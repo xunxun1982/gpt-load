@@ -171,6 +171,27 @@ func (ps *ProxyServer) executeRequestWithRetry(c *gin.Context, startTime time.Ti
 	if retryCount > keysConfig.MaxRetries {
 		logrus.Debugf("Max retries exceeded (%d)", retryCount-1)
 
+		// 返回最后一次重试错误
+		if len(retryErrors) > 0 {
+			lastError := retryErrors[len(retryErrors)-1]
+			if lastError.StatusCode > 0 {
+				var errorJSON interface{}
+				if err := json.Unmarshal([]byte(lastError.ErrorMessage), &errorJSON); err == nil {
+					c.JSON(lastError.StatusCode, errorJSON)
+				} else {
+					c.JSON(lastError.StatusCode, gin.H{
+						"error": gin.H{
+							"message": lastError.ErrorMessage,
+							"type":    "upstream_error",
+							"code":    "proxy_forwarded_error",
+						},
+					})
+				}
+				return
+			}
+		}
+
+		// Fallback to generic error if no valid upstream error available
 		errorResponse := gin.H{
 			"error":        "Max retries exceeded",
 			"code":         errors.ErrProxyRetryExhausted,
@@ -180,10 +201,6 @@ func (ps *ProxyServer) executeRequestWithRetry(c *gin.Context, startTime time.Ti
 		}
 
 		statusCode := http.StatusBadGateway
-		if len(retryErrors) > 0 && retryErrors[len(retryErrors)-1].StatusCode > 0 {
-			statusCode = retryErrors[len(retryErrors)-1].StatusCode
-		}
-
 		c.JSON(statusCode, errorResponse)
 		return
 	}
@@ -342,8 +359,8 @@ func (ps *ProxyServer) executeRequestWithRetry(c *gin.Context, startTime time.Ti
 			logrus.Debugf("Initial request returned error %d (response time: %v)", resp.StatusCode, responseTime)
 		}
 
-		// Extract error message from response, handling Gzip
-		errorMessage := getErrorMessageFromResponse(resp)
+		// Extract full error response from upstream, handling Gzip
+		fullErrorResponse := getFullErrorResponseFromResponse(resp)
 
 		var jsonError struct {
 			Error struct {
@@ -351,22 +368,22 @@ func (ps *ProxyServer) executeRequestWithRetry(c *gin.Context, startTime time.Ti
 			} `json:"error"`
 		}
 
-		if err := json.Unmarshal([]byte(errorMessage), &jsonError); err == nil && jsonError.Error.Message != "" {
-			logrus.Warnf("Http Error: %s", jsonError.Error.Message)
+		if err := json.Unmarshal([]byte(fullErrorResponse), &jsonError); err == nil && jsonError.Error.Message != "" {
+			logrus.Warnf("Http Error %d: %s", resp.StatusCode, jsonError.Error.Message)
 		} else {
-			logrus.Warnf("Http Error: %s", errorMessage)
+			logrus.Warnf("Http Error %d: %s", resp.StatusCode, fullErrorResponse)
 		}
 
 		// Record failure asynchronously
 		go ps.keyManager.RecordFailure(keyInfo.Key, fmt.Errorf("HTTP %d", resp.StatusCode))
 
-		// Record retry error information
+		// Record retry error information with full upstream response
 		if retryErrors == nil {
 			retryErrors = make([]types.RetryError, 0)
 		}
 		retryErrors = append(retryErrors, types.RetryError{
 			StatusCode:   resp.StatusCode,
-			ErrorMessage: errorMessage,
+			ErrorMessage: fullErrorResponse,
 			KeyIndex:     keyInfo.Index,
 			Attempt:      retryCount + 1,
 		})
@@ -404,37 +421,39 @@ func (ps *ProxyServer) executeRequestWithRetry(c *gin.Context, startTime time.Ti
 	}
 }
 
-// getErrorMessageFromResponse reads the response body, handles Gzip decompression,
-// and returns a meaningful error message.
-func getErrorMessageFromResponse(resp *http.Response) string {
+// getFullErrorResponseFromResponse reads the complete response body, handles Gzip decompression,
+// and returns the full upstream error response for forwarding to client.
+func getFullErrorResponseFromResponse(resp *http.Response) string {
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Sprintf("HTTP %d (failed to read body: %v)", resp.StatusCode, err)
+		return fmt.Sprintf(`{"error": {"message": "HTTP %d (failed to read body: %v)", "type": "proxy_error", "code": "read_error"}}`, resp.StatusCode, err)
 	}
-	defer resp.Body.Close()
 
-	var errorMessage string
+	// Important: We need to restore the response body for potential reuse
+	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+	var responseContent string
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		reader, gErr := gzip.NewReader(bytes.NewReader(bodyBytes))
 		if gErr != nil {
-			errorMessage = string(bodyBytes)
+			responseContent = string(bodyBytes)
 		} else {
 			defer reader.Close()
 			uncompressedBytes, rErr := io.ReadAll(reader)
 			if rErr != nil {
-				return fmt.Sprintf("gzip read error: %v", rErr)
+				return fmt.Sprintf(`{"error": {"message": "gzip read error: %v", "type": "proxy_error", "code": "gzip_error"}}`, rErr)
 			}
-			errorMessage = string(uncompressedBytes)
+			responseContent = string(uncompressedBytes)
 		}
 	} else {
-		errorMessage = string(bodyBytes)
+		responseContent = string(bodyBytes)
 	}
 
-	if strings.TrimSpace(errorMessage) == "" {
-		return fmt.Sprintf("HTTP %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	if strings.TrimSpace(responseContent) == "" {
+		return fmt.Sprintf(`{"error": {"message": "HTTP %d: %s", "type": "http_error", "code": "empty_response"}}`, resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 
-	return errorMessage
+	return responseContent
 }
 
 var newline = []byte("\n")
