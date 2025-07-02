@@ -342,29 +342,8 @@ func (ps *ProxyServer) executeRequestWithRetry(c *gin.Context, startTime time.Ti
 			logrus.Debugf("Initial request returned error %d (response time: %v)", resp.StatusCode, responseTime)
 		}
 
-		// Read response body to get error information
-		var errorMessage string
-		errorBodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			errorMessage = fmt.Sprintf("HTTP %d (failed to read body: %v)", resp.StatusCode, err)
-		} else {
-			if resp.Header.Get("Content-Encoding") == "gzip" {
-				reader, gErr := gzip.NewReader(bytes.NewReader(errorBodyBytes))
-				if gErr != nil {
-					errorMessage = fmt.Sprintf("gzip reader error: %v", gErr)
-				} else {
-					uncompressedBytes, rErr := io.ReadAll(reader)
-					reader.Close()
-					if rErr != nil {
-						errorMessage = fmt.Sprintf("gzip read error: %v", rErr)
-					} else {
-						errorMessage = string(uncompressedBytes)
-					}
-				}
-			} else {
-				errorMessage = string(errorBodyBytes)
-			}
-		}
+		// Extract error message from response, handling Gzip
+		errorMessage := getErrorMessageFromResponse(resp)
 
 		var jsonError struct {
 			Error struct {
@@ -423,6 +402,39 @@ func (ps *ProxyServer) executeRequestWithRetry(c *gin.Context, startTime time.Ti
 	} else {
 		ps.handleNormalResponse(c, resp)
 	}
+}
+
+// getErrorMessageFromResponse reads the response body, handles Gzip decompression,
+// and returns a meaningful error message.
+func getErrorMessageFromResponse(resp *http.Response) string {
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Sprintf("HTTP %d (failed to read body: %v)", resp.StatusCode, err)
+	}
+	defer resp.Body.Close()
+
+	var errorMessage string
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		reader, gErr := gzip.NewReader(bytes.NewReader(bodyBytes))
+		if gErr != nil {
+			errorMessage = string(bodyBytes)
+		} else {
+			defer reader.Close()
+			uncompressedBytes, rErr := io.ReadAll(reader)
+			if rErr != nil {
+				return fmt.Sprintf("gzip read error: %v", rErr)
+			}
+			errorMessage = string(uncompressedBytes)
+		}
+	} else {
+		errorMessage = string(bodyBytes)
+	}
+
+	if strings.TrimSpace(errorMessage) == "" {
+		return fmt.Sprintf("HTTP %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+
+	return errorMessage
 }
 
 var newline = []byte("\n")
