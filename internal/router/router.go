@@ -3,6 +3,7 @@ package router
 import (
 	"embed"
 	"gpt-load/internal/handler"
+	"gpt-load/internal/i18n"
 	"gpt-load/internal/middleware"
 	"gpt-load/internal/proxy"
 	"gpt-load/internal/services"
@@ -56,6 +57,7 @@ func NewRouter(
 	router.Use(middleware.CORS(configManager.GetCORSConfig()))
 	router.Use(middleware.RateLimiter(configManager.GetPerformanceConfig()))
 	router.Use(middleware.SecurityHeaders())
+	router.Use(i18n.Middleware()) // 添加 i18n 中间件
 	startTime := time.Now()
 	router.Use(func(c *gin.Context) {
 		c.Set("serverStartTime", startTime)

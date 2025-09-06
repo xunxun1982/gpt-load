@@ -27,6 +27,9 @@ http.interceptors.request.use(config => {
   if (authKey) {
     config.headers.Authorization = `Bearer ${authKey}`;
   }
+  // 添加语言头
+  const locale = localStorage.getItem("locale") || "zh-CN";
+  config.headers["Accept-Language"] = locale;
   return config;
 });
 
