@@ -143,7 +143,7 @@ func (s *Server) ListKeysInGroup(c *gin.Context) {
 
 	statusFilter := c.Query("status")
 	if statusFilter != "" && statusFilter != models.KeyStatusActive && statusFilter != models.KeyStatusInvalid {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "Invalid status filter"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_status_filter")
 		return
 	}
 
@@ -283,7 +283,7 @@ func (s *Server) TestMultipleKeys(c *gin.Context) {
 
 	group, err := s.GroupManager.GetGroupByName(groupDB.Name)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrResourceNotFound, fmt.Sprintf("Group '%s' not found", groupDB.Name)))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrResourceNotFound, "validation.group_not_found")
 		return
 	}
 
@@ -322,7 +322,7 @@ func (s *Server) ValidateGroupKeys(c *gin.Context) {
 
 	// Validate status if provided
 	if req.Status != "" && req.Status != models.KeyStatusActive && req.Status != models.KeyStatusInvalid {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "Invalid status value"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_status_value")
 		return
 	}
 
@@ -333,7 +333,7 @@ func (s *Server) ValidateGroupKeys(c *gin.Context) {
 
 	group, err := s.GroupManager.GetGroupByName(groupDB.Name)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrResourceNotFound, fmt.Sprintf("Group '%s' not found", groupDB.Name)))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrResourceNotFound, "validation.group_not_found")
 		return
 	}
 
@@ -425,7 +425,7 @@ func (s *Server) ExportKeys(c *gin.Context) {
 	switch statusFilter {
 	case "all", models.KeyStatusActive, models.KeyStatusInvalid:
 	default:
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "Invalid status filter"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_status_filter")
 		return
 	}
 

@@ -452,7 +452,7 @@ function resetPage() {
             <div class="details-content">
               <div class="detail-section">
                 <h4 class="section-title">{{ t("keys.basicInfo") }}</h4>
-                <n-form label-placement="left" label-width="85px" label-align="right">
+                <n-form label-placement="left" label-width="140px" label-align="right">
                   <n-grid cols="1 m:2">
                     <n-grid-item>
                       <n-form-item :label="`${t('keys.groupName')}：`">
@@ -528,7 +528,7 @@ function resetPage() {
 
               <div class="detail-section">
                 <h4 class="section-title">{{ t("keys.upstreamAddresses") }}</h4>
-                <n-form label-placement="left" label-width="100px">
+                <n-form label-placement="left" label-width="140px">
                   <n-form-item
                     v-for="(upstream, index) in group?.upstreams ?? []"
                     :key="index"
