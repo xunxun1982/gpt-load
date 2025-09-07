@@ -4,7 +4,10 @@ import { getGroupDisplayName } from "@/utils/display";
 import { Add, Search } from "@vicons/ionicons5";
 import { NButton, NCard, NEmpty, NInput, NSpin, NTag } from "naive-ui";
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import GroupFormModal from "./GroupFormModal.vue";
+
+const { t } = useI18n();
 
 interface Props {
   groups: Group[];
@@ -76,7 +79,12 @@ function handleGroupCreated(group: Group) {
     <n-card class="group-list-card modern-card" :bordered="false" size="small">
       <!-- 搜索框 -->
       <div class="search-section">
-        <n-input v-model:value="searchText" placeholder="搜索分组名称..." size="small" clearable>
+        <n-input
+          v-model:value="searchText"
+          :placeholder="t('keys.searchGroupPlaceholder')"
+          size="small"
+          clearable
+        >
           <template #prefix>
             <n-icon :component="Search" />
           </template>
@@ -87,7 +95,10 @@ function handleGroupCreated(group: Group) {
       <div class="groups-section">
         <n-spin :show="loading" size="small">
           <div v-if="filteredGroups.length === 0 && !loading" class="empty-container">
-            <n-empty size="small" :description="searchText ? '未找到匹配的分组' : '暂无分组'" />
+            <n-empty
+              size="small"
+              :description="searchText ? t('keys.noMatchingGroups') : t('keys.noGroups')"
+            />
           </div>
           <div v-else class="groups-list">
             <div
@@ -123,7 +134,7 @@ function handleGroupCreated(group: Group) {
           <template #icon>
             <n-icon :component="Add" />
           </template>
-          创建分组
+          {{ t("keys.createGroup") }}
         </n-button>
       </div>
     </n-card>

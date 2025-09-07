@@ -3,6 +3,9 @@ import { getDashboardStats } from "@/api/dashboard";
 import type { DashboardStatsResponse } from "@/types/models";
 import { NCard, NGrid, NGridItem, NSpace, NTag, NTooltip } from "naive-ui";
 import { onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
+
+const { t } = useI18n();
 
 // 统计数据
 const stats = ref<DashboardStatsResponse | null>(null);
@@ -45,7 +48,7 @@ const fetchStats = async () => {
       };
     }, 0);
   } catch (error) {
-    console.error("获取统计数据失败:", error);
+    console.error("Failed to fetch stats:", error);
   } finally {
     loading.value = false;
   }
@@ -79,7 +82,7 @@ onMounted(() => {
               <div class="stat-value">
                 {{ stats?.key_count?.value ?? 0 }}
               </div>
-              <div class="stat-title">密钥数量</div>
+              <div class="stat-title">{{ t("dashboard.totalKeys") }}</div>
             </div>
 
             <div class="stat-bar">
@@ -112,7 +115,7 @@ onMounted(() => {
               <div class="stat-value">
                 {{ stats?.rpm?.value.toFixed(1) ?? 0 }}
               </div>
-              <div class="stat-title">10分钟RPM</div>
+              <div class="stat-title">{{ t("dashboard.rpm10Min") }}</div>
             </div>
 
             <div class="stat-bar">
@@ -145,7 +148,7 @@ onMounted(() => {
               <div class="stat-value">
                 {{ stats ? formatValue(stats.request_count.value) : "--" }}
               </div>
-              <div class="stat-title">24小时请求</div>
+              <div class="stat-title">{{ t("dashboard.requests24h") }}</div>
             </div>
 
             <div class="stat-bar">
@@ -178,7 +181,7 @@ onMounted(() => {
               <div class="stat-value">
                 {{ stats ? formatValue(stats.error_rate.value ?? 0, "rate") : "--" }}
               </div>
-              <div class="stat-title">24小时错误率</div>
+              <div class="stat-title">{{ t("dashboard.errorRate24h") }}</div>
             </div>
 
             <div class="stat-bar">

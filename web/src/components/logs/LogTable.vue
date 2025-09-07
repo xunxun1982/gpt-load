@@ -27,6 +27,9 @@ import {
   useMessage,
 } from "naive-ui";
 import { computed, h, onMounted, reactive, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+
+const { t } = useI18n();
 
 // Message instance
 const message = useMessage();
@@ -62,13 +65,13 @@ const filters = reactive({
 });
 
 const successOptions = [
-  { label: "成功", value: "true" },
-  { label: "失败", value: "false" },
+  { label: t("common.success"), value: "true" },
+  { label: t("common.error"), value: "false" },
 ];
 
 const requestTypeOptions = [
-  { label: "重试请求", value: "retry" },
-  { label: "最终请求", value: "final" },
+  { label: t("logs.retryRequest"), value: "retry" },
+  { label: t("logs.finalRequest"), value: "final" },
 ];
 
 // Fetch data
@@ -100,14 +103,14 @@ const loadLogs = async () => {
     } else {
       logs.value = [];
       total.value = 0;
-      window.$message.error(res.message || "加载日志失败", {
+      window.$message.error(res.message || t("logs.loadFailed"), {
         keepAliveOnHover: true,
         duration: 5000,
         closable: true,
       });
     }
   } catch (_error) {
-    window.$message.error("加载日志请求失败");
+    window.$message.error(t("logs.requestFailed"));
   } finally {
     loading.value = false;
   }
@@ -150,58 +153,61 @@ const formatJsonString = (jsonStr: string) => {
 const copyContent = async (content: string, type: string) => {
   const success = await copy(content);
   if (success) {
-    message.success(`${type}已复制到剪贴板`);
+    message.success(t("logs.copiedToClipboard", { type }));
   } else {
-    message.error(`复制${type}失败`);
+    message.error(t("logs.copyFailed", { type }));
   }
 };
 
 // Columns definition
 const createColumns = () => [
   {
-    title: "时间",
+    title: t("logs.time"),
     key: "timestamp",
     width: 160,
     render: (row: LogRow) => formatDateTime(row.timestamp),
   },
   {
-    title: "状态",
+    title: t("common.status"),
     key: "is_success",
     width: 50,
     render: (row: LogRow) =>
       h(
         NTag,
         { type: row.is_success ? "success" : "error", size: "small", round: true },
-        { default: () => (row.is_success ? "成功" : "失败") }
+        { default: () => (row.is_success ? t("common.success") : t("common.error")) }
       ),
   },
   {
-    title: "请求类型",
+    title: t("logs.requestType"),
     key: "request_type",
     width: 90,
     render: (row: LogRow) => {
       return h(
         NTag,
         { type: row.request_type === "retry" ? "warning" : "default", size: "small", round: true },
-        { default: () => (row.request_type === "retry" ? "重试请求" : "最终请求") }
+        {
+          default: () =>
+            row.request_type === "retry" ? t("logs.retryRequest") : t("logs.finalRequest"),
+        }
       );
     },
   },
   {
-    title: "响应类型",
+    title: t("logs.responseType"),
     key: "is_stream",
     width: 80,
     render: (row: LogRow) =>
       h(
         NTag,
         { type: row.is_stream ? "info" : "default", size: "small", round: true },
-        { default: () => (row.is_stream ? "流式" : "非流") }
+        { default: () => (row.is_stream ? t("logs.stream") : t("logs.nonStream")) }
       ),
   },
-  { title: "状态码", key: "status_code", width: 60 },
-  { title: "耗时(ms)", key: "duration_ms", width: 80 },
-  { title: "分组", key: "group_name", width: 120 },
-  { title: "模型", key: "model", width: 200 },
+  { title: t("logs.statusCode"), key: "status_code", width: 60 },
+  { title: t("logs.duration"), key: "duration_ms", width: 80 },
+  { title: t("logs.group"), key: "group_name", width: 120 },
+  { title: t("logs.model"), key: "model", width: 200 },
   {
     title: "Key",
     key: "key_value",
@@ -223,9 +229,9 @@ const createColumns = () => [
         ),
       ]),
   },
-  { title: "源IP", key: "source_ip", width: 140 },
+  { title: t("logs.sourceIP"), key: "source_ip", width: 140 },
   {
-    title: "操作",
+    title: t("common.actions"),
     key: "actions",
     width: 100,
     fixed: "right" as const,
@@ -240,7 +246,7 @@ const createColumns = () => [
         },
         {
           icon: () => h(NIcon, null, { default: () => h(DocumentTextOutline) }),
-          default: () => "详情",
+          default: () => t("common.detail"),
         }
       ),
   },
@@ -313,7 +319,7 @@ function changePageSize(size: number) {
                   v-model:value="filters.is_success"
                   :options="successOptions"
                   size="small"
-                  placeholder="状态"
+                  :placeholder="t('common.status')"
                   clearable
                   @update:value="handleSearch"
                 />
@@ -321,7 +327,7 @@ function changePageSize(size: number) {
               <div class="filter-item">
                 <n-input
                   v-model:value="filters.status_code"
-                  placeholder="状态码"
+                  :placeholder="t('logs.statusCode')"
                   size="small"
                   clearable
                   @keyup.enter="handleSearch"
@@ -330,7 +336,7 @@ function changePageSize(size: number) {
               <div class="filter-item">
                 <n-input
                   v-model:value="filters.group_name"
-                  placeholder="分组名"
+                  :placeholder="t('logs.groupName')"
                   size="small"
                   clearable
                   @keyup.enter="handleSearch"
@@ -339,7 +345,7 @@ function changePageSize(size: number) {
               <div class="filter-item">
                 <n-input
                   v-model:value="filters.model"
-                  placeholder="模型"
+                  :placeholder="t('logs.model')"
                   size="small"
                   clearable
                   @keyup.enter="handleSearch"
@@ -348,7 +354,7 @@ function changePageSize(size: number) {
               <div class="filter-item">
                 <n-input
                   v-model:value="filters.key_value"
-                  placeholder="密钥"
+                  :placeholder="t('logs.key')"
                   size="small"
                   clearable
                   @keyup.enter="handleSearch"
@@ -360,7 +366,7 @@ function changePageSize(size: number) {
                   :options="requestTypeOptions"
                   size="small"
                   clearable
-                  placeholder="请求类型"
+                  :placeholder="t('logs.requestType')"
                   @update:value="handleSearch"
                 />
               </div>
@@ -370,7 +376,7 @@ function changePageSize(size: number) {
                   type="datetime"
                   clearable
                   size="small"
-                  placeholder="开始时间"
+                  :placeholder="t('common.startTime')"
                 />
               </div>
               <div class="filter-item">
@@ -379,13 +385,13 @@ function changePageSize(size: number) {
                   type="datetime"
                   clearable
                   size="small"
-                  placeholder="结束时间"
+                  :placeholder="t('common.endTime')"
                 />
               </div>
               <div class="filter-item">
                 <n-input
                   v-model:value="filters.error_contains"
-                  placeholder="错误信息"
+                  :placeholder="t('logs.errorMessage')"
                   size="small"
                   clearable
                   @keyup.enter="handleSearch"
@@ -396,14 +402,14 @@ function changePageSize(size: number) {
                   <template #icon>
                     <n-icon :component="Search" />
                   </template>
-                  搜索
+                  {{ t("common.search") }}
                 </n-button>
-                <n-button size="small" @click="resetFilters">重置</n-button>
+                <n-button size="small" @click="resetFilters">{{ t("common.reset") }}</n-button>
                 <n-button size="small" type="primary" ghost @click="exportLogs">
                   <template #icon>
                     <n-icon :component="DownloadOutline" />
                   </template>
-                  导出密钥
+                  {{ t("logs.exportLogs") }}
                 </n-button>
               </div>
             </div>
@@ -428,14 +434,14 @@ function changePageSize(size: number) {
         <!-- 分页 -->
         <div class="pagination-container">
           <div class="pagination-info">
-            <span>共 {{ total }} 条记录</span>
+            <span>{{ t("logs.totalRecords", { total }) }}</span>
             <n-select
               v-model:value="pageSize"
               :options="[
-                { label: '15条/页', value: 15 },
-                { label: '30条/页', value: 30 },
-                { label: '50条/页', value: 50 },
-                { label: '100条/页', value: 100 },
+                { label: t('logs.recordsPerPage', { count: 15 }), value: 15 },
+                { label: t('logs.recordsPerPage', { count: 30 }), value: 30 },
+                { label: t('logs.recordsPerPage', { count: 50 }), value: 50 },
+                { label: t('logs.recordsPerPage', { count: 100 }), value: 100 },
               ]"
               size="small"
               style="width: 100px; margin-left: 12px"
@@ -448,15 +454,17 @@ function changePageSize(size: number) {
               :disabled="currentPage <= 1"
               @click="changePage(currentPage - 1)"
             >
-              上一页
+              {{ t("logs.previousPage") }}
             </n-button>
-            <span class="page-info">第 {{ currentPage }} 页，共 {{ totalPages }} 页</span>
+            <span class="page-info">
+              {{ t("logs.pageInfo", { current: currentPage, total: totalPages }) }}
+            </span>
             <n-button
               size="small"
               :disabled="currentPage >= totalPages"
               @click="changePage(currentPage + 1)"
             >
-              下一页
+              {{ t("logs.nextPage") }}
             </n-button>
           </div>
         </div>
@@ -464,59 +472,65 @@ function changePageSize(size: number) {
     </n-space>
 
     <!-- 详情模态框 -->
-    <n-modal v-model:show="showDetailModal" preset="card" style="width: 1000px" title="请求详情">
+    <n-modal
+      v-model:show="showDetailModal"
+      preset="card"
+      style="width: 1000px"
+      :title="t('logs.requestDetails')"
+    >
       <div v-if="selectedLog" style="max-height: 65vh; overflow-y: auto">
         <n-space vertical size="small">
           <!-- 基本信息 -->
           <n-card
-            title="基本信息"
+            :title="t('logs.basicInfo')"
             size="small"
             :header-style="{ padding: '8px 12px', fontSize: '13px' }"
           >
             <div class="detail-grid-compact">
               <div class="detail-item-compact">
-                <span class="detail-label-compact">时间:</span>
+                <span class="detail-label-compact">{{ t("logs.time") }}:</span>
                 <span class="detail-value-compact">
                   {{ formatDateTime(selectedLog.timestamp) }}
                 </span>
               </div>
               <div class="detail-item-compact">
-                <span class="detail-label-compact">状态:</span>
+                <span class="detail-label-compact">{{ t("common.status") }}:</span>
                 <n-tag :type="selectedLog.is_success ? 'success' : 'error'" size="small">
-                  {{ selectedLog.is_success ? "成功" : "失败" }} - {{ selectedLog.status_code }}
+                  {{ selectedLog.is_success ? t("common.success") : t("common.error") }} -
+                  {{ selectedLog.status_code }}
                 </n-tag>
               </div>
               <div class="detail-item-compact">
-                <span class="detail-label-compact">耗时:</span>
+                <span class="detail-label-compact">{{ t("logs.duration") }}:</span>
                 <span class="detail-value-compact">{{ selectedLog.duration_ms }}ms</span>
               </div>
               <div class="detail-item-compact">
-                <span class="detail-label-compact">分组:</span>
+                <span class="detail-label-compact">{{ t("logs.group") }}:</span>
                 <span class="detail-value-compact">{{ selectedLog.group_name }}</span>
               </div>
               <div class="detail-item-compact">
-                <span class="detail-label-compact">模型:</span>
+                <span class="detail-label-compact">{{ t("logs.model") }}:</span>
                 <span class="detail-value-compact">{{ selectedLog.model }}</span>
               </div>
               <div class="detail-item-compact">
-                <span class="detail-label-compact">请求类型:</span>
+                <span class="detail-label-compact">{{ t("logs.requestType") }}:</span>
                 <n-tag v-if="selectedLog.request_type === 'retry'" type="warning" size="small">
-                  重试
+                  {{ t("logs.retryRequest") }}
                 </n-tag>
-                <n-tag v-else type="default" size="small">最终</n-tag>
+                <n-tag v-else type="default" size="small">{{ t("logs.finalRequest") }}</n-tag>
               </div>
               <div class="detail-item-compact">
-                <span class="detail-label-compact">响应类型:</span>
+                <span class="detail-label-compact">{{ t("logs.responseType") }}:</span>
                 <n-tag :type="selectedLog.is_stream ? 'info' : 'default'" size="small">
-                  {{ selectedLog.is_stream ? "流式" : "非流" }}
+                  {{ selectedLog.is_stream ? t("logs.stream") : t("logs.nonStream") }}
                 </n-tag>
               </div>
               <div class="detail-item-compact">
-                <span class="detail-label-compact">源IP:</span>
+                <span class="detail-label-compact">{{ t("logs.sourceIP") }}:</span>
                 <span class="detail-value-compact">{{ selectedLog.source_ip || "-" }}</span>
               </div>
               <div class="detail-item-compact key-item">
-                <span class="detail-label-compact">密钥:</span>
+                <span class="detail-label-compact">{{ t("logs.key") }}:</span>
                 <div class="key-display-compact">
                   <span class="key-value-compact">
                     {{
@@ -551,18 +565,18 @@ function changePageSize(size: number) {
 
           <!-- 请求信息 (紧凑布局) -->
           <n-card
-            title="请求信息"
+            :title="t('logs.requestInfo')"
             size="small"
             :header-style="{ padding: '8px 12px', fontSize: '13px' }"
           >
             <div class="compact-fields">
               <div class="compact-field" v-if="selectedLog.request_path">
                 <div class="compact-field-header">
-                  <span class="compact-field-title">请求路径</span>
+                  <span class="compact-field-title">{{ t("logs.requestPath") }}</span>
                   <n-button
                     size="tiny"
                     text
-                    @click="copyContent(selectedLog.request_path, '请求路径')"
+                    @click="copyContent(selectedLog.request_path, t('logs.requestPath'))"
                   >
                     <template #icon>
                       <n-icon :component="CopyOutline" />
@@ -576,11 +590,11 @@ function changePageSize(size: number) {
 
               <div class="compact-field" v-if="selectedLog.upstream_addr">
                 <div class="compact-field-header">
-                  <span class="compact-field-title">上游地址</span>
+                  <span class="compact-field-title">{{ t("logs.upstreamAddress") }}</span>
                   <n-button
                     size="tiny"
                     text
-                    @click="copyContent(selectedLog.upstream_addr, '上游地址')"
+                    @click="copyContent(selectedLog.upstream_addr, t('logs.upstreamAddress'))"
                   >
                     <template #icon>
                       <n-icon :component="CopyOutline" />
@@ -612,11 +626,16 @@ function changePageSize(size: number) {
 
               <div class="compact-field" v-if="selectedLog.request_body">
                 <div class="compact-field-header">
-                  <span class="compact-field-title">请求内容</span>
+                  <span class="compact-field-title">{{ t("logs.requestContent") }}</span>
                   <n-button
                     size="tiny"
                     text
-                    @click="copyContent(formatJsonString(selectedLog.request_body), '请求内容')"
+                    @click="
+                      copyContent(
+                        formatJsonString(selectedLog.request_body),
+                        t('logs.requestContent')
+                      )
+                    "
                   >
                     <template #icon>
                       <n-icon :component="CopyOutline" />
@@ -633,7 +652,7 @@ function changePageSize(size: number) {
           <!-- 错误信息 -->
           <n-card
             v-if="selectedLog.error_message"
-            title="错误信息"
+            :title="t('logs.errorInfo')"
             size="small"
             :header-style="{ padding: '8px 12px', fontSize: '13px' }"
           >
@@ -642,7 +661,7 @@ function changePageSize(size: number) {
                 size="tiny"
                 text
                 ghost
-                @click="copyContent(selectedLog.error_message, '错误信息')"
+                @click="copyContent(selectedLog.error_message, t('logs.errorMessage'))"
               >
                 <template #icon>
                   <n-icon :component="CopyOutline" />
@@ -659,7 +678,7 @@ function changePageSize(size: number) {
       </div>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="closeDetailModal">关闭</n-button>
+          <n-button @click="closeDetailModal">{{ t("common.close") }}</n-button>
         </n-space>
       </template>
     </n-modal>
