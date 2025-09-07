@@ -17,7 +17,7 @@ const { t } = useI18n();
 
 const handleLogin = async () => {
   if (!authKey.value) {
-    message.error(t('login.authKeyRequired'));
+    message.error(t("login.authKeyRequired"));
     return;
   }
   loading.value = true;
@@ -42,15 +42,15 @@ const handleLogin = async () => {
 
     <div class="login-content">
       <div class="login-header">
-        <h1 class="login-title">{{ t('login.title') }}</h1>
-        <p class="login-subtitle">{{ t('login.subtitle') }}</p>
+        <h1 class="login-title">{{ t("login.title") }}</h1>
+        <p class="login-subtitle">{{ t("login.subtitle") }}</p>
       </div>
 
       <n-card class="login-card modern-card" :bordered="false">
         <template #header>
           <div class="card-header">
-            <h2 class="card-title">{{ t('login.welcome') }}</h2>
-            <p class="card-subtitle">{{ t('login.welcomeDesc') }}</p>
+            <h2 class="card-title">{{ t("login.welcome") }}</h2>
+            <p class="card-subtitle">{{ t("login.welcomeDesc") }}</p>
           </div>
         </template>
 
@@ -78,7 +78,7 @@ const handleLogin = async () => {
             :disabled="loading"
           >
             <template v-if="!loading">
-              <span>{{ t('login.loginButton') }}</span>
+              <span>{{ t("login.loginButton") }}</span>
             </template>
           </n-button>
         </n-space>

@@ -57,7 +57,6 @@ func NewRouter(
 	router.Use(middleware.CORS(configManager.GetCORSConfig()))
 	router.Use(middleware.RateLimiter(configManager.GetPerformanceConfig()))
 	router.Use(middleware.SecurityHeaders())
-	router.Use(i18n.Middleware()) // 添加 i18n 中间件
 	startTime := time.Now()
 	router.Use(func(c *gin.Context) {
 		c.Set("serverStartTime", startTime)
@@ -85,6 +84,8 @@ func registerAPIRoutes(
 	configManager types.ConfigManager,
 ) {
 	api := router.Group("/api")
+	api.Use(i18n.Middleware())
+
 	authConfig := configManager.GetAuthConfig()
 
 	// 公开
