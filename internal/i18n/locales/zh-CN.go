@@ -55,6 +55,10 @@ var MessagesZhCN = map[string]string{
 	"validation.invalid_channel_type":    "无效的通道类型。支持的类型有: {types}",
 	"validation.test_model_empty":        "测试模型不能为空或只有空格",
 	"validation.invalid_status_value":    "无效的状态值",
+	"validation.invalid_upstreams":       "upstreams配置错误: {error}",
+	"validation.group_id_required":       "需要提供group_id参数",
+	"validation.invalid_group_id_format": "无效的group_id格式",
+	"validation.keys_text_empty":         "密钥文本不能为空",
 
 	// 任务相关
 	"task.validation_started": "密钥验证任务已开始",
@@ -151,4 +155,26 @@ var MessagesZhCN = map[string]string{
 	"error.upstream_weight_positive": "upstream权重必须是正整数",
 	"error.marshal_upstreams_failed": "序列化清理后的upstreams失败",
 	"error.unknown_config_field":     "未知的配置字段: '{field}'",
+	"error.invalid_config_format":    "无效的配置格式: {error}",
+	"error.process_header_rules":     "处理请求头规则失败: {error}",
+	"error.invalidate_group_cache":   "刷新分组缓存失败",
+	"error.unmarshal_header_rules":   "解析请求头规则失败",
+	"error.delete_group_cache":       "删除分组失败: 无法清理缓存",
+	"error.get_total_keys":           "获取密钥总数失败: {error}",
+	"error.get_active_keys":          "获取活跃密钥数失败: {error}",
+	"error.get_hourly_requests":      "获取每小时请求数失败: {error}",
+	"error.get_hourly_failures":      "获取每小时失败数失败: {error}",
+	"error.get_daily_stats":          "获取每日统计失败: {error}",
+	"error.get_weekly_stats":         "获取每周统计失败: {error}",
+	"error.decrypt_key_copy":         "解密密钥时失败，跳过该密钥",
+	"error.start_import_task":        "启动异步密钥导入任务失败",
+	"error.export_logs":              "导出日志失败",
+
+	// 登录相关
+	"auth.invalid_request":           "无效的请求格式",
+	"auth.authentication_successful": "认证成功",
+	"auth.authentication_failed":     "认证失败",
+
+	// 设置成功消息
+	"settings.update_success": "设置更新成功。配置将在后台在所有实例间重新加载。",
 }

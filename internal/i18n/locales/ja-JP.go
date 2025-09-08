@@ -55,6 +55,10 @@ var MessagesJaJP = map[string]string{
 	"validation.invalid_channel_type":    "無効なチャンネルタイプ。サポートされるタイプ: {types}",
 	"validation.test_model_empty":        "テストモデルは空またはスペースのみにできません",
 	"validation.invalid_status_value":    "無効なステータス値",
+	"validation.invalid_upstreams":       "無効なupstreams設定: {error}",
+	"validation.group_id_required":       "group_idクエリパラメータが必要です",
+	"validation.invalid_group_id_format": "無効なgroup_id形式",
+	"validation.keys_text_empty":         "キーテキストは空にできません",
 
 	// タスク関連
 	"task.validation_started": "キー検証タスクが開始されました",
@@ -151,4 +155,26 @@ var MessagesJaJP = map[string]string{
 	"error.upstream_weight_positive": "upstreamの重みは正の整数である必要があります",
 	"error.marshal_upstreams_failed": "クリーンアップされたupstreamsのシリアル化に失敗しました",
 	"error.unknown_config_field":     "未知の設定フィールド: '{field}'",
+	"error.invalid_config_format":    "無効な設定形式: {error}",
+	"error.process_header_rules":     "ヘッダールールの処理に失敗しました: {error}",
+	"error.invalidate_group_cache":   "グループキャッシュの無効化に失敗しました",
+	"error.unmarshal_header_rules":   "ヘッダールールのアンマーシャルに失敗しました",
+	"error.delete_group_cache":       "グループの削除に失敗: キャッシュをクリーンアップできません",
+	"error.get_total_keys":           "合計キー数の取得に失敗: {error}",
+	"error.get_active_keys":          "アクティブキー数の取得に失敗: {error}",
+	"error.get_hourly_requests":      "時間別リクエスト数の取得に失敗: {error}",
+	"error.get_hourly_failures":      "時間別失敗数の取得に失敗: {error}",
+	"error.get_daily_stats":          "日別統計の取得に失敗: {error}",
+	"error.get_weekly_stats":         "週別統計の取得に失敗: {error}",
+	"error.decrypt_key_copy":         "グループコピー中のキー復号化に失敗、スキップします",
+	"error.start_import_task":        "グループコピー用の非同期キーインポートタスクの開始に失敗しました",
+	"error.export_logs":              "ログのエクスポートに失敗しました",
+
+	// ログイン関連
+	"auth.invalid_request":           "無効なリクエスト形式",
+	"auth.authentication_successful": "認証成功",
+	"auth.authentication_failed":     "認証失敗",
+
+	// 設定成功メッセージ
+	"settings.update_success": "設定が正常に更新されました。設定はすべてのインスタンスでバックグラウンドで再読み込みされます。",
 }

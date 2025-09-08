@@ -17,17 +17,17 @@ func Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 获取 Accept-Language 头
 		acceptLang := c.GetHeader("Accept-Language")
-		
+
 		// 获取 Localizer
 		localizer := GetLocalizer(acceptLang)
-		
+
 		// 将 Localizer 存储到 Context 中
 		c.Set(LocalizerKey, localizer)
-		
+
 		// 存储当前语言
 		lang := normalizeLanguageCode(acceptLang)
 		c.Set(LangKey, lang)
-		
+
 		c.Next()
 	}
 }
@@ -54,10 +54,10 @@ func GetLangFromContext(c *gin.Context) string {
 }
 
 // Success 返回成功响应（带国际化消息）
-func Success(c *gin.Context, msgID string, data interface{}) {
+func Success(c *gin.Context, msgID string, data any) {
 	localizer := GetLocalizerFromContext(c)
 	message := T(localizer, msgID)
-	
+
 	c.JSON(200, gin.H{
 		"success": true,
 		"message": message,
@@ -67,10 +67,10 @@ func Success(c *gin.Context, msgID string, data interface{}) {
 }
 
 // SuccessWithData 返回成功响应（带模板数据）
-func SuccessWithData(c *gin.Context, msgID string, templateData map[string]interface{}, data interface{}) {
+func SuccessWithData(c *gin.Context, msgID string, templateData map[string]any, data any) {
 	localizer := GetLocalizerFromContext(c)
 	message := T(localizer, msgID, templateData)
-	
+
 	c.JSON(200, gin.H{
 		"success": true,
 		"message": message,
@@ -83,7 +83,7 @@ func SuccessWithData(c *gin.Context, msgID string, templateData map[string]inter
 func Error(c *gin.Context, code int, msgID string) {
 	localizer := GetLocalizerFromContext(c)
 	message := T(localizer, msgID)
-	
+
 	c.JSON(code, gin.H{
 		"success": false,
 		"message": message,
@@ -92,10 +92,10 @@ func Error(c *gin.Context, code int, msgID string) {
 }
 
 // ErrorWithData 返回错误响应（带模板数据）
-func ErrorWithData(c *gin.Context, code int, msgID string, templateData map[string]interface{}) {
+func ErrorWithData(c *gin.Context, code int, msgID string, templateData map[string]any) {
 	localizer := GetLocalizerFromContext(c)
 	message := T(localizer, msgID, templateData)
-	
+
 	c.JSON(code, gin.H{
 		"success": false,
 		"message": message,
@@ -104,7 +104,7 @@ func ErrorWithData(c *gin.Context, code int, msgID string, templateData map[stri
 }
 
 // Message 获取国际化消息
-func Message(c *gin.Context, msgID string, templateData ...map[string]interface{}) string {
+func Message(c *gin.Context, msgID string, templateData ...map[string]any) string {
 	localizer := GetLocalizerFromContext(c)
 	return T(localizer, msgID, templateData...)
 }

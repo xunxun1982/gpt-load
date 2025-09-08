@@ -110,7 +110,7 @@ func normalizeLanguageCode(lang string) string {
 }
 
 // T 翻译消息
-func T(localizer *i18n.Localizer, msgID string, data ...map[string]interface{}) string {
+func T(localizer *i18n.Localizer, msgID string, data ...map[string]any) string {
 	config := &i18n.LocalizeConfig{
 		MessageID: msgID,
 	}

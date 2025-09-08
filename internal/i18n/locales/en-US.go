@@ -55,6 +55,10 @@ var MessagesEnUS = map[string]string{
 	"validation.invalid_channel_type":    "Invalid channel type. Supported types: {types}",
 	"validation.test_model_empty":        "Test model cannot be empty or contain only spaces",
 	"validation.invalid_status_value":    "Invalid status value",
+	"validation.invalid_upstreams":       "Invalid upstreams configuration: {error}",
+	"validation.group_id_required":       "group_id query parameter is required",
+	"validation.invalid_group_id_format": "Invalid group_id format",
+	"validation.keys_text_empty":         "Keys text cannot be empty",
 
 	// Task related
 	"task.validation_started": "Key validation task started",
@@ -151,4 +155,26 @@ var MessagesEnUS = map[string]string{
 	"error.upstream_weight_positive": "upstream weight must be a positive integer",
 	"error.marshal_upstreams_failed": "failed to marshal cleaned upstreams",
 	"error.unknown_config_field":     "unknown config field: '{field}'",
+	"error.invalid_config_format":    "Invalid config format: {error}",
+	"error.process_header_rules":     "Failed to process header rules: {error}",
+	"error.invalidate_group_cache":   "failed to invalidate group cache",
+	"error.unmarshal_header_rules":   "Failed to unmarshal header rules",
+	"error.delete_group_cache":       "Failed to delete group: unable to clean up cache",
+	"error.get_total_keys":           "failed to get total keys: {error}",
+	"error.get_active_keys":          "failed to get active keys: {error}",
+	"error.get_hourly_requests":      "failed to get hourly total requests: {error}",
+	"error.get_hourly_failures":      "failed to get hourly failed requests: {error}",
+	"error.get_daily_stats":          "failed to get daily stats: {error}",
+	"error.get_weekly_stats":         "failed to get weekly stats: {error}",
+	"error.decrypt_key_copy":         "Failed to decrypt key during group copy, skipping",
+	"error.start_import_task":        "Failed to start async key import task for group copy",
+	"error.export_logs":              "Failed to export logs",
+
+	// Login related
+	"auth.invalid_request":           "Invalid request format",
+	"auth.authentication_successful": "Authentication successful",
+	"auth.authentication_failed":     "Authentication failed",
+
+	// Settings success message
+	"settings.update_success": "Settings updated successfully. Configuration will be reloaded in the background across all instances.",
 }

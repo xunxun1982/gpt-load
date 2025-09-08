@@ -85,7 +85,5 @@ func (s *Server) UpdateSettings(c *gin.Context) {
 
 	time.Sleep(100 * time.Millisecond) // 等待异步更新配置
 
-	response.Success(c, gin.H{
-		"message": "Settings updated successfully. Configuration will be reloaded in the background across all instances.",
-	})
+	response.SuccessI18n(c, "settings.update_success", nil)
 }

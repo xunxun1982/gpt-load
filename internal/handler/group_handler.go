@@ -190,7 +190,7 @@ func (s *Server) CreateGroup(c *gin.Context) {
 	channelType := strings.TrimSpace(req.ChannelType)
 	if !isValidChannelType(channelType) {
 		supported := strings.Join(channel.GetChannels(), ", ")
-		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_channel_type", map[string]interface{}{"types": supported})
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_channel_type", map[string]any{"types": supported})
 		return
 	}
 
@@ -202,13 +202,13 @@ func (s *Server) CreateGroup(c *gin.Context) {
 
 	cleanedUpstreams, err := validateAndCleanUpstreams(req.Upstreams)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, err.Error()))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": err.Error()})
 		return
 	}
 
 	cleanedConfig, err := s.validateAndCleanConfig(req.Config)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Invalid config format: %v", err)))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -235,7 +235,7 @@ func (s *Server) CreateGroup(c *gin.Context) {
 
 			// Check for duplicate keys
 			if seenKeys[canonicalKey] {
-				response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.duplicate_header", map[string]interface{}{"key": canonicalKey})
+				response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.duplicate_header", map[string]any{"key": canonicalKey})
 				return
 			}
 			seenKeys[canonicalKey] = true
@@ -250,7 +250,7 @@ func (s *Server) CreateGroup(c *gin.Context) {
 		if len(normalizedHeaderRules) > 0 {
 			headerRulesBytes, err := json.Marshal(normalizedHeaderRules)
 			if err != nil {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to process header rules: %v", err)))
+				response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.process_header_rules", map[string]any{"error": err.Error()})
 				return
 			}
 			headerRulesJSON = headerRulesBytes
@@ -378,7 +378,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		cleanedChannelType := strings.TrimSpace(*req.ChannelType)
 		if !isValidChannelType(cleanedChannelType) {
 			supported := strings.Join(channel.GetChannels(), ", ")
-			response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_channel_type", map[string]interface{}{"types": supported})
+			response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_channel_type", map[string]any{"types": supported})
 			return
 		}
 		group.ChannelType = cleanedChannelType
@@ -409,7 +409,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 	if req.Config != nil {
 		cleanedConfig, err := s.validateAndCleanConfig(req.Config)
 		if err != nil {
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Invalid config format: %v", err)))
+			response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
 			return
 		}
 		group.Config = cleanedConfig
@@ -436,7 +436,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 
 			// Check for duplicate keys
 			if seenKeys[canonicalKey] {
-				response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.duplicate_header", map[string]interface{}{"key": canonicalKey})
+				response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.duplicate_header", map[string]any{"key": canonicalKey})
 				return
 			}
 			seenKeys[canonicalKey] = true
@@ -451,7 +451,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		if len(normalizedHeaderRules) > 0 {
 			headerRulesBytes, err := json.Marshal(normalizedHeaderRules)
 			if err != nil {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to process header rules: %v", err)))
+				response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.process_header_rules", map[string]any{"error": err.Error()})
 				return
 			}
 			headerRulesJSON = headerRulesBytes
@@ -607,8 +607,7 @@ func (s *Server) DeleteGroup(c *gin.Context) {
 				"error":    err,
 			}).Error("Failed to remove keys from memory store, rolling back transaction")
 
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase,
-				"Failed to delete group: unable to clean up cache"))
+			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "error.delete_group_cache")
 			return
 		}
 	}
@@ -623,7 +622,7 @@ func (s *Server) DeleteGroup(c *gin.Context) {
 	if err := s.GroupManager.Invalidate(); err != nil {
 		logrus.WithContext(c.Request.Context()).WithError(err).Error("failed to invalidate group cache")
 	}
-	response.Success(c, gin.H{"message": "Group and associated keys deleted successfully"})
+	response.SuccessI18n(c, "success.group_deleted", nil)
 }
 
 // ConfigOption represents a single configurable option for a group.

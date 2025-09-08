@@ -20,7 +20,7 @@ func (s *Server) Stats(c *gin.Context) {
 	now := time.Now()
 	rpmStats, err := s.getRPMStats(now)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase, "failed to get rpm stats"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.rpm_stats_failed")
 		return
 	}
 	twentyFourHoursAgo := now.Add(-24 * time.Hour)
@@ -28,12 +28,12 @@ func (s *Server) Stats(c *gin.Context) {
 
 	currentPeriod, err := s.getHourlyStats(twentyFourHoursAgo, now)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase, "failed to get current period stats"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.current_stats_failed")
 		return
 	}
 	previousPeriod, err := s.getHourlyStats(fortyEightHoursAgo, twentyFourHoursAgo)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase, "failed to get previous period stats"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.previous_stats_failed")
 		return
 	}
 
@@ -125,7 +125,7 @@ func (s *Server) Chart(c *gin.Context) {
 		query = query.Where("group_id = ?", groupID)
 	}
 	if err := query.Order("time asc").Find(&hourlyStats).Error; err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase, "failed to get chart data"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.chart_data_failed")
 		return
 	}
 
@@ -272,14 +272,14 @@ func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.Se
 	if len(password) < 16 {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       keyType,
-			Message:    i18n.Message(c, "security.password_too_short", map[string]interface{}{"keyType": keyType, "length": len(password)}),
+			Message:    i18n.Message(c, "security.password_too_short", map[string]any{"keyType": keyType, "length": len(password)}),
 			Severity:   "high", // 长度不足是高风险
 			Suggestion: i18n.Message(c, "security.password_recommendation_16"),
 		})
 	} else if len(password) < 32 {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       keyType,
-			Message:    i18n.Message(c, "security.password_short", map[string]interface{}{"keyType": keyType, "length": len(password)}),
+			Message:    i18n.Message(c, "security.password_short", map[string]any{"keyType": keyType, "length": len(password)}),
 			Severity:   "medium",
 			Suggestion: i18n.Message(c, "security.password_recommendation_32"),
 		})
@@ -297,7 +297,7 @@ func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.Se
 		if strings.Contains(lower, pattern) {
 			warnings = append(warnings, models.SecurityWarning{
 				Type:       keyType,
-				Message:    i18n.Message(c, "security.password_weak_pattern", map[string]interface{}{"keyType": keyType, "pattern": pattern}),
+				Message:    i18n.Message(c, "security.password_weak_pattern", map[string]any{"keyType": keyType, "pattern": pattern}),
 				Severity:   "high",
 				Suggestion: i18n.Message(c, "security.password_avoid_common"),
 			})
@@ -309,7 +309,7 @@ func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.Se
 	if len(password) >= 16 && !hasGoodComplexity(password) {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       keyType,
-			Message:    i18n.Message(c, "security.password_low_complexity", map[string]interface{}{"keyType": keyType}),
+			Message:    i18n.Message(c, "security.password_low_complexity", map[string]any{"keyType": keyType}),
 			Severity:   "medium",
 			Suggestion: i18n.Message(c, "security.password_complexity"),
 		})
