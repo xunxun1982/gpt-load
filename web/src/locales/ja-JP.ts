@@ -66,7 +66,6 @@ export default {
     note: "注意",
     remark: "備考",
     language: "言語",
-    languageChanged: "言語が変更されました",
     previousPage: "前のページ",
     nextPage: "次のページ",
   },

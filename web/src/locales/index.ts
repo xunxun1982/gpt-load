@@ -60,15 +60,16 @@ if (axios.defaults.headers) {
 
 // 切换语言的辅助函数
 export function setLocale(locale: Locale) {
-  // 使用响应式的 locale.value 实现即时切换
-  i18n.global.locale.value = locale;
+  // 保存到 localStorage
   localStorage.setItem("locale", locale);
-  document.documentElement.setAttribute("lang", locale);
 
-  // 同时更新 axios 的默认 headers
+  // 更新 axios 的默认 headers
   if (axios.defaults.headers) {
     axios.defaults.headers.common["Accept-Language"] = locale;
   }
+
+  // 刷新页面以确保所有内容（包括后端数据）都使用新语言
+  window.location.reload();
 }
 
 // 获取当前语言

@@ -1,12 +1,8 @@
 <script setup lang="ts">
-import { NDropdown, NButton, NIcon, useMessage } from "naive-ui";
+import { NDropdown, NButton, NIcon } from "naive-ui";
 import { computed } from "vue";
-import { useI18n } from "vue-i18n";
 import { SUPPORTED_LOCALES, setLocale, getCurrentLocaleLabel, type Locale } from "@/locales";
 import { Language } from "@vicons/ionicons5";
-
-const { t } = useI18n();
-const message = useMessage();
 
 // 当前语言标签
 const currentLabel = computed(() => getCurrentLocaleLabel());
@@ -22,7 +18,7 @@ const options = computed(() =>
 // 切换语言
 const handleSelect = (key: string) => {
   setLocale(key as Locale);
-  message.success(t("common.languageChanged"));
+  // 页面会自动刷新，不需要提示
 };
 </script>
 

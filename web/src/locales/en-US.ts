@@ -66,7 +66,6 @@ export default {
     note: "Note",
     remark: "Remark",
     language: "Language",
-    languageChanged: "Language changed",
     previousPage: "Previous",
     nextPage: "Next",
   },

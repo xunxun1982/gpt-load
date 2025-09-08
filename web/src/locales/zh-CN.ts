@@ -66,7 +66,6 @@ export default {
     note: "注意",
     remark: "备注",
     language: "语言",
-    languageChanged: "语言已切换",
     previousPage: "上一页",
     nextPage: "下一页",
   },
