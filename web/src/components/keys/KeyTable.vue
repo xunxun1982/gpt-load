@@ -664,13 +664,13 @@ function resetPage() {
                   <template #icon>
                     <n-icon :component="CheckmarkCircle" />
                   </template>
-                  {{ t("keys.valid") }}
+                  {{ t("keys.validShort") }}
                 </n-tag>
                 <n-tag v-else :bordered="false" round>
                   <template #icon>
                     <n-icon :component="AlertCircleOutline" />
                   </template>
-                  {{ t("keys.invalid") }}
+                  {{ t("keys.invalidShort") }}
                 </n-tag>
                 <n-input
                   class="key-text"
@@ -702,11 +702,11 @@ function resetPage() {
             <div class="key-bottom">
               <div class="key-stats">
                 <span class="stat-item">
-                  {{ t("keys.requests") }}
+                  {{ t("keys.requestsShort") }}
                   <strong>{{ key.request_count }}</strong>
                 </span>
                 <span class="stat-item">
-                  {{ t("keys.failures") }}
+                  {{ t("keys.failuresShort") }}
                   <strong>{{ key.failure_count }}</strong>
                 </span>
                 <span class="stat-item">
@@ -722,7 +722,7 @@ function resetPage() {
                   @click="testKey(key)"
                   :title="t('keys.testKey')"
                 >
-                  {{ t("keys.test") }}
+                  {{ t("keys.testShort") }}
                 </n-button>
                 <n-button
                   v-if="key.status !== 'active'"
@@ -732,7 +732,7 @@ function resetPage() {
                   :title="t('keys.restoreKey')"
                   type="warning"
                 >
-                  {{ t("keys.restore") }}
+                  {{ t("keys.restoreShort") }}
                 </n-button>
                 <n-button
                   round
@@ -742,7 +742,7 @@ function resetPage() {
                   @click="deleteKey(key)"
                   :title="t('keys.deleteKey')"
                 >
-                  {{ t("common.delete") }}
+                  {{ t("common.deleteShort") }}
                 </n-button>
               </n-button-group>
             </div>

@@ -8,6 +8,7 @@ export default {
     cancel: "取消",
     confirm: "确认",
     delete: "删除",
+    deleteShort: "删除", // Short version for card display (already 2-char)
     edit: "编辑",
     save: "保存",
     reset: "重置",
@@ -334,6 +335,13 @@ export default {
     unused: "未使用",
     test: "测试",
     restore: "恢复",
+    // Short versions for card display (same as regular for Chinese)
+    requestsShort: "请求",
+    failuresShort: "失败",
+    testShort: "测试",
+    restoreShort: "恢复",
+    validShort: "有效",
+    invalidShort: "无效",
     testKey: "测试密钥",
     totalRecords: "共 {total} 条记录",
     recordsPerPage: "{count}条/页",

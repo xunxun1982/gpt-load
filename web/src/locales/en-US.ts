@@ -8,6 +8,7 @@ export default {
     cancel: "Cancel",
     confirm: "Confirm",
     delete: "Delete",
+    deleteShort: "×", // Short version for card display (2-char limit)
     edit: "Edit",
     save: "Save",
     reset: "Reset",
@@ -344,6 +345,13 @@ export default {
     unused: "Unused",
     test: "Test",
     restore: "Restore",
+    // Short versions for card display (2-char limit to match Chinese)
+    requestsShort: "RQ",
+    failuresShort: "FL",
+    testShort: "Go",
+    restoreShort: "↻",
+    validShort: "OK",
+    invalidShort: "NG",
     testKey: "Test Key",
     totalRecords: "Total {total} records",
     recordsPerPage: "{count} per page",

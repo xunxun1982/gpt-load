@@ -8,6 +8,7 @@ export default {
     cancel: "キャンセル",
     confirm: "確認",
     delete: "削除",
+    deleteShort: "削除", // Short version for card display (already 2-char)
     edit: "編集",
     save: "保存",
     reset: "リセット",
@@ -344,6 +345,13 @@ export default {
     unused: "未使用",
     test: "テスト",
     restore: "復元",
+    // Short versions for card display (2-char limit to match Chinese)
+    requestsShort: "要求",
+    failuresShort: "失敗",
+    testShort: "試験",
+    restoreShort: "復元",
+    validShort: "有効",
+    invalidShort: "無効",
     testKey: "キーをテスト",
     totalRecords: "合計 {total} 件",
     recordsPerPage: "{count}件/ページ",
