@@ -1,9 +1,10 @@
 package locales
 
-// Messages 中文(简体)翻译
+// Messages Chinese (Simplified) translations
 var MessagesZhCN = map[string]string{
-	// 通用消息
+	// Common messages
 	"success":        "操作成功",
+	"common.success": "操作成功",
 	"error":          "操作失败",
 	"unauthorized":   "未授权",
 	"forbidden":      "禁止访问",
@@ -13,20 +14,20 @@ var MessagesZhCN = map[string]string{
 	"invalid_param":  "参数无效",
 	"required_field": "必填字段",
 
-	// 认证相关
+	// Authentication related
 	"auth.invalid_key":    "无效的授权密钥",
 	"auth.key_required":   "需要授权密钥",
 	"auth.login_success":  "登录成功",
 	"auth.logout_success": "退出成功",
 
-	// 分组相关
+	// Group related
 	"group.created":     "分组创建成功",
 	"group.updated":     "分组更新成功",
 	"group.deleted":     "分组删除成功",
 	"group.not_found":   "分组不存在",
 	"group.name_exists": "分组名称已存在",
 
-	// 密钥相关
+	// Key related
 	"key.created":         "密钥创建成功",
 	"key.updated":         "密钥更新成功",
 	"key.deleted":         "密钥删除成功",
@@ -35,39 +36,39 @@ var MessagesZhCN = map[string]string{
 	"key.check_started":   "密钥检查已开始",
 	"key.check_completed": "密钥检查完成",
 
-	// 设置相关
+	// Settings related
 	"settings.updated": "设置更新成功",
 	"settings.reset":   "设置已重置",
 
-	// 日志相关
+	// Logs related
 	"logs.cleared":  "日志已清除",
 	"logs.exported": "日志导出成功",
 
-	// 验证相关
+	// Validation related
 	"validation.invalid_group_name":      "无效的分组名称。只能包含小写字母、数字、中划线或下划线，长度1-100位",
 	"validation.invalid_test_path":       "无效的测试路径。如果提供，必须是以 / 开头的有效路径，且不能是完整的URL。",
-	"validation.duplicate_header":        "重复的请求头: {key}",
+	"validation.duplicate_header":        "重复的请求头: {{.key}}",
 	"validation.group_not_found":         "分组不存在",
 	"validation.invalid_status_filter":   "无效的状态过滤器",
 	"validation.invalid_group_id":        "无效的分组ID格式",
 	"validation.test_model_required":     "测试模型是必需的",
 	"validation.invalid_copy_keys_value": "无效的copy_keys值。必须是'none'、'valid_only'或'all'",
-	"validation.invalid_channel_type":    "无效的通道类型。支持的类型有: {types}",
+	"validation.invalid_channel_type":    "无效的通道类型。支持的类型有: {{.types}}",
 	"validation.test_model_empty":        "测试模型不能为空或只有空格",
 	"validation.invalid_status_value":    "无效的状态值",
-	"validation.invalid_upstreams":       "upstreams配置错误: {error}",
+	"validation.invalid_upstreams":       "upstreams配置错误: {{.error}}",
 	"validation.group_id_required":       "需要提供group_id参数",
 	"validation.invalid_group_id_format": "无效的group_id格式",
 	"validation.keys_text_empty":         "密钥文本不能为空",
 
-	// 任务相关
+	// Task related
 	"task.validation_started": "密钥验证任务已开始",
 	"task.import_started":     "密钥导入任务已开始",
 	"task.delete_started":     "密钥删除任务已开始",
 	"task.already_running":    "已有任务正在运行",
 	"task.get_status_failed":  "获取任务状态失败",
 
-	// 仪表板相关
+	// Dashboard related
 	"dashboard.invalid_keys":               "无效密钥数量",
 	"dashboard.success_requests":           "成功请求",
 	"dashboard.failed_requests":            "失败请求",
@@ -76,7 +77,7 @@ var MessagesZhCN = map[string]string{
 	"dashboard.encryption_key_missing":     "未设置ENCRYPTION_KEY，敏感数据将明文存储",
 	"dashboard.encryption_key_recommended": "强烈建议设置ENCRYPTION_KEY以加密保护API密钥等敏感数据",
 
-	// 数据库相关
+	// Database related
 	"database.cannot_get_groups":     "无法获取分组列表",
 	"database.rpm_stats_failed":      "获取RPM统计失败",
 	"database.current_stats_failed":  "获取当前期间统计失败",
@@ -84,23 +85,23 @@ var MessagesZhCN = map[string]string{
 	"database.chart_data_failed":     "获取图表数据失败",
 	"database.group_stats_failed":    "获取部分统计信息失败",
 
-	// 成功消息
+	// Success messages
 	"success.group_deleted":        "分组及相关密钥删除成功",
-	"success.keys_restored":        "{count}个密钥已恢复",
-	"success.invalid_keys_cleared": "{count}个无效密钥已清除",
-	"success.all_keys_cleared":     "{count}个密钥已清除",
+	"success.keys_restored":        "{{.count}}个密钥已恢复",
+	"success.invalid_keys_cleared": "{{.count}}个无效密钥已清除",
+	"success.all_keys_cleared":     "{{.count}}个密钥已清除",
 
-	// 密码安全相关
-	"security.password_too_short":         "{keyType}长度不足（{length}字符），建议至少16字符",
-	"security.password_short":             "{keyType}长度偏短（{length}字符），建议32字符以上",
-	"security.password_weak_pattern":      "{keyType}包含常见弱密码模式：{pattern}",
-	"security.password_low_complexity":    "{keyType}复杂度不足，缺少大小写字母、数字或特殊字符的组合",
+	// Password security related
+	"security.password_too_short":         "{{.keyType}}长度不足（{{.length}}字符），建议至少16字符",
+	"security.password_short":             "{{.keyType}}长度偏短（{{.length}}字符），建议32字符以上",
+	"security.password_weak_pattern":      "{{.keyType}}包含常见弱密码模式：{{.pattern}}",
+	"security.password_low_complexity":    "{{.keyType}}复杂度不足，缺少大小写字母、数字或特殊字符的组合",
 	"security.password_recommendation_16": "使用至少16个字符的强密码，推荐32字符以上",
 	"security.password_recommendation_32": "推荐使用32个字符以上的密码以提高安全性",
 	"security.password_avoid_common":      "避免使用常见单词，建议使用随机生成的强密码",
 	"security.password_complexity":        "建议包含大小写字母、数字和特殊字符以提高密码强度",
 
-	// 配置相关
+	// Config related
 	"config.updated":                          "配置更新成功",
 	"config.app_url":                          "项目地址",
 	"config.app_url_desc":                     "项目的基础 URL，用于拼接分组终端节点地址。系统配置优先于环境变量 APP_URL。",
@@ -113,7 +114,7 @@ var MessagesZhCN = map[string]string{
 	"config.enable_request_body_logging":      "启用日志详情",
 	"config.enable_request_body_logging_desc": "是否在请求日志中记录完整的请求体内容。启用此功能会增加内存以及存储空间的占用。",
 
-	// 请求设置相关
+	// Request settings related
 	"config.request_timeout":              "请求超时（秒）",
 	"config.request_timeout_desc":         "转发请求的完整生命周期超时（秒）等。",
 	"config.connect_timeout":              "连接超时（秒）",
@@ -129,7 +130,7 @@ var MessagesZhCN = map[string]string{
 	"config.proxy_url":                    "代理服务器地址",
 	"config.proxy_url_desc":               "全局 HTTP/HTTPS 代理服务器地址，例如：http://user:pass@host:port。如果为空，则使用环境变量配置。",
 
-	// 密钥配置相关
+	// Key config related
 	"config.max_retries":                     "最大重试次数",
 	"config.max_retries_desc":                "单个请求使用不同 Key 的最大重试次数，0为不重试。",
 	"config.blacklist_threshold":             "黑名单阈值",
@@ -141,40 +142,32 @@ var MessagesZhCN = map[string]string{
 	"config.key_validation_timeout":          "密钥验证超时（秒）",
 	"config.key_validation_timeout_desc":     "后台定时验证单个 Key 时的 API 请求超时时间（秒）。",
 
-	// 分类标签
+	// Category labels
 	"config.category.basic":   "基础参数",
 	"config.category.request": "请求设置",
 	"config.category.key":     "密钥配置",
 
-	// 内部错误消息（供fmt.Errorf使用）
+	// Internal error messages (for fmt.Errorf usage)
 	"error.upstreams_required":       "upstreams字段是必需的",
 	"error.invalid_upstreams_format": "upstreams格式无效",
 	"error.at_least_one_upstream":    "至少需要一个upstream",
 	"error.upstream_url_empty":       "upstream URL不能为空",
-	"error.invalid_upstream_url":     "无效的upstream URL格式: {url}",
 	"error.upstream_weight_positive": "upstream权重必须是正整数",
 	"error.marshal_upstreams_failed": "序列化清理后的upstreams失败",
-	"error.unknown_config_field":     "未知的配置字段: '{field}'",
-	"error.invalid_config_format":    "无效的配置格式: {error}",
-	"error.process_header_rules":     "处理请求头规则失败: {error}",
+	"error.invalid_config_format":    "无效的配置格式: {{.error}}",
+	"error.process_header_rules":     "处理请求头规则失败: {{.error}}",
 	"error.invalidate_group_cache":   "刷新分组缓存失败",
 	"error.unmarshal_header_rules":   "解析请求头规则失败",
 	"error.delete_group_cache":       "删除分组失败: 无法清理缓存",
-	"error.get_total_keys":           "获取密钥总数失败: {error}",
-	"error.get_active_keys":          "获取活跃密钥数失败: {error}",
-	"error.get_hourly_requests":      "获取每小时请求数失败: {error}",
-	"error.get_hourly_failures":      "获取每小时失败数失败: {error}",
-	"error.get_daily_stats":          "获取每日统计失败: {error}",
-	"error.get_weekly_stats":         "获取每周统计失败: {error}",
 	"error.decrypt_key_copy":         "解密密钥时失败，跳过该密钥",
 	"error.start_import_task":        "启动异步密钥导入任务失败",
 	"error.export_logs":              "导出日志失败",
 
-	// 登录相关
+	// Login related
 	"auth.invalid_request":           "无效的请求格式",
 	"auth.authentication_successful": "认证成功",
 	"auth.authentication_failed":     "认证失败",
 
-	// 设置成功消息
+	// Settings success message
 	"settings.update_success": "设置更新成功。配置将在后台在所有实例间重新加载。",
 }

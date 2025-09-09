@@ -24,9 +24,10 @@ type ErrorResponse struct {
 
 // Success sends a standardized success response.
 func Success(c *gin.Context, data any) {
+	message := i18n.Message(c, "common.success")
 	c.JSON(http.StatusOK, SuccessResponse{
 		Code:    0,
-		Message: "Success",
+		Message: message,
 		Data:    data,
 	})
 }
