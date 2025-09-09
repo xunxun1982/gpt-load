@@ -950,16 +950,16 @@ const deselectAllColumns = () => {
     flex-direction: column;
     gap: 12px;
   }
-  
+
   .filter-grid {
     width: 100%;
   }
-  
+
   .filter-item {
     flex: 1 1 100%;
     min-width: 100%;
   }
-  
+
   .filter-actions {
     width: 100%;
     justify-content: flex-start;
@@ -971,13 +971,13 @@ const deselectAllColumns = () => {
   .filter-actions {
     width: 100%;
   }
-  
+
   .filter-actions :deep(.n-button-group) {
     display: flex;
     flex-wrap: wrap;
     width: 100%;
   }
-  
+
   .filter-actions :deep(.n-button) {
     flex: 1;
     min-width: 40px;

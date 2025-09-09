@@ -51,8 +51,11 @@ const toggleMenu = () => {
     </n-layout-header>
 
     <n-drawer v-model:show="isMenuOpen" :width="260" placement="right">
-      <n-drawer-content title="GPT Load" body-content-style="padding: 0; display: flex; flex-direction: column; height: 100%;">
-        <div style="flex: 1; overflow-y: auto;">
+      <n-drawer-content
+        title="GPT Load"
+        body-content-style="padding: 0; display: flex; flex-direction: column; height: 100%;"
+      >
+        <div style="flex: 1; overflow-y: auto">
           <nav-bar mode="vertical" @close="isMenuOpen = false" />
         </div>
         <div class="mobile-actions">
@@ -188,11 +191,11 @@ const toggleMenu = () => {
     position: static;
     transform: none;
   }
-  
+
   .header-content {
     overflow-x: visible;
   }
-  
+
   .mobile-actions > :deep(*) {
     width: 100%;
   }
