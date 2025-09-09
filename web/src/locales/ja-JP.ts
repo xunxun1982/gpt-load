@@ -53,6 +53,10 @@ export default {
     language: "言語",
     previousPage: "前のページ",
     nextPage: "次のページ",
+    startTime: "開始時間",
+    endTime: "終了時間",
+    selectAll: "すべて選択",
+    deselectAll: "選択を解除",
   },
   login: {
     title: "GPT Load",
@@ -369,7 +373,7 @@ export default {
     sourceIP: "ソースIP",
     groupName: "グループ名",
     errorMessage: "エラーメッセージ",
-    exportLogs: "ログをエクスポート",
+    exportLogs: "キーのエクスポート",
     totalRecords: "合計 {total} 件",
     recordsPerPage: "{count}件/ページ",
     previousPage: "前のページ",
@@ -403,6 +407,7 @@ export default {
     upstreamAddress: "アップストリームアドレス",
     requestContent: "リクエスト内容",
     errorInfo: "エラー情報",
+    customColumns: "カラムのカスタマイズ",
   },
   settings: {
     title: "システム設定",

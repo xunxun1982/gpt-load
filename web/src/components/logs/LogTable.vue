@@ -4,29 +4,38 @@ import type { LogFilter, RequestLog } from "@/types/models";
 import { copy } from "@/utils/clipboard";
 import { maskKey } from "@/utils/display";
 import {
+  CheckmarkDoneOutline,
+  CloseCircleOutline,
   CopyOutline,
   DocumentTextOutline,
   DownloadOutline,
   EyeOffOutline,
   EyeOutline,
+  ReloadOutline,
   Search,
+  SettingsOutline,
 } from "@vicons/ionicons5";
 import {
   NButton,
+  NButtonGroup,
   NCard,
+  NCheckbox,
+  NCheckboxGroup,
   NDataTable,
   NDatePicker,
   NEllipsis,
   NIcon,
   NInput,
   NModal,
+  NPopover,
   NSelect,
   NSpace,
   NSpin,
   NTag,
+  NTooltip,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, reactive, ref, watch } from "vue";
+import { computed, h, onMounted, reactive, ref, watch, type VNodeChild } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -36,6 +45,18 @@ const message = useMessage();
 
 interface LogRow extends RequestLog {
   is_key_visible: boolean;
+}
+
+// Column configuration
+interface ColumnConfig {
+  key: string;
+  title: string;
+  width: number;
+  defaultVisible: boolean;
+  alwaysVisible?: boolean; // 某些列不能隐藏
+  required?: boolean; // 必选字段，不能取消选中
+  fixed?: "left" | "right"; // 固定列位置
+  render?: (row: LogRow) => VNodeChild;
 }
 
 // Data
@@ -159,18 +180,54 @@ const copyContent = async (content: string, type: string) => {
   }
 };
 
-// Columns definition
-const createColumns = () => [
+// Column visibility management
+const visibleColumns = ref<string[]>([]);
+const STORAGE_KEY = "log-table-visible-columns";
+
+// Load column preferences from localStorage
+const loadColumnPreferences = () => {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    try {
+      visibleColumns.value = JSON.parse(saved);
+    } catch {
+      // If parse fails, use defaults
+      setDefaultColumns();
+    }
+  } else {
+    setDefaultColumns();
+  }
+};
+
+// Set default visible columns (all columns selected by default)
+const setDefaultColumns = () => {
+  visibleColumns.value = allColumnConfigs.filter(col => !col.alwaysVisible).map(col => col.key);
+};
+
+// Save column preferences to localStorage
+const saveColumnPreferences = () => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(visibleColumns.value));
+};
+
+// Watch for changes and save
+watch(visibleColumns, saveColumnPreferences, { deep: true });
+
+// All available columns configuration
+const allColumnConfigs: ColumnConfig[] = [
   {
-    title: t("logs.time"),
     key: "timestamp",
+    title: t("logs.time"),
     width: 160,
+    defaultVisible: true,
+    required: true, // 必选字段
     render: (row: LogRow) => formatDateTime(row.timestamp),
   },
   {
-    title: t("common.status"),
     key: "is_success",
-    width: 50,
+    title: t("common.status"),
+    width: 90,
+    defaultVisible: true,
+    required: true, // 必选字段
     render: (row: LogRow) =>
       h(
         NTag,
@@ -179,9 +236,10 @@ const createColumns = () => [
       ),
   },
   {
-    title: t("logs.requestType"),
     key: "request_type",
+    title: t("logs.requestType"),
     width: 90,
+    defaultVisible: true,
     render: (row: LogRow) => {
       return h(
         NTag,
@@ -194,9 +252,10 @@ const createColumns = () => [
     },
   },
   {
-    title: t("logs.responseType"),
     key: "is_stream",
-    width: 80,
+    title: t("logs.responseType"),
+    width: 140,
+    defaultVisible: true,
     render: (row: LogRow) =>
       h(
         NTag,
@@ -204,14 +263,36 @@ const createColumns = () => [
         { default: () => (row.is_stream ? t("logs.stream") : t("logs.nonStream")) }
       ),
   },
-  { title: t("logs.statusCode"), key: "status_code", width: 60 },
-  { title: t("logs.duration"), key: "duration_ms", width: 80 },
-  { title: t("logs.group"), key: "group_name", width: 120 },
-  { title: t("logs.model"), key: "model", width: 200 },
   {
-    title: "Key",
+    key: "status_code",
+    title: t("logs.statusCode"),
+    width: 130,
+    defaultVisible: true,
+  },
+  {
+    key: "duration_ms",
+    title: t("logs.duration"),
+    width: 110,
+    defaultVisible: true,
+  },
+  {
+    key: "group_name",
+    title: t("logs.group"),
+    width: 120,
+    defaultVisible: true,
+  },
+  {
+    key: "model",
+    title: t("logs.model"),
+    width: 240,
+    defaultVisible: true,
+    required: true, // 必选字段
+  },
+  {
     key: "key_value",
+    title: "Key",
     width: 200,
+    defaultVisible: true,
     render: (row: LogRow) =>
       h(NSpace, { align: "center", wrap: false }, () => [
         h(
@@ -229,11 +310,53 @@ const createColumns = () => [
         ),
       ]),
   },
-  { title: t("logs.sourceIP"), key: "source_ip", width: 140 },
   {
-    title: t("common.actions"),
+    key: "source_ip",
+    title: t("logs.sourceIP"),
+    width: 260,
+    defaultVisible: true,
+  },
+  {
+    key: "request_path",
+    title: t("logs.requestPath"),
+    width: 550,
+    defaultVisible: true,
+    render: (row: LogRow) =>
+      h(NEllipsis, { style: "max-width: 530px" }, { default: () => row.request_path || "-" }),
+  },
+  {
+    key: "upstream_addr",
+    title: t("logs.upstreamAddress"),
+    width: 600,
+    defaultVisible: true,
+    render: (row: LogRow) =>
+      h(NEllipsis, { style: "max-width: 580px" }, { default: () => row.upstream_addr || "-" }),
+  },
+  {
+    key: "error_message",
+    title: t("logs.errorMessage"),
+    width: 600,
+    defaultVisible: true,
+    render: (row: LogRow) => {
+      if (!row.error_message) {
+        return "-";
+      }
+      return h(
+        NEllipsis,
+        {
+          style: "max-width: 580px; color: var(--error-color)",
+          tooltip: true,
+        },
+        { default: () => row.error_message }
+      );
+    },
+  },
+  {
     key: "actions",
+    title: t("common.actions"),
     width: 100,
+    defaultVisible: true,
+    alwaysVisible: true, // Actions column cannot be hidden
     fixed: "right" as const,
     render: (row: LogRow) =>
       h(
@@ -252,10 +375,27 @@ const createColumns = () => [
   },
 ];
 
-const columns = createColumns();
+// Generate displayed columns based on visibility settings
+const createColumns = () => {
+  return allColumnConfigs
+    .filter(col => col.alwaysVisible || col.required || visibleColumns.value.includes(col.key))
+    .map(col => ({
+      title: col.title,
+      key: col.key,
+      width: col.width,
+      fixed: col.fixed,
+      render: col.render,
+    }));
+};
+
+// Computed columns that react to visibility changes
+const columns = computed(() => createColumns());
 
 // Lifecycle and Watchers
-onMounted(loadLogs);
+onMounted(() => {
+  loadColumnPreferences();
+  loadLogs();
+});
 watch([currentPage, pageSize], loadLogs);
 
 const handleSearch = () => {
@@ -304,6 +444,16 @@ function changePageSize(size: number) {
   pageSize.value = size;
   currentPage.value = 1;
 }
+
+// Column selector functions
+const selectAllColumns = () => {
+  visibleColumns.value = allColumnConfigs.filter(col => !col.alwaysVisible).map(col => col.key);
+};
+
+const deselectAllColumns = () => {
+  // Keep required columns selected
+  visibleColumns.value = allColumnConfigs.filter(col => col.required).map(col => col.key);
+};
 </script>
 
 <template>
@@ -321,6 +471,16 @@ function changePageSize(size: number) {
                   size="small"
                   :placeholder="t('common.status')"
                   clearable
+                  @update:value="handleSearch"
+                />
+              </div>
+              <div class="filter-item">
+                <n-select
+                  v-model:value="filters.request_type"
+                  :options="requestTypeOptions"
+                  size="small"
+                  clearable
+                  :placeholder="t('logs.requestType')"
                   @update:value="handleSearch"
                 />
               </div>
@@ -352,25 +512,6 @@ function changePageSize(size: number) {
                 />
               </div>
               <div class="filter-item">
-                <n-input
-                  v-model:value="filters.key_value"
-                  :placeholder="t('logs.key')"
-                  size="small"
-                  clearable
-                  @keyup.enter="handleSearch"
-                />
-              </div>
-              <div class="filter-item">
-                <n-select
-                  v-model:value="filters.request_type"
-                  :options="requestTypeOptions"
-                  size="small"
-                  clearable
-                  :placeholder="t('logs.requestType')"
-                  @update:value="handleSearch"
-                />
-              </div>
-              <div class="filter-item">
                 <n-date-picker
                   v-model:value="filters.start_time"
                   type="datetime"
@@ -390,6 +531,15 @@ function changePageSize(size: number) {
               </div>
               <div class="filter-item">
                 <n-input
+                  v-model:value="filters.key_value"
+                  :placeholder="t('logs.key')"
+                  size="small"
+                  clearable
+                  @keyup.enter="handleSearch"
+                />
+              </div>
+              <div class="filter-item">
+                <n-input
                   v-model:value="filters.error_contains"
                   :placeholder="t('logs.errorMessage')"
                   size="small"
@@ -398,19 +548,89 @@ function changePageSize(size: number) {
                 />
               </div>
               <div class="filter-actions">
-                <n-button ghost size="small" :disabled="loading" @click="handleSearch">
-                  <template #icon>
-                    <n-icon :component="Search" />
-                  </template>
-                  {{ t("common.search") }}
-                </n-button>
-                <n-button size="small" @click="resetFilters">{{ t("common.reset") }}</n-button>
-                <n-button size="small" type="primary" ghost @click="exportLogs">
-                  <template #icon>
-                    <n-icon :component="DownloadOutline" />
-                  </template>
-                  {{ t("logs.exportLogs") }}
-                </n-button>
+                <n-button-group size="small">
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button ghost :disabled="loading" @click="handleSearch">
+                        <template #icon>
+                          <n-icon :component="Search" />
+                        </template>
+                      </n-button>
+                    </template>
+                    {{ t("common.search") }}
+                  </n-tooltip>
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button @click="resetFilters">
+                        <template #icon>
+                          <n-icon :component="ReloadOutline" />
+                        </template>
+                      </n-button>
+                    </template>
+                    {{ t("common.reset") }}
+                  </n-tooltip>
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button ghost @click="exportLogs">
+                        <template #icon>
+                          <n-icon :component="DownloadOutline" />
+                        </template>
+                      </n-button>
+                    </template>
+                    {{ t("logs.exportLogs") }}
+                  </n-tooltip>
+                  <n-popover trigger="click" placement="bottom-end">
+                    <template #trigger>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-button ghost>
+                            <template #icon>
+                              <n-icon :component="SettingsOutline" />
+                            </template>
+                          </n-button>
+                        </template>
+                        {{ t("logs.customColumns") }}
+                      </n-tooltip>
+                    </template>
+                    <div class="column-selector">
+                      <n-space vertical size="medium">
+                        <n-space>
+                          <n-tooltip trigger="hover">
+                            <template #trigger>
+                              <n-button size="tiny" @click="selectAllColumns">
+                                <template #icon>
+                                  <n-icon :component="CheckmarkDoneOutline" />
+                                </template>
+                              </n-button>
+                            </template>
+                            {{ t("common.selectAll") }}
+                          </n-tooltip>
+                          <n-tooltip trigger="hover">
+                            <template #trigger>
+                              <n-button size="tiny" @click="deselectAllColumns">
+                                <template #icon>
+                                  <n-icon :component="CloseCircleOutline" />
+                                </template>
+                              </n-button>
+                            </template>
+                            {{ t("common.deselectAll") }}
+                          </n-tooltip>
+                        </n-space>
+                        <n-checkbox-group v-model:value="visibleColumns">
+                          <n-space vertical size="small">
+                            <n-checkbox
+                              v-for="col in allColumnConfigs.filter(c => !c.alwaysVisible)"
+                              :key="col.key"
+                              :value="col.key"
+                              :label="col.title"
+                              :disabled="col.required"
+                            />
+                          </n-space>
+                        </n-checkbox-group>
+                      </n-space>
+                    </div>
+                  </n-popover>
+                </n-button-group>
               </div>
             </div>
           </div>
@@ -420,14 +640,7 @@ function changePageSize(size: number) {
         <!-- 表格 -->
         <div class="table-container">
           <n-spin :show="loading">
-            <n-data-table
-              :columns="columns"
-              :data="logs"
-              :bordered="false"
-              remote
-              size="small"
-              :scroll-x="1180"
-            />
+            <n-data-table :columns="columns" :data="logs" :bordered="false" remote size="small" />
           </n-spin>
         </div>
 
@@ -737,16 +950,37 @@ function changePageSize(size: number) {
     flex-direction: column;
     gap: 12px;
   }
+  
+  .filter-grid {
+    width: 100%;
+  }
+  
+  .filter-item {
+    flex: 1 1 100%;
+    min-width: 100%;
+  }
+  
+  .filter-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
 }
 
 @media (max-width: 480px) {
   .filter-actions {
     width: 100%;
-    flex-direction: column;
-    align-items: stretch;
   }
-  .filter-actions .n-button {
+  
+  .filter-actions :deep(.n-button-group) {
+    display: flex;
+    flex-wrap: wrap;
     width: 100%;
+  }
+  
+  .filter-actions :deep(.n-button) {
+    flex: 1;
+    min-width: 40px;
   }
 }
 
@@ -890,12 +1124,19 @@ function changePageSize(size: number) {
 }
 
 .compact-field-error {
-  border: 1px solid #f5c6cb;
-  background: #f8d7da;
+  border: 1px solid var(--error-border-color, #f5c6cb);
+  background: var(--error-bg-color, #f8d7da);
 }
 
 .compact-field-error .compact-field-content {
-  color: #721c24;
+  color: var(--error-text-color, #721c24);
+}
+
+/* 暗黑模式下的错误信息样式 */
+:global(.dark) .compact-field-error {
+  --error-border-color: rgba(248, 113, 113, 0.3);
+  --error-bg-color: rgba(239, 68, 68, 0.1);
+  --error-text-color: #fca5a5;
 }
 
 .compact-field-header {
@@ -994,5 +1235,12 @@ function changePageSize(size: number) {
 
 .error-block {
   max-height: 200px;
+}
+
+/* Column selector styles */
+.column-selector {
+  min-width: 100px;
+  max-height: 400px;
+  overflow-y: auto;
 }
 </style>
