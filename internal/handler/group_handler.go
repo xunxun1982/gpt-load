@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/i18n"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
 	"gpt-load/internal/utils"
@@ -182,38 +183,38 @@ func (s *Server) CreateGroup(c *gin.Context) {
 	// Data Cleaning and Validation
 	name := strings.TrimSpace(req.Name)
 	if !isValidGroupName(name) {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "无效的分组名称。只能包含小写字母、数字、中划线或下划线，长度1-100位"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_group_name")
 		return
 	}
 
 	channelType := strings.TrimSpace(req.ChannelType)
 	if !isValidChannelType(channelType) {
 		supported := strings.Join(channel.GetChannels(), ", ")
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Invalid channel type. Supported types are: %s", supported)))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_channel_type", map[string]any{"types": supported})
 		return
 	}
 
 	testModel := strings.TrimSpace(req.TestModel)
 	if testModel == "" {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "Test model is required"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.test_model_required")
 		return
 	}
 
 	cleanedUpstreams, err := validateAndCleanUpstreams(req.Upstreams)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, err.Error()))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": err.Error()})
 		return
 	}
 
 	cleanedConfig, err := s.validateAndCleanConfig(req.Config)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Invalid config format: %v", err)))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
 		return
 	}
 
 	validationEndpoint := strings.TrimSpace(req.ValidationEndpoint)
 	if !isValidValidationEndpoint(validationEndpoint) {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "无效的测试路径。如果提供，必须是以 / 开头的有效路径，且不能是完整的URL。"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_test_path")
 		return
 	}
 
@@ -234,7 +235,7 @@ func (s *Server) CreateGroup(c *gin.Context) {
 
 			// Check for duplicate keys
 			if seenKeys[canonicalKey] {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Duplicate header key: %s", canonicalKey)))
+				response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.duplicate_header", map[string]any{"key": canonicalKey})
 				return
 			}
 			seenKeys[canonicalKey] = true
@@ -249,7 +250,7 @@ func (s *Server) CreateGroup(c *gin.Context) {
 		if len(normalizedHeaderRules) > 0 {
 			headerRulesBytes, err := json.Marshal(normalizedHeaderRules)
 			if err != nil {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to process header rules: %v", err)))
+				response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.process_header_rules", map[string]any{"error": err.Error()})
 				return
 			}
 			headerRulesJSON = headerRulesBytes
@@ -322,7 +323,7 @@ type GroupUpdateRequest struct {
 func (s *Server) UpdateGroup(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "Invalid group ID format"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
 		return
 	}
 
@@ -350,7 +351,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 	if req.Name != nil {
 		cleanedName := strings.TrimSpace(*req.Name)
 		if !isValidGroupName(cleanedName) {
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "无效的分组名称格式。只能包含小写字母、数字、中划线或下划线，长度1-100位"))
+			response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_group_name")
 			return
 		}
 		group.Name = cleanedName
@@ -377,7 +378,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		cleanedChannelType := strings.TrimSpace(*req.ChannelType)
 		if !isValidChannelType(cleanedChannelType) {
 			supported := strings.Join(channel.GetChannels(), ", ")
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Invalid channel type. Supported types are: %s", supported)))
+			response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_channel_type", map[string]any{"types": supported})
 			return
 		}
 		group.ChannelType = cleanedChannelType
@@ -388,7 +389,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 	if req.TestModel != "" {
 		cleanedTestModel := strings.TrimSpace(req.TestModel)
 		if cleanedTestModel == "" {
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "Test model cannot be empty or just spaces."))
+			response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.test_model_empty")
 			return
 		}
 		group.TestModel = cleanedTestModel
@@ -399,7 +400,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 	if req.ValidationEndpoint != nil {
 		validationEndpoint := strings.TrimSpace(*req.ValidationEndpoint)
 		if !isValidValidationEndpoint(validationEndpoint) {
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "无效的测试路径。如果提供，必须是以 / 开头的有效路径，且不能是完整的URL。"))
+			response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_test_path")
 			return
 		}
 		group.ValidationEndpoint = validationEndpoint
@@ -408,7 +409,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 	if req.Config != nil {
 		cleanedConfig, err := s.validateAndCleanConfig(req.Config)
 		if err != nil {
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Invalid config format: %v", err)))
+			response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
 			return
 		}
 		group.Config = cleanedConfig
@@ -435,7 +436,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 
 			// Check for duplicate keys
 			if seenKeys[canonicalKey] {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Duplicate header key: %s", canonicalKey)))
+				response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.duplicate_header", map[string]any{"key": canonicalKey})
 				return
 			}
 			seenKeys[canonicalKey] = true
@@ -450,7 +451,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		if len(normalizedHeaderRules) > 0 {
 			headerRulesBytes, err := json.Marshal(normalizedHeaderRules)
 			if err != nil {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to process header rules: %v", err)))
+				response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.process_header_rules", map[string]any{"error": err.Error()})
 				return
 			}
 			headerRulesJSON = headerRulesBytes
@@ -544,7 +545,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 func (s *Server) DeleteGroup(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "Invalid group ID format"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
 		return
 	}
 
@@ -606,8 +607,7 @@ func (s *Server) DeleteGroup(c *gin.Context) {
 				"error":    err,
 			}).Error("Failed to remove keys from memory store, rolling back transaction")
 
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase,
-				"Failed to delete group: unable to clean up cache"))
+			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "error.delete_group_cache")
 			return
 		}
 	}
@@ -622,7 +622,7 @@ func (s *Server) DeleteGroup(c *gin.Context) {
 	if err := s.GroupManager.Invalidate(); err != nil {
 		logrus.WithContext(c.Request.Context()).WithError(err).Error("failed to invalidate group cache")
 	}
-	response.Success(c, gin.H{"message": "Group and associated keys deleted successfully"})
+	response.SuccessI18n(c, "success.group_deleted", nil)
 }
 
 // ConfigOption represents a single configurable option for a group.
@@ -676,10 +676,20 @@ func (s *Server) GetGroupConfigOptions(c *gin.Context) {
 				defaultValue = currentSettingsValue.FieldByName(fieldName).Interface()
 			}
 
+			// Translate name and description if they're i18n keys
+			name := definition.Name
+			if strings.HasPrefix(name, "config.") {
+				name = i18n.Message(c, name)
+			}
+			description := definition.Description
+			if strings.HasPrefix(description, "config.") {
+				description = i18n.Message(c, description)
+			}
+
 			option := ConfigOption{
 				Key:          key,
-				Name:         definition.Name,
-				Description:  definition.Description,
+				Name:         name,
+				Description:  description,
 				DefaultValue: defaultValue,
 			}
 			options = append(options, option)
@@ -727,7 +737,7 @@ func calculateRequestStats(total, failed int64) RequestStats {
 func (s *Server) GetGroupStats(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "Invalid group ID format"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
 		return
 	}
 	groupID := uint(id)
@@ -860,7 +870,7 @@ func (s *Server) GetGroupStats(c *gin.Context) {
 	if len(errors) > 0 {
 		// 只记录第一个错误，但表明可能存在多个错误
 		logrus.WithContext(c.Request.Context()).WithError(errors[0]).Error("Errors occurred while fetching group stats")
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase, "Failed to retrieve some statistics"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.group_stats_failed")
 		return
 	}
 
@@ -911,7 +921,7 @@ func (s *Server) generateUniqueGroupName(baseName string) string {
 func (s *Server) CopyGroup(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "Invalid group ID format"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
 		return
 	}
 	sourceGroupID := uint(id)
@@ -924,7 +934,7 @@ func (s *Server) CopyGroup(c *gin.Context) {
 
 	// Validate copy keys option
 	if req.CopyKeys != "" && req.CopyKeys != "none" && req.CopyKeys != "valid_only" && req.CopyKeys != "all" {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "Invalid copy_keys value. Must be 'none', 'valid_only', or 'all'"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrValidation, "validation.invalid_copy_keys_value")
 		return
 	}
 	if req.CopyKeys == "" {
@@ -1036,7 +1046,7 @@ func (s *Server) CopyGroup(c *gin.Context) {
 func (s *Server) List(c *gin.Context) {
 	var groups []models.Group
 	if err := s.DB.Select("id, name,display_name").Find(&groups).Error; err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase, "无法获取分组列表"))
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.cannot_get_groups")
 		return
 	}
 	response.Success(c, groups)

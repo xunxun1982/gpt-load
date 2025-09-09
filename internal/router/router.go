@@ -3,6 +3,7 @@ package router
 import (
 	"embed"
 	"gpt-load/internal/handler"
+	"gpt-load/internal/i18n"
 	"gpt-load/internal/middleware"
 	"gpt-load/internal/proxy"
 	"gpt-load/internal/services"
@@ -83,6 +84,8 @@ func registerAPIRoutes(
 	configManager types.ConfigManager,
 ) {
 	api := router.Group("/api")
+	api.Use(i18n.Middleware())
+
 	authConfig := configManager.GetAuthConfig()
 
 	// 公开
