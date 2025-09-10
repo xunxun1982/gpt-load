@@ -762,7 +762,7 @@ async function handleSubmit() {
                   <template #trigger>
                     <n-input-number
                       v-model:value="upstream.weight"
-                      :min="1"
+                      :min="0"
                       :placeholder="t('keys.weight')"
                       style="width: 100%"
                     />
