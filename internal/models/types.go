@@ -62,10 +62,11 @@ type GroupSubGroup struct {
 
 // SubGroupInfo 用于API响应的子分组信息
 type SubGroupInfo struct {
-	GroupID     uint   `json:"group_id"`
-	Name        string `json:"name"`
-	DisplayName string `json:"display_name"`
-	Weight      int    `json:"weight"`
+	Group       Group `json:"group"`
+	Weight      int   `json:"weight"`
+	TotalKeys   int64 `json:"total_keys"`
+	ActiveKeys  int64 `json:"active_keys"`
+	InvalidKeys int64 `json:"invalid_keys"`
 }
 
 // ParentAggregateGroupInfo 用于API响应的父聚合分组信息
@@ -115,6 +116,7 @@ type APIKey struct {
 	KeyHash      string     `gorm:"type:varchar(128);index" json:"key_hash"`
 	GroupID      uint       `gorm:"not null;index" json:"group_id"`
 	Status       string     `gorm:"type:varchar(50);not null;default:'active'" json:"status"`
+	Notes        string     `gorm:"type:varchar(255);default:''" json:"notes"`
 	RequestCount int64      `gorm:"not null;default:0" json:"request_count"`
 	FailureCount int64      `gorm:"not null;default:0" json:"failure_count"`
 	LastUsedAt   *time.Time `json:"last_used_at"`

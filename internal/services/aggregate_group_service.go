@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"sync"
 
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
@@ -108,7 +109,7 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 	}, nil
 }
 
-// GetSubGroups returns sub groups for an aggregate group
+// GetSubGroups returns sub groups for an aggregate group with complete information
 func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) ([]models.SubGroupInfo, error) {
 	var group models.Group
 	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
@@ -144,13 +145,24 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 		return nil, err
 	}
 
+	keyStatsMap := s.fetchSubGroupsKeyStats(ctx, subGroupIDs)
+
 	subGroups := make([]models.SubGroupInfo, 0, len(subGroupModels))
 	for _, subGroup := range subGroupModels {
+		stats := keyStatsMap[subGroup.ID]
+
+		if stats.Err != nil {
+			logrus.WithContext(ctx).WithError(stats.Err).
+				WithField("group_id", subGroup.ID).
+				Warn("failed to fetch key stats for sub-group, using zero values")
+		}
+
 		subGroups = append(subGroups, models.SubGroupInfo{
-			GroupID:     subGroup.ID,
-			Name:        subGroup.Name,
-			DisplayName: subGroup.DisplayName,
+			Group:       subGroup,
 			Weight:      weightMap[subGroup.ID],
+			TotalKeys:   stats.TotalKeys,
+			ActiveKeys:  stats.ActiveKeys,
+			InvalidKeys: stats.InvalidKeys,
 		})
 	}
 
@@ -173,11 +185,14 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 
 	// Check if there are existing sub groups and get their validation endpoint
 	var existingEndpoint string
-	var existingSubGroup models.GroupSubGroup
-	if err := s.db.WithContext(ctx).Where("group_id = ?", groupID).First(&existingSubGroup).Error; err == nil {
-		// If we have existing sub groups, get one of their validation endpoints
+	var existingSubGroups []models.GroupSubGroup
+	if err := s.db.WithContext(ctx).Where("group_id = ?", groupID).Find(&existingSubGroups).Error; err != nil {
+		return err
+	}
+
+	if len(existingSubGroups) > 0 {
 		var existingGroup models.Group
-		if err := s.db.WithContext(ctx).First(&existingGroup, existingSubGroup.SubGroupID).Error; err == nil {
+		if err := s.db.WithContext(ctx).First(&existingGroup, existingSubGroups[0].SubGroupID).Error; err == nil {
 			existingEndpoint = utils.GetValidationEndpoint(&existingGroup)
 		}
 	}
@@ -185,12 +200,6 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 	// Validate sub groups with existing endpoint for consistency
 	result, err := s.ValidateSubGroups(ctx, group.ChannelType, inputs, existingEndpoint)
 	if err != nil {
-		return err
-	}
-
-	// Manually query existing sub groups
-	var existingSubGroups []models.GroupSubGroup
-	if err := s.db.WithContext(ctx).Where("group_id = ?", groupID).Find(&existingSubGroups).Error; err != nil {
 		return err
 	}
 
@@ -208,7 +217,7 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 	}
 
 	// Add new sub groups
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, newSg := range result.SubGroups {
 			newSg.GroupID = groupID
 			if err := tx.Create(&newSg).Error; err != nil {
@@ -216,13 +225,19 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 			}
 		}
 
-		// 触发缓存更新
-		if err := s.groupManager.Invalidate(); err != nil {
-			logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after adding sub groups")
-		}
-
 		return nil
 	})
+
+	if err != nil {
+		return err
+	}
+
+	// 触发缓存更新
+	if err := s.groupManager.Invalidate(); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after adding sub groups")
+	}
+
+	return nil
 }
 
 // UpdateSubGroupWeight updates the weight of a specific sub group
@@ -361,4 +376,63 @@ func (s *AggregateGroupService) GetParentAggregateGroups(ctx context.Context, su
 	}
 
 	return parentGroups, nil
+}
+
+// keyStatsResult stores key statistics for a single group
+type keyStatsResult struct {
+	GroupID     uint
+	TotalKeys   int64
+	ActiveKeys  int64
+	InvalidKeys int64
+	Err         error
+}
+
+// fetchSubGroupsKeyStats batch fetches key statistics for multiple sub-groups concurrently
+func (s *AggregateGroupService) fetchSubGroupsKeyStats(ctx context.Context, groupIDs []uint) map[uint]keyStatsResult {
+	results := make(map[uint]keyStatsResult)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, groupID := range groupIDs {
+		wg.Add(1)
+		go func(gid uint) {
+			defer wg.Done()
+
+			var totalKeys, activeKeys int64
+			result := keyStatsResult{GroupID: gid}
+
+			// Query total keys
+			if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
+				Where("group_id = ?", gid).
+				Count(&totalKeys).Error; err != nil {
+				result.Err = err
+				mu.Lock()
+				results[gid] = result
+				mu.Unlock()
+				return
+			}
+
+			// Query active keys
+			if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
+				Where("group_id = ? AND status = ?", gid, models.KeyStatusActive).
+				Count(&activeKeys).Error; err != nil {
+				result.Err = err
+				mu.Lock()
+				results[gid] = result
+				mu.Unlock()
+				return
+			}
+
+			result.TotalKeys = totalKeys
+			result.ActiveKeys = activeKeys
+			result.InvalidKeys = totalKeys - activeKeys
+
+			mu.Lock()
+			results[gid] = result
+			mu.Unlock()
+		}(groupID)
+	}
+
+	wg.Wait()
+	return results
 }

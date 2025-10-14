@@ -1,14 +1,48 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import type { Group, SubGroupInfo } from "@/types/models";
-import { Add, CreateOutline, InformationCircleOutline, Trash } from "@vicons/ionicons5";
-import { NButton, NButtonGroup, NEmpty, NIcon, NSpin, useDialog } from "naive-ui";
+import { getGroupDisplayName } from "@/utils/display";
+import {
+  Add,
+  CreateOutline,
+  EyeOutline,
+  InformationCircleOutline,
+  Search,
+  Trash,
+} from "@vicons/ionicons5";
+import {
+  NButton,
+  NButtonGroup,
+  NEmpty,
+  NIcon,
+  NInput,
+  NSelect,
+  NSpin,
+  NTag,
+  NTooltip,
+  useDialog,
+} from "naive-ui";
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import AddSubGroupModal from "./AddSubGroupModal.vue";
 import EditSubGroupWeightModal from "./EditSubGroupWeightModal.vue";
 
 const { t } = useI18n();
+
+// 获取子分组状态
+function getSubGroupStatus(subGroup: SubGroupInfo): {
+  status: "active" | "disabled" | "unavailable";
+  text: string;
+  type: "success" | "warning" | "error";
+} {
+  if (subGroup.weight === 0) {
+    return { status: "disabled", text: t("subGroups.statusDisabled"), type: "warning" };
+  }
+  if (subGroup.weight > 0 && subGroup.active_keys === 0) {
+    return { status: "unavailable", text: t("subGroups.statusUnavailable"), type: "error" };
+  }
+  return { status: "active", text: t("subGroups.statusActive"), type: "success" };
+}
 
 interface SubGroupRow extends SubGroupInfo {
   percentage: number;
@@ -35,6 +69,18 @@ const addModalShow = ref(false);
 const editModalShow = ref(false);
 const editingSubGroup = ref<SubGroupInfo | null>(null);
 
+// 搜索和过滤状态
+const searchText = ref("");
+const statusFilter = ref<"all" | "active" | "disabled" | "unavailable">("all");
+
+// 状态过滤选项
+const statusOptions = [
+  { label: t("common.all"), value: "all" },
+  { label: t("subGroups.statusActive"), value: "active" },
+  { label: t("subGroups.statusDisabled"), value: "disabled" },
+  { label: t("subGroups.statusUnavailable"), value: "unavailable" },
+];
+
 // 计算带百分比的子分组数据并按权重排序
 const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
   if (!props.subGroups) {
@@ -50,6 +96,31 @@ const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
   return withPercentage.sort((a, b) => b.weight - a.weight);
 });
 
+// 过滤后的子分组（应用搜索和状态过滤）
+const filteredSubGroups = computed<SubGroupRow[]>(() => {
+  let filtered = sortedSubGroupsWithPercentage.value;
+
+  // 名称搜索过滤（不区分大小写）
+  if (searchText.value.trim()) {
+    const searchLower = searchText.value.trim().toLowerCase();
+    filtered = filtered.filter(sg => {
+      const name = sg.group.name?.toLowerCase() || "";
+      const displayName = sg.group.display_name?.toLowerCase() || "";
+      return name.includes(searchLower) || displayName.includes(searchLower);
+    });
+  }
+
+  // 状态过滤
+  if (statusFilter.value !== "all") {
+    filtered = filtered.filter(sg => {
+      const status = getSubGroupStatus(sg).status;
+      return status === statusFilter.value;
+    });
+  }
+
+  return filtered;
+});
+
 function openEditModal(subGroup: SubGroupInfo) {
   editingSubGroup.value = subGroup;
   editModalShow.value = true;
@@ -62,7 +133,7 @@ async function deleteSubGroup(subGroup: SubGroupInfo) {
 
   const d = dialog.warning({
     title: t("subGroups.removeSubGroup"),
-    content: t("subGroups.confirmRemoveSubGroup", { name: subGroup.display_name || subGroup.name }),
+    content: t("subGroups.confirmRemoveSubGroup", { name: getGroupDisplayName(subGroup) }),
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
@@ -72,7 +143,11 @@ async function deleteSubGroup(subGroup: SubGroupInfo) {
 
       d.loading = true;
       try {
-        await keysApi.deleteSubGroup(props.selectedGroup.id, subGroup.group_id);
+        const groupId = subGroup.group.id;
+        if (!groupId) {
+          return;
+        }
+        await keysApi.deleteSubGroup(props.selectedGroup.id, groupId);
         emit("refresh");
       } finally {
         d.loading = false;
@@ -81,18 +156,22 @@ async function deleteSubGroup(subGroup: SubGroupInfo) {
   });
 }
 
-// 统一的成功处理函数
+// Handle success after modal operations
 function handleSuccess() {
   emit("refresh");
 }
 
-function formatDisplayName(subGroup: SubGroupInfo): string {
-  return subGroup.display_name || subGroup.name;
-}
-
-// 跳转到分组信息
+// Navigate to group info
 function goToGroupInfo(groupId: number) {
   emit("group-select", groupId);
+}
+
+// Format number with K suffix
+function formatNumber(num: number): string {
+  if (num >= 1000) {
+    return `${(num / 1000).toFixed(1)}K`;
+  }
+  return num.toString();
 }
 </script>
 
@@ -109,7 +188,24 @@ function goToGroupInfo(groupId: number) {
         </n-button>
       </div>
       <div class="toolbar-right">
-        <!-- 可以添加其他操作按钮 -->
+        <n-select
+          v-model:value="statusFilter"
+          :options="statusOptions"
+          size="small"
+          style="width: 120px"
+          :placeholder="t('keys.allStatus')"
+        />
+        <n-input
+          v-model:value="searchText"
+          :placeholder="t('keys.searchByName')"
+          size="small"
+          style="width: 200px"
+          clearable
+        >
+          <template #prefix>
+            <n-icon :component="Search" />
+          </template>
+        </n-input>
       </div>
     </div>
 
@@ -119,21 +215,24 @@ function goToGroupInfo(groupId: number) {
         <div v-if="!props.subGroups || props.subGroups.length === 0" class="empty-container">
           <n-empty :description="t('subGroups.noSubGroups')" />
         </div>
+        <div v-else-if="filteredSubGroups.length === 0" class="empty-container">
+          <n-empty :description="t('keys.noMatchingKeys')" />
+        </div>
         <div v-else class="keys-grid">
           <div
-            v-for="subGroup in sortedSubGroupsWithPercentage"
-            :key="subGroup.group_id"
+            v-for="subGroup in filteredSubGroups"
+            :key="subGroup.group.id"
             class="key-card status-sub-group"
-            :class="{ disabled: subGroup.weight === 0 }"
+            :class="{ disabled: subGroup.weight === 0 || subGroup.active_keys === 0 }"
           >
-            <!-- 主要信息行：显示名 + 分组名 -->
+            <!-- Main info row: display name + group name -->
             <div class="key-main">
               <div class="key-section">
                 <div class="sub-group-names">
-                  <span class="display-name">{{ formatDisplayName(subGroup) }}</span>
+                  <span class="display-name">{{ getGroupDisplayName(subGroup) }}</span>
                 </div>
                 <div class="quick-actions">
-                  <span class="group-name">#{{ subGroup.name }}</span>
+                  <span class="group-name">#{{ subGroup.group.name }}</span>
                 </div>
               </div>
             </div>
@@ -146,30 +245,106 @@ function goToGroupInfo(groupId: number) {
                   <strong>{{ subGroup.weight }}</strong>
                 </span>
                 <div class="weight-bar">
-                  <div class="weight-fill" :style="{ width: `${subGroup.percentage}%` }" />
+                  <div
+                    class="weight-fill"
+                    :class="{
+                      'weight-fill-active': subGroup.weight > 0 && subGroup.active_keys > 0,
+                      'weight-fill-unavailable': subGroup.weight > 0 && subGroup.active_keys === 0,
+                    }"
+                    :style="{ width: `${subGroup.percentage}%` }"
+                  />
                 </div>
                 <span class="weight-text">{{ subGroup.percentage }}%</span>
               </div>
             </div>
 
+            <!-- 密钥统计 -->
+            <div class="key-stats-row">
+              <div class="stats-left">
+                <span class="stat-item">
+                  <span class="stat-value">{{ formatNumber(subGroup.total_keys) }}</span>
+                </span>
+                <n-divider vertical />
+                <span class="stat-item stat-success">
+                  {{ formatNumber(subGroup.active_keys) }}
+                </span>
+                <n-divider vertical />
+                <span class="stat-item stat-error">
+                  {{ formatNumber(subGroup.invalid_keys) }}
+                </span>
+              </div>
+              <n-tag :type="getSubGroupStatus(subGroup).type" size="small">
+                {{ getSubGroupStatus(subGroup).text }}
+              </n-tag>
+            </div>
+
             <!-- 操作按钮行 -->
             <div class="key-bottom">
               <div class="key-stats">
+                <n-tooltip trigger="hover" placement="top">
+                  <template #trigger>
+                    <n-button round tertiary type="default" size="tiny">
+                      <template #icon>
+                        <n-icon :component="InformationCircleOutline" />
+                      </template>
+                    </n-button>
+                  </template>
+                  <div class="sub-group-info-tooltip">
+                    <!-- 分组名称和状态 -->
+                    <div class="info-header">
+                      <div class="info-title">{{ getGroupDisplayName(subGroup) }}</div>
+                      <n-tag :type="getSubGroupStatus(subGroup).type" size="small">
+                        {{ getSubGroupStatus(subGroup).text }}
+                      </n-tag>
+                    </div>
+
+                    <!-- 详细信息 -->
+                    <div class="info-details">
+                      <div class="info-row">
+                        <span class="info-label">{{ t("keys.testModel") }}:</span>
+                        <span class="info-value">{{ subGroup.group.test_model || "-" }}</span>
+                      </div>
+                      <div class="info-row" v-if="subGroup.group.channel_type !== 'gemini'">
+                        <span class="info-label">{{ t("keys.testPath") }}:</span>
+                        <span class="info-value">
+                          {{ subGroup.group.validation_endpoint || "-" }}
+                        </span>
+                      </div>
+
+                      <!-- 上游地址 -->
+                      <div
+                        class="info-row"
+                        v-if="subGroup.group.upstreams && subGroup.group.upstreams.length > 0"
+                      >
+                        <span class="info-label">{{ t("keys.upstreamAddresses") }}:</span>
+                        <div class="info-value upstream-list">
+                          <input
+                            v-for="(upstream, index) in subGroup.group.upstreams"
+                            :key="index"
+                            class="upstream-input"
+                            :value="upstream.url"
+                            readonly
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </n-tooltip>
+              </div>
+              <n-button-group class="key-actions">
                 <n-button
                   round
                   tertiary
                   type="default"
                   size="tiny"
-                  @click="goToGroupInfo(subGroup.group_id)"
-                  :title="t('subGroups.viewGroupInfo')"
+                  @click="subGroup.group.id && goToGroupInfo(subGroup.group.id)"
+                  :title="t('subGroups.viewSubGroup')"
                 >
                   <template #icon>
-                    <n-icon :component="InformationCircleOutline" />
+                    <n-icon :component="EyeOutline" />
                   </template>
-                  {{ t("subGroups.groupInfo") }}
+                  {{ t("common.view") }}
                 </n-button>
-              </div>
-              <n-button-group class="key-actions">
                 <n-button
                   round
                   tertiary
@@ -206,7 +381,12 @@ function goToGroupInfo(groupId: number) {
     <!-- 底部信息 -->
     <div class="pagination-container">
       <div class="pagination-info">
-        <span>{{ t("subGroups.totalSubGroups", { total: props.subGroups?.length || 0 }) }}</span>
+        <span>
+          {{ t("subGroups.totalSubGroups", { total: filteredSubGroups.length }) }}
+          <template v-if="filteredSubGroups.length !== (props.subGroups?.length || 0)">
+            / {{ props.subGroups?.length || 0 }}
+          </template>
+        </span>
       </div>
       <div class="pagination-controls">
         <span class="page-info">
@@ -371,7 +551,7 @@ function goToGroupInfo(groupId: number) {
 
 /* 权重显示样式 */
 .weight-display {
-  margin: 8px 0;
+  margin: 4px 0;
 }
 
 .weight-bar-container {
@@ -489,9 +669,40 @@ function goToGroupInfo(groupId: number) {
 
 .weight-fill {
   height: 100%;
-  background: linear-gradient(90deg, #2080f0, #4098fc);
   border-radius: 4px;
   transition: width 0.3s ease;
+}
+
+/* Active state - green gradient */
+.key-card .weight-fill-active {
+  background: linear-gradient(90deg, #0e7a43, #18a058, #36ad6a, #5fd299) !important;
+}
+
+:root.dark .key-card .weight-fill-active {
+  background: linear-gradient(90deg, #4aba7d, #63e2b7, #7fe7c4, #a3f5d0) !important;
+}
+
+/* Unavailable state - striped pattern (red/orange warning) */
+.key-card .weight-fill-unavailable {
+  background: repeating-linear-gradient(
+    45deg,
+    #f5a9a9,
+    #f5a9a9 8px,
+    #e88592 8px,
+    #e88592 16px
+  ) !important;
+  opacity: 0.85;
+}
+
+:root.dark .key-card .weight-fill-unavailable {
+  background: repeating-linear-gradient(
+    45deg,
+    #8b3a3a,
+    #8b3a3a 8px,
+    #a04848 8px,
+    #a04848 16px
+  ) !important;
+  opacity: 0.8;
 }
 
 .weight-text {
@@ -500,6 +711,59 @@ function goToGroupInfo(groupId: number) {
   font-size: 14px;
   min-width: 40px;
   text-align: right;
+}
+
+/* Key stats row styles */
+.key-stats-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.stats-left {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  flex: 1;
+}
+
+.stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-label {
+  color: var(--text-secondary);
+}
+
+.stat-value {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.stat-divider {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+.stat-success {
+  color: #18a058;
+  font-weight: 600;
+}
+
+:root.dark .stat-success {
+  color: #63e2b7;
+}
+
+.stat-error {
+  color: #d03050;
+  font-weight: 600;
+}
+
+:root.dark .stat-error {
+  color: #e88080;
 }
 
 .pagination-container {
@@ -571,5 +835,85 @@ function goToGroupInfo(groupId: number) {
 
 .key-card.disabled .weight-fill {
   background: var(--color-disabled);
+}
+
+/* Tooltip 样式 */
+.sub-group-info-tooltip {
+  min-width: 450px;
+  max-width: 600px;
+  padding: 8px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+:root:not(.dark) .info-header {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.info-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: inherit;
+}
+
+.info-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  font-size: 13px;
+  line-height: 1.5;
+  gap: 12px;
+}
+
+.info-label {
+  color: inherit;
+  opacity: 0.7;
+  flex-shrink: 0;
+  min-width: 100px;
+}
+
+.info-value {
+  color: inherit;
+  font-weight: 500;
+  text-align: right;
+  word-break: break-word;
+  flex: 1;
+}
+
+.upstream-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.upstream-input {
+  width: 100%;
+  font-size: 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  outline: none;
+  overflow-x: auto;
+  white-space: nowrap;
 }
 </style>
