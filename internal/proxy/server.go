@@ -108,7 +108,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 
-	isStream := channelHandler.IsStreamRequest(c, bodyBytes)
+	isStream := channelHandler.IsStreamRequest(c, finalBodyBytes)
 
 	ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, 0)
 }
@@ -130,13 +130,18 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCount+1, err)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, err.Error()))
-		ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusServiceUnavailable, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusServiceUnavailable, err, isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 
-	upstreamURL, err := channelHandler.BuildUpstreamURL(c.Request.URL, originalGroup.Name)
+	// Select upstream with its dedicated HTTP clients
+	upstreamSelection, err := channelHandler.SelectUpstreamWithClients(c.Request.URL, originalGroup.Name)
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to build upstream URL: %v", err)))
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to select upstream: %v", err)))
+		return
+	}
+	if upstreamSelection == nil || upstreamSelection.URL == "" {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to select upstream: empty result"))
 		return
 	}
 
@@ -150,7 +155,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	}
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, c.Request.Method, upstreamURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
@@ -164,6 +169,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	req.Header.Del("Authorization")
 	req.Header.Del("X-Api-Key")
 	req.Header.Del("X-Goog-Api-Key")
+	req.Header.Del("Proxy-Authorization")
 
 	channelHandler.ModifyRequest(req, apiKey, group)
 
@@ -173,12 +179,22 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
+	// Use the upstream-specific client (with its dedicated proxy configuration)
 	var client *http.Client
 	if isStream {
-		client = channelHandler.GetStreamClient()
+		client = upstreamSelection.StreamClient
 		req.Header.Set("X-Accel-Buffering", "no")
 	} else {
-		client = channelHandler.GetHTTPClient()
+		client = upstreamSelection.HTTPClient
+	}
+
+	// Defensive nil-check with backward-compatible fallback
+	if client == nil {
+		if isStream {
+			client = channelHandler.GetStreamClient()
+		} else {
+			client = channelHandler.GetHTTPClient()
+		}
 	}
 
 	resp, err := client.Do(req)
@@ -190,7 +206,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil || (resp != nil && resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound) {
 		if err != nil && app_errors.IsIgnorableError(err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, models.RequestTypeFinal)
 			return
 		}
 
@@ -228,7 +244,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			requestType = models.RequestTypeFinal
 		}
 
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream, upstreamURL, channelHandler, bodyBytes, requestType)
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, requestType)
 
 		// 如果是最后一次尝试，直接返回错误，不再递归
 		if isLastAttempt {
@@ -261,7 +277,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		ps.handleNormalResponse(c, resp)
 	}
 
-	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal)
+	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, models.RequestTypeFinal)
 }
 
 // logRequest is a helper function to create and record a request log.
@@ -275,6 +291,7 @@ func (ps *ProxyServer) logRequest(
 	finalError error,
 	isStream bool,
 	upstreamAddr string,
+	proxyURL *string,
 	channelHandler channel.ChannelProxy,
 	bodyBytes []byte,
 	requestType string,
@@ -292,6 +309,12 @@ func (ps *ProxyServer) logRequest(
 
 	duration := time.Since(startTime).Milliseconds()
 
+	// Format upstream address with proxy info if available
+	upstreamAddrWithProxy := upstreamAddr
+	if proxyURL != nil && *proxyURL != "" {
+		upstreamAddrWithProxy = fmt.Sprintf("%s (proxy: %s)", upstreamAddr, *proxyURL)
+	}
+
 	logEntry := &models.RequestLog{
 		GroupID:      group.ID,
 		GroupName:    group.Name,
@@ -303,7 +326,7 @@ func (ps *ProxyServer) logRequest(
 		UserAgent:    userAgent,
 		RequestType:  requestType,
 		IsStream:     isStream,
-		UpstreamAddr: utils.TruncateString(upstreamAddr, 500),
+		UpstreamAddr: utils.TruncateString(upstreamAddrWithProxy, 500),
 		RequestBody:  requestBodyToLog,
 	}
 

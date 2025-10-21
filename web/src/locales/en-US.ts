@@ -324,6 +324,11 @@ export default {
       "Complete URL of the API server. Multiple upstreams enable load balancing and failover for high availability",
     weightTooltip:
       "Load balancing weight configuration. Weight determines traffic distribution ratio - higher values receive more traffic. Weight 0 disables the upstream (no requests). Example: Weight 2:1 means the first receives ~67% of traffic",
+    upstreamProxyUrl: "Proxy",
+    upstreamProxyUrlTooltip:
+      "Dedicated proxy server for this upstream (http/https only). If configured, it will be used instead of the group-level proxy. Leave empty to inherit group/global proxy settings",
+    upstreamProxyUrlPlaceholder: "http://proxy.example.com:8080",
+    invalidUpstreamProxy: "Invalid upstream proxy URL",
     addUpstream: "Add Upstream",
     groupConfig: "Group Configuration",
     groupConfigTooltip:
@@ -480,6 +485,7 @@ export default {
     hideDetails: "Hide Details",
     requestInfo: "Request Information",
     upstreamAddress: "Upstream Address",
+    proxyServer: "Proxy Server",
     requestContent: "Request Content",
     errorInfo: "Error Information",
     customColumns: "Custom Columns",
