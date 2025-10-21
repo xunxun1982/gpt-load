@@ -7,7 +7,6 @@ import (
 	"gpt-load/internal/httpclient"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -166,39 +165,10 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		return nil, fmt.Errorf("no active upstreams (all weights <= 0) for %s channel", name)
 	}
 
-	// Fallback clients for backward compatibility (use first upstream's clients or group-level config)
-	var fallbackHTTPClient, fallbackStreamClient *http.Client
-	if len(upstreamInfos) > 0 {
-		fallbackHTTPClient = upstreamInfos[0].HTTPClient
-		fallbackStreamClient = upstreamInfos[0].StreamClient
-	} else {
-		// Should not happen, but create default clients just in case
-		clientConfig := &httpclient.Config{
-			ConnectTimeout:        time.Duration(group.EffectiveConfig.ConnectTimeout) * time.Second,
-			RequestTimeout:        time.Duration(group.EffectiveConfig.RequestTimeout) * time.Second,
-			IdleConnTimeout:       time.Duration(group.EffectiveConfig.IdleConnTimeout) * time.Second,
-			MaxIdleConns:          group.EffectiveConfig.MaxIdleConns,
-			MaxIdleConnsPerHost:   group.EffectiveConfig.MaxIdleConnsPerHost,
-			ResponseHeaderTimeout: time.Duration(group.EffectiveConfig.ResponseHeaderTimeout) * time.Second,
-			ProxyURL:              group.EffectiveConfig.ProxyURL,
-			DisableCompression:    false,
-			WriteBufferSize:       32 * 1024,
-			ReadBufferSize:        32 * 1024,
-			ForceAttemptHTTP2:     true,
-			TLSHandshakeTimeout:   15 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		}
-		streamConfig := *clientConfig
-		streamConfig.RequestTimeout = 0
-		streamConfig.DisableCompression = true
-		streamConfig.WriteBufferSize = 0
-		streamConfig.ReadBufferSize = 0
-		streamConfig.MaxIdleConns = max(group.EffectiveConfig.MaxIdleConns*2, 50)
-		streamConfig.MaxIdleConnsPerHost = max(group.EffectiveConfig.MaxIdleConnsPerHost*2, 20)
-
-		fallbackHTTPClient = f.clientManager.GetClient(clientConfig)
-		fallbackStreamClient = f.clientManager.GetClient(&streamConfig)
-	}
+	// Fallback clients for backward compatibility (use first upstream's clients)
+	// This is guaranteed to exist because we validated hasActiveUpstream above
+	fallbackHTTPClient := upstreamInfos[0].HTTPClient
+	fallbackStreamClient := upstreamInfos[0].StreamClient
 
 	return &BaseChannel{
 		Name:               name,

@@ -183,6 +183,15 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		client = upstreamSelection.HTTPClient
 	}
 
+	// Defensive nil-check with backward-compatible fallback
+	if client == nil {
+		if isStream {
+			client = channelHandler.GetStreamClient()
+		} else {
+			client = channelHandler.GetHTTPClient()
+		}
+	}
+
 	resp, err := client.Do(req)
 	if resp != nil {
 		defer resp.Body.Close()
