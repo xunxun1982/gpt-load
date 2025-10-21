@@ -43,6 +43,7 @@ type BaseChannel struct {
 
 // SelectUpstream selects an upstream using a smooth weighted round-robin algorithm.
 // Returns the selected UpstreamInfo which includes URL and dedicated HTTP clients.
+// Returns nil if no upstream is available (all weights are zero or no upstreams configured).
 func (b *BaseChannel) SelectUpstream() *UpstreamInfo {
 	b.upstreamLock.Lock()
 	defer b.upstreamLock.Unlock()
@@ -50,7 +51,7 @@ func (b *BaseChannel) SelectUpstream() *UpstreamInfo {
 	if len(b.Upstreams) == 0 {
 		return nil
 	}
-	if len(b.Upstreams) == 1 {
+	if len(b.Upstreams) == 1 && b.Upstreams[0].Weight > 0 {
 		return &b.Upstreams[0]
 	}
 
@@ -59,6 +60,9 @@ func (b *BaseChannel) SelectUpstream() *UpstreamInfo {
 
 	for i := range b.Upstreams {
 		up := &b.Upstreams[i]
+		if up.Weight <= 0 {
+			continue // skip disabled upstreams
+		}
 		totalWeight += up.Weight
 		up.CurrentWeight += up.Weight
 
@@ -68,7 +72,7 @@ func (b *BaseChannel) SelectUpstream() *UpstreamInfo {
 	}
 
 	if best == nil {
-		return &b.Upstreams[0] // 降级到第一个可用的
+		return nil // no available upstream (all disabled)
 	}
 
 	best.CurrentWeight -= totalWeight
@@ -89,21 +93,23 @@ func (b *BaseChannel) getUpstreamURL() *url.URL {
 func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName string) (*UpstreamSelection, error) {
 	upstream := b.SelectUpstream()
 	if upstream == nil {
-		return nil, fmt.Errorf("no upstream configured for channel %s", b.Name)
+		return nil, fmt.Errorf("no upstream available for channel %s (all disabled or none configured)", b.Name)
 	}
 
-	finalURL := *upstream.URL
+	base := *upstream.URL
 	proxyPrefix := "/proxy/" + groupName
-	requestPath := originalURL.Path
-	requestPath = strings.TrimPrefix(requestPath, proxyPrefix)
+	reqPath := strings.TrimPrefix(originalURL.Path, proxyPrefix)
 
-	finalURL.Path = strings.TrimRight(finalURL.Path, "/") + requestPath
-	finalURL.RawQuery = originalURL.RawQuery
+	// Build relative URL with preserved query
+	rel, _ := url.Parse(reqPath)
+	rel.RawQuery = originalURL.RawQuery
+	finalURL := *base.ResolveReference(rel)
 
 	return &UpstreamSelection{
 		URL:          finalURL.String(),
 		HTTPClient:   upstream.HTTPClient,
 		StreamClient: upstream.StreamClient,
+		ProxyURL:     upstream.ProxyURL,
 	}, nil
 }
 

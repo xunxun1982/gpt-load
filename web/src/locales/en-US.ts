@@ -326,7 +326,7 @@ export default {
       "Load balancing weight configuration. Weight determines traffic distribution ratio - higher values receive more traffic. Weight 0 disables the upstream (no requests). Example: Weight 2:1 means the first receives ~67% of traffic",
     upstreamProxyUrl: "Proxy",
     upstreamProxyUrlTooltip:
-      "Dedicated proxy server address for this upstream. If configured, this proxy will be used with priority; if empty, the proxy server address from group configuration will be used",
+      "Dedicated proxy server for this upstream (http/https only). If configured, it will be used instead of the group-level proxy. Leave empty to inherit group/global proxy settings",
     upstreamProxyUrlPlaceholder: "http://proxy.example.com:8080",
     addUpstream: "Add Upstream",
     groupConfig: "Group Configuration",

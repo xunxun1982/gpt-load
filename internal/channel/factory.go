@@ -105,9 +105,8 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse upstream url '%s' for %s channel: %w", def.URL, name, err)
 		}
-		if def.Weight <= 0 {
-			continue
-		}
+		// Note: We keep zero-weight upstreams in the list (they're just disabled)
+		// The selection algorithm will skip them
 
 		// Determine which proxy URL to use: upstream-specific or group-level
 		proxyURL := group.EffectiveConfig.ProxyURL
@@ -153,6 +152,18 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 			HTTPClient:   httpClient,
 			StreamClient: streamClient,
 		})
+	}
+
+	// Verify at least one upstream has positive weight
+	hasActiveUpstream := false
+	for _, up := range upstreamInfos {
+		if up.Weight > 0 {
+			hasActiveUpstream = true
+			break
+		}
+	}
+	if !hasActiveUpstream {
+		return nil, fmt.Errorf("no active upstreams (all weights <= 0) for %s channel", name)
 	}
 
 	// Fallback clients for backward compatibility (use first upstream's clients or group-level config)

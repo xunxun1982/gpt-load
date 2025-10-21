@@ -108,7 +108,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 
-	isStream := channelHandler.IsStreamRequest(c, bodyBytes)
+	isStream := channelHandler.IsStreamRequest(c, finalBodyBytes)
 
 	ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, 0)
 }

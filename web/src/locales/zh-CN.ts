@@ -317,7 +317,7 @@ export default {
       "负载均衡权重配置。权重决定流量分配比例，数值越大获得的流量越多。权重为0时禁用该上游（不接收任何请求）。示例：权重2:1表示前者获得约67%的流量",
     upstreamProxyUrl: "代理",
     upstreamProxyUrlTooltip:
-      "此上游专用的代理服务器地址。如果配置，将优先使用此代理；如果为空，则使用分组配置中的代理服务器地址",
+      "此上游专用的代理服务器地址（仅支持 http/https）。如果配置，将优先使用此代理；如果为空，则使用分组或全局代理配置",
     upstreamProxyUrlPlaceholder: "http://proxy.example.com:8080",
     addUpstream: "添加上游地址",
     groupConfig: "分组配置",

@@ -478,12 +478,15 @@ async function handleSubmit() {
       display_name: formData.display_name,
       description: formData.description,
       upstreams: formData.upstreams
-        .filter((upstream: UpstreamInfo) => upstream.url.trim())
-        .map((upstream: UpstreamInfo) => ({
-          url: upstream.url,
-          weight: upstream.weight,
-          proxy_url: upstream.proxy_url || undefined,
-        })),
+        .map((u: UpstreamInfo) => ({
+          url: (u.url || "").trim(),
+          weight: u.weight,
+          proxy_url: (() => {
+            const p = (u.proxy_url || "").trim();
+            return /^https?:\/\//i.test(p) ? p : undefined;
+          })(),
+        }))
+        .filter(u => !!u.url),
       channel_type: formData.channel_type,
       sort: formData.sort,
       test_model: formData.test_model,
@@ -784,6 +787,7 @@ async function handleSubmit() {
                       v-model:value="upstream.proxy_url"
                       :placeholder="t('keys.upstreamProxyUrlPlaceholder')"
                       style="width: 100%"
+                      clearable
                     />
                   </template>
                   {{ t("keys.upstreamProxyUrlTooltip") }}
