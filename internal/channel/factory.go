@@ -107,7 +107,7 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		// Note: We keep zero-weight upstreams in the list (they're just disabled)
 		// The selection algorithm will skip them
 
-		// Determine which proxy URL to use: upstream-specific or group-level
+		// Determine effective proxy URL (per-upstream overrides group-level)
 		proxyURL := group.EffectiveConfig.ProxyURL
 		if def.ProxyURL != nil && *def.ProxyURL != "" {
 			proxyURL = *def.ProxyURL
@@ -144,10 +144,16 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		httpClient := f.clientManager.GetClient(clientConfig)
 		streamClient := f.clientManager.GetClient(&streamConfig)
 
+		// Prepare a stable pointer to the effective proxy value for logging/observability
+		var proxyPtr *string
+		if proxyURL != "" {
+			p := proxyURL // per-iteration copy to avoid pointer aliasing across loop iterations
+			proxyPtr = &p
+		}
 		upstreamInfos = append(upstreamInfos, UpstreamInfo{
 			URL:          u,
 			Weight:       def.Weight,
-			ProxyURL:     def.ProxyURL,
+			ProxyURL:     proxyPtr,
 			HTTPClient:   httpClient,
 			StreamClient: streamClient,
 		})

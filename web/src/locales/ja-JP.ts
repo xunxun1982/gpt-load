@@ -327,6 +327,7 @@ export default {
     upstreamProxyUrlTooltip:
       "このアップストリーム専用のプロキシサーバーアドレス（http/httpsのみ対応）。設定されている場合、このプロキシが優先的に使用されます。空の場合、グループまたはグローバルプロキシ設定が使用されます",
     upstreamProxyUrlPlaceholder: "http://proxy.example.com:8080",
+    invalidUpstreamProxy: "アップストリームプロキシURLが無効です",
     addUpstream: "アップストリーム追加",
     groupConfig: "グループ設定",
     groupConfigTooltip:

@@ -319,6 +319,7 @@ export default {
     upstreamProxyUrlTooltip:
       "此上游专用的代理服务器地址（仅支持 http/https）。如果配置，将优先使用此代理；如果为空，则使用分组或全局代理配置",
     upstreamProxyUrlPlaceholder: "http://proxy.example.com:8080",
+    invalidUpstreamProxy: "上游代理地址格式不正确",
     addUpstream: "添加上游地址",
     groupConfig: "分组配置",
     groupConfigTooltip:

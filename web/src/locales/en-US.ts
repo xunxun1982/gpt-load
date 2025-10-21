@@ -328,6 +328,7 @@ export default {
     upstreamProxyUrlTooltip:
       "Dedicated proxy server for this upstream (http/https only). If configured, it will be used instead of the group-level proxy. Leave empty to inherit group/global proxy settings",
     upstreamProxyUrlPlaceholder: "http://proxy.example.com:8080",
+    invalidUpstreamProxy: "Invalid upstream proxy URL",
     addUpstream: "Add Upstream",
     groupConfig: "Group Configuration",
     groupConfigTooltip:
