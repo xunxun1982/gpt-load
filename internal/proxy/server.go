@@ -130,7 +130,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCount+1, err)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, err.Error()))
-		ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusServiceUnavailable, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusServiceUnavailable, err, isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 
@@ -138,6 +138,10 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	upstreamSelection, err := channelHandler.SelectUpstreamWithClients(c.Request.URL, originalGroup.Name)
 	if err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to select upstream: %v", err)))
+		return
+	}
+	if upstreamSelection == nil || upstreamSelection.URL == "" {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to select upstream: empty result"))
 		return
 	}
 
@@ -165,6 +169,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	req.Header.Del("Authorization")
 	req.Header.Del("X-Api-Key")
 	req.Header.Del("X-Goog-Api-Key")
+	req.Header.Del("Proxy-Authorization")
 
 	channelHandler.ModifyRequest(req, apiKey, group)
 
@@ -201,7 +206,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil || (resp != nil && resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound) {
 		if err != nil && app_errors.IsIgnorableError(err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamSelection.URL, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, models.RequestTypeFinal)
 			return
 		}
 
@@ -239,7 +244,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			requestType = models.RequestTypeFinal
 		}
 
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream, upstreamSelection.URL, channelHandler, bodyBytes, requestType)
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, requestType)
 
 		// 如果是最后一次尝试，直接返回错误，不再递归
 		if isLastAttempt {
@@ -272,7 +277,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		ps.handleNormalResponse(c, resp)
 	}
 
-	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, channelHandler, bodyBytes, models.RequestTypeFinal)
+	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, models.RequestTypeFinal)
 }
 
 // logRequest is a helper function to create and record a request log.
@@ -286,6 +291,7 @@ func (ps *ProxyServer) logRequest(
 	finalError error,
 	isStream bool,
 	upstreamAddr string,
+	proxyURL *string,
 	channelHandler channel.ChannelProxy,
 	bodyBytes []byte,
 	requestType string,
@@ -303,6 +309,12 @@ func (ps *ProxyServer) logRequest(
 
 	duration := time.Since(startTime).Milliseconds()
 
+	// Format upstream address with proxy info if available
+	upstreamAddrWithProxy := upstreamAddr
+	if proxyURL != nil && *proxyURL != "" {
+		upstreamAddrWithProxy = fmt.Sprintf("%s (proxy: %s)", upstreamAddr, *proxyURL)
+	}
+
 	logEntry := &models.RequestLog{
 		GroupID:      group.ID,
 		GroupName:    group.Name,
@@ -314,7 +326,7 @@ func (ps *ProxyServer) logRequest(
 		UserAgent:    userAgent,
 		RequestType:  requestType,
 		IsStream:     isStream,
-		UpstreamAddr: utils.TruncateString(upstreamAddr, 500),
+		UpstreamAddr: utils.TruncateString(upstreamAddrWithProxy, 500),
 		RequestBody:  requestBodyToLog,
 	}
 

@@ -165,10 +165,16 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		return nil, fmt.Errorf("no active upstreams (all weights <= 0) for %s channel", name)
 	}
 
-	// Fallback clients for backward compatibility (use first upstream's clients)
-	// This is guaranteed to exist because we validated hasActiveUpstream above
+	// Fallback clients: prefer the first active upstream, otherwise use index 0
 	fallbackHTTPClient := upstreamInfos[0].HTTPClient
 	fallbackStreamClient := upstreamInfos[0].StreamClient
+	for _, up := range upstreamInfos {
+		if up.Weight > 0 {
+			fallbackHTTPClient = up.HTTPClient
+			fallbackStreamClient = up.StreamClient
+			break
+		}
+	}
 
 	return &BaseChannel{
 		Name:               name,
