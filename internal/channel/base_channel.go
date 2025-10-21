@@ -20,6 +20,9 @@ type UpstreamInfo struct {
 	URL           *url.URL
 	Weight        int
 	CurrentWeight int
+	ProxyURL      *string      // Optional proxy URL for this upstream
+	HTTPClient    *http.Client // Dedicated HTTP client for this upstream
+	StreamClient  *http.Client // Dedicated stream client for this upstream
 }
 
 // BaseChannel provides common functionality for channel proxies.
@@ -38,8 +41,9 @@ type BaseChannel struct {
 	effectiveConfig *types.SystemSettings
 }
 
-// getUpstreamURL selects an upstream URL using a smooth weighted round-robin algorithm.
-func (b *BaseChannel) getUpstreamURL() *url.URL {
+// SelectUpstream selects an upstream using a smooth weighted round-robin algorithm.
+// Returns the selected UpstreamInfo which includes URL and dedicated HTTP clients.
+func (b *BaseChannel) SelectUpstream() *UpstreamInfo {
 	b.upstreamLock.Lock()
 	defer b.upstreamLock.Unlock()
 
@@ -47,7 +51,7 @@ func (b *BaseChannel) getUpstreamURL() *url.URL {
 		return nil
 	}
 	if len(b.Upstreams) == 1 {
-		return b.Upstreams[0].URL
+		return &b.Upstreams[0]
 	}
 
 	totalWeight := 0
@@ -64,14 +68,47 @@ func (b *BaseChannel) getUpstreamURL() *url.URL {
 	}
 
 	if best == nil {
-		return b.Upstreams[0].URL // 降级到第一个可用的
+		return &b.Upstreams[0] // 降级到第一个可用的
 	}
 
 	best.CurrentWeight -= totalWeight
-	return best.URL
+	return best
+}
+
+// getUpstreamURL selects an upstream URL using a smooth weighted round-robin algorithm.
+// Deprecated: Use SelectUpstream() instead to get the full UpstreamInfo with dedicated clients.
+func (b *BaseChannel) getUpstreamURL() *url.URL {
+	upstream := b.SelectUpstream()
+	if upstream == nil {
+		return nil
+	}
+	return upstream.URL
+}
+
+// SelectUpstreamWithClients selects an upstream and returns its URL with dedicated HTTP clients.
+func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName string) (*UpstreamSelection, error) {
+	upstream := b.SelectUpstream()
+	if upstream == nil {
+		return nil, fmt.Errorf("no upstream configured for channel %s", b.Name)
+	}
+
+	finalURL := *upstream.URL
+	proxyPrefix := "/proxy/" + groupName
+	requestPath := originalURL.Path
+	requestPath = strings.TrimPrefix(requestPath, proxyPrefix)
+
+	finalURL.Path = strings.TrimRight(finalURL.Path, "/") + requestPath
+	finalURL.RawQuery = originalURL.RawQuery
+
+	return &UpstreamSelection{
+		URL:          finalURL.String(),
+		HTTPClient:   upstream.HTTPClient,
+		StreamClient: upstream.StreamClient,
+	}, nil
 }
 
 // BuildUpstreamURL constructs the target URL for the upstream service.
+// Deprecated: Use SelectUpstreamWithClients instead.
 func (b *BaseChannel) BuildUpstreamURL(originalURL *url.URL, groupName string) (string, error) {
 	base := b.getUpstreamURL()
 	if base == nil {

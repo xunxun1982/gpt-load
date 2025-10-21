@@ -855,6 +855,24 @@ const deselectAllColumns = () => {
                 </div>
               </div>
 
+              <div class="compact-field" v-if="selectedLog.proxy_url">
+                <div class="compact-field-header">
+                  <span class="compact-field-title">{{ t("logs.proxyServer") }}</span>
+                  <n-button
+                    size="tiny"
+                    text
+                    @click="copyContent(selectedLog.proxy_url, t('logs.proxyServer'))"
+                  >
+                    <template #icon>
+                      <n-icon :component="CopyOutline" />
+                    </template>
+                  </n-button>
+                </div>
+                <div class="compact-field-content">
+                  {{ selectedLog.proxy_url }}
+                </div>
+              </div>
+
               <div class="compact-field" v-if="selectedLog.user_agent">
                 <div class="compact-field-header">
                   <span class="compact-field-title">User Agent</span>

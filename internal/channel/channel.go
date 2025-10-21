@@ -9,18 +9,33 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// UpstreamSelection contains the selected upstream information including dedicated clients.
+type UpstreamSelection struct {
+	URL          string
+	HTTPClient   *http.Client
+	StreamClient *http.Client
+}
+
 // ChannelProxy defines the interface for different API channel proxies.
 type ChannelProxy interface {
+	// SelectUpstreamWithClients selects an upstream and returns its URL with dedicated HTTP clients.
+	// This method should be used instead of BuildUpstreamURL + GetHTTPClient/GetStreamClient
+	// to ensure the correct client (with the right proxy) is used for each upstream.
+	SelectUpstreamWithClients(originalURL *url.URL, groupName string) (*UpstreamSelection, error)
+
 	// BuildUpstreamURL constructs the target URL for the upstream service.
+	// Deprecated: Use SelectUpstreamWithClients instead.
 	BuildUpstreamURL(originalURL *url.URL, groupName string) (string, error)
 
 	// IsConfigStale checks if the channel's configuration is stale compared to the provided group.
 	IsConfigStale(group *models.Group) bool
 
 	// GetHTTPClient returns the client for standard requests.
+	// Deprecated: Use SelectUpstreamWithClients instead to get the upstream-specific client.
 	GetHTTPClient() *http.Client
 
 	// GetStreamClient returns the client for streaming requests.
+	// Deprecated: Use SelectUpstreamWithClients instead to get the upstream-specific client.
 	GetStreamClient() *http.Client
 
 	// ModifyRequest allows the channel to add specific headers or modify the request

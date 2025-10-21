@@ -323,6 +323,10 @@ export default {
       "APIサーバーの完全なURL。複数のアップストリームにより高可用性のためのロードバランシングとフェイルオーバーが可能",
     weightTooltip:
       "ロードバランシング重み設定。重みはトラフィック分配比率を決定し、値が高いほど多くのトラフィックを受信します。重み0はアップストリームを無効化（リクエストなし）。例：重み2:1は前者が約67%のトラフィックを受信",
+    upstreamProxyUrl: "プロキシ",
+    upstreamProxyUrlTooltip:
+      "このアップストリーム専用のプロキシサーバーアドレス。設定されている場合、このプロキシが優先的に使用されます。空の場合、グループ設定のプロキシサーバーアドレスが使用されます",
+    upstreamProxyUrlPlaceholder: "http://proxy.example.com:8080",
     addUpstream: "アップストリーム追加",
     groupConfig: "グループ設定",
     groupConfigTooltip:
@@ -480,6 +484,7 @@ export default {
     hideDetails: "詳細非表示",
     requestInfo: "リクエスト情報",
     upstreamAddress: "アップストリームアドレス",
+    proxyServer: "プロキシサーバー",
     requestContent: "リクエスト内容",
     errorInfo: "エラー情報",
     customColumns: "カラムのカスタマイズ",

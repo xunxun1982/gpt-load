@@ -7,6 +7,7 @@ import (
 	"gpt-load/internal/httpclient"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -84,8 +85,9 @@ func (f *Factory) GetChannel(group *models.Group) (ChannelProxy, error) {
 // newBaseChannel is a helper function to create and configure a BaseChannel.
 func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel, error) {
 	type upstreamDef struct {
-		URL    string `json:"url"`
-		Weight int    `json:"weight"`
+		URL      string  `json:"url"`
+		Weight   int     `json:"weight"`
+		ProxyURL *string `json:"proxy_url,omitempty"`
 	}
 
 	var defs []upstreamDef
@@ -106,45 +108,92 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		if def.Weight <= 0 {
 			continue
 		}
-		upstreamInfos = append(upstreamInfos, UpstreamInfo{URL: u, Weight: def.Weight})
+
+		// Determine which proxy URL to use: upstream-specific or group-level
+		proxyURL := group.EffectiveConfig.ProxyURL
+		if def.ProxyURL != nil && *def.ProxyURL != "" {
+			proxyURL = *def.ProxyURL
+		}
+
+		// Base configuration for regular requests, derived from the group's effective settings.
+		clientConfig := &httpclient.Config{
+			ConnectTimeout:        time.Duration(group.EffectiveConfig.ConnectTimeout) * time.Second,
+			RequestTimeout:        time.Duration(group.EffectiveConfig.RequestTimeout) * time.Second,
+			IdleConnTimeout:       time.Duration(group.EffectiveConfig.IdleConnTimeout) * time.Second,
+			MaxIdleConns:          group.EffectiveConfig.MaxIdleConns,
+			MaxIdleConnsPerHost:   group.EffectiveConfig.MaxIdleConnsPerHost,
+			ResponseHeaderTimeout: time.Duration(group.EffectiveConfig.ResponseHeaderTimeout) * time.Second,
+			ProxyURL:              proxyURL,
+			DisableCompression:    false,
+			WriteBufferSize:       32 * 1024,
+			ReadBufferSize:        32 * 1024,
+			ForceAttemptHTTP2:     true,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+
+		// Create a dedicated configuration for streaming requests.
+		streamConfig := *clientConfig
+		streamConfig.RequestTimeout = 0
+		streamConfig.DisableCompression = true
+		streamConfig.WriteBufferSize = 0
+		streamConfig.ReadBufferSize = 0
+		// Use a larger, independent connection pool for streaming clients to avoid exhaustion.
+		streamConfig.MaxIdleConns = max(group.EffectiveConfig.MaxIdleConns*2, 50)
+		streamConfig.MaxIdleConnsPerHost = max(group.EffectiveConfig.MaxIdleConnsPerHost*2, 20)
+
+		// Get both clients from the manager using their respective configurations.
+		httpClient := f.clientManager.GetClient(clientConfig)
+		streamClient := f.clientManager.GetClient(&streamConfig)
+
+		upstreamInfos = append(upstreamInfos, UpstreamInfo{
+			URL:          u,
+			Weight:       def.Weight,
+			ProxyURL:     def.ProxyURL,
+			HTTPClient:   httpClient,
+			StreamClient: streamClient,
+		})
 	}
 
-	// Base configuration for regular requests, derived from the group's effective settings.
-	clientConfig := &httpclient.Config{
-		ConnectTimeout:        time.Duration(group.EffectiveConfig.ConnectTimeout) * time.Second,
-		RequestTimeout:        time.Duration(group.EffectiveConfig.RequestTimeout) * time.Second,
-		IdleConnTimeout:       time.Duration(group.EffectiveConfig.IdleConnTimeout) * time.Second,
-		MaxIdleConns:          group.EffectiveConfig.MaxIdleConns,
-		MaxIdleConnsPerHost:   group.EffectiveConfig.MaxIdleConnsPerHost,
-		ResponseHeaderTimeout: time.Duration(group.EffectiveConfig.ResponseHeaderTimeout) * time.Second,
-		ProxyURL:              group.EffectiveConfig.ProxyURL,
-		DisableCompression:    false,
-		WriteBufferSize:       32 * 1024,
-		ReadBufferSize:        32 * 1024,
-		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   15 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+	// Fallback clients for backward compatibility (use first upstream's clients or group-level config)
+	var fallbackHTTPClient, fallbackStreamClient *http.Client
+	if len(upstreamInfos) > 0 {
+		fallbackHTTPClient = upstreamInfos[0].HTTPClient
+		fallbackStreamClient = upstreamInfos[0].StreamClient
+	} else {
+		// Should not happen, but create default clients just in case
+		clientConfig := &httpclient.Config{
+			ConnectTimeout:        time.Duration(group.EffectiveConfig.ConnectTimeout) * time.Second,
+			RequestTimeout:        time.Duration(group.EffectiveConfig.RequestTimeout) * time.Second,
+			IdleConnTimeout:       time.Duration(group.EffectiveConfig.IdleConnTimeout) * time.Second,
+			MaxIdleConns:          group.EffectiveConfig.MaxIdleConns,
+			MaxIdleConnsPerHost:   group.EffectiveConfig.MaxIdleConnsPerHost,
+			ResponseHeaderTimeout: time.Duration(group.EffectiveConfig.ResponseHeaderTimeout) * time.Second,
+			ProxyURL:              group.EffectiveConfig.ProxyURL,
+			DisableCompression:    false,
+			WriteBufferSize:       32 * 1024,
+			ReadBufferSize:        32 * 1024,
+			ForceAttemptHTTP2:     true,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+		streamConfig := *clientConfig
+		streamConfig.RequestTimeout = 0
+		streamConfig.DisableCompression = true
+		streamConfig.WriteBufferSize = 0
+		streamConfig.ReadBufferSize = 0
+		streamConfig.MaxIdleConns = max(group.EffectiveConfig.MaxIdleConns*2, 50)
+		streamConfig.MaxIdleConnsPerHost = max(group.EffectiveConfig.MaxIdleConnsPerHost*2, 20)
+
+		fallbackHTTPClient = f.clientManager.GetClient(clientConfig)
+		fallbackStreamClient = f.clientManager.GetClient(&streamConfig)
 	}
-
-	// Create a dedicated configuration for streaming requests.
-	streamConfig := *clientConfig
-	streamConfig.RequestTimeout = 0
-	streamConfig.DisableCompression = true
-	streamConfig.WriteBufferSize = 0
-	streamConfig.ReadBufferSize = 0
-	// Use a larger, independent connection pool for streaming clients to avoid exhaustion.
-	streamConfig.MaxIdleConns = max(group.EffectiveConfig.MaxIdleConns*2, 50)
-	streamConfig.MaxIdleConnsPerHost = max(group.EffectiveConfig.MaxIdleConnsPerHost*2, 20)
-
-	// Get both clients from the manager using their respective configurations.
-	httpClient := f.clientManager.GetClient(clientConfig)
-	streamClient := f.clientManager.GetClient(&streamConfig)
 
 	return &BaseChannel{
 		Name:               name,
 		Upstreams:          upstreamInfos,
-		HTTPClient:         httpClient,
-		StreamClient:       streamClient,
+		HTTPClient:         fallbackHTTPClient,
+		StreamClient:       fallbackStreamClient,
 		TestModel:          group.TestModel,
 		ValidationEndpoint: utils.GetValidationEndpoint(group),
 		channelType:        group.ChannelType,

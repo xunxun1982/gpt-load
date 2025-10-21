@@ -834,8 +834,9 @@ func (s *GroupService) validateAndCleanUpstreams(upstreams json.RawMessage) (dat
 	}
 
 	var defs []struct {
-		URL    string `json:"url"`
-		Weight int    `json:"weight"`
+		URL      string  `json:"url"`
+		Weight   int     `json:"weight"`
+		ProxyURL *string `json:"proxy_url,omitempty"`
 	}
 	if err := json.Unmarshal(upstreams, &defs); err != nil {
 		return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": err.Error()})
@@ -859,6 +860,15 @@ func (s *GroupService) validateAndCleanUpstreams(upstreams json.RawMessage) (dat
 		}
 		if defs[i].Weight > 0 {
 			hasActiveUpstream = true
+		}
+		// Clean proxy_url if present
+		if defs[i].ProxyURL != nil {
+			trimmed := strings.TrimSpace(*defs[i].ProxyURL)
+			if trimmed == "" {
+				defs[i].ProxyURL = nil
+			} else {
+				defs[i].ProxyURL = &trimmed
+			}
 		}
 	}
 

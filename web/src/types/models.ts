@@ -31,6 +31,7 @@ export interface APIKey {
 export interface UpstreamInfo {
   url: string;
   weight: number;
+  proxy_url?: string;
 }
 
 export interface HeaderRule {
@@ -163,6 +164,7 @@ export interface RequestLog {
   key_value?: string;
   model: string;
   upstream_addr: string;
+  proxy_url?: string;
   is_stream: boolean;
   request_body?: string;
 }

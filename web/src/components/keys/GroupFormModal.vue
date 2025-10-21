@@ -477,7 +477,13 @@ async function handleSubmit() {
       name: formData.name,
       display_name: formData.display_name,
       description: formData.description,
-      upstreams: formData.upstreams.filter((upstream: UpstreamInfo) => upstream.url.trim()),
+      upstreams: formData.upstreams
+        .filter((upstream: UpstreamInfo) => upstream.url.trim())
+        .map((upstream: UpstreamInfo) => ({
+          url: upstream.url,
+          weight: upstream.weight,
+          proxy_url: upstream.proxy_url || undefined,
+        })),
       channel_type: formData.channel_type,
       sort: formData.sort,
       test_model: formData.test_model,
@@ -768,6 +774,19 @@ async function handleSubmit() {
                     />
                   </template>
                   {{ t("keys.weightTooltip") }}
+                </n-tooltip>
+              </div>
+              <div class="upstream-proxy">
+                <span class="proxy-label">{{ t("keys.upstreamProxyUrl") }}</span>
+                <n-tooltip trigger="hover" placement="top" style="width: 100%">
+                  <template #trigger>
+                    <n-input
+                      v-model:value="upstream.proxy_url"
+                      :placeholder="t('keys.upstreamProxyUrlPlaceholder')"
+                      style="width: 100%"
+                    />
+                  </template>
+                  {{ t("keys.upstreamProxyUrlTooltip") }}
                 </n-tooltip>
               </div>
               <div class="upstream-actions">
@@ -1283,17 +1302,33 @@ async function handleSubmit() {
 }
 
 .upstream-url {
-  flex: 1;
+  flex: 2.3;
+  min-width: 200px;
 }
 
 .upstream-weight {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 0 0 140px;
+  flex: 0 0 120px;
 }
 
 .weight-label {
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.upstream-proxy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1.5;
+  min-width: 180px;
+  margin-right: 44px;
+}
+
+.proxy-label {
   font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
@@ -1303,6 +1338,7 @@ async function handleSubmit() {
   flex: 0 0 32px;
   display: flex;
   justify-content: center;
+  margin-left: -44px;
 }
 
 /* 配置项行布局 */
@@ -1360,7 +1396,8 @@ async function handleSubmit() {
     align-items: stretch;
   }
 
-  .upstream-weight {
+  .upstream-weight,
+  .upstream-proxy {
     flex: 1;
     flex-direction: column;
     align-items: flex-start;

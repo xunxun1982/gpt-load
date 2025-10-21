@@ -665,12 +665,21 @@ function resetPage() {
                     class="upstream-item"
                     :label="`${t('keys.upstream')} ${index + 1}:`"
                   >
-                    <span class="upstream-weight">
-                      <n-tag size="small" type="info">
-                        {{ t("keys.weight") }}: {{ upstream.weight }}
-                      </n-tag>
-                    </span>
-                    <n-input class="upstream-url" :value="upstream.url" readonly size="small" />
+                    <div class="upstream-info-container">
+                      <div class="upstream-main-info">
+                        <span class="upstream-weight">
+                          <n-tag size="small" type="info">
+                            {{ t("keys.weight") }}: {{ upstream.weight }}
+                          </n-tag>
+                        </span>
+                        <n-input class="upstream-url" :value="upstream.url" readonly size="small" />
+                      </div>
+                      <div class="upstream-proxy-info" v-if="upstream.proxy_url">
+                        <n-tag size="small" type="success">
+                          {{ t("keys.upstreamProxyUrl") }}: {{ upstream.proxy_url }}
+                        </n-tag>
+                      </div>
+                    </div>
                   </n-form-item>
                 </n-form>
               </div>
@@ -864,15 +873,36 @@ function resetPage() {
   border-bottom: 2px solid var(--border-color);
 }
 
+.upstream-info-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.upstream-main-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
 .upstream-url {
   font-family: monospace;
   font-size: 0.9rem;
   color: var(--text-primary);
   margin-left: 5px;
+  flex: 1;
 }
 
 .upstream-weight {
   min-width: 70px;
+}
+
+.upstream-proxy-info {
+  display: flex;
+  align-items: center;
+  padding-left: 78px;
 }
 
 .config-json {
