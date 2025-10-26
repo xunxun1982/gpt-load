@@ -25,9 +25,8 @@ func min(a, b int) int {
 func (ps *ProxyServer) isModelsEndpoint(path string) bool {
 	// Trim trailing slash to handle paths like "/v1/models/"
 	p := strings.TrimRight(path, "/")
-	return strings.HasSuffix(p, "/models") ||
-		strings.HasSuffix(p, "/v1/models") ||
-		strings.HasSuffix(p, "/v1beta/models")
+	// HasSuffix("/models") matches "/models", "/v1/models", "/v1beta/models", etc.
+	return strings.HasSuffix(p, "/models")
 }
 
 // handleModelsResponse handles /models endpoint responses by adding model mapping aliases
@@ -47,6 +46,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 			hdr := c.Writer.Header()
 			hdr.Del("Content-Encoding")
 			hdr.Del("ETag")
+			hdr.Del("Transfer-Encoding")
 			hdr.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
 			if _, writeErr := c.Writer.Write(bodyBytes); writeErr != nil {
 				logUpstreamError("writing partial models response", writeErr)
@@ -71,6 +71,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 		hdr := c.Writer.Header()
 		hdr.Del("Content-Encoding")
 		hdr.Del("ETag")
+		hdr.Del("Transfer-Encoding")
 		hdr.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
 		if _, writeErr := c.Writer.Write(bodyBytes); writeErr != nil {
 			logUpstreamError("writing original models response", writeErr)
@@ -89,6 +90,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	hdr := c.Writer.Header()
 	hdr.Del("Content-Encoding")
 	hdr.Del("ETag")
+	hdr.Del("Transfer-Encoding")
 	hdr.Set("Content-Type", "application/json; charset=utf-8")
 	hdr.Set("Content-Length", strconv.Itoa(len(enhancedBody)))
 	if _, err := c.Writer.Write(enhancedBody); err != nil {
@@ -111,7 +113,7 @@ func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Gro
 		logrus.WithFields(logrus.Fields{
 			"error": err.Error(),
 			"response_preview": string(bodyBytes[:min(500, len(bodyBytes))]),
-		}).Error("Failed to parse models response as JSON")
+		}).Warn("Failed to parse models response as JSON; returning original")
 		return nil, err
 	}
 

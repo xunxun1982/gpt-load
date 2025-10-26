@@ -112,9 +112,9 @@ func logUpstreamError(context string, err error) {
 	}
 }
 
-// handleGzipCompression is deprecated and no longer needed.
-// Go's http.Client with DisableCompression=false automatically handles decompression.
-// This function is kept for backward compatibility but does nothing.
+// Deprecated: handleGzipCompression is no longer needed.
+// Go's http.Client (DisableCompression == false) auto-adds Accept-Encoding and
+// transparently decompresses non-streaming responses. Kept temporarily for back-compat.
 func handleGzipCompression(resp *http.Response, bodyBytes []byte) []byte {
 	// When DisableCompression is false (default for non-streaming requests),
 	// Go's http.Client automatically:

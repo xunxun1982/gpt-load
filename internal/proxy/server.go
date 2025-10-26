@@ -299,12 +299,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	// Fast path: handle response based on type
 	if isStream {
 		ps.handleStreamingResponse(c, resp)
-	} else if len(group.ModelMappingCache) > 0 && ps.isModelsEndpoint(c.Request.URL.Path) {
+	} else if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
 		// Special handling for /models endpoint with model mapping enabled
 		// Only check endpoint path if model mapping is configured (performance optimization)
 		// Clear stale headers before enhancement
 		c.Writer.Header().Del("Content-Length")
 		c.Writer.Header().Del("ETag")
+		c.Writer.Header().Del("Transfer-Encoding")
 		logrus.WithFields(logrus.Fields{
 			"group":                group.Name,
 			"path":                 c.Request.URL.Path,
@@ -382,6 +383,8 @@ func (ps *ProxyServer) logRequest(
 	if originalModel, exists := c.Get("original_model"); exists {
 		if originalModelStr, ok := originalModel.(string); ok && originalModelStr != "" {
 			// Store original only when it differs from the actual upstream model
+			// Note: MappedModel stores the user's requested model alias (before mapping)
+			// while Model stores the actual model sent to upstream (after mapping)
 			if logEntry.Model != "" && logEntry.Model != originalModelStr {
 				logEntry.MappedModel = originalModelStr
 			}
