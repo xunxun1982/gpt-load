@@ -30,33 +30,34 @@ func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group
 
 // applyModelMapping applies model name mapping based on group configuration.
 // It modifies the request body to replace the model name if a mapping is configured.
-func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) ([]byte, string, error) {
+// Returns the modified body bytes and the original model name (empty if no mapping occurred).
+func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) ([]byte, string) {
 	originalModel := ""
 
 	// Fast path: no model mapping configured
 	if group.ModelMapping == "" && len(group.ModelMappingCache) == 0 {
-		return bodyBytes, originalModel, nil
+		return bodyBytes, originalModel
 	}
 
 	if len(bodyBytes) == 0 {
-		return bodyBytes, originalModel, nil
+		return bodyBytes, originalModel
 	}
 
 	var requestData map[string]any
 	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
 		logrus.WithError(err).Warn("Failed to unmarshal request body for model mapping, passing through")
-		return bodyBytes, originalModel, nil
+		return bodyBytes, originalModel
 	}
 
 	// Extract original model name
 	modelValue, ok := requestData["model"]
 	if !ok {
-		return bodyBytes, originalModel, nil
+		return bodyBytes, originalModel
 	}
 
 	originalModel, ok = modelValue.(string)
 	if !ok || originalModel == "" {
-		return bodyBytes, originalModel, nil
+		return bodyBytes, originalModel
 	}
 
 	// Apply model mapping using cached map if available
@@ -75,7 +76,7 @@ func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) 
 			"group":          group.Name,
 			"original_model": originalModel,
 		}).Warn("Failed to apply model mapping, using original model")
-		return bodyBytes, originalModel, nil
+		return bodyBytes, originalModel
 	}
 
 	// If model was mapped, update the request body
@@ -84,7 +85,7 @@ func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) 
 		modifiedBytes, err := json.Marshal(requestData)
 		if err != nil {
 			logrus.WithError(err).Warn("Failed to marshal request body after model mapping, using original")
-			return bodyBytes, originalModel, nil
+			return bodyBytes, originalModel
 		}
 
 		logrus.WithFields(logrus.Fields{
@@ -93,10 +94,10 @@ func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) 
 			"mapped_model":   mappedModel,
 		}).Debug("Applied model mapping")
 
-		return modifiedBytes, originalModel, nil
+		return modifiedBytes, originalModel
 	}
 
-	return bodyBytes, originalModel, nil
+	return bodyBytes, originalModel
 }
 
 // logUpstreamError provides a centralized way to log errors from upstream interactions.

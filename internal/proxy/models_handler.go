@@ -41,22 +41,26 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	// Read response body
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		logrus.WithError(err).Error("Failed to read models response body")
-		ps.handleNormalResponse(c, resp)
+		logrus.WithError(err).Warn("Failed to read models response body; returning partial/original if any")
+		// resp.Body is already consumed, write any partial bytes read
+		if len(bodyBytes) > 0 {
+			hdr := c.Writer.Header()
+			hdr.Del("Content-Encoding")
+			hdr.Del("ETag")
+			hdr.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+			if _, writeErr := c.Writer.Write(bodyBytes); writeErr != nil {
+				logUpstreamError("writing partial models response", writeErr)
+			}
+		}
 		return
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"original_size": len(bodyBytes),
-		"first_bytes":   fmt.Sprintf("%x", bodyBytes[:min(10, len(bodyBytes))]),
+		"body_size":   len(bodyBytes),
+		"first_bytes": fmt.Sprintf("%x", bodyBytes[:min(10, len(bodyBytes))]),
 	}).Debug("Read response body")
 
-	// Decompress if needed
-	bodyBytes = handleGzipCompression(resp, bodyBytes)
-
-	logrus.WithFields(logrus.Fields{
-		"decompressed_size": len(bodyBytes),
-	}).Debug("After decompression")
+	// Upstream returns plain body (Accept-Encoding removed). No decompression needed.
 
 	// Try to parse and enhance the response
 	enhancedBody, err := ps.enhanceModelsResponse(bodyBytes, group)

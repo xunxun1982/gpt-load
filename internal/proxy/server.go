@@ -112,14 +112,10 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		isStream = false
 	} else {
 		// Apply model mapping first (before param overrides to allow overriding the mapped model if needed)
-		bodyBytesAfterMapping, originalModel, err := ps.applyModelMapping(bodyBytes, group)
-		if err != nil {
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply model mapping: %v", err)))
-			return
-		}
+		bodyBytesAfterMapping, originalModel := ps.applyModelMapping(bodyBytes, group)
 
-		// Store original model in context for logging
-		if originalModel != "" {
+		// Store original model only if mapping changed the payload
+		if originalModel != "" && !bytes.Equal(bodyBytesAfterMapping, bodyBytes) {
 			c.Set("original_model", originalModel)
 		}
 
@@ -193,11 +189,11 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	req.Header.Del("X-Goog-Api-Key")
 	req.Header.Del("Proxy-Authorization")
 
-	// For /models endpoint with model mapping, remove Accept-Encoding to let Go handle decompression automatically
-	// This allows us to modify the response body
-	if len(group.ModelMappingCache) > 0 && ps.isModelsEndpoint(c.Request.URL.Path) {
+	// For /models with mapping configured, remove Accept-Encoding so upstream returns plain (non-gzip) body
+	// This ensures we can read/modify the response safely.
+	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
 		req.Header.Del("Accept-Encoding")
-		logrus.Debug("Removed Accept-Encoding header for /models endpoint to enable automatic decompression")
+		logrus.Debug("Removed Accept-Encoding header for /models endpoint to avoid gzip compression")
 	}
 
 	channelHandler.ModifyRequest(req, apiKey, group)
@@ -385,9 +381,10 @@ func (ps *ProxyServer) logRequest(
 	// Get original model from context (before mapping)
 	if originalModel, exists := c.Get("original_model"); exists {
 		if originalModelStr, ok := originalModel.(string); ok && originalModelStr != "" {
-			// If model mapping occurred, store the original model in MappedModel
-			// Model field keeps the actual model sent to upstream (after mapping)
-			logEntry.MappedModel = originalModelStr
+			// Store original only when it differs from the actual upstream model
+			if logEntry.Model != "" && logEntry.Model != originalModelStr {
+				logEntry.MappedModel = originalModelStr
+			}
 		}
 	}
 

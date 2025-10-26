@@ -105,10 +105,13 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 		reqPath = "/" + reqPath
 	}
 
-	// Build final URL using path.Join for RFC 3986 compliance
 	finalURL := base
 	// Use url.JoinPath for safe path joining (Go 1.19+)
-	finalURL.Path = strings.TrimRight(base.Path, "/") + reqPath
+	joinedPath, err := url.JoinPath(base.Path, reqPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to join URL paths: %w", err)
+	}
+	finalURL.Path = joinedPath
 	finalURL.RawQuery = originalURL.RawQuery
 
 	return &UpstreamSelection{
