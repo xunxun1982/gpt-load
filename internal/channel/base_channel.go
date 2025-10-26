@@ -100,10 +100,10 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 	proxyPrefix := "/proxy/" + groupName
 	reqPath := strings.TrimPrefix(originalURL.Path, proxyPrefix)
 
-	// Build relative URL with preserved query
-	rel, _ := url.Parse(reqPath)
-	rel.RawQuery = originalURL.RawQuery
-	finalURL := *base.ResolveReference(rel)
+	// Build final URL by appending request path to base path
+	finalURL := base
+	finalURL.Path = strings.TrimRight(base.Path, "/") + reqPath
+	finalURL.RawQuery = originalURL.RawQuery
 
 	return &UpstreamSelection{
 		URL:          finalURL.String(),

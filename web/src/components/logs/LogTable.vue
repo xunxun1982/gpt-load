@@ -761,6 +761,10 @@ const deselectAllColumns = () => {
                 <span class="detail-label-compact">{{ t("logs.model") }}:</span>
                 <span class="detail-value-compact">{{ selectedLog.model }}</span>
               </div>
+              <div class="detail-item-compact" v-if="selectedLog.mapped_model">
+                <span class="detail-label-compact">{{ t("logs.mappedModel") }}:</span>
+                <span class="detail-value-compact">{{ selectedLog.mapped_model }}</span>
+              </div>
               <div class="detail-item-compact">
                 <span class="detail-label-compact">{{ t("logs.requestType") }}:</span>
                 <n-tag v-if="selectedLog.request_type === 'retry'" type="warning" size="small">

@@ -6,7 +6,10 @@ import type { Group, GroupConfigOption, UpstreamInfo } from "@/types/models";
 import { Add, Close, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
   NButton,
+  NButtonGroup,
   NCard,
+  NCollapse,
+  NCollapseItem,
   NForm,
   NFormItem,
   NIcon,
@@ -46,6 +49,12 @@ interface HeaderRuleItem {
   action: "set" | "remove";
 }
 
+// 模型映射项类型
+interface ModelMappingItem {
+  from: string;
+  to: string;
+}
+
 const props = withDefaults(defineProps<Props>(), {
   group: null,
 });
@@ -56,6 +65,7 @@ const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
+const modelMappingEditMode = ref<"visual" | "json">("visual"); // 模型映射编辑模式
 
 // 表单数据接口
 interface GroupFormData {
@@ -68,6 +78,8 @@ interface GroupFormData {
   test_model: string;
   validation_endpoint: string;
   param_overrides: string;
+  model_mapping: string;
+  model_mapping_items: ModelMappingItem[];
   config: Record<string, number | string | boolean>;
   configItems: ConfigItem[];
   header_rules: HeaderRuleItem[];
@@ -90,6 +102,8 @@ const formData = reactive<GroupFormData>({
   test_model: "",
   validation_endpoint: "",
   param_overrides: "",
+  model_mapping: "",
+  model_mapping_items: [] as ModelMappingItem[],
   config: {},
   configItems: [] as ConfigItem[],
   header_rules: [] as HeaderRuleItem[],
@@ -204,6 +218,49 @@ watch(
   }
 );
 
+// 监听模型映射数组变化，同步到 JSON
+watch(
+  () => formData.model_mapping_items,
+  items => {
+    if (modelMappingEditMode.value === "visual") {
+      formData.model_mapping = modelMappingItemsToJson(items);
+    }
+  },
+  { deep: true }
+);
+
+// 监听模型映射 JSON 变化，同步到数组
+watch(
+  () => formData.model_mapping,
+  jsonStr => {
+    if (modelMappingEditMode.value === "json") {
+      formData.model_mapping_items = parseModelMapping(jsonStr);
+    }
+  }
+);
+
+// 监听编辑模式切换，自动格式化
+watch(
+  () => modelMappingEditMode.value,
+  (newMode, oldMode) => {
+    if (newMode === "json" && oldMode === "visual") {
+      // 切换到 JSON 模式时，自动格式化
+      const jsonStr = modelMappingItemsToJson(formData.model_mapping_items);
+      if (jsonStr) {
+        try {
+          const obj = JSON.parse(jsonStr);
+          formData.model_mapping = JSON.stringify(obj, null, 2);
+        } catch {
+          formData.model_mapping = jsonStr;
+        }
+      }
+    } else if (newMode === "visual" && oldMode === "json") {
+      // 切换到可视化模式时，解析 JSON
+      formData.model_mapping_items = parseModelMapping(formData.model_mapping);
+    }
+  }
+);
+
 // 监听渠道类型变化，在新增模式下智能更新默认值
 watch(
   () => formData.channel_type,
@@ -282,6 +339,8 @@ function resetForm() {
     test_model: isCreateMode ? testModelPlaceholder.value : "",
     validation_endpoint: "",
     param_overrides: "",
+    model_mapping: "",
+    model_mapping_items: [],
     config: {},
     configItems: [],
     header_rules: [],
@@ -321,6 +380,8 @@ function loadGroupData() {
     test_model: props.group.test_model || "",
     validation_endpoint: props.group.validation_endpoint || "",
     param_overrides: JSON.stringify(props.group.param_overrides || {}, null, 2),
+    model_mapping: props.group.model_mapping || "",
+    model_mapping_items: parseModelMapping(props.group.model_mapping || ""),
     config: {},
     configItems,
     header_rules: (props.group.header_rules || []).map((rule: HeaderRuleItem) => ({
@@ -385,6 +446,62 @@ function addHeaderRule() {
     value: "",
     action: "set",
   });
+}
+
+// 解析模型映射 JSON 为数组
+function parseModelMapping(jsonStr: string): ModelMappingItem[] {
+  if (!jsonStr || jsonStr.trim() === "" || jsonStr.trim() === "{}") {
+    return [];
+  }
+  try {
+    const obj = JSON.parse(jsonStr);
+    return Object.entries(obj).map(([from, to]) => ({
+      from,
+      to: to as string,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// 将模型映射数组转换为 JSON 字符串
+function modelMappingItemsToJson(items: ModelMappingItem[]): string {
+  if (!items || items.length === 0) {
+    return "";
+  }
+  const obj: Record<string, string> = {};
+  items.forEach(item => {
+    if (item.from && item.from.trim() && item.to && item.to.trim()) {
+      obj[item.from.trim()] = item.to.trim();
+    }
+  });
+  return Object.keys(obj).length > 0 ? JSON.stringify(obj) : "";
+}
+
+// 添加模型映射项
+function addModelMappingItem() {
+  formData.model_mapping_items.push({
+    from: "",
+    to: "",
+  });
+}
+
+// 删除模型映射项
+function removeModelMappingItem(index: number) {
+  formData.model_mapping_items.splice(index, 1);
+}
+
+// 格式化模型映射 JSON
+function formatModelMappingJson() {
+  if (!formData.model_mapping || formData.model_mapping.trim() === "") {
+    return;
+  }
+  try {
+    const obj = JSON.parse(formData.model_mapping);
+    formData.model_mapping = JSON.stringify(obj, null, 2);
+  } catch {
+    // 如果解析失败，不做处理（静默失败）
+  }
 }
 
 // 删除Header规则
@@ -458,6 +575,17 @@ async function handleSubmit() {
       }
     }
 
+    // 根据当前编辑模式获取模型映射 JSON
+    let modelMappingJson = "";
+    if (modelMappingEditMode.value === "visual") {
+      // 可视化模式：从数组转换
+      modelMappingJson = modelMappingItemsToJson(formData.model_mapping_items);
+    } else {
+      // JSON 模式：先格式化，然后使用
+      formatModelMappingJson();
+      modelMappingJson = formData.model_mapping;
+    }
+
     // 将configItems转换为config对象
     const config: Record<string, number | string | boolean> = {};
     formData.configItems.forEach((item: ConfigItem) => {
@@ -492,6 +620,7 @@ async function handleSubmit() {
       test_model: formData.test_model,
       validation_endpoint: formData.validation_endpoint,
       param_overrides: paramOverrides,
+      model_mapping: modelMappingJson,
       config,
       header_rules: formData.header_rules
         .filter((rule: HeaderRuleItem) => rule.key.trim())
@@ -1077,6 +1206,84 @@ async function handleSubmit() {
                     :rows="4"
                   />
                 </n-form-item>
+
+                <div class="config-section">
+                  <div class="config-header-with-switch">
+                    <h5 class="config-title-with-tooltip">
+                      {{ t("keys.modelMapping") }}
+                      <n-tooltip trigger="hover" placement="top">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        {{ t("keys.modelMappingTooltip") }}
+                      </n-tooltip>
+                    </h5>
+                    <n-button-group size="small">
+                      <n-button
+                        :type="modelMappingEditMode === 'visual' ? 'primary' : 'default'"
+                        @click="modelMappingEditMode = 'visual'"
+                      >
+                        {{ t("keys.visualEdit") }}
+                      </n-button>
+                      <n-button
+                        :type="modelMappingEditMode === 'json' ? 'primary' : 'default'"
+                        @click="modelMappingEditMode = 'json'"
+                      >
+                        {{ t("keys.jsonEdit") }}
+                      </n-button>
+                    </n-button-group>
+                  </div>
+
+                  <!-- 可视化编辑模式 -->
+                  <div v-if="modelMappingEditMode === 'visual'" class="model-mapping-items">
+                    <n-form-item
+                      v-for="(item, index) in formData.model_mapping_items"
+                      :key="index"
+                      class="model-mapping-item-row"
+                    >
+                      <div class="model-mapping-item-content">
+                        <div class="model-mapping-from">
+                          <n-input
+                            v-model:value="item.from"
+                            :placeholder="t('keys.originalModel')"
+                          />
+                        </div>
+                        <div class="model-mapping-arrow">→</div>
+                        <div class="model-mapping-to">
+                          <n-input v-model:value="item.to" :placeholder="t('keys.targetModel')" />
+                        </div>
+                        <n-button
+                          text
+                          type="error"
+                          @click="removeModelMappingItem(index)"
+                          class="remove-btn"
+                        >
+                          <template #icon>
+                            <n-icon :component="Close" />
+                          </template>
+                        </n-button>
+                      </div>
+                    </n-form-item>
+
+                    <n-button dashed block @click="addModelMappingItem" style="margin-top: 8px">
+                      <template #icon>
+                        <n-icon :component="Add" />
+                      </template>
+                      {{ t("keys.addModelMapping") }}
+                    </n-button>
+                  </div>
+
+                  <!-- JSON 编辑模式 -->
+                  <div v-else>
+                    <n-input
+                      v-model:value="formData.model_mapping"
+                      type="textarea"
+                      placeholder='{"gpt-4":"gpt-4-turbo"}'
+                      :rows="6"
+                      @blur="formatModelMappingJson"
+                    />
+                  </div>
+                </div>
               </div>
             </n-collapse-item>
           </n-collapse>
@@ -1369,6 +1576,50 @@ async function handleSubmit() {
   flex: 0 0 32px;
   display: flex;
   justify-content: center;
+}
+
+.model-mapping-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.model-mapping-item-row {
+  margin-bottom: 0;
+}
+
+.model-mapping-item-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.model-mapping-from,
+.model-mapping-to {
+  flex: 1;
+}
+
+.model-mapping-arrow {
+  flex: 0 0 auto;
+  font-size: 18px;
+  color: var(--text-secondary);
+  font-weight: bold;
+}
+
+.remove-btn {
+  flex: 0 0 32px;
+}
+
+.config-header-with-switch {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.config-header-with-switch h5 {
+  margin: 0;
 }
 
 @media (max-width: 768px) {

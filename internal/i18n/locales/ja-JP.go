@@ -71,6 +71,7 @@ var MessagesJaJP = map[string]string{
 	"validation.sub_group_weight_max_exceeded": "サブグループの重みは1000を超えることはできません",
 	"validation.sub_group_referenced_cannot_modify": "このグループは {{.count}} 個の集約グループでサブグループとして参照されています。チャンネルタイプまたは検証エンドポイントは変更できません。変更前に関連する集約グループからこのグループを削除してください",
 	"validation.standard_group_requires_upstreams_testmodel": "標準グループへの変換にはアップストリームサーバーとテストモデルの提供が必要です",
+	"validation.invalid_model_mapping":                       "モデルマッピング形式が無効です：{{.error}}",
 
 	// Task related
 	"task.validation_started": "キー検証タスクが開始されました",

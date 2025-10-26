@@ -77,6 +77,7 @@ export interface Group {
   api_keys?: APIKey[];
   endpoint?: string;
   param_overrides: Record<string, unknown>;
+  model_mapping?: string;
   header_rules?: HeaderRule[];
   proxy_keys: string;
   group_type?: GroupType;
@@ -163,6 +164,7 @@ export interface RequestLog {
   parent_group_name?: string;
   key_value?: string;
   model: string;
+  mapped_model?: string;
   upstream_addr: string;
   proxy_url?: string;
   is_stream: boolean;
