@@ -289,7 +289,7 @@ export default {
     customHeaders: "カスタムヘッダー",
     emptyValue: "(空)",
     paramOverrides: "パラメーターオーバーライド",
-    modelMapping: "モデルリダイレクト",
+    modelMapping: "モデルマッピング",
     enterModelName: "モデル名を入力してください",
     enterUpstreamUrl: "アップストリームURLを入力してください",
     enterValidationPath: "検証エンドポイントパスを入力してください",
@@ -361,7 +361,7 @@ export default {
     paramOverridesTooltip:
       "JSON形式を使用して、上書きするAPIリクエストパラメータを定義します。これらのパラメータは、リクエスト送信時に元のパラメータにマージされます。",
     modelMappingTooltip:
-      "モデル名のマッピングルールを定義し、クライアントのモデルリクエストを自動的にターゲットモデルにリダイレクトします。例：gpt-4 → gpt-4-turbo",
+      "モデル名のマッピングルールを定義し、クライアントのモデルリクエストを自動的にターゲットモデルにマッピングします。例：gpt-4 → gpt-4-turbo",
     invalidModelMappingFormat: "モデルマッピング形式が無効です。JSON構文を確認してください",
     originalModel: "元のモデル",
     targetModel: "ターゲットモデル",
@@ -457,7 +457,7 @@ export default {
     statusCode: "ステータスコード",
     duration: "所要時間(ms)",
     model: "モデル",
-    mappedModel: "マッピングモデル",
+    mappedModel: "マッピング前モデル",
     sourceIP: "ソースIP",
     groupName: "グループ名",
     parentGroup: "集約グループ",

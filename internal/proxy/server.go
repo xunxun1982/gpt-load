@@ -306,6 +306,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	} else if len(group.ModelMappingCache) > 0 && ps.isModelsEndpoint(c.Request.URL.Path) {
 		// Special handling for /models endpoint with model mapping enabled
 		// Only check endpoint path if model mapping is configured (performance optimization)
+		// Clear stale headers before enhancement
+		c.Writer.Header().Del("Content-Length")
+		c.Writer.Header().Del("ETag")
 		logrus.WithFields(logrus.Fields{
 			"group":                group.Name,
 			"path":                 c.Request.URL.Path,

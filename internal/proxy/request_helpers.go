@@ -1,13 +1,10 @@
 package proxy
 
 import (
-	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"io"
 	"net/http"
 
 	"github.com/sirupsen/logrus"
@@ -114,38 +111,15 @@ func logUpstreamError(context string, err error) {
 	}
 }
 
-// handleGzipCompression checks for gzip encoding and decompresses the body if necessary.
-// Note: This function name is kept for backward compatibility, but it now handles multiple compression formats.
+// handleGzipCompression is deprecated and no longer needed.
+// Go's http.Client with DisableCompression=false automatically handles decompression.
+// This function is kept for backward compatibility but does nothing.
 func handleGzipCompression(resp *http.Response, bodyBytes []byte) []byte {
-	encoding := resp.Header.Get("Content-Encoding")
-
-	switch encoding {
-	case "gzip":
-		reader, gzipErr := gzip.NewReader(bytes.NewReader(bodyBytes))
-		if gzipErr != nil {
-			logrus.Warnf("Failed to create gzip reader: %v", gzipErr)
-			return bodyBytes
-		}
-		defer reader.Close()
-
-		decompressedBody, readAllErr := io.ReadAll(reader)
-		if readAllErr != nil {
-			logrus.Warnf("Failed to decompress gzip body: %v", readAllErr)
-			return bodyBytes
-		}
-		return decompressedBody
-
-	case "zstd":
-		// For zstd, we need to use an external library
-		// For now, log a warning and return the original body
-		// The client will need to handle zstd decompression
-		logrus.WithFields(logrus.Fields{
-			"encoding": encoding,
-			"size":     len(bodyBytes),
-		}).Warn("zstd compression detected but not supported for response modification, returning compressed body")
-		return bodyBytes
-
-	default:
-		return bodyBytes
-	}
+	// When DisableCompression is false (default for non-streaming requests),
+	// Go's http.Client automatically:
+	// 1. Adds "Accept-Encoding: gzip" to requests
+	// 2. Decompresses response bodies
+	// 3. Removes "Content-Encoding" header from responses
+	// Therefore, this function will never see compressed data and can be safely removed.
+	return bodyBytes
 }

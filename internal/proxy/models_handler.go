@@ -6,6 +6,7 @@ import (
 	"gpt-load/internal/models"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -22,9 +23,11 @@ func min(a, b int) int {
 
 // isModelsEndpoint checks if the request path is a models endpoint
 func (ps *ProxyServer) isModelsEndpoint(path string) bool {
-	return strings.HasSuffix(path, "/models") ||
-		strings.HasSuffix(path, "/v1/models") ||
-		strings.HasSuffix(path, "/v1beta/models")
+	// Trim trailing slash to handle paths like "/v1/models/"
+	p := strings.TrimRight(path, "/")
+	return strings.HasSuffix(p, "/models") ||
+		strings.HasSuffix(p, "/v1/models") ||
+		strings.HasSuffix(p, "/v1beta/models")
 }
 
 // handleModelsResponse handles /models endpoint responses by adding model mapping aliases
@@ -60,6 +63,11 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	if err != nil {
 		logrus.WithError(err).Debug("Failed to enhance models response, returning original")
 		// If enhancement fails, return original response
+		// Update headers to match the actual body size
+		hdr := c.Writer.Header()
+		hdr.Del("Content-Encoding")
+		hdr.Del("ETag")
+		hdr.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
 		if _, writeErr := c.Writer.Write(bodyBytes); writeErr != nil {
 			logUpstreamError("writing original models response", writeErr)
 		}
@@ -73,6 +81,12 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	}).Debug("Successfully enhanced /models response")
 
 	// Write enhanced response
+	// Update headers to match the enhanced body
+	hdr := c.Writer.Header()
+	hdr.Del("Content-Encoding")
+	hdr.Del("ETag")
+	hdr.Set("Content-Type", "application/json; charset=utf-8")
+	hdr.Set("Content-Length", strconv.Itoa(len(enhancedBody)))
 	if _, err := c.Writer.Write(enhancedBody); err != nil {
 		logUpstreamError("writing enhanced models response", err)
 	}

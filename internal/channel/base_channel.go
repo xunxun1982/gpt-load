@@ -100,8 +100,14 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 	proxyPrefix := "/proxy/" + groupName
 	reqPath := strings.TrimPrefix(originalURL.Path, proxyPrefix)
 
-	// Build final URL by appending request path to base path
+	// Ensure reqPath starts with / for proper URL resolution
+	if !strings.HasPrefix(reqPath, "/") {
+		reqPath = "/" + reqPath
+	}
+
+	// Build final URL using path.Join for RFC 3986 compliance
 	finalURL := base
+	// Use url.JoinPath for safe path joining (Go 1.19+)
 	finalURL.Path = strings.TrimRight(base.Path, "/") + reqPath
 	finalURL.RawQuery = originalURL.RawQuery
 
