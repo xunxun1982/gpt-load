@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"gpt-load/internal/models"
@@ -75,6 +76,20 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 		hdr.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
 		if _, writeErr := c.Writer.Write(bodyBytes); writeErr != nil {
 			logUpstreamError("writing original models response", writeErr)
+		}
+		return
+	}
+
+	// If no change, forward original (avoid misleading "enhanced" log)
+	if len(enhancedBody) == len(bodyBytes) && bytes.Equal(enhancedBody, bodyBytes) {
+		logrus.Debug("No alias enhancement applied; forwarding upstream body")
+		hdr := c.Writer.Header()
+		hdr.Del("Content-Encoding")
+		hdr.Del("ETag")
+		hdr.Del("Transfer-Encoding")
+		hdr.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+		if _, err := c.Writer.Write(bodyBytes); err != nil {
+			logUpstreamError("writing passthrough models response", err)
 		}
 		return
 	}
@@ -166,10 +181,9 @@ func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Gro
 		responseData["data"] = dataArray
 		enhanced = true
 		logrus.WithField("added_count", addedCount).Debug("Added alias models to OpenAI format response")
-	}
-
-	// Gemini format: {"models": [{"name": "model-name", ...}]}
-	if modelsArray, ok := responseData["models"].([]any); ok {
+	} else if modelsArray, ok := responseData["models"].([]any); ok {
+		// Gemini format: {"models": [{"name": "model-name", ...}]}
+		// Use else if to process only one format (avoid dual-format enhancement)
 		existingModels := make(map[string]bool)
 		for _, item := range modelsArray {
 			if modelObj, ok := item.(map[string]any); ok {
