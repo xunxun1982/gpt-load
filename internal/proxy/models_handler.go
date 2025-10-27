@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -31,9 +32,38 @@ func (ps *ProxyServer) isModelsEndpoint(path string) bool {
 	return strings.HasSuffix(p, "/models")
 }
 
-// writeModelsResponse writes a response body with proper headers and status code
-func writeModelsResponse(c *gin.Context, statusCode int, body []byte, contentType string) error {
+// copyUpstreamHeaders copies headers from upstream, excluding hop-by-hop and Content-Length.
+func copyUpstreamHeaders(dst http.Header, src http.Header) {
+	for k, vv := range src {
+		switch http.CanonicalHeaderKey(k) {
+		case "Content-Length", "Connection", "Keep-Alive", "Proxy-Authenticate",
+			"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+			continue
+		default:
+			dst.Del(k)
+			for _, v := range vv {
+				dst.Add(k, v)
+			}
+		}
+	}
+}
+
+// writePassthroughModelsResponse forwards upstream headers/body (keeps Content-Encoding/Type).
+func writePassthroughModelsResponse(c *gin.Context, resp *http.Response, body []byte) error {
 	hdr := c.Writer.Header()
+	copyUpstreamHeaders(hdr, resp.Header)
+	// We aggregated the body; ensure no chunked conflict and set correct length.
+	hdr.Del("Transfer-Encoding")
+	hdr.Set("Content-Length", strconv.Itoa(len(body)))
+	c.Writer.WriteHeader(resp.StatusCode)
+	_, err := c.Writer.Write(body)
+	return err
+}
+
+// writeEnhancedModelsResponse writes a mutated body, dropping encodings/validators and setting JSON Content-Type.
+func writeEnhancedModelsResponse(c *gin.Context, resp *http.Response, body []byte, contentType string) error {
+	hdr := c.Writer.Header()
+	copyUpstreamHeaders(hdr, resp.Header)
 	hdr.Del("Content-Encoding")
 	hdr.Del("ETag")
 	hdr.Del("Transfer-Encoding")
@@ -41,13 +71,19 @@ func writeModelsResponse(c *gin.Context, statusCode int, body []byte, contentTyp
 		hdr.Set("Content-Type", contentType)
 	}
 	hdr.Set("Content-Length", strconv.Itoa(len(body)))
-	c.Writer.WriteHeader(statusCode)
+	c.Writer.WriteHeader(resp.StatusCode)
 	_, err := c.Writer.Write(body)
 	return err
 }
 
 // handleModelsResponse handles /models endpoint responses by adding model mapping aliases
 func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response, group *models.Group) {
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
 	logrus.WithFields(logrus.Fields{
 		"group":                group.Name,
 		"model_mapping_count":  len(group.ModelMappingCache),
@@ -60,7 +96,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 		logrus.WithError(err).Warn("Failed to read models response body; returning partial/original if any")
 		// resp.Body is already consumed, write any partial bytes read
 		if len(bodyBytes) > 0 {
-			if writeErr := writeModelsResponse(c, resp.StatusCode, bodyBytes, ""); writeErr != nil {
+			if writeErr := writePassthroughModelsResponse(c, resp, bodyBytes); writeErr != nil {
 				logUpstreamError("writing partial models response", writeErr)
 			}
 		}
@@ -79,7 +115,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	if err != nil {
 		logrus.WithError(err).Debug("Failed to enhance models response, returning original")
 		// If enhancement fails, return original response
-		if writeErr := writeModelsResponse(c, resp.StatusCode, bodyBytes, ""); writeErr != nil {
+		if writeErr := writePassthroughModelsResponse(c, resp, bodyBytes); writeErr != nil {
 			logUpstreamError("writing original models response", writeErr)
 		}
 		return
@@ -88,7 +124,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	// If no change, forward original (avoid misleading "enhanced" log)
 	if len(enhancedBody) == len(bodyBytes) && bytes.Equal(enhancedBody, bodyBytes) {
 		logrus.Debug("No alias enhancement applied; forwarding upstream body")
-		if err := writeModelsResponse(c, resp.StatusCode, bodyBytes, ""); err != nil {
+		if err := writePassthroughModelsResponse(c, resp, bodyBytes); err != nil {
 			logUpstreamError("writing passthrough models response", err)
 		}
 		return
@@ -101,7 +137,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	}).Debug("Successfully enhanced /models response")
 
 	// Write enhanced response with JSON content type
-	if err := writeModelsResponse(c, resp.StatusCode, enhancedBody, "application/json; charset=utf-8"); err != nil {
+	if err := writeEnhancedModelsResponse(c, resp, enhancedBody, "application/json; charset=utf-8"); err != nil {
 		logUpstreamError("writing enhanced models response", err)
 	}
 }
@@ -165,7 +201,7 @@ func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Gro
 				newModel := map[string]any{
 					"id":       alias,
 					"object":   "model",
-					"created":  1626777600,
+					"created":  time.Now().Unix(),
 					"owned_by": "alias",
 				}
 				dataArray = append(dataArray, newModel)
@@ -173,8 +209,10 @@ func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Gro
 				logrus.WithField("alias", alias).Debug("Added alias model to response")
 			}
 		}
-		responseData["data"] = dataArray
-		enhanced = true
+		if addedCount > 0 {
+			responseData["data"] = dataArray
+			enhanced = true
+		}
 		logrus.WithField("added_count", addedCount).Debug("Added alias models to OpenAI format response")
 	} else if modelsArray, ok := responseData["models"].([]any); ok {
 		// Gemini format: {"models": [{"name": "model-name", ...}]}
@@ -189,6 +227,7 @@ func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Gro
 		}
 
 		// Add alias models that don't already exist
+		addedCount := 0
 		for _, alias := range aliasModels {
 			if !existingModels[alias] {
 				newModel := map[string]any{
@@ -196,10 +235,13 @@ func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Gro
 					"display_name": alias,
 				}
 				modelsArray = append(modelsArray, newModel)
+				addedCount++
 			}
 		}
-		responseData["models"] = modelsArray
-		enhanced = true
+		if addedCount > 0 {
+			responseData["models"] = modelsArray
+			enhanced = true
+		}
 	}
 
 	if !enhanced {
