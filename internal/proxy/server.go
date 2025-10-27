@@ -94,6 +94,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 
+	// Read request body
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		logrus.Errorf("Failed to read request body: %v", err)
@@ -102,13 +103,30 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	}
 	c.Request.Body.Close()
 
-	finalBodyBytes, err := ps.applyParamOverrides(bodyBytes, group)
-	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
-		return
-	}
+	// For GET requests (like /v1/models), skip body processing
+	var finalBodyBytes []byte
+	var isStream bool
 
-	isStream := channelHandler.IsStreamRequest(c, finalBodyBytes)
+	if c.Request.Method == "GET" || len(bodyBytes) == 0 {
+		finalBodyBytes = bodyBytes
+		isStream = false
+	} else {
+		// Apply model mapping first (before param overrides to allow overriding the mapped model if needed)
+		bodyBytesAfterMapping, originalModel := ps.applyModelMapping(bodyBytes, group)
+
+		// Store original model only if mapping changed the payload
+		if originalModel != "" && !bytes.Equal(bodyBytesAfterMapping, bodyBytes) {
+			c.Set("original_model", originalModel)
+		}
+
+		finalBodyBytes, err = ps.applyParamOverrides(bodyBytesAfterMapping, group)
+		if err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
+			return
+		}
+
+		isStream = channelHandler.IsStreamRequest(c, finalBodyBytes)
+	}
 
 	ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, 0)
 }
@@ -170,6 +188,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	req.Header.Del("X-Api-Key")
 	req.Header.Del("X-Goog-Api-Key")
 	req.Header.Del("Proxy-Authorization")
+
+	// For /models with mapping configured, remove Accept-Encoding so upstream returns plain (non-gzip) body
+	// This ensures we can read/modify the response safely.
+	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
+		req.Header.Del("Accept-Encoding")
+		logrus.Debug("Removed Accept-Encoding header for /models endpoint to avoid gzip compression")
+	}
 
 	channelHandler.ModifyRequest(req, apiKey, group)
 
@@ -271,8 +296,22 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	}
 	c.Status(resp.StatusCode)
 
+	// Fast path: handle response based on type
 	if isStream {
 		ps.handleStreamingResponse(c, resp)
+	} else if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
+		// Special handling for /models endpoint with model mapping enabled
+		// Only check endpoint path if model mapping is configured (performance optimization)
+		// Clear stale headers before enhancement
+		c.Writer.Header().Del("Content-Length")
+		c.Writer.Header().Del("ETag")
+		c.Writer.Header().Del("Transfer-Encoding")
+		logrus.WithFields(logrus.Fields{
+			"group":                group.Name,
+			"path":                 c.Request.URL.Path,
+			"model_mapping_count":  len(group.ModelMappingCache),
+		}).Debug("Detected /models endpoint with model mapping, applying enhancement")
+		ps.handleModelsResponse(c, resp, group)
 	} else {
 		ps.handleNormalResponse(c, resp)
 	}
@@ -338,6 +377,18 @@ func (ps *ProxyServer) logRequest(
 
 	if channelHandler != nil && bodyBytes != nil {
 		logEntry.Model = channelHandler.ExtractModel(c, bodyBytes)
+	}
+
+	// Get original model from context (before mapping)
+	if originalModel, exists := c.Get("original_model"); exists {
+		if originalModelStr, ok := originalModel.(string); ok && originalModelStr != "" {
+			// Store original only when it differs from the actual upstream model
+			// Note: MappedModel stores the user's requested model alias (before mapping)
+			// while Model stores the actual model sent to upstream (after mapping)
+			if logEntry.Model != "" && logEntry.Model != originalModelStr {
+				logEntry.MappedModel = originalModelStr
+			}
+		}
 	}
 
 	if apiKey != nil {

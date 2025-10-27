@@ -96,6 +96,7 @@ type GroupCreateParams struct {
 	ParamOverrides     map[string]any
 	Config             map[string]any
 	HeaderRules        []models.HeaderRule
+	ModelMapping       string
 	ProxyKeys          string
 	SubGroups          []SubGroupInput
 }
@@ -116,6 +117,7 @@ type GroupUpdateParams struct {
 	ParamOverrides     map[string]any
 	Config             map[string]any
 	HeaderRules        *[]models.HeaderRule
+	ModelMapping       *string
 	ProxyKeys          *string
 	SubGroups          *[]SubGroupInput
 }
@@ -210,6 +212,14 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		headerRulesJSON = datatypes.JSON("[]")
 	}
 
+	// Validate model mapping if provided
+	modelMapping := strings.TrimSpace(params.ModelMapping)
+	if modelMapping != "" {
+		if err := utils.ValidateModelMapping(modelMapping); err != nil {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_model_mapping", map[string]any{"error": err.Error()})
+		}
+	}
+
 	group := models.Group{
 		Name:               name,
 		DisplayName:        strings.TrimSpace(params.DisplayName),
@@ -223,6 +233,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		ParamOverrides:     params.ParamOverrides,
 		Config:             cleanedConfig,
 		HeaderRules:        headerRulesJSON,
+		ModelMapping:       modelMapping,
 		ProxyKeys:          strings.TrimSpace(params.ProxyKeys),
 	}
 
@@ -376,6 +387,16 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			headerRulesJSON = datatypes.JSON("[]")
 		}
 		group.HeaderRules = headerRulesJSON
+	}
+
+	if params.ModelMapping != nil {
+		modelMapping := strings.TrimSpace(*params.ModelMapping)
+		if modelMapping != "" {
+			if err := utils.ValidateModelMapping(modelMapping); err != nil {
+				return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_model_mapping", map[string]any{"error": err.Error()})
+			}
+		}
+		group.ModelMapping = modelMapping
 	}
 
 	if err := tx.Save(&group).Error; err != nil {

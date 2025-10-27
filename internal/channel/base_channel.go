@@ -100,10 +100,19 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 	proxyPrefix := "/proxy/" + groupName
 	reqPath := strings.TrimPrefix(originalURL.Path, proxyPrefix)
 
-	// Build relative URL with preserved query
-	rel, _ := url.Parse(reqPath)
-	rel.RawQuery = originalURL.RawQuery
-	finalURL := *base.ResolveReference(rel)
+	// Ensure reqPath starts with / for proper URL resolution
+	if !strings.HasPrefix(reqPath, "/") {
+		reqPath = "/" + reqPath
+	}
+
+	finalURL := base
+	// Use url.JoinPath for safe path joining (Go 1.19+)
+	joinedPath, err := url.JoinPath(base.Path, reqPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to join URL paths: %w", err)
+	}
+	finalURL.Path = joinedPath
+	finalURL.RawQuery = originalURL.RawQuery
 
 	return &UpstreamSelection{
 		URL:          finalURL.String(),

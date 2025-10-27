@@ -57,6 +57,7 @@ type GroupCreateRequest struct {
 	ParamOverrides     map[string]any      `json:"param_overrides"`
 	Config             map[string]any      `json:"config"`
 	HeaderRules        []models.HeaderRule `json:"header_rules"`
+	ModelMapping       string              `json:"model_mapping"`
 	ProxyKeys          string              `json:"proxy_keys"`
 }
 
@@ -81,6 +82,7 @@ func (s *Server) CreateGroup(c *gin.Context) {
 		ParamOverrides:     req.ParamOverrides,
 		Config:             req.Config,
 		HeaderRules:        req.HeaderRules,
+		ModelMapping:       req.ModelMapping,
 		ProxyKeys:          req.ProxyKeys,
 	}
 
@@ -122,6 +124,7 @@ type GroupUpdateRequest struct {
 	ParamOverrides     map[string]any      `json:"param_overrides"`
 	Config             map[string]any      `json:"config"`
 	HeaderRules        []models.HeaderRule `json:"header_rules"`
+	ModelMapping       *string             `json:"model_mapping,omitempty"`
 	ProxyKeys          *string             `json:"proxy_keys,omitempty"`
 }
 
@@ -149,6 +152,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		ValidationEndpoint: req.ValidationEndpoint,
 		ParamOverrides:     req.ParamOverrides,
 		Config:             req.Config,
+		ModelMapping:       req.ModelMapping,
 		ProxyKeys:          req.ProxyKeys,
 	}
 
@@ -191,6 +195,7 @@ type GroupResponse struct {
 	ParamOverrides     datatypes.JSONMap   `json:"param_overrides"`
 	Config             datatypes.JSONMap   `json:"config"`
 	HeaderRules        []models.HeaderRule `json:"header_rules"`
+	ModelMapping       string              `json:"model_mapping"`
 	ProxyKeys          string              `json:"proxy_keys"`
 	LastValidatedAt    *time.Time          `json:"last_validated_at"`
 	CreatedAt          time.Time           `json:"created_at"`
@@ -233,6 +238,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		ParamOverrides:     group.ParamOverrides,
 		Config:             group.Config,
 		HeaderRules:        headerRules,
+		ModelMapping:       group.ModelMapping,
 		ProxyKeys:          group.ProxyKeys,
 		LastValidatedAt:    group.LastValidatedAt,
 		CreatedAt:          group.CreatedAt,

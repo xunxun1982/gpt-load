@@ -95,6 +95,7 @@ type Group struct {
 	ParamOverrides     datatypes.JSONMap    `gorm:"type:json" json:"param_overrides"`
 	Config             datatypes.JSONMap    `gorm:"type:json" json:"config"`
 	HeaderRules        datatypes.JSON       `gorm:"type:json" json:"header_rules"`
+	ModelMapping       string               `gorm:"type:text" json:"model_mapping"` // JSON format model name mapping
 	APIKeys            []APIKey             `gorm:"foreignKey:GroupID" json:"api_keys"`
 	SubGroups          []GroupSubGroup      `gorm:"-" json:"sub_groups,omitempty"`
 	LastValidatedAt    *time.Time           `json:"last_validated_at"`
@@ -102,8 +103,9 @@ type Group struct {
 	UpdatedAt          time.Time            `json:"updated_at"`
 
 	// For cache
-	ProxyKeysMap   map[string]struct{} `gorm:"-" json:"-"`
-	HeaderRuleList []HeaderRule        `gorm:"-" json:"-"`
+	ProxyKeysMap      map[string]struct{} `gorm:"-" json:"-"`
+	HeaderRuleList    []HeaderRule        `gorm:"-" json:"-"`
+	ModelMappingCache map[string]string   `gorm:"-" json:"-"` // Parsed model mapping for performance
 }
 
 // APIKey 对应 api_keys 表
@@ -138,6 +140,7 @@ type RequestLog struct {
 	KeyValue        string    `gorm:"type:text" json:"key_value"`
 	KeyHash         string    `gorm:"type:varchar(128);index" json:"key_hash"`
 	Model           string    `gorm:"type:varchar(255);index" json:"model"`
+	MappedModel     string    `gorm:"type:varchar(255)" json:"mapped_model"` // Model name after mapping/redirect
 	IsSuccess       bool      `gorm:"not null" json:"is_success"`
 	SourceIP        string    `gorm:"type:varchar(64)" json:"source_ip"`
 	StatusCode      int       `gorm:"not null" json:"status_code"`

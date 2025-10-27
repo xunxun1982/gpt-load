@@ -82,6 +82,17 @@ func (gm *GroupManager) Initialize() error {
 				g.HeaderRuleList = []models.HeaderRule{}
 			}
 
+			// Parse model mapping cache for performance
+			if g.ModelMapping != "" {
+				modelMap, err := utils.ParseModelMapping(g.ModelMapping)
+				if err != nil {
+					logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse model mapping for group")
+					g.ModelMappingCache = nil
+				} else {
+					g.ModelMappingCache = modelMap
+				}
+			}
+
 			// Load sub-groups for aggregate groups
 			if g.GroupType == "aggregate" {
 				if subGroups, ok := subGroupsByAggregateID[g.ID]; ok {
@@ -100,6 +111,7 @@ func (gm *GroupManager) Initialize() error {
 				"group_name":         g.Name,
 				"effective_config":   g.EffectiveConfig,
 				"header_rules_count": len(g.HeaderRuleList),
+				"model_mapping":      g.ModelMapping != "",
 				"sub_group_count":    len(g.SubGroups),
 			}).Debug("Loaded group with effective config")
 		}
