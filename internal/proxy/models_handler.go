@@ -7,6 +7,7 @@ import (
 	"gpt-load/internal/models"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -30,6 +31,21 @@ func (ps *ProxyServer) isModelsEndpoint(path string) bool {
 	return strings.HasSuffix(p, "/models")
 }
 
+// writeModelsResponse writes a response body with proper headers and status code
+func writeModelsResponse(c *gin.Context, statusCode int, body []byte, contentType string) error {
+	hdr := c.Writer.Header()
+	hdr.Del("Content-Encoding")
+	hdr.Del("ETag")
+	hdr.Del("Transfer-Encoding")
+	if contentType != "" {
+		hdr.Set("Content-Type", contentType)
+	}
+	hdr.Set("Content-Length", strconv.Itoa(len(body)))
+	c.Writer.WriteHeader(statusCode)
+	_, err := c.Writer.Write(body)
+	return err
+}
+
 // handleModelsResponse handles /models endpoint responses by adding model mapping aliases
 func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response, group *models.Group) {
 	logrus.WithFields(logrus.Fields{
@@ -44,12 +60,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 		logrus.WithError(err).Warn("Failed to read models response body; returning partial/original if any")
 		// resp.Body is already consumed, write any partial bytes read
 		if len(bodyBytes) > 0 {
-			hdr := c.Writer.Header()
-			hdr.Del("Content-Encoding")
-			hdr.Del("ETag")
-			hdr.Del("Transfer-Encoding")
-			hdr.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-			if _, writeErr := c.Writer.Write(bodyBytes); writeErr != nil {
+			if writeErr := writeModelsResponse(c, resp.StatusCode, bodyBytes, ""); writeErr != nil {
 				logUpstreamError("writing partial models response", writeErr)
 			}
 		}
@@ -68,13 +79,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	if err != nil {
 		logrus.WithError(err).Debug("Failed to enhance models response, returning original")
 		// If enhancement fails, return original response
-		// Update headers to match the actual body size
-		hdr := c.Writer.Header()
-		hdr.Del("Content-Encoding")
-		hdr.Del("ETag")
-		hdr.Del("Transfer-Encoding")
-		hdr.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		if _, writeErr := c.Writer.Write(bodyBytes); writeErr != nil {
+		if writeErr := writeModelsResponse(c, resp.StatusCode, bodyBytes, ""); writeErr != nil {
 			logUpstreamError("writing original models response", writeErr)
 		}
 		return
@@ -83,12 +88,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	// If no change, forward original (avoid misleading "enhanced" log)
 	if len(enhancedBody) == len(bodyBytes) && bytes.Equal(enhancedBody, bodyBytes) {
 		logrus.Debug("No alias enhancement applied; forwarding upstream body")
-		hdr := c.Writer.Header()
-		hdr.Del("Content-Encoding")
-		hdr.Del("ETag")
-		hdr.Del("Transfer-Encoding")
-		hdr.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		if _, err := c.Writer.Write(bodyBytes); err != nil {
+		if err := writeModelsResponse(c, resp.StatusCode, bodyBytes, ""); err != nil {
 			logUpstreamError("writing passthrough models response", err)
 		}
 		return
@@ -100,15 +100,8 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 		"enhanced_size": len(enhancedBody),
 	}).Debug("Successfully enhanced /models response")
 
-	// Write enhanced response
-	// Update headers to match the enhanced body
-	hdr := c.Writer.Header()
-	hdr.Del("Content-Encoding")
-	hdr.Del("ETag")
-	hdr.Del("Transfer-Encoding")
-	hdr.Set("Content-Type", "application/json; charset=utf-8")
-	hdr.Set("Content-Length", strconv.Itoa(len(enhancedBody)))
-	if _, err := c.Writer.Write(enhancedBody); err != nil {
+	// Write enhanced response with JSON content type
+	if err := writeModelsResponse(c, resp.StatusCode, enhancedBody, "application/json; charset=utf-8"); err != nil {
 		logUpstreamError("writing enhanced models response", err)
 	}
 }
@@ -137,6 +130,8 @@ func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Gro
 	for originalModel := range group.ModelMappingCache {
 		aliasModels = append(aliasModels, originalModel)
 	}
+	// Sort to ensure deterministic ordering (map iteration is random)
+	sort.Strings(aliasModels)
 
 	logrus.WithFields(logrus.Fields{
 		"group":         group.Name,
@@ -213,5 +208,10 @@ func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Gro
 	}
 
 	// Serialize enhanced response
-	return json.Marshal(responseData)
+	enhancedBytes, err := json.Marshal(responseData)
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to marshal enhanced models response")
+		return bodyBytes, nil
+	}
+	return enhancedBytes, nil
 }
