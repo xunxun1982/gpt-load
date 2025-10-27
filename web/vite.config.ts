@@ -30,6 +30,18 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: "dist",
       assetsDir: "assets",
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            // 使用对象形式避免循环依赖问题
+            "vue-vendor": ["vue", "vue-router", "vue-i18n"],
+            "naive-ui": ["naive-ui"],
+            vendor: ["axios", "@vueuse/core", "@vicons/ionicons5"],
+          },
+        },
+      },
+      // 提高 chunk 大小警告限制，因为 Naive UI 本身就很大
+      chunkSizeWarningLimit: 1400,
     },
   };
 });
