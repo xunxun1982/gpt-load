@@ -38,6 +38,10 @@ function getSubGroupStatus(subGroup: SubGroupInfo): {
   if (subGroup.weight === 0) {
     return { status: "disabled", text: t("subGroups.statusDisabled"), type: "warning" };
   }
+  // 检查分组是否被禁用
+  if (!subGroup.group.enabled) {
+    return { status: "unavailable", text: t("subGroups.statusGroupDisabled"), type: "error" };
+  }
   if (subGroup.weight > 0 && subGroup.active_keys === 0) {
     return { status: "unavailable", text: t("subGroups.statusUnavailable"), type: "error" };
   }

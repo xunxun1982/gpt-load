@@ -137,6 +137,7 @@ function handleGroupCreated(group: Group) {
               :class="{
                 active: selectedGroup?.id === group.id,
                 aggregate: group.group_type === 'aggregate',
+                disabled: !group.enabled,
               }"
               @click="handleGroupClick(group)"
               :ref="
@@ -160,6 +161,9 @@ function handleGroupCreated(group: Group) {
                   </n-tag>
                   <n-tag v-if="group.group_type === 'aggregate'" size="tiny" type="warning" round>
                     {{ t("keys.aggregateGroup") }}
+                  </n-tag>
+                  <n-tag v-if="!group.enabled" size="tiny" type="error" round>
+                    {{ t("keys.disabled") }}
                   </n-tag>
                   <span v-if="group.group_type !== 'aggregate'" class="group-id">
                     #{{ group.name }}
@@ -356,6 +360,32 @@ function handleGroupCreated(group: Group) {
 .group-item.active .group-id {
   opacity: 0.9;
   color: white;
+}
+
+/* 禁用分组样式 */
+.group-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--bg-secondary);
+}
+
+.group-item.disabled:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-color);
+}
+
+.group-item.disabled.aggregate:hover {
+  background: var(--bg-secondary);
+  border-style: dashed;
+}
+
+.group-item.disabled .group-name,
+.group-item.disabled .group-id {
+  color: var(--text-tertiary);
+}
+
+.group-item.disabled .group-icon {
+  opacity: 0.6;
 }
 
 .add-section {

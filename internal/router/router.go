@@ -117,6 +117,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		groups.DELETE("/:id", serverHandler.DeleteGroup)
 		groups.GET("/:id/stats", serverHandler.GetGroupStats)
 		groups.POST("/:id/copy", serverHandler.CopyGroup)
+		groups.PUT("/:id/toggle-enabled", serverHandler.ToggleGroupEnabled)
 
 		groups.GET("/:id/sub-groups", serverHandler.GetSubGroups)
 		groups.POST("/:id/sub-groups", serverHandler.AddSubGroups)

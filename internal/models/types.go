@@ -57,7 +57,8 @@ type GroupSubGroup struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 
 	// Lightweight association - only store necessary info for performance
-	SubGroupName string `gorm:"-" json:"sub_group_name,omitempty"`
+	SubGroupName    string `gorm:"-" json:"sub_group_name,omitempty"`
+	SubGroupEnabled bool   `gorm:"-" json:"sub_group_enabled,omitempty"`
 }
 
 // SubGroupInfo 用于API响应的子分组信息
@@ -87,6 +88,7 @@ type Group struct {
 	ProxyKeys          string               `gorm:"type:text" json:"proxy_keys"`
 	Description        string               `gorm:"type:varchar(512)" json:"description"`
 	GroupType          string               `gorm:"type:varchar(50);default:'standard'" json:"group_type"` // 'standard' or 'aggregate'
+	Enabled            bool                 `gorm:"default:true;not null" json:"enabled"`                   // Group enabled status
 	Upstreams          datatypes.JSON       `gorm:"type:json;not null" json:"upstreams"`
 	ValidationEndpoint string               `gorm:"type:varchar(255)" json:"validation_endpoint"`
 	ChannelType        string               `gorm:"type:varchar(50);not null" json:"channel_type"`

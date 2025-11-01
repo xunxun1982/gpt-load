@@ -71,6 +71,7 @@ export interface Group {
   sort: number;
   test_model: string;
   channel_type: ChannelType;
+  enabled: boolean;
   upstreams: UpstreamInfo[];
   validation_endpoint: string;
   config: Record<string, unknown>;

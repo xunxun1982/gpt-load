@@ -97,6 +97,13 @@ func (s *CronChecker) submitValidationJobs() {
 
 	for i := range groups {
 		group := &groups[i]
+
+		// Skip disabled groups
+		if !group.Enabled {
+			logrus.WithField("group_name", group.Name).Debug("CronChecker: Skipping disabled group")
+			continue
+		}
+
 		group.EffectiveConfig = s.SettingsManager.GetEffectiveConfig(group.Config)
 		interval := time.Duration(group.EffectiveConfig.KeyValidationIntervalMinutes) * time.Minute
 

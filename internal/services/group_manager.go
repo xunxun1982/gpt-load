@@ -101,6 +101,7 @@ func (gm *GroupManager) Initialize() error {
 						g.SubGroups[i] = sg
 						if subGroup, exists := groupByID[sg.SubGroupID]; exists {
 							g.SubGroups[i].SubGroupName = subGroup.Name
+							g.SubGroups[i].SubGroupEnabled = subGroup.Enabled
 						}
 					}
 				}
