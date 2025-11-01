@@ -253,6 +253,8 @@ export default {
     enabled: "有効",
     groupEnabledSuccess: "グループが有効化されました",
     groupDisabledSuccess: "グループが無効化されました",
+    aggregateGroupEnabledSuccess: "集約グループが有効化されました",
+    aggregateGroupDisabledSuccess: "集約グループが無効化されました",
     toggleGroupEnabledFailed: "グループステータスの切り替えに失敗しました",
     deleteSubGroup: "サブグループを削除",
     confirmDeleteSubGroup: 'サブグループ "{name}" を削除してもよろしいですか？',

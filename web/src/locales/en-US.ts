@@ -253,6 +253,8 @@ export default {
     enabled: "Enabled",
     groupEnabledSuccess: "Group enabled successfully",
     groupDisabledSuccess: "Group disabled successfully",
+    aggregateGroupEnabledSuccess: "Aggregate group enabled successfully",
+    aggregateGroupDisabledSuccess: "Aggregate group disabled successfully",
     toggleGroupEnabledFailed: "Failed to toggle group status",
     editWeight: "Edit Weight",
     deleteSubGroup: "Delete Sub Group",

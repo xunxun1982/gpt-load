@@ -300,6 +300,6 @@ export const keysApi = {
 
   // 切换分组启用/禁用状态
   async toggleGroupEnabled(groupId: number, enabled: boolean): Promise<void> {
-    await http.put(`/groups/${groupId}/toggle-enabled`, { enabled });
+    await http.put(`/groups/${groupId}/toggle-enabled`, { enabled }, { hideMessage: true });
   },
 };

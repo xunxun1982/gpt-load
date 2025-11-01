@@ -69,6 +69,7 @@ watch(
 );
 
 function handleGroupClick(group: Group) {
+  // 允许选中禁用的分组，以便用户可以启用或修改配置
   emit("group-select", group);
 }
 
@@ -362,21 +363,22 @@ function handleGroupCreated(group: Group) {
   color: white;
 }
 
-/* 禁用分组样式 */
+/* 禁用分组样式 - 保持可选中，只是视觉上变灰 */
 .group-item.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  opacity: 0.6;
   background: var(--bg-secondary);
 }
 
 .group-item.disabled:hover {
-  background: var(--bg-secondary);
-  border-color: var(--border-color);
+  background: var(--hover-color);
+  border-color: var(--primary-color);
+  opacity: 0.7;
 }
 
 .group-item.disabled.aggregate:hover {
-  background: var(--bg-secondary);
+  background: var(--hover-color);
   border-style: dashed;
+  opacity: 0.7;
 }
 
 .group-item.disabled .group-name,

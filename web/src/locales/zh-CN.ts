@@ -253,6 +253,8 @@ export default {
     enabled: "已启用",
     groupEnabledSuccess: "分组已启用",
     groupDisabledSuccess: "分组已禁用",
+    aggregateGroupEnabledSuccess: "聚合分组已启用",
+    aggregateGroupDisabledSuccess: "聚合分组已禁用",
     toggleGroupEnabledFailed: "切换分组状态失败",
     deleteSubGroupFailed: "删除子分组失败",
     loadSubGroupsFailed: "加载子分组列表失败",
