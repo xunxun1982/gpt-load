@@ -187,6 +187,7 @@ type GroupResponse struct {
 	DisplayName        string              `json:"display_name"`
 	Description        string              `json:"description"`
 	GroupType          string              `json:"group_type"`
+	Enabled            bool                `json:"enabled"`
 	Upstreams          datatypes.JSON      `json:"upstreams"`
 	ChannelType        string              `json:"channel_type"`
 	Sort               int                 `json:"sort"`
@@ -230,6 +231,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		DisplayName:        group.DisplayName,
 		Description:        group.Description,
 		GroupType:          group.GroupType,
+		Enabled:            group.Enabled,
 		Upstreams:          group.Upstreams,
 		ChannelType:        group.ChannelType,
 		Sort:               group.Sort,
@@ -470,4 +472,34 @@ func (s *Server) GetParentAggregateGroups(c *gin.Context) {
 	}
 
 	response.Success(c, parentGroups)
+}
+
+// ToggleGroupEnabledRequest defines the payload for toggling group enabled status
+type ToggleGroupEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// ToggleGroupEnabled handles enabling/disabling a group
+func (s *Server) ToggleGroupEnabled(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	var req ToggleGroupEnabledRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	if err := s.GroupService.ToggleGroupEnabled(c.Request.Context(), uint(id), req.Enabled); s.handleGroupError(c, err) {
+		return
+	}
+
+	messageKey := "success.group_enabled"
+	if !req.Enabled {
+		messageKey = "success.group_disabled"
+	}
+	response.SuccessI18n(c, messageKey, nil)
 }

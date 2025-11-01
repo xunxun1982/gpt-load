@@ -281,6 +281,12 @@ func (s *Server) TestMultipleKeys(c *gin.Context) {
 		return
 	}
 
+	// Check if group is enabled
+	if !groupDB.Enabled {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.group_disabled")
+		return
+	}
+
 	group, err := s.GroupManager.GetGroupByName(groupDB.Name)
 	if err != nil {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrResourceNotFound, "validation.group_not_found")
@@ -327,6 +333,12 @@ func (s *Server) ValidateGroupKeys(c *gin.Context) {
 
 	groupDB, ok := s.findGroupByID(c, req.GroupID)
 	if !ok {
+		return
+	}
+
+	// Check if group is enabled
+	if !groupDB.Enabled {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.group_disabled")
 		return
 	}
 

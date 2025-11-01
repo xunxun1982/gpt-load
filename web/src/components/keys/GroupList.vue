@@ -69,6 +69,7 @@ watch(
 );
 
 function handleGroupClick(group: Group) {
+  // 允许选中禁用的分组，以便用户可以启用或修改配置
   emit("group-select", group);
 }
 
@@ -137,7 +138,11 @@ function handleGroupCreated(group: Group) {
               :class="{
                 active: selectedGroup?.id === group.id,
                 aggregate: group.group_type === 'aggregate',
+                disabled: !group.enabled,
               }"
+              :aria-label="
+                !group.enabled ? `${getGroupDisplayName(group)} (${t('keys.disabled')})` : undefined
+              "
               @click="handleGroupClick(group)"
               :ref="
                 el => {
@@ -160,6 +165,9 @@ function handleGroupCreated(group: Group) {
                   </n-tag>
                   <n-tag v-if="group.group_type === 'aggregate'" size="tiny" type="warning" round>
                     {{ t("keys.aggregateGroup") }}
+                  </n-tag>
+                  <n-tag v-if="!group.enabled" size="tiny" type="error" round>
+                    {{ t("keys.disabled") }}
                   </n-tag>
                   <span v-if="group.group_type !== 'aggregate'" class="group-id">
                     #{{ group.name }}
@@ -272,8 +280,7 @@ function handleGroupCreated(group: Group) {
   border-color: rgba(102, 126, 234, 0.2);
 }
 
-.group-item:hover,
-.group-item.aggregate:hover {
+.group-item:hover {
   background: var(--bg-tertiary);
   border-color: var(--primary-color);
 }
@@ -281,6 +288,7 @@ function handleGroupCreated(group: Group) {
 .group-item.aggregate:hover {
   background: linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(102, 126, 234, 0.1) 100%);
   border-style: dashed;
+  border-color: var(--primary-color);
 }
 
 :root.dark .group-item:hover {
@@ -291,6 +299,27 @@ function handleGroupCreated(group: Group) {
 :root.dark .group-item.aggregate:hover {
   background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(102, 126, 234, 0.15) 100%);
   border-color: rgba(102, 126, 234, 0.4);
+}
+
+/* hover 状态下的文字保持可见 */
+.group-item:hover .group-name {
+  color: var(--text-primary) !important;
+  opacity: 1 !important;
+}
+
+:root.dark .group-item:hover .group-name {
+  color: rgba(255, 255, 255, 0.95) !important;
+  opacity: 1 !important;
+}
+
+.group-item:hover .group-id {
+  color: var(--text-secondary) !important;
+  opacity: 1 !important;
+}
+
+:root.dark .group-item:hover .group-id {
+  color: rgba(255, 255, 255, 0.7) !important;
+  opacity: 1 !important;
 }
 
 .group-item.aggregate.active {
@@ -353,9 +382,169 @@ function handleGroupCreated(group: Group) {
   color: var(--text-secondary);
 }
 
+/* 选中状态下的文字样式 - 更加醒目 */
+.group-item.active .group-name {
+  color: white !important;
+  font-weight: 700;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
 .group-item.active .group-id {
-  opacity: 0.9;
+  opacity: 1 !important;
+  color: rgba(255, 255, 255, 0.95) !important;
+  font-weight: 500;
+}
+
+/* 选中状态 hover 时保持样式 */
+.group-item.active:hover .group-name {
+  color: white !important;
+  font-weight: 700;
+}
+
+.group-item.active:hover .group-id {
+  color: rgba(255, 255, 255, 0.95) !important;
+  opacity: 1 !important;
+}
+
+/* 禁用但已选中的分组 - 保持选中状态可见 */
+.group-item.disabled.active {
+  background: var(--primary-gradient);
+  opacity: 0.75;
+  border-color: transparent;
   color: white;
+}
+
+:root.dark .group-item.disabled.active {
+  background: var(--primary-gradient);
+  opacity: 0.75;
+}
+
+/* 禁用但已选中状态下的文字 - 保持醒目 */
+.group-item.disabled.active .group-name {
+  color: white !important;
+  font-weight: 700;
+  opacity: 1 !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.group-item.disabled.active .group-id {
+  color: rgba(255, 255, 255, 0.9) !important;
+  opacity: 1 !important;
+  font-weight: 500;
+}
+
+/* 禁用但已选中状态 hover 时保持样式 */
+.group-item.disabled.active:hover .group-name {
+  color: white !important;
+}
+
+.group-item.disabled.active:hover .group-id {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+/* 禁用分组样式 - 使用橙色边框和淡背景表示禁用 */
+.group-item.disabled {
+  background: linear-gradient(135deg, rgba(245, 166, 35, 0.12) 0%, rgba(230, 140, 20, 0.12) 100%);
+  border-color: #f5a623;
+  border-width: 2px;
+}
+
+:root.dark .group-item.disabled {
+  background: linear-gradient(135deg, rgba(245, 166, 35, 0.15) 0%, rgba(230, 140, 20, 0.15) 100%);
+  border-color: rgba(245, 166, 35, 0.7);
+  border-width: 2px;
+}
+
+.group-item.disabled:hover {
+  background: linear-gradient(135deg, rgba(245, 166, 35, 0.9) 0%, rgba(230, 140, 20, 0.9) 100%);
+  border-color: #f5a623;
+  border-width: 2px;
+}
+
+:root.dark .group-item.disabled:hover {
+  background: linear-gradient(135deg, rgba(245, 166, 35, 0.85) 0%, rgba(230, 140, 20, 0.85) 100%);
+  border-color: rgba(245, 166, 35, 0.9);
+  border-width: 2px;
+}
+
+.group-item.disabled.aggregate:hover {
+  background: linear-gradient(135deg, rgba(245, 166, 35, 0.9) 0%, rgba(230, 140, 20, 0.9) 100%);
+  border-style: dashed;
+  border-color: #f5a623;
+  border-width: 2px;
+}
+
+:root.dark .group-item.disabled.aggregate:hover {
+  background: linear-gradient(135deg, rgba(245, 166, 35, 0.85) 0%, rgba(230, 140, 20, 0.85) 100%);
+  border-color: rgba(245, 166, 35, 0.9);
+  border-width: 2px;
+}
+
+/* 禁用状态 hover 的文字 - 使用白色文字配深色背景，最高对比度 */
+.group-item.disabled:hover .group-name {
+  color: #ffffff !important;
+  opacity: 1 !important;
+  font-weight: 700 !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+:root.dark .group-item.disabled:hover .group-name {
+  color: #ffffff !important;
+  opacity: 1 !important;
+  font-weight: 700 !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.group-item.disabled:hover .group-id {
+  color: rgba(255, 255, 255, 0.95) !important;
+  opacity: 1 !important;
+  font-weight: 500 !important;
+}
+
+:root.dark .group-item.disabled:hover .group-id {
+  color: rgba(255, 255, 255, 0.95) !important;
+  opacity: 1 !important;
+  font-weight: 500 !important;
+}
+
+/* 禁用分组的文字颜色 - 增强对比度 */
+.group-item.disabled .group-name {
+  color: rgba(0, 0, 0, 0.85);
+  opacity: 1;
+  font-weight: 600;
+}
+
+.group-item.disabled .group-id {
+  color: rgba(0, 0, 0, 0.65);
+  opacity: 1;
+}
+
+/* 禁用分组的文字颜色 - 暗黑模式 */
+:root.dark .group-item.disabled .group-name {
+  color: rgba(255, 255, 255, 0.85);
+  opacity: 1;
+  font-weight: 600;
+}
+
+:root.dark .group-item.disabled .group-id {
+  color: rgba(255, 255, 255, 0.7);
+  opacity: 1;
+}
+
+.group-item.disabled .group-icon {
+  opacity: 0.7;
+  background: rgba(245, 166, 35, 0.15);
+}
+
+:root.dark .group-item.disabled .group-icon {
+  opacity: 0.8;
+  background: rgba(245, 166, 35, 0.2);
+}
+
+/* 禁用状态 hover 时的图标 - 白色背景 */
+.group-item.disabled:hover .group-icon {
+  background: rgba(255, 255, 255, 0.3) !important;
+  opacity: 1 !important;
 }
 
 .add-section {

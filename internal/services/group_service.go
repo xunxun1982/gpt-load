@@ -975,3 +975,21 @@ func (s *GroupService) isValidChannelType(channelType string) bool {
 	}
 	return false
 }
+
+// ToggleGroupEnabled enables or disables a group
+func (s *GroupService) ToggleGroupEnabled(ctx context.Context, id uint, enabled bool) error {
+	var group models.Group
+	if err := s.db.WithContext(ctx).First(&group, id).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
+	if err := s.db.WithContext(ctx).Model(&group).Update("enabled", enabled).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
+	if err := s.groupManager.Invalidate(); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
+	}
+
+	return nil
+}

@@ -24,6 +24,7 @@ import {
   NIcon,
   NInput,
   NSpin,
+  NSwitch,
   NTag,
   NTooltip,
   useDialog,
@@ -65,6 +66,7 @@ const expandedName = ref<string[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const showProxyKeys = ref(false);
 const parentAggregateGroups = ref<ParentAggregateGroup[]>([]);
+const groupEnabled = ref(props.group?.enabled ?? true);
 
 const proxyKeysDisplay = computed(() => {
   if (!props.group?.proxy_keys) {
@@ -90,9 +92,12 @@ const isAggregateGroup = computed(() => {
   return props.group?.group_type === "aggregate";
 });
 
-// 计算有效子分组数（weight > 0 且有可用密钥）
+// 计算有效子分组数（weight > 0 且有可用密钥 且分组已启用）
 const activeSubGroupsCount = computed(() => {
-  return props.subGroups?.filter(sg => sg.weight > 0 && sg.active_keys > 0).length || 0;
+  return (
+    props.subGroups?.filter(sg => sg.weight > 0 && sg.active_keys > 0 && sg.group.enabled).length ||
+    0
+  );
 });
 
 // 计算禁用子分组数（weight = 0）
@@ -100,9 +105,12 @@ const disabledSubGroupsCount = computed(() => {
   return props.subGroups?.filter(sg => sg.weight === 0).length || 0;
 });
 
-// 计算无效子分组数（weight > 0 但无可用密钥）
+// 计算无效子分组数（weight > 0 但无可用密钥 或 分组被禁用）
 const unavailableSubGroupsCount = computed(() => {
-  return props.subGroups?.filter(sg => sg.weight > 0 && sg.active_keys === 0).length || 0;
+  return (
+    props.subGroups?.filter(sg => sg.weight > 0 && (sg.active_keys === 0 || !sg.group.enabled))
+      .length || 0
+  );
 });
 
 async function copyProxyKeys() {
@@ -130,6 +138,7 @@ watch(
     resetPage();
     loadStats();
     loadParentAggregateGroups();
+    groupEnabled.value = props.group?.enabled ?? true;
   }
 );
 
@@ -333,6 +342,36 @@ function resetPage() {
   showCopyModal.value = false;
   expandedName.value = [];
 }
+
+async function handleToggleEnabled(enabled: boolean) {
+  if (!props.group?.id) {
+    return;
+  }
+
+  try {
+    // 先更新本地状态
+    groupEnabled.value = enabled;
+    await keysApi.toggleGroupEnabled(props.group.id, enabled);
+
+    // 根据分组类型显示不同的提示
+    const isAggregate = props.group.group_type === "aggregate";
+    const successKey = enabled
+      ? isAggregate
+        ? "keys.aggregateGroupEnabledSuccess"
+        : "keys.groupEnabledSuccess"
+      : isAggregate
+        ? "keys.aggregateGroupDisabledSuccess"
+        : "keys.groupDisabledSuccess";
+
+    window.$message.success(t(successKey));
+    // Refresh the group data
+    emit("refresh", { ...props.group, enabled });
+  } catch (_error) {
+    // 失败时恢复状态
+    groupEnabled.value = !enabled;
+    window.$message.error(t("keys.toggleGroupEnabledFailed"));
+  }
+}
 </script>
 
 <template>
@@ -351,6 +390,16 @@ function resetPage() {
                 </template>
                 {{ t("keys.clickToCopy") }}
               </n-tooltip>
+              <n-switch
+                v-if="group"
+                :value="groupEnabled"
+                @update:value="handleToggleEnabled"
+                size="small"
+                class="group-status-switch"
+              >
+                <template #checked>{{ t("keys.enable") }}</template>
+                <template #unchecked>{{ t("keys.disable") }}</template>
+              </n-switch>
             </h3>
           </div>
           <div class="header-actions">
@@ -1061,5 +1110,54 @@ function resetPage() {
   color: var(--error-color, #dc2626);
   font-style: italic;
   font-size: 0.8rem;
+}
+
+/* 分组启用/禁用开关样式 */
+.group-status-switch {
+  margin-left: 12px;
+}
+
+/* 精确控制开关尺寸，避免使用 transform scale 导致文本模糊 */
+.group-status-switch :deep(.n-switch) {
+  height: 20px;
+  min-width: 52px;
+}
+
+.group-status-switch :deep(.n-switch__rail) {
+  height: 20px;
+  padding: 0 3px;
+}
+
+.group-status-switch :deep(.n-switch__button) {
+  width: 16px;
+  height: 16px;
+  z-index: 2;
+}
+
+/* 让文字显示在滑块旁边的可见区域 */
+.group-status-switch :deep(.n-switch__checked) {
+  right: 0 !important;
+  padding-right: 20px !important;
+  padding-left: 4px !important;
+  font-size: 12px;
+  line-height: 20px;
+  letter-spacing: -0.2px;
+  font-weight: 400;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+
+.group-status-switch :deep(.n-switch__unchecked) {
+  left: 0 !important;
+  padding-left: 20px !important;
+  padding-right: 4px !important;
+  font-size: 12px;
+  line-height: 20px;
+  letter-spacing: -0.2px;
+  font-weight: 400;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
 }
 </style>
