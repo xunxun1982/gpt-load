@@ -22,6 +22,7 @@ type subGroupItem struct {
 	subGroupID    uint
 	weight        int
 	currentWeight int
+	enabled       bool
 }
 
 // NewSubGroupManager creates a new sub-group manager service
@@ -117,6 +118,7 @@ func (m *SubGroupManager) createSelector(group *models.Group) *selector {
 			subGroupID:    sg.SubGroupID,
 			weight:        sg.Weight,
 			currentWeight: 0,
+			enabled:       sg.SubGroupEnabled,
 		})
 	}
 
@@ -151,6 +153,13 @@ func (s *selector) selectNext() string {
 	}
 
 	if len(s.subGroups) == 1 {
+		if !s.subGroups[0].enabled {
+			logrus.WithFields(logrus.Fields{
+				"group_id":   s.subGroups[0].subGroupID,
+				"group_name": s.subGroups[0].name,
+			}).Debug("Single sub-group is disabled")
+			return ""
+		}
 		if s.hasActiveKeys(s.subGroups[0].subGroupID) {
 			return s.subGroups[0].name
 		}
@@ -172,6 +181,15 @@ func (s *selector) selectNext() string {
 			continue
 		}
 		attempted[item.subGroupID] = true
+
+		if !item.enabled {
+			logrus.WithFields(logrus.Fields{
+				"group_id":   item.subGroupID,
+				"group_name": item.name,
+				"attempts":   len(attempted),
+			}).Debug("Sub-group is disabled, trying next")
+			continue
+		}
 
 		if s.hasActiveKeys(item.subGroupID) {
 			logrus.WithFields(logrus.Fields{

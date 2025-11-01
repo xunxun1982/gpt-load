@@ -68,6 +68,12 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 
+	// Check if group is enabled
+	if !originalGroup.Enabled {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Group '%s' is disabled", groupName)))
+		return
+	}
+
 	// Select sub-group if this is an aggregate group
 	subGroupName, err := ps.subGroupManager.SelectSubGroup(originalGroup)
 	if err != nil {
