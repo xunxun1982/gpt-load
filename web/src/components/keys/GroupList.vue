@@ -133,6 +133,11 @@ const sectionChannelGroups = computed(() => {
   return result;
 });
 
+// 类型守卫：验证是否为有效的渠道类型
+function isValidChannelType(value: string): value is ChannelType {
+  return value === "openai" || value === "gemini" || value === "anthropic" || value === "default";
+}
+
 // 获取渠道类型图标
 function getChannelTypeIcon(channelType: string): string {
   switch (channelType) {
@@ -152,7 +157,8 @@ function groupByChannelType(groups: Group[]): ChannelGroup[] {
   const channelMap = new Map<ChannelType, Group[]>();
 
   for (const group of groups) {
-    const channelType = (group.channel_type?.trim() || "default") as ChannelType;
+    const rawType = group.channel_type?.trim() || "default";
+    const channelType: ChannelType = isValidChannelType(rawType) ? rawType : "default";
     if (!channelMap.has(channelType)) {
       channelMap.set(channelType, []);
     }
@@ -169,6 +175,12 @@ function groupByChannelType(groups: Group[]): ChannelGroup[] {
       icon: getChannelTypeIcon(channelType),
     });
   }
+
+  // 按渠道类型排序以确保一致的显示顺序
+  result.sort((a, b) => {
+    const order: ChannelType[] = ["openai", "gemini", "anthropic", "default"];
+    return order.indexOf(a.channelType) - order.indexOf(b.channelType);
+  });
 
   return result;
 }
@@ -312,6 +324,7 @@ function handleGroupCreated(group: Group) {
                 class="section-header"
                 role="button"
                 tabindex="0"
+                :aria-expanded="!isSectionCollapsed(section.sectionKey)"
                 @click="toggleSection(section.sectionKey)"
                 @keydown.enter="toggleSection(section.sectionKey)"
                 @keydown.space.prevent="toggleSection(section.sectionKey)"
@@ -335,6 +348,9 @@ function handleGroupCreated(group: Group) {
                     class="channel-header"
                     role="button"
                     tabindex="0"
+                    :aria-expanded="
+                      !isChannelCollapsed(section.sectionKey, channelGroup.channelType)
+                    "
                     @click="toggleChannel(section.sectionKey, channelGroup.channelType)"
                     @keydown.enter="toggleChannel(section.sectionKey, channelGroup.channelType)"
                     @keydown.space.prevent="
