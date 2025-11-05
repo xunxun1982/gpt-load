@@ -35,8 +35,8 @@ func WeightedRandomSelect(weights []int) int {
 	}
 
 	if totalWeight == 0 {
-		// If all weights are 0, select randomly from all
-		return GetRand().Intn(len(weights))
+		// If all weights are 0, no valid selection (all disabled)
+		return -1
 	}
 
 	// Generate random number in range [0, totalWeight)

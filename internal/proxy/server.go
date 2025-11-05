@@ -164,7 +164,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 	// Use new retry logic for aggregate groups, old logic for standard groups
 	if originalGroup.GroupType == "aggregate" && retryCtx != nil {
-		ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx)
+		ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, finalBodyBytes, isStream, startTime, retryCtx)
 	} else {
 		ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, 0)
 	}
@@ -364,7 +364,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	c *gin.Context,
 	channelHandler channel.ChannelProxy,
 	originalGroup *models.Group,
-	currentGroup *models.Group,
 	bodyBytes []byte,
 	isStream bool,
 	startTime time.Time,
@@ -735,7 +734,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	// Increment attempt count and retry
 	retryCtx.attemptCount++
 	// Use original body bytes for retry to allow new sub-group to apply its own mapping
-	ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, group, retryCtx.originalBodyBytes, isStream, startTime, retryCtx)
+	ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, startTime, retryCtx)
 }
 
 // logRequest is a helper function to create and record a request log.

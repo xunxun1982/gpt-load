@@ -57,10 +57,19 @@ func (b *BaseChannel) SelectUpstream() *UpstreamInfo {
 		return &b.Upstreams[0]
 	}
 
-	// Build weights array
+	// Build weights array and check for positive weights
 	weights := make([]int, len(b.Upstreams))
+	hasPositiveWeight := false
 	for i := range b.Upstreams {
-		weights[i] = b.Upstreams[i].Weight
+		weight := b.Upstreams[i].Weight
+		weights[i] = weight
+		if weight > 0 {
+			hasPositiveWeight = true
+		}
+	}
+
+	if !hasPositiveWeight {
+		return nil // all upstreams disabled (weight 0)
 	}
 
 	// Use shared weighted random selection
