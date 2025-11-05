@@ -238,7 +238,11 @@ function handleGroupCreated(group: Group) {
                   @click="handleGroupClick(group)"
                   :ref="
                     el => {
-                      if (el) groupItemRefs.set(group.id, el);
+                      if (el) {
+                        groupItemRefs.set(group.id, el);
+                      } else {
+                        groupItemRefs.delete(group.id);
+                      }
                     }
                   "
                 >
