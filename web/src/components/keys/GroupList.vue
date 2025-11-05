@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { Group } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
-import { Add, LinkOutline, Search } from "@vicons/ionicons5";
-import { NButton, NCard, NEmpty, NInput, NSpin, NTag } from "naive-ui";
+import { Add, LinkOutline, Search, ChevronDown, ChevronForward } from "@vicons/ionicons5";
+import { NButton, NCard, NEmpty, NInput, NSpin, NTag, NIcon } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
@@ -18,6 +18,10 @@ const ICON_OPENAI = "🤖";
 const ICON_GEMINI = "💎";
 const ICON_ANTHROPIC = "🧠";
 const ICON_DEFAULT = "🔧";
+
+// 折叠状态管理
+const collapsedSections = ref<Set<string>>(new Set());
+const collapsedChannels = ref<Set<string>>(new Set());
 
 interface Props {
   groups: Group[];
@@ -36,6 +40,13 @@ interface GroupSection {
   icon: string;
   titleKey: string;
   isAggregate: boolean;
+  sectionKey: string;
+}
+
+interface ChannelGroup {
+  channelType: string;
+  groups: Group[];
+  icon: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -94,6 +105,7 @@ const groupSections = computed<GroupSection[]>(() => {
       icon: ICON_AGGREGATE,
       titleKey: "keys.aggregateGroupsTitle",
       isAggregate: true,
+      sectionKey: "aggregate",
     });
   }
 
@@ -103,11 +115,76 @@ const groupSections = computed<GroupSection[]>(() => {
       icon: ICON_STANDARD,
       titleKey: "keys.standardGroupsTitle",
       isAggregate: false,
+      sectionKey: "standard",
     });
   }
 
   return sections;
 });
+
+// 按渠道类型分组
+function groupByChannelType(groups: Group[]): ChannelGroup[] {
+  const channelMap = new Map<string, Group[]>();
+
+  for (const group of groups) {
+    const channelType = group.channel_type || "default";
+    if (!channelMap.has(channelType)) {
+      channelMap.set(channelType, []);
+    }
+    channelMap.get(channelType)?.push(group);
+  }
+
+  const result: ChannelGroup[] = [];
+  for (const [channelType, channelGroups] of channelMap) {
+    // 对每个渠道类型内的分组按 sort 排序
+    channelGroups.sort(sortBySort);
+
+    let icon = ICON_DEFAULT;
+    switch (channelType) {
+      case "openai":
+        icon = ICON_OPENAI;
+        break;
+      case "gemini":
+        icon = ICON_GEMINI;
+        break;
+      case "anthropic":
+        icon = ICON_ANTHROPIC;
+        break;
+    }
+    result.push({ channelType, groups: channelGroups, icon });
+  }
+
+  return result;
+}
+
+// 切换分组区域折叠状态
+function toggleSection(sectionKey: string) {
+  if (collapsedSections.value.has(sectionKey)) {
+    collapsedSections.value.delete(sectionKey);
+  } else {
+    collapsedSections.value.add(sectionKey);
+  }
+}
+
+// 切换渠道分组折叠状态
+function toggleChannel(sectionKey: string, channelType: string) {
+  const key = `${sectionKey}-${channelType}`;
+  if (collapsedChannels.value.has(key)) {
+    collapsedChannels.value.delete(key);
+  } else {
+    collapsedChannels.value.add(key);
+  }
+}
+
+// 检查分组区域是否折叠
+function isSectionCollapsed(sectionKey: string): boolean {
+  return collapsedSections.value.has(sectionKey);
+}
+
+// 检查渠道分组是否折叠
+function isChannelCollapsed(sectionKey: string, channelType: string): boolean {
+  return collapsedChannels.value.has(`${sectionKey}-${channelType}`);
+}
 
 // 获取分组图标
 function getGroupIcon(group: Group, isAggregate: boolean): string {
@@ -221,50 +298,82 @@ function handleGroupCreated(group: Group) {
           <div v-else class="groups-list">
             <!-- 分组区域（统一渲染） -->
             <div v-for="section in groupSections" :key="section.titleKey" class="group-section">
-              <div class="section-header">
+              <div class="section-header" @click="toggleSection(section.sectionKey)">
+                <n-icon
+                  class="collapse-icon"
+                  :component="isSectionCollapsed(section.sectionKey) ? ChevronForward : ChevronDown"
+                />
                 <span class="section-icon">{{ section.icon }}</span>
                 <span class="section-title">{{ t(section.titleKey) }}</span>
                 <span class="section-count">{{ section.groups.length }}</span>
               </div>
-              <div class="section-items">
+              <div v-if="!isSectionCollapsed(section.sectionKey)" class="section-items">
+                <!-- 按渠道类型分组 -->
                 <div
-                  v-for="group in section.groups"
-                  :key="group.id"
-                  class="group-item"
-                  :class="{
-                    aggregate: section.isAggregate,
-                    active: selectedGroup?.id === group.id,
-                    disabled: !group.enabled,
-                  }"
-                  :aria-label="
-                    !group.enabled
-                      ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
-                      : undefined
-                  "
-                  @click="handleGroupClick(group)"
-                  :ref="
-                    el => {
-                      if (el) {
-                        groupItemRefs.set(group.id, el);
-                      } else {
-                        groupItemRefs.delete(group.id);
-                      }
-                    }
-                  "
+                  v-for="channelGroup in groupByChannelType(section.groups)"
+                  :key="channelGroup.channelType"
+                  class="channel-group"
                 >
-                  <div class="group-icon">
-                    <span>{{ getGroupIcon(group, section.isAggregate) }}</span>
+                  <div
+                    class="channel-header"
+                    @click="toggleChannel(section.sectionKey, channelGroup.channelType)"
+                  >
+                    <n-icon
+                      class="collapse-icon"
+                      :component="
+                        isChannelCollapsed(section.sectionKey, channelGroup.channelType)
+                          ? ChevronForward
+                          : ChevronDown
+                      "
+                    />
+                    <span class="channel-icon">{{ channelGroup.icon }}</span>
+                    <span class="channel-title">{{ channelGroup.channelType }}</span>
+                    <span class="channel-count">{{ channelGroup.groups.length }}</span>
                   </div>
-                  <div class="group-content">
-                    <div class="group-name">{{ getGroupDisplayName(group) }}</div>
-                    <div class="group-meta">
-                      <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
-                        {{ group.channel_type }}
-                      </n-tag>
-                      <n-tag v-if="!group.enabled" size="tiny" type="error" round>
-                        {{ t("keys.disabled") }}
-                      </n-tag>
-                      <span class="group-id">#{{ group.name }}</span>
+                  <div
+                    v-if="!isChannelCollapsed(section.sectionKey, channelGroup.channelType)"
+                    class="channel-items"
+                  >
+                    <div
+                      v-for="group in channelGroup.groups"
+                      :key="group.id"
+                      class="group-item"
+                      :class="{
+                        aggregate: section.isAggregate,
+                        active: selectedGroup?.id === group.id,
+                        disabled: !group.enabled,
+                      }"
+                      :aria-label="
+                        !group.enabled
+                          ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
+                          : undefined
+                      "
+                      @click="handleGroupClick(group)"
+                      :ref="
+                        el => {
+                          if (el) {
+                            groupItemRefs.set(group.id, el);
+                          } else {
+                            groupItemRefs.delete(group.id);
+                          }
+                        }
+                      "
+                    >
+                      <div class="group-icon">
+                        <span>{{ getGroupIcon(group, section.isAggregate) }}</span>
+                      </div>
+                      <div class="group-content">
+                        <div class="group-name">{{ getGroupDisplayName(group) }}</div>
+                        <div class="group-meta">
+                          <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
+                            {{ group.channel_type }}
+                          </n-tag>
+                          <n-tag v-if="!group.enabled" size="tiny" type="error" round>
+                            {{ t("keys.disabled") }}
+                          </n-tag>
+                          <span class="group-id">#{{ group.name }}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -369,10 +478,17 @@ function handleGroupCreated(group: Group) {
   border-radius: 6px;
   margin-bottom: 6px;
   transition: all 0.2s ease;
+  cursor: pointer;
+  user-select: none;
 }
 
 .section-header:hover {
   background: var(--bg-tertiary);
+}
+
+.collapse-icon {
+  font-size: 14px;
+  transition: transform 0.2s ease;
 }
 
 .section-icon {
@@ -401,10 +517,68 @@ function handleGroupCreated(group: Group) {
 .section-items {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   padding-left: 8px;
   border-left: 2px solid var(--border-color);
   margin-left: 8px;
+}
+
+/* 渠道分组 */
+.channel-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.channel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+}
+
+.channel-header:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.channel-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.channel-title {
+  flex: 1;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.channel-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  padding: 1px 6px;
+  border-radius: 8px;
+  min-width: 20px;
+  text-align: center;
+}
+
+.channel-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 12px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border-color);
 }
 
 /* 深色模式优化 */
@@ -424,6 +598,25 @@ function handleGroupCreated(group: Group) {
 
 :root.dark .section-items {
   border-left-color: rgba(255, 255, 255, 0.1);
+}
+
+:root.dark .channel-header {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+:root.dark .channel-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+:root.dark .channel-count {
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+:root.dark .channel-items {
+  border-left-color: rgba(255, 255, 255, 0.08);
 }
 
 .group-item {
