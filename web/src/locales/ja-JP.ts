@@ -316,6 +316,8 @@ export default {
     sortOrderTooltip:
       "リスト内の表示順序を決定、数値が小さいほど前に表示されます。10、20、30のような間隔での設定を推奨",
     sortValue: "ソート値",
+    maxRetries: "最大リトライ回数",
+    maxRetriesPlaceholder: "サブグループ失敗時の最大リトライ回数 (0-5)",
     testModelTooltip:
       "APIキーの有効性を検証するためのモデル名。システムはこのモデルを使用してテストリクエストを送信し、キーが機能しているか確認します。軽量で高速なモデルを使用してください",
     testPathTooltip1:

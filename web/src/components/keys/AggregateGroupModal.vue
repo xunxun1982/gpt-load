@@ -55,6 +55,7 @@ const defaultFormData = {
   channel_type: "openai" as ChannelType,
   sort: 1,
   proxy_keys: "",
+  max_retries: 0,
 };
 
 // 表单数据
@@ -116,6 +117,7 @@ function loadGroupData() {
     channel_type: props.group.channel_type || "openai",
     sort: props.group.sort || 1,
     proxy_keys: props.group.proxy_keys || "",
+    max_retries: props.group.config?.max_retries || 0,
   });
 }
 
@@ -144,6 +146,9 @@ async function handleSubmit() {
       sort: formData.sort,
       proxy_keys: formData.proxy_keys,
       group_type: "aggregate" as const,
+      config: {
+        max_retries: formData.max_retries,
+      },
     };
 
     let result: Group;
@@ -225,6 +230,16 @@ async function handleSubmit() {
             <n-input-number
               v-model:value="formData.sort"
               :placeholder="t('keys.sortValue')"
+              style="width: 100%"
+            />
+          </n-form-item>
+
+          <n-form-item :label="t('keys.maxRetries')">
+            <n-input-number
+              v-model:value="formData.max_retries"
+              :placeholder="t('keys.maxRetriesPlaceholder')"
+              :min="0"
+              :max="5"
               style="width: 100%"
             />
           </n-form-item>

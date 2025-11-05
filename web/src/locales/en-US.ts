@@ -317,6 +317,8 @@ export default {
     sortOrderTooltip:
       "Determines display order in the list, smaller numbers appear first. Recommend using intervals like 10, 20, 30 for easy adjustment",
     sortValue: "Sort value",
+    maxRetries: "Max Retries",
+    maxRetriesPlaceholder: "Max retries when sub-group fails (0-5)",
     testModelTooltip:
       "Model name for validating API key availability. System will use this model to send test requests to check if the key is working. Please use lightweight and fast models",
     testPathTooltip1:
