@@ -12,6 +12,12 @@ const { t } = useI18n();
 
 // 常量定义
 const GROUP_TYPE_AGGREGATE = "aggregate" as const;
+const ICON_AGGREGATE = "🔗";
+const ICON_STANDARD = "📦";
+const ICON_OPENAI = "🤖";
+const ICON_GEMINI = "💎";
+const ICON_ANTHROPIC = "🧠";
+const ICON_DEFAULT = "🔧";
 
 interface Props {
   groups: Group[];
@@ -85,7 +91,7 @@ const groupSections = computed<GroupSection[]>(() => {
   if (filteredGroups.value.aggregateGroups.length > 0) {
     sections.push({
       groups: filteredGroups.value.aggregateGroups,
-      icon: "🔗",
+      icon: ICON_AGGREGATE,
       titleKey: "keys.aggregateGroupsTitle",
       isAggregate: true,
     });
@@ -94,7 +100,7 @@ const groupSections = computed<GroupSection[]>(() => {
   if (filteredGroups.value.standardGroups.length > 0) {
     sections.push({
       groups: filteredGroups.value.standardGroups,
-      icon: "📦",
+      icon: ICON_STANDARD,
       titleKey: "keys.standardGroupsTitle",
       isAggregate: false,
     });
@@ -106,18 +112,18 @@ const groupSections = computed<GroupSection[]>(() => {
 // 获取分组图标
 function getGroupIcon(group: Group, isAggregate: boolean): string {
   if (isAggregate) {
-    return "🔗";
+    return ICON_AGGREGATE;
   }
 
   switch (group.channel_type) {
     case "openai":
-      return "🤖";
+      return ICON_OPENAI;
     case "gemini":
-      return "💎";
+      return ICON_GEMINI;
     case "anthropic":
-      return "🧠";
+      return ICON_ANTHROPIC;
     default:
-      return "🔧";
+      return ICON_DEFAULT;
   }
 }
 
