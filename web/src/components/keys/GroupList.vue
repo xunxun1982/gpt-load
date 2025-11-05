@@ -34,16 +34,39 @@ const showGroupModal = ref(false);
 const groupItemRefs = ref(new Map());
 const showAggregateGroupModal = ref(false);
 
+// 过滤和分组的分组列表
 const filteredGroups = computed(() => {
-  if (!searchText.value.trim()) {
-    return props.groups;
+  let groups = props.groups;
+
+  // 应用搜索过滤
+  if (searchText.value.trim()) {
+    const search = searchText.value.toLowerCase().trim();
+    groups = groups.filter(
+      group =>
+        group.name.toLowerCase().includes(search) ||
+        group.display_name?.toLowerCase().includes(search)
+    );
   }
-  const search = searchText.value.toLowerCase().trim();
-  return props.groups.filter(
-    group =>
-      group.name.toLowerCase().includes(search) ||
-      group.display_name?.toLowerCase().includes(search)
-  );
+
+  // 分离聚合分组和标准分组
+  const aggregateGroups = groups.filter(g => g.group_type === "aggregate");
+  const standardGroups = groups.filter(g => g.group_type !== "aggregate");
+
+  // 按 sort 字段排序（升序）
+  const sortBySort = (a: Group, b: Group) => {
+    const sortA = a.sort ?? 0;
+    const sortB = b.sort ?? 0;
+    if (sortA !== sortB) {
+      return sortA - sortB;
+    }
+    // sort 相同时按 id 降序
+    return (b.id ?? 0) - (a.id ?? 0);
+  };
+
+  aggregateGroups.sort(sortBySort);
+  standardGroups.sort(sortBySort);
+
+  return { aggregateGroups, standardGroups };
 });
 
 // 监听选中项 ID 的变化，并自动滚动到该项
@@ -124,54 +147,113 @@ function handleGroupCreated(group: Group) {
       <!-- 分组列表 -->
       <div class="groups-section">
         <n-spin :show="loading" size="small">
-          <div v-if="filteredGroups.length === 0 && !loading" class="empty-container">
+          <div
+            v-if="
+              filteredGroups.aggregateGroups.length === 0 &&
+              filteredGroups.standardGroups.length === 0 &&
+              !loading
+            "
+            class="empty-container"
+          >
             <n-empty
               size="small"
               :description="searchText ? t('keys.noMatchingGroups') : t('keys.noGroups')"
             />
           </div>
           <div v-else class="groups-list">
-            <div
-              v-for="group in filteredGroups"
-              :key="group.id"
-              class="group-item"
-              :class="{
-                active: selectedGroup?.id === group.id,
-                aggregate: group.group_type === 'aggregate',
-                disabled: !group.enabled,
-              }"
-              :aria-label="
-                !group.enabled ? `${getGroupDisplayName(group)} (${t('keys.disabled')})` : undefined
-              "
-              @click="handleGroupClick(group)"
-              :ref="
-                el => {
-                  if (el) groupItemRefs.set(group.id, el);
-                }
-              "
-            >
-              <div class="group-icon">
-                <span v-if="group.group_type === 'aggregate'">🔗</span>
-                <span v-else-if="group.channel_type === 'openai'">🤖</span>
-                <span v-else-if="group.channel_type === 'gemini'">💎</span>
-                <span v-else-if="group.channel_type === 'anthropic'">🧠</span>
-                <span v-else>🔧</span>
+            <!-- 聚合分组区域 -->
+            <div v-if="filteredGroups.aggregateGroups.length > 0" class="group-section">
+              <div class="section-header">
+                <span class="section-icon">🔗</span>
+                <span class="section-title">{{ t("keys.aggregateGroupsTitle") }}</span>
+                <span class="section-count">{{ filteredGroups.aggregateGroups.length }}</span>
               </div>
-              <div class="group-content">
-                <div class="group-name">{{ getGroupDisplayName(group) }}</div>
-                <div class="group-meta">
-                  <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
-                    {{ group.channel_type }}
-                  </n-tag>
-                  <n-tag v-if="group.group_type === 'aggregate'" size="tiny" type="warning" round>
-                    {{ t("keys.aggregateGroup") }}
-                  </n-tag>
-                  <n-tag v-if="!group.enabled" size="tiny" type="error" round>
-                    {{ t("keys.disabled") }}
-                  </n-tag>
-                  <span v-if="group.group_type !== 'aggregate'" class="group-id">
-                    #{{ group.name }}
-                  </span>
+              <div class="section-items">
+                <div
+                  v-for="group in filteredGroups.aggregateGroups"
+                  :key="group.id"
+                  class="group-item aggregate"
+                  :class="{
+                    active: selectedGroup?.id === group.id,
+                    disabled: !group.enabled,
+                  }"
+                  :aria-label="
+                    !group.enabled
+                      ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
+                      : undefined
+                  "
+                  @click="handleGroupClick(group)"
+                  :ref="
+                    el => {
+                      if (el) groupItemRefs.set(group.id, el);
+                    }
+                  "
+                >
+                  <div class="group-icon">
+                    <span>🔗</span>
+                  </div>
+                  <div class="group-content">
+                    <div class="group-name">{{ getGroupDisplayName(group) }}</div>
+                    <div class="group-meta">
+                      <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
+                        {{ group.channel_type }}
+                      </n-tag>
+                      <n-tag v-if="!group.enabled" size="tiny" type="error" round>
+                        {{ t("keys.disabled") }}
+                      </n-tag>
+                      <span class="group-id">#{{ group.name }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 标准分组区域 -->
+            <div v-if="filteredGroups.standardGroups.length > 0" class="group-section">
+              <div class="section-header">
+                <span class="section-icon">📦</span>
+                <span class="section-title">{{ t("keys.standardGroupsTitle") }}</span>
+                <span class="section-count">{{ filteredGroups.standardGroups.length }}</span>
+              </div>
+              <div class="section-items">
+                <div
+                  v-for="group in filteredGroups.standardGroups"
+                  :key="group.id"
+                  class="group-item"
+                  :class="{
+                    active: selectedGroup?.id === group.id,
+                    disabled: !group.enabled,
+                  }"
+                  :aria-label="
+                    !group.enabled
+                      ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
+                      : undefined
+                  "
+                  @click="handleGroupClick(group)"
+                  :ref="
+                    el => {
+                      if (el) groupItemRefs.set(group.id, el);
+                    }
+                  "
+                >
+                  <div class="group-icon">
+                    <span v-if="group.channel_type === 'openai'">🤖</span>
+                    <span v-else-if="group.channel_type === 'gemini'">💎</span>
+                    <span v-else-if="group.channel_type === 'anthropic'">🧠</span>
+                    <span v-else>🔧</span>
+                  </div>
+                  <div class="group-content">
+                    <div class="group-name">{{ getGroupDisplayName(group) }}</div>
+                    <div class="group-meta">
+                      <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
+                        {{ group.channel_type }}
+                      </n-tag>
+                      <n-tag v-if="!group.enabled" size="tiny" type="error" round>
+                        {{ t("keys.disabled") }}
+                      </n-tag>
+                      <span class="group-id">#{{ group.name }}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -247,10 +329,88 @@ function handleGroupCreated(group: Group) {
 .groups-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 12px;
   max-height: 100%;
   overflow-y: auto;
   width: 100%;
+}
+
+/* 分组区域 */
+.group-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 区域标题 */
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.3px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  transition: all 0.2s ease;
+}
+
+.section-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.section-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.section-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.section-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 10px;
+  min-width: 24px;
+  text-align: center;
+}
+
+/* 区域项目容器 */
+.section-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border-color);
+  margin-left: 8px;
+}
+
+/* 深色模式优化 */
+:root.dark .section-header {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+:root.dark .section-header:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .section-count {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .section-items {
+  border-left-color: rgba(255, 255, 255, 0.1);
 }
 
 .group-item {
