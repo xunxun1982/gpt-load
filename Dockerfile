@@ -3,8 +3,6 @@ FROM node:20-alpine AS builder
 ARG VERSION=1.0.0
 WORKDIR /build
 COPY ./web .
-# 升级 npm 到最新版本
-RUN npm install -g npm@latest
 RUN npm install
 RUN VITE_VERSION=${VERSION} npm run build
 

@@ -10,6 +10,9 @@ import GroupFormModal from "./GroupFormModal.vue";
 
 const { t } = useI18n();
 
+// 常量定义
+const GROUP_TYPE_AGGREGATE = "aggregate" as const;
+
 interface Props {
   groups: Group[];
   selectedGroup: Group | null;
@@ -20,6 +23,13 @@ interface Emits {
   (e: "group-select", group: Group): void;
   (e: "refresh"): void;
   (e: "refresh-and-select", groupId: number): void;
+}
+
+interface GroupSection {
+  groups: Group[];
+  icon: string;
+  titleKey: string;
+  isAggregate: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -59,14 +69,57 @@ const filteredGroups = computed(() => {
   }
 
   // 分离聚合分组和标准分组
-  const aggregateGroups = groups.filter(g => g.group_type === "aggregate");
-  const standardGroups = groups.filter(g => g.group_type !== "aggregate");
+  const aggregateGroups = groups.filter(g => g.group_type === GROUP_TYPE_AGGREGATE);
+  const standardGroups = groups.filter(g => g.group_type !== GROUP_TYPE_AGGREGATE);
 
   aggregateGroups.sort(sortBySort);
   standardGroups.sort(sortBySort);
 
   return { aggregateGroups, standardGroups };
 });
+
+// 分组区域配置
+const groupSections = computed<GroupSection[]>(() => {
+  const sections: GroupSection[] = [];
+
+  if (filteredGroups.value.aggregateGroups.length > 0) {
+    sections.push({
+      groups: filteredGroups.value.aggregateGroups,
+      icon: "🔗",
+      titleKey: "keys.aggregateGroupsTitle",
+      isAggregate: true,
+    });
+  }
+
+  if (filteredGroups.value.standardGroups.length > 0) {
+    sections.push({
+      groups: filteredGroups.value.standardGroups,
+      icon: "📦",
+      titleKey: "keys.standardGroupsTitle",
+      isAggregate: false,
+    });
+  }
+
+  return sections;
+});
+
+// 获取分组图标
+function getGroupIcon(group: Group, isAggregate: boolean): string {
+  if (isAggregate) {
+    return "🔗";
+  }
+
+  switch (group.channel_type) {
+    case "openai":
+      return "🤖";
+    case "gemini":
+      return "💎";
+    case "anthropic":
+      return "🧠";
+    default:
+      return "🔧";
+  }
+}
 
 // 监听选中项 ID 的变化，并自动滚动到该项
 watch(
@@ -160,66 +213,20 @@ function handleGroupCreated(group: Group) {
             />
           </div>
           <div v-else class="groups-list">
-            <!-- 聚合分组区域 -->
-            <div v-if="filteredGroups.aggregateGroups.length > 0" class="group-section">
+            <!-- 分组区域（统一渲染） -->
+            <div v-for="section in groupSections" :key="section.titleKey" class="group-section">
               <div class="section-header">
-                <span class="section-icon">🔗</span>
-                <span class="section-title">{{ t("keys.aggregateGroupsTitle") }}</span>
-                <span class="section-count">{{ filteredGroups.aggregateGroups.length }}</span>
+                <span class="section-icon">{{ section.icon }}</span>
+                <span class="section-title">{{ t(section.titleKey) }}</span>
+                <span class="section-count">{{ section.groups.length }}</span>
               </div>
               <div class="section-items">
                 <div
-                  v-for="group in filteredGroups.aggregateGroups"
-                  :key="group.id"
-                  class="group-item aggregate"
-                  :class="{
-                    active: selectedGroup?.id === group.id,
-                    disabled: !group.enabled,
-                  }"
-                  :aria-label="
-                    !group.enabled
-                      ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
-                      : undefined
-                  "
-                  @click="handleGroupClick(group)"
-                  :ref="
-                    el => {
-                      if (el) groupItemRefs.set(group.id, el);
-                    }
-                  "
-                >
-                  <div class="group-icon">
-                    <span>🔗</span>
-                  </div>
-                  <div class="group-content">
-                    <div class="group-name">{{ getGroupDisplayName(group) }}</div>
-                    <div class="group-meta">
-                      <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
-                        {{ group.channel_type }}
-                      </n-tag>
-                      <n-tag v-if="!group.enabled" size="tiny" type="error" round>
-                        {{ t("keys.disabled") }}
-                      </n-tag>
-                      <span class="group-id">#{{ group.name }}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- 标准分组区域 -->
-            <div v-if="filteredGroups.standardGroups.length > 0" class="group-section">
-              <div class="section-header">
-                <span class="section-icon">📦</span>
-                <span class="section-title">{{ t("keys.standardGroupsTitle") }}</span>
-                <span class="section-count">{{ filteredGroups.standardGroups.length }}</span>
-              </div>
-              <div class="section-items">
-                <div
-                  v-for="group in filteredGroups.standardGroups"
+                  v-for="group in section.groups"
                   :key="group.id"
                   class="group-item"
                   :class="{
+                    aggregate: section.isAggregate,
                     active: selectedGroup?.id === group.id,
                     disabled: !group.enabled,
                   }"
@@ -236,10 +243,7 @@ function handleGroupCreated(group: Group) {
                   "
                 >
                   <div class="group-icon">
-                    <span v-if="group.channel_type === 'openai'">🤖</span>
-                    <span v-else-if="group.channel_type === 'gemini'">💎</span>
-                    <span v-else-if="group.channel_type === 'anthropic'">🧠</span>
-                    <span v-else>🔧</span>
+                    <span>{{ getGroupIcon(group, section.isAggregate) }}</span>
                   </div>
                   <div class="group-content">
                     <div class="group-name">{{ getGroupDisplayName(group) }}</div>
