@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
+	"gpt-load/internal/utils"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -55,6 +56,34 @@ func (m *SubGroupManager) SelectSubGroup(group *models.Group) (string, error) {
 	}).Debug("Selected sub-group from aggregate")
 
 	return selectedName, nil
+}
+
+// SelectSubGroupWithRetry selects an appropriate sub-group with exclusion list support for retry logic
+// excludeSubGroupIDs: map of sub-group IDs to exclude from selection (failed sub-groups in current request)
+// Returns: selected sub-group name, sub-group ID, and error
+func (m *SubGroupManager) SelectSubGroupWithRetry(group *models.Group, excludeSubGroupIDs map[uint]bool) (string, uint, error) {
+	if group.GroupType != "aggregate" {
+		return "", 0, nil
+	}
+
+	selector := m.getSelector(group)
+	if selector == nil {
+		return "", 0, fmt.Errorf("no valid sub-groups available for aggregate group '%s'", group.Name)
+	}
+
+	selectedName, selectedID := selector.selectNextWithExclusion(excludeSubGroupIDs)
+	if selectedName == "" {
+		return "", 0, fmt.Errorf("no sub-groups with active keys for aggregate group '%s'", group.Name)
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"aggregate_group": group.Name,
+		"selected_group":  selectedName,
+		"selected_id":     selectedID,
+		"excluded_count":  len(excludeSubGroupIDs),
+	}).Debug("Selected sub-group from aggregate with exclusion list")
+
+	return selectedName, selectedID, nil
 }
 
 // RebuildSelectors rebuild all selectors based on the incoming group
@@ -215,27 +244,161 @@ func (s *selector) selectNext() string {
 	return ""
 }
 
-// selectByWeight implements smooth weighted round-robin algorithm
-func (s *selector) selectByWeight() *subGroupItem {
-	totalWeight := 0
-	var best *subGroupItem
+// selectNextWithExclusion uses weighted round-robin algorithm with exclusion list support
+// excludeIDs: map of sub-group IDs to exclude from selection
+// Returns: selected sub-group name and ID
+func (s *selector) selectNextWithExclusion(excludeIDs map[uint]bool) (string, uint) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
+	if len(s.subGroups) == 0 {
+		return "", 0
+	}
+
+	// Fast path: single sub-group
+	if len(s.subGroups) == 1 {
+		item := &s.subGroups[0]
+		// Check if excluded
+		if excludeIDs[item.subGroupID] {
+			return "", 0
+		}
+		// Check if enabled
+		if !item.enabled {
+			logrus.WithFields(logrus.Fields{
+				"group_id":   item.subGroupID,
+				"group_name": item.name,
+			}).Debug("Single sub-group is disabled")
+			return "", 0
+		}
+		// Check if has active keys
+		if s.hasActiveKeys(item.subGroupID) {
+			return item.name, item.subGroupID
+		}
+		logrus.WithFields(logrus.Fields{
+			"group_id":   item.subGroupID,
+			"group_name": item.name,
+		}).Debug("Single sub-group has no active keys")
+		return "", 0
+	}
+
+	// Count available sub-groups (not excluded, enabled, has active keys)
+	availableCount := 0
 	for i := range s.subGroups {
 		item := &s.subGroups[i]
-		totalWeight += item.weight
-		item.currentWeight += item.weight
-
-		if best == nil || item.currentWeight > best.currentWeight {
-			best = item
+		if !excludeIDs[item.subGroupID] && item.enabled {
+			availableCount++
 		}
 	}
 
-	if best == nil {
-		return &s.subGroups[0]
+	if availableCount == 0 {
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group": s.groupName,
+			"excluded_count":  len(excludeIDs),
+		}).Debug("No available sub-groups after exclusion")
+		return "", 0
 	}
 
-	best.currentWeight -= totalWeight
-	return best
+	// Try to select a sub-group using weighted round-robin
+	attempted := make(map[uint]bool)
+	for len(attempted) < len(s.subGroups) {
+		item := s.selectByWeightWithExclusion(excludeIDs)
+		if item == nil {
+			break
+		}
+
+		if attempted[item.subGroupID] {
+			continue
+		}
+		attempted[item.subGroupID] = true
+
+		// Skip if excluded
+		if excludeIDs[item.subGroupID] {
+			continue
+		}
+
+		// Skip if disabled
+		if !item.enabled {
+			logrus.WithFields(logrus.Fields{
+				"group_id":   item.subGroupID,
+				"group_name": item.name,
+				"attempts":   len(attempted),
+			}).Debug("Sub-group is disabled, trying next")
+			continue
+		}
+
+		// Check if has active keys
+		if s.hasActiveKeys(item.subGroupID) {
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": s.groupName,
+				"selected_group":  item.name,
+				"selected_id":     item.subGroupID,
+				"attempts":        len(attempted),
+				"excluded_count":  len(excludeIDs),
+			}).Debug("Selected sub-group with active keys (with exclusion)")
+			return item.name, item.subGroupID
+		}
+
+		logrus.WithFields(logrus.Fields{
+			"group_id":   item.subGroupID,
+			"group_name": item.name,
+			"attempts":   len(attempted),
+		}).Debug("Sub-group has no active keys, trying next")
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"aggregate_group":  s.groupName,
+		"total_sub_groups": len(s.subGroups),
+		"excluded_count":   len(excludeIDs),
+	}).Warn("No sub-groups with active keys available after exclusion")
+
+	return "", 0
+}
+
+// selectByWeight implements weighted random selection algorithm
+func (s *selector) selectByWeight() *subGroupItem {
+	if len(s.subGroups) == 0 {
+		return nil
+	}
+
+	// Build weights array
+	weights := make([]int, len(s.subGroups))
+	for i := range s.subGroups {
+		weights[i] = s.subGroups[i].weight
+	}
+
+	// Use shared weighted random selection
+	idx := utils.WeightedRandomSelect(weights)
+	if idx < 0 {
+		return nil
+	}
+
+	return &s.subGroups[idx]
+}
+
+// selectByWeightWithExclusion implements weighted random selection algorithm with exclusion list
+// Only considers sub-groups not in the exclusion list
+func (s *selector) selectByWeightWithExclusion(excludeIDs map[uint]bool) *subGroupItem {
+	if len(s.subGroups) == 0 {
+		return nil
+	}
+
+	// Build weights array (0 for excluded sub-groups)
+	weights := make([]int, len(s.subGroups))
+	for i := range s.subGroups {
+		if excludeIDs[s.subGroups[i].subGroupID] {
+			weights[i] = 0 // Exclude by setting weight to 0
+		} else {
+			weights[i] = s.subGroups[i].weight
+		}
+	}
+
+	// Use shared weighted random selection
+	idx := utils.WeightedRandomSelect(weights)
+	if idx < 0 {
+		return nil
+	}
+
+	return &s.subGroups[idx]
 }
 
 // hasActiveKeys checks if a sub-group has available API keys

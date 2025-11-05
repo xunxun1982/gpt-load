@@ -4,6 +4,7 @@ package middleware
 import (
 	"crypto/subtle"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,14 +45,35 @@ func Logger(config types.LogConfig) gin.HandlerFunc {
 		keyInfo := ""
 		if keyIndex, exists := c.Get("keyIndex"); exists {
 			if keyPreview, exists := c.Get("keyPreview"); exists {
-				keyInfo = fmt.Sprintf(" - Key[%v] %v", keyIndex, keyPreview)
+				// Use strings.Builder for better performance in hot path
+				var b strings.Builder
+				b.WriteString(" - Key[")
+				// Use strconv for int type, fallback to fmt.Sprint for other types
+				if idx, ok := keyIndex.(int); ok {
+					b.WriteString(strconv.Itoa(idx))
+				} else {
+					b.WriteString(fmt.Sprint(keyIndex))
+				}
+				b.WriteString("] ")
+				b.WriteString(fmt.Sprint(keyPreview))
+				keyInfo = b.String()
 			}
 		}
 
 		// Get retry information (if exists)
 		retryInfo := ""
 		if retryCount, exists := c.Get("retryCount"); exists {
-			retryInfo = fmt.Sprintf(" - Retry[%d]", retryCount)
+			// Use strings.Builder for better performance in hot path
+			var b strings.Builder
+			b.WriteString(" - Retry[")
+			// Use strconv for int type, fallback to fmt.Sprint for other types
+			if count, ok := retryCount.(int); ok {
+				b.WriteString(strconv.Itoa(count))
+			} else {
+				b.WriteString(fmt.Sprint(retryCount))
+			}
+			b.WriteByte(']')
+			retryInfo = b.String()
 		}
 
 		// Filter health check and other monitoring endpoint logs to reduce noise

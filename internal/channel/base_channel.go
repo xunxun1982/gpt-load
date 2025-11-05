@@ -41,7 +41,7 @@ type BaseChannel struct {
 	effectiveConfig *types.SystemSettings
 }
 
-// SelectUpstream selects an upstream using a smooth weighted round-robin algorithm.
+// SelectUpstream selects an upstream using weighted random selection algorithm.
 // Returns the selected UpstreamInfo which includes URL and dedicated HTTP clients.
 // Returns nil if no upstream is available (all weights are zero or no upstreams configured).
 func (b *BaseChannel) SelectUpstream() *UpstreamInfo {
@@ -51,32 +51,34 @@ func (b *BaseChannel) SelectUpstream() *UpstreamInfo {
 	if len(b.Upstreams) == 0 {
 		return nil
 	}
+
+	// Fast path: single upstream
 	if len(b.Upstreams) == 1 && b.Upstreams[0].Weight > 0 {
 		return &b.Upstreams[0]
 	}
 
-	totalWeight := 0
-	var best *UpstreamInfo
-
+	// Build weights array and check for positive weights
+	weights := make([]int, len(b.Upstreams))
+	hasPositiveWeight := false
 	for i := range b.Upstreams {
-		up := &b.Upstreams[i]
-		if up.Weight <= 0 {
-			continue // skip disabled upstreams
-		}
-		totalWeight += up.Weight
-		up.CurrentWeight += up.Weight
-
-		if best == nil || up.CurrentWeight > best.CurrentWeight {
-			best = up
+		weight := b.Upstreams[i].Weight
+		weights[i] = weight
+		if weight > 0 {
+			hasPositiveWeight = true
 		}
 	}
 
-	if best == nil {
+	if !hasPositiveWeight {
+		return nil // all upstreams disabled (weight 0)
+	}
+
+	// Use shared weighted random selection
+	idx := utils.WeightedRandomSelect(weights)
+	if idx < 0 {
 		return nil // no available upstream (all disabled)
 	}
 
-	best.CurrentWeight -= totalWeight
-	return best
+	return &b.Upstreams[idx]
 }
 
 // getUpstreamURL selects an upstream URL using a smooth weighted round-robin algorithm.
