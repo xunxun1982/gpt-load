@@ -79,6 +79,11 @@ func parseMaxRetries(config map[string]any) int {
 	case string:
 		if parsed, err := strconv.Atoi(v); err == nil {
 			maxRetries = parsed
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"value": v,
+				"error": err,
+			}).Warn("Failed to parse string for max_retries")
 		}
 	default:
 		logrus.WithFields(logrus.Fields{
@@ -744,7 +749,10 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 		// All sub-groups failed, reset exclusion list for next retry cycle
 		logrus.WithField("aggregate_group", originalGroup.Name).
 			Debug("All sub-groups failed, resetting exclusion list for next retry cycle")
-		retryCtx.excludedSubGroups = make(map[uint]bool, len(originalGroup.SubGroups))
+		// Clear the map instead of allocating a new one
+		for k := range retryCtx.excludedSubGroups {
+			delete(retryCtx.excludedSubGroups, k)
+		}
 	}
 
 	// Increment attempt count and retry
