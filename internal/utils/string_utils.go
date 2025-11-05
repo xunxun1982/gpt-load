@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -11,7 +10,13 @@ func MaskAPIKey(key string) string {
 	if length <= 8 {
 		return key
 	}
-	return fmt.Sprintf("%s****%s", key[:4], key[length-4:])
+	// Use strings.Builder for better performance in hot path (logging)
+	var b strings.Builder
+	b.Grow(length) // Pre-allocate capacity
+	b.WriteString(key[:4])
+	b.WriteString("****")
+	b.WriteString(key[length-4:])
+	return b.String()
 }
 
 // TruncateString shortens a string to a maximum length.

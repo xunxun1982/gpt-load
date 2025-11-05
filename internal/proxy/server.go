@@ -514,14 +514,15 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Create a new URL with the sub-group name instead of aggregate group name
 	// Replace /proxy/{aggregate_group}/ with /proxy/{sub_group}/
+	// Note: Path format is guaranteed by the router, no validation needed here for performance
 	subGroupURL := *c.Request.URL
 	subGroupURL.Path = strings.Replace(c.Request.URL.Path, "/proxy/"+originalGroup.Name+"/", "/proxy/"+group.Name+"/", 1)
 
 	logrus.WithFields(logrus.Fields{
-		"original_path":  c.Request.URL.Path,
-		"subgroup_path":  subGroupURL.Path,
+		"original_path":   c.Request.URL.Path,
+		"subgroup_path":   subGroupURL.Path,
 		"aggregate_group": originalGroup.Name,
-		"sub_group":      group.Name,
+		"sub_group":       group.Name,
 	}).Debug("Rewriting URL path for sub-group")
 
 	// Select upstream with its dedicated HTTP clients
@@ -793,7 +794,14 @@ func (ps *ProxyServer) logRequest(
 	// Format upstream address with proxy info if available
 	upstreamAddrWithProxy := upstreamAddr
 	if proxyURL != nil && *proxyURL != "" {
-		upstreamAddrWithProxy = fmt.Sprintf("%s (proxy: %s)", upstreamAddr, *proxyURL)
+		// Use strings.Builder for better performance in hot path
+		var b strings.Builder
+		b.Grow(len(upstreamAddr) + len(*proxyURL) + 10) // Pre-allocate capacity
+		b.WriteString(upstreamAddr)
+		b.WriteString(" (proxy: ")
+		b.WriteString(*proxyURL)
+		b.WriteByte(')')
+		upstreamAddrWithProxy = b.String()
 	}
 
 	logEntry := &models.RequestLog{

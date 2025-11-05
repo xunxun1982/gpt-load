@@ -36,7 +36,8 @@ func NewProvider(db *gorm.DB, store store.Store, settingsManager *config.SystemS
 
 // SelectKey 为指定的分组原子性地选择并轮换一个可用的 APIKey。
 func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
-	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", groupID)
+	// Use strconv instead of fmt.Sprintf for better performance in hot path
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 
 	// 1. Atomically rotate the key ID from the list
 	keyIDStr, err := p.store.Rotate(activeKeysListKey)
@@ -53,7 +54,8 @@ func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 	}
 
 	// 2. Get key details from HASH
-	keyHashKey := fmt.Sprintf("key:%d", keyID)
+	// Use strconv instead of fmt.Sprintf for better performance in hot path
+	keyHashKey := "key:" + keyIDStr
 	keyDetails, err := p.store.HGetAll(keyHashKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get key details for key ID %d: %w", keyID, err)
@@ -90,8 +92,9 @@ func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 // UpdateStatus 异步地提交一个 Key 状态更新任务。
 func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, isSuccess bool, errorMessage string) {
 	go func() {
-		keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
-		activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
+		// Use strconv instead of fmt.Sprintf for better performance
+		keyHashKey := "key:" + strconv.FormatUint(uint64(apiKey.ID), 10)
+		activeKeysListKey := "group:" + strconv.FormatUint(uint64(group.ID), 10) + ":active_keys"
 
 		if isSuccess {
 			if err := p.handleSuccess(apiKey.ID, keyHashKey, activeKeysListKey); err != nil {
@@ -254,7 +257,8 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 		}
 
 		for _, key := range batchKeys {
-			keyHashKey := fmt.Sprintf("key:%d", key.ID)
+			// Use strconv instead of fmt.Sprintf for better performance
+			keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
 			keyDetails := p.apiKeyToMap(key)
 
 			if pipeline != nil {
@@ -286,7 +290,8 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	logrus.Info("Updating active key lists for all groups...")
 	for groupID, activeIDs := range allActiveKeyIDs {
 		if len(activeIDs) > 0 {
-			activeKeysListKey := fmt.Sprintf("group:%d:active_keys", groupID)
+			// Use strconv instead of fmt.Sprintf for better performance
+			activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 			p.store.Delete(activeKeysListKey)
 			if err := p.store.LPush(activeKeysListKey, activeIDs...); err != nil {
 				logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Error("Failed to LPush active keys for group")
@@ -525,7 +530,8 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 		return nil
 	}
 
-	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", groupID)
+	// Use strconv instead of fmt.Sprintf for better performance
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 
 	// 第一步：直接删除整个 active_keys 列表
 	if err := p.store.Delete(activeKeysListKey); err != nil {
@@ -538,7 +544,8 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 
 	// 第二步：批量删除所有相关的key hash
 	for _, keyID := range keyIDs {
-		keyHashKey := fmt.Sprintf("key:%d", keyID)
+		// Use strconv instead of fmt.Sprintf for better performance
+		keyHashKey := "key:" + strconv.FormatUint(uint64(keyID), 10)
 		if err := p.store.Delete(keyHashKey); err != nil {
 			logrus.WithFields(logrus.Fields{
 				"keyID": keyID,
@@ -558,7 +565,8 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 // addKeyToStore is a helper to add a single key to the cache.
 func (p *KeyProvider) addKeyToStore(key *models.APIKey) error {
 	// 1. Store key details in HASH
-	keyHashKey := fmt.Sprintf("key:%d", key.ID)
+	// Use strconv instead of fmt.Sprintf for better performance
+	keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
 	keyDetails := p.apiKeyToMap(key)
 	if err := p.store.HSet(keyHashKey, keyDetails); err != nil {
 		return fmt.Errorf("failed to HSet key details for key %d: %w", key.ID, err)
@@ -566,7 +574,8 @@ func (p *KeyProvider) addKeyToStore(key *models.APIKey) error {
 
 	// 2. If active, add to the active LIST
 	if key.Status == models.KeyStatusActive {
-		activeKeysListKey := fmt.Sprintf("group:%d:active_keys", key.GroupID)
+		// Use strconv instead of fmt.Sprintf for better performance
+		activeKeysListKey := "group:" + strconv.FormatUint(uint64(key.GroupID), 10) + ":active_keys"
 		if err := p.store.LRem(activeKeysListKey, 0, key.ID); err != nil {
 			return fmt.Errorf("failed to LRem key %d before LPush for group %d: %w", key.ID, key.GroupID, err)
 		}
@@ -579,12 +588,14 @@ func (p *KeyProvider) addKeyToStore(key *models.APIKey) error {
 
 // removeKeyFromStore is a helper to remove a single key from the cache.
 func (p *KeyProvider) removeKeyFromStore(keyID, groupID uint) error {
-	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", groupID)
+	// Use strconv instead of fmt.Sprintf for better performance
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 	if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
 		logrus.WithFields(logrus.Fields{"keyID": keyID, "groupID": groupID, "error": err}).Error("Failed to LRem key from active list")
 	}
 
-	keyHashKey := fmt.Sprintf("key:%d", keyID)
+	// Use strconv instead of fmt.Sprintf for better performance
+	keyHashKey := "key:" + strconv.FormatUint(uint64(keyID), 10)
 	if err := p.store.Delete(keyHashKey); err != nil {
 		return fmt.Errorf("failed to delete key HASH for key %d: %w", keyID, err)
 	}
