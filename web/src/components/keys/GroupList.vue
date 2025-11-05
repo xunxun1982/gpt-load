@@ -34,6 +34,16 @@ const showGroupModal = ref(false);
 const groupItemRefs = ref(new Map());
 const showAggregateGroupModal = ref(false);
 
+// 按 sort 字段排序（升序），sort 相同时按 id 降序
+function sortBySort(a: Group, b: Group) {
+  const sortA = a.sort ?? 0;
+  const sortB = b.sort ?? 0;
+  if (sortA !== sortB) {
+    return sortA - sortB;
+  }
+  return (b.id ?? 0) - (a.id ?? 0);
+}
+
 // 过滤和分组的分组列表
 const filteredGroups = computed(() => {
   let groups = props.groups;
@@ -51,17 +61,6 @@ const filteredGroups = computed(() => {
   // 分离聚合分组和标准分组
   const aggregateGroups = groups.filter(g => g.group_type === "aggregate");
   const standardGroups = groups.filter(g => g.group_type !== "aggregate");
-
-  // 按 sort 字段排序（升序）
-  const sortBySort = (a: Group, b: Group) => {
-    const sortA = a.sort ?? 0;
-    const sortB = b.sort ?? 0;
-    if (sortA !== sortB) {
-      return sortA - sortB;
-    }
-    // sort 相同时按 id 降序
-    return (b.id ?? 0) - (a.id ?? 0);
-  };
 
   aggregateGroups.sort(sortBySort);
   standardGroups.sort(sortBySort);

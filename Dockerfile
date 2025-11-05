@@ -20,7 +20,7 @@ ENV GO111MODULE=on \
 WORKDIR /build
 
 # 利用 Docker 层缓存优化依赖下载
-ADD go.mod go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
@@ -42,8 +42,8 @@ RUN apk upgrade --no-cache \
     && update-ca-certificates
 
 # 运行时优化环境变量
-ENV GOGC=100 \
-    GOMEMLIMIT=512MiB
+# 限制内存使用，防止容器 OOM
+ENV GOMEMLIMIT=512MiB
 
 COPY --from=builder2 /build/gpt-load .
 EXPOSE 3001
