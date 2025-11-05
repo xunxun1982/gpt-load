@@ -4,6 +4,7 @@ package middleware
 import (
 	"crypto/subtle"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,7 +48,12 @@ func Logger(config types.LogConfig) gin.HandlerFunc {
 				// Use strings.Builder for better performance in hot path
 				var b strings.Builder
 				b.WriteString(" - Key[")
-				b.WriteString(fmt.Sprint(keyIndex))
+				// Use strconv for int type, fallback to fmt.Sprint for other types
+				if idx, ok := keyIndex.(int); ok {
+					b.WriteString(strconv.Itoa(idx))
+				} else {
+					b.WriteString(fmt.Sprint(keyIndex))
+				}
 				b.WriteString("] ")
 				b.WriteString(fmt.Sprint(keyPreview))
 				keyInfo = b.String()
@@ -60,7 +66,12 @@ func Logger(config types.LogConfig) gin.HandlerFunc {
 			// Use strings.Builder for better performance in hot path
 			var b strings.Builder
 			b.WriteString(" - Retry[")
-			b.WriteString(fmt.Sprint(retryCount))
+			// Use strconv for int type, fallback to fmt.Sprint for other types
+			if count, ok := retryCount.(int); ok {
+				b.WriteString(strconv.Itoa(count))
+			} else {
+				b.WriteString(fmt.Sprint(retryCount))
+			}
 			b.WriteByte(']')
 			retryInfo = b.String()
 		}

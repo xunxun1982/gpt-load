@@ -5,6 +5,7 @@ import (
 )
 
 // MaskAPIKey masks an API key for safe logging.
+// Example: "sk-1234567890abcdef" -> "sk-1****cdef"
 func MaskAPIKey(key string) string {
 	length := len(key)
 	if length <= 8 {
@@ -12,7 +13,9 @@ func MaskAPIKey(key string) string {
 	}
 	// Use strings.Builder for better performance in hot path (logging)
 	var b strings.Builder
-	b.Grow(length) // Pre-allocate capacity
+	// Pre-allocate exactly 12 bytes: 4 (prefix) + 4 (****) + 4 (suffix)
+	// The result is always 12 bytes regardless of original key length
+	b.Grow(12)
 	b.WriteString(key[:4])
 	b.WriteString("****")
 	b.WriteString(key[length-4:])
