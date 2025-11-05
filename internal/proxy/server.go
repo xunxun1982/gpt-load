@@ -46,6 +46,58 @@ type retryContext struct {
 	originalBodyBytes  []byte        // Original request body (before any sub-group mapping)
 }
 
+// parseMaxRetries extracts and validates max_retries from group config
+// Returns a value clamped to the range [0, 5]
+func parseMaxRetries(config map[string]any) int {
+	if config == nil {
+		return 0
+	}
+
+	val, ok := config["max_retries"]
+	if !ok {
+		return 0
+	}
+
+	maxRetries := 0
+	// Try different type assertions
+	switch v := val.(type) {
+	case float64:
+		maxRetries = int(v)
+	case int:
+		maxRetries = v
+	case int64:
+		maxRetries = int(v)
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			maxRetries = int(parsed)
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"value": v,
+				"error": err,
+			}).Warn("Failed to parse json.Number for max_retries")
+		}
+	case string:
+		if parsed, err := strconv.Atoi(v); err == nil {
+			maxRetries = parsed
+		}
+	default:
+		logrus.WithFields(logrus.Fields{
+			"value": val,
+			"type":  fmt.Sprintf("%T", val),
+		}).Warn("Unexpected type for max_retries")
+	}
+
+	// Clamp to 0-5 range
+	if maxRetries < 0 {
+		return 0
+	}
+	if maxRetries > 5 {
+		return 5
+	}
+
+	return maxRetries
+}
+
 // NewProxyServer creates a new proxy server
 func NewProxyServer(
 	keyProvider *keypool.KeyProvider,
@@ -370,48 +422,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	retryCtx *retryContext,
 ) {
 	// Get max retries from aggregate group config (default 0)
-	maxRetries := 0
-	if originalGroup.Config != nil {
-		if val, ok := originalGroup.Config["max_retries"]; ok {
-			// Try different type assertions
-			switch v := val.(type) {
-			case float64:
-				maxRetries = int(v)
-			case int:
-				maxRetries = v
-			case int64:
-				maxRetries = int(v)
-			case json.Number:
-				if parsed, err := v.Int64(); err == nil {
-					maxRetries = int(parsed)
-				} else {
-					logrus.WithFields(logrus.Fields{
-						"aggregate_group": originalGroup.Name,
-						"value":           v,
-						"error":           err,
-					}).Warn("Failed to parse json.Number for max_retries")
-				}
-			case string:
-				if parsed, err := strconv.Atoi(v); err == nil {
-					maxRetries = parsed
-				}
-			default:
-				logrus.WithFields(logrus.Fields{
-					"aggregate_group": originalGroup.Name,
-					"value":           val,
-					"type":            fmt.Sprintf("%T", val),
-				}).Warn("Unexpected type for max_retries")
-			}
-		}
-	}
-
-	// Validate and clamp max retries to 0-5 range
-	if maxRetries < 0 {
-		maxRetries = 0
-	}
-	if maxRetries > 5 {
-		maxRetries = 5
-	}
+	maxRetries := parseMaxRetries(originalGroup.Config)
 
 	logrus.WithFields(logrus.Fields{
 		"aggregate_group": originalGroup.Name,
