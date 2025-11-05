@@ -35,6 +35,8 @@ interface Emits {
   (e: "refresh-and-select", groupId: number): void;
 }
 
+type ChannelType = "openai" | "gemini" | "anthropic" | "default";
+
 interface GroupSection {
   groups: Group[];
   icon: string;
@@ -44,7 +46,7 @@ interface GroupSection {
 }
 
 interface ChannelGroup {
-  channelType: string;
+  channelType: ChannelType;
   groups: Group[];
   icon: string;
 }
@@ -122,12 +124,35 @@ const groupSections = computed<GroupSection[]>(() => {
   return sections;
 });
 
+// 为每个分组区域计算渠道分组（缓存以提高性能）
+const sectionChannelGroups = computed(() => {
+  const result = new Map<string, ChannelGroup[]>();
+  for (const section of groupSections.value) {
+    result.set(section.sectionKey, groupByChannelType(section.groups));
+  }
+  return result;
+});
+
+// 获取渠道类型图标
+function getChannelTypeIcon(channelType: string): string {
+  switch (channelType) {
+    case "openai":
+      return ICON_OPENAI;
+    case "gemini":
+      return ICON_GEMINI;
+    case "anthropic":
+      return ICON_ANTHROPIC;
+    default:
+      return ICON_DEFAULT;
+  }
+}
+
 // 按渠道类型分组
 function groupByChannelType(groups: Group[]): ChannelGroup[] {
-  const channelMap = new Map<string, Group[]>();
+  const channelMap = new Map<ChannelType, Group[]>();
 
   for (const group of groups) {
-    const channelType = group.channel_type || "default";
+    const channelType = (group.channel_type?.trim() || "default") as ChannelType;
     if (!channelMap.has(channelType)) {
       channelMap.set(channelType, []);
     }
@@ -138,20 +163,11 @@ function groupByChannelType(groups: Group[]): ChannelGroup[] {
   for (const [channelType, channelGroups] of channelMap) {
     // 对每个渠道类型内的分组按 sort 排序
     channelGroups.sort(sortBySort);
-
-    let icon = ICON_DEFAULT;
-    switch (channelType) {
-      case "openai":
-        icon = ICON_OPENAI;
-        break;
-      case "gemini":
-        icon = ICON_GEMINI;
-        break;
-      case "anthropic":
-        icon = ICON_ANTHROPIC;
-        break;
-    }
-    result.push({ channelType, groups: channelGroups, icon });
+    result.push({
+      channelType,
+      groups: channelGroups,
+      icon: getChannelTypeIcon(channelType),
+    });
   }
 
   return result;
@@ -195,17 +211,7 @@ function getGroupIcon(group: Group, isAggregate: boolean): string {
   if (isAggregate) {
     return ICON_AGGREGATE;
   }
-
-  switch (group.channel_type) {
-    case "openai":
-      return ICON_OPENAI;
-    case "gemini":
-      return ICON_GEMINI;
-    case "anthropic":
-      return ICON_ANTHROPIC;
-    default:
-      return ICON_DEFAULT;
-  }
+  return getChannelTypeIcon(group.channel_type || "default");
 }
 
 // 监听选中项 ID 的变化，并自动滚动到该项
@@ -302,7 +308,14 @@ function handleGroupCreated(group: Group) {
           <div v-else class="groups-list">
             <!-- 分组区域（统一渲染） -->
             <div v-for="section in groupSections" :key="section.titleKey" class="group-section">
-              <div class="section-header" @click="toggleSection(section.sectionKey)">
+              <div
+                class="section-header"
+                role="button"
+                tabindex="0"
+                @click="toggleSection(section.sectionKey)"
+                @keydown.enter="toggleSection(section.sectionKey)"
+                @keydown.space.prevent="toggleSection(section.sectionKey)"
+              >
                 <n-icon
                   class="collapse-icon"
                   :component="isSectionCollapsed(section.sectionKey) ? ChevronForward : ChevronDown"
@@ -314,13 +327,19 @@ function handleGroupCreated(group: Group) {
               <div v-if="!isSectionCollapsed(section.sectionKey)" class="section-items">
                 <!-- 按渠道类型分组 -->
                 <div
-                  v-for="channelGroup in groupByChannelType(section.groups)"
+                  v-for="channelGroup in sectionChannelGroups.get(section.sectionKey) || []"
                   :key="channelGroup.channelType"
                   class="channel-group"
                 >
                   <div
                     class="channel-header"
+                    role="button"
+                    tabindex="0"
                     @click="toggleChannel(section.sectionKey, channelGroup.channelType)"
+                    @keydown.enter="toggleChannel(section.sectionKey, channelGroup.channelType)"
+                    @keydown.space.prevent="
+                      toggleChannel(section.sectionKey, channelGroup.channelType)
+                    "
                   >
                     <n-icon
                       class="collapse-icon"
@@ -490,6 +509,11 @@ function handleGroupCreated(group: Group) {
   background: var(--bg-tertiary);
 }
 
+.section-header:focus {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
 .collapse-icon {
   font-size: 14px;
   transition: transform 0.2s ease;
@@ -552,6 +576,11 @@ function handleGroupCreated(group: Group) {
 .channel-header:hover {
   background: var(--bg-secondary);
   color: var(--text-primary);
+}
+
+.channel-header:focus {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
 }
 
 .channel-icon {
