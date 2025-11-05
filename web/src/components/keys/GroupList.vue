@@ -159,21 +159,25 @@ function groupByChannelType(groups: Group[]): ChannelGroup[] {
 
 // 切换分组区域折叠状态
 function toggleSection(sectionKey: string) {
-  if (collapsedSections.value.has(sectionKey)) {
-    collapsedSections.value.delete(sectionKey);
+  const next = new Set(collapsedSections.value);
+  if (next.has(sectionKey)) {
+    next.delete(sectionKey);
   } else {
-    collapsedSections.value.add(sectionKey);
+    next.add(sectionKey);
   }
+  collapsedSections.value = next;
 }
 
 // 切换渠道分组折叠状态
 function toggleChannel(sectionKey: string, channelType: string) {
   const key = `${sectionKey}-${channelType}`;
-  if (collapsedChannels.value.has(key)) {
-    collapsedChannels.value.delete(key);
+  const next = new Set(collapsedChannels.value);
+  if (next.has(key)) {
+    next.delete(key);
   } else {
-    collapsedChannels.value.add(key);
+    next.add(key);
   }
+  collapsedChannels.value = next;
 }
 
 // 检查分组区域是否折叠
