@@ -653,21 +653,19 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 }
 
 // countAvailableSubGroups counts the number of available sub-groups
-// Excludes: disabled (enabled=false), no active keys (invalid), and in exclusion list
+// Excludes: disabled (enabled=false) and sub-groups in the exclusion list
+// Note: Actual key availability is checked during sub-group selection
 func (ps *ProxyServer) countAvailableSubGroups(group *models.Group, excludedIDs map[uint]bool) int {
 	count := 0
 	for _, sg := range group.SubGroups {
-		// Naturally exclude: skip disabled sub-groups
+		// Skip disabled sub-groups
 		if !sg.SubGroupEnabled {
 			continue
 		}
-		// Dynamically exclude: skip sub-groups in exclusion list
+		// Skip sub-groups in exclusion list
 		if excludedIDs[sg.SubGroupID] {
 			continue
 		}
-		// Naturally exclude: check if has active keys (invalid state)
-		// We assume if a sub-group is enabled and not excluded, it's available
-		// The actual key availability check will be done during selection
 		count++
 	}
 	return count
@@ -689,20 +687,27 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 ) {
 	// Get current sub-group ID
 	if subGroupID, exists := c.Get("current_sub_group_id"); exists {
+		subGroupIDUint, ok := subGroupID.(uint)
+		if !ok {
+			logrus.WithField("sub_group_id", subGroupID).
+				Error("Invalid sub-group ID type in context")
+			return
+		}
+
 		// Count available sub-groups (excluding disabled and no active keys)
 		availableCount := ps.countAvailableSubGroups(originalGroup, retryCtx.excludedSubGroups)
 
 		// Only exclude the failed sub-group if there are more than 1 available
 		// If only 1 available, don't exclude it (no other choice)
 		if availableCount > 1 {
-			retryCtx.excludedSubGroups[subGroupID.(uint)] = true
+			retryCtx.excludedSubGroups[subGroupIDUint] = true
 			logrus.WithFields(logrus.Fields{
-				"sub_group_id":    subGroupID,
+				"sub_group_id":    subGroupIDUint,
 				"excluded_count":  len(retryCtx.excludedSubGroups),
 				"available_count": availableCount - 1,
 			}).Debug("Added failed sub-group to exclusion list")
 		} else {
-			logrus.WithField("sub_group_id", subGroupID).
+			logrus.WithField("sub_group_id", subGroupIDUint).
 				Debug("Not excluding last available sub-group")
 		}
 	}
