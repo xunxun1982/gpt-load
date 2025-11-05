@@ -427,7 +427,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			logrus.WithField("aggregate_group", originalGroup.Name).
 				Warn("No valid sub-groups available, skipping retry")
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, "No valid sub-groups available"))
-			ps.logRequest(c, originalGroup, nil, nil, startTime, http.StatusServiceUnavailable,
+			ps.logRequest(c, originalGroup, originalGroup, nil, startTime, http.StatusServiceUnavailable,
 				errors.New("no valid sub-groups"), isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
 			return
 		}
