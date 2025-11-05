@@ -10,6 +10,15 @@ import GroupFormModal from "./GroupFormModal.vue";
 
 const { t } = useI18n();
 
+// 常量定义
+const GROUP_TYPE_AGGREGATE = "aggregate" as const;
+const ICON_AGGREGATE = "🔗";
+const ICON_STANDARD = "📦";
+const ICON_OPENAI = "🤖";
+const ICON_GEMINI = "💎";
+const ICON_ANTHROPIC = "🧠";
+const ICON_DEFAULT = "🔧";
+
 interface Props {
   groups: Group[];
   selectedGroup: Group | null;
@@ -20,6 +29,13 @@ interface Emits {
   (e: "group-select", group: Group): void;
   (e: "refresh"): void;
   (e: "refresh-and-select", groupId: number): void;
+}
+
+interface GroupSection {
+  groups: Group[];
+  icon: string;
+  titleKey: string;
+  isAggregate: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -34,17 +50,82 @@ const showGroupModal = ref(false);
 const groupItemRefs = ref(new Map());
 const showAggregateGroupModal = ref(false);
 
-const filteredGroups = computed(() => {
-  if (!searchText.value.trim()) {
-    return props.groups;
+// 按 sort 字段排序（升序），sort 相同时按 id 降序
+function sortBySort(a: Group, b: Group) {
+  const sortA = a.sort ?? 0;
+  const sortB = b.sort ?? 0;
+  if (sortA !== sortB) {
+    return sortA - sortB;
   }
-  const search = searchText.value.toLowerCase().trim();
-  return props.groups.filter(
-    group =>
-      group.name.toLowerCase().includes(search) ||
-      group.display_name?.toLowerCase().includes(search)
-  );
+  return (b.id ?? 0) - (a.id ?? 0);
+}
+
+// 过滤和分组的分组列表
+const filteredGroups = computed(() => {
+  let groups = props.groups;
+
+  // 应用搜索过滤
+  if (searchText.value.trim()) {
+    const search = searchText.value.toLowerCase().trim();
+    groups = groups.filter(
+      group =>
+        group.name.toLowerCase().includes(search) ||
+        group.display_name?.toLowerCase().includes(search)
+    );
+  }
+
+  // 分离聚合分组和标准分组
+  const aggregateGroups = groups.filter(g => g.group_type === GROUP_TYPE_AGGREGATE);
+  const standardGroups = groups.filter(g => g.group_type !== GROUP_TYPE_AGGREGATE);
+
+  aggregateGroups.sort(sortBySort);
+  standardGroups.sort(sortBySort);
+
+  return { aggregateGroups, standardGroups };
 });
+
+// 分组区域配置
+const groupSections = computed<GroupSection[]>(() => {
+  const sections: GroupSection[] = [];
+
+  if (filteredGroups.value.aggregateGroups.length > 0) {
+    sections.push({
+      groups: filteredGroups.value.aggregateGroups,
+      icon: ICON_AGGREGATE,
+      titleKey: "keys.aggregateGroupsTitle",
+      isAggregate: true,
+    });
+  }
+
+  if (filteredGroups.value.standardGroups.length > 0) {
+    sections.push({
+      groups: filteredGroups.value.standardGroups,
+      icon: ICON_STANDARD,
+      titleKey: "keys.standardGroupsTitle",
+      isAggregate: false,
+    });
+  }
+
+  return sections;
+});
+
+// 获取分组图标
+function getGroupIcon(group: Group, isAggregate: boolean): string {
+  if (isAggregate) {
+    return ICON_AGGREGATE;
+  }
+
+  switch (group.channel_type) {
+    case "openai":
+      return ICON_OPENAI;
+    case "gemini":
+      return ICON_GEMINI;
+    case "anthropic":
+      return ICON_ANTHROPIC;
+    default:
+      return ICON_DEFAULT;
+  }
+}
 
 // 监听选中项 ID 的变化，并自动滚动到该项
 watch(
@@ -124,54 +205,68 @@ function handleGroupCreated(group: Group) {
       <!-- 分组列表 -->
       <div class="groups-section">
         <n-spin :show="loading" size="small">
-          <div v-if="filteredGroups.length === 0 && !loading" class="empty-container">
+          <div
+            v-if="
+              filteredGroups.aggregateGroups.length === 0 &&
+              filteredGroups.standardGroups.length === 0 &&
+              !loading
+            "
+            class="empty-container"
+          >
             <n-empty
               size="small"
               :description="searchText ? t('keys.noMatchingGroups') : t('keys.noGroups')"
             />
           </div>
           <div v-else class="groups-list">
-            <div
-              v-for="group in filteredGroups"
-              :key="group.id"
-              class="group-item"
-              :class="{
-                active: selectedGroup?.id === group.id,
-                aggregate: group.group_type === 'aggregate',
-                disabled: !group.enabled,
-              }"
-              :aria-label="
-                !group.enabled ? `${getGroupDisplayName(group)} (${t('keys.disabled')})` : undefined
-              "
-              @click="handleGroupClick(group)"
-              :ref="
-                el => {
-                  if (el) groupItemRefs.set(group.id, el);
-                }
-              "
-            >
-              <div class="group-icon">
-                <span v-if="group.group_type === 'aggregate'">🔗</span>
-                <span v-else-if="group.channel_type === 'openai'">🤖</span>
-                <span v-else-if="group.channel_type === 'gemini'">💎</span>
-                <span v-else-if="group.channel_type === 'anthropic'">🧠</span>
-                <span v-else>🔧</span>
+            <!-- 分组区域（统一渲染） -->
+            <div v-for="section in groupSections" :key="section.titleKey" class="group-section">
+              <div class="section-header">
+                <span class="section-icon">{{ section.icon }}</span>
+                <span class="section-title">{{ t(section.titleKey) }}</span>
+                <span class="section-count">{{ section.groups.length }}</span>
               </div>
-              <div class="group-content">
-                <div class="group-name">{{ getGroupDisplayName(group) }}</div>
-                <div class="group-meta">
-                  <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
-                    {{ group.channel_type }}
-                  </n-tag>
-                  <n-tag v-if="group.group_type === 'aggregate'" size="tiny" type="warning" round>
-                    {{ t("keys.aggregateGroup") }}
-                  </n-tag>
-                  <n-tag v-if="!group.enabled" size="tiny" type="error" round>
-                    {{ t("keys.disabled") }}
-                  </n-tag>
-                  <span v-if="group.group_type !== 'aggregate'" class="group-id">
-                    #{{ group.name }}
-                  </span>
+              <div class="section-items">
+                <div
+                  v-for="group in section.groups"
+                  :key="group.id"
+                  class="group-item"
+                  :class="{
+                    aggregate: section.isAggregate,
+                    active: selectedGroup?.id === group.id,
+                    disabled: !group.enabled,
+                  }"
+                  :aria-label="
+                    !group.enabled
+                      ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
+                      : undefined
+                  "
+                  @click="handleGroupClick(group)"
+                  :ref="
+                    el => {
+                      if (el) {
+                        groupItemRefs.set(group.id, el);
+                      } else {
+                        groupItemRefs.delete(group.id);
+                      }
+                    }
+                  "
+                >
+                  <div class="group-icon">
+                    <span>{{ getGroupIcon(group, section.isAggregate) }}</span>
+                  </div>
+                  <div class="group-content">
+                    <div class="group-name">{{ getGroupDisplayName(group) }}</div>
+                    <div class="group-meta">
+                      <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
+                        {{ group.channel_type }}
+                      </n-tag>
+                      <n-tag v-if="!group.enabled" size="tiny" type="error" round>
+                        {{ t("keys.disabled") }}
+                      </n-tag>
+                      <span class="group-id">#{{ group.name }}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -247,10 +342,88 @@ function handleGroupCreated(group: Group) {
 .groups-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 12px;
   max-height: 100%;
   overflow-y: auto;
   width: 100%;
+}
+
+/* 分组区域 */
+.group-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 区域标题 */
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.3px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  transition: all 0.2s ease;
+}
+
+.section-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.section-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.section-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.section-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 10px;
+  min-width: 24px;
+  text-align: center;
+}
+
+/* 区域项目容器 */
+.section-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border-color);
+  margin-left: 8px;
+}
+
+/* 深色模式优化 */
+:root.dark .section-header {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+:root.dark .section-header:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .section-count {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .section-items {
+  border-left-color: rgba(255, 255, 255, 0.1);
 }
 
 .group-item {
