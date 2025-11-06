@@ -492,7 +492,7 @@ func (s *Server) UpdateKeyNotes(c *gin.Context) {
 	}
 
 	// Update notes
-	if err := s.DB.Model(&key).Update("notes", req.Notes).Error; err != nil {
+	if err := s.DB.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("notes", req.Notes).Error; err != nil {
 		response.Error(c, app_errors.ParseDBError(err))
 		return
 	}

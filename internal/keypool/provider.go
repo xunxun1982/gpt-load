@@ -166,7 +166,7 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 			updates["status"] = models.KeyStatusActive
 		}
 
-		if err := tx.Model(&key).Updates(updates).Error; err != nil {
+		if err := tx.Model(&models.APIKey{}).Where("id = ?", keyID).Updates(updates).Error; err != nil {
 			return fmt.Errorf("failed to update key in DB: %w", err)
 		}
 
@@ -217,7 +217,7 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 			updates["status"] = models.KeyStatusInvalid
 		}
 
-		if err := tx.Model(&key).Updates(updates).Error; err != nil {
+		if err := tx.Model(&models.APIKey{}).Where("id = ?", apiKey.ID).Updates(updates).Error; err != nil {
 			return fmt.Errorf("failed to update key stats in DB: %w", err)
 		}
 

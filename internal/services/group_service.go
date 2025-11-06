@@ -983,7 +983,7 @@ func (s *GroupService) ToggleGroupEnabled(ctx context.Context, id uint, enabled 
 		return app_errors.ParseDBError(err)
 	}
 
-	if err := s.db.WithContext(ctx).Model(&group).Update("enabled", enabled).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&models.Group{}).Where("id = ?", id).Update("enabled", enabled).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
 
