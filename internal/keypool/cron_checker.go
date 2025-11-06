@@ -125,14 +125,14 @@ func (s *CronChecker) validateGroupKeys(group *models.Group) {
 	groupProcessStart := time.Now()
 
 	var invalidKeys []models.APIKey
-	err := s.DB.Where("group_id = ? AND status = ?", group.ID, models.KeyStatusInvalid).Find(&invalidKeys).Error
+	err := s.DB.Select("id, group_id, key_value, status").Where("group_id = ? AND status = ?", group.ID, models.KeyStatusInvalid).Find(&invalidKeys).Error
 	if err != nil {
 		logrus.Errorf("CronChecker: Failed to get invalid keys for group %s: %v", group.Name, err)
 		return
 	}
 
 	if len(invalidKeys) == 0 {
-		if err := s.DB.Model(group).Update("last_validated_at", time.Now()).Error; err != nil {
+		if err := s.DB.Model(&models.Group{}).Where("id = ?", group.ID).Update("last_validated_at", time.Now()).Error; err != nil {
 			logrus.Errorf("CronChecker: Failed to update last_validated_at for group %s: %v", group.Name, err)
 		}
 		logrus.Infof("CronChecker: Group '%s' has no invalid keys to check.", group.Name)
@@ -189,7 +189,7 @@ DistributeLoop:
 
 	keyWg.Wait()
 
-	if err := s.DB.Model(group).Update("last_validated_at", time.Now()).Error; err != nil {
+	if err := s.DB.Model(&models.Group{}).Where("id = ?", group.ID).Update("last_validated_at", time.Now()).Error; err != nil {
 		logrus.Errorf("CronChecker: Failed to update last_validated_at for group %s: %v", group.Name, err)
 	}
 

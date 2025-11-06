@@ -978,13 +978,13 @@ func (s *GroupService) isValidChannelType(channelType string) bool {
 
 // ToggleGroupEnabled enables or disables a group
 func (s *GroupService) ToggleGroupEnabled(ctx context.Context, id uint, enabled bool) error {
-	var group models.Group
-	if err := s.db.WithContext(ctx).First(&group, id).Error; err != nil {
-		return app_errors.ParseDBError(err)
+	// Update directly (RowsAffected check below handles non-existent groups)
+	result := s.db.WithContext(ctx).Model(&models.Group{}).Where("id = ?", id).Update("enabled", enabled)
+	if result.Error != nil {
+		return app_errors.ParseDBError(result.Error)
 	}
-
-	if err := s.db.WithContext(ctx).Model(&group).Update("enabled", enabled).Error; err != nil {
-		return app_errors.ParseDBError(err)
+	if result.RowsAffected == 0 {
+		return app_errors.ErrResourceNotFound
 	}
 
 	if err := s.groupManager.Invalidate(); err != nil {
