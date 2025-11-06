@@ -308,7 +308,7 @@ export const keysApi = {
   // 导出分组完整数据
   async exportGroup(groupId: number): Promise<void> {
     try {
-      const data = await http.get(`/groups/${groupId}/export`);
+      const { data } = await http.get(`/groups/${groupId}/export`);
 
       // 将数据转换为 JSON 字符串
       const jsonStr = JSON.stringify(data, null, 2);

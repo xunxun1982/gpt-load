@@ -137,7 +137,7 @@ func (s *KeyManualValidationService) runValidation(group *models.Group, keys []m
 	logrus.Infof("Manual validation finished for group %s: %+v", group.Name, result)
 }
 
-// validationWorker contains validation result information.
+// validationWorker processes key validation jobs from the jobs channel and sends results.
 func (s *KeyManualValidationService) validationWorker(wg *sync.WaitGroup, group *models.Group, jobs <-chan models.APIKey, results chan<- bool) {
 	defer wg.Done()
 	for key := range jobs {

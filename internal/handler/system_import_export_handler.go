@@ -55,6 +55,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 		var headerRules []models.HeaderRule
 		if len(group.HeaderRules) > 0 {
 			if err := json.Unmarshal(group.HeaderRules, &headerRules); err != nil {
+				logrus.WithError(err).WithField("group_id", group.ID).Warn("Failed to parse HeaderRules during export")
 				headerRules = []models.HeaderRule{}
 			}
 		}
@@ -92,7 +93,9 @@ func (s *Server) ExportAll(c *gin.Context) {
 		// If it's an aggregate group, get sub-group information
 		if group.GroupType == "aggregate" {
 			subGroups, err := s.AggregateGroupService.GetSubGroups(c.Request.Context(), group.ID)
-			if err == nil {
+			if err != nil {
+				logrus.WithError(err).WithField("group_id", group.ID).Warn("Failed to get sub-groups during export")
+			} else {
 				for _, sg := range subGroups {
 					groupExport.SubGroups = append(groupExport.SubGroups, SubGroupExportInfo{
 						GroupName: sg.Group.Name,
@@ -142,7 +145,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 	var convertedSettingsMap map[string]any
 	if len(importData.SystemSettings) > 0 {
 		var err error
-		convertedSettingsMap, err = convertSettingsMap(importData.SystemSettings, s.SettingsManager)
+		convertedSettingsMap, err = convertSettingsMap(importData.SystemSettings)
 		if err != nil {
 			logrus.WithError(err).Error("Failed to convert system settings during import")
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Invalid system settings: %v", err)))
@@ -212,9 +215,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 }
 
 // convertSettingsMap converts map[string]string to map[string]any and performs type conversion based on field types.
-func convertSettingsMap(stringMap map[string]string, settingsManager interface {
-	ValidateSettings(map[string]any) error
-}) (map[string]any, error) {
+func convertSettingsMap(stringMap map[string]string) (map[string]any, error) {
 	// Get SystemSettings struct information to determine field types
 	tempSettings := utils.DefaultSystemSettings()
 	v := reflect.ValueOf(&tempSettings).Elem()

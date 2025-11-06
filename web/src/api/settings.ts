@@ -35,10 +35,10 @@ export const settingsApi = {
   // 导出系统全量配置
   async exportAll(): Promise<void> {
     try {
-      const data = await http.get("/system/export");
+      const response = await http.get("/system/export");
 
       // 将数据转换为 JSON 字符串
-      const jsonStr = JSON.stringify(data, null, 2);
+      const jsonStr = JSON.stringify(response.data, null, 2);
 
       // 创建 Blob 对象
       const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });

@@ -320,14 +320,14 @@ func isStaticResource(path string) bool {
 		".webp", ".avif", ".map",
 	}
 
-	// 检查路径前缀
+	// Check path prefix
 	for _, prefix := range staticPrefixes {
 		if strings.HasPrefix(path, prefix) {
 			return true
 		}
 	}
 
-	// 检查文件扩展名
+	// Check file extension
 	for _, suffix := range staticSuffixes {
 		if strings.HasSuffix(path, suffix) {
 			return true

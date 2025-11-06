@@ -389,21 +389,28 @@ func (s *AggregateGroupService) fetchSubGroupsKeyStats(ctx context.Context, grou
 
 	// Check cache first
 	s.statsCacheMu.RLock()
-	if entry, ok := s.statsCache[cacheKey]; ok {
-		if time.Now().Before(entry.expiresAt) {
-			// Cache hit - return cached results
-			s.statsCacheMu.RUnlock()
-			// Deep copy to avoid race conditions
-			cachedResults := make(map[uint]keyStatsResult, len(entry.results))
-			for k, v := range entry.results {
-				cachedResults[k] = v
-			}
-			return cachedResults
-		}
-		// Cache expired, remove it
-		delete(s.statsCache, cacheKey)
-	}
+	entry, cached := s.statsCache[cacheKey]
+	isFresh := cached && time.Now().Before(entry.expiresAt)
 	s.statsCacheMu.RUnlock()
+
+	if isFresh {
+		// Cache hit - return cached results
+		// Deep copy to avoid race conditions
+		cachedResults := make(map[uint]keyStatsResult, len(entry.results))
+		for k, v := range entry.results {
+			cachedResults[k] = v
+		}
+		return cachedResults
+	}
+
+	if cached {
+		// Cache expired, clear it under write lock
+		s.statsCacheMu.Lock()
+		if current, ok := s.statsCache[cacheKey]; ok && current.expiresAt.Equal(entry.expiresAt) {
+			delete(s.statsCache, cacheKey)
+		}
+		s.statsCacheMu.Unlock()
+	}
 
 	// Initialize results map with all group IDs to ensure all groups are represented
 	for _, gid := range groupIDs {

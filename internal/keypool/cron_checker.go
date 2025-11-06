@@ -2,6 +2,8 @@ package keypool
 
 import (
 	"context"
+	"math/rand"
+	"strings"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
@@ -94,6 +96,9 @@ func (s *CronChecker) submitValidationJobs() {
 
 	validationStartTime := time.Now()
 	var wg sync.WaitGroup
+	// Use a thread-safe map to collect group IDs that need to be updated
+	var groupsToUpdateMu sync.Mutex
+	groupsToUpdate := make(map[uint]struct{})
 
 	for i := range groups {
 		group := &groups[i]
@@ -112,16 +117,22 @@ func (s *CronChecker) submitValidationJobs() {
 			g := group
 			go func() {
 				defer wg.Done()
-				s.validateGroupKeys(g)
+				s.validateGroupKeys(g, &groupsToUpdateMu, groupsToUpdate)
 			}()
 		}
 	}
 
 	wg.Wait()
+
+	// Batch update all groups' last_validated_at in a single transaction
+	if len(groupsToUpdate) > 0 {
+		s.batchUpdateLastValidatedAt(groupsToUpdate)
+	}
 }
 
 // validateGroupKeys validates all invalid keys for a single group concurrently.
-func (s *CronChecker) validateGroupKeys(group *models.Group) {
+// It adds the group ID to groupsToUpdate map after validation completes.
+func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *sync.Mutex, groupsToUpdate map[uint]struct{}) {
 	groupProcessStart := time.Now()
 
 	var invalidKeys []models.APIKey
@@ -132,11 +143,10 @@ func (s *CronChecker) validateGroupKeys(group *models.Group) {
 	}
 
 	if len(invalidKeys) == 0 {
-		// Use UpdateColumns to only update last_validated_at field, avoiding updated_at auto-update and hooks
-		now := time.Now()
-		if err := s.DB.Model(&models.Group{}).Where("id = ?", group.ID).UpdateColumns(map[string]any{"last_validated_at": now}).Error; err != nil {
-			logrus.Errorf("CronChecker: Failed to update last_validated_at for group %s: %v", group.Name, err)
-		}
+		// Mark group for batch update
+		groupsToUpdateMu.Lock()
+		groupsToUpdate[group.ID] = struct{}{}
+		groupsToUpdateMu.Unlock()
 		logrus.Infof("CronChecker: Group '%s' has no invalid keys to check.", group.Name)
 		return
 	}
@@ -191,11 +201,10 @@ DistributeLoop:
 
 	keyWg.Wait()
 
-	// Use UpdateColumns to only update last_validated_at field, avoiding updated_at auto-update and hooks
-	now := time.Now()
-	if err := s.DB.Model(&models.Group{}).Where("id = ?", group.ID).UpdateColumns(map[string]any{"last_validated_at": now}).Error; err != nil {
-		logrus.Errorf("CronChecker: Failed to update last_validated_at for group %s: %v", group.Name, err)
-	}
+	// Mark group for batch update
+	groupsToUpdateMu.Lock()
+	groupsToUpdate[group.ID] = struct{}{}
+	groupsToUpdateMu.Unlock()
 
 	duration := time.Since(groupProcessStart)
 	logrus.Infof(
@@ -205,4 +214,51 @@ DistributeLoop:
 		becameValidCount,
 		duration.String(),
 	)
+}
+
+// batchUpdateLastValidatedAt updates last_validated_at for multiple groups in a single batch operation.
+// It uses retry mechanism to handle SQLITE_BUSY errors.
+func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{}) {
+	if len(groupsToUpdate) == 0 {
+		return
+	}
+
+	// Convert map to slice for SQL IN clause
+	groupIDs := make([]uint, 0, len(groupsToUpdate))
+	for id := range groupsToUpdate {
+		groupIDs = append(groupIDs, id)
+	}
+
+	now := time.Now()
+	const maxRetries = 5
+	const baseDelay = 50 * time.Millisecond
+	const maxJitter = 200 * time.Millisecond
+
+	var err error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Use UpdateColumns with Where IN for batch update
+		// This avoids GORM's updated_at auto-update and hooks while supporting batch operations
+		err = s.DB.Model(&models.Group{}).
+			Where("id IN ?", groupIDs).
+			UpdateColumns(map[string]any{"last_validated_at": now}).Error
+		if err == nil {
+			logrus.Debugf("CronChecker: Successfully batch updated last_validated_at for %d groups", len(groupIDs))
+			return
+		}
+
+		// Check if it's a SQLITE_BUSY error
+		if strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "SQLITE_BUSY") {
+			jitter := time.Duration(rand.Intn(int(maxJitter)))
+			totalDelay := baseDelay*time.Duration(attempt+1) + jitter
+			logrus.Debugf("CronChecker: Database is locked, retrying batch update in %v... (attempt %d/%d)", totalDelay, attempt+1, maxRetries)
+			time.Sleep(totalDelay)
+			continue
+		}
+
+		// For other errors, break immediately
+		break
+	}
+
+	// If all retries failed, log error but don't fail the entire operation
+	logrus.Errorf("CronChecker: Failed to batch update last_validated_at for %d groups after %d attempts: %v", len(groupIDs), maxRetries, err)
 }
