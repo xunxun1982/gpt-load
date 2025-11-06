@@ -492,8 +492,13 @@ func (s *Server) UpdateKeyNotes(c *gin.Context) {
 	}
 
 	// Update notes
-	if err := s.DB.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("notes", req.Notes).Error; err != nil {
-		response.Error(c, app_errors.ParseDBError(err))
+	result := s.DB.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("notes", req.Notes)
+	if result.Error != nil {
+		response.Error(c, app_errors.ParseDBError(result.Error))
+		return
+	}
+	if result.RowsAffected == 0 {
+		response.Error(c, app_errors.ErrResourceNotFound)
 		return
 	}
 
