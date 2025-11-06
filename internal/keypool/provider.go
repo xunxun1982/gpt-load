@@ -98,7 +98,7 @@ func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, i
 		activeKeysListKey := "group:" + strconv.FormatUint(uint64(group.ID), 10) + ":active_keys"
 
 		if isSuccess {
-			if err := p.handleSuccess(apiKey.ID, keyHashKey, activeKeysListKey); err != nil {
+			if err := p.handleSuccess(apiKey.ID, keyHashKey, activeKeysListKey, group.ID); err != nil {
 				logrus.WithFields(logrus.Fields{"keyID": apiKey.ID, "error": err}).Error("Failed to handle key success")
 			}
 		} else {
@@ -145,7 +145,7 @@ func (p *KeyProvider) executeTransactionWithRetry(operation func(tx *gorm.DB) er
 	return err
 }
 
-func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey string) error {
+func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey string, groupID uint) error {
 	keyDetails, err := p.store.HGetAll(keyHashKey)
 	if err != nil {
 		return fmt.Errorf("failed to get key details from store: %w", err)
@@ -186,9 +186,10 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 				return fmt.Errorf("failed to LPush key back to active list: %w", err)
 			}
 
-			// Invalidate cache after key status change (need to extract groupID from key)
-			// Note: We don't have direct access to groupID here, so this would need to be passed
-			// or retrieved from the key. For now, we'll skip this case as it's less critical.
+			// Invalidate cache after key status change
+			if p.CacheInvalidationCallback != nil {
+				p.CacheInvalidationCallback(groupID)
+			}
 		}
 
 		return nil

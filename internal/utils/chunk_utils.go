@@ -1,8 +1,15 @@
 package utils
 
+import "fmt"
+
 // ProcessInChunks processes a slice in chunks of the specified size.
 // It calls the provided function for each chunk.
+// Returns an error if chunkSize is invalid or if the processing function fails.
 func ProcessInChunks[T any](items []T, chunkSize int, fn func(chunk []T) error) error {
+	if chunkSize <= 0 {
+		return fmt.Errorf("chunk size must be positive, got %d", chunkSize)
+	}
+
 	for i := 0; i < len(items); i += chunkSize {
 		end := i + chunkSize
 		if end > len(items) {
@@ -18,8 +25,14 @@ func ProcessInChunks[T any](items []T, chunkSize int, fn func(chunk []T) error) 
 
 // ChunkSlice splits a slice into chunks of the specified size.
 // Returns a slice of slices, where each inner slice is a chunk.
-func ChunkSlice[T any](items []T, chunkSize int) [][]T {
-	var chunks [][]T
+// Returns an error if chunkSize is invalid.
+func ChunkSlice[T any](items []T, chunkSize int) ([][]T, error) {
+	if chunkSize <= 0 {
+		return nil, fmt.Errorf("chunk size must be positive, got %d", chunkSize)
+	}
+
+	// Pre-allocate chunks slice with estimated capacity
+	chunks := make([][]T, 0, (len(items)+chunkSize-1)/chunkSize)
 	for i := 0; i < len(items); i += chunkSize {
 		end := i + chunkSize
 		if end > len(items) {
@@ -27,5 +40,5 @@ func ChunkSlice[T any](items []T, chunkSize int) [][]T {
 		}
 		chunks = append(chunks, items[i:end])
 	}
-	return chunks
+	return chunks, nil
 }
