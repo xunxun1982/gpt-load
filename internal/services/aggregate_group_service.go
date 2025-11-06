@@ -223,8 +223,10 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 		for i := range result.SubGroups {
 			result.SubGroups[i].GroupID = groupID
 		}
-		// Use CreateInBatches for better performance when adding multiple sub groups
-		if err := tx.CreateInBatches(result.SubGroups, len(result.SubGroups)).Error; err != nil {
+		// Use CreateInBatches with fixed batch size for better performance and robustness
+		// Fixed batch size ensures consistent behavior even with large sub-group counts
+		const batchSize = 100
+		if err := tx.CreateInBatches(result.SubGroups, batchSize).Error; err != nil {
 			return app_errors.ParseDBError(err)
 		}
 		return nil
@@ -466,10 +468,12 @@ func (s *AggregateGroupService) fetchSubGroupsKeyStats(ctx context.Context, grou
 		results:   cachedResults,
 		expiresAt: time.Now().Add(s.statsCacheTTL),
 	}
-	// Clean up expired entries periodically (keep cache size reasonable)
-	// Only cleanup when cache grows large to avoid overhead
+	// Clean up expired entries periodically to prevent memory leak
+	// Always cleanup expired entries, but only do full cleanup when cache grows large
+	s.cleanupExpiredCacheEntries()
+	// If cache is still large after cleanup, log a warning
 	if len(s.statsCache) > 100 {
-		s.cleanupExpiredCacheEntries()
+		logrus.Debugf("AggregateGroupService: Cache size is %d after cleanup, consider tuning cache TTL", len(s.statsCache))
 	}
 	s.statsCacheMu.Unlock()
 

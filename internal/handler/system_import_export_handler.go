@@ -140,6 +140,13 @@ func (s *Server) ImportAll(c *gin.Context) {
 		return
 	}
 
+	// Validate version compatibility
+	// Log warning if version doesn't match expected value to help with future format evolution
+	if importData.Version != "" && importData.Version != "2.0" {
+		logrus.WithField("version", importData.Version).WithField("expected_version", "2.0").
+			Warn("Importing data with different version, compatibility not guaranteed")
+	}
+
 	// Validate system settings before transaction to ensure full rollback on failure
 	// Convert map[string]string to map[string]any and perform type conversion based on field types
 	var convertedSettingsMap map[string]any

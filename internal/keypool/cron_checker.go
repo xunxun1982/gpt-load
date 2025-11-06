@@ -264,7 +264,10 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 
 		if isLockError {
 			jitter := time.Duration(rand.Intn(int(maxJitter)))
-			totalDelay := baseDelay*time.Duration(attempt+1) + jitter
+			// Use exponential backoff for better performance under lock contention
+			// Delays: 50ms, 100ms, 200ms, 400ms, 800ms (plus jitter)
+			exponentialDelay := baseDelay * (1 << attempt)
+			totalDelay := exponentialDelay + jitter
 			logrus.Debugf("CronChecker: Database lock detected, retrying batch update in %v... (attempt %d/%d)", totalDelay, attempt+1, maxRetries)
 			time.Sleep(totalDelay)
 			continue
