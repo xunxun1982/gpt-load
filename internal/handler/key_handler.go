@@ -480,19 +480,8 @@ func (s *Server) UpdateKeyNotes(c *gin.Context) {
 		return
 	}
 
-	// Check if the key exists and update its notes
-	var key models.APIKey
-	if err := s.DB.First(&key, keyID).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			response.Error(c, app_errors.ErrResourceNotFound)
-		} else {
-			response.Error(c, app_errors.ParseDBError(err))
-		}
-		return
-	}
-
-	// Update notes
-	result := s.DB.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("notes", req.Notes)
+	// Update notes (RowsAffected check below handles non-existent keys)
+	result := s.DB.Model(&models.APIKey{}).Where("id = ?", uint(keyID)).Update("notes", req.Notes)
 	if result.Error != nil {
 		response.Error(c, app_errors.ParseDBError(result.Error))
 		return
