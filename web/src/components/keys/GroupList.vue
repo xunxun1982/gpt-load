@@ -35,7 +35,7 @@ interface Emits {
   (e: "refresh-and-select", groupId: number): void;
 }
 
-type ChannelType = "openai" | "gemini" | "anthropic" | "default";
+type ChannelType = string;
 
 interface GroupSection {
   groups: Group[];
@@ -50,6 +50,9 @@ interface ChannelGroup {
   groups: Group[];
   icon: string;
 }
+
+// 已知渠道类型的排序顺序
+const KNOWN_CHANNEL_ORDER: string[] = ["openai", "gemini", "anthropic", "default"];
 
 const props = withDefaults(defineProps<Props>(), {
   loading: false,
@@ -133,14 +136,10 @@ const sectionChannelGroups = computed(() => {
   return result;
 });
 
-// 类型守卫：验证是否为有效的渠道类型
-function isValidChannelType(value: string): value is ChannelType {
-  return value === "openai" || value === "gemini" || value === "anthropic" || value === "default";
-}
-
-// 获取渠道类型图标
+// 获取渠道类型图标（仅为已知类型提供特定图标）
 function getChannelTypeIcon(channelType: string): string {
-  switch (channelType) {
+  const lowerType = channelType.toLowerCase();
+  switch (lowerType) {
     case "openai":
       return ICON_OPENAI;
     case "gemini":
@@ -152,13 +151,13 @@ function getChannelTypeIcon(channelType: string): string {
   }
 }
 
-// 按渠道类型分组
+// 按渠道类型分组（保留所有原始渠道类型，不强制转换）
 function groupByChannelType(groups: Group[]): ChannelGroup[] {
   const channelMap = new Map<ChannelType, Group[]>();
 
   for (const group of groups) {
-    const rawType = group.channel_type?.trim() || "default";
-    const channelType: ChannelType = isValidChannelType(rawType) ? rawType : "default";
+    // 保留原始渠道类型，仅在为空时使用 default
+    const channelType = group.channel_type?.trim() || "default";
     if (!channelMap.has(channelType)) {
       channelMap.set(channelType, []);
     }
@@ -176,10 +175,27 @@ function groupByChannelType(groups: Group[]): ChannelGroup[] {
     });
   }
 
-  // 按渠道类型排序以确保一致的显示顺序
+  // 按渠道类型排序：已知类型在前，未知类型按字母顺序在后
   result.sort((a, b) => {
-    const order: ChannelType[] = ["openai", "gemini", "anthropic", "default"];
-    return order.indexOf(a.channelType) - order.indexOf(b.channelType);
+    const aLower = a.channelType.toLowerCase();
+    const bLower = b.channelType.toLowerCase();
+    const aIndex = KNOWN_CHANNEL_ORDER.indexOf(aLower);
+    const bIndex = KNOWN_CHANNEL_ORDER.indexOf(bLower);
+
+    // 两者都是已知类型，按预定义顺序排序
+    if (aIndex !== -1 && bIndex !== -1) {
+      return aIndex - bIndex;
+    }
+    // a 是已知类型，b 不是，a 排在前面
+    if (aIndex !== -1) {
+      return -1;
+    }
+    // b 是已知类型，a 不是，b 排在前面
+    if (bIndex !== -1) {
+      return 1;
+    }
+    // 两者都是未知类型，按字母顺序排序
+    return aLower.localeCompare(bLower);
   });
 
   return result;
