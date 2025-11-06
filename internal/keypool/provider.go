@@ -8,7 +8,7 @@ import (
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
-	"gpt-load/internal/utils"
+	"math/rand"
 	"strconv"
 	"strings"
 	"time"
@@ -129,8 +129,9 @@ func (p *KeyProvider) executeTransactionWithRetry(operation func(tx *gorm.DB) er
 		}
 
 		if strings.Contains(err.Error(), "database is locked") {
-			// Use seeded random number generator to avoid predictable jitter sequences
-			jitter := time.Duration(utils.GetRand().Intn(int(maxJitter)))
+			// Use thread-safe global rand.Intn (Go 1.20+ auto-seeds and is concurrency-safe)
+			// This avoids data race issues when multiple goroutines call executeTransactionWithRetry concurrently
+			jitter := time.Duration(rand.Intn(int(maxJitter)))
 			totalDelay := baseDelay + jitter
 			logrus.Debugf("Database is locked, retrying in %v... (attempt %d/%d)", totalDelay, i+1, maxRetries)
 			time.Sleep(totalDelay)

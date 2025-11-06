@@ -2,11 +2,11 @@ package keypool
 
 import (
 	"context"
+	"math/rand"
 	"strings"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
-	"gpt-load/internal/utils"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -288,9 +288,9 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 			strings.Contains(errMsg, "could not obtain lock")
 
 		if isLockError {
-			// Use seeded random number generator to avoid predictable jitter sequences
-			// This improves collision avoidance in high-concurrency scenarios
-			jitter := time.Duration(utils.GetRand().Intn(int(maxJitter)))
+			// Use thread-safe global rand.Intn (Go 1.20+ auto-seeds and is concurrency-safe)
+			// This provides good randomness while avoiding data race issues
+			jitter := time.Duration(rand.Intn(int(maxJitter)))
 			// Use exponential backoff for better performance under lock contention
 			// Delays: 50ms, 100ms, 200ms, 400ms, 800ms (plus jitter)
 			exponentialDelay := baseDelay * (1 << attempt)
