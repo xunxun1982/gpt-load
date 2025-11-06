@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { Group } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
-import { Add, LinkOutline, Search } from "@vicons/ionicons5";
-import { NButton, NCard, NEmpty, NInput, NSpin, NTag } from "naive-ui";
+import { Add, LinkOutline, Search, ChevronDown, ChevronForward } from "@vicons/ionicons5";
+import { NButton, NCard, NEmpty, NInput, NSpin, NTag, NIcon } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
@@ -19,6 +19,10 @@ const ICON_GEMINI = "💎";
 const ICON_ANTHROPIC = "🧠";
 const ICON_DEFAULT = "🔧";
 
+// 折叠状态管理
+const collapsedSections = ref<Set<string>>(new Set());
+const collapsedChannels = ref<Set<string>>(new Set());
+
 interface Props {
   groups: Group[];
   selectedGroup: Group | null;
@@ -31,12 +35,24 @@ interface Emits {
   (e: "refresh-and-select", groupId: number): void;
 }
 
+type ChannelType = string;
+
 interface GroupSection {
   groups: Group[];
   icon: string;
   titleKey: string;
   isAggregate: boolean;
+  sectionKey: string;
 }
+
+interface ChannelGroup {
+  channelType: ChannelType;
+  groups: Group[];
+  icon: string;
+}
+
+// 已知渠道类型的排序顺序
+const KNOWN_CHANNEL_ORDER: string[] = ["openai", "gemini", "anthropic", "default"];
 
 const props = withDefaults(defineProps<Props>(), {
   loading: false,
@@ -94,6 +110,7 @@ const groupSections = computed<GroupSection[]>(() => {
       icon: ICON_AGGREGATE,
       titleKey: "keys.aggregateGroupsTitle",
       isAggregate: true,
+      sectionKey: "aggregate",
     });
   }
 
@@ -103,19 +120,26 @@ const groupSections = computed<GroupSection[]>(() => {
       icon: ICON_STANDARD,
       titleKey: "keys.standardGroupsTitle",
       isAggregate: false,
+      sectionKey: "standard",
     });
   }
 
   return sections;
 });
 
-// 获取分组图标
-function getGroupIcon(group: Group, isAggregate: boolean): string {
-  if (isAggregate) {
-    return ICON_AGGREGATE;
+// 为每个分组区域计算渠道分组（缓存以提高性能）
+const sectionChannelGroups = computed(() => {
+  const result = new Map<string, ChannelGroup[]>();
+  for (const section of groupSections.value) {
+    result.set(section.sectionKey, groupByChannelType(section.groups));
   }
+  return result;
+});
 
-  switch (group.channel_type) {
+// 获取渠道类型图标（仅为已知类型提供特定图标）
+function getChannelTypeIcon(channelType: string): string {
+  const lowerType = channelType.toLowerCase();
+  switch (lowerType) {
     case "openai":
       return ICON_OPENAI;
     case "gemini":
@@ -125,6 +149,98 @@ function getGroupIcon(group: Group, isAggregate: boolean): string {
     default:
       return ICON_DEFAULT;
   }
+}
+
+// 按渠道类型分组（保留所有原始渠道类型，不强制转换）
+function groupByChannelType(groups: Group[]): ChannelGroup[] {
+  const channelMap = new Map<ChannelType, Group[]>();
+
+  for (const group of groups) {
+    // 保留原始渠道类型，仅在为空时使用 default
+    const channelType = group.channel_type?.trim() || "default";
+    if (!channelMap.has(channelType)) {
+      channelMap.set(channelType, []);
+    }
+    channelMap.get(channelType)?.push(group);
+  }
+
+  const result: ChannelGroup[] = [];
+  for (const [channelType, channelGroups] of channelMap) {
+    // 对每个渠道类型内的分组按 sort 排序
+    channelGroups.sort(sortBySort);
+    result.push({
+      channelType,
+      groups: channelGroups,
+      icon: getChannelTypeIcon(channelType),
+    });
+  }
+
+  // 按渠道类型排序：已知类型在前，未知类型按字母顺序在后
+  result.sort((a, b) => {
+    const aLower = a.channelType.toLowerCase();
+    const bLower = b.channelType.toLowerCase();
+    const aIndex = KNOWN_CHANNEL_ORDER.indexOf(aLower);
+    const bIndex = KNOWN_CHANNEL_ORDER.indexOf(bLower);
+
+    // 两者都是已知类型，按预定义顺序排序
+    if (aIndex !== -1 && bIndex !== -1) {
+      return aIndex - bIndex;
+    }
+    // a 是已知类型，b 不是，a 排在前面
+    if (aIndex !== -1) {
+      return -1;
+    }
+    // b 是已知类型，a 不是，b 排在前面
+    if (bIndex !== -1) {
+      return 1;
+    }
+    // 两者都是未知类型，按字母顺序排序
+    return aLower.localeCompare(bLower);
+  });
+
+  return result;
+}
+
+// 切换分组区域折叠状态
+function toggleSection(sectionKey: string) {
+  const next = new Set(collapsedSections.value);
+  if (next.has(sectionKey)) {
+    next.delete(sectionKey);
+  } else {
+    next.add(sectionKey);
+  }
+  collapsedSections.value = next;
+}
+
+// 切换渠道分组折叠状态
+function toggleChannel(sectionKey: string, channelType: string) {
+  const key = `${sectionKey}-${channelType}`;
+  const next = new Set(collapsedChannels.value);
+  if (next.has(key)) {
+    next.delete(key);
+  } else {
+    next.add(key);
+  }
+  collapsedChannels.value = next;
+}
+
+// 检查分组区域是否折叠
+function isSectionCollapsed(sectionKey: string): boolean {
+  return collapsedSections.value.has(sectionKey);
+}
+
+// 检查渠道分组是否折叠
+function isChannelCollapsed(sectionKey: string, channelType: string): boolean {
+  return collapsedChannels.value.has(`${sectionKey}-${channelType}`);
+}
+
+// 获取分组图标
+function getGroupIcon(group: Group, isAggregate: boolean): string {
+  if (isAggregate) {
+    return ICON_AGGREGATE;
+  }
+  const channelType = group.channel_type?.trim() || "default";
+  return getChannelTypeIcon(channelType);
 }
 
 // 监听选中项 ID 的变化，并自动滚动到该项
@@ -156,7 +272,8 @@ function handleGroupClick(group: Group) {
 
 // 获取渠道类型的标签颜色
 function getChannelTagType(channelType: string) {
-  switch (channelType) {
+  const normalized = channelType?.trim().toLowerCase();
+  switch (normalized) {
     case "openai":
       return "success";
     case "gemini":
@@ -221,50 +338,99 @@ function handleGroupCreated(group: Group) {
           <div v-else class="groups-list">
             <!-- 分组区域（统一渲染） -->
             <div v-for="section in groupSections" :key="section.titleKey" class="group-section">
-              <div class="section-header">
+              <div
+                class="section-header"
+                role="button"
+                tabindex="0"
+                :aria-expanded="!isSectionCollapsed(section.sectionKey)"
+                @click="toggleSection(section.sectionKey)"
+                @keydown.enter="toggleSection(section.sectionKey)"
+                @keydown.space.prevent="toggleSection(section.sectionKey)"
+              >
+                <n-icon
+                  class="collapse-icon"
+                  :component="isSectionCollapsed(section.sectionKey) ? ChevronForward : ChevronDown"
+                />
                 <span class="section-icon">{{ section.icon }}</span>
                 <span class="section-title">{{ t(section.titleKey) }}</span>
                 <span class="section-count">{{ section.groups.length }}</span>
               </div>
-              <div class="section-items">
+              <div v-if="!isSectionCollapsed(section.sectionKey)" class="section-items">
+                <!-- 按渠道类型分组 -->
                 <div
-                  v-for="group in section.groups"
-                  :key="group.id"
-                  class="group-item"
-                  :class="{
-                    aggregate: section.isAggregate,
-                    active: selectedGroup?.id === group.id,
-                    disabled: !group.enabled,
-                  }"
-                  :aria-label="
-                    !group.enabled
-                      ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
-                      : undefined
-                  "
-                  @click="handleGroupClick(group)"
-                  :ref="
-                    el => {
-                      if (el) {
-                        groupItemRefs.set(group.id, el);
-                      } else {
-                        groupItemRefs.delete(group.id);
-                      }
-                    }
-                  "
+                  v-for="channelGroup in sectionChannelGroups.get(section.sectionKey) || []"
+                  :key="channelGroup.channelType"
+                  class="channel-group"
                 >
-                  <div class="group-icon">
-                    <span>{{ getGroupIcon(group, section.isAggregate) }}</span>
+                  <div
+                    class="channel-header"
+                    role="button"
+                    tabindex="0"
+                    :aria-expanded="
+                      !isChannelCollapsed(section.sectionKey, channelGroup.channelType)
+                    "
+                    @click="toggleChannel(section.sectionKey, channelGroup.channelType)"
+                    @keydown.enter="toggleChannel(section.sectionKey, channelGroup.channelType)"
+                    @keydown.space.prevent="
+                      toggleChannel(section.sectionKey, channelGroup.channelType)
+                    "
+                  >
+                    <n-icon
+                      class="collapse-icon"
+                      :component="
+                        isChannelCollapsed(section.sectionKey, channelGroup.channelType)
+                          ? ChevronForward
+                          : ChevronDown
+                      "
+                    />
+                    <span class="channel-icon">{{ channelGroup.icon }}</span>
+                    <span class="channel-title">{{ channelGroup.channelType }}</span>
+                    <span class="channel-count">{{ channelGroup.groups.length }}</span>
                   </div>
-                  <div class="group-content">
-                    <div class="group-name">{{ getGroupDisplayName(group) }}</div>
-                    <div class="group-meta">
-                      <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
-                        {{ group.channel_type }}
-                      </n-tag>
-                      <n-tag v-if="!group.enabled" size="tiny" type="error" round>
-                        {{ t("keys.disabled") }}
-                      </n-tag>
-                      <span class="group-id">#{{ group.name }}</span>
+                  <div
+                    v-if="!isChannelCollapsed(section.sectionKey, channelGroup.channelType)"
+                    class="channel-items"
+                  >
+                    <div
+                      v-for="group in channelGroup.groups"
+                      :key="group.id"
+                      class="group-item"
+                      :class="{
+                        aggregate: section.isAggregate,
+                        active: selectedGroup?.id === group.id,
+                        disabled: !group.enabled,
+                      }"
+                      :aria-label="
+                        !group.enabled
+                          ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
+                          : undefined
+                      "
+                      @click="handleGroupClick(group)"
+                      :ref="
+                        el => {
+                          if (el) {
+                            groupItemRefs.set(group.id, el);
+                          } else {
+                            groupItemRefs.delete(group.id);
+                          }
+                        }
+                      "
+                    >
+                      <div class="group-icon">
+                        <span>{{ getGroupIcon(group, section.isAggregate) }}</span>
+                      </div>
+                      <div class="group-content">
+                        <div class="group-name">{{ getGroupDisplayName(group) }}</div>
+                        <div class="group-meta">
+                          <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
+                            {{ group.channel_type }}
+                          </n-tag>
+                          <n-tag v-if="!group.enabled" size="tiny" type="error" round>
+                            {{ t("keys.disabled") }}
+                          </n-tag>
+                          <span class="group-id">#{{ group.name }}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -305,8 +471,27 @@ function handleGroupCreated(group: Group) {
 }
 
 .groups-section::-webkit-scrollbar {
-  width: 1px;
-  height: 1px;
+  width: 8px;
+  height: 8px;
+}
+
+.groups-section::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+.groups-section::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-bg);
+  border-radius: 4px;
+  border: 2px solid var(--bg-secondary);
+}
+
+.groups-section::-webkit-scrollbar-thumb:hover {
+  background: var(--border-color);
+}
+
+.groups-section::-webkit-scrollbar-thumb:active {
+  background: var(--primary-color);
 }
 
 .group-list-container {
@@ -342,7 +527,7 @@ function handleGroupCreated(group: Group) {
 .groups-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
   max-height: 100%;
   overflow-y: auto;
   width: 100%;
@@ -352,27 +537,39 @@ function handleGroupCreated(group: Group) {
 .group-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0px;
 }
 
 /* 区域标题 */
 .section-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 3px;
+  padding: 2px 4px;
   font-size: 13px;
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: 0.3px;
   background: var(--bg-secondary);
-  border-radius: 6px;
-  margin-bottom: 6px;
+  border-radius: 3px;
+  margin-bottom: 2px;
   transition: all 0.2s ease;
+  cursor: pointer;
+  user-select: none;
 }
 
 .section-header:hover {
   background: var(--bg-tertiary);
+}
+
+.section-header:focus {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+.collapse-icon {
+  font-size: 14px;
+  transition: transform 0.2s ease;
 }
 
 .section-icon {
@@ -401,10 +598,73 @@ function handleGroupCreated(group: Group) {
 .section-items {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-left: 8px;
+  gap: 3px;
+  padding-left: 6px;
   border-left: 2px solid var(--border-color);
-  margin-left: 8px;
+  margin-left: 5px;
+}
+
+/* 渠道分组 */
+.channel-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.channel-header {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+}
+
+.channel-header:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.channel-header:focus {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+.channel-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.channel-title {
+  flex: 1;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.channel-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  padding: 1px 6px;
+  border-radius: 8px;
+  min-width: 20px;
+  text-align: center;
+}
+
+.channel-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 8px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border-color);
 }
 
 /* 深色模式优化 */
@@ -426,12 +686,31 @@ function handleGroupCreated(group: Group) {
   border-left-color: rgba(255, 255, 255, 0.1);
 }
 
+:root.dark .channel-header {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+:root.dark .channel-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+:root.dark .channel-count {
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+:root.dark .channel-items {
+  border-left-color: rgba(255, 255, 255, 0.08);
+}
+
 .group-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-radius: 6px;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s ease;
   border: 1px solid var(--border-color);
@@ -730,20 +1009,28 @@ function handleGroupCreated(group: Group) {
 
 /* 滚动条样式 */
 .groups-list::-webkit-scrollbar {
-  width: 4px;
+  width: 8px;
 }
 
 .groups-list::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  margin: 4px 0;
 }
 
 .groups-list::-webkit-scrollbar-thumb {
   background: var(--scrollbar-bg);
-  border-radius: 2px;
+  border-radius: 4px;
+  border: 2px solid var(--bg-secondary);
+  min-height: 40px;
 }
 
 .groups-list::-webkit-scrollbar-thumb:hover {
   background: var(--border-color);
+}
+
+.groups-list::-webkit-scrollbar-thumb:active {
+  background: var(--primary-color);
 }
 
 /* 暗黑模式特殊样式 */

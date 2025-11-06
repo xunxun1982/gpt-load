@@ -214,8 +214,22 @@ function handleNavigateToGroup(groupId: number) {
   }
 
   .sidebar {
-    width: 240px;
+    width: 220px;
     height: calc(100vh - 159px);
+  }
+}
+
+/* 中等屏幕优化 */
+@media (min-width: 1280px) {
+  .sidebar {
+    width: 250px;
+  }
+}
+
+/* 超大屏幕进一步优化 */
+@media (min-width: 1600px) {
+  .sidebar {
+    width: 280px;
   }
 }
 </style>
