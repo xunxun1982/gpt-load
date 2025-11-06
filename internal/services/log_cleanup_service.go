@@ -94,7 +94,7 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 
 	for {
 		// First, query IDs of records to delete (using index on timestamp)
-		var ids []string
+		ids := make([]string, 0, batchSize)
 		if err := s.db.Model(&models.RequestLog{}).
 			Where("timestamp < ?", cutoffTime).
 			Limit(batchSize).
@@ -108,18 +108,27 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 			break
 		}
 
-		// Delete by ID (primary key, much faster than timestamp-based delete)
-		result := s.db.Where("id IN ?", ids).Delete(&models.RequestLog{})
-		if result.Error != nil {
-			logrus.WithError(result.Error).Error("Failed to cleanup expired request logs")
-			return
-		}
+		// Delete by ID in smaller chunks to avoid long locks
+		chunkSize := 100
+		batchDeleted := int64(0)
+		for i := 0; i < len(ids); i += chunkSize {
+			end := i + chunkSize
+			if end > len(ids) {
+				end = len(ids)
+			}
+			chunk := ids[i:end]
 
-		deleted := result.RowsAffected
-		totalDeleted += deleted
+			result := s.db.Where("id IN ?", chunk).Delete(&models.RequestLog{})
+			if result.Error != nil {
+				logrus.WithError(result.Error).Error("Failed to cleanup expired request logs")
+				return
+			}
+			batchDeleted += result.RowsAffected
+		}
+		totalDeleted += batchDeleted
 
 		// If deleted count is less than batch size, we're done
-		if deleted < int64(batchSize) {
+		if batchDeleted < int64(batchSize) {
 			break
 		}
 

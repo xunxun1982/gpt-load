@@ -33,9 +33,9 @@ type AggregateGroupService struct {
 	db           *gorm.DB
 	groupManager *GroupManager
 	// Cache for key statistics to reduce database queries
-	statsCache      map[string]keyStatsCacheEntry
-	statsCacheMu    sync.RWMutex
-	statsCacheTTL   time.Duration
+	statsCache    map[string]keyStatsCacheEntry
+	statsCacheMu  sync.RWMutex
+	statsCacheTTL time.Duration
 }
 
 // keyStatsCacheEntry stores cached key statistics with expiration time
@@ -206,7 +206,7 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 	}
 
 	// Check for duplicates with existing sub groups
-	existingSubGroupIDs := make(map[uint]bool)
+	existingSubGroupIDs := make(map[uint]bool, len(existingSubGroups))
 	for _, sg := range existingSubGroups {
 		existingSubGroupIDs[sg.SubGroupID] = true
 	}

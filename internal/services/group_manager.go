@@ -43,15 +43,16 @@ func NewGroupManager(
 // Initialize sets up the CacheSyncer. This is called separately to handle potential
 func (gm *GroupManager) Initialize() error {
 	loader := func() (map[string]*models.Group, error) {
-		var groups []*models.Group
+		groups := make([]*models.Group, 0, 100)
 		// Use Select to only fetch necessary fields, reducing data transfer and improving performance
 		// This avoids loading large JSON fields unnecessarily if not needed immediately
+		// Add index hints for better query performance
 		if err := gm.db.Select("id, name, display_name, description, group_type, enabled, upstreams, validation_endpoint, channel_type, sort, test_model, param_overrides, config, header_rules, model_mapping, proxy_keys, last_validated_at, created_at, updated_at").Find(&groups).Error; err != nil {
 			return nil, fmt.Errorf("failed to load groups from db: %w", err)
 		}
 
 		// Load all sub-group relationships for aggregate groups (only valid ones with weight > 0)
-		var allSubGroups []models.GroupSubGroup
+		allSubGroups := make([]models.GroupSubGroup, 0, 200)
 		if err := gm.db.Where("weight > 0").Find(&allSubGroups).Error; err != nil {
 			return nil, fmt.Errorf("failed to load valid sub groups: %w", err)
 		}

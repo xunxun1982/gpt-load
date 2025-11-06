@@ -88,7 +88,7 @@ type Group struct {
 	ProxyKeys          string               `gorm:"type:text" json:"proxy_keys"`
 	Description        string               `gorm:"type:varchar(512)" json:"description"`
 	GroupType          string               `gorm:"type:varchar(50);default:'standard'" json:"group_type"` // 'standard' or 'aggregate'
-	Enabled            bool                 `gorm:"default:true;not null" json:"enabled"`                   // Group enabled status
+	Enabled            bool                 `gorm:"default:true;not null" json:"enabled"`                  // Group enabled status
 	Upstreams          datatypes.JSON       `gorm:"type:json;not null" json:"upstreams"`
 	ValidationEndpoint string               `gorm:"type:varchar(255)" json:"validation_endpoint"`
 	ChannelType        string               `gorm:"type:varchar(50);not null" json:"channel_type"`
@@ -115,8 +115,8 @@ type APIKey struct {
 	ID           uint       `gorm:"primaryKey;autoIncrement" json:"id"`
 	KeyValue     string     `gorm:"type:text;not null" json:"key_value"`
 	KeyHash      string     `gorm:"type:varchar(128);index" json:"key_hash"`
-	GroupID      uint       `gorm:"not null;index" json:"group_id"`
-	Status       string     `gorm:"type:varchar(50);not null;default:'active'" json:"status"`
+	GroupID      uint       `gorm:"not null;index:idx_api_keys_group_status" json:"group_id"`
+	Status       string     `gorm:"type:varchar(50);not null;default:'active';index:idx_api_keys_group_status" json:"status"`
 	Notes        string     `gorm:"type:varchar(255);default:''" json:"notes"`
 	RequestCount int64      `gorm:"not null;default:0" json:"request_count"`
 	FailureCount int64      `gorm:"not null;default:0" json:"failure_count"`
@@ -134,8 +134,8 @@ const (
 // RequestLog corresponds to the request_logs table.
 type RequestLog struct {
 	ID              string    `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Timestamp       time.Time `gorm:"not null;index" json:"timestamp"`
-	GroupID         uint      `gorm:"not null;index" json:"group_id"`
+	Timestamp       time.Time `gorm:"not null;index:idx_request_logs_group_timestamp;index:idx_request_logs_success_timestamp" json:"timestamp"`
+	GroupID         uint      `gorm:"not null;index:idx_request_logs_group_timestamp" json:"group_id"`
 	GroupName       string    `gorm:"type:varchar(255);index" json:"group_name"`
 	ParentGroupID   uint      `gorm:"index" json:"parent_group_id"`
 	ParentGroupName string    `gorm:"type:varchar(255);index" json:"parent_group_name"`
@@ -143,7 +143,7 @@ type RequestLog struct {
 	KeyHash         string    `gorm:"type:varchar(128);index" json:"key_hash"`
 	Model           string    `gorm:"type:varchar(255);index" json:"model"`
 	MappedModel     string    `gorm:"type:varchar(255)" json:"mapped_model"` // Model name after mapping/redirect
-	IsSuccess       bool      `gorm:"not null" json:"is_success"`
+	IsSuccess       bool      `gorm:"not null;index:idx_request_logs_success_timestamp" json:"is_success"`
 	SourceIP        string    `gorm:"type:varchar(64)" json:"source_ip"`
 	StatusCode      int       `gorm:"not null" json:"status_code"`
 	RequestPath     string    `gorm:"type:varchar(500)" json:"request_path"`
@@ -198,7 +198,7 @@ type ChartData struct {
 // GroupHourlyStat corresponds to the group_hourly_stats table, used to store hourly request statistics for each group.
 type GroupHourlyStat struct {
 	ID           uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Time         time.Time `gorm:"not null;uniqueIndex:idx_group_time" json:"time"` // 整点时间
+	Time         time.Time `gorm:"not null;uniqueIndex:idx_group_time" json:"time"` // Hourly timestamp
 	GroupID      uint      `gorm:"not null;uniqueIndex:idx_group_time" json:"group_id"`
 	SuccessCount int64     `gorm:"not null;default:0" json:"success_count"`
 	FailureCount int64     `gorm:"not null;default:0" json:"failure_count"`

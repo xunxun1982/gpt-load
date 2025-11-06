@@ -48,6 +48,12 @@ func NewI18nError(apiErr *app_errors.APIError, msgID string, template map[string
 	}
 }
 
+// groupKeyStatsCacheEntry represents a cached key statistics entry with expiration
+type groupKeyStatsCacheEntry struct {
+	Stats     KeyStats
+	ExpiresAt time.Time
+}
+
 // GroupService handles business logic for group operations.
 type GroupService struct {
 	db                    *gorm.DB
@@ -58,6 +64,9 @@ type GroupService struct {
 	encryptionSvc         encryption.Service
 	aggregateGroupService *AggregateGroupService
 	channelRegistry       []string
+	keyStatsCache         map[uint]groupKeyStatsCacheEntry
+	keyStatsCacheMu       sync.RWMutex
+	keyStatsCacheTTL      time.Duration
 }
 
 // NewGroupService constructs a GroupService.
@@ -78,6 +87,8 @@ func NewGroupService(
 		keyImportSvc:          keyImportSvc,
 		encryptionSvc:         encryptionSvc,
 		aggregateGroupService: aggregateGroupService,
+		keyStatsCache:         make(map[uint]groupKeyStatsCacheEntry),
+		keyStatsCacheTTL:      3 * time.Minute,
 		channelRegistry:       channel.GetChannels(),
 	}
 }
@@ -260,7 +271,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 
 // ListGroups returns all groups without sub-group relations.
 func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
-	var groups []models.Group
+	groups := make([]models.Group, 0, 100)
 	if err := s.db.WithContext(ctx).Order("sort asc, id desc").Find(&groups).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
@@ -569,7 +580,7 @@ func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupS
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	// 根据分组类型选择不同的统计逻辑
+	// Select different statistics logic based on group type
 	if group.GroupType == "aggregate" {
 		return s.getAggregateGroupStats(ctx, groupID)
 	}
@@ -599,8 +610,19 @@ func (s *GroupService) queryGroupHourlyStats(ctx context.Context, groupID uint, 
 	return calculateRequestStats(result.SuccessCount+result.FailureCount, result.FailureCount), nil
 }
 
-// fetchKeyStats retrieves API key statistics for a group
+// fetchKeyStats retrieves API key statistics for a group with caching
 func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStats, error) {
+	// Check cache first
+	s.keyStatsCacheMu.RLock()
+	if entry, ok := s.keyStatsCache[groupID]; ok {
+		if time.Now().Before(entry.ExpiresAt) {
+			s.keyStatsCacheMu.RUnlock()
+			return entry.Stats, nil
+		}
+	}
+	s.keyStatsCacheMu.RUnlock()
+
+	// Cache miss - query database
 	var totalKeys, activeKeys int64
 
 	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
@@ -615,11 +637,28 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 		return KeyStats{}, fmt.Errorf("failed to get active keys: %w", err)
 	}
 
-	return KeyStats{
+	stats := KeyStats{
 		TotalKeys:   totalKeys,
 		ActiveKeys:  activeKeys,
 		InvalidKeys: totalKeys - activeKeys,
-	}, nil
+	}
+
+	// Update cache
+	s.keyStatsCacheMu.Lock()
+	s.keyStatsCache[groupID] = groupKeyStatsCacheEntry{
+		Stats:     stats,
+		ExpiresAt: time.Now().Add(s.keyStatsCacheTTL),
+	}
+	s.keyStatsCacheMu.Unlock()
+
+	return stats, nil
+}
+
+// InvalidateKeyStatsCache invalidates the key statistics cache for a specific group
+func (s *GroupService) InvalidateKeyStatsCache(groupID uint) {
+	s.keyStatsCacheMu.Lock()
+	delete(s.keyStatsCache, groupID)
+	s.keyStatsCacheMu.Unlock()
 }
 
 // fetchRequestStats retrieves request statistics for multiple time periods
@@ -918,7 +957,7 @@ func calculateRequestStats(total, failed int64) RequestStats {
 }
 
 func (s *GroupService) generateUniqueGroupName(ctx context.Context, baseName string) string {
-	var groups []models.Group
+	groups := make([]models.Group, 0, 100)
 	if err := s.db.WithContext(ctx).Select("name").Find(&groups).Error; err != nil {
 		return baseName + "_copy"
 	}

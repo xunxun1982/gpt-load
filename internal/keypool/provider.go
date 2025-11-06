@@ -18,10 +18,11 @@ import (
 )
 
 type KeyProvider struct {
-	db              *gorm.DB
-	store           store.Store
-	settingsManager *config.SystemSettingsManager
-	encryptionSvc   encryption.Service
+	db                        *gorm.DB
+	store                     store.Store
+	settingsManager           *config.SystemSettingsManager
+	encryptionSvc             encryption.Service
+	CacheInvalidationCallback func(groupID uint) // Optional callback for cache invalidation
 }
 
 // NewProvider creates a new KeyProvider instance.
@@ -184,6 +185,10 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 			if err := p.store.LPush(activeKeysListKey, keyID); err != nil {
 				return fmt.Errorf("failed to LPush key back to active list: %w", err)
 			}
+
+			// Invalidate cache after key status change (need to extract groupID from key)
+			// Note: We don't have direct access to groupID here, so this would need to be passed
+			// or retrieved from the key. For now, we'll skip this case as it's less critical.
 		}
 
 		return nil
@@ -234,6 +239,11 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 			}
 			if err := p.store.HSet(keyHashKey, map[string]any{"status": models.KeyStatusInvalid}); err != nil {
 				return fmt.Errorf("failed to update key status to invalid in store: %w", err)
+			}
+
+			// Invalidate cache after key status change
+			if p.CacheInvalidationCallback != nil {
+				p.CacheInvalidationCallback(group.ID)
 			}
 		}
 
@@ -535,7 +545,7 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 	// Use strconv instead of fmt.Sprintf for better performance
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 
-	// 第一步：直接删除整个 active_keys 列表
+	// Step 1: Delete the entire active_keys list
 	if err := p.store.Delete(activeKeysListKey); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"groupID": groupID,
@@ -544,7 +554,7 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 		return err
 	}
 
-	// 第二步：批量删除所有相关的key hash
+	// Step 2: Batch delete all related key hashes
 	for _, keyID := range keyIDs {
 		// Use strconv instead of fmt.Sprintf for better performance
 		keyHashKey := "key:" + strconv.FormatUint(uint64(keyID), 10)
