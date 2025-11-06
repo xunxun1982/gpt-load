@@ -453,8 +453,27 @@ function handleGroupCreated(group: Group) {
 }
 
 .groups-section::-webkit-scrollbar {
-  width: 1px;
-  height: 1px;
+  width: 8px;
+  height: 8px;
+}
+
+.groups-section::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+.groups-section::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-bg);
+  border-radius: 4px;
+  border: 2px solid var(--bg-secondary);
+}
+
+.groups-section::-webkit-scrollbar-thumb:hover {
+  background: var(--border-color);
+}
+
+.groups-section::-webkit-scrollbar-thumb:active {
+  background: var(--primary-color);
 }
 
 .group-list-container {
@@ -490,7 +509,7 @@ function handleGroupCreated(group: Group) {
 .groups-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
   max-height: 100%;
   overflow-y: auto;
   width: 100%;
@@ -500,22 +519,22 @@ function handleGroupCreated(group: Group) {
 .group-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0px;
 }
 
 /* 区域标题 */
 .section-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 3px;
+  padding: 2px 4px;
   font-size: 13px;
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: 0.3px;
   background: var(--bg-secondary);
-  border-radius: 6px;
-  margin-bottom: 6px;
+  border-radius: 3px;
+  margin-bottom: 2px;
   transition: all 0.2s ease;
   cursor: pointer;
   user-select: none;
@@ -561,29 +580,29 @@ function handleGroupCreated(group: Group) {
 .section-items {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-left: 8px;
+  gap: 3px;
+  padding-left: 6px;
   border-left: 2px solid var(--border-color);
-  margin-left: 8px;
+  margin-left: 5px;
 }
 
 /* 渠道分组 */
 .channel-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .channel-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 3px;
+  padding: 2px 5px;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
   background: var(--bg-tertiary);
-  border-radius: 4px;
+  border-radius: 3px;
   cursor: pointer;
   user-select: none;
   transition: all 0.2s ease;
@@ -624,9 +643,9 @@ function handleGroupCreated(group: Group) {
 .channel-items {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-left: 12px;
-  margin-left: 4px;
+  gap: 2px;
+  padding-left: 8px;
+  margin-left: 2px;
   border-left: 1px solid var(--border-color);
 }
 
@@ -671,9 +690,9 @@ function handleGroupCreated(group: Group) {
 .group-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-radius: 6px;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s ease;
   border: 1px solid var(--border-color);
@@ -972,20 +991,28 @@ function handleGroupCreated(group: Group) {
 
 /* 滚动条样式 */
 .groups-list::-webkit-scrollbar {
-  width: 4px;
+  width: 8px;
 }
 
 .groups-list::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  margin: 4px 0;
 }
 
 .groups-list::-webkit-scrollbar-thumb {
   background: var(--scrollbar-bg);
-  border-radius: 2px;
+  border-radius: 4px;
+  border: 2px solid var(--bg-secondary);
+  min-height: 40px;
 }
 
 .groups-list::-webkit-scrollbar-thumb:hover {
   background: var(--border-color);
+}
+
+.groups-list::-webkit-scrollbar-thumb:active {
+  background: var(--primary-color);
 }
 
 /* 暗黑模式特殊样式 */
