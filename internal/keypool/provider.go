@@ -129,7 +129,7 @@ func (p *KeyProvider) executeTransactionWithRetry(operation func(tx *gorm.DB) er
 		}
 
 		if strings.Contains(err.Error(), "database is locked") {
-			// Use thread-safe global rand.Intn (Go 1.20+ auto-seeds and is concurrency-safe)
+			// Use thread-safe global rand.Intn (concurrency-safe; Go 1.20+ also auto-seeds)
 			// This avoids data race issues when multiple goroutines call executeTransactionWithRetry concurrently
 			jitter := time.Duration(rand.Intn(int(maxJitter)))
 			totalDelay := baseDelay + jitter
@@ -202,7 +202,7 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 
 	failureCount, _ := strconv.ParseInt(keyDetails["failure_count"], 10, 64)
 
-	// 获取该分组的有效配置
+	// Get the effective configuration for this group
 	blacklistThreshold := group.EffectiveConfig.BlacklistThreshold
 
 	return p.executeTransactionWithRetry(func(tx *gorm.DB) error {

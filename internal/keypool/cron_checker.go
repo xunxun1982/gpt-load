@@ -235,18 +235,20 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 	const maxRetries = 5
 	const baseDelay = 50 * time.Millisecond
 	const maxJitter = 200 * time.Millisecond
-	// SQLite has a default limit of ~999 parameters in IN clause
-	// Split into chunks if needed for compatibility across all databases
+	// SQLite has a default limit of ~999 bound parameters per statement
+	// UPDATE statement binds: 1 (last_validated_at) + N (IDs in IN clause)
+	// So chunk size must be 998 to stay within the 999 parameter limit
 	const sqliteMaxInParams = 999
+	const sqliteChunkSize = sqliteMaxInParams - 1
 
 	var err error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Handle large batches by splitting into chunks for SQLite compatibility
-		if len(groupIDs) > sqliteMaxInParams {
+		if len(groupIDs) > sqliteChunkSize {
 			// Process in chunks to avoid SQLite parameter limit
 			err = nil
-			for i := 0; i < len(groupIDs); i += sqliteMaxInParams {
-				end := i + sqliteMaxInParams
+			for i := 0; i < len(groupIDs); i += sqliteChunkSize {
+				end := i + sqliteChunkSize
 				if end > len(groupIDs) {
 					end = len(groupIDs)
 				}
@@ -288,7 +290,7 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 			strings.Contains(errMsg, "could not obtain lock")
 
 		if isLockError {
-			// Use thread-safe global rand.Intn (Go 1.20+ auto-seeds and is concurrency-safe)
+			// Use thread-safe global rand.Intn (concurrency-safe; Go 1.20+ also auto-seeds)
 			// This provides good randomness while avoiding data race issues
 			jitter := time.Duration(rand.Intn(int(maxJitter)))
 			// Use exponential backoff for better performance under lock contention
