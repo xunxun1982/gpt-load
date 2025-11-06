@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -468,9 +469,11 @@ func (s *AggregateGroupService) fetchSubGroupsKeyStats(ctx context.Context, grou
 		results:   cachedResults,
 		expiresAt: time.Now().Add(s.statsCacheTTL),
 	}
-	// Clean up expired entries periodically to prevent memory leak
-	// Always cleanup expired entries, but only do full cleanup when cache grows large
-	s.cleanupExpiredCacheEntries()
+	// Clean up expired entries when cache grows to prevent memory leak
+	// Only cleanup when cache size exceeds threshold to reduce write-lock contention
+	if len(s.statsCache) > 50 {
+		s.cleanupExpiredCacheEntries()
+	}
 	// If cache is still large after cleanup, log a warning
 	if len(s.statsCache) > 100 {
 		logrus.Debugf("AggregateGroupService: Cache size is %d after cleanup, consider tuning cache TTL", len(s.statsCache))
@@ -482,19 +485,13 @@ func (s *AggregateGroupService) fetchSubGroupsKeyStats(ctx context.Context, grou
 
 // generateCacheKey creates a cache key from sorted group IDs
 func (s *AggregateGroupService) generateCacheKey(groupIDs []uint) string {
-	// Simple approach: use a string representation of sorted IDs
-	// For better performance, could use a hash, but this is simpler and sufficient
 	var keyBuilder strings.Builder
 	keyBuilder.Grow(len(groupIDs) * 10) // Estimate 10 chars per ID
 
-	// Sort IDs for consistent cache keys (simple insertion sort for small arrays)
+	// Sort IDs for consistent cache keys using standard library sort
 	sorted := make([]uint, len(groupIDs))
 	copy(sorted, groupIDs)
-	for i := 1; i < len(sorted); i++ {
-		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
-			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
-		}
-	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 
 	for i, id := range sorted {
 		if i > 0 {

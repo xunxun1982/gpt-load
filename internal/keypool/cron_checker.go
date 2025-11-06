@@ -226,8 +226,6 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 
 	// Convert map to slice for SQL IN clause
 	// Note: GORM handles database-specific SQL syntax automatically
-	// For very large batches (>1000 IDs), consider splitting into chunks for SQLite compatibility
-	// In practice, group count is typically small (<100), so this is usually not needed
 	groupIDs := make([]uint, 0, len(groupsToUpdate))
 	for id := range groupsToUpdate {
 		groupIDs = append(groupIDs, id)
@@ -237,18 +235,45 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 	const maxRetries = 5
 	const baseDelay = 50 * time.Millisecond
 	const maxJitter = 200 * time.Millisecond
+	// SQLite has a default limit of ~999 parameters in IN clause
+	// Split into chunks if needed for compatibility across all databases
+	const sqliteMaxInParams = 999
 
 	var err error
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Use UpdateColumns with Where IN for batch update
-		// GORM automatically handles database-specific SQL syntax differences
-		// This avoids GORM's updated_at auto-update and hooks while supporting batch operations
-		err = s.DB.Model(&models.Group{}).
-			Where("id IN ?", groupIDs).
-			UpdateColumns(map[string]any{"last_validated_at": now}).Error
-		if err == nil {
-			logrus.Debugf("CronChecker: Successfully batch updated last_validated_at for %d groups", len(groupIDs))
-			return
+		// Handle large batches by splitting into chunks for SQLite compatibility
+		if len(groupIDs) > sqliteMaxInParams {
+			// Process in chunks to avoid SQLite parameter limit
+			err = nil
+			for i := 0; i < len(groupIDs); i += sqliteMaxInParams {
+				end := i + sqliteMaxInParams
+				if end > len(groupIDs) {
+					end = len(groupIDs)
+				}
+				chunk := groupIDs[i:end]
+				if chunkErr := s.DB.Model(&models.Group{}).
+					Where("id IN ?", chunk).
+					UpdateColumns(map[string]any{"last_validated_at": now}).Error; chunkErr != nil {
+					// If chunk update fails, set error and break to retry entire batch
+					err = chunkErr
+					break
+				}
+			}
+			if err == nil {
+				logrus.Debugf("CronChecker: Successfully batch updated last_validated_at for %d groups (in chunks)", len(groupIDs))
+				return
+			}
+		} else {
+			// Use UpdateColumns with Where IN for batch update
+			// GORM automatically handles database-specific SQL syntax differences
+			// This avoids GORM's updated_at auto-update and hooks while supporting batch operations
+			err = s.DB.Model(&models.Group{}).
+				Where("id IN ?", groupIDs).
+				UpdateColumns(map[string]any{"last_validated_at": now}).Error
+			if err == nil {
+				logrus.Debugf("CronChecker: Successfully batch updated last_validated_at for %d groups", len(groupIDs))
+				return
+			}
 		}
 
 		// Check for database lock errors across different database types
