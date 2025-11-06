@@ -217,13 +217,17 @@ DistributeLoop:
 }
 
 // batchUpdateLastValidatedAt updates last_validated_at for multiple groups in a single batch operation.
-// It uses retry mechanism to handle SQLITE_BUSY errors.
+// It uses retry mechanism to handle database lock errors across different database types.
+// Compatible with SQLite, MySQL, and PostgreSQL.
 func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{}) {
 	if len(groupsToUpdate) == 0 {
 		return
 	}
 
 	// Convert map to slice for SQL IN clause
+	// Note: GORM handles database-specific SQL syntax automatically
+	// For very large batches (>1000 IDs), consider splitting into chunks for SQLite compatibility
+	// In practice, group count is typically small (<100), so this is usually not needed
 	groupIDs := make([]uint, 0, len(groupsToUpdate))
 	for id := range groupsToUpdate {
 		groupIDs = append(groupIDs, id)
@@ -237,6 +241,7 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 	var err error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Use UpdateColumns with Where IN for batch update
+		// GORM automatically handles database-specific SQL syntax differences
 		// This avoids GORM's updated_at auto-update and hooks while supporting batch operations
 		err = s.DB.Model(&models.Group{}).
 			Where("id IN ?", groupIDs).
@@ -246,11 +251,21 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 			return
 		}
 
-		// Check if it's a SQLITE_BUSY error
-		if strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "SQLITE_BUSY") {
+		// Check for database lock errors across different database types
+		// SQLite: "database is locked", "SQLITE_BUSY"
+		// MySQL: "Lock wait timeout exceeded", "Deadlock found"
+		// PostgreSQL: "deadlock detected", "could not obtain lock"
+		errMsg := strings.ToLower(err.Error())
+		isLockError := strings.Contains(errMsg, "database is locked") ||
+			strings.Contains(errMsg, "sqlite_busy") ||
+			strings.Contains(errMsg, "lock wait timeout") ||
+			strings.Contains(errMsg, "deadlock") ||
+			strings.Contains(errMsg, "could not obtain lock")
+
+		if isLockError {
 			jitter := time.Duration(rand.Intn(int(maxJitter)))
 			totalDelay := baseDelay*time.Duration(attempt+1) + jitter
-			logrus.Debugf("CronChecker: Database is locked, retrying batch update in %v... (attempt %d/%d)", totalDelay, attempt+1, maxRetries)
+			logrus.Debugf("CronChecker: Database lock detected, retrying batch update in %v... (attempt %d/%d)", totalDelay, attempt+1, maxRetries)
 			time.Sleep(totalDelay)
 			continue
 		}
