@@ -214,7 +214,7 @@ function handleNavigateToGroup(groupId: number) {
   }
 
   .sidebar {
-    width: 220px;
+    width: 242px;
     height: calc(100vh - 159px);
   }
 }
@@ -222,14 +222,14 @@ function handleNavigateToGroup(groupId: number) {
 /* 中等屏幕优化 */
 @media (min-width: 1280px) {
   .sidebar {
-    width: 250px;
+    width: 275px;
   }
 }
 
 /* 超大屏幕进一步优化 */
 @media (min-width: 1600px) {
   .sidebar {
-    width: 280px;
+    width: 308px;
   }
 }
 </style>

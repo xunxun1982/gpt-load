@@ -19,28 +19,10 @@ import (
 	"gorm.io/datatypes"
 )
 
+// handleGroupError is deprecated, use HandleServiceError instead
+// Kept for backward compatibility during migration
 func (s *Server) handleGroupError(c *gin.Context, err error) bool {
-	if err == nil {
-		return false
-	}
-
-	if svcErr, ok := err.(*services.I18nError); ok {
-		if svcErr.Template != nil {
-			response.ErrorI18nFromAPIError(c, svcErr.APIError, svcErr.MessageID, svcErr.Template)
-		} else {
-			response.ErrorI18nFromAPIError(c, svcErr.APIError, svcErr.MessageID)
-		}
-		return true
-	}
-
-	if apiErr, ok := err.(*app_errors.APIError); ok {
-		response.Error(c, apiErr)
-		return true
-	}
-
-	logrus.WithContext(c.Request.Context()).WithError(err).Error("unexpected group service error")
-	response.Error(c, app_errors.ErrInternalServer)
-	return true
+	return HandleServiceError(c, err)
 }
 
 // GroupCreateRequest defines the payload for creating a group.

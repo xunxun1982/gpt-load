@@ -16,9 +16,9 @@ type ConfigManager interface {
 	ReloadConfig() error
 }
 
-// SystemSettings 定义所有系统配置项
+// SystemSettings defines all system configuration items.
 type SystemSettings struct {
-	// 基础参数
+	// Basic parameters
 	AppUrl                         string `json:"app_url" default:"http://localhost:3001" name:"config.app_url" category:"config.category.basic" desc:"config.app_url_desc" validate:"required"`
 	ProxyKeys                      string `json:"proxy_keys" name:"config.proxy_keys" category:"config.category.basic" desc:"config.proxy_keys_desc" validate:"required"`
 	RequestLogRetentionDays        int    `json:"request_log_retention_days" default:"7" name:"config.log_retention_days" category:"config.category.basic" desc:"config.log_retention_days_desc" validate:"required,min=0"`

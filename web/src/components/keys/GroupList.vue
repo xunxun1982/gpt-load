@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import type { Group } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
-import { Add, LinkOutline, Search, ChevronDown, ChevronForward } from "@vicons/ionicons5";
-import { NButton, NCard, NEmpty, NInput, NSpin, NTag, NIcon } from "naive-ui";
+import { Add, LinkOutline, Search, ChevronDown, ChevronForward, CloudDownloadOutline, CloudUploadOutline } from "@vicons/ionicons5";
+import { NButton, NCard, NEmpty, NInput, NSpin, NTag, NIcon, useDialog, useMessage } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
 import GroupFormModal from "./GroupFormModal.vue";
+import { keysApi } from "@/api/keys";
 
 const { t } = useI18n();
+const message = useMessage();
+const dialog = useDialog();
 
 // 常量定义
 const GROUP_TYPE_AGGREGATE = "aggregate" as const;
@@ -65,6 +68,7 @@ const showGroupModal = ref(false);
 // 存储分组项 DOM 元素的引用
 const groupItemRefs = ref(new Map());
 const showAggregateGroupModal = ref(false);
+const fileInputRef = ref<HTMLInputElement | null>(null);
 
 // 按 sort 字段排序（升序），sort 相同时按 id 降序
 function sortBySort(a: Group, b: Group) {
@@ -300,23 +304,91 @@ function handleGroupCreated(group: Group) {
     emit("refresh-and-select", group.id);
   }
 }
+
+// 导出分组
+function handleExportGroup(group: Group, event: Event) {
+  event.stopPropagation();
+  if (!group.id) return;
+
+  dialog.info({
+    title: t('keys.exportGroup'),
+    content: t('keys.exportGroupConfirm', { name: getGroupDisplayName(group) }),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: async () => {
+      try {
+        await keysApi.exportGroup(group.id!);
+        message.success(t('keys.exportSuccess'));
+      } catch (error: any) {
+        message.error(error.message || t('keys.exportFailed'));
+      }
+    }
+  });
+}
+
+// 触发文件选择（分组导入）
+function handleImportClick() {
+  fileInputRef.value?.click();
+}
+
+// 处理文件导入（分组导入）
+async function handleFileChange(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+
+    // 显示确认对话框
+    dialog.info({
+      title: t('keys.importGroup'),
+      content: t('keys.importGroupConfirm', { name: data.group?.name || 'Unknown' }),
+      positiveText: t('common.confirm'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: async () => {
+        try {
+          await keysApi.importGroup(data);
+          message.success(t('keys.importSuccess'));
+          emit('refresh');
+        } catch (error: any) {
+          message.error(error.message || t('keys.importFailed'));
+        }
+      }
+    });
+  } catch (error) {
+    message.error(t('keys.invalidImportFile'));
+  } finally {
+    // 清空文件输入，允许重复选择同一文件
+    target.value = '';
+  }
+}
+
 </script>
 
 <template>
   <div class="group-list-container">
     <n-card class="group-list-card modern-card" :bordered="false" size="small">
-      <!-- 搜索框 -->
+      <!-- 搜索框和导入导出按钮 -->
       <div class="search-section">
         <n-input
           v-model:value="searchText"
           :placeholder="t('keys.searchGroupPlaceholder')"
           size="small"
           clearable
+          style="flex: 1"
         >
           <template #prefix>
             <n-icon :component="Search" />
           </template>
         </n-input>
+        <n-button type="primary" size="small" @click="handleImportClick" :title="t('keys.importGroup')">
+          <template #icon>
+            <n-icon :component="CloudUploadOutline" />
+          </template>
+        </n-button>
       </div>
 
       <!-- 分组列表 -->
@@ -431,6 +503,18 @@ function handleGroupCreated(group: Group) {
                           <span class="group-id">#{{ group.name }}</span>
                         </div>
                       </div>
+                      <div class="group-actions" @click.stop>
+                        <n-button
+                          text
+                          size="tiny"
+                          @click="handleExportGroup(group, $event)"
+                          :title="t('keys.exportGroup')"
+                        >
+                          <template #icon>
+                            <n-icon :component="CloudDownloadOutline" :size="16" />
+                          </template>
+                        </n-button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -456,6 +540,16 @@ function handleGroupCreated(group: Group) {
         </n-button>
       </div>
     </n-card>
+
+    <!-- 隐藏的文件输入 -->
+    <input
+      ref="fileInputRef"
+      type="file"
+      accept=".json"
+      style="display: none"
+      @change="handleFileChange"
+    />
+
     <group-form-modal v-model:show="showGroupModal" @success="handleGroupCreated" />
     <aggregate-group-modal
       v-model:show="showAggregateGroupModal"
@@ -512,6 +606,9 @@ function handleGroupCreated(group: Group) {
 
 .search-section {
   height: 41px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .groups-section {
@@ -809,6 +906,21 @@ function handleGroupCreated(group: Group) {
 .group-content {
   flex: 1;
   min-width: 0;
+}
+
+.group-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 8px;
+}
+
+.group-item:hover .group-actions {
+  opacity: 1;
 }
 
 .group-name {

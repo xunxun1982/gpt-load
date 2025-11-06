@@ -24,7 +24,7 @@ type KeyProvider struct {
 	encryptionSvc   encryption.Service
 }
 
-// NewProvider 创建一个新的 KeyProvider 实例。
+// NewProvider creates a new KeyProvider instance.
 func NewProvider(db *gorm.DB, store store.Store, settingsManager *config.SystemSettingsManager, encryptionSvc encryption.Service) *KeyProvider {
 	return &KeyProvider{
 		db:              db,
@@ -34,7 +34,7 @@ func NewProvider(db *gorm.DB, store store.Store, settingsManager *config.SystemS
 	}
 }
 
-// SelectKey 为指定的分组原子性地选择并轮换一个可用的 APIKey。
+// SelectKey atomically selects and rotates an available APIKey for the specified group.
 func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 	// Use strconv instead of fmt.Sprintf for better performance in hot path
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
@@ -89,7 +89,7 @@ func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 	return apiKey, nil
 }
 
-// UpdateStatus 异步地提交一个 Key 状态更新任务。
+// UpdateStatus asynchronously submits a key status update task.
 func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, isSuccess bool, errorMessage string) {
 	go func() {
 		// Use strconv instead of fmt.Sprintf for better performance
@@ -239,11 +239,11 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 	})
 }
 
-// LoadKeysFromDB 从数据库加载所有分组和密钥，并填充到 Store 中。
+// LoadKeysFromDB loads all groups and keys from the database and populates the Store.
 func (p *KeyProvider) LoadKeysFromDB() error {
 	logrus.Debug("First time startup, loading keys from DB...")
 
-	// 1. 分批从数据库加载并使用 Pipeline 写入 Redis
+	// Load from database in batches and write to Redis using Pipeline
 	allActiveKeyIDs := make(map[uint][]any)
 	batchSize := 1000
 	var batchKeys []*models.APIKey
@@ -286,7 +286,7 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 		return fmt.Errorf("failed during batch processing of keys: %w", err)
 	}
 
-	// 2. 更新所有分组的 active_keys 列表
+	// Update active_keys list for all groups
 	logrus.Info("Updating active key lists for all groups...")
 	for groupID, activeIDs := range allActiveKeyIDs {
 		if len(activeIDs) > 0 {
@@ -302,7 +302,7 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	return nil
 }
 
-// AddKeys 批量添加新的 Key 到池和数据库中。
+// AddKeys batch adds new keys to the pool and database.
 func (p *KeyProvider) AddKeys(groupID uint, keys []models.APIKey) error {
 	if len(keys) == 0 {
 		return nil
@@ -325,7 +325,7 @@ func (p *KeyProvider) AddKeys(groupID uint, keys []models.APIKey) error {
 	return err
 }
 
-// RemoveKeys 批量从池和数据库中移除 Key。
+// RemoveKeys batch removes keys from the pool and database.
 func (p *KeyProvider) RemoveKeys(groupID uint, keyValues []string) (int64, error) {
 	if len(keyValues) == 0 {
 		return 0, nil
@@ -376,7 +376,7 @@ func (p *KeyProvider) RemoveKeys(groupID uint, keyValues []string) (int64, error
 	return deletedCount, err
 }
 
-// RestoreKeys 恢复组内所有无效的 Key。
+// RestoreKeys restores all invalid keys in the group.
 func (p *KeyProvider) RestoreKeys(groupID uint) (int64, error) {
 	var invalidKeys []models.APIKey
 	var restoredCount int64
@@ -414,7 +414,7 @@ func (p *KeyProvider) RestoreKeys(groupID uint) (int64, error) {
 	return restoredCount, err
 }
 
-// RestoreMultipleKeys 恢复指定的 Key。
+// RestoreMultipleKeys restores the specified keys.
 func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int64, error) {
 	if len(keyValues) == 0 {
 		return 0, nil
@@ -471,12 +471,12 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 	return restoredCount, err
 }
 
-// RemoveInvalidKeys 移除组内所有无效的 Key。
+// RemoveInvalidKeys removes all invalid keys in the group.
 func (p *KeyProvider) RemoveInvalidKeys(groupID uint) (int64, error) {
 	return p.removeKeysByStatus(groupID, models.KeyStatusInvalid)
 }
 
-// RemoveAllKeys 移除组内所有的 Key。
+// RemoveAllKeys removes all keys in the group.
 func (p *KeyProvider) RemoveAllKeys(groupID uint) (int64, error) {
 	return p.removeKeysByStatus(groupID)
 }
@@ -523,8 +523,8 @@ func (p *KeyProvider) removeKeysByStatus(groupID uint, status ...string) (int64,
 	return removedCount, err
 }
 
-// RemoveKeysFromStore 直接从内存存储中移除指定的键，不涉及数据库操作
-// 这个方法适用于数据库已经删除但需要清理内存存储的场景
+// RemoveKeysFromStore directly removes the specified keys from the in-memory store without database operations.
+// This method is suitable for scenarios where keys are already deleted from the database but need to be cleaned from the memory store.
 func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 	if len(keyIDs) == 0 {
 		return nil

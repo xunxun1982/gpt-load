@@ -118,6 +118,8 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		groups.GET("/:id/stats", serverHandler.GetGroupStats)
 		groups.POST("/:id/copy", serverHandler.CopyGroup)
 		groups.PUT("/:id/toggle-enabled", serverHandler.ToggleGroupEnabled)
+		groups.GET("/:id/export", serverHandler.ExportGroup)
+		groups.POST("/import", serverHandler.ImportGroup)
 
 		groups.GET("/:id/sub-groups", serverHandler.GetSubGroups)
 		groups.POST("/:id/sub-groups", serverHandler.AddSubGroups)
@@ -167,6 +169,13 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 	{
 		settings.GET("", serverHandler.GetSettings)
 		settings.PUT("", serverHandler.UpdateSettings)
+	}
+
+	// 系统全量导入导出
+	system := api.Group("/system")
+	{
+		system.GET("/export", serverHandler.ExportAll)
+		system.POST("/import", serverHandler.ImportAll)
 	}
 }
 

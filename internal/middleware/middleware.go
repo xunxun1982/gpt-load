@@ -311,7 +311,7 @@ func StaticCache() gin.HandlerFunc {
 	}
 }
 
-// isStaticResource 判断是否为静态资源
+// isStaticResource checks if the path is a static resource.
 func isStaticResource(path string) bool {
 	staticPrefixes := []string{"/assets/"}
 	staticSuffixes := []string{

@@ -44,7 +44,9 @@ func NewGroupManager(
 func (gm *GroupManager) Initialize() error {
 	loader := func() (map[string]*models.Group, error) {
 		var groups []*models.Group
-		if err := gm.db.Find(&groups).Error; err != nil {
+		// Use Select to only fetch necessary fields, reducing data transfer and improving performance
+		// This avoids loading large JSON fields unnecessarily if not needed immediately
+		if err := gm.db.Select("id, name, display_name, description, group_type, enabled, upstreams, validation_endpoint, channel_type, sort, test_model, param_overrides, config, header_rules, model_mapping, proxy_keys, last_validated_at, created_at, updated_at").Find(&groups).Error; err != nil {
 			return nil, fmt.Errorf("failed to load groups from db: %w", err)
 		}
 

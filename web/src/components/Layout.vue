@@ -96,18 +96,19 @@ const toggleMenu = () => {
   position: sticky;
   top: 0;
   z-index: 100;
-  padding: 0 12px;
+  padding: 0 clamp(12px, 2vw, 24px);
 }
 
 .header-content {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 0;
+  padding: 8px clamp(12px, 2vw, 24px);
   overflow-x: auto;
   max-width: 1200px;
   margin: 0 auto;
   position: relative;
+  width: 100%;
 }
 
 .header-nav {
@@ -176,8 +177,10 @@ const toggleMenu = () => {
 }
 
 .content-wrapper {
-  padding: 16px;
+  padding: clamp(12px, 1.5vw, 20px);
   min-height: calc(100vh - 111px);
+  max-width: 100%;
+  margin: 0 auto;
 }
 
 .layout-footer {

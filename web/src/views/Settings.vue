@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { settingsApi, type Setting, type SettingCategory } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
-import { HelpCircle, Save } from "@vicons/ionicons5";
+import { HelpCircle, Save, CloudDownloadOutline, CloudUploadOutline } from "@vicons/ionicons5";
 import {
   NButton,
   NCard,
@@ -15,6 +15,7 @@ import {
   NSpace,
   NSwitch,
   NTooltip,
+  useDialog,
   useMessage,
   type FormItemRule,
 } from "naive-ui";
@@ -28,6 +29,8 @@ const formRef = ref();
 const form = ref<Record<string, string | number | boolean>>({});
 const isSaving = ref(false);
 const message = useMessage();
+const dialog = useDialog();
+const systemFileInputRef = ref<HTMLInputElement | null>(null);
 
 fetchSettings();
 
@@ -96,6 +99,65 @@ function generateValidationRules(item: Setting): FormItemRule[] {
     });
   }
   return rules;
+}
+
+// 导出系统全量配置
+function handleExportAll() {
+  dialog.info({
+    title: t('settings.exportSystem'),
+    content: t('settings.exportSystemConfirm'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: async () => {
+      try {
+        await settingsApi.exportAll();
+        message.success(t('settings.exportSuccess'));
+      } catch (error: any) {
+        message.error(error.message || t('settings.exportFailed'));
+      }
+    }
+  });
+}
+
+// 触发系统文件选择
+function handleSystemImportClick() {
+  systemFileInputRef.value?.click();
+}
+
+// 处理系统文件导入
+async function handleSystemFileChange(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+
+    // 显示确认对话框
+    dialog.info({
+      title: t('settings.importSystem'),
+      content: t('settings.importSystemConfirm'),
+      positiveText: t('common.confirm'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: async () => {
+        try {
+          await settingsApi.importAll(data);
+          message.success(t('settings.importSuccess'));
+          // 重新加载设置
+          await fetchSettings();
+        } catch (error: any) {
+          message.error(error.message || t('settings.importFailed'));
+        }
+      }
+    });
+  } catch (error) {
+    message.error(t('settings.invalidImportFile'));
+  } finally {
+    // 清空文件输入，允许重复选择同一文件
+    target.value = '';
+  }
 }
 </script>
 
@@ -172,7 +234,7 @@ function generateValidationRules(item: Setting): FormItemRule[] {
 
     <div
       v-if="settingList.length > 0"
-      style="display: flex; justify-content: center; padding-top: 12px"
+      style="display: flex; justify-content: center; gap: 12px; padding-top: 12px; flex-wrap: wrap"
     >
       <n-button
         type="primary"
@@ -187,6 +249,39 @@ function generateValidationRules(item: Setting): FormItemRule[] {
         </template>
         {{ isSaving ? t("settings.saving") : t("settings.saveSettings") }}
       </n-button>
+      <n-button
+        type="info"
+        size="large"
+        :disabled="isSaving"
+        @click="handleExportAll"
+        style="min-width: 200px"
+      >
+        <template #icon>
+          <n-icon :component="CloudDownloadOutline" />
+        </template>
+        {{ t("settings.exportSystem") }}
+      </n-button>
+      <n-button
+        type="warning"
+        size="large"
+        :disabled="isSaving"
+        @click="handleSystemImportClick"
+        style="min-width: 200px"
+      >
+        <template #icon>
+          <n-icon :component="CloudUploadOutline" />
+        </template>
+        {{ t("settings.importSystem") }}
+      </n-button>
     </div>
+
+    <!-- 隐藏的文件输入 -->
+    <input
+      ref="systemFileInputRef"
+      type="file"
+      accept=".json"
+      style="display: none"
+      @change="handleSystemFileChange"
+    />
   </n-space>
 </template>

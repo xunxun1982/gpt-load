@@ -2,7 +2,10 @@ package services
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
@@ -28,13 +31,25 @@ type AggregateValidationResult struct {
 type AggregateGroupService struct {
 	db           *gorm.DB
 	groupManager *GroupManager
+	// Cache for key statistics to reduce database queries
+	statsCache      map[string]keyStatsCacheEntry
+	statsCacheMu    sync.RWMutex
+	statsCacheTTL   time.Duration
+}
+
+// keyStatsCacheEntry stores cached key statistics with expiration time
+type keyStatsCacheEntry struct {
+	results   map[uint]keyStatsResult
+	expiresAt time.Time
 }
 
 // NewAggregateGroupService constructs an AggregateGroupService instance.
 func NewAggregateGroupService(db *gorm.DB, groupManager *GroupManager) *AggregateGroupService {
 	return &AggregateGroupService{
-		db:           db,
-		groupManager: groupManager,
+		db:            db,
+		groupManager:  groupManager,
+		statsCache:    make(map[string]keyStatsCacheEntry),
+		statsCacheTTL: 5 * time.Minute, // Cache for 5 minutes
 	}
 }
 
@@ -111,16 +126,9 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 
 // GetSubGroups returns sub groups for an aggregate group with complete information
 func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) ([]models.SubGroupInfo, error) {
-	var group models.Group
-	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, NewI18nError(app_errors.ErrResourceNotFound, "group.not_found", nil)
-		}
+	_, err := FindAggregateGroupByID(ctx, s.db, groupID)
+	if err != nil {
 		return nil, err
-	}
-
-	if group.GroupType != "aggregate" {
-		return nil, NewI18nError(app_errors.ErrBadRequest, "group.not_aggregate", nil)
 	}
 
 	var groupSubGroups []models.GroupSubGroup
@@ -171,16 +179,9 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 
 // AddSubGroups adds new sub groups to an aggregate group
 func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, inputs []SubGroupInput) error {
-	var group models.Group
-	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return NewI18nError(app_errors.ErrResourceNotFound, "group.not_found", nil)
-		}
+	group, err := FindAggregateGroupByID(ctx, s.db, groupID)
+	if err != nil {
 		return err
-	}
-
-	if group.GroupType != "aggregate" {
-		return NewI18nError(app_errors.ErrBadRequest, "group.not_aggregate", nil)
 	}
 
 	// Check if there are existing sub groups and get their validation endpoint
@@ -216,15 +217,16 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 		}
 	}
 
-	// Add new sub groups
+	// Add new sub groups using batch insert for better performance
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, newSg := range result.SubGroups {
-			newSg.GroupID = groupID
-			if err := tx.Create(&newSg).Error; err != nil {
-				return app_errors.ParseDBError(err)
-			}
+		// Set groupID for all sub groups
+		for i := range result.SubGroups {
+			result.SubGroups[i].GroupID = groupID
 		}
-
+		// Use CreateInBatches for better performance when adding multiple sub groups
+		if err := tx.CreateInBatches(result.SubGroups, len(result.SubGroups)).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
 		return nil
 	})
 
@@ -232,7 +234,7 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 		return err
 	}
 
-	// 触发缓存更新
+	// Trigger cache update
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after adding sub groups")
 	}
@@ -242,16 +244,9 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 
 // UpdateSubGroupWeight updates the weight of a specific sub group
 func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupID, subGroupID uint, weight int) error {
-	var group models.Group
-	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return NewI18nError(app_errors.ErrResourceNotFound, "group.not_found", nil)
-		}
+	_, err := FindAggregateGroupByID(ctx, s.db, groupID)
+	if err != nil {
 		return err
-	}
-
-	if group.GroupType != "aggregate" {
-		return NewI18nError(app_errors.ErrBadRequest, "group.not_aggregate", nil)
 	}
 
 	if weight < 0 {
@@ -262,7 +257,7 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
 	}
 
-	// 检查子分组关联是否存在
+	// Check if sub-group relationship exists
 	var existingRecord models.GroupSubGroup
 	if err := s.db.WithContext(ctx).Where("group_id = ? AND sub_group_id = ?", groupID, subGroupID).First(&existingRecord).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -284,7 +279,7 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
 	}
 
-	// 触发缓存更新
+	// Trigger cache update
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after updating sub group weight")
 	}
@@ -294,16 +289,9 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 
 // DeleteSubGroup removes a sub group from an aggregate group
 func (s *AggregateGroupService) DeleteSubGroup(ctx context.Context, groupID, subGroupID uint) error {
-	var group models.Group
-	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return NewI18nError(app_errors.ErrResourceNotFound, "group.not_found", nil)
-		}
+	_, err := FindAggregateGroupByID(ctx, s.db, groupID)
+	if err != nil {
 		return err
-	}
-
-	if group.GroupType != "aggregate" {
-		return NewI18nError(app_errors.ErrBadRequest, "group.not_aggregate", nil)
 	}
 
 	result := s.db.WithContext(ctx).
@@ -318,7 +306,7 @@ func (s *AggregateGroupService) DeleteSubGroup(ctx context.Context, groupID, sub
 		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
 	}
 
-	// 触发缓存更新
+	// Trigger cache update
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after deleting sub group")
 	}
@@ -387,52 +375,131 @@ type keyStatsResult struct {
 	Err         error
 }
 
-// fetchSubGroupsKeyStats batch fetches key statistics for multiple sub-groups concurrently
+// fetchSubGroupsKeyStats batch fetches key statistics for multiple sub-groups using a single SQL query
+// Results are cached for 5 minutes to reduce database load
 func (s *AggregateGroupService) fetchSubGroupsKeyStats(ctx context.Context, groupIDs []uint) map[uint]keyStatsResult {
 	results := make(map[uint]keyStatsResult)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
 
-	for _, groupID := range groupIDs {
-		wg.Add(1)
-		go func(gid uint) {
-			defer wg.Done()
-
-			var totalKeys, activeKeys int64
-			result := keyStatsResult{GroupID: gid}
-
-			// Query total keys
-			if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
-				Where("group_id = ?", gid).
-				Count(&totalKeys).Error; err != nil {
-				result.Err = err
-				mu.Lock()
-				results[gid] = result
-				mu.Unlock()
-				return
-			}
-
-			// Query active keys
-			if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
-				Where("group_id = ? AND status = ?", gid, models.KeyStatusActive).
-				Count(&activeKeys).Error; err != nil {
-				result.Err = err
-				mu.Lock()
-				results[gid] = result
-				mu.Unlock()
-				return
-			}
-
-			result.TotalKeys = totalKeys
-			result.ActiveKeys = activeKeys
-			result.InvalidKeys = totalKeys - activeKeys
-
-			mu.Lock()
-			results[gid] = result
-			mu.Unlock()
-		}(groupID)
+	if len(groupIDs) == 0 {
+		return results
 	}
 
-	wg.Wait()
+	// Generate cache key from sorted group IDs
+	cacheKey := s.generateCacheKey(groupIDs)
+
+	// Check cache first
+	s.statsCacheMu.RLock()
+	if entry, ok := s.statsCache[cacheKey]; ok {
+		if time.Now().Before(entry.expiresAt) {
+			// Cache hit - return cached results
+			s.statsCacheMu.RUnlock()
+			// Deep copy to avoid race conditions
+			cachedResults := make(map[uint]keyStatsResult, len(entry.results))
+			for k, v := range entry.results {
+				cachedResults[k] = v
+			}
+			return cachedResults
+		}
+		// Cache expired, remove it
+		delete(s.statsCache, cacheKey)
+	}
+	s.statsCacheMu.RUnlock()
+
+	// Initialize results map with all group IDs to ensure all groups are represented
+	for _, gid := range groupIDs {
+		results[gid] = keyStatsResult{GroupID: gid}
+	}
+
+	// Use a single SQL query with GROUP BY to fetch all statistics at once
+	// This reduces database round trips from 2N to 1
+	type statsRow struct {
+		GroupID    uint  `gorm:"column:group_id"`
+		TotalKeys  int64 `gorm:"column:total_keys"`
+		ActiveKeys int64 `gorm:"column:active_keys"`
+	}
+
+	var statsRows []statsRow
+	err := s.db.WithContext(ctx).Raw(`
+		SELECT
+			group_id,
+			COUNT(*) as total_keys,
+			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as active_keys
+		FROM api_keys
+		WHERE group_id IN ?
+		GROUP BY group_id
+	`, models.KeyStatusActive, groupIDs).Scan(&statsRows).Error
+
+	if err != nil {
+		// If query fails, mark all results with error
+		for gid := range results {
+			result := results[gid]
+			result.Err = err
+			results[gid] = result
+		}
+		return results
+	}
+
+	// Update results with fetched statistics
+	for _, row := range statsRows {
+		result := results[row.GroupID]
+		result.TotalKeys = row.TotalKeys
+		result.ActiveKeys = row.ActiveKeys
+		result.InvalidKeys = row.TotalKeys - row.ActiveKeys
+		results[row.GroupID] = result
+	}
+
+	// Cache the results (deep copy to avoid reference issues)
+	cachedResults := make(map[uint]keyStatsResult, len(results))
+	for k, v := range results {
+		cachedResults[k] = v
+	}
+
+	s.statsCacheMu.Lock()
+	s.statsCache[cacheKey] = keyStatsCacheEntry{
+		results:   cachedResults,
+		expiresAt: time.Now().Add(s.statsCacheTTL),
+	}
+	// Clean up expired entries periodically (keep cache size reasonable)
+	// Only cleanup when cache grows large to avoid overhead
+	if len(s.statsCache) > 100 {
+		s.cleanupExpiredCacheEntries()
+	}
+	s.statsCacheMu.Unlock()
+
 	return results
+}
+
+// generateCacheKey creates a cache key from sorted group IDs
+func (s *AggregateGroupService) generateCacheKey(groupIDs []uint) string {
+	// Simple approach: use a string representation of sorted IDs
+	// For better performance, could use a hash, but this is simpler and sufficient
+	var keyBuilder strings.Builder
+	keyBuilder.Grow(len(groupIDs) * 10) // Estimate 10 chars per ID
+
+	// Sort IDs for consistent cache keys (simple insertion sort for small arrays)
+	sorted := make([]uint, len(groupIDs))
+	copy(sorted, groupIDs)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+
+	for i, id := range sorted {
+		if i > 0 {
+			keyBuilder.WriteByte(',')
+		}
+		keyBuilder.WriteString(strconv.FormatUint(uint64(id), 10))
+	}
+	return keyBuilder.String()
+}
+
+// cleanupExpiredCacheEntries removes expired entries from the cache
+func (s *AggregateGroupService) cleanupExpiredCacheEntries() {
+	now := time.Now()
+	for key, entry := range s.statsCache {
+		if now.After(entry.expiresAt) {
+			delete(s.statsCache, key)
+		}
+	}
 }

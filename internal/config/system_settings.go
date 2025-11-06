@@ -22,7 +22,7 @@ import (
 
 const SettingsUpdateChannel = "system_settings:updated"
 
-// SystemSettingsManager 管理系统配置
+// SystemSettingsManager manages system configuration.
 type SystemSettingsManager struct {
 	syncer *syncer.CacheSyncer[types.SystemSettings]
 }
@@ -109,7 +109,7 @@ func (sm *SystemSettingsManager) Stop(ctx context.Context) {
 	}
 }
 
-// EnsureSettingsInitialized 确保数据库中存在所有系统设置的记录。
+// EnsureSettingsInitialized ensures all system setting records exist in the database.
 func (sm *SystemSettingsManager) EnsureSettingsInitialized(authConfig types.AuthConfig) error {
 	defaultSettings := utils.DefaultSystemSettings()
 	metadata := utils.GenerateSettingsMetadata(&defaultSettings)
@@ -151,7 +151,7 @@ func (sm *SystemSettingsManager) EnsureSettingsInitialized(authConfig types.Auth
 	return nil
 }
 
-// GetSettings 获取当前系统配置
+// GetSettings gets the current system configuration.
 func (sm *SystemSettingsManager) GetSettings() types.SystemSettings {
 	if sm.syncer == nil {
 		logrus.Warn("SystemSettingsManager is not initialized, returning default settings.")
@@ -178,14 +178,14 @@ func (sm *SystemSettingsManager) GetAppUrl() string {
 	return fmt.Sprintf("http://%s:%s", host, port)
 }
 
-// UpdateSettings 更新系统配置
+// UpdateSettings updates system configuration.
 func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) error {
-	// 验证配置项
+	// Validate configuration items
 	if err := sm.ValidateSettings(settingsMap); err != nil {
 		return err
 	}
 
-	// 更新数据库
+	// Update database
 	var settingsToUpdate []models.SystemSetting
 	for key, value := range settingsMap {
 		settingsToUpdate = append(settingsToUpdate, models.SystemSetting{

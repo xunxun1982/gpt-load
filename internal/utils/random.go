@@ -62,3 +62,15 @@ func WeightedRandomSelect(weights []int) int {
 
 	return -1
 }
+
+// GenerateRandomSuffix generates a random 4-character suffix using lowercase letters and numbers
+func GenerateRandomSuffix() string {
+	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+	const length = 4
+	rng := GetRand()
+	suffix := make([]byte, length)
+	for i := range suffix {
+		suffix[i] = charset[rng.Intn(len(charset))]
+	}
+	return string(suffix)
+}

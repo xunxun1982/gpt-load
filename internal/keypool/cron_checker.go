@@ -132,7 +132,9 @@ func (s *CronChecker) validateGroupKeys(group *models.Group) {
 	}
 
 	if len(invalidKeys) == 0 {
-		if err := s.DB.Model(&models.Group{}).Where("id = ?", group.ID).Update("last_validated_at", time.Now()).Error; err != nil {
+		// Use UpdateColumns to only update last_validated_at field, avoiding updated_at auto-update and hooks
+		now := time.Now()
+		if err := s.DB.Model(&models.Group{}).Where("id = ?", group.ID).UpdateColumns(map[string]any{"last_validated_at": now}).Error; err != nil {
 			logrus.Errorf("CronChecker: Failed to update last_validated_at for group %s: %v", group.Name, err)
 		}
 		logrus.Infof("CronChecker: Group '%s' has no invalid keys to check.", group.Name)
@@ -189,7 +191,9 @@ DistributeLoop:
 
 	keyWg.Wait()
 
-	if err := s.DB.Model(&models.Group{}).Where("id = ?", group.ID).Update("last_validated_at", time.Now()).Error; err != nil {
+	// Use UpdateColumns to only update last_validated_at field, avoiding updated_at auto-update and hooks
+	now := time.Now()
+	if err := s.DB.Model(&models.Group{}).Where("id = ?", group.ID).UpdateColumns(map[string]any{"last_validated_at": now}).Error; err != nil {
 		logrus.Errorf("CronChecker: Failed to update last_validated_at for group %s: %v", group.Name, err)
 	}
 

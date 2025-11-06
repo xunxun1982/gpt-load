@@ -236,15 +236,15 @@ func (s *Server) getRPMStats(now time.Time) (models.StatCard, error) {
 	}, nil
 }
 
-// getSecurityWarnings 检查安全配置并返回警告信息
+// getSecurityWarnings checks security configuration and returns warning information.
 func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 	var warnings []models.SecurityWarning
 
-	// 获取AUTH_KEY和ENCRYPTION_KEY
+	// Get AUTH_KEY and ENCRYPTION_KEY
 	authConfig := s.config.GetAuthConfig()
 	encryptionKey := s.config.GetEncryptionKey()
 
-	// 检查AUTH_KEY
+	// Check AUTH_KEY
 	if authConfig.Key == "" {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       "AUTH_KEY",
@@ -257,7 +257,7 @@ func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 		warnings = append(warnings, authWarnings...)
 	}
 
-	// 检查ENCRYPTION_KEY
+	// Check ENCRYPTION_KEY
 	if encryptionKey == "" {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       "ENCRYPTION_KEY",
@@ -270,7 +270,7 @@ func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 		warnings = append(warnings, encryptionWarnings...)
 	}
 
-	// 检查系统级代理密钥
+	// Check system-level proxy keys
 	systemSettings := s.SettingsManager.GetSettings()
 	if systemSettings.ProxyKeys != "" {
 		proxyKeys := strings.Split(systemSettings.ProxyKeys, ",")
@@ -284,7 +284,7 @@ func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 		}
 	}
 
-	// 检查分组级代理密钥
+	// Check group-level proxy keys
 	var groups []models.Group
 	if err := s.DB.Where("proxy_keys IS NOT NULL AND proxy_keys != ''").Find(&groups).Error; err == nil {
 		for _, group := range groups {
@@ -305,16 +305,16 @@ func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 	return warnings
 }
 
-// checkPasswordSecurity 综合检查密码安全性
+// checkPasswordSecurity comprehensively checks password security.
 func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.SecurityWarning {
 	var warnings []models.SecurityWarning
 
-	// 1. 长度检查
+	// 1. Length check
 	if len(password) < 16 {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       keyType,
 			Message:    i18n.Message(c, "security.password_too_short", map[string]any{"keyType": keyType, "length": len(password)}),
-			Severity:   "high", // 长度不足是高风险
+			Severity:   "high", // Insufficient length is high risk
 			Suggestion: i18n.Message(c, "security.password_recommendation_16"),
 		})
 	} else if len(password) < 32 {
@@ -326,7 +326,7 @@ func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.Se
 		})
 	}
 
-	// 2. 常见弱密码检查
+	// 2. Common weak password check
 	lower := strings.ToLower(password)
 	weakPatterns := []string{
 		"password", "123456", "admin", "secret", "test", "demo",
@@ -346,7 +346,7 @@ func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.Se
 		}
 	}
 
-	// 3. 复杂度检查（仅在长度足够时检查）
+	// 3. Complexity check (only when length is sufficient)
 	if len(password) >= 16 && !hasGoodComplexity(password) {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       keyType,
@@ -359,7 +359,7 @@ func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.Se
 	return warnings
 }
 
-// hasGoodComplexity 检查密码复杂度
+// hasGoodComplexity checks password complexity.
 func hasGoodComplexity(password string) bool {
 	var hasUpper, hasLower, hasDigit, hasSpecial bool
 
