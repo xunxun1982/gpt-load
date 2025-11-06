@@ -239,7 +239,8 @@ function getGroupIcon(group: Group, isAggregate: boolean): string {
   if (isAggregate) {
     return ICON_AGGREGATE;
   }
-  return getChannelTypeIcon(group.channel_type || "default");
+  const channelType = group.channel_type?.trim() || "default";
+  return getChannelTypeIcon(channelType);
 }
 
 // 监听选中项 ID 的变化，并自动滚动到该项
@@ -271,7 +272,8 @@ function handleGroupClick(group: Group) {
 
 // 获取渠道类型的标签颜色
 function getChannelTagType(channelType: string) {
-  switch (channelType) {
+  const normalized = channelType?.trim().toLowerCase();
+  switch (normalized) {
     case "openai":
       return "success";
     case "gemini":
