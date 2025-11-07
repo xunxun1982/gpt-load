@@ -260,8 +260,8 @@ func (s *Server) ExportGroup(c *gin.Context) {
 			ProxyKeys:          groupData.Group.ProxyKeys,
 			Sort:               groupData.Group.Sort,
 		},
-		Keys:       []KeyExportInfo{},
-		SubGroups:  []SubGroupExportInfo{},
+		Keys:       make([]KeyExportInfo, 0, len(groupData.Keys)),
+		SubGroups:  make([]SubGroupExportInfo, 0, len(groupData.SubGroups)),
 		ExportedAt: time.Now().Format(time.RFC3339),
 		Version:    "2.0",
 	}
