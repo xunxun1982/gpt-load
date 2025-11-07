@@ -508,7 +508,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCtx.attemptCount+1, err)
 
 		// Handle sub-group failure
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, http.StatusServiceUnavailable, err)
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, http.StatusServiceUnavailable, err, nil)
 		return
 	}
 
@@ -635,7 +635,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		ps.keyProvider.UpdateStatus(apiKey, group, false, parsedError)
 
 		// Handle sub-group failure
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, statusCode, errors.New(parsedError))
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, statusCode, errors.New(parsedError), apiKey)
 		return
 	}
 
@@ -701,6 +701,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	maxRetries int,
 	statusCode int,
 	err error,
+	apiKey *models.APIKey,
 ) {
 	// Get current sub-group ID
 	if subGroupID, exists := c.Get("current_sub_group_id"); exists {
@@ -736,7 +737,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 		requestType = models.RequestTypeFinal
 	}
 
-	ps.logRequest(c, originalGroup, group, nil, startTime, statusCode, err, isStream, "", nil, channelHandler, bodyBytes, requestType)
+	ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, err, isStream, "", nil, channelHandler, bodyBytes, requestType)
 
 	// If this is the last attempt, return error
 	if isLastAttempt {

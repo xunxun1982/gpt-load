@@ -7,13 +7,13 @@ import (
 	"gorm.io/datatypes"
 )
 
-// Key状态
+// Key status constants
 const (
 	KeyStatusActive  = "active"
 	KeyStatusInvalid = "invalid"
 )
 
-// SystemSetting 对应 system_settings 表
+// SystemSetting corresponds to the system_settings table.
 type SystemSetting struct {
 	ID           uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	SettingKey   string    `gorm:"type:varchar(255);not null;unique" json:"setting_key"`
@@ -23,7 +23,7 @@ type SystemSetting struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// GroupConfig 存储特定于分组的配置
+// GroupConfig stores group-specific configuration.
 type GroupConfig struct {
 	RequestTimeout               *int    `json:"request_timeout,omitempty"`
 	IdleConnTimeout              *int    `json:"idle_conn_timeout,omitempty"`
@@ -47,7 +47,7 @@ type HeaderRule struct {
 	Action string `json:"action"` // "set" or "remove"
 }
 
-// GroupSubGroup 聚合分组和子分组的关联表
+// GroupSubGroup is the association table for aggregate groups and sub-groups.
 type GroupSubGroup struct {
 	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	GroupID    uint      `gorm:"not null;uniqueIndex:idx_group_sub" json:"group_id"`
@@ -61,7 +61,7 @@ type GroupSubGroup struct {
 	SubGroupEnabled bool   `gorm:"-" json:"sub_group_enabled,omitempty"`
 }
 
-// SubGroupInfo 用于API响应的子分组信息
+// SubGroupInfo represents sub-group information for API responses.
 type SubGroupInfo struct {
 	Group       Group `json:"group"`
 	Weight      int   `json:"weight"`
@@ -70,7 +70,7 @@ type SubGroupInfo struct {
 	InvalidKeys int64 `json:"invalid_keys"`
 }
 
-// ParentAggregateGroupInfo 用于API响应的父聚合分组信息
+// ParentAggregateGroupInfo represents parent aggregate group information for API responses.
 type ParentAggregateGroupInfo struct {
 	GroupID     uint   `json:"group_id"`
 	Name        string `json:"name"`
@@ -78,7 +78,7 @@ type ParentAggregateGroupInfo struct {
 	Weight      int    `json:"weight"`
 }
 
-// Group 对应 groups 表
+// Group corresponds to the groups table.
 type Group struct {
 	ID                 uint                 `gorm:"primaryKey;autoIncrement" json:"id"`
 	EffectiveConfig    types.SystemSettings `gorm:"-" json:"effective_config,omitempty"`
@@ -88,7 +88,7 @@ type Group struct {
 	ProxyKeys          string               `gorm:"type:text" json:"proxy_keys"`
 	Description        string               `gorm:"type:varchar(512)" json:"description"`
 	GroupType          string               `gorm:"type:varchar(50);default:'standard'" json:"group_type"` // 'standard' or 'aggregate'
-	Enabled            bool                 `gorm:"default:true;not null" json:"enabled"`                   // Group enabled status
+	Enabled            bool                 `gorm:"default:true;not null" json:"enabled"`                  // Group enabled status
 	Upstreams          datatypes.JSON       `gorm:"type:json;not null" json:"upstreams"`
 	ValidationEndpoint string               `gorm:"type:varchar(255)" json:"validation_endpoint"`
 	ChannelType        string               `gorm:"type:varchar(50);not null" json:"channel_type"`
@@ -110,13 +110,13 @@ type Group struct {
 	ModelMappingCache map[string]string   `gorm:"-" json:"-"` // Parsed model mapping for performance
 }
 
-// APIKey 对应 api_keys 表
+// APIKey corresponds to the api_keys table.
 type APIKey struct {
 	ID           uint       `gorm:"primaryKey;autoIncrement" json:"id"`
 	KeyValue     string     `gorm:"type:text;not null" json:"key_value"`
 	KeyHash      string     `gorm:"type:varchar(128);index" json:"key_hash"`
-	GroupID      uint       `gorm:"not null;index" json:"group_id"`
-	Status       string     `gorm:"type:varchar(50);not null;default:'active'" json:"status"`
+	GroupID      uint       `gorm:"not null;index:idx_api_keys_group_status" json:"group_id"`
+	Status       string     `gorm:"type:varchar(50);not null;default:'active';index:idx_api_keys_group_status" json:"status"`
 	Notes        string     `gorm:"type:varchar(255);default:''" json:"notes"`
 	RequestCount int64      `gorm:"not null;default:0" json:"request_count"`
 	FailureCount int64      `gorm:"not null;default:0" json:"failure_count"`
@@ -125,17 +125,17 @@ type APIKey struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
-// RequestType 请求类型常量
+// RequestType request type constants
 const (
 	RequestTypeRetry = "retry"
 	RequestTypeFinal = "final"
 )
 
-// RequestLog 对应 request_logs 表
+// RequestLog corresponds to the request_logs table.
 type RequestLog struct {
 	ID              string    `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Timestamp       time.Time `gorm:"not null;index" json:"timestamp"`
-	GroupID         uint      `gorm:"not null;index" json:"group_id"`
+	Timestamp       time.Time `gorm:"not null;index:idx_request_logs_group_timestamp;index:idx_request_logs_success_timestamp" json:"timestamp"`
+	GroupID         uint      `gorm:"not null;index:idx_request_logs_group_timestamp" json:"group_id"`
 	GroupName       string    `gorm:"type:varchar(255);index" json:"group_name"`
 	ParentGroupID   uint      `gorm:"index" json:"parent_group_id"`
 	ParentGroupName string    `gorm:"type:varchar(255);index" json:"parent_group_name"`
@@ -143,7 +143,7 @@ type RequestLog struct {
 	KeyHash         string    `gorm:"type:varchar(128);index" json:"key_hash"`
 	Model           string    `gorm:"type:varchar(255);index" json:"model"`
 	MappedModel     string    `gorm:"type:varchar(255)" json:"mapped_model"` // Model name after mapping/redirect
-	IsSuccess       bool      `gorm:"not null" json:"is_success"`
+	IsSuccess       bool      `gorm:"not null;index:idx_request_logs_success_timestamp" json:"is_success"`
 	SourceIP        string    `gorm:"type:varchar(64)" json:"source_ip"`
 	StatusCode      int       `gorm:"not null" json:"status_code"`
 	RequestPath     string    `gorm:"type:varchar(500)" json:"request_path"`
@@ -156,7 +156,7 @@ type RequestLog struct {
 	RequestBody     string    `gorm:"type:text" json:"request_body"`
 }
 
-// StatCard 用于仪表盘的单个统计卡片数据
+// StatCard represents a single statistics card data for the dashboard.
 type StatCard struct {
 	Value         float64 `json:"value"`
 	SubValue      int64   `json:"sub_value,omitempty"`
@@ -165,15 +165,15 @@ type StatCard struct {
 	TrendIsGrowth bool    `json:"trend_is_growth"`
 }
 
-// SecurityWarning 用于安全警告信息
+// SecurityWarning represents security warning information.
 type SecurityWarning struct {
-	Type       string `json:"type"`       // 警告类型：auth_key, encryption_key 等
-	Message    string `json:"message"`    // 警告信息
-	Severity   string `json:"severity"`   // 严重程度：low, medium, high
-	Suggestion string `json:"suggestion"` // 建议解决方案
+	Type       string `json:"type"`       // Warning type: auth_key, encryption_key, etc.
+	Message    string `json:"message"`    // Warning message
+	Severity   string `json:"severity"`   // Severity level: low, medium, high
+	Suggestion string `json:"suggestion"` // Suggested solution
 }
 
-// DashboardStatsResponse 用于仪表盘基础统计的API响应
+// DashboardStatsResponse represents the API response for dashboard basic statistics.
 type DashboardStatsResponse struct {
 	KeyCount         StatCard          `json:"key_count"`
 	RPM              StatCard          `json:"rpm"`
@@ -182,23 +182,23 @@ type DashboardStatsResponse struct {
 	SecurityWarnings []SecurityWarning `json:"security_warnings"`
 }
 
-// ChartDataset 用于图表的数据集
+// ChartDataset represents a dataset for charts.
 type ChartDataset struct {
 	Label string  `json:"label"`
 	Data  []int64 `json:"data"`
 	Color string  `json:"color"`
 }
 
-// ChartData 用于图表的API响应
+// ChartData represents the API response for charts.
 type ChartData struct {
 	Labels   []string       `json:"labels"`
 	Datasets []ChartDataset `json:"datasets"`
 }
 
-// GroupHourlyStat 对应 group_hourly_stats 表，用于存储每个分组每小时的请求统计
+// GroupHourlyStat corresponds to the group_hourly_stats table, used to store hourly request statistics for each group.
 type GroupHourlyStat struct {
 	ID           uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Time         time.Time `gorm:"not null;uniqueIndex:idx_group_time" json:"time"` // 整点时间
+	Time         time.Time `gorm:"not null;uniqueIndex:idx_group_time" json:"time"` // Hourly timestamp
 	GroupID      uint      `gorm:"not null;uniqueIndex:idx_group_time" json:"group_id"`
 	SuccessCount int64     `gorm:"not null;default:0" json:"success_count"`
 	FailureCount int64     `gorm:"not null;default:0" json:"failure_count"`

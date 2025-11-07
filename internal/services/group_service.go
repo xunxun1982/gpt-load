@@ -48,6 +48,12 @@ func NewI18nError(apiErr *app_errors.APIError, msgID string, template map[string
 	}
 }
 
+// groupKeyStatsCacheEntry represents a cached key statistics entry with expiration
+type groupKeyStatsCacheEntry struct {
+	Stats     KeyStats
+	ExpiresAt time.Time
+}
+
 // GroupService handles business logic for group operations.
 type GroupService struct {
 	db                    *gorm.DB
@@ -58,6 +64,9 @@ type GroupService struct {
 	encryptionSvc         encryption.Service
 	aggregateGroupService *AggregateGroupService
 	channelRegistry       []string
+	keyStatsCache         map[uint]groupKeyStatsCacheEntry
+	keyStatsCacheMu       sync.RWMutex
+	keyStatsCacheTTL      time.Duration
 }
 
 // NewGroupService constructs a GroupService.
@@ -78,6 +87,8 @@ func NewGroupService(
 		keyImportSvc:          keyImportSvc,
 		encryptionSvc:         encryptionSvc,
 		aggregateGroupService: aggregateGroupService,
+		keyStatsCache:         make(map[uint]groupKeyStatsCacheEntry),
+		keyStatsCacheTTL:      3 * time.Minute,
 		channelRegistry:       channel.GetChannels(),
 	}
 }
@@ -260,7 +271,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 
 // ListGroups returns all groups without sub-group relations.
 func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
-	var groups []models.Group
+	groups := make([]models.Group, 0, 100)
 	if err := s.db.WithContext(ctx).Order("sort asc, id desc").Find(&groups).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
@@ -416,16 +427,6 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 // DeleteGroup removes a group and associated resources.
 func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
-	var apiKeys []models.APIKey
-	if err := s.db.WithContext(ctx).Where("group_id = ?", id).Find(&apiKeys).Error; err != nil {
-		return app_errors.ParseDBError(err)
-	}
-
-	keyIDs := make([]uint, 0, len(apiKeys))
-	for _, key := range apiKeys {
-		keyIDs = append(keyIDs, key.ID)
-	}
-
 	tx := s.db.WithContext(ctx).Begin()
 	if err := tx.Error; err != nil {
 		return app_errors.ErrDatabase
@@ -441,26 +442,53 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 		return app_errors.ParseDBError(err)
 	}
 
+	// Query key IDs inside transaction to avoid race conditions
+	var keyIDs []uint
+	if err := tx.Model(&models.APIKey{}).
+		Where("group_id = ?", id).
+		Pluck("id", &keyIDs).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
 	if err := tx.Where("group_id = ? OR sub_group_id = ?", id, id).Delete(&models.GroupSubGroup{}).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
 
-	if err := tx.Where("group_id = ?", id).Delete(&models.APIKey{}).Error; err != nil {
-		return app_errors.ErrDatabase
+	// Use batch deletion for large datasets to improve performance and reduce lock time
+	// This is much faster than deleting all rows at once, especially for groups with many keys
+	// Delete by ID in batches to leverage primary key index and reduce lock contention
+	// Smaller batch size (50) ensures each DELETE operation stays well under 200ms threshold
+	// Even with 100 IDs, DELETE operations can exceed 200ms, so 50 is a safer choice
+	if len(keyIDs) > 0 {
+		batchSize := 50
+		totalDeleted := int64(0)
+
+		for i := 0; i < len(keyIDs); i += batchSize {
+			end := i + batchSize
+			if end > len(keyIDs) {
+				end = len(keyIDs)
+			}
+			batchIDs := keyIDs[i:end]
+
+			result := tx.Where("id IN ?", batchIDs).Delete(&models.APIKey{})
+			if result.Error != nil {
+				return app_errors.ParseDBError(result.Error)
+			}
+
+			totalDeleted += result.RowsAffected
+		}
+
+		if totalDeleted > 0 {
+			logrus.WithContext(ctx).WithFields(logrus.Fields{
+				"groupID":      id,
+				"deletedCount": totalDeleted,
+				"totalKeys":    len(keyIDs),
+			}).Debug("Deleted API keys in batches")
+		}
 	}
 
 	if err := tx.Delete(&models.Group{}, id).Error; err != nil {
 		return app_errors.ParseDBError(err)
-	}
-
-	if len(keyIDs) > 0 {
-		if err := s.keyService.KeyProvider.RemoveKeysFromStore(id, keyIDs); err != nil {
-			logrus.WithContext(ctx).WithFields(logrus.Fields{
-				"groupID":  id,
-				"keyCount": len(keyIDs),
-			}).WithError(err).Error("failed to remove keys from memory store, rolling back transaction")
-			return NewI18nError(app_errors.ErrDatabase, "error.delete_group_cache", nil)
-		}
 	}
 
 	if err := tx.Commit().Error; err != nil {
@@ -468,10 +496,159 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 	}
 	tx = nil
 
+	// Post-commit: best-effort cache/memory updates
+	if len(keyIDs) > 0 {
+		if err := s.keyService.KeyProvider.RemoveKeysFromStore(id, keyIDs); err != nil {
+			logrus.WithContext(ctx).WithFields(logrus.Fields{
+				"groupID":  id,
+				"keyCount": len(keyIDs),
+			}).WithError(err).Warn("failed to remove keys from memory store; will refresh on next use")
+		}
+	}
+	// Clear per-group key stats cache to avoid stale counts for soon-to-be-reused IDs
+	s.InvalidateKeyStatsCache(id)
+
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
 
+	return nil
+}
+
+// DeleteAllGroups removes all groups and their associated resources.
+// This is a dangerous operation intended for debugging and testing purposes only.
+// It should only be accessible when DEBUG_MODE environment variable is enabled.
+//
+// The operation performs the following steps:
+// 1. Deletes all sub-group relationships
+// 2. Deletes all API keys in batches to avoid long-running transactions
+// 3. Deletes all groups
+// 4. Clears the key store cache
+// 5. Invalidates the group cache
+//
+// Returns an error if any database operation fails.
+func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
+	logrus.WithContext(ctx).Warn("DeleteAllGroups called - this will remove ALL groups and keys")
+
+	// Step 1: Get total key count before deletion (for logging only)
+	var totalKeys int64
+	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).Count(&totalKeys).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to count API keys")
+		return app_errors.ParseDBError(err)
+	}
+
+	logrus.WithContext(ctx).WithField("totalKeys", totalKeys).Info("Starting deletion of all groups and keys")
+
+	// Step 2: Optimize SQLite for bulk deletion BEFORE starting transaction
+	// Note: PRAGMA synchronous cannot be changed inside a transaction in SQLite
+	// We only disable foreign keys which provides significant performance improvement
+	// and is safe because we're deleting all related data anyway
+	originalForeignKeys := true
+	fkDisabled := false
+	var fkResult int
+	if err := s.db.WithContext(ctx).Raw("PRAGMA foreign_keys").Scan(&fkResult).Error; err == nil {
+		originalForeignKeys = fkResult == 1
+	}
+
+	// Disable foreign keys for better performance
+	if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to disable foreign keys, continuing anyway")
+	} else {
+		fkDisabled = true
+	}
+
+	// Step 3: Begin transaction
+	tx := s.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		// Restore foreign keys if transaction fails to start (only if we successfully disabled them)
+		if fkDisabled && originalForeignKeys {
+			s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
+		}
+		return app_errors.ErrDatabase
+	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+			// Restore foreign keys on rollback (only if we successfully disabled them)
+			if fkDisabled && originalForeignKeys {
+				s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
+			}
+		}
+	}()
+
+	// Step 4: Delete all sub-group relationships
+	if err := tx.Exec("DELETE FROM group_sub_groups").Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to delete sub-group relationships")
+		return app_errors.ParseDBError(err)
+	}
+
+	// Step 5: Delete all API keys using optimized DELETE
+	// For SQLite, a simple DELETE FROM is the fastest way to remove all rows
+	if totalKeys > 0 {
+		result := tx.Exec("DELETE FROM api_keys")
+		if result.Error != nil {
+			logrus.WithContext(ctx).WithError(result.Error).Error("failed to delete all API keys")
+			return app_errors.ParseDBError(result.Error)
+		}
+		logrus.WithContext(ctx).WithField("deletedKeys", result.RowsAffected).Info("Deleted all API keys")
+
+		// Reset auto-increment counter (SQLite-specific)
+		// This is optional but keeps the database clean for future inserts
+		// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
+		if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='api_keys'").Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("failed to reset api_keys sequence, continuing anyway")
+		}
+	}
+
+	// Step 6: Delete all groups
+	result := tx.Exec("DELETE FROM groups")
+	if result.Error != nil {
+		logrus.WithContext(ctx).WithError(result.Error).Error("failed to delete all groups")
+		return app_errors.ParseDBError(result.Error)
+	}
+	logrus.WithContext(ctx).WithField("deletedGroups", result.RowsAffected).Info("Deleted all groups")
+
+	// Reset auto-increment counter (SQLite-specific)
+	// This is optional but keeps the database clean for future inserts
+	// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
+	if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='groups'").Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to reset groups sequence, continuing anyway")
+	}
+
+	// Step 7: Commit the transaction
+	if err := tx.Commit().Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to commit transaction")
+		// Foreign keys will be restored by defer
+		return app_errors.ErrDatabase
+	}
+	tx = nil
+
+	// Step 8: Restore foreign keys setting (only if we successfully disabled them)
+	if fkDisabled && originalForeignKeys {
+		if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("failed to restore foreign keys setting")
+		}
+	}
+
+	// Step 9: Clear the key store cache
+	// This removes all keys from memory to ensure consistency
+	if err := s.keyService.KeyProvider.ClearAllKeys(); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to clear key store cache")
+		// Continue even if cache clear fails, as database is already updated
+	}
+
+	// Step 10: Invalidate the group cache to force reload
+	if err := s.groupManager.Invalidate(); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
+		// Continue even if cache invalidation fails
+	}
+
+	// Step 11: Reset in-memory key stats cache to avoid serving stale data for reused IDs
+	s.keyStatsCacheMu.Lock()
+	s.keyStatsCache = make(map[uint]groupKeyStatsCacheEntry)
+	s.keyStatsCacheMu.Unlock()
+
+	logrus.WithContext(ctx).Info("Successfully deleted all groups and keys")
 	return nil
 }
 
@@ -569,7 +746,7 @@ func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupS
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	// 根据分组类型选择不同的统计逻辑
+	// Select different statistics logic based on group type
 	if group.GroupType == "aggregate" {
 		return s.getAggregateGroupStats(ctx, groupID)
 	}
@@ -599,8 +776,19 @@ func (s *GroupService) queryGroupHourlyStats(ctx context.Context, groupID uint, 
 	return calculateRequestStats(result.SuccessCount+result.FailureCount, result.FailureCount), nil
 }
 
-// fetchKeyStats retrieves API key statistics for a group
+// fetchKeyStats retrieves API key statistics for a group with caching
 func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStats, error) {
+	// Check cache first
+	s.keyStatsCacheMu.RLock()
+	if entry, ok := s.keyStatsCache[groupID]; ok {
+		if time.Now().Before(entry.ExpiresAt) {
+			s.keyStatsCacheMu.RUnlock()
+			return entry.Stats, nil
+		}
+	}
+	s.keyStatsCacheMu.RUnlock()
+
+	// Cache miss - query database
 	var totalKeys, activeKeys int64
 
 	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
@@ -615,11 +803,28 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 		return KeyStats{}, fmt.Errorf("failed to get active keys: %w", err)
 	}
 
-	return KeyStats{
+	stats := KeyStats{
 		TotalKeys:   totalKeys,
 		ActiveKeys:  activeKeys,
 		InvalidKeys: totalKeys - activeKeys,
-	}, nil
+	}
+
+	// Update cache
+	s.keyStatsCacheMu.Lock()
+	s.keyStatsCache[groupID] = groupKeyStatsCacheEntry{
+		Stats:     stats,
+		ExpiresAt: time.Now().Add(s.keyStatsCacheTTL),
+	}
+	s.keyStatsCacheMu.Unlock()
+
+	return stats, nil
+}
+
+// InvalidateKeyStatsCache invalidates the key statistics cache for a specific group
+func (s *GroupService) InvalidateKeyStatsCache(groupID uint) {
+	s.keyStatsCacheMu.Lock()
+	delete(s.keyStatsCache, groupID)
+	s.keyStatsCacheMu.Unlock()
 }
 
 // fetchRequestStats retrieves request statistics for multiple time periods
@@ -918,7 +1123,7 @@ func calculateRequestStats(total, failed int64) RequestStats {
 }
 
 func (s *GroupService) generateUniqueGroupName(ctx context.Context, baseName string) string {
-	var groups []models.Group
+	groups := make([]models.Group, 0, 100)
 	if err := s.db.WithContext(ctx).Select("name").Find(&groups).Error; err != nil {
 		return baseName + "_copy"
 	}

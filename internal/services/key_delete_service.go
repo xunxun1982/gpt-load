@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 
 	"github.com/sirupsen/logrus"
 )
@@ -80,24 +81,30 @@ func (s *KeyDeleteService) processAndDeleteKeys(
 	progressCallback func(processed int),
 ) (deletedCount int, ignoredCount int, err error) {
 	var totalDeletedCount int64
+	var processedCount int
 
-	for i := 0; i < len(keys); i += deleteChunkSize {
-		end := i + deleteChunkSize
-		if end > len(keys) {
-			end = len(keys)
-		}
-		chunk := keys[i:end]
-
+	err = utils.ProcessInChunks(keys, deleteChunkSize, func(chunk []string) error {
 		deletedChunkCount, err := s.KeyService.KeyProvider.RemoveKeys(groupID, chunk)
 		if err != nil {
-			return int(totalDeletedCount), len(keys) - int(totalDeletedCount), err
+			return err
 		}
 
 		totalDeletedCount += deletedChunkCount
+		processedCount += len(chunk)
 
 		if progressCallback != nil {
-			progressCallback(i + len(chunk))
+			progressCallback(processedCount)
 		}
+		return nil
+	})
+
+	if err != nil {
+		return int(totalDeletedCount), len(keys) - int(totalDeletedCount), err
+	}
+
+	// Invalidate cache after deleting keys
+	if s.KeyService.CacheInvalidationCallback != nil && totalDeletedCount > 0 {
+		s.KeyService.CacheInvalidationCallback(groupID)
 	}
 
 	return int(totalDeletedCount), len(keys) - int(totalDeletedCount), nil

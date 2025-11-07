@@ -182,6 +182,7 @@ var MessagesJaJP = map[string]string{
 	"error.delete_group_cache":       "グループの削除に失敗: キャッシュをクリーンアップできません",
 	"error.decrypt_key_copy":         "グループコピー中のキー復号化に失敗、スキップします",
 	"error.start_import_task":        "グループコピー用の非同期キーインポートタスクの開始に失敗しました",
+	"error.debug_mode_required":      "この操作にはDEBUG_MODEを有効にする必要があります",
 	"error.export_logs":              "ログのエクスポートに失敗しました",
 
 	// Login related
@@ -198,7 +199,18 @@ var MessagesJaJP = map[string]string{
 	"success.sub_group_deleted":        "サブグループが正常に削除されました",
 	"success.group_enabled":            "グループが有効化されました",
 	"success.group_disabled":           "グループが無効化されました",
+	"success.all_groups_deleted":       "すべてのグループが削除されました",
+	"success.group_imported":           "グループが正常にインポートされました",
+	"success.system_imported":          "システム設定が正常にインポートされました",
+	"success.system_settings_imported": "システム設定が正常にインポートされました",
+	"success.groups_batch_imported":    "グループのバッチインポートが成功しました",
 	"group.not_aggregate":              "グループはアグリゲートグループではありません",
 	"group.sub_group_already_exists":   "サブグループ{{.sub_group_id}}は既に存在します",
 	"group.sub_group_not_found":        "サブグループが見つかりません",
+	"database.group_not_found":         "グループが見つかりません",
+	"database.cannot_get_group":        "グループ情報を取得できません",
+	"database.cannot_create_group":     "グループを作成できません",
+	"database.cannot_create_keys":      "キーを作成できません",
+	"database.cannot_get_settings":     "システム設定を取得できません",
+	"database.import_failed":           "インポートに失敗しました",
 }

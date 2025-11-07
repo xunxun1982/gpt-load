@@ -7,6 +7,7 @@ import (
 	"gpt-load/internal/config"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -146,8 +147,8 @@ func (s *RequestLogService) flush() {
 
 		logrus.Debugf("Popped %d request logs to flush.", len(keys))
 
-		var logs []*models.RequestLog
-		var processedKeys []string
+		logs := make([]*models.RequestLog, 0, len(keys))
+		processedKeys := make([]string, 0, len(keys))
 		for _, key := range keys {
 			logBytes, err := s.store.Get(key)
 			if err != nil {
@@ -207,7 +208,7 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 			return fmt.Errorf("failed to batch insert request logs: %w", err)
 		}
 
-		keyStats := make(map[string]int64)
+		keyStats := make(map[string]int64, len(logs)/2)
 		for _, log := range logs {
 			if log.IsSuccess && log.KeyHash != "" {
 				keyStats[log.KeyHash]++
@@ -216,10 +217,16 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 
 		if len(keyStats) > 0 {
 			var caseStmt strings.Builder
-			var keyHashes []string
+			keyHashes := make([]string, 0, len(keyStats))
+			// Pre-allocate capacity: ~50 bytes per CASE clause
+			caseStmt.Grow(len(keyStats) * 50)
 			caseStmt.WriteString("CASE key_hash ")
 			for keyHash, count := range keyStats {
-				caseStmt.WriteString(fmt.Sprintf("WHEN '%s' THEN request_count + %d ", keyHash, count))
+				caseStmt.WriteString("WHEN '")
+				caseStmt.WriteString(keyHash)
+				caseStmt.WriteString("' THEN request_count + ")
+				caseStmt.WriteString(strconv.FormatInt(count, 10))
+				caseStmt.WriteString(" ")
 				keyHashes = append(keyHashes, keyHash)
 			}
 			caseStmt.WriteString("END")
@@ -233,11 +240,11 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 			}
 		}
 
-		// 更新统计表
+		// Update statistics table
 		hourlyStats := make(map[struct {
 			Time    time.Time
 			GroupID uint
-		}]struct{ Success, Failure int64 })
+		}]struct{ Success, Failure int64 }, len(logs)/10)
 		for _, log := range logs {
 			if log.RequestType == models.RequestTypeRetry {
 				continue

@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"strconv"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 	"gpt-load/internal/utils"
@@ -403,7 +404,8 @@ func (s *selector) selectByWeightWithExclusion(excludeIDs map[uint]bool) *subGro
 
 // hasActiveKeys checks if a sub-group has available API keys
 func (s *selector) hasActiveKeys(groupID uint) bool {
-	key := fmt.Sprintf("group:%d:active_keys", groupID)
+	// Use strconv instead of fmt.Sprintf for better performance in hot path
+	key := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 	length, err := s.store.LLen(key)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{

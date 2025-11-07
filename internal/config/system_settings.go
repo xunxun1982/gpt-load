@@ -22,7 +22,7 @@ import (
 
 const SettingsUpdateChannel = "system_settings:updated"
 
-// SystemSettingsManager 管理系统配置
+// SystemSettingsManager manages system configuration.
 type SystemSettingsManager struct {
 	syncer *syncer.CacheSyncer[types.SystemSettings]
 }
@@ -109,7 +109,7 @@ func (sm *SystemSettingsManager) Stop(ctx context.Context) {
 	}
 }
 
-// EnsureSettingsInitialized 确保数据库中存在所有系统设置的记录。
+// EnsureSettingsInitialized ensures all system setting records exist in the database.
 func (sm *SystemSettingsManager) EnsureSettingsInitialized(authConfig types.AuthConfig) error {
 	defaultSettings := utils.DefaultSystemSettings()
 	metadata := utils.GenerateSettingsMetadata(&defaultSettings)
@@ -151,7 +151,7 @@ func (sm *SystemSettingsManager) EnsureSettingsInitialized(authConfig types.Auth
 	return nil
 }
 
-// GetSettings 获取当前系统配置
+// GetSettings gets the current system configuration.
 func (sm *SystemSettingsManager) GetSettings() types.SystemSettings {
 	if sm.syncer == nil {
 		logrus.Warn("SystemSettingsManager is not initialized, returning default settings.")
@@ -178,14 +178,14 @@ func (sm *SystemSettingsManager) GetAppUrl() string {
 	return fmt.Sprintf("http://%s:%s", host, port)
 }
 
-// UpdateSettings 更新系统配置
+// UpdateSettings updates system configuration.
 func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) error {
-	// 验证配置项
+	// Validate configuration items
 	if err := sm.ValidateSettings(settingsMap); err != nil {
 		return err
 	}
 
-	// 更新数据库
+	// Update database
 	var settingsToUpdate []models.SystemSetting
 	for key, value := range settingsMap {
 		settingsToUpdate = append(settingsToUpdate, models.SystemSetting{
@@ -203,11 +203,34 @@ func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) erro
 		}
 	}
 
-	// 触发所有实例重新加载
+	// Trigger all instances to reload
 	return sm.syncer.Invalidate()
 }
 
-// GetEffectiveConfig 获取有效配置 (系统配置 + 分组覆盖)
+// ReloadSettings forces a synchronous reload of settings from the database.
+// This method is useful after importing settings to ensure cache is immediately updated.
+func (sm *SystemSettingsManager) ReloadSettings() error {
+	if sm.syncer == nil {
+		return fmt.Errorf("SystemSettingsManager is not initialized")
+	}
+
+	// Force synchronous reload of the cache
+	if err := sm.syncer.Reload(); err != nil {
+		return fmt.Errorf("failed to reload settings: %w", err)
+	}
+
+	logrus.Info("System settings cache reloaded synchronously")
+
+	// Also notify other instances to reload
+	if err := sm.syncer.Invalidate(); err != nil {
+		logrus.Warnf("Failed to notify other instances: %v", err)
+		// Don't return error as local reload was successful
+	}
+
+	return nil
+}
+
+// GetEffectiveConfig gets effective configuration (system config + group overrides)
 func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JSONMap) types.SystemSettings {
 	effectiveConfig := sm.GetSettings()
 
@@ -245,7 +268,7 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 	return effectiveConfig
 }
 
-// ValidateSettings 验证系统配置的有效性
+// ValidateSettings validates the validity of system configuration
 func (sm *SystemSettingsManager) ValidateSettings(settingsMap map[string]any) error {
 	tempSettings := utils.DefaultSystemSettings()
 	v := reflect.ValueOf(&tempSettings).Elem()

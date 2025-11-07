@@ -1,0 +1,627 @@
+package services
+
+import (
+	"fmt"
+	"strings"
+
+	"gpt-load/internal/encryption"
+	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
+	"sync"
+	"time"
+
+	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
+)
+
+// ExportImportService provides unified import/export functionality
+// This service handles both group-level and system-level import/export operations
+// It solves the FindInBatches limitation and reduces code duplication
+type ExportImportService struct {
+	db                *gorm.DB
+	bulkImportService *BulkImportService
+	encryptionService encryption.Service
+}
+
+// NewExportImportService creates a new export/import service
+func NewExportImportService(db *gorm.DB, bulkImport *BulkImportService, encryptionSvc encryption.Service) *ExportImportService {
+	return &ExportImportService{
+		db:                db,
+		bulkImportService: bulkImport,
+		encryptionService: encryptionSvc,
+	}
+}
+
+// GenerateUniqueGroupName generates a unique group name by appending a random suffix if needed
+// This is the centralized function for all group name conflict resolution
+// It appends a random 4-character suffix (e.g., "api-keys" -> "api-keysx9k2")
+func (s *ExportImportService) GenerateUniqueGroupName(tx *gorm.DB, baseName string) (string, error) {
+	groupName := baseName
+	maxAttempts := 10
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Check if this name already exists
+		var count int64
+		if err := tx.Model(&models.Group{}).Where("name = ?", groupName).Count(&count).Error; err != nil {
+			return "", fmt.Errorf("failed to check group name: %w", err)
+		}
+
+		// If name is unique, we're done
+		if count == 0 {
+			if groupName != baseName {
+				logrus.Debugf("Generated unique group name: %s (original: %s)", groupName, baseName)
+			}
+			return groupName, nil
+		}
+
+		// Generate a new name with random suffix for next attempt
+		if attempt < maxAttempts-1 {
+			// Ensure the name doesn't exceed database limits
+			// Most databases have a limit around 100-255 chars for names
+			if len(baseName)+4 > 100 {
+				baseName = baseName[:96] // Leave room for 4-char suffix
+			}
+			// Append random suffix directly without underscore
+			// e.g., "api-keys" becomes "api-keysx9k2"
+			groupName = baseName + utils.GenerateRandomSuffix()
+		} else {
+			return "", fmt.Errorf("failed to generate unique group name for %s after %d attempts", baseName, maxAttempts)
+		}
+	}
+
+	return groupName, nil
+}
+
+// KeyExportInfo represents exported key information
+type KeyExportInfo struct {
+	KeyValue string `json:"key_value"`
+	Status   string `json:"status"`
+}
+
+// ExportKeysResult contains the exported keys and count
+type ExportKeysResult struct {
+	Keys  []KeyExportInfo
+	Count int
+}
+
+// ExportKeysForGroup exports all keys for a specific group
+// This method fixes the FindInBatches limitation by using manual offset pagination
+func (s *ExportImportService) ExportKeysForGroup(groupID uint) (*ExportKeysResult, error) {
+	var allKeys []KeyExportInfo
+	offset := 0
+	const batchSize = 2000
+	totalExported := 0
+
+	// Get total count for progress tracking
+	var totalCount int64
+	if err := s.db.Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalCount).Error; err != nil {
+		logrus.WithError(err).Warnf("Failed to get total count for group %d", groupID)
+	}
+
+	// Log start with expected count
+	if totalCount > 0 {
+		logrus.Infof("Exporting %d keys for group ID: %d", totalCount, groupID)
+	} else {
+		logrus.Debugf("Starting key export for group ID: %d", groupID)
+	}
+
+	// Track progress percentage
+	lastLoggedPercent := 0
+
+	for {
+		var batchKeys []struct {
+			KeyValue string
+			Status   string
+		}
+
+		// Use Limit and Offset instead of FindInBatches to avoid its limitations
+		// FindInBatches has known issues with primary key pagination
+		err := s.db.Model(&models.APIKey{}).
+			Select("key_value, status").
+			Where("group_id = ?", groupID).
+			Limit(batchSize).
+			Offset(offset).
+			Find(&batchKeys).Error
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to export keys batch at offset %d: %w", offset, err)
+		}
+
+		// If no more records, we're done
+		if len(batchKeys) == 0 {
+			break
+		}
+
+		// Add keys from this batch
+		for _, key := range batchKeys {
+			allKeys = append(allKeys, KeyExportInfo{
+				KeyValue: key.KeyValue,
+				Status:   key.Status,
+			})
+		}
+
+		totalExported += len(batchKeys)
+
+		// Only log progress at 25%, 50%, 75% intervals for large exports
+		if totalCount > 10000 && totalExported > 0 {
+			currentPercent := (totalExported * 100) / int(totalCount)
+			if currentPercent >= lastLoggedPercent+25 {
+				logrus.Infof("Export progress: %d%% (%d/%d keys)", currentPercent, totalExported, totalCount)
+				lastLoggedPercent = currentPercent
+			}
+		}
+
+		// Debug level logging for detailed progress
+		logrus.Debugf("Exported batch: %d keys at offset %d (total: %d)",
+			len(batchKeys), offset, totalExported)
+
+		// If we got less than batchSize, we've reached the end
+		if len(batchKeys) < batchSize {
+			break
+		}
+
+		offset += batchSize
+	}
+
+	// Final summary log
+	logrus.Infof("Export completed: %d keys for group ID %d", totalExported, groupID)
+
+	return &ExportKeysResult{
+		Keys:  allKeys,
+		Count: totalExported,
+	}, nil
+}
+
+// ExportKeysForGroups exports keys for multiple groups
+// Returns a map of group ID to keys
+func (s *ExportImportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]KeyExportInfo, error) {
+	if len(groupIDs) == 0 {
+		return make(map[uint][]KeyExportInfo), nil
+	}
+
+	result := make(map[uint][]KeyExportInfo)
+	mu := sync.Mutex{}
+	totalExported := 0
+
+	// Get total count for progress tracking
+	var totalCount int64
+	if err := s.db.Model(&models.APIKey{}).Where("group_id IN ?", groupIDs).Count(&totalCount).Error; err != nil {
+		logrus.WithError(err).Warn("Failed to get total count for groups")
+	}
+
+	// Process all groups' keys in batches
+	offset := 0
+	const batchSize = 5000 // Larger batch for multiple groups
+
+	// Log start with expected count
+	if totalCount > 0 {
+		logrus.Infof("Exporting %d keys from %d groups", totalCount, len(groupIDs))
+	} else {
+		logrus.Debugf("Starting key export for %d groups", len(groupIDs))
+	}
+
+	lastLoggedPercent := 0
+
+	for {
+		var batchKeys []struct {
+			GroupID  uint
+			KeyValue string
+			Status   string
+		}
+
+		// Query keys for all groups
+		err := s.db.Model(&models.APIKey{}).
+			Select("group_id, key_value, status").
+			Where("group_id IN ?", groupIDs).
+			Limit(batchSize).
+			Offset(offset).
+			Find(&batchKeys).Error
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to export keys batch at offset %d: %w", offset, err)
+		}
+
+		// If no more records, we're done
+		if len(batchKeys) == 0 {
+			break
+		}
+
+		// Group keys by group ID
+		mu.Lock()
+		for _, key := range batchKeys {
+			if _, exists := result[key.GroupID]; !exists {
+				result[key.GroupID] = []KeyExportInfo{}
+			}
+			result[key.GroupID] = append(result[key.GroupID], KeyExportInfo{
+				KeyValue: key.KeyValue,
+				Status:   key.Status,
+			})
+		}
+		totalExported += len(batchKeys)
+		mu.Unlock()
+
+		// Only log progress at 25%, 50%, 75% intervals for large exports
+		if totalCount > 10000 && totalExported > 0 {
+			currentPercent := (totalExported * 100) / int(totalCount)
+			if currentPercent >= lastLoggedPercent+25 {
+				logrus.Infof("System export progress: %d%% (%d/%d keys)", currentPercent, totalExported, totalCount)
+				lastLoggedPercent = currentPercent
+			}
+		}
+
+		// Debug level logging for detailed progress
+		logrus.Debugf("Exported batch: %d keys at offset %d (total: %d)",
+			len(batchKeys), offset, totalExported)
+
+		// If we got less than batchSize, we've reached the end
+		if len(batchKeys) < batchSize {
+			break
+		}
+
+		offset += batchSize
+	}
+
+	logrus.Infof("System export completed: %d keys from %d groups", totalExported, len(groupIDs))
+
+	return result, nil
+}
+
+// ImportKeys imports keys for a group using the bulk import service
+func (s *ExportImportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyExportInfo) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	keyModels := make([]models.APIKey, 0, len(keys))
+	skippedKeys := 0
+
+	for _, keyInfo := range keys {
+		// Decrypt key_value to calculate key_hash
+		decryptedKey, err := s.encryptionService.Decrypt(keyInfo.KeyValue)
+		if err != nil {
+			logrus.WithError(err).Debug("Failed to decrypt key during import, skipping")
+			skippedKeys++
+			continue
+		}
+
+		keyHash := s.encryptionService.Hash(decryptedKey)
+
+		// Import keys with clean state:
+		// - Always set status to "active" for fresh start (ignore exported status)
+		// - Always set FailureCount to 0 for fresh start (ignore exported failure_count)
+		// This ensures imported keys start fresh without carrying over failure history
+		// This prevents immediate blacklisting by CronChecker after import
+		keyModels = append(keyModels, models.APIKey{
+			GroupID:      groupID,
+			KeyValue:     keyInfo.KeyValue,           // Keep encrypted value
+			KeyHash:      keyHash,                    // Calculated hash
+			Status:       models.KeyStatusActive,     // Always start as active
+			FailureCount: 0,                          // Always reset to 0 for fresh start
+		})
+	}
+
+	if len(keyModels) > 0 {
+		logrus.Infof("Importing %d keys for group ID: %d", len(keyModels), groupID)
+		if skippedKeys > 0 {
+			logrus.Warnf("Skipped %d keys due to decryption errors", skippedKeys)
+		}
+
+		// Use the bulk import service with the provided transaction
+		if err := s.bulkImportService.BulkInsertAPIKeysWithTx(tx, keyModels); err != nil {
+			return fmt.Errorf("bulk import failed: %w", err)
+		}
+	} else if skippedKeys > 0 {
+		logrus.Warnf("All %d keys were skipped due to decryption errors", skippedKeys)
+	}
+
+	return nil
+}
+
+// ExportGroupData exports a complete group with all its data
+type GroupExportData struct {
+	Group     models.Group       `json:"group"`
+	Keys      []KeyExportInfo    `json:"keys"`
+	SubGroups []SubGroupInfo     `json:"sub_groups,omitempty"`
+}
+
+// SubGroupInfo represents sub-group relationship
+type SubGroupInfo struct {
+	GroupName string `json:"group_name"`
+	Weight    int    `json:"weight"`
+}
+
+// ExportGroup exports a complete group with keys and sub-groups
+func (s *ExportImportService) ExportGroup(groupID uint) (*GroupExportData, error) {
+	var group models.Group
+	if err := s.db.First(&group, groupID).Error; err != nil {
+		return nil, fmt.Errorf("failed to find group: %w", err)
+	}
+
+	// Export keys
+	keysResult, err := s.ExportKeysForGroup(groupID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to export keys: %w", err)
+	}
+
+	result := &GroupExportData{
+		Group: group,
+		Keys:  keysResult.Keys,
+	}
+
+	// If it's an aggregate group, export sub-groups
+	if group.GroupType == "aggregate" {
+		var subGroupRelations []models.GroupSubGroup
+		err := s.db.Where("group_id = ?", groupID).
+			Find(&subGroupRelations).Error
+
+		if err == nil && len(subGroupRelations) > 0 {
+			// Get sub-group IDs
+			subGroupIDs := make([]uint, 0, len(subGroupRelations))
+			for _, rel := range subGroupRelations {
+				subGroupIDs = append(subGroupIDs, rel.SubGroupID)
+			}
+
+			// Get sub-group details
+			var subGroups []models.Group
+			if err := s.db.Where("id IN ?", subGroupIDs).Find(&subGroups).Error; err == nil {
+				result.SubGroups = make([]SubGroupInfo, 0, len(subGroups))
+				for _, sg := range subGroups {
+					// Find the weight for this sub-group
+					weight := 0
+					for _, rel := range subGroupRelations {
+						if rel.SubGroupID == sg.ID {
+							weight = rel.Weight
+							break
+						}
+					}
+					result.SubGroups = append(result.SubGroups, SubGroupInfo{
+						GroupName: sg.Name,
+						Weight:    weight,
+					})
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// ImportGroup imports a complete group with keys and sub-groups
+func (s *ExportImportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (uint, error) {
+	// Use the centralized unique name generation function
+	groupName, err := s.GenerateUniqueGroupName(tx, data.Group.Name)
+	if err != nil {
+		return 0, err
+	}
+
+	// Create the group with cleaned configuration
+	newGroup := data.Group
+	newGroup.ID = 0 // Reset ID for new record
+	newGroup.Name = groupName
+
+	// Clean Config values to remove leading/trailing whitespace
+	// This fixes issues like ' http://...' which cause URL parsing errors
+	if newGroup.Config != nil {
+		cleanedConfig := make(map[string]any)
+		for key, value := range newGroup.Config {
+			if strValue, ok := value.(string); ok {
+				cleanedConfig[key] = strings.TrimSpace(strValue)
+			} else {
+				cleanedConfig[key] = value
+			}
+		}
+		newGroup.Config = cleanedConfig
+	}
+
+	if err := tx.Create(&newGroup).Error; err != nil {
+		return 0, fmt.Errorf("failed to create group: %w", err)
+	}
+
+	if groupName != data.Group.Name {
+		logrus.Infof("Imported group %s (renamed from %s) with ID %d", groupName, data.Group.Name, newGroup.ID)
+	} else {
+		logrus.Debugf("Imported group %s with ID %d", groupName, newGroup.ID)
+	}
+
+	// Import keys
+	if len(data.Keys) > 0 {
+		if err := s.ImportKeys(tx, newGroup.ID, data.Keys); err != nil {
+			return 0, fmt.Errorf("failed to import keys: %w", err)
+		}
+	}
+
+	// Import sub-groups for aggregate groups
+	if newGroup.GroupType == "aggregate" && len(data.SubGroups) > 0 {
+		// Find sub-group IDs
+		var groupNames []string
+		for _, sg := range data.SubGroups {
+			groupNames = append(groupNames, sg.GroupName)
+		}
+
+		var subGroups []models.Group
+		if err := tx.Where("name IN ?", groupNames).Find(&subGroups).Error; err == nil {
+			// Create relationships
+			for _, subGroup := range subGroups {
+				// Find the weight for this sub-group
+				weight := 0
+				for _, sg := range data.SubGroups {
+					if sg.GroupName == subGroup.Name {
+						weight = sg.Weight
+						break
+					}
+				}
+
+				relation := models.GroupSubGroup{
+					GroupID:    newGroup.ID,
+					SubGroupID: subGroup.ID,
+					Weight:     weight,
+				}
+
+				if err := tx.Create(&relation).Error; err != nil {
+					logrus.WithError(err).Warnf("Failed to create sub-group relation for %s", subGroup.Name)
+				}
+			}
+		}
+	}
+
+	return newGroup.ID, nil
+}
+
+// SystemExportData represents full system export
+type SystemExportData struct {
+	Version        string                    `json:"version"`
+	ExportedAt     string                    `json:"exported_at"`
+	SystemSettings map[string]string         `json:"system_settings"`
+	Groups         []GroupExportData         `json:"groups"`
+}
+
+// ExportSystem exports the entire system configuration
+func (s *ExportImportService) ExportSystem() (*SystemExportData, error) {
+	// Export system settings
+	var settings []models.SystemSetting
+	if err := s.db.Find(&settings).Error; err != nil {
+		return nil, fmt.Errorf("failed to export system settings: %w", err)
+	}
+
+	settingsMap := make(map[string]string)
+	for _, setting := range settings {
+		settingsMap[setting.SettingKey] = setting.SettingValue
+	}
+
+	// Export all groups
+	var groups []models.Group
+	if err := s.db.Order("sort ASC, id DESC").Find(&groups).Error; err != nil {
+		return nil, fmt.Errorf("failed to export groups: %w", err)
+	}
+
+	// Get group IDs
+	groupIDs := make([]uint, 0, len(groups))
+	for _, group := range groups {
+		groupIDs = append(groupIDs, group.ID)
+	}
+
+	// Export all keys at once
+	keysMap, err := s.ExportKeysForGroups(groupIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to export keys: %w", err)
+	}
+
+	// Build export data
+	groupExports := make([]GroupExportData, 0, len(groups))
+	for _, group := range groups {
+		groupData := GroupExportData{
+			Group: group,
+			Keys:  keysMap[group.ID],
+		}
+
+		// Export sub-groups for aggregate groups
+		if group.GroupType == "aggregate" {
+			var subGroupRelations []models.GroupSubGroup
+			err := s.db.Where("group_id = ?", group.ID).
+				Find(&subGroupRelations).Error
+
+			if err == nil && len(subGroupRelations) > 0 {
+				// Get sub-group IDs
+				subGroupIDs := make([]uint, 0, len(subGroupRelations))
+				for _, rel := range subGroupRelations {
+					subGroupIDs = append(subGroupIDs, rel.SubGroupID)
+				}
+
+				// Get sub-group details
+				var subGroups []models.Group
+				if err := s.db.Where("id IN ?", subGroupIDs).Find(&subGroups).Error; err == nil {
+					groupData.SubGroups = make([]SubGroupInfo, 0, len(subGroups))
+					for _, sg := range subGroups {
+						// Find the weight for this sub-group
+						weight := 0
+						for _, rel := range subGroupRelations {
+							if rel.SubGroupID == sg.ID {
+								weight = rel.Weight
+								break
+							}
+						}
+						groupData.SubGroups = append(groupData.SubGroups, SubGroupInfo{
+							GroupName: sg.Name,
+							Weight:    weight,
+						})
+					}
+				}
+			}
+		}
+
+		groupExports = append(groupExports, groupData)
+	}
+
+	return &SystemExportData{
+		Version:        "2.0",
+		ExportedAt:     time.Now().Format(time.RFC3339),
+		SystemSettings: settingsMap,
+		Groups:         groupExports,
+	}, nil
+}
+
+// ImportSystem imports the entire system configuration
+func (s *ExportImportService) ImportSystem(tx *gorm.DB, data *SystemExportData) error {
+	// Count settings to import for logging
+	settingsCount := len(data.SystemSettings)
+	groupsCount := len(data.Groups)
+
+	logrus.Infof("Starting system import: %d settings, %d groups", settingsCount, groupsCount)
+
+	// Import system settings - ensure they are properly updated and cleaned
+	updatedSettings := 0
+	createdSettings := 0
+
+	for key, value := range data.SystemSettings {
+		// Clean the value to remove leading/trailing whitespace
+		// This fixes issues like ' http://...' which cause URL parsing errors
+		cleanedValue := strings.TrimSpace(value)
+
+		var setting models.SystemSetting
+		if err := tx.Where("setting_key = ?", key).First(&setting).Error; err == nil {
+			// Update existing setting
+			// Use Updates instead of Update to ensure all fields are updated
+			if err := tx.Model(&setting).Updates(map[string]interface{}{
+				"setting_value": cleanedValue,
+				"updated_at":    time.Now(),
+			}).Error; err != nil {
+				return fmt.Errorf("failed to update setting %s: %w", key, err)
+			}
+			updatedSettings++
+			logrus.Debugf("Updated setting: %s", key)
+		} else {
+			// Create new setting
+			setting = models.SystemSetting{
+				SettingKey:   key,
+				SettingValue: cleanedValue,
+			}
+			if err := tx.Create(&setting).Error; err != nil {
+				return fmt.Errorf("failed to create setting %s: %w", key, err)
+			}
+			createdSettings++
+			logrus.Debugf("Created new setting: %s", key)
+		}
+	}
+
+	logrus.Infof("System settings imported: %d updated, %d created", updatedSettings, createdSettings)
+
+	// Import all groups with unique name handling
+	importedGroups := 0
+	for _, groupData := range data.Groups {
+		groupID, err := s.ImportGroup(tx, &groupData)
+		if err != nil {
+			// Log error but continue with other groups
+			logrus.WithError(err).Warnf("Failed to import group %s, skipping", groupData.Group.Name)
+			continue
+		}
+		importedGroups++
+		logrus.Debugf("Imported group %s with ID %d", groupData.Group.Name, groupID)
+	}
+
+	logrus.Infof("Groups imported: %d/%d successful", importedGroups, groupsCount)
+
+	// Note: Cache refresh should be handled by the handler after transaction commits
+	// This ensures the database changes are visible when the cache is refreshed
+
+	return nil
+}

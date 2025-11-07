@@ -50,6 +50,7 @@ type Config struct {
 	Database      types.DatabaseConfig
 	RedisDSN      string
 	EncryptionKey string
+	DebugMode     bool // Enable debug features like clearing all groups
 }
 
 // NewManager creates a new configuration manager
@@ -103,6 +104,7 @@ func (m *Manager) ReloadConfig() error {
 		},
 		RedisDSN:      os.Getenv("REDIS_DSN"),
 		EncryptionKey: os.Getenv("ENCRYPTION_KEY"),
+		DebugMode:     utils.ParseBoolean(os.Getenv("DEBUG_MODE"), false),
 	}
 	m.config = config
 
@@ -152,6 +154,12 @@ func (m *Manager) GetDatabaseConfig() types.DatabaseConfig {
 // GetEncryptionKey returns the encryption key.
 func (m *Manager) GetEncryptionKey() string {
 	return m.config.EncryptionKey
+}
+
+// IsDebugMode returns whether debug mode is enabled.
+// Debug mode enables dangerous operations like clearing all groups for testing purposes.
+func (m *Manager) IsDebugMode() bool {
+	return m.config.DebugMode
 }
 
 // GetEffectiveServerConfig returns server configuration merged with system settings

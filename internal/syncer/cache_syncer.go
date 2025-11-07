@@ -66,6 +66,12 @@ func (s *CacheSyncer[T]) Invalidate() error {
 	return s.store.Publish(s.channelName, []byte("reload"))
 }
 
+// Reload forces an immediate synchronous reload of the cache from the source.
+// This is useful when you need to ensure the cache is updated immediately after database changes.
+func (s *CacheSyncer[T]) Reload() error {
+	return s.reload()
+}
+
 // Stop gracefully shuts down the syncer's background goroutine.
 func (s *CacheSyncer[T]) Stop() {
 	close(s.stopChan)

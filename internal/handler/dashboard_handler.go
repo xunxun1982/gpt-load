@@ -40,24 +40,24 @@ func (s *Server) Stats(c *gin.Context) {
 		return
 	}
 
-	// 计算请求量趋势
+	// Calculate request trend
 	reqTrend := 0.0
 	reqTrendIsGrowth := true
 	if previousPeriod.TotalRequests > 0 {
-		// 有前期数据，计算百分比变化
+		// Has previous period data, calculate percentage change
 		reqTrend = (float64(currentPeriod.TotalRequests-previousPeriod.TotalRequests) / float64(previousPeriod.TotalRequests)) * 100
 		reqTrendIsGrowth = reqTrend >= 0
 	} else if currentPeriod.TotalRequests > 0 {
-		// 前期无数据，当前有数据，视为100%增长
+		// No previous period data, current has data, treat as 100% growth
 		reqTrend = 100.0
 		reqTrendIsGrowth = true
 	} else {
-		// 前期和当前都无数据
+		// Both previous and current periods have no data
 		reqTrend = 0.0
 		reqTrendIsGrowth = true
 	}
 
-	// 计算当前和前期错误率
+	// Calculate current and previous error rates
 	currentErrorRate := 0.0
 	if currentPeriod.TotalRequests > 0 {
 		currentErrorRate = (float64(currentPeriod.TotalFailures) / float64(currentPeriod.TotalRequests)) * 100
@@ -68,27 +68,27 @@ func (s *Server) Stats(c *gin.Context) {
 		previousErrorRate = (float64(previousPeriod.TotalFailures) / float64(previousPeriod.TotalRequests)) * 100
 	}
 
-	// 计算错误率趋势
+	// Calculate error rate trend
 	errorRateTrend := 0.0
 	errorRateTrendIsGrowth := false
 	if previousPeriod.TotalRequests > 0 {
-		// 有前期数据，计算百分点差异
+		// Has previous period data, calculate percentage point difference
 		errorRateTrend = currentErrorRate - previousErrorRate
-		errorRateTrendIsGrowth = errorRateTrend < 0 // 错误率下降是好事
+		errorRateTrendIsGrowth = errorRateTrend < 0 // Decreasing error rate is good
 	} else if currentPeriod.TotalRequests > 0 {
-		// 前期无数据，当前有数据
-		errorRateTrend = currentErrorRate // 显示当前错误率
-		errorRateTrendIsGrowth = false    // 有错误是坏事（如果错误率>0）
+		// No previous period data, current has data
+		errorRateTrend = currentErrorRate // Show current error rate
+		errorRateTrendIsGrowth = false    // Having errors is bad (if error rate > 0)
 		if currentErrorRate == 0 {
-			errorRateTrendIsGrowth = true // 如果当前无错误，标记为正面
+			errorRateTrendIsGrowth = true // If current has no errors, mark as positive
 		}
 	} else {
-		// 都无数据
+		// Both have no data
 		errorRateTrend = 0.0
 		errorRateTrendIsGrowth = true
 	}
 
-	// 获取安全警告信息
+	// Get security warning information
 	securityWarnings := s.getSecurityWarnings(c)
 
 	stats := models.DashboardStatsResponse{
@@ -236,15 +236,15 @@ func (s *Server) getRPMStats(now time.Time) (models.StatCard, error) {
 	}, nil
 }
 
-// getSecurityWarnings 检查安全配置并返回警告信息
+// getSecurityWarnings checks security configuration and returns warning information.
 func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 	var warnings []models.SecurityWarning
 
-	// 获取AUTH_KEY和ENCRYPTION_KEY
+	// Get AUTH_KEY and ENCRYPTION_KEY
 	authConfig := s.config.GetAuthConfig()
 	encryptionKey := s.config.GetEncryptionKey()
 
-	// 检查AUTH_KEY
+	// Check AUTH_KEY
 	if authConfig.Key == "" {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       "AUTH_KEY",
@@ -257,7 +257,7 @@ func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 		warnings = append(warnings, authWarnings...)
 	}
 
-	// 检查ENCRYPTION_KEY
+	// Check ENCRYPTION_KEY
 	if encryptionKey == "" {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       "ENCRYPTION_KEY",
@@ -270,7 +270,7 @@ func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 		warnings = append(warnings, encryptionWarnings...)
 	}
 
-	// 检查系统级代理密钥
+	// Check system-level proxy keys
 	systemSettings := s.SettingsManager.GetSettings()
 	if systemSettings.ProxyKeys != "" {
 		proxyKeys := strings.Split(systemSettings.ProxyKeys, ",")
@@ -284,7 +284,7 @@ func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 		}
 	}
 
-	// 检查分组级代理密钥
+	// Check group-level proxy keys
 	var groups []models.Group
 	if err := s.DB.Where("proxy_keys IS NOT NULL AND proxy_keys != ''").Find(&groups).Error; err == nil {
 		for _, group := range groups {
@@ -305,16 +305,16 @@ func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 	return warnings
 }
 
-// checkPasswordSecurity 综合检查密码安全性
+// checkPasswordSecurity comprehensively checks password security.
 func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.SecurityWarning {
 	var warnings []models.SecurityWarning
 
-	// 1. 长度检查
+	// 1. Length check
 	if len(password) < 16 {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       keyType,
 			Message:    i18n.Message(c, "security.password_too_short", map[string]any{"keyType": keyType, "length": len(password)}),
-			Severity:   "high", // 长度不足是高风险
+			Severity:   "high", // Insufficient length is high risk
 			Suggestion: i18n.Message(c, "security.password_recommendation_16"),
 		})
 	} else if len(password) < 32 {
@@ -326,7 +326,7 @@ func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.Se
 		})
 	}
 
-	// 2. 常见弱密码检查
+	// 2. Common weak password check
 	lower := strings.ToLower(password)
 	weakPatterns := []string{
 		"password", "123456", "admin", "secret", "test", "demo",
@@ -346,7 +346,7 @@ func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.Se
 		}
 	}
 
-	// 3. 复杂度检查（仅在长度足够时检查）
+	// 3. Complexity check (only when length is sufficient)
 	if len(password) >= 16 && !hasGoodComplexity(password) {
 		warnings = append(warnings, models.SecurityWarning{
 			Type:       keyType,
@@ -359,7 +359,7 @@ func checkPasswordSecurity(c *gin.Context, password, keyType string) []models.Se
 	return warnings
 }
 
-// hasGoodComplexity 检查密码复杂度
+// hasGoodComplexity checks password complexity.
 func hasGoodComplexity(password string) bool {
 	var hasUpper, hasLower, hasDigit, hasSpecial bool
 
@@ -376,7 +376,7 @@ func hasGoodComplexity(password string) bool {
 		}
 	}
 
-	// 至少包含3种类型的字符
+	// Must contain at least 3 types of characters
 	count := 0
 	if hasUpper {
 		count++

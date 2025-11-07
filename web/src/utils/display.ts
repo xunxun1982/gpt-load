@@ -35,10 +35,13 @@ export function formatDisplayName(name: string): string {
  * @returns The display name for the group.
  */
 export function getGroupDisplayName(item: Group | SubGroupInfo): string {
-  if ("group" in item && item.group) {
+  // Check if it's a SubGroupInfo with a valid group property
+  if ("group" in item && item.group && typeof item.group === "object") {
     const group = item.group as Group;
     return group.display_name || formatDisplayName(group.name);
   }
+
+  // Otherwise treat it as a Group
   const group = item as Group;
   return group.display_name || formatDisplayName(group.name);
 }

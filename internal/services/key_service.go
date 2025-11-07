@@ -6,8 +6,8 @@ import (
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 	"io"
-	"regexp"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -42,10 +42,11 @@ type RestoreKeysResult struct {
 
 // KeyService provides services related to API keys.
 type KeyService struct {
-	DB            *gorm.DB
-	KeyProvider   *keypool.KeyProvider
-	KeyValidator  *keypool.KeyValidator
-	EncryptionSvc encryption.Service
+	DB                        *gorm.DB
+	KeyProvider               *keypool.KeyProvider
+	KeyValidator              *keypool.KeyValidator
+	EncryptionSvc             encryption.Service
+	CacheInvalidationCallback func(groupID uint) // Optional callback for cache invalidation
 }
 
 // NewKeyService creates a new KeyService.
@@ -97,14 +98,14 @@ func (s *KeyService) processAndCreateKeys(
 	if err := s.DB.Model(&models.APIKey{}).Where("group_id = ?", groupID).Pluck("key_hash", &existingHashes).Error; err != nil {
 		return 0, 0, err
 	}
-	existingHashMap := make(map[string]bool)
+	existingHashMap := make(map[string]bool, len(existingHashes))
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
 
 	// 2. Prepare new keys for creation
-	var newKeysToCreate []models.APIKey
-	uniqueNewKeys := make(map[string]bool)
+	newKeysToCreate := make([]models.APIKey, 0, len(keys))
+	uniqueNewKeys := make(map[string]bool, len(keys))
 
 	for _, keyVal := range keys {
 		trimmedKey := strings.TrimSpace(keyVal)
@@ -138,20 +139,24 @@ func (s *KeyService) processAndCreateKeys(
 	}
 
 	// 3. Use KeyProvider to add keys in chunks
-	for i := 0; i < len(newKeysToCreate); i += chunkSize {
-		end := i + chunkSize
-		if end > len(newKeysToCreate) {
-			end = len(newKeysToCreate)
-		}
-		chunk := newKeysToCreate[i:end]
+	err = utils.ProcessInChunks(newKeysToCreate, chunkSize, func(chunk []models.APIKey) error {
 		if err := s.KeyProvider.AddKeys(groupID, chunk); err != nil {
-			return addedCount, len(keys) - addedCount, err
+			return err
 		}
 		addedCount += len(chunk)
 
 		if progressCallback != nil {
-			progressCallback(i + len(chunk))
+			progressCallback(addedCount)
 		}
+		return nil
+	})
+	if err != nil {
+		return addedCount, len(keys) - addedCount, err
+	}
+
+	// Invalidate cache after adding keys
+	if s.CacheInvalidationCallback != nil && addedCount > 0 {
+		s.CacheInvalidationCallback(groupID)
 	}
 
 	return addedCount, len(keys) - addedCount, nil
@@ -167,9 +172,8 @@ func (s *KeyService) ParseKeysFromText(text string) []string {
 		return s.filterValidKeys(keys)
 	}
 
-	// 通用解析：通过分隔符分割文本，不使用复杂的正则表达式
-	delimiters := regexp.MustCompile(`[\s,;|\n\r\t]+`)
-	splitKeys := delimiters.Split(strings.TrimSpace(text), -1)
+	// Generic parsing: split text by delimiters without using complex regular expressions
+	splitKeys := utils.DelimitersPattern.Split(strings.TrimSpace(text), -1)
 
 	for _, key := range splitKeys {
 		key = strings.TrimSpace(key)
@@ -183,7 +187,7 @@ func (s *KeyService) ParseKeysFromText(text string) []string {
 
 // filterValidKeys validates and filters potential API keys
 func (s *KeyService) filterValidKeys(keys []string) []string {
-	var validKeys []string
+	validKeys := make([]string, 0, len(keys))
 	for _, key := range keys {
 		key = strings.TrimSpace(key)
 		if s.isValidKeyFormat(key) {
@@ -200,8 +204,7 @@ func (s *KeyService) isValidKeyFormat(key string) bool {
 		return false
 	}
 
-	validChars := regexp.MustCompile(`^[a-zA-Z0-9_\-./+=:]+$`)
-	return validChars.MatchString(key)
+	return utils.ValidKeyCharsPattern.MatchString(key)
 }
 
 // RestoreMultipleKeys handles the business logic of restoring keys from a text block.
@@ -215,17 +218,16 @@ func (s *KeyService) RestoreMultipleKeys(groupID uint, keysText string) (*Restor
 	}
 
 	var totalRestoredCount int64
-	for i := 0; i < len(keysToRestore); i += chunkSize {
-		end := i + chunkSize
-		if end > len(keysToRestore) {
-			end = len(keysToRestore)
-		}
-		chunk := keysToRestore[i:end]
+	err := utils.ProcessInChunks(keysToRestore, chunkSize, func(chunk []string) error {
 		restoredCount, err := s.KeyProvider.RestoreMultipleKeys(groupID, chunk)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		totalRestoredCount += restoredCount
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	ignoredCount := len(keysToRestore) - int(totalRestoredCount)
@@ -257,6 +259,19 @@ func (s *KeyService) ClearAllKeys(groupID uint) (int64, error) {
 	return s.KeyProvider.RemoveAllKeys(groupID)
 }
 
+// ResetGroupActiveKeysFailureCount resets failure_count to 0 for all active keys in a specific group.
+// This is useful when importing a group, treating it as a fresh import.
+func (s *KeyService) ResetGroupActiveKeysFailureCount(groupID uint) (int64, error) {
+	return s.KeyProvider.ResetGroupActiveKeysFailureCount(groupID)
+}
+
+// ResetAllActiveKeysFailureCount resets failure_count to 0 for all active keys across all groups.
+// This is useful when system configuration changes (e.g., blacklist_threshold) and we want to
+// reset the failure history to avoid immediate blacklisting with new thresholds.
+func (s *KeyService) ResetAllActiveKeysFailureCount() (int64, error) {
+	return s.KeyProvider.ResetAllActiveKeysFailureCount()
+}
+
 // DeleteMultipleKeys handles the business logic of deleting keys from a text block.
 func (s *KeyService) DeleteMultipleKeys(groupID uint, keysText string) (*DeleteKeysResult, error) {
 	keysToDelete := s.ParseKeysFromText(keysText)
@@ -268,17 +283,16 @@ func (s *KeyService) DeleteMultipleKeys(groupID uint, keysText string) (*DeleteK
 	}
 
 	var totalDeletedCount int64
-	for i := 0; i < len(keysToDelete); i += chunkSize {
-		end := i + chunkSize
-		if end > len(keysToDelete) {
-			end = len(keysToDelete)
-		}
-		chunk := keysToDelete[i:end]
+	err := utils.ProcessInChunks(keysToDelete, chunkSize, func(chunk []string) error {
 		deletedCount, err := s.KeyProvider.RemoveKeys(groupID, chunk)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		totalDeletedCount += deletedCount
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	ignoredCount := len(keysToDelete) - int(totalDeletedCount)
@@ -322,18 +336,17 @@ func (s *KeyService) TestMultipleKeys(group *models.Group, keysText string) ([]k
 		return nil, fmt.Errorf("no valid keys found in the input text")
 	}
 
-	var allResults []keypool.KeyTestResult
-	for i := 0; i < len(keysToTest); i += chunkSize {
-		end := i + chunkSize
-		if end > len(keysToTest) {
-			end = len(keysToTest)
-		}
-		chunk := keysToTest[i:end]
+	allResults := make([]keypool.KeyTestResult, 0, len(keysToTest))
+	err := utils.ProcessInChunks(keysToTest, chunkSize, func(chunk []string) error {
 		results, err := s.KeyValidator.TestMultipleKeys(group, chunk)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		allResults = append(allResults, results...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return allResults, nil

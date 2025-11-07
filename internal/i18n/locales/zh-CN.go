@@ -182,6 +182,7 @@ var MessagesZhCN = map[string]string{
 	"error.delete_group_cache":       "删除分组失败: 无法清理缓存",
 	"error.decrypt_key_copy":         "解密密钥时失败，跳过该密钥",
 	"error.start_import_task":        "启动异步密钥导入任务失败",
+	"error.debug_mode_required":      "此操作需要启用 DEBUG_MODE",
 	"error.export_logs":              "导出日志失败",
 
 	// Login related
@@ -198,7 +199,18 @@ var MessagesZhCN = map[string]string{
 	"success.sub_group_deleted":        "子分组删除成功",
 	"success.group_enabled":            "分组已启用",
 	"success.group_disabled":           "分组已禁用",
+	"success.all_groups_deleted":       "所有分组已删除",
+	"success.group_imported":           "分组导入成功",
+	"success.system_imported":          "系统配置导入成功",
+	"success.system_settings_imported": "系统设置导入成功",
+	"success.groups_batch_imported":    "分组批量导入成功",
 	"group.not_aggregate":              "该分组不是聚合分组",
 	"group.sub_group_already_exists":   "子分组{{.sub_group_id}}已存在",
 	"group.sub_group_not_found":        "子分组不存在",
+	"database.group_not_found":         "分组不存在",
+	"database.cannot_get_group":        "无法获取分组信息",
+	"database.cannot_create_group":     "无法创建分组",
+	"database.cannot_create_keys":      "无法创建密钥",
+	"database.cannot_get_settings":     "无法获取系统设置",
+	"database.import_failed":           "导入失败",
 }

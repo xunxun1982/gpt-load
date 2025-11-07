@@ -25,7 +25,7 @@ async function loadGroups() {
   try {
     loading.value = true;
     groups.value = await keysApi.getGroups();
-    // 选择默认分组
+    // Select default group
     if (groups.value.length > 0 && !selectedGroup.value) {
       const groupId = route.query.groupId;
       const found = groups.value.find(g => String(g.id) === String(groupId));
@@ -61,7 +61,7 @@ async function loadSubGroups() {
   }
 }
 
-// 监听选中分组变化，加载子分组数据
+// Watch for selected group changes, load subgroup data
 watch(selectedGroup, async newGroup => {
   if (newGroup?.group_type === "aggregate") {
     await loadSubGroups();
@@ -104,7 +104,7 @@ async function refreshGroupsAndSelect(targetGroupId?: number, selectFirst = true
   }
 }
 
-// 处理子分组选择，跳转到对应的分组
+// Handle subgroup selection, navigate to corresponding group
 function handleSubGroupSelect(groupId: number) {
   const targetGroup = groups.value.find(g => g.id === groupId);
   if (targetGroup) {
@@ -112,7 +112,7 @@ function handleSubGroupSelect(groupId: number) {
   }
 }
 
-// 处理聚合分组跳转，跳转到对应的聚合分组
+// Handle aggregate group navigation, navigate to corresponding aggregate group
 function handleNavigateToGroup(groupId: number) {
   const targetGroup = groups.value.find(g => g.id === groupId);
   if (targetGroup) {
@@ -123,7 +123,7 @@ function handleNavigateToGroup(groupId: number) {
 
 <template>
   <div>
-    <!-- 加密配置错误警告 -->
+    <!-- Encryption configuration error warning -->
     <encryption-mismatch-alert style="margin-bottom: 16px" />
 
     <div class="keys-container">
@@ -138,9 +138,9 @@ function handleNavigateToGroup(groupId: number) {
         />
       </div>
 
-      <!-- 右侧主内容区域，占80% -->
+      <!-- Right side main content area, 80% width -->
       <div class="main-content">
-        <!-- 分组信息卡片，更紧凑 -->
+        <!-- Group info card, more compact -->
         <div class="group-info">
           <group-info-card
             :group="selectedGroup"
@@ -153,15 +153,15 @@ function handleNavigateToGroup(groupId: number) {
           />
         </div>
 
-        <!-- 密钥表格区域 / 子分组列表区域 -->
+        <!-- Key table area / Subgroup list area -->
         <div class="key-table-section">
-          <!-- 标准分组显示密钥列表 -->
+          <!-- Standard group displays key list -->
           <key-table
             v-if="!selectedGroup || selectedGroup.group_type !== 'aggregate'"
             :selected-group="selectedGroup"
           />
 
-          <!-- 聚合分组显示子分组列表 -->
+          <!-- Aggregate group displays subgroup list -->
           <sub-group-table
             v-else
             :selected-group="selectedGroup"
@@ -214,22 +214,22 @@ function handleNavigateToGroup(groupId: number) {
   }
 
   .sidebar {
-    width: 220px;
+    width: 242px;
     height: calc(100vh - 159px);
   }
 }
 
-/* 中等屏幕优化 */
+/* Medium screen optimization */
 @media (min-width: 1280px) {
   .sidebar {
-    width: 250px;
+    width: 275px;
   }
 }
 
-/* 超大屏幕进一步优化 */
+/* Extra large screen further optimization */
 @media (min-width: 1600px) {
   .sidebar {
-    width: 280px;
+    width: 308px;
   }
 }
 </style>

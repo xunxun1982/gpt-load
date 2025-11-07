@@ -183,6 +183,7 @@ var MessagesEnUS = map[string]string{
 	"error.decrypt_key_copy":         "Failed to decrypt key during group copy, skipping",
 	"error.start_import_task":        "Failed to start async key import task for group copy",
 	"error.export_logs":              "Failed to export logs",
+	"error.debug_mode_required":      "This operation requires DEBUG_MODE to be enabled",
 
 	// Login related
 	"auth.invalid_request":           "Invalid request format",
@@ -198,7 +199,18 @@ var MessagesEnUS = map[string]string{
 	"success.sub_group_deleted":        "Sub group deleted successfully",
 	"success.group_enabled":            "Group enabled successfully",
 	"success.group_disabled":           "Group disabled successfully",
+	"success.all_groups_deleted":       "All groups deleted successfully",
+	"success.group_imported":           "Group imported successfully",
+	"success.system_imported":          "System configuration imported successfully",
+	"success.system_settings_imported": "System settings imported successfully",
+	"success.groups_batch_imported":    "Groups batch imported successfully",
 	"group.not_aggregate":              "Group is not an aggregate group",
 	"group.sub_group_already_exists":   "Sub group {{.sub_group_id}} already exists",
 	"group.sub_group_not_found":        "Sub group not found",
+	"database.group_not_found":         "Group not found",
+	"database.cannot_get_group":        "Cannot get group information",
+	"database.cannot_create_group":     "Cannot create group",
+	"database.cannot_create_keys":      "Cannot create keys",
+	"database.cannot_get_settings":     "Cannot get system settings",
+	"database.import_failed":           "Import failed",
 }

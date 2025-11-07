@@ -33,6 +33,8 @@ type Server struct {
 	LogService                 *services.LogService
 	CommonHandler              *CommonHandler
 	EncryptionSvc              encryption.Service
+	BulkImportService          *services.BulkImportService // Added for optimized bulk imports
+	ExportImportService        *services.ExportImportService // Added for unified export/import
 }
 
 // NewServerParams defines the dependencies for the NewServer constructor.
@@ -52,6 +54,8 @@ type NewServerParams struct {
 	LogService                 *services.LogService
 	CommonHandler              *CommonHandler
 	EncryptionSvc              encryption.Service
+	BulkImportService          *services.BulkImportService // Added for optimized bulk imports
+	ExportImportService        *services.ExportImportService // Added for unified export/import
 }
 
 // NewServer creates a new handler instance with dependencies injected by dig.
@@ -71,6 +75,8 @@ func NewServer(params NewServerParams) *Server {
 		LogService:                 params.LogService,
 		CommonHandler:              params.CommonHandler,
 		EncryptionSvc:              params.EncryptionSvc,
+		BulkImportService:          params.BulkImportService,
+		ExportImportService:        params.ExportImportService,
 	}
 }
 

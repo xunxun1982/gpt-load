@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// LogCleanupService 负责清理过期的请求日志
+// LogCleanupService handles cleanup of expired request logs.
 type LogCleanupService struct {
 	db              *gorm.DB
 	settingsManager *config.SystemSettingsManager
@@ -19,7 +19,7 @@ type LogCleanupService struct {
 	wg              sync.WaitGroup
 }
 
-// NewLogCleanupService 创建新的日志清理服务
+// NewLogCleanupService creates a new log cleanup service.
 func NewLogCleanupService(db *gorm.DB, settingsManager *config.SystemSettingsManager) *LogCleanupService {
 	return &LogCleanupService{
 		db:              db,
@@ -28,14 +28,14 @@ func NewLogCleanupService(db *gorm.DB, settingsManager *config.SystemSettingsMan
 	}
 }
 
-// Start 启动日志清理服务
+// Start starts the log cleanup service.
 func (s *LogCleanupService) Start() {
 	s.wg.Add(1)
 	go s.run()
 	logrus.Debug("Log cleanup service started")
 }
 
-// Stop 停止日志清理服务
+// Stop stops the log cleanup service gracefully.
 func (s *LogCleanupService) Stop(ctx context.Context) {
 	close(s.stopCh)
 
@@ -53,13 +53,13 @@ func (s *LogCleanupService) Stop(ctx context.Context) {
 	}
 }
 
-// run 运行日志清理的主循环
+// run executes the main cleanup loop.
 func (s *LogCleanupService) run() {
 	defer s.wg.Done()
 	ticker := time.NewTicker(2 * time.Hour)
 	defer ticker.Stop()
 
-	// 启动时先执行一次清理
+	// Perform initial cleanup on startup
 	s.cleanupExpiredLogs()
 
 	for {
@@ -72,9 +72,10 @@ func (s *LogCleanupService) run() {
 	}
 }
 
-// cleanupExpiredLogs 清理过期的请求日志
+// cleanupExpiredLogs cleans up expired request logs using direct time-based batch deletion for better performance
+// This approach uses timestamp index directly instead of querying IDs first, which is much faster
 func (s *LogCleanupService) cleanupExpiredLogs() {
-	// 获取日志保留天数配置
+	// Get log retention days configuration
 	settings := s.settingsManager.GetSettings()
 	retentionDays := settings.RequestLogRetentionDays
 
@@ -83,19 +84,42 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 		return
 	}
 
-	// 计算过期时间点
+	// Calculate cutoff time
 	cutoffTime := time.Now().AddDate(0, 0, -retentionDays).UTC()
 
-	// 执行删除操作
-	result := s.db.Where("timestamp < ?", cutoffTime).Delete(&models.RequestLog{})
-	if result.Error != nil {
-		logrus.WithError(result.Error).Error("Failed to cleanup expired request logs")
-		return
+	// Use direct time-based batch deletion to leverage timestamp index
+	// This is much faster than querying IDs first and then deleting by IN clause
+	// Batch size optimized for MySQL performance (typically 1000-5000 rows per batch)
+	batchSize := 2000
+	totalDeleted := int64(0)
+
+	for {
+		// Direct deletion using timestamp index - this is the fastest approach
+		// MySQL can use the timestamp index efficiently for range queries
+		result := s.db.Where("timestamp < ?", cutoffTime).
+			Limit(batchSize).
+			Delete(&models.RequestLog{})
+
+		if result.Error != nil {
+			logrus.WithError(result.Error).Error("Failed to cleanup expired request logs")
+			return
+		}
+
+		deletedCount := result.RowsAffected
+		totalDeleted += deletedCount
+
+		// If deleted count is less than batch size, we're done
+		if deletedCount < int64(batchSize) {
+			break
+		}
+
+		// Small delay between batches to avoid overwhelming the database and reduce lock contention
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	if result.RowsAffected > 0 {
+	if totalDeleted > 0 {
 		logrus.WithFields(logrus.Fields{
-			"deleted_count":  result.RowsAffected,
+			"deleted_count":  totalDeleted,
 			"cutoff_time":    cutoffTime.Format(time.RFC3339),
 			"retention_days": retentionDays,
 		}).Info("Successfully cleaned up expired request logs")

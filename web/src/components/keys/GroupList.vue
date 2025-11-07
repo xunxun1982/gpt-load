@@ -1,16 +1,37 @@
 <script setup lang="ts">
 import type { Group } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
-import { Add, LinkOutline, Search, ChevronDown, ChevronForward } from "@vicons/ionicons5";
-import { NButton, NCard, NEmpty, NInput, NSpin, NTag, NIcon } from "naive-ui";
+import {
+  Add,
+  LinkOutline,
+  Search,
+  ChevronDown,
+  ChevronForward,
+  CloudDownloadOutline,
+  CloudUploadOutline,
+} from "@vicons/ionicons5";
+import {
+  NButton,
+  NCard,
+  NEmpty,
+  NInput,
+  NSpin,
+  NTag,
+  NIcon,
+  useDialog,
+  useMessage,
+} from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
 import GroupFormModal from "./GroupFormModal.vue";
+import { keysApi } from "@/api/keys";
 
 const { t } = useI18n();
+const message = useMessage();
+const dialog = useDialog();
 
-// 常量定义
+// Constant definitions
 const GROUP_TYPE_AGGREGATE = "aggregate" as const;
 const ICON_AGGREGATE = "🔗";
 const ICON_STANDARD = "📦";
@@ -19,7 +40,7 @@ const ICON_GEMINI = "💎";
 const ICON_ANTHROPIC = "🧠";
 const ICON_DEFAULT = "🔧";
 
-// 折叠状态管理
+// Collapse state management
 const collapsedSections = ref<Set<string>>(new Set());
 const collapsedChannels = ref<Set<string>>(new Set());
 
@@ -51,7 +72,7 @@ interface ChannelGroup {
   icon: string;
 }
 
-// 已知渠道类型的排序顺序
+// Known channel type sort order
 const KNOWN_CHANNEL_ORDER: string[] = ["openai", "gemini", "anthropic", "default"];
 
 const props = withDefaults(defineProps<Props>(), {
@@ -62,11 +83,12 @@ const emit = defineEmits<Emits>();
 
 const searchText = ref("");
 const showGroupModal = ref(false);
-// 存储分组项 DOM 元素的引用
+// Store references to group item DOM elements
 const groupItemRefs = ref(new Map());
 const showAggregateGroupModal = ref(false);
+const fileInputRef = ref<HTMLInputElement | null>(null);
 
-// 按 sort 字段排序（升序），sort 相同时按 id 降序
+// Sort by sort field (ascending), if sort is the same, sort by id descending
 function sortBySort(a: Group, b: Group) {
   const sortA = a.sort ?? 0;
   const sortB = b.sort ?? 0;
@@ -76,11 +98,11 @@ function sortBySort(a: Group, b: Group) {
   return (b.id ?? 0) - (a.id ?? 0);
 }
 
-// 过滤和分组的分组列表
+// Filtered and grouped group list
 const filteredGroups = computed(() => {
   let groups = props.groups;
 
-  // 应用搜索过滤
+  // Apply search filter
   if (searchText.value.trim()) {
     const search = searchText.value.toLowerCase().trim();
     groups = groups.filter(
@@ -90,7 +112,7 @@ const filteredGroups = computed(() => {
     );
   }
 
-  // 分离聚合分组和标准分组
+  // Separate aggregate groups and standard groups
   const aggregateGroups = groups.filter(g => g.group_type === GROUP_TYPE_AGGREGATE);
   const standardGroups = groups.filter(g => g.group_type !== GROUP_TYPE_AGGREGATE);
 
@@ -100,7 +122,7 @@ const filteredGroups = computed(() => {
   return { aggregateGroups, standardGroups };
 });
 
-// 分组区域配置
+// Group section configuration
 const groupSections = computed<GroupSection[]>(() => {
   const sections: GroupSection[] = [];
 
@@ -127,7 +149,7 @@ const groupSections = computed<GroupSection[]>(() => {
   return sections;
 });
 
-// 为每个分组区域计算渠道分组（缓存以提高性能）
+// Calculate channel groups for each group section (cached for performance)
 const sectionChannelGroups = computed(() => {
   const result = new Map<string, ChannelGroup[]>();
   for (const section of groupSections.value) {
@@ -136,7 +158,7 @@ const sectionChannelGroups = computed(() => {
   return result;
 });
 
-// 获取渠道类型图标（仅为已知类型提供特定图标）
+// Get channel type icon (only provides specific icons for known types)
 function getChannelTypeIcon(channelType: string): string {
   const lowerType = channelType.toLowerCase();
   switch (lowerType) {
@@ -151,12 +173,12 @@ function getChannelTypeIcon(channelType: string): string {
   }
 }
 
-// 按渠道类型分组（保留所有原始渠道类型，不强制转换）
+// Group by channel type (preserve all original channel types, no forced conversion)
 function groupByChannelType(groups: Group[]): ChannelGroup[] {
   const channelMap = new Map<ChannelType, Group[]>();
 
   for (const group of groups) {
-    // 保留原始渠道类型，仅在为空时使用 default
+    // Preserve original channel type, only use default when empty
     const channelType = group.channel_type?.trim() || "default";
     if (!channelMap.has(channelType)) {
       channelMap.set(channelType, []);
@@ -166,7 +188,7 @@ function groupByChannelType(groups: Group[]): ChannelGroup[] {
 
   const result: ChannelGroup[] = [];
   for (const [channelType, channelGroups] of channelMap) {
-    // 对每个渠道类型内的分组按 sort 排序
+    // Sort groups within each channel type by sort
     channelGroups.sort(sortBySort);
     result.push({
       channelType,
@@ -175,33 +197,33 @@ function groupByChannelType(groups: Group[]): ChannelGroup[] {
     });
   }
 
-  // 按渠道类型排序：已知类型在前，未知类型按字母顺序在后
+  // Sort by channel type: known types first, unknown types alphabetically
   result.sort((a, b) => {
     const aLower = a.channelType.toLowerCase();
     const bLower = b.channelType.toLowerCase();
     const aIndex = KNOWN_CHANNEL_ORDER.indexOf(aLower);
     const bIndex = KNOWN_CHANNEL_ORDER.indexOf(bLower);
 
-    // 两者都是已知类型，按预定义顺序排序
+    // Both are known types, sort by predefined order
     if (aIndex !== -1 && bIndex !== -1) {
       return aIndex - bIndex;
     }
-    // a 是已知类型，b 不是，a 排在前面
+    // a is known type, b is not, a comes first
     if (aIndex !== -1) {
       return -1;
     }
-    // b 是已知类型，a 不是，b 排在前面
+    // b is known type, a is not, b comes first
     if (bIndex !== -1) {
       return 1;
     }
-    // 两者都是未知类型，按字母顺序排序
+    // Both are unknown types, sort alphabetically
     return aLower.localeCompare(bLower);
   });
 
   return result;
 }
 
-// 切换分组区域折叠状态
+// Toggle group section collapse state
 function toggleSection(sectionKey: string) {
   const next = new Set(collapsedSections.value);
   if (next.has(sectionKey)) {
@@ -212,7 +234,7 @@ function toggleSection(sectionKey: string) {
   collapsedSections.value = next;
 }
 
-// 切换渠道分组折叠状态
+// Toggle channel group collapse state
 function toggleChannel(sectionKey: string, channelType: string) {
   const key = `${sectionKey}-${channelType}`;
   const next = new Set(collapsedChannels.value);
@@ -224,17 +246,17 @@ function toggleChannel(sectionKey: string, channelType: string) {
   collapsedChannels.value = next;
 }
 
-// 检查分组区域是否折叠
+// Check if group section is collapsed
 function isSectionCollapsed(sectionKey: string): boolean {
   return collapsedSections.value.has(sectionKey);
 }
 
-// 检查渠道分组是否折叠
+// Check if channel group is collapsed
 function isChannelCollapsed(sectionKey: string, channelType: string): boolean {
   return collapsedChannels.value.has(`${sectionKey}-${channelType}`);
 }
 
-// 获取分组图标
+// Get group icon
 function getGroupIcon(group: Group, isAggregate: boolean): string {
   if (isAggregate) {
     return ICON_AGGREGATE;
@@ -243,7 +265,7 @@ function getGroupIcon(group: Group, isAggregate: boolean): string {
   return getChannelTypeIcon(channelType);
 }
 
-// 监听选中项 ID 的变化，并自动滚动到该项
+// Watch for changes in selected item ID and automatically scroll to that item
 watch(
   () => props.selectedGroup?.id,
   id => {
@@ -254,23 +276,23 @@ watch(
     const element = groupItemRefs.value.get(id);
     if (element) {
       element.scrollIntoView({
-        behavior: "smooth", // 平滑滚动
-        block: "nearest", // 将元素滚动到最近的边缘
+        behavior: "smooth", // Smooth scrolling
+        block: "nearest", // Scroll element to nearest edge
       });
     }
   },
   {
-    flush: "post", // 确保在 DOM 更新后执行回调
-    immediate: true, // 立即执行一次以处理初始加载
+    flush: "post", // Ensure callback executes after DOM update
+    immediate: true, // Execute once immediately to handle initial load
   }
 );
 
 function handleGroupClick(group: Group) {
-  // 允许选中禁用的分组，以便用户可以启用或修改配置
+  // Allow selecting disabled groups so users can enable or modify configuration
   emit("group-select", group);
 }
 
-// 获取渠道类型的标签颜色
+// Get channel type tag color
 function getChannelTagType(channelType: string) {
   const normalized = channelType?.trim().toLowerCase();
   switch (normalized) {
@@ -300,26 +322,134 @@ function handleGroupCreated(group: Group) {
     emit("refresh-and-select", group.id);
   }
 }
+
+// Export group
+function handleExportGroup(group: Group, event: Event) {
+  event.stopPropagation();
+
+  if (!group || !group.id) {
+    message.error(t("common.error"));
+    return;
+  }
+
+  dialog.info({
+    title: t("keys.exportGroup"),
+    content: t("keys.exportGroupConfirm", { name: getGroupDisplayName(group) }),
+    positiveText: t("common.confirm"),
+    negativeText: t("common.cancel"),
+    onPositiveClick: async () => {
+      try {
+        await keysApi.exportGroup(group.id!);
+        message.success(t("keys.exportSuccess"));
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : t("keys.exportFailed");
+        message.error(errorMessage);
+      }
+    },
+  });
+}
+
+// Import state management
+const isImporting = ref(false);
+
+// Trigger file selection (group import)
+function handleImportClick() {
+  if (isImporting.value) {
+    message.warning(t("keys.importInProgress"));
+    return;
+  }
+  fileInputRef.value?.click();
+}
+
+// Handle file import (group import)
+async function handleFileChange(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+
+  if (!file) {
+    return;
+  }
+
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+
+    // Show confirmation dialog
+    dialog.info({
+      title: t("keys.importGroup"),
+      content: t("keys.importGroupConfirm", { name: data.group?.name || "Unknown" }),
+      positiveText: t("common.confirm"),
+      negativeText: t("common.cancel"),
+      onPositiveClick: () => {
+        // Prevent duplicate imports
+        if (isImporting.value) {
+          message.warning(t("keys.importInProgress"));
+          return false; // Keep dialog open
+        }
+
+        // Close dialog immediately and start import
+        isImporting.value = true;
+        const loadingMessage = message.loading(t("keys.importing"), {
+          duration: 0, // Don't auto-close
+        });
+
+        // Execute import asynchronously after dialog closes
+        setTimeout(async () => {
+          try {
+            await keysApi.importGroup(data);
+            loadingMessage.destroy();
+            message.success(t("keys.importSuccess"));
+            emit("refresh");
+          } catch (error: unknown) {
+            loadingMessage.destroy();
+            const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");
+            message.error(errorMessage);
+          } finally {
+            isImporting.value = false;
+          }
+        }, 100); // Small delay to ensure dialog closes first
+
+        return true; // Close dialog immediately
+      },
+    });
+  } catch (error) {
+    message.error(t("keys.invalidImportFile"));
+  } finally {
+    // Clear file input to allow selecting the same file again
+    target.value = "";
+  }
+}
 </script>
 
 <template>
   <div class="group-list-container">
     <n-card class="group-list-card modern-card" :bordered="false" size="small">
-      <!-- 搜索框 -->
+      <!-- Search box and import/export buttons -->
       <div class="search-section">
         <n-input
           v-model:value="searchText"
           :placeholder="t('keys.searchGroupPlaceholder')"
           size="small"
           clearable
+          style="flex: 1"
         >
           <template #prefix>
             <n-icon :component="Search" />
           </template>
         </n-input>
+        <n-button
+          type="primary"
+          size="small"
+          @click="handleImportClick"
+          :title="t('keys.importGroup')"
+        >
+          <template #icon>
+            <n-icon :component="CloudUploadOutline" />
+          </template>
+        </n-button>
       </div>
 
-      <!-- 分组列表 -->
+      <!-- Group list -->
       <div class="groups-section">
         <n-spin :show="loading" size="small">
           <div
@@ -336,7 +466,7 @@ function handleGroupCreated(group: Group) {
             />
           </div>
           <div v-else class="groups-list">
-            <!-- 分组区域（统一渲染） -->
+            <!-- Group section (unified rendering) -->
             <div v-for="section in groupSections" :key="section.titleKey" class="group-section">
               <div
                 class="section-header"
@@ -356,7 +486,7 @@ function handleGroupCreated(group: Group) {
                 <span class="section-count">{{ section.groups.length }}</span>
               </div>
               <div v-if="!isSectionCollapsed(section.sectionKey)" class="section-items">
-                <!-- 按渠道类型分组 -->
+                <!-- Group by channel type -->
                 <div
                   v-for="channelGroup in sectionChannelGroups.get(section.sectionKey) || []"
                   :key="channelGroup.channelType"
@@ -431,6 +561,18 @@ function handleGroupCreated(group: Group) {
                           <span class="group-id">#{{ group.name }}</span>
                         </div>
                       </div>
+                      <div class="group-actions" @click.stop>
+                        <n-button
+                          text
+                          size="tiny"
+                          @click="handleExportGroup(group, $event)"
+                          :title="t('keys.exportGroup')"
+                        >
+                          <template #icon>
+                            <n-icon :component="CloudDownloadOutline" :size="16" />
+                          </template>
+                        </n-button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -440,7 +582,7 @@ function handleGroupCreated(group: Group) {
         </n-spin>
       </div>
 
-      <!-- 添加分组按钮 -->
+      <!-- Add group button -->
       <div class="add-section">
         <n-button type="success" size="small" block @click="openCreateGroupModal">
           <template #icon>
@@ -456,6 +598,16 @@ function handleGroupCreated(group: Group) {
         </n-button>
       </div>
     </n-card>
+
+    <!-- Hidden file input -->
+    <input
+      ref="fileInputRef"
+      type="file"
+      accept=".json"
+      style="display: none"
+      @change="handleFileChange"
+    />
+
     <group-form-modal v-model:show="showGroupModal" @success="handleGroupCreated" />
     <aggregate-group-modal
       v-model:show="showAggregateGroupModal"
@@ -512,6 +664,9 @@ function handleGroupCreated(group: Group) {
 
 .search-section {
   height: 41px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .groups-section {
@@ -533,14 +688,14 @@ function handleGroupCreated(group: Group) {
   width: 100%;
 }
 
-/* 分组区域 */
+/* Group section */
 .group-section {
   display: flex;
   flex-direction: column;
   gap: 0px;
 }
 
-/* 区域标题 */
+/* Section header */
 .section-header {
   display: flex;
   align-items: center;
@@ -594,7 +749,7 @@ function handleGroupCreated(group: Group) {
   text-align: center;
 }
 
-/* 区域项目容器 */
+/* Section items container */
 .section-items {
   display: flex;
   flex-direction: column;
@@ -604,7 +759,7 @@ function handleGroupCreated(group: Group) {
   margin-left: 5px;
 }
 
-/* 渠道分组 */
+/* Channel group */
 .channel-group {
   display: flex;
   flex-direction: column;
@@ -667,7 +822,7 @@ function handleGroupCreated(group: Group) {
   border-left: 1px solid var(--border-color);
 }
 
-/* 深色模式优化 */
+/* Dark mode optimization */
 :root.dark .section-header {
   color: rgba(255, 255, 255, 0.95);
   background: rgba(255, 255, 255, 0.05);
@@ -721,7 +876,7 @@ function handleGroupCreated(group: Group) {
   position: relative;
 }
 
-/* 聚合分组样式 */
+/* Aggregate group style */
 .group-item.aggregate {
   border-style: dashed;
   background: linear-gradient(135deg, rgba(102, 126, 234, 0.02) 0%, rgba(102, 126, 234, 0.05) 100%);
@@ -753,7 +908,7 @@ function handleGroupCreated(group: Group) {
   border-color: rgba(102, 126, 234, 0.4);
 }
 
-/* hover 状态下的文字保持可见 */
+/* Keep text visible in hover state */
 .group-item:hover .group-name {
   color: var(--text-primary) !important;
   opacity: 1 !important;
@@ -811,6 +966,21 @@ function handleGroupCreated(group: Group) {
   min-width: 0;
 }
 
+.group-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 8px;
+}
+
+.group-item:hover .group-actions {
+  opacity: 1;
+}
+
 .group-name {
   font-weight: 600;
   font-size: 14px;
@@ -834,7 +1004,7 @@ function handleGroupCreated(group: Group) {
   color: var(--text-secondary);
 }
 
-/* 选中状态下的文字样式 - 更加醒目 */
+/* Text style in selected state - more prominent */
 .group-item.active .group-name {
   color: white !important;
   font-weight: 700;
@@ -847,7 +1017,7 @@ function handleGroupCreated(group: Group) {
   font-weight: 500;
 }
 
-/* 选中状态 hover 时保持样式 */
+/* Maintain style when hovering in selected state */
 .group-item.active:hover .group-name {
   color: white !important;
   font-weight: 700;
@@ -858,7 +1028,7 @@ function handleGroupCreated(group: Group) {
   opacity: 1 !important;
 }
 
-/* 禁用但已选中的分组 - 保持选中状态可见 */
+/* Disabled but selected group - keep selected state visible */
 .group-item.disabled.active {
   background: var(--primary-gradient);
   opacity: 0.75;
@@ -871,7 +1041,7 @@ function handleGroupCreated(group: Group) {
   opacity: 0.75;
 }
 
-/* 禁用但已选中状态下的文字 - 保持醒目 */
+/* Text in disabled but selected state - keep prominent */
 .group-item.disabled.active .group-name {
   color: white !important;
   font-weight: 700;
@@ -885,7 +1055,7 @@ function handleGroupCreated(group: Group) {
   font-weight: 500;
 }
 
-/* 禁用但已选中状态 hover 时保持样式 */
+/* Maintain style when hovering in disabled but selected state */
 .group-item.disabled.active:hover .group-name {
   color: white !important;
 }
@@ -894,7 +1064,7 @@ function handleGroupCreated(group: Group) {
   color: rgba(255, 255, 255, 0.9) !important;
 }
 
-/* 禁用分组样式 - 使用橙色边框和淡背景表示禁用 */
+/* Disabled group style - use orange border and light background to indicate disabled */
 .group-item.disabled {
   background: linear-gradient(135deg, rgba(245, 166, 35, 0.12) 0%, rgba(230, 140, 20, 0.12) 100%);
   border-color: #f5a623;
@@ -932,7 +1102,7 @@ function handleGroupCreated(group: Group) {
   border-width: 2px;
 }
 
-/* 禁用状态 hover 的文字 - 使用白色文字配深色背景，最高对比度 */
+/* Text in disabled state hover - use white text with dark background for maximum contrast */
 .group-item.disabled:hover .group-name {
   color: #ffffff !important;
   opacity: 1 !important;
@@ -959,7 +1129,7 @@ function handleGroupCreated(group: Group) {
   font-weight: 500 !important;
 }
 
-/* 禁用分组的文字颜色 - 增强对比度 */
+/* Disabled group text color - enhanced contrast */
 .group-item.disabled .group-name {
   color: rgba(0, 0, 0, 0.85);
   opacity: 1;
@@ -971,7 +1141,7 @@ function handleGroupCreated(group: Group) {
   opacity: 1;
 }
 
-/* 禁用分组的文字颜色 - 暗黑模式 */
+/* Disabled group text color - dark mode */
 :root.dark .group-item.disabled .group-name {
   color: rgba(255, 255, 255, 0.85);
   opacity: 1;
@@ -993,7 +1163,7 @@ function handleGroupCreated(group: Group) {
   background: rgba(245, 166, 35, 0.2);
 }
 
-/* 禁用状态 hover 时的图标 - 白色背景 */
+/* Icon in disabled state hover - white background */
 .group-item.disabled:hover .group-icon {
   background: rgba(255, 255, 255, 0.3) !important;
   opacity: 1 !important;
@@ -1007,7 +1177,7 @@ function handleGroupCreated(group: Group) {
   gap: 8px;
 }
 
-/* 滚动条样式 */
+/* Scrollbar style */
 .groups-list::-webkit-scrollbar {
   width: 8px;
 }
@@ -1033,7 +1203,7 @@ function handleGroupCreated(group: Group) {
   background: var(--primary-color);
 }
 
-/* 暗黑模式特殊样式 */
+/* Dark mode special styles */
 :root.dark .group-item {
   border-color: rgba(255, 255, 255, 0.05);
 }
@@ -1050,7 +1220,7 @@ function handleGroupCreated(group: Group) {
   background: rgba(255, 255, 255, 0.03);
 }
 
-/* 标签样式优化 */
+/* Tag style optimization */
 :root.dark .group-meta :deep(.n-tag) {
   background: rgba(102, 126, 234, 0.15);
   border: 1px solid rgba(102, 126, 234, 0.3);
