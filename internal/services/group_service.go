@@ -646,6 +646,11 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 		// Continue even if cache invalidation fails
 	}
 
+	// Step 8: Reset in-memory key stats cache to avoid serving stale data for reused IDs
+	s.keyStatsCacheMu.Lock()
+	s.keyStatsCache = make(map[uint]groupKeyStatsCacheEntry)
+	s.keyStatsCacheMu.Unlock()
+
 	logrus.WithContext(ctx).Info("Successfully deleted all groups and keys")
 	return nil
 }

@@ -101,8 +101,12 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 			// Set larger timeouts for bulk operations
 			sqlDB.SetConnMaxIdleTime(time.Minute * 10)
 			// Apply MySQL session optimizations
-			DB.Exec("SET SESSION sql_mode='TRADITIONAL'")
-			DB.Exec("SET SESSION innodb_lock_wait_timeout=50")
+			if err := DB.Exec("SET SESSION sql_mode='TRADITIONAL'").Error; err != nil {
+				return nil, fmt.Errorf("failed to set sql_mode: %w", err)
+			}
+			if err := DB.Exec("SET SESSION innodb_lock_wait_timeout=50").Error; err != nil {
+				return nil, fmt.Errorf("failed to set innodb_lock_wait_timeout: %w", err)
+			}
 		}
 	} else {
 		// SQLite needs limited connections to avoid locking issues
@@ -123,10 +127,18 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 
 			// Set PRAGMA via raw SQL connection to avoid GORM slow SQL logging
 			// These are initialization commands, not actual slow queries
-			rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA mmap_size = %s", mmapSize))
-			rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA page_size = %s", pageSize))
-			rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA journal_size_limit = %s", journalSizeLimit))
-			rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA wal_autocheckpoint = %s", walAutocheckpoint))
+			if _, err := rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA mmap_size = %s", mmapSize)); err != nil {
+				log.Printf("failed to apply PRAGMA mmap_size: %v", err)
+			}
+			if _, err := rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA page_size = %s", pageSize)); err != nil {
+				log.Printf("failed to apply PRAGMA page_size: %v", err)
+			}
+			if _, err := rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA journal_size_limit = %s", journalSizeLimit)); err != nil {
+				log.Printf("failed to apply PRAGMA journal_size_limit: %v", err)
+			}
+			if _, err := rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA wal_autocheckpoint = %s", walAutocheckpoint)); err != nil {
+				log.Printf("failed to apply PRAGMA wal_autocheckpoint: %v", err)
+			}
 			rawDB.Close()
 		}
 		// Note: cache_size and temp_store are already set in DSN (line 67)

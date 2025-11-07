@@ -55,6 +55,7 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 	if len(keys) > 0 {
 		startPrep := time.Now()
 		keyModels := make([]models.APIKey, 0, len(keys))
+		skippedKeys := 0
 		for _, keyInfo := range keys {
 			// Decrypt key_value to calculate key_hash for proper indexing and deduplication
 			// The exported key_value is encrypted, so we need to decrypt it first
@@ -62,6 +63,7 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 			if err != nil {
 				// If decryption fails, log and skip this key
 				logrus.WithError(err).Warn("Failed to decrypt key during import, skipping")
+				skippedKeys++
 				continue
 			}
 
@@ -74,6 +76,9 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 				KeyHash:  keyHash,         // Add calculated hash
 				Status:   keyInfo.Status,
 			})
+		}
+		if skippedKeys > 0 {
+			logrus.Warnf("Skipped %d keys due to decryption failures during import", skippedKeys)
 		}
 		prepDuration := time.Since(startPrep)
 		logrus.Infof("Key preparation (decrypt+hash) took %v for %d keys", prepDuration, len(keyModels))
@@ -320,12 +325,14 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	// Run asynchronously to avoid blocking the HTTP response (can take 30+ seconds for large groups)
 	go func(ctx context.Context, groupID uint) {
 		// Use background context with timeout to avoid goroutine leaks
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer cancel()
 
 		// First, load all keys to Redis store
 		if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(groupID); err != nil {
 			logrus.WithContext(ctx).WithError(err).Errorf("Failed to load keys to store for imported group %d", groupID)
+		} else {
+			logrus.WithContext(ctx).Infof("Successfully loaded keys to store for imported group %d", groupID)
 		}
 
 		// Then reset failure_count for all active keys
