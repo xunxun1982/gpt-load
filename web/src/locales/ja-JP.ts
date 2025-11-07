@@ -574,6 +574,8 @@ export default {
       "システム全量設定をインポートしますか？これにより、既存のシステム設定とすべてのグループ設定が上書きされます。",
     exportSuccess: "エクスポート成功",
     importSuccess: "インポート成功",
+    systemSettingsImported: "システム設定のインポートに成功しました",
+    groupsBatchImported: "グループの一括インポートに成功しました",
     exportFailed: "エクスポート失敗",
     importFailed: "インポート失敗",
     invalidImportFile: "無効なインポートファイル",

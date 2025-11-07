@@ -126,7 +126,7 @@ func (p *KeyProvider) executeTransactionWithRetry(operation func(tx *gorm.DB) er
 	const maxJitter = 150 * time.Millisecond
 	var err error
 
-	for i := range maxRetries {
+	for i := 0; i < maxRetries; i++ {
 		err = p.db.Transaction(operation)
 		if err == nil {
 			return nil
@@ -587,15 +587,17 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 
 	// Process in batches to avoid memory issues and improve performance
 	batchSize := 1000
-	offset := 0
 
+	// Use cursor-based pagination to avoid skipping keys
+	// When we update failure_count to 0, those keys are removed from the result set
+	// So we always query from the beginning (no offset) until no more keys are found
 	for {
 		var keys []models.APIKey
 		if err := p.db.Select("id, group_id").
 			Where("status = ?", models.KeyStatusActive).
 			Where("failure_count > 0").
+			Order("id ASC"). // Stable ordering for consistent results
 			Limit(batchSize).
-			Offset(offset).
 			Find(&keys).Error; err != nil {
 			return totalReset, fmt.Errorf("failed to query active keys: %w", err)
 		}
@@ -640,8 +642,6 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 				p.CacheInvalidationCallback(groupID)
 			}
 		}
-
-		offset += len(keys)
 
 		// If we got fewer than batchSize, we've reached the end
 		if len(keys) < batchSize {
