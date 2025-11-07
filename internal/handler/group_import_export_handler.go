@@ -29,7 +29,10 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		return 0, err
 	}
 
-	headerRulesJSON, _ := json.Marshal(groupInfo.HeaderRules)
+	headerRulesJSON, err := json.Marshal(groupInfo.HeaderRules)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal header rules: %w", err)
+	}
 	group := models.Group{
 		Name:               groupName,
 		DisplayName:        groupInfo.DisplayName,
@@ -114,6 +117,7 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		var foundSubGroups []models.Group
 		if err := tx.Where("name IN ?", groupNames).Find(&foundSubGroups).Error; err != nil {
 			// If query fails, continue without sub-groups (non-critical)
+			logrus.WithError(err).Warnf("Failed to query sub-groups during import, continuing without sub-groups")
 			return group.ID, nil
 		}
 
@@ -138,6 +142,7 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		if len(groupSubGroups) > 0 {
 			if err := tx.CreateInBatches(groupSubGroups, 1000).Error; err != nil {
 				// If creation fails, continue without sub-groups (non-critical)
+				logrus.WithError(err).Warnf("Failed to create sub-group relationships during import")
 				return group.ID, nil
 			}
 		}
@@ -323,9 +328,10 @@ func (s *Server) ImportGroup(c *gin.Context) {
 
 	// Load keys to Redis store and reset failure_count asynchronously
 	// Run asynchronously to avoid blocking the HTTP response (can take 30+ seconds for large groups)
-	go func(ctx context.Context, groupID uint) {
-		// Use background context with timeout to avoid goroutine leaks
-		ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	go func(groupID uint) {
+		// Derive from request context but with extended timeout for async work
+		// This maintains request traceability while ensuring async operations complete even if HTTP request is cancelled
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
 		defer cancel()
 
 		// First, load all keys to Redis store
@@ -342,7 +348,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		} else if resetCount > 0 {
 			logrus.WithContext(ctx).Infof("Reset failure_count for %d active keys in imported group %d", resetCount, groupID)
 		}
-	}(context.Background(), createdGroupID)
+	}(createdGroupID)
 
 	response.SuccessI18n(c, "success.group_imported", s.newGroupResponse(&createdGroup))
 }

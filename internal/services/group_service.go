@@ -476,12 +476,6 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 			}
 
 			totalDeleted += result.RowsAffected
-
-			// Small delay between batches to reduce lock contention
-			// This is safe within a transaction as it doesn't affect transaction isolation
-			if i+batchSize < len(keyIDs) {
-				time.Sleep(10 * time.Millisecond)
-			}
 		}
 
 		if totalDeleted > 0 {
@@ -598,8 +592,9 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 		}
 		logrus.WithContext(ctx).WithField("deletedKeys", result.RowsAffected).Info("Deleted all API keys")
 
-		// Reset auto-increment counter for api_keys table
+		// Reset auto-increment counter (SQLite-specific)
 		// This is optional but keeps the database clean for future inserts
+		// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
 		if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='api_keys'").Error; err != nil {
 			logrus.WithContext(ctx).WithError(err).Warn("failed to reset api_keys sequence, continuing anyway")
 		}
@@ -613,7 +608,9 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	}
 	logrus.WithContext(ctx).WithField("deletedGroups", result.RowsAffected).Info("Deleted all groups")
 
-	// Reset auto-increment counter for groups table
+	// Reset auto-increment counter (SQLite-specific)
+	// This is optional but keeps the database clean for future inserts
+	// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
 	if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='groups'").Error; err != nil {
 		logrus.WithContext(ctx).WithError(err).Warn("failed to reset groups sequence, continuing anyway")
 	}
@@ -633,20 +630,20 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 		}
 	}
 
-	// Step 6: Clear the key store cache
+	// Step 9: Clear the key store cache
 	// This removes all keys from memory to ensure consistency
 	if err := s.keyService.KeyProvider.ClearAllKeys(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to clear key store cache")
 		// Continue even if cache clear fails, as database is already updated
 	}
 
-	// Step 7: Invalidate the group cache to force reload
+	// Step 10: Invalidate the group cache to force reload
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 		// Continue even if cache invalidation fails
 	}
 
-	// Step 8: Reset in-memory key stats cache to avoid serving stale data for reused IDs
+	// Step 11: Reset in-memory key stats cache to avoid serving stale data for reused IDs
 	s.keyStatsCacheMu.Lock()
 	s.keyStatsCache = make(map[uint]groupKeyStatsCacheEntry)
 	s.keyStatsCacheMu.Unlock()

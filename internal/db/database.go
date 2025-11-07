@@ -118,7 +118,9 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		// Most PRAGMA settings are already in DSN, but some need to be set via direct SQL
 		// Use raw SQL connection to avoid slow SQL logging for initialization commands
 		rawDB, err := sqlDB.Conn(context.Background())
-		if err == nil {
+		if err != nil {
+			log.Printf("failed to acquire connection for SQLite PRAGMAs: %v", err)
+		} else {
 			// Get environment variables for PRAGMA settings
 			mmapSize := utils.GetEnvOrDefault("SQLITE_MMAP_SIZE", "30000000000") // 30GB memory mapping (virtual, not physical RAM)
 			pageSize := utils.GetEnvOrDefault("SQLITE_PAGE_SIZE", "4096")        // Optimal page size
