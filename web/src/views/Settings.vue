@@ -102,7 +102,7 @@ function generateValidationRules(item: Setting): FormItemRule[] {
   return rules;
 }
 
-// 导出系统全量配置
+// Export full system configuration
 function handleExportAll() {
   dialog.info({
     title: t("settings.exportSystem"),
@@ -121,10 +121,10 @@ function handleExportAll() {
   });
 }
 
-// 导入状态管理
+// Import state management
 const isImporting = ref(false);
 
-// 触发系统文件选择
+// Trigger system file selection
 function handleSystemImportClick() {
   if (isImporting.value) {
     message.warning(t("settings.importInProgress"));
@@ -133,7 +133,7 @@ function handleSystemImportClick() {
   systemFileInputRef.value?.click();
 }
 
-// 处理系统文件导入
+// Handle system file import
 async function handleSystemFileChange(event: Event) {
   const target = event.target as HTMLInputElement;
   const file = target.files?.[0];
@@ -150,28 +150,42 @@ async function handleSystemFileChange(event: Event) {
       parsedData = JSON.parse(text);
     } catch (parseError) {
       console.error("JSON parse error:", parseError);
-      message.error(`${t("settings.invalidImportFile")}: JSON 格式错误`);
+      message.error(`${t("settings.invalidImportFile")}: JSON format error`);
       target.value = "";
       return;
     }
 
-    // 处理可能的数据包装（response.data 格式）
-    // 支持两种格式：
-    // 1. 直接数据格式：{ version, system_settings, groups }
-    // 2. 包装格式：{ code, message, data: { version, system_settings, groups } }
-    let data: any = parsedData;
+    // Handle possible data wrapping (response.data format)
+    // Support two formats:
+    // 1. Direct data format: { version, system_settings, groups }
+    // 2. Wrapped format: { code, message, data: { version, system_settings, groups } }
+    interface ImportData {
+      version?: string;
+      system_settings?: Record<string, unknown>;
+      groups?: unknown[];
+    }
 
-    // 检查是否是包装格式（包含 code 或 message 字段，且有 data 字段）
-    const wrappedData = parsedData as { data?: unknown; code?: number; message?: string };
+    interface WrappedResponse {
+      data?: ImportData;
+      code?: number;
+      message?: string;
+    }
+
+    let data: ImportData;
+
+    // Check if it's wrapped format (contains code or message field, and has data field)
+    const wrappedData = parsedData as WrappedResponse;
     if (
       wrappedData.data &&
       typeof wrappedData.data === "object" &&
       (wrappedData.code !== undefined || wrappedData.message !== undefined)
     ) {
-      data = wrappedData.data;
+      data = wrappedData.data as ImportData;
+    } else {
+      data = parsedData as ImportData;
     }
 
-    // 调试信息（仅在开发环境输出）
+    // Debug information (only output in development environment)
     if (import.meta.env.DEV) {
       console.log("Parsed import data structure:", {
         originalKeys: Object.keys(parsedData as Record<string, unknown>),
@@ -185,13 +199,15 @@ async function handleSystemFileChange(event: Event) {
       });
     }
 
-    // 判断导入数据类型 - 更宽松的判断
+    // Determine import data type - more lenient check
     const hasSystemSettings = data.system_settings && typeof data.system_settings === "object";
     const hasGroups = data.groups && Array.isArray(data.groups);
-    const systemSettingsCount = hasSystemSettings ? Object.keys(data.system_settings).length : 0;
-    const groupsCount = hasGroups ? data.groups.length : 0;
+    const systemSettingsCount = hasSystemSettings && data.system_settings
+      ? Object.keys(data.system_settings).length
+      : 0;
+    const groupsCount = hasGroups && data.groups ? data.groups.length : 0;
 
-    // 如果同时有系统设置和分组（即使其中一个是空的），使用全量导入
+    // If both system settings and groups exist (even if one is empty), use full import
     if (hasSystemSettings && systemSettingsCount > 0 && hasGroups && groupsCount > 0) {
       dialog.warning({
         title: t("settings.importSystem"),
@@ -229,7 +245,7 @@ async function handleSystemFileChange(event: Event) {
         },
       });
     } else if (hasSystemSettings && systemSettingsCount > 0) {
-      // 仅系统设置
+      // System settings only
       dialog.info({
         title: t("settings.importSystemSettings"),
         content: t("settings.importSystemSettingsConfirm"),
@@ -248,7 +264,16 @@ async function handleSystemFileChange(event: Event) {
           // Execute import asynchronously after dialog closes
           setTimeout(async () => {
             try {
-              await settingsApi.importSystemSettings({ system_settings: data.system_settings });
+              // Type guard: ensure system_settings exists and is an object
+              if (!data.system_settings || typeof data.system_settings !== "object") {
+                throw new Error(t("settings.invalidImportFile"));
+              }
+              // Convert Record<string, unknown> to Record<string, string>
+              const systemSettings: Record<string, string> = {};
+              for (const [key, value] of Object.entries(data.system_settings)) {
+                systemSettings[key] = String(value ?? "");
+              }
+              await settingsApi.importSystemSettings({ system_settings: systemSettings });
               message.destroyAll();
               message.success(t("settings.importSuccess"));
               await fetchSettings();
@@ -266,7 +291,7 @@ async function handleSystemFileChange(event: Event) {
         },
       });
     } else if (hasGroups && groupsCount > 0) {
-      // 仅分组
+      // Groups only
       dialog.info({
         title: t("settings.importGroups"),
         content: t("settings.importGroupsConfirm", { count: groupsCount }),
@@ -285,6 +310,10 @@ async function handleSystemFileChange(event: Event) {
           // Execute import asynchronously after dialog closes
           setTimeout(async () => {
             try {
+              // Type guard: ensure groups exists and is an array
+              if (!data.groups || !Array.isArray(data.groups)) {
+                throw new Error(t("settings.invalidImportFile"));
+              }
               await settingsApi.importGroupsBatch({ groups: data.groups });
               message.destroyAll();
               message.success(t("settings.importSuccess"));
@@ -302,10 +331,20 @@ async function handleSystemFileChange(event: Event) {
         },
       });
     } else if (hasSystemSettings || hasGroups) {
-      // 有字段但都为空，使用全量导入
-      dialog.info({
+      // Has fields but both are empty, validate before importing
+      // Reject truly empty imports to prevent unintentional data clearing
+      if (systemSettingsCount === 0 && groupsCount === 0) {
+        console.error("Empty import data detected:", data);
+        message.warning(
+          `${t("settings.invalidImportFile")}: Import data is empty, both system_settings and groups have no valid content. Please check the import file.`
+        );
+        return;
+      }
+
+      // If one field has content but the other is empty, use full import
+      dialog.warning({
         title: t("settings.importSystem"),
-        content: t("settings.importSystemConfirm"),
+        content: `${t("settings.importSystemConfirm")}\n\nNote: Partial data is empty, will use full import mode.`,
         positiveText: t("common.confirm"),
         negativeText: t("common.cancel"),
         onPositiveClick: () => {
@@ -339,18 +378,18 @@ async function handleSystemFileChange(event: Event) {
         },
       });
     } else {
-      // 无效的导入文件
+      // Invalid import file
       console.error("Invalid import file structure:", data);
       message.error(
-        `${t("settings.invalidImportFile")}: 文件格式不正确，缺少 system_settings 或 groups 字段`
+        `${t("settings.invalidImportFile")}: File format is incorrect, missing system_settings or groups field`
       );
     }
   } catch (error: unknown) {
     console.error("Import error:", error);
-    const errorMessage = error instanceof Error ? error.message : "未知错误";
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
     message.error(`${t("settings.invalidImportFile")}: ${errorMessage}`);
   } finally {
-    // 清空文件输入，允许重复选择同一文件
+    // Clear file input to allow selecting the same file again
     target.value = "";
   }
 }
@@ -427,7 +466,7 @@ function showDeleteAllGroupsConfirmation() {
     onPositiveClick: () => {
       // Validate the input text
       if (confirmText.trim() !== REQUIRED_TEXT) {
-        message.error(t("settings.confirmTextMismatch"));
+        message.error(t("settings.confirmTextMismatch", { text: REQUIRED_TEXT }));
         return false; // Prevent dialog from closing
       }
       // Proceed with deletion
@@ -653,7 +692,7 @@ checkDebugMode();
       </template>
     </n-card>
 
-    <!-- 隐藏的文件输入 -->
+    <!-- Hidden file input -->
     <input
       ref="systemFileInputRef"
       type="file"

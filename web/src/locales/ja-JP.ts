@@ -603,7 +603,7 @@ export default {
       "この操作により、すべてのグループとすべてのキーが削除されます。すべてのデータが永久に失われます。",
     typeToConfirm: '確認するには "{text}" と入力してください',
     caseSensitiveWarning: "注意：大文字と小文字を区別し、完全に一致する必要があります",
-    confirmTextMismatch: "確認テキストが一致しません。正確に入力してください：DELETE ALL",
+    confirmTextMismatch: "確認テキストが一致しません。正確に入力してください：{text}",
     finalWarning: "最終警告",
     deleteAllGroupsFailed: "すべてのグループの削除に失敗しました",
   },

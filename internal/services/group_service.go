@@ -550,6 +550,7 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	// We only disable foreign keys which provides significant performance improvement
 	// and is safe because we're deleting all related data anyway
 	originalForeignKeys := true
+	fkDisabled := false
 	var fkResult int
 	if err := s.db.WithContext(ctx).Raw("PRAGMA foreign_keys").Scan(&fkResult).Error; err == nil {
 		originalForeignKeys = fkResult == 1
@@ -558,13 +559,15 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	// Disable foreign keys for better performance
 	if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
 		logrus.WithContext(ctx).WithError(err).Warn("failed to disable foreign keys, continuing anyway")
+	} else {
+		fkDisabled = true
 	}
 
 	// Step 3: Begin transaction
 	tx := s.db.WithContext(ctx).Begin()
 	if err := tx.Error; err != nil {
-		// Restore foreign keys if transaction fails to start
-		if originalForeignKeys {
+		// Restore foreign keys if transaction fails to start (only if we successfully disabled them)
+		if fkDisabled && originalForeignKeys {
 			s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
 		}
 		return app_errors.ErrDatabase
@@ -572,8 +575,8 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	defer func() {
 		if tx != nil {
 			tx.Rollback()
-			// Restore foreign keys on rollback
-			if originalForeignKeys {
+			// Restore foreign keys on rollback (only if we successfully disabled them)
+			if fkDisabled && originalForeignKeys {
 				s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
 			}
 		}
@@ -623,8 +626,8 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	}
 	tx = nil
 
-	// Step 8: Restore foreign keys setting
-	if originalForeignKeys {
+	// Step 8: Restore foreign keys setting (only if we successfully disabled them)
+	if fkDisabled && originalForeignKeys {
 		if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON").Error; err != nil {
 			logrus.WithContext(ctx).WithError(err).Warn("failed to restore foreign keys setting")
 		}

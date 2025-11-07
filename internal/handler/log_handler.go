@@ -30,7 +30,7 @@ func (s *Server) GetLogs(c *gin.Context) {
 		return
 	}
 
-	// 解密所有日志中的密钥用于前端显示
+	// Decrypt all keys in logs for frontend display
 	for i := range logs {
 		if logs[i].KeyValue != "" {
 			decryptedValue, err := s.EncryptionSvc.Decrypt(logs[i].KeyValue)

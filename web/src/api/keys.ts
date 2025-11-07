@@ -318,18 +318,18 @@ export const keysApi = {
   // Export complete group data
   async exportGroup(groupId: number): Promise<void> {
     try {
-      // 注意：http 拦截器已经返回 response.data，所以这里直接获取数据
+      // Note: http interceptor already returns response.data, so get data directly here
       const data = await http.get(`/groups/${groupId}/export`);
 
-      // 防御性检查：确保数据有效
+      // Defensive check: ensure data is valid
       if (!data) {
         throw new Error("Export data is empty");
       }
 
-      // 将数据转换为 JSON 字符串
+      // Convert data to JSON string
       const jsonStr = JSON.stringify(data, null, 2);
 
-      // 创建 Blob 对象
+      // Create Blob object
       const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8" });
 
       // Generate filename with different prefix based on group type

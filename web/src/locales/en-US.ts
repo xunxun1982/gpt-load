@@ -601,7 +601,7 @@ export default {
       "This action will delete ALL groups and ALL keys. All data will be lost permanently.",
     typeToConfirm: 'Type "{text}" to confirm',
     caseSensitiveWarning: "Note: This is case-sensitive and must match exactly",
-    confirmTextMismatch: "Confirmation text does not match. Please type exactly: DELETE ALL",
+    confirmTextMismatch: "Confirmation text does not match. Please type exactly: {text}",
     finalWarning: "Final Warning",
     deleteAllGroupsFailed: "Failed to delete all groups",
   },

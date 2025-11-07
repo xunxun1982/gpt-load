@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -317,20 +318,24 @@ func (s *Server) ImportGroup(c *gin.Context) {
 
 	// Load keys to Redis store and reset failure_count asynchronously
 	// Run asynchronously to avoid blocking the HTTP response (can take 30+ seconds for large groups)
-	go func(groupID uint) {
+	go func(ctx context.Context, groupID uint) {
+		// Use background context with timeout to avoid goroutine leaks
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+
 		// First, load all keys to Redis store
 		if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(groupID); err != nil {
-			logrus.WithError(err).Errorf("Failed to load keys to store for imported group %d", groupID)
+			logrus.WithContext(ctx).WithError(err).Errorf("Failed to load keys to store for imported group %d", groupID)
 		}
 
 		// Then reset failure_count for all active keys
 		resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(groupID)
 		if resetErr != nil {
-			logrus.WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d", groupID)
+			logrus.WithContext(ctx).WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d", groupID)
 		} else if resetCount > 0 {
-			logrus.Infof("Reset failure_count for %d active keys in imported group %d", resetCount, groupID)
+			logrus.WithContext(ctx).Infof("Reset failure_count for %d active keys in imported group %d", resetCount, groupID)
 		}
-	}(createdGroupID)
+	}(context.Background(), createdGroupID)
 
 	response.SuccessI18n(c, "success.group_imported", s.newGroupResponse(&createdGroup))
 }

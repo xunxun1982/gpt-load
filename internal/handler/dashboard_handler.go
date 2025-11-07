@@ -40,24 +40,24 @@ func (s *Server) Stats(c *gin.Context) {
 		return
 	}
 
-	// 计算请求量趋势
+	// Calculate request trend
 	reqTrend := 0.0
 	reqTrendIsGrowth := true
 	if previousPeriod.TotalRequests > 0 {
-		// 有前期数据，计算百分比变化
+		// Has previous period data, calculate percentage change
 		reqTrend = (float64(currentPeriod.TotalRequests-previousPeriod.TotalRequests) / float64(previousPeriod.TotalRequests)) * 100
 		reqTrendIsGrowth = reqTrend >= 0
 	} else if currentPeriod.TotalRequests > 0 {
-		// 前期无数据，当前有数据，视为100%增长
+		// No previous period data, current has data, treat as 100% growth
 		reqTrend = 100.0
 		reqTrendIsGrowth = true
 	} else {
-		// 前期和当前都无数据
+		// Both previous and current periods have no data
 		reqTrend = 0.0
 		reqTrendIsGrowth = true
 	}
 
-	// 计算当前和前期错误率
+	// Calculate current and previous error rates
 	currentErrorRate := 0.0
 	if currentPeriod.TotalRequests > 0 {
 		currentErrorRate = (float64(currentPeriod.TotalFailures) / float64(currentPeriod.TotalRequests)) * 100
@@ -68,27 +68,27 @@ func (s *Server) Stats(c *gin.Context) {
 		previousErrorRate = (float64(previousPeriod.TotalFailures) / float64(previousPeriod.TotalRequests)) * 100
 	}
 
-	// 计算错误率趋势
+	// Calculate error rate trend
 	errorRateTrend := 0.0
 	errorRateTrendIsGrowth := false
 	if previousPeriod.TotalRequests > 0 {
-		// 有前期数据，计算百分点差异
+		// Has previous period data, calculate percentage point difference
 		errorRateTrend = currentErrorRate - previousErrorRate
-		errorRateTrendIsGrowth = errorRateTrend < 0 // 错误率下降是好事
+		errorRateTrendIsGrowth = errorRateTrend < 0 // Decreasing error rate is good
 	} else if currentPeriod.TotalRequests > 0 {
-		// 前期无数据，当前有数据
-		errorRateTrend = currentErrorRate // 显示当前错误率
-		errorRateTrendIsGrowth = false    // 有错误是坏事（如果错误率>0）
+		// No previous period data, current has data
+		errorRateTrend = currentErrorRate // Show current error rate
+		errorRateTrendIsGrowth = false    // Having errors is bad (if error rate > 0)
 		if currentErrorRate == 0 {
-			errorRateTrendIsGrowth = true // 如果当前无错误，标记为正面
+			errorRateTrendIsGrowth = true // If current has no errors, mark as positive
 		}
 	} else {
-		// 都无数据
+		// Both have no data
 		errorRateTrend = 0.0
 		errorRateTrendIsGrowth = true
 	}
 
-	// 获取安全警告信息
+	// Get security warning information
 	securityWarnings := s.getSecurityWarnings(c)
 
 	stats := models.DashboardStatsResponse{
@@ -376,7 +376,7 @@ func hasGoodComplexity(password string) bool {
 		}
 	}
 
-	// 至少包含3种类型的字符
+	// Must contain at least 3 types of characters
 	count := 0
 	if hasUpper {
 		count++

@@ -203,7 +203,7 @@ func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) erro
 		}
 	}
 
-	// 触发所有实例重新加载
+	// Trigger all instances to reload
 	return sm.syncer.Invalidate()
 }
 
@@ -230,7 +230,7 @@ func (sm *SystemSettingsManager) ReloadSettings() error {
 	return nil
 }
 
-// GetEffectiveConfig 获取有效配置 (系统配置 + 分组覆盖)
+// GetEffectiveConfig gets effective configuration (system config + group overrides)
 func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JSONMap) types.SystemSettings {
 	effectiveConfig := sm.GetSettings()
 
@@ -268,7 +268,7 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 	return effectiveConfig
 }
 
-// ValidateSettings 验证系统配置的有效性
+// ValidateSettings validates the validity of system configuration
 func (sm *SystemSettingsManager) ValidateSettings(settingsMap map[string]any) error {
 	tempSettings := utils.DefaultSystemSettings()
 	v := reflect.ValueOf(&tempSettings).Elem()

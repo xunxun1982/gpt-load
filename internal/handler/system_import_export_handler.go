@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -477,18 +478,22 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	// Reset failure_count for all active keys in each successfully imported group asynchronously
 	// This treats each import as a fresh start, clearing any historical failure counts
 	// Run asynchronously to avoid blocking the HTTP response (can take minutes for large groups)
-	go func(groups []models.Group) {
+	go func(ctx context.Context, groups []models.Group) {
+		// Use background context with timeout to avoid goroutine leaks
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+
 		for _, group := range groups {
 			resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(group.ID)
 			if resetErr != nil {
-				logrus.WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d (%s)",
+				logrus.WithContext(ctx).WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d (%s)",
 					group.ID, group.Name)
 			} else if resetCount > 0 {
-				logrus.Infof("Reset failure_count for %d active keys in imported group %d (%s)",
+				logrus.WithContext(ctx).Infof("Reset failure_count for %d active keys in imported group %d (%s)",
 					resetCount, group.ID, group.Name)
 			}
 		}
-	}(importedGroups)
+	}(context.Background(), importedGroups)
 
 	// Convert imported groups to response format
 	groupResponses := make([]interface{}, 0, len(importedGroups))

@@ -202,6 +202,8 @@ var MessagesJaJP = map[string]string{
 	"success.all_groups_deleted":       "すべてのグループが削除されました",
 	"success.group_imported":           "グループが正常にインポートされました",
 	"success.system_imported":          "システム設定が正常にインポートされました",
+	"success.system_settings_imported": "システム設定が正常にインポートされました",
+	"success.groups_batch_imported":    "グループのバッチインポートが成功しました",
 	"group.not_aggregate":              "グループはアグリゲートグループではありません",
 	"group.sub_group_already_exists":   "サブグループ{{.sub_group_id}}は既に存在します",
 	"group.sub_group_not_found":        "サブグループが見つかりません",

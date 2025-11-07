@@ -582,7 +582,7 @@ export default {
     deleteAllGroupsConfirmText: "此操作将删除所有分组和所有密钥。所有数据将永久丢失。",
     typeToConfirm: '输入 "{text}" 以确认',
     caseSensitiveWarning: "注意：区分大小写，必须完全匹配",
-    confirmTextMismatch: "确认文本不匹配。请准确输入：DELETE ALL",
+    confirmTextMismatch: "确认文本不匹配。请准确输入：{text}",
     finalWarning: "最后警告",
     deleteAllGroupsFailed: "删除所有分组失败",
   },

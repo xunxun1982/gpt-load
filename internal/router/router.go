@@ -50,7 +50,7 @@ func NewRouter(
 
 	router := gin.New()
 
-	// 注册全局中间件
+	// Register global middleware
 	router.Use(middleware.Recovery())
 	router.Use(middleware.ErrorHandler())
 	router.Use(middleware.Logger(configManager.GetLogConfig()))
@@ -63,7 +63,7 @@ func NewRouter(
 		c.Next()
 	})
 
-	// 注册路由
+	// Register routes
 	registerSystemRoutes(router, serverHandler)
 	registerAPIRoutes(router, serverHandler, configManager)
 	registerProxyRoutes(router, proxyServer, groupManager, serverHandler)
@@ -72,12 +72,12 @@ func NewRouter(
 	return router
 }
 
-// registerSystemRoutes 注册系统级路由
+// registerSystemRoutes registers system-level routes
 func registerSystemRoutes(router *gin.Engine, serverHandler *handler.Server) {
 	router.GET("/health", serverHandler.Health)
 }
 
-// registerAPIRoutes 注册API路由
+// registerAPIRoutes registers API routes
 func registerAPIRoutes(
 	router *gin.Engine,
 	serverHandler *handler.Server,
@@ -88,22 +88,22 @@ func registerAPIRoutes(
 
 	authConfig := configManager.GetAuthConfig()
 
-	// 公开
+	// Public routes
 	registerPublicAPIRoutes(api, serverHandler)
 
-	// 认证
+	// Protected routes
 	protectedAPI := api.Group("")
 	protectedAPI.Use(middleware.Auth(authConfig))
 	registerProtectedAPIRoutes(protectedAPI, serverHandler, configManager)
 }
 
-// registerPublicAPIRoutes 公开API路由
+// registerPublicAPIRoutes registers public API routes
 func registerPublicAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Server) {
 	api.POST("/auth/login", serverHandler.Login)
 	api.GET("/integration/info", serverHandler.GetIntegrationInfo)
 }
 
-// registerProtectedAPIRoutes 认证API路由
+// registerProtectedAPIRoutes registers protected API routes
 func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Server, configManager types.ConfigManager) {
 	api.GET("/channel-types", serverHandler.CommonHandler.GetChannelTypes)
 
@@ -156,7 +156,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 	// Tasks
 	api.GET("/tasks/status", serverHandler.GetTaskStatus)
 
-	// 仪表板和日志
+	// Dashboard and logs
 	dashboard := api.Group("/dashboard")
 	{
 		dashboard.GET("/stats", serverHandler.Stats)
@@ -164,21 +164,21 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		dashboard.GET("/encryption-status", serverHandler.EncryptionStatus)
 	}
 
-	// 日志
+	// Logs
 	logs := api.Group("/logs")
 	{
 		logs.GET("", serverHandler.GetLogs)
 		logs.GET("/export", serverHandler.ExportLogs)
 	}
 
-	// 设置
+	// Settings
 	settings := api.Group("/settings")
 	{
 		settings.GET("", serverHandler.GetSettings)
 		settings.PUT("", serverHandler.UpdateSettings)
 	}
 
-	// 系统全量导入导出
+	// System-wide import/export
 	system := api.Group("/system")
 	{
 		system.GET("/export", serverHandler.ExportAll)
@@ -189,7 +189,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 	}
 }
 
-// registerProxyRoutes 注册代理路由
+// registerProxyRoutes registers proxy routes
 func registerProxyRoutes(
 	router *gin.Engine,
 	proxyServer *proxy.ProxyServer,
@@ -204,14 +204,14 @@ func registerProxyRoutes(
 	proxyGroup.Any("/*path", proxyServer.HandleProxy)
 }
 
-// registerFrontendRoutes 注册前端路由
+// registerFrontendRoutes registers frontend routes
 func registerFrontendRoutes(router *gin.Engine, buildFS embed.FS, indexPage []byte) {
 	router.Use(gzip.Gzip(gzip.DefaultCompression))
 	router.NoMethod(func(c *gin.Context) {
 		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "Method not allowed"})
 	})
 
-	// 使用静态资源缓存中间件
+	// Use static resource cache middleware
 	router.Use(middleware.StaticCache())
 
 	router.Use(static.Serve("/", EmbedFolder(buildFS, "web/dist")))
@@ -220,7 +220,7 @@ func registerFrontendRoutes(router *gin.Engine, buildFS embed.FS, indexPage []by
 			c.JSON(http.StatusNotFound, gin.H{"error": "Not Found"})
 			return
 		}
-		// HTML页面不缓存，确保更新能及时生效
+		// HTML pages are not cached to ensure updates take effect immediately
 		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		c.Header("Pragma", "no-cache")
 		c.Header("Expires", "0")

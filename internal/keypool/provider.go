@@ -213,9 +213,8 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 
 	// Ensure EffectiveConfig is set for this group (use group-level config which may override system settings)
 	// This ensures validation uses the correct group-specific blacklist_threshold, not just system settings
-	if group.EffectiveConfig.AppUrl == "" {
-		group.EffectiveConfig = p.settingsManager.GetEffectiveConfig(group.Config)
-	}
+	// Always call GetEffectiveConfig as it is idempotent and cached, avoiding fragile sentinel checks
+	group.EffectiveConfig = p.settingsManager.GetEffectiveConfig(group.Config)
 
 	// Get the effective configuration for this group
 	// This will use group-specific blacklist_threshold if set, otherwise fall back to system settings
@@ -574,6 +573,12 @@ func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, err
 
 	if result.RowsAffected > 0 {
 		logrus.Infof("Reset failure_count for %d active keys in group %d", result.RowsAffected, groupID)
+
+		// Invalidate cache after resetting failure counts to ensure consistency
+		// This matches the behavior in ResetAllActiveKeysFailureCount
+		if p.CacheInvalidationCallback != nil {
+			p.CacheInvalidationCallback(groupID)
+		}
 	}
 
 	return result.RowsAffected, nil
@@ -590,15 +595,21 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 
 	// Use cursor-based pagination to avoid skipping keys
 	// When we update failure_count to 0, those keys are removed from the result set
-	// So we always query from the beginning (no offset) until no more keys are found
+	// So we use WHERE id > lastID to query the next batch, ensuring no keys are skipped
+	var lastID uint = 0
 	for {
 		var keys []models.APIKey
-		if err := p.db.Select("id, group_id").
+		query := p.db.Select("id, group_id").
 			Where("status = ?", models.KeyStatusActive).
 			Where("failure_count > 0").
 			Order("id ASC"). // Stable ordering for consistent results
-			Limit(batchSize).
-			Find(&keys).Error; err != nil {
+			Limit(batchSize)
+
+		if lastID > 0 {
+			query = query.Where("id > ?", lastID)
+		}
+
+		if err := query.Find(&keys).Error; err != nil {
 			return totalReset, fmt.Errorf("failed to query active keys: %w", err)
 		}
 
@@ -642,6 +653,9 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 				p.CacheInvalidationCallback(groupID)
 			}
 		}
+
+		// Update lastID for cursor-based pagination
+		lastID = keys[len(keys)-1].ID
 
 		// If we got fewer than batchSize, we've reached the end
 		if len(keys) < batchSize {
@@ -805,10 +819,12 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 	batchSize := 1000
 	var batchKeys []models.APIKey
 	activeKeyIDs := make([]any, 0)
+	totalProcessed := 0
 
 	err := p.db.Model(&models.APIKey{}).
 		Where("group_id = ?", groupID).
 		FindInBatches(&batchKeys, batchSize, func(tx *gorm.DB, batch int) error {
+			totalProcessed += len(batchKeys)
 			// Use pipeline for better Redis performance
 			var pipeline store.Pipeliner
 			if redisStore, ok := p.store.(store.RedisPipeliner); ok {
@@ -855,7 +871,7 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 	}
 
 	duration := time.Since(startTime)
-	logrus.Infof("Loaded %d keys to store for group %d in %v", len(activeKeyIDs), groupID, duration)
+	logrus.Infof("Loaded %d keys (%d active) to store for group %d in %v", totalProcessed, len(activeKeyIDs), groupID, duration)
 	return nil
 }
 

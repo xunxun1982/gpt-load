@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 	"strings"
 	"time"
 
@@ -81,17 +82,26 @@ func (s *BulkImportService) initializeOptimizations() {
 // initializeSQLiteOptimizations applies SQLite-specific optimizations
 // Note: Only applies safe, global optimizations. Transaction-specific settings
 // are applied within the transaction scope in BulkInsertAPIKeysWithTx
+// PRAGMA settings can be configured via environment variables for deployment flexibility
 func (s *BulkImportService) initializeSQLiteOptimizations() {
 	// Apply only safe, global SQLite PRAGMA optimizations
 	// Do NOT disable foreign_keys, synchronous, or other safety features globally
+	// Use environment variables with reasonable defaults for bulk import operations
+	cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "20000")        // Increase cache to 20000 pages (~80MB with 4KB pages)
+	tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")       // Use memory for temporary tables
+	mmapSize := utils.GetEnvOrDefault("SQLITE_MMAP_SIZE", "30000000000")    // 30GB memory mapping (virtual, not physical RAM)
+	pageSize := utils.GetEnvOrDefault("SQLITE_PAGE_SIZE", "4096")          // Optimal page size
+	busyTimeout := utils.GetEnvOrDefault("SQLITE_BUSY_TIMEOUT", "30000")   // 30 second busy timeout
+	walAutocheckpoint := utils.GetEnvOrDefault("SQLITE_WAL_AUTOCHECKPOINT", "10000") // Less frequent WAL checkpoints
+
 	pragmas := []string{
-		"PRAGMA cache_size = 20000",        // Increase cache to 20000 pages (~80MB with 4KB pages)
-		"PRAGMA temp_store = MEMORY",       // Use memory for temporary tables
-		"PRAGMA journal_mode = WAL",        // Ensure WAL mode is enabled
-		"PRAGMA page_size = 4096",         // Optimal page size
-		"PRAGMA mmap_size = 30000000000",  // 30GB memory mapping
-		"PRAGMA busy_timeout = 30000",     // 30 second busy timeout
-		"PRAGMA wal_autocheckpoint = 10000", // Less frequent WAL checkpoints
+		fmt.Sprintf("PRAGMA cache_size = %s", cacheSize),
+		fmt.Sprintf("PRAGMA temp_store = %s", tempStore),
+		"PRAGMA journal_mode = WAL", // Ensure WAL mode is enabled
+		fmt.Sprintf("PRAGMA page_size = %s", pageSize),
+		fmt.Sprintf("PRAGMA mmap_size = %s", mmapSize),
+		fmt.Sprintf("PRAGMA busy_timeout = %s", busyTimeout),
+		fmt.Sprintf("PRAGMA wal_autocheckpoint = %s", walAutocheckpoint),
 	}
 
 	for _, pragma := range pragmas {

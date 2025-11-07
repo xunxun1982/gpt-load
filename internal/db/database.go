@@ -1,8 +1,10 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"gpt-load/internal/types"
+	"gpt-load/internal/utils"
 	"log"
 	"os"
 	"path/filepath"
@@ -60,10 +62,12 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		// Enhanced SQLite optimizations for bulk operations
 		// WAL mode: Better concurrency and write performance
 		// synchronous=NORMAL: Safe with WAL, faster writes
-		// cache_size: Larger cache for better performance
-		// temp_store=MEMORY: Use memory for temp tables
-		// mmap_size: Memory mapping for faster reads
-		params := "_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&cache=shared&_cache_size=10000&_temp_store=MEMORY"
+		// cache_size: Larger cache for better performance (configurable via env var)
+		// temp_store=MEMORY: Use memory for temp tables (configurable via env var)
+		// mmap_size: Memory mapping for faster reads (set via direct SQL to avoid slow query log)
+		cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")      // ~40MB cache with 4KB pages
+		tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")     // Use memory for temporary tables
+		params := fmt.Sprintf("_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&cache=shared&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
 		delimiter := "?"
 		if strings.Contains(dsn, "?") {
 			delimiter = "&"
@@ -106,13 +110,27 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		sqlDB.SetMaxOpenConns(1)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 
-		// Apply additional SQLite PRAGMA optimizations
-		DB.Exec("PRAGMA cache_size = 10000")      // ~40MB cache with 4KB pages
-		DB.Exec("PRAGMA temp_store = MEMORY")     // Use memory for temporary tables
-		DB.Exec("PRAGMA mmap_size = 30000000000") // 30GB memory mapping
-		DB.Exec("PRAGMA page_size = 4096")        // Optimal page size
-		DB.Exec("PRAGMA journal_size_limit = 67108864") // 64MB WAL file limit
-		DB.Exec("PRAGMA wal_autocheckpoint = 1000") // Checkpoint every 1000 pages
+		// Apply additional SQLite PRAGMA optimizations via DSN or direct SQL
+		// Most PRAGMA settings are already in DSN, but some need to be set via direct SQL
+		// Use raw SQL connection to avoid slow SQL logging for initialization commands
+		rawDB, err := sqlDB.Conn(context.Background())
+		if err == nil {
+			// Get environment variables for PRAGMA settings
+			mmapSize := utils.GetEnvOrDefault("SQLITE_MMAP_SIZE", "30000000000") // 30GB memory mapping (virtual, not physical RAM)
+			pageSize := utils.GetEnvOrDefault("SQLITE_PAGE_SIZE", "4096")        // Optimal page size
+			journalSizeLimit := utils.GetEnvOrDefault("SQLITE_JOURNAL_SIZE_LIMIT", "67108864") // 64MB WAL file limit
+			walAutocheckpoint := utils.GetEnvOrDefault("SQLITE_WAL_AUTOCHECKPOINT", "1000") // Checkpoint every 1000 pages
+
+			// Set PRAGMA via raw SQL connection to avoid GORM slow SQL logging
+			// These are initialization commands, not actual slow queries
+			rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA mmap_size = %s", mmapSize))
+			rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA page_size = %s", pageSize))
+			rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA journal_size_limit = %s", journalSizeLimit))
+			rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA wal_autocheckpoint = %s", walAutocheckpoint))
+			rawDB.Close()
+		}
+		// Note: cache_size and temp_store are already set in DSN (line 67)
+		// No need to set them again via Exec to avoid duplicate execution and slow SQL logging
 	}
 
 	return DB, nil
