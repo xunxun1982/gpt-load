@@ -8,6 +8,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,9 +109,10 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		// The selection algorithm will skip them
 
 		// Determine effective proxy URL (per-upstream overrides group-level)
-		proxyURL := group.EffectiveConfig.ProxyURL
+		// Trim whitespace to handle common configuration issues
+		proxyURL := strings.TrimSpace(group.EffectiveConfig.ProxyURL)
 		if def.ProxyURL != nil && *def.ProxyURL != "" {
-			proxyURL = *def.ProxyURL
+			proxyURL = strings.TrimSpace(*def.ProxyURL)
 		}
 
 		// Base configuration for regular requests, derived from the group's effective settings.

@@ -48,3 +48,4 @@ func FindAggregateGroupByID(ctx context.Context, db *gorm.DB, groupID uint) (*mo
 	return FindGroupByIDWithType(ctx, db, groupID, "aggregate")
 }
 
+

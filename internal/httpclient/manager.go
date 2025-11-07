@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,13 +87,20 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	}
 
 	// Set http proxy.
+	// Trim whitespace from proxy URL before parsing to handle common configuration issues
 	if config.ProxyURL != "" {
-		proxyURL, err := url.Parse(config.ProxyURL)
-		if err != nil {
-			logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", config.ProxyURL, err)
-			transport.Proxy = http.ProxyFromEnvironment
+		trimmedProxyURL := strings.TrimSpace(config.ProxyURL)
+		if trimmedProxyURL != "" {
+			proxyURL, err := url.Parse(trimmedProxyURL)
+			if err != nil {
+				logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", trimmedProxyURL, err)
+				transport.Proxy = http.ProxyFromEnvironment
+			} else {
+				transport.Proxy = http.ProxyURL(proxyURL)
+			}
 		} else {
-			transport.Proxy = http.ProxyURL(proxyURL)
+			// ProxyURL was only whitespace, fall back to environment
+			transport.Proxy = http.ProxyFromEnvironment
 		}
 	} else {
 		transport.Proxy = http.ProxyFromEnvironment
