@@ -472,7 +472,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 
 			result := tx.Where("id IN ?", batchIDs).Delete(&models.APIKey{})
 			if result.Error != nil {
-				return app_errors.ErrDatabase
+				return app_errors.ParseDBError(result.Error)
 			}
 
 			totalDeleted += result.RowsAffected
@@ -491,20 +491,22 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 		return app_errors.ParseDBError(err)
 	}
 
+	if err := tx.Commit().Error; err != nil {
+		return app_errors.ErrDatabase
+	}
+	tx = nil
+
+	// Post-commit: best-effort cache/memory updates
 	if len(keyIDs) > 0 {
 		if err := s.keyService.KeyProvider.RemoveKeysFromStore(id, keyIDs); err != nil {
 			logrus.WithContext(ctx).WithFields(logrus.Fields{
 				"groupID":  id,
 				"keyCount": len(keyIDs),
-			}).WithError(err).Error("failed to remove keys from memory store, rolling back transaction")
-			return NewI18nError(app_errors.ErrDatabase, "error.delete_group_cache", nil)
+			}).WithError(err).Warn("failed to remove keys from memory store; will refresh on next use")
 		}
 	}
-
-	if err := tx.Commit().Error; err != nil {
-		return app_errors.ErrDatabase
-	}
-	tx = nil
+	// Clear per-group key stats cache to avoid stale counts for soon-to-be-reused IDs
+	s.InvalidateKeyStatsCache(id)
 
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
@@ -528,15 +530,13 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	logrus.WithContext(ctx).Warn("DeleteAllGroups called - this will remove ALL groups and keys")
 
-	// Step 1: Get key IDs before deletion for cache cleanup
-	// Do this outside transaction for better performance
-	var keyIDs []uint
-	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).Pluck("id", &keyIDs).Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Error("failed to query key IDs")
+	// Step 1: Get total key count before deletion (for logging only)
+	var totalKeys int64
+	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).Count(&totalKeys).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to count API keys")
 		return app_errors.ParseDBError(err)
 	}
 
-	totalKeys := len(keyIDs)
 	logrus.WithContext(ctx).WithField("totalKeys", totalKeys).Info("Starting deletion of all groups and keys")
 
 	// Step 2: Optimize SQLite for bulk deletion BEFORE starting transaction
@@ -588,7 +588,7 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 		result := tx.Exec("DELETE FROM api_keys")
 		if result.Error != nil {
 			logrus.WithContext(ctx).WithError(result.Error).Error("failed to delete all API keys")
-			return app_errors.ErrDatabase
+			return app_errors.ParseDBError(result.Error)
 		}
 		logrus.WithContext(ctx).WithField("deletedKeys", result.RowsAffected).Info("Deleted all API keys")
 

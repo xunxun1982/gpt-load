@@ -40,13 +40,19 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		)
 	}
 
+	// Detect driver types once and reuse
+	isPostgres := strings.HasPrefix(dsn, "postgres://") ||
+		strings.HasPrefix(dsn, "postgresql://") ||
+		(strings.Contains(dsn, "host=") && strings.Contains(dsn, "dbname="))
+	isMySQL := strings.Contains(dsn, "@tcp(") || strings.Contains(dsn, "@unix(")
+
 	var dialector gorm.Dialector
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+	if isPostgres {
 		dialector = postgres.New(postgres.Config{
 			DSN:                  dsn,
 			PreferSimpleProtocol: true,
 		})
-	} else if strings.Contains(dsn, "@tcp") {
+	} else if isMySQL {
 		if !strings.Contains(dsn, "parseTime") {
 			if strings.Contains(dsn, "?") {
 				dsn += "&parseTime=true"
@@ -56,8 +62,11 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		}
 		dialector = mysql.Open(dsn)
 	} else {
-		if err := os.MkdirAll(filepath.Dir(dsn), 0755); err != nil {
-			return nil, fmt.Errorf("failed to create database directory: %w", err)
+		// Create directory only for plain filesystem paths (not SQLite file: URIs)
+		if !strings.HasPrefix(dsn, "file:") {
+			if err := os.MkdirAll(filepath.Dir(dsn), 0755); err != nil {
+				return nil, fmt.Errorf("failed to create database directory: %w", err)
+			}
 		}
 		// Enhanced SQLite optimizations for bulk operations
 		// WAL mode: Better concurrency and write performance
@@ -90,14 +99,14 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 	}
 
 	// Set connection pool parameters based on database type
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") || strings.Contains(dsn, "@tcp") {
+	if isPostgres || isMySQL {
 		// PostgreSQL and MySQL can handle more connections
 		sqlDB.SetMaxIdleConns(50)
 		sqlDB.SetMaxOpenConns(500)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 
 		// Apply additional optimizations for MySQL
-		if strings.Contains(dsn, "@tcp") {
+		if isMySQL {
 			// Set larger timeouts for bulk operations
 			sqlDB.SetConnMaxIdleTime(time.Minute * 10)
 			// Apply MySQL session optimizations
@@ -129,22 +138,25 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 
 			// Set PRAGMA via raw SQL connection to avoid GORM slow SQL logging
 			// These are initialization commands, not actual slow queries
-			if _, err := rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA mmap_size = %s", mmapSize)); err != nil {
+			// Use a bounded context to prevent rare hangs during startup when the DB is busy
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if _, err := rawDB.ExecContext(ctx, fmt.Sprintf("PRAGMA mmap_size = %s", mmapSize)); err != nil {
 				log.Printf("failed to apply PRAGMA mmap_size: %v", err)
 			}
-			if _, err := rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA page_size = %s", pageSize)); err != nil {
+			if _, err := rawDB.ExecContext(ctx, fmt.Sprintf("PRAGMA page_size = %s", pageSize)); err != nil {
 				log.Printf("failed to apply PRAGMA page_size: %v", err)
 			}
-			if _, err := rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA journal_size_limit = %s", journalSizeLimit)); err != nil {
+			if _, err := rawDB.ExecContext(ctx, fmt.Sprintf("PRAGMA journal_size_limit = %s", journalSizeLimit)); err != nil {
 				log.Printf("failed to apply PRAGMA journal_size_limit: %v", err)
 			}
-			if _, err := rawDB.ExecContext(context.Background(), fmt.Sprintf("PRAGMA wal_autocheckpoint = %s", walAutocheckpoint)); err != nil {
+			if _, err := rawDB.ExecContext(ctx, fmt.Sprintf("PRAGMA wal_autocheckpoint = %s", walAutocheckpoint)); err != nil {
 				log.Printf("failed to apply PRAGMA wal_autocheckpoint: %v", err)
 			}
 			rawDB.Close()
 		}
-		// Note: cache_size and temp_store are already set in DSN (line 67)
-		// No need to set them again via Exec to avoid duplicate execution and slow SQL logging
+		// cache_size and temp_store are already set in the DSN above; avoid reapplying via PRAGMA to prevent duplicate work and noisy logs
 	}
 
 	return DB, nil

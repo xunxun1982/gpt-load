@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -59,13 +60,15 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		startPrep := time.Now()
 		keyModels := make([]models.APIKey, 0, len(keys))
 		skippedKeys := 0
-		for _, keyInfo := range keys {
+		for i, keyInfo := range keys {
 			// Decrypt key_value to calculate key_hash for proper indexing and deduplication
 			// The exported key_value is encrypted, so we need to decrypt it first
 			decryptedKey, err := encryptionSvc.Decrypt(keyInfo.KeyValue)
 			if err != nil {
-				// If decryption fails, log and skip this key
-				logrus.WithError(err).Warn("Failed to decrypt key during import, skipping")
+				// If decryption fails, log and skip this key (no key material)
+				logrus.WithError(err).
+					WithField("index", i).
+					Warn("Failed to decrypt key during import, skipping")
 				skippedKeys++
 				continue
 			}
@@ -125,6 +128,18 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		subGroupMap := make(map[string]uint, len(foundSubGroups))
 		for _, sg := range foundSubGroups {
 			subGroupMap[sg.Name] = sg.ID
+		}
+
+		// Log any missing sub-groups for visibility (non-fatal)
+		missing := make([]string, 0, len(groupNames))
+		for _, name := range groupNames {
+			if _, ok := subGroupMap[name]; !ok {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) > 0 {
+			logrus.WithField("missing_sub_groups", strings.Join(missing, ",")).
+				Warnf("Some referenced sub-groups were not found; relationships will be partially created for group %s", group.Name)
 		}
 
 		// Batch create group-sub-group relationships
@@ -207,7 +222,7 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	// This fixes the FindInBatches limitation that only exports 2000 records
 	groupData, err := s.ExportImportService.ExportGroup(uint(id))
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.group_not_found")
 		} else {
 			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.cannot_get_group")
@@ -220,6 +235,9 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	if len(groupData.Group.HeaderRules) > 0 {
 		if err := json.Unmarshal(groupData.Group.HeaderRules, &headerRules); err != nil {
 			headerRules = []models.HeaderRule{}
+			logrus.WithError(err).
+				WithField("group", groupData.Group.Name).
+				Warn("Failed to parse HeaderRules for export; exporting empty list")
 		}
 	}
 
@@ -274,10 +292,10 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	} else {
 		filenamePrefix = "standard-group"
 	}
-	filename := fmt.Sprintf("%s_%s_%s.json", filenamePrefix, groupData.Group.Name, time.Now().Format("20060102_150405"))
+	safeName := sanitizeFilename(groupData.Group.Name)
+	filename := fmt.Sprintf("%s_%s_%s.json", filenamePrefix, safeName, time.Now().Format("20060102_150405"))
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.Header("Content-Type", "application/json; charset=utf-8")
-	c.Header("Content-Transfer-Encoding", "binary")
 
 	// Return JSON data
 	c.JSON(http.StatusOK, exportData)
@@ -305,6 +323,12 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		logrus.Debugf("SubGroups: %d", len(importData.SubGroups))
 	}
 
+	// Basic validation for group type
+	if importData.Group.GroupType != "standard" && importData.Group.GroupType != "aggregate" {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_type")
+		return
+	}
+
 	// Use transaction to ensure data consistency, rollback on failure
 	var createdGroup models.Group
 	var createdGroupID uint
@@ -327,28 +351,52 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	}
 
 	// Load keys to Redis store and reset failure_count asynchronously
-	// Run asynchronously to avoid blocking the HTTP response (can take 30+ seconds for large groups)
-	go func(groupID uint) {
-		// Derive from request context but with extended timeout for async work
-		// This maintains request traceability while ensuring async operations complete even if HTTP request is cancelled
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
+	// Capture only safe values before launching the goroutine; never retain gin.Context
+	parentCtx := context.Background()
+	reqID := c.GetHeader("X-Request-ID")
+	go func(groupID uint, parent context.Context, reqID string) {
+		ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
 		defer cancel()
+		entry := logrus.WithContext(ctx)
+		if reqID != "" {
+			entry = entry.WithField("request_id", reqID)
+		}
 
 		// First, load all keys to Redis store
 		if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(groupID); err != nil {
-			logrus.WithContext(ctx).WithError(err).Errorf("Failed to load keys to store for imported group %d", groupID)
+			entry.WithError(err).Errorf("Failed to load keys to store for imported group %d", groupID)
 		} else {
-			logrus.WithContext(ctx).Infof("Successfully loaded keys to store for imported group %d", groupID)
+			entry.Infof("Successfully loaded keys to store for imported group %d", groupID)
 		}
 
 		// Then reset failure_count for all active keys
 		resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(groupID)
 		if resetErr != nil {
-			logrus.WithContext(ctx).WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d", groupID)
+			entry.WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d", groupID)
 		} else if resetCount > 0 {
-			logrus.WithContext(ctx).Infof("Reset failure_count for %d active keys in imported group %d", resetCount, groupID)
+			entry.Infof("Reset failure_count for %d active keys in imported group %d", resetCount, groupID)
 		}
-	}(createdGroupID)
+	}(createdGroupID, parentCtx, reqID)
 
 	response.SuccessI18n(c, "success.group_imported", s.newGroupResponse(&createdGroup))
+}
+
+// sanitizeFilename keeps alphanumerics, dash, underscore, and dot; replaces others with '_'
+func sanitizeFilename(name string) string {
+	b := make([]rune, 0, len(name))
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+			b = append(b, r)
+		default:
+			b = append(b, '_')
+		}
+	}
+	if len(b) == 0 {
+		return "group"
+	}
+	return string(b)
 }
