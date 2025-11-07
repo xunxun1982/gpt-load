@@ -63,7 +63,12 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		dialector = mysql.Open(dsn)
 	} else {
 		// Create directory only for plain filesystem paths (not SQLite file: URIs)
-		if !strings.HasPrefix(dsn, "file:") {
+		// SQLite supports various URI formats: file:, file://, file:///, file://localhost/
+		// All of these start with "file:", so we skip directory creation for any URI format
+		if strings.HasPrefix(dsn, "file:") {
+			// Skip mkdir for file: URIs to avoid creating wrong directories
+			// SQLite driver will handle URI parsing and path extraction
+		} else {
 			if err := os.MkdirAll(filepath.Dir(dsn), 0755); err != nil {
 				return nil, fmt.Errorf("failed to create database directory: %w", err)
 			}

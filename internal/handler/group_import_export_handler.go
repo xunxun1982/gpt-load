@@ -351,6 +351,14 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	}
 
 	// Load keys to Redis store and reset failure_count asynchronously
+	// These operations run asynchronously after the success response is sent to avoid blocking the HTTP response
+	// Design decision: These are best-effort optimizations and non-critical post-processing operations
+	// - The group and keys are already committed to the database, ensuring data integrity
+	// - Cache loading failures don't affect data persistence; keys will be loaded on next use
+	// - Failure counts reset is an optimization; existing counts don't prevent functionality
+	// - Failures are logged with request_id for traceability; operators can monitor logs
+	// Note: Users are not notified of async operation failures to keep the API simple and avoid complexity
+	// If these operations are critical, consider implementing a job queue with status tracking
 	// Capture only safe values before launching the goroutine; never retain gin.Context
 	parentCtx := context.Background()
 	reqID := c.GetHeader("X-Request-ID")
