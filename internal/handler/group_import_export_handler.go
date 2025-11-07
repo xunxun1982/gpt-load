@@ -231,13 +231,16 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	}
 
 	// Parse HeaderRules for export format
+	// Fail export on parse error to prevent silent data loss
+	// If HeaderRules are corrupted, user should know before exporting incomplete data
 	var headerRules []models.HeaderRule
 	if len(groupData.Group.HeaderRules) > 0 {
 		if err := json.Unmarshal(groupData.Group.HeaderRules, &headerRules); err != nil {
-			headerRules = []models.HeaderRule{}
 			logrus.WithError(err).
 				WithField("group", groupData.Group.Name).
-				Warn("Failed to parse HeaderRules for export; exporting empty list")
+				Error("Failed to parse HeaderRules for export")
+			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.export_failed")
+			return
 		}
 	}
 
@@ -390,6 +393,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 }
 
 // sanitizeFilename keeps alphanumerics, dash, underscore, and dot; replaces others with '_'
+// Truncates to 100 characters to prevent overly long filenames in Content-Disposition headers
 func sanitizeFilename(name string) string {
 	b := make([]rune, 0, len(name))
 	for _, r := range name {
@@ -405,6 +409,12 @@ func sanitizeFilename(name string) string {
 	}
 	if len(b) == 0 {
 		return "group"
+	}
+	// Truncate to reasonable length for filename (100 chars)
+	// This prevents issues with extremely long filenames in HTTP headers
+	// The full filename will still include prefix and timestamp
+	if len(b) > 100 {
+		b = b[:100]
 	}
 	return string(b)
 }
