@@ -94,7 +94,7 @@ func registerAPIRoutes(
 	// 认证
 	protectedAPI := api.Group("")
 	protectedAPI.Use(middleware.Auth(authConfig))
-	registerProtectedAPIRoutes(protectedAPI, serverHandler)
+	registerProtectedAPIRoutes(protectedAPI, serverHandler, configManager)
 }
 
 // registerPublicAPIRoutes 公开API路由
@@ -104,7 +104,7 @@ func registerPublicAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Server
 }
 
 // registerProtectedAPIRoutes 认证API路由
-func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Server) {
+func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Server, configManager types.ConfigManager) {
 	api.GET("/channel-types", serverHandler.CommonHandler.GetChannelTypes)
 
 	groups := api.Group("/groups")
@@ -126,6 +126,13 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		groups.PUT("/:id/sub-groups/:subGroupId/weight", serverHandler.UpdateSubGroupWeight)
 		groups.DELETE("/:id/sub-groups/:subGroupId", serverHandler.DeleteSubGroup)
 		groups.GET("/:id/parent-aggregate-groups", serverHandler.GetParentAggregateGroups)
+
+		// Debug-only endpoint: Delete all groups
+		// This dangerous operation is only available when DEBUG_MODE environment variable is enabled
+		// It should NEVER be enabled in production environments
+		if configManager.IsDebugMode() {
+			groups.DELETE("/debug/delete-all", serverHandler.DeleteAllGroups)
+		}
 	}
 
 	// Key Management Routes
@@ -178,6 +185,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		system.POST("/import", serverHandler.ImportAll)
 		system.POST("/import-settings", serverHandler.ImportSystemSettings)
 		system.POST("/import-groups-batch", serverHandler.ImportGroupsBatch)
+		system.GET("/environment", serverHandler.GetEnvironmentInfo)
 	}
 }
 

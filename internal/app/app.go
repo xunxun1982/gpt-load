@@ -81,7 +81,7 @@ func (a *App) Start() error {
 		return fmt.Errorf("failed to initialize i18n: %w", err)
 	}
 	logrus.Info("i18n initialized successfully.")
-	
+
 	// Master 节点执行初始化
 	if a.configManager.IsMaster() {
 		logrus.Info("Starting as Master Node.")
@@ -134,7 +134,9 @@ func (a *App) Start() error {
 	// 显示配置并启动所有后台服务
 	a.configManager.DisplayServerConfig()
 
-	a.groupManager.Initialize()
+	if err := a.groupManager.Initialize(); err != nil {
+		return fmt.Errorf("failed to initialize group manager: %w", err)
+	}
 
 	// Create HTTP server
 	serverConfig := a.configManager.GetEffectiveServerConfig()

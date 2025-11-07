@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { settingsApi, type Setting, type SettingCategory } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
+import http from "@/utils/http";
 import { HelpCircle, Save, CloudDownloadOutline, CloudUploadOutline } from "@vicons/ionicons5";
 import {
   NButton,
@@ -19,7 +20,7 @@ import {
   useMessage,
   type FormItemRule,
 } from "naive-ui";
-import { ref } from "vue";
+import { h, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -104,23 +105,31 @@ function generateValidationRules(item: Setting): FormItemRule[] {
 // 导出系统全量配置
 function handleExportAll() {
   dialog.info({
-    title: t('settings.exportSystem'),
-    content: t('settings.exportSystemConfirm'),
-    positiveText: t('common.confirm'),
-    negativeText: t('common.cancel'),
+    title: t("settings.exportSystem"),
+    content: t("settings.exportSystemConfirm"),
+    positiveText: t("common.confirm"),
+    negativeText: t("common.cancel"),
     onPositiveClick: async () => {
       try {
         await settingsApi.exportAll();
-        message.success(t('settings.exportSuccess'));
-      } catch (error: any) {
-        message.error(error.message || t('settings.exportFailed'));
+        message.success(t("settings.exportSuccess"));
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : t("settings.exportFailed");
+        message.error(errorMessage);
       }
-    }
+    },
   });
 }
 
+// 导入状态管理
+const isImporting = ref(false);
+
 // 触发系统文件选择
 function handleSystemImportClick() {
+  if (isImporting.value) {
+    message.warning(t("settings.importInProgress"));
+    return;
+  }
   systemFileInputRef.value?.click();
 }
 
@@ -129,18 +138,20 @@ async function handleSystemFileChange(event: Event) {
   const target = event.target as HTMLInputElement;
   const file = target.files?.[0];
 
-  if (!file) return;
+  if (!file) {
+    return;
+  }
 
   try {
     const text = await file.text();
-    let parsedData: any;
+    let parsedData: unknown;
 
     try {
       parsedData = JSON.parse(text);
     } catch (parseError) {
-      console.error('JSON parse error:', parseError);
-      message.error(t('settings.invalidImportFile') + ': JSON 格式错误');
-      target.value = '';
+      console.error("JSON parse error:", parseError);
+      message.error(`${t("settings.invalidImportFile")}: JSON 格式错误`);
+      target.value = "";
       return;
     }
 
@@ -148,115 +159,337 @@ async function handleSystemFileChange(event: Event) {
     // 支持两种格式：
     // 1. 直接数据格式：{ version, system_settings, groups }
     // 2. 包装格式：{ code, message, data: { version, system_settings, groups } }
-    let data = parsedData;
+    let data: any = parsedData;
 
     // 检查是否是包装格式（包含 code 或 message 字段，且有 data 字段）
-    if (parsedData.data && typeof parsedData.data === 'object' &&
-        (parsedData.code !== undefined || parsedData.message !== undefined)) {
-      data = parsedData.data;
+    const wrappedData = parsedData as { data?: unknown; code?: number; message?: string };
+    if (
+      wrappedData.data &&
+      typeof wrappedData.data === "object" &&
+      (wrappedData.code !== undefined || wrappedData.message !== undefined)
+    ) {
+      data = wrappedData.data;
     }
 
     // 调试信息（仅在开发环境输出）
     if (import.meta.env.DEV) {
-      console.log('Parsed import data structure:', {
-        originalKeys: Object.keys(parsedData),
+      console.log("Parsed import data structure:", {
+        originalKeys: Object.keys(parsedData as Record<string, unknown>),
         dataKeys: Object.keys(data),
         hasSystemSettings: !!data.system_settings,
         hasGroups: !!data.groups,
         systemSettingsType: typeof data.system_settings,
-        groupsType: Array.isArray(data.groups) ? 'array' : typeof data.groups,
+        groupsType: Array.isArray(data.groups) ? "array" : typeof data.groups,
         systemSettingsKeys: data.system_settings ? Object.keys(data.system_settings) : [],
-        groupsLength: Array.isArray(data.groups) ? data.groups.length : 'not array',
+        groupsLength: Array.isArray(data.groups) ? data.groups.length : "not array",
       });
     }
 
     // 判断导入数据类型 - 更宽松的判断
-    const hasSystemSettings = data.system_settings && typeof data.system_settings === 'object';
+    const hasSystemSettings = data.system_settings && typeof data.system_settings === "object";
     const hasGroups = data.groups && Array.isArray(data.groups);
     const systemSettingsCount = hasSystemSettings ? Object.keys(data.system_settings).length : 0;
     const groupsCount = hasGroups ? data.groups.length : 0;
 
     // 如果同时有系统设置和分组（即使其中一个是空的），使用全量导入
-    if ((hasSystemSettings && systemSettingsCount > 0) && (hasGroups && groupsCount > 0)) {
+    if (hasSystemSettings && systemSettingsCount > 0 && hasGroups && groupsCount > 0) {
       dialog.warning({
-        title: t('settings.importSystem'),
-        content: t('settings.importSystemWithGroups'),
-        positiveText: t('settings.importBoth'),
-        negativeText: t('common.cancel'),
-        onPositiveClick: async () => {
-          try {
-            // 使用全量导入
-            await settingsApi.importAll(data);
-            message.success(t('settings.importSuccess'));
-            await fetchSettings();
-          } catch (error: any) {
-            message.error(error.message || t('settings.importFailed'));
+        title: t("settings.importSystem"),
+        content: t("settings.importSystemWithGroups"),
+        positiveText: t("settings.importBoth"),
+        negativeText: t("common.cancel"),
+        onPositiveClick: () => {
+          if (isImporting.value) {
+            message.warning(t("settings.importInProgress"));
+            return false;
           }
-        }
+
+          // Close dialog immediately and start import
+          isImporting.value = true;
+          message.loading(t("settings.importingSystem"), { duration: 0 });
+
+          // Execute import asynchronously after dialog closes
+          setTimeout(async () => {
+            try {
+              await settingsApi.importAll(data);
+              message.destroyAll();
+              message.success(t("settings.importSuccess"));
+              await fetchSettings();
+            } catch (error: unknown) {
+              message.destroyAll();
+              const errorMessage =
+                error instanceof Error ? error.message : t("settings.importFailed");
+              message.error(errorMessage);
+            } finally {
+              isImporting.value = false;
+            }
+          }, 100);
+
+          return true; // Close dialog immediately
+        },
       });
     } else if (hasSystemSettings && systemSettingsCount > 0) {
       // 仅系统设置
       dialog.info({
-        title: t('settings.importSystemSettings'),
-        content: t('settings.importSystemSettingsConfirm'),
-        positiveText: t('common.confirm'),
-        negativeText: t('common.cancel'),
-        onPositiveClick: async () => {
-          try {
-            await settingsApi.importSystemSettings({ system_settings: data.system_settings });
-            message.success(t('settings.importSuccess'));
-            await fetchSettings();
-          } catch (error: any) {
-            message.error(error.message || t('settings.importFailed'));
+        title: t("settings.importSystemSettings"),
+        content: t("settings.importSystemSettingsConfirm"),
+        positiveText: t("common.confirm"),
+        negativeText: t("common.cancel"),
+        onPositiveClick: () => {
+          if (isImporting.value) {
+            message.warning(t("settings.importInProgress"));
+            return false;
           }
-        }
+
+          // Close dialog immediately and start import
+          isImporting.value = true;
+          message.loading(t("settings.importingSettings"), { duration: 0 });
+
+          // Execute import asynchronously after dialog closes
+          setTimeout(async () => {
+            try {
+              await settingsApi.importSystemSettings({ system_settings: data.system_settings });
+              message.destroyAll();
+              message.success(t("settings.importSuccess"));
+              await fetchSettings();
+            } catch (error: unknown) {
+              message.destroyAll();
+              const errorMessage =
+                error instanceof Error ? error.message : t("settings.importFailed");
+              message.error(errorMessage);
+            } finally {
+              isImporting.value = false;
+            }
+          }, 100);
+
+          return true; // Close dialog immediately
+        },
       });
     } else if (hasGroups && groupsCount > 0) {
       // 仅分组
       dialog.info({
-        title: t('settings.importGroups'),
-        content: t('settings.importGroupsConfirm', { count: groupsCount }),
-        positiveText: t('common.confirm'),
-        negativeText: t('common.cancel'),
-        onPositiveClick: async () => {
-          try {
-            await settingsApi.importGroupsBatch({ groups: data.groups });
-            message.success(t('settings.importSuccess'));
-          } catch (error: any) {
-            message.error(error.message || t('settings.importFailed'));
+        title: t("settings.importGroups"),
+        content: t("settings.importGroupsConfirm", { count: groupsCount }),
+        positiveText: t("common.confirm"),
+        negativeText: t("common.cancel"),
+        onPositiveClick: () => {
+          if (isImporting.value) {
+            message.warning(t("settings.importInProgress"));
+            return false;
           }
-        }
+
+          // Close dialog immediately and start import
+          isImporting.value = true;
+          message.loading(t("settings.importingGroups"), { duration: 0 });
+
+          // Execute import asynchronously after dialog closes
+          setTimeout(async () => {
+            try {
+              await settingsApi.importGroupsBatch({ groups: data.groups });
+              message.destroyAll();
+              message.success(t("settings.importSuccess"));
+            } catch (error: unknown) {
+              message.destroyAll();
+              const errorMessage =
+                error instanceof Error ? error.message : t("settings.importFailed");
+              message.error(errorMessage);
+            } finally {
+              isImporting.value = false;
+            }
+          }, 100);
+
+          return true; // Close dialog immediately
+        },
       });
     } else if (hasSystemSettings || hasGroups) {
       // 有字段但都为空，使用全量导入
       dialog.info({
-        title: t('settings.importSystem'),
-        content: t('settings.importSystemConfirm'),
-        positiveText: t('common.confirm'),
-        negativeText: t('common.cancel'),
-        onPositiveClick: async () => {
-          try {
-            await settingsApi.importAll(data);
-            message.success(t('settings.importSuccess'));
-            await fetchSettings();
-          } catch (error: any) {
-            message.error(error.message || t('settings.importFailed'));
+        title: t("settings.importSystem"),
+        content: t("settings.importSystemConfirm"),
+        positiveText: t("common.confirm"),
+        negativeText: t("common.cancel"),
+        onPositiveClick: () => {
+          if (isImporting.value) {
+            message.warning(t("settings.importInProgress"));
+            return false;
           }
-        }
+
+          // Close dialog immediately and start import
+          isImporting.value = true;
+          message.loading(t("settings.importingSystem"), { duration: 0 });
+
+          // Execute import asynchronously after dialog closes
+          setTimeout(async () => {
+            try {
+              await settingsApi.importAll(data);
+              message.destroyAll();
+              message.success(t("settings.importSuccess"));
+              await fetchSettings();
+            } catch (error: unknown) {
+              message.destroyAll();
+              const errorMessage =
+                error instanceof Error ? error.message : t("settings.importFailed");
+              message.error(errorMessage);
+            } finally {
+              isImporting.value = false;
+            }
+          }, 100);
+
+          return true; // Close dialog immediately
+        },
       });
     } else {
       // 无效的导入文件
-      console.error('Invalid import file structure:', data);
-      message.error(t('settings.invalidImportFile') + ': 文件格式不正确，缺少 system_settings 或 groups 字段');
+      console.error("Invalid import file structure:", data);
+      message.error(
+        `${t("settings.invalidImportFile")}: 文件格式不正确，缺少 system_settings 或 groups 字段`
+      );
     }
-  } catch (error: any) {
-    console.error('Import error:', error);
-    message.error(t('settings.invalidImportFile') + ': ' + (error.message || '未知错误'));
+  } catch (error: unknown) {
+    console.error("Import error:", error);
+    const errorMessage = error instanceof Error ? error.message : "未知错误";
+    message.error(`${t("settings.invalidImportFile")}: ${errorMessage}`);
   } finally {
     // 清空文件输入，允许重复选择同一文件
-    target.value = '';
+    target.value = "";
   }
 }
+
+// ============ Debug Mode: Delete All Groups ============
+// This is a dangerous operation that should only be used for testing/debugging
+// Requires DEBUG_MODE environment variable to be enabled on the server
+const isDeletingAllGroups = ref(false);
+
+/**
+ * Handle delete all groups with multiple confirmations
+ * This function implements a three-step confirmation process to prevent accidental deletion:
+ * 1. First warning dialog explaining the danger
+ * 2. Second confirmation requiring typing "DELETE ALL"
+ * 3. Final confirmation before actual deletion
+ */
+function handleDeleteAllGroups() {
+  // First confirmation: Warning dialog
+  dialog.warning({
+    title: `⚠️ ${t("settings.dangerZone")}`,
+    content: t("settings.deleteAllGroupsWarning"),
+    positiveText: t("common.confirm"),
+    negativeText: t("common.cancel"),
+    onPositiveClick: () => {
+      // Second confirmation: Require typing confirmation text
+      showDeleteAllGroupsConfirmation();
+    },
+  });
+}
+
+/**
+ * Show second confirmation dialog requiring user to type "DELETE ALL"
+ * Uses a simpler approach with validation in the callback
+ */
+function showDeleteAllGroupsConfirmation() {
+  let confirmText = "";
+  const REQUIRED_TEXT = "DELETE ALL";
+
+  dialog.warning({
+    title: `⚠️⚠️ ${t("settings.finalWarning")}`,
+    content: () => {
+      return h("div", [
+        h(
+          "p",
+          { style: "margin-bottom: 12px; color: #d03050; font-weight: bold;" },
+          t("settings.deleteAllGroupsConfirmText")
+        ),
+        h(
+          "p",
+          { style: "margin-bottom: 12px;" },
+          t("settings.typeToConfirm", { text: REQUIRED_TEXT })
+        ),
+        h(
+          "p",
+          { style: "margin-bottom: 8px; font-size: 12px; color: #666;" },
+          t("settings.caseSensitiveWarning")
+        ),
+        h(NInput, {
+          defaultValue: "",
+          onUpdateValue: (val: string) => {
+            confirmText = val;
+          },
+          placeholder: REQUIRED_TEXT,
+          style: "margin-top: 8px;",
+          autofocus: true,
+        }),
+      ]);
+    },
+    positiveText: t("settings.deleteAllGroups"),
+    negativeText: t("common.cancel"),
+    positiveButtonProps: {
+      type: "error",
+    },
+    onPositiveClick: () => {
+      // Validate the input text
+      if (confirmText.trim() !== REQUIRED_TEXT) {
+        message.error(t("settings.confirmTextMismatch"));
+        return false; // Prevent dialog from closing
+      }
+      // Proceed with deletion
+      performDeleteAllGroups();
+      return true; // Allow dialog to close
+    },
+  });
+}
+
+/**
+ * Perform the actual deletion of all groups
+ * This is the final step after all confirmations
+ */
+async function performDeleteAllGroups() {
+  if (isDeletingAllGroups.value) {
+    return;
+  }
+
+  try {
+    isDeletingAllGroups.value = true;
+
+    // Import keysApi to access deleteAllGroups method
+    const { keysApi } = await import("@/api/keys");
+
+    await keysApi.deleteAllGroups();
+    message.success(t("groups.allGroupsDeletedSuccess"));
+
+    // Optionally refresh the page or redirect
+    setTimeout(() => {
+      window.location.reload();
+    }, 1500);
+  } catch (error: unknown) {
+    console.error("Delete all groups error:", error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage?.includes("DEBUG_MODE")) {
+      message.error(t("groups.debugModeRequired"));
+    } else {
+      message.error(errorMessage || t("settings.deleteAllGroupsFailed"));
+    }
+  } finally {
+    isDeletingAllGroups.value = false;
+  }
+}
+
+// Check if debug mode is enabled by checking if the endpoint is accessible
+// We'll show the button only if we can detect debug mode is enabled
+const isDebugModeEnabled = ref(false);
+
+// Check if debug mode is enabled from server
+async function checkDebugMode() {
+  try {
+    const response = await http.get<{ debug_mode: boolean }>("/system/environment");
+    // API response format: { code: 0, message: "success", data: { debug_mode: true } }
+    // http.get returns the full ApiResponse, so we need to access response.data
+    isDebugModeEnabled.value = response.data?.debug_mode === true;
+  } catch (error) {
+    console.error("Failed to check debug mode:", error);
+    isDebugModeEnabled.value = false;
+  }
+}
+
+checkDebugMode();
 </script>
 
 <template>
@@ -350,7 +583,7 @@ async function handleSystemFileChange(event: Event) {
       <n-button
         type="info"
         size="large"
-        :disabled="isSaving"
+        :disabled="isSaving || isImporting"
         @click="handleExportAll"
         style="min-width: 200px"
       >
@@ -362,16 +595,63 @@ async function handleSystemFileChange(event: Event) {
       <n-button
         type="warning"
         size="large"
-        :disabled="isSaving"
+        :loading="isImporting"
+        :disabled="isSaving || isImporting"
         @click="handleSystemImportClick"
         style="min-width: 200px"
       >
         <template #icon>
           <n-icon :component="CloudUploadOutline" />
         </template>
-        {{ t("settings.importSystem") }}
+        {{ isImporting ? t("settings.importing") : t("settings.importSystem") }}
       </n-button>
     </div>
+
+    <!-- Danger Zone: Debug Mode Only -->
+    <n-card
+      v-if="isDebugModeEnabled"
+      size="small"
+      title="⚠️ Danger Zone (Debug Mode Only)"
+      style="margin-top: 24px; border: 2px solid #d03050"
+      :segmented="{
+        content: true,
+        footer: 'soft',
+      }"
+    >
+      <template #header-extra>
+        <n-tooltip trigger="hover" placement="top">
+          <template #trigger>
+            <n-icon :component="HelpCircle" :size="18" style="cursor: help; color: #d03050" />
+          </template>
+          {{ t("settings.debugModeOnlyFeature") }}
+        </n-tooltip>
+      </template>
+
+      <n-space vertical :size="12">
+        <div style="color: #d03050; font-weight: bold">
+          {{ t("settings.dangerZoneWarning") }}
+        </div>
+        <div style="color: #666">
+          {{ t("settings.dangerZoneDescription") }}
+        </div>
+      </n-space>
+
+      <template #footer>
+        <div style="display: flex; justify-content: center">
+          <n-button
+            type="error"
+            size="large"
+            :loading="isDeletingAllGroups"
+            :disabled="isDeletingAllGroups || isSaving"
+            @click="handleDeleteAllGroups"
+            style="min-width: 250px"
+            secondary
+          >
+            {{ t("settings.deleteAllGroups") }}
+          </n-button>
+        </div>
+      </template>
+    </n-card>
 
     <!-- 隐藏的文件输入 -->
     <input

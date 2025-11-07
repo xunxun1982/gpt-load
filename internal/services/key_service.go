@@ -259,6 +259,19 @@ func (s *KeyService) ClearAllKeys(groupID uint) (int64, error) {
 	return s.KeyProvider.RemoveAllKeys(groupID)
 }
 
+// ResetGroupActiveKeysFailureCount resets failure_count to 0 for all active keys in a specific group.
+// This is useful when importing a group, treating it as a fresh import.
+func (s *KeyService) ResetGroupActiveKeysFailureCount(groupID uint) (int64, error) {
+	return s.KeyProvider.ResetGroupActiveKeysFailureCount(groupID)
+}
+
+// ResetAllActiveKeysFailureCount resets failure_count to 0 for all active keys across all groups.
+// This is useful when system configuration changes (e.g., blacklist_threshold) and we want to
+// reset the failure history to avoid immediate blacklisting with new thresholds.
+func (s *KeyService) ResetAllActiveKeysFailureCount() (int64, error) {
+	return s.KeyProvider.ResetAllActiveKeysFailureCount()
+}
+
 // DeleteMultipleKeys handles the business logic of deleting keys from a text block.
 func (s *KeyService) DeleteMultipleKeys(groupID uint, keysText string) (*DeleteKeysResult, error) {
 	keysToDelete := s.ParseKeysFromText(keysText)

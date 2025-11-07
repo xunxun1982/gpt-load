@@ -212,15 +212,23 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 		defer queryWg.Done()
 		defer close(jobs)
 
-		offset := 0
+		var lastID uint = 0
 		for {
 			var batchKeys []models.APIKey
-			err := s.DB.Select("id, group_id, key_value, status").
+			// Use cursor-based pagination instead of OFFSET for better performance
+			// OFFSET becomes very slow with large datasets (30+ seconds for OFFSET 3000)
+			// Cursor-based pagination using "WHERE id > lastID" is much faster
+			query := s.DB.Select("id, group_id, key_value, status").
 				Where("group_id = ? AND status = ?", group.ID, models.KeyStatusInvalid).
-				Order("id ASC"). // Consistent ordering for pagination
-				Limit(batchSize).
-				Offset(offset).
-				Find(&batchKeys).Error
+				Order("id ASC").
+				Limit(batchSize)
+
+			// Add cursor condition for subsequent batches
+			if lastID > 0 {
+				query = query.Where("id > ?", lastID)
+			}
+
+			err := query.Find(&batchKeys).Error
 
 			if err != nil {
 				logrus.Errorf("CronChecker: Failed to get invalid keys for group %s: %v", group.Name, err)
@@ -240,7 +248,8 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 				}
 			}
 
-			offset += len(batchKeys)
+			// Update cursor to last processed ID
+			lastID = batchKeys[len(batchKeys)-1].ID
 
 			// If we got fewer than batchSize, we've reached the end
 			if len(batchKeys) < batchSize {

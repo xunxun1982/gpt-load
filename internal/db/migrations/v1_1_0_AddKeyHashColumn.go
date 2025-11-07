@@ -51,28 +51,31 @@ func V1_1_0_AddKeyHashColumn(db *gorm.DB) error {
 			break
 		}
 
-		// Build CASE WHEN statement for batch update
+		// Build CASE WHEN statement for batch update with parameterized queries
+		// This prevents SQL injection and handles special characters in hashes
 		var caseWhen strings.Builder
-		var ids []interface{}
+		args := make([]interface{}, 0, len(apiKeys)*3)
+		ids := make([]interface{}, 0, len(apiKeys))
 
 		caseWhen.WriteString("UPDATE api_keys SET key_hash = CASE id ")
 		for _, key := range apiKeys {
 			keyHash := encSvc.Hash(key.KeyValue)
-			caseWhen.WriteString(fmt.Sprintf("WHEN %d THEN '%s' ", key.ID, keyHash))
+			caseWhen.WriteString("WHEN ? THEN ? ")
+			args = append(args, key.ID, keyHash)
 			ids = append(ids, key.ID)
 		}
 		caseWhen.WriteString("END, updated_at = CURRENT_TIMESTAMP WHERE id IN (")
-
-		// Add placeholders for IN clause
-		placeholders := make([]string, len(ids))
-		for i := range placeholders {
-			placeholders[i] = "?"
+		for i := range ids {
+			if i > 0 {
+				caseWhen.WriteString(",")
+			}
+			caseWhen.WriteString("?")
 		}
-		caseWhen.WriteString(strings.Join(placeholders, ","))
 		caseWhen.WriteString(")")
+		args = append(args, ids...)
 
-		// Execute batch update
-		err := db.Exec(caseWhen.String(), ids...).Error
+		// Execute batch update with parameterized query
+		err := db.Exec(caseWhen.String(), args...).Error
 		if err != nil {
 			logrus.WithError(err).Error("Failed to update batch of key_hash")
 			return err

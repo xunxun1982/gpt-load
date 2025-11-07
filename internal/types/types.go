@@ -11,6 +11,7 @@ type ConfigManager interface {
 	GetEncryptionKey() string
 	GetEffectiveServerConfig() ServerConfig
 	GetRedisDSN() string
+	IsDebugMode() bool
 	Validate() error
 	DisplayServerConfig()
 	ReloadConfig() error

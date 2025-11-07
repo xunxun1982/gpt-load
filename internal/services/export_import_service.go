@@ -2,6 +2,8 @@ package services
 
 import (
 	"fmt"
+	"strings"
+
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
@@ -284,11 +286,17 @@ func (s *ExportImportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 
 		keyHash := s.encryptionService.Hash(decryptedKey)
 
+		// Import keys with clean state:
+		// - Always set status to "active" for fresh start (ignore exported status)
+		// - Always set FailureCount to 0 for fresh start (ignore exported failure_count)
+		// This ensures imported keys start fresh without carrying over failure history
+		// This prevents immediate blacklisting by CronChecker after import
 		keyModels = append(keyModels, models.APIKey{
-			GroupID:  groupID,
-			KeyValue: keyInfo.KeyValue, // Keep encrypted value
-			KeyHash:  keyHash,
-			Status:   keyInfo.Status,
+			GroupID:      groupID,
+			KeyValue:     keyInfo.KeyValue,           // Keep encrypted value
+			KeyHash:      keyHash,                    // Calculated hash
+			Status:       models.KeyStatusActive,     // Always start as active
+			FailureCount: 0,                          // Always reset to 0 for fresh start
 		})
 	}
 
@@ -386,10 +394,24 @@ func (s *ExportImportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 		return 0, err
 	}
 
-	// Create the group
+	// Create the group with cleaned configuration
 	newGroup := data.Group
 	newGroup.ID = 0 // Reset ID for new record
 	newGroup.Name = groupName
+
+	// Clean Config values to remove leading/trailing whitespace
+	// This fixes issues like ' http://...' which cause URL parsing errors
+	if newGroup.Config != nil {
+		cleanedConfig := make(map[string]any)
+		for key, value := range newGroup.Config {
+			if strValue, ok := value.(string); ok {
+				cleanedConfig[key] = strings.TrimSpace(strValue)
+			} else {
+				cleanedConfig[key] = value
+			}
+		}
+		newGroup.Config = cleanedConfig
+	}
 
 	if err := tx.Create(&newGroup).Error; err != nil {
 		return 0, fmt.Errorf("failed to create group: %w", err)
@@ -546,17 +568,21 @@ func (s *ExportImportService) ImportSystem(tx *gorm.DB, data *SystemExportData) 
 
 	logrus.Infof("Starting system import: %d settings, %d groups", settingsCount, groupsCount)
 
-	// Import system settings - ensure they are properly updated
+	// Import system settings - ensure they are properly updated and cleaned
 	updatedSettings := 0
 	createdSettings := 0
 
 	for key, value := range data.SystemSettings {
+		// Clean the value to remove leading/trailing whitespace
+		// This fixes issues like ' http://...' which cause URL parsing errors
+		cleanedValue := strings.TrimSpace(value)
+
 		var setting models.SystemSetting
 		if err := tx.Where("setting_key = ?", key).First(&setting).Error; err == nil {
 			// Update existing setting
 			// Use Updates instead of Update to ensure all fields are updated
 			if err := tx.Model(&setting).Updates(map[string]interface{}{
-				"setting_value": value,
+				"setting_value": cleanedValue,
 				"updated_at":    time.Now(),
 			}).Error; err != nil {
 				return fmt.Errorf("failed to update setting %s: %w", key, err)
@@ -567,7 +593,7 @@ func (s *ExportImportService) ImportSystem(tx *gorm.DB, data *SystemExportData) 
 			// Create new setting
 			setting = models.SystemSetting{
 				SettingKey:   key,
-				SettingValue: value,
+				SettingValue: cleanedValue,
 			}
 			if err := tx.Create(&setting).Error; err != nil {
 				return fmt.Errorf("failed to create setting %s: %w", key, err)

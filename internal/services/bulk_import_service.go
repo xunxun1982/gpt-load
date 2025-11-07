@@ -79,19 +79,18 @@ func (s *BulkImportService) initializeOptimizations() {
 }
 
 // initializeSQLiteOptimizations applies SQLite-specific optimizations
+// Note: Only applies safe, global optimizations. Transaction-specific settings
+// are applied within the transaction scope in BulkInsertAPIKeysWithTx
 func (s *BulkImportService) initializeSQLiteOptimizations() {
-	// Apply SQLite-specific PRAGMA optimizations for bulk operations
+	// Apply only safe, global SQLite PRAGMA optimizations
+	// Do NOT disable foreign_keys, synchronous, or other safety features globally
 	pragmas := []string{
 		"PRAGMA cache_size = 20000",        // Increase cache to 20000 pages (~80MB with 4KB pages)
 		"PRAGMA temp_store = MEMORY",       // Use memory for temporary tables
 		"PRAGMA journal_mode = WAL",        // Ensure WAL mode is enabled
-		"PRAGMA synchronous = OFF",         // Disable sync for maximum speed during import
 		"PRAGMA page_size = 4096",         // Optimal page size
 		"PRAGMA mmap_size = 30000000000",  // 30GB memory mapping
 		"PRAGMA busy_timeout = 30000",     // 30 second busy timeout
-		"PRAGMA foreign_keys = OFF",       // Temporarily disable foreign key checks for import
-		"PRAGMA locking_mode = EXCLUSIVE",  // Exclusive locking for better performance
-		"PRAGMA cache_spill = OFF",        // Don't spill cache to disk during import
 		"PRAGMA wal_autocheckpoint = 10000", // Less frequent WAL checkpoints
 	}
 
@@ -103,43 +102,28 @@ func (s *BulkImportService) initializeSQLiteOptimizations() {
 }
 
 // initializeMySQLOptimizations applies MySQL-specific optimizations
+// Note: Only applies safe, global optimizations. Transaction-specific settings
+// are applied within the transaction scope in BulkInsertAPIKeysWithTx
 func (s *BulkImportService) initializeMySQLOptimizations() {
-	// Apply MySQL-specific optimizations for bulk operations
-	optimizations := []string{
-		"SET autocommit = 0",                           // Disable autocommit for bulk operations
-		"SET unique_checks = 0",                        // Temporarily disable unique checks
-		"SET foreign_key_checks = 0",                   // Temporarily disable foreign key checks
-		"SET sql_log_bin = 0",                         // Disable binary logging if allowed
-		"SET SESSION bulk_insert_buffer_size = 256*1024*1024", // 256MB buffer for bulk inserts
-	}
-
-	for _, opt := range optimizations {
-		if err := s.db.Exec(opt).Error; err != nil {
-			// Some settings might fail due to permissions, log but continue
-			logrus.Debugf("MySQL optimization setting failed (may be permission issue): %s, error: %v", opt, err)
-		}
-	}
-
-	// Check and potentially increase max_allowed_packet
+	// Check max_allowed_packet for information only
+	// Do NOT disable autocommit, unique_checks, or foreign_key_checks globally
 	var maxAllowedPacket int64
 	s.db.Raw("SELECT @@max_allowed_packet").Scan(&maxAllowedPacket)
 	logrus.Infof("MySQL max_allowed_packet: %d bytes", maxAllowedPacket)
+
+	// Note: Transaction-specific optimizations like disabling checks
+	// should be applied within the transaction scope, not globally
 }
 
 // initializePostgresOptimizations applies PostgreSQL-specific optimizations
+// Note: Only applies safe, global optimizations. Transaction-specific settings
+// are applied within the transaction scope in BulkInsertAPIKeysWithTx
 func (s *BulkImportService) initializePostgresOptimizations() {
 	// PostgreSQL optimizations are typically set at session level
 	// Most optimizations are handled by GORM's transaction management
+	// Do NOT disable synchronous_commit globally as it affects all connections
 
-	// Disable synchronous_commit for this session (if permissions allow)
-	if err := s.db.Exec("SET synchronous_commit = OFF").Error; err != nil {
-		logrus.Debugf("PostgreSQL optimization setting failed: synchronous_commit, error: %v", err)
-	}
-
-	// Increase work_mem for better sorting/hashing performance
-	if err := s.db.Exec("SET work_mem = '256MB'").Error; err != nil {
-		logrus.Debugf("PostgreSQL optimization setting failed: work_mem, error: %v", err)
-	}
+	logrus.Debug("PostgreSQL bulk import will use transaction-scoped optimizations")
 }
 
 // setDefaultBatchSizes sets optimal batch sizes based on database type
@@ -239,9 +223,6 @@ func (s *BulkImportService) BulkInsertAPIKeys(keys []models.APIKey) error {
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("failed to commit bulk insert transaction: %w", err)
 	}
-
-	// Re-enable constraints
-	s.restoreConstraints()
 
 	return nil
 }
@@ -352,25 +333,13 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 	return nil
 }
 
-// restoreConstraints re-enables database constraints after bulk import
+// restoreConstraints is deprecated and should not be used
+// All constraint modifications should be transaction-scoped
+// This method is kept for backward compatibility but does nothing
 func (s *BulkImportService) restoreConstraints() {
-	switch s.dbType {
-	case "sqlite":
-		s.db.Exec("PRAGMA foreign_keys = ON")
-		s.db.Exec("PRAGMA synchronous = NORMAL")  // Restore safe synchronous mode
-		s.db.Exec("PRAGMA locking_mode = NORMAL") // Restore normal locking
-		s.db.Exec("PRAGMA cache_spill = ON")      // Re-enable cache spill
-		s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)") // Checkpoint WAL file
-
-	case "mysql":
-		s.db.Exec("SET foreign_key_checks = 1")
-		s.db.Exec("SET unique_checks = 1")
-		s.db.Exec("SET autocommit = 1")
-
-	case "postgres":
-		// PostgreSQL constraints are transaction-scoped, automatically restored
-		s.db.Exec("SET synchronous_commit = ON")
-	}
+	// No-op: All optimizations are now transaction-scoped
+	// Constraints are automatically restored when transaction commits/rollbacks
+	logrus.Debug("restoreConstraints called but no action needed (transaction-scoped optimizations)")
 }
 
 // BulkInsertGeneric performs optimized bulk insert for any model type
@@ -418,8 +387,6 @@ func (s *BulkImportService) BulkInsertGeneric(records interface{}, recordCount i
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("failed to commit bulk insert transaction: %w", err)
 	}
-
-	s.restoreConstraints()
 
 	return nil
 }

@@ -56,6 +56,13 @@ func (s *Server) GetSettings(c *gin.Context) {
 	response.Success(c, responseData)
 }
 
+// GetEnvironmentInfo returns environment-specific information like DEBUG_MODE status
+func (s *Server) GetEnvironmentInfo(c *gin.Context) {
+	response.Success(c, gin.H{
+		"debug_mode": s.config.IsDebugMode(),
+	})
+}
+
 // UpdateSettings handles the PUT /api/settings request.
 func (s *Server) UpdateSettings(c *gin.Context) {
 	var settingsMap map[string]any

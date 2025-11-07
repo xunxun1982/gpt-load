@@ -474,6 +474,22 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		}
 	}
 
+	// Reset failure_count for all active keys in each successfully imported group asynchronously
+	// This treats each import as a fresh start, clearing any historical failure counts
+	// Run asynchronously to avoid blocking the HTTP response (can take minutes for large groups)
+	go func(groups []models.Group) {
+		for _, group := range groups {
+			resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(group.ID)
+			if resetErr != nil {
+				logrus.WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d (%s)",
+					group.ID, group.Name)
+			} else if resetCount > 0 {
+				logrus.Infof("Reset failure_count for %d active keys in imported group %d (%s)",
+					resetCount, group.ID, group.Name)
+			}
+		}
+	}(importedGroups)
+
 	// Convert imported groups to response format
 	groupResponses := make([]interface{}, 0, len(importedGroups))
 	for _, group := range importedGroups {
@@ -496,7 +512,7 @@ func convertSettingsMap(stringMap map[string]string) (map[string]any, error) {
 	v := reflect.ValueOf(&tempSettings).Elem()
 	t := v.Type()
 	jsonToField := make(map[string]reflect.StructField)
-	for i := range t.NumField() {
+	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
 		if jsonTag != "" && jsonTag != "-" {

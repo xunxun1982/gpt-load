@@ -182,6 +182,7 @@ var MessagesJaJP = map[string]string{
 	"error.delete_group_cache":       "グループの削除に失敗: キャッシュをクリーンアップできません",
 	"error.decrypt_key_copy":         "グループコピー中のキー復号化に失敗、スキップします",
 	"error.start_import_task":        "グループコピー用の非同期キーインポートタスクの開始に失敗しました",
+	"error.debug_mode_required":      "この操作にはDEBUG_MODEを有効にする必要があります",
 	"error.export_logs":              "ログのエクスポートに失敗しました",
 
 	// Login related
@@ -198,6 +199,7 @@ var MessagesJaJP = map[string]string{
 	"success.sub_group_deleted":        "サブグループが正常に削除されました",
 	"success.group_enabled":            "グループが有効化されました",
 	"success.group_disabled":           "グループが無効化されました",
+	"success.all_groups_deleted":       "すべてのグループが削除されました",
 	"success.group_imported":           "グループが正常にインポートされました",
 	"success.system_imported":          "システム設定が正常にインポートされました",
 	"group.not_aggregate":              "グループはアグリゲートグループではありません",

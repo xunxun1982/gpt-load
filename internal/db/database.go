@@ -63,7 +63,12 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		// cache_size: Larger cache for better performance
 		// temp_store=MEMORY: Use memory for temp tables
 		// mmap_size: Memory mapping for faster reads
-		dialector = sqlite.Open(dsn + "?_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&cache=shared&_cache_size=10000&_temp_store=MEMORY")
+		params := "_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&cache=shared&_cache_size=10000&_temp_store=MEMORY"
+		delimiter := "?"
+		if strings.Contains(dsn, "?") {
+			delimiter = "&"
+		}
+		dialector = sqlite.Open(dsn + delimiter + params)
 	}
 
 	var err error

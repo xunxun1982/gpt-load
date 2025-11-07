@@ -349,8 +349,15 @@ function handleExportGroup(group: Group, event: Event) {
   });
 }
 
+// Import state management
+const isImporting = ref(false);
+
 // 触发文件选择（分组导入）
 function handleImportClick() {
+  if (isImporting.value) {
+    message.warning(t("keys.importInProgress"));
+    return;
+  }
   fileInputRef.value?.click();
 }
 
@@ -373,15 +380,36 @@ async function handleFileChange(event: Event) {
       content: t("keys.importGroupConfirm", { name: data.group?.name || "Unknown" }),
       positiveText: t("common.confirm"),
       negativeText: t("common.cancel"),
-      onPositiveClick: async () => {
-        try {
-          await keysApi.importGroup(data);
-          message.success(t("keys.importSuccess"));
-          emit("refresh");
-        } catch (error: unknown) {
-          const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");
-          message.error(errorMessage);
+      onPositiveClick: () => {
+        // Prevent duplicate imports
+        if (isImporting.value) {
+          message.warning(t("keys.importInProgress"));
+          return false; // Keep dialog open
         }
+
+        // Close dialog immediately and start import
+        isImporting.value = true;
+        const loadingMessage = message.loading(t("keys.importing"), {
+          duration: 0, // Don't auto-close
+        });
+
+        // Execute import asynchronously after dialog closes
+        setTimeout(async () => {
+          try {
+            await keysApi.importGroup(data);
+            loadingMessage.destroy();
+            message.success(t("keys.importSuccess"));
+            emit("refresh");
+          } catch (error: unknown) {
+            loadingMessage.destroy();
+            const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");
+            message.error(errorMessage);
+          } finally {
+            isImporting.value = false;
+          }
+        }, 100); // Small delay to ensure dialog closes first
+
+        return true; // Close dialog immediately
       },
     });
   } catch (error) {

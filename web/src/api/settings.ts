@@ -30,46 +30,34 @@ export const settingsApi = {
     return response.data || [];
   },
 
-  // ============ 系统全量导入导出 ============
+  // ============ System Import/Export ============
 
-  // 导出系统全量配置
+  // Export full system configuration
   async exportAll(): Promise<void> {
     try {
       const response = await http.get("/system/export", { hideMessage: true });
 
-      // 处理响应格式：响应拦截器已经返回了 response.data，所以 response 就是数据对象
-      // 但如果数据被包装在 { code, message, data } 格式中，需要提取 data
-      let exportData: any = response;
-      if (response && typeof response === 'object' && 'data' in response) {
-        const resp = response as any;
-        if (resp.data && typeof resp.data === 'object' &&
-            (resp.code !== undefined || resp.message !== undefined)) {
-          // 如果响应是标准的 { code, message, data } 格式，提取 data
-          exportData = resp.data;
-        }
-      }
+      // Response interceptor already returns response.data, use it directly
+      const jsonStr = JSON.stringify(response, null, 2);
 
-      // 将数据转换为 JSON 字符串
-      const jsonStr = JSON.stringify(exportData, null, 2);
-
-      // 创建 Blob 对象
+      // Create Blob object
       const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8" });
 
-      // 生成文件名
+      // Generate filename
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const filename = `system_export_${timestamp}.json`;
 
-      // 创建下载链接
+      // Create download link
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
       link.download = filename;
 
-      // 触发下载
+      // Trigger download
       document.body.appendChild(link);
       link.click();
 
-      // 清理
+      // Cleanup
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
     } catch (error) {
@@ -78,20 +66,23 @@ export const settingsApi = {
     }
   },
 
-  // 导入系统全量配置
+  // Import full system configuration
   async importAll(data: unknown): Promise<void> {
-    await http.post("/system/import", data);
+    // Use longer timeout for large imports (5 minutes)
+    await http.post("/system/import", data, { timeout: 300000 });
   },
 
-  // ============ 分离的导入功能 ============
+  // ============ Separated Import Functions ============
 
-  // 导入系统设置（仅系统设置，会强制刷新缓存）
+  // Import system settings only (will force cache refresh)
   async importSystemSettings(data: { system_settings: Record<string, string> }): Promise<void> {
+    // System settings import is usually fast, use default timeout
     await http.post("/system/import-settings", data);
   },
 
-  // 批量导入分组
+  // Batch import groups
   async importGroupsBatch(data: { groups: unknown[] }): Promise<void> {
-    await http.post("/system/import-groups-batch", data);
+    // Use longer timeout for large batch imports (5 minutes)
+    await http.post("/system/import-groups-batch", data, { timeout: 300000 });
   },
 };

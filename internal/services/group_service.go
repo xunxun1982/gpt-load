@@ -427,14 +427,6 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 // DeleteGroup removes a group and associated resources.
 func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
-	// Only query key IDs, not all fields
-	var keyIDs []uint
-	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
-		Where("group_id = ?", id).
-		Pluck("id", &keyIDs).Error; err != nil {
-		return app_errors.ParseDBError(err)
-	}
-
 	tx := s.db.WithContext(ctx).Begin()
 	if err := tx.Error; err != nil {
 		return app_errors.ErrDatabase
@@ -447,6 +439,14 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 
 	var group models.Group
 	if err := tx.First(&group, id).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
+	// Query key IDs inside transaction to avoid race conditions
+	var keyIDs []uint
+	if err := tx.Model(&models.APIKey{}).
+		Where("group_id = ?", id).
+		Pluck("id", &keyIDs).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
 
@@ -516,6 +516,134 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
 
+	return nil
+}
+
+// DeleteAllGroups removes all groups and their associated resources.
+// This is a dangerous operation intended for debugging and testing purposes only.
+// It should only be accessible when DEBUG_MODE environment variable is enabled.
+//
+// The operation performs the following steps:
+// 1. Deletes all sub-group relationships
+// 2. Deletes all API keys in batches to avoid long-running transactions
+// 3. Deletes all groups
+// 4. Clears the key store cache
+// 5. Invalidates the group cache
+//
+// Returns an error if any database operation fails.
+func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
+	logrus.WithContext(ctx).Warn("DeleteAllGroups called - this will remove ALL groups and keys")
+
+	// Step 1: Get key IDs before deletion for cache cleanup
+	// Do this outside transaction for better performance
+	var keyIDs []uint
+	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).Pluck("id", &keyIDs).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to query key IDs")
+		return app_errors.ParseDBError(err)
+	}
+
+	totalKeys := len(keyIDs)
+	logrus.WithContext(ctx).WithField("totalKeys", totalKeys).Info("Starting deletion of all groups and keys")
+
+	// Step 2: Optimize SQLite for bulk deletion BEFORE starting transaction
+	// Note: PRAGMA synchronous cannot be changed inside a transaction in SQLite
+	// We only disable foreign keys which provides significant performance improvement
+	// and is safe because we're deleting all related data anyway
+	originalForeignKeys := true
+	var fkResult int
+	if err := s.db.WithContext(ctx).Raw("PRAGMA foreign_keys").Scan(&fkResult).Error; err == nil {
+		originalForeignKeys = fkResult == 1
+	}
+
+	// Disable foreign keys for better performance
+	if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to disable foreign keys, continuing anyway")
+	}
+
+	// Step 3: Begin transaction
+	tx := s.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		// Restore foreign keys if transaction fails to start
+		if originalForeignKeys {
+			s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
+		}
+		return app_errors.ErrDatabase
+	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+			// Restore foreign keys on rollback
+			if originalForeignKeys {
+				s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
+			}
+		}
+	}()
+
+	// Step 4: Delete all sub-group relationships
+	if err := tx.Exec("DELETE FROM group_sub_groups").Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to delete sub-group relationships")
+		return app_errors.ParseDBError(err)
+	}
+
+	// Step 5: Delete all API keys using optimized DELETE
+	// For SQLite, a simple DELETE FROM is the fastest way to remove all rows
+	if totalKeys > 0 {
+		result := tx.Exec("DELETE FROM api_keys")
+		if result.Error != nil {
+			logrus.WithContext(ctx).WithError(result.Error).Error("failed to delete all API keys")
+			return app_errors.ErrDatabase
+		}
+		logrus.WithContext(ctx).WithField("deletedKeys", result.RowsAffected).Info("Deleted all API keys")
+
+		// Reset auto-increment counter for api_keys table
+		// This is optional but keeps the database clean for future inserts
+		if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='api_keys'").Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("failed to reset api_keys sequence, continuing anyway")
+		}
+	}
+
+	// Step 6: Delete all groups
+	result := tx.Exec("DELETE FROM groups")
+	if result.Error != nil {
+		logrus.WithContext(ctx).WithError(result.Error).Error("failed to delete all groups")
+		return app_errors.ParseDBError(result.Error)
+	}
+	logrus.WithContext(ctx).WithField("deletedGroups", result.RowsAffected).Info("Deleted all groups")
+
+	// Reset auto-increment counter for groups table
+	if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='groups'").Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to reset groups sequence, continuing anyway")
+	}
+
+	// Step 7: Commit the transaction
+	if err := tx.Commit().Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to commit transaction")
+		// Foreign keys will be restored by defer
+		return app_errors.ErrDatabase
+	}
+	tx = nil
+
+	// Step 8: Restore foreign keys setting
+	if originalForeignKeys {
+		if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("failed to restore foreign keys setting")
+		}
+	}
+
+	// Step 6: Clear the key store cache
+	// This removes all keys from memory to ensure consistency
+	if err := s.keyService.KeyProvider.ClearAllKeys(); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to clear key store cache")
+		// Continue even if cache clear fails, as database is already updated
+	}
+
+	// Step 7: Invalidate the group cache to force reload
+	if err := s.groupManager.Invalidate(); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
+		// Continue even if cache invalidation fails
+	}
+
+	logrus.WithContext(ctx).Info("Successfully deleted all groups and keys")
 	return nil
 }
 

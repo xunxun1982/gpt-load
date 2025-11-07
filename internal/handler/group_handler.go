@@ -485,3 +485,37 @@ func (s *Server) ToggleGroupEnabled(c *gin.Context) {
 	}
 	response.SuccessI18n(c, messageKey, nil)
 }
+
+// DeleteAllGroups handles deleting all groups and their associated resources.
+// This is a dangerous debugging operation that should only be accessible when DEBUG_MODE is enabled.
+//
+// Security considerations:
+// - This endpoint is only registered when DEBUG_MODE environment variable is set to true
+// - It requires authentication like all other admin endpoints
+// - It logs a warning before execution
+// - It should NEVER be enabled in production environments
+//
+// The operation will:
+// - Delete all sub-group relationships
+// - Delete all API keys across all groups
+// - Delete all groups
+// - Clear the in-memory key cache
+// - Invalidate the group cache
+//
+// Returns a success message if all operations complete successfully,
+// or an error if any operation fails (with transaction rollback).
+func (s *Server) DeleteAllGroups(c *gin.Context) {
+	// Double-check that debug mode is enabled (defense in depth)
+	if !s.config.IsDebugMode() {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrForbidden, "error.debug_mode_required")
+		return
+	}
+
+	logrus.WithContext(c.Request.Context()).Warn("DeleteAllGroups endpoint called - proceeding with deletion of all groups")
+
+	if err := s.GroupService.DeleteAllGroups(c.Request.Context()); s.handleGroupError(c, err) {
+		return
+	}
+
+	response.SuccessI18n(c, "success.all_groups_deleted", nil)
+}

@@ -183,6 +183,7 @@ var MessagesEnUS = map[string]string{
 	"error.decrypt_key_copy":         "Failed to decrypt key during group copy, skipping",
 	"error.start_import_task":        "Failed to start async key import task for group copy",
 	"error.export_logs":              "Failed to export logs",
+	"error.debug_mode_required":      "This operation requires DEBUG_MODE to be enabled",
 
 	// Login related
 	"auth.invalid_request":           "Invalid request format",
@@ -198,6 +199,7 @@ var MessagesEnUS = map[string]string{
 	"success.sub_group_deleted":        "Sub group deleted successfully",
 	"success.group_enabled":            "Group enabled successfully",
 	"success.group_disabled":           "Group disabled successfully",
+	"success.all_groups_deleted":       "All groups deleted successfully",
 	"success.group_imported":           "Group imported successfully",
 	"success.system_imported":          "System configuration imported successfully",
 	"success.system_settings_imported": "System settings imported successfully",

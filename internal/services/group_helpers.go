@@ -34,7 +34,8 @@ func FindGroupByIDWithType(ctx context.Context, db *gorm.DB, groupID uint, expec
 		if expectedType == "aggregate" {
 			messageID = "group.not_aggregate"
 		} else {
-			messageID = "group.not_standard"
+			// Use existing i18n key for standard group validation
+			messageID = "validation.invalid_group_type"
 		}
 		return nil, NewI18nError(app_errors.ErrBadRequest, messageID, nil)
 	}

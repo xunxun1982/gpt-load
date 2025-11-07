@@ -52,6 +52,7 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 	}
 
 	if len(keys) > 0 {
+		startPrep := time.Now()
 		keyModels := make([]models.APIKey, 0, len(keys))
 		for _, keyInfo := range keys {
 			// Decrypt key_value to calculate key_hash for proper indexing and deduplication
@@ -73,6 +74,8 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 				Status:   keyInfo.Status,
 			})
 		}
+		prepDuration := time.Since(startPrep)
+		logrus.Infof("Key preparation (decrypt+hash) took %v for %d keys", prepDuration, len(keyModels))
 
 		if len(keyModels) > 0 {
 			// Use the new BulkImportService for optimized bulk insert
@@ -293,8 +296,10 @@ func (s *Server) ImportGroup(c *gin.Context) {
 
 	// Use transaction to ensure data consistency, rollback on failure
 	var createdGroup models.Group
+	var createdGroupID uint
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		createdGroupID, err := importGroupFromExportData(tx, s.ExportImportService, s.EncryptionSvc, s.BulkImportService, importData.Group, importData.Keys, importData.SubGroups)
+		var err error
+		createdGroupID, err = importGroupFromExportData(tx, s.ExportImportService, s.EncryptionSvc, s.BulkImportService, importData.Group, importData.Keys, importData.SubGroups)
 		if err != nil {
 			return err
 		}
@@ -309,6 +314,23 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
 		return
 	}
+
+	// Load keys to Redis store and reset failure_count asynchronously
+	// Run asynchronously to avoid blocking the HTTP response (can take 30+ seconds for large groups)
+	go func(groupID uint) {
+		// First, load all keys to Redis store
+		if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(groupID); err != nil {
+			logrus.WithError(err).Errorf("Failed to load keys to store for imported group %d", groupID)
+		}
+
+		// Then reset failure_count for all active keys
+		resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(groupID)
+		if resetErr != nil {
+			logrus.WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d", groupID)
+		} else if resetCount > 0 {
+			logrus.Infof("Reset failure_count for %d active keys in imported group %d", resetCount, groupID)
+		}
+	}(createdGroupID)
 
 	response.SuccessI18n(c, "success.group_imported", s.newGroupResponse(&createdGroup))
 }
