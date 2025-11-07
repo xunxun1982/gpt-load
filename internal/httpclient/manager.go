@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,15 +87,18 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	}
 
 	// Set http proxy.
-	if config.ProxyURL != "" {
-		proxyURL, err := url.Parse(config.ProxyURL)
+	// Trim whitespace from proxy URL before parsing to handle common configuration issues
+	trimmedProxyURL := strings.TrimSpace(config.ProxyURL)
+	if trimmedProxyURL != "" {
+		proxyURL, err := url.Parse(trimmedProxyURL)
 		if err != nil {
-			logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", config.ProxyURL, err)
+			logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", trimmedProxyURL, err)
 			transport.Proxy = http.ProxyFromEnvironment
 		} else {
 			transport.Proxy = http.ProxyURL(proxyURL)
 		}
 	} else {
+		// ProxyURL was empty or only whitespace, fall back to environment
 		transport.Proxy = http.ProxyFromEnvironment
 	}
 
@@ -108,7 +112,9 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 }
 
 // getFingerprint generates a unique string representation of the client configuration.
+// ProxyURL is normalized (trimmed) to ensure configs that differ only by whitespace generate the same fingerprint.
 func (c *Config) getFingerprint() string {
+	normalizedProxy := strings.TrimSpace(c.ProxyURL)
 	return fmt.Sprintf(
 		"ct:%.0fs|rt:%.0fs|it:%.0fs|mic:%d|mich:%d|rht:%.0fs|dc:%t|wbs:%d|rbs:%d|fh2:%t|tlst:%.0fs|ect:%.0fs|proxy:%s",
 		c.ConnectTimeout.Seconds(),
@@ -123,6 +129,6 @@ func (c *Config) getFingerprint() string {
 		c.ForceAttemptHTTP2,
 		c.TLSHandshakeTimeout.Seconds(),
 		c.ExpectContinueTimeout.Seconds(),
-		c.ProxyURL,
+		normalizedProxy,
 	)
 }
