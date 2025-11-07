@@ -5,41 +5,25 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
-	"gpt-load/internal/utils"
+	"gpt-load/internal/services"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
-// generateUniqueGroupName generates a unique group name, adding a random suffix if it already exists.
-func generateUniqueGroupName(tx *gorm.DB, baseName string) (string, error) {
-	groupName := baseName
-	var existingGroup models.Group
-	maxAttempts := 10
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if err := tx.Where("name = ?", groupName).First(&existingGroup).Error; err != nil {
-			return groupName, nil
-		}
-		if attempt < maxAttempts-1 {
-			if len(baseName)+4 > 100 {
-				baseName = baseName[:96]
-			}
-			groupName = baseName + utils.GenerateRandomSuffix()
-		} else {
-			return "", fmt.Errorf("failed to generate unique group name for %s after %d attempts", baseName, maxAttempts)
-		}
-	}
-	return groupName, nil
-}
-
-// importGroupFromExportData imports a group from export data (helper function to reduce code duplication).
-func importGroupFromExportData(tx *gorm.DB, groupInfo GroupExportInfo, keys []KeyExportInfo, subGroups []SubGroupExportInfo) (uint, error) {
-	groupName, err := generateUniqueGroupName(tx, groupInfo.Name)
+// importGroupFromExportData imports a group from export data with optimized bulk import.
+// This function uses the centralized name generation from ExportImportService
+func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImportService, encryptionSvc encryption.Service, bulkImportSvc *services.BulkImportService, groupInfo GroupExportInfo, keys []KeyExportInfo, subGroups []SubGroupExportInfo) (uint, error) {
+	// Use the centralized unique name generation from ExportImportService
+	groupName, err := exportImportSvc.GenerateUniqueGroupName(tx, groupInfo.Name)
 	if err != nil {
 		return 0, err
 	}
@@ -70,29 +54,82 @@ func importGroupFromExportData(tx *gorm.DB, groupInfo GroupExportInfo, keys []Ke
 	if len(keys) > 0 {
 		keyModels := make([]models.APIKey, 0, len(keys))
 		for _, keyInfo := range keys {
+			// Decrypt key_value to calculate key_hash for proper indexing and deduplication
+			// The exported key_value is encrypted, so we need to decrypt it first
+			decryptedKey, err := encryptionSvc.Decrypt(keyInfo.KeyValue)
+			if err != nil {
+				// If decryption fails, log and skip this key
+				logrus.WithError(err).Warn("Failed to decrypt key during import, skipping")
+				continue
+			}
+
+			// Calculate key_hash from decrypted key for proper indexing
+			keyHash := encryptionSvc.Hash(decryptedKey)
+
 			keyModels = append(keyModels, models.APIKey{
 				GroupID:  group.ID,
-				KeyValue: keyInfo.KeyValue,
+				KeyValue: keyInfo.KeyValue, // Keep encrypted value
+				KeyHash:  keyHash,         // Add calculated hash
 				Status:   keyInfo.Status,
 			})
 		}
-		if err := tx.CreateInBatches(keyModels, 1000).Error; err != nil {
-			return 0, err
+
+		if len(keyModels) > 0 {
+			// Use the new BulkImportService for optimized bulk insert
+			// This service automatically detects the database type and uses optimal batch sizes
+			// It also applies database-specific optimizations for maximum performance
+			logrus.Debugf("Using BulkImportService to import %d keys for group %s",
+				len(keyModels), group.Name)
+
+			// The BulkImportService will:
+			// - Detect database type (SQLite/MySQL/PostgreSQL)
+			// - Calculate optimal batch size based on key size
+			// - Apply database-specific optimizations
+			// - Use the existing transaction to avoid nesting issues
+			// IMPORTANT: Use BulkInsertAPIKeysWithTx to use the existing transaction
+			if err := bulkImportSvc.BulkInsertAPIKeysWithTx(tx, keyModels); err != nil {
+				return 0, fmt.Errorf("bulk import failed: %w", err)
+			}
 		}
 	}
 
 	if group.GroupType == "aggregate" && len(subGroups) > 0 {
+		// Batch query all sub-groups to avoid N+1 query problem
+		// Collect all group names first
+		groupNames := make([]string, 0, len(subGroups))
 		for _, sgInfo := range subGroups {
-			var subGroup models.Group
-			if err := tx.Where("name = ?", sgInfo.GroupName).First(&subGroup).Error; err == nil {
-				groupSubGroup := models.GroupSubGroup{
+			groupNames = append(groupNames, sgInfo.GroupName)
+		}
+
+		// Query all sub-groups in a single query
+		var foundSubGroups []models.Group
+		if err := tx.Where("name IN ?", groupNames).Find(&foundSubGroups).Error; err != nil {
+			// If query fails, continue without sub-groups (non-critical)
+			return group.ID, nil
+		}
+
+		// Create a map for quick lookup
+		subGroupMap := make(map[string]uint, len(foundSubGroups))
+		for _, sg := range foundSubGroups {
+			subGroupMap[sg.Name] = sg.ID
+		}
+
+		// Batch create group-sub-group relationships
+		groupSubGroups := make([]models.GroupSubGroup, 0, len(subGroups))
+		for _, sgInfo := range subGroups {
+			if subGroupID, exists := subGroupMap[sgInfo.GroupName]; exists {
+				groupSubGroups = append(groupSubGroups, models.GroupSubGroup{
 					GroupID:    group.ID,
-					SubGroupID: subGroup.ID,
+					SubGroupID: subGroupID,
 					Weight:     sgInfo.Weight,
-				}
-				if err := tx.Create(&groupSubGroup).Error; err != nil {
-					continue
-				}
+				})
+			}
+		}
+
+		if len(groupSubGroups) > 0 {
+			if err := tx.CreateInBatches(groupSubGroups, 1000).Error; err != nil {
+				// If creation fails, continue without sub-groups (non-critical)
+				return group.ID, nil
 			}
 		}
 	}
@@ -152,10 +189,11 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		return
 	}
 
-	// Get group information, preload keys to avoid N+1 queries
-	var group models.Group
-	if err := s.DB.Preload("APIKeys").First(&group, id).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+	// Use the new ExportImportService to export the group
+	// This fixes the FindInBatches limitation that only exports 2000 records
+	groupData, err := s.ExportImportService.ExportGroup(uint(id))
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
 			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.group_not_found")
 		} else {
 			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.cannot_get_group")
@@ -163,32 +201,32 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		return
 	}
 
-	// Parse HeaderRules
+	// Parse HeaderRules for export format
 	var headerRules []models.HeaderRule
-	if len(group.HeaderRules) > 0 {
-		if err := json.Unmarshal(group.HeaderRules, &headerRules); err != nil {
+	if len(groupData.Group.HeaderRules) > 0 {
+		if err := json.Unmarshal(groupData.Group.HeaderRules, &headerRules); err != nil {
 			headerRules = []models.HeaderRule{}
 		}
 	}
 
-	// Build export data
+	// Build export data structure compatible with existing format
 	exportData := GroupExportData{
 		Group: GroupExportInfo{
-			Name:               group.Name,
-			DisplayName:        group.DisplayName,
-			Description:        group.Description,
-			GroupType:          group.GroupType,
-			ChannelType:        group.ChannelType,
-			Enabled:            group.Enabled,
-			TestModel:          group.TestModel,
-			ValidationEndpoint: group.ValidationEndpoint,
-			Upstreams:          json.RawMessage(group.Upstreams),
-			ParamOverrides:     group.ParamOverrides,
-			Config:             group.Config,
+			Name:               groupData.Group.Name,
+			DisplayName:        groupData.Group.DisplayName,
+			Description:        groupData.Group.Description,
+			GroupType:          groupData.Group.GroupType,
+			ChannelType:        groupData.Group.ChannelType,
+			Enabled:            groupData.Group.Enabled,
+			TestModel:          groupData.Group.TestModel,
+			ValidationEndpoint: groupData.Group.ValidationEndpoint,
+			Upstreams:          json.RawMessage(groupData.Group.Upstreams),
+			ParamOverrides:     groupData.Group.ParamOverrides,
+			Config:             groupData.Group.Config,
 			HeaderRules:        headerRules,
-			ModelMapping:       group.ModelMapping,
-			ProxyKeys:          group.ProxyKeys,
-			Sort:               group.Sort,
+			ModelMapping:       groupData.Group.ModelMapping,
+			ProxyKeys:          groupData.Group.ProxyKeys,
+			Sort:               groupData.Group.Sort,
 		},
 		Keys:       []KeyExportInfo{},
 		SubGroups:  []SubGroupExportInfo{},
@@ -196,35 +234,33 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		Version:    "2.0",
 	}
 
-	// Export keys
-	for _, key := range group.APIKeys {
+	// Convert keys to export format
+	for _, key := range groupData.Keys {
 		exportData.Keys = append(exportData.Keys, KeyExportInfo{
 			KeyValue: key.KeyValue,
 			Status:   key.Status,
 		})
 	}
 
-	// If it's an aggregate group, get sub-group information
-	if group.GroupType == "aggregate" {
-		subGroups, err := s.AggregateGroupService.GetSubGroups(c.Request.Context(), uint(id))
-		if err == nil {
-			for _, sg := range subGroups {
-				exportData.SubGroups = append(exportData.SubGroups, SubGroupExportInfo{
-					GroupName: sg.Group.Name,
-					Weight:    sg.Weight,
-				})
-			}
-		}
+	// Convert sub-groups to export format
+	for _, sg := range groupData.SubGroups {
+		exportData.SubGroups = append(exportData.SubGroups, SubGroupExportInfo{
+			GroupName: sg.GroupName,
+			Weight:    sg.Weight,
+		})
 	}
+
+	logrus.Debugf("Export via new service: Total %d keys exported for group %s",
+		len(exportData.Keys), groupData.Group.Name)
 
 	// Set response headers, use different filename prefix based on group type
 	var filenamePrefix string
-	if group.GroupType == "aggregate" {
+	if groupData.Group.GroupType == "aggregate" {
 		filenamePrefix = "aggregate-group"
 	} else {
 		filenamePrefix = "standard-group"
 	}
-	filename := fmt.Sprintf("%s_%s_%s.json", filenamePrefix, group.Name, time.Now().Format("20060102_150405"))
+	filename := fmt.Sprintf("%s_%s_%s.json", filenamePrefix, groupData.Group.Name, time.Now().Format("20060102_150405"))
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.Header("Content-Transfer-Encoding", "binary")
@@ -248,12 +284,25 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		return
 	}
 
+	// Log import summary
+	logrus.Infof("Importing group %s with %d keys",
+		importData.Group.Name, len(importData.Keys))
+	if len(importData.SubGroups) > 0 {
+		logrus.Debugf("SubGroups: %d", len(importData.SubGroups))
+	}
+
 	// Use transaction to ensure data consistency, rollback on failure
-	var createdGroupID uint
+	var createdGroup models.Group
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		var err error
-		createdGroupID, err = importGroupFromExportData(tx, importData.Group, importData.Keys, importData.SubGroups)
-		return err
+		createdGroupID, err := importGroupFromExportData(tx, s.ExportImportService, s.EncryptionSvc, s.BulkImportService, importData.Group, importData.Keys, importData.SubGroups)
+		if err != nil {
+			return err
+		}
+		// Query the created group within the transaction to avoid an extra query after commit
+		if err := tx.First(&createdGroup, createdGroupID).Error; err != nil {
+			return err
+		}
+		return nil
 	})
 
 	if err != nil {
@@ -261,12 +310,5 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		return
 	}
 
-	// Query the created group
-	var group models.Group
-	if err := s.DB.First(&group, createdGroupID).Error; err != nil {
-		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.cannot_get_group")
-		return
-	}
-
-	response.SuccessI18n(c, "success.group_imported", s.newGroupResponse(&group))
+	response.SuccessI18n(c, "success.group_imported", s.newGroupResponse(&createdGroup))
 }

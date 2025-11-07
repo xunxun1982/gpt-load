@@ -132,17 +132,20 @@ func (s *CronChecker) submitValidationJobs() {
 
 // validateGroupKeys validates all invalid keys for a single group concurrently.
 // It adds the group ID to groupsToUpdate map after validation completes.
+// Uses streaming batch processing for large result sets to improve performance and reduce memory usage.
 func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *sync.Mutex, groupsToUpdate map[uint]struct{}) {
 	groupProcessStart := time.Now()
 
-	var invalidKeys []models.APIKey
-	err := s.DB.Select("id, group_id, key_value, status").Where("group_id = ? AND status = ?", group.ID, models.KeyStatusInvalid).Find(&invalidKeys).Error
-	if err != nil {
-		logrus.Errorf("CronChecker: Failed to get invalid keys for group %s: %v", group.Name, err)
+	// First, check if there are any invalid keys (quick count query using index)
+	var invalidKeyCount int64
+	if err := s.DB.Model(&models.APIKey{}).
+		Where("group_id = ? AND status = ?", group.ID, models.KeyStatusInvalid).
+		Count(&invalidKeyCount).Error; err != nil {
+		logrus.Errorf("CronChecker: Failed to count invalid keys for group %s: %v", group.Name, err)
 		return
 	}
 
-	if len(invalidKeys) == 0 {
+	if invalidKeyCount == 0 {
 		// Mark group for batch update
 		groupsToUpdateMu.Lock()
 		groupsToUpdate[group.ID] = struct{}{}
@@ -151,9 +154,19 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 		return
 	}
 
+	// Use streaming batch processing to avoid loading all keys into memory at once
+	// This significantly improves performance for large result sets by:
+	// 1. Reducing memory usage
+	// 2. Starting validation immediately (no need to wait for all data)
+	// 3. Using smaller, faster queries instead of one large query
+	batchSize := 1000
 	var becameValidCount int32
+	var totalChecked int32
 	var keyWg sync.WaitGroup
-	jobs := make(chan *models.APIKey, len(invalidKeys))
+
+	// Use buffered channel to allow concurrent processing while streaming data
+	// Buffer size should be larger than batch size to avoid blocking
+	jobs := make(chan *models.APIKey, batchSize*2)
 
 	concurrency := group.EffectiveConfig.KeyValidationConcurrency
 	for range concurrency {
@@ -166,6 +179,8 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 					if !ok {
 						return
 					}
+
+					atomic.AddInt32(&totalChecked, 1)
 
 					// Decrypt the key before validation
 					decryptedKey, err := s.EncryptionSvc.Decrypt(key.KeyValue)
@@ -189,16 +204,53 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 		}()
 	}
 
-DistributeLoop:
-	for i := range invalidKeys {
-		select {
-		case jobs <- &invalidKeys[i]:
-		case <-s.stopChan:
-			break DistributeLoop
-		}
-	}
-	close(jobs)
+	// Stream data from database in batches and send to workers immediately
+	// This allows validation to start processing while we're still querying
+	var queryWg sync.WaitGroup
+	queryWg.Add(1)
+	go func() {
+		defer queryWg.Done()
+		defer close(jobs)
 
+		offset := 0
+		for {
+			var batchKeys []models.APIKey
+			err := s.DB.Select("id, group_id, key_value, status").
+				Where("group_id = ? AND status = ?", group.ID, models.KeyStatusInvalid).
+				Order("id ASC"). // Consistent ordering for pagination
+				Limit(batchSize).
+				Offset(offset).
+				Find(&batchKeys).Error
+
+			if err != nil {
+				logrus.Errorf("CronChecker: Failed to get invalid keys for group %s: %v", group.Name, err)
+				return
+			}
+
+			if len(batchKeys) == 0 {
+				break
+			}
+
+			// Send keys to workers immediately
+			for i := range batchKeys {
+				select {
+				case jobs <- &batchKeys[i]:
+				case <-s.stopChan:
+					return
+				}
+			}
+
+			offset += len(batchKeys)
+
+			// If we got fewer than batchSize, we've reached the end
+			if len(batchKeys) < batchSize {
+				break
+			}
+		}
+	}()
+
+	// Wait for all queries to complete and all validations to finish
+	queryWg.Wait()
 	keyWg.Wait()
 
 	// Mark group for batch update
@@ -210,7 +262,7 @@ DistributeLoop:
 	logrus.Infof(
 		"CronChecker: Group '%s' validation finished. Total checked: %d, became valid: %d. Duration: %s.",
 		group.Name,
-		len(invalidKeys),
+		totalChecked,
 		becameValidCount,
 		duration.String(),
 	)

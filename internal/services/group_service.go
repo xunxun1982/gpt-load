@@ -427,14 +427,12 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 // DeleteGroup removes a group and associated resources.
 func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
-	var apiKeys []models.APIKey
-	if err := s.db.WithContext(ctx).Where("group_id = ?", id).Find(&apiKeys).Error; err != nil {
+	// Only query key IDs, not all fields
+	var keyIDs []uint
+	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
+		Where("group_id = ?", id).
+		Pluck("id", &keyIDs).Error; err != nil {
 		return app_errors.ParseDBError(err)
-	}
-
-	keyIDs := make([]uint, 0, len(apiKeys))
-	for _, key := range apiKeys {
-		keyIDs = append(keyIDs, key.ID)
 	}
 
 	tx := s.db.WithContext(ctx).Begin()
@@ -456,8 +454,43 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 		return app_errors.ParseDBError(err)
 	}
 
-	if err := tx.Where("group_id = ?", id).Delete(&models.APIKey{}).Error; err != nil {
-		return app_errors.ErrDatabase
+	// Use batch deletion for large datasets to improve performance and reduce lock time
+	// This is much faster than deleting all rows at once, especially for groups with many keys
+	// Delete by ID in batches to leverage primary key index and reduce lock contention
+	// Smaller batch size (50) ensures each DELETE operation stays well under 200ms threshold
+	// Even with 100 IDs, DELETE operations can exceed 200ms, so 50 is a safer choice
+	if len(keyIDs) > 0 {
+		batchSize := 50
+		totalDeleted := int64(0)
+
+		for i := 0; i < len(keyIDs); i += batchSize {
+			end := i + batchSize
+			if end > len(keyIDs) {
+				end = len(keyIDs)
+			}
+			batchIDs := keyIDs[i:end]
+
+			result := tx.Where("id IN ?", batchIDs).Delete(&models.APIKey{})
+			if result.Error != nil {
+				return app_errors.ErrDatabase
+			}
+
+			totalDeleted += result.RowsAffected
+
+			// Small delay between batches to reduce lock contention
+			// This is safe within a transaction as it doesn't affect transaction isolation
+			if i+batchSize < len(keyIDs) {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+
+		if totalDeleted > 0 {
+			logrus.WithContext(ctx).WithFields(logrus.Fields{
+				"groupID":      id,
+				"deletedCount": totalDeleted,
+				"totalKeys":    len(keyIDs),
+			}).Debug("Deleted API keys in batches")
+		}
 	}
 
 	if err := tx.Delete(&models.Group{}, id).Error; err != nil {

@@ -571,6 +571,12 @@ export default {
     exportFailed: "エクスポート失敗",
     importFailed: "インポート失敗",
     invalidImportFile: "無効なインポートファイル",
+    importSystemSettings: "システム設定をインポート",
+    importSystemSettingsConfirm: "システム設定をインポートしますか？既存のシステム設定が上書きされ、すぐに有効になります。",
+    importGroups: "グループ一括インポート",
+    importGroupsConfirm: "{count} 個のグループをインポートしますか？",
+    importSystemWithGroups: "ファイルにシステム設定とグループの両方が含まれています。両方をインポートしますか？",
+    importBoth: "両方インポート",
   },
   footer: {
     checking: "確認中...",

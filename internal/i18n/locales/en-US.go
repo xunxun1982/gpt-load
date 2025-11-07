@@ -200,6 +200,8 @@ var MessagesEnUS = map[string]string{
 	"success.group_disabled":           "Group disabled successfully",
 	"success.group_imported":           "Group imported successfully",
 	"success.system_imported":          "System configuration imported successfully",
+	"success.system_settings_imported": "System settings imported successfully",
+	"success.groups_batch_imported":    "Groups batch imported successfully",
 	"group.not_aggregate":              "Group is not an aggregate group",
 	"group.sub_group_already_exists":   "Sub group {{.sub_group_id}} already exists",
 	"group.sub_group_not_found":        "Sub group not found",

@@ -133,27 +133,125 @@ async function handleSystemFileChange(event: Event) {
 
   try {
     const text = await file.text();
-    const data = JSON.parse(text);
+    let parsedData: any;
 
-    // 显示确认对话框
-    dialog.info({
-      title: t('settings.importSystem'),
-      content: t('settings.importSystemConfirm'),
-      positiveText: t('common.confirm'),
-      negativeText: t('common.cancel'),
-      onPositiveClick: async () => {
-        try {
-          await settingsApi.importAll(data);
-          message.success(t('settings.importSuccess'));
-          // 重新加载设置
-          await fetchSettings();
-        } catch (error: any) {
-          message.error(error.message || t('settings.importFailed'));
+    try {
+      parsedData = JSON.parse(text);
+    } catch (parseError) {
+      console.error('JSON parse error:', parseError);
+      message.error(t('settings.invalidImportFile') + ': JSON 格式错误');
+      target.value = '';
+      return;
+    }
+
+    // 处理可能的数据包装（response.data 格式）
+    // 支持两种格式：
+    // 1. 直接数据格式：{ version, system_settings, groups }
+    // 2. 包装格式：{ code, message, data: { version, system_settings, groups } }
+    let data = parsedData;
+
+    // 检查是否是包装格式（包含 code 或 message 字段，且有 data 字段）
+    if (parsedData.data && typeof parsedData.data === 'object' &&
+        (parsedData.code !== undefined || parsedData.message !== undefined)) {
+      data = parsedData.data;
+    }
+
+    // 调试信息（仅在开发环境输出）
+    if (import.meta.env.DEV) {
+      console.log('Parsed import data structure:', {
+        originalKeys: Object.keys(parsedData),
+        dataKeys: Object.keys(data),
+        hasSystemSettings: !!data.system_settings,
+        hasGroups: !!data.groups,
+        systemSettingsType: typeof data.system_settings,
+        groupsType: Array.isArray(data.groups) ? 'array' : typeof data.groups,
+        systemSettingsKeys: data.system_settings ? Object.keys(data.system_settings) : [],
+        groupsLength: Array.isArray(data.groups) ? data.groups.length : 'not array',
+      });
+    }
+
+    // 判断导入数据类型 - 更宽松的判断
+    const hasSystemSettings = data.system_settings && typeof data.system_settings === 'object';
+    const hasGroups = data.groups && Array.isArray(data.groups);
+    const systemSettingsCount = hasSystemSettings ? Object.keys(data.system_settings).length : 0;
+    const groupsCount = hasGroups ? data.groups.length : 0;
+
+    // 如果同时有系统设置和分组（即使其中一个是空的），使用全量导入
+    if ((hasSystemSettings && systemSettingsCount > 0) && (hasGroups && groupsCount > 0)) {
+      dialog.warning({
+        title: t('settings.importSystem'),
+        content: t('settings.importSystemWithGroups'),
+        positiveText: t('settings.importBoth'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: async () => {
+          try {
+            // 使用全量导入
+            await settingsApi.importAll(data);
+            message.success(t('settings.importSuccess'));
+            await fetchSettings();
+          } catch (error: any) {
+            message.error(error.message || t('settings.importFailed'));
+          }
         }
-      }
-    });
-  } catch (error) {
-    message.error(t('settings.invalidImportFile'));
+      });
+    } else if (hasSystemSettings && systemSettingsCount > 0) {
+      // 仅系统设置
+      dialog.info({
+        title: t('settings.importSystemSettings'),
+        content: t('settings.importSystemSettingsConfirm'),
+        positiveText: t('common.confirm'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: async () => {
+          try {
+            await settingsApi.importSystemSettings({ system_settings: data.system_settings });
+            message.success(t('settings.importSuccess'));
+            await fetchSettings();
+          } catch (error: any) {
+            message.error(error.message || t('settings.importFailed'));
+          }
+        }
+      });
+    } else if (hasGroups && groupsCount > 0) {
+      // 仅分组
+      dialog.info({
+        title: t('settings.importGroups'),
+        content: t('settings.importGroupsConfirm', { count: groupsCount }),
+        positiveText: t('common.confirm'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: async () => {
+          try {
+            await settingsApi.importGroupsBatch({ groups: data.groups });
+            message.success(t('settings.importSuccess'));
+          } catch (error: any) {
+            message.error(error.message || t('settings.importFailed'));
+          }
+        }
+      });
+    } else if (hasSystemSettings || hasGroups) {
+      // 有字段但都为空，使用全量导入
+      dialog.info({
+        title: t('settings.importSystem'),
+        content: t('settings.importSystemConfirm'),
+        positiveText: t('common.confirm'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: async () => {
+          try {
+            await settingsApi.importAll(data);
+            message.success(t('settings.importSuccess'));
+            await fetchSettings();
+          } catch (error: any) {
+            message.error(error.message || t('settings.importFailed'));
+          }
+        }
+      });
+    } else {
+      // 无效的导入文件
+      console.error('Invalid import file structure:', data);
+      message.error(t('settings.invalidImportFile') + ': 文件格式不正确，缺少 system_settings 或 groups 字段');
+    }
+  } catch (error: any) {
+    console.error('Import error:', error);
+    message.error(t('settings.invalidImportFile') + ': ' + (error.message || '未知错误'));
   } finally {
     // 清空文件输入，允许重复选择同一文件
     target.value = '';

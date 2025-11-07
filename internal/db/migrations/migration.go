@@ -26,7 +26,12 @@ func MigrateDatabase(db *gorm.DB) error {
 	}
 
 	// Run v1.3.0 migration
-	return V1_3_0_AddGroupEnabledColumn(db)
+	if err := V1_3_0_AddGroupEnabledColumn(db); err != nil {
+		return err
+	}
+
+	// Run v1.3.1 migration - Add dedicated group_id index for faster deletion
+	return V1_3_1_AddGroupIDIndex(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

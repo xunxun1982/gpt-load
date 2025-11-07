@@ -72,7 +72,8 @@ func (s *LogCleanupService) run() {
 	}
 }
 
-// cleanupExpiredLogs cleans up expired request logs using batch deletion for better performance
+// cleanupExpiredLogs cleans up expired request logs using direct time-based batch deletion for better performance
+// This approach uses timestamp index directly instead of querying IDs first, which is much faster
 func (s *LogCleanupService) cleanupExpiredLogs() {
 	// Get log retention days configuration
 	settings := s.settingsManager.GetSettings()
@@ -86,54 +87,34 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 	// Calculate cutoff time
 	cutoffTime := time.Now().AddDate(0, 0, -retentionDays).UTC()
 
-	// Use batch deletion to avoid slow SQL operations
-	// Delete in batches to reduce lock time and improve performance
-	// Use smaller batch size and delete by ID for better performance
-	batchSize := 500
+	// Use direct time-based batch deletion to leverage timestamp index
+	// This is much faster than querying IDs first and then deleting by IN clause
+	// Batch size optimized for MySQL performance (typically 1000-5000 rows per batch)
+	batchSize := 2000
 	totalDeleted := int64(0)
 
 	for {
-		// First, query IDs of records to delete (using index on timestamp)
-		ids := make([]string, 0, batchSize)
-		if err := s.db.Model(&models.RequestLog{}).
-			Where("timestamp < ?", cutoffTime).
+		// Direct deletion using timestamp index - this is the fastest approach
+		// MySQL can use the timestamp index efficiently for range queries
+		result := s.db.Where("timestamp < ?", cutoffTime).
 			Limit(batchSize).
-			Pluck("id", &ids).Error; err != nil {
-			logrus.WithError(err).Error("Failed to query expired request log IDs")
+			Delete(&models.RequestLog{})
+
+		if result.Error != nil {
+			logrus.WithError(result.Error).Error("Failed to cleanup expired request logs")
 			return
 		}
 
-		// If no more rows to delete, break
-		if len(ids) == 0 {
-			break
-		}
-
-		// Delete by ID in smaller chunks to avoid long locks
-		chunkSize := 100
-		batchDeleted := int64(0)
-		for i := 0; i < len(ids); i += chunkSize {
-			end := i + chunkSize
-			if end > len(ids) {
-				end = len(ids)
-			}
-			chunk := ids[i:end]
-
-			result := s.db.Where("id IN ?", chunk).Delete(&models.RequestLog{})
-			if result.Error != nil {
-				logrus.WithError(result.Error).Error("Failed to cleanup expired request logs")
-				return
-			}
-			batchDeleted += result.RowsAffected
-		}
-		totalDeleted += batchDeleted
+		deletedCount := result.RowsAffected
+		totalDeleted += deletedCount
 
 		// If deleted count is less than batch size, we're done
-		if batchDeleted < int64(batchSize) {
+		if deletedCount < int64(batchSize) {
 			break
 		}
 
-		// Small delay between batches to avoid overwhelming the database
-		time.Sleep(10 * time.Millisecond)
+		// Small delay between batches to avoid overwhelming the database and reduce lock contention
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	if totalDeleted > 0 {

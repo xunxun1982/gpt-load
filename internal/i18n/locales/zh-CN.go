@@ -200,6 +200,8 @@ var MessagesZhCN = map[string]string{
 	"success.group_disabled":           "分组已禁用",
 	"success.group_imported":           "分组导入成功",
 	"success.system_imported":          "系统配置导入成功",
+	"success.system_settings_imported": "系统设置导入成功",
+	"success.groups_batch_imported":    "分组批量导入成功",
 	"group.not_aggregate":              "该分组不是聚合分组",
 	"group.sub_group_already_exists":   "子分组{{.sub_group_id}}已存在",
 	"group.sub_group_not_found":        "子分组不存在",

@@ -558,6 +558,12 @@ export default {
     exportFailed: "导出失败",
     importFailed: "导入失败",
     invalidImportFile: "无效的导入文件",
+    importSystemSettings: "导入系统设置",
+    importSystemSettingsConfirm: "确定要导入系统设置吗？这将覆盖现有系统设置并立即生效。",
+    importGroups: "批量导入分组",
+    importGroupsConfirm: "确定要导入 {count} 个分组吗？",
+    importSystemWithGroups: "检测到文件包含系统设置和分组，是否同时导入？",
+    importBoth: "同时导入",
   },
   footer: {
     checking: "检查中...",

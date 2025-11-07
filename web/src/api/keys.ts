@@ -1,12 +1,12 @@
 import i18n from "@/locales";
 import type {
-    APIKey,
-    Group,
-    GroupConfigOption,
-    GroupStatsResponse,
-    KeyStatus,
-    ParentAggregateGroup,
-    TaskInfo,
+  APIKey,
+  Group,
+  GroupConfigOption,
+  GroupStatsResponse,
+  KeyStatus,
+  ParentAggregateGroup,
+  TaskInfo,
 } from "@/types/models";
 import http from "@/utils/http";
 
@@ -308,25 +308,31 @@ export const keysApi = {
   // 导出分组完整数据
   async exportGroup(groupId: number): Promise<void> {
     try {
-      const { data } = await http.get(`/groups/${groupId}/export`);
+      // 注意：http 拦截器已经返回 response.data，所以这里直接获取数据
+      const data = await http.get(`/groups/${groupId}/export`);
+
+      // 防御性检查：确保数据有效
+      if (!data) {
+        throw new Error("Export data is empty");
+      }
 
       // 将数据转换为 JSON 字符串
       const jsonStr = JSON.stringify(data, null, 2);
 
       // 创建 Blob 对象
-      const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+      const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8" });
 
       // 生成文件名：根据分组类型使用不同的前缀
       const groupData = (data as any).group;
       const groupName = groupData?.name || `group_${groupId}`;
-      const groupType = groupData?.group_type || 'standard';
-      const prefix = groupType === 'aggregate' ? 'aggregate-group' : 'standard-group';
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const groupType = groupData?.group_type || "standard";
+      const prefix = groupType === "aggregate" ? "aggregate-group" : "standard-group";
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const filename = `${prefix}_${groupName}_${timestamp}.json`;
 
       // 创建下载链接
       const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
+      const link = document.createElement("a");
       link.href = url;
       link.download = filename;
 
@@ -338,13 +344,13 @@ export const keysApi = {
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
     } catch (error) {
-      console.error('Export failed:', error);
+      console.error("Export failed:", error);
       throw error;
     }
   },
 
   // 导入分组数据
-  async importGroup(data: any): Promise<Group> {
+  async importGroup(data: unknown): Promise<Group> {
     const res = await http.post("/groups/import", data);
     return res.data;
   },

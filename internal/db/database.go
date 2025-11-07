@@ -57,7 +57,13 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		if err := os.MkdirAll(filepath.Dir(dsn), 0755); err != nil {
 			return nil, fmt.Errorf("failed to create database directory: %w", err)
 		}
-		dialector = sqlite.Open(dsn + "?_busy_timeout=5000")
+		// Enhanced SQLite optimizations for bulk operations
+		// WAL mode: Better concurrency and write performance
+		// synchronous=NORMAL: Safe with WAL, faster writes
+		// cache_size: Larger cache for better performance
+		// temp_store=MEMORY: Use memory for temp tables
+		// mmap_size: Memory mapping for faster reads
+		dialector = sqlite.Open(dsn + "?_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&cache=shared&_cache_size=10000&_temp_store=MEMORY")
 	}
 
 	var err error
@@ -73,10 +79,36 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
 	}
-	// Set connection pool parameters for all drivers
-	sqlDB.SetMaxIdleConns(50)
-	sqlDB.SetMaxOpenConns(500)
-	sqlDB.SetConnMaxLifetime(time.Hour)
+
+	// Set connection pool parameters based on database type
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") || strings.Contains(dsn, "@tcp") {
+		// PostgreSQL and MySQL can handle more connections
+		sqlDB.SetMaxIdleConns(50)
+		sqlDB.SetMaxOpenConns(500)
+		sqlDB.SetConnMaxLifetime(time.Hour)
+
+		// Apply additional optimizations for MySQL
+		if strings.Contains(dsn, "@tcp") {
+			// Set larger timeouts for bulk operations
+			sqlDB.SetConnMaxIdleTime(time.Minute * 10)
+			// Apply MySQL session optimizations
+			DB.Exec("SET SESSION sql_mode='TRADITIONAL'")
+			DB.Exec("SET SESSION innodb_lock_wait_timeout=50")
+		}
+	} else {
+		// SQLite needs limited connections to avoid locking issues
+		sqlDB.SetMaxIdleConns(1)
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetConnMaxLifetime(time.Hour)
+
+		// Apply additional SQLite PRAGMA optimizations
+		DB.Exec("PRAGMA cache_size = 10000")      // ~40MB cache with 4KB pages
+		DB.Exec("PRAGMA temp_store = MEMORY")     // Use memory for temporary tables
+		DB.Exec("PRAGMA mmap_size = 30000000000") // 30GB memory mapping
+		DB.Exec("PRAGMA page_size = 4096")        // Optimal page size
+		DB.Exec("PRAGMA journal_size_limit = 67108864") // 64MB WAL file limit
+		DB.Exec("PRAGMA wal_autocheckpoint = 1000") // Checkpoint every 1000 pages
+	}
 
 	return DB, nil
 }

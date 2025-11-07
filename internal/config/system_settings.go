@@ -207,6 +207,29 @@ func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) erro
 	return sm.syncer.Invalidate()
 }
 
+// ReloadSettings forces a synchronous reload of settings from the database.
+// This method is useful after importing settings to ensure cache is immediately updated.
+func (sm *SystemSettingsManager) ReloadSettings() error {
+	if sm.syncer == nil {
+		return fmt.Errorf("SystemSettingsManager is not initialized")
+	}
+
+	// Force synchronous reload of the cache
+	if err := sm.syncer.Reload(); err != nil {
+		return fmt.Errorf("failed to reload settings: %w", err)
+	}
+
+	logrus.Info("System settings cache reloaded synchronously")
+
+	// Also notify other instances to reload
+	if err := sm.syncer.Invalidate(); err != nil {
+		logrus.Warnf("Failed to notify other instances: %v", err)
+		// Don't return error as local reload was successful
+	}
+
+	return nil
+}
+
 // GetEffectiveConfig 获取有效配置 (系统配置 + 分组覆盖)
 func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JSONMap) types.SystemSettings {
 	effectiveConfig := sm.GetSettings()

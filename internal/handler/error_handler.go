@@ -43,3 +43,4 @@ func HandleServiceError(c *gin.Context, err error) bool {
 	response.Error(c, app_errors.ErrInternalServer)
 	return true
 }
+

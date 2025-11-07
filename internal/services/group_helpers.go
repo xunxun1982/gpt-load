@@ -46,3 +46,4 @@ func FindGroupByIDWithType(ctx context.Context, db *gorm.DB, groupID uint, expec
 func FindAggregateGroupByID(ctx context.Context, db *gorm.DB, groupID uint) (*models.Group, error) {
 	return FindGroupByIDWithType(ctx, db, groupID, "aggregate")
 }
+

@@ -571,6 +571,12 @@ export default {
     exportFailed: "Export failed",
     importFailed: "Import failed",
     invalidImportFile: "Invalid import file",
+    importSystemSettings: "Import System Settings",
+    importSystemSettingsConfirm: "Are you sure you want to import system settings? This will overwrite existing system settings and take effect immediately.",
+    importGroups: "Import Groups Batch",
+    importGroupsConfirm: "Are you sure you want to import {count} groups?",
+    importSystemWithGroups: "The file contains both system settings and groups. Import both?",
+    importBoth: "Import Both",
   },
   footer: {
     checking: "Checking...",

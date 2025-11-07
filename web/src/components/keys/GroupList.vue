@@ -1,8 +1,26 @@
 <script setup lang="ts">
 import type { Group } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
-import { Add, LinkOutline, Search, ChevronDown, ChevronForward, CloudDownloadOutline, CloudUploadOutline } from "@vicons/ionicons5";
-import { NButton, NCard, NEmpty, NInput, NSpin, NTag, NIcon, useDialog, useMessage } from "naive-ui";
+import {
+  Add,
+  LinkOutline,
+  Search,
+  ChevronDown,
+  ChevronForward,
+  CloudDownloadOutline,
+  CloudUploadOutline,
+} from "@vicons/ionicons5";
+import {
+  NButton,
+  NCard,
+  NEmpty,
+  NInput,
+  NSpin,
+  NTag,
+  NIcon,
+  useDialog,
+  useMessage,
+} from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
@@ -308,21 +326,26 @@ function handleGroupCreated(group: Group) {
 // 导出分组
 function handleExportGroup(group: Group, event: Event) {
   event.stopPropagation();
-  if (!group.id) return;
+
+  if (!group || !group.id) {
+    message.error(t("common.error"));
+    return;
+  }
 
   dialog.info({
-    title: t('keys.exportGroup'),
-    content: t('keys.exportGroupConfirm', { name: getGroupDisplayName(group) }),
-    positiveText: t('common.confirm'),
-    negativeText: t('common.cancel'),
+    title: t("keys.exportGroup"),
+    content: t("keys.exportGroupConfirm", { name: getGroupDisplayName(group) }),
+    positiveText: t("common.confirm"),
+    negativeText: t("common.cancel"),
     onPositiveClick: async () => {
       try {
         await keysApi.exportGroup(group.id!);
-        message.success(t('keys.exportSuccess'));
-      } catch (error: any) {
-        message.error(error.message || t('keys.exportFailed'));
+        message.success(t("keys.exportSuccess"));
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : t("keys.exportFailed");
+        message.error(errorMessage);
       }
-    }
+    },
   });
 }
 
@@ -336,7 +359,9 @@ async function handleFileChange(event: Event) {
   const target = event.target as HTMLInputElement;
   const file = target.files?.[0];
 
-  if (!file) return;
+  if (!file) {
+    return;
+  }
 
   try {
     const text = await file.text();
@@ -344,28 +369,28 @@ async function handleFileChange(event: Event) {
 
     // 显示确认对话框
     dialog.info({
-      title: t('keys.importGroup'),
-      content: t('keys.importGroupConfirm', { name: data.group?.name || 'Unknown' }),
-      positiveText: t('common.confirm'),
-      negativeText: t('common.cancel'),
+      title: t("keys.importGroup"),
+      content: t("keys.importGroupConfirm", { name: data.group?.name || "Unknown" }),
+      positiveText: t("common.confirm"),
+      negativeText: t("common.cancel"),
       onPositiveClick: async () => {
         try {
           await keysApi.importGroup(data);
-          message.success(t('keys.importSuccess'));
-          emit('refresh');
-        } catch (error: any) {
-          message.error(error.message || t('keys.importFailed'));
+          message.success(t("keys.importSuccess"));
+          emit("refresh");
+        } catch (error: unknown) {
+          const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");
+          message.error(errorMessage);
         }
-      }
+      },
     });
   } catch (error) {
-    message.error(t('keys.invalidImportFile'));
+    message.error(t("keys.invalidImportFile"));
   } finally {
     // 清空文件输入，允许重复选择同一文件
-    target.value = '';
+    target.value = "";
   }
 }
-
 </script>
 
 <template>
@@ -384,7 +409,12 @@ async function handleFileChange(event: Event) {
             <n-icon :component="Search" />
           </template>
         </n-input>
-        <n-button type="primary" size="small" @click="handleImportClick" :title="t('keys.importGroup')">
+        <n-button
+          type="primary"
+          size="small"
+          @click="handleImportClick"
+          :title="t('keys.importGroup')"
+        >
           <template #icon>
             <n-icon :component="CloudUploadOutline" />
           </template>

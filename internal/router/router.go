@@ -176,6 +176,8 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 	{
 		system.GET("/export", serverHandler.ExportAll)
 		system.POST("/import", serverHandler.ImportAll)
+		system.POST("/import-settings", serverHandler.ImportSystemSettings)
+		system.POST("/import-groups-batch", serverHandler.ImportGroupsBatch)
 	}
 }
 

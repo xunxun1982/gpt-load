@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
+	"gpt-load/internal/services"
 	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -29,100 +29,84 @@ type SystemExportData struct {
 
 // ExportAll exports all system data (system settings and all groups).
 func (s *Server) ExportAll(c *gin.Context) {
-	// Get all system settings
-	var systemSettings []models.SystemSetting
-	if err := s.DB.Find(&systemSettings).Error; err != nil {
-		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.cannot_get_settings")
+	// Use the new ExportImportService to export the entire system
+	// This fixes the FindInBatches limitation that only exports 2000 records
+	systemData, err := s.ExportImportService.ExportSystem()
+	if err != nil {
+		logrus.WithError(err).Error("Failed to export system")
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.export_failed")
 		return
 	}
 
-	settingsMap := make(map[string]string)
-	for _, setting := range systemSettings {
-		settingsMap[setting.SettingKey] = setting.SettingValue
-	}
+	// Convert from services.SystemExportData to handler.SystemExportData
+	// Parse HeaderRules for each group to match the expected format
+	groupExports := make([]GroupExportData, 0, len(systemData.Groups))
+	totalKeys := 0
 
-	// Get all groups, preload keys to avoid N+1 queries
-	var groups []models.Group
-	if err := s.DB.Preload("APIKeys").Order("sort ASC, id DESC").Find(&groups).Error; err != nil {
-		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.cannot_get_groups")
-		return
-	}
-
-	// Build group export data
-	groupExports := make([]GroupExportData, 0, len(groups))
-	for _, group := range groups {
+	for _, groupData := range systemData.Groups {
 		// Parse HeaderRules
 		var headerRules []models.HeaderRule
-		if len(group.HeaderRules) > 0 {
-			if err := json.Unmarshal(group.HeaderRules, &headerRules); err != nil {
-				logrus.WithError(err).WithField("group_id", group.ID).Warn("Failed to parse HeaderRules during export")
+		if len(groupData.Group.HeaderRules) > 0 {
+			if err := json.Unmarshal(groupData.Group.HeaderRules, &headerRules); err != nil {
+				logrus.WithError(err).WithField("group_id", groupData.Group.ID).Warn("Failed to parse HeaderRules during export")
 				headerRules = []models.HeaderRule{}
 			}
 		}
 
 		groupExport := GroupExportData{
 			Group: GroupExportInfo{
-				Name:               group.Name,
-				DisplayName:        group.DisplayName,
-				Description:        group.Description,
-				GroupType:          group.GroupType,
-				ChannelType:        group.ChannelType,
-				Enabled:            group.Enabled,
-				TestModel:          group.TestModel,
-				ValidationEndpoint: group.ValidationEndpoint,
-				Upstreams:          json.RawMessage(group.Upstreams),
-				ParamOverrides:     group.ParamOverrides,
-				Config:             group.Config,
+				Name:               groupData.Group.Name,
+				DisplayName:        groupData.Group.DisplayName,
+				Description:        groupData.Group.Description,
+				GroupType:          groupData.Group.GroupType,
+				ChannelType:        groupData.Group.ChannelType,
+				Enabled:            groupData.Group.Enabled,
+				TestModel:          groupData.Group.TestModel,
+				ValidationEndpoint: groupData.Group.ValidationEndpoint,
+				Upstreams:          json.RawMessage(groupData.Group.Upstreams),
+				ParamOverrides:     groupData.Group.ParamOverrides,
+				Config:             groupData.Group.Config,
 				HeaderRules:        headerRules,
-				ModelMapping:       group.ModelMapping,
-				ProxyKeys:          group.ProxyKeys,
-				Sort:               group.Sort,
+				ModelMapping:       groupData.Group.ModelMapping,
+				ProxyKeys:          groupData.Group.ProxyKeys,
+				Sort:               groupData.Group.Sort,
 			},
 			Keys:      []KeyExportInfo{},
 			SubGroups: []SubGroupExportInfo{},
 		}
 
-		// Export keys
-		for _, key := range group.APIKeys {
+		// Convert keys
+		for _, key := range groupData.Keys {
 			groupExport.Keys = append(groupExport.Keys, KeyExportInfo{
 				KeyValue: key.KeyValue,
 				Status:   key.Status,
 			})
 		}
+		totalKeys += len(groupData.Keys)
 
-		// If it's an aggregate group, get sub-group information
-		if group.GroupType == "aggregate" {
-			subGroups, err := s.AggregateGroupService.GetSubGroups(c.Request.Context(), group.ID)
-			if err != nil {
-				logrus.WithError(err).WithField("group_id", group.ID).Warn("Failed to get sub-groups during export")
-			} else {
-				for _, sg := range subGroups {
-					groupExport.SubGroups = append(groupExport.SubGroups, SubGroupExportInfo{
-						GroupName: sg.Group.Name,
-						Weight:    sg.Weight,
-					})
-				}
-			}
+		// Convert sub-groups
+		for _, sg := range groupData.SubGroups {
+			groupExport.SubGroups = append(groupExport.SubGroups, SubGroupExportInfo{
+				GroupName: sg.GroupName,
+				Weight:    sg.Weight,
+			})
 		}
 
 		groupExports = append(groupExports, groupExport)
 	}
 
+	logrus.Debugf("System export via new service: Total %d keys exported across %d groups",
+		totalKeys, len(systemData.Groups))
+
 	exportData := SystemExportData{
-		Version:        "2.0",
-		ExportedAt:     time.Now().Format(time.RFC3339),
-		SystemSettings: settingsMap,
+		Version:        systemData.Version,
+		ExportedAt:     systemData.ExportedAt,
+		SystemSettings: systemData.SystemSettings,
 		Groups:         groupExports,
 	}
 
-	// Set response headers
-	filename := fmt.Sprintf("system_export_%s.json", time.Now().Format("20060102_150405"))
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	c.Header("Content-Type", "application/json; charset=utf-8")
-	c.Header("Content-Transfer-Encoding", "binary")
-
-	// Return JSON data
-	c.JSON(http.StatusOK, exportData)
+	// Return JSON data with standard response format
+	response.Success(c, exportData)
 }
 
 // SystemImportData represents the data structure for system-wide import.
@@ -138,6 +122,17 @@ func (s *Server) ImportAll(c *gin.Context) {
 	if err := c.ShouldBindJSON(&importData); err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
 		return
+	}
+
+	// Log import summary
+	totalKeys := 0
+	for _, groupExport := range importData.Groups {
+		totalKeys += len(groupExport.Keys)
+	}
+	logrus.Infof("System import: %d groups with %d total keys",
+		len(importData.Groups), totalKeys)
+	if len(importData.SystemSettings) > 0 {
+		logrus.Debugf("System settings: %d", len(importData.SystemSettings))
 	}
 
 	// Validate version compatibility
@@ -166,37 +161,67 @@ func (s *Server) ImportAll(c *gin.Context) {
 		}
 	}
 
+	// Convert handler format to service format for unified import
+	serviceImportData := &services.SystemExportData{
+		Version:        importData.Version,
+		ExportedAt:     "", // Not needed for import
+		SystemSettings: importData.SystemSettings,
+		Groups:         make([]services.GroupExportData, 0, len(importData.Groups)),
+	}
+
+	// Convert groups to service format
+	for _, groupExport := range importData.Groups {
+		// Convert HeaderRules back to JSON for storage
+		headerRulesJSON, _ := json.Marshal(groupExport.Group.HeaderRules)
+
+		groupData := services.GroupExportData{
+			Group: models.Group{
+				Name:               groupExport.Group.Name,
+				DisplayName:        groupExport.Group.DisplayName,
+				Description:        groupExport.Group.Description,
+				GroupType:          groupExport.Group.GroupType,
+				ChannelType:        groupExport.Group.ChannelType,
+				Enabled:            groupExport.Group.Enabled,
+				TestModel:          groupExport.Group.TestModel,
+				ValidationEndpoint: groupExport.Group.ValidationEndpoint,
+				Upstreams:          []byte(groupExport.Group.Upstreams),
+				ParamOverrides:     groupExport.Group.ParamOverrides,
+				Config:             groupExport.Group.Config,
+				HeaderRules:        headerRulesJSON,
+				ModelMapping:       groupExport.Group.ModelMapping,
+				ProxyKeys:          groupExport.Group.ProxyKeys,
+				Sort:               groupExport.Group.Sort,
+			},
+			Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
+			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
+		}
+
+		// Convert keys
+		for _, key := range groupExport.Keys {
+			groupData.Keys = append(groupData.Keys, services.KeyExportInfo{
+				KeyValue: key.KeyValue,
+				Status:   key.Status,
+			})
+		}
+
+		// Convert sub-groups
+		for _, sg := range groupExport.SubGroups {
+			groupData.SubGroups = append(groupData.SubGroups, services.SubGroupInfo{
+				GroupName: sg.GroupName,
+				Weight:    sg.Weight,
+			})
+		}
+
+		serviceImportData.Groups = append(serviceImportData.Groups, groupData)
+	}
+
 	// Use transaction to ensure data consistency
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		// Import system settings (overwrite mode)
-		if len(importData.SystemSettings) > 0 {
-			for key, value := range importData.SystemSettings {
-				var setting models.SystemSetting
-				if err := tx.Where("setting_key = ?", key).First(&setting).Error; err == nil {
-					// Update if exists
-					if err := tx.Model(&setting).Update("setting_value", value).Error; err != nil {
-						return err
-					}
-				} else {
-					// Create if not exists
-					setting = models.SystemSetting{
-						SettingKey:   key,
-						SettingValue: value,
-					}
-					if err := tx.Create(&setting).Error; err != nil {
-						return err
-					}
-				}
-			}
+		// Use the unified ExportImportService for system import
+		// This ensures consistent handling of all imports
+		if err := s.ExportImportService.ImportSystem(tx, serviceImportData); err != nil {
+			return err
 		}
-
-		// Import all groups
-		for _, groupExport := range importData.Groups {
-			if _, err := importGroupFromExportData(tx, groupExport.Group, groupExport.Keys, groupExport.SubGroups); err != nil {
-				return err
-			}
-		}
-
 		return nil
 	})
 
@@ -205,20 +230,263 @@ func (s *Server) ImportAll(c *gin.Context) {
 		return
 	}
 
-	// Trigger system settings reload (via UpdateSettings which triggers syncer.Invalidate)
-	// Use the previously converted settingsMap to trigger cache refresh
+	// Force reload system settings from database after import
+	// This ensures all imported settings take effect immediately
+	logrus.Info("Forcing system settings reload after import...")
+
+	// Use the new ReloadSettings method to force synchronous cache reload
 	if len(convertedSettingsMap) > 0 {
-		// Call UpdateSettings to trigger cache refresh
-		// Although database is already updated, UpdateSettings uses OnConflict handling and won't duplicate updates
-		// If UpdateSettings fails (e.g., syncer.Invalidate fails), only log warning, don't return error
-		// because data is already correctly saved, just cache refresh failed, can wait for auto refresh
-		if err := s.SettingsManager.UpdateSettings(convertedSettingsMap); err != nil {
-			logrus.WithError(err).Warn("Failed to refresh system settings cache after import, but data has been saved correctly")
-			// Don't return error because data is already correctly saved, just cache refresh failed
+		if err := s.SettingsManager.ReloadSettings(); err != nil {
+			logrus.WithError(err).Warn("Failed to reload system settings cache, settings may not take effect immediately")
+		} else {
+			logrus.Info("System settings cache reloaded successfully")
 		}
 	}
 
+	// Invalidate group manager cache to ensure new groups are visible
+	if s.GroupManager != nil {
+		if err := s.GroupManager.Invalidate(); err != nil {
+			logrus.WithError(err).Warn("Failed to invalidate group manager cache")
+		} else {
+			logrus.Info("Group manager cache invalidated successfully")
+		}
+	}
+
+	logrus.Info("System import completed successfully")
 	response.SuccessI18n(c, "success.system_imported", nil)
+}
+
+// SystemSettingsImportData represents the data structure for system settings import only.
+type SystemSettingsImportData struct {
+	SystemSettings map[string]string `json:"system_settings"`
+}
+
+// ImportSystemSettings imports system settings only and forces cache reload.
+// This is a separate endpoint that focuses solely on system settings import and refresh.
+func (s *Server) ImportSystemSettings(c *gin.Context) {
+	var importData SystemSettingsImportData
+	if err := c.ShouldBindJSON(&importData); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	if len(importData.SystemSettings) == 0 {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "No system settings provided"))
+		return
+	}
+
+	logrus.Infof("Importing system settings: %d settings", len(importData.SystemSettings))
+
+	// Convert map[string]string to map[string]any and perform type conversion
+	convertedSettingsMap, err := convertSettingsMap(importData.SystemSettings)
+	if err != nil {
+		logrus.WithError(err).Error("Failed to convert system settings during import")
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Invalid system settings: %v", err)))
+		return
+	}
+
+	// Validate settings before transaction
+	if err := s.SettingsManager.ValidateSettings(convertedSettingsMap); err != nil {
+		logrus.WithError(err).Error("System settings validation failed during import")
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, fmt.Sprintf("Invalid system settings: %v", err)))
+		return
+	}
+
+	// Use transaction to ensure data consistency
+	err = s.DB.Transaction(func(tx *gorm.DB) error {
+		// Import system settings using the same logic as ExportImportService
+		updatedSettings := 0
+		createdSettings := 0
+
+		for key, value := range importData.SystemSettings {
+			var setting models.SystemSetting
+			if err := tx.Where("setting_key = ?", key).First(&setting).Error; err == nil {
+				// Update existing setting
+				if err := tx.Model(&setting).Updates(map[string]interface{}{
+					"setting_value": value,
+					"updated_at":    time.Now(),
+				}).Error; err != nil {
+					return fmt.Errorf("failed to update setting %s: %w", key, err)
+				}
+				updatedSettings++
+				logrus.Debugf("Updated setting: %s", key)
+			} else {
+				// Create new setting
+				setting = models.SystemSetting{
+					SettingKey:   key,
+					SettingValue: value,
+				}
+				if err := tx.Create(&setting).Error; err != nil {
+					return fmt.Errorf("failed to create setting %s: %w", key, err)
+				}
+				createdSettings++
+				logrus.Debugf("Created new setting: %s", key)
+			}
+		}
+
+		logrus.Infof("System settings imported: %d updated, %d created", updatedSettings, createdSettings)
+		return nil
+	})
+
+	if err != nil {
+		logrus.WithError(err).Error("Failed to import system settings")
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
+		return
+	}
+
+	// Force synchronous reload of system settings cache after transaction commits
+	// This ensures the imported settings take effect immediately
+	logrus.Info("Forcing system settings cache reload after import...")
+	if err := s.SettingsManager.ReloadSettings(); err != nil {
+		logrus.WithError(err).Error("Failed to reload system settings cache")
+		// Still return success as database was updated, but log the error
+		response.SuccessI18n(c, "success.system_settings_imported", map[string]interface{}{
+			"warning": "Settings imported but cache reload failed. Please restart the service.",
+		})
+		return
+	}
+
+	// Also invalidate group manager cache if needed
+	if s.GroupManager != nil {
+		if err := s.GroupManager.Invalidate(); err != nil {
+			logrus.WithError(err).Warn("Failed to invalidate group manager cache")
+		}
+	}
+
+	logrus.Info("System settings import completed successfully")
+	response.SuccessI18n(c, "success.system_settings_imported", nil)
+}
+
+// GroupsBatchImportData represents the data structure for batch group import.
+type GroupsBatchImportData struct {
+	Groups []GroupExportData `json:"groups"`
+}
+
+// ImportGroupsBatch imports multiple groups in batch.
+// This reuses the existing ImportGroup logic for consistency.
+func (s *Server) ImportGroupsBatch(c *gin.Context) {
+	var importData GroupsBatchImportData
+	if err := c.ShouldBindJSON(&importData); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	if len(importData.Groups) == 0 {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "No groups provided"))
+		return
+	}
+
+	// Log import summary
+	totalKeys := 0
+	for _, groupExport := range importData.Groups {
+		totalKeys += len(groupExport.Keys)
+	}
+	logrus.Infof("Batch importing %d groups with %d total keys", len(importData.Groups), totalKeys)
+
+	// Convert handler format to service format for unified import
+	serviceGroups := make([]services.GroupExportData, 0, len(importData.Groups))
+	for _, groupExport := range importData.Groups {
+		// Convert HeaderRules back to JSON for storage
+		headerRulesJSON, _ := json.Marshal(groupExport.Group.HeaderRules)
+
+		groupData := services.GroupExportData{
+			Group: models.Group{
+				Name:               groupExport.Group.Name,
+				DisplayName:        groupExport.Group.DisplayName,
+				Description:        groupExport.Group.Description,
+				GroupType:          groupExport.Group.GroupType,
+				ChannelType:        groupExport.Group.ChannelType,
+				Enabled:            groupExport.Group.Enabled,
+				TestModel:          groupExport.Group.TestModel,
+				ValidationEndpoint: groupExport.Group.ValidationEndpoint,
+				Upstreams:          []byte(groupExport.Group.Upstreams),
+				ParamOverrides:     groupExport.Group.ParamOverrides,
+				Config:             groupExport.Group.Config,
+				HeaderRules:        headerRulesJSON,
+				ModelMapping:       groupExport.Group.ModelMapping,
+				ProxyKeys:          groupExport.Group.ProxyKeys,
+				Sort:               groupExport.Group.Sort,
+			},
+			Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
+			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
+		}
+
+		// Convert keys
+		for _, key := range groupExport.Keys {
+			groupData.Keys = append(groupData.Keys, services.KeyExportInfo{
+				KeyValue: key.KeyValue,
+				Status:   key.Status,
+			})
+		}
+
+		// Convert sub-groups
+		for _, sg := range groupExport.SubGroups {
+			groupData.SubGroups = append(groupData.SubGroups, services.SubGroupInfo{
+				GroupName: sg.GroupName,
+				Weight:    sg.Weight,
+			})
+		}
+
+		serviceGroups = append(serviceGroups, groupData)
+	}
+
+	// Use transaction to ensure data consistency
+	var importedGroups []models.Group
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		// Import all groups using the unified ExportImportService
+		importedCount := 0
+		for _, groupData := range serviceGroups {
+			groupID, err := s.ExportImportService.ImportGroup(tx, &groupData)
+			if err != nil {
+				// Log error but continue with other groups
+				logrus.WithError(err).Warnf("Failed to import group %s, skipping", groupData.Group.Name)
+				continue
+			}
+
+			// Query the created group within the transaction
+			var createdGroup models.Group
+			if err := tx.First(&createdGroup, groupID).Error; err != nil {
+				logrus.WithError(err).Warnf("Failed to query imported group %d", groupID)
+				continue
+			}
+
+			importedGroups = append(importedGroups, createdGroup)
+			importedCount++
+			logrus.Debugf("Imported group %s with ID %d", groupData.Group.Name, groupID)
+		}
+
+		logrus.Infof("Groups imported: %d/%d successful", importedCount, len(serviceGroups))
+		return nil
+	})
+
+	if err != nil {
+		logrus.WithError(err).Error("Failed to import groups batch")
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
+		return
+	}
+
+	// Invalidate group manager cache to ensure new groups are visible
+	if s.GroupManager != nil {
+		if err := s.GroupManager.Invalidate(); err != nil {
+			logrus.WithError(err).Warn("Failed to invalidate group manager cache")
+		} else {
+			logrus.Info("Group manager cache invalidated successfully")
+		}
+	}
+
+	// Convert imported groups to response format
+	groupResponses := make([]interface{}, 0, len(importedGroups))
+	for _, group := range importedGroups {
+		groupResponses = append(groupResponses, s.newGroupResponse(&group))
+	}
+
+	logrus.Infof("Batch import completed: %d groups imported", len(importedGroups))
+	response.SuccessI18n(c, "success.groups_batch_imported", map[string]interface{}{
+		"groups":      groupResponses,
+		"imported":    len(importedGroups),
+		"total":       len(importData.Groups),
+		"failed":      len(importData.Groups) - len(importedGroups),
+	})
 }
 
 // convertSettingsMap converts map[string]string to map[string]any and performs type conversion based on field types.

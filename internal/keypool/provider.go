@@ -22,7 +22,10 @@ type KeyProvider struct {
 	store                     store.Store
 	settingsManager           *config.SystemSettingsManager
 	encryptionSvc             encryption.Service
-	CacheInvalidationCallback func(groupID uint) // Optional callback for cache invalidation
+	// CacheInvalidationCallback is an optional callback for cache invalidation.
+	// Note: This callback will be invoked from a goroutine (spawned in UpdateStatus),
+	// so implementers must handle concurrent access if the callback accesses shared state.
+	CacheInvalidationCallback func(groupID uint)
 }
 
 // NewProvider creates a new KeyProvider instance.
