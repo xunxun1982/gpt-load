@@ -355,6 +355,24 @@ export default {
     addHeader: "Add Header",
     paramOverridesTooltip:
       "Define the API request parameters to be overridden using JSON format. These parameters will be merged with the original parameters when sending the request.",
+    modelRedirectPolicy: "Unconfigured Model Policy",
+    modelRedirectPolicyTooltip:
+      "Choose how to handle requests for models not configured in redirect rules",
+    modelRedirectStrictMode: "Strict Mode: Reject unconfigured model requests (return 404)",
+    modelRedirectLooseMode: "Loose Mode: Pass through unconfigured model requests",
+    modelRedirectStrictWarning:
+      "In strict mode, only models configured in redirect rules below can be requested, other models will return 404 error",
+    modelRedirectLooseInfo:
+      "In loose mode, models without redirect configuration will be passed directly to upstream service",
+    modelRedirectRules: "Model Redirect Rules",
+    modelRedirectRulesTooltip:
+      "Configure model redirect rules, key is the model name requested by user, value is the actual model name sent to upstream",
+    modelRedirectRulesDescription:
+      "Configure model redirect rules, key is the model name requested by user, value is the actual model name sent to upstream",
+    modelRedirectInvalidJson: "Invalid JSON format for model redirect rules",
+    modelRedirectInvalidFormat: "Model redirect rule keys and values must all be strings",
+    modelRedirectEmptyModel: "Model name cannot be empty",
+    modelRedirectSelfReference: "Cannot redirect model to itself: {model}",
     never: "Never",
     daysAgo: "{days} days ago",
     hoursAgo: "{hours} hours ago",
