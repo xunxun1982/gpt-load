@@ -374,6 +374,7 @@ export default {
       "HTTPヘッダー名、値、操作タイプを設定します。削除操作は指定されたヘッダーを削除します",
     headerName: "ヘッダー名",
     duplicateHeader: "重複するヘッダー名",
+    duplicatePathRedirect: "重複する元のパス",
     headerValuePlaceholder: "変数をサポート、例：${CLIENT_IP}",
     willRemoveFromRequest: "リクエストから削除されます",
     removeToggleTooltip:

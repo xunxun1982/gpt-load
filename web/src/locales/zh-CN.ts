@@ -363,6 +363,7 @@ export default {
     headerTooltip: "配置HTTP请求头的名称、值和操作类型。移除操作会删除指定的请求头",
     headerName: "Header名称",
     duplicateHeader: "Header名称重复",
+    duplicatePathRedirect: "原始路径重复",
     headerValuePlaceholder: "支持变量，例如：${CLIENT_IP}",
     willRemoveFromRequest: "将从请求中移除",
     removeToggleTooltip: "开启移除开关将删除此请求头，关闭则添加或覆盖此请求头",

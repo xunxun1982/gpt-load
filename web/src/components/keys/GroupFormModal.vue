@@ -346,6 +346,7 @@ function resetForm() {
     config: {},
     configItems: [],
     header_rules: [],
+    path_redirects: [],
     proxy_keys: "",
   });
 
@@ -513,6 +514,30 @@ function formatModelMappingJson() {
 // 删除Header规则
 function removeHeaderRule(index: number) {
   formData.header_rules.splice(index, 1);
+}
+
+// 添加路径重定向规则
+function addPathRedirect() {
+  formData.path_redirects.push({
+    from: '',
+    to: '',
+  });
+}
+
+// 验证路径重定向 from 路径唯一性
+function validatePathRedirectFromUniqueness(
+  rules: PathRedirectRule[],
+  currentIndex: number,
+  from: string
+): boolean {
+  if (!from.trim()) {
+    return true;
+  }
+
+  const normalizedFrom = from.trim();
+  return !rules.some(
+    (rule, index) => index !== currentIndex && rule.from.trim() === normalizedFrom
+  );
 }
 
 // 规范化Header Key到Canonical格式（模拟HTTP标准）
@@ -1216,35 +1241,35 @@ async function handleSubmit() {
                   />
                 </n-form-item>
 
-                <div class="config-section">
+              </div>
+
               <div class="config-section">
                 <h5 class="config-title-with-tooltip">
                   {{ t("keys.modelMapping") }}
-                      <n-tooltip trigger="hover" placement="top">
-                        <template #trigger>
-                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
-                        </template>
-                        {{ t("keys.modelMappingTooltip") }}
-                      </n-tooltip>
-                    </h5>
-                    <n-button-group size="small">
-                      <n-button
-                        :type="modelMappingEditMode === 'visual' ? 'primary' : 'default'"
-                        @click="modelMappingEditMode = 'visual'"
-                      >
-                        {{ t("keys.visualEdit") }}
-                      </n-button>
-                      <n-button
-                        :type="modelMappingEditMode === 'json' ? 'primary' : 'default'"
-                        @click="modelMappingEditMode = 'json'"
-                      >
-                        {{ t("keys.jsonEdit") }}
-                      </n-button>
-                    </n-button-group>
-                  </div>
+                  <n-tooltip trigger="hover" placement="top">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                    </template>
+                    {{ t("keys.modelMappingTooltip") }}
+                  </n-tooltip>
+                </h5>
+                <n-button-group size="small">
+                  <n-button
+                    :type="modelMappingEditMode === 'visual' ? 'primary' : 'default'"
+                    @click="modelMappingEditMode = 'visual'"
+                  >
+                    {{ t("keys.visualEdit") }}
+                  </n-button>
+                  <n-button
+                    :type="modelMappingEditMode === 'json' ? 'primary' : 'default'"
+                    @click="modelMappingEditMode = 'json'"
+                  >
+                    {{ t("keys.jsonEdit") }}
+                  </n-button>
+                </n-button-group>
 
-                  <!-- 可视化编辑模式 -->
-                  <div v-if="modelMappingEditMode === 'visual'" class="model-mapping-items">
+                <!-- 可视化编辑模式 -->
+                <div v-if="modelMappingEditMode === 'visual'" class="model-mapping-items">
                     <n-form-item
                       v-for="(item, index) in formData.model_mapping_items"
                       :key="index"
@@ -1282,16 +1307,15 @@ async function handleSubmit() {
                     </n-button>
                   </div>
 
-                  <!-- JSON 编辑模式 -->
-                  <div v-else>
-                    <n-input
-                      v-model:value="formData.model_mapping"
-                      type="textarea"
-                      placeholder='{"gpt-4":"gpt-4-turbo"}'
-                      :rows="6"
-                      @blur="formatModelMappingJson"
-                    />
-                  </div>
+                <!-- JSON 编辑模式 -->
+                <div v-else>
+                  <n-input
+                    v-model:value="formData.model_mapping"
+                    type="textarea"
+                    placeholder='{"gpt-4":"gpt-4-turbo"}'
+                    :rows="6"
+                    @blur="formatModelMappingJson"
+                  />
                 </div>
               </div>
 
@@ -1322,7 +1346,31 @@ async function handleSubmit() {
                 >
                   <div class="model-mapping-item-content">
                     <div class="model-mapping-from">
-                      <n-input v-model:value="rule.from" :placeholder="t('keys.pathRedirectFromPlaceholder')" />
+                      <n-input
+                        v-model:value="rule.from"
+                        :placeholder="t('keys.pathRedirectFromPlaceholder')"
+                        :status="
+                          !validatePathRedirectFromUniqueness(
+                            formData.path_redirects,
+                            index,
+                            rule.from
+                          )
+                            ? 'error'
+                            : undefined
+                        "
+                      />
+                      <div
+                        v-if="
+                          !validatePathRedirectFromUniqueness(
+                            formData.path_redirects,
+                            index,
+                            rule.from
+                          )
+                        "
+                        class="error-message"
+                      >
+                        {{ t("keys.duplicatePathRedirect") }}
+                      </div>
                     </div>
                     <div class="model-mapping-arrow">→</div>
                     <div class="model-mapping-to">
@@ -1336,7 +1384,7 @@ async function handleSubmit() {
                   </div>
                 </n-form-item>
 
-                <n-button dashed block @click="formData.path_redirects.push({ from: '', to: '' })" style="margin-top: 8px">
+                <n-button dashed block @click="addPathRedirect" style="margin-top: 8px">
                   <template #icon>
                     <n-icon :component="Add" />
                   </template>

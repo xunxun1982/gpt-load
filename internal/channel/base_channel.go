@@ -110,7 +110,7 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 	}
 
 	// Apply path redirect rules (OpenAI only; rules list is empty for other channels)
-	reqPath = b.applyPathRedirects(reqPath, groupName)
+	reqPath = b.applyPathRedirects(reqPath)
 
 	finalURL := base
 	// Use url.JoinPath for safe path joining (Go 1.19+)
@@ -184,7 +184,7 @@ func (b *BaseChannel) GetStreamClient() *http.Client {
 
 // applyPathRedirects applies first matching prefix rewrite rule to the request path.
 // Rules are expected to be relative to the group (i.e., without /proxy/{group}).
-func (b *BaseChannel) applyPathRedirects(reqPath string, groupName string) string {
+func (b *BaseChannel) applyPathRedirects(reqPath string) string {
 	if len(b.pathRedirectRules) == 0 || reqPath == "" {
 		return reqPath
 	}

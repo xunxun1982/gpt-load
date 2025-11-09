@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
@@ -1248,6 +1249,33 @@ func (s *GroupService) normalizePathRedirects(rules []models.PathRedirectRule) (
 	if len(rules) == 0 {
 		return datatypes.JSON("[]"), nil
 	}
+
+	// normalizePathForMatching applies the same canonicalization used at request time
+	normalizePathForMatching := func(p string) string {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return ""
+		}
+		// Strip scheme/host if a full URL was provided
+		if u, err := url.Parse(p); err == nil && u.Scheme != "" {
+			p = u.Path
+		}
+		// Remove '/proxy/{group}/' prefix if present
+		if strings.HasPrefix(p, "/proxy/") {
+			rest := strings.TrimPrefix(p, "/proxy/")
+			if idx := strings.IndexByte(rest, '/'); idx >= 0 {
+				p = rest[idx:]
+			} else {
+				p = "/"
+			}
+		}
+		// Ensure leading slash
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		return p
+	}
+
 	seen := make(map[string]bool)
 	normalized := make([]models.PathRedirectRule, 0, len(rules))
 	for _, r := range rules {
@@ -1260,8 +1288,9 @@ func (s *GroupService) normalizePathRedirects(rules []models.PathRedirectRule) (
 		if len(from) > 512 || len(to) > 512 {
 			continue
 		}
-		key := strings.ToLower(from)
-		if seen[key] {
+		// Use the same normalization as runtime matching to dedupe
+		key := normalizePathForMatching(from)
+		if key == "" || seen[key] {
 			continue
 		}
 		seen[key] = true

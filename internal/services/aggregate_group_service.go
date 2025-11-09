@@ -331,15 +331,6 @@ func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Co
 		Count(&count).Error
 
 	if err != nil {
-		// Graceful degradation to avoid failing updates due to transient DB timeouts/locks
-		if errors.Is(err, context.DeadlineExceeded) ||
-			strings.Contains(strings.ToLower(err.Error()), "database is locked") ||
-			strings.Contains(strings.ToLower(err.Error()), "busy") ||
-			strings.Contains(strings.ToLower(err.Error()), "interrupted") {
-			logrus.WithContext(ctx).WithError(err).WithField("sub_group_id", subGroupID).
-				Warn("CountAggregateGroupsUsingSubGroup timed out/locked - returning 0 to avoid blocking update")
-			return 0, nil
-		}
 		return 0, app_errors.ParseDBError(err)
 	}
 

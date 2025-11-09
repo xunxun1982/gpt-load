@@ -375,6 +375,7 @@ export default {
       "Configure HTTP header name, value and operation type. Remove operation will delete the specified header",
     headerName: "Header name",
     duplicateHeader: "Duplicate header name",
+    duplicatePathRedirect: "Duplicate source path",
     headerValuePlaceholder: "Supports variables, e.g.: ${CLIENT_IP}",
     willRemoveFromRequest: "Will be removed from request",
     removeToggleTooltip:
