@@ -2,7 +2,7 @@
 import { keysApi } from "@/api/keys";
 import { settingsApi } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
-import type { Group, GroupConfigOption, UpstreamInfo } from "@/types/models";
+import type { Group, GroupConfigOption, UpstreamInfo, PathRedirectRule } from "@/types/models";
 import { Add, Close, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
   NButton,
@@ -83,6 +83,7 @@ interface GroupFormData {
   config: Record<string, number | string | boolean>;
   configItems: ConfigItem[];
   header_rules: HeaderRuleItem[];
+  path_redirects: PathRedirectRule[];
   proxy_keys: string;
 }
 
@@ -107,6 +108,7 @@ const formData = reactive<GroupFormData>({
   config: {},
   configItems: [] as ConfigItem[],
   header_rules: [] as HeaderRuleItem[],
+  path_redirects: [] as PathRedirectRule[],
   proxy_keys: "",
 });
 
@@ -389,6 +391,10 @@ function loadGroupData() {
       value: rule.value || "",
       action: (rule.action as "set" | "remove") || "set",
     })),
+    path_redirects: (props.group.path_redirects || []).map((r: PathRedirectRule) => ({
+      from: (r.from || ""),
+      to: (r.to || ""),
+    })),
     proxy_keys: props.group.proxy_keys || "",
   });
 }
@@ -629,6 +635,9 @@ async function handleSubmit() {
           value: rule.value,
           action: rule.action,
         })),
+      path_redirects: (formData.path_redirects || [])
+        .filter((r: PathRedirectRule) => (r.from || "").trim() && (r.to || "").trim())
+        .map((r: PathRedirectRule) => ({ from: (r.from || "").trim(), to: (r.to || "").trim() })),
       proxy_keys: formData.proxy_keys,
     };
 
@@ -1208,9 +1217,9 @@ async function handleSubmit() {
                 </n-form-item>
 
                 <div class="config-section">
-                  <div class="config-header-with-switch">
-                    <h5 class="config-title-with-tooltip">
-                      {{ t("keys.modelMapping") }}
+              <div class="config-section">
+                <h5 class="config-title-with-tooltip">
+                  {{ t("keys.modelMapping") }}
                       <n-tooltip trigger="hover" placement="top">
                         <template #trigger>
                           <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
@@ -1284,6 +1293,55 @@ async function handleSubmit() {
                     />
                   </div>
                 </div>
+              </div>
+
+              <!-- URL 路径重写（仅 OpenAI 渠道显示） -->
+              <div class="config-section" v-if="formData.channel_type === 'openai'">
+                <h5 class="config-title-with-tooltip">
+                  {{ t("keys.pathRedirects") }}
+                  <n-tooltip trigger="hover" placement="top">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                    </template>
+                    <div>
+                      {{ t("keys.pathRedirectsTooltip1") }}
+                      <br />
+                      • /v1 → /v2
+                      <br />
+                      • /v1 → /api/paas/v4
+                      <br />
+                      {{ t("keys.pathRedirectsTooltip2") }}
+                    </div>
+                  </n-tooltip>
+                </h5>
+
+                <n-form-item
+                  v-for="(rule, index) in formData.path_redirects"
+                  :key="index"
+                  :label="`${t('keys.pathRedirect')} ${index + 1}`"
+                >
+                  <div class="model-mapping-item-content">
+                    <div class="model-mapping-from">
+                      <n-input v-model:value="rule.from" :placeholder="t('keys.pathRedirectFromPlaceholder')" />
+                    </div>
+                    <div class="model-mapping-arrow">→</div>
+                    <div class="model-mapping-to">
+                      <n-input v-model:value="rule.to" :placeholder="t('keys.pathRedirectToPlaceholder')" />
+                    </div>
+                    <n-button text type="error" @click="formData.path_redirects.splice(index, 1)" class="remove-btn">
+                      <template #icon>
+                        <n-icon :component="Close" />
+                      </template>
+                    </n-button>
+                  </div>
+                </n-form-item>
+
+                <n-button dashed block @click="formData.path_redirects.push({ from: '', to: '' })" style="margin-top: 8px">
+                  <template #icon>
+                    <n-icon :component="Add" />
+                  </template>
+                  {{ t("keys.addPathRedirect") }}
+                </n-button>
               </div>
             </n-collapse-item>
           </n-collapse>

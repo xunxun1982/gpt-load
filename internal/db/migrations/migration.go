@@ -31,7 +31,15 @@ func MigrateDatabase(db *gorm.DB) error {
 	}
 
 	// Run v1.3.1 migration - Add dedicated group_id index for faster deletion
-	return V1_3_1_AddGroupIDIndex(db)
+	if err := V1_3_1_AddGroupIDIndex(db); err != nil {
+		return err
+	}
+	// Run v1.3.2 migration - Add slow SQL indexes (sub_group_id, groups.group_type)
+	if err := V1_3_2_AddSlowSQLIndexes(db); err != nil {
+		return err
+	}
+	// Run v1.3.3 migration - Add composite indexes for ordering and filters
+	return V1_3_3_AddCompositeIndexes(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

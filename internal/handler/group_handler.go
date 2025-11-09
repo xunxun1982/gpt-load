@@ -27,20 +27,21 @@ func (s *Server) handleGroupError(c *gin.Context, err error) bool {
 
 // GroupCreateRequest defines the payload for creating a group.
 type GroupCreateRequest struct {
-	Name               string              `json:"name"`
-	DisplayName        string              `json:"display_name"`
-	Description        string              `json:"description"`
-	GroupType          string              `json:"group_type"` // 'standard' or 'aggregate'
-	Upstreams          json.RawMessage     `json:"upstreams"`
-	ChannelType        string              `json:"channel_type"`
-	Sort               int                 `json:"sort"`
-	TestModel          string              `json:"test_model"`
-	ValidationEndpoint string              `json:"validation_endpoint"`
-	ParamOverrides     map[string]any      `json:"param_overrides"`
-	Config             map[string]any      `json:"config"`
-	HeaderRules        []models.HeaderRule `json:"header_rules"`
-	ModelMapping       string              `json:"model_mapping"`
-	ProxyKeys          string              `json:"proxy_keys"`
+	Name               string                  `json:"name"`
+	DisplayName        string                  `json:"display_name"`
+	Description        string                  `json:"description"`
+	GroupType          string                  `json:"group_type"` // 'standard' or 'aggregate'
+	Upstreams          json.RawMessage         `json:"upstreams"`
+	ChannelType        string                  `json:"channel_type"`
+	Sort               int                     `json:"sort"`
+	TestModel          string                  `json:"test_model"`
+	ValidationEndpoint string                  `json:"validation_endpoint"`
+	ParamOverrides     map[string]any          `json:"param_overrides"`
+	Config             map[string]any          `json:"config"`
+	HeaderRules        []models.HeaderRule     `json:"header_rules"`
+	ModelMapping       string                  `json:"model_mapping"`
+	PathRedirects      []models.PathRedirectRule `json:"path_redirects"`
+	ProxyKeys          string                  `json:"proxy_keys"`
 }
 
 // CreateGroup handles the creation of a new group.
@@ -65,8 +66,9 @@ func (s *Server) CreateGroup(c *gin.Context) {
 		Config:             req.Config,
 		HeaderRules:        req.HeaderRules,
 		ModelMapping:       req.ModelMapping,
+		PathRedirects:      req.PathRedirects,
 		ProxyKeys:          req.ProxyKeys,
-	}
+}
 
 	group, err := s.GroupService.CreateGroup(c.Request.Context(), params)
 	if s.handleGroupError(c, err) {
@@ -94,20 +96,21 @@ func (s *Server) ListGroups(c *gin.Context) {
 // GroupUpdateRequest defines the payload for updating a group.
 // Using a dedicated struct avoids issues with zero values being ignored by GORM's Update.
 type GroupUpdateRequest struct {
-	Name               *string             `json:"name,omitempty"`
-	DisplayName        *string             `json:"display_name,omitempty"`
-	Description        *string             `json:"description,omitempty"`
-	GroupType          *string             `json:"group_type,omitempty"`
-	Upstreams          json.RawMessage     `json:"upstreams"`
-	ChannelType        *string             `json:"channel_type,omitempty"`
-	Sort               *int                `json:"sort"`
-	TestModel          string              `json:"test_model"`
-	ValidationEndpoint *string             `json:"validation_endpoint,omitempty"`
-	ParamOverrides     map[string]any      `json:"param_overrides"`
-	Config             map[string]any      `json:"config"`
-	HeaderRules        []models.HeaderRule `json:"header_rules"`
-	ModelMapping       *string             `json:"model_mapping,omitempty"`
-	ProxyKeys          *string             `json:"proxy_keys,omitempty"`
+	Name               *string                 `json:"name,omitempty"`
+	DisplayName        *string                 `json:"display_name,omitempty"`
+	Description        *string                 `json:"description,omitempty"`
+	GroupType          *string                 `json:"group_type,omitempty"`
+	Upstreams          json.RawMessage         `json:"upstreams"`
+	ChannelType        *string                 `json:"channel_type,omitempty"`
+	Sort               *int                    `json:"sort"`
+	TestModel          string                  `json:"test_model"`
+	ValidationEndpoint *string                 `json:"validation_endpoint,omitempty"`
+	ParamOverrides     map[string]any          `json:"param_overrides"`
+	Config             map[string]any          `json:"config"`
+	HeaderRules        []models.HeaderRule     `json:"header_rules"`
+	ModelMapping       *string                 `json:"model_mapping,omitempty"`
+	PathRedirects      []models.PathRedirectRule `json:"path_redirects"`
+	ProxyKeys          *string                 `json:"proxy_keys,omitempty"`
 }
 
 // UpdateGroup handles updating an existing group.
@@ -135,8 +138,9 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		ParamOverrides:     req.ParamOverrides,
 		Config:             req.Config,
 		ModelMapping:       req.ModelMapping,
+		PathRedirects:      req.PathRedirects,
 		ProxyKeys:          req.ProxyKeys,
-	}
+}
 
 	if req.Upstreams != nil {
 		params.Upstreams = req.Upstreams
@@ -163,26 +167,27 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 
 // GroupResponse defines the structure for a group response, excluding sensitive or large fields.
 type GroupResponse struct {
-	ID                 uint                `json:"id"`
-	Name               string              `json:"name"`
-	Endpoint           string              `json:"endpoint"`
-	DisplayName        string              `json:"display_name"`
-	Description        string              `json:"description"`
-	GroupType          string              `json:"group_type"`
-	Enabled            bool                `json:"enabled"`
-	Upstreams          datatypes.JSON      `json:"upstreams"`
-	ChannelType        string              `json:"channel_type"`
-	Sort               int                 `json:"sort"`
-	TestModel          string              `json:"test_model"`
-	ValidationEndpoint string              `json:"validation_endpoint"`
-	ParamOverrides     datatypes.JSONMap   `json:"param_overrides"`
-	Config             datatypes.JSONMap   `json:"config"`
-	HeaderRules        []models.HeaderRule `json:"header_rules"`
-	ModelMapping       string              `json:"model_mapping"`
-	ProxyKeys          string              `json:"proxy_keys"`
-	LastValidatedAt    *time.Time          `json:"last_validated_at"`
-	CreatedAt          time.Time           `json:"created_at"`
-	UpdatedAt          time.Time           `json:"updated_at"`
+	ID                 uint                    `json:"id"`
+	Name               string                  `json:"name"`
+	Endpoint           string                  `json:"endpoint"`
+	DisplayName        string                  `json:"display_name"`
+	Description        string                  `json:"description"`
+	GroupType          string                  `json:"group_type"`
+	Enabled            bool                    `json:"enabled"`
+	Upstreams          datatypes.JSON          `json:"upstreams"`
+	ChannelType        string                  `json:"channel_type"`
+	Sort               int                     `json:"sort"`
+	TestModel          string                  `json:"test_model"`
+	ValidationEndpoint string                  `json:"validation_endpoint"`
+	ParamOverrides     datatypes.JSONMap       `json:"param_overrides"`
+	Config             datatypes.JSONMap       `json:"config"`
+	HeaderRules        []models.HeaderRule     `json:"header_rules"`
+	ModelMapping       string                  `json:"model_mapping"`
+	PathRedirects      []models.PathRedirectRule `json:"path_redirects"`
+	ProxyKeys          string                  `json:"proxy_keys"`
+	LastValidatedAt    *time.Time              `json:"last_validated_at"`
+	CreatedAt          time.Time               `json:"created_at"`
+	UpdatedAt          time.Time               `json:"updated_at"`
 }
 
 // newGroupResponse creates a new GroupResponse from a models.Group.
@@ -205,6 +210,14 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 			headerRules = make([]models.HeaderRule, 0)
 		}
 	}
+	// Parse path redirects from JSON
+	var pathRedirects []models.PathRedirectRule
+	if len(group.PathRedirects) > 0 {
+		if err := json.Unmarshal(group.PathRedirects, &pathRedirects); err != nil {
+			logrus.WithError(err).Error("Failed to unmarshal path redirects")
+			pathRedirects = make([]models.PathRedirectRule, 0)
+		}
+	}
 
 	return &GroupResponse{
 		ID:                 group.ID,
@@ -223,6 +236,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		Config:             group.Config,
 		HeaderRules:        headerRules,
 		ModelMapping:       group.ModelMapping,
+		PathRedirects:      pathRedirects,
 		ProxyKeys:          group.ProxyKeys,
 		LastValidatedAt:    group.LastValidatedAt,
 		CreatedAt:          group.CreatedAt,

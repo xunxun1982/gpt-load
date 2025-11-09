@@ -40,6 +40,11 @@ export interface HeaderRule {
   action: "set" | "remove";
 }
 
+export interface PathRedirectRule {
+  from: string;
+  to: string;
+}
+
 // 子分组配置（创建/更新时使用）
 export interface SubGroupConfig {
   group_id: number;
@@ -80,6 +85,7 @@ export interface Group {
   param_overrides: Record<string, unknown>;
   model_mapping?: string;
   header_rules?: HeaderRule[];
+  path_redirects?: PathRedirectRule[];
   proxy_keys: string;
   group_type?: GroupType;
   sub_groups?: SubGroupInfo[]; // 子分组列表（仅聚合分组）
