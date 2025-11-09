@@ -217,7 +217,13 @@ func (b *BaseChannel) applyPathRedirects(reqPath string) string {
 			continue
 		}
 		if strings.HasPrefix(reqPath, from) {
-			return to + strings.TrimPrefix(reqPath, from)
+			rest := reqPath[len(from):]
+			if rest == "" {
+				return to
+			}
+			if strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, "?") || strings.HasPrefix(rest, "#") {
+				return to + rest
+			}
 		}
 	}
 	return reqPath
