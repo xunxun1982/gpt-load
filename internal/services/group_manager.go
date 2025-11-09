@@ -49,7 +49,7 @@ loader := func() (map[string]*models.Group, error) {
 ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
 		// Use Select to only fetch necessary fields, reducing data transfer and improving performance
-		if err := gm.db.WithContext(ctx).Select("id, name, display_name, description, group_type, enabled, upstreams, validation_endpoint, channel_type, sort, test_model, param_overrides, config, header_rules, model_mapping, proxy_keys, last_validated_at, created_at, updated_at").Find(&groups).Error; err != nil {
+if err := gm.db.WithContext(ctx).Select("id, name,display_name, description, group_type, enabled, upstreams, validation_endpoint, channel_type, sort, test_model, param_overrides, config, header_rules, model_mapping, path_redirects, proxy_keys, last_validated_at, created_at, updated_at").Find(&groups).Error; err != nil {
 			// If DB is locked or timed out, serve stale cache if available
 			if gm.syncer != nil && (strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "busy") || strings.Contains(err.Error(), "interrupted") || err == context.DeadlineExceeded) {
 				logrus.WithError(err).Warn("Group loader timed out/locked - returning stale cache")
@@ -96,7 +96,7 @@ allSubGroups := make([]models.GroupSubGroup, 0, 200)
 				g.HeaderRuleList = []models.HeaderRule{}
 			}
 
-			// Parse model mapping cache for performance
+// Parse model mapping cache for performance
 			if g.ModelMapping != "" {
 				modelMap, err := utils.ParseModelMapping(g.ModelMapping)
 				if err != nil {
@@ -105,6 +105,16 @@ allSubGroups := make([]models.GroupSubGroup, 0, 200)
 				} else {
 					g.ModelMappingCache = modelMap
 				}
+			}
+
+			// Parse path redirect rules (OpenAI only)
+			if len(group.PathRedirects) > 0 {
+				if err := json.Unmarshal(group.PathRedirects, &g.PathRedirectRuleList); err != nil {
+					logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse path redirects for group")
+					g.PathRedirectRuleList = []models.PathRedirectRule{}
+				}
+			} else {
+				g.PathRedirectRuleList = []models.PathRedirectRule{}
 			}
 
 			// Load sub-groups for aggregate groups
@@ -127,6 +137,7 @@ allSubGroups := make([]models.GroupSubGroup, 0, 200)
 				"effective_config":   g.EffectiveConfig,
 				"header_rules_count": len(g.HeaderRuleList),
 				"model_mapping":      g.ModelMapping != "",
+				"path_redirects":     len(g.PathRedirectRuleList),
 				"sub_group_count":    len(g.SubGroups),
 			}).Debug("Loaded group with effective config")
 		}

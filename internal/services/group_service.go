@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
@@ -129,6 +130,7 @@ type GroupCreateParams struct {
 	Config             map[string]any
 	HeaderRules        []models.HeaderRule
 	ModelMapping       string
+	PathRedirects      []models.PathRedirectRule
 	ProxyKeys          string
 	SubGroups          []SubGroupInput
 }
@@ -150,6 +152,7 @@ type GroupUpdateParams struct {
 	Config             map[string]any
 	HeaderRules        *[]models.HeaderRule
 	ModelMapping       *string
+	PathRedirects      []models.PathRedirectRule
 	ProxyKeys          *string
 	SubGroups          *[]SubGroupInput
 }
@@ -252,6 +255,12 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		}
 	}
 
+	// Normalize path redirects (OpenAI only; stored regardless, applied at runtime per channel)
+	pathRedirectsJSON, err := s.normalizePathRedirects(params.PathRedirects)
+	if err != nil {
+		return nil, err
+	}
+
 	group := models.Group{
 		Name:               name,
 		DisplayName:        strings.TrimSpace(params.DisplayName),
@@ -266,6 +275,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		Config:             cleanedConfig,
 		HeaderRules:        headerRulesJSON,
 		ModelMapping:       modelMapping,
+		PathRedirects:      pathRedirectsJSON,
 		ProxyKeys:          strings.TrimSpace(params.ProxyKeys),
 	}
 
@@ -465,6 +475,15 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			}
 		}
 		group.ModelMapping = modelMapping
+	}
+
+	// Update path redirects if provided
+	if params.PathRedirects != nil {
+		pathRedirectsJSON, err := s.normalizePathRedirects(params.PathRedirects)
+		if err != nil {
+			return nil, err
+		}
+		group.PathRedirects = pathRedirectsJSON
 	}
 
 	if err := tx.Save(&group).Error; err != nil {
@@ -1221,7 +1240,70 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 		return nil, NewI18nError(app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
 	}
 
-	return finalMap, nil
+return finalMap, nil
+}
+
+// normalizePathRedirects validates and normalizes path redirect rules.
+// Keeps only non-empty pairs, trims spaces, and deduplicates by `from` keeping first occurrence.
+func (s *GroupService) normalizePathRedirects(rules []models.PathRedirectRule) (datatypes.JSON, error) {
+	if len(rules) == 0 {
+		return datatypes.JSON("[]"), nil
+	}
+
+	// normalizePathForMatching applies the same canonicalization used at request time
+	normalizePathForMatching := func(p string) string {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return ""
+		}
+		// Strip scheme/host if a full URL was provided
+		if u, err := url.Parse(p); err == nil && u.Scheme != "" {
+			p = u.Path
+		}
+		// Remove '/proxy/{group}/' prefix if present
+		if strings.HasPrefix(p, "/proxy/") {
+			rest := strings.TrimPrefix(p, "/proxy/")
+			if idx := strings.IndexByte(rest, '/'); idx >= 0 {
+				p = rest[idx:]
+			} else {
+				p = "/"
+			}
+		}
+		// Ensure leading slash
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		return p
+	}
+
+	seen := make(map[string]bool)
+	normalized := make([]models.PathRedirectRule, 0, len(rules))
+	for _, r := range rules {
+		from := strings.TrimSpace(r.From)
+		to := strings.TrimSpace(r.To)
+		if from == "" || to == "" {
+			continue
+		}
+		// Cap to reasonable length to avoid accidental huge payloads
+		if len(from) > 512 || len(to) > 512 {
+			continue
+		}
+		// Use the same normalization as runtime matching to dedupe
+		key := normalizePathForMatching(from)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		normalized = append(normalized, models.PathRedirectRule{From: from, To: to})
+	}
+	if len(normalized) == 0 {
+		return datatypes.JSON("[]"), nil
+	}
+	b, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, NewI18nError(app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
+	}
+	return datatypes.JSON(b), nil
 }
 
 // normalizeHeaderRules deduplicates and normalises header rules.

@@ -85,11 +85,13 @@ func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 		return false, fmt.Errorf("failed to parse validation endpoint: %w", err)
 	}
 
-	// Build final URL with path and query parameters
-	finalURL := *upstreamURL
-	finalURL.Path = strings.TrimRight(finalURL.Path, "/") + endpointURL.Path
-	finalURL.RawQuery = endpointURL.RawQuery
-	reqURL := finalURL.String()
+	// Build final URL via channel's selector to apply path redirects consistently
+	proxyURL := &url.URL{Path: "/proxy/" + group.Name + strings.TrimLeft(endpointURL.Path, "/"), RawQuery: endpointURL.RawQuery}
+	selection, err := ch.SelectUpstreamWithClients(proxyURL, group.Name)
+	if err != nil {
+		return false, fmt.Errorf("failed to build upstream url: %w", err)
+	}
+	reqURL := selection.URL
 
 	// Use a minimal, low-cost payload for validation
 	payload := gin.H{
@@ -116,7 +118,11 @@ func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	resp, err := ch.HTTPClient.Do(req)
+	client := ch.HTTPClient
+	if selection != nil && selection.HTTPClient != nil {
+		client = selection.HTTPClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("failed to send validation request: %w", err)
 	}

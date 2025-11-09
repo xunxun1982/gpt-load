@@ -2,7 +2,7 @@
 import { keysApi } from "@/api/keys";
 import { settingsApi } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
-import type { Group, GroupConfigOption, UpstreamInfo } from "@/types/models";
+import type { Group, GroupConfigOption, UpstreamInfo, PathRedirectRule } from "@/types/models";
 import { Add, Close, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
   NButton,
@@ -83,6 +83,7 @@ interface GroupFormData {
   config: Record<string, number | string | boolean>;
   configItems: ConfigItem[];
   header_rules: HeaderRuleItem[];
+  path_redirects: PathRedirectRule[];
   proxy_keys: string;
 }
 
@@ -107,6 +108,7 @@ const formData = reactive<GroupFormData>({
   config: {},
   configItems: [] as ConfigItem[],
   header_rules: [] as HeaderRuleItem[],
+  path_redirects: [] as PathRedirectRule[],
   proxy_keys: "",
 });
 
@@ -344,6 +346,7 @@ function resetForm() {
     config: {},
     configItems: [],
     header_rules: [],
+    path_redirects: [],
     proxy_keys: "",
   });
 
@@ -388,6 +391,10 @@ function loadGroupData() {
       key: rule.key || "",
       value: rule.value || "",
       action: (rule.action as "set" | "remove") || "set",
+    })),
+    path_redirects: (props.group.path_redirects || []).map((r: PathRedirectRule) => ({
+      from: (r.from || ""),
+      to: (r.to || ""),
     })),
     proxy_keys: props.group.proxy_keys || "",
   });
@@ -507,6 +514,30 @@ function formatModelMappingJson() {
 // 删除Header规则
 function removeHeaderRule(index: number) {
   formData.header_rules.splice(index, 1);
+}
+
+// 添加路径重定向规则
+function addPathRedirect() {
+  formData.path_redirects.push({
+    from: '',
+    to: '',
+  });
+}
+
+// 验证路径重定向 from 路径唯一性
+function validatePathRedirectFromUniqueness(
+  rules: PathRedirectRule[],
+  currentIndex: number,
+  from: string
+): boolean {
+  if (!from.trim()) {
+    return true;
+  }
+
+  const normalizedFrom = from.trim();
+  return !rules.some(
+    (rule, index) => index !== currentIndex && rule.from.trim() === normalizedFrom
+  );
 }
 
 // 规范化Header Key到Canonical格式（模拟HTTP标准）
@@ -629,6 +660,9 @@ async function handleSubmit() {
           value: rule.value,
           action: rule.action,
         })),
+      path_redirects: (formData.path_redirects || [])
+        .filter((r: PathRedirectRule) => (r.from || "").trim() && (r.to || "").trim())
+        .map((r: PathRedirectRule) => ({ from: (r.from || "").trim(), to: (r.to || "").trim() })),
       proxy_keys: formData.proxy_keys,
     };
 
@@ -1207,35 +1241,35 @@ async function handleSubmit() {
                   />
                 </n-form-item>
 
-                <div class="config-section">
-                  <div class="config-header-with-switch">
-                    <h5 class="config-title-with-tooltip">
-                      {{ t("keys.modelMapping") }}
-                      <n-tooltip trigger="hover" placement="top">
-                        <template #trigger>
-                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
-                        </template>
-                        {{ t("keys.modelMappingTooltip") }}
-                      </n-tooltip>
-                    </h5>
-                    <n-button-group size="small">
-                      <n-button
-                        :type="modelMappingEditMode === 'visual' ? 'primary' : 'default'"
-                        @click="modelMappingEditMode = 'visual'"
-                      >
-                        {{ t("keys.visualEdit") }}
-                      </n-button>
-                      <n-button
-                        :type="modelMappingEditMode === 'json' ? 'primary' : 'default'"
-                        @click="modelMappingEditMode = 'json'"
-                      >
-                        {{ t("keys.jsonEdit") }}
-                      </n-button>
-                    </n-button-group>
-                  </div>
+              </div>
 
-                  <!-- 可视化编辑模式 -->
-                  <div v-if="modelMappingEditMode === 'visual'" class="model-mapping-items">
+              <div class="config-section">
+                <h5 class="config-title-with-tooltip">
+                  {{ t("keys.modelMapping") }}
+                  <n-tooltip trigger="hover" placement="top">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                    </template>
+                    {{ t("keys.modelMappingTooltip") }}
+                  </n-tooltip>
+                </h5>
+                <n-button-group size="small">
+                  <n-button
+                    :type="modelMappingEditMode === 'visual' ? 'primary' : 'default'"
+                    @click="modelMappingEditMode = 'visual'"
+                  >
+                    {{ t("keys.visualEdit") }}
+                  </n-button>
+                  <n-button
+                    :type="modelMappingEditMode === 'json' ? 'primary' : 'default'"
+                    @click="modelMappingEditMode = 'json'"
+                  >
+                    {{ t("keys.jsonEdit") }}
+                  </n-button>
+                </n-button-group>
+
+                <!-- 可视化编辑模式 -->
+                <div v-if="modelMappingEditMode === 'visual'" class="model-mapping-items">
                     <n-form-item
                       v-for="(item, index) in formData.model_mapping_items"
                       :key="index"
@@ -1273,17 +1307,89 @@ async function handleSubmit() {
                     </n-button>
                   </div>
 
-                  <!-- JSON 编辑模式 -->
-                  <div v-else>
-                    <n-input
-                      v-model:value="formData.model_mapping"
-                      type="textarea"
-                      placeholder='{"gpt-4":"gpt-4-turbo"}'
-                      :rows="6"
-                      @blur="formatModelMappingJson"
-                    />
-                  </div>
+                <!-- JSON 编辑模式 -->
+                <div v-else>
+                  <n-input
+                    v-model:value="formData.model_mapping"
+                    type="textarea"
+                    placeholder='{"gpt-4":"gpt-4-turbo"}'
+                    :rows="6"
+                    @blur="formatModelMappingJson"
+                  />
                 </div>
+              </div>
+
+              <!-- URL 路径重写（仅 OpenAI 渠道显示） -->
+              <div class="config-section" v-if="formData.channel_type === 'openai'">
+                <h5 class="config-title-with-tooltip">
+                  {{ t("keys.pathRedirects") }}
+                  <n-tooltip trigger="hover" placement="top">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                    </template>
+                    <div>
+                      {{ t("keys.pathRedirectsTooltip1") }}
+                      <br />
+                      • /v1 → /v2
+                      <br />
+                      • /v1 → /api/paas/v4
+                      <br />
+                      {{ t("keys.pathRedirectsTooltip2") }}
+                    </div>
+                  </n-tooltip>
+                </h5>
+
+                <n-form-item
+                  v-for="(rule, index) in formData.path_redirects"
+                  :key="index"
+                  :label="`${t('keys.pathRedirect')} ${index + 1}`"
+                >
+                  <div class="model-mapping-item-content">
+                    <div class="model-mapping-from">
+                      <n-input
+                        v-model:value="rule.from"
+                        :placeholder="t('keys.pathRedirectFromPlaceholder')"
+                        :status="
+                          !validatePathRedirectFromUniqueness(
+                            formData.path_redirects,
+                            index,
+                            rule.from
+                          )
+                            ? 'error'
+                            : undefined
+                        "
+                      />
+                      <div
+                        v-if="
+                          !validatePathRedirectFromUniqueness(
+                            formData.path_redirects,
+                            index,
+                            rule.from
+                          )
+                        "
+                        class="error-message"
+                      >
+                        {{ t("keys.duplicatePathRedirect") }}
+                      </div>
+                    </div>
+                    <div class="model-mapping-arrow">→</div>
+                    <div class="model-mapping-to">
+                      <n-input v-model:value="rule.to" :placeholder="t('keys.pathRedirectToPlaceholder')" />
+                    </div>
+                    <n-button text type="error" @click="formData.path_redirects.splice(index, 1)" class="remove-btn">
+                      <template #icon>
+                        <n-icon :component="Close" />
+                      </template>
+                    </n-button>
+                  </div>
+                </n-form-item>
+
+                <n-button dashed block @click="addPathRedirect" style="margin-top: 8px">
+                  <template #icon>
+                    <n-icon :component="Add" />
+                  </template>
+                  {{ t("keys.addPathRedirect") }}
+                </n-button>
               </div>
             </n-collapse-item>
           </n-collapse>

@@ -184,7 +184,7 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		}
 	}
 
-	return &BaseChannel{
+bc := &BaseChannel{
 		Name:               name,
 		Upstreams:          upstreamInfos,
 		HTTPClient:         fallbackHTTPClient,
@@ -194,5 +194,11 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		channelType:        group.ChannelType,
 		groupUpstreams:     group.Upstreams,
 		effectiveConfig:    &group.EffectiveConfig,
-	}, nil
+	}
+	// Only apply path redirects for openai channel type
+	if name == "openai" {
+		bc.pathRedirectsRaw = group.PathRedirects
+		bc.pathRedirectRules = group.PathRedirectRuleList
+	}
+	return bc, nil
 }

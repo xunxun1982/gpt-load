@@ -47,6 +47,13 @@ type HeaderRule struct {
 	Action string `json:"action"` // "set" or "remove"
 }
 
+// PathRedirectRule defines a single URL path rewrite rule.
+// Only applied to OpenAI channel groups at request time.
+type PathRedirectRule struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 // GroupSubGroup is the association table for aggregate groups and sub-groups.
 type GroupSubGroup struct {
 	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -98,6 +105,7 @@ type Group struct {
 	Config             datatypes.JSONMap    `gorm:"type:json" json:"config"`
 	HeaderRules        datatypes.JSON       `gorm:"type:json" json:"header_rules"`
 	ModelMapping       string               `gorm:"type:text" json:"model_mapping"` // JSON format model name mapping
+	PathRedirects      datatypes.JSON       `gorm:"type:json" json:"path_redirects"`                       // JSON array of {from,to} rules (OpenAI only)
 	APIKeys            []APIKey             `gorm:"foreignKey:GroupID" json:"api_keys"`
 	SubGroups          []GroupSubGroup      `gorm:"-" json:"sub_groups,omitempty"`
 	LastValidatedAt    *time.Time           `json:"last_validated_at"`
@@ -105,9 +113,10 @@ type Group struct {
 	UpdatedAt          time.Time            `json:"updated_at"`
 
 	// For cache
-	ProxyKeysMap      map[string]struct{} `gorm:"-" json:"-"`
-	HeaderRuleList    []HeaderRule        `gorm:"-" json:"-"`
-	ModelMappingCache map[string]string   `gorm:"-" json:"-"` // Parsed model mapping for performance
+	ProxyKeysMap         map[string]struct{} `gorm:"-" json:"-"`
+	HeaderRuleList       []HeaderRule        `gorm:"-" json:"-"`
+	ModelMappingCache    map[string]string   `gorm:"-" json:"-"` // Parsed model mapping for performance
+	PathRedirectRuleList []PathRedirectRule  `gorm:"-" json:"-"` // Parsed rules for performance (OpenAI)
 }
 
 // APIKey corresponds to the api_keys table.

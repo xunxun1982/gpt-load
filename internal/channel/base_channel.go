@@ -36,9 +36,11 @@ type BaseChannel struct {
 	upstreamLock       sync.Mutex
 
 	// Cached fields from the group for stale check
-	channelType     string
-	groupUpstreams  datatypes.JSON
-	effectiveConfig *types.SystemSettings
+	channelType       string
+	groupUpstreams    datatypes.JSON
+	effectiveConfig   *types.SystemSettings
+	pathRedirectsRaw  datatypes.JSON
+	pathRedirectRules []models.PathRedirectRule // Applied only for OpenAI channel
 }
 
 // SelectUpstream selects an upstream using weighted random selection algorithm.
@@ -107,6 +109,9 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 		reqPath = "/" + reqPath
 	}
 
+	// Apply path redirect rules (OpenAI only; rules list is empty for other channels)
+	reqPath = b.applyPathRedirects(reqPath)
+
 	finalURL := base
 	// Use url.JoinPath for safe path joining (Go 1.19+)
 	joinedPath, err := url.JoinPath(base.Path, reqPath)
@@ -161,6 +166,9 @@ func (b *BaseChannel) IsConfigStale(group *models.Group) bool {
 	if !reflect.DeepEqual(b.effectiveConfig, &group.EffectiveConfig) {
 		return true
 	}
+	if b.Name == "openai" && !bytes.Equal(b.pathRedirectsRaw, group.PathRedirects) {
+		return true
+	}
 	return false
 }
 
@@ -172,4 +180,51 @@ func (b *BaseChannel) GetHTTPClient() *http.Client {
 // GetStreamClient returns the client for streaming requests.
 func (b *BaseChannel) GetStreamClient() *http.Client {
 	return b.StreamClient
+}
+
+// applyPathRedirects applies first matching prefix rewrite rule to the request path.
+// Rules are expected to be relative to the group (i.e., without /proxy/{group}).
+func (b *BaseChannel) applyPathRedirects(reqPath string) string {
+	if len(b.pathRedirectRules) == 0 || reqPath == "" {
+		return reqPath
+	}
+	normalize := func(p string) string {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return ""
+		}
+		if u, err := url.Parse(p); err == nil && u.Scheme != "" {
+			p = u.Path // strip scheme/host if a full URL was provided
+		}
+		if strings.HasPrefix(p, "/proxy/") {
+			// Remove '/proxy/{group}/' if present
+			rest := strings.TrimPrefix(p, "/proxy/")
+			if idx := strings.IndexByte(rest, '/'); idx >= 0 {
+				p = rest[idx:]
+			} else {
+				p = "/"
+			}
+		}
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		return p
+	}
+	for _, r := range b.pathRedirectRules {
+		from := normalize(r.From)
+		to := normalize(r.To)
+		if from == "" || to == "" {
+			continue
+		}
+		if strings.HasPrefix(reqPath, from) {
+			rest := reqPath[len(from):]
+			if rest == "" {
+				return to
+			}
+			if strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, "?") || strings.HasPrefix(rest, "#") {
+				return to + rest
+			}
+		}
+	}
+	return reqPath
 }
