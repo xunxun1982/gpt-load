@@ -358,10 +358,21 @@ func (s *KeyService) BuildPageCacheKey(groupID uint, statusFilter, searchHash st
 
 // GetCachedPage returns a cached page if available and not expired
 func (s *KeyService) GetCachedPage(cacheKey string) ([]models.APIKey, bool) {
+	now := time.Now()
+
 	s.pageCacheMu.RLock()
 	entry, ok := s.pageCache[cacheKey]
+	expired := ok && now.After(entry.ExpiresAt)
 	s.pageCacheMu.RUnlock()
-	if !ok || time.Now().After(entry.ExpiresAt) {
+
+	if !ok {
+		return nil, false
+	}
+	if expired {
+		// Remove expired entry to prevent memory leak
+		s.pageCacheMu.Lock()
+		delete(s.pageCache, cacheKey)
+		s.pageCacheMu.Unlock()
 		return nil, false
 	}
 	return entry.Items, true

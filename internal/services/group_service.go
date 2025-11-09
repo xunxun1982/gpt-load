@@ -1050,6 +1050,7 @@ func (s *GroupService) fetchRequestStats(ctx context.Context, groupID uint, stat
 func (s *GroupService) getStandardGroupStats(ctx context.Context, groupID uint) (*GroupStats, error) {
 	stats := &GroupStats{}
 	var allErrors []error
+	var errsMu sync.Mutex
 
 	// Run key stats and request stats concurrently to avoid additive timeouts
 	done := make(chan struct{}, 2)
@@ -1058,7 +1059,9 @@ func (s *GroupService) getStandardGroupStats(ctx context.Context, groupID uint) 
 		defer func() { done <- struct{}{} }()
 		keyStats, err := s.fetchKeyStats(ctx, groupID)
 		if err != nil {
+			errsMu.Lock()
 			allErrors = append(allErrors, err)
+			errsMu.Unlock()
 			logrus.WithContext(ctx).WithError(err).Warn("failed to fetch key stats, continuing with request stats")
 			return
 		}
@@ -1068,7 +1071,9 @@ func (s *GroupService) getStandardGroupStats(ctx context.Context, groupID uint) 
 	go func() {
 		defer func() { done <- struct{}{} }()
 		if errs := s.fetchRequestStats(ctx, groupID, stats); len(errs) > 0 {
+			errsMu.Lock()
 			allErrors = append(allErrors, errs...)
+			errsMu.Unlock()
 		}
 	}()
 	// Wait for both

@@ -38,21 +38,21 @@ func V1_3_2_AddSlowSQLIndexes(db *gorm.DB) error {
 					WHERE TABLE_SCHEMA = DATABASE()
 					AND TABLE_NAME = 'group_sub_groups'
 					AND INDEX_NAME = 'idx_group_sub_groups_sub_group_id'
-				`).Count(&indexCount).Error
+				`).Scan(&indexCount).Error
 				indexExists = indexCount > 0
 			case "sqlite":
 				var indexCount int64
 				checkErr = db.Raw(`
 					SELECT COUNT(*) FROM sqlite_master
 					WHERE type = 'index' AND name = 'idx_group_sub_groups_sub_group_id'
-				`).Count(&indexCount).Error
+				`).Scan(&indexCount).Error
 				indexExists = indexCount > 0
 			case "postgres":
 				var indexCount int64
 				checkErr = db.Raw(`
 					SELECT COUNT(*) FROM pg_indexes
 					WHERE tablename = 'group_sub_groups' AND indexname = 'idx_group_sub_groups_sub_group_id'
-				`).Count(&indexCount).Error
+				`).Scan(&indexCount).Error
 				indexExists = indexCount > 0
 			default:
 				// For other databases, assume index doesn't exist and try to create
@@ -102,21 +102,21 @@ func V1_3_2_AddSlowSQLIndexes(db *gorm.DB) error {
 					WHERE TABLE_SCHEMA = DATABASE()
 					AND TABLE_NAME = 'groups'
 					AND INDEX_NAME = 'idx_groups_group_type'
-				`).Count(&indexCount).Error
+				`).Scan(&indexCount).Error
 				indexExists = indexCount > 0
 			case "sqlite":
 				var indexCount int64
 				checkErr = db.Raw(`
 					SELECT COUNT(*) FROM sqlite_master
 					WHERE type = 'index' AND name = 'idx_groups_group_type'
-				`).Count(&indexCount).Error
+				`).Scan(&indexCount).Error
 				indexExists = indexCount > 0
 			case "postgres":
 				var indexCount int64
 				checkErr = db.Raw(`
 					SELECT COUNT(*) FROM pg_indexes
 					WHERE tablename = 'groups' AND indexname = 'idx_groups_group_type'
-				`).Count(&indexCount).Error
+				`).Scan(&indexCount).Error
 				indexExists = indexCount > 0
 			default:
 				// For other databases, assume index doesn't exist and try to create

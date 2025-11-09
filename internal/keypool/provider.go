@@ -713,6 +713,7 @@ func (p *KeyProvider) RemoveAllKeys(groupID uint) (int64, error) {
 
 	totalDeleted := int64(0)
 	dial := p.db.Dialector.Name()
+	retries := 0
 
 	for {
 		var res *gorm.DB
@@ -732,13 +733,21 @@ func (p *KeyProvider) RemoveAllKeys(groupID uint) (int64, error) {
 		if res.Error != nil {
 			// Retry with exponential backoff on transient/timeout errors
 			if isTransientDBError(res.Error) || errors.Is(res.Error, context.DeadlineExceeded) {
-				if err := backoffSleep(maxRetries, res.Error); err != nil {
+				if retries >= maxRetries {
 					return totalDeleted, res.Error
 				}
+				delay := time.Duration(25<<retries) * time.Millisecond
+				if delay > 500*time.Millisecond {
+					delay = 500 * time.Millisecond
+				}
+				logrus.WithError(res.Error).Debugf("Transient delete failure; retrying in %v (attempt %d/%d)", delay, retries+1, maxRetries)
+				time.Sleep(delay)
+				retries++
 				continue
 			}
 			return totalDeleted, res.Error
 		}
+		retries = 0
 
 		affected := res.RowsAffected
 		totalDeleted += affected

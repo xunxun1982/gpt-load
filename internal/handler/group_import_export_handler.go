@@ -33,9 +33,9 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 	// Extract the suffix that was added to the name and apply it to display name too
 	// This ensures both name and display name have the same random suffix
 	displayName := groupInfo.DisplayName
-	if displayName != "" && groupName != groupInfo.Name {
+	if displayName != "" && groupName != groupInfo.Name && strings.HasPrefix(groupName, groupInfo.Name) {
 		// Find the suffix that was added to the name
-		suffix := strings.TrimPrefix(groupName, groupInfo.Name)
+		suffix := groupName[len(groupInfo.Name):]
 		displayName = groupInfo.DisplayName + suffix
 	}
 
