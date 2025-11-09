@@ -539,7 +539,11 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 	// Use a goroutine to avoid blocking the response
 	if keyCount > 0 {
 		go func() {
-			if _, err := s.keyService.KeyProvider.RemoveAllKeys(id); err != nil {
+			// Use a timeout context for background deletion
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			if _, err := s.keyService.KeyProvider.RemoveAllKeys(cleanupCtx, id); err != nil {
 				logrus.WithFields(logrus.Fields{
 					"groupID": id,
 					"error":   err,
@@ -780,9 +784,20 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 	newGroup.Name = uniqueName
 
 	// Set display name with the same suffix as the name
-	suffix := strings.TrimPrefix(uniqueName, sourceGroup.Name)
+	// Only append suffix if the unique name actually starts with the original name
+	// (it may be truncated if the original name is too long)
+	suffix := ""
+	if strings.HasPrefix(uniqueName, sourceGroup.Name) {
+		suffix = uniqueName[len(sourceGroup.Name):]
+	}
+
 	if sourceGroup.DisplayName != "" {
-		newGroup.DisplayName = sourceGroup.DisplayName + suffix
+		if suffix != "" {
+			newGroup.DisplayName = sourceGroup.DisplayName + suffix
+		} else {
+			// If the name was truncated, use the unique name directly
+			newGroup.DisplayName = sourceGroup.DisplayName + " Copy"
+		}
 	} else {
 		newGroup.DisplayName = uniqueName
 	}

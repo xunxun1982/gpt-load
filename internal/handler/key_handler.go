@@ -465,7 +465,7 @@ func (s *Server) ClearAllKeys(c *gin.Context) {
 		return
 	}
 
-	rowsAffected, err := s.KeyService.ClearAllKeys(req.GroupID)
+	rowsAffected, err := s.KeyService.ClearAllKeys(c.Request.Context(), req.GroupID)
 	if err != nil {
 		response.Error(c, app_errors.ParseDBError(err))
 		return

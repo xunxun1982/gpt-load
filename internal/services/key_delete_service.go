@@ -87,7 +87,11 @@ func (s *KeyDeleteService) runDelete(group *models.Group, keys []string) {
 
 // runDeleteAllGroupKeys performs the full-group deletion using the provider's chunked delete.
 func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group, total int) {
-	deleted, err := s.KeyService.KeyProvider.RemoveAllKeys(group.ID)
+	// Create a context with timeout for the deletion operation
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	deleted, err := s.KeyService.KeyProvider.RemoveAllKeys(ctx, group.ID)
 	if err != nil {
 		_ = s.TaskService.EndTask(nil, err)
 		return

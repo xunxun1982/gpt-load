@@ -280,8 +280,8 @@ func (s *KeyService) ClearAllInvalidKeys(groupID uint) (int64, error) {
 }
 
 // ClearAllKeys deletes all keys from a group.
-func (s *KeyService) ClearAllKeys(groupID uint) (int64, error) {
-	return s.KeyProvider.RemoveAllKeys(groupID)
+func (s *KeyService) ClearAllKeys(ctx context.Context, groupID uint) (int64, error) {
+	return s.KeyProvider.RemoveAllKeys(ctx, groupID)
 }
 
 // ResetGroupActiveKeysFailureCount resets failure_count to 0 for all active keys in a specific group.
@@ -371,9 +371,19 @@ func (s *KeyService) GetCachedPage(cacheKey string) ([]models.APIKey, bool) {
 	if expired {
 		// Remove expired entry to prevent memory leak
 		s.pageCacheMu.Lock()
-		delete(s.pageCache, cacheKey)
+		// Re-check under write lock to avoid deleting newly refreshed entries
+		entry, ok = s.pageCache[cacheKey]
+		if ok && time.Now().After(entry.ExpiresAt) {
+			delete(s.pageCache, cacheKey)
+			s.pageCacheMu.Unlock()
+			return nil, false
+		}
 		s.pageCacheMu.Unlock()
-		return nil, false
+
+		// If entry was refreshed by another goroutine, return it
+		if !ok {
+			return nil, false
+		}
 	}
 	return entry.Items, true
 }

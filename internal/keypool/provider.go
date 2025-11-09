@@ -703,7 +703,7 @@ func (p *KeyProvider) RemoveInvalidKeys(groupID uint) (int64, error) {
 // global deletion semaphore to serialize heavy group deletions (especially for SQLite)
 var deleteSem = make(chan struct{}, 1)
 
-func (p *KeyProvider) RemoveAllKeys(groupID uint) (int64, error) {
+func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint) (int64, error) {
 	const chunkSize = 500
 	const maxRetries = 5
 
@@ -716,8 +716,13 @@ func (p *KeyProvider) RemoveAllKeys(groupID uint) (int64, error) {
 	retries := 0
 
 	for {
+		// Check if context is canceled before each batch
+		if err := ctx.Err(); err != nil {
+			return totalDeleted, err
+		}
+
 		var res *gorm.DB
-		batchCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		batchCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		switch dial {
 		case "sqlite":
 			res = p.db.WithContext(batchCtx).Exec("DELETE FROM api_keys WHERE rowid IN (SELECT rowid FROM api_keys WHERE group_id = ? LIMIT ?)", groupID, chunkSize)
@@ -892,21 +897,6 @@ func isTransientDBError(err error) bool {
 		strings.Contains(es, "interrupted") ||
 		strings.Contains(es, "lock timeout") ||
 		strings.Contains(es, "could not obtain lock")
-}
-
-// backoffSleep sleeps with exponential backoff for a bounded number of retries.
-func backoffSleep(maxRetries int, lastErr error) error {
-	const base = 25 * time.Millisecond
-	const max = 500 * time.Millisecond
-	for i := 0; i < maxRetries; i++ {
-		d := base * time.Duration(1<<i)
-		if d > max {
-			d = max
-		}
-		logrus.WithError(lastErr).Debugf("Transient DB error, backing off for %v (attempt %d/%d)", d, i+1, maxRetries)
-		time.Sleep(d)
-	}
-	return fmt.Errorf("max retries exceeded: %w", lastErr)
 }
 
 // ClearAllKeys removes all keys from the in-memory store.
