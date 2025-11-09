@@ -12,11 +12,12 @@ import (
 // FindGroupByID finds a group by ID and returns it, or an error if not found.
 func FindGroupByID(ctx context.Context, db *gorm.DB, groupID uint) (*models.Group, error) {
 	var group models.Group
-	if err := db.WithContext(ctx).First(&group, groupID).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, NewI18nError(app_errors.ErrResourceNotFound, "group.not_found", nil)
-		}
+	// Use primary key lookup without ORDER BY to avoid slow paths under heavy load
+	if err := db.WithContext(ctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
+	}
+	if group.ID == 0 {
+		return nil, NewI18nError(app_errors.ErrResourceNotFound, "group.not_found", nil)
 	}
 	return &group, nil
 }

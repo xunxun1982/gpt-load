@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gpt-load/internal/encryption"
@@ -9,6 +10,8 @@ import (
 	"gpt-load/internal/utils"
 	"io"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -16,7 +19,6 @@ import (
 
 const (
 	maxRequestKeys = 5000
-	chunkSize      = 500
 )
 
 // AddKeysResult holds the result of adding multiple keys.
@@ -41,12 +43,34 @@ type RestoreKeysResult struct {
 }
 
 // KeyService provides services related to API keys.
-type KeyService struct {
+ type KeyService struct {
 	DB                        *gorm.DB
 	KeyProvider               *keypool.KeyProvider
 	KeyValidator              *keypool.KeyValidator
 	EncryptionSvc             encryption.Service
 	CacheInvalidationCallback func(groupID uint) // Optional callback for cache invalidation
+
+	// Lightweight last-page cache for listing keys under load
+	pageCache    map[string]keyPageCacheEntry
+	pageCacheMu  sync.RWMutex
+	pageCacheTTL time.Duration
+ }
+
+ type keyPageCacheEntry struct {
+	Items     []models.APIKey
+	ExpiresAt time.Time
+ }
+
+// insertChunkSize returns an insert/list chunk size tuned by database dialect
+func (s *KeyService) insertChunkSize() int {
+	switch s.DB.Dialector.Name() {
+	case "sqlite":
+		return 100  // Reduced from 200 for smoother operation
+	case "mysql", "postgres":
+		return 300  // Reduced from 500 for better concurrency
+	default:
+		return 200  // Reduced from 300
+	}
 }
 
 // NewKeyService creates a new KeyService.
@@ -56,6 +80,8 @@ func NewKeyService(db *gorm.DB, keyProvider *keypool.KeyProvider, keyValidator *
 		KeyProvider:   keyProvider,
 		KeyValidator:  keyValidator,
 		EncryptionSvc: encryptionSvc,
+		pageCache:     make(map[string]keyPageCacheEntry),
+		pageCacheTTL:  2 * time.Second,
 	}
 }
 
@@ -138,8 +164,8 @@ func (s *KeyService) processAndCreateKeys(
 		return 0, len(keys), nil
 	}
 
-	// 3. Use KeyProvider to add keys in chunks
-	err = utils.ProcessInChunks(newKeysToCreate, chunkSize, func(chunk []models.APIKey) error {
+// 3. Use KeyProvider to add keys in chunks (dialect-aware chunk size)
+err = utils.ProcessInChunks(newKeysToCreate, s.insertChunkSize(), func(chunk []models.APIKey) error {
 		if err := s.KeyProvider.AddKeys(groupID, chunk); err != nil {
 			return err
 		}
@@ -218,7 +244,7 @@ func (s *KeyService) RestoreMultipleKeys(groupID uint, keysText string) (*Restor
 	}
 
 	var totalRestoredCount int64
-	err := utils.ProcessInChunks(keysToRestore, chunkSize, func(chunk []string) error {
+err := utils.ProcessInChunks(keysToRestore, s.insertChunkSize(), func(chunk []string) error {
 		restoredCount, err := s.KeyProvider.RestoreMultipleKeys(groupID, chunk)
 		if err != nil {
 			return err
@@ -255,8 +281,8 @@ func (s *KeyService) ClearAllInvalidKeys(groupID uint) (int64, error) {
 }
 
 // ClearAllKeys deletes all keys from a group.
-func (s *KeyService) ClearAllKeys(groupID uint) (int64, error) {
-	return s.KeyProvider.RemoveAllKeys(groupID)
+func (s *KeyService) ClearAllKeys(ctx context.Context, groupID uint) (int64, error) {
+	return s.KeyProvider.RemoveAllKeys(ctx, groupID)
 }
 
 // ResetGroupActiveKeysFailureCount resets failure_count to 0 for all active keys in a specific group.
@@ -283,7 +309,7 @@ func (s *KeyService) DeleteMultipleKeys(groupID uint, keysText string) (*DeleteK
 	}
 
 	var totalDeletedCount int64
-	err := utils.ProcessInChunks(keysToDelete, chunkSize, func(chunk []string) error {
+err := utils.ProcessInChunks(keysToDelete, s.insertChunkSize(), func(chunk []string) error {
 		deletedCount, err := s.KeyProvider.RemoveKeys(groupID, chunk)
 		if err != nil {
 			return err
@@ -323,7 +349,51 @@ func (s *KeyService) ListKeysInGroupQuery(groupID uint, statusFilter string, sea
 
 	query = query.Order("last_used_at desc, updated_at desc")
 
-	return query
+return query
+}
+
+// BuildPageCacheKey composes a cache key for a keys list request
+func (s *KeyService) BuildPageCacheKey(groupID uint, statusFilter, searchHash string, page, pageSize int) string {
+	return fmt.Sprintf("g:%d|st:%s|sh:%s|p:%d|ps:%d", groupID, statusFilter, searchHash, page, pageSize)
+}
+
+// GetCachedPage returns a cached page if available and not expired
+func (s *KeyService) GetCachedPage(cacheKey string) ([]models.APIKey, bool) {
+	now := time.Now()
+
+	s.pageCacheMu.RLock()
+	entry, ok := s.pageCache[cacheKey]
+	expired := ok && now.After(entry.ExpiresAt)
+	s.pageCacheMu.RUnlock()
+
+	if !ok {
+		return nil, false
+	}
+	if expired {
+		// Remove expired entry to prevent memory leak
+		s.pageCacheMu.Lock()
+		// Re-check under write lock to avoid deleting newly refreshed entries
+		entry, ok = s.pageCache[cacheKey]
+		if ok && time.Now().After(entry.ExpiresAt) {
+			delete(s.pageCache, cacheKey)
+			s.pageCacheMu.Unlock()
+			return nil, false
+		}
+		s.pageCacheMu.Unlock()
+
+		// If entry was refreshed by another goroutine, return it
+		if !ok {
+			return nil, false
+		}
+	}
+	return entry.Items, true
+}
+
+// SetCachedPage caches a page of keys for a short TTL
+func (s *KeyService) SetCachedPage(cacheKey string, items []models.APIKey) {
+	s.pageCacheMu.Lock()
+	s.pageCache[cacheKey] = keyPageCacheEntry{Items: items, ExpiresAt: time.Now().Add(s.pageCacheTTL)}
+	s.pageCacheMu.Unlock()
 }
 
 // TestMultipleKeys handles a one-off validation test for multiple keys.
@@ -337,7 +407,7 @@ func (s *KeyService) TestMultipleKeys(group *models.Group, keysText string) ([]k
 	}
 
 	allResults := make([]keypool.KeyTestResult, 0, len(keysToTest))
-	err := utils.ProcessInChunks(keysToTest, chunkSize, func(chunk []string) error {
+err := utils.ProcessInChunks(keysToTest, s.insertChunkSize(), func(chunk []string) error {
 		results, err := s.KeyValidator.TestMultipleKeys(group, chunk)
 		if err != nil {
 			return err
@@ -365,7 +435,7 @@ func (s *KeyService) StreamKeysToWriter(groupID uint, statusFilter string, write
 	}
 
 	var keys []models.APIKey
-	err := query.FindInBatches(&keys, chunkSize, func(tx *gorm.DB, batch int) error {
+err := query.FindInBatches(&keys, s.insertChunkSize(), func(tx *gorm.DB, batch int) error {
 		for _, key := range keys {
 			decryptedKey, err := s.EncryptionSvc.Decrypt(key.KeyValue)
 			if err != nil {

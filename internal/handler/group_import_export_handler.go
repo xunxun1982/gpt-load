@@ -30,13 +30,22 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		return 0, err
 	}
 
+	// Extract the suffix that was added to the name and apply it to display name too
+	// This ensures both name and display name have the same random suffix
+	displayName := groupInfo.DisplayName
+	if displayName != "" && groupName != groupInfo.Name && strings.HasPrefix(groupName, groupInfo.Name) {
+		// Find the suffix that was added to the name
+		suffix := groupName[len(groupInfo.Name):]
+		displayName = groupInfo.DisplayName + suffix
+	}
+
 	headerRulesJSON, err := json.Marshal(groupInfo.HeaderRules)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal header rules: %w", err)
 	}
 	group := models.Group{
 		Name:               groupName,
-		DisplayName:        groupInfo.DisplayName,
+		DisplayName:        displayName,
 		Description:        groupInfo.Description,
 		GroupType:          groupInfo.GroupType,
 		ChannelType:        groupInfo.ChannelType,

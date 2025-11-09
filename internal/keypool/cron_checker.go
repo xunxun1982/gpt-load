@@ -2,11 +2,13 @@ package keypool
 
 import (
 	"context"
+	"encoding/json"
 	"math/rand"
 	"strings"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
+	"gpt-load/internal/store"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +23,7 @@ type CronChecker struct {
 	SettingsManager *config.SystemSettingsManager
 	Validator       *KeyValidator
 	EncryptionSvc   encryption.Service
+	Store           store.Store
 	stopChan        chan struct{}
 	wg              sync.WaitGroup
 }
@@ -31,12 +34,14 @@ func NewCronChecker(
 	settingsManager *config.SystemSettingsManager,
 	validator *KeyValidator,
 	encryptionSvc encryption.Service,
+	store store.Store,
 ) *CronChecker {
-	return &CronChecker{
+return &CronChecker{
 		DB:              db,
 		SettingsManager: settingsManager,
 		Validator:       validator,
 		EncryptionSvc:   encryptionSvc,
+		Store:           store,
 		stopChan:        make(chan struct{}),
 	}
 }
@@ -88,9 +93,21 @@ func (s *CronChecker) runLoop() {
 
 // submitValidationJobs finds groups whose keys need validation and validates them concurrently.
 func (s *CronChecker) submitValidationJobs() {
+	// Skip when a heavy task (import/delete) is running to avoid DB contention
+	if s.isBusy() {
+		logrus.Debug("CronChecker: busy mode detected (import/delete running), skipping this cycle")
+		return
+	}
+
 	var groups []models.Group
-	if err := s.DB.Where("group_type != ? OR group_type IS NULL", "aggregate").Find(&groups).Error; err != nil {
-		logrus.Errorf("CronChecker: Failed to get groups: %v", err)
+	// Short timeout and minimal column selection to avoid long blocking
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := s.DB.WithContext(ctx).
+		Select("id, name, config, enabled, group_type, channel_type, last_validated_at").
+		Where("group_type IS NULL OR group_type != ?", "aggregate").
+		Find(&groups).Error; err != nil {
+		logrus.Errorf("CronChecker: Failed to get groups (timeout/error): %v", err)
 		return
 	}
 
@@ -137,8 +154,10 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 	groupProcessStart := time.Now()
 
 	// First, check if there are any invalid keys (quick count query using index)
-	var invalidKeyCount int64
-	if err := s.DB.Model(&models.APIKey{}).
+var invalidKeyCount int64
+	cctx, ccancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer ccancel()
+	if err := s.DB.WithContext(cctx).Model(&models.APIKey{}).
 		Where("group_id = ? AND status = ?", group.ID, models.KeyStatusInvalid).
 		Count(&invalidKeyCount).Error; err != nil {
 		logrus.Errorf("CronChecker: Failed to count invalid keys for group %s: %v", group.Name, err)
@@ -228,7 +247,9 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 				query = query.Where("id > ?", lastID)
 			}
 
-			err := query.Find(&batchKeys).Error
+qctx, qcancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	err := query.WithContext(qctx).Find(&batchKeys).Error
+	qcancel()
 
 			if err != nil {
 				logrus.Errorf("CronChecker: Failed to get invalid keys for group %s: %v", group.Name, err)
@@ -369,4 +390,26 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 
 	// If all retries failed, log error but don't fail the entire operation
 	logrus.Errorf("CronChecker: Failed to batch update last_validated_at for %d groups after %d attempts: %v", len(groupIDs), maxRetries, err)
+}
+
+// isBusy returns true if a global import/delete task is running (read directly from store)
+func (s *CronChecker) isBusy() bool {
+	if s.Store == nil {
+		return false
+	}
+	b, err := s.Store.Get("global_task")
+	if err != nil {
+		return false
+	}
+	var st struct {
+		TaskType  string `json:"task_type"`
+		IsRunning bool   `json:"is_running"`
+	}
+	if json.Unmarshal(b, &st) != nil {
+		return false
+	}
+	if !st.IsRunning {
+		return false
+	}
+	return st.TaskType == "KEY_IMPORT" || st.TaskType == "KEY_DELETE"
 }

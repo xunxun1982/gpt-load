@@ -1,6 +1,7 @@
 package keypool
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"gpt-load/internal/config"
@@ -367,26 +368,48 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 }
 
 // AddKeys batch adds new keys to the pool and database.
+// Use very small DB transactions, then update cache outside the transaction to shorten lock time.
 func (p *KeyProvider) AddKeys(groupID uint, keys []models.APIKey) error {
 	if len(keys) == 0 {
 		return nil
 	}
 
-	err := p.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&keys).Error; err != nil {
+	// Dialect-aware batch size (smaller for SQLite)
+	smallBatchSize := 25  // Reduced from 50 to prevent blocking
+	switch p.db.Dialector.Name() {
+	case "mysql", "postgres":
+		smallBatchSize = 100  // Reduced from 200 for smoother operation
+	}
+
+	for i := 0; i < len(keys); i += smallBatchSize {
+		end := i + smallBatchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		batch := keys[i:end]
+
+		// Step 1: Insert this batch in a short transaction
+		if err := p.db.Transaction(func(tx *gorm.DB) error {
+			return tx.Create(&batch).Error
+		}); err != nil {
 			return err
 		}
 
-		for _, key := range keys {
-			if err := p.addKeyToStore(&key); err != nil {
-				logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Error("Failed to add key to store after DB creation, rolling back transaction")
-				return err
+		// Step 2: Update in-memory store outside the transaction (best-effort)
+		for j := range batch {
+			if err := p.addKeyToStore(&batch[j]); err != nil {
+				logrus.WithFields(logrus.Fields{"keyID": batch[j].ID, "error": err}).Warn("Failed to add key to store; will be refreshed on next reload")
 			}
 		}
-		return nil
-	})
 
-	return err
+		// Short delay between batches to avoid monopolizing the DB
+		// Increased delay for better concurrency with other operations
+		if i+smallBatchSize < len(keys) {
+			time.Sleep(20 * time.Millisecond)  // Increased from 10ms
+		}
+	}
+
+	return nil
 }
 
 // RemoveKeys batch removes keys from the pool and database.
@@ -675,9 +698,77 @@ func (p *KeyProvider) RemoveInvalidKeys(groupID uint) (int64, error) {
 	return p.removeKeysByStatus(groupID, models.KeyStatusInvalid)
 }
 
-// RemoveAllKeys removes all keys in the group.
-func (p *KeyProvider) RemoveAllKeys(groupID uint) (int64, error) {
-	return p.removeKeysByStatus(groupID)
+// RemoveAllKeys removes all keys in the group using chunked deletion with dialect-specific SQL.
+// This minimizes lock holding time and works across SQLite, MySQL, and PostgreSQL.
+// global deletion semaphore to serialize heavy group deletions (especially for SQLite)
+var deleteSem = make(chan struct{}, 1)
+
+func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint) (int64, error) {
+	const chunkSize = 500
+	const maxRetries = 5
+
+	// serialize deletions
+	deleteSem <- struct{}{}
+	defer func() { <-deleteSem }()
+
+	totalDeleted := int64(0)
+	dial := p.db.Dialector.Name()
+	retries := 0
+
+	for {
+		// Check if context is canceled before each batch
+		if err := ctx.Err(); err != nil {
+			return totalDeleted, err
+		}
+
+		var res *gorm.DB
+		batchCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		switch dial {
+		case "sqlite":
+			res = p.db.WithContext(batchCtx).Exec("DELETE FROM api_keys WHERE rowid IN (SELECT rowid FROM api_keys WHERE group_id = ? LIMIT ?)", groupID, chunkSize)
+		case "mysql":
+			res = p.db.WithContext(batchCtx).Exec("DELETE FROM api_keys WHERE group_id = ? ORDER BY id LIMIT ?", groupID, chunkSize)
+		case "postgres":
+			res = p.db.WithContext(batchCtx).Exec("WITH c AS (SELECT id FROM api_keys WHERE group_id = ? ORDER BY id LIMIT ?) DELETE FROM api_keys WHERE id IN (SELECT id FROM c)", groupID, chunkSize)
+		default:
+			res = p.db.WithContext(batchCtx).Where("group_id = ?", groupID).Delete(&models.APIKey{})
+		}
+		cancel()
+
+		if res.Error != nil {
+			// Retry with exponential backoff on transient/timeout errors
+			if isTransientDBError(res.Error) || errors.Is(res.Error, context.DeadlineExceeded) {
+				if retries >= maxRetries {
+					return totalDeleted, res.Error
+				}
+				delay := time.Duration(25<<retries) * time.Millisecond
+				if delay > 500*time.Millisecond {
+					delay = 500 * time.Millisecond
+				}
+				logrus.WithError(res.Error).Debugf("Transient delete failure; retrying in %v (attempt %d/%d)", delay, retries+1, maxRetries)
+				time.Sleep(delay)
+				retries++
+				continue
+			}
+			return totalDeleted, res.Error
+		}
+		retries = 0
+
+		affected := res.RowsAffected
+		totalDeleted += affected
+		if affected == 0 || affected < chunkSize {
+			break
+		}
+
+		// Short yield to let other operations proceed
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Clear active key list for the group to prevent stale usage
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+	_ = p.store.Delete(activeKeysListKey)
+
+	return totalDeleted, nil
 }
 
 // removeKeysByStatus is a generic function to remove keys by status.
@@ -741,24 +832,71 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 		return err
 	}
 
-	// Step 2: Batch delete all related key hashes
-	for _, keyID := range keyIDs {
-		// Use strconv instead of fmt.Sprintf for better performance
-		keyHashKey := "key:" + strconv.FormatUint(uint64(keyID), 10)
-		if err := p.store.Delete(keyHashKey); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"keyID": keyID,
-				"error": err,
-			}).Error("Failed to delete key hash")
+	// Step 2: Batch delete all related key hashes (optimized for large batches)
+	// Process in smaller batches to avoid blocking other operations
+	batchSize := 100
+	for i := 0; i < len(keyIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(keyIDs) {
+			end = len(keyIDs)
+		}
+
+		// Delete batch of keys
+		for _, keyID := range keyIDs[i:end] {
+			// Use strconv instead of fmt.Sprintf for better performance
+			keyHashKey := "key:" + strconv.FormatUint(uint64(keyID), 10)
+			if err := p.store.Delete(keyHashKey); err != nil {
+				// Log but don't fail the entire operation for individual key failures
+				logrus.WithFields(logrus.Fields{
+					"keyID": keyID,
+					"error": err,
+				}).Debug("Failed to delete key hash")
+			}
+		}
+
+		// Small yield to avoid blocking other operations
+		if i+batchSize < len(keyIDs) {
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"groupID":  groupID,
-		"keyCount": len(keyIDs),
-	}).Info("Successfully cleaned up group keys from store")
+	// Don't log here - let the caller log with appropriate context and timing
+	// This avoids duplicate logs when the caller also logs the operation
 
 	return nil
+}
+
+// RemoveOrphanedKeysFromStore removes any orphaned keys for a group that no longer exists
+// This is a best-effort cleanup operation for idempotent delete scenarios
+func (p *KeyProvider) RemoveOrphanedKeysFromStore(groupID uint) error {
+	// Use strconv instead of fmt.Sprintf for better performance
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+
+	// Try to delete the active_keys list if it exists
+	if err := p.store.Delete(activeKeysListKey); err != nil {
+		// This is expected if the group was already cleaned up
+		logrus.WithFields(logrus.Fields{
+			"groupID": groupID,
+		}).Debug("No orphaned keys found for group")
+	}
+
+	// Note: We can't clean individual key hashes without knowing the key IDs
+	// They will be cleaned up on next access attempt
+
+	return nil
+}
+
+// isTransientDBError determines if an error is likely transient/lock-related and worth retrying.
+func isTransientDBError(err error) bool {
+	if err == nil {
+		return false
+	}
+	es := err.Error()
+	return strings.Contains(es, "database is locked") ||
+		strings.Contains(es, "deadlock") ||
+		strings.Contains(es, "interrupted") ||
+		strings.Contains(es, "lock timeout") ||
+		strings.Contains(es, "could not obtain lock")
 }
 
 // ClearAllKeys removes all keys from the in-memory store.
@@ -815,13 +953,14 @@ func (p *KeyProvider) addKeyToStore(key *models.APIKey) error {
 func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 	startTime := time.Now()
 
-	// Load keys in batches for better performance
-	batchSize := 1000
+	// Increase batch size for better performance with large key sets
+	batchSize := 5000  // Increased from 1000
 	var batchKeys []models.APIKey
 	activeKeyIDs := make([]any, 0)
 	totalProcessed := 0
 
 	err := p.db.Model(&models.APIKey{}).
+		Select("id, key_value, status, failure_count, group_id, created_at"). // Only select needed fields
 		Where("group_id = ?", groupID).
 		FindInBatches(&batchKeys, batchSize, func(tx *gorm.DB, batch int) error {
 			totalProcessed += len(batchKeys)
@@ -894,7 +1033,7 @@ func (p *KeyProvider) removeKeyFromStore(keyID, groupID uint) error {
 // apiKeyToMap converts an APIKey model to a map for HSET.
 func (p *KeyProvider) apiKeyToMap(key *models.APIKey) map[string]any {
 	return map[string]any{
-		"id":            fmt.Sprint(key.ID),
+		"id":            strconv.FormatUint(uint64(key.ID), 10),  // Use strconv for better performance
 		"key_string":    key.KeyValue,
 		"status":        key.Status,
 		"failure_count": key.FailureCount,

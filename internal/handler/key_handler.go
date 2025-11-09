@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
+	"gpt-load/internal/services"
 	"log"
 	"strconv"
 	"strings"
@@ -13,7 +15,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
-	"gorm.io/gorm"
 )
 
 // validateGroupIDFromQuery validates and parses group ID from a query parameter.
@@ -47,13 +48,25 @@ func validateKeysText(c *gin.Context, keysText string) bool {
 
 // findGroupByID is a helper function to find a group by its ID.
 func (s *Server) findGroupByID(c *gin.Context, groupID uint) (*models.Group, bool) {
+	// 1) Try cache first (fast path, avoids DB during heavy writes)
+	if cached, err := s.GroupManager.GetGroupByID(groupID); err == nil && cached != nil {
+		return cached, true
+	}
+
+	// 2) Short DB lookup with small timeout, then fallback to cache again if needed
 	var group models.Group
-	if err := s.DB.First(&group, groupID).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			response.Error(c, app_errors.ErrResourceNotFound)
-		} else {
-			response.Error(c, app_errors.ParseDBError(err))
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 300*time.Millisecond)
+	defer cancel()
+	if err := s.DB.WithContext(ctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
+		// DB busy - try cache fallback again, otherwise return error
+		if cached, err2 := s.GroupManager.GetGroupByID(groupID); err2 == nil {
+			return cached, true
 		}
+		response.Error(c, app_errors.ParseDBError(err))
+		return nil, false
+	}
+	if group.ID == 0 {
+		response.Error(c, app_errors.ErrResourceNotFound)
 		return nil, false
 	}
 	return &group, true
@@ -140,7 +153,8 @@ func (s *Server) ListKeysInGroup(c *gin.Context) {
 		return
 	}
 
-	if _, ok := s.findGroupByID(c, groupID); !ok {
+group, ok := s.findGroupByID(c, groupID)
+	if !ok {
 		return
 	}
 
@@ -151,21 +165,56 @@ func (s *Server) ListKeysInGroup(c *gin.Context) {
 	}
 
 	searchKeyword := c.Query("key_value")
-	searchHash := ""
+searchHash := ""
 	if searchKeyword != "" {
 		searchHash = s.EncryptionSvc.Hash(searchKeyword)
 	}
 
-	query := s.KeyService.ListKeysInGroupQuery(groupID, statusFilter, searchHash)
+	// Prepare cache key for potential fallback and storage
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", strconv.Itoa(response.DefaultPageSize)))
+	cacheKey := s.KeyService.BuildPageCacheKey(groupID, statusFilter, searchHash, page, pageSize)
 
-	var keys []models.APIKey
-	paginatedResult, err := response.Paginate(c, query, &keys)
-	if err != nil {
-		response.Error(c, app_errors.ParseDBError(err))
+// If a key import task is in progress for this group, degrade immediately to avoid DB contention
+if status, err := s.TaskService.GetTaskStatus(); err == nil && status.IsRunning && status.TaskType == services.TaskTypeKeyImport {
+	// For SQLite, any ongoing import can cause read locks. Degrade globally to avoid spinners.
+	if s.DB.Dialector.Name() == "sqlite" || status.GroupName == group.Name {
+		// Try last cached items; otherwise return fast empty page (unknown totals)
+		if cached, ok := s.KeyService.GetCachedPage(cacheKey); ok {
+			response.Success(c, &response.PaginatedResponse{
+				Items: cached,
+				Pagination: response.Pagination{Page: page, PageSize: pageSize, TotalItems: -1, TotalPages: -1},
+			})
+			return
+		}
+		empty := &response.PaginatedResponse{
+			Items: []models.APIKey{},
+			Pagination: response.Pagination{Page: page, PageSize: pageSize, TotalItems: -1, TotalPages: -1},
+		}
+		response.Success(c, empty)
 		return
 	}
+}
 
-	// Decrypt all keys for display
+query := s.KeyService.ListKeysInGroupQuery(groupID, statusFilter, searchHash)
+
+var keys []models.APIKey
+paginatedResult, err := response.Paginate(c, query, &keys)
+if err != nil {
+	response.Error(c, app_errors.ParseDBError(err))
+	return
+}
+
+// If data degraded (unknown totals + empty), try cache
+if len(keys) == 0 && paginatedResult.Pagination.TotalItems == -1 {
+	if cached, ok := s.KeyService.GetCachedPage(cacheKey); ok {
+		paginatedResult.Items = cached
+		response.Success(c, paginatedResult)
+		return
+	}
+}
+
+// Decrypt all keys for display
 	for i := range keys {
 		decryptedValue, err := s.EncryptionSvc.Decrypt(keys[i].KeyValue)
 		if err != nil {
@@ -175,9 +224,14 @@ func (s *Server) ListKeysInGroup(c *gin.Context) {
 			keys[i].KeyValue = decryptedValue
 		}
 	}
-	paginatedResult.Items = keys
+paginatedResult.Items = keys
 
-	response.Success(c, paginatedResult)
+// Cache the page for quick fallback under load (only small pages)
+if page == 1 && pageSize <= 50 {
+	s.KeyService.SetCachedPage(cacheKey, keys)
+}
+
+response.Success(c, paginatedResult)
 }
 
 // DeleteMultipleKeys handles deleting keys from a text block within a specific group.
@@ -411,7 +465,7 @@ func (s *Server) ClearAllKeys(c *gin.Context) {
 		return
 	}
 
-	rowsAffected, err := s.KeyService.ClearAllKeys(req.GroupID)
+	rowsAffected, err := s.KeyService.ClearAllKeys(c.Request.Context(), req.GroupID)
 	if err != nil {
 		response.Error(c, app_errors.ParseDBError(err))
 		return

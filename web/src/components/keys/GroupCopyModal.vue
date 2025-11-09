@@ -38,6 +38,7 @@ const emit = defineEmits<Emits>();
 const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
+const previewGroupName = ref("");
 
 const formData = ref<CopyFormData>({
   copyKeys: "all",
@@ -52,6 +53,9 @@ const modalVisible = computed({
 watchEffect(() => {
   if (props.show) {
     resetForm();
+    previewGroupName.value = props.sourceGroup ? generateNewGroupName() : "";
+  } else {
+    previewGroupName.value = "";
   }
 });
 
@@ -62,13 +66,19 @@ function resetForm() {
 }
 
 // 生成新分组名称预览（仅用于显示）
-function generateNewGroupName(): string {
-  if (!props.sourceGroup) {
-    return "";
+function randomSuffix(len = 4): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let out = "";
+  for (let i = 0; i < len; i++) {
+    out += chars.charAt(Math.floor(Math.random() * chars.length));
   }
+  return out;
+}
 
+function generateNewGroupName(): string {
+  if (!props.sourceGroup) return "";
   const baseName = props.sourceGroup.name;
-  return `${baseName}_copy`;
+  return `${baseName}${randomSuffix(4)}`; // best practice: short, no underscore, traceable
 }
 
 async function handleCopy() {
@@ -135,7 +145,7 @@ function handleCancel() {
         <div class="copy-preview">
           <div class="preview-item">
             <span class="preview-label">{{ t("keys.newGroupNameLabel") }}</span>
-            <code class="preview-value">{{ generateNewGroupName() }}</code>
+            <code class="preview-value">{{ previewGroupName }}</code>
           </div>
         </div>
 

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -54,6 +55,12 @@ type groupKeyStatsCacheEntry struct {
 	ExpiresAt time.Time
 }
 
+// groupListCacheEntry represents a cached groups list with expiration
+type groupListCacheEntry struct {
+	Groups    []models.Group
+	ExpiresAt time.Time
+}
+
 // GroupService handles business logic for group operations.
 type GroupService struct {
 	db                    *gorm.DB
@@ -61,12 +68,17 @@ type GroupService struct {
 	groupManager          *GroupManager
 	keyService            *KeyService
 	keyImportSvc          *KeyImportService
+	keyDeleteSvc          *KeyDeleteService
+	bulkImportSvc         *BulkImportService
 	encryptionSvc         encryption.Service
 	aggregateGroupService *AggregateGroupService
 	channelRegistry       []string
 	keyStatsCache         map[uint]groupKeyStatsCacheEntry
 	keyStatsCacheMu       sync.RWMutex
 	keyStatsCacheTTL      time.Duration
+	groupListCache        *groupListCacheEntry
+	groupListCacheMu      sync.RWMutex
+	groupListCacheTTL     time.Duration
 }
 
 // NewGroupService constructs a GroupService.
@@ -76,21 +88,30 @@ func NewGroupService(
 	groupManager *GroupManager,
 	keyService *KeyService,
 	keyImportSvc *KeyImportService,
+	keyDeleteSvc *KeyDeleteService,
+	bulkImportSvc *BulkImportService,
 	encryptionSvc encryption.Service,
 	aggregateGroupService *AggregateGroupService,
 ) *GroupService {
-	return &GroupService{
+	svc := &GroupService{
 		db:                    db,
 		settingsManager:       settingsManager,
 		groupManager:          groupManager,
 		keyService:            keyService,
 		keyImportSvc:          keyImportSvc,
+		keyDeleteSvc:          keyDeleteSvc,
+		bulkImportSvc:         bulkImportSvc,
 		encryptionSvc:         encryptionSvc,
 		aggregateGroupService: aggregateGroupService,
 		keyStatsCache:         make(map[uint]groupKeyStatsCacheEntry),
-		keyStatsCacheTTL:      3 * time.Minute,
+		keyStatsCacheTTL:      30 * time.Second, // Reduced from 3 minutes to 30 seconds for fresher data
+		groupListCacheTTL:     30 * time.Second, // Increased from 2 seconds to balance freshness and performance
 		channelRegistry:       channel.GetChannels(),
 	}
+	if svc.keyService != nil {
+		svc.keyService.CacheInvalidationCallback = svc.InvalidateKeyStatsCache
+	}
+	return svc
 }
 
 // GroupCreateParams captures all fields required to create a group.
@@ -266,16 +287,60 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
 
+	// Invalidate group list cache after creating a new group
+	s.invalidateGroupListCache()
+
 	return &group, nil
+}
+
+// invalidateGroupListCache clears the group list cache
+func (s *GroupService) invalidateGroupListCache() {
+	s.groupListCacheMu.Lock()
+	s.groupListCache = nil
+	s.groupListCacheMu.Unlock()
+	logrus.Debug("Group list cache invalidated")
 }
 
 // ListGroups returns all groups without sub-group relations.
 func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
-	groups := make([]models.Group, 0, 100)
+	// Check cache first
+	s.groupListCacheMu.RLock()
+	if s.groupListCache != nil && time.Now().Before(s.groupListCache.ExpiresAt) {
+		// Cache hit, return cached groups
+		groups := make([]models.Group, len(s.groupListCache.Groups))
+		copy(groups, s.groupListCache.Groups)
+		s.groupListCacheMu.RUnlock()
+		logrus.WithContext(ctx).Debug("Group list cache hit")
+		return groups, nil
+	}
+	s.groupListCacheMu.RUnlock()
+
+// Cache miss, fetch from database without timeout for reliability
+// Group list queries should be fast with proper indexes
+groups := make([]models.Group, 0, 100)
 	if err := s.db.WithContext(ctx).Order("sort asc, id desc").Find(&groups).Error; err != nil {
+		// On failure, return stale cache if available to keep UI responsive
+		s.groupListCacheMu.RLock()
+		if s.groupListCache != nil {
+			stale := make([]models.Group, len(s.groupListCache.Groups))
+			copy(stale, s.groupListCache.Groups)
+			s.groupListCacheMu.RUnlock()
+			logrus.WithContext(ctx).WithError(err).Warn("ListGroups DB error - returning stale cache")
+			return stale, nil
+		}
+		s.groupListCacheMu.RUnlock()
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	// Update cache
+	s.groupListCacheMu.Lock()
+	s.groupListCache = &groupListCacheEntry{
+		Groups:    groups,
+		ExpiresAt: time.Now().Add(s.groupListCacheTTL),
+	}
+	s.groupListCacheMu.Unlock()
+
+	logrus.WithContext(ctx).Debug("Group list cache updated")
 	return groups, nil
 }
 
@@ -317,29 +382,21 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	}
 
 	// Check if this group is used as a sub-group in aggregate groups before allowing critical changes
-	if group.GroupType != "aggregate" && (params.ChannelType != nil || params.ValidationEndpoint != nil) {
-		count, err := s.aggregateGroupService.CountAggregateGroupsUsingSubGroup(ctx, group.ID)
-		if err != nil {
-			return nil, err
-		}
+	// Only perform the check if the new values are actually changing to avoid unnecessary COUNT queries
+	if group.GroupType != "aggregate" {
+		channelTypeChanged := params.ChannelType != nil && strings.TrimSpace(*params.ChannelType) != group.ChannelType
+		validationEndpointChanged := params.ValidationEndpoint != nil && strings.TrimSpace(*params.ValidationEndpoint) != group.ValidationEndpoint
 
-		if count > 0 {
-			// Check if ChannelType is being changed
-			if params.ChannelType != nil {
-				cleanedChannelType := strings.TrimSpace(*params.ChannelType)
-				if group.ChannelType != cleanedChannelType {
-					return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_referenced_cannot_modify",
-						map[string]any{"count": count})
-				}
+		if channelTypeChanged || validationEndpointChanged {
+			count, err := s.aggregateGroupService.CountAggregateGroupsUsingSubGroup(ctx, group.ID)
+			if err != nil {
+				return nil, err
 			}
 
-			// Check if ValidationEndpoint is being changed
-			if params.ValidationEndpoint != nil {
-				cleanedValidationEndpoint := strings.TrimSpace(*params.ValidationEndpoint)
-				if group.ValidationEndpoint != cleanedValidationEndpoint {
-					return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_referenced_cannot_modify",
-						map[string]any{"count": count})
-				}
+			if count > 0 {
+				// If referenced by aggregate groups, disallow these specific changes
+				return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_referenced_cannot_modify",
+					map[string]any{"count": count})
 			}
 		}
 	}
@@ -422,11 +479,16 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
 
+	// Invalidate group list cache after updating a group
+	s.invalidateGroupListCache()
+
 	return &group, nil
 }
 
 // DeleteGroup removes a group and associated resources.
+// This operation is idempotent - deleting a non-existent group returns success.
 func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
+	// Start transaction
 	tx := s.db.WithContext(ctx).Begin()
 	if err := tx.Error; err != nil {
 		return app_errors.ErrDatabase
@@ -437,82 +499,117 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 		}
 	}()
 
+	// Get the group for logging
 	var group models.Group
 	if err := tx.First(&group, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Group doesn't exist - idempotent delete returns success
+			tx.Rollback()
+			return nil
+		}
 		return app_errors.ParseDBError(err)
 	}
 
-	// Query key IDs inside transaction to avoid race conditions
-	var keyIDs []uint
-	if err := tx.Model(&models.APIKey{}).
-		Where("group_id = ?", id).
-		Pluck("id", &keyIDs).Error; err != nil {
-		return app_errors.ParseDBError(err)
-	}
+	// Count keys for logging (fast query with index)
+	var keyCount int64
+	tx.Model(&models.APIKey{}).Where("group_id = ?", id).Count(&keyCount)
 
+	// Delete sub-group relationships
 	if err := tx.Where("group_id = ? OR sub_group_id = ?", id, id).Delete(&models.GroupSubGroup{}).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
 
-	// Use batch deletion for large datasets to improve performance and reduce lock time
-	// This is much faster than deleting all rows at once, especially for groups with many keys
-	// Delete by ID in batches to leverage primary key index and reduce lock contention
-	// Smaller batch size (50) ensures each DELETE operation stays well under 200ms threshold
-	// Even with 100 IDs, DELETE operations can exceed 200ms, so 50 is a safer choice
-	if len(keyIDs) > 0 {
-		batchSize := 50
-		totalDeleted := int64(0)
-
-		for i := 0; i < len(keyIDs); i += batchSize {
-			end := i + batchSize
-			if end > len(keyIDs) {
-				end = len(keyIDs)
-			}
-			batchIDs := keyIDs[i:end]
-
-			result := tx.Where("id IN ?", batchIDs).Delete(&models.APIKey{})
-			if result.Error != nil {
-				return app_errors.ParseDBError(result.Error)
-			}
-
-			totalDeleted += result.RowsAffected
-		}
-
-		if totalDeleted > 0 {
-			logrus.WithContext(ctx).WithFields(logrus.Fields{
-				"groupID":      id,
-				"deletedCount": totalDeleted,
-				"totalKeys":    len(keyIDs),
-			}).Debug("Deleted API keys in batches")
-		}
+	// Delete all API keys for this group in a single operation
+	if err := tx.Where("group_id = ?", id).Delete(&models.APIKey{}).Error; err != nil {
+		return app_errors.ErrDatabase
 	}
 
+	// Delete the group
 	if err := tx.Delete(&models.Group{}, id).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
 
+	// Commit transaction
 	if err := tx.Commit().Error; err != nil {
 		return app_errors.ErrDatabase
 	}
 	tx = nil
 
-	// Post-commit: best-effort cache/memory updates
-	if len(keyIDs) > 0 {
-		if err := s.keyService.KeyProvider.RemoveKeysFromStore(id, keyIDs); err != nil {
-			logrus.WithContext(ctx).WithFields(logrus.Fields{
-				"groupID":  id,
-				"keyCount": len(keyIDs),
-			}).WithError(err).Warn("failed to remove keys from memory store; will refresh on next use")
-		}
-	}
-	// Clear per-group key stats cache to avoid stale counts for soon-to-be-reused IDs
-	s.InvalidateKeyStatsCache(id)
+	// Clear memory store for this group after database commit
+	// Use a goroutine to avoid blocking the response
+	if keyCount > 0 {
+		go func() {
+			// Use a timeout context for background deletion
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
+			if _, err := s.keyService.KeyProvider.RemoveAllKeys(cleanupCtx, id); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"groupID": id,
+					"error":   err,
+				}).Error("failed to remove keys from memory store")
+			}
+		}()
+	}
+
+	// Invalidate caches
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
+	s.invalidateGroupListCache()
+	s.InvalidateKeyStatsCache(id)
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"groupID":   id,
+		"groupName": group.Name,
+		"keyCount":  keyCount,
+	}).Info("Successfully deleted group")
 
 	return nil
+}
+
+// deleteKeysInBatches deletes keys in small batches with separate transactions
+// This avoids long-running transactions that block other operations
+func (s *GroupService) deleteKeysInBatches(ctx context.Context, keyIDs []uint) int64 {
+	if len(keyIDs) == 0 {
+		return 0
+	}
+
+	const batchSize = 50
+	totalDeleted := int64(0)
+
+	for i := 0; i < len(keyIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(keyIDs) {
+			end = len(keyIDs)
+		}
+		batchIDs := keyIDs[i:end]
+
+		// Each batch in its own transaction
+		var deleted int64
+		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			result := tx.Where("id IN ?", batchIDs).Delete(&models.APIKey{})
+			if result.Error != nil {
+				return result.Error
+			}
+			deleted = result.RowsAffected
+			return nil
+		})
+
+		if err != nil {
+			logrus.WithContext(ctx).WithError(err).WithField("batch", i/batchSize).Warn("Failed to delete batch of keys")
+			continue
+		}
+
+		totalDeleted += deleted
+
+		// Small delay between batches to allow other operations
+		if i+batchSize < len(keyIDs) {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	return totalDeleted
 }
 
 // DeleteAllGroups removes all groups and their associated resources.
@@ -643,6 +740,9 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 		// Continue even if cache invalidation fails
 	}
 
+	// Invalidate group list cache after deleting all groups
+	s.invalidateGroupListCache()
+
 	// Step 11: Reset in-memory key stats cache to avoid serving stale data for reused IDs
 	s.keyStatsCacheMu.Lock()
 	s.keyStatsCache = make(map[uint]groupKeyStatsCacheEntry)
@@ -679,60 +779,92 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 
 	newGroup := sourceGroup
 	newGroup.ID = 0
-	newGroup.Name = s.generateUniqueGroupName(ctx, sourceGroup.Name)
-	if sourceGroup.DisplayName != "" {
-		newGroup.DisplayName = sourceGroup.DisplayName + " Copy"
+	// Generate unique name with suffix
+	uniqueName := s.generateUniqueGroupNameForCopy(ctx, sourceGroup.Name, tx)
+	newGroup.Name = uniqueName
+
+	// Set display name with the same suffix as the name
+	// Only append suffix if the unique name actually starts with the original name
+	// (it may be truncated if the original name is too long)
+	suffix := ""
+	if strings.HasPrefix(uniqueName, sourceGroup.Name) {
+		suffix = uniqueName[len(sourceGroup.Name):]
 	}
+
+	if sourceGroup.DisplayName != "" {
+		if suffix != "" {
+			newGroup.DisplayName = sourceGroup.DisplayName + suffix
+		} else {
+			// If the name was truncated, use the unique name directly
+			newGroup.DisplayName = sourceGroup.DisplayName + " Copy"
+		}
+	} else {
+		newGroup.DisplayName = uniqueName
+	}
+
 	newGroup.CreatedAt = time.Time{}
 	newGroup.UpdatedAt = time.Time{}
 	newGroup.LastValidatedAt = nil
 
+	// Create the new group
 	if err := tx.Create(&newGroup).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	// Fetch source keys to copy if needed (quick query)
 	var sourceKeyValues []string
 	if option != "none" {
-		var sourceKeys []models.APIKey
-		query := tx.Where("group_id = ?", sourceGroupID)
+		// Only fetch key_value field to reduce memory and query time
+		var sourceKeyData []struct {
+			KeyValue string
+		}
+		query := tx.Table("api_keys").Select("key_value").Where("group_id = ?", sourceGroupID)
 		if option == "valid_only" {
 			query = query.Where("status = ?", models.KeyStatusActive)
 		}
-		if err := query.Find(&sourceKeys).Error; err != nil {
+		if err := query.Scan(&sourceKeyData).Error; err != nil {
 			return nil, app_errors.ParseDBError(err)
 		}
 
-		for _, sourceKey := range sourceKeys {
-			decryptedKey, err := s.encryptionSvc.Decrypt(sourceKey.KeyValue)
+		// Decrypt keys (fast operation)
+		for _, keyData := range sourceKeyData {
+			decryptedKey, err := s.encryptionSvc.Decrypt(keyData.KeyValue)
 			if err != nil {
-				logrus.WithContext(ctx).WithError(err).WithField("key_id", sourceKey.ID).Error("failed to decrypt key during group copy, skipping")
+				logrus.WithContext(ctx).Debug("failed to decrypt key during group copy, skipping")
 				continue
 			}
 			sourceKeyValues = append(sourceKeyValues, decryptedKey)
 		}
 	}
 
+	// Commit the transaction immediately - group is created
 	if err := tx.Commit().Error; err != nil {
 		return nil, app_errors.ErrDatabase
 	}
 	tx = nil
 
+	// Invalidate caches
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
+	s.invalidateGroupListCache()
 
+	// Start async copy task if we have keys to copy
+	// This returns immediately and shows progress in UI
 	if len(sourceKeyValues) > 0 {
+		// Use import service for async copy with progress tracking
 		keysText := strings.Join(sourceKeyValues, "\n")
 		if _, err := s.keyImportSvc.StartImportTask(&newGroup, keysText); err != nil {
 			logrus.WithContext(ctx).WithFields(logrus.Fields{
 				"groupId":  newGroup.ID,
 				"keyCount": len(sourceKeyValues),
-			}).WithError(err).Error("failed to start async key import task for group copy")
+			}).WithError(err).Error("failed to start async import task for group copy")
+			// Don't fail the copy - group is already created
 		} else {
 			logrus.WithContext(ctx).WithFields(logrus.Fields{
 				"groupId":  newGroup.ID,
 				"keyCount": len(sourceKeyValues),
-			}).Info("started async key import task for group copy")
+			}).Info("Started async import task for group copy")
 		}
 	}
 
@@ -742,9 +874,20 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 // GetGroupStats returns aggregated usage statistics for a group.
 func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupStats, error) {
 	var group models.Group
-	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
+// Try cache first to avoid DB under heavy writes
+if cached, err := s.groupManager.GetGroupByID(groupID); err == nil && cached != nil {
+	group = *cached
+} else {
+	// Short DB lookup with small timeout
+	qctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	if err := s.db.WithContext(qctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
+}
+if group.ID == 0 {
+	return nil, app_errors.ErrResourceNotFound
+}
 
 	// Select different statistics logic based on group type
 	if group.GroupType == "aggregate" {
@@ -776,6 +919,69 @@ func (s *GroupService) queryGroupHourlyStats(ctx context.Context, groupID uint, 
 	return calculateRequestStats(result.SuccessCount+result.FailureCount, result.FailureCount), nil
 }
 
+// queryMultipleTimeRangeStats queries statistics for multiple time periods in a single SQL query
+// This is optimized to use CASE WHEN statements to reduce the number of database queries
+func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID uint) (stats24h, stats7d, stats30d RequestStats, err error) {
+	var result struct {
+		Success24h  int64
+		Failure24h  int64
+		Success7d   int64
+		Failure7d   int64
+		Success30d  int64
+		Failure30d  int64
+	}
+
+	now := time.Now()
+	currentHour := now.Truncate(time.Hour)
+	endTime := currentHour.Add(time.Hour) // Include current hour
+
+	// Calculate time boundaries
+	time24hAgo := endTime.Add(-24 * time.Hour)
+	time7dAgo := endTime.Add(-7 * 24 * time.Hour)
+	time30dAgo := endTime.Add(-30 * 24 * time.Hour)
+
+// Single query with CASE WHEN for all three time ranges
+	query := `
+		SELECT
+			COALESCE(SUM(CASE WHEN time >= ? THEN success_count ELSE 0 END), 0) as success24h,
+			COALESCE(SUM(CASE WHEN time >= ? THEN failure_count ELSE 0 END), 0) as failure24h,
+			COALESCE(SUM(CASE WHEN time >= ? THEN success_count ELSE 0 END), 0) as success7d,
+			COALESCE(SUM(CASE WHEN time >= ? THEN failure_count ELSE 0 END), 0) as failure7d,
+			COALESCE(SUM(success_count), 0) as success30d,
+			COALESCE(SUM(failure_count), 0) as failure30d
+		FROM group_hourly_stats
+		WHERE group_id = ? AND time >= ? AND time < ?
+	`
+
+	// Add a timeout to avoid blocking during heavy writes
+queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	type qres struct{ err error }
+	done := make(chan qres, 1)
+	go func() {
+		err := s.db.WithContext(queryCtx).Raw(query,
+			time24hAgo, time24hAgo,
+			time7dAgo, time7dAgo,
+			groupID, time30dAgo, endTime,
+		).Scan(&result).Error
+		done <- qres{err: err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return RequestStats{}, RequestStats{}, RequestStats{}, r.err
+		}
+		stats24h = calculateRequestStats(result.Success24h+result.Failure24h, result.Failure24h)
+		stats7d = calculateRequestStats(result.Success7d+result.Failure7d, result.Failure7d)
+		stats30d = calculateRequestStats(result.Success30d+result.Failure30d, result.Failure30d)
+		return stats24h, stats7d, stats30d, nil
+	case <-queryCtx.Done():
+		// Timeout: return zero stats to avoid blocking UI
+		logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Stats query timed out, returning zeros")
+		return RequestStats{}, RequestStats{}, RequestStats{}, nil
+	}
+}
+
 // fetchKeyStats retrieves API key statistics for a group with caching
 func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStats, error) {
 	// Check cache first
@@ -788,19 +994,32 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 	}
 	s.keyStatsCacheMu.RUnlock()
 
-	// Cache miss - query database
-	var totalKeys, activeKeys int64
+	// Cache miss - query database with timeout to avoid blocking during bulk inserts
+	// Create a context with timeout for the query
+	// Use a longer timeout to ensure data is fetched properly during import operations
+queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 
-	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
-		Where("group_id = ?", groupID).
-		Count(&totalKeys).Error; err != nil {
-		return KeyStats{}, fmt.Errorf("failed to get total keys: %w", err)
+	// Use index-friendly COUNT queries to leverage composite indexes and avoid full table scans
+
+	// Use two index-friendly COUNT queries instead of a single aggregation to leverage composite indexes
+	var totalKeys int64
+	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalKeys).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats total count timed out, returning empty stats")
+			return KeyStats{TotalKeys: 0, ActiveKeys: 0, InvalidKeys: 0}, nil
+		}
+		return KeyStats{}, fmt.Errorf("failed to count total keys: %w", err)
 	}
 
-	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
-		Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).
-		Count(&activeKeys).Error; err != nil {
-		return KeyStats{}, fmt.Errorf("failed to get active keys: %w", err)
+	var activeKeys int64
+	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).Count(&activeKeys).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out, returning partial stats")
+			activeKeys = 0
+		} else {
+			return KeyStats{}, fmt.Errorf("failed to count active keys: %w", err)
+		}
 	}
 
 	stats := KeyStats{
@@ -829,74 +1048,60 @@ func (s *GroupService) InvalidateKeyStatsCache(groupID uint) {
 
 // fetchRequestStats retrieves request statistics for multiple time periods
 func (s *GroupService) fetchRequestStats(ctx context.Context, groupID uint, stats *GroupStats) []error {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var errs []error
-
-	// Define time periods and their corresponding setters
-	timePeriods := []struct {
-		hours  int
-		name   string
-		setter func(RequestStats)
-	}{
-		{24, "24-hour", func(r RequestStats) { stats.Stats24Hour = r }},
-		{7 * 24, "7-day", func(r RequestStats) { stats.Stats7Day = r }},
-		{30 * 24, "30-day", func(r RequestStats) { stats.Stats30Day = r }},
+	// Use the optimized single query to get all time range statistics
+	stats24h, stats7d, stats30d, err := s.queryMultipleTimeRangeStats(ctx, groupID)
+	if err != nil {
+		return []error{fmt.Errorf("failed to get time range stats: %w", err)}
 	}
 
-	// Fetch statistics for each time period concurrently
-	for _, period := range timePeriods {
-		wg.Add(1)
-		go func(hours int, name string, setter func(RequestStats)) {
-			defer wg.Done()
+	// Assign the results to the stats structure
+	stats.Stats24Hour = stats24h
+	stats.Stats7Day = stats7d
+	stats.Stats30Day = stats30d
 
-			res, err := s.queryGroupHourlyStats(ctx, groupID, hours)
-			if err != nil {
-				mu.Lock()
-				errs = append(errs, fmt.Errorf("failed to get %s stats: %w", name, err))
-				mu.Unlock()
-				return
-			}
-
-			mu.Lock()
-			setter(res)
-			mu.Unlock()
-		}(period.hours, period.name, period.setter)
-	}
-
-	wg.Wait()
-	return errs
+	return nil
 }
 
 func (s *GroupService) getStandardGroupStats(ctx context.Context, groupID uint) (*GroupStats, error) {
 	stats := &GroupStats{}
 	var allErrors []error
+	var errsMu sync.Mutex
 
-	// Fetch key statistics (only for standard groups)
-	keyStats, err := s.fetchKeyStats(ctx, groupID)
-	if err != nil {
-		allErrors = append(allErrors, err)
-		// Log error but continue to fetch request stats
-		logrus.WithContext(ctx).WithError(err).Warn("failed to fetch key stats, continuing with request stats")
-	} else {
+	// Run key stats and request stats concurrently to avoid additive timeouts
+	done := make(chan struct{}, 2)
+	// key stats
+	go func() {
+		defer func() { done <- struct{}{} }()
+		keyStats, err := s.fetchKeyStats(ctx, groupID)
+		if err != nil {
+			errsMu.Lock()
+			allErrors = append(allErrors, err)
+			errsMu.Unlock()
+			logrus.WithContext(ctx).WithError(err).Warn("failed to fetch key stats, continuing with request stats")
+			return
+		}
 		stats.KeyStats = keyStats
-	}
+	}()
+	// request stats (24h/7d/30d)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		if errs := s.fetchRequestStats(ctx, groupID, stats); len(errs) > 0 {
+			errsMu.Lock()
+			allErrors = append(allErrors, errs...)
+			errsMu.Unlock()
+		}
+	}()
+	// Wait for both
+	<-done
+	<-done
 
-	// Fetch request statistics (common for all groups)
-	if errs := s.fetchRequestStats(ctx, groupID, stats); len(errs) > 0 {
-		allErrors = append(allErrors, errs...)
-	}
-
-	// Handle errors
 	if len(allErrors) > 0 {
 		logrus.WithContext(ctx).WithError(allErrors[0]).Error("errors occurred while fetching group stats")
-		// Return partial stats if we have some data
 		if stats.Stats24Hour.TotalRequests > 0 || stats.Stats7Day.TotalRequests > 0 || stats.Stats30Day.TotalRequests > 0 {
 			return stats, nil
 		}
 		return nil, NewI18nError(app_errors.ErrDatabase, "database.group_stats_failed", nil)
 	}
-
 	return stats, nil
 }
 
@@ -1122,30 +1327,57 @@ func calculateRequestStats(total, failed int64) RequestStats {
 	return stats
 }
 
-func (s *GroupService) generateUniqueGroupName(ctx context.Context, baseName string) string {
-	groups := make([]models.Group, 0, 100)
-	if err := s.db.WithContext(ctx).Select("name").Find(&groups).Error; err != nil {
-		return baseName + "_copy"
+// generateUniqueGroupNameForCopy generates a unique group name for copy operations
+// For copy operations, we don't try the original name because it definitely exists
+// We directly append a random 4-character suffix to create a new unique name
+// Format: {baseName}{random4} (e.g., "siliconflow" becomes "siliconflowa8f3")
+// It accepts an optional db parameter to use a transaction, otherwise uses the default connection
+// Optimized: Check each candidate name individually instead of loading all names
+// This uses the UNIQUE index on name column for fast lookups, avoiding full table scan
+// Performance: O(k) where k is the number of attempts (usually 1), instead of O(n) where n is total groups
+func (s *GroupService) generateUniqueGroupNameForCopy(ctx context.Context, baseName string, db ...*gorm.DB) string {
+	var queryDB *gorm.DB
+	if len(db) > 0 && db[0] != nil {
+		// Use provided database connection (e.g., transaction)
+		queryDB = db[0].WithContext(ctx)
+	} else {
+		// Use default database connection
+		queryDB = s.db.WithContext(ctx)
 	}
 
-	existingNames := make(map[string]bool, len(groups))
-	for _, group := range groups {
-		existingNames[group.Name] = true
+	// For copy operations, we don't try the original name (it definitely exists)
+	// Generate a name with random suffix directly (no underscore, no timestamp)
+	// Ensure the name doesn't exceed database limits (usually 100-255 chars)
+	trimmedBaseName := baseName
+	if len(baseName)+4 > 100 {
+		trimmedBaseName = baseName[:96] // Leave room for 4-char suffix
 	}
 
-	copyName := baseName + "_copy"
-	if !existingNames[copyName] {
-		return copyName
-	}
+	maxAttempts := 10
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Generate name with random suffix (4 chars)
+		// e.g., "siliconflow" becomes "siliconflowa8f3"
+		groupName := trimmedBaseName + utils.GenerateRandomSuffix()
 
-	for i := 2; i <= 1000; i++ {
-		candidate := fmt.Sprintf("%s_copy_%d", baseName, i)
-		if !existingNames[candidate] {
-			return candidate
+		// Check if this name already exists
+		var existingGroup models.Group
+		if err := queryDB.Where("name = ?", groupName).First(&existingGroup).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				// Name doesn't exist, use it
+				logrus.WithContext(ctx).Debugf("Generated unique group name for copy: %s (original: %s)", groupName, baseName)
+				return groupName
+			}
+			// On other errors, log and continue to try alternatives
+			logrus.WithContext(ctx).WithError(err).Warn("failed to check if group name exists, trying alternatives")
 		}
+
+		// Name exists, try again with a new random suffix
 	}
 
-	return copyName
+	// Final fallback: use timestamp suffix if all random attempts failed
+	groupName := fmt.Sprintf("%s%d", trimmedBaseName, time.Now().Unix())
+	logrus.WithContext(ctx).Warnf("Failed to generate unique group name after %d attempts, using timestamp suffix", maxAttempts)
+	return groupName
 }
 
 // isValidGroupName validates the group name.
@@ -1195,6 +1427,9 @@ func (s *GroupService) ToggleGroupEnabled(ctx context.Context, id uint, enabled 
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
+
+	// Invalidate group list cache after toggling group enabled status
+	s.invalidateGroupListCache()
 
 	return nil
 }
