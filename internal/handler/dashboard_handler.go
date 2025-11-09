@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"gpt-load/internal/encryption"
 	app_errors "gpt-load/internal/errors"
@@ -420,8 +421,10 @@ func (s *Server) checkEncryptionMismatch(c *gin.Context) (bool, string, string, 
 
 	// Sample check API keys
 	var sampleKeys []models.APIKey
-	if err := s.DB.Limit(20).Where("key_hash IS NOT NULL AND key_hash != ''").Find(&sampleKeys).Error; err != nil {
-		logrus.WithError(err).Error("Failed to fetch sample keys for encryption check")
+	ctxTimeout, cancel := context.WithTimeout(c.Request.Context(), 300*time.Millisecond)
+	defer cancel()
+	if err := s.DB.WithContext(ctxTimeout).Limit(20).Where("key_hash IS NOT NULL AND key_hash != ''").Find(&sampleKeys).Error; err != nil {
+		logrus.WithError(err).Warn("Encryption check sample query failed/timeout; skipping")
 		return false, ScenarioNone, "", ""
 	}
 

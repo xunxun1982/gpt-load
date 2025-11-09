@@ -399,6 +399,14 @@ func (s *ExportImportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 	newGroup.ID = 0 // Reset ID for new record
 	newGroup.Name = groupName
 
+	// Extract the suffix that was added to the name and apply it to display name too
+	// This ensures both name and display name have the same random suffix
+	if newGroup.DisplayName != "" && groupName != data.Group.Name {
+		// Find the suffix that was added to the name
+		suffix := strings.TrimPrefix(groupName, data.Group.Name)
+		newGroup.DisplayName = newGroup.DisplayName + suffix
+	}
+
 	// Clean Config values to remove leading/trailing whitespace
 	// This fixes issues like ' http://...' which cause URL parsing errors
 	if newGroup.Config != nil {

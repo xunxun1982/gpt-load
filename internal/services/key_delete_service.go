@@ -49,6 +49,17 @@ func (s *KeyDeleteService) StartDeleteTask(group *models.Group, keysText string)
 	return initialStatus, nil
 }
 
+// StartDeleteAllGroupKeys starts a serialized global task to delete all keys in a group.
+// It leverages TaskService to ensure only one heavy delete/import runs at a time.
+func (s *KeyDeleteService) StartDeleteAllGroupKeys(group *models.Group, total int) (*TaskStatus, error) {
+	status, err := s.TaskService.StartTask(TaskTypeKeyDelete, group.Name, total)
+	if err != nil {
+		return nil, err
+	}
+	go s.runDeleteAllGroupKeys(group, total)
+	return status, nil
+}
+
 func (s *KeyDeleteService) runDelete(group *models.Group, keys []string) {
 	progressCallback := func(processed int) {
 		if err := s.TaskService.UpdateProgress(processed); err != nil {
@@ -72,6 +83,25 @@ func (s *KeyDeleteService) runDelete(group *models.Group, keys []string) {
 	if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
 		logrus.Errorf("Failed to end task with success result for group %d: %v", group.ID, endErr)
 	}
+}
+
+// runDeleteAllGroupKeys performs the full-group deletion using the provider's chunked delete.
+func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group, total int) {
+	deleted, err := s.KeyService.KeyProvider.RemoveAllKeys(group.ID)
+	if err != nil {
+		_ = s.TaskService.EndTask(nil, err)
+		return
+	}
+	// Best-effort: mark progress as complete
+	_ = s.TaskService.UpdateProgress(int(deleted))
+
+	// Invalidate cache after deleting keys
+	if s.KeyService.CacheInvalidationCallback != nil && deleted > 0 {
+		s.KeyService.CacheInvalidationCallback(group.ID)
+	}
+
+	result := KeyDeleteResult{DeletedCount: int(deleted), IgnoredCount: 0}
+	_ = s.TaskService.EndTask(result, nil)
 }
 
 // processAndDeleteKeys is the core function for deleting keys with progress tracking.

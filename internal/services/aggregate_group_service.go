@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -194,7 +195,7 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 
 	if len(existingSubGroups) > 0 {
 		var existingGroup models.Group
-		if err := s.db.WithContext(ctx).First(&existingGroup, existingSubGroups[0].SubGroupID).Error; err == nil {
+		if err := s.db.WithContext(ctx).Where("id = ?", existingSubGroups[0].SubGroupID).Limit(1).Find(&existingGroup).Error; err == nil && existingGroup.ID != 0 {
 			existingEndpoint = utils.GetValidationEndpoint(&existingGroup)
 		}
 	}
@@ -262,11 +263,11 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 
 	// Check if sub-group relationship exists
 	var existingRecord models.GroupSubGroup
-	if err := s.db.WithContext(ctx).Where("group_id = ? AND sub_group_id = ?", groupID, subGroupID).First(&existingRecord).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
-		}
+	if err := s.db.WithContext(ctx).Where("group_id = ? AND sub_group_id = ?", groupID, subGroupID).Limit(1).Find(&existingRecord).Error; err != nil {
 		return err
+	}
+	if existingRecord.GroupID == 0 {
+		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
 	}
 
 	result := s.db.WithContext(ctx).
@@ -319,8 +320,12 @@ func (s *AggregateGroupService) DeleteSubGroup(ctx context.Context, groupID, sub
 
 // CountAggregateGroupsUsingSubGroup returns the number of aggregate groups that use the specified group as a sub-group
 func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Context, subGroupID uint) (int64, error) {
+	// Add timeout to prevent blocking when group operations are in progress
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	var count int64
-	err := s.db.WithContext(ctx).
+	err := s.db.WithContext(queryCtx).
 		Model(&models.GroupSubGroup{}).
 		Where("sub_group_id = ?", subGroupID).
 		Count(&count).Error
@@ -334,8 +339,15 @@ func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Co
 
 // GetParentAggregateGroups returns the aggregate groups that use the specified group as a sub-group
 func (s *AggregateGroupService) GetParentAggregateGroups(ctx context.Context, subGroupID uint) ([]models.ParentAggregateGroupInfo, error) {
+queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+
 	var groupSubGroups []models.GroupSubGroup
-	if err := s.db.WithContext(ctx).Where("sub_group_id = ?", subGroupID).Find(&groupSubGroups).Error; err != nil {
+if err := s.db.WithContext(queryCtx).Where("sub_group_id = ?", subGroupID).Find(&groupSubGroups).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			// Gracefully degrade: return empty list instead of blocking
+			return []models.ParentAggregateGroupInfo{}, nil
+		}
 		return nil, app_errors.ParseDBError(err)
 	}
 
@@ -352,7 +364,10 @@ func (s *AggregateGroupService) GetParentAggregateGroups(ctx context.Context, su
 	}
 
 	var aggregateGroupModels []models.Group
-	if err := s.db.WithContext(ctx).Where("id IN ?", aggregateGroupIDs).Find(&aggregateGroupModels).Error; err != nil {
+if err := s.db.WithContext(queryCtx).Where("id IN ?", aggregateGroupIDs).Find(&aggregateGroupModels).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return []models.ParentAggregateGroupInfo{}, nil
+		}
 		return nil, app_errors.ParseDBError(err)
 	}
 
