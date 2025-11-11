@@ -324,7 +324,7 @@ function handleGroupCreated(group: Group) {
 }
 
 // Export group
-function handleExportGroup(group: Group, event: Event) {
+async function handleExportGroup(group: Group, event: Event) {
   event.stopPropagation();
 
   if (!group || !group.id) {
@@ -332,21 +332,18 @@ function handleExportGroup(group: Group, event: Event) {
     return;
   }
 
-  dialog.info({
-    title: t("keys.exportGroup"),
-    content: t("keys.exportGroupConfirm", { name: getGroupDisplayName(group) }),
-    positiveText: t("common.confirm"),
-    negativeText: t("common.cancel"),
-    onPositiveClick: async () => {
-      try {
-        await keysApi.exportGroup(group.id!);
-        message.success(t("keys.exportSuccess"));
-      } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : t("keys.exportFailed");
-        message.error(errorMessage);
-      }
-    },
-  });
+  const mode = await (async () => {
+    const { askExportMode } = await import("@/utils/export-import");
+    return askExportMode(dialog, t);
+  })();
+
+  try {
+    await keysApi.exportGroup(group.id!, mode);
+    message.success(t("keys.exportSuccess"));
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : t("keys.exportFailed");
+    message.error(errorMessage);
+  }
 }
 
 // Import state management
@@ -374,48 +371,36 @@ async function handleFileChange(event: Event) {
     const text = await file.text();
     const data = JSON.parse(text);
 
-    // Show confirmation dialog
-    dialog.info({
-      title: t("keys.importGroup"),
-      content: t("keys.importGroupConfirm", { name: data.group?.name || "Unknown" }),
-      positiveText: t("common.confirm"),
-      negativeText: t("common.cancel"),
-      onPositiveClick: () => {
-        // Prevent duplicate imports
-        if (isImporting.value) {
-          message.warning(t("keys.importInProgress"));
-          return false; // Keep dialog open
-        }
+    const mode = await (async () => {
+      const { askImportMode } = await import("@/utils/export-import");
+      return askImportMode(dialog, t);
+    })();
 
-        // Close dialog immediately and start import
-        isImporting.value = true;
-        const loadingMessage = message.loading(t("keys.importing"), {
-          duration: 0, // Don't auto-close
-        });
+    // Prevent duplicate imports
+    if (isImporting.value) {
+      message.warning(t("keys.importInProgress"));
+      return;
+    }
 
-        // Execute import asynchronously after dialog closes
-        setTimeout(async () => {
-          try {
-            const created = await keysApi.importGroup(data);
-            loadingMessage.destroy();
-            message.success(t("keys.importSuccess"));
-            if (created?.id) {
-              emit("refresh-and-select", created.id);
-            } else {
-              emit("refresh");
-            }
-          } catch (error: unknown) {
-            loadingMessage.destroy();
-            const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");
-            message.error(errorMessage);
-          } finally {
-            isImporting.value = false;
-          }
-        }, 100); // Small delay to ensure dialog closes first
+    isImporting.value = true;
+    const loadingMessage = message.loading(t("keys.importing"), { duration: 0 });
 
-        return true; // Close dialog immediately
-      },
-    });
+    try {
+      const created = await keysApi.importGroup(data, { mode, filename: file.name });
+      loadingMessage.destroy();
+      message.success(t("keys.importSuccess"));
+      if (created?.id) {
+        emit("refresh-and-select", created.id);
+      } else {
+        emit("refresh");
+      }
+    } catch (error: unknown) {
+      loadingMessage.destroy();
+      const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");
+      message.error(errorMessage);
+    } finally {
+      isImporting.value = false;
+    }
   } catch (error) {
     message.error(t("keys.invalidImportFile"));
   } finally {

@@ -106,6 +106,19 @@ export default {
     diskUsage: "磁盘使用率",
     uptime: "运行时间",
   },
+  export: {
+    modeTitle: "选择导出方式",
+    modeDesc: "请选择导出文件中密钥的格式。建议选择加密导出以保护敏感信息。",
+    encrypted: "加密导出（推荐）",
+    plain: "明文导出（敏感）",
+  },
+  import: {
+    modeTitle: "选择导入模式",
+    modeDesc: "请选择导入文件中密钥的格式。无法确定时可选择自动识别（推荐）。",
+    encrypted: "加密导入",
+    plain: "明文导入",
+    auto: "自动识别",
+  },
   keys: {
     title: "密钥管理",
     groupManagement: "分组管理",

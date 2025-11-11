@@ -23,7 +23,7 @@ import (
 
 // importGroupFromExportData imports a group from export data with optimized bulk import.
 // This function uses the centralized name generation from ExportImportService
-func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImportService, encryptionSvc encryption.Service, bulkImportSvc *services.BulkImportService, groupInfo GroupExportInfo, keys []KeyExportInfo, subGroups []SubGroupExportInfo) (uint, error) {
+func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImportService, encryptionSvc encryption.Service, bulkImportSvc *services.BulkImportService, groupInfo GroupExportInfo, keys []KeyExportInfo, subGroups []SubGroupExportInfo, inputIsPlain bool) (uint, error) {
 	// Use the centralized unique name generation from ExportImportService
 	groupName, err := exportImportSvc.GenerateUniqueGroupName(tx, groupInfo.Name)
 	if err != nil {
@@ -78,33 +78,48 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		keyModels := make([]models.APIKey, 0, len(keys))
 		skippedKeys := 0
 		for i, keyInfo := range keys {
-			// Decrypt key_value to calculate key_hash for proper indexing and deduplication
-			// The exported key_value is encrypted, so we need to decrypt it first
-			decryptedKey, err := encryptionSvc.Decrypt(keyInfo.KeyValue)
-			if err != nil {
-				// If decryption fails, log and skip this key (no key material)
-				logrus.WithError(err).
-					WithField("index", i).
-					Warn("Failed to decrypt key during import, skipping")
-				skippedKeys++
-				continue
+			var plain string
+			var stored string
+			if inputIsPlain {
+				plain = keyInfo.KeyValue
+				enc, e := encryptionSvc.Encrypt(plain)
+				if e != nil {
+					logrus.WithError(e).WithField("index", i).Warn("Failed to encrypt plaintext key during import, skipping")
+					skippedKeys++
+					continue
+				}
+				stored = enc
+			} else {
+				// Decrypt key_value to calculate key_hash for proper indexing and deduplication
+				// The exported key_value is encrypted, so we need to decrypt it first
+				dec, derr := encryptionSvc.Decrypt(keyInfo.KeyValue)
+				if derr != nil {
+					// If decryption fails, log and skip this key (no key material)
+					logrus.WithError(derr).
+						WithField("index", i).
+						Warn("Failed to decrypt key during import, skipping")
+					skippedKeys++
+					continue
+				}
+				plain = dec
+				stored = keyInfo.KeyValue // already encrypted
 			}
 
-			// Calculate key_hash from decrypted key for proper indexing
-			keyHash := encryptionSvc.Hash(decryptedKey)
+			// Calculate key_hash from decrypted/plain key for proper indexing
+			keyHash := encryptionSvc.Hash(plain)
 
 			keyModels = append(keyModels, models.APIKey{
 				GroupID:  group.ID,
-				KeyValue: keyInfo.KeyValue, // Keep encrypted value
-				KeyHash:  keyHash,         // Add calculated hash
+				KeyValue: stored, // encrypted in DB
+				KeyHash:  keyHash, // Calculated hash
 				Status:   keyInfo.Status,
 			})
 		}
 		if skippedKeys > 0 {
-			logrus.Warnf("Skipped %d keys due to decryption failures during import", skippedKeys)
+			logrus.Warnf("Skipped %d keys due to preparation failures during import", skippedKeys)
 		}
 		prepDuration := time.Since(startPrep)
-		logrus.Infof("Key preparation (decrypt+hash) took %v for %d keys", prepDuration, len(keyModels))
+		logrus.Infof("Key preparation took %v for %d keys", prepDuration, len(keyModels))
 
 		if len(keyModels) > 0 {
 			// Use the new BulkImportService for optimized bulk insert
@@ -250,6 +265,9 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		return
 	}
 
+	// Determine export mode: plain or encrypted (default encrypted)
+	exportMode := GetExportMode(c)
+
 	// Parse HeaderRules for export format using common utility function
 	// ParseHeaderRulesForExport handles errors internally and logs warnings
 	headerRules := ParseHeaderRulesForExport(groupData.Group.HeaderRules, groupData.Group.ID)
@@ -288,10 +306,18 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		Version:    "2.0",
 	}
 
-	// Convert keys to export format
+	// Convert keys to export format. Decrypt to plaintext only when explicitly requested.
 	for _, key := range groupData.Keys {
+		kv := key.KeyValue
+		if exportMode == "plain" {
+			if decrypted, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
+				kv = decrypted
+			} else {
+				logrus.WithError(derr).Debug("Failed to decrypt key during plain export, keeping original value")
+			}
+		}
 		exportData.Keys = append(exportData.Keys, KeyExportInfo{
-			KeyValue: key.KeyValue,
+			KeyValue: kv,
 			Status:   key.Status,
 		})
 	}
@@ -315,7 +341,11 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		filenamePrefix = "standard-group"
 	}
 	safeName := sanitizeFilename(groupData.Group.Name)
-	filename := fmt.Sprintf("%s_%s_%s.json", filenamePrefix, safeName, time.Now().Format("20060102_150405"))
+	suffix := "enc"
+	if exportMode == "plain" {
+		suffix = "plain"
+	}
+	filename := fmt.Sprintf("%s_%s_%s-%s.json", filenamePrefix, safeName, time.Now().Format("20060102_150405"), suffix)
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.Header("Content-Type", "application/json; charset=utf-8")
 
@@ -338,9 +368,17 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		return
 	}
 
+	// Determine import mode from query, filename or content
+	sample := make([]string, 0, 5)
+	for i := 0; i < len(importData.Keys) && i < 5; i++ {
+		sample = append(sample, importData.Keys[i].KeyValue)
+	}
+	importMode := GetImportMode(c, sample)
+	inputIsPlain := importMode == "plain"
+
 	// Log import summary
-	logrus.Infof("Importing group %s with %d keys",
-		importData.Group.Name, len(importData.Keys))
+	logrus.Infof("Importing group %s with %d keys (mode=%s)",
+		importData.Group.Name, len(importData.Keys), importMode)
 	if len(importData.SubGroups) > 0 {
 		logrus.Debugf("SubGroups: %d", len(importData.SubGroups))
 	}
@@ -356,7 +394,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	var createdGroupID uint
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		createdGroupID, err = importGroupFromExportData(tx, s.ExportImportService, s.EncryptionSvc, s.BulkImportService, importData.Group, importData.Keys, importData.SubGroups)
+		createdGroupID, err = importGroupFromExportData(tx, s.ExportImportService, s.EncryptionSvc, s.BulkImportService, importData.Group, importData.Keys, importData.SubGroups, inputIsPlain)
 		if err != nil {
 			return err
 		}

@@ -30,6 +30,9 @@ type SystemExportData struct {
 
 // ExportAll exports all system data (system settings and all groups).
 func (s *Server) ExportAll(c *gin.Context) {
+	// Determine export mode: plain or encrypted (default encrypted)
+	exportMode := GetExportMode(c)
+
 	// Use the new ExportImportService to export the entire system
 	// This fixes the FindInBatches limitation that only exports 2000 records
 	systemData, err := s.ExportImportService.ExportSystem()
@@ -79,10 +82,18 @@ func (s *Server) ExportAll(c *gin.Context) {
 			SubGroups: []SubGroupExportInfo{},
 		}
 
-		// Convert keys
+		// Convert keys; when plain mode, decrypt for output
 		for _, key := range groupData.Keys {
+			kv := key.KeyValue
+			if exportMode == "plain" {
+				if dec, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
+					kv = dec
+				} else {
+					logrus.WithError(derr).Debug("Failed to decrypt key during plain system export, keeping original value")
+				}
+			}
 			groupExport.Keys = append(groupExport.Keys, KeyExportInfo{
-				KeyValue: key.KeyValue,
+				KeyValue: kv,
 				Status:   key.Status,
 			})
 		}
@@ -109,6 +120,15 @@ func (s *Server) ExportAll(c *gin.Context) {
 		Groups:         groupExports,
 	}
 
+	// Set download headers with mode suffix for filename
+	suffix := "enc"
+	if exportMode == "plain" {
+		suffix = "plain"
+	}
+	filename := fmt.Sprintf("system-export_%s-%s.json", time.Now().Format("20060102_150405"), suffix)
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Header("Content-Type", "application/json; charset=utf-8")
+
 	// Return JSON data with standard response format
 	response.Success(c, exportData)
 }
@@ -128,13 +148,28 @@ func (s *Server) ImportAll(c *gin.Context) {
 		return
 	}
 
+	// Determine import mode from query, filename or content
+	sample := make([]string, 0, 5)
+	outer:
+	for _, g := range importData.Groups {
+		for _, k := range g.Keys {
+			if len(sample) < 5 {
+				sample = append(sample, k.KeyValue)
+			} else {
+				break outer
+			}
+		}
+	}
+	importMode := GetImportMode(c, sample)
+	inputIsPlain := importMode == "plain"
+
 	// Log import summary
 	totalKeys := 0
 	for _, groupExport := range importData.Groups {
 		totalKeys += len(groupExport.Keys)
 	}
-	logrus.Infof("System import: %d groups with %d total keys",
-		len(importData.Groups), totalKeys)
+	logrus.Infof("System import: %d groups with %d total keys (mode=%s)",
+		len(importData.Groups), totalKeys, importMode)
 	if len(importData.SystemSettings) > 0 {
 		logrus.Debugf("System settings: %d", len(importData.SystemSettings))
 	}
@@ -209,11 +244,20 @@ func (s *Server) ImportAll(c *gin.Context) {
 			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
 		}
 
-		// Convert keys
-		for _, key := range groupExport.Keys {
+		// Convert keys; if input is plaintext, encrypt before passing to service
+		for idx := range groupExport.Keys {
+			kv := groupExport.Keys[idx].KeyValue
+			if inputIsPlain {
+				if enc, e := s.EncryptionSvc.Encrypt(kv); e == nil {
+					kv = enc
+				} else {
+					logrus.WithError(e).WithField("group", groupExport.Group.Name).Warn("Failed to encrypt plaintext key during system import, skipping")
+					continue
+				}
+			}
 			groupData.Keys = append(groupData.Keys, services.KeyExportInfo{
-				KeyValue: key.KeyValue,
-				Status:   key.Status,
+				KeyValue: kv,
+				Status:   groupExport.Keys[idx].Status,
 			})
 		}
 

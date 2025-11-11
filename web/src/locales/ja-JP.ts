@@ -76,6 +76,19 @@ export default {
     settings: "システム設定",
     logout: "ログアウト",
   },
+  export: {
+    modeTitle: "エクスポート方式を選択",
+    modeDesc: "エクスポートファイル内のキー形式を選択してください。機密保護のため暗号化エクスポートを推奨します。",
+    encrypted: "暗号化（推奨）",
+    plain: "平文（機密）",
+  },
+  import: {
+    modeTitle: "インポート方式を選択",
+    modeDesc: "インポートファイル内のキー形式を選択してください。不明な場合は自動判別（推奨）を選択してください。",
+    encrypted: "暗号化インポート",
+    plain: "平文インポート",
+    auto: "自動判別",
+  },
   dashboard: {
     title: "ダッシュボード",
     overview: "概要",

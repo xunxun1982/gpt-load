@@ -106,6 +106,19 @@ export default {
     diskUsage: "Disk Usage",
     uptime: "Uptime",
   },
+  export: {
+    modeTitle: "Select Export Mode",
+    modeDesc: "Choose how to include keys in the export file. Encrypted export is recommended to protect sensitive data.",
+    encrypted: "Encrypted (Recommended)",
+    plain: "Plaintext (Sensitive)",
+  },
+  import: {
+    modeTitle: "Select Import Mode",
+    modeDesc: "Choose the format of keys in the import file. If unsure, select Auto (recommended).",
+    encrypted: "Encrypted",
+    plain: "Plaintext",
+    auto: "Auto Detect",
+  },
   keys: {
     title: "Key Management",
     groupManagement: "Group Management",
