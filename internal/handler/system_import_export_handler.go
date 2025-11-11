@@ -45,32 +45,35 @@ func (s *Server) ExportAll(c *gin.Context) {
 	totalKeys := 0
 
 	for _, groupData := range systemData.Groups {
-		// Parse HeaderRules
-		var headerRules []models.HeaderRule
-		if len(groupData.Group.HeaderRules) > 0 {
-			if err := json.Unmarshal(groupData.Group.HeaderRules, &headerRules); err != nil {
-				logrus.WithError(err).WithField("group_id", groupData.Group.ID).Warn("Failed to parse HeaderRules during export")
-				headerRules = []models.HeaderRule{}
-			}
-		}
+		// Parse HeaderRules using common utility function
+		headerRules := ParseHeaderRulesForExport(groupData.Group.HeaderRules, groupData.Group.ID)
+
+		// Parse PathRedirects for export format using common utility function
+		pathRedirects := ParsePathRedirectsForExport(groupData.Group.PathRedirects)
+
+		// Convert ModelRedirectRules from datatypes.JSONMap to map[string]string for export
+		modelRedirectRules := ConvertModelRedirectRulesToExport(groupData.Group.ModelRedirectRules)
 
 		groupExport := GroupExportData{
 			Group: GroupExportInfo{
-				Name:               groupData.Group.Name,
-				DisplayName:        groupData.Group.DisplayName,
-				Description:        groupData.Group.Description,
-				GroupType:          groupData.Group.GroupType,
-				ChannelType:        groupData.Group.ChannelType,
-				Enabled:            groupData.Group.Enabled,
-				TestModel:          groupData.Group.TestModel,
-				ValidationEndpoint: groupData.Group.ValidationEndpoint,
-				Upstreams:          json.RawMessage(groupData.Group.Upstreams),
-				ParamOverrides:     groupData.Group.ParamOverrides,
-				Config:             groupData.Group.Config,
-				HeaderRules:        headerRules,
-				ModelMapping:       groupData.Group.ModelMapping,
-				ProxyKeys:          groupData.Group.ProxyKeys,
-				Sort:               groupData.Group.Sort,
+				Name:                groupData.Group.Name,
+				DisplayName:         groupData.Group.DisplayName,
+				Description:         groupData.Group.Description,
+				GroupType:           groupData.Group.GroupType,
+				ChannelType:         groupData.Group.ChannelType,
+				Enabled:             groupData.Group.Enabled,
+				TestModel:           groupData.Group.TestModel,
+				ValidationEndpoint:  groupData.Group.ValidationEndpoint,
+				Upstreams:           json.RawMessage(groupData.Group.Upstreams),
+				ParamOverrides:      groupData.Group.ParamOverrides,
+				Config:              groupData.Group.Config,
+				HeaderRules:         headerRules,
+				ModelMapping:        groupData.Group.ModelMapping,
+				ModelRedirectRules:  modelRedirectRules,
+				ModelRedirectStrict: groupData.Group.ModelRedirectStrict,
+				PathRedirects:       pathRedirects,
+				ProxyKeys:           groupData.Group.ProxyKeys,
+				Sort:                groupData.Group.Sort,
 			},
 			Keys:      []KeyExportInfo{},
 			SubGroups: []SubGroupExportInfo{},
@@ -172,26 +175,35 @@ func (s *Server) ImportAll(c *gin.Context) {
 
 	// Convert groups to service format
 	for _, groupExport := range importData.Groups {
-		// Convert HeaderRules back to JSON for storage
-		headerRulesJSON, _ := json.Marshal(groupExport.Group.HeaderRules)
+		// Convert HeaderRules back to JSON for storage using common utility function
+		headerRulesJSON := ConvertHeaderRulesToJSON(groupExport.Group.HeaderRules)
+
+		// Convert PathRedirects back to JSON for storage using common utility function
+		pathRedirectsJSON := ConvertPathRedirectsToJSON(groupExport.Group.PathRedirects)
+
+		// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
+		modelRedirectRules := ConvertModelRedirectRulesToImport(groupExport.Group.ModelRedirectRules)
 
 		groupData := services.GroupExportData{
 			Group: models.Group{
-				Name:               groupExport.Group.Name,
-				DisplayName:        groupExport.Group.DisplayName,
-				Description:        groupExport.Group.Description,
-				GroupType:          groupExport.Group.GroupType,
-				ChannelType:        groupExport.Group.ChannelType,
-				Enabled:            groupExport.Group.Enabled,
-				TestModel:          groupExport.Group.TestModel,
-				ValidationEndpoint: groupExport.Group.ValidationEndpoint,
-				Upstreams:          []byte(groupExport.Group.Upstreams),
-				ParamOverrides:     groupExport.Group.ParamOverrides,
-				Config:             groupExport.Group.Config,
-				HeaderRules:        headerRulesJSON,
-				ModelMapping:       groupExport.Group.ModelMapping,
-				ProxyKeys:          groupExport.Group.ProxyKeys,
-				Sort:               groupExport.Group.Sort,
+				Name:                groupExport.Group.Name,
+				DisplayName:         groupExport.Group.DisplayName,
+				Description:         groupExport.Group.Description,
+				GroupType:           groupExport.Group.GroupType,
+				ChannelType:         groupExport.Group.ChannelType,
+				Enabled:             groupExport.Group.Enabled,
+				TestModel:           groupExport.Group.TestModel,
+				ValidationEndpoint:  groupExport.Group.ValidationEndpoint,
+				Upstreams:           []byte(groupExport.Group.Upstreams),
+				ParamOverrides:      groupExport.Group.ParamOverrides,
+				Config:              groupExport.Group.Config,
+				HeaderRules:         headerRulesJSON,
+				ModelMapping:        groupExport.Group.ModelMapping,
+				ModelRedirectRules:  modelRedirectRules,
+				ModelRedirectStrict: groupExport.Group.ModelRedirectStrict,
+				PathRedirects:       pathRedirectsJSON,
+				ProxyKeys:           groupExport.Group.ProxyKeys,
+				Sort:                groupExport.Group.Sort,
 			},
 			Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
 			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
@@ -387,26 +399,35 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	// Convert handler format to service format for unified import
 	serviceGroups := make([]services.GroupExportData, 0, len(importData.Groups))
 	for _, groupExport := range importData.Groups {
-		// Convert HeaderRules back to JSON for storage
-		headerRulesJSON, _ := json.Marshal(groupExport.Group.HeaderRules)
+		// Convert HeaderRules back to JSON for storage using common utility function
+		headerRulesJSON := ConvertHeaderRulesToJSON(groupExport.Group.HeaderRules)
+
+		// Convert PathRedirects back to JSON for storage using common utility function
+		pathRedirectsJSON := ConvertPathRedirectsToJSON(groupExport.Group.PathRedirects)
+
+		// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
+		modelRedirectRules := ConvertModelRedirectRulesToImport(groupExport.Group.ModelRedirectRules)
 
 		groupData := services.GroupExportData{
 			Group: models.Group{
-				Name:               groupExport.Group.Name,
-				DisplayName:        groupExport.Group.DisplayName,
-				Description:        groupExport.Group.Description,
-				GroupType:          groupExport.Group.GroupType,
-				ChannelType:        groupExport.Group.ChannelType,
-				Enabled:            groupExport.Group.Enabled,
-				TestModel:          groupExport.Group.TestModel,
-				ValidationEndpoint: groupExport.Group.ValidationEndpoint,
-				Upstreams:          []byte(groupExport.Group.Upstreams),
-				ParamOverrides:     groupExport.Group.ParamOverrides,
-				Config:             groupExport.Group.Config,
-				HeaderRules:        headerRulesJSON,
-				ModelMapping:       groupExport.Group.ModelMapping,
-				ProxyKeys:          groupExport.Group.ProxyKeys,
-				Sort:               groupExport.Group.Sort,
+				Name:                groupExport.Group.Name,
+				DisplayName:         groupExport.Group.DisplayName,
+				Description:         groupExport.Group.Description,
+				GroupType:           groupExport.Group.GroupType,
+				ChannelType:         groupExport.Group.ChannelType,
+				Enabled:             groupExport.Group.Enabled,
+				TestModel:           groupExport.Group.TestModel,
+				ValidationEndpoint:  groupExport.Group.ValidationEndpoint,
+				Upstreams:           []byte(groupExport.Group.Upstreams),
+				ParamOverrides:      groupExport.Group.ParamOverrides,
+				Config:              groupExport.Group.Config,
+				HeaderRules:         headerRulesJSON,
+				ModelMapping:        groupExport.Group.ModelMapping,
+				ModelRedirectRules:  modelRedirectRules,
+				ModelRedirectStrict: groupExport.Group.ModelRedirectStrict,
+				PathRedirects:       pathRedirectsJSON,
+				ProxyKeys:           groupExport.Group.ProxyKeys,
+				Sort:                groupExport.Group.Sort,
 			},
 			Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
 			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),

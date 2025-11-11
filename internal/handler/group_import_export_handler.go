@@ -39,26 +39,34 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		displayName = groupInfo.DisplayName + suffix
 	}
 
-	headerRulesJSON, err := json.Marshal(groupInfo.HeaderRules)
-	if err != nil {
-		return 0, fmt.Errorf("failed to marshal header rules: %w", err)
-	}
+	// Convert HeaderRules using common utility function
+	headerRulesJSON := ConvertHeaderRulesToJSON(groupInfo.HeaderRules)
+
+	// Convert PathRedirects using common utility function
+	pathRedirectsJSON := ConvertPathRedirectsToJSON(groupInfo.PathRedirects)
+
+	// Convert ModelRedirectRules using common utility function
+	modelRedirectRules := ConvertModelRedirectRulesToImport(groupInfo.ModelRedirectRules)
+
 	group := models.Group{
-		Name:               groupName,
-		DisplayName:        displayName,
-		Description:        groupInfo.Description,
-		GroupType:          groupInfo.GroupType,
-		ChannelType:        groupInfo.ChannelType,
-		Enabled:            groupInfo.Enabled,
-		TestModel:          groupInfo.TestModel,
-		ValidationEndpoint: groupInfo.ValidationEndpoint,
-		Upstreams:          []byte(groupInfo.Upstreams),
-		ParamOverrides:     groupInfo.ParamOverrides,
-		Config:             groupInfo.Config,
-		HeaderRules:        headerRulesJSON,
-		ModelMapping:       groupInfo.ModelMapping,
-		ProxyKeys:          groupInfo.ProxyKeys,
-		Sort:               groupInfo.Sort,
+		Name:                groupName,
+		DisplayName:         displayName,
+		Description:         groupInfo.Description,
+		GroupType:           groupInfo.GroupType,
+		ChannelType:         groupInfo.ChannelType,
+		Enabled:             groupInfo.Enabled,
+		TestModel:           groupInfo.TestModel,
+		ValidationEndpoint:  groupInfo.ValidationEndpoint,
+		Upstreams:           []byte(groupInfo.Upstreams),
+		ParamOverrides:      groupInfo.ParamOverrides,
+		ModelRedirectStrict: groupInfo.ModelRedirectStrict,
+		ModelRedirectRules:  modelRedirectRules,
+		PathRedirects:       pathRedirectsJSON,
+		Config:              groupInfo.Config,
+		HeaderRules:         headerRulesJSON,
+		ModelMapping:        groupInfo.ModelMapping,
+		ProxyKeys:           groupInfo.ProxyKeys,
+		Sort:                groupInfo.Sort,
 	}
 
 	if err := tx.Create(&group).Error; err != nil {
@@ -192,19 +200,22 @@ type GroupExportData struct {
 type GroupExportInfo struct {
 	Name               string              `json:"name"`
 	DisplayName        string              `json:"display_name"`
-	Description        string              `json:"description"`
-	GroupType          string              `json:"group_type"`
-	ChannelType        string              `json:"channel_type"`
-	Enabled            bool                `json:"enabled"`
-	TestModel          string              `json:"test_model"`
-	ValidationEndpoint string              `json:"validation_endpoint"`
-	Upstreams          json.RawMessage     `json:"upstreams"`
-	ParamOverrides     map[string]any     `json:"param_overrides"`
-	Config             map[string]any     `json:"config"`
-	HeaderRules        []models.HeaderRule `json:"header_rules"`
-	ModelMapping       string              `json:"model_mapping"`
-	ProxyKeys          string              `json:"proxy_keys"`
-	Sort               int                 `json:"sort"`
+	Description         string              `json:"description"`
+	GroupType           string              `json:"group_type"`
+	ChannelType         string              `json:"channel_type"`
+	Enabled             bool                `json:"enabled"`
+	TestModel           string              `json:"test_model"`
+	ValidationEndpoint  string              `json:"validation_endpoint"`
+	Upstreams           json.RawMessage     `json:"upstreams"`
+	ParamOverrides      map[string]any      `json:"param_overrides"`
+	Config              map[string]any      `json:"config"`
+	HeaderRules         []models.HeaderRule `json:"header_rules"`
+	ModelMapping        string              `json:"model_mapping,omitempty"`         // Deprecated: for backward compatibility
+	ModelRedirectRules  map[string]string   `json:"model_redirect_rules,omitempty"`  // New field
+	ModelRedirectStrict bool                `json:"model_redirect_strict,omitempty"` // New field
+	PathRedirects       []models.PathRedirectRule `json:"path_redirects,omitempty"`  // Path redirect rules
+	ProxyKeys           string              `json:"proxy_keys"`
+	Sort                int                 `json:"sort"`
 }
 
 // KeyExportInfo represents key export information.
@@ -239,38 +250,37 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		return
 	}
 
-	// Parse HeaderRules for export format
-	// Fail export on parse error to prevent silent data loss
-	// If HeaderRules are corrupted, user should know before exporting incomplete data
-	var headerRules []models.HeaderRule
-	if len(groupData.Group.HeaderRules) > 0 {
-		if err := json.Unmarshal(groupData.Group.HeaderRules, &headerRules); err != nil {
-			logrus.WithError(err).
-				WithField("group", groupData.Group.Name).
-				Error("Failed to parse HeaderRules for export")
-			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.export_failed")
-			return
-		}
-	}
+	// Parse HeaderRules for export format using common utility function
+	// ParseHeaderRulesForExport handles errors internally and logs warnings
+	headerRules := ParseHeaderRulesForExport(groupData.Group.HeaderRules, groupData.Group.ID)
+
+	// Parse PathRedirects for export format using common utility function
+	pathRedirects := ParsePathRedirectsForExport(groupData.Group.PathRedirects)
+
+	// Convert ModelRedirectRules from datatypes.JSONMap to map[string]string for export
+	modelRedirectRules := ConvertModelRedirectRulesToExport(groupData.Group.ModelRedirectRules)
 
 	// Build export data structure compatible with existing format
 	exportData := GroupExportData{
 		Group: GroupExportInfo{
-			Name:               groupData.Group.Name,
-			DisplayName:        groupData.Group.DisplayName,
-			Description:        groupData.Group.Description,
-			GroupType:          groupData.Group.GroupType,
-			ChannelType:        groupData.Group.ChannelType,
-			Enabled:            groupData.Group.Enabled,
-			TestModel:          groupData.Group.TestModel,
-			ValidationEndpoint: groupData.Group.ValidationEndpoint,
-			Upstreams:          json.RawMessage(groupData.Group.Upstreams),
-			ParamOverrides:     groupData.Group.ParamOverrides,
-			Config:             groupData.Group.Config,
-			HeaderRules:        headerRules,
-			ModelMapping:       groupData.Group.ModelMapping,
-			ProxyKeys:          groupData.Group.ProxyKeys,
-			Sort:               groupData.Group.Sort,
+			Name:                groupData.Group.Name,
+			DisplayName:         groupData.Group.DisplayName,
+			Description:         groupData.Group.Description,
+			GroupType:           groupData.Group.GroupType,
+			ChannelType:         groupData.Group.ChannelType,
+			Enabled:             groupData.Group.Enabled,
+			TestModel:           groupData.Group.TestModel,
+			ValidationEndpoint:  groupData.Group.ValidationEndpoint,
+			Upstreams:           json.RawMessage(groupData.Group.Upstreams),
+			ParamOverrides:      groupData.Group.ParamOverrides,
+			Config:              groupData.Group.Config,
+			HeaderRules:         headerRules,
+			ModelMapping:        groupData.Group.ModelMapping,
+			ModelRedirectRules:  modelRedirectRules,
+			ModelRedirectStrict: groupData.Group.ModelRedirectStrict,
+			PathRedirects:       pathRedirects,
+			ProxyKeys:           groupData.Group.ProxyKeys,
+			Sort:                groupData.Group.Sort,
 		},
 		Keys:       make([]KeyExportInfo, 0, len(groupData.Keys)),
 		SubGroups:  make([]SubGroupExportInfo, 0, len(groupData.SubGroups)),
@@ -360,6 +370,16 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	if err != nil {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
 		return
+	}
+
+	// Invalidate group manager cache synchronously to ensure new group is immediately visible in the list
+	// This must happen before the success response to provide a good user experience
+	if s.GroupManager != nil {
+		if err := s.GroupManager.Invalidate(); err != nil {
+			logrus.WithError(err).Warn("Failed to invalidate group manager cache after import")
+		} else {
+			logrus.Debug("Group manager cache invalidated successfully after import")
+		}
 	}
 
 	// Load keys to Redis store and reset failure_count asynchronously

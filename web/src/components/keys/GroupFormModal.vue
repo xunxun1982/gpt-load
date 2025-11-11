@@ -49,8 +49,8 @@ interface HeaderRuleItem {
   action: "set" | "remove";
 }
 
-// 模型映射项类型
-interface ModelMappingItem {
+// 模型重定向项类型
+interface ModelRedirectItem {
   from: string;
   to: string;
 }
@@ -65,7 +65,11 @@ const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
-const modelMappingEditMode = ref<"visual" | "json">("visual"); // 模型映射编辑模式
+const modelRedirectEditMode = ref<"visual" | "json">("visual");
+const modelRedirectTip = `{
+  "gpt-5": "gpt-5-2025-08-07",
+  "gemini-2.5-flash": "gemini-2.5-flash-preview-09-2025"
+}`;
 
 // 表单数据接口
 interface GroupFormData {
@@ -78,13 +82,15 @@ interface GroupFormData {
   test_model: string;
   validation_endpoint: string;
   param_overrides: string;
-  model_mapping: string;
-  model_mapping_items: ModelMappingItem[];
-  config: Record<string, number | string | boolean>;
+  model_redirect_rules: string;
+  model_redirect_items: ModelRedirectItem[];
+  model_redirect_strict: boolean;
+  config: Record<string, any>;
   configItems: ConfigItem[];
   header_rules: HeaderRuleItem[];
   path_redirects: PathRedirectRule[];
   proxy_keys: string;
+  group_type?: string;
 }
 
 // 表单数据
@@ -103,13 +109,15 @@ const formData = reactive<GroupFormData>({
   test_model: "",
   validation_endpoint: "",
   param_overrides: "",
-  model_mapping: "",
-  model_mapping_items: [] as ModelMappingItem[],
+  model_redirect_rules: "",
+  model_redirect_items: [] as ModelRedirectItem[],
+  model_redirect_strict: false,
   config: {},
   configItems: [] as ConfigItem[],
   header_rules: [] as HeaderRuleItem[],
   path_redirects: [] as PathRedirectRule[],
   proxy_keys: "",
+  group_type: "standard",
 });
 
 const channelTypeOptions = ref<{ label: string; value: string }[]>([]);
@@ -220,45 +228,45 @@ watch(
   }
 );
 
-// 监听模型映射数组变化，同步到 JSON
+// 监听模型重定向数组变化，同步到 JSON
 watch(
-  () => formData.model_mapping_items,
+  () => formData.model_redirect_items,
   items => {
-    if (modelMappingEditMode.value === "visual") {
-      formData.model_mapping = modelMappingItemsToJson(items);
+    if (modelRedirectEditMode.value === "visual") {
+      formData.model_redirect_rules = modelRedirectItemsToJson(items);
     }
   },
   { deep: true }
 );
 
-// 监听模型映射 JSON 变化，同步到数组
+// 监听模型重定向 JSON 变化，同步到数组
 watch(
-  () => formData.model_mapping,
+  () => formData.model_redirect_rules,
   jsonStr => {
-    if (modelMappingEditMode.value === "json") {
-      formData.model_mapping_items = parseModelMapping(jsonStr);
+    if (modelRedirectEditMode.value === "json") {
+      formData.model_redirect_items = parseModelRedirect(jsonStr);
     }
   }
 );
 
 // 监听编辑模式切换，自动格式化
 watch(
-  () => modelMappingEditMode.value,
+  () => modelRedirectEditMode.value,
   (newMode, oldMode) => {
     if (newMode === "json" && oldMode === "visual") {
       // 切换到 JSON 模式时，自动格式化
-      const jsonStr = modelMappingItemsToJson(formData.model_mapping_items);
+      const jsonStr = modelRedirectItemsToJson(formData.model_redirect_items);
       if (jsonStr) {
         try {
           const obj = JSON.parse(jsonStr);
-          formData.model_mapping = JSON.stringify(obj, null, 2);
+          formData.model_redirect_rules = JSON.stringify(obj, null, 2);
         } catch {
-          formData.model_mapping = jsonStr;
+          formData.model_redirect_rules = jsonStr;
         }
       }
     } else if (newMode === "visual" && oldMode === "json") {
       // 切换到可视化模式时，解析 JSON
-      formData.model_mapping_items = parseModelMapping(formData.model_mapping);
+      formData.model_redirect_items = parseModelRedirect(formData.model_redirect_rules);
     }
   }
 );
@@ -341,13 +349,15 @@ function resetForm() {
     test_model: isCreateMode ? testModelPlaceholder.value : "",
     validation_endpoint: "",
     param_overrides: "",
-    model_mapping: "",
-    model_mapping_items: [],
+    model_redirect_rules: "",
+    model_redirect_items: [],
+    model_redirect_strict: false,
     config: {},
     configItems: [],
     header_rules: [],
     path_redirects: [],
     proxy_keys: "",
+    group_type: "standard",
   });
 
   // 重置用户修改状态追踪
@@ -383,8 +393,9 @@ function loadGroupData() {
     test_model: props.group.test_model || "",
     validation_endpoint: props.group.validation_endpoint || "",
     param_overrides: JSON.stringify(props.group.param_overrides || {}, null, 2),
-    model_mapping: props.group.model_mapping || "",
-    model_mapping_items: parseModelMapping(props.group.model_mapping || ""),
+    model_redirect_rules: JSON.stringify(props.group.model_redirect_rules || {}, null, 2),
+    model_redirect_items: parseModelRedirect(JSON.stringify(props.group.model_redirect_rules || {}, null, 2)),
+    model_redirect_strict: props.group.model_redirect_strict || false,
     config: {},
     configItems,
     header_rules: (props.group.header_rules || []).map((rule: HeaderRuleItem) => ({
@@ -397,6 +408,7 @@ function loadGroupData() {
       to: (r.to || ""),
     })),
     proxy_keys: props.group.proxy_keys || "",
+    group_type: props.group.group_type || "standard",
   });
 }
 
@@ -455,8 +467,8 @@ function addHeaderRule() {
   });
 }
 
-// 解析模型映射 JSON 为数组
-function parseModelMapping(jsonStr: string): ModelMappingItem[] {
+// 解析模型重定向 JSON 为数组
+function parseModelRedirect(jsonStr: string): ModelRedirectItem[] {
   if (!jsonStr || jsonStr.trim() === "" || jsonStr.trim() === "{}") {
     return [];
   }
@@ -471,8 +483,8 @@ function parseModelMapping(jsonStr: string): ModelMappingItem[] {
   }
 }
 
-// 将模型映射数组转换为 JSON 字符串
-function modelMappingItemsToJson(items: ModelMappingItem[]): string {
+// 将模型重定向数组转换为 JSON 字符串
+function modelRedirectItemsToJson(items: ModelRedirectItem[]): string {
   if (!items || items.length === 0) {
     return "";
   }
@@ -485,27 +497,27 @@ function modelMappingItemsToJson(items: ModelMappingItem[]): string {
   return Object.keys(obj).length > 0 ? JSON.stringify(obj) : "";
 }
 
-// 添加模型映射项
-function addModelMappingItem() {
-  formData.model_mapping_items.push({
+// 添加模型重定向项
+function addModelRedirectItem() {
+  formData.model_redirect_items.push({
     from: "",
     to: "",
   });
 }
 
-// 删除模型映射项
-function removeModelMappingItem(index: number) {
-  formData.model_mapping_items.splice(index, 1);
+// 删除模型重定向项
+function removeModelRedirectItem(index: number) {
+  formData.model_redirect_items.splice(index, 1);
 }
 
-// 格式化模型映射 JSON
-function formatModelMappingJson() {
-  if (!formData.model_mapping || formData.model_mapping.trim() === "") {
+// 格式化模型重定向 JSON
+function formatModelRedirectJson() {
+  if (!formData.model_redirect_rules || formData.model_redirect_rules.trim() === "") {
     return;
   }
   try {
-    const obj = JSON.parse(formData.model_mapping);
-    formData.model_mapping = JSON.stringify(obj, null, 2);
+    const obj = JSON.parse(formData.model_redirect_rules);
+    formData.model_redirect_rules = JSON.stringify(obj, null, 2);
   } catch {
     // 如果解析失败，不做处理（静默失败）
   }
@@ -606,15 +618,42 @@ async function handleSubmit() {
       }
     }
 
-    // 根据当前编辑模式获取模型映射 JSON
-    let modelMappingJson = "";
-    if (modelMappingEditMode.value === "visual") {
-      // 可视化模式：从数组转换
-      modelMappingJson = modelMappingItemsToJson(formData.model_mapping_items);
+    // Get model redirect rules based on current edit mode
+    let modelRedirectRules = {};
+    if (modelRedirectEditMode.value === "visual") {
+      // Visual mode: convert from array
+      const rulesJson = modelRedirectItemsToJson(formData.model_redirect_items);
+      if (rulesJson) {
+        try {
+          modelRedirectRules = JSON.parse(rulesJson);
+        } catch {
+          message.error(t("keys.modelRedirectInvalidJson"));
+          return;
+        }
+      }
     } else {
-      // JSON 模式：先格式化，然后使用
-      formatModelMappingJson();
-      modelMappingJson = formData.model_mapping;
+      // JSON mode: format and use
+      formatModelRedirectJson();
+      if (formData.model_redirect_rules) {
+        try {
+          modelRedirectRules = JSON.parse(formData.model_redirect_rules);
+
+          // Validate rule format
+          for (const [key, value] of Object.entries(modelRedirectRules)) {
+            if (typeof key !== "string" || typeof value !== "string") {
+              message.error(t("keys.modelRedirectInvalidFormat"));
+              return;
+            }
+            if (key.trim() === "" || (value as string).trim() === "") {
+              message.error(t("keys.modelRedirectEmptyModel"));
+              return;
+            }
+          }
+        } catch {
+          message.error(t("keys.modelRedirectInvalidJson"));
+          return;
+        }
+      }
     }
 
     // 将configItems转换为config对象
@@ -651,7 +690,8 @@ async function handleSubmit() {
       test_model: formData.test_model,
       validation_endpoint: formData.validation_endpoint,
       param_overrides: paramOverrides,
-      model_mapping: modelMappingJson,
+      model_redirect_rules: modelRedirectRules,
+      model_redirect_strict: formData.model_redirect_strict,
       config,
       header_rules: formData.header_rules
         .filter((rule: HeaderRuleItem) => rule.key.trim())
@@ -1220,6 +1260,127 @@ async function handleSubmit() {
                 </div>
               </div>
 
+              <!-- 模型重定向配置 -->
+              <div v-if="formData.group_type !== 'aggregate'" class="config-section">
+                <n-form-item path="model_redirect_strict">
+                  <template #label>
+                    <div class="form-label-with-tooltip">
+                      {{ t("keys.modelRedirectPolicy") }}
+                      <n-tooltip trigger="hover" placement="top">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        {{ t("keys.modelRedirectPolicyTooltip") }}
+                      </n-tooltip>
+                    </div>
+                  </template>
+                  <div style="display: flex; align-items: center; gap: 12px">
+                    <n-switch v-model:value="formData.model_redirect_strict" />
+                    <span style="font-size: 14px; color: #666">
+                      {{
+                        formData.model_redirect_strict
+                          ? t("keys.modelRedirectStrictMode")
+                          : t("keys.modelRedirectLooseMode")
+                      }}
+                    </span>
+                  </div>
+                  <template #feedback>
+                    <div style="font-size: 12px; color: #999; margin: 4px 0">
+                      <div v-if="formData.model_redirect_strict" style="color: #f5a623">
+                        ⚠️ {{ t("keys.modelRedirectStrictWarning") }}
+                      </div>
+                      <div v-else style="color: #52c41a">
+                        ✅ {{ t("keys.modelRedirectLooseInfo") }}
+                      </div>
+                    </div>
+                  </template>
+                </n-form-item>
+
+                <n-form-item path="model_redirect_rules">
+                  <template #label>
+                    <div class="form-label-with-tooltip">
+                      {{ t("keys.modelRedirectRules") }}
+                      <n-tooltip trigger="hover" placement="top">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        {{ t("keys.modelRedirectRulesTooltip") }}
+                      </n-tooltip>
+                    </div>
+                  </template>
+
+                  <div class="model-redirect-wrapper">
+                    <n-button-group size="small" style="margin-bottom: 12px">
+                      <n-button
+                        :type="modelRedirectEditMode === 'visual' ? 'primary' : 'default'"
+                        @click="modelRedirectEditMode = 'visual'"
+                      >
+                        {{ t("keys.visualEdit") }}
+                      </n-button>
+                      <n-button
+                        :type="modelRedirectEditMode === 'json' ? 'primary' : 'default'"
+                        @click="modelRedirectEditMode = 'json'"
+                      >
+                        {{ t("keys.jsonEdit") }}
+                      </n-button>
+                    </n-button-group>
+
+                    <!-- Visual Edit Mode -->
+                    <div v-if="modelRedirectEditMode === 'visual'">
+                      <div
+                        v-for="(item, index) in formData.model_redirect_items"
+                        :key="index"
+                        class="model-redirect-row"
+                      >
+                        <n-input
+                          v-model:value="item.from"
+                          :placeholder="t('keys.sourceModel')"
+                          style="flex: 1"
+                        />
+                        <span class="redirect-arrow">→</span>
+                        <n-input
+                          v-model:value="item.to"
+                          :placeholder="t('keys.targetModel')"
+                          style="flex: 1"
+                        />
+                        <n-button
+                          text
+                          type="error"
+                          @click="removeModelRedirectItem(index)"
+                          style="padding: 0 8px"
+                        >
+                          <template #icon>
+                            <n-icon :component="Close" />
+                          </template>
+                        </n-button>
+                      </div>
+
+                      <n-button
+                        dashed
+                        block
+                        @click="addModelRedirectItem"
+                        style="margin-top: 12px"
+                      >
+                        <template #icon>
+                          <n-icon :component="Add" />
+                        </template>
+                        {{ t("keys.addModelRedirect") }}
+                      </n-button>
+                    </div>
+
+                    <!-- JSON Edit Mode -->
+                    <n-input
+                      v-else
+                      v-model:value="formData.model_redirect_rules"
+                      type="textarea"
+                      :placeholder="modelRedirectTip"
+                      :rows="4"
+                      @blur="formatModelRedirectJson"
+                    />
+                  </div>
+                </n-form-item>
+              </div>
+
               <div class="config-section">
                 <n-form-item path="param_overrides">
                   <template #label>
@@ -1241,82 +1402,6 @@ async function handleSubmit() {
                   />
                 </n-form-item>
 
-              </div>
-
-              <div class="config-section">
-                <h5 class="config-title-with-tooltip">
-                  {{ t("keys.modelMapping") }}
-                  <n-tooltip trigger="hover" placement="top">
-                    <template #trigger>
-                      <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
-                    </template>
-                    {{ t("keys.modelMappingTooltip") }}
-                  </n-tooltip>
-                </h5>
-                <n-button-group size="small">
-                  <n-button
-                    :type="modelMappingEditMode === 'visual' ? 'primary' : 'default'"
-                    @click="modelMappingEditMode = 'visual'"
-                  >
-                    {{ t("keys.visualEdit") }}
-                  </n-button>
-                  <n-button
-                    :type="modelMappingEditMode === 'json' ? 'primary' : 'default'"
-                    @click="modelMappingEditMode = 'json'"
-                  >
-                    {{ t("keys.jsonEdit") }}
-                  </n-button>
-                </n-button-group>
-
-                <!-- 可视化编辑模式 -->
-                <div v-if="modelMappingEditMode === 'visual'" class="model-mapping-items">
-                    <n-form-item
-                      v-for="(item, index) in formData.model_mapping_items"
-                      :key="index"
-                      class="model-mapping-item-row"
-                    >
-                      <div class="model-mapping-item-content">
-                        <div class="model-mapping-from">
-                          <n-input
-                            v-model:value="item.from"
-                            :placeholder="t('keys.originalModel')"
-                          />
-                        </div>
-                        <div class="model-mapping-arrow">→</div>
-                        <div class="model-mapping-to">
-                          <n-input v-model:value="item.to" :placeholder="t('keys.targetModel')" />
-                        </div>
-                        <n-button
-                          text
-                          type="error"
-                          @click="removeModelMappingItem(index)"
-                          class="remove-btn"
-                        >
-                          <template #icon>
-                            <n-icon :component="Close" />
-                          </template>
-                        </n-button>
-                      </div>
-                    </n-form-item>
-
-                    <n-button dashed block @click="addModelMappingItem" style="margin-top: 8px">
-                      <template #icon>
-                        <n-icon :component="Add" />
-                      </template>
-                      {{ t("keys.addModelMapping") }}
-                    </n-button>
-                  </div>
-
-                <!-- JSON 编辑模式 -->
-                <div v-else>
-                  <n-input
-                    v-model:value="formData.model_mapping"
-                    type="textarea"
-                    placeholder='{"gpt-4":"gpt-4-turbo"}'
-                    :rows="6"
-                    @blur="formatModelMappingJson"
-                  />
-                </div>
               </div>
 
               <!-- URL 路径重写（仅 OpenAI 渠道显示） -->
@@ -1684,37 +1769,23 @@ async function handleSubmit() {
   justify-content: center;
 }
 
-.model-mapping-items {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.model-mapping-item-row {
-  margin-bottom: 0;
-}
-
-.model-mapping-item-content {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.model-redirect-wrapper {
   width: 100%;
 }
 
-.model-mapping-from,
-.model-mapping-to {
-  flex: 1;
+.model-redirect-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
-.model-mapping-arrow {
+.redirect-arrow {
   flex: 0 0 auto;
-  font-size: 18px;
-  color: var(--text-secondary);
-  font-weight: bold;
-}
-
-.remove-btn {
-  flex: 0 0 32px;
+  padding: 0 8px;
+  font-size: 16px;
+  color: #999;
+  user-select: none;
 }
 
 .config-header-with-switch {

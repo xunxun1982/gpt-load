@@ -96,26 +96,49 @@ allSubGroups := make([]models.GroupSubGroup, 0, 200)
 				g.HeaderRuleList = []models.HeaderRule{}
 			}
 
-// Parse model mapping cache for performance
-			if g.ModelMapping != "" {
-				modelMap, err := utils.ParseModelMapping(g.ModelMapping)
-				if err != nil {
-					logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse model mapping for group")
-					g.ModelMappingCache = nil
+
+		// Parse model mapping cache for performance (deprecated, for backward compatibility)
+		if g.ModelMapping != "" {
+			modelMap, err := utils.ParseModelMapping(g.ModelMapping)
+			if err != nil {
+				logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse model mapping for group")
+				g.ModelMappingCache = nil
+			} else {
+				g.ModelMappingCache = modelMap
+			}
+		}
+
+		// Parse model redirect rules with error handling
+		g.ModelRedirectMap = make(map[string]string)
+		if len(group.ModelRedirectRules) > 0 {
+			hasInvalidRules := false
+			for key, value := range group.ModelRedirectRules {
+				if valueStr, ok := value.(string); ok {
+					g.ModelRedirectMap[key] = valueStr
 				} else {
-					g.ModelMappingCache = modelMap
+					logrus.WithFields(logrus.Fields{
+						"group_name": g.Name,
+						"rule_key":   key,
+						"value_type": fmt.Sprintf("%T", value),
+						"value":      value,
+					}).Error("Invalid model redirect rule value type, skipping this rule")
+					hasInvalidRules = true
 				}
 			}
+			if hasInvalidRules {
+				logrus.WithField("group_name", g.Name).Warn("Group has invalid model redirect rules, some rules were skipped. Please check the configuration.")
+			}
+		}
 
-			// Parse path redirect rules (OpenAI only)
-			if len(group.PathRedirects) > 0 {
-				if err := json.Unmarshal(group.PathRedirects, &g.PathRedirectRuleList); err != nil {
-					logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse path redirects for group")
-					g.PathRedirectRuleList = []models.PathRedirectRule{}
-				}
-			} else {
+		// Parse path redirect rules (OpenAI only)
+		if len(group.PathRedirects) > 0 {
+			if err := json.Unmarshal(group.PathRedirects, &g.PathRedirectRuleList); err != nil {
+				logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse path redirects for group")
 				g.PathRedirectRuleList = []models.PathRedirectRule{}
 			}
+		} else {
+			g.PathRedirectRuleList = []models.PathRedirectRule{}
+		}
 
 			// Load sub-groups for aggregate groups
 			if g.GroupType == "aggregate" {
@@ -133,12 +156,14 @@ allSubGroups := make([]models.GroupSubGroup, 0, 200)
 
 			groupMap[g.Name] = &g
 			logrus.WithFields(logrus.Fields{
-				"group_name":         g.Name,
-				"effective_config":   g.EffectiveConfig,
-				"header_rules_count": len(g.HeaderRuleList),
-				"model_mapping":      g.ModelMapping != "",
-				"path_redirects":     len(g.PathRedirectRuleList),
-				"sub_group_count":    len(g.SubGroups),
+			"group_name":                   g.Name,
+			"effective_config":             g.EffectiveConfig,
+			"header_rules_count":           len(g.HeaderRuleList),
+			"model_mapping":                g.ModelMapping != "",           // deprecated
+			"model_redirect_rules_count":   len(g.ModelRedirectMap),
+			"model_redirect_strict":        g.ModelRedirectStrict,
+			"path_redirects":               len(g.PathRedirectRuleList),
+			"sub_group_count":              len(g.SubGroups),
 			}).Debug("Loaded group with effective config")
 		}
 

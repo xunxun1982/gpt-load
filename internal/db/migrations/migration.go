@@ -39,7 +39,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.3.3 migration - Add composite indexes for ordering and filters
-	return V1_3_3_AddCompositeIndexes(db)
+	if err := V1_3_3_AddCompositeIndexes(db); err != nil {
+		return err
+	}
+	// Run v1.4.0 migration - Add model redirect columns
+	return V1_4_0_AddModelRedirectColumns(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors
