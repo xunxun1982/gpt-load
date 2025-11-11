@@ -103,22 +103,17 @@ function generateValidationRules(item: Setting): FormItemRule[] {
 }
 
 // Export full system configuration
-function handleExportAll() {
-  dialog.info({
-    title: t("settings.exportSystem"),
-    content: t("settings.exportSystemConfirm"),
-    positiveText: t("common.confirm"),
-    negativeText: t("common.cancel"),
-    onPositiveClick: async () => {
-      try {
-        await settingsApi.exportAll();
-        message.success(t("settings.exportSuccess"));
-      } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : t("settings.exportFailed");
-        message.error(errorMessage);
-      }
-    },
-  });
+async function handleExportAll() {
+  const { askExportMode } = await import("@/utils/export-import");
+  const mode = await askExportMode(dialog, t);
+
+  try {
+    await settingsApi.exportAll(mode);
+    message.success(t("settings.exportSuccess"));
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : t("settings.exportFailed");
+    message.error(errorMessage);
+  }
 }
 
 // Import state management
@@ -227,7 +222,9 @@ async function handleSystemFileChange(event: Event) {
           // Execute import asynchronously after dialog closes
           setTimeout(async () => {
             try {
-              await settingsApi.importAll(data);
+              const { askImportMode } = await import("@/utils/export-import");
+              const mode = await askImportMode(dialog, t);
+              await settingsApi.importAll(data, { mode, filename: file.name });
               message.destroyAll();
               message.success(t("settings.importSuccess"));
               await fetchSettings();
@@ -314,7 +311,11 @@ async function handleSystemFileChange(event: Event) {
               if (!data.groups || !Array.isArray(data.groups)) {
                 throw new Error(t("settings.invalidImportFile"));
               }
-              await settingsApi.importGroupsBatch({ groups: data.groups });
+              // Ask import mode (backend will ignore if unsupported)
+              const { askImportMode } = await import("@/utils/export-import");
+              const mode = await askImportMode(dialog, t);
+              // Prefer full system import path when only groups provided? Keep batch endpoint for compatibility
+              await settingsApi.importGroupsBatch({ groups: data.groups }, { mode, filename: file.name });
               message.destroyAll();
               message.success(t("settings.importSuccess"));
             } catch (error: unknown) {

@@ -106,6 +106,19 @@ export default {
     diskUsage: "Disk Usage",
     uptime: "Uptime",
   },
+  export: {
+    modeTitle: "Select Export Mode",
+    modeDesc: "Choose how to include keys in the export file. Encrypted export is recommended to protect sensitive data.",
+    encrypted: "Encrypted (Recommended)",
+    plain: "Plaintext (Sensitive)",
+  },
+  import: {
+    modeTitle: "Select Import Mode",
+    modeDesc: "Choose the format of keys in the import file. If unsure, select Auto (recommended).",
+    encrypted: "Encrypted",
+    plain: "Plaintext",
+    auto: "Auto Detect",
+  },
   keys: {
     title: "Key Management",
     groupManagement: "Group Management",
@@ -391,6 +404,28 @@ export default {
     addModelMapping: "Add Model Mapping",
     visualEdit: "Visual Edit",
     jsonEdit: "Manual Edit",
+    modelRedirectPolicy: "Unconfigured Model Policy",
+    modelRedirectPolicyTooltip:
+      "Choose how to handle requests for models not configured in redirect rules",
+    modelRedirectStrictMode: "Strict Mode: Reject unconfigured model requests (return 404)",
+    modelRedirectLooseMode: "Loose Mode: Pass through unconfigured model requests",
+    modelRedirectStrictWarning:
+      "In strict mode, only models configured in redirect rules below can be requested, other models will return 404 error",
+    modelRedirectLooseInfo:
+      "In loose mode, models without redirect configuration will be passed directly to upstream service",
+    modelRedirectRules: "Model Redirect Rules",
+    modelRedirectTooltip:
+      "Configure model redirect rules, key is the model name requested by user, value is the actual model name sent to upstream",
+    modelRedirectMode: "Redirect Mode",
+    strictMode: "Strict",
+    looseMode: "Loose",
+    strictModeDesc: "Only configured models allowed (whitelist)",
+    looseModeDesc: "Configured models redirect, others pass through",
+    sourceModel: "Source Model",
+    addModelRedirect: "Add Model Redirect",
+    modelRedirectInvalidJson: "Invalid JSON format for model redirect rules",
+    modelRedirectInvalidFormat: "Model redirect rule keys and values must all be strings",
+    modelRedirectEmptyModel: "Model name cannot be empty",
     never: "Never",
     daysAgo: "{days} days ago",
     hoursAgo: "{hours} hours ago",

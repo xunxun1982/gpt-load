@@ -23,7 +23,7 @@ import (
 
 // importGroupFromExportData imports a group from export data with optimized bulk import.
 // This function uses the centralized name generation from ExportImportService
-func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImportService, encryptionSvc encryption.Service, bulkImportSvc *services.BulkImportService, groupInfo GroupExportInfo, keys []KeyExportInfo, subGroups []SubGroupExportInfo) (uint, error) {
+func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImportService, encryptionSvc encryption.Service, bulkImportSvc *services.BulkImportService, groupInfo GroupExportInfo, keys []KeyExportInfo, subGroups []SubGroupExportInfo, inputIsPlain bool) (uint, error) {
 	// Use the centralized unique name generation from ExportImportService
 	groupName, err := exportImportSvc.GenerateUniqueGroupName(tx, groupInfo.Name)
 	if err != nil {
@@ -39,26 +39,34 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		displayName = groupInfo.DisplayName + suffix
 	}
 
-	headerRulesJSON, err := json.Marshal(groupInfo.HeaderRules)
-	if err != nil {
-		return 0, fmt.Errorf("failed to marshal header rules: %w", err)
-	}
+	// Convert HeaderRules using common utility function
+	headerRulesJSON := ConvertHeaderRulesToJSON(groupInfo.HeaderRules)
+
+	// Convert PathRedirects using common utility function
+	pathRedirectsJSON := ConvertPathRedirectsToJSON(groupInfo.PathRedirects)
+
+	// Convert ModelRedirectRules using common utility function
+	modelRedirectRules := ConvertModelRedirectRulesToImport(groupInfo.ModelRedirectRules)
+
 	group := models.Group{
-		Name:               groupName,
-		DisplayName:        displayName,
-		Description:        groupInfo.Description,
-		GroupType:          groupInfo.GroupType,
-		ChannelType:        groupInfo.ChannelType,
-		Enabled:            groupInfo.Enabled,
-		TestModel:          groupInfo.TestModel,
-		ValidationEndpoint: groupInfo.ValidationEndpoint,
-		Upstreams:          []byte(groupInfo.Upstreams),
-		ParamOverrides:     groupInfo.ParamOverrides,
-		Config:             groupInfo.Config,
-		HeaderRules:        headerRulesJSON,
-		ModelMapping:       groupInfo.ModelMapping,
-		ProxyKeys:          groupInfo.ProxyKeys,
-		Sort:               groupInfo.Sort,
+		Name:                groupName,
+		DisplayName:         displayName,
+		Description:         groupInfo.Description,
+		GroupType:           groupInfo.GroupType,
+		ChannelType:         groupInfo.ChannelType,
+		Enabled:             groupInfo.Enabled,
+		TestModel:           groupInfo.TestModel,
+		ValidationEndpoint:  groupInfo.ValidationEndpoint,
+		Upstreams:           []byte(groupInfo.Upstreams),
+		ParamOverrides:      groupInfo.ParamOverrides,
+		ModelRedirectStrict: groupInfo.ModelRedirectStrict,
+		ModelRedirectRules:  modelRedirectRules,
+		PathRedirects:       pathRedirectsJSON,
+		Config:              groupInfo.Config,
+		HeaderRules:         headerRulesJSON,
+		ModelMapping:        groupInfo.ModelMapping,
+		ProxyKeys:           groupInfo.ProxyKeys,
+		Sort:                groupInfo.Sort,
 	}
 
 	if err := tx.Create(&group).Error; err != nil {
@@ -70,33 +78,48 @@ func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImpo
 		keyModels := make([]models.APIKey, 0, len(keys))
 		skippedKeys := 0
 		for i, keyInfo := range keys {
-			// Decrypt key_value to calculate key_hash for proper indexing and deduplication
-			// The exported key_value is encrypted, so we need to decrypt it first
-			decryptedKey, err := encryptionSvc.Decrypt(keyInfo.KeyValue)
-			if err != nil {
-				// If decryption fails, log and skip this key (no key material)
-				logrus.WithError(err).
-					WithField("index", i).
-					Warn("Failed to decrypt key during import, skipping")
-				skippedKeys++
-				continue
+			var plain string
+			var stored string
+			if inputIsPlain {
+				plain = keyInfo.KeyValue
+				enc, e := encryptionSvc.Encrypt(plain)
+				if e != nil {
+					logrus.WithError(e).WithField("index", i).Warn("Failed to encrypt plaintext key during import, skipping")
+					skippedKeys++
+					continue
+				}
+				stored = enc
+			} else {
+				// Decrypt key_value to calculate key_hash for proper indexing and deduplication
+				// The exported key_value is encrypted, so we need to decrypt it first
+				dec, derr := encryptionSvc.Decrypt(keyInfo.KeyValue)
+				if derr != nil {
+					// If decryption fails, log and skip this key (no key material)
+					logrus.WithError(derr).
+						WithField("index", i).
+						Warn("Failed to decrypt key during import, skipping")
+					skippedKeys++
+					continue
+				}
+				plain = dec
+				stored = keyInfo.KeyValue // already encrypted
 			}
 
-			// Calculate key_hash from decrypted key for proper indexing
-			keyHash := encryptionSvc.Hash(decryptedKey)
+			// Calculate key_hash from decrypted/plain key for proper indexing
+			keyHash := encryptionSvc.Hash(plain)
 
 			keyModels = append(keyModels, models.APIKey{
 				GroupID:  group.ID,
-				KeyValue: keyInfo.KeyValue, // Keep encrypted value
-				KeyHash:  keyHash,         // Add calculated hash
+				KeyValue: stored, // encrypted in DB
+				KeyHash:  keyHash, // Calculated hash
 				Status:   keyInfo.Status,
 			})
 		}
 		if skippedKeys > 0 {
-			logrus.Warnf("Skipped %d keys due to decryption failures during import", skippedKeys)
+			logrus.Warnf("Skipped %d keys due to preparation failures during import", skippedKeys)
 		}
 		prepDuration := time.Since(startPrep)
-		logrus.Infof("Key preparation (decrypt+hash) took %v for %d keys", prepDuration, len(keyModels))
+		logrus.Infof("Key preparation took %v for %d keys", prepDuration, len(keyModels))
 
 		if len(keyModels) > 0 {
 			// Use the new BulkImportService for optimized bulk insert
@@ -192,19 +215,22 @@ type GroupExportData struct {
 type GroupExportInfo struct {
 	Name               string              `json:"name"`
 	DisplayName        string              `json:"display_name"`
-	Description        string              `json:"description"`
-	GroupType          string              `json:"group_type"`
-	ChannelType        string              `json:"channel_type"`
-	Enabled            bool                `json:"enabled"`
-	TestModel          string              `json:"test_model"`
-	ValidationEndpoint string              `json:"validation_endpoint"`
-	Upstreams          json.RawMessage     `json:"upstreams"`
-	ParamOverrides     map[string]any     `json:"param_overrides"`
-	Config             map[string]any     `json:"config"`
-	HeaderRules        []models.HeaderRule `json:"header_rules"`
-	ModelMapping       string              `json:"model_mapping"`
-	ProxyKeys          string              `json:"proxy_keys"`
-	Sort               int                 `json:"sort"`
+	Description         string              `json:"description"`
+	GroupType           string              `json:"group_type"`
+	ChannelType         string              `json:"channel_type"`
+	Enabled             bool                `json:"enabled"`
+	TestModel           string              `json:"test_model"`
+	ValidationEndpoint  string              `json:"validation_endpoint"`
+	Upstreams           json.RawMessage     `json:"upstreams"`
+	ParamOverrides      map[string]any      `json:"param_overrides"`
+	Config              map[string]any      `json:"config"`
+	HeaderRules         []models.HeaderRule `json:"header_rules"`
+	ModelMapping        string              `json:"model_mapping,omitempty"`         // Deprecated: for backward compatibility
+	ModelRedirectRules  map[string]string   `json:"model_redirect_rules,omitempty"`  // New field
+	ModelRedirectStrict bool                `json:"model_redirect_strict,omitempty"` // New field
+	PathRedirects       []models.PathRedirectRule `json:"path_redirects,omitempty"`  // Path redirect rules
+	ProxyKeys           string              `json:"proxy_keys"`
+	Sort                int                 `json:"sort"`
 }
 
 // KeyExportInfo represents key export information.
@@ -239,38 +265,40 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		return
 	}
 
-	// Parse HeaderRules for export format
-	// Fail export on parse error to prevent silent data loss
-	// If HeaderRules are corrupted, user should know before exporting incomplete data
-	var headerRules []models.HeaderRule
-	if len(groupData.Group.HeaderRules) > 0 {
-		if err := json.Unmarshal(groupData.Group.HeaderRules, &headerRules); err != nil {
-			logrus.WithError(err).
-				WithField("group", groupData.Group.Name).
-				Error("Failed to parse HeaderRules for export")
-			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.export_failed")
-			return
-		}
-	}
+	// Determine export mode: plain or encrypted (default encrypted)
+	exportMode := GetExportMode(c)
+
+	// Parse HeaderRules for export format using common utility function
+	// ParseHeaderRulesForExport handles errors internally and logs warnings
+	headerRules := ParseHeaderRulesForExport(groupData.Group.HeaderRules, groupData.Group.ID)
+
+	// Parse PathRedirects for export format using common utility function
+	pathRedirects := ParsePathRedirectsForExport(groupData.Group.PathRedirects)
+
+	// Convert ModelRedirectRules from datatypes.JSONMap to map[string]string for export
+	modelRedirectRules := ConvertModelRedirectRulesToExport(groupData.Group.ModelRedirectRules)
 
 	// Build export data structure compatible with existing format
 	exportData := GroupExportData{
 		Group: GroupExportInfo{
-			Name:               groupData.Group.Name,
-			DisplayName:        groupData.Group.DisplayName,
-			Description:        groupData.Group.Description,
-			GroupType:          groupData.Group.GroupType,
-			ChannelType:        groupData.Group.ChannelType,
-			Enabled:            groupData.Group.Enabled,
-			TestModel:          groupData.Group.TestModel,
-			ValidationEndpoint: groupData.Group.ValidationEndpoint,
-			Upstreams:          json.RawMessage(groupData.Group.Upstreams),
-			ParamOverrides:     groupData.Group.ParamOverrides,
-			Config:             groupData.Group.Config,
-			HeaderRules:        headerRules,
-			ModelMapping:       groupData.Group.ModelMapping,
-			ProxyKeys:          groupData.Group.ProxyKeys,
-			Sort:               groupData.Group.Sort,
+			Name:                groupData.Group.Name,
+			DisplayName:         groupData.Group.DisplayName,
+			Description:         groupData.Group.Description,
+			GroupType:           groupData.Group.GroupType,
+			ChannelType:         groupData.Group.ChannelType,
+			Enabled:             groupData.Group.Enabled,
+			TestModel:           groupData.Group.TestModel,
+			ValidationEndpoint:  groupData.Group.ValidationEndpoint,
+			Upstreams:           json.RawMessage(groupData.Group.Upstreams),
+			ParamOverrides:      groupData.Group.ParamOverrides,
+			Config:              groupData.Group.Config,
+			HeaderRules:         headerRules,
+			ModelMapping:        groupData.Group.ModelMapping,
+			ModelRedirectRules:  modelRedirectRules,
+			ModelRedirectStrict: groupData.Group.ModelRedirectStrict,
+			PathRedirects:       pathRedirects,
+			ProxyKeys:           groupData.Group.ProxyKeys,
+			Sort:                groupData.Group.Sort,
 		},
 		Keys:       make([]KeyExportInfo, 0, len(groupData.Keys)),
 		SubGroups:  make([]SubGroupExportInfo, 0, len(groupData.SubGroups)),
@@ -278,10 +306,18 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		Version:    "2.0",
 	}
 
-	// Convert keys to export format
+	// Convert keys to export format. Decrypt to plaintext only when explicitly requested.
 	for _, key := range groupData.Keys {
+		kv := key.KeyValue
+		if exportMode == "plain" {
+			if decrypted, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
+				kv = decrypted
+			} else {
+				logrus.WithError(derr).Debug("Failed to decrypt key during plain export, keeping original value")
+			}
+		}
 		exportData.Keys = append(exportData.Keys, KeyExportInfo{
-			KeyValue: key.KeyValue,
+			KeyValue: kv,
 			Status:   key.Status,
 		})
 	}
@@ -305,7 +341,11 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		filenamePrefix = "standard-group"
 	}
 	safeName := sanitizeFilename(groupData.Group.Name)
-	filename := fmt.Sprintf("%s_%s_%s.json", filenamePrefix, safeName, time.Now().Format("20060102_150405"))
+	suffix := "enc"
+	if exportMode == "plain" {
+		suffix = "plain"
+	}
+	filename := fmt.Sprintf("%s_%s_%s-%s.json", filenamePrefix, safeName, time.Now().Format("20060102_150405"), suffix)
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.Header("Content-Type", "application/json; charset=utf-8")
 
@@ -328,9 +368,17 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		return
 	}
 
+	// Determine import mode from query, filename or content
+	sample := make([]string, 0, 5)
+	for i := 0; i < len(importData.Keys) && i < 5; i++ {
+		sample = append(sample, importData.Keys[i].KeyValue)
+	}
+	importMode := GetImportMode(c, sample)
+	inputIsPlain := importMode == "plain"
+
 	// Log import summary
-	logrus.Infof("Importing group %s with %d keys",
-		importData.Group.Name, len(importData.Keys))
+	logrus.Infof("Importing group %s with %d keys (mode=%s)",
+		importData.Group.Name, len(importData.Keys), importMode)
 	if len(importData.SubGroups) > 0 {
 		logrus.Debugf("SubGroups: %d", len(importData.SubGroups))
 	}
@@ -346,7 +394,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	var createdGroupID uint
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		createdGroupID, err = importGroupFromExportData(tx, s.ExportImportService, s.EncryptionSvc, s.BulkImportService, importData.Group, importData.Keys, importData.SubGroups)
+		createdGroupID, err = importGroupFromExportData(tx, s.ExportImportService, s.EncryptionSvc, s.BulkImportService, importData.Group, importData.Keys, importData.SubGroups, inputIsPlain)
 		if err != nil {
 			return err
 		}
@@ -360,6 +408,20 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	if err != nil {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
 		return
+	}
+
+	// Invalidate group manager cache synchronously to ensure new group is immediately visible in the list
+	// This must happen before the success response to provide a good user experience
+	if s.GroupManager != nil {
+		if err := s.GroupManager.Invalidate(); err != nil {
+			logrus.WithError(err).Warn("Failed to invalidate group manager cache after import")
+		} else {
+			logrus.Debug("Group manager cache invalidated successfully after import")
+		}
+	}
+	// Also invalidate the group list cache so /api/groups immediately reflects new data
+	if s.GroupService != nil {
+		s.GroupService.InvalidateGroupListCache()
 	}
 
 	// Load keys to Redis store and reset failure_count asynchronously

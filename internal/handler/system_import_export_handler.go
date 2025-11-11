@@ -30,6 +30,9 @@ type SystemExportData struct {
 
 // ExportAll exports all system data (system settings and all groups).
 func (s *Server) ExportAll(c *gin.Context) {
+	// Determine export mode: plain or encrypted (default encrypted)
+	exportMode := GetExportMode(c)
+
 	// Use the new ExportImportService to export the entire system
 	// This fixes the FindInBatches limitation that only exports 2000 records
 	systemData, err := s.ExportImportService.ExportSystem()
@@ -45,41 +48,52 @@ func (s *Server) ExportAll(c *gin.Context) {
 	totalKeys := 0
 
 	for _, groupData := range systemData.Groups {
-		// Parse HeaderRules
-		var headerRules []models.HeaderRule
-		if len(groupData.Group.HeaderRules) > 0 {
-			if err := json.Unmarshal(groupData.Group.HeaderRules, &headerRules); err != nil {
-				logrus.WithError(err).WithField("group_id", groupData.Group.ID).Warn("Failed to parse HeaderRules during export")
-				headerRules = []models.HeaderRule{}
-			}
-		}
+		// Parse HeaderRules using common utility function
+		headerRules := ParseHeaderRulesForExport(groupData.Group.HeaderRules, groupData.Group.ID)
+
+		// Parse PathRedirects for export format using common utility function
+		pathRedirects := ParsePathRedirectsForExport(groupData.Group.PathRedirects)
+
+		// Convert ModelRedirectRules from datatypes.JSONMap to map[string]string for export
+		modelRedirectRules := ConvertModelRedirectRulesToExport(groupData.Group.ModelRedirectRules)
 
 		groupExport := GroupExportData{
 			Group: GroupExportInfo{
-				Name:               groupData.Group.Name,
-				DisplayName:        groupData.Group.DisplayName,
-				Description:        groupData.Group.Description,
-				GroupType:          groupData.Group.GroupType,
-				ChannelType:        groupData.Group.ChannelType,
-				Enabled:            groupData.Group.Enabled,
-				TestModel:          groupData.Group.TestModel,
-				ValidationEndpoint: groupData.Group.ValidationEndpoint,
-				Upstreams:          json.RawMessage(groupData.Group.Upstreams),
-				ParamOverrides:     groupData.Group.ParamOverrides,
-				Config:             groupData.Group.Config,
-				HeaderRules:        headerRules,
-				ModelMapping:       groupData.Group.ModelMapping,
-				ProxyKeys:          groupData.Group.ProxyKeys,
-				Sort:               groupData.Group.Sort,
+				Name:                groupData.Group.Name,
+				DisplayName:         groupData.Group.DisplayName,
+				Description:         groupData.Group.Description,
+				GroupType:           groupData.Group.GroupType,
+				ChannelType:         groupData.Group.ChannelType,
+				Enabled:             groupData.Group.Enabled,
+				TestModel:           groupData.Group.TestModel,
+				ValidationEndpoint:  groupData.Group.ValidationEndpoint,
+				Upstreams:           json.RawMessage(groupData.Group.Upstreams),
+				ParamOverrides:      groupData.Group.ParamOverrides,
+				Config:              groupData.Group.Config,
+				HeaderRules:         headerRules,
+				ModelMapping:        groupData.Group.ModelMapping,
+				ModelRedirectRules:  modelRedirectRules,
+				ModelRedirectStrict: groupData.Group.ModelRedirectStrict,
+				PathRedirects:       pathRedirects,
+				ProxyKeys:           groupData.Group.ProxyKeys,
+				Sort:                groupData.Group.Sort,
 			},
 			Keys:      []KeyExportInfo{},
 			SubGroups: []SubGroupExportInfo{},
 		}
 
-		// Convert keys
+		// Convert keys; when plain mode, decrypt for output
 		for _, key := range groupData.Keys {
+			kv := key.KeyValue
+			if exportMode == "plain" {
+				if dec, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
+					kv = dec
+				} else {
+					logrus.WithError(derr).Debug("Failed to decrypt key during plain system export, keeping original value")
+				}
+			}
 			groupExport.Keys = append(groupExport.Keys, KeyExportInfo{
-				KeyValue: key.KeyValue,
+				KeyValue: kv,
 				Status:   key.Status,
 			})
 		}
@@ -106,6 +120,15 @@ func (s *Server) ExportAll(c *gin.Context) {
 		Groups:         groupExports,
 	}
 
+	// Set download headers with mode suffix for filename
+	suffix := "enc"
+	if exportMode == "plain" {
+		suffix = "plain"
+	}
+	filename := fmt.Sprintf("system-export_%s-%s.json", time.Now().Format("20060102_150405"), suffix)
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Header("Content-Type", "application/json; charset=utf-8")
+
 	// Return JSON data with standard response format
 	response.Success(c, exportData)
 }
@@ -125,13 +148,28 @@ func (s *Server) ImportAll(c *gin.Context) {
 		return
 	}
 
+	// Determine import mode from query, filename or content
+	sample := make([]string, 0, 5)
+	outer:
+	for _, g := range importData.Groups {
+		for _, k := range g.Keys {
+			if len(sample) < 5 {
+				sample = append(sample, k.KeyValue)
+			} else {
+				break outer
+			}
+		}
+	}
+	importMode := GetImportMode(c, sample)
+	inputIsPlain := importMode == "plain"
+
 	// Log import summary
 	totalKeys := 0
 	for _, groupExport := range importData.Groups {
 		totalKeys += len(groupExport.Keys)
 	}
-	logrus.Infof("System import: %d groups with %d total keys",
-		len(importData.Groups), totalKeys)
+	logrus.Infof("System import: %d groups with %d total keys (mode=%s)",
+		len(importData.Groups), totalKeys, importMode)
 	if len(importData.SystemSettings) > 0 {
 		logrus.Debugf("System settings: %d", len(importData.SystemSettings))
 	}
@@ -172,36 +210,54 @@ func (s *Server) ImportAll(c *gin.Context) {
 
 	// Convert groups to service format
 	for _, groupExport := range importData.Groups {
-		// Convert HeaderRules back to JSON for storage
-		headerRulesJSON, _ := json.Marshal(groupExport.Group.HeaderRules)
+		// Convert HeaderRules back to JSON for storage using common utility function
+		headerRulesJSON := ConvertHeaderRulesToJSON(groupExport.Group.HeaderRules)
+
+		// Convert PathRedirects back to JSON for storage using common utility function
+		pathRedirectsJSON := ConvertPathRedirectsToJSON(groupExport.Group.PathRedirects)
+
+		// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
+		modelRedirectRules := ConvertModelRedirectRulesToImport(groupExport.Group.ModelRedirectRules)
 
 		groupData := services.GroupExportData{
 			Group: models.Group{
-				Name:               groupExport.Group.Name,
-				DisplayName:        groupExport.Group.DisplayName,
-				Description:        groupExport.Group.Description,
-				GroupType:          groupExport.Group.GroupType,
-				ChannelType:        groupExport.Group.ChannelType,
-				Enabled:            groupExport.Group.Enabled,
-				TestModel:          groupExport.Group.TestModel,
-				ValidationEndpoint: groupExport.Group.ValidationEndpoint,
-				Upstreams:          []byte(groupExport.Group.Upstreams),
-				ParamOverrides:     groupExport.Group.ParamOverrides,
-				Config:             groupExport.Group.Config,
-				HeaderRules:        headerRulesJSON,
-				ModelMapping:       groupExport.Group.ModelMapping,
-				ProxyKeys:          groupExport.Group.ProxyKeys,
-				Sort:               groupExport.Group.Sort,
+				Name:                groupExport.Group.Name,
+				DisplayName:         groupExport.Group.DisplayName,
+				Description:         groupExport.Group.Description,
+				GroupType:           groupExport.Group.GroupType,
+				ChannelType:         groupExport.Group.ChannelType,
+				Enabled:             groupExport.Group.Enabled,
+				TestModel:           groupExport.Group.TestModel,
+				ValidationEndpoint:  groupExport.Group.ValidationEndpoint,
+				Upstreams:           []byte(groupExport.Group.Upstreams),
+				ParamOverrides:      groupExport.Group.ParamOverrides,
+				Config:              groupExport.Group.Config,
+				HeaderRules:         headerRulesJSON,
+				ModelMapping:        groupExport.Group.ModelMapping,
+				ModelRedirectRules:  modelRedirectRules,
+				ModelRedirectStrict: groupExport.Group.ModelRedirectStrict,
+				PathRedirects:       pathRedirectsJSON,
+				ProxyKeys:           groupExport.Group.ProxyKeys,
+				Sort:                groupExport.Group.Sort,
 			},
 			Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
 			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
 		}
 
-		// Convert keys
-		for _, key := range groupExport.Keys {
+		// Convert keys; if input is plaintext, encrypt before passing to service
+		for idx := range groupExport.Keys {
+			kv := groupExport.Keys[idx].KeyValue
+			if inputIsPlain {
+				if enc, e := s.EncryptionSvc.Encrypt(kv); e == nil {
+					kv = enc
+				} else {
+					logrus.WithError(e).WithField("group", groupExport.Group.Name).Warn("Failed to encrypt plaintext key during system import, skipping")
+					continue
+				}
+			}
 			groupData.Keys = append(groupData.Keys, services.KeyExportInfo{
-				KeyValue: key.KeyValue,
-				Status:   key.Status,
+				KeyValue: kv,
+				Status:   groupExport.Keys[idx].Status,
 			})
 		}
 
@@ -251,6 +307,10 @@ func (s *Server) ImportAll(c *gin.Context) {
 		} else {
 			logrus.Info("Group manager cache invalidated successfully")
 		}
+	}
+	// Also invalidate the group list cache so /api/groups returns fresh list
+	if s.GroupService != nil {
+		s.GroupService.InvalidateGroupListCache()
 	}
 
 	logrus.Info("System import completed successfully")
@@ -387,26 +447,35 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	// Convert handler format to service format for unified import
 	serviceGroups := make([]services.GroupExportData, 0, len(importData.Groups))
 	for _, groupExport := range importData.Groups {
-		// Convert HeaderRules back to JSON for storage
-		headerRulesJSON, _ := json.Marshal(groupExport.Group.HeaderRules)
+		// Convert HeaderRules back to JSON for storage using common utility function
+		headerRulesJSON := ConvertHeaderRulesToJSON(groupExport.Group.HeaderRules)
+
+		// Convert PathRedirects back to JSON for storage using common utility function
+		pathRedirectsJSON := ConvertPathRedirectsToJSON(groupExport.Group.PathRedirects)
+
+		// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
+		modelRedirectRules := ConvertModelRedirectRulesToImport(groupExport.Group.ModelRedirectRules)
 
 		groupData := services.GroupExportData{
 			Group: models.Group{
-				Name:               groupExport.Group.Name,
-				DisplayName:        groupExport.Group.DisplayName,
-				Description:        groupExport.Group.Description,
-				GroupType:          groupExport.Group.GroupType,
-				ChannelType:        groupExport.Group.ChannelType,
-				Enabled:            groupExport.Group.Enabled,
-				TestModel:          groupExport.Group.TestModel,
-				ValidationEndpoint: groupExport.Group.ValidationEndpoint,
-				Upstreams:          []byte(groupExport.Group.Upstreams),
-				ParamOverrides:     groupExport.Group.ParamOverrides,
-				Config:             groupExport.Group.Config,
-				HeaderRules:        headerRulesJSON,
-				ModelMapping:       groupExport.Group.ModelMapping,
-				ProxyKeys:          groupExport.Group.ProxyKeys,
-				Sort:               groupExport.Group.Sort,
+				Name:                groupExport.Group.Name,
+				DisplayName:         groupExport.Group.DisplayName,
+				Description:         groupExport.Group.Description,
+				GroupType:           groupExport.Group.GroupType,
+				ChannelType:         groupExport.Group.ChannelType,
+				Enabled:             groupExport.Group.Enabled,
+				TestModel:           groupExport.Group.TestModel,
+				ValidationEndpoint:  groupExport.Group.ValidationEndpoint,
+				Upstreams:           []byte(groupExport.Group.Upstreams),
+				ParamOverrides:      groupExport.Group.ParamOverrides,
+				Config:              groupExport.Group.Config,
+				HeaderRules:         headerRulesJSON,
+				ModelMapping:        groupExport.Group.ModelMapping,
+				ModelRedirectRules:  modelRedirectRules,
+				ModelRedirectStrict: groupExport.Group.ModelRedirectStrict,
+				PathRedirects:       pathRedirectsJSON,
+				ProxyKeys:           groupExport.Group.ProxyKeys,
+				Sort:                groupExport.Group.Sort,
 			},
 			Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
 			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
@@ -473,6 +542,10 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		} else {
 			logrus.Info("Group manager cache invalidated successfully")
 		}
+	}
+	// Also invalidate the group list cache so /api/groups returns fresh list
+	if s.GroupService != nil {
+		s.GroupService.InvalidateGroupListCache()
 	}
 
 	// Reset failure_count for all active keys in each successfully imported group asynchronously

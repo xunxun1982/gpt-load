@@ -117,44 +117,48 @@ func NewGroupService(
 
 // GroupCreateParams captures all fields required to create a group.
 type GroupCreateParams struct {
-	Name               string
-	DisplayName        string
-	Description        string
-	GroupType          string
-	Upstreams          json.RawMessage
-	ChannelType        string
-	Sort               int
-	TestModel          string
-	ValidationEndpoint string
-	ParamOverrides     map[string]any
-	Config             map[string]any
-	HeaderRules        []models.HeaderRule
-	ModelMapping       string
-	PathRedirects      []models.PathRedirectRule
-	ProxyKeys          string
-	SubGroups          []SubGroupInput
+	Name                string
+	DisplayName         string
+	Description         string
+	GroupType           string
+	Upstreams           json.RawMessage
+	ChannelType         string
+	Sort                int
+	TestModel           string
+	ValidationEndpoint  string
+	ParamOverrides      map[string]any
+	Config              map[string]any
+	HeaderRules         []models.HeaderRule
+	ModelMapping        string // Deprecated: for backward compatibility
+	ModelRedirectRules  map[string]string
+	ModelRedirectStrict bool
+	PathRedirects       []models.PathRedirectRule
+	ProxyKeys           string
+	SubGroups           []SubGroupInput
 }
 
 // GroupUpdateParams captures updatable fields for a group.
 type GroupUpdateParams struct {
-	Name               *string
-	DisplayName        *string
-	Description        *string
-	GroupType          *string
-	Upstreams          json.RawMessage
-	HasUpstreams       bool
-	ChannelType        *string
-	Sort               *int
-	TestModel          string
-	HasTestModel       bool
-	ValidationEndpoint *string
-	ParamOverrides     map[string]any
-	Config             map[string]any
-	HeaderRules        *[]models.HeaderRule
-	ModelMapping       *string
-	PathRedirects      []models.PathRedirectRule
-	ProxyKeys          *string
-	SubGroups          *[]SubGroupInput
+	Name                *string
+	DisplayName         *string
+	Description         *string
+	GroupType           *string
+	Upstreams           json.RawMessage
+	HasUpstreams        bool
+	ChannelType         *string
+	Sort                *int
+	TestModel           string
+	HasTestModel        bool
+	ValidationEndpoint  *string
+	ParamOverrides      map[string]any
+	Config              map[string]any
+	HeaderRules         *[]models.HeaderRule
+	ModelMapping        *string // Deprecated: for backward compatibility
+	ModelRedirectRules  map[string]string
+	ModelRedirectStrict *bool
+	PathRedirects       []models.PathRedirectRule
+	ProxyKeys           *string
+	SubGroups           *[]SubGroupInput
 }
 
 // KeyStats captures aggregated API key statistics for a group.
@@ -247,12 +251,32 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		headerRulesJSON = datatypes.JSON("[]")
 	}
 
-	// Validate model mapping if provided
+	// Migration: If ModelMapping is provided but ModelRedirectRules is empty, migrate from old format
 	modelMapping := strings.TrimSpace(params.ModelMapping)
-	if modelMapping != "" {
+	modelRedirectRules := params.ModelRedirectRules
+
+	if modelMapping != "" && len(modelRedirectRules) == 0 {
+		// Validate old format
 		if err := utils.ValidateModelMapping(modelMapping); err != nil {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_model_mapping", map[string]any{"error": err.Error()})
 		}
+		// Migrate to new format
+		migrated, err := utils.MigrateModelMappingToRedirectRules(modelMapping)
+		if err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to migrate ModelMapping to ModelRedirectRules")
+		} else {
+			modelRedirectRules = migrated
+		}
+	}
+
+	// Validate model redirect rules for aggregate groups
+	if groupType == "aggregate" && len(modelRedirectRules) > 0 {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.aggregate_no_model_redirect", nil)
+	}
+
+	// Validate model redirect rules format
+	if err := validateModelRedirectRules(modelRedirectRules); err != nil {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_model_redirect", map[string]any{"error": err.Error()})
 	}
 
 	// Normalize path redirects (OpenAI only; stored regardless, applied at runtime per channel)
@@ -262,21 +286,23 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 	}
 
 	group := models.Group{
-		Name:               name,
-		DisplayName:        strings.TrimSpace(params.DisplayName),
-		Description:        strings.TrimSpace(params.Description),
-		GroupType:          groupType,
-		Upstreams:          cleanedUpstreams,
-		ChannelType:        channelType,
-		Sort:               params.Sort,
-		TestModel:          testModel,
-		ValidationEndpoint: validationEndpoint,
-		ParamOverrides:     params.ParamOverrides,
-		Config:             cleanedConfig,
-		HeaderRules:        headerRulesJSON,
-		ModelMapping:       modelMapping,
-		PathRedirects:      pathRedirectsJSON,
-		ProxyKeys:          strings.TrimSpace(params.ProxyKeys),
+		Name:                name,
+		DisplayName:         strings.TrimSpace(params.DisplayName),
+		Description:         strings.TrimSpace(params.Description),
+		GroupType:           groupType,
+		Upstreams:           cleanedUpstreams,
+		ChannelType:         channelType,
+		Sort:                params.Sort,
+		TestModel:           testModel,
+		ValidationEndpoint:  validationEndpoint,
+		ParamOverrides:      params.ParamOverrides,
+		Config:              cleanedConfig,
+		HeaderRules:         headerRulesJSON,
+		ModelMapping:        modelMapping, // Keep for backward compatibility
+		ModelRedirectRules:  convertToJSONMap(modelRedirectRules),
+		ModelRedirectStrict: params.ModelRedirectStrict,
+		PathRedirects:       pathRedirectsJSON,
+		ProxyKeys:           strings.TrimSpace(params.ProxyKeys),
 	}
 
 	tx := s.db.WithContext(ctx).Begin()
@@ -309,6 +335,11 @@ func (s *GroupService) invalidateGroupListCache() {
 	s.groupListCache = nil
 	s.groupListCacheMu.Unlock()
 	logrus.Debug("Group list cache invalidated")
+}
+
+// InvalidateGroupListCache exposes group list cache invalidation for other packages (e.g., handlers)
+func (s *GroupService) InvalidateGroupListCache() {
+	s.invalidateGroupListCache()
 }
 
 // ListGroups returns all groups without sub-group relations.
@@ -434,6 +465,23 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 	if params.ParamOverrides != nil {
 		group.ParamOverrides = params.ParamOverrides
+	}
+
+	// Validate model redirect rules for aggregate groups
+	if group.GroupType == "aggregate" && params.ModelRedirectRules != nil && len(params.ModelRedirectRules) > 0 {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.aggregate_no_model_redirect", nil)
+	}
+
+	// Validate model redirect rules format
+	if params.ModelRedirectRules != nil {
+		if err := validateModelRedirectRules(params.ModelRedirectRules); err != nil {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_model_redirect", map[string]any{"error": err.Error()})
+		}
+		group.ModelRedirectRules = convertToJSONMap(params.ModelRedirectRules)
+	}
+
+	if params.ModelRedirectStrict != nil {
+		group.ModelRedirectStrict = *params.ModelRedirectStrict
 	}
 
 	if params.ValidationEndpoint != nil {
@@ -1512,6 +1560,39 @@ func (s *GroupService) ToggleGroupEnabled(ctx context.Context, id uint, enabled 
 
 	// Invalidate group list cache after toggling group enabled status
 	s.invalidateGroupListCache()
+
+	return nil
+}
+
+// convertToJSONMap converts a map[string]string to datatypes.JSONMap
+func convertToJSONMap(input map[string]string) datatypes.JSONMap {
+	if len(input) == 0 {
+		return datatypes.JSONMap{}
+	}
+
+	result := make(datatypes.JSONMap)
+	for k, v := range input {
+		trimmedKey := strings.TrimSpace(k)
+		trimmedValue := strings.TrimSpace(v)
+		if trimmedKey == "" || trimmedValue == "" {
+			continue
+		}
+		result[trimmedKey] = trimmedValue
+	}
+	return result
+}
+
+// validateModelRedirectRules validates the format and content of model redirect rules
+func validateModelRedirectRules(rules map[string]string) error {
+	if len(rules) == 0 {
+		return nil
+	}
+
+	for key, value := range rules {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			return fmt.Errorf("model name cannot be empty")
+		}
+	}
 
 	return nil
 }

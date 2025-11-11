@@ -33,31 +33,26 @@ export const settingsApi = {
   // ============ System Import/Export ============
 
   // Export full system configuration
-  async exportAll(): Promise<void> {
+  async exportAll(mode: "plain" | "encrypted" = "encrypted"): Promise<void> {
     try {
-      const response = await http.get("/system/export", { hideMessage: true });
+      const response = await http.get("/system/export", {
+        params: { mode },
+        hideMessage: true,
+      });
 
-      // Response interceptor already returns response.data, use it directly
       const jsonStr = JSON.stringify(response, null, 2);
-
-      // Create Blob object
       const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8" });
 
-      // Generate filename
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const filename = `system_export_${timestamp}.json`;
+      const suffix = mode === "plain" ? "plain" : "enc";
+      const filename = `system_export_${timestamp}-${suffix}.json`;
 
-      // Create download link
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
       link.download = filename;
-
-      // Trigger download
       document.body.appendChild(link);
       link.click();
-
-      // Cleanup
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
     } catch (error) {
@@ -67,9 +62,14 @@ export const settingsApi = {
   },
 
   // Import full system configuration
-  async importAll(data: unknown): Promise<void> {
-    // Use longer timeout for large imports (5 minutes)
-    await http.post("/system/import", data, { timeout: 300000 });
+  async importAll(
+    data: unknown,
+    opts?: { mode?: "plain" | "encrypted" | "auto"; filename?: string }
+  ): Promise<void> {
+    const params: Record<string, string> = {};
+    if (opts?.mode) params.mode = opts.mode;
+    if (opts?.filename) params.filename = opts.filename;
+    await http.post("/system/import", data, { timeout: 300000, params });
   },
 
   // ============ Separated Import Functions ============
@@ -81,8 +81,13 @@ export const settingsApi = {
   },
 
   // Batch import groups
-  async importGroupsBatch(data: { groups: unknown[] }): Promise<void> {
-    // Use longer timeout for large batch imports (5 minutes)
-    await http.post("/system/import-groups-batch", data, { timeout: 300000 });
+  async importGroupsBatch(
+    data: { groups: unknown[] },
+    opts?: { mode?: "plain" | "encrypted" | "auto"; filename?: string }
+  ): Promise<void> {
+    const params: Record<string, string> = {};
+    if (opts?.mode) params.mode = opts.mode;
+    if (opts?.filename) params.filename = opts.filename;
+    await http.post("/system/import-groups-batch", data, { timeout: 300000, params });
   },
 };

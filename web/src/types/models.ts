@@ -83,7 +83,9 @@ export interface Group {
   api_keys?: APIKey[];
   endpoint?: string;
   param_overrides: Record<string, unknown>;
-  model_mapping?: string;
+  model_mapping?: string; // Deprecated: for backward compatibility
+  model_redirect_rules: Record<string, string>;
+  model_redirect_strict: boolean;
   header_rules?: HeaderRule[];
   path_redirects?: PathRedirectRule[];
   proxy_keys: string;

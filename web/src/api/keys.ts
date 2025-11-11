@@ -316,42 +316,37 @@ export const keysApi = {
   // ============ Import/Export ============
 
   // Export complete group data
-  async exportGroup(groupId: number): Promise<void> {
+  async exportGroup(groupId: number, mode: "plain" | "encrypted" = "encrypted"): Promise<void> {
     try {
-      // Note: http interceptor already returns response.data, so get data directly here
-      const data = await http.get(`/groups/${groupId}/export`);
+      // Request export with mode parameter
+      const data = await http.get(`/groups/${groupId}/export`, {
+        params: { mode },
+        hideMessage: true,
+      });
 
-      // Defensive check: ensure data is valid
       if (!data) {
         throw new Error("Export data is empty");
       }
 
-      // Convert data to JSON string
       const jsonStr = JSON.stringify(data, null, 2);
-
-      // Create Blob object
       const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8" });
 
-      // Generate filename with different prefix based on group type
+      // Generate filename with different prefix and mode suffix
       const exportData = data as { group?: { name?: string; group_type?: string } };
       const groupData = exportData.group;
       const groupName = groupData?.name || `group_${groupId}`;
       const groupType = groupData?.group_type || "standard";
       const prefix = groupType === "aggregate" ? "aggregate-group" : "standard-group";
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const filename = `${prefix}_${groupName}_${timestamp}.json`;
+      const suffix = mode === "plain" ? "plain" : "enc";
+      const filename = `${prefix}_${groupName}_${timestamp}-${suffix}.json`;
 
-      // Create download link
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
       link.download = filename;
-
-      // Trigger download
       document.body.appendChild(link);
       link.click();
-
-      // Cleanup
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
     } catch (error) {
@@ -361,9 +356,14 @@ export const keysApi = {
   },
 
   // Import group data
-  async importGroup(data: unknown): Promise<Group> {
-    // Single group import is usually fast, use default 60s timeout
-    const res = await http.post("/groups/import", data);
+  async importGroup(
+    data: unknown,
+    options?: { mode?: "plain" | "encrypted" | "auto"; filename?: string }
+  ): Promise<Group> {
+    const params: Record<string, string> = {};
+    if (options?.mode) params.mode = options.mode;
+    if (options?.filename) params.filename = options.filename;
+    const res = await http.post("/groups/import", data, { params });
     return res.data;
   },
 };

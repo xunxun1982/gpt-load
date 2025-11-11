@@ -73,6 +73,8 @@ var MessagesZhCN = map[string]string{
 	"validation.sub_group_referenced_cannot_modify": "该分组正被 {{.count}} 个聚合分组引用为子分组，无法修改渠道类型或验证端点。请先从相关聚合分组中移除此分组后再进行修改",
 	"validation.standard_group_requires_upstreams_testmodel": "转换为标准分组需要提供上游服务器和测试模型",
 	"validation.invalid_model_mapping":                       "模型映射格式无效：{{.error}}",
+	"validation.aggregate_no_model_redirect": "聚合分组不支持模型重定向规则",
+	"validation.invalid_model_redirect":      "无效的模型重定向规则：{{.error}}",
 
 	// Task related
 	"task.validation_started": "密钥验证任务已开始",

@@ -76,6 +76,19 @@ export default {
     settings: "システム設定",
     logout: "ログアウト",
   },
+  export: {
+    modeTitle: "エクスポート方式を選択",
+    modeDesc: "エクスポートファイル内のキー形式を選択してください。機密保護のため暗号化エクスポートを推奨します。",
+    encrypted: "暗号化（推奨）",
+    plain: "平文（機密）",
+  },
+  import: {
+    modeTitle: "インポート方式を選択",
+    modeDesc: "インポートファイル内のキー形式を選択してください。不明な場合は自動判別（推奨）を選択してください。",
+    encrypted: "暗号化インポート",
+    plain: "平文インポート",
+    auto: "自動判別",
+  },
   dashboard: {
     title: "ダッシュボード",
     overview: "概要",
@@ -390,6 +403,29 @@ export default {
     addModelMapping: "モデルマッピングを追加",
     visualEdit: "ビジュアル編集",
     jsonEdit: "手動編集",
+    modelRedirectPolicy: "未設定モデルポリシー",
+    modelRedirectPolicyTooltip:
+      "リダイレクトルールで設定されていないモデルのリクエストをどう処理するか選択",
+    modelRedirectStrictMode: "厳格モード：未設定モデルのリクエストを拒否（404を返す）",
+    modelRedirectLooseMode: "寛容モード：未設定モデルのリクエストをパススルー",
+    modelRedirectStrictWarning:
+      "厳格モードでは、以下のリダイレクトルールで設定されたモデルのみリクエスト可能で、他のモデルは404エラーを返します",
+    modelRedirectLooseInfo:
+      "寛容モードでは、リダイレクト設定のないモデルはアップストリームサービスに直接パススルーされます",
+    modelRedirectRules: "モデルリダイレクトルール",
+    modelRedirectTooltip:
+      "モデルリダイレクトルールを設定。キーはユーザーがリクエストするモデル名、値はアップストリームに送信する実際のモデル名",
+    modelRedirectMode: "リダイレクトモード",
+    strictMode: "厳格",
+    looseMode: "寛容",
+    strictModeDesc: "設定されたモデルのみ許可（ホワイトリスト）",
+    looseModeDesc: "設定されたモデルはリダイレクト、その他はパススルー",
+    sourceModel: "ソースモデル",
+    addModelRedirect: "モデルリダイレクトを追加",
+    modelRedirectInvalidJson: "モデルリダイレクトルールのJSON形式が無効です",
+    modelRedirectInvalidFormat:
+      "モデルリダイレクトルールのキーと値はすべて文字列である必要があります",
+    modelRedirectEmptyModel: "モデル名を空にすることはできません",
     never: "使用なし",
     daysAgo: "{days}日前",
     hoursAgo: "{hours}時間前",

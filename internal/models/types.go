@@ -87,36 +87,39 @@ type ParentAggregateGroupInfo struct {
 
 // Group corresponds to the groups table.
 type Group struct {
-	ID                 uint                 `gorm:"primaryKey;autoIncrement" json:"id"`
-	EffectiveConfig    types.SystemSettings `gorm:"-" json:"effective_config,omitempty"`
-	Name               string               `gorm:"type:varchar(255);not null;unique" json:"name"`
-	Endpoint           string               `gorm:"-" json:"endpoint"`
-	DisplayName        string               `gorm:"type:varchar(255)" json:"display_name"`
-	ProxyKeys          string               `gorm:"type:text" json:"proxy_keys"`
-	Description        string               `gorm:"type:varchar(512)" json:"description"`
-	GroupType          string               `gorm:"type:varchar(50);default:'standard'" json:"group_type"` // 'standard' or 'aggregate'
-	Enabled            bool                 `gorm:"default:true;not null" json:"enabled"`                  // Group enabled status
-	Upstreams          datatypes.JSON       `gorm:"type:json;not null" json:"upstreams"`
-	ValidationEndpoint string               `gorm:"type:varchar(255)" json:"validation_endpoint"`
-	ChannelType        string               `gorm:"type:varchar(50);not null" json:"channel_type"`
-	Sort               int                  `gorm:"default:0" json:"sort"`
-	TestModel          string               `gorm:"type:varchar(255);not null" json:"test_model"`
-	ParamOverrides     datatypes.JSONMap    `gorm:"type:json" json:"param_overrides"`
-	Config             datatypes.JSONMap    `gorm:"type:json" json:"config"`
-	HeaderRules        datatypes.JSON       `gorm:"type:json" json:"header_rules"`
-	ModelMapping       string               `gorm:"type:text" json:"model_mapping"` // JSON format model name mapping
-	PathRedirects      datatypes.JSON       `gorm:"type:json" json:"path_redirects"`                       // JSON array of {from,to} rules (OpenAI only)
-	APIKeys            []APIKey             `gorm:"foreignKey:GroupID" json:"api_keys"`
-	SubGroups          []GroupSubGroup      `gorm:"-" json:"sub_groups,omitempty"`
-	LastValidatedAt    *time.Time           `json:"last_validated_at"`
-	CreatedAt          time.Time            `json:"created_at"`
-	UpdatedAt          time.Time            `json:"updated_at"`
+	ID                   uint                 `gorm:"primaryKey;autoIncrement" json:"id"`
+	EffectiveConfig      types.SystemSettings `gorm:"-" json:"effective_config,omitempty"`
+	Name                 string               `gorm:"type:varchar(255);not null;unique" json:"name"`
+	Endpoint             string               `gorm:"-" json:"endpoint"`
+	DisplayName          string               `gorm:"type:varchar(255)" json:"display_name"`
+	ProxyKeys            string               `gorm:"type:text" json:"proxy_keys"`
+	Description          string               `gorm:"type:varchar(512)" json:"description"`
+	GroupType            string               `gorm:"type:varchar(50);default:'standard'" json:"group_type"` // 'standard' or 'aggregate'
+	Enabled              bool                 `gorm:"default:true;not null" json:"enabled"`                  // Group enabled status
+	Upstreams            datatypes.JSON       `gorm:"type:json;not null" json:"upstreams"`
+	ValidationEndpoint   string               `gorm:"type:varchar(255)" json:"validation_endpoint"`
+	ChannelType          string               `gorm:"type:varchar(50);not null" json:"channel_type"`
+	Sort                 int                  `gorm:"default:0" json:"sort"`
+	TestModel            string               `gorm:"type:varchar(255);not null" json:"test_model"`
+	ParamOverrides       datatypes.JSONMap    `gorm:"type:json" json:"param_overrides"`
+	Config               datatypes.JSONMap    `gorm:"type:json" json:"config"`
+	HeaderRules          datatypes.JSON       `gorm:"type:json" json:"header_rules"`
+	ModelMapping         string               `gorm:"type:text" json:"model_mapping"`         // Deprecated: use ModelRedirectRules instead
+	ModelRedirectRules   datatypes.JSONMap    `gorm:"type:json" json:"model_redirect_rules"`  // Model redirect rules from upstream
+	ModelRedirectStrict  bool                 `gorm:"default:false" json:"model_redirect_strict"` // Strict mode for model redirect
+	PathRedirects        datatypes.JSON       `gorm:"type:json" json:"path_redirects"`        // JSON array of {from,to} rules (OpenAI only)
+	APIKeys              []APIKey             `gorm:"foreignKey:GroupID" json:"api_keys"`
+	SubGroups            []GroupSubGroup      `gorm:"-" json:"sub_groups,omitempty"`
+	LastValidatedAt      *time.Time           `json:"last_validated_at"`
+	CreatedAt            time.Time            `json:"created_at"`
+	UpdatedAt            time.Time            `json:"updated_at"`
 
 	// For cache
 	ProxyKeysMap         map[string]struct{} `gorm:"-" json:"-"`
 	HeaderRuleList       []HeaderRule        `gorm:"-" json:"-"`
-	ModelMappingCache    map[string]string   `gorm:"-" json:"-"` // Parsed model mapping for performance
-	PathRedirectRuleList []PathRedirectRule  `gorm:"-" json:"-"` // Parsed rules for performance (OpenAI)
+	ModelMappingCache    map[string]string   `gorm:"-" json:"-"` // Deprecated: for backward compatibility
+	ModelRedirectMap     map[string]string   `gorm:"-" json:"-"` // Parsed model redirect rules for performance
+	PathRedirectRuleList []PathRedirectRule  `gorm:"-" json:"-"` // Parsed path redirect rules for performance (OpenAI)
 }
 
 // APIKey corresponds to the api_keys table.

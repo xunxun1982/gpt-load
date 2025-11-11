@@ -292,6 +292,25 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		logrus.Debug("Removed Accept-Encoding header for /models endpoint to avoid gzip compression")
 	}
 
+	// Apply model redirection
+	finalBodyBytes, err := channelHandler.ApplyModelRedirect(req, bodyBytes, group)
+	if err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
+		return
+	}
+
+	// Update request body if it was modified by redirection
+	if !bytes.Equal(finalBodyBytes, bodyBytes) {
+		req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
+		req.ContentLength = int64(len(finalBodyBytes))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(finalBodyBytes)), nil
+		}
+		bodyBytes = finalBodyBytes
+	}
+
+	// Log request
 	channelHandler.ModifyRequest(req, apiKey, group)
 
 	// Apply custom header rules
@@ -385,31 +404,22 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	// ps.keyProvider.UpdateStatus(apiKey, group, true) // 请求成功不再重置成功次数，减少IO消耗
 	logrus.Debugf("Request for group %s succeeded on attempt %d with key %s", group.Name, retryCount+1, utils.MaskAPIKey(apiKey.KeyValue))
 
-	for key, values := range resp.Header {
-		for _, value := range values {
-			c.Header(key, value)
-		}
-	}
-	c.Status(resp.StatusCode)
-
-	// Fast path: handle response based on type
-	if isStream {
-		ps.handleStreamingResponse(c, resp)
-	} else if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
-		// Special handling for /models endpoint with model mapping enabled
-		// Only check endpoint path if model mapping is configured (performance optimization)
-		// Clear stale headers before enhancement
-		c.Writer.Header().Del("Content-Length")
-		c.Writer.Header().Del("ETag")
-		c.Writer.Header().Del("Transfer-Encoding")
-		logrus.WithFields(logrus.Fields{
-			"group":                group.Name,
-			"path":                 c.Request.URL.Path,
-			"model_mapping_count":  len(group.ModelMappingCache),
-		}).Debug("Detected /models endpoint with model mapping, applying enhancement")
-		ps.handleModelsResponse(c, resp, group)
+	// Check if this is a model list request (needs special handling)
+	if shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
+		ps.handleModelListResponse(c, resp, group, channelHandler)
 	} else {
-		ps.handleNormalResponse(c, resp)
+		for key, values := range resp.Header {
+			for _, value := range values {
+				c.Header(key, value)
+			}
+		}
+		c.Status(resp.StatusCode)
+
+		if isStream {
+			ps.handleStreamingResponse(c, resp)
+		} else {
+			ps.handleNormalResponse(c, resp)
+		}
 	}
 
 	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, models.RequestTypeFinal)
@@ -568,6 +578,22 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		logrus.Debug("Removed Accept-Encoding header for /models endpoint to avoid gzip compression")
 	}
 
+	// Apply model redirection for aggregate sub-group before modifying the request
+	redirectedBody, err := subGroupChannelHandler.ApplyModelRedirect(req, finalBodyBytes, group)
+	if err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+		return
+	}
+	if !bytes.Equal(redirectedBody, finalBodyBytes) {
+		finalBodyBytes = redirectedBody
+		req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
+		req.ContentLength = int64(len(finalBodyBytes))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(finalBodyBytes)), nil
+		}
+	}
+
 	subGroupChannelHandler.ModifyRequest(req, apiKey, group)
 
 	// Apply custom header rules
@@ -642,28 +668,32 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Request succeeded
 	logrus.Debugf("Request for aggregate group %s succeeded on attempt %d with sub-group %s", originalGroup.Name, retryCtx.attemptCount+1, group.Name)
 
-	for key, values := range resp.Header {
-		for _, value := range values {
-			c.Header(key, value)
-		}
-	}
-	c.Status(resp.StatusCode)
-
-	// Fast path: handle response based on type
-	if isStream {
-		ps.handleStreamingResponse(c, resp)
-	} else if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
-		c.Writer.Header().Del("Content-Length")
-		c.Writer.Header().Del("ETag")
-		c.Writer.Header().Del("Transfer-Encoding")
-		logrus.WithFields(logrus.Fields{
-			"group":               group.Name,
-			"path":                c.Request.URL.Path,
-			"model_mapping_count": len(group.ModelMappingCache),
-		}).Debug("Detected /models endpoint with model mapping, applying enhancement")
-		ps.handleModelsResponse(c, resp, group)
+	if shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
+		ps.handleModelListResponse(c, resp, group, subGroupChannelHandler)
 	} else {
-		ps.handleNormalResponse(c, resp)
+		for key, values := range resp.Header {
+			for _, value := range values {
+				c.Header(key, value)
+			}
+		}
+		c.Status(resp.StatusCode)
+
+		// Fast path: handle response based on type
+		if isStream {
+			ps.handleStreamingResponse(c, resp)
+		} else if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
+			c.Writer.Header().Del("Content-Length")
+			c.Writer.Header().Del("ETag")
+			c.Writer.Header().Del("Transfer-Encoding")
+			logrus.WithFields(logrus.Fields{
+				"group":               group.Name,
+				"path":                c.Request.URL.Path,
+				"model_mapping_count": len(group.ModelMappingCache),
+			}).Debug("Detected /models endpoint with model mapping, applying enhancement")
+			ps.handleModelsResponse(c, resp, group)
+		} else {
+			ps.handleNormalResponse(c, resp)
+		}
 	}
 
 	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
