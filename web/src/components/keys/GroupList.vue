@@ -396,10 +396,14 @@ async function handleFileChange(event: Event) {
         // Execute import asynchronously after dialog closes
         setTimeout(async () => {
           try {
-            await keysApi.importGroup(data);
+            const created = await keysApi.importGroup(data);
             loadingMessage.destroy();
             message.success(t("keys.importSuccess"));
-            emit("refresh");
+            if (created?.id) {
+              emit("refresh-and-select", created.id);
+            } else {
+              emit("refresh");
+            }
           } catch (error: unknown) {
             loadingMessage.destroy();
             const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");

@@ -337,6 +337,11 @@ func (s *GroupService) invalidateGroupListCache() {
 	logrus.Debug("Group list cache invalidated")
 }
 
+// InvalidateGroupListCache exposes group list cache invalidation for other packages (e.g., handlers)
+func (s *GroupService) InvalidateGroupListCache() {
+	s.invalidateGroupListCache()
+}
+
 // ListGroups returns all groups without sub-group relations.
 func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 	// Check cache first
@@ -1567,7 +1572,12 @@ func convertToJSONMap(input map[string]string) datatypes.JSONMap {
 
 	result := make(datatypes.JSONMap)
 	for k, v := range input {
-		result[k] = v
+		trimmedKey := strings.TrimSpace(k)
+		trimmedValue := strings.TrimSpace(v)
+		if trimmedKey == "" || trimmedValue == "" {
+			continue
+		}
+		result[trimmedKey] = trimmedValue
 	}
 	return result
 }

@@ -573,6 +573,19 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		logrus.Debug("Removed Accept-Encoding header for /models endpoint to avoid gzip compression")
 	}
 
+	// Apply model redirection for aggregate sub-group before modifying the request
+	redirectedBody, err := subGroupChannelHandler.ApplyModelRedirect(req, finalBodyBytes, group)
+	if err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+		return
+	}
+	if !bytes.Equal(redirectedBody, finalBodyBytes) {
+		finalBodyBytes = redirectedBody
+		req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
+		req.ContentLength = int64(len(finalBodyBytes))
+	}
+
 	subGroupChannelHandler.ModifyRequest(req, apiKey, group)
 
 	// Apply custom header rules
@@ -647,28 +660,32 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Request succeeded
 	logrus.Debugf("Request for aggregate group %s succeeded on attempt %d with sub-group %s", originalGroup.Name, retryCtx.attemptCount+1, group.Name)
 
-	for key, values := range resp.Header {
-		for _, value := range values {
-			c.Header(key, value)
-		}
-	}
-	c.Status(resp.StatusCode)
-
-	// Fast path: handle response based on type
-	if isStream {
-		ps.handleStreamingResponse(c, resp)
-	} else if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
-		c.Writer.Header().Del("Content-Length")
-		c.Writer.Header().Del("ETag")
-		c.Writer.Header().Del("Transfer-Encoding")
-		logrus.WithFields(logrus.Fields{
-			"group":               group.Name,
-			"path":                c.Request.URL.Path,
-			"model_mapping_count": len(group.ModelMappingCache),
-		}).Debug("Detected /models endpoint with model mapping, applying enhancement")
-		ps.handleModelsResponse(c, resp, group)
+	if shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
+		ps.handleModelListResponse(c, resp, group, subGroupChannelHandler)
 	} else {
-		ps.handleNormalResponse(c, resp)
+		for key, values := range resp.Header {
+			for _, value := range values {
+				c.Header(key, value)
+			}
+		}
+		c.Status(resp.StatusCode)
+
+		// Fast path: handle response based on type
+		if isStream {
+			ps.handleStreamingResponse(c, resp)
+		} else if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
+			c.Writer.Header().Del("Content-Length")
+			c.Writer.Header().Del("ETag")
+			c.Writer.Header().Del("Transfer-Encoding")
+			logrus.WithFields(logrus.Fields{
+				"group":               group.Name,
+				"path":                c.Request.URL.Path,
+				"model_mapping_count": len(group.ModelMappingCache),
+			}).Debug("Detected /models endpoint with model mapping, applying enhancement")
+			ps.handleModelsResponse(c, resp, group)
+		} else {
+			ps.handleNormalResponse(c, resp)
+		}
 	}
 
 	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)

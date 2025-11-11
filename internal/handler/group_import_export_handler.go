@@ -381,6 +381,10 @@ func (s *Server) ImportGroup(c *gin.Context) {
 			logrus.Debug("Group manager cache invalidated successfully after import")
 		}
 	}
+	// Also invalidate the group list cache so /api/groups immediately reflects new data
+	if s.GroupService != nil {
+		s.GroupService.InvalidateGroupListCache()
+	}
 
 	// Load keys to Redis store and reset failure_count asynchronously
 	// These operations run asynchronously after the success response is sent to avoid blocking the HTTP response

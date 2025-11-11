@@ -6,22 +6,38 @@ import (
 
 // V1_4_0_AddModelRedirectColumns adds model_redirect_rules and model_redirect_strict columns to groups table
 func V1_4_0_AddModelRedirectColumns(db *gorm.DB) error {
-	// Check if model_redirect_rules column exists
 	var columnExists bool
-	if db.Dialector.Name() == "mysql" {
-		db.Raw(`
+	switch db.Dialector.Name() {
+	case "mysql":
+		if err := db.Raw(`
 			SELECT COUNT(*) > 0
 			FROM information_schema.COLUMNS
 			WHERE TABLE_SCHEMA = DATABASE()
 			AND TABLE_NAME = 'groups'
 			AND COLUMN_NAME = 'model_redirect_rules'
-		`).Scan(&columnExists)
-	} else {
-		db.Raw(`
+		`).Scan(&columnExists).Error; err != nil {
+			return err
+		}
+	case "postgres":
+		if err := db.Raw(`
+			SELECT EXISTS (
+				SELECT 1
+				FROM information_schema.columns
+				WHERE table_schema = current_schema()
+				AND table_name = 'groups'
+				AND column_name = 'model_redirect_rules'
+			)
+		`).Scan(&columnExists).Error; err != nil {
+			return err
+		}
+	default:
+		if err := db.Raw(`
 			SELECT COUNT(*) > 0
 			FROM pragma_table_info('groups')
 			WHERE name = 'model_redirect_rules'
-		`).Scan(&columnExists)
+		`).Scan(&columnExists).Error; err != nil {
+			return err
+		}
 	}
 
 	if !columnExists {
@@ -30,21 +46,38 @@ func V1_4_0_AddModelRedirectColumns(db *gorm.DB) error {
 		}
 	}
 
-	// Check if model_redirect_strict column exists
-	if db.Dialector.Name() == "mysql" {
-		db.Raw(`
+	columnExists = false
+	switch db.Dialector.Name() {
+	case "mysql":
+		if err := db.Raw(`
 			SELECT COUNT(*) > 0
 			FROM information_schema.COLUMNS
 			WHERE TABLE_SCHEMA = DATABASE()
 			AND TABLE_NAME = 'groups'
 			AND COLUMN_NAME = 'model_redirect_strict'
-		`).Scan(&columnExists)
-	} else {
-		db.Raw(`
+		`).Scan(&columnExists).Error; err != nil {
+			return err
+		}
+	case "postgres":
+		if err := db.Raw(`
+			SELECT EXISTS (
+				SELECT 1
+				FROM information_schema.columns
+				WHERE table_schema = current_schema()
+				AND table_name = 'groups'
+				AND column_name = 'model_redirect_strict'
+			)
+		`).Scan(&columnExists).Error; err != nil {
+			return err
+		}
+	default:
+		if err := db.Raw(`
 			SELECT COUNT(*) > 0
 			FROM pragma_table_info('groups')
 			WHERE name = 'model_redirect_strict'
-		`).Scan(&columnExists)
+		`).Scan(&columnExists).Error; err != nil {
+			return err
+		}
 	}
 
 	if !columnExists {

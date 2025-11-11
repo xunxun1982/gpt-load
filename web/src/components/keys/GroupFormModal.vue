@@ -474,10 +474,12 @@ function parseModelRedirect(jsonStr: string): ModelRedirectItem[] {
   }
   try {
     const obj = JSON.parse(jsonStr);
-    return Object.entries(obj).map(([from, to]) => ({
-      from,
-      to: to as string,
-    }));
+    return Object.entries(obj)
+      .filter(([, to]) => typeof to === "string")
+      .map(([from, to]) => ({
+        from: (from as string).trim(),
+        to: (to as string).trim(),
+      }));
   } catch {
     return [];
   }
@@ -490,7 +492,12 @@ function modelRedirectItemsToJson(items: ModelRedirectItem[]): string {
   }
   const obj: Record<string, string> = {};
   items.forEach(item => {
-    if (item.from && item.from.trim() && item.to && item.to.trim()) {
+    if (
+      typeof item.from === "string" &&
+      typeof item.to === "string" &&
+      item.from.trim() &&
+      item.to.trim()
+    ) {
       obj[item.from.trim()] = item.to.trim();
     }
   });
@@ -1304,7 +1311,7 @@ async function handleSubmit() {
                         <template #trigger>
                           <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
                         </template>
-                        {{ t("keys.modelRedirectRulesTooltip") }}
+                        {{ t("keys.modelRedirectTooltip") }}
                       </n-tooltip>
                     </div>
                   </template>

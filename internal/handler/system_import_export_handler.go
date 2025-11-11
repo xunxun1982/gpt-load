@@ -264,6 +264,10 @@ func (s *Server) ImportAll(c *gin.Context) {
 			logrus.Info("Group manager cache invalidated successfully")
 		}
 	}
+	// Also invalidate the group list cache so /api/groups returns fresh list
+	if s.GroupService != nil {
+		s.GroupService.InvalidateGroupListCache()
+	}
 
 	logrus.Info("System import completed successfully")
 	response.SuccessI18n(c, "success.system_imported", nil)
@@ -494,6 +498,10 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		} else {
 			logrus.Info("Group manager cache invalidated successfully")
 		}
+	}
+	// Also invalidate the group list cache so /api/groups returns fresh list
+	if s.GroupService != nil {
+		s.GroupService.InvalidateGroupListCache()
 	}
 
 	// Reset failure_count for all active keys in each successfully imported group asynchronously
