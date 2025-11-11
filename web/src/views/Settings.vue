@@ -104,10 +104,8 @@ function generateValidationRules(item: Setting): FormItemRule[] {
 
 // Export full system configuration
 async function handleExportAll() {
-  const mode = await (async () => {
-    const { askExportMode } = await import("@/utils/export-import");
-    return askExportMode(dialog, t);
-  })();
+  const { askExportMode } = await import("@/utils/export-import");
+  const mode = await askExportMode(dialog, t);
 
   try {
     await settingsApi.exportAll(mode);

@@ -332,10 +332,8 @@ async function handleExportGroup(group: Group, event: Event) {
     return;
   }
 
-  const mode = await (async () => {
-    const { askExportMode } = await import("@/utils/export-import");
-    return askExportMode(dialog, t);
-  })();
+  const { askExportMode } = await import("@/utils/export-import");
+  const mode = await askExportMode(dialog, t);
 
   try {
     await keysApi.exportGroup(group.id!, mode);
@@ -371,10 +369,8 @@ async function handleFileChange(event: Event) {
     const text = await file.text();
     const data = JSON.parse(text);
 
-    const mode = await (async () => {
-      const { askImportMode } = await import("@/utils/export-import");
-      return askImportMode(dialog, t);
-    })();
+    const { askImportMode } = await import("@/utils/export-import");
+    const mode = await askImportMode(dialog, t);
 
     // Prevent duplicate imports
     if (isImporting.value) {
@@ -387,7 +383,6 @@ async function handleFileChange(event: Event) {
 
     try {
       const created = await keysApi.importGroup(data, { mode, filename: file.name });
-      loadingMessage.destroy();
       message.success(t("keys.importSuccess"));
       if (created?.id) {
         emit("refresh-and-select", created.id);
@@ -395,10 +390,10 @@ async function handleFileChange(event: Event) {
         emit("refresh");
       }
     } catch (error: unknown) {
-      loadingMessage.destroy();
       const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");
       message.error(errorMessage);
     } finally {
+      loadingMessage.destroy();
       isImporting.value = false;
     }
   } catch (error) {

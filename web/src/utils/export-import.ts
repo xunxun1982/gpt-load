@@ -5,92 +5,65 @@ import { NButton } from "naive-ui";
 export type ExportMode = "plain" | "encrypted";
 export type ImportMode = "plain" | "encrypted" | "auto";
 
-export function askExportMode(dialog: DialogApi, t: (key: string) => string): Promise<ExportMode> {
+type ButtonType = "default" | "primary" | "info" | "success" | "warning" | "error";
+
+function askMode<T extends string>(
+  dialog: DialogApi,
+  t: (key: string) => string,
+  opts: {
+    titleKey: string;
+    contentKey: string;
+    actions: Array<{ label: string; value: T; type?: ButtonType }>;
+  }
+): Promise<T> {
   return new Promise(resolve => {
     const d = dialog.create({
-      title: t("export.modeTitle"),
-      content: t("export.modeDesc"),
+      title: t(opts.titleKey),
+      content: t(opts.contentKey),
       showIcon: true,
-      closable: true,
-      maskClosable: true,
+      closable: false,
+      maskClosable: false,
       action: () =>
         h(
           "div",
           { style: "display:flex; gap:8px; justify-content:flex-end; width:100%" },
-          [
+          opts.actions.map(action =>
             h(
               NButton,
               {
+                type: action.type,
                 onClick: () => {
                   d.destroy();
-                  resolve("encrypted");
-                },
-                type: "primary",
-              },
-              { default: () => t("export.encrypted") }
-            ),
-            h(
-              NButton,
-              {
-                onClick: () => {
-                  d.destroy();
-                  resolve("plain");
+                  resolve(action.value);
                 },
               },
-              { default: () => t("export.plain") }
-            ),
-          ]
+              { default: () => action.label }
+            )
+          )
         ),
     });
   });
 }
 
+export function askExportMode(dialog: DialogApi, t: (key: string) => string): Promise<ExportMode> {
+  return askMode<ExportMode>(dialog, t, {
+    titleKey: "export.modeTitle",
+    contentKey: "export.modeDesc",
+    actions: [
+      { label: t("export.encrypted"), value: "encrypted", type: "primary" },
+      { label: t("export.plain"), value: "plain" },
+    ],
+  });
+}
+
 export function askImportMode(dialog: DialogApi, t: (key: string) => string): Promise<ImportMode> {
-  return new Promise(resolve => {
-    const d = dialog.create({
-      title: t("import.modeTitle"),
-      content: t("import.modeDesc"),
-      showIcon: true,
-      closable: true,
-      maskClosable: true,
-      action: () =>
-        h(
-          "div",
-          { style: "display:flex; gap:8px; justify-content:flex-end; width:100%" },
-          [
-            h(
-              NButton,
-              {
-                onClick: () => {
-                  d.destroy();
-                  resolve("encrypted");
-                },
-                type: "primary",
-              },
-              { default: () => t("import.encrypted") }
-            ),
-            h(
-              NButton,
-              {
-                onClick: () => {
-                  d.destroy();
-                  resolve("plain");
-                },
-              },
-              { default: () => t("import.plain") }
-            ),
-            h(
-              NButton,
-              {
-                onClick: () => {
-                  d.destroy();
-                  resolve("auto");
-                },
-              },
-              { default: () => t("import.auto") }
-            ),
-          ]
-        ),
-    });
+  return askMode<ImportMode>(dialog, t, {
+    titleKey: "import.modeTitle",
+    contentKey: "import.modeDesc",
+    actions: [
+      { label: t("import.encrypted"), value: "encrypted", type: "primary" },
+      { label: t("import.plain"), value: "plain" },
+      { label: t("import.auto"), value: "auto" },
+    ],
   });
 }
