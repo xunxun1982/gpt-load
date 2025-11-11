@@ -304,6 +304,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if !bytes.Equal(finalBodyBytes, bodyBytes) {
 		req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
 		req.ContentLength = int64(len(finalBodyBytes))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(finalBodyBytes)), nil
+		}
 	}
 
 	channelHandler.ModifyRequest(req, apiKey, group)
@@ -584,6 +587,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		finalBodyBytes = redirectedBody
 		req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
 		req.ContentLength = int64(len(finalBodyBytes))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(finalBodyBytes)), nil
+		}
 	}
 
 	subGroupChannelHandler.ModifyRequest(req, apiKey, group)
