@@ -307,8 +307,10 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		req.GetBody = func() (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(finalBodyBytes)), nil
 		}
+		bodyBytes = finalBodyBytes
 	}
 
+	// Log request
 	channelHandler.ModifyRequest(req, apiKey, group)
 
 	// Apply custom header rules
