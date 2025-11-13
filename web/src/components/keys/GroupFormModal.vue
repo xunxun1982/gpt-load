@@ -1931,4 +1931,50 @@ async function handleSubmit() {
     justify-content: flex-end;
   }
 }
+
+/* 路径重定向规则样式 */
+.model-mapping-item-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+}
+
+.model-mapping-from {
+  flex: 1;
+  position: relative;
+}
+
+.model-mapping-arrow {
+  flex: 0 0 auto;
+  padding: 0 8px;
+  font-size: 16px;
+  color: #999;
+  user-select: none;
+  height: 34px;
+  display: flex;
+  align-items: center;
+}
+
+.model-mapping-to {
+  flex: 1;
+}
+
+.remove-btn {
+  flex: 0 0 32px;
+  height: 34px;
+}
+
+@media (max-width: 768px) {
+  .model-mapping-item-content {
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .model-mapping-from,
+  .model-mapping-to {
+    flex: 1;
+  }
+}
 </style>
