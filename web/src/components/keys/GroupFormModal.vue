@@ -1435,6 +1435,7 @@ async function handleSubmit() {
                   v-for="(rule, index) in formData.path_redirects"
                   :key="index"
                   :label="`${t('keys.pathRedirect')} ${index + 1}`"
+                  class="path-redirect-form-item"
                 >
                   <div class="model-mapping-item-content">
                     <div class="model-mapping-from">
@@ -1787,12 +1788,20 @@ async function handleSubmit() {
   margin-bottom: 8px;
 }
 
-.redirect-arrow {
+/* 统一的箭头样式（用于模型重定向和路径重定向） */
+.redirect-arrow,
+.model-mapping-arrow {
   flex: 0 0 auto;
-  padding: 0 8px;
+  padding: 0 4px;
   font-size: 16px;
   color: #999;
   user-select: none;
+  height: 36px;
+  line-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease;
 }
 
 .config-header-with-switch {
@@ -1933,36 +1942,60 @@ async function handleSubmit() {
 }
 
 /* 路径重定向规则样式 */
+/* 让 form-item 标签与内容垂直居中对齐 */
+.path-redirect-form-item :deep(.n-form-item-label) {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  line-height: 36px;
+}
+
 .model-mapping-item-content {
   display: flex;
-  align-items: flex-start;
+  align-items: center;  /* 垂直居中对齐所有元素 */
   gap: 12px;
   width: 100%;
+  min-height: 36px;
 }
 
 .model-mapping-from {
   flex: 1;
   position: relative;
-}
-
-.model-mapping-arrow {
-  flex: 0 0 auto;
-  padding: 0 8px;
-  font-size: 16px;
-  color: #999;
-  user-select: none;
-  height: 34px;
-  display: flex;
-  align-items: center;
+  min-width: 0;  /* 允许 flex 子元素收缩 */
 }
 
 .model-mapping-to {
   flex: 1;
+  min-width: 0;  /* 允许 flex 子元素收缩 */
+}
+
+/* 确保输入框内的文字垂直居中 */
+.model-mapping-from :deep(.n-input),
+.model-mapping-to :deep(.n-input) {
+  --n-height: 36px;
+}
+
+.model-mapping-from :deep(.n-input__input-el),
+.model-mapping-to :deep(.n-input__input-el) {
+  line-height: 36px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.model-mapping-from :deep(.n-input .n-input-wrapper),
+.model-mapping-to :deep(.n-input .n-input-wrapper) {
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .remove-btn {
-  flex: 0 0 32px;
-  height: 34px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  height: 36px;
+  width: 36px;
 }
 
 @media (max-width: 768px) {
@@ -1975,6 +2008,14 @@ async function handleSubmit() {
   .model-mapping-from,
   .model-mapping-to {
     flex: 1;
+  }
+
+  /* 移动端箭头旋转90度，更好地适应垂直布局 */
+  .redirect-arrow,
+  .model-mapping-arrow {
+    height: auto;
+    transform: rotate(90deg);
+    padding: 4px 0;
   }
 }
 </style>
