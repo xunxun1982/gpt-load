@@ -1437,8 +1437,8 @@ async function handleSubmit() {
                   :label="`${t('keys.pathRedirect')} ${index + 1}`"
                   class="path-redirect-form-item"
                 >
-                  <div class="model-mapping-item-content">
-                    <div class="model-mapping-from">
+                  <div class="redirect-item-content">
+                    <div class="redirect-item-from">
                       <n-input
                         v-model:value="rule.from"
                         :placeholder="t('keys.pathRedirectFromPlaceholder')"
@@ -1465,11 +1465,11 @@ async function handleSubmit() {
                         {{ t("keys.duplicatePathRedirect") }}
                       </div>
                     </div>
-                    <div class="model-mapping-arrow">→</div>
-                    <div class="model-mapping-to">
+                    <div class="redirect-item-arrow">→</div>
+                    <div class="redirect-item-to">
                       <n-input v-model:value="rule.to" :placeholder="t('keys.pathRedirectToPlaceholder')" />
                     </div>
-                    <n-button text type="error" @click="formData.path_redirects.splice(index, 1)" class="remove-btn">
+                    <n-button text type="error" @click="formData.path_redirects.splice(index, 1)" class="redirect-item-remove-btn">
                       <template #icon>
                         <n-icon :component="Close" />
                       </template>
@@ -1779,6 +1779,7 @@ async function handleSubmit() {
 
 .model-redirect-wrapper {
   width: 100%;
+  --redirect-item-height: 36px;
 }
 
 .model-redirect-row {
@@ -1790,14 +1791,14 @@ async function handleSubmit() {
 
 /* 统一的箭头样式（用于模型重定向和路径重定向） */
 .redirect-arrow,
-.model-mapping-arrow {
+.redirect-item-arrow {
   flex: 0 0 auto;
   padding: 0 4px;
   font-size: 16px;
   color: #999;
   user-select: none;
-  height: 36px;
-  line-height: 36px;
+  height: var(--redirect-item-height, 36px);
+  line-height: var(--redirect-item-height, 36px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1942,77 +1943,82 @@ async function handleSubmit() {
 }
 
 /* 路径重定向规则样式 */
+/* 使用 CSS 变量统一管理高度，便于维护 */
+.path-redirect-form-item {
+  --redirect-item-height: 36px;
+}
+
 /* 让 form-item 标签与内容垂直居中对齐 */
 .path-redirect-form-item :deep(.n-form-item-label) {
   display: flex;
   align-items: center;
-  height: 36px;
-  line-height: 36px;
+  height: var(--redirect-item-height);
+  line-height: var(--redirect-item-height);
 }
 
-.model-mapping-item-content {
+.redirect-item-content {
   display: flex;
   align-items: center;  /* 垂直居中对齐所有元素 */
   gap: 12px;
   width: 100%;
-  min-height: 36px;
+  min-height: var(--redirect-item-height);
 }
 
-.model-mapping-from {
+.redirect-item-from {
   flex: 1;
   position: relative;
   min-width: 0;  /* 允许 flex 子元素收缩 */
 }
 
-.model-mapping-to {
+.redirect-item-to {
   flex: 1;
   min-width: 0;  /* 允许 flex 子元素收缩 */
 }
 
 /* 确保输入框内的文字垂直居中 */
-.model-mapping-from :deep(.n-input),
-.model-mapping-to :deep(.n-input) {
-  --n-height: 36px;
+.redirect-item-from :deep(.n-input),
+.redirect-item-to :deep(.n-input) {
+  --n-height: var(--redirect-item-height);
 }
 
-.model-mapping-from :deep(.n-input__input-el),
-.model-mapping-to :deep(.n-input__input-el) {
-  line-height: 36px;
+.redirect-item-from :deep(.n-input__input-el),
+.redirect-item-to :deep(.n-input__input-el) {
+  line-height: var(--redirect-item-height);
   padding-top: 0;
   padding-bottom: 0;
 }
 
-.model-mapping-from :deep(.n-input .n-input-wrapper),
-.model-mapping-to :deep(.n-input .n-input-wrapper) {
+.redirect-item-from :deep(.n-input .n-input-wrapper),
+.redirect-item-to :deep(.n-input .n-input-wrapper) {
   padding-top: 0;
   padding-bottom: 0;
 }
 
-.remove-btn {
+.redirect-item-remove-btn {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
-  height: 36px;
-  width: 36px;
+  height: var(--redirect-item-height);
+  width: var(--redirect-item-height);
 }
 
 @media (max-width: 768px) {
-  .model-mapping-item-content {
+  .redirect-item-content {
     flex-direction: column;
     gap: 8px;
     align-items: stretch;
   }
 
-  .model-mapping-from,
-  .model-mapping-to {
+  .redirect-item-from,
+  .redirect-item-to {
     flex: 1;
   }
 
   /* 移动端箭头旋转90度，更好地适应垂直布局 */
   .redirect-arrow,
-  .model-mapping-arrow {
+  .redirect-item-arrow {
     height: auto;
     transform: rotate(90deg);
     padding: 4px 0;
