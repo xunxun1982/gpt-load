@@ -132,41 +132,12 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 
 		// Fast path: handle preflight requests immediately
 		if c.Request.Method == "OPTIONS" {
-			// When credentials are allowed, always validate origin explicitly.
-			allowed := false
-			if hasWildcard && !config.AllowCredentials {
-				// Wildcard is only valid when credentials are not allowed.
-				allowed = true
-			} else if allowedOriginsMap[origin] {
-				// Origin must be in the explicit allowlist when credentials are enabled.
-				allowed = true
-			}
+			// Check if origin is allowed
+			if isOriginAllowed(origin, hasWildcard, config.AllowCredentials, allowedOriginsMap) {
+				// Set Access-Control-Allow-Origin header
+				setAllowOriginHeader(c, origin, hasWildcard, config.AllowCredentials)
 
-			if allowed {
-				if hasWildcard && !config.AllowCredentials {
-					c.Header("Access-Control-Allow-Origin", "*")
-				} else {
-					c.Header("Access-Control-Allow-Origin", origin)
-					// Ensure caches differentiate responses by origin when echoing specific origins.
-					vary := c.Writer.Header().Get("Vary")
-					if vary == "" {
-						c.Header("Vary", "Origin")
-					} else {
-						// Check if "Origin" is already present as a distinct token
-						varyHeaders := strings.Split(vary, ",")
-						hasOrigin := false
-						for _, h := range varyHeaders {
-							if strings.TrimSpace(h) == "Origin" {
-								hasOrigin = true
-								break
-							}
-						}
-						if !hasOrigin {
-							c.Header("Vary", vary+", Origin")
-						}
-					}
-				}
-				// Set CORS headers for preflight only when origin is allowed.
+				// Set CORS headers for preflight only when origin is allowed
 				c.Header("Access-Control-Allow-Methods", allowedMethods)
 				c.Header("Access-Control-Allow-Headers", allowedHeaders)
 				if config.AllowCredentials {
@@ -181,39 +152,10 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 		}
 
 		// For actual requests, check origin and set headers
-		allowed := false
-		if hasWildcard && !config.AllowCredentials {
-			// Wildcard is only valid when credentials are not allowed.
-			allowed = true
-		} else if allowedOriginsMap[origin] {
-			// Origin must be in the explicit allowlist when credentials are enabled.
-			allowed = true
-		}
+		if isOriginAllowed(origin, hasWildcard, config.AllowCredentials, allowedOriginsMap) {
+			// Set Access-Control-Allow-Origin header
+			setAllowOriginHeader(c, origin, hasWildcard, config.AllowCredentials)
 
-		if allowed {
-			if hasWildcard && !config.AllowCredentials {
-				c.Header("Access-Control-Allow-Origin", "*")
-			} else {
-				c.Header("Access-Control-Allow-Origin", origin)
-				// Ensure caches differentiate responses by origin when echoing specific origins.
-				vary := c.Writer.Header().Get("Vary")
-				if vary == "" {
-					c.Header("Vary", "Origin")
-				} else {
-					// Check if "Origin" is already present as a distinct token
-					varyHeaders := strings.Split(vary, ",")
-					hasOrigin := false
-					for _, h := range varyHeaders {
-						if strings.TrimSpace(h) == "Origin" {
-							hasOrigin = true
-							break
-						}
-					}
-					if !hasOrigin {
-						c.Header("Vary", vary+", Origin")
-					}
-				}
-			}
 			// Set other CORS headers only for allowed origins
 			c.Header("Access-Control-Allow-Methods", allowedMethods)
 			c.Header("Access-Control-Allow-Headers", allowedHeaders)
@@ -224,6 +166,47 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// isOriginAllowed checks if the origin is allowed based on CORS configuration
+func isOriginAllowed(origin string, hasWildcard, allowCredentials bool, allowedOriginsMap map[string]bool) bool {
+	if hasWildcard && !allowCredentials {
+		// Wildcard is only valid when credentials are not allowed
+		return true
+	}
+	// Origin must be in the explicit allowlist when credentials are enabled
+	return allowedOriginsMap[origin]
+}
+
+// setAllowOriginHeader sets the Access-Control-Allow-Origin header and Vary header if needed
+func setAllowOriginHeader(c *gin.Context, origin string, hasWildcard, allowCredentials bool) {
+	if hasWildcard && !allowCredentials {
+		c.Header("Access-Control-Allow-Origin", "*")
+	} else {
+		c.Header("Access-Control-Allow-Origin", origin)
+		// Ensure caches differentiate responses by origin when echoing specific origins
+		addVaryOriginHeader(c)
+	}
+}
+
+// addVaryOriginHeader adds "Origin" to the Vary header if not already present
+func addVaryOriginHeader(c *gin.Context) {
+	vary := c.Writer.Header().Get("Vary")
+	if vary == "" {
+		c.Header("Vary", "Origin")
+		return
+	}
+
+	// Check if "Origin" is already present as a distinct token
+	// Use strings.Contains with comma boundaries for better performance
+	if vary == "Origin" || strings.HasPrefix(vary, "Origin,") ||
+		strings.HasSuffix(vary, ",Origin") || strings.Contains(vary, ",Origin,") ||
+		strings.Contains(vary, ", Origin,") || strings.Contains(vary, ",Origin ") ||
+		strings.Contains(vary, ", Origin ") {
+		return
+	}
+
+	c.Header("Vary", vary+", Origin")
 }
 
 // Auth creates an authentication middleware
