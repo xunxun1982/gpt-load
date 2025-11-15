@@ -96,8 +96,23 @@ func Logger(config types.LogConfig) gin.HandlerFunc {
 	}
 }
 
-// CORS creates a CORS middleware
+// CORS creates a CORS middleware with efficient preflight handling
 func CORS(config types.CORSConfig) gin.HandlerFunc {
+	// Pre-compute joined strings for better performance
+	allowedMethods := strings.Join(config.AllowedMethods, ", ")
+	allowedHeaders := strings.Join(config.AllowedHeaders, ", ")
+
+	// Create a map for faster origin lookup
+	allowedOriginsMap := make(map[string]bool, len(config.AllowedOrigins))
+	hasWildcard := false
+	for _, origin := range config.AllowedOrigins {
+		if origin == "*" {
+			hasWildcard = true
+			break
+		}
+		allowedOriginsMap[origin] = true
+	}
+
 	return func(c *gin.Context) {
 		if !config.Enabled {
 			c.Next()
@@ -106,31 +121,51 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 
 		origin := c.Request.Header.Get("Origin")
 
-		// Check if origin is allowed
-		allowed := false
-		for _, allowedOrigin := range config.AllowedOrigins {
-			if allowedOrigin == "*" || allowedOrigin == origin {
-				allowed = true
-				break
+		// Fast path: handle preflight requests immediately
+		if c.Request.Method == "OPTIONS" {
+			// Check if origin is allowed
+			allowed := hasWildcard || allowedOriginsMap[origin]
+
+			if allowed {
+				if hasWildcard {
+					c.Header("Access-Control-Allow-Origin", "*")
+				} else {
+					c.Header("Access-Control-Allow-Origin", origin)
+				}
+			}
+
+			// Set CORS headers for preflight
+			c.Header("Access-Control-Allow-Methods", allowedMethods)
+			c.Header("Access-Control-Allow-Headers", allowedHeaders)
+
+			if config.AllowCredentials {
+				c.Header("Access-Control-Allow-Credentials", "true")
+			}
+
+			// Add cache control for preflight to reduce requests
+			c.Header("Access-Control-Max-Age", "86400") // 24 hours
+
+			c.AbortWithStatus(204)
+			return
+		}
+
+		// For actual requests, check origin and set headers
+		allowed := hasWildcard || allowedOriginsMap[origin]
+
+		if allowed {
+			if hasWildcard {
+				c.Header("Access-Control-Allow-Origin", "*")
+			} else {
+				c.Header("Access-Control-Allow-Origin", origin)
 			}
 		}
 
-		if allowed {
-			c.Header("Access-Control-Allow-Origin", origin)
-		}
-
 		// Set other CORS headers
-		c.Header("Access-Control-Allow-Methods", strings.Join(config.AllowedMethods, ", "))
-		c.Header("Access-Control-Allow-Headers", strings.Join(config.AllowedHeaders, ", "))
+		c.Header("Access-Control-Allow-Methods", allowedMethods)
+		c.Header("Access-Control-Allow-Headers", allowedHeaders)
 
 		if config.AllowCredentials {
 			c.Header("Access-Control-Allow-Credentials", "true")
-		}
-
-		// Handle preflight requests
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
-			return
 		}
 
 		c.Next()
@@ -338,12 +373,24 @@ func isStaticResource(path string) bool {
 }
 
 // SecurityHeaders creates a middleware to add security-related headers
+// Implements security best practices to prevent browser attacks
 func SecurityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Prevent MIME type sniffing attacks
 		c.Header("X-Content-Type-Options", "nosniff")
+
+		// Control referrer information leakage
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+
+		// Restrict browser features to prevent abuse
 		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
-		c.Header("X-Frame-Options", "SAMEORIGIN")
+
+		// Prevent clickjacking attacks
+		c.Header("X-Frame-Options", "DENY")
+
+		// Enable XSS protection (legacy browsers)
+		c.Header("X-XSS-Protection", "1; mode=block")
+
 		c.Next()
 	}
 }

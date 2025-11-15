@@ -279,11 +279,11 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 	req.Header = c.Request.Header.Clone()
 
-	// Clean up client auth key
-	req.Header.Del("Authorization")
-	req.Header.Del("X-Api-Key")
-	req.Header.Del("X-Goog-Api-Key")
-	req.Header.Del("Proxy-Authorization")
+	// Clean up client auth headers
+	utils.CleanClientAuthHeaders(req)
+
+	// Apply anonymization: remove tracking and proxy-revealing headers
+	utils.CleanAnonymizationHeaders(req)
 
 	// For /models with mapping configured, remove Accept-Encoding so upstream returns plain (non-gzip) body
 	// This ensures we can read/modify the response safely.
@@ -328,14 +328,26 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		client = upstreamSelection.HTTPClient
 	}
 
-	// Defensive nil-check with backward-compatible fallback
+	// Defensive nil-check - this should never happen as SelectUpstreamWithClients always returns valid clients
 	if client == nil {
-		if isStream {
-			client = channelHandler.GetStreamClient()
-		} else {
-			client = channelHandler.GetHTTPClient()
-		}
+		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for group %s, upstream %s", group.Name, upstreamSelection.URL)
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
+		return
 	}
+
+	// Log which client is being used for debugging proxy issues
+	logrus.WithFields(logrus.Fields{
+		"group":      group.Name,
+		"upstream":   upstreamSelection.URL,
+		"has_proxy":  upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
+		"proxy_url":  func() string {
+			if upstreamSelection.ProxyURL != nil {
+				return *upstreamSelection.ProxyURL
+			}
+			return "none"
+		}(),
+		"is_stream": isStream,
+	}).Debug("Using HTTP client for request")
 
 	resp, err := client.Do(req)
 	if resp != nil {
@@ -566,11 +578,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	req.Header = c.Request.Header.Clone()
 
-	// Clean up client auth key
-	req.Header.Del("Authorization")
-	req.Header.Del("X-Api-Key")
-	req.Header.Del("X-Goog-Api-Key")
-	req.Header.Del("Proxy-Authorization")
+	// Clean up client auth headers
+	utils.CleanClientAuthHeaders(req)
+
+	// Apply anonymization: remove tracking and proxy-revealing headers
+	utils.CleanAnonymizationHeaders(req)
 
 	// For /models with mapping configured, remove Accept-Encoding
 	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
@@ -611,14 +623,26 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		client = upstreamSelection.HTTPClient
 	}
 
-	// Defensive nil-check with backward-compatible fallback
+	// Defensive nil-check - this should never happen as SelectUpstreamWithClients always returns valid clients
 	if client == nil {
-		if isStream {
-			client = subGroupChannelHandler.GetStreamClient()
-		} else {
-			client = subGroupChannelHandler.GetHTTPClient()
-		}
+		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for sub-group %s, upstream %s", group.Name, upstreamSelection.URL)
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
+		return
 	}
+
+	// Log which client is being used for debugging proxy issues
+	logrus.WithFields(logrus.Fields{
+		"group":      group.Name,
+		"upstream":   upstreamSelection.URL,
+		"has_proxy":  upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
+		"proxy_url":  func() string {
+			if upstreamSelection.ProxyURL != nil {
+				return *upstreamSelection.ProxyURL
+			}
+			return "none"
+		}(),
+		"is_stream": isStream,
+	}).Debug("Using HTTP client for aggregate sub-group request")
 
 	resp, err := client.Do(req)
 	if resp != nil {

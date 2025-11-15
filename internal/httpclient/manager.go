@@ -45,6 +45,32 @@ func NewHTTPClientManager() *HTTPClientManager {
 	}
 }
 
+// testProxyConnectivity tests if the proxy is reachable.
+// This runs asynchronously to avoid blocking client creation.
+// It helps diagnose proxy configuration issues early.
+func testProxyConnectivity(proxyURL *url.URL, originalProxyStr string) {
+	// Simple TCP connectivity test
+	dialer := &net.Dialer{
+		Timeout: 3 * time.Second,
+	}
+
+	conn, err := dialer.Dial("tcp", proxyURL.Host)
+	if err != nil {
+		logrus.Warnf("Proxy connectivity test FAILED for '%s': %v", originalProxyStr, err)
+		logrus.Warnf("Troubleshooting steps:")
+		logrus.Warnf("  1. Verify proxy is running at %s", proxyURL.Host)
+		logrus.Warnf("  2. Check firewall allows connection to proxy")
+		logrus.Warnf("  3. Verify proxy URL format is correct (http://host:port)")
+		logrus.Warnf("  4. Check if proxy requires authentication")
+		logrus.Warnf("Requests through this proxy will likely fail!")
+		return
+	}
+	defer conn.Close()
+
+	logrus.Infof("✓ Proxy connectivity test PASSED for '%s' (host: %s)", originalProxyStr, proxyURL.Host)
+	logrus.Debugf("Proxy at %s is reachable and accepting TCP connections", proxyURL.Host)
+}
+
 // GetClient returns an HTTP client that matches the given configuration.
 // If a matching client already exists in the cache, it is returned.
 // Otherwise, a new client is created, cached, and returned.
@@ -86,7 +112,7 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 		ReadBufferSize:        config.ReadBufferSize,
 	}
 
-	// Set http proxy.
+	// Set HTTP proxy with validation and detailed logging
 	// Trim whitespace from proxy URL before parsing to handle common configuration issues
 	trimmedProxyURL := strings.TrimSpace(config.ProxyURL)
 	if trimmedProxyURL != "" {
@@ -95,7 +121,18 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 			logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", trimmedProxyURL, err)
 			transport.Proxy = http.ProxyFromEnvironment
 		} else {
-			transport.Proxy = http.ProxyURL(proxyURL)
+			// Validate proxy URL scheme
+			if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" && proxyURL.Scheme != "socks5" {
+				logrus.Warnf("Unsupported proxy scheme '%s' in URL '%s', falling back to environment settings", proxyURL.Scheme, trimmedProxyURL)
+				transport.Proxy = http.ProxyFromEnvironment
+			} else {
+				// Set proxy with detailed logging
+				transport.Proxy = http.ProxyURL(proxyURL)
+				logrus.Debugf("HTTP client configured with proxy: %s (scheme: %s, host: %s)", trimmedProxyURL, proxyURL.Scheme, proxyURL.Host)
+
+				// Test proxy connectivity (non-blocking)
+				go testProxyConnectivity(proxyURL, trimmedProxyURL)
+			}
 		}
 	} else {
 		// ProxyURL was empty or only whitespace, fall back to environment
@@ -108,6 +145,15 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	}
 
 	m.clients[fingerprint] = newClient
+
+	// Log client creation with full configuration details for debugging
+	logrus.WithFields(logrus.Fields{
+		"fingerprint":  fingerprint,
+		"proxy_url":    trimmedProxyURL,
+		"timeout":      config.RequestTimeout,
+		"has_proxy":    trimmedProxyURL != "",
+	}).Debug("Created new HTTP client")
+
 	return newClient
 }
 

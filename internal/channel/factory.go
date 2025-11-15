@@ -58,17 +58,21 @@ func NewFactory(settingsManager *config.SystemSettingsManager, clientManager *ht
 }
 
 // GetChannel returns a channel proxy based on the group's channel type.
+// It uses caching to avoid recreating channels unnecessarily.
+// The cache is automatically invalidated when configuration changes are detected.
 func (f *Factory) GetChannel(group *models.Group) (ChannelProxy, error) {
 	f.cacheLock.Lock()
 	defer f.cacheLock.Unlock()
 
 	if channel, ok := f.channelCache[group.ID]; ok {
 		if !channel.IsConfigStale(group) {
+			logrus.Debugf("Using cached channel for group %d (%s) with type '%s'", group.ID, group.Name, group.ChannelType)
 			return channel, nil
 		}
+		logrus.Debugf("Channel config is stale for group %d (%s), recreating channel", group.ID, group.Name)
 	}
 
-	logrus.Debugf("Creating new channel for group %d with type '%s'", group.ID, group.ChannelType)
+	logrus.Debugf("Creating new channel for group %d (%s) with type '%s'", group.ID, group.Name, group.ChannelType)
 
 	constructor, ok := channelRegistry[group.ChannelType]
 	if !ok {
@@ -80,6 +84,25 @@ func (f *Factory) GetChannel(group *models.Group) (ChannelProxy, error) {
 	}
 	f.channelCache[group.ID] = channel
 	return channel, nil
+}
+
+// InvalidateCache removes a channel from the cache, forcing it to be recreated on next access.
+// This is useful when configuration changes are made that should take effect immediately.
+func (f *Factory) InvalidateCache(groupID uint) {
+	f.cacheLock.Lock()
+	defer f.cacheLock.Unlock()
+	delete(f.channelCache, groupID)
+	logrus.Debugf("Invalidated channel cache for group %d", groupID)
+}
+
+// InvalidateAllCaches clears the entire channel cache.
+// This forces all channels to be recreated on next access.
+func (f *Factory) InvalidateAllCaches() {
+	f.cacheLock.Lock()
+	defer f.cacheLock.Unlock()
+	count := len(f.channelCache)
+	f.channelCache = make(map[uint]ChannelProxy)
+	logrus.Infof("Invalidated all channel caches (%d channels cleared)", count)
 }
 
 // newBaseChannel is a helper function to create and configure a BaseChannel.
@@ -105,14 +128,45 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse upstream url '%s' for %s channel: %w", def.URL, name, err)
 		}
-		// Note: We keep zero-weight upstreams in the list (they're just disabled)
-		// The selection algorithm will skip them
+
+		// Skip zero-weight upstreams entirely - no need to create clients or configure proxy
+		if def.Weight <= 0 {
+			logrus.WithFields(logrus.Fields{
+				"group_id":   group.ID,
+				"group_name": group.Name,
+				"upstream":   def.URL,
+				"weight":     def.Weight,
+			}).Debug("Skipping zero-weight upstream (disabled)")
+			continue
+		}
 
 		// Determine effective proxy URL (per-upstream overrides group-level)
 		// Trim whitespace to handle common configuration issues
 		proxyURL := strings.TrimSpace(group.EffectiveConfig.ProxyURL)
 		if def.ProxyURL != nil && *def.ProxyURL != "" {
 			proxyURL = strings.TrimSpace(*def.ProxyURL)
+			logrus.WithFields(logrus.Fields{
+				"group_id":   group.ID,
+				"group_name": group.Name,
+				"upstream":   def.URL,
+				"proxy":      proxyURL,
+				"weight":     def.Weight,
+			}).Debug("Using per-upstream proxy (overrides group-level)")
+		} else if proxyURL != "" {
+			logrus.WithFields(logrus.Fields{
+				"group_id":   group.ID,
+				"group_name": group.Name,
+				"upstream":   def.URL,
+				"proxy":      proxyURL,
+				"weight":     def.Weight,
+			}).Debug("Using group-level proxy")
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"group_id":   group.ID,
+				"group_name": group.Name,
+				"upstream":   def.URL,
+				"weight":     def.Weight,
+			}).Debug("No proxy configured for this upstream")
 		}
 
 		// Base configuration for regular requests, derived from the group's effective settings.
@@ -161,28 +215,14 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		})
 	}
 
-	// Verify at least one upstream has positive weight
-	hasActiveUpstream := false
-	for _, up := range upstreamInfos {
-		if up.Weight > 0 {
-			hasActiveUpstream = true
-			break
-		}
-	}
-	if !hasActiveUpstream {
+	// Verify at least one upstream was added (all zero-weight upstreams are already filtered out)
+	if len(upstreamInfos) == 0 {
 		return nil, fmt.Errorf("no active upstreams (all weights <= 0) for %s channel", name)
 	}
 
-	// Fallback clients: prefer the first active upstream, otherwise use index 0
+	// Fallback clients: use the first upstream (all upstreams in the list have positive weight)
 	fallbackHTTPClient := upstreamInfos[0].HTTPClient
 	fallbackStreamClient := upstreamInfos[0].StreamClient
-	for _, up := range upstreamInfos {
-		if up.Weight > 0 {
-			fallbackHTTPClient = up.HTTPClient
-			fallbackStreamClient = up.StreamClient
-			break
-		}
-	}
 
 	bc := &BaseChannel{
 		Name:                name,
