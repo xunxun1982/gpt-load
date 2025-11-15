@@ -161,10 +161,9 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 				if config.AllowCredentials {
 					c.Header("Access-Control-Allow-Credentials", "true")
 				}
+				// Add cache control for preflight to reduce requests
+				c.Header("Access-Control-Max-Age", "86400") // 24 hours
 			}
-
-			// Add cache control for preflight to reduce requests
-			c.Header("Access-Control-Max-Age", "86400") // 24 hours
 
 			c.AbortWithStatus(204)
 			return

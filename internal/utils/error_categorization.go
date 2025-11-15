@@ -89,7 +89,6 @@ func CategorizeError(err error) *CategorizedError {
 
 	// Connection errors - string-based cases not covered by specific types.
 	if strings.Contains(errorMessage, "connection refused") ||
-		strings.Contains(errorMessage, "connect: connection refused") ||
 		strings.Contains(errorMessage, "no route to host") {
 		return &CategorizedError{
 			Type:        ErrorCategoryConnection,
