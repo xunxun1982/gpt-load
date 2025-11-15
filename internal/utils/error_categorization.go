@@ -29,15 +29,35 @@ type CategorizedError struct {
 
 // CategorizeError analyzes an error and returns detailed categorization.
 // This implements "fast fail" error handling for better API stability and predictability.
-// Performance: O(1) for most error types using string matching.
+// Performance: O(n) in the length of the error message due to substring checks (n is typically small).
 func CategorizeError(err error) *CategorizedError {
 	if err == nil {
 		return nil
 	}
 
+	// Prefer concrete error types first for accuracy and performance.
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return &CategorizedError{
+			Type:       ErrorCategoryTimeout,
+			Message:    "Request timeout - the target service took too long to respond",
+			StatusCode: http.StatusGatewayTimeout,
+			ShouldRetry: true,
+		}
+	}
+
+	if opErr, ok := err.(*net.OpError); ok && opErr.Err == syscall.ECONNREFUSED {
+		return &CategorizedError{
+			Type:       ErrorCategoryConnection,
+			Message:    "Connection refused - target service is not accepting connections",
+			StatusCode: http.StatusServiceUnavailable,
+			ShouldRetry: true,
+		}
+	}
+
+	// Fall back to string-based heuristics for other error types.
 	errorMessage := strings.ToLower(err.Error())
 
-	// Timeout errors - should retry
+	// Timeout errors - string fallback
 	if strings.Contains(errorMessage, "timeout") ||
 		strings.Contains(errorMessage, "deadline exceeded") ||
 		strings.Contains(errorMessage, "context deadline exceeded") {
@@ -49,10 +69,10 @@ func CategorizeError(err error) *CategorizedError {
 		}
 	}
 
-	// DNS resolution errors - should retry
+	// DNS resolution errors - narrower heuristics to avoid misclassification.
 	if strings.Contains(errorMessage, "no such host") ||
-		strings.Contains(errorMessage, "dns") ||
-		strings.Contains(errorMessage, "name resolution") {
+		strings.Contains(errorMessage, "name resolution") ||
+		strings.Contains(errorMessage, "server misbehaving") {
 		return &CategorizedError{
 			Type:       ErrorCategoryDNS,
 			Message:    "DNS resolution failed - unable to resolve target hostname",
@@ -61,7 +81,7 @@ func CategorizeError(err error) *CategorizedError {
 		}
 	}
 
-	// Connection errors - should retry
+	// Connection errors - string-based cases not covered by specific types.
 	if strings.Contains(errorMessage, "connection refused") ||
 		strings.Contains(errorMessage, "connect: connection refused") ||
 		strings.Contains(errorMessage, "no route to host") {
@@ -86,11 +106,12 @@ func CategorizeError(err error) *CategorizedError {
 		}
 	}
 
-	// Network errors - should retry
-	if strings.Contains(errorMessage, "network") ||
+	// Network errors - narrower heuristics to avoid generic "network" / "eof" matches.
+	if strings.Contains(errorMessage, "network is unreachable") ||
+		strings.Contains(errorMessage, "network unreachable") ||
 		strings.Contains(errorMessage, "connection reset") ||
 		strings.Contains(errorMessage, "broken pipe") ||
-		strings.Contains(errorMessage, "eof") {
+		strings.Contains(errorMessage, "unexpected eof") {
 		return &CategorizedError{
 			Type:       ErrorCategoryNetwork,
 			Message:    "Network error - unable to reach the target service",
@@ -99,31 +120,7 @@ func CategorizeError(err error) *CategorizedError {
 		}
 	}
 
-	// Check for specific error types
-	if netErr, ok := err.(net.Error); ok {
-		if netErr.Timeout() {
-			return &CategorizedError{
-				Type:       ErrorCategoryTimeout,
-				Message:    "Request timeout - the target service took too long to respond",
-				StatusCode: http.StatusGatewayTimeout,
-				ShouldRetry: true,
-			}
-		}
-	}
-
-	// Check for syscall errors
-	if opErr, ok := err.(*net.OpError); ok {
-		if opErr.Err == syscall.ECONNREFUSED {
-			return &CategorizedError{
-				Type:       ErrorCategoryConnection,
-				Message:    "Connection refused - target service is not accepting connections",
-				StatusCode: http.StatusServiceUnavailable,
-				ShouldRetry: true,
-			}
-		}
-	}
-
-	// Unknown error - default to no retry to avoid retry storms; make configurable if needed
+	// Unknown error - default to no retry to avoid retry storms; make configurable if needed.
 	return &CategorizedError{
 		Type:       ErrorCategoryUnknown,
 		Message:    "Unexpected error: " + err.Error(),

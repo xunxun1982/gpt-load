@@ -197,15 +197,15 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		// Determine effective proxy URL (per-upstream overrides group-level)
 		// Trim whitespace to handle common configuration issues
 		proxyURL := strings.TrimSpace(group.EffectiveConfig.ProxyURL)
-		if def.ProxyURL != nil && *def.ProxyURL != "" {
+		if def.ProxyURL != nil && strings.TrimSpace(*def.ProxyURL) != "" {
 			proxyURL = strings.TrimSpace(*def.ProxyURL)
-				logrus.WithFields(logrus.Fields{
-					"group_id":   group.ID,
-					"group_name": group.Name,
-					"upstream":   def.URL,
-					"proxy":      utils.SanitizeProxyString(proxyURL),
-					"weight":     def.Weight,
-				}).Debug("Using per-upstream proxy (overrides group-level)")
+			logrus.WithFields(logrus.Fields{
+				"group_id":   group.ID,
+				"group_name": group.Name,
+				"upstream":   def.URL,
+				"proxy":      utils.SanitizeProxyString(proxyURL),
+				"weight":     def.Weight,
+			}).Debug("Using per-upstream proxy (overrides group-level)")
 		} else if proxyURL != "" {
 			logrus.WithFields(logrus.Fields{
 				"group_id":   group.ID,

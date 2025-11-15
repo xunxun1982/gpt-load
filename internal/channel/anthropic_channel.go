@@ -74,23 +74,24 @@ func (ch *AnthropicChannel) ExtractModel(c *gin.Context, bodyBytes []byte) strin
 }
 
 // ValidateKey checks if the given API key is valid by making a messages request.
+// It now uses BaseChannel.SelectValidationUpstream so that upstream-specific proxy configuration
+// is honored consistently with normal traffic.
 func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
-	upstreamURL := ch.getUpstreamURL()
-	if upstreamURL == nil {
-		return false, fmt.Errorf("no upstream URL configured for channel %s", ch.Name)
-	}
-
 	// Parse validation endpoint to extract path and query parameters
 	endpointURL, err := url.Parse(ch.ValidationEndpoint)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse validation endpoint: %w", err)
 	}
 
-	// Build final URL with path and query parameters
-	finalURL := *upstreamURL
-	finalURL.Path = strings.TrimRight(finalURL.Path, "/") + endpointURL.Path
-	finalURL.RawQuery = endpointURL.RawQuery
-	reqURL := finalURL.String()
+	selection, err := ch.SelectValidationUpstream(group, endpointURL.Path, endpointURL.RawQuery)
+	if err != nil {
+		return false, fmt.Errorf("failed to select upstream for anthropic validation: %w", err)
+	}
+	if selection == nil || selection.URL == "" {
+		return false, fmt.Errorf("failed to select upstream for anthropic validation: empty result")
+	}
+
+	reqURL := selection.URL
 
 	// Use a minimal, low-cost payload for validation
 	payload := gin.H{
@@ -119,7 +120,12 @@ func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIK
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	resp, err := ch.HTTPClient.Do(req)
+	client := selection.HTTPClient
+	if client == nil {
+		client = ch.HTTPClient
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("failed to send validation request: %w", err)
 	}

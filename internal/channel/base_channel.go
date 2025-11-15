@@ -206,6 +206,20 @@ func (b *BaseChannel) GetStreamClient() *http.Client {
 	return b.StreamClient
 }
 
+// SelectValidationUpstream is a helper for ValidateKey that selects an upstream
+// with its dedicated HTTP client (including per-upstream proxy configuration).
+// This ensures that key validation uses the same proxy/upstream logic as normal requests.
+func (b *BaseChannel) SelectValidationUpstream(group *models.Group, validationPath string, rawQuery string) (*UpstreamSelection, error) {
+	// Build a synthetic proxy URL to reuse the upstream selection logic.
+	// This ensures path redirects and proxy configuration are applied consistently.
+	proxyURL := &url.URL{
+		Path:     "/proxy/" + group.Name + validationPath,
+		RawQuery: rawQuery,
+	}
+
+	return b.SelectUpstreamWithClients(proxyURL, group.Name)
+}
+
 // applyPathRedirects applies first matching prefix rewrite rule to the request path.
 // Rules are expected to be relative to the group (i.e., without /proxy/{group}).
 func (b *BaseChannel) applyPathRedirects(reqPath string) string {

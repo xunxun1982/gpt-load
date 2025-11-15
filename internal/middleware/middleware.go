@@ -112,8 +112,9 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 		}
 		allowedOriginsMap[origin] = true
 	}
-	// Clear map if wildcard found to save memory
-	if hasWildcard {
+	// Clear map only when wildcard is used without credentials.
+	// When credentials are allowed, we still need the explicit allowlist for origin validation.
+	if hasWildcard && !config.AllowCredentials {
 		allowedOriginsMap = nil
 	}
 
@@ -127,24 +128,28 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 
 		// Fast path: handle preflight requests immediately
 		if c.Request.Method == "OPTIONS" {
-			// Check if origin is allowed
-			allowed := hasWildcard || allowedOriginsMap[origin]
+			// When credentials are allowed, always validate origin explicitly.
+			allowed := false
+			if hasWildcard && !config.AllowCredentials {
+				// Wildcard is only valid when credentials are not allowed.
+				allowed = true
+			} else if allowedOriginsMap[origin] {
+				// Origin must be in the explicit allowlist when credentials are enabled.
+				allowed = true
+			}
 
 			if allowed {
-				// Cannot use wildcard origin when credentials are allowed
 				if hasWildcard && !config.AllowCredentials {
 					c.Header("Access-Control-Allow-Origin", "*")
 				} else {
 					c.Header("Access-Control-Allow-Origin", origin)
 				}
-			}
-
-			// Set CORS headers for preflight
-			c.Header("Access-Control-Allow-Methods", allowedMethods)
-			c.Header("Access-Control-Allow-Headers", allowedHeaders)
-
-			if config.AllowCredentials {
-				c.Header("Access-Control-Allow-Credentials", "true")
+				// Set CORS headers for preflight only when origin is allowed.
+				c.Header("Access-Control-Allow-Methods", allowedMethods)
+				c.Header("Access-Control-Allow-Headers", allowedHeaders)
+				if config.AllowCredentials {
+					c.Header("Access-Control-Allow-Credentials", "true")
+				}
 			}
 
 			// Add cache control for preflight to reduce requests
@@ -155,10 +160,16 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 		}
 
 		// For actual requests, check origin and set headers
-		allowed := hasWildcard || allowedOriginsMap[origin]
+		allowed := false
+		if hasWildcard && !config.AllowCredentials {
+			// Wildcard is only valid when credentials are not allowed.
+			allowed = true
+		} else if allowedOriginsMap[origin] {
+			// Origin must be in the explicit allowlist when credentials are enabled.
+			allowed = true
+		}
 
 		if allowed {
-			// Cannot use wildcard origin when credentials are allowed
 			if hasWildcard && !config.AllowCredentials {
 				c.Header("Access-Control-Allow-Origin", "*")
 			} else {
@@ -171,7 +182,6 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 				c.Header("Access-Control-Allow-Credentials", "true")
 			}
 		}
-
 
 		c.Next()
 	}

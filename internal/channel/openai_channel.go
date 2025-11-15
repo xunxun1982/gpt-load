@@ -85,11 +85,10 @@ func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 		return false, fmt.Errorf("failed to parse validation endpoint: %w", err)
 	}
 
-	// Build final URL via channel's selector to apply path redirects consistently
-	proxyURL := &url.URL{Path: "/proxy/" + group.Name + strings.TrimLeft(endpointURL.Path, "/"), RawQuery: endpointURL.RawQuery}
-	selection, err := ch.SelectUpstreamWithClients(proxyURL, group.Name)
+	// Select upstream with dedicated client using the unified helper
+	selection, err := ch.SelectValidationUpstream(group, endpointURL.Path, endpointURL.RawQuery)
 	if err != nil {
-		return false, fmt.Errorf("failed to build upstream url: %w", err)
+		return false, fmt.Errorf("failed to select validation upstream: %w", err)
 	}
 	reqURL := selection.URL
 
