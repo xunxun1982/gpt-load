@@ -198,12 +198,14 @@ func addVaryOriginHeader(c *gin.Context) {
 	}
 
 	// Check if "Origin" is already present as a distinct token
-	// Use strings.Contains with comma boundaries for better performance
-	if vary == "Origin" || strings.HasPrefix(vary, "Origin,") ||
-		strings.HasSuffix(vary, ",Origin") || strings.Contains(vary, ",Origin,") ||
-		strings.Contains(vary, ", Origin,") || strings.Contains(vary, ",Origin ") ||
-		strings.Contains(vary, ", Origin ") {
-		return
+	// Split by comma and check each token for exact match
+	// For typical Vary headers (1-3 values), this is more efficient and maintainable
+	// than multiple string checks, with negligible allocation overhead
+	varyHeaders := strings.Split(vary, ",")
+	for _, h := range varyHeaders {
+		if strings.TrimSpace(h) == "Origin" {
+			return
+		}
 	}
 
 	c.Header("Vary", vary+", Origin")
