@@ -117,6 +117,10 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 	if hasWildcard && !config.AllowCredentials {
 		allowedOriginsMap = nil
 	}
+	// Warn on misconfiguration: wildcard origin with credentials enabled effectively disables CORS.
+	if config.AllowCredentials && len(config.AllowedOrigins) == 1 && config.AllowedOrigins[0] == "*" {
+		logrus.Warn("CORS configuration uses AllowedOrigins=['*'] with AllowCredentials=true; this blocks all credentialed CORS requests. Configure explicit origins instead.")
+	}
 
 	return func(c *gin.Context) {
 		if !config.Enabled {
@@ -143,6 +147,13 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 					c.Header("Access-Control-Allow-Origin", "*")
 				} else {
 					c.Header("Access-Control-Allow-Origin", origin)
+					// Ensure caches differentiate responses by origin when echoing specific origins.
+					vary := c.Writer.Header().Get("Vary")
+					if vary == "" {
+						c.Header("Vary", "Origin")
+					} else if !strings.Contains(vary, "Origin") {
+						c.Header("Vary", vary+", Origin")
+					}
 				}
 				// Set CORS headers for preflight only when origin is allowed.
 				c.Header("Access-Control-Allow-Methods", allowedMethods)
@@ -174,6 +185,13 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 				c.Header("Access-Control-Allow-Origin", "*")
 			} else {
 				c.Header("Access-Control-Allow-Origin", origin)
+				// Ensure caches differentiate responses by origin when echoing specific origins.
+				vary := c.Writer.Header().Get("Vary")
+				if vary == "" {
+					c.Header("Vary", "Origin")
+				} else if !strings.Contains(vary, "Origin") {
+					c.Header("Vary", vary+", Origin")
+				}
 			}
 			// Set other CORS headers only for allowed origins
 			c.Header("Access-Control-Allow-Methods", allowedMethods)
