@@ -123,12 +123,12 @@ func CategorizeError(err error) *CategorizedError {
 		}
 	}
 
-	// Unknown error - should retry with caution
+	// Unknown error - default to no retry to avoid retry storms; make configurable if needed
 	return &CategorizedError{
 		Type:       ErrorCategoryUnknown,
 		Message:    "Unexpected error: " + err.Error(),
 		StatusCode: http.StatusInternalServerError,
-		ShouldRetry: true,
+		ShouldRetry: false,
 	}
 }
 

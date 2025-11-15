@@ -112,6 +112,10 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 		}
 		allowedOriginsMap[origin] = true
 	}
+	// Clear map if wildcard found to save memory
+	if hasWildcard {
+		allowedOriginsMap = nil
+	}
 
 	return func(c *gin.Context) {
 		if !config.Enabled {
@@ -127,7 +131,8 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 			allowed := hasWildcard || allowedOriginsMap[origin]
 
 			if allowed {
-				if hasWildcard {
+				// Cannot use wildcard origin when credentials are allowed
+				if hasWildcard && !config.AllowCredentials {
 					c.Header("Access-Control-Allow-Origin", "*")
 				} else {
 					c.Header("Access-Control-Allow-Origin", origin)
@@ -153,20 +158,20 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 		allowed := hasWildcard || allowedOriginsMap[origin]
 
 		if allowed {
-			if hasWildcard {
+			// Cannot use wildcard origin when credentials are allowed
+			if hasWildcard && !config.AllowCredentials {
 				c.Header("Access-Control-Allow-Origin", "*")
 			} else {
 				c.Header("Access-Control-Allow-Origin", origin)
 			}
+			// Set other CORS headers only for allowed origins
+			c.Header("Access-Control-Allow-Methods", allowedMethods)
+			c.Header("Access-Control-Allow-Headers", allowedHeaders)
+			if config.AllowCredentials {
+				c.Header("Access-Control-Allow-Credentials", "true")
+			}
 		}
 
-		// Set other CORS headers
-		c.Header("Access-Control-Allow-Methods", allowedMethods)
-		c.Header("Access-Control-Allow-Headers", allowedHeaders)
-
-		if config.AllowCredentials {
-			c.Header("Access-Control-Allow-Credentials", "true")
-		}
 
 		c.Next()
 	}
@@ -385,11 +390,8 @@ func SecurityHeaders() gin.HandlerFunc {
 		// Restrict browser features to prevent abuse
 		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 
-		// Prevent clickjacking attacks
-		c.Header("X-Frame-Options", "DENY")
-
-		// Enable XSS protection (legacy browsers)
-		c.Header("X-XSS-Protection", "1; mode=block")
+		// Prevent clickjacking attacks while allowing same-origin embedding if needed
+		c.Header("X-Frame-Options", "SAMEORIGIN")
 
 		c.Next()
 	}

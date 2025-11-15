@@ -124,7 +124,7 @@ func DiagnoseProxy(proxyURLStr string, testTargetURL string) *ProxyDiagnostics {
 // LogProxyDiagnostics logs the diagnostic results in a user-friendly format.
 func LogProxyDiagnostics(diag *ProxyDiagnostics) {
 	logrus.Info("=== Proxy Diagnostics Report ===")
-	logrus.Infof("Proxy URL: %s", diag.ProxyURL)
+	logrus.Infof("Proxy URL: %s", SanitizeProxyString(diag.ProxyURL))
 	logrus.Infof("TCP Connectable: %v", diag.TCPConnectable)
 	if diag.TCPError != nil {
 		logrus.Infof("TCP Error: %v", diag.TCPError)

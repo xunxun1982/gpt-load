@@ -104,18 +104,17 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 		return nil, fmt.Errorf("no upstream available for channel %s (all disabled or none configured)", b.Name)
 	}
 
-	// Log selected upstream with proxy information for debugging
+	// Log selected upstream with proxy information for debugging (sanitized)
+	sanitizedProxy := "none"
+	if upstream.ProxyURL != nil {
+		sanitizedProxy = utils.SanitizeProxyString(*upstream.ProxyURL)
+	}
 	logrus.WithFields(logrus.Fields{
 		"channel":    b.Name,
 		"group_name": groupName,
 		"upstream":   upstream.URL.String(),
 		"has_proxy":  upstream.ProxyURL != nil && *upstream.ProxyURL != "",
-		"proxy_url":  func() string {
-			if upstream.ProxyURL != nil {
-				return *upstream.ProxyURL
-			}
-			return "none"
-		}(),
+		"proxy_url":  sanitizedProxy,
 	}).Debug("Selected upstream with client configuration")
 
 	base := *upstream.URL

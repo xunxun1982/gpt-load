@@ -15,6 +15,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// inflightCall coordinates concurrent constructions for the same group.
+// It ensures that only one goroutine performs the work while others wait.
+type inflightCall struct {
+	wg  sync.WaitGroup
+	res ChannelProxy
+	err error
+}
+
 // channelConstructor defines the function signature for creating a new channel proxy.
 type channelConstructor func(f *Factory, group *models.Group) (ChannelProxy, error)
 
@@ -46,6 +54,9 @@ type Factory struct {
 	clientManager   *httpclient.HTTPClientManager
 	channelCache    map[uint]ChannelProxy
 	cacheLock       sync.Mutex
+
+	inFlight     map[uint]*inflightCall
+	inFlightLock sync.Mutex
 }
 
 // NewFactory creates a new channel factory.
@@ -54,6 +65,7 @@ func NewFactory(settingsManager *config.SystemSettingsManager, clientManager *ht
 		settingsManager: settingsManager,
 		clientManager:   clientManager,
 		channelCache:    make(map[uint]ChannelProxy),
+		inFlight:        make(map[uint]*inflightCall),
 	}
 }
 
@@ -61,29 +73,71 @@ func NewFactory(settingsManager *config.SystemSettingsManager, clientManager *ht
 // It uses caching to avoid recreating channels unnecessarily.
 // The cache is automatically invalidated when configuration changes are detected.
 func (f *Factory) GetChannel(group *models.Group) (ChannelProxy, error) {
+	// Fast path: quick cache check
 	f.cacheLock.Lock()
-	defer f.cacheLock.Unlock()
-
-	if channel, ok := f.channelCache[group.ID]; ok {
-		if !channel.IsConfigStale(group) {
-			logrus.Debugf("Using cached channel for group %d (%s) with type '%s'", group.ID, group.Name, group.ChannelType)
-			return channel, nil
-		}
-		logrus.Debugf("Channel config is stale for group %d (%s), recreating channel", group.ID, group.Name)
+	existing, ok := f.channelCache[group.ID]
+	f.cacheLock.Unlock()
+	if ok && !existing.IsConfigStale(group) {
+		logrus.Debugf("Using cached channel for group %d (%s) with type '%s'", group.ID, group.Name, group.ChannelType)
+		return existing, nil
 	}
 
-	logrus.Debugf("Creating new channel for group %d (%s) with type '%s'", group.ID, group.Name, group.ChannelType)
-
-	constructor, ok := channelRegistry[group.ChannelType]
-	if !ok {
-		return nil, fmt.Errorf("unsupported channel type: %s", group.ChannelType)
+	// Singleflight: ensure only one constructor runs per group.ID
+	f.inFlightLock.Lock()
+	if call, inProgress := f.inFlight[group.ID]; inProgress {
+		f.inFlightLock.Unlock()
+		// Wait for the ongoing construction
+		call.wg.Wait()
+		return call.res, call.err
 	}
-	channel, err := constructor(f, group)
+	call := &inflightCall{}
+	call.wg.Add(1)
+	f.inFlight[group.ID] = call
+	f.inFlightLock.Unlock()
+
+	// Perform construction outside locks
+	constructor, found := channelRegistry[group.ChannelType]
+	if !found {
+		call.err = fmt.Errorf("unsupported channel type: %s", group.ChannelType)
+		call.wg.Done()
+		f.inFlightLock.Lock()
+		delete(f.inFlight, group.ID)
+		f.inFlightLock.Unlock()
+		return nil, call.err
+	}
+
+	newCh, err := constructor(f, group)
 	if err != nil {
+		call.err = err
+		call.wg.Done()
+		f.inFlightLock.Lock()
+		delete(f.inFlight, group.ID)
+		f.inFlightLock.Unlock()
 		return nil, err
 	}
-	f.channelCache[group.ID] = channel
-	return channel, nil
+
+	// Install into cache with double-check and emit a single log line
+	f.cacheLock.Lock()
+	if current, ok := f.channelCache[group.ID]; ok && !current.IsConfigStale(group) {
+		// Another goroutine installed a fresh channel while we were constructing
+		call.res = current
+		f.cacheLock.Unlock()
+	} else {
+		if ok {
+			logrus.Debugf("Replaced stale channel for group %d (%s) with type '%s'", group.ID, group.Name, group.ChannelType)
+		} else {
+			logrus.Debugf("Created new channel for group %d (%s) with type '%s'", group.ID, group.Name, group.ChannelType)
+		}
+		f.channelCache[group.ID] = newCh
+		call.res = newCh
+		f.cacheLock.Unlock()
+	}
+
+	call.wg.Done()
+	f.inFlightLock.Lock()
+	delete(f.inFlight, group.ID)
+	f.inFlightLock.Unlock()
+	return call.res, nil
 }
 
 // InvalidateCache removes a channel from the cache, forcing it to be recreated on next access.
@@ -145,19 +199,19 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		proxyURL := strings.TrimSpace(group.EffectiveConfig.ProxyURL)
 		if def.ProxyURL != nil && *def.ProxyURL != "" {
 			proxyURL = strings.TrimSpace(*def.ProxyURL)
-			logrus.WithFields(logrus.Fields{
-				"group_id":   group.ID,
-				"group_name": group.Name,
-				"upstream":   def.URL,
-				"proxy":      proxyURL,
-				"weight":     def.Weight,
-			}).Debug("Using per-upstream proxy (overrides group-level)")
+				logrus.WithFields(logrus.Fields{
+					"group_id":   group.ID,
+					"group_name": group.Name,
+					"upstream":   def.URL,
+					"proxy":      utils.SanitizeProxyString(proxyURL),
+					"weight":     def.Weight,
+				}).Debug("Using per-upstream proxy (overrides group-level)")
 		} else if proxyURL != "" {
 			logrus.WithFields(logrus.Fields{
 				"group_id":   group.ID,
 				"group_name": group.Name,
 				"upstream":   def.URL,
-				"proxy":      proxyURL,
+				"proxy":      utils.SanitizeProxyString(proxyURL),
 				"weight":     def.Weight,
 			}).Debug("Using group-level proxy")
 		} else {

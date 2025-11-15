@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"gpt-load/internal/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -48,15 +49,20 @@ func NewHTTPClientManager() *HTTPClientManager {
 // testProxyConnectivity tests if the proxy is reachable.
 // This runs asynchronously to avoid blocking client creation.
 // It helps diagnose proxy configuration issues early.
-func testProxyConnectivity(proxyURL *url.URL, originalProxyStr string) {
+func testProxyConnectivity(proxyURL *url.URL) {
 	// Simple TCP connectivity test
 	dialer := &net.Dialer{
 		Timeout: 3 * time.Second,
 	}
 
+	sanitized := ""
+	if proxyURL != nil {
+		sanitized = utils.SanitizeProxyURLForLog(proxyURL)
+	}
+
 	conn, err := dialer.Dial("tcp", proxyURL.Host)
 	if err != nil {
-		logrus.Warnf("Proxy connectivity test FAILED for '%s': %v", originalProxyStr, err)
+		logrus.Warnf("Proxy connectivity test FAILED for '%s': %v", sanitized, err)
 		logrus.Warnf("Troubleshooting steps:")
 		logrus.Warnf("  1. Verify proxy is running at %s", proxyURL.Host)
 		logrus.Warnf("  2. Check firewall allows connection to proxy")
@@ -67,7 +73,7 @@ func testProxyConnectivity(proxyURL *url.URL, originalProxyStr string) {
 	}
 	defer conn.Close()
 
-	logrus.Infof("✓ Proxy connectivity test PASSED for '%s' (host: %s)", originalProxyStr, proxyURL.Host)
+	logrus.Infof("✓ Proxy connectivity test PASSED for '%s' (host: %s)", sanitized, proxyURL.Host)
 	logrus.Debugf("Proxy at %s is reachable and accepting TCP connections", proxyURL.Host)
 }
 
@@ -128,10 +134,11 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 			} else {
 				// Set proxy with detailed logging
 				transport.Proxy = http.ProxyURL(proxyURL)
-				logrus.Debugf("HTTP client configured with proxy: %s (scheme: %s, host: %s)", trimmedProxyURL, proxyURL.Scheme, proxyURL.Host)
+				sanitized := utils.SanitizeProxyURLForLog(proxyURL)
+				logrus.Debugf("HTTP client configured with proxy: %s (scheme: %s, host: %s)", sanitized, proxyURL.Scheme, proxyURL.Host)
 
 				// Test proxy connectivity (non-blocking)
-				go testProxyConnectivity(proxyURL, trimmedProxyURL)
+				go testProxyConnectivity(proxyURL)
 			}
 		}
 	} else {
@@ -149,7 +156,7 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	// Log client creation with full configuration details for debugging
 	logrus.WithFields(logrus.Fields{
 		"fingerprint":  fingerprint,
-		"proxy_url":    trimmedProxyURL,
+		"proxy_url":    utils.SanitizeProxyString(trimmedProxyURL),
 		"timeout":      config.RequestTimeout,
 		"has_proxy":    trimmedProxyURL != "",
 	}).Debug("Created new HTTP client")
