@@ -74,22 +74,19 @@ func (ch *OpenAIChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
 
 // ValidateKey checks if the given API key is valid by making a chat completion request.
 func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
-	upstreamURL := ch.getUpstreamURL()
-	if upstreamURL == nil {
-		return false, fmt.Errorf("no upstream URL configured for channel %s", ch.Name)
-	}
-
 	// Parse validation endpoint to extract path and query parameters
 	endpointURL, err := url.Parse(ch.ValidationEndpoint)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse validation endpoint: %w", err)
 	}
 
-	// Build final URL via channel's selector to apply path redirects consistently
-	proxyURL := &url.URL{Path: "/proxy/" + group.Name + strings.TrimLeft(endpointURL.Path, "/"), RawQuery: endpointURL.RawQuery}
-	selection, err := ch.SelectUpstreamWithClients(proxyURL, group.Name)
+	// Select upstream with dedicated client using the unified helper
+	selection, err := ch.SelectValidationUpstream(group, endpointURL.Path, endpointURL.RawQuery)
 	if err != nil {
-		return false, fmt.Errorf("failed to build upstream url: %w", err)
+		return false, fmt.Errorf("failed to select validation upstream: %w", err)
+	}
+	if selection == nil || selection.URL == "" {
+		return false, fmt.Errorf("failed to select validation upstream: empty result")
 	}
 	reqURL := selection.URL
 
@@ -118,9 +115,9 @@ func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	client := ch.HTTPClient
-	if selection != nil && selection.HTTPClient != nil {
-		client = selection.HTTPClient
+	client := selection.HTTPClient
+	if client == nil {
+		client = ch.HTTPClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {

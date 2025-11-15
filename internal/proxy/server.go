@@ -279,11 +279,11 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 	req.Header = c.Request.Header.Clone()
 
-	// Clean up client auth key
-	req.Header.Del("Authorization")
-	req.Header.Del("X-Api-Key")
-	req.Header.Del("X-Goog-Api-Key")
-	req.Header.Del("Proxy-Authorization")
+	// Clean up client auth headers
+	utils.CleanClientAuthHeaders(req)
+
+	// Apply anonymization: remove tracking and proxy-revealing headers
+	utils.CleanAnonymizationHeaders(req)
 
 	// For /models with mapping configured, remove Accept-Encoding so upstream returns plain (non-gzip) body
 	// This ensures we can read/modify the response safely.
@@ -328,14 +328,26 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		client = upstreamSelection.HTTPClient
 	}
 
-	// Defensive nil-check with backward-compatible fallback
+	// Defensive nil-check - this should never happen as SelectUpstreamWithClients always returns valid clients
 	if client == nil {
-		if isStream {
-			client = channelHandler.GetStreamClient()
-		} else {
-			client = channelHandler.GetHTTPClient()
-		}
+		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for group %s, upstream %s", group.Name, upstreamSelection.URL)
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
+		return
 	}
+
+	// Log which client is being used for debugging proxy issues
+	logrus.WithFields(logrus.Fields{
+		"group":      group.Name,
+		"upstream":   upstreamSelection.URL,
+		"has_proxy":  upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
+		"proxy_url":  func() string {
+			if upstreamSelection.ProxyURL != nil {
+				return *upstreamSelection.ProxyURL
+			}
+			return "none"
+		}(),
+		"is_stream": isStream,
+	}).Debug("Using HTTP client for request")
 
 	resp, err := client.Do(req)
 	if resp != nil {
@@ -374,10 +386,10 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), parsedError)
 		}
 
-		// 使用解析后的错误信息更新密钥状态
+		// Update key status with parsed error information
 		ps.keyProvider.UpdateStatus(apiKey, group, false, parsedError)
 
-		// 判断是否为最后一次尝试
+		// Check if this is the last retry attempt
 		isLastAttempt := retryCount >= cfg.MaxRetries
 		requestType := models.RequestTypeRetry
 		if isLastAttempt {
@@ -386,7 +398,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, requestType)
 
-		// 如果是最后一次尝试，直接返回错误，不再递归
+		// If this is the last attempt, return error directly without recursion
 		if isLastAttempt {
 			var errorJSON map[string]any
 			if err := json.Unmarshal([]byte(errorMessage), &errorJSON); err == nil {
@@ -401,7 +413,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		return
 	}
 
-	// ps.keyProvider.UpdateStatus(apiKey, group, true) // 请求成功不再重置成功次数，减少IO消耗
+	// Success no longer resets success count to reduce IO overhead
 	logrus.Debugf("Request for group %s succeeded on attempt %d with key %s", group.Name, retryCount+1, utils.MaskAPIKey(apiKey.KeyValue))
 
 	// Check if this is a model list request (needs special handling)
@@ -566,11 +578,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	req.Header = c.Request.Header.Clone()
 
-	// Clean up client auth key
-	req.Header.Del("Authorization")
-	req.Header.Del("X-Api-Key")
-	req.Header.Del("X-Goog-Api-Key")
-	req.Header.Del("Proxy-Authorization")
+	// Clean up client auth headers
+	utils.CleanClientAuthHeaders(req)
+
+	// Apply anonymization: remove tracking and proxy-revealing headers
+	utils.CleanAnonymizationHeaders(req)
 
 	// For /models with mapping configured, remove Accept-Encoding
 	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
@@ -611,14 +623,26 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		client = upstreamSelection.HTTPClient
 	}
 
-	// Defensive nil-check with backward-compatible fallback
+	// Defensive nil-check - this should never happen as SelectUpstreamWithClients always returns valid clients
 	if client == nil {
-		if isStream {
-			client = subGroupChannelHandler.GetStreamClient()
-		} else {
-			client = subGroupChannelHandler.GetHTTPClient()
-		}
+		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for sub-group %s, upstream %s", group.Name, upstreamSelection.URL)
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
+		return
 	}
+
+	// Log which client is being used for debugging proxy issues
+	logrus.WithFields(logrus.Fields{
+		"group":      group.Name,
+		"upstream":   upstreamSelection.URL,
+		"has_proxy":  upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
+		"proxy_url":  func() string {
+			if upstreamSelection.ProxyURL != nil {
+				return *upstreamSelection.ProxyURL
+			}
+			return "none"
+		}(),
+		"is_stream": isStream,
+	}).Debug("Using HTTP client for aggregate sub-group request")
 
 	resp, err := client.Do(req)
 	if resp != nil {
@@ -873,7 +897,7 @@ func (ps *ProxyServer) logRequest(
 	}
 
 	if apiKey != nil {
-		// 加密密钥值用于日志存储
+		// Encrypt key value for log storage
 		encryptedKeyValue, err := ps.encryptionSvc.Encrypt(apiKey.KeyValue)
 		if err != nil {
 			logrus.WithError(err).Error("Failed to encrypt key value for logging")
@@ -881,7 +905,7 @@ func (ps *ProxyServer) logRequest(
 		} else {
 			logEntry.KeyValue = encryptedKeyValue
 		}
-		// 添加 KeyHash 用于反查
+		// Add KeyHash for reverse lookup
 		logEntry.KeyHash = ps.encryptionSvc.Hash(apiKey.KeyValue)
 	}
 

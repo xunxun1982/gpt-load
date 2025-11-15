@@ -97,18 +97,22 @@ func (ch *GeminiChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
 }
 
 // ValidateKey checks if the given API key is valid by making a generateContent request.
+// It now uses BaseChannel.SelectValidationUpstream so that upstream-specific proxy configuration
+// is honored consistently with normal traffic.
 func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
-	upstreamURL := ch.getUpstreamURL()
-	if upstreamURL == nil {
-		return false, fmt.Errorf("no upstream URL configured for channel %s", ch.Name)
+	validationPath := "/v1beta/models/" + ch.TestModel + ":generateContent"
+	q := url.Values{}
+	q.Set("key", apiKey.KeyValue)
+
+	selection, err := ch.SelectValidationUpstream(group, validationPath, q.Encode())
+	if err != nil {
+		return false, fmt.Errorf("failed to select upstream for gemini validation: %w", err)
+	}
+	if selection == nil || selection.URL == "" {
+		return false, fmt.Errorf("failed to select upstream for gemini validation: empty result")
 	}
 
-	// Safely join the path segments
-	reqURL, err := url.JoinPath(upstreamURL.String(), "v1beta", "models", ch.TestModel+":generateContent")
-	if err != nil {
-		return false, fmt.Errorf("failed to create gemini validation path: %w", err)
-	}
-	reqURL += "?key=" + apiKey.KeyValue
+	reqURL := selection.URL
 
 	payload := gin.H{
 		"contents": []gin.H{
@@ -137,7 +141,12 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	resp, err := ch.HTTPClient.Do(req)
+	client := selection.HTTPClient
+	if client == nil {
+		client = ch.HTTPClient
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("failed to send validation request: %w", err)
 	}
