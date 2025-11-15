@@ -108,9 +108,9 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 	for _, origin := range config.AllowedOrigins {
 		if origin == "*" {
 			hasWildcard = true
-			break
+		} else {
+			allowedOriginsMap[origin] = true
 		}
-		allowedOriginsMap[origin] = true
 	}
 	// Clear map only when wildcard is used without credentials.
 	// When credentials are allowed, we still need the explicit allowlist for origin validation.
@@ -151,8 +151,19 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 					vary := c.Writer.Header().Get("Vary")
 					if vary == "" {
 						c.Header("Vary", "Origin")
-					} else if !strings.Contains(vary, "Origin") {
-						c.Header("Vary", vary+", Origin")
+					} else {
+						// Check if "Origin" is already present as a distinct token
+						varyHeaders := strings.Split(vary, ",")
+						hasOrigin := false
+						for _, h := range varyHeaders {
+							if strings.TrimSpace(h) == "Origin" {
+								hasOrigin = true
+								break
+							}
+						}
+						if !hasOrigin {
+							c.Header("Vary", vary+", Origin")
+						}
 					}
 				}
 				// Set CORS headers for preflight only when origin is allowed.
@@ -188,8 +199,19 @@ func CORS(config types.CORSConfig) gin.HandlerFunc {
 				vary := c.Writer.Header().Get("Vary")
 				if vary == "" {
 					c.Header("Vary", "Origin")
-				} else if !strings.Contains(vary, "Origin") {
-					c.Header("Vary", vary+", Origin")
+				} else {
+					// Check if "Origin" is already present as a distinct token
+					varyHeaders := strings.Split(vary, ",")
+					hasOrigin := false
+					for _, h := range varyHeaders {
+						if strings.TrimSpace(h) == "Origin" {
+							hasOrigin = true
+							break
+						}
+					}
+					if !hasOrigin {
+						c.Header("Vary", vary+", Origin")
+					}
 				}
 			}
 			// Set other CORS headers only for allowed origins
