@@ -49,7 +49,7 @@ loader := func() (map[string]*models.Group, error) {
 ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
 		// Use Select to only fetch necessary fields, reducing data transfer and improving performance
-if err := gm.db.WithContext(ctx).Select("id, name,display_name, description, group_type, enabled, upstreams, validation_endpoint, channel_type, sort, test_model, param_overrides, config, header_rules, model_mapping, path_redirects, proxy_keys, last_validated_at, created_at, updated_at").Find(&groups).Error; err != nil {
+if err := gm.db.WithContext(ctx).Select("id, name,display_name, description, group_type, enabled, upstreams, validation_endpoint, channel_type, sort, test_model, param_overrides, config, header_rules, model_mapping, model_redirect_rules, model_redirect_strict, path_redirects, proxy_keys, last_validated_at, created_at, updated_at").Find(&groups).Error; err != nil {
 			// If DB is locked or timed out, serve stale cache if available
 			if gm.syncer != nil && (strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "busy") || strings.Contains(err.Error(), "interrupted") || err == context.DeadlineExceeded) {
 				logrus.WithError(err).Warn("Group loader timed out/locked - returning stale cache")

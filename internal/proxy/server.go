@@ -374,10 +374,10 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), parsedError)
 		}
 
-		// 使用解析后的错误信息更新密钥状态
+		// Update key status with parsed error information
 		ps.keyProvider.UpdateStatus(apiKey, group, false, parsedError)
 
-		// 判断是否为最后一次尝试
+		// Check if this is the last retry attempt
 		isLastAttempt := retryCount >= cfg.MaxRetries
 		requestType := models.RequestTypeRetry
 		if isLastAttempt {
@@ -386,7 +386,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, requestType)
 
-		// 如果是最后一次尝试，直接返回错误，不再递归
+		// If this is the last attempt, return error directly without recursion
 		if isLastAttempt {
 			var errorJSON map[string]any
 			if err := json.Unmarshal([]byte(errorMessage), &errorJSON); err == nil {
@@ -401,7 +401,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		return
 	}
 
-	// ps.keyProvider.UpdateStatus(apiKey, group, true) // 请求成功不再重置成功次数，减少IO消耗
+	// ps.keyProvider.UpdateStatus(apiKey, group, true) // Success no longer resets success count to reduce IO overhead
 	logrus.Debugf("Request for group %s succeeded on attempt %d with key %s", group.Name, retryCount+1, utils.MaskAPIKey(apiKey.KeyValue))
 
 	// Check if this is a model list request (needs special handling)
@@ -873,7 +873,7 @@ func (ps *ProxyServer) logRequest(
 	}
 
 	if apiKey != nil {
-		// 加密密钥值用于日志存储
+		// Encrypt key value for log storage
 		encryptedKeyValue, err := ps.encryptionSvc.Encrypt(apiKey.KeyValue)
 		if err != nil {
 			logrus.WithError(err).Error("Failed to encrypt key value for logging")
@@ -881,7 +881,7 @@ func (ps *ProxyServer) logRequest(
 		} else {
 			logEntry.KeyValue = encryptedKeyValue
 		}
-		// 添加 KeyHash 用于反查
+		// Add KeyHash for reverse lookup
 		logEntry.KeyHash = ps.encryptionSvc.Hash(apiKey.KeyValue)
 	}
 
