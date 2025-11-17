@@ -54,8 +54,8 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 	offset := (page - 1) * pageSize
 
 	// 2. Fetch data with Limit+1 strategy to detect if there are more pages
-	// This allows us to skip COUNT for last page and provides faster initial response
-	dataCtx, dataCancel := context.WithTimeout(context.Background(), DataQueryTimeout)
+	// Use request context to enable proper cancellation when client disconnects
+	dataCtx, dataCancel := context.WithTimeout(c.Request.Context(), DataQueryTimeout)
 	defer dataCancel()
 
 	dataQuery := query.Session(&gorm.Session{NewDB: true})
@@ -63,17 +63,9 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 	fetchLimit := pageSize + 1
 	err = dataQuery.WithContext(dataCtx).Limit(fetchLimit).Offset(offset).Find(dest).Error
 	if err != nil {
-		logrus.WithError(err).Warn("Pagination data query failed")
-		// Return empty result with unknown totals on data fetch failure
-		return &PaginatedResponse{
-			Items: dest,
-			Pagination: Pagination{
-				Page:       page,
-				PageSize:   pageSize,
-				TotalItems: -1,
-				TotalPages: -1,
-			},
-		}, nil
+		logrus.WithError(err).Error("Pagination data query failed")
+		// Return error to caller for proper 5xx handling
+		return nil, err
 	}
 
 	// 3. Determine actual row count from fetched data
@@ -89,51 +81,63 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 
 	// 4. Start parallel COUNT query for accurate totals
 	// For indexed queries (group_id, status, etc.), this should be fast
-	var totalItems int64 = -1
-	var totalPages int = -1
-	countDone := make(chan struct{})
+	// Use channel to safely communicate COUNT result between goroutines
+	type countResult struct {
+		totalItems int64
+		totalPages int
+	}
+	countDone := make(chan countResult, 1) // buffered to prevent goroutine leak
+
+	// Use request context to enable cancellation when client disconnects
+	countCtx, countCancel := context.WithTimeout(c.Request.Context(), CountQueryTimeout)
+	defer countCancel()
 
 	go func() {
-		defer close(countDone)
-		countCtx, countCancel := context.WithTimeout(context.Background(), CountQueryTimeout)
-		defer countCancel()
-
+		var total int64 = -1
 		countQuery := query.Session(&gorm.Session{NewDB: true})
-		err := countQuery.WithContext(countCtx).Count(&totalItems).Error
+		err := countQuery.WithContext(countCtx).Count(&total).Error
+
+		result := countResult{totalItems: -1, totalPages: -1}
 		if err != nil {
 			if context.DeadlineExceeded == err || countCtx.Err() == context.DeadlineExceeded {
 				logrus.Warn("Pagination COUNT query timed out - this may indicate missing indexes or very large dataset")
 			} else {
 				logrus.WithError(err).Warn("Pagination COUNT query failed")
 			}
-			totalItems = -1 // Mark as unknown
+		} else {
+			result.totalItems = total
+			if total >= 0 {
+				result.totalPages = int(math.Ceil(float64(total) / float64(pageSize)))
+			}
 		}
+		countDone <- result
 	}()
 
 	// 5. Smart total calculation based on available information
 	// If we're on the last page (no more data), we can calculate exact total without waiting for COUNT
+	var totalItems int64
+	var totalPages int
+
 	if !hasMore && actualCount < pageSize {
 		// Last page detected: calculate exact total
 		totalItems = int64(offset + actualCount)
 		totalPages = page
 		// Cancel COUNT query as we don't need it
-		dataCancel()
+		countCancel()
 	} else if !hasMore && actualCount == pageSize && page == 1 {
 		// Special case: exactly one page of data
 		totalItems = int64(pageSize)
 		totalPages = 1
+		// Cancel COUNT query as we don't need it
+		countCancel()
 	} else {
-		// Wait for COUNT with timeout to avoid blocking UI
+		// Wait for COUNT result with timeout to avoid blocking UI
 		select {
-		case <-countDone:
+		case result := <-countDone:
 			// COUNT completed successfully or failed
-			if totalItems >= 0 {
-				totalPages = int(math.Ceil(float64(totalItems) / float64(pageSize)))
-			} else {
-				// COUNT failed/timed out: estimate minimum pages based on current page
-				// We know there are at least (page) pages since we fetched data
-				totalItems = -1
-				totalPages = -1
+			totalItems = result.totalItems
+			totalPages = result.totalPages
+			if totalItems < 0 {
 				logrus.WithFields(logrus.Fields{
 					"page":     page,
 					"pageSize": pageSize,
@@ -184,35 +188,5 @@ func trimSliceToLen(dest any, length int) {
 	}
 	if val.Len() > length {
 		val.Set(val.Slice(0, length))
-	}
-}
-
-// countWithTimeout performs a COUNT query with a timeout to prevent blocking during heavy import operations
-func countWithTimeout(parentCtx context.Context, query *gorm.DB, count *int64) error {
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(parentCtx, CountQueryTimeout)
-	defer cancel()
-
-	// Create a channel to receive the result
-	type countResult struct {
-		err error
-	}
-	resultChan := make(chan countResult, 1)
-
-	// Run the count query in a goroutine
-	go func() {
-		// Use WithContext to make the query cancellable
-		err := query.WithContext(ctx).Count(count).Error
-		resultChan <- countResult{err: err}
-	}()
-
-	// Wait for either the query to complete or the timeout
-	select {
-	case <-ctx.Done():
-		// Timeout occurred
-		return ctx.Err()
-	case result := <-resultChan:
-		// Query completed
-		return result.err
 	}
 }
