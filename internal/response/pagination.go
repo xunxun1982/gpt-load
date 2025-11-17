@@ -34,7 +34,7 @@ type PaginatedResponse struct {
 }
 
 // Paginate performs optimized pagination on a GORM query and returns a standardized response.
-// Strategy: Fetch data first (Limit+1 to detect end), then COUNT in parallel with intelligent fallback.
+// Strategy: Execute data fetch and COUNT in true parallel, use Limit+1 to detect end and avoid COUNT when possible.
 // For indexed queries (e.g., WHERE group_id = ?), COUNT should be fast using index scans.
 func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, error) {
 	// 1. Parse pagination parameters from query string
@@ -53,34 +53,7 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 
 	offset := (page - 1) * pageSize
 
-	// 2. Fetch data with Limit+1 strategy to detect if there are more pages
-	// Use request context to enable proper cancellation when client disconnects
-	dataCtx, dataCancel := context.WithTimeout(c.Request.Context(), DataQueryTimeout)
-	defer dataCancel()
-
-	dataQuery := query.Session(&gorm.Session{NewDB: true})
-	// Fetch one extra row to detect if there are more pages
-	fetchLimit := pageSize + 1
-	err = dataQuery.WithContext(dataCtx).Limit(fetchLimit).Offset(offset).Find(dest).Error
-	if err != nil {
-		logrus.WithError(err).Error("Pagination data query failed")
-		// Return error to caller for proper 5xx handling
-		return nil, err
-	}
-
-	// 3. Determine actual row count from fetched data
-	// Use reflection to get slice length since dest is interface{}
-	actualCount := getSliceLen(dest)
-	hasMore := actualCount > pageSize
-
-	// Trim the extra row if we fetched pageSize+1
-	if hasMore {
-		trimSliceToLen(dest, pageSize)
-		actualCount = pageSize
-	}
-
-	// 4. Start parallel COUNT query for accurate totals
-	// For indexed queries (group_id, status, etc.), this should be fast
+	// 2. Start COUNT query in parallel (true parallelism with data fetch)
 	// Use channel to safely communicate COUNT result between goroutines
 	type countResult struct {
 		totalItems int64
@@ -99,9 +72,13 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 
 		result := countResult{totalItems: -1, totalPages: -1}
 		if err != nil {
-			if context.DeadlineExceeded == err || countCtx.Err() == context.DeadlineExceeded {
+			// Distinguish intentional cancellation from real errors
+			switch {
+			case err == context.DeadlineExceeded || countCtx.Err() == context.DeadlineExceeded:
 				logrus.Warn("Pagination COUNT query timed out - this may indicate missing indexes or very large dataset")
-			} else {
+			case err == context.Canceled || countCtx.Err() == context.Canceled:
+				// Expected when we cancel COUNT on last-page inference; no warning needed
+			default:
 				logrus.WithError(err).Warn("Pagination COUNT query failed")
 			}
 		} else {
@@ -113,15 +90,50 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 		countDone <- result
 	}()
 
+	// 3. Fetch data with Limit+1 strategy to detect if there are more pages
+	// Use request context to enable proper cancellation when client disconnects
+	dataCtx, dataCancel := context.WithTimeout(c.Request.Context(), DataQueryTimeout)
+	defer dataCancel()
+
+	dataQuery := query.Session(&gorm.Session{NewDB: true})
+	// Fetch one extra row to detect if there are more pages
+	fetchLimit := pageSize + 1
+	err = dataQuery.WithContext(dataCtx).Limit(fetchLimit).Offset(offset).Find(dest).Error
+	if err != nil {
+		logrus.WithError(err).Error("Pagination data query failed")
+		// Cancel COUNT query if data fetch fails
+		countCancel()
+		// Return error to caller for proper 5xx handling
+		return nil, err
+	}
+
+	// 4. Determine actual row count from fetched data
+	// Use reflection to get slice length since dest is interface{}
+	actualCount := getSliceLen(dest)
+	hasMore := actualCount > pageSize
+
+	// Trim the extra row if we fetched pageSize+1
+	if hasMore {
+		trimSliceToLen(dest, pageSize)
+		actualCount = pageSize
+	}
+
 	// 5. Smart total calculation based on available information
-	// If we're on the last page (no more data), we can calculate exact total without waiting for COUNT
+	// Only infer totals from offset+actualCount when we're certain we're on a valid last page
 	var totalItems int64
 	var totalPages int
 
-	if !hasMore {
+	// Avoid incorrect inference for out-of-range pages (page > 1 with 0 results)
+	// or when hasMore=true (not last page, need COUNT)
+	if !hasMore && !(page > 1 && actualCount == 0) {
 		// Last page detected: calculate exact total based on current page window
 		totalItems = int64(offset + actualCount)
-		totalPages = page
+		// Normalize empty dataset semantics: totalItems=0 yields totalPages=0
+		if totalItems == 0 {
+			totalPages = 0
+		} else {
+			totalPages = page
+		}
 		// Cancel COUNT query as we don't need it
 		countCancel()
 	} else {
@@ -165,12 +177,14 @@ func getSliceLen(dest any) int {
 }
 
 // trimSliceToLen trims a slice to the specified length using reflection
+// dest must be a pointer to a slice for this to work correctly
 func trimSliceToLen(dest any, length int) {
 	val := reflect.ValueOf(dest)
 	if val.Kind() == reflect.Ptr {
 		val = val.Elem()
 	}
-	if val.Kind() != reflect.Slice {
+	// Guard against non-slice types and non-settable values to prevent panic
+	if val.Kind() != reflect.Slice || !val.CanSet() {
 		return
 	}
 	if val.Len() > length {
