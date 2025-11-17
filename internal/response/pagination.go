@@ -131,24 +131,17 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 		// Cancel COUNT query as we don't need it
 		countCancel()
 	} else {
-		// Wait for COUNT result with timeout to avoid blocking UI
-		select {
-		case result := <-countDone:
-			// COUNT completed successfully or failed
-			totalItems = result.totalItems
-			totalPages = result.totalPages
-			if totalItems < 0 {
-				logrus.WithFields(logrus.Fields{
-					"page":     page,
-					"pageSize": pageSize,
-					"hasMore":  hasMore,
-				}).Warn("COUNT unavailable - returning data with unknown totals")
-			}
-		case <-time.After(CountQueryTimeout + 200*time.Millisecond):
-			// COUNT still running after extended timeout - return data with unknown totals
-			totalItems = -1
-			totalPages = -1
-			logrus.Warn("COUNT query exceeded maximum wait time - returning data with unknown totals")
+		// Wait for COUNT result - goroutine will always send result (success or timeout)
+		// Buffered channel ensures no goroutine leak even if we don't wait
+		result := <-countDone
+		totalItems = result.totalItems
+		totalPages = result.totalPages
+		if totalItems < 0 {
+			logrus.WithFields(logrus.Fields{
+				"page":     page,
+				"pageSize": pageSize,
+				"hasMore":  hasMore,
+			}).Warn("COUNT unavailable - returning data with unknown totals")
 		}
 	}
 
