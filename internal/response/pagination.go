@@ -118,16 +118,10 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 	var totalItems int64
 	var totalPages int
 
-	if !hasMore && actualCount < pageSize {
-		// Last page detected: calculate exact total
+	if !hasMore {
+		// Last page detected: calculate exact total based on current page window
 		totalItems = int64(offset + actualCount)
 		totalPages = page
-		// Cancel COUNT query as we don't need it
-		countCancel()
-	} else if !hasMore && actualCount == pageSize && page == 1 {
-		// Special case: exactly one page of data
-		totalItems = int64(pageSize)
-		totalPages = 1
 		// Cancel COUNT query as we don't need it
 		countCancel()
 	} else {
