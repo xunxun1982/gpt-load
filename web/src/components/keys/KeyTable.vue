@@ -28,7 +28,7 @@ import {
   useDialog,
   type MessageReactive,
 } from "naive-ui";
-import { h, ref, watch } from "vue";
+import { computed, h, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import KeyCreateDialog from "./KeyCreateDialog.vue";
 import KeyDeleteDialog from "./KeyDeleteDialog.vue";
@@ -52,7 +52,38 @@ const statusFilter = ref<"all" | "active" | "invalid">("all");
 const currentPage = ref(1);
 const pageSize = ref(12);
 const total = ref(0);
-const totalPages = ref(0);
+const totalPages = computed(() => {
+  if (total.value < 0) {
+    return -1;
+  }
+  return Math.ceil(total.value / pageSize.value);
+});
+
+// Display text for pagination info
+const totalRecordsText = computed(() => {
+  if (total.value < 0) {
+    return t("keys.calculatingTotal");
+  }
+  return t("keys.totalRecords", { total: total.value });
+});
+
+const pageInfoText = computed(() => {
+  if (totalPages.value < 0) {
+    return t("keys.pageInfoUnknown", { current: currentPage.value });
+  }
+  return t("keys.pageInfo", { current: currentPage.value, total: totalPages.value });
+});
+
+// Check if next page button should be disabled
+const isNextPageDisabled = computed(() => {
+  if (totalPages.value > 0 && currentPage.value >= totalPages.value) {
+    return true;
+  }
+  if (keys.value.length === 0) {
+    return true;
+  }
+  return false;
+});
 const dialog = useDialog();
 const confirmInput = ref("");
 
@@ -206,7 +237,6 @@ async function loadKeys() {
     });
     keys.value = result.items as KeyRow[];
     total.value = result.pagination.total_items;
-    totalPages.value = result.pagination.total_pages;
   } finally {
     loading.value = false;
   }
@@ -796,7 +826,7 @@ function resetPage() {
     <!-- 分页 -->
     <div class="pagination-container">
       <div class="pagination-info">
-        <span>{{ t("keys.totalRecords", { total }) }}</span>
+        <span>{{ totalRecordsText }}</span>
         <n-select
           v-model:value="pageSize"
           :options="[
@@ -815,13 +845,9 @@ function resetPage() {
           {{ t("common.previousPage") }}
         </n-button>
         <span class="page-info">
-          {{ t("keys.pageInfo", { current: currentPage, total: totalPages }) }}
+          {{ pageInfoText }}
         </span>
-        <n-button
-          size="small"
-          :disabled="currentPage >= totalPages"
-          @click="changePage(currentPage + 1)"
-        >
+        <n-button size="small" :disabled="isNextPageDisabled" @click="changePage(currentPage + 1)">
           {{ t("common.nextPage") }}
         </n-button>
       </div>

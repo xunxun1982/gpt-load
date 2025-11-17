@@ -65,7 +65,41 @@ const logs = ref<LogRow[]>([]);
 const currentPage = ref(1);
 const pageSize = ref(15);
 const total = ref(0);
-const totalPages = computed(() => Math.ceil(total.value / pageSize.value));
+const totalPages = computed(() => {
+  if (total.value < 0) {
+    return -1;
+  }
+  return Math.ceil(total.value / pageSize.value);
+});
+
+// Display text for pagination info
+const totalRecordsText = computed(() => {
+  if (total.value < 0) {
+    return t("logs.calculatingTotal");
+  }
+  return t("logs.totalRecords", { total: total.value });
+});
+
+const pageInfoText = computed(() => {
+  if (totalPages.value < 0) {
+    return t("logs.pageInfoUnknown", { current: currentPage.value });
+  }
+  return t("logs.pageInfo", { current: currentPage.value, total: totalPages.value });
+});
+
+// Check if next page button should be disabled
+const isNextPageDisabled = computed(() => {
+  // If we know the total pages and we're at or beyond it, disable
+  if (totalPages.value > 0 && currentPage.value >= totalPages.value) {
+    return true;
+  }
+  // If we have no data on current page, also disable
+  if (logs.value.length === 0) {
+    return true;
+  }
+  // Otherwise, allow user to try (backend will handle if there's no more data)
+  return false;
+});
 
 // Modal for viewing request/response details
 const showDetailModal = ref(false);
@@ -679,7 +713,7 @@ const deselectAllColumns = () => {
         <!-- 分页 -->
         <div class="pagination-container">
           <div class="pagination-info">
-            <span>{{ t("logs.totalRecords", { total }) }}</span>
+            <span>{{ totalRecordsText }}</span>
             <n-select
               v-model:value="pageSize"
               :options="[
@@ -702,11 +736,11 @@ const deselectAllColumns = () => {
               {{ t("logs.previousPage") }}
             </n-button>
             <span class="page-info">
-              {{ t("logs.pageInfo", { current: currentPage, total: totalPages }) }}
+              {{ pageInfoText }}
             </span>
             <n-button
               size="small"
-              :disabled="currentPage >= totalPages"
+              :disabled="isNextPageDisabled"
               @click="changePage(currentPage + 1)"
             >
               {{ t("logs.nextPage") }}
