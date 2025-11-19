@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/encryption"
+	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
 	"gpt-load/internal/services"
@@ -213,24 +213,24 @@ type GroupExportData struct {
 
 // GroupExportInfo represents group export information.
 type GroupExportInfo struct {
-	Name               string              `json:"name"`
-	DisplayName        string              `json:"display_name"`
-	Description         string              `json:"description"`
-	GroupType           string              `json:"group_type"`
-	ChannelType         string              `json:"channel_type"`
-	Enabled             bool                `json:"enabled"`
-	TestModel           string              `json:"test_model"`
-	ValidationEndpoint  string              `json:"validation_endpoint"`
-	Upstreams           json.RawMessage     `json:"upstreams"`
-	ParamOverrides      map[string]any      `json:"param_overrides"`
-	Config              map[string]any      `json:"config"`
-	HeaderRules         []models.HeaderRule `json:"header_rules"`
-	ModelMapping        string              `json:"model_mapping,omitempty"`         // Deprecated: for backward compatibility
-	ModelRedirectRules  map[string]string   `json:"model_redirect_rules,omitempty"`  // New field
-	ModelRedirectStrict bool                `json:"model_redirect_strict,omitempty"` // New field
-	PathRedirects       []models.PathRedirectRule `json:"path_redirects,omitempty"`  // Path redirect rules
-	ProxyKeys           string              `json:"proxy_keys"`
-	Sort                int                 `json:"sort"`
+	Name                string                    `json:"name"`
+	DisplayName         string                    `json:"display_name"`
+	Description         string                    `json:"description"`
+	GroupType           string                    `json:"group_type"`
+	ChannelType         string                    `json:"channel_type"`
+	Enabled             bool                      `json:"enabled"`
+	TestModel           string                    `json:"test_model"`
+	ValidationEndpoint  string                    `json:"validation_endpoint"`
+	Upstreams           json.RawMessage           `json:"upstreams"`
+	ParamOverrides      map[string]any            `json:"param_overrides"`
+	Config              map[string]any            `json:"config"`
+	HeaderRules         []models.HeaderRule       `json:"header_rules"`
+	ModelMapping        string                    `json:"model_mapping,omitempty"`         // Deprecated: for backward compatibility
+	ModelRedirectRules  map[string]string         `json:"model_redirect_rules,omitempty"`  // New field
+	ModelRedirectStrict bool                      `json:"model_redirect_strict,omitempty"` // New field
+	PathRedirects       []models.PathRedirectRule `json:"path_redirects,omitempty"`        // Path redirect rules
+	ProxyKeys           string                    `json:"proxy_keys"`
+	Sort                int                       `json:"sort"`
 }
 
 // KeyExportInfo represents key export information.
@@ -389,12 +389,73 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		return
 	}
 
+	// Convert handler format to service format
+	// Convert HeaderRules back to JSON for storage using common utility function
+	headerRulesJSON := ConvertHeaderRulesToJSON(importData.Group.HeaderRules)
+
+	// Convert PathRedirects back to JSON for storage using common utility function
+	pathRedirectsJSON := ConvertPathRedirectsToJSON(importData.Group.PathRedirects)
+
+	// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
+	modelRedirectRules := ConvertModelRedirectRulesToImport(importData.Group.ModelRedirectRules)
+
+	serviceGroupData := services.GroupExportData{
+		Group: models.Group{
+			Name:                importData.Group.Name,
+			DisplayName:         importData.Group.DisplayName,
+			Description:         importData.Group.Description,
+			GroupType:           importData.Group.GroupType,
+			ChannelType:         importData.Group.ChannelType,
+			Enabled:             importData.Group.Enabled,
+			TestModel:           importData.Group.TestModel,
+			ValidationEndpoint:  importData.Group.ValidationEndpoint,
+			Upstreams:           []byte(importData.Group.Upstreams),
+			ParamOverrides:      importData.Group.ParamOverrides,
+			Config:              importData.Group.Config,
+			HeaderRules:         headerRulesJSON,
+			ModelMapping:        importData.Group.ModelMapping,
+			ModelRedirectRules:  modelRedirectRules,
+			ModelRedirectStrict: importData.Group.ModelRedirectStrict,
+			PathRedirects:       pathRedirectsJSON,
+			ProxyKeys:           importData.Group.ProxyKeys,
+			Sort:                importData.Group.Sort,
+		},
+		Keys:      make([]services.KeyExportInfo, 0, len(importData.Keys)),
+		SubGroups: make([]services.SubGroupInfo, 0, len(importData.SubGroups)),
+	}
+
+	// Convert keys; if input is plaintext, encrypt before passing to service
+	for _, k := range importData.Keys {
+		kv := k.KeyValue
+		if inputIsPlain {
+			if enc, e := s.EncryptionSvc.Encrypt(kv); e == nil {
+				kv = enc
+			} else {
+				logrus.WithError(e).WithField("group", importData.Group.Name).Warn("Failed to encrypt plaintext key during import, skipping")
+				continue
+			}
+		}
+		serviceGroupData.Keys = append(serviceGroupData.Keys, services.KeyExportInfo{
+			KeyValue: kv,
+			Status:   k.Status,
+		})
+	}
+
+	// Convert sub-groups
+	for _, sg := range importData.SubGroups {
+		serviceGroupData.SubGroups = append(serviceGroupData.SubGroups, services.SubGroupInfo{
+			GroupName: sg.GroupName,
+			Weight:    sg.Weight,
+		})
+	}
+
 	// Use transaction to ensure data consistency, rollback on failure
 	var createdGroup models.Group
 	var createdGroupID uint
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		createdGroupID, err = importGroupFromExportData(tx, s.ExportImportService, s.EncryptionSvc, s.BulkImportService, importData.Group, importData.Keys, importData.SubGroups, inputIsPlain)
+		// Use the centralized ImportGroup service method
+		createdGroupID, err = s.ExportImportService.ImportGroup(tx, &serviceGroupData)
 		if err != nil {
 			return err
 		}
