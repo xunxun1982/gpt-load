@@ -177,14 +177,22 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 
-	// Read request body
-	bodyBytes, err := io.ReadAll(c.Request.Body)
+	// Read request body using buffer pool to reduce GC overhead
+	buf := utils.GetBuffer()
+	defer utils.PutBuffer(buf)
+
+	_, err = buf.ReadFrom(c.Request.Body)
 	if err != nil {
 		logrus.Errorf("Failed to read request body: %v", err)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "Failed to read request body"))
 		return
 	}
 	c.Request.Body.Close()
+
+	// Create a copy of the body bytes as the buffer will be returned to the pool
+	// This avoids the dynamic resizing allocations of io.ReadAll
+	bodyBytes := make([]byte, buf.Len())
+	copy(bodyBytes, buf.Bytes())
 
 	// For GET requests (like /v1/models), skip body processing
 	var finalBodyBytes []byte
