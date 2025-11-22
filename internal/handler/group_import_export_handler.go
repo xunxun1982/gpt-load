@@ -22,10 +22,10 @@ import (
 )
 
 // importGroupFromExportData imports a group from export data with optimized bulk import.
-// This function uses the centralized name generation from ExportImportService
-func importGroupFromExportData(tx *gorm.DB, exportImportSvc *services.ExportImportService, encryptionSvc encryption.Service, bulkImportSvc *services.BulkImportService, groupInfo GroupExportInfo, keys []KeyExportInfo, subGroups []SubGroupExportInfo, inputIsPlain bool) (uint, error) {
-	// Use the centralized unique name generation from ExportImportService
-	groupName, err := exportImportSvc.GenerateUniqueGroupName(tx, groupInfo.Name)
+// This function uses the centralized name generation from ImportExportService
+func importGroupFromExportData(tx *gorm.DB, importExportSvc *services.ImportExportService, encryptionSvc encryption.Service, bulkImportSvc *services.BulkImportService, groupInfo GroupExportInfo, keys []KeyExportInfo, subGroups []SubGroupExportInfo, inputIsPlain bool) (uint, error) {
+	// Use the centralized unique name generation from ImportExportService
+	groupName, err := importExportSvc.GenerateUniqueGroupName(tx, groupInfo.Name)
 	if err != nil {
 		return 0, err
 	}
@@ -253,9 +253,9 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		return
 	}
 
-	// Use the new ExportImportService to export the group
+	// Use the new ImportExportService to export the group
 	// This fixes the FindInBatches limitation that only exports 2000 records
-	groupData, err := s.ExportImportService.ExportGroup(uint(id))
+	groupData, err := s.ImportExportService.ExportGroup(uint(id))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.group_not_found")
@@ -455,7 +455,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
 		// Use the centralized ImportGroup service method
-		createdGroupID, err = s.ExportImportService.ImportGroup(tx, &serviceGroupData)
+		createdGroupID, err = s.ImportExportService.ImportGroup(tx, &serviceGroupData)
 		if err != nil {
 			return err
 		}

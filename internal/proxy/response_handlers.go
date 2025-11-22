@@ -10,39 +10,17 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// capturedResponseWriter wraps gin.ResponseWriter to capture response body
-type capturedResponseWriter struct {
-	gin.ResponseWriter
-	body       *bytes.Buffer
-	maxCapture int // Maximum bytes to capture (0 = no limit)
-	captured   int // Bytes captured so far
-}
+// maxResponseCaptureBytes is the maximum size of response body to capture for logging
+const maxResponseCaptureBytes = 65000
 
-// Write captures data while writing to underlying writer
-func (w *capturedResponseWriter) Write(data []byte) (int, error) {
-	// Write to client first
-	n, err := w.ResponseWriter.Write(data)
-
-	// Capture data if within limits
-	if w.maxCapture == 0 || w.captured < w.maxCapture {
-		toCapture := data[:n]
-		if w.maxCapture > 0 && w.captured+n > w.maxCapture {
-			toCapture = data[:w.maxCapture-w.captured]
+// shouldCaptureResponse checks if response body capturing is enabled for the request
+func shouldCaptureResponse(c *gin.Context) bool {
+	if groupVal, exists := c.Get("group"); exists {
+		if group, ok := groupVal.(*models.Group); ok {
+			return group.EffectiveConfig.EnableRequestBodyLogging
 		}
-		w.body.Write(toCapture)
-		w.captured += len(toCapture)
 	}
-
-	return n, err
-}
-
-// newCapturedWriter creates a new response writer that captures data
-func newCapturedWriter(w gin.ResponseWriter, maxCapture int) *capturedResponseWriter {
-	return &capturedResponseWriter{
-		ResponseWriter: w,
-		body:           bytes.NewBuffer(make([]byte, 0, 4096)),
-		maxCapture:     maxCapture,
-	}
+	return false
 }
 
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
@@ -59,12 +37,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	}
 
 	// Check if response body capturing is enabled
-	shouldCapture := false
-	if groupVal, exists := c.Get("group"); exists {
-		if group, ok := groupVal.(*models.Group); ok {
-			shouldCapture = group.EffectiveConfig.EnableRequestBodyLogging
-		}
-	}
+	shouldCapture := shouldCaptureResponse(c)
 
 	var responseCapture *bytes.Buffer
 	if shouldCapture {
@@ -80,11 +53,11 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 				return
 			}
 
-			// Capture response data if enabled (up to 65KB)
-			if responseCapture != nil && responseCapture.Len() < 65000 {
+			// Capture response data if enabled (up to max capture limit)
+			if responseCapture != nil && responseCapture.Len() < maxResponseCaptureBytes {
 				toWrite := buf[:n]
-				if responseCapture.Len()+n > 65000 {
-					toWrite = buf[:65000-responseCapture.Len()]
+				if responseCapture.Len()+n > maxResponseCaptureBytes {
+					toWrite = buf[:maxResponseCaptureBytes-responseCapture.Len()]
 				}
 				responseCapture.Write(toWrite)
 			}
@@ -108,12 +81,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 
 func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response) {
 	// Check if response body capturing is enabled
-	shouldCapture := false
-	if groupVal, exists := c.Get("group"); exists {
-		if group, ok := groupVal.(*models.Group); ok {
-			shouldCapture = group.EffectiveConfig.EnableRequestBodyLogging
-		}
-	}
+	shouldCapture := shouldCaptureResponse(c)
 
 	if shouldCapture {
 		// Read response body and capture it
@@ -123,9 +91,9 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			return
 		}
 
-		// Store captured response (truncate to 65KB)
-		if len(body) > 65000 {
-			c.Set("response_body", string(body[:65000]))
+		// Store captured response (truncate to max capture limit)
+		if len(body) > maxResponseCaptureBytes {
+			c.Set("response_body", string(body[:maxResponseCaptureBytes]))
 		} else {
 			c.Set("response_body", string(body))
 		}

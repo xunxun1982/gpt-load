@@ -854,13 +854,13 @@ func (ps *ProxyServer) logRequest(
 	var requestBodyToLog, responseBodyToLog, userAgent string
 
 	if group.EffectiveConfig.EnableRequestBodyLogging {
-		requestBodyToLog = utils.TruncateString(string(bodyBytes), 65000)
+		requestBodyToLog = utils.TruncateString(string(bodyBytes), maxResponseCaptureBytes)
 		userAgent = c.Request.UserAgent()
 
 		// Get captured response body from context (if available)
 		if responseBody, exists := c.Get("response_body"); exists {
 			if responseBodyStr, ok := responseBody.(string); ok {
-				responseBodyToLog = utils.TruncateString(responseBodyStr, 65000)
+				responseBodyToLog = utils.TruncateString(responseBodyStr, maxResponseCaptureBytes)
 			}
 		}
 	}
