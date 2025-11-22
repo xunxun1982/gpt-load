@@ -374,13 +374,11 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		}
 
 		var statusCode int
-		var errorMessage string
 		var parsedError string
 
 		if err != nil {
 			statusCode = 500
-			errorMessage = err.Error()
-			parsedError = errorMessage
+			parsedError = err.Error()
 			logrus.Debugf("Request failed (attempt %d/%d) for key %s: %v", retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), err)
 		} else {
 			// HTTP-level error (status >= 400)
@@ -392,7 +390,6 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			}
 
 			errorBody = handleGzipCompression(resp, errorBody)
-			errorMessage = string(errorBody)
 			parsedError = app_errors.ParseUpstreamError(errorBody)
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), parsedError)
 		}
@@ -412,10 +409,10 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		// If this is the last attempt, return error directly without recursion
 		if isLastAttempt {
 			var errorJSON map[string]any
-			if err := json.Unmarshal([]byte(errorMessage), &errorJSON); err == nil {
+			if err := json.Unmarshal([]byte(parsedError), &errorJSON); err == nil {
 				c.JSON(statusCode, errorJSON)
 			} else {
-				response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", errorMessage))
+				response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", parsedError))
 			}
 			return
 		}
@@ -672,13 +669,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 
 		var statusCode int
-		var errorMessage string
 		var parsedError string
 
 		if err != nil {
 			statusCode = 500
-			errorMessage = err.Error()
-			parsedError = errorMessage
+			parsedError = err.Error()
 			logrus.Debugf("Request failed (attempt %d/%d) for key %s: %v", retryCtx.attemptCount+1, maxRetries, utils.MaskAPIKey(apiKey.KeyValue), err)
 		} else {
 			// HTTP-level error (status >= 400)
@@ -690,7 +685,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}
 
 			errorBody = handleGzipCompression(resp, errorBody)
-			errorMessage = string(errorBody)
 			parsedError = app_errors.ParseUpstreamError(errorBody)
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCtx.attemptCount+1, maxRetries, utils.MaskAPIKey(apiKey.KeyValue), parsedError)
 		}
