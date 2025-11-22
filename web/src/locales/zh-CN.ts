@@ -553,6 +553,7 @@ export default {
     upstreamAddress: "上游地址",
     proxyServer: "代理服务器",
     requestContent: "请求内容",
+    responseContent: "响应内容",
     errorInfo: "错误信息",
     customColumns: "自定义列",
   },
