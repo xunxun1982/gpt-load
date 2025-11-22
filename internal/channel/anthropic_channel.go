@@ -37,6 +37,9 @@ func newAnthropicChannel(f *Factory, group *models.Group) (ChannelProxy, error) 
 
 // ModifyRequest sets the required headers for the Anthropic API.
 func (ch *AnthropicChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey, group *models.Group) {
+	// Dual authentication: set both Authorization and x-api-key headers
+	// Anthropic API supports both; some proxies may only recognize one
+	req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
 	req.Header.Set("x-api-key", apiKey.KeyValue)
 	req.Header.Set("anthropic-version", "2023-06-01")
 }
@@ -110,6 +113,8 @@ func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIK
 	if err != nil {
 		return false, fmt.Errorf("failed to create validation request: %w", err)
 	}
+	// Apply dual authentication strategy consistent with ModifyRequest
+	req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
 	req.Header.Set("x-api-key", apiKey.KeyValue)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Content-Type", "application/json")
