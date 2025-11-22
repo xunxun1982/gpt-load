@@ -14,18 +14,18 @@ import (
 	"gorm.io/gorm"
 )
 
-// ExportImportService provides unified import/export functionality
+// ImportExportService provides unified import/export functionality
 // This service handles both group-level and system-level import/export operations
 // It solves the FindInBatches limitation and reduces code duplication
-type ExportImportService struct {
+type ImportExportService struct {
 	db                *gorm.DB
 	bulkImportService *BulkImportService
 	encryptionService encryption.Service
 }
 
-// NewExportImportService creates a new export/import service
-func NewExportImportService(db *gorm.DB, bulkImport *BulkImportService, encryptionSvc encryption.Service) *ExportImportService {
-	return &ExportImportService{
+// NewImportExportService creates a new import/export service
+func NewImportExportService(db *gorm.DB, bulkImport *BulkImportService, encryptionSvc encryption.Service) *ImportExportService {
+	return &ImportExportService{
 		db:                db,
 		bulkImportService: bulkImport,
 		encryptionService: encryptionSvc,
@@ -35,7 +35,7 @@ func NewExportImportService(db *gorm.DB, bulkImport *BulkImportService, encrypti
 // GenerateUniqueGroupName generates a unique group name by appending a random suffix if needed
 // This is the centralized function for all group name conflict resolution
 // It appends a random 4-character suffix (e.g., "api-keys" -> "api-keysx9k2")
-func (s *ExportImportService) GenerateUniqueGroupName(tx *gorm.DB, baseName string) (string, error) {
+func (s *ImportExportService) GenerateUniqueGroupName(tx *gorm.DB, baseName string) (string, error) {
 	groupName := baseName
 	maxAttempts := 10
 
@@ -86,7 +86,7 @@ type ExportKeysResult struct {
 
 // ExportKeysForGroup exports all keys for a specific group
 // This method fixes the FindInBatches limitation by using manual offset pagination
-func (s *ExportImportService) ExportKeysForGroup(groupID uint) (*ExportKeysResult, error) {
+func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResult, error) {
 	var allKeys []KeyExportInfo
 	offset := 0
 	const batchSize = 2000
@@ -174,7 +174,7 @@ func (s *ExportImportService) ExportKeysForGroup(groupID uint) (*ExportKeysResul
 
 // ExportKeysForGroups exports keys for multiple groups
 // Returns a map of group ID to keys
-func (s *ExportImportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]KeyExportInfo, error) {
+func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]KeyExportInfo, error) {
 	if len(groupIDs) == 0 {
 		return make(map[uint][]KeyExportInfo), nil
 	}
@@ -267,7 +267,7 @@ func (s *ExportImportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 }
 
 // ImportKeys imports keys for a group using the bulk import service
-func (s *ExportImportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyExportInfo) error {
+func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyExportInfo) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -331,7 +331,7 @@ type SubGroupInfo struct {
 }
 
 // ExportGroup exports a complete group with keys and sub-groups
-func (s *ExportImportService) ExportGroup(groupID uint) (*GroupExportData, error) {
+func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error) {
 	var group models.Group
 	if err := s.db.First(&group, groupID).Error; err != nil {
 		return nil, fmt.Errorf("failed to find group: %w", err)
@@ -387,7 +387,7 @@ func (s *ExportImportService) ExportGroup(groupID uint) (*GroupExportData, error
 }
 
 // ImportGroup imports a complete group with keys and sub-groups
-func (s *ExportImportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (uint, error) {
+func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (uint, error) {
 	// Use the centralized unique name generation function
 	groupName, err := s.GenerateUniqueGroupName(tx, data.Group.Name)
 	if err != nil {
@@ -484,7 +484,7 @@ type SystemExportData struct {
 }
 
 // ExportSystem exports the entire system configuration
-func (s *ExportImportService) ExportSystem() (*SystemExportData, error) {
+func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 	// Export system settings
 	var settings []models.SystemSetting
 	if err := s.db.Find(&settings).Error; err != nil {
@@ -569,7 +569,7 @@ func (s *ExportImportService) ExportSystem() (*SystemExportData, error) {
 }
 
 // ImportSystem imports the entire system configuration
-func (s *ExportImportService) ImportSystem(tx *gorm.DB, data *SystemExportData) error {
+func (s *ImportExportService) ImportSystem(tx *gorm.DB, data *SystemExportData) error {
 	// Count settings to import for logging
 	settingsCount := len(data.SystemSettings)
 	groupsCount := len(data.Groups)

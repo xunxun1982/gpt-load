@@ -951,6 +951,29 @@ const deselectAllColumns = () => {
                   {{ formatJsonString(selectedLog.request_body) }}
                 </div>
               </div>
+
+              <div class="compact-field" v-if="selectedLog.response_body">
+                <div class="compact-field-header">
+                  <span class="compact-field-title">{{ t("logs.responseContent") }}</span>
+                  <n-button
+                    size="tiny"
+                    text
+                    @click="
+                      copyContent(
+                        formatJsonString(selectedLog.response_body),
+                        t('logs.responseContent')
+                      )
+                    "
+                  >
+                    <template #icon>
+                      <n-icon :component="CopyOutline" />
+                    </template>
+                  </n-button>
+                </div>
+                <div class="compact-field-content">
+                  {{ formatJsonString(selectedLog.response_body) }}
+                </div>
+              </div>
             </div>
           </n-card>
 

@@ -33,9 +33,9 @@ func (s *Server) ExportAll(c *gin.Context) {
 	// Determine export mode: plain or encrypted (default encrypted)
 	exportMode := GetExportMode(c)
 
-	// Use the new ExportImportService to export the entire system
+	// Use the new ImportExportService to export the entire system
 	// This fixes the FindInBatches limitation that only exports 2000 records
-	systemData, err := s.ExportImportService.ExportSystem()
+	systemData, err := s.ImportExportService.ExportSystem()
 	if err != nil {
 		logrus.WithError(err).Error("Failed to export system")
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.export_failed")
@@ -274,9 +274,9 @@ func (s *Server) ImportAll(c *gin.Context) {
 
 	// Use transaction to ensure data consistency
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		// Use the unified ExportImportService for system import
+		// Use the unified ImportExportService for system import
 		// This ensures consistent handling of all imports
-		if err := s.ExportImportService.ImportSystem(tx, serviceImportData); err != nil {
+		if err := s.ImportExportService.ImportSystem(tx, serviceImportData); err != nil {
 			return err
 		}
 		return nil
@@ -355,7 +355,7 @@ func (s *Server) ImportSystemSettings(c *gin.Context) {
 
 	// Use transaction to ensure data consistency
 	err = s.DB.Transaction(func(tx *gorm.DB) error {
-		// Import system settings using the same logic as ExportImportService
+		// Import system settings using the same logic as ImportExportService
 		updatedSettings := 0
 		createdSettings := 0
 
@@ -503,10 +503,10 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	// Use transaction to ensure data consistency
 	var importedGroups []models.Group
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
-		// Import all groups using the unified ExportImportService
+		// Import all groups using the unified ImportExportService
 		importedCount := 0
 		for _, groupData := range serviceGroups {
-			groupID, err := s.ExportImportService.ImportGroup(tx, &groupData)
+			groupID, err := s.ImportExportService.ImportGroup(tx, &groupData)
 			if err != nil {
 				// Log error but continue with other groups
 				logrus.WithError(err).Warnf("Failed to import group %s, skipping", groupData.Group.Name)

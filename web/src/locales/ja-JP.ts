@@ -575,6 +575,7 @@ export default {
     upstreamAddress: "アップストリームアドレス",
     proxyServer: "プロキシサーバー",
     requestContent: "リクエスト内容",
+    responseContent: "レスポンス内容",
     errorInfo: "エラー情報",
     customColumns: "カラムのカスタマイズ",
   },

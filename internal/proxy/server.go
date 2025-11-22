@@ -248,6 +248,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 ) {
 	cfg := group.EffectiveConfig
 
+	// Store group in context for response handlers to access
+	c.Set("group", group)
+
 	apiKey, err := ps.keyProvider.SelectKey(group.ID)
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCount+1, err)
@@ -532,6 +535,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 
 	cfg := group.EffectiveConfig
+
+	// Store group in context for response handlers to access
+	c.Set("group", group)
 
 	apiKey, err := ps.keyProvider.SelectKey(group.ID)
 	if err != nil {
@@ -845,11 +851,18 @@ func (ps *ProxyServer) logRequest(
 		return
 	}
 
-	var requestBodyToLog, userAgent string
+	var requestBodyToLog, responseBodyToLog, userAgent string
 
 	if group.EffectiveConfig.EnableRequestBodyLogging {
-		requestBodyToLog = utils.TruncateString(string(bodyBytes), 65000)
+		requestBodyToLog = utils.TruncateString(string(bodyBytes), maxResponseCaptureBytes)
 		userAgent = c.Request.UserAgent()
+
+		// Get captured response body from context (if available)
+		if responseBody, exists := c.Get("response_body"); exists {
+			if responseBodyStr, ok := responseBody.(string); ok {
+				responseBodyToLog = utils.TruncateString(responseBodyStr, maxResponseCaptureBytes)
+			}
+		}
 	}
 
 	duration := time.Since(startTime).Milliseconds()
@@ -880,6 +893,7 @@ func (ps *ProxyServer) logRequest(
 		IsStream:     isStream,
 		UpstreamAddr: utils.TruncateString(upstreamAddrWithProxy, 500),
 		RequestBody:  requestBodyToLog,
+		ResponseBody: responseBodyToLog,
 	}
 
 	// Set parent group

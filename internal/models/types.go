@@ -166,6 +166,7 @@ type RequestLog struct {
 	UpstreamAddr    string    `gorm:"type:varchar(500)" json:"upstream_addr"`
 	IsStream        bool      `gorm:"not null" json:"is_stream"`
 	RequestBody     string    `gorm:"type:text" json:"request_body"`
+	ResponseBody    string    `gorm:"type:text" json:"response_body"` // Response body for debugging (only stored when logging is enabled)
 }
 
 // StatCard represents a single statistics card data for the dashboard.

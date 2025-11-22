@@ -573,6 +573,7 @@ export default {
     upstreamAddress: "Upstream Address",
     proxyServer: "Proxy Server",
     requestContent: "Request Content",
+    responseContent: "Response Content",
     errorInfo: "Error Information",
     customColumns: "Custom Columns",
   },
