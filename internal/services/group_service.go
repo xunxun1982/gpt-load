@@ -356,10 +356,14 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 	}
 	s.groupListCacheMu.RUnlock()
 
-// Cache miss, fetch from database without timeout for reliability
-// Group list queries should be fast with proper indexes
-groups := make([]models.Group, 0, 100)
-	if err := s.db.WithContext(ctx).Order("sort asc, id desc").Find(&groups).Error; err != nil {
+	// Cache miss, fetch from database with timeout for reliability
+	// Group list queries should be fast with proper indexes
+	groups := make([]models.Group, 0, 100)
+
+	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
+	defer cancel()
+
+	if err := s.db.WithContext(queryCtx).Order("sort asc, id desc").Find(&groups).Error; err != nil {
 		// On failure, return stale cache if available to keep UI responsive
 		s.groupListCacheMu.RLock()
 		if s.groupListCache != nil {
@@ -938,23 +942,22 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 	return &newGroup, nil
 }
 
-// GetGroupStats returns aggregated usage statistics for a group.
 func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupStats, error) {
 	var group models.Group
-// Try cache first to avoid DB under heavy writes
-if cached, err := s.groupManager.GetGroupByID(groupID); err == nil && cached != nil {
-	group = *cached
-} else {
-	// Short DB lookup with small timeout
-	qctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
-	defer cancel()
-	if err := s.db.WithContext(qctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
-		return nil, app_errors.ParseDBError(err)
+	// Try cache first to avoid DB under heavy writes
+	if cached, err := s.groupManager.GetGroupByID(groupID); err == nil && cached != nil {
+		group = *cached
+	} else {
+		// Short DB lookup with small, configurable timeout
+		qctx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
+		defer cancel()
+		if err := s.db.WithContext(qctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
+			return nil, app_errors.ParseDBError(err)
+		}
 	}
-}
-if group.ID == 0 {
-	return nil, app_errors.ErrResourceNotFound
-}
+	if group.ID == 0 {
+		return nil, app_errors.ErrResourceNotFound
+	}
 
 	// Select different statistics logic based on group type
 	if group.GroupType == "aggregate" {
@@ -1007,7 +1010,7 @@ func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID 
 	time7dAgo := endTime.Add(-7 * 24 * time.Hour)
 	time30dAgo := endTime.Add(-30 * 24 * time.Hour)
 
-// Single query with CASE WHEN for all three time ranges
+	// Single query with CASE WHEN for all three time ranges
 	query := `
 		SELECT
 			COALESCE(SUM(CASE WHEN time >= ? THEN success_count ELSE 0 END), 0) as success24h,
@@ -1021,7 +1024,7 @@ func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID 
 	`
 
 	// Add a timeout to avoid blocking during heavy writes
-queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
 	defer cancel()
 	type qres struct{ err error }
 	done := make(chan qres, 1)
@@ -1069,7 +1072,7 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 	// Cache miss - query database with timeout to avoid blocking during bulk inserts
 	// Create a context with timeout for the query
 	// Use a longer timeout to ensure data is fetched properly during import operations
-queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	// Use index-friendly COUNT queries to leverage composite indexes and avoid full table scans
@@ -1293,12 +1296,13 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 		return nil, NewI18nError(app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
 	}
 
-return finalMap, nil
+	return finalMap, nil
 }
 
 // normalizePathRedirects validates and normalizes path redirect rules.
 // Keeps only non-empty pairs, trims spaces, and deduplicates by `from` keeping first occurrence.
 func (s *GroupService) normalizePathRedirects(rules []models.PathRedirectRule) (datatypes.JSON, error) {
+	// ...
 	if len(rules) == 0 {
 		return datatypes.JSON("[]"), nil
 	}

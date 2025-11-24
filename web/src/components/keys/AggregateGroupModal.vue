@@ -15,6 +15,7 @@ import {
   NSelect,
   useMessage,
   type FormRules,
+  type FormInst,
 } from "naive-ui";
 import { reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -38,7 +39,7 @@ const emit = defineEmits<Emits>();
 const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
-const formRef = ref();
+const formRef = ref<FormInst | null>(null);
 
 // Channel type options
 const channelTypeOptions = [
@@ -102,6 +103,7 @@ watch(
 // Reset form
 function resetForm() {
   Object.assign(formData, defaultFormData);
+  formRef.value?.restoreValidation();
 }
 
 // Load group data (edit mode)
@@ -115,7 +117,7 @@ function loadGroupData() {
     display_name: props.group.display_name || "",
     description: props.group.description || "",
     channel_type: props.group.channel_type || "openai",
-    sort: props.group.sort || 1,
+    sort: props.group.sort ?? 1,
     proxy_keys: props.group.proxy_keys || "",
     max_retries: props.group.config?.max_retries ?? 0,
   });
@@ -124,6 +126,20 @@ function loadGroupData() {
 // Close modal
 function handleClose() {
   emit("update:show", false);
+}
+
+async function executeGroupMutation(
+  action: "create" | "update",
+  fn: () => Promise<Group>
+): Promise<Group | null> {
+  try {
+    return await fn();
+  } catch (error) {
+    console.error(`Error ${action} group:`, error);
+    // Handle API errors with user-friendly message
+    message.error(t("common.operationFailed"));
+    return null;
+  }
 }
 
 // Submit form
@@ -152,35 +168,32 @@ async function handleSubmit() {
       proxy_keys: formData.proxy_keys,
       group_type: "aggregate" as const,
       config: {
-        max_retries: formData.max_retries,
+        max_retries: formData.max_retries ?? 0,
       },
     };
 
     let result: Group;
     if (props.group) {
       // Edit mode
-      if (!props.group.id) {
+      const groupId = props.group.id;
+      if (!groupId) {
         message.error(t("keys.invalidGroup"));
         return;
       }
-      try {
-        result = await keysApi.updateGroup(props.group.id, submitData);
-      } catch (error) {
-        console.error("Error updating group:", error); // Log error for debugging
-        // Handle API errors with user-friendly message
-        message.error(t("common.operationFailed"));
+      const updated = await executeGroupMutation("update", () =>
+        keysApi.updateGroup(groupId, submitData)
+      );
+      if (!updated) {
         return;
       }
+      result = updated;
     } else {
       // Create mode
-      try {
-        result = await keysApi.createGroup(submitData);
-      } catch (error) {
-        console.error("Error creating group:", error); // Log error for debugging
-        // Handle API errors with user-friendly message
-        message.error(t("common.operationFailed"));
+      const created = await executeGroupMutation("create", () => keysApi.createGroup(submitData));
+      if (!created) {
         return;
       }
+      result = created;
     }
 
     emit("success", result);

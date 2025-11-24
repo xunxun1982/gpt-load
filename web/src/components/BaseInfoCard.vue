@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DashboardStatsResponse } from "@/types/models";
 import { NCard, NGrid, NGridItem, NSpace, NTag, NTooltip } from "naive-ui";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -38,46 +38,48 @@ const formatTrend = (trend: number): string => {
 };
 
 // Update animated values when stats change
-const updateAnimatedValues = () => {
-  if (stats.value) {
-    setTimeout(() => {
-      animatedValues.value = {
-        key_count: (() => {
-          const active = stats.value?.key_count?.value ?? 0;
-          const invalid = stats.value?.key_count?.sub_value ?? 0;
-          const total = active + invalid;
-          const denom = Math.max(total, 1);
-          return active / denom;
-        })(),
-        rpm: (() => {
-          const trend = stats.value?.rpm?.trend ?? 0;
-          const clamped = Math.max(Math.min(trend, 100), -100);
-          // Map trend from [-100, 100] to [0, 1], with 0 change at 0.5
-          return (clamped + 100) / 200;
-        })(),
-        request_count: (() => {
-          const trend = stats.value?.request_count?.trend ?? 0;
-          const clamped = Math.max(Math.min(trend, 100), -100);
-          // Map trend from [-100, 100] to [0, 1], with 0 change at 0.5
-          return (clamped + 100) / 200;
-        })(),
-        error_rate: (100 - (stats.value?.error_rate?.value ?? 0)) / 100,
-      };
-    }, 0);
+const updateAnimatedValues = async () => {
+  if (!stats.value) {
+    animatedValues.value = {};
+    return;
   }
+
+  await nextTick();
+  animatedValues.value = {
+    key_count: (() => {
+      const active = stats.value?.key_count?.value ?? 0;
+      const invalid = stats.value?.key_count?.sub_value ?? 0;
+      const total = active + invalid;
+      const denom = Math.max(total, 1);
+      return active / denom;
+    })(),
+    rpm: (() => {
+      const trend = stats.value?.rpm?.trend ?? 0;
+      const clamped = Math.max(Math.min(trend, 100), -100);
+      // Map trend from [-100, 100] to [0, 1], with 0 change at 0.5
+      return (clamped + 100) / 200;
+    })(),
+    request_count: (() => {
+      const trend = stats.value?.request_count?.trend ?? 0;
+      const clamped = Math.max(Math.min(trend, 100), -100);
+      // Map trend from [-100, 100] to [0, 1], with 0 change at 0.5
+      return (clamped + 100) / 200;
+    })(),
+    error_rate: (() => {
+      const raw = stats.value?.error_rate?.value ?? 0;
+      const clamped = Math.max(Math.min(raw, 100), 0);
+      return (100 - clamped) / 100;
+    })(),
+  };
 };
 
-// Initialize animated values on mount
-onMounted(() => {
-  updateAnimatedValues();
-});
-
-// React to stats changes
+// React to stats changes (and initialize on mount)
 watch(
   () => stats.value,
   () => {
     updateAnimatedValues();
-  }
+  },
+  { immediate: true }
 );
 </script>
 

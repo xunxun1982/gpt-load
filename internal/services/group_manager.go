@@ -30,8 +30,13 @@ const (
 // It falls back to a sane default if the environment variable is not set or invalid.
 func getDBLookupTimeout() time.Duration {
 	if v := os.Getenv("DB_LOOKUP_TIMEOUT_MS"); v != "" {
-		if ms, err := strconv.Atoi(v); err == nil && ms >= minDBLookupTimeoutMs {
-			return time.Duration(ms) * time.Millisecond
+		if ms, err := strconv.Atoi(v); err == nil {
+			if ms >= minDBLookupTimeoutMs {
+				return time.Duration(ms) * time.Millisecond
+			}
+			logrus.Warnf("DB_LOOKUP_TIMEOUT_MS value %d is below minimum %d, using default %dms", ms, minDBLookupTimeoutMs, defaultDBLookupTimeoutMs)
+		} else {
+			logrus.Warnf("Invalid DB_LOOKUP_TIMEOUT_MS value '%s', using default %dms", v, defaultDBLookupTimeoutMs)
 		}
 	}
 	return time.Duration(defaultDBLookupTimeoutMs) * time.Millisecond

@@ -164,6 +164,10 @@ func (s *BulkImportService) setDefaultBatchSizes() {
 func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numFields int) int {
 	// Estimate record size in bytes
 	recordSize := avgFieldSize * numFields
+	if recordSize <= 0 {
+		// Fallback to a small but safe default to avoid panics
+		return 10
+	}
 
 	var maxBatchSize int
 

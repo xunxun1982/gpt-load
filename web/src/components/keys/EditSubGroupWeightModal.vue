@@ -123,22 +123,22 @@ async function handleSubmit() {
 
   try {
     loading.value = true;
-
-    if (!props.aggregateGroup.id) {
-      message.error(t("keys.invalidAggregateGroup"));
-      return;
-    }
-
     const subGroupId = props.subGroup.group.id;
-    if (!subGroupId) {
+    if (subGroupId === undefined) {
       message.error(t("keys.invalidSubGroup"));
       return;
     }
 
+    const aggregateGroupId = props.aggregateGroup.id;
+    if (aggregateGroupId === undefined) {
+      message.error(t("keys.invalidAggregateGroup"));
+      return;
+    }
+
     await keysApi.updateSubGroupWeight(
-      props.aggregateGroup.id,
+      aggregateGroupId,
       subGroupId,
-      formData.weight // Keep original numeric value without rounding
+      formData.weight // Integer weight value (already constrained by input precision)
     );
 
     // Backend has already displayed a success message through API response, no need to repeat here
