@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DashboardStatsResponse } from "@/types/models";
 import { NCard, NGrid, NGridItem, NSpace, NTag, NTooltip } from "naive-ui";
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -38,13 +38,12 @@ const formatTrend = (trend: number): string => {
 };
 
 // Update animated values when stats change
-const updateAnimatedValues = async () => {
+const updateAnimatedValues = () => {
   if (!stats.value) {
     animatedValues.value = {};
     return;
   }
 
-  await nextTick();
   animatedValues.value = {
     key_count: (() => {
       const active = stats.value?.key_count?.value ?? 0;

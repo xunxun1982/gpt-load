@@ -974,12 +974,15 @@ func (s *GroupService) queryGroupHourlyStats(ctx context.Context, groupID uint, 
 		FailureCount int64
 	}
 
+	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
+	defer cancel()
+
 	now := time.Now()
 	currentHour := now.Truncate(time.Hour)
 	endTime := currentHour.Add(time.Hour) // Include current hour
 	startTime := endTime.Add(-time.Duration(hours) * time.Hour)
 
-	if err := s.db.WithContext(ctx).Model(&models.GroupHourlyStat{}).
+	if err := s.db.WithContext(queryCtx).Model(&models.GroupHourlyStat{}).
 		Select("SUM(success_count) as success_count, SUM(failure_count) as failure_count").
 		Where("group_id = ? AND time >= ? AND time < ?", groupID, startTime, endTime).
 		Scan(&result).Error; err != nil {
@@ -1023,35 +1026,28 @@ func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID 
 		WHERE group_id = ? AND time >= ? AND time < ?
 	`
 
-	// Add a timeout to avoid blocking during heavy writes
 	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
 	defer cancel()
-	type qres struct{ err error }
-	done := make(chan qres, 1)
-	go func() {
-		err := s.db.WithContext(queryCtx).Raw(query,
-			time24hAgo, time24hAgo,
-			time7dAgo, time7dAgo,
-			groupID, time30dAgo, endTime,
-		).Scan(&result).Error
-		done <- qres{err: err}
-	}()
-	select {
-	case r := <-done:
-		if r.err != nil {
-			return RequestStats{}, RequestStats{}, RequestStats{}, r.err
-		}
-		stats24h = calculateRequestStats(result.Success24h+result.Failure24h, result.Failure24h)
-		stats7d = calculateRequestStats(result.Success7d+result.Failure7d, result.Failure7d)
-		stats30d = calculateRequestStats(result.Success30d+result.Failure30d, result.Failure30d)
-		return stats24h, stats7d, stats30d, nil
-	case <-queryCtx.Done():
-		// Timeout: return zero stats to avoid blocking UI
-		logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Stats query timed out, returning zeros")
-		return RequestStats{}, RequestStats{}, RequestStats{}, nil
+
+	if err := s.db.WithContext(queryCtx).Raw(query,
+		time24hAgo, time24hAgo,
+		time7dAgo, time7dAgo,
+		groupID, time30dAgo, endTime,
+	).Scan(&result).Error; err != nil {
+		return RequestStats{}, RequestStats{}, RequestStats{}, err
 	}
+
+	stats24h = calculateRequestStats(result.Success24h+result.Failure24h, result.Failure24h)
+	stats7d = calculateRequestStats(result.Success7d+result.Failure7d, result.Failure7d)
+	stats30d = calculateRequestStats(result.Success30d+result.Failure30d, result.Failure30d)
+	return stats24h, stats7d, stats30d, nil
 }
 
+// The following methods are reserved for future functionality and should not be removed:
+// - deleteKeysInBatches: planned for batch key deletion optimization
+// - queryGroupHourlyStats: planned for hourly statistics endpoint
+// TODO(tracker-issue-123): Implement or remove these methods
+// Keep method references below to avoid unusedfunc warnings while retaining future extension points.
 var (
 	_ = (*GroupService).deleteKeysInBatches
 	_ = (*GroupService).queryGroupHourlyStats
@@ -1071,8 +1067,8 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 
 	// Cache miss - query database with timeout to avoid blocking during bulk inserts
 	// Create a context with timeout for the query
-	// Use a longer timeout to ensure data is fetched properly during import operations
-	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	// Key stats queries may need more time during bulk imports
+	queryCtx, cancel := context.WithTimeout(ctx, 2*getDBLookupTimeout())
 	defer cancel()
 
 	// Use index-friendly COUNT queries to leverage composite indexes and avoid full table scans
@@ -1302,7 +1298,6 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 // normalizePathRedirects validates and normalizes path redirect rules.
 // Keeps only non-empty pairs, trims spaces, and deduplicates by `from` keeping first occurrence.
 func (s *GroupService) normalizePathRedirects(rules []models.PathRedirectRule) (datatypes.JSON, error) {
-	// ...
 	if len(rules) == 0 {
 		return datatypes.JSON("[]"), nil
 	}
