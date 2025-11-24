@@ -231,10 +231,12 @@ export interface StatCard {
 }
 
 // Security warning information
+export type SecuritySeverity = "low" | "medium" | "high";
+
 export interface SecurityWarning {
   type: string; // Warning type: auth_key, encryption_key, etc.
   message: string; // Warning message
-  severity: string; // Severity level: low, medium, high
+  severity: SecuritySeverity; // Severity level: low, medium, high
   suggestion: string; // Suggested resolution
 }
 

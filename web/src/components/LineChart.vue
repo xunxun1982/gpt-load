@@ -93,11 +93,11 @@ const visibleLabels = computed(() => {
 
   const labels = chartData.value.labels;
   const maxLabels = 8; // Show at most 8 labels
-  const step = Math.ceil(labels.length / maxLabels);
+  const step = Math.max(1, Math.ceil(labels.length / maxLabels));
 
   return labels
     .map((label, index) => ({ text: formatTimeLabel(label), index }))
-    .filter((_, i) => i % step === 1);
+    .filter((_, i) => i % step === 0);
 });
 
 // Position calculation helpers
@@ -256,8 +256,8 @@ const handleMouseMove = (event: MouseEvent) => {
 
   const rect = chartSvg.value.getBoundingClientRect();
   // Take SVG viewBox scaling into account
-  const scaleX = 800 / rect.width;
-  const scaleY = 260 / rect.height;
+  const scaleX = chartWidth / rect.width;
+  const scaleY = chartHeight / rect.height;
 
   const mouseX = (event.clientX - rect.left) * scaleX;
   const mouseY = (event.clientY - rect.top) * scaleY;
@@ -298,15 +298,18 @@ const handleMouseMove = (event: MouseEvent) => {
       y: mouseY,
     };
 
-    // Show tooltip
+    // Show tooltip: convert from SVG viewBox coords to rendered pixel coords
     const x = getXPosition(closestTimeIndex);
     const avgY =
       datasetsAtTime.reduce((sum, item) => sum + getYPosition(item.value), 0) /
       datasetsAtTime.length;
 
+    const tooltipX = (x / chartWidth) * rect.width;
+    const tooltipY = ((avgY - 20) / chartHeight) * rect.height;
+
     tooltipPosition.value = {
-      x,
-      y: avgY - 20, // Display slightly above the average height
+      x: tooltipX,
+      y: tooltipY,
     };
 
     tooltipData.value = {
@@ -681,28 +684,28 @@ onMounted(() => {
   transition: all 0.2s ease;
 }
 
-/* 浅色主题 */
+/* Light theme */
 :root:not(.dark) .legend-item {
   color: #334155;
   background: rgba(255, 255, 255, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.7);
 }
 
-/* 暗黑主题 */
+/* Dark theme */
 :root.dark .legend-item {
   color: var(--text-primary);
   background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
 }
 
-/* 浅色主题悬停效果 */
+/* Light theme hover effect */
 :root:not(.dark) .legend-item:hover {
   background: rgba(255, 255, 255, 0.9);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
-/* 暗黑主题悬停效果 */
+/* Dark theme hover effect */
 :root.dark .legend-item:hover {
   background: var(--primary-color);
   color: white;
@@ -747,7 +750,7 @@ onMounted(() => {
   border-radius: 8px;
 }
 
-/* 浅色主题 - 白色背景 */
+/* Light theme - white background */
 :root:not(.dark) .chart-svg {
   background: white;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);

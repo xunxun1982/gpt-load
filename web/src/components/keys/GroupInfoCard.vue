@@ -66,7 +66,12 @@ const expandedName = ref<string[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const showProxyKeys = ref(false);
 const parentAggregateGroups = ref<ParentAggregateGroup[]>([]);
-const groupEnabled = ref(true);
+const groupEnabled = computed({
+  get: () => props.group?.enabled ?? true,
+  set: (_value: boolean) => {
+    // Handled by handleToggleEnabled
+  },
+});
 
 const proxyKeysDisplay = computed(() => {
   if (!props.group?.proxy_keys) {
@@ -87,12 +92,12 @@ const hasAdvancedConfig = computed(() => {
   );
 });
 
-// 判断是否为聚合分组
+// Check if it's an aggregate group
 const isAggregateGroup = computed(() => {
   return props.group?.group_type === "aggregate";
 });
 
-// 计算有效子分组数（weight > 0 且有可用密钥 且分组已启用）
+// Calculate number of active sub-groups (weight > 0, has available keys, and group is enabled)
 const activeSubGroupsCount = computed(() => {
   return (
     props.subGroups?.filter(sg => sg.weight > 0 && sg.active_keys > 0 && sg.group.enabled).length ||
@@ -100,12 +105,12 @@ const activeSubGroupsCount = computed(() => {
   );
 });
 
-// 计算禁用子分组数（weight = 0）
+// Calculate number of disabled sub-groups (weight = 0)
 const disabledSubGroupsCount = computed(() => {
   return props.subGroups?.filter(sg => sg.weight === 0).length || 0;
 });
 
-// 计算无效子分组数（weight > 0 但无可用密钥 或 分组被禁用）
+// Calculate number of unavailable sub-groups (weight > 0 but no available keys or group is disabled)
 const unavailableSubGroupsCount = computed(() => {
   return (
     props.subGroups?.filter(sg => sg.weight > 0 && (sg.active_keys === 0 || !sg.group.enabled))
@@ -138,11 +143,11 @@ watch(
     resetPage();
     loadStats();
     loadParentAggregateGroups();
-    groupEnabled.value = props.group?.enabled ?? true;
-  }
+  },
+  { immediate: true }
 );
 
-// 监听任务完成事件，自动刷新当前分组数据
+// Watch task completion events and auto-refresh current group data
 watch(
   () => [appState.groupDataRefreshTrigger, appState.syncOperationTrigger],
   () => {
@@ -150,7 +155,7 @@ watch(
       return;
     }
 
-    // 检查是否需要刷新当前分组的数据
+    // Check if current group data needs refresh
     const isCurrentGroupTask =
       appState.lastCompletedTask && appState.lastCompletedTask.groupName === props.group.name;
     const isCurrentGroupSync =
@@ -349,11 +354,9 @@ async function handleToggleEnabled(enabled: boolean) {
   }
 
   try {
-    // 先更新本地状态
-    groupEnabled.value = enabled;
     await keysApi.toggleGroupEnabled(props.group.id, enabled);
 
-    // 根据分组类型显示不同的提示
+    // Determine success message based on group type
     const isAggregate = props.group.group_type === "aggregate";
     const successKey = enabled
       ? isAggregate
@@ -367,8 +370,6 @@ async function handleToggleEnabled(enabled: boolean) {
     // Refresh the group data
     emit("refresh", { ...props.group, enabled });
   } catch (_error) {
-    // 失败时恢复状态
-    groupEnabled.value = !enabled;
     window.$message.error(t("keys.toggleGroupEnabledFailed"));
   }
 }
@@ -445,12 +446,12 @@ async function handleToggleEnabled(enabled: boolean) {
       </template>
 
       <n-divider style="margin: 0; margin-bottom: 12px" />
-      <!-- 统计摘要区 -->
+      <!-- Stats summary section -->
       <div class="stats-summary">
         <n-spin :show="loading" size="small">
           <n-grid cols="2 s:4" :x-gap="12" :y-gap="12" responsive="screen">
             <n-grid-item span="1">
-              <!-- 聚合分组：子分组统计 -->
+              <!-- Aggregate group: sub-group statistics -->
               <n-statistic
                 v-if="isAggregateGroup"
                 :label="`${t('keys.subGroups')}：${props.subGroups?.length || 0}`"
@@ -483,7 +484,7 @@ async function handleToggleEnabled(enabled: boolean) {
                 </n-tooltip>
               </n-statistic>
 
-              <!-- 标准分组：密钥统计 -->
+              <!-- Standard group: key statistics -->
               <n-statistic
                 v-else
                 :label="`${t('keys.keyCount')}：${stats?.key_stats?.total_keys ?? 0}`"
@@ -581,7 +582,7 @@ async function handleToggleEnabled(enabled: boolean) {
       </div>
       <n-divider style="margin: 0" />
 
-      <!-- 详细信息区（可折叠） -->
+      <!-- Detailed information section (collapsible) -->
       <div class="details-section">
         <n-collapse accordion v-model:expanded-names="expandedName">
           <n-collapse-item :title="t('keys.detailInfo')" name="details">
@@ -610,7 +611,7 @@ async function handleToggleEnabled(enabled: boolean) {
                         {{ group?.sort }}
                       </n-form-item>
                     </n-grid-item>
-                    <!-- 标准分组才显示测试模型和测试路径 -->
+                    <!-- Only standard groups show test model and test path -->
                     <n-grid-item v-if="!isAggregateGroup">
                       <n-form-item :label="`${t('keys.testModel')}：`">
                         {{ group?.test_model }}
@@ -663,7 +664,7 @@ async function handleToggleEnabled(enabled: boolean) {
                 </n-form>
               </div>
 
-              <!-- 聚合引用区（仅普通分组且存在被引用关系时显示） -->
+              <!-- Aggregate references section (shown only for standard groups referenced by aggregates) -->
               <div
                 class="detail-section"
                 v-if="!isAggregateGroup && parentAggregateGroups.length > 0"
@@ -705,7 +706,7 @@ async function handleToggleEnabled(enabled: boolean) {
                 </n-form>
               </div>
 
-              <!-- 标准分组才显示上游地址 -->
+              <!-- Only standard groups show upstream addresses -->
               <div class="detail-section" v-if="!isAggregateGroup">
                 <h4 class="section-title">{{ t("keys.upstreamAddresses") }}</h4>
                 <n-form label-placement="left" label-width="140px">
@@ -734,7 +735,7 @@ async function handleToggleEnabled(enabled: boolean) {
                 </n-form>
               </div>
 
-              <!-- 标准分组才显示高级配置 -->
+              <!-- Only standard groups show advanced configuration -->
               <div class="detail-section" v-if="!isAggregateGroup && hasAdvancedConfig">
                 <h4 class="section-title">{{ t("keys.advancedConfig") }}</h4>
                 <n-form label-placement="left">
@@ -1012,7 +1013,7 @@ async function handleToggleEnabled(enabled: boolean) {
   min-height: 0;
 }
 
-/* 描述内容样式 */
+/* Description content styles */
 .description-content {
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -1054,7 +1055,7 @@ async function handleToggleEnabled(enabled: boolean) {
   flex-shrink: 0;
 }
 
-/* 配置项tooltip样式 */
+/* Config tooltip styles */
 .config-label {
   display: inline-flex;
   align-items: center;
@@ -1137,12 +1138,12 @@ async function handleToggleEnabled(enabled: boolean) {
   font-size: 0.8rem;
 }
 
-/* 分组启用/禁用开关样式 */
+/* Group enable/disable switch styles */
 .group-status-switch {
   margin-left: 12px;
 }
 
-/* 精确控制开关尺寸，避免使用 transform scale 导致文本模糊 */
+/* Precisely control switch size to avoid text blur from transform scale */
 .group-status-switch :deep(.n-switch) {
   height: 20px;
   min-width: 52px;
@@ -1159,7 +1160,7 @@ async function handleToggleEnabled(enabled: boolean) {
   z-index: 2;
 }
 
-/* 让文字显示在滑块旁边的可见区域 */
+/* Make switch text visible next to the thumb */
 .group-status-switch :deep(.n-switch__checked) {
   right: 0 !important;
   padding-right: 20px !important;

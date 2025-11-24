@@ -20,7 +20,7 @@ interface Props {
   show: boolean;
   subGroup: SubGroupInfo | null;
   aggregateGroup: Group | null;
-  subGroups: SubGroupInfo[]; // 当前的子分组列表
+  subGroups: SubGroupInfo[]; // Current sub-group list
 }
 
 interface Emits {
@@ -36,20 +36,20 @@ const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
 
-// 表单数据
+// Form data
 const formData = reactive<{
   weight: number;
 }>({
   weight: 0,
 });
 
-// 预览新的权重百分比（假设其他子分组权重不变）
+// Preview new weight percentage (assuming other sub-group weights stay unchanged)
 const previewPercentage = computed(() => {
   if (!props.subGroups || !props.subGroup) {
     return 0;
   }
 
-  // 计算总权重（用新权重替换当前子分组的权重）
+  // Calculate total weight (using the new weight for the current sub-group)
   const totalWeight = props.subGroups.reduce((sum, sg) => {
     if (sg.group.id === props.subGroup?.group.id) {
       return sum + formData.weight;
@@ -60,7 +60,7 @@ const previewPercentage = computed(() => {
   return totalWeight > 0 ? Math.round((formData.weight / totalWeight) * 100) : 0;
 });
 
-// 表单验证规则
+// Form validation rules
 const rules: FormRules = {
   weight: [
     {
@@ -81,7 +81,7 @@ const rules: FormRules = {
   ],
 };
 
-// 监听弹窗显示状态和子分组变化
+// Watch dialog visibility and sub-group changes
 watch(
   () => [props.show, props.subGroup] as const,
   ([show, subGroup]) => {
@@ -92,12 +92,12 @@ watch(
   { immediate: true }
 );
 
-// 关闭弹窗
+// Close modal
 function handleClose() {
   emit("update:show", false);
 }
 
-// 提交表单
+// Submit form
 async function handleSubmit() {
   if (loading.value || !props.subGroup || !props.aggregateGroup) {
     return;
@@ -122,10 +122,10 @@ async function handleSubmit() {
     await keysApi.updateSubGroupWeight(
       props.aggregateGroup.id,
       subGroupId,
-      formData.weight // 保持原始数值，不进行取整
+      formData.weight // Keep original numeric value without rounding
     );
 
-    // 后端已经通过API响应显示成功消息，这里不需要重复显示
+    // Backend has already displayed a success message through API response, no need to repeat here
     emit("success");
     handleClose();
   } finally {
@@ -133,7 +133,7 @@ async function handleSubmit() {
   }
 }
 
-// 快速调整权重
+// Quickly adjust weight by delta
 function adjustWeight(delta: number) {
   const newWeight = Math.max(0, Math.min(1000, formData.weight + delta));
   formData.weight = newWeight;
@@ -330,7 +330,7 @@ function adjustWeight(delta: number) {
   font-style: italic;
 }
 
-/* 响应式适配 */
+/* Responsive layout */
 @media (max-width: 768px) {
   .edit-weight-modal {
     width: 90vw;
@@ -352,7 +352,7 @@ function adjustWeight(delta: number) {
   }
 }
 
-/* 暗黑模式适配 */
+/* Dark mode adjustments */
 :root.dark .sub-group-info {
   background: var(--bg-tertiary);
   border-color: var(--border-color);

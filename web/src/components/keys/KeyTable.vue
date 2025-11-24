@@ -561,7 +561,7 @@ async function clearAllInvalid() {
         const { data } = await keysApi.clearAllInvalidKeys(props.selectedGroup.id);
         window.$message.success(data?.message || t("keys.clearSuccess"));
         await loadKeys();
-        // 触发同步操作刷新
+        // Trigger sync operation refresh
         triggerSyncOperationRefresh(props.selectedGroup.name, "CLEAR_ALL_INVALID");
       } catch (_error) {
         console.error("Delete failed");
@@ -652,7 +652,7 @@ function resetPage() {
 
 <template>
   <div class="key-table-container">
-    <!-- 工具栏 -->
+    <!-- Toolbar -->
     <div class="toolbar">
       <div class="toolbar-left">
         <n-button type="success" size="small" @click="createDialogShow = true">
@@ -711,7 +711,7 @@ function resetPage() {
       </div>
     </div>
 
-    <!-- 密钥卡片网格 -->
+    <!-- Key cards grid -->
     <div class="keys-grid-container">
       <n-spin :show="loading">
         <div v-if="keys.length === 0 && !loading" class="empty-container">
@@ -724,7 +724,7 @@ function resetPage() {
             class="key-card"
             :class="getStatusClass(key.status)"
           >
-            <!-- 主要信息行：Key + 快速操作 -->
+            <!-- Main info row: Key + Quick actions -->
             <div class="key-main">
               <div class="key-section">
                 <n-tag v-if="key.status === 'active'" type="success" :bordered="false" round>
@@ -770,7 +770,7 @@ function resetPage() {
               </div>
             </div>
 
-            <!-- 统计信息 + 操作按钮行 -->
+            <!-- Statistics + Action buttons row -->
             <div class="key-bottom">
               <div class="key-stats">
                 <span class="stat-item">
@@ -823,7 +823,7 @@ function resetPage() {
       </n-spin>
     </div>
 
-    <!-- 分页 -->
+    <!-- Pagination -->
     <div class="pagination-container">
       <div class="pagination-info">
         <span>{{ totalRecordsText }}</span>
@@ -870,7 +870,7 @@ function resetPage() {
     />
   </div>
 
-  <!-- 备注编辑对话框 -->
+  <!-- Notes edit dialog -->
   <n-modal v-model:show="notesDialogShow" preset="dialog" :title="t('keys.editKeyNotes')">
     <n-input
       v-model:value="editingNotes"
@@ -1048,7 +1048,7 @@ function resetPage() {
   box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
 }
 
-/* 密钥卡片网格 */
+/* Key cards grid */
 .keys-grid-container {
   flex: 1;
   overflow-y: auto;
@@ -1078,7 +1078,7 @@ function resetPage() {
   transform: translateY(-1px);
 }
 
-/* 状态相关样式 */
+/* Status-related styles */
 .key-card.status-valid {
   border-color: var(--success-border);
   background: var(--success-bg);
@@ -1096,7 +1096,7 @@ function resetPage() {
   background: var(--error-bg);
 }
 
-/* 主要信息行 */
+/* Main info row */
 .key-main {
   display: flex;
   justify-content: space-between;
@@ -1112,7 +1112,7 @@ function resetPage() {
   min-width: 0;
 }
 
-/* 底部统计和按钮行 */
+/* Bottom statistics and buttons row */
 .key-bottom {
   display: flex;
   justify-content: space-between;
@@ -1156,13 +1156,13 @@ function resetPage() {
   white-space: nowrap;
 }
 
-/* 浅色主题 */
+/* Light theme */
 :root:not(.dark) .key-text {
   color: #495057;
   background: #f8f9fa;
 }
 
-/* 暗黑主题 */
+/* Dark theme */
 :root.dark .key-text {
   color: var(--text-primary);
   background: var(--bg-tertiary);
@@ -1189,17 +1189,17 @@ function resetPage() {
   transition: background-color 0.2s;
 }
 
-/* 浅色主题 */
+/* Light theme */
 :root:not(.dark) .quick-btn:hover {
   background: #e9ecef;
 }
 
-/* 暗黑主题 */
+/* Dark theme */
 :root.dark .quick-btn:hover {
   background: var(--bg-tertiary);
 }
 
-/* 统计信息行 */
+/* Statistics row */
 
 .action-btn {
   padding: 2px 6px;
@@ -1248,7 +1248,7 @@ function resetPage() {
   color: white;
 }
 
-/* 加载和空状态 */
+/* Loading and empty states */
 .loading-state,
 .empty-state {
   display: flex;
@@ -1266,7 +1266,7 @@ function resetPage() {
   font-size: 14px;
 }
 
-/* 分页 */
+/* Pagination */
 .pagination-container {
   display: flex;
   justify-content: space-between;

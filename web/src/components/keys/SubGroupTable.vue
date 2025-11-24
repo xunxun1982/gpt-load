@@ -241,7 +241,7 @@ function formatNumber(num: number): string {
               </div>
             </div>
 
-            <!-- 权重显示 -->
+            <!-- Weight display -->
             <div class="weight-display">
               <div class="weight-bar-container">
                 <span class="weight-label">

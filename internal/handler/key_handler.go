@@ -57,8 +57,11 @@ func (s *Server) findGroupByID(c *gin.Context, groupID uint) (*models.Group, boo
 
 	// 2) Short DB lookup with small timeout, then fallback to cache again if needed
 	var group models.Group
-	// Make timeout configurable, default to 300ms
+	// Make timeout configurable with sane lower bound, default to 300ms
 	timeoutMs := utils.ParseInteger(utils.GetEnvOrDefault("DB_LOOKUP_TIMEOUT_MS", "300"), 300)
+	if timeoutMs < 50 {
+		timeoutMs = 50
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 	if err := s.DB.WithContext(ctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {

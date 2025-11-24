@@ -263,7 +263,7 @@ const allColumnConfigs: ColumnConfig[] = [
     title: t("common.status"),
     width: 90,
     defaultVisible: true,
-    required: true, // 必选字段
+    required: true, // Required field
     render: (row: LogRow) =>
       h(
         NTag,
@@ -329,7 +329,7 @@ const allColumnConfigs: ColumnConfig[] = [
     title: t("logs.model"),
     width: 240,
     defaultVisible: true,
-    required: true, // 必选字段
+    required: true, // Required field
   },
   {
     key: "key_value",
@@ -509,7 +509,7 @@ const deselectAllColumns = () => {
 <template>
   <div class="log-table-container">
     <n-space vertical>
-      <!-- 工具栏 -->
+      <!-- Toolbar -->
       <div class="toolbar">
         <div class="filter-section">
           <div class="filter-row">
@@ -696,7 +696,7 @@ const deselectAllColumns = () => {
         </div>
       </div>
       <div class="table-main">
-        <!-- 表格 -->
+        <!-- Table -->
         <div class="table-container">
           <n-spin :show="loading">
             <n-data-table
@@ -710,7 +710,7 @@ const deselectAllColumns = () => {
           </n-spin>
         </div>
 
-        <!-- 分页 -->
+        <!-- Pagination -->
         <div class="pagination-container">
           <div class="pagination-info">
             <span>{{ totalRecordsText }}</span>
@@ -750,7 +750,7 @@ const deselectAllColumns = () => {
       </div>
     </n-space>
 
-    <!-- 详情模态框 -->
+    <!-- Detail modal -->
     <n-modal
       v-model:show="showDetailModal"
       preset="card"
@@ -759,7 +759,7 @@ const deselectAllColumns = () => {
     >
       <div v-if="selectedLog" style="max-height: 65vh; overflow-y: auto">
         <n-space vertical size="small">
-          <!-- 基本信息 -->
+          <!-- Basic information -->
           <n-card
             :title="t('logs.basicInfo')"
             size="small"
@@ -850,7 +850,7 @@ const deselectAllColumns = () => {
             </div>
           </n-card>
 
-          <!-- 请求信息 (紧凑布局) -->
+          <!-- Request information (compact layout) -->
           <n-card
             :title="t('logs.requestInfo')"
             size="small"
@@ -977,7 +977,7 @@ const deselectAllColumns = () => {
             </div>
           </n-card>
 
-          <!-- 错误信息 -->
+          <!-- Error information -->
           <n-card
             v-if="selectedLog.error_message"
             :title="t('logs.errorInfo')"

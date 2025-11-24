@@ -1,5 +1,5 @@
 import vue from "@vitejs/plugin-vue";
-import viteCompression from "vite-plugin-compression";
+import { compression } from "vite-plugin-compression2";
 import path from "path";
 import { defineConfig, loadEnv } from "vite";
 
@@ -16,12 +16,10 @@ export default defineConfig(({ mode }) => {
     plugins: [
       vue(),
       // Enable gzip compression for production builds
-      viteCompression({
-        verbose: true,
-        disable: false,
+      compression({
+        include: /\.(js|css|html|svg)$/,
         threshold: 10240, // Compress files larger than 10KB
         algorithm: "gzip",
-        ext: ".gz",
       }),
     ],
     // Resolve configuration

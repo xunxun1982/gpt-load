@@ -28,7 +28,7 @@ const versionInfo = ref<VersionInfo>({
 
 const isChecking = ref(false);
 
-// 版本状态配置
+// Version status configuration
 const statusConfig = {
   checking: {
     color: "#0066cc",
@@ -89,7 +89,7 @@ onMounted(() => {
 <template>
   <footer class="app-footer">
     <div class="footer-container">
-      <!-- 主要信息区 -->
+      <!-- Main info section -->
       <div class="footer-main">
         <span class="project-info">
           <a href="https://github.com/tbphp/gpt-load" target="_blank" rel="noopener noreferrer">
@@ -99,7 +99,7 @@ onMounted(() => {
 
         <n-divider vertical />
 
-        <!-- 版本信息 -->
+        <!-- Version info -->
         <div
           class="version-container"
           :class="{
@@ -130,7 +130,7 @@ onMounted(() => {
 
         <n-divider vertical />
 
-        <!-- 链接区 -->
+        <!-- Links section -->
         <div class="links-container">
           <n-tooltip trigger="hover" placement="top">
             <template #trigger>
@@ -210,7 +210,7 @@ onMounted(() => {
 
         <n-divider vertical />
 
-        <!-- 版权信息 -->
+        <!-- Copyright info -->
         <div class="copyright-container">
           <span class="copyright-text">
             © 2025 by
@@ -268,7 +268,7 @@ onMounted(() => {
   text-decoration: underline;
 }
 
-/* 版本信息区域 */
+/* Version info area */
 .version-container {
   display: flex;
   align-items: center;
@@ -303,7 +303,7 @@ onMounted(() => {
   opacity: 0.7;
 }
 
-/* 链接区域 */
+/* Links area */
 .links-container {
   display: flex;
   align-items: center;
@@ -334,7 +334,7 @@ onMounted(() => {
   align-items: center;
 }
 
-/* 版权信息区域 */
+/* Copyright area */
 .copyright-container {
   display: flex;
   align-items: center;
@@ -361,7 +361,7 @@ onMounted(() => {
   text-decoration: underline !important;
 }
 
-/* 响应式设计 */
+/* Responsive layout */
 @media (max-width: 768px) {
   .app-footer {
     padding: 10px 16px;

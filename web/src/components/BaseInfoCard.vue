@@ -16,11 +16,11 @@ const props = withDefaults(defineProps<Props>(), {
   loading: false,
 });
 
-// 使用计算属性代替ref
+// Use computed properties instead of ref for stats
 const stats = computed(() => props.stats);
 const animatedValues = ref<Record<string, number>>({});
 
-// 格式化数值显示
+// Format numeric values for display
 const formatValue = (value: number, type: "count" | "rate" = "count"): string => {
   if (type === "rate") {
     return `${value.toFixed(1)}%`;
@@ -31,13 +31,13 @@ const formatValue = (value: number, type: "count" | "rate" = "count"): string =>
   return value.toString();
 };
 
-// 格式化趋势显示
+// Format trend value for display
 const formatTrend = (trend: number): string => {
   const sign = trend >= 0 ? "+" : "";
   return `${sign}${trend.toFixed(1)}%`;
 };
 
-// 监听stats变化并更新动画值
+// Update animated values when stats change
 const updateAnimatedValues = () => {
   if (stats.value) {
     setTimeout(() => {
@@ -53,7 +53,7 @@ const updateAnimatedValues = () => {
   }
 };
 
-// 监听stats变化
+// Initialize animated values on mount
 onMounted(() => {
   updateAnimatedValues();
 });
@@ -63,7 +63,7 @@ onMounted(() => {
   <div class="stats-container">
     <n-space vertical size="medium">
       <n-grid cols="2 s:4" :x-gap="20" :y-gap="20" responsive="screen">
-        <!-- 密钥数量 -->
+        <!-- Key count -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0s">
             <div class="stat-header">
@@ -96,7 +96,7 @@ onMounted(() => {
           </n-card>
         </n-grid-item>
 
-        <!-- RPM (10分钟) -->
+        <!-- RPM (10 minutes) -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0.05s">
             <div class="stat-header">
@@ -129,7 +129,7 @@ onMounted(() => {
           </n-card>
         </n-grid-item>
 
-        <!-- 24小时请求 -->
+        <!-- 24h requests -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0.1s">
             <div class="stat-header">
@@ -162,7 +162,7 @@ onMounted(() => {
           </n-card>
         </n-grid-item>
 
-        <!-- 24小时错误率 -->
+        <!-- 24h error rate -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0.15s">
             <div class="stat-header">
@@ -341,7 +341,7 @@ onMounted(() => {
   }
 }
 
-/* 响应式网格 */
+/* Responsive grid */
 :deep(.n-grid-item) {
   min-width: 0;
 }

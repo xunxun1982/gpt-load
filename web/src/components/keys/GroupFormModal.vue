@@ -36,20 +36,20 @@ interface Emits {
   (e: "switchToGroup", groupId: number): void;
 }
 
-// 配置项类型
+// Configuration item type
 interface ConfigItem {
   key: string;
   value: number | string | boolean;
 }
 
-// Header规则类型
+// Header rule type
 interface HeaderRuleItem {
   key: string;
   value: string;
   action: "set" | "remove";
 }
 
-// 模型重定向项类型
+// Model redirect item type
 interface ModelRedirectItem {
   from: string;
   to: string;
@@ -71,7 +71,7 @@ const modelRedirectTip = `{
   "gemini-2.5-flash": "gemini-2.5-flash-preview-09-2025"
 }`;
 
-// 表单数据接口
+// Form data interface
 interface GroupFormData {
   name: string;
   display_name: string;
@@ -93,7 +93,7 @@ interface GroupFormData {
   group_type?: string;
 }
 
-// 表单数据
+// Form data
 const formData = reactive<GroupFormData>({
   name: "",
   display_name: "",
@@ -125,13 +125,13 @@ const configOptions = ref<GroupConfigOption[]>([]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
 
-// 跟踪用户是否已手动修改过字段（仅在新增模式下使用）
+// Track whether fields were manually modified (used only in create mode)
 const userModifiedFields = ref({
   test_model: false,
   upstream: false,
 });
 
-// 根据渠道类型动态生成占位符提示
+// Generate placeholders dynamically based on channel type
 const testModelPlaceholder = computed(() => {
   switch (formData.channel_type) {
     case "openai":
@@ -165,13 +165,13 @@ const validationEndpointPlaceholder = computed(() => {
     case "anthropic":
       return "/v1/messages";
     case "gemini":
-      return ""; // Gemini 不显示此字段
+      return ""; // Field is hidden for Gemini
     default:
       return t("keys.enterValidationPath");
   }
 });
 
-// 表单验证规则
+// Form validation rules
 const rules: FormRules = {
   name: [
     {
@@ -209,7 +209,7 @@ const rules: FormRules = {
   ],
 };
 
-// 监听弹窗显示状态
+// Watch dialog visibility
 watch(
   () => props.show,
   show => {
@@ -228,7 +228,7 @@ watch(
   }
 );
 
-// 监听模型重定向数组变化，同步到 JSON
+// Watch model redirect array changes and sync to JSON
 watch(
   () => formData.model_redirect_items,
   items => {
@@ -239,7 +239,7 @@ watch(
   { deep: true }
 );
 
-// 监听模型重定向 JSON 变化，同步到数组
+// Watch model redirect JSON changes and sync to array
 watch(
   () => formData.model_redirect_rules,
   jsonStr => {
@@ -249,12 +249,12 @@ watch(
   }
 );
 
-// 监听编辑模式切换，自动格式化
+// Watch edit mode switch and auto-format
 watch(
   () => modelRedirectEditMode.value,
   (newMode, oldMode) => {
     if (newMode === "json" && oldMode === "visual") {
-      // 切换到 JSON 模式时，自动格式化
+      // When switching to JSON mode, auto-format
       const jsonStr = modelRedirectItemsToJson(formData.model_redirect_items);
       if (jsonStr) {
         try {
@@ -265,19 +265,19 @@ watch(
         }
       }
     } else if (newMode === "visual" && oldMode === "json") {
-      // 切换到可视化模式时，解析 JSON
+      // When switching to visual mode, parse JSON
       formData.model_redirect_items = parseModelRedirect(formData.model_redirect_rules);
     }
   }
 );
 
-// 监听渠道类型变化，在新增模式下智能更新默认值
+// Watch channel type changes and intelligently update defaults in create mode
 watch(
   () => formData.channel_type,
   (_newChannelType, oldChannelType) => {
     if (!props.group && oldChannelType) {
-      // 仅在新增模式且不是初始设置时处理
-      // 检查测试模型是否应该更新（为空或是旧渠道类型的默认值）
+      // Only handle in create mode and when this is not the initial setup
+      // Check whether test model should be updated (empty or equals the old channel default)
       if (
         !userModifiedFields.value.test_model ||
         formData.test_model === getOldDefaultTestModel(oldChannelType)
@@ -286,7 +286,7 @@ watch(
         userModifiedFields.value.test_model = false;
       }
 
-      // 检查第一个上游地址是否应该更新
+      // Check whether the first upstream URL should be updated
       if (
         formData.upstreams.length > 0 &&
         (!userModifiedFields.value.upstream ||
@@ -299,7 +299,7 @@ watch(
   }
 );
 
-// 获取旧渠道类型的默认值（用于比较）
+// Get default values for previous channel type (for comparison)
 function getOldDefaultTestModel(channelType: string): string {
   switch (channelType) {
     case "openai":
@@ -326,12 +326,12 @@ function getOldDefaultUpstream(channelType: string): string {
   }
 }
 
-// 重置表单
+// Reset form
 function resetForm() {
   const isCreateMode = !props.group;
   const defaultChannelType = "openai";
 
-  // 先设置渠道类型，这样 computed 属性能正确计算默认值
+  // Set channel type first so computed properties can calculate default values correctly
   formData.channel_type = defaultChannelType;
 
   Object.assign(formData, {
@@ -360,7 +360,7 @@ function resetForm() {
     group_type: "standard",
   });
 
-  // 重置用户修改状态追踪
+  // Reset tracking state for user-modified flags
   if (isCreateMode) {
     userModifiedFields.value = {
       test_model: false,
@@ -369,7 +369,7 @@ function resetForm() {
   }
 }
 
-// 加载分组数据（编辑模式）
+// Load group data (edit mode)
 function loadGroupData() {
   if (!props.group) {
     return;
@@ -424,7 +424,7 @@ async function fetchChannelTypes() {
   channelTypesFetched.value = true;
 }
 
-// 添加上游地址
+// Add upstream
 function addUpstream() {
   formData.upstreams.push({
     url: "",
@@ -432,7 +432,7 @@ function addUpstream() {
   });
 }
 
-// 删除上游地址
+// Remove upstream
 function removeUpstream(index: number) {
   if (formData.upstreams.length > 1) {
     formData.upstreams.splice(index, 1);
@@ -447,7 +447,7 @@ async function fetchGroupConfigOptions() {
   configOptionsFetched.value = true;
 }
 
-// 添加配置项
+// Add config item
 function addConfigItem() {
   formData.configItems.push({
     key: "",
@@ -455,12 +455,12 @@ function addConfigItem() {
   });
 }
 
-// 删除配置项
+// Remove config item
 function removeConfigItem(index: number) {
   formData.configItems.splice(index, 1);
 }
 
-// 添加Header规则
+// Add header rule
 function addHeaderRule() {
   formData.header_rules.push({
     key: "",
@@ -469,7 +469,7 @@ function addHeaderRule() {
   });
 }
 
-// 解析模型重定向 JSON 为数组
+// Parse model redirect JSON into an array
 function parseModelRedirect(jsonStr: string): ModelRedirectItem[] {
   if (!jsonStr || jsonStr.trim() === "" || jsonStr.trim() === "{}") {
     return [];
@@ -487,7 +487,7 @@ function parseModelRedirect(jsonStr: string): ModelRedirectItem[] {
   }
 }
 
-// 将模型重定向数组转换为 JSON 字符串
+// Convert model redirect array to JSON string
 function modelRedirectItemsToJson(items: ModelRedirectItem[]): string {
   if (!items || items.length === 0) {
     return "";
@@ -506,7 +506,7 @@ function modelRedirectItemsToJson(items: ModelRedirectItem[]): string {
   return Object.keys(obj).length > 0 ? JSON.stringify(obj) : "";
 }
 
-// 添加模型重定向项
+// Add model redirect item
 function addModelRedirectItem() {
   formData.model_redirect_items.push({
     from: "",
@@ -514,12 +514,12 @@ function addModelRedirectItem() {
   });
 }
 
-// 删除模型重定向项
+// Remove model redirect item
 function removeModelRedirectItem(index: number) {
   formData.model_redirect_items.splice(index, 1);
 }
 
-// 格式化模型重定向 JSON
+// Format model redirect JSON
 function formatModelRedirectJson() {
   if (!formData.model_redirect_rules || formData.model_redirect_rules.trim() === "") {
     return;
@@ -528,16 +528,16 @@ function formatModelRedirectJson() {
     const obj = JSON.parse(formData.model_redirect_rules);
     formData.model_redirect_rules = JSON.stringify(obj, null, 2);
   } catch {
-    // 如果解析失败，不做处理（静默失败）
+    // If parsing fails, do nothing (silent failure)
   }
 }
 
-// 删除Header规则
+// Remove header rule
 function removeHeaderRule(index: number) {
   formData.header_rules.splice(index, 1);
 }
 
-// 添加路径重定向规则
+// Add path redirect rule
 function addPathRedirect() {
   formData.path_redirects.push({
     from: "",
@@ -545,7 +545,7 @@ function addPathRedirect() {
   });
 }
 
-// 验证路径重定向 from 路径唯一性
+// Validate uniqueness of path redirect "from" value
 function validatePathRedirectFromUniqueness(
   rules: PathRedirectRule[],
   currentIndex: number,
@@ -561,7 +561,7 @@ function validatePathRedirectFromUniqueness(
   );
 }
 
-// 规范化Header Key到Canonical格式（模拟HTTP标准）
+// Normalize header key to canonical format (HTTP-style)
 function canonicalHeaderKey(key: string): string {
   if (!key) {
     return key;
@@ -572,7 +572,7 @@ function canonicalHeaderKey(key: string): string {
     .join("-");
 }
 
-// 验证Header Key唯一性（使用Canonical格式对比）
+// Validate header key uniqueness (using canonical format)
 function validateHeaderKeyUniqueness(
   rules: HeaderRuleItem[],
   currentIndex: number,
@@ -588,7 +588,7 @@ function validateHeaderKeyUniqueness(
   );
 }
 
-// 当配置项的key改变时，设置默认值
+// Set default value when config key changes
 function handleConfigKeyChange(index: number, key: string) {
   const option = configOptions.value.find(opt => opt.key === key);
   if (option) {
@@ -600,12 +600,12 @@ const getConfigOption = (key: string) => {
   return configOptions.value.find(opt => opt.key === key);
 };
 
-// 关闭弹窗
+// Close modal
 function handleClose() {
   emit("update:show", false);
 }
 
-// 提交表单
+// Submit form
 async function handleSubmit() {
   if (loading.value) {
     return;
@@ -616,7 +616,7 @@ async function handleSubmit() {
 
     loading.value = true;
 
-    // 验证 JSON 格式
+    // Validate JSON format
     let paramOverrides = {};
     if (formData.param_overrides) {
       try {
@@ -665,21 +665,32 @@ async function handleSubmit() {
       }
     }
 
-    // 将configItems转换为config对象
+    // Convert configItems to config object
     const config: Record<string, number | string | boolean> = {};
-    formData.configItems.forEach((item: ConfigItem) => {
-      if (item.key && item.key.trim()) {
-        const option = configOptions.value.find(opt => opt.key === item.key);
-        if (option && typeof option.default_value === "number" && typeof item.value === "string") {
-          const numValue = Number(item.value);
-          config[item.key] = isNaN(numValue) ? 0 : numValue;
-        } else {
-          config[item.key] = item.value;
-        }
+    for (const item of formData.configItems) {
+      if (!item.key || !item.key.trim()) {
+        continue;
       }
-    });
 
-    // 构建提交数据
+      const option = configOptions.value.find(opt => opt.key === item.key);
+      if (option && typeof option.default_value === "number") {
+        const rawValue = item.value;
+        const strValue = typeof rawValue === "string" ? rawValue : String(rawValue);
+        const numValue = Number(strValue);
+
+        if (Number.isNaN(numValue)) {
+          message.error(t("keys.invalidNumericConfig", { key: item.key }));
+          loading.value = false;
+          return;
+        }
+
+        config[item.key] = numValue;
+      } else {
+        config[item.key] = item.value;
+      }
+    }
+
+    // Build submit payload
     const submitData = {
       name: formData.name,
       display_name: formData.display_name,
@@ -717,15 +728,15 @@ async function handleSubmit() {
 
     let res: Group;
     if (props.group?.id) {
-      // 编辑模式
+      // Edit mode
       res = await keysApi.updateGroup(props.group.id, submitData);
     } else {
-      // 新建模式
+      // Create mode
       res = await keysApi.createGroup(submitData);
     }
 
     emit("success", res);
-    // 如果是新建模式，发出切换到新分组的事件
+    // If creating, emit event to switch to the new group
     if (!props.group?.id && res.id) {
       emit("switchToGroup", res.id);
     }
@@ -763,7 +774,7 @@ async function handleSubmit() {
         require-mark-placement="right-hanging"
         class="group-form"
       >
-        <!-- 基础信息 -->
+        <!-- Basic Information -->
         <div class="form-section">
           <h4 class="section-title">{{ t("keys.basicInfo") }}</h4>
 
@@ -1269,7 +1280,7 @@ async function handleSubmit() {
                 </div>
               </div>
 
-              <!-- 模型重定向配置 -->
+              <!-- Model redirect configuration -->
               <div v-if="formData.group_type !== 'aggregate'" class="config-section">
                 <n-form-item path="model_redirect_strict">
                   <template #label>
@@ -1407,7 +1418,7 @@ async function handleSubmit() {
                 </n-form-item>
               </div>
 
-              <!-- URL 路径重写（仅 OpenAI 渠道显示） -->
+              <!-- URL path redirects (only shown for OpenAI channel) -->
               <div class="config-section" v-if="formData.channel_type === 'openai'">
                 <h5 class="config-title-with-tooltip">
                   {{ t("keys.pathRedirects") }}
@@ -1543,45 +1554,11 @@ async function handleSubmit() {
   --n-border-radius: 6px;
 }
 
-:deep(.n-card-header) {
-  border-bottom: 1px solid var(--border-color);
-  padding: 10px 20px;
+:deep(.n-button) {
+  --n-border-radius: 6px;
 }
 
-:deep(.n-card__content) {
-  max-height: calc(100vh - 68px - 61px - 50px);
-  overflow-y: auto;
-}
-
-:deep(.n-card__footer) {
-  border-top: 1px solid var(--border-color);
-  padding: 10px 15px;
-}
-
-:deep(.n-form-item-feedback-wrapper) {
-  min-height: 10px;
-}
-
-.config-section {
-  margin-top: 16px;
-}
-
-.config-title {
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 12px 0;
-}
-
-.form-label {
-  margin-left: 25px;
-  margin-right: 10px;
-  height: 34px;
-  line-height: 34px;
-  font-weight: 500;
-}
-
-/* Tooltip相关样式 */
+/* Tooltip related styles */
 .form-label-with-tooltip {
   display: flex;
   align-items: center;
@@ -1635,7 +1612,7 @@ async function handleSubmit() {
   font-size: 13px;
 }
 
-/* 增强表单样式 */
+/* Enhanced form styles */
 :deep(.n-form-item-label) {
   font-weight: 500;
   color: var(--text-primary);
@@ -1661,7 +1638,7 @@ async function handleSubmit() {
   --n-border-radius: 8px;
 }
 
-/* 美化tooltip */
+/* Beautify tooltip */
 :deep(.n-tooltip__trigger) {
   display: inline-flex;
   align-items: center;
@@ -1681,7 +1658,7 @@ async function handleSubmit() {
   white-space: pre-line;
 }
 
-/* 折叠面板样式优化 */
+/* Collapse panel style optimization */
 :deep(.n-collapse-item__header) {
   font-weight: 500;
   color: var(--text-primary);
@@ -1695,7 +1672,7 @@ async function handleSubmit() {
   height: 40px;
 }
 
-/* 表单行布局 */
+/* Form row layout */
 .form-row {
   display: flex;
   gap: 20px;
@@ -1707,7 +1684,7 @@ async function handleSubmit() {
   width: 50%;
 }
 
-/* 上游地址行布局 */
+/* Upstream address row layout */
 .upstream-row {
   display: flex;
   align-items: center;
@@ -1755,7 +1732,7 @@ async function handleSubmit() {
   margin-left: -44px;
 }
 
-/* 配置项行布局 */
+/* Config item row layout */
 .config-item-row {
   margin-bottom: 12px;
 }
@@ -1779,6 +1756,8 @@ async function handleSubmit() {
   flex: 0 0 32px;
   display: flex;
   justify-content: center;
+  align-items: flex-start;
+  height: 34px;
 }
 
 .model-redirect-wrapper {
@@ -1793,7 +1772,7 @@ async function handleSubmit() {
   margin-bottom: 8px;
 }
 
-/* 统一的箭头样式（用于模型重定向和路径重定向） */
+/* Unified arrow style (for model and path redirect) */
 .redirect-arrow,
 .redirect-item-arrow {
   flex: 0 0 auto;
@@ -1866,7 +1845,7 @@ async function handleSubmit() {
   }
 }
 
-/* Header规则相关样式 */
+/* Header rule related styles */
 .header-rule-row {
   margin-bottom: 12px;
 }
@@ -1946,13 +1925,13 @@ async function handleSubmit() {
   }
 }
 
-/* 路径重定向规则样式 */
-/* 使用 CSS 变量统一管理高度，便于维护 */
+/* Path redirect rule styles */
+/* Use CSS variables to unify height for easier maintenance */
 .path-redirect-form-item {
   --redirect-item-height: 36px;
 }
 
-/* 让 form-item 标签与内容垂直居中对齐 */
+/* Vertically align form-item label with its content */
 .path-redirect-form-item :deep(.n-form-item-label) {
   display: flex;
   align-items: center;
@@ -1962,7 +1941,7 @@ async function handleSubmit() {
 
 .redirect-item-content {
   display: flex;
-  align-items: center; /* 垂直居中对齐所有元素 */
+  align-items: center; /* Vertically align all elements */
   gap: 12px;
   width: 100%;
   min-height: var(--redirect-item-height);
@@ -1971,15 +1950,15 @@ async function handleSubmit() {
 .redirect-item-from {
   flex: 1;
   position: relative;
-  min-width: 0; /* 允许 flex 子元素收缩 */
+  min-width: 0; /* Allow flex child elements to shrink */
 }
 
 .redirect-item-to {
   flex: 1;
-  min-width: 0; /* 允许 flex 子元素收缩 */
+  min-width: 0; /* Allow flex child elements to shrink */
 }
 
-/* 确保输入框内的文字垂直居中 */
+/* Ensure text in inputs is vertically centered */
 .redirect-item-from :deep(.n-input),
 .redirect-item-to :deep(.n-input) {
   --n-height: var(--redirect-item-height);
@@ -2020,7 +1999,7 @@ async function handleSubmit() {
     flex: 1;
   }
 
-  /* 移动端箭头旋转90度，更好地适应垂直布局 */
+  /* Rotate arrows 90 degrees on mobile for vertical layout */
   .redirect-arrow,
   .redirect-item-arrow {
     height: auto;

@@ -21,7 +21,7 @@ import {
 } from "naive-ui";
 import { computed, defineComponent, watch } from "vue";
 
-// 自定义主题配置 - 根据主题动态调整
+// Custom theme overrides - dynamically adjusted based on current theme
 const themeOverrides = computed<GlobalThemeOverrides>(() => {
   const baseOverrides: GlobalThemeOverrides = {
     common: {
@@ -55,16 +55,16 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
     },
   };
 
-  // 暗黑模式下的特殊覆盖
+  // Extra overrides for dark mode
   if (actualTheme.value === "dark") {
     return {
       ...baseOverrides,
       common: {
         ...baseOverrides.common,
-        // 分层对比：浅色外层背景，深黑色内容
-        bodyColor: "#2b3038", // 外层背景 - 浅灰色
-        cardColor: "#0f1115", // 卡片内容 - 深黑色
-        modalColor: "#0f1115", // 模态框 - 深黑色
+        // Layered contrast: lighter outer background, deep dark content
+        bodyColor: "#2b3038", // Outer background - light gray
+        cardColor: "#0f1115", // Card content - deep dark
+        modalColor: "#0f1115", // Modal - deep dark
         popoverColor: "#0f1115", // 弹出层 - 深黑色
         tableColor: "#0f1115", // 表格 - 深黑色
         inputColor: "#1a1d23", // 输入框 - 稍深一点
@@ -148,12 +148,12 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
   return baseOverrides;
 });
 
-// 根据当前主题动态返回主题对象
+// Return theme object based on current theme
 const theme = computed<GlobalTheme | undefined>(() => {
   return actualTheme.value === "dark" ? darkTheme : undefined;
 });
 
-// 根据当前语言返回对应的 locale 配置
+// Return Naive UI locale based on current language
 const locale = computed(() => {
   const currentLocale = getLocale();
   switch (currentLocale) {
@@ -168,7 +168,7 @@ const locale = computed(() => {
   }
 });
 
-// 根据当前语言返回对应的日期 locale 配置
+// Return date-fns locale based on current language
 const dateLocale = computed(() => {
   const currentLocale = getLocale();
   switch (currentLocale) {

@@ -40,14 +40,14 @@ const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
 
-// 渠道类型选项
+// Channel type options
 const channelTypeOptions = [
   { label: "OpenAI", value: "openai" as ChannelType },
   { label: "Gemini", value: "gemini" as ChannelType },
   { label: "Anthropic", value: "anthropic" as ChannelType },
 ];
 
-// 默认表单数据
+// Default form data
 const defaultFormData = {
   name: "",
   display_name: "",
@@ -58,10 +58,10 @@ const defaultFormData = {
   max_retries: 0,
 };
 
-// 表单数据
+// Reactive form data
 const formData = reactive({ ...defaultFormData });
 
-// 表单验证规则
+// Form validation rules
 const rules: FormRules = {
   name: [
     {
@@ -84,12 +84,12 @@ const rules: FormRules = {
   ],
 };
 
-// 监听弹窗显示状态
+// Watch dialog visibility
 watch(
   () => props.show,
   show => {
     if (show) {
-      // 新建模式重置表单，编辑模式加载数据
+      // In create mode reset the form; in edit mode load data
       if (props.group) {
         loadGroupData();
       } else {
@@ -99,12 +99,12 @@ watch(
   }
 );
 
-// 重置表单
+// Reset form
 function resetForm() {
   Object.assign(formData, defaultFormData);
 }
 
-// 加载分组数据（编辑模式）
+// Load group data (edit mode)
 function loadGroupData() {
   if (!props.group) {
     return;
@@ -121,12 +121,12 @@ function loadGroupData() {
   });
 }
 
-// 关闭弹窗
+// Close modal
 function handleClose() {
   emit("update:show", false);
 }
 
-// 提交表单
+// Submit form
 async function handleSubmit() {
   if (loading.value) {
     return;
@@ -137,7 +137,7 @@ async function handleSubmit() {
 
     loading.value = true;
 
-    // 构建提交数据
+    // Build submit payload
     const submitData = {
       name: formData.name,
       display_name: formData.display_name,
@@ -153,14 +153,14 @@ async function handleSubmit() {
 
     let result: Group;
     if (props.group) {
-      // 编辑模式
+      // Edit mode
       if (!props.group?.id) {
         message.error(t("keys.invalidGroup"));
         return;
       }
       result = await keysApi.updateGroup(props.group.id, submitData);
     } else {
-      // 新建模式
+      // Create mode
       result = await keysApi.createGroup(submitData);
     }
 
@@ -197,7 +197,7 @@ async function handleSubmit() {
         label-placement="left"
         label-width="120px"
       >
-        <!-- 基础信息 -->
+        <!-- Basic information -->
         <div class="form-section">
           <h4 class="section-title">{{ t("keys.basicInfo") }}</h4>
 

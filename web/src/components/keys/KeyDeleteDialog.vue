@@ -26,7 +26,7 @@ const { t } = useI18n();
 const loading = ref(false);
 const keysText = ref("");
 
-// 监听弹窗显示状态
+// Watch dialog show state
 watch(
   () => props.show,
   show => {
@@ -36,17 +36,17 @@ watch(
   }
 );
 
-// 重置表单
+// Reset form
 function resetForm() {
   keysText.value = "";
 }
 
-// 关闭弹窗
+// Close dialog
 function handleClose() {
   emit("update:show", false);
 }
 
-// 提交表单
+// Submit form
 async function handleSubmit() {
   if (loading.value || !keysText.value.trim()) {
     return;

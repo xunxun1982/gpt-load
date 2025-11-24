@@ -65,7 +65,7 @@ function resetForm() {
   };
 }
 
-// 生成新分组名称预览（仅用于显示）
+// Generate new group name preview (for display only)
 function randomSuffix(len = 4): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   let out = "";
@@ -152,7 +152,7 @@ function handleCancel() {
         </div>
 
         <n-form :model="formData" label-placement="left" label-width="80px" class="group-copy-form">
-          <!-- 密钥复制选项 -->
+          <!-- Key copy options -->
           <div class="copy-options">
             <n-form-item :label="t('keys.keyHandling')">
               <n-radio-group v-model:value="formData.copyKeys" name="copyKeys">
@@ -242,7 +242,7 @@ function handleCancel() {
   gap: 12px;
 }
 
-/* 增强表单样式 - 与GroupFormModal保持一致 */
+/* Enhanced form styles - keep consistent with GroupFormModal */
 :deep(.n-form-item-label) {
   font-weight: 500;
   color: var(--text-primary);

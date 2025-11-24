@@ -409,12 +409,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 		// If this is the last attempt, return error directly without recursion
 		if isLastAttempt {
-			var errorJSON map[string]any
-			if err := json.Unmarshal([]byte(parsedError), &errorJSON); err == nil {
-				c.JSON(statusCode, errorJSON)
-			} else {
-				response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", parsedError))
-			}
+			response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", parsedError))
 			return
 		}
 
