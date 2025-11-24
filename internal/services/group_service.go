@@ -364,16 +364,19 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 	defer cancel()
 
 	if err := s.db.WithContext(queryCtx).Order("sort asc, id desc").Find(&groups).Error; err != nil {
-		// On failure, return stale cache if available to keep UI responsive
-		s.groupListCacheMu.RLock()
-		if s.groupListCache != nil {
-			stale := make([]models.Group, len(s.groupListCache.Groups))
-			copy(stale, s.groupListCache.Groups)
+		// Only use stale cache for transient errors (timeout/canceled) to keep UI responsive
+		// For other errors (schema issues, query bugs), return the error immediately
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			s.groupListCacheMu.RLock()
+			if s.groupListCache != nil {
+				stale := make([]models.Group, len(s.groupListCache.Groups))
+				copy(stale, s.groupListCache.Groups)
+				s.groupListCacheMu.RUnlock()
+				logrus.WithContext(ctx).WithError(err).Warn("ListGroups timeout/canceled - returning stale cache")
+				return stale, nil
+			}
 			s.groupListCacheMu.RUnlock()
-			logrus.WithContext(ctx).WithError(err).Warn("ListGroups DB error - returning stale cache")
-			return stale, nil
 		}
-		s.groupListCacheMu.RUnlock()
 		return nil, app_errors.ParseDBError(err)
 	}
 
@@ -645,7 +648,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 //
 // The operation performs the following steps:
 // 1. Deletes all sub-group relationships
-// 2. Deletes all API keys in batches to avoid long-running transactions
+// 2. Deletes all API keys (optimized with PRAGMA settings for SQLite)
 // 3. Deletes all groups
 // 4. Clears the key store cache
 // 5. Invalidates the group cache
