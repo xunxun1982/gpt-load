@@ -163,10 +163,24 @@ async function handleSubmit() {
         message.error(t("keys.invalidGroup"));
         return;
       }
-      result = await keysApi.updateGroup(props.group.id, submitData);
+      try {
+        result = await keysApi.updateGroup(props.group.id, submitData);
+      } catch (error) {
+        console.error("Error updating group:", error); // Log error for debugging
+        // Handle API errors with user-friendly message
+        message.error(t("common.operationFailed"));
+        return;
+      }
     } else {
       // Create mode
-      result = await keysApi.createGroup(submitData);
+      try {
+        result = await keysApi.createGroup(submitData);
+      } catch (error) {
+        console.error("Error creating group:", error); // Log error for debugging
+        // Handle API errors with user-friendly message
+        message.error(t("common.operationFailed"));
+        return;
+      }
     }
 
     emit("success", result);

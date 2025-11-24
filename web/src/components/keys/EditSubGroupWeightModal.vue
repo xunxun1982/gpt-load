@@ -12,6 +12,7 @@ import {
   NModal,
   useMessage,
   type FormRules,
+  type FormInst,
 } from "naive-ui";
 import { computed, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -34,7 +35,7 @@ const emit = defineEmits<Emits>();
 const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
-const formRef = ref();
+const formRef = ref<FormInst | null>(null);
 
 // Form data
 const formData = reactive<{
@@ -99,7 +100,17 @@ function handleClose() {
 
 // Submit form
 async function handleSubmit() {
-  if (loading.value || !props.subGroup || !props.aggregateGroup) {
+  if (loading.value) {
+    return;
+  }
+
+  if (!props.subGroup) {
+    message.error(t("keys.invalidSubGroup"));
+    return;
+  }
+
+  if (!props.aggregateGroup) {
+    message.error(t("keys.invalidAggregateGroup"));
     return;
   }
 
@@ -113,7 +124,7 @@ async function handleSubmit() {
   try {
     loading.value = true;
 
-    if (!props.aggregateGroup?.id) {
+    if (!props.aggregateGroup.id) {
       message.error(t("keys.invalidAggregateGroup"));
       return;
     }

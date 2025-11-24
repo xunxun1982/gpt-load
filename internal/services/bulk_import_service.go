@@ -352,6 +352,8 @@ func (s *BulkImportService) restoreConstraints() {
 	logrus.Debug("restoreConstraints called but no action needed (transaction-scoped optimizations)")
 }
 
+var _ = (*BulkImportService).restoreConstraints
+
 // BulkInsertGeneric performs optimized bulk insert for any model type
 func (s *BulkImportService) BulkInsertGeneric(records interface{}, recordCount int, avgRecordSize int) error {
 	if recordCount == 0 {

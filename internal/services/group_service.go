@@ -1049,6 +1049,11 @@ queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	}
 }
 
+var (
+	_ = (*GroupService).deleteKeysInBatches
+	_ = (*GroupService).queryGroupHourlyStats
+)
+
 // fetchKeyStats retrieves API key statistics for a group with caching
 func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStats, error) {
 	// Check cache first

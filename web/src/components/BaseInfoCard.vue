@@ -49,8 +49,18 @@ const updateAnimatedValues = () => {
           const denom = Math.max(total, 1);
           return active / denom;
         })(),
-        rpm: Math.min(100 + (stats.value?.rpm?.trend ?? 0), 100) / 100,
-        request_count: Math.min(100 + (stats.value?.request_count?.trend ?? 0), 100) / 100,
+        rpm: (() => {
+          const trend = stats.value?.rpm?.trend ?? 0;
+          const clamped = Math.max(Math.min(trend, 100), -100);
+          // Map trend from [-100, 100] to [0, 1], with 0 change at 0.5
+          return (clamped + 100) / 200;
+        })(),
+        request_count: (() => {
+          const trend = stats.value?.request_count?.trend ?? 0;
+          const clamped = Math.max(Math.min(trend, 100), -100);
+          // Map trend from [-100, 100] to [0, 1], with 0 change at 0.5
+          return (clamped + 100) / 200;
+        })(),
         error_rate: (100 - (stats.value?.error_rate?.value ?? 0)) / 100,
       };
     }, 0);
