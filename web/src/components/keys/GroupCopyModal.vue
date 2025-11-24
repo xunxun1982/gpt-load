@@ -76,7 +76,9 @@ function randomSuffix(len = 4): string {
 }
 
 function generateNewGroupName(): string {
-  if (!props.sourceGroup) return "";
+  if (!props.sourceGroup) {
+    return "";
+  }
   const baseName = props.sourceGroup.name;
   return `${baseName}${randomSuffix(4)}`; // best practice: short, no underscore, traceable
 }

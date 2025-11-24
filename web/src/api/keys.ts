@@ -361,8 +361,12 @@ export const keysApi = {
     options?: { mode?: "plain" | "encrypted" | "auto"; filename?: string }
   ): Promise<Group> {
     const params: Record<string, string> = {};
-    if (options?.mode) params.mode = options.mode;
-    if (options?.filename) params.filename = options.filename;
+    if (options?.mode) {
+      params.mode = options.mode;
+    }
+    if (options?.filename) {
+      params.filename = options.filename;
+    }
     const res = await http.post("/groups/import", data, { params });
     return res.data;
   },

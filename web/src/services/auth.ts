@@ -17,7 +17,7 @@ export function useAuthService() {
       authKey.value = key;
       return true;
     } catch (_error) {
-      // 错误已记录
+      // Error has already been logged by the HTTP layer
       return false;
     }
   };

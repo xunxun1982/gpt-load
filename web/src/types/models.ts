@@ -1,20 +1,20 @@
-// 通用 API 响应结构
+// Common API response structure
 export interface ApiResponse<T> {
   code: number;
   message: string;
   data: T;
 }
 
-// 密钥状态
+// Key status
 export type KeyStatus = "active" | "invalid" | undefined;
 
-// 分组类型
+// Group type
 export type GroupType = "standard" | "aggregate";
 
-// 渠道类型
+// Channel type
 export type ChannelType = "openai" | "gemini" | "anthropic";
 
-// 数据模型定义
+// Data model definitions
 export interface APIKey {
   id: number;
   group_id: number;
@@ -45,13 +45,13 @@ export interface PathRedirectRule {
   to: string;
 }
 
-// 子分组配置（创建/更新时使用）
+// Sub-group configuration (used when creating/updating)
 export interface SubGroupConfig {
   group_id: number;
   weight: number;
 }
 
-// 子分组信息（展示时使用）
+// Sub-group information (used for display)
 export interface SubGroupInfo {
   group: Group;
   weight: number;
@@ -60,7 +60,7 @@ export interface SubGroupInfo {
   invalid_keys: number;
 }
 
-// 父聚合分组信息（展示时使用）
+// Parent aggregate group information (used for display)
 export interface ParentAggregateGroup {
   group_id: number;
   name: string;
@@ -90,8 +90,8 @@ export interface Group {
   path_redirects?: PathRedirectRule[];
   proxy_keys: string;
   group_type?: GroupType;
-  sub_groups?: SubGroupInfo[]; // 子分组列表（仅聚合分组）
-  sub_group_ids?: number[]; // 子分组ID列表
+  sub_groups?: SubGroupInfo[]; // List of sub-groups (aggregate groups only)
+  sub_group_ids?: number[]; // List of sub-group IDs
   created_at?: string;
   updated_at?: string;
 }
@@ -221,7 +221,7 @@ export interface GroupRequestStat {
   request_count: number;
 }
 
-// 仪表盘统计卡片数据
+// Dashboard statistics card data
 export interface StatCard {
   value: number;
   sub_value?: number;
@@ -230,15 +230,15 @@ export interface StatCard {
   trend_is_growth: boolean;
 }
 
-// 安全警告信息
+// Security warning information
 export interface SecurityWarning {
-  type: string; // 警告类型：auth_key, encryption_key 等
-  message: string; // 警告信息
-  severity: string; // 严重程度：low, medium, high
-  suggestion: string; // 建议解决方案
+  type: string; // Warning type: auth_key, encryption_key, etc.
+  message: string; // Warning message
+  severity: string; // Severity level: low, medium, high
+  suggestion: string; // Suggested resolution
 }
 
-// 仪表盘基础统计响应
+// Dashboard base statistics response
 export interface DashboardStatsResponse {
   key_count: StatCard;
   rpm: StatCard;
@@ -247,14 +247,14 @@ export interface DashboardStatsResponse {
   security_warnings: SecurityWarning[];
 }
 
-// 图表数据集
+// Chart dataset definition
 export interface ChartDataset {
   label: string;
   data: number[];
   color: string;
 }
 
-// 图表数据
+// Chart data for dashboard charts
 export interface ChartData {
   labels: string[];
   datasets: ChartDataset[];

@@ -318,8 +318,9 @@ function openCreateAggregateGroupModal() {
 function handleGroupCreated(group: Group) {
   showGroupModal.value = false;
   showAggregateGroupModal.value = false;
-  if (group?.id) {
-    emit("refresh-and-select", group.id);
+  const groupId = group.id;
+  if (groupId) {
+    emit("refresh-and-select", groupId);
   }
 }
 
@@ -336,10 +337,11 @@ async function handleExportGroup(group: Group, event: Event) {
   const mode = await askExportMode(dialog, t);
 
   try {
-    await keysApi.exportGroup(group.id!, mode);
+    const groupId = group.id;
+    await keysApi.exportGroup(groupId, mode);
     message.success(t("keys.exportSuccess"));
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : t("keys.exportFailed");
+  } catch (_error: unknown) {
+    const errorMessage = _error instanceof Error ? _error.message : t("keys.exportFailed");
     message.error(errorMessage);
   }
 }
@@ -389,14 +391,14 @@ async function handleFileChange(event: Event) {
       } else {
         emit("refresh");
       }
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");
+    } catch (_error: unknown) {
+      const errorMessage = _error instanceof Error ? _error.message : t("keys.importFailed");
       message.error(errorMessage);
     } finally {
       loadingMessage.destroy();
       isImporting.value = false;
     }
-  } catch (error) {
+  } catch (_error) {
     message.error(t("keys.invalidImportFile"));
   } finally {
     // Clear file input to allow selecting the same file again

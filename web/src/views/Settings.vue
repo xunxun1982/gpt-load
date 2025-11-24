@@ -182,7 +182,7 @@ async function handleSystemFileChange(event: Event) {
 
     // Debug information (only output in development environment)
     if (import.meta.env.DEV) {
-      console.log("Parsed import data structure:", {
+      globalThis.console.warn("Parsed import data structure:", {
         originalKeys: Object.keys(parsedData as Record<string, unknown>),
         dataKeys: Object.keys(data),
         hasSystemSettings: !!data.system_settings,
@@ -197,9 +197,8 @@ async function handleSystemFileChange(event: Event) {
     // Determine import data type - more lenient check
     const hasSystemSettings = data.system_settings && typeof data.system_settings === "object";
     const hasGroups = data.groups && Array.isArray(data.groups);
-    const systemSettingsCount = hasSystemSettings && data.system_settings
-      ? Object.keys(data.system_settings).length
-      : 0;
+    const systemSettingsCount =
+      hasSystemSettings && data.system_settings ? Object.keys(data.system_settings).length : 0;
     const groupsCount = hasGroups && data.groups ? data.groups.length : 0;
 
     // If both system settings and groups exist (even if one is empty), use full import
@@ -315,7 +314,10 @@ async function handleSystemFileChange(event: Event) {
               const { askImportMode } = await import("@/utils/export-import");
               const mode = await askImportMode(dialog, t);
               // Prefer full system import path when only groups provided? Keep batch endpoint for compatibility
-              await settingsApi.importGroupsBatch({ groups: data.groups }, { mode, filename: file.name });
+              await settingsApi.importGroupsBatch(
+                { groups: data.groups },
+                { mode, filename: file.name }
+              );
               message.destroyAll();
               message.success(t("settings.importSuccess"));
             } catch (error: unknown) {

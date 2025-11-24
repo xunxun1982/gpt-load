@@ -8,7 +8,7 @@ import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
 
-// 图表数据
+// Chart data and reactive state
 const chartData = ref<ChartData | null>(null);
 const selectedGroup = ref<number | null>(null);
 const loading = ref(true);
@@ -30,19 +30,19 @@ const tooltipData = ref<{
 const tooltipPosition = ref({ x: 0, y: 0 });
 const chartSvg = ref<SVGElement>();
 
-// 图表尺寸和边距
+// Chart dimensions and padding
 const chartWidth = 800;
 const chartHeight = 260;
 const padding = { top: 40, right: 40, bottom: 60, left: 80 };
 
-// 格式化分组选项
+// Group selection options for dropdown
 const groupOptions = ref<Array<{ label: string; value: number | null }>>([]);
 
-// 计算有效的绘图区域
+// Derived drawable area size
 const plotWidth = chartWidth - padding.left - padding.right;
 const plotHeight = chartHeight - padding.top - padding.bottom;
 
-// 计算数据的最大值和最小值
+// Compute global min and max values across all datasets
 const dataRange = computed(() => {
   if (!chartData.value) {
     return { min: 0, max: 100 };
@@ -52,12 +52,12 @@ const dataRange = computed(() => {
   const max = Math.max(...allValues, 0);
   const min = Math.min(...allValues, 0);
 
-  // 如果所有数据都是0，设置一个合理的范围
+  // If all values are 0, use a reasonable default range
   if (max === 0 && min === 0) {
     return { min: 0, max: 10 };
   }
 
-  // 添加一些padding让图表更好看
+  // Add visual padding so the chart looks better
   const paddingValue = Math.max((max - min) * 0.1, 1);
   return {
     min: Math.max(0, min - paddingValue),
@@ -65,7 +65,7 @@ const dataRange = computed(() => {
   };
 });
 
-// 生成Y轴刻度
+// Generate Y-axis ticks
 const yTicks = computed(() => {
   const { min, max } = dataRange.value;
   const range = max - min;
@@ -75,7 +75,7 @@ const yTicks = computed(() => {
   return Array.from({ length: tickCount }, (_, i) => min + i * step);
 });
 
-// 格式化时间标签
+// Format time label for X-axis
 const formatTimeLabel = (isoString: string) => {
   const date = new Date(isoString);
   return date.toLocaleTimeString(undefined, {
@@ -85,14 +85,14 @@ const formatTimeLabel = (isoString: string) => {
   });
 };
 
-// 生成可见的X轴标签（避免重叠）
+// Compute visible X-axis labels (avoid overlapping text)
 const visibleLabels = computed(() => {
   if (!chartData.value) {
     return [];
   }
 
   const labels = chartData.value.labels;
-  const maxLabels = 8; // 最多显示8个标签
+  const maxLabels = 8; // Show at most 8 labels
   const step = Math.ceil(labels.length / maxLabels);
 
   return labels
@@ -100,7 +100,7 @@ const visibleLabels = computed(() => {
     .filter((_, i) => i % step === 1);
 });
 
-// 位置计算函数
+// Position calculation helpers
 const getXPosition = (index: number) => {
   if (!chartData.value) {
     return 0;
@@ -118,7 +118,7 @@ const getYPosition = (value: number) => {
   return padding.top + (1 - ratio) * plotHeight;
 };
 
-// Helper to find segments of non-zero data (用于填充区域)
+// Helper to find segments of non-zero data (used for filled areas)
 const getSegments = (data: number[]) => {
   const segments: Array<Array<{ value: number; index: number }>> = [];
   let currentSegment: Array<{ value: number; index: number }> = [];
@@ -141,13 +141,13 @@ const getSegments = (data: number[]) => {
   return segments;
 };
 
-// 生成线条路径（连续线条，包括0值点）
+// Generate line path (continuous line including zero-value points)
 const generateLinePath = (data: number[]) => {
   if (data.length === 0) {
     return "";
   }
 
-  // 找到第一个和最后一个非0值的位置
+  // Find index of first and last non-zero values
   let firstNonZeroIndex = -1;
   let lastNonZeroIndex = -1;
 
@@ -160,12 +160,12 @@ const generateLinePath = (data: number[]) => {
     }
   }
 
-  // 如果没有非0值，返回空路径
+  // If there are no non-zero values, return an empty path
   if (firstNonZeroIndex === -1) {
     return "";
   }
 
-  // 生成连续的路径，从第一个非0值到最后一个非0值
+  // Build a continuous path from the first to the last non-zero point
   const pathCommands: string[] = [];
 
   for (let i = firstNonZeroIndex; i <= lastNonZeroIndex; i++) {
@@ -178,7 +178,7 @@ const generateLinePath = (data: number[]) => {
   return pathCommands.join(" ");
 };
 
-// 生成填充区域路径（只为有数据的区域填充）
+// Generate area paths only for ranges that have data
 const generateAreaPath = (data: number[]) => {
   const segments = getSegments(data);
   const pathParts: string[] = [];
@@ -202,7 +202,7 @@ const generateAreaPath = (data: number[]) => {
   return pathParts.join(" ");
 };
 
-// 数字格式化
+// Format numbers for axis labels and tooltip values
 const formatNumber = (value: number) => {
   // if (value >= 1000000) {
   //   return `${(value / 1000000).toFixed(1)}M`;
@@ -217,7 +217,7 @@ const isErrorDataset = (label: string) => {
   return label.includes("失败") || label.includes("Error") || label.includes("エラー");
 };
 
-// 动画相关
+// Animation related state
 const animatedStroke = ref("0");
 const animatedOffset = ref("0");
 
@@ -226,7 +226,7 @@ const startAnimation = () => {
     return;
   }
 
-  // 计算总路径长度（近似）
+  // Approximate total path length for stroke animation
   const totalLength = plotWidth + plotHeight;
   animatedStroke.value = `${totalLength}`;
   animatedOffset.value = `${totalLength}`;
@@ -248,21 +248,21 @@ const startAnimation = () => {
   requestAnimationFrame(animate);
 };
 
-// 鼠标交互
+// Mouse interaction handlers
 const handleMouseMove = (event: MouseEvent) => {
   if (!chartData.value || !chartSvg.value) {
     return;
   }
 
   const rect = chartSvg.value.getBoundingClientRect();
-  // 考虑SVG的viewBox缩放
+  // Take SVG viewBox scaling into account
   const scaleX = 800 / rect.width;
   const scaleY = 260 / rect.height;
 
   const mouseX = (event.clientX - rect.left) * scaleX;
   const mouseY = (event.clientY - rect.top) * scaleY;
 
-  // 首先找到最接近的X轴位置（时间点）
+  // First, find the nearest X-axis position (time point)
   let closestXDistance = Infinity;
   let closestTimeIndex = -1;
 
@@ -276,14 +276,14 @@ const handleMouseMove = (event: MouseEvent) => {
     }
   });
 
-  // 如果鼠标距离最近的时间点太远，不显示提示
+  // If the mouse is too far from the nearest time point, hide tooltip
   if (closestXDistance > 50) {
     hoveredPoint.value = null;
     tooltipData.value = null;
     return;
   }
 
-  // 收集该时间点所有数据集的数据
+  // Collect values of all datasets at this time index
   const datasetsAtTime = chartData.value.datasets.map(dataset => ({
     label: dataset.label,
     value: dataset.data[closestTimeIndex],
@@ -292,13 +292,13 @@ const handleMouseMove = (event: MouseEvent) => {
 
   if (closestTimeIndex >= 0) {
     hoveredPoint.value = {
-      datasetIndex: 0, // 不再需要特定的数据集索引
+      datasetIndex: 0, // No longer need a specific dataset index
       pointIndex: closestTimeIndex,
       x: mouseX,
       y: mouseY,
     };
 
-    // 显示 tooltip
+    // Show tooltip
     const x = getXPosition(closestTimeIndex);
     const avgY =
       datasetsAtTime.reduce((sum, item) => sum + getYPosition(item.value), 0) /
@@ -306,7 +306,7 @@ const handleMouseMove = (event: MouseEvent) => {
 
     tooltipPosition.value = {
       x,
-      y: avgY - 20, // 在平均高度上方显示
+      y: avgY - 20, // Display slightly above the average height
     };
 
     tooltipData.value = {
@@ -324,7 +324,7 @@ const hideTooltip = () => {
   tooltipData.value = null;
 };
 
-// 获取分组列表
+// Fetch group list for the group filter
 const fetchGroups = async () => {
   try {
     const response = await getGroupList();
@@ -340,14 +340,14 @@ const fetchGroups = async () => {
   }
 };
 
-// 获取图表数据
+// Fetch time-series chart data
 const fetchChartData = async () => {
   try {
     loading.value = true;
     const response = await getDashboardChart(selectedGroup.value || undefined);
     chartData.value = response.data;
 
-    // 延迟启动动画，确保DOM更新完成
+    // Start animation after a short delay to ensure DOM is updated
     setTimeout(() => {
       startAnimation();
     }, 100);
@@ -358,7 +358,7 @@ const fetchChartData = async () => {
   }
 };
 
-// 监听分组选择变化
+// Refresh chart when selected group changes
 watch(selectedGroup, () => {
   fetchChartData();
 });
@@ -400,7 +400,7 @@ onMounted(() => {
           @mousemove="handleMouseMove"
           @mouseleave="hideTooltip"
         >
-          <!-- 背景网格 -->
+          <!-- Background grid pattern -->
           <defs>
             <pattern id="grid" width="40" height="30" patternUnits="userSpaceOnUse">
               <path
@@ -414,7 +414,7 @@ onMounted(() => {
           </defs>
           <rect width="100%" height="100%" fill="url(#grid)" />
 
-          <!-- Y轴刻度线和标签 -->
+          <!-- Y-axis grid line and labels -->
           <g class="y-axis">
             <line
               :x1="padding.left"
@@ -444,7 +444,7 @@ onMounted(() => {
             </g>
           </g>
 
-          <!-- X轴刻度线和标签 -->
+          <!-- X-axis grid line and labels -->
           <g class="x-axis">
             <line
               :x1="padding.left"
@@ -474,9 +474,9 @@ onMounted(() => {
             </g>
           </g>
 
-          <!-- 数据线条 -->
+          <!-- Data series lines and areas -->
           <g v-for="(dataset, datasetIndex) in chartData.datasets" :key="dataset.label">
-            <!-- 渐变定义 -->
+            <!-- Gradient definition for filled area -->
             <defs>
               <linearGradient :id="`gradient-${datasetIndex}`" x1="0%" y1="0%" x2="0%" y2="100%">
                 <stop offset="0%" :stop-color="dataset.color" stop-opacity="0.3" />
@@ -484,7 +484,7 @@ onMounted(() => {
               </linearGradient>
             </defs>
 
-            <!-- 填充区域 -->
+            <!-- Filled area under the line -->
             <path
               :d="generateAreaPath(dataset.data)"
               :fill="`url(#gradient-${datasetIndex})`"
@@ -492,7 +492,7 @@ onMounted(() => {
               :style="{ opacity: isErrorDataset(dataset.label) ? 0.3 : 0.6 }"
             />
 
-            <!-- 主线条 -->
+            <!-- Main line path -->
             <path
               :d="generateLinePath(dataset.data)"
               :stroke="dataset.color"
@@ -505,7 +505,7 @@ onMounted(() => {
               }"
             />
 
-            <!-- 数据点 -->
+            <!-- Data points -->
             <g v-for="(value, pointIndex) in dataset.data" :key="pointIndex">
               <circle
                 v-if="value > 0"
@@ -524,7 +524,7 @@ onMounted(() => {
             </g>
           </g>
 
-          <!-- 悬停指示线 -->
+          <!-- Vertical guide line when hovering -->
           <line
             v-if="hoveredPoint"
             :x1="getXPosition(hoveredPoint.pointIndex)"
@@ -538,7 +538,7 @@ onMounted(() => {
           />
         </svg>
 
-        <!-- 提示框 -->
+        <!-- Tooltip overlay -->
         <div
           v-if="tooltipData"
           class="chart-tooltip"
@@ -571,13 +571,13 @@ onMounted(() => {
   border: 1px solid var(--border-color-light);
 }
 
-/* 浅色主题 - 保持原有的紫色渐变设计 */
+/* Light theme - keep original purple gradient background */
 :root:not(.dark) .chart-container {
   background: var(--primary-gradient);
   color: white;
 }
 
-/* 暗黑主题 - 使用深蓝紫渐变外层背景 */
+/* Dark theme - deep blue-purple gradient background */
 :root.dark .chart-container {
   background: linear-gradient(135deg, #525a7a 0%, #424964 100%);
   box-shadow: var(--shadow-md);
@@ -604,7 +604,7 @@ onMounted(() => {
   font-weight: 600;
 }
 
-/* 浅色主题 - 白色渐变文字 */
+/* Light theme - white gradient title text */
 :root:not(.dark) .chart-title {
   background: linear-gradient(45deg, #fff, #f0f0f0);
   -webkit-background-clip: text;
@@ -612,7 +612,7 @@ onMounted(() => {
   background-clip: text;
 }
 
-/* 暗黑主题 - 白色文字 */
+/* Dark theme - solid white title text */
 :root.dark .chart-title {
   color: white;
   background: none;
@@ -627,12 +627,12 @@ onMounted(() => {
   font-weight: 400;
 }
 
-/* 浅色主题 */
+/* Light theme subtitle */
 :root:not(.dark) .chart-subtitle {
   color: rgba(255, 255, 255, 0.8);
 }
 
-/* 暗黑主题 */
+/* Dark theme subtitle */
 :root.dark .chart-subtitle {
   color: var(--text-secondary);
 }
@@ -658,13 +658,13 @@ onMounted(() => {
   border-radius: 24px;
 }
 
-/* 浅色主题 */
+/* Light theme legend */
 :root:not(.dark) .chart-legend {
   background: rgba(255, 255, 255, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.5);
 }
 
-/* 暗黑主题 */
+/* Dark theme legend */
 :root.dark .chart-legend {
   background: var(--overlay-bg);
   border: 1px solid var(--border-color);
@@ -754,7 +754,7 @@ onMounted(() => {
   border: 1px solid #e0e0e0;
 }
 
-/* 暗黑主题 - 深色背景 */
+/* Dark theme - dark chart background */
 :root.dark .chart-svg {
   background: var(--card-bg-solid);
   box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
@@ -857,7 +857,7 @@ onMounted(() => {
   opacity: 0.8;
 }
 
-/* 响应式设计 */
+/* Responsive layout adjustments */
 @media (max-width: 768px) {
   .chart-container {
     padding: 16px;
@@ -909,7 +909,7 @@ onMounted(() => {
   }
 }
 
-/* 动画效果 */
+/* Animation keyframes */
 @keyframes fadeInUp {
   from {
     opacity: 0;

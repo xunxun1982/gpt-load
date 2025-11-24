@@ -66,7 +66,7 @@ const expandedName = ref<string[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const showProxyKeys = ref(false);
 const parentAggregateGroups = ref<ParentAggregateGroup[]>([]);
-const groupEnabled = ref(props.group?.enabled ?? true);
+const groupEnabled = ref(true);
 
 const proxyKeysDisplay = computed(() => {
   if (!props.group?.proxy_keys) {

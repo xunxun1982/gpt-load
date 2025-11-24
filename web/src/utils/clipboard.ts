@@ -1,8 +1,8 @@
 /**
- * 复制文本
+ * Copy text
  */
 export async function copy(text: string): Promise<boolean> {
-  // navigator.clipboard 仅在安全上下文（HTTPS）或 localhost 中可用
+  // navigator.clipboard is only available in secure contexts (HTTPS) or localhost
   if (navigator.clipboard && window.isSecureContext) {
     try {
       await navigator.clipboard.writeText(text);
@@ -12,7 +12,7 @@ export async function copy(text: string): Promise<boolean> {
     }
   }
 
-  // 后备方案：使用已弃用但兼容性更好的 execCommand
+  // Fallback: use the deprecated but more compatible execCommand API
   try {
     const input = document.createElement("input");
     input.style.position = "fixed";

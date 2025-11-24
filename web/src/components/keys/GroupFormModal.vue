@@ -85,7 +85,7 @@ interface GroupFormData {
   model_redirect_rules: string;
   model_redirect_items: ModelRedirectItem[];
   model_redirect_strict: boolean;
-  config: Record<string, any>;
+  config: Record<string, number | string | boolean>;
   configItems: ConfigItem[];
   header_rules: HeaderRuleItem[];
   path_redirects: PathRedirectRule[];
@@ -394,7 +394,9 @@ function loadGroupData() {
     validation_endpoint: props.group.validation_endpoint || "",
     param_overrides: JSON.stringify(props.group.param_overrides || {}, null, 2),
     model_redirect_rules: JSON.stringify(props.group.model_redirect_rules || {}, null, 2),
-    model_redirect_items: parseModelRedirect(JSON.stringify(props.group.model_redirect_rules || {}, null, 2)),
+    model_redirect_items: parseModelRedirect(
+      JSON.stringify(props.group.model_redirect_rules || {}, null, 2)
+    ),
     model_redirect_strict: props.group.model_redirect_strict || false,
     config: {},
     configItems,
@@ -404,8 +406,8 @@ function loadGroupData() {
       action: (rule.action as "set" | "remove") || "set",
     })),
     path_redirects: (props.group.path_redirects || []).map((r: PathRedirectRule) => ({
-      from: (r.from || ""),
-      to: (r.to || ""),
+      from: r.from || "",
+      to: r.to || "",
     })),
     proxy_keys: props.group.proxy_keys || "",
     group_type: props.group.group_type || "standard",
@@ -538,8 +540,8 @@ function removeHeaderRule(index: number) {
 // 添加路径重定向规则
 function addPathRedirect() {
   formData.path_redirects.push({
-    from: '',
-    to: '',
+    from: "",
+    to: "",
   });
 }
 
@@ -1362,12 +1364,7 @@ async function handleSubmit() {
                         </n-button>
                       </div>
 
-                      <n-button
-                        dashed
-                        block
-                        @click="addModelRedirectItem"
-                        style="margin-top: 12px"
-                      >
+                      <n-button dashed block @click="addModelRedirectItem" style="margin-top: 12px">
                         <template #icon>
                           <n-icon :component="Add" />
                         </template>
@@ -1408,7 +1405,6 @@ async function handleSubmit() {
                     :rows="4"
                   />
                 </n-form-item>
-
               </div>
 
               <!-- URL 路径重写（仅 OpenAI 渠道显示） -->
@@ -1467,9 +1463,17 @@ async function handleSubmit() {
                     </div>
                     <div class="redirect-item-arrow">→</div>
                     <div class="redirect-item-to">
-                      <n-input v-model:value="rule.to" :placeholder="t('keys.pathRedirectToPlaceholder')" />
+                      <n-input
+                        v-model:value="rule.to"
+                        :placeholder="t('keys.pathRedirectToPlaceholder')"
+                      />
                     </div>
-                    <n-button text type="error" @click="formData.path_redirects.splice(index, 1)" class="redirect-item-remove-btn">
+                    <n-button
+                      text
+                      type="error"
+                      @click="formData.path_redirects.splice(index, 1)"
+                      class="redirect-item-remove-btn"
+                    >
                       <template #icon>
                         <n-icon :component="Close" />
                       </template>
@@ -1958,7 +1962,7 @@ async function handleSubmit() {
 
 .redirect-item-content {
   display: flex;
-  align-items: center;  /* 垂直居中对齐所有元素 */
+  align-items: center; /* 垂直居中对齐所有元素 */
   gap: 12px;
   width: 100%;
   min-height: var(--redirect-item-height);
@@ -1967,12 +1971,12 @@ async function handleSubmit() {
 .redirect-item-from {
   flex: 1;
   position: relative;
-  min-width: 0;  /* 允许 flex 子元素收缩 */
+  min-width: 0; /* 允许 flex 子元素收缩 */
 }
 
 .redirect-item-to {
   flex: 1;
-  min-width: 0;  /* 允许 flex 子元素收缩 */
+  min-width: 0; /* 允许 flex 子元素收缩 */
 }
 
 /* 确保输入框内的文字垂直居中 */

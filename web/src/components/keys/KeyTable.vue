@@ -87,14 +87,14 @@ const isNextPageDisabled = computed(() => {
 const dialog = useDialog();
 const confirmInput = ref("");
 
-// 状态过滤选项
+// Status filter options
 const statusOptions = [
   { label: t("common.all"), value: "all" },
   { label: t("keys.valid"), value: "active" },
   { label: t("keys.invalid"), value: "invalid" },
 ];
 
-// 更多操作下拉菜单选项
+// More actions dropdown menu options
 const moreOptions = [
   { label: t("keys.exportAllKeys"), key: "copyAll" },
   { label: t("keys.exportValidKeys"), key: "copyValid" },
@@ -124,7 +124,7 @@ const isRestoring = ref(false);
 const createDialogShow = ref(false);
 const deleteDialogShow = ref(false);
 
-// 备注编辑相关
+// State related to editing key notes
 const notesDialogShow = ref(false);
 const editingKey = ref<KeyRow | null>(null);
 const editingNotes = ref("");
@@ -133,10 +133,10 @@ watch(
   () => props.selectedGroup,
   async newGroup => {
     if (newGroup) {
-      // 检查重置页面是否会触发分页观察者。
+      // Check whether resetting the page will trigger the pagination watcher
       const willWatcherTrigger = currentPage.value !== 1 || statusFilter.value !== "all";
       resetPage();
-      // 如果分页观察者不触发，则手动加载。
+      // If the pagination watcher does not trigger, manually load data
       if (!willWatcherTrigger) {
         await loadKeys();
       }
@@ -157,13 +157,13 @@ watch(statusFilter, async () => {
   }
 });
 
-// 监听任务完成事件，自动刷新密钥列表
+// Watch task completion events and automatically refresh key list
 watch(
   () => appState.groupDataRefreshTrigger,
   () => {
-    // 检查是否需要刷新当前分组的密钥列表
+    // Check whether the current group's key list should be refreshed
     if (appState.lastCompletedTask && props.selectedGroup) {
-      // 通过分组名称匹配
+      // Match by group name
       const isCurrentGroup = appState.lastCompletedTask.groupName === props.selectedGroup.name;
 
       const shouldRefresh =
@@ -172,14 +172,14 @@ watch(
         appState.lastCompletedTask.taskType === "KEY_DELETE";
 
       if (isCurrentGroup && shouldRefresh) {
-        // 刷新当前分组的密钥列表
+        // Refresh key list for current group
         loadKeys();
       }
     }
   }
 );
 
-// 处理搜索输入的防抖
+// Handle debounced search input
 function handleSearchInput() {
   if (currentPage.value !== 1) {
     currentPage.value = 1;
@@ -188,7 +188,7 @@ function handleSearchInput() {
   }
 }
 
-// 处理更多操作菜单
+// Handle selection from the more actions menu
 function handleMoreAction(key: string) {
   switch (key) {
     case "copyAll":
@@ -242,10 +242,10 @@ async function loadKeys() {
   }
 }
 
-// 处理批量删除成功后的刷新
+// Handle list refresh after batch delete succeeds
 async function handleBatchDeleteSuccess() {
   await loadKeys();
-  // 触发同步操作刷新
+  // Trigger sync operation refresh
   if (props.selectedGroup) {
     triggerSyncOperationRefresh(props.selectedGroup.name, "BATCH_DELETE");
   }
@@ -284,7 +284,7 @@ async function testKey(_key: KeyRow) {
       });
     }
     await loadKeys();
-    // 触发同步操作刷新
+    // Trigger sync operation refresh
     triggerSyncOperationRefresh(props.selectedGroup.name, "TEST_SINGLE");
   } catch (_error) {
     console.error("Test failed");
@@ -321,7 +321,7 @@ function toggleKeyVisibility(key: KeyRow) {
   key.is_visible = !key.is_visible;
 }
 
-// 获取要显示的值（备注优先，否则显示密钥）
+// Get the display value (prefer notes, otherwise show key)
 function getDisplayValue(key: KeyRow): string {
   if (key.notes && !key.is_visible) {
     return key.notes;
@@ -329,14 +329,14 @@ function getDisplayValue(key: KeyRow): string {
   return key.is_visible ? key.key_value : maskKey(key.key_value);
 }
 
-// 编辑密钥备注
+// Open notes editor for a key
 function editKeyNotes(key: KeyRow) {
   editingKey.value = key;
   editingNotes.value = key.notes || "";
   notesDialogShow.value = true;
 }
 
-// 保存备注
+// Save notes for the current key
 async function saveKeyNotes() {
   if (!editingKey.value) {
     return;
@@ -374,7 +374,7 @@ async function restoreKey(key: KeyRow) {
       try {
         await keysApi.restoreKeys(props.selectedGroup.id, key.key_value);
         await loadKeys();
-        // 触发同步操作刷新
+        // Trigger sync operation refresh
         triggerSyncOperationRefresh(props.selectedGroup.name, "RESTORE_SINGLE");
       } catch (_error) {
         console.error("Restore failed");
@@ -407,7 +407,7 @@ async function deleteKey(key: KeyRow) {
       try {
         await keysApi.deleteKeys(props.selectedGroup.id, key.key_value);
         await loadKeys();
-        // 触发同步操作刷新
+        // Trigger sync operation refresh
         triggerSyncOperationRefresh(props.selectedGroup.name, "DELETE_SINGLE");
       } catch (_error) {
         console.error("Delete failed");
@@ -500,7 +500,7 @@ async function restoreAllInvalid() {
       try {
         await keysApi.restoreAllInvalidKeys(props.selectedGroup.id);
         await loadKeys();
-        // 触发同步操作刷新
+        // Trigger sync operation refresh
         triggerSyncOperationRefresh(props.selectedGroup.name, "RESTORE_ALL_INVALID");
       } catch (_error) {
         console.error("Restore failed");

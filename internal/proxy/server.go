@@ -383,7 +383,8 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		} else {
 			// HTTP-level error (status >= 400)
 			statusCode = resp.StatusCode
-			errorBody, readErr := io.ReadAll(resp.Body)
+			// Limit error body read to 64KB to prevent memory exhaustion
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 			if readErr != nil {
 				logrus.Errorf("Failed to read error body: %v", readErr)
 				errorBody = []byte("Failed to read error body")
@@ -678,7 +679,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		} else {
 			// HTTP-level error (status >= 400)
 			statusCode = resp.StatusCode
-			errorBody, readErr := io.ReadAll(resp.Body)
+			// Limit error body read to 64KB to prevent memory exhaustion
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 			if readErr != nil {
 				logrus.Errorf("Failed to read error body: %v", readErr)
 				errorBody = []byte("Failed to read error body")

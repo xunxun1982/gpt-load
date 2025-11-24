@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"gpt-load/internal/utils"
+
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
@@ -55,7 +57,9 @@ func (s *Server) findGroupByID(c *gin.Context, groupID uint) (*models.Group, boo
 
 	// 2) Short DB lookup with small timeout, then fallback to cache again if needed
 	var group models.Group
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 300*time.Millisecond)
+	// Make timeout configurable, default to 300ms
+	timeoutMs := utils.ParseInteger(utils.GetEnvOrDefault("DB_LOOKUP_TIMEOUT_MS", "300"), 300)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 	if err := s.DB.WithContext(ctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
 		// DB busy - try cache fallback again, otherwise return error
