@@ -44,19 +44,24 @@ func NewGroupManager(
 
 // Initialize sets up the CacheSyncer. This is called separately to handle potential
 func (gm *GroupManager) Initialize() error {
-loader := func() (map[string]*models.Group, error) {
+	loader := func() (map[string]*models.Group, error) {
 		groups := make([]*models.Group, 0, 100)
-ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		defer cancel()
-		// Use Select to only fetch necessary fields, reducing data transfer and improving performance
-		if err := gm.db.WithContext(ctx).Select(
+
+		// Use a short timeout per query to keep startup fast while avoiding long blocking.
+		// Groups and sub-groups each get their own context budget so one slow query
+		// does not consume the entire timeout window.
+		groupsCtx, groupsCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer groupsCancel()
+
+		// Use Select to only fetch necessary fields, reducing data transfer and improving performance.
+		if err := gm.db.WithContext(groupsCtx).Select(
 			"id, name, display_name, description, group_type, enabled, upstreams, "+
 				"validation_endpoint, channel_type, sort, test_model, param_overrides, "+
 				"config, header_rules, model_mapping, model_redirect_rules, "+
 				"model_redirect_strict, path_redirects, proxy_keys, last_validated_at, "+
 				"created_at, updated_at",
 		).Find(&groups).Error; err != nil {
-			// If DB is locked or timed out, serve stale cache if available
+			// If DB is locked or timed out, serve stale cache if available.
 			if gm.syncer != nil && (strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "busy") || strings.Contains(err.Error(), "interrupted") || err == context.DeadlineExceeded) {
 				logrus.WithError(err).Warn("Group loader timed out/locked - returning stale cache")
 				return gm.syncer.Get(), nil
@@ -64,14 +69,28 @@ ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 			return nil, fmt.Errorf("failed to load groups from db: %w", err)
 		}
 
-		// Load all sub-group relationships for aggregate groups (only valid ones with weight > 0)
-allSubGroups := make([]models.GroupSubGroup, 0, 200)
-		if err := gm.db.WithContext(ctx).Where("weight > 0").Find(&allSubGroups).Error; err != nil {
+		// Load all sub-group relationships for aggregate groups (only valid ones with weight > 0).
+		allSubGroups := make([]models.GroupSubGroup, 0, 200)
+		subCtx, subCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer subCancel()
+		if err := gm.db.WithContext(subCtx).
+			Select("group_id, sub_group_id, weight").
+			Where("weight > ?", 0).
+			Find(&allSubGroups).Error; err != nil {
+			// If DB is locked or timed out, serve stale cache if available.
 			if gm.syncer != nil && (strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "busy") || strings.Contains(err.Error(), "interrupted") || err == context.DeadlineExceeded) {
 				logrus.WithError(err).Warn("Sub-groups loader timed out/locked - returning stale cache")
 				return gm.syncer.Get(), nil
 			}
-			return nil, fmt.Errorf("failed to load valid sub groups: %w", err)
+
+			// On initial load we have no previous cache; for transient timeouts/locks
+			// it is better to start with groups only than to fail the whole application.
+			if err == context.DeadlineExceeded || strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "busy") || strings.Contains(err.Error(), "interrupted") {
+				logrus.WithError(err).Warn("Sub-groups loader timed out/locked on initial load - continuing without sub-groups")
+				allSubGroups = nil
+			} else {
+				return nil, fmt.Errorf("failed to load valid sub groups: %w", err)
+			}
 		}
 
 		// Group sub-groups by aggregate group ID

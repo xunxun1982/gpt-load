@@ -111,9 +111,9 @@ async function copyProxyKeys() {
     return;
   }
 
-  // Convert comma-separated keys to newline-separated text
+  // Convert comma/newline-separated keys to newline-separated text
   const formattedKeys = proxyKeys
-    .split(",")
+    .split(/[\n,]+/)
     .map(key => key.trim())
     .filter(key => key.length > 0)
     .join("\n");

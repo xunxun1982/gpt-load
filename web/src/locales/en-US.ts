@@ -336,6 +336,8 @@ export default {
     atLeastOneUpstream: "At least one upstream address is required",
     invalidJsonFormat: "Parameter override must be valid JSON format",
     invalidNumericConfig: 'Invalid numeric value for config "{key}"',
+    invalidAggregateGroup: "Aggregate group is missing or invalid",
+    invalidSubGroup: "Sub group is missing or invalid",
     groupNameTooltip:
       "Used as part of API routing, only lowercase letters, numbers, hyphens or underscores, 1-100 characters. E.g.: gemini, openai-2",
     displayNameTooltip:

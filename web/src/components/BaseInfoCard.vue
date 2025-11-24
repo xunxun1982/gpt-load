@@ -42,9 +42,13 @@ const updateAnimatedValues = () => {
   if (stats.value) {
     setTimeout(() => {
       animatedValues.value = {
-        key_count:
-          (stats.value?.key_count?.value ?? 0) /
-          ((stats.value?.key_count?.value ?? 1) + (stats.value?.key_count?.sub_value ?? 1)),
+        key_count: (() => {
+          const active = stats.value?.key_count?.value ?? 0;
+          const invalid = stats.value?.key_count?.sub_value ?? 0;
+          const total = active + invalid;
+          const denom = Math.max(total, 1);
+          return active / denom;
+        })(),
         rpm: Math.min(100 + (stats.value?.rpm?.trend ?? 0), 100) / 100,
         request_count: Math.min(100 + (stats.value?.request_count?.trend ?? 0), 100) / 100,
         error_rate: (100 - (stats.value?.error_rate?.value ?? 0)) / 100,

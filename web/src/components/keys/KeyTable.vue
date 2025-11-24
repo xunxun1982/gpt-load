@@ -327,7 +327,7 @@ function toggleKeyVisibility(key: KeyRow) {
   key.is_visible = !key.is_visible;
 }
 
-// Get the display value (prefer notes, otherwise show key)
+// Get the display value (show notes only when key is hidden, otherwise show key)
 function getDisplayValue(key: KeyRow): string {
   if (key.notes && !key.is_visible) {
     return key.notes;
@@ -465,7 +465,7 @@ function getStatusClass(status: KeyStatus): string {
   }
 }
 
-async function copyAllKeys() {
+function copyAllKeys() {
   if (!props.selectedGroup?.id) {
     return;
   }
@@ -473,7 +473,7 @@ async function copyAllKeys() {
   keysApi.exportKeys(props.selectedGroup.id, "all");
 }
 
-async function copyValidKeys() {
+function copyValidKeys() {
   if (!props.selectedGroup?.id) {
     return;
   }
@@ -481,7 +481,7 @@ async function copyValidKeys() {
   keysApi.exportKeys(props.selectedGroup.id, "active");
 }
 
-async function copyInvalidKeys() {
+function copyInvalidKeys() {
   if (!props.selectedGroup?.id) {
     return;
   }
@@ -724,7 +724,7 @@ function resetPage() {
     <!-- Key cards grid -->
     <div class="keys-grid-container">
       <n-spin :show="loading">
-        <div v-if="keys.length === 0 && !loading" class="empty-container">
+        <div v-if="keys.length === 0 && !loading" class="empty-state">
           <n-empty :description="t('keys.noMatchingKeys')" />
         </div>
         <div v-else class="keys-grid">
@@ -1152,9 +1152,10 @@ function resetPage() {
 
 .key-actions {
   flex-shrink: 0;
-  &:deep(.n-button) {
-    padding: 0 4px;
-  }
+}
+
+.key-actions :deep(.n-button) {
+  padding: 0 4px;
 }
 
 .key-text {
@@ -1187,26 +1188,6 @@ function resetPage() {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
-}
-
-.quick-btn {
-  padding: 4px 6px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  border-radius: 3px;
-  font-size: 12px;
-  transition: background-color 0.2s;
-}
-
-/* Light theme */
-:root:not(.dark) .quick-btn:hover {
-  background: #e9ecef;
-}
-
-/* Dark theme */
-:root.dark .quick-btn:hover {
-  background: var(--bg-tertiary);
 }
 
 /* Statistics row */
@@ -1258,22 +1239,13 @@ function resetPage() {
   color: white;
 }
 
-/* Loading and empty states */
-.loading-state,
+/* Empty state */
 .empty-state {
   display: flex;
   justify-content: center;
   align-items: center;
   height: 200px;
   color: #6c757d;
-}
-
-.loading-spinner {
-  font-size: 14px;
-}
-
-.empty-text {
-  font-size: 14px;
 }
 
 /* Pagination */

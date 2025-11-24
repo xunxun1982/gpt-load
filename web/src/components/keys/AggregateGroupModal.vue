@@ -133,7 +133,12 @@ async function handleSubmit() {
   }
 
   try {
-    await formRef.value?.validate();
+    try {
+      await formRef.value?.validate();
+    } catch {
+      // Validation errors are already displayed by the form
+      return;
+    }
 
     loading.value = true;
 

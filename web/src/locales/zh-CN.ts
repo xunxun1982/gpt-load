@@ -329,6 +329,8 @@ export default {
     atLeastOneUpstream: "至少需要一个上游地址",
     invalidJsonFormat: "参数覆盖必须是有效的 JSON 格式",
     invalidNumericConfig: '配置项 "{key}" 必须是有效的数字',
+    invalidAggregateGroup: "无效的聚合分组",
+    invalidSubGroup: "无效的子分组",
     groupNameTooltip:
       "作为API路由的一部分，只能包含小写字母、数字、中划线或下划线，长度1-100位。例如：gemini、openai-2",
     displayNameTooltip:

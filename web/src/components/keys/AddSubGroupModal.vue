@@ -179,30 +179,28 @@ function handleClose() {
 
 // Submit form
 async function handleSubmit() {
-  if (loading.value || !props.aggregateGroup?.id) {
+  const aggregateId = props.aggregateGroup?.id;
+  if (loading.value || typeof aggregateId !== "number") {
     return;
   }
 
-  loading.value = true;
-
   try {
+    loading.value = true;
+
     await formRef.value?.validate();
 
     // Filter out valid sub-groups
     const validSubGroups = formData.sub_groups.filter(sg => sg.group_id !== null);
 
-    if (validSubGroups.length === 0) {
-      message.error(t("keys.atLeastOneSubGroup"));
-      return;
-    }
-
     await keysApi.addSubGroups(
-      props.aggregateGroup.id,
+      aggregateId,
       validSubGroups as { group_id: number; weight: number }[]
     );
 
     emit("success");
     handleClose();
+  } catch (_error) {
+    message.error(t("common.error"));
   } finally {
     loading.value = false;
   }

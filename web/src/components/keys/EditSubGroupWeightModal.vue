@@ -120,7 +120,7 @@ async function handleSubmit() {
 
     const subGroupId = props.subGroup.group.id;
     if (!subGroupId) {
-      message.error("no subGroupId");
+      message.error(t("keys.invalidSubGroup"));
       return;
     }
 
