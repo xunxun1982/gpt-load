@@ -639,50 +639,6 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 	return nil
 }
 
-// deleteKeysInBatches deletes keys in small batches with separate transactions
-// This avoids long-running transactions that block other operations
-func (s *GroupService) deleteKeysInBatches(ctx context.Context, keyIDs []uint) int64 {
-	if len(keyIDs) == 0 {
-		return 0
-	}
-
-	const batchSize = 50
-	totalDeleted := int64(0)
-
-	for i := 0; i < len(keyIDs); i += batchSize {
-		end := i + batchSize
-		if end > len(keyIDs) {
-			end = len(keyIDs)
-		}
-		batchIDs := keyIDs[i:end]
-
-		// Each batch in its own transaction
-		var deleted int64
-		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			result := tx.Where("id IN ?", batchIDs).Delete(&models.APIKey{})
-			if result.Error != nil {
-				return result.Error
-			}
-			deleted = result.RowsAffected
-			return nil
-		})
-
-		if err != nil {
-			logrus.WithContext(ctx).WithError(err).WithField("batch", i/batchSize).Warn("Failed to delete batch of keys")
-			continue
-		}
-
-		totalDeleted += deleted
-
-		// Small delay between batches to allow other operations
-		if i+batchSize < len(keyIDs) {
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-
-	return totalDeleted
-}
-
 // DeleteAllGroups removes all groups and their associated resources.
 // This is a dangerous operation intended for debugging and testing purposes only.
 // It should only be accessible when DEBUG_MODE environment variable is enabled.
@@ -967,31 +923,6 @@ func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupS
 	return s.getStandardGroupStats(ctx, groupID)
 }
 
-// queryGroupHourlyStats queries aggregated hourly statistics from group_hourly_stats table
-func (s *GroupService) queryGroupHourlyStats(ctx context.Context, groupID uint, hours int) (RequestStats, error) {
-	var result struct {
-		SuccessCount int64
-		FailureCount int64
-	}
-
-	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
-	defer cancel()
-
-	now := time.Now()
-	currentHour := now.Truncate(time.Hour)
-	endTime := currentHour.Add(time.Hour) // Include current hour
-	startTime := endTime.Add(-time.Duration(hours) * time.Hour)
-
-	if err := s.db.WithContext(queryCtx).Model(&models.GroupHourlyStat{}).
-		Select("SUM(success_count) as success_count, SUM(failure_count) as failure_count").
-		Where("group_id = ? AND time >= ? AND time < ?", groupID, startTime, endTime).
-		Scan(&result).Error; err != nil {
-		return RequestStats{}, err
-	}
-
-	return calculateRequestStats(result.SuccessCount+result.FailureCount, result.FailureCount), nil
-}
-
 // queryMultipleTimeRangeStats queries statistics for multiple time periods in a single SQL query
 // This is optimized to use CASE WHEN statements to reduce the number of database queries
 func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID uint) (stats24h, stats7d, stats30d RequestStats, err error) {
@@ -1042,16 +973,6 @@ func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID 
 	stats30d = calculateRequestStats(result.Success30d+result.Failure30d, result.Failure30d)
 	return stats24h, stats7d, stats30d, nil
 }
-
-// The following methods are reserved for future functionality and should not be removed:
-// - deleteKeysInBatches: planned for batch key deletion optimization
-// - queryGroupHourlyStats: planned for hourly statistics endpoint
-// TODO(tracker-issue-123): Implement or remove these methods
-// Keep method references below to avoid unusedfunc warnings while retaining future extension points.
-var (
-	_ = (*GroupService).deleteKeysInBatches
-	_ = (*GroupService).queryGroupHourlyStats
-)
 
 // fetchKeyStats retrieves API key statistics for a group with caching
 func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStats, error) {

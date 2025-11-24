@@ -191,12 +191,12 @@ watch(
             <div class="stat-header">
               <div class="stat-icon error-icon">🛡️</div>
               <n-tag
-                v-if="stats?.error_rate && stats.error_rate.trend !== 0"
+                v-if="stats?.error_rate?.trend !== undefined && stats.error_rate.trend !== 0"
                 :type="stats?.error_rate?.trend_is_growth ? 'success' : 'error'"
                 size="small"
                 class="stat-trend"
               >
-                {{ stats?.error_rate ? formatTrend(stats.error_rate.trend) : "--" }}
+                {{ formatTrend(stats.error_rate.trend) }}
               </n-tag>
             </div>
 
