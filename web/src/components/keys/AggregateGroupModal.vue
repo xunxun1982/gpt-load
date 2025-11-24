@@ -117,7 +117,7 @@ function loadGroupData() {
     channel_type: props.group.channel_type || "openai",
     sort: props.group.sort || 1,
     proxy_keys: props.group.proxy_keys || "",
-    max_retries: props.group.config?.max_retries || 0,
+    max_retries: props.group.config?.max_retries ?? 0,
   });
 }
 
@@ -154,7 +154,7 @@ async function handleSubmit() {
     let result: Group;
     if (props.group) {
       // Edit mode
-      if (!props.group?.id) {
+      if (!props.group.id) {
         message.error(t("keys.invalidGroup"));
         return;
       }

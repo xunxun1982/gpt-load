@@ -244,10 +244,11 @@ async function loadKeys() {
 
 // Handle list refresh after batch delete succeeds
 async function handleBatchDeleteSuccess() {
+  const groupName = props.selectedGroup?.name;
   await loadKeys();
   // Trigger sync operation refresh
-  if (props.selectedGroup) {
-    triggerSyncOperationRefresh(props.selectedGroup.name, "BATCH_DELETE");
+  if (groupName) {
+    triggerSyncOperationRefresh(groupName, "BATCH_DELETE");
   }
 }
 
@@ -261,7 +262,10 @@ async function copyKey(key: KeyRow) {
 }
 
 async function testKey(_key: KeyRow) {
-  if (!props.selectedGroup?.id || !_key.key_value || testingMsg) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || !_key.key_value || testingMsg) {
     return;
   }
 
@@ -270,7 +274,7 @@ async function testKey(_key: KeyRow) {
   });
 
   try {
-    const response = await keysApi.testKeys(props.selectedGroup.id, _key.key_value);
+    const response = await keysApi.testKeys(groupId, _key.key_value);
     const curValid = response.results?.[0] || {};
     if (curValid.is_valid) {
       window.$message.success(
@@ -285,7 +289,9 @@ async function testKey(_key: KeyRow) {
     }
     await loadKeys();
     // Trigger sync operation refresh
-    triggerSyncOperationRefresh(props.selectedGroup.name, "TEST_SINGLE");
+    if (groupName) {
+      triggerSyncOperationRefresh(groupName, "TEST_SINGLE");
+    }
   } catch (_error) {
     console.error("Test failed");
   } finally {
@@ -350,11 +356,15 @@ async function saveKeyNotes() {
     notesDialogShow.value = false;
   } catch (error) {
     console.error("Update notes failed", error);
+    window.$message.error(t("keys.notesUpdateFailed"));
   }
 }
 
 async function restoreKey(key: KeyRow) {
-  if (!props.selectedGroup?.id || !key.key_value || isRestoring.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || !key.key_value || isRestoring.value) {
     return;
   }
 
@@ -364,18 +374,16 @@ async function restoreKey(key: KeyRow) {
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
-      if (!props.selectedGroup?.id) {
-        return;
-      }
-
       isRestoring.value = true;
       d.loading = true;
 
       try {
-        await keysApi.restoreKeys(props.selectedGroup.id, key.key_value);
+        await keysApi.restoreKeys(groupId, key.key_value);
         await loadKeys();
         // Trigger sync operation refresh
-        triggerSyncOperationRefresh(props.selectedGroup.name, "RESTORE_SINGLE");
+        if (groupName) {
+          triggerSyncOperationRefresh(groupName, "RESTORE_SINGLE");
+        }
       } catch (_error) {
         console.error("Restore failed");
       } finally {
@@ -387,7 +395,10 @@ async function restoreKey(key: KeyRow) {
 }
 
 async function deleteKey(key: KeyRow) {
-  if (!props.selectedGroup?.id || !key.key_value || isDeling.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || !key.key_value || isDeling.value) {
     return;
   }
 
@@ -397,18 +408,16 @@ async function deleteKey(key: KeyRow) {
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
-      if (!props.selectedGroup?.id) {
-        return;
-      }
-
       d.loading = true;
       isDeling.value = true;
 
       try {
-        await keysApi.deleteKeys(props.selectedGroup.id, key.key_value);
+        await keysApi.deleteKeys(groupId, key.key_value);
         await loadKeys();
         // Trigger sync operation refresh
-        triggerSyncOperationRefresh(props.selectedGroup.name, "DELETE_SINGLE");
+        if (groupName) {
+          triggerSyncOperationRefresh(groupName, "DELETE_SINGLE");
+        }
       } catch (_error) {
         console.error("Delete failed");
       } finally {
@@ -481,7 +490,10 @@ async function copyInvalidKeys() {
 }
 
 async function restoreAllInvalid() {
-  if (!props.selectedGroup?.id || isRestoring.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || isRestoring.value) {
     return;
   }
 
@@ -491,17 +503,15 @@ async function restoreAllInvalid() {
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
-      if (!props.selectedGroup?.id) {
-        return;
-      }
-
       isRestoring.value = true;
       d.loading = true;
       try {
-        await keysApi.restoreAllInvalidKeys(props.selectedGroup.id);
+        await keysApi.restoreAllInvalidKeys(groupId);
         await loadKeys();
         // Trigger sync operation refresh
-        triggerSyncOperationRefresh(props.selectedGroup.name, "RESTORE_ALL_INVALID");
+        if (groupName) {
+          triggerSyncOperationRefresh(groupName, "RESTORE_ALL_INVALID");
+        }
       } catch (_error) {
         console.error("Restore failed");
       } finally {
@@ -541,7 +551,10 @@ async function validateKeys(status: "all" | "active" | "invalid") {
 }
 
 async function clearAllInvalid() {
-  if (!props.selectedGroup?.id || isDeling.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || isDeling.value) {
     return;
   }
 
@@ -551,18 +564,16 @@ async function clearAllInvalid() {
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
-      if (!props.selectedGroup?.id) {
-        return;
-      }
-
       isDeling.value = true;
       d.loading = true;
       try {
-        const { data } = await keysApi.clearAllInvalidKeys(props.selectedGroup.id);
+        const { data } = await keysApi.clearAllInvalidKeys(groupId);
         window.$message.success(data?.message || t("keys.clearSuccess"));
         await loadKeys();
         // Trigger sync operation refresh
-        triggerSyncOperationRefresh(props.selectedGroup.name, "CLEAR_ALL_INVALID");
+        if (groupName) {
+          triggerSyncOperationRefresh(groupName, "CLEAR_ALL_INVALID");
+        }
       } catch (_error) {
         console.error("Delete failed");
       } finally {
@@ -574,7 +585,10 @@ async function clearAllInvalid() {
 }
 
 async function clearAll() {
-  if (!props.selectedGroup?.id || isDeling.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || !groupName || isDeling.value) {
     return;
   }
 
@@ -593,7 +607,7 @@ async function clearAll() {
               t("keys.dangerousOperationWarning1"),
               h("strong", null, t("common.all")),
               t("keys.dangerousOperationWarning2"),
-              h("strong", { style: { color: "#d03050" } }, props.selectedGroup?.name),
+              h("strong", { style: { color: "#d03050" } }, groupName),
               t("keys.toConfirm"),
             ]),
             h(NInput, {
@@ -607,22 +621,18 @@ async function clearAll() {
         positiveText: t("keys.confirmClear"),
         negativeText: t("common.cancel"),
         onPositiveClick: async () => {
-          if (confirmInput.value !== props.selectedGroup?.name) {
+          if (confirmInput.value !== groupName) {
             window.$message.error(t("keys.incorrectGroupName"));
             return false; // Prevent dialog from closing
           }
 
-          if (!props.selectedGroup?.id) {
-            return;
-          }
-
           isDeling.value = true;
           try {
-            await keysApi.clearAllKeys(props.selectedGroup.id);
+            await keysApi.clearAllKeys(groupId);
             window.$message.success(t("keys.clearAllKeysSuccess"));
             await loadKeys();
             // Trigger sync operation refresh
-            triggerSyncOperationRefresh(props.selectedGroup.name, "CLEAR_ALL");
+            triggerSyncOperationRefresh(groupName, "CLEAR_ALL");
           } catch (_error) {
             console.error("Clear all failed", _error);
           } finally {

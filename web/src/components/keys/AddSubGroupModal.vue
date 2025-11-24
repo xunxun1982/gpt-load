@@ -91,10 +91,11 @@ const getAvailableOptions = computed(() => {
 
 // Compute available options for each sub-group item
 const getOptionsForItems = computed(() => {
-  const selectedIds = formData.sub_groups.map(sg => sg.group_id).filter(Boolean);
-
   return formData.sub_groups.map((currentItem, currentIndex) => {
-    const otherSelectedIds = selectedIds.filter((_id, index) => index !== currentIndex);
+    const otherSelectedIds = formData.sub_groups
+      .filter((_item, idx) => idx !== currentIndex)
+      .map(sg => sg.group_id)
+      .filter((id): id is number => id !== null);
 
     return getAvailableOptions.value.filter(option => {
       // If it's the current item's selected value, allow it to be displayed
@@ -102,7 +103,7 @@ const getOptionsForItems = computed(() => {
         return true;
       }
       // Otherwise, only show options not selected by other items
-      return !otherSelectedIds.includes(option?.value || 0);
+      return !otherSelectedIds.includes(option.value as number);
     });
   });
 });
@@ -182,9 +183,10 @@ async function handleSubmit() {
     return;
   }
 
+  loading.value = true;
+
   try {
     await formRef.value?.validate();
-    loading.value = true;
 
     // Filter out valid sub-groups
     const validSubGroups = formData.sub_groups.filter(sg => sg.group_id !== null);

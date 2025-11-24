@@ -103,9 +103,14 @@ async function handleSubmit() {
     return;
   }
 
+  // Short-circuit on validation failure and avoid noisy rejections.
   try {
     await formRef.value?.validate();
+  } catch {
+    return;
+  }
 
+  try {
     loading.value = true;
 
     if (!props.aggregateGroup?.id) {

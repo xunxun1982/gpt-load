@@ -335,6 +335,7 @@ export default {
     enterTestModel: "テストモデルを入力してください",
     atLeastOneUpstream: "少なくとも1つのアップストリームアドレスが必要です",
     invalidJsonFormat: "パラメーターオーバーライドは有効なJSON形式である必要があります",
+    invalidNumericConfig: "設定項目「{key}」は数値である必要があります",
     groupNameTooltip:
       "APIルーティングの一部として使用、小文字、数字、ハイフン、アンダースコアのみ、1-100文字。例：gemini、openai-2",
     displayNameTooltip:
@@ -477,6 +478,7 @@ export default {
     enterKeysToDeletePlaceholder: "削除するキーを入力、一行に一つ",
     group: "グループ",
     notesUpdated: "備考が更新されました",
+    notesUpdateFailed: "備考の更新に失敗しました",
     editNotes: "備考を編集",
     notes: "備考",
     editKeyNotes: "キー備考を編集",

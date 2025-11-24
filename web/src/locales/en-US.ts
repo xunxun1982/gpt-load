@@ -335,6 +335,7 @@ export default {
     enterTestModel: "Please enter test model",
     atLeastOneUpstream: "At least one upstream address is required",
     invalidJsonFormat: "Parameter override must be valid JSON format",
+    invalidNumericConfig: 'Invalid numeric value for config "{key}"',
     groupNameTooltip:
       "Used as part of API routing, only lowercase letters, numbers, hyphens or underscores, 1-100 characters. E.g.: gemini, openai-2",
     displayNameTooltip:
@@ -476,6 +477,7 @@ export default {
     enterKeysToDeletePlaceholder: "Enter keys to delete, one per line",
     group: "Group",
     notesUpdated: "Notes updated",
+    notesUpdateFailed: "Failed to update notes",
     editNotes: "Edit notes",
     notes: "Notes",
     editKeyNotes: "Edit key notes",

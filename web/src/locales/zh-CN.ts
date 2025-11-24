@@ -328,6 +328,7 @@ export default {
     enterTestModel: "请输入测试模型",
     atLeastOneUpstream: "至少需要一个上游地址",
     invalidJsonFormat: "参数覆盖必须是有效的 JSON 格式",
+    invalidNumericConfig: '配置项 "{key}" 必须是有效的数字',
     groupNameTooltip:
       "作为API路由的一部分，只能包含小写字母、数字、中划线或下划线，长度1-100位。例如：gemini、openai-2",
     displayNameTooltip:
@@ -458,6 +459,7 @@ export default {
     enterKeysToDeletePlaceholder: "输入要删除的密钥，每行一个",
     group: "分组",
     notesUpdated: "备注已更新",
+    notesUpdateFailed: "备注更新失败",
     editNotes: "编辑备注",
     notes: "备注",
     editKeyNotes: "编辑密钥备注",

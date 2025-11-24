@@ -33,17 +33,31 @@ const isGenerating = ref(false);
 // Generate random string
 function generateRandomString(length: number): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const charsLength = chars.length;
   let result = "";
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+
+  // Prefer cryptographically strong random generator when available
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const randomValues = new Uint32Array(length);
+    crypto.getRandomValues(randomValues);
+    for (let i = 0; i < length; i++) {
+      result += chars.charAt(randomValues[i] % charsLength);
+    }
+    return result;
   }
+
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * charsLength));
+  }
+
   return result;
 }
 
 // Generate keys
 function generateKeys(): string[] {
   const keys: string[] = [];
-  for (let i = 0; i < keyCount.value; i++) {
+  const count = Math.min(Math.max(keyCount.value, 1), 100);
+  for (let i = 0; i < count; i++) {
     keys.push(`sk-${generateRandomString(48)}`);
   }
   return keys;
@@ -83,7 +97,7 @@ function confirmGenerateKeys() {
     emit("update:modelValue", updatedValue);
     showKeyGeneratorModal.value = false;
 
-    message.success(t("keys.keysGeneratedSuccess", { count: keyCount.value }));
+    message.success(t("keys.keysGeneratedSuccess", { count: newKeys.length }));
   } finally {
     isGenerating.value = false;
   }
@@ -103,6 +117,11 @@ async function copyProxyKeys() {
     .map(key => key.trim())
     .filter(key => key.length > 0)
     .join("\n");
+
+  if (!formattedKeys.trim()) {
+    message.warning(t("keys.noKeysToCopy"));
+    return;
+  }
 
   const success = await copy(formattedKeys);
   if (success) {

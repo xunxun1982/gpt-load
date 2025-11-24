@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DashboardStatsResponse } from "@/types/models";
 import { NCard, NGrid, NGridItem, NSpace, NTag, NTooltip } from "naive-ui";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -57,6 +57,14 @@ const updateAnimatedValues = () => {
 onMounted(() => {
   updateAnimatedValues();
 });
+
+// React to stats changes
+watch(
+  () => stats.value,
+  () => {
+    updateAnimatedValues();
+  }
+);
 </script>
 
 <template>
@@ -68,7 +76,7 @@ onMounted(() => {
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0s">
             <div class="stat-header">
               <div class="stat-icon key-icon">🔑</div>
-              <n-tooltip v-if="stats?.key_count.sub_value" trigger="hover">
+              <n-tooltip v-if="stats?.key_count?.sub_value" trigger="hover">
                 <template #trigger>
                   <n-tag type="error" size="small" class="stat-trend">
                     {{ stats.key_count.sub_value }}
@@ -103,7 +111,7 @@ onMounted(() => {
               <div class="stat-icon rpm-icon">⏱️</div>
               <n-tag
                 v-if="stats?.rpm && stats.rpm.trend !== undefined"
-                :type="stats?.rpm.trend_is_growth ? 'success' : 'error'"
+                :type="stats?.rpm?.trend_is_growth ? 'success' : 'error'"
                 size="small"
                 class="stat-trend"
               >
@@ -113,7 +121,7 @@ onMounted(() => {
 
             <div class="stat-content">
               <div class="stat-value">
-                {{ stats?.rpm?.value.toFixed(1) ?? 0 }}
+                {{ stats?.rpm?.value?.toFixed(1) ?? "0.0" }}
               </div>
               <div class="stat-title">{{ t("dashboard.rpm10Min") }}</div>
             </div>
@@ -146,7 +154,7 @@ onMounted(() => {
 
             <div class="stat-content">
               <div class="stat-value">
-                {{ stats ? formatValue(stats.request_count.value) : "--" }}
+                {{ stats?.request_count ? formatValue(stats.request_count.value) : "--" }}
               </div>
               <div class="stat-title">{{ t("dashboard.requests24h") }}</div>
             </div>
@@ -168,12 +176,12 @@ onMounted(() => {
             <div class="stat-header">
               <div class="stat-icon error-icon">🛡️</div>
               <n-tag
-                v-if="stats?.error_rate.trend !== 0"
-                :type="stats?.error_rate.trend_is_growth ? 'success' : 'error'"
+                v-if="stats?.error_rate && stats.error_rate.trend !== 0"
+                :type="stats?.error_rate?.trend_is_growth ? 'success' : 'error'"
                 size="small"
                 class="stat-trend"
               >
-                {{ stats ? formatTrend(stats.error_rate.trend) : "--" }}
+                {{ stats?.error_rate ? formatTrend(stats.error_rate.trend) : "--" }}
               </n-tag>
             </div>
 

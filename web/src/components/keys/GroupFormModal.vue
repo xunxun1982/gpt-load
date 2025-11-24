@@ -676,6 +676,12 @@ async function handleSubmit() {
       if (option && typeof option.default_value === "number") {
         const rawValue = item.value;
         const strValue = typeof rawValue === "string" ? rawValue : String(rawValue);
+
+        if (typeof rawValue === "string" && rawValue.trim() === "") {
+          message.error(t("keys.invalidNumericConfig", { key: item.key }));
+          loading.value = false;
+          return;
+        }
         const numValue = Number(strValue);
 
         if (Number.isNaN(numValue)) {
