@@ -648,7 +648,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 //
 // The operation performs the following steps:
 // 1. Deletes all sub-group relationships
-// 2. Deletes all API keys (optimized with PRAGMA settings for SQLite)
+// 2. Deletes all API keys (with SQLite sequence reset)
 // 3. Deletes all groups
 // 4. Clears the key store cache
 // 5. Invalidates the group cache
@@ -981,11 +981,11 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 	var activeKeys int64
 	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).Count(&activeKeys).Error; err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out or canceled, returning partial stats")
-			activeKeys = 0
-		} else {
-			return KeyStats{}, fmt.Errorf("failed to count active keys: %w", err)
+			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out or canceled, returning empty stats")
+			// Return empty stats to avoid misleading InvalidKeys when active count is unknown
+			return KeyStats{TotalKeys: 0, ActiveKeys: 0, InvalidKeys: 0}, nil
 		}
+		return KeyStats{}, fmt.Errorf("failed to count active keys: %w", err)
 	}
 
 	stats := KeyStats{
