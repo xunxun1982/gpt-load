@@ -81,7 +81,7 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		// mmap_size: Memory mapping for faster reads (set via direct SQL to avoid slow query log)
 		cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")      // ~40MB cache with 4KB pages
 		tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")     // Use memory for temporary tables
-		params := fmt.Sprintf("_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&cache=shared&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
+		params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&cache=shared&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
 		delimiter := "?"
 		if strings.Contains(dsn, "?") {
 			delimiter = "&"

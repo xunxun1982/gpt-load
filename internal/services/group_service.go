@@ -666,40 +666,14 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 
 	logrus.WithContext(ctx).WithField("totalKeys", totalKeys).Info("Starting deletion of all groups and keys")
 
-	// Step 2: Optimize SQLite for bulk deletion BEFORE starting transaction
-	// Note: PRAGMA synchronous cannot be changed inside a transaction in SQLite
-	// We only disable foreign keys which provides significant performance improvement
-	// and is safe because we're deleting all related data anyway
-	originalForeignKeys := true
-	fkDisabled := false
-	var fkResult int
-	if err := s.db.WithContext(ctx).Raw("PRAGMA foreign_keys").Scan(&fkResult).Error; err == nil {
-		originalForeignKeys = fkResult == 1
-	}
-
-	// Disable foreign keys for better performance
-	if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Warn("failed to disable foreign keys, continuing anyway")
-	} else {
-		fkDisabled = true
-	}
-
 	// Step 3: Begin transaction
 	tx := s.db.WithContext(ctx).Begin()
 	if err := tx.Error; err != nil {
-		// Restore foreign keys if transaction fails to start (only if we successfully disabled them)
-		if fkDisabled && originalForeignKeys {
-			s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
-		}
 		return app_errors.ErrDatabase
 	}
 	defer func() {
 		if tx != nil {
 			tx.Rollback()
-			// Restore foreign keys on rollback (only if we successfully disabled them)
-			if fkDisabled && originalForeignKeys {
-				s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
-			}
 		}
 	}()
 
@@ -749,13 +723,6 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 		return app_errors.ErrDatabase
 	}
 	tx = nil
-
-	// Step 8: Restore foreign keys setting (only if we successfully disabled them)
-	if fkDisabled && originalForeignKeys {
-		if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON").Error; err != nil {
-			logrus.WithContext(ctx).WithError(err).Warn("failed to restore foreign keys setting")
-		}
-	}
 
 	// Step 9: Clear the key store cache
 	// This removes all keys from memory to ensure consistency
@@ -968,6 +935,11 @@ func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID 
 		time7dAgo, time7dAgo,
 		groupID, time30dAgo, endTime,
 	).Scan(&result).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			logrus.WithContext(ctx).WithField("groupID", groupID).
+				Warn("request stats query timed out or canceled, returning empty stats")
+			return RequestStats{}, RequestStats{}, RequestStats{}, nil
+		}
 		return RequestStats{}, RequestStats{}, RequestStats{}, err
 	}
 
@@ -1000,8 +972,8 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 	// Use two index-friendly COUNT queries instead of a single aggregation to leverage composite indexes
 	var totalKeys int64
 	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalKeys).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats total count timed out, returning empty stats")
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats total count timed out or canceled, returning empty stats")
 			return KeyStats{TotalKeys: 0, ActiveKeys: 0, InvalidKeys: 0}, nil
 		}
 		return KeyStats{}, fmt.Errorf("failed to count total keys: %w", err)
@@ -1009,8 +981,8 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 
 	var activeKeys int64
 	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).Count(&activeKeys).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out, returning partial stats")
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out or canceled, returning partial stats")
 			activeKeys = 0
 		} else {
 			return KeyStats{}, fmt.Errorf("failed to count active keys: %w", err)
