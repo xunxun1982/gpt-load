@@ -719,7 +719,6 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	// Step 7: Commit the transaction
 	if err := tx.Commit().Error; err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to commit transaction")
-		// Foreign keys will be restored by defer
 		return app_errors.ErrDatabase
 	}
 	tx = nil
