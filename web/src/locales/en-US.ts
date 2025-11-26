@@ -284,6 +284,7 @@ export default {
     enterWeight: "Please enter weight",
     weightCannotBeNegative: "Weight cannot be negative",
     weightMaxExceeded: "Weight cannot exceed 1000",
+    weightRangeHint: "Range: 0-1000 (0 = disabled)",
     newWeight: "New Weight",
     currentWeight: "Current Weight",
     previewPercentage: "Preview Percentage",
@@ -349,6 +350,9 @@ export default {
     sortValue: "Sort value",
     maxRetries: "Max Retries",
     maxRetriesPlaceholder: "Max retries when sub-group fails (0-5)",
+    subMaxRetries: "Sub-group max retries",
+    subMaxRetriesPlaceholder:
+      "Max retries per sub-group within a single request (0 means no retry, 0-5)",
     testModelTooltip:
       "Model name for validating API key availability. System will use this model to send test requests to check if the key is working. Please use lightweight and fast models",
     testPathTooltip1:

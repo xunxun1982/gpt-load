@@ -279,6 +279,7 @@ export default {
     enterWeight: "请输入权重",
     weightCannotBeNegative: "权重不能为负数",
     weightMaxExceeded: "权重不能超过1000",
+    weightRangeHint: "范围 0-1000（0=禁用）",
     newWeight: "新权重",
     currentWeight: "当前权重",
     previewPercentage: "预览百分比",
@@ -342,6 +343,8 @@ export default {
     sortValue: "排序值",
     maxRetries: "最大重试次数",
     maxRetriesPlaceholder: "子分组失败时的最大重试次数 (0-5)",
+    subMaxRetries: "子组重试上限",
+    subMaxRetriesPlaceholder: "限制单个子组在一次请求中的重试次数（0 表示不重试，范围 0-5）",
     testModelTooltip:
       "用于验证API密钥有效性的模型名称。系统会使用这个模型发送测试请求来检查密钥是否可用，请尽量使用轻量快速的模型",
     testPathTooltip1: "自定义用于验证密钥的API端点路径。如果不填写，将使用默认路径",

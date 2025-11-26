@@ -357,6 +357,33 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
+		// Allow group-only override keys that are not part of system-level settings metadata.
+		// Currently this is used for aggregate group sub-group retry configuration.
+		if key == "sub_max_retries" {
+			floatVal, ok := value.(float64)
+			if !ok {
+				// For safety, accept integer-like types from potential import flows.
+				switch v := value.(type) {
+				case int:
+					floatVal = float64(v)
+				case int64:
+					floatVal = float64(v)
+				default:
+					// If type is not numeric, skip strict validation here and let runtime clamping handle it.
+					continue
+				}
+			}
+			intVal := int(floatVal)
+			if floatVal != float64(intVal) {
+				return fmt.Errorf("invalid value for %s: must be an integer", key)
+			}
+			if intVal < 0 {
+				return fmt.Errorf("value for %s (%d) is below minimum value (%d)", key, intVal, 0)
+			}
+			// Upper bound (0-5) is enforced at runtime by proxy server clamping logic.
+			continue
+		}
+
 		field, ok := jsonToField[key]
 		if !ok {
 			return fmt.Errorf("invalid setting key: %s", key)

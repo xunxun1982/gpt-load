@@ -284,6 +284,7 @@ export default {
     enterWeight: "ウェイトを入力してください",
     weightCannotBeNegative: "ウェイトは負の値にできません",
     weightMaxExceeded: "ウェイトは1000を超えることはできません",
+    weightRangeHint: "範囲: 0〜1000（0=無効）",
     newWeight: "新しいウェイト",
     currentWeight: "現在のウェイト",
     previewPercentage: "プレビュー割合",
@@ -347,6 +348,9 @@ export default {
     sortValue: "ソート値",
     maxRetries: "最大リトライ回数",
     maxRetriesPlaceholder: "サブグループ失敗時の最大リトライ回数 (0-5)",
+    subMaxRetries: "サブグループ最大リトライ",
+    subMaxRetriesPlaceholder:
+      "1回のリクエスト内で各サブグループに許可される最大リトライ回数（0はリトライなし、0-5）",
     testModelTooltip:
       "APIキーの有効性を検証するためのモデル名。システムはこのモデルを使用してテストリクエストを送信し、キーが機能しているか確認します。軽量で高速なモデルを使用してください",
     testPathTooltip1:

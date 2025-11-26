@@ -191,12 +191,9 @@ function adjustWeight(delta: number) {
             </h4>
             <div class="group-details">
               <span class="detail-item">
-                <strong>{{ t("keys.groupId") }}:</strong>
-                {{ subGroup?.group.id }}
-              </span>
-              <span class="detail-item">
-                <strong>{{ t("keys.currentWeight") }}:</strong>
-                {{ subGroup?.weight }}
+                {{ t("keys.groupId") }}: {{ subGroup?.group.id }} · {{ t("keys.currentWeight") }}:
+                {{ subGroup?.weight }} ·
+                {{ t("keys.weightRangeHint") }}
               </span>
             </div>
           </div>
