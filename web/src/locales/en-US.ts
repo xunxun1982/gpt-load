@@ -4,6 +4,7 @@ export default {
   },
   common: {
     operationSuccess: "Operation successful",
+    operationFailed: "Operation failed",
     submit: "Submit",
     cancel: "Cancel",
     confirm: "Confirm",
@@ -339,6 +340,7 @@ export default {
     invalidNumericConfig: 'Invalid numeric value for config "{key}"',
     invalidAggregateGroup: "Aggregate group is missing or invalid",
     invalidSubGroup: "Sub group is missing or invalid",
+    invalidGroup: "Group is missing or invalid",
     groupNameTooltip:
       "Used as part of API routing, only lowercase letters, numbers, hyphens or underscores, 1-100 characters. E.g.: gemini, openai-2",
     displayNameTooltip:

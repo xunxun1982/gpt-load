@@ -5,6 +5,7 @@ export default {
   common: {
     submit: "提交",
     operationSuccess: "操作成功",
+    operationFailed: "操作失败",
     cancel: "取消",
     confirm: "确认",
     delete: "删除",
@@ -332,6 +333,7 @@ export default {
     invalidNumericConfig: '配置项 "{key}" 必须是有效的数字',
     invalidAggregateGroup: "无效的聚合分组",
     invalidSubGroup: "无效的子分组",
+    invalidGroup: "无效的分组",
     groupNameTooltip:
       "作为API路由的一部分，只能包含小写字母、数字、中划线或下划线，长度1-100位。例如：gemini、openai-2",
     displayNameTooltip:

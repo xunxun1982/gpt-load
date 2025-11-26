@@ -113,6 +113,12 @@ function loadGroupData() {
     return;
   }
 
+  formRef.value?.restoreValidation();
+
+  const config = (props.group.config || {}) as Record<string, unknown>;
+  const maxRetries = (config["max_retries"] as number | undefined) ?? 0;
+  const subMaxRetries = (config["sub_max_retries"] as number | undefined) ?? 0;
+
   Object.assign(formData, {
     name: props.group.name || "",
     display_name: props.group.display_name || "",
@@ -120,8 +126,8 @@ function loadGroupData() {
     channel_type: props.group.channel_type || "openai",
     sort: props.group.sort ?? 1,
     proxy_keys: props.group.proxy_keys || "",
-    max_retries: props.group.config?.max_retries ?? 0,
-    sub_max_retries: (props.group.config as any)?.sub_max_retries ?? 0,
+    max_retries: maxRetries,
+    sub_max_retries: subMaxRetries,
   });
 }
 
@@ -324,7 +330,7 @@ async function handleSubmit() {
 }
 
 .form-section {
-  margin-top: 20px;
+  margin-top: 8px;
 }
 
 .form-section:first-child {
@@ -335,8 +341,51 @@ async function handleSubmit() {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 16px;
-  padding-bottom: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 2px;
   border-bottom: 1px solid var(--border-color);
+}
+
+:deep(.n-form-item) {
+  margin-bottom: 8px !important;
+  --n-feedback-height: 0 !important;
+}
+
+:deep(.n-form-item-label) {
+  font-weight: 500;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  height: 32px;
+  line-height: 32px;
+}
+
+/* Fix required mark vertical alignment */
+:deep(.n-form-item-label__asterisk) {
+  display: flex;
+  align-items: center;
+  height: 32px;
+}
+
+:deep(.n-form-item-blank) {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+:deep(.n-input),
+:deep(.n-input-number) {
+  --n-height: 32px;
+}
+
+:deep(.n-base-selection-label) {
+  height: 32px;
+  line-height: 32px;
+  display: flex;
+  align-items: center;
+}
+
+:deep(.n-base-selection) {
+  --n-height: 32px;
 }
 </style>

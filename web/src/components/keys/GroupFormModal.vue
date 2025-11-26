@@ -1527,41 +1527,54 @@ async function handleSubmit() {
   width: 800px;
 }
 
+/* Add scrollable container with max height for better UX */
+.group-form-card {
+  max-height: 85vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.group-form-card :deep(.n-card__content) {
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: calc(85vh - 80px);
+  padding-right: 24px;
+}
+
+/* Custom scrollbar styling */
+.group-form-card :deep(.n-card__content)::-webkit-scrollbar {
+  width: 6px;
+}
+
+.group-form-card :deep(.n-card__content)::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.group-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+}
+
+.group-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
 .form-section {
-  margin-top: 20px;
+  margin-top: 8px;
 }
 
 .section-title {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
-  margin: 0 0 16px 0;
-  padding-bottom: 8px;
-  border-bottom: 2px solid var(--border-color);
-}
-
-:deep(.n-form-item-label) {
-  font-weight: 500;
+  margin: 0 0 8px 0;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border-color);
 }
 
 :deep(.n-form-item-blank) {
   flex-grow: 1;
-}
-
-:deep(.n-input) {
-  --n-border-radius: 6px;
-}
-
-:deep(.n-select) {
-  --n-border-radius: 6px;
-}
-
-:deep(.n-input-number) {
-  --n-border-radius: 6px;
-}
-
-:deep(.n-button) {
-  --n-border-radius: 6px;
 }
 
 /* Tooltip related styles */
@@ -1618,10 +1631,32 @@ async function handleSubmit() {
   font-size: 13px;
 }
 
-/* Enhanced form styles */
+/* Enhanced form styles - force compact spacing */
+:deep(.n-form-item) {
+  margin-bottom: 8px !important;
+  --n-feedback-height: 0 !important;
+}
+
 :deep(.n-form-item-label) {
   font-weight: 500;
   color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  height: 32px;
+  line-height: 32px;
+}
+
+/* Fix required mark vertical alignment */
+:deep(.n-form-item-label__asterisk) {
+  display: flex;
+  align-items: center;
+  height: 32px;
+}
+
+:deep(.n-form-item-blank) {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
 }
 
 :deep(.n-input) {
@@ -1630,6 +1665,7 @@ async function handleSubmit() {
   --n-border-hover: 1px solid var(--primary-color);
   --n-border-focus: 1px solid var(--primary-color);
   --n-box-shadow-focus: 0 0 0 2px var(--primary-color-suppl);
+  --n-height: 32px;
 }
 
 :deep(.n-select) {
@@ -1638,6 +1674,7 @@ async function handleSubmit() {
 
 :deep(.n-input-number) {
   --n-border-radius: 8px;
+  --n-height: 32px;
 }
 
 :deep(.n-button) {
@@ -1675,7 +1712,14 @@ async function handleSubmit() {
 }
 
 :deep(.n-base-selection-label) {
-  height: 40px;
+  height: 32px;
+  line-height: 32px;
+  display: flex;
+  align-items: center;
+}
+
+:deep(.n-base-selection) {
+  --n-height: 32px;
 }
 
 /* Form row layout */
@@ -1740,7 +1784,7 @@ async function handleSubmit() {
 
 /* Config item row layout */
 .config-item-row {
-  margin-bottom: 12px;
+  margin-bottom: 8px !important;
 }
 
 .config-item-content {
@@ -1775,7 +1819,7 @@ async function handleSubmit() {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 8px !important;
 }
 
 /* Unified arrow style (for model and path redirect) */
@@ -1853,7 +1897,7 @@ async function handleSubmit() {
 
 /* Header rule related styles */
 .header-rule-row {
-  margin-bottom: 12px;
+  margin-bottom: 8px !important;
 }
 
 .header-rule-content {

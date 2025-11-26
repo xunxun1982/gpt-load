@@ -4,6 +4,7 @@ export default {
   },
   common: {
     operationSuccess: "操作成功",
+    operationFailed: "操作失敗",
     submit: "送信",
     cancel: "キャンセル",
     confirm: "確認",
@@ -337,6 +338,7 @@ export default {
     atLeastOneUpstream: "少なくとも1つのアップストリームアドレスが必要です",
     invalidJsonFormat: "パラメーターオーバーライドは有効なJSON形式である必要があります",
     invalidNumericConfig: "設定項目「{key}」は数値である必要があります",
+    invalidGroup: "無効なグループです",
     groupNameTooltip:
       "APIルーティングの一部として使用、小文字、数字、ハイフン、アンダースコアのみ、1-100文字。例：gemini、openai-2",
     displayNameTooltip:
