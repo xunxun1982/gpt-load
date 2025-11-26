@@ -144,8 +144,10 @@ async function executeGroupMutation(
     return await fn();
   } catch (error) {
     console.error(`Error ${action} group:`, error);
-    // Handle API errors with user-friendly message
-    message.error(t("common.operationFailed"));
+    // Extract API error message if available
+    const apiMessage = (error as { response?: { data?: { message?: string } } })?.response?.data
+      ?.message;
+    message.error(apiMessage || t("common.operationFailed"));
     return null;
   }
 }

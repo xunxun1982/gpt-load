@@ -334,6 +334,8 @@ function resetForm() {
   // Set channel type first so computed properties can calculate default values correctly
   formData.channel_type = defaultChannelType;
 
+  formRef.value?.restoreValidation();
+
   Object.assign(formData, {
     name: "",
     display_name: "",
