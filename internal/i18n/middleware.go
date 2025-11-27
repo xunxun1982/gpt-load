@@ -6,9 +6,9 @@ import (
 )
 
 const (
-	// LocalizerKey 是 gin.Context 中存储 Localizer 的键
+	// LocalizerKey is the key used to store Localizer in gin.Context
 	LocalizerKey = "localizer"
-	// LangKey 是 gin.Context 中存储当前语言的键
+	// LangKey is the key used to store current language in gin.Context
 	LangKey = "lang"
 )
 

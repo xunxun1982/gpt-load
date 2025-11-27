@@ -25,37 +25,53 @@ const emit = defineEmits<Emits>();
 
 const message = useMessage();
 
-// 密钥生成弹窗相关
+// Key generator modal state
 const showKeyGeneratorModal = ref(false);
 const keyCount = ref(1);
 const isGenerating = ref(false);
 
-// 生成随机字符串
+// Generate random string
 function generateRandomString(length: number): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const charsLength = chars.length;
   let result = "";
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+
+  // Prefer cryptographically strong random generator when available
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const randomValues = new Uint32Array(length);
+    crypto.getRandomValues(randomValues);
+    for (let i = 0; i < length; i++) {
+      const value = randomValues[i]!;
+      result += chars.charAt(value % charsLength);
+    }
+    return result;
   }
+
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * charsLength));
+  }
+
   return result;
 }
 
-// 生成密钥
+// Generate keys
 function generateKeys(): string[] {
   const keys: string[] = [];
-  for (let i = 0; i < keyCount.value; i++) {
+  // Defensive bounds check (UI already enforces 1-100 via NInputNumber)
+  const count = Math.min(Math.max(keyCount.value, 1), 100);
+  for (let i = 0; i < count; i++) {
     keys.push(`sk-${generateRandomString(48)}`);
   }
   return keys;
 }
 
-// 打开密钥生成器弹窗
+// Open key generator modal
 function openKeyGenerator() {
   showKeyGeneratorModal.value = true;
   keyCount.value = 1;
 }
 
-// 确认生成密钥
+// Confirm key generation
 function confirmGenerateKeys() {
   if (isGenerating.value) {
     return;
@@ -68,12 +84,12 @@ function confirmGenerateKeys() {
 
     let updatedValue = currentValue.trim();
 
-    // 处理逗号兼容情况
+    // Handle comma compatibility
     if (updatedValue && !updatedValue.endsWith(",")) {
       updatedValue += ",";
     }
 
-    // 添加新生成的密钥
+    // Append newly generated keys
     if (updatedValue) {
       updatedValue += newKeys.join(",");
     } else {
@@ -83,13 +99,13 @@ function confirmGenerateKeys() {
     emit("update:modelValue", updatedValue);
     showKeyGeneratorModal.value = false;
 
-    message.success(t("keys.keysGeneratedSuccess", { count: keyCount.value }));
+    message.success(t("keys.keysGeneratedSuccess", { count: newKeys.length }));
   } finally {
     isGenerating.value = false;
   }
 }
 
-// 复制代理密钥
+// Copy proxy keys
 async function copyProxyKeys() {
   const proxyKeys = props.modelValue || "";
   if (!proxyKeys.trim()) {
@@ -97,12 +113,17 @@ async function copyProxyKeys() {
     return;
   }
 
-  // 将逗号分隔的密钥转换为换行分隔
+  // Convert comma/newline-separated keys to newline-separated text
   const formattedKeys = proxyKeys
-    .split(",")
+    .split(/[\n,]+/)
     .map(key => key.trim())
     .filter(key => key.length > 0)
     .join("\n");
+
+  if (!formattedKeys.trim()) {
+    message.warning(t("keys.noKeysToCopy"));
+    return;
+  }
 
   const success = await copy(formattedKeys);
   if (success) {
@@ -112,7 +133,7 @@ async function copyProxyKeys() {
   }
 }
 
-// 处理输入框值变化
+// Handle input value changes
 function handleInput(value: string) {
   emit("update:modelValue", value);
 }
@@ -145,7 +166,7 @@ function handleInput(value: string) {
       </template>
     </n-input>
 
-    <!-- 密钥生成器弹窗 -->
+    <!-- Key generator modal -->
     <n-modal
       v-model:show="showKeyGeneratorModal"
       preset="dialog"

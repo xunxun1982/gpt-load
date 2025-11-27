@@ -21,50 +21,52 @@ interface Props {
 
 const props = defineProps<Props>();
 
-// 本地存储键名
+// Severity level ordering for comparison
+const SEVERITY_ORDER = { high: 3, medium: 2, low: 1 } as const;
+
+// Local storage key name
 const STORAGE_KEY = "security-alert-dismissed";
 
-// 检查是否已经被用户设置为不再提醒
+// Check whether the user has chosen not to be reminded again
 const isDismissedPermanently = ref(localStorage.getItem(STORAGE_KEY) === "true");
 
-// 本次会话是否已关闭
+// Whether the alert has been closed in this session
 const isClosedThisSession = ref(false);
 
-// 是否显示详情
+// Expanded details section names
 const showDetails = ref<string[]>([]);
 
-// 是否显示警告
+// Whether the warning banner should be shown
 const shouldShow = computed(() => {
   return props.warnings.length > 0 && !isDismissedPermanently.value && !isClosedThisSession.value;
 });
 
-// 获取最高严重级别
+// Get the highest severity level among all warnings
 const highestSeverity = computed(() => {
   if (!props.warnings.length) {
     return "low";
   }
 
-  const severityOrder = { high: 3, medium: 2, low: 1 };
   return props.warnings.reduce((highest, warning) => {
-    const currentLevel = severityOrder[warning.severity as keyof typeof severityOrder] || 1;
-    const highestLevel = severityOrder[highest as keyof typeof severityOrder] || 1;
+    const currentLevel = SEVERITY_ORDER[warning.severity as keyof typeof SEVERITY_ORDER] || 1;
+    const highestLevel = SEVERITY_ORDER[highest as keyof typeof SEVERITY_ORDER] || 1;
     return currentLevel > highestLevel ? warning.severity : highest;
   }, "low");
 });
 
-// 获取警告类型的映射（调整为更温和的颜色）
+// Map severity to alert type (use more moderate colors)
 const alertType = computed(() => {
   switch (highestSeverity.value) {
     case "high":
-      return "warning"; // 使用橙色而非红色
+      return "warning"; // Use orange instead of red
     case "medium":
-      return "info"; // 使用蓝色
+      return "info"; // Use blue
     default:
       return "info";
   }
 });
 
-// 生成警告摘要文本
+// Generate summary text for the warnings
 const warningText = computed(() => {
   const count = props.warnings.length;
   const highCount = props.warnings.filter(w => w.severity === "high").length;
@@ -76,7 +78,7 @@ const warningText = computed(() => {
   }
 });
 
-// 获取严重程度标签类型
+// Map severity to tag type
 const getSeverityTagType = (severity: string) => {
   switch (severity) {
     case "high":
@@ -88,7 +90,7 @@ const getSeverityTagType = (severity: string) => {
   }
 };
 
-// 获取严重程度中文
+// Get localized severity label text
 const getSeverityText = (severity: string) => {
   switch (severity) {
     case "high":
@@ -100,18 +102,24 @@ const getSeverityText = (severity: string) => {
   }
 };
 
-// 关闭警告（仅本次会话）
+// Close warning banner for this session only
 const handleClose = () => {
   isClosedThisSession.value = true;
 };
 
-// 不再提醒
+// Do not remind again (persist choice)
 const handleDismissPermanently = () => {
-  localStorage.setItem(STORAGE_KEY, "true");
-  isDismissedPermanently.value = true;
+  try {
+    localStorage.setItem(STORAGE_KEY, "true");
+    isDismissedPermanently.value = true;
+  } catch (error) {
+    console.warn("Failed to save security alert dismissal preference:", error);
+    // Still close for this session even if persistence fails
+    isClosedThisSession.value = true;
+  }
 };
 
-// 打开安全配置文档
+// Open security configuration documentation
 const openSecurityDocs = () => {
   window.open("https://www.gpt-load.com/docs/configuration/security", "_blank");
 };
@@ -135,7 +143,7 @@ const openSecurityDocs = () => {
         {{ warningText }}
       </div>
 
-      <!-- 问题详情列表 -->
+      <!-- Detail list of issues -->
       <n-collapse v-model:expanded-names="showDetails" style="margin-bottom: 12px">
         <n-collapse-item name="details" :title="t('security.viewDetails')">
           <n-list style="padding-top: 8px; margin-left: 0">
@@ -198,7 +206,7 @@ const openSecurityDocs = () => {
 </template>
 
 <style scoped>
-/* 安全提醒按钮样式优化 */
+/* Button style enhancements for security alert actions */
 .security-primary-btn {
   font-weight: 600;
 }
@@ -207,7 +215,7 @@ const openSecurityDocs = () => {
   font-weight: 500;
 }
 
-/* 暗黑模式下的按钮优化 */
+/* Button style adjustments in dark mode */
 :root.dark .security-primary-btn {
   background: var(--primary-color) !important;
   color: white !important;

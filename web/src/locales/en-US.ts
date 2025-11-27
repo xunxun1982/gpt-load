@@ -4,6 +4,7 @@ export default {
   },
   common: {
     operationSuccess: "Operation successful",
+    operationFailed: "Operation failed",
     submit: "Submit",
     cancel: "Cancel",
     confirm: "Confirm",
@@ -284,6 +285,7 @@ export default {
     enterWeight: "Please enter weight",
     weightCannotBeNegative: "Weight cannot be negative",
     weightMaxExceeded: "Weight cannot exceed 1000",
+    weightRangeHint: "Range: 0-1000 (0 = disabled)",
     newWeight: "New Weight",
     currentWeight: "Current Weight",
     previewPercentage: "Preview Percentage",
@@ -335,6 +337,10 @@ export default {
     enterTestModel: "Please enter test model",
     atLeastOneUpstream: "At least one upstream address is required",
     invalidJsonFormat: "Parameter override must be valid JSON format",
+    invalidNumericConfig: 'Invalid numeric value for config "{key}"',
+    invalidAggregateGroup: "Aggregate group is missing or invalid",
+    invalidSubGroup: "Sub group is missing or invalid",
+    invalidGroup: "Group is missing or invalid",
     groupNameTooltip:
       "Used as part of API routing, only lowercase letters, numbers, hyphens or underscores, 1-100 characters. E.g.: gemini, openai-2",
     displayNameTooltip:
@@ -346,6 +352,9 @@ export default {
     sortValue: "Sort value",
     maxRetries: "Max Retries",
     maxRetriesPlaceholder: "Max retries when sub-group fails (0-5)",
+    subMaxRetries: "Sub-group max retries",
+    subMaxRetriesPlaceholder:
+      "Max retries per sub-group within a single request (0 means no retry, 0-5)",
     testModelTooltip:
       "Model name for validating API key availability. System will use this model to send test requests to check if the key is working. Please use lightweight and fast models",
     testPathTooltip1:
@@ -476,6 +485,7 @@ export default {
     enterKeysToDeletePlaceholder: "Enter keys to delete, one per line",
     group: "Group",
     notesUpdated: "Notes updated",
+    notesUpdateFailed: "Failed to update notes",
     editNotes: "Edit notes",
     notes: "Notes",
     editKeyNotes: "Edit key notes",
@@ -673,6 +683,7 @@ export default {
   charts: {
     requestTrend24h: "24h Request Trend",
     allGroups: "All Groups",
+    loadError: "Failed to load chart data. Please try again.",
   },
   security: {
     warningsWithHigh:

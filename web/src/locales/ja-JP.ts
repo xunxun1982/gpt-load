@@ -4,6 +4,7 @@ export default {
   },
   common: {
     operationSuccess: "操作成功",
+    operationFailed: "操作失敗",
     submit: "送信",
     cancel: "キャンセル",
     confirm: "確認",
@@ -284,6 +285,7 @@ export default {
     enterWeight: "ウェイトを入力してください",
     weightCannotBeNegative: "ウェイトは負の値にできません",
     weightMaxExceeded: "ウェイトは1000を超えることはできません",
+    weightRangeHint: "範囲: 0〜1000（0=無効）",
     newWeight: "新しいウェイト",
     currentWeight: "現在のウェイト",
     previewPercentage: "プレビュー割合",
@@ -335,6 +337,8 @@ export default {
     enterTestModel: "テストモデルを入力してください",
     atLeastOneUpstream: "少なくとも1つのアップストリームアドレスが必要です",
     invalidJsonFormat: "パラメーターオーバーライドは有効なJSON形式である必要があります",
+    invalidNumericConfig: "設定項目「{key}」は数値である必要があります",
+    invalidGroup: "無効なグループです",
     groupNameTooltip:
       "APIルーティングの一部として使用、小文字、数字、ハイフン、アンダースコアのみ、1-100文字。例：gemini、openai-2",
     displayNameTooltip:
@@ -346,6 +350,9 @@ export default {
     sortValue: "ソート値",
     maxRetries: "最大リトライ回数",
     maxRetriesPlaceholder: "サブグループ失敗時の最大リトライ回数 (0-5)",
+    subMaxRetries: "サブグループ最大リトライ",
+    subMaxRetriesPlaceholder:
+      "1回のリクエスト内で各サブグループに許可される最大リトライ回数（0はリトライなし、0-5）",
     testModelTooltip:
       "APIキーの有効性を検証するためのモデル名。システムはこのモデルを使用してテストリクエストを送信し、キーが機能しているか確認します。軽量で高速なモデルを使用してください",
     testPathTooltip1:
@@ -477,6 +484,7 @@ export default {
     enterKeysToDeletePlaceholder: "削除するキーを入力、一行に一つ",
     group: "グループ",
     notesUpdated: "備考が更新されました",
+    notesUpdateFailed: "備考の更新に失敗しました",
     editNotes: "備考を編集",
     notes: "備考",
     editKeyNotes: "キー備考を編集",
@@ -564,28 +572,9 @@ export default {
     stackTrace: "スタックトレース",
     logLevel: "ログレベル",
     logTime: "ログ時間",
-    logMessage: "ログメッセージ",
-    clearLogs: "ログクリア",
-    filterLogs: "ログフィルター",
-    searchLogs: "ログ検索",
-    noLogs: "ログがありません",
-    showDetails: "詳細表示",
-    hideDetails: "詳細非表示",
-    requestInfo: "リクエスト情報",
-    upstreamAddress: "アップストリームアドレス",
-    proxyServer: "プロキシサーバー",
-    requestContent: "リクエスト内容",
-    responseContent: "レスポンス内容",
-    errorInfo: "エラー情報",
     customColumns: "カラムのカスタマイズ",
   },
   settings: {
-    title: "システム設定",
-    general: "基本設定",
-    security: "セキュリティ設定",
-    performance: "パフォーマンス設定",
-    notification: "通知設定",
-    advanced: "詳細設定",
     systemConfig: "システム設定",
     appUrl: "アプリケーションURL",
     loadFailed: "設定の読み込みに失敗しました",
@@ -677,6 +666,7 @@ export default {
   charts: {
     requestTrend24h: "24時間リクエストトレンド",
     allGroups: "すべてのグループ",
+    loadError: "グラフデータの読み込みに失敗しました。しばらくしてから再試行してください",
   },
   security: {
     warningsWithHigh:

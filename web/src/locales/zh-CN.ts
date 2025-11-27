@@ -5,6 +5,7 @@ export default {
   common: {
     submit: "提交",
     operationSuccess: "操作成功",
+    operationFailed: "操作失败",
     cancel: "取消",
     confirm: "确认",
     delete: "删除",
@@ -279,6 +280,7 @@ export default {
     enterWeight: "请输入权重",
     weightCannotBeNegative: "权重不能为负数",
     weightMaxExceeded: "权重不能超过1000",
+    weightRangeHint: "范围 0-1000（0=禁用）",
     newWeight: "新权重",
     currentWeight: "当前权重",
     previewPercentage: "预览百分比",
@@ -328,6 +330,10 @@ export default {
     enterTestModel: "请输入测试模型",
     atLeastOneUpstream: "至少需要一个上游地址",
     invalidJsonFormat: "参数覆盖必须是有效的 JSON 格式",
+    invalidNumericConfig: '配置项 "{key}" 必须是有效的数字',
+    invalidAggregateGroup: "无效的聚合分组",
+    invalidSubGroup: "无效的子分组",
+    invalidGroup: "无效的分组",
     groupNameTooltip:
       "作为API路由的一部分，只能包含小写字母、数字、中划线或下划线，长度1-100位。例如：gemini、openai-2",
     displayNameTooltip:
@@ -339,6 +345,8 @@ export default {
     sortValue: "排序值",
     maxRetries: "最大重试次数",
     maxRetriesPlaceholder: "子分组失败时的最大重试次数 (0-5)",
+    subMaxRetries: "子组重试上限",
+    subMaxRetriesPlaceholder: "限制单个子组在一次请求中的重试次数（0 表示不重试，范围 0-5）",
     testModelTooltip:
       "用于验证API密钥有效性的模型名称。系统会使用这个模型发送测试请求来检查密钥是否可用，请尽量使用轻量快速的模型",
     testPathTooltip1: "自定义用于验证密钥的API端点路径。如果不填写，将使用默认路径",
@@ -458,6 +466,7 @@ export default {
     enterKeysToDeletePlaceholder: "输入要删除的密钥，每行一个",
     group: "分组",
     notesUpdated: "备注已更新",
+    notesUpdateFailed: "备注更新失败",
     editNotes: "编辑备注",
     notes: "备注",
     editKeyNotes: "编辑密钥备注",
@@ -647,6 +656,7 @@ export default {
   charts: {
     requestTrend24h: "24小时请求趋势",
     allGroups: "全部分组",
+    loadError: "图表数据加载失败，请稍后重试",
   },
   security: {
     warningsWithHigh: "发现 {count} 个安全配置问题，{highCount} 个需要优先处理",

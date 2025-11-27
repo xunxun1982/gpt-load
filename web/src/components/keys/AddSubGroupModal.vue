@@ -43,40 +43,40 @@ const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
 
-// 表单数据
+// Form data
 const formData = reactive<{
   sub_groups: SubGroupItem[];
 }>({
   sub_groups: [{ group_id: null, weight: 1 }],
 });
 
-// 计算可用的分组选项（排除已添加的）
+// Compute available group options (exclude already added ones)
 const getAvailableOptions = computed(() => {
   if (!props.aggregateGroup?.channel_type) {
     return [];
   }
 
-  // 获取已存在的子分组ID
+  // Get IDs of existing sub-groups
   const existingIds = props.existingSubGroups.map(sg => sg.group.id);
 
   return props.groups
     .filter(group => {
-      // 必须是标准分组
+      // Must be a standard group
       if (group.group_type === "aggregate") {
         return false;
       }
 
-      // 必须是相同的渠道类型
+      // Must have the same channel type
       if (group.channel_type !== props.aggregateGroup?.channel_type) {
         return false;
       }
 
-      // 不能是当前聚合分组自己
+      // Cannot be the aggregate group itself
       if (props.aggregateGroup?.id && group.id === props.aggregateGroup.id) {
         return false;
       }
 
-      // 不能是已存在的子分组
+      // Cannot be a group that is already a sub-group
       if (group.id && existingIds.includes(group.id)) {
         return false;
       }
@@ -89,49 +89,50 @@ const getAvailableOptions = computed(() => {
     }));
 });
 
-// 为每个子分组项计算可用选项
+// Compute available options for each sub-group item
 const getOptionsForItems = computed(() => {
-  const selectedIds = formData.sub_groups.map(sg => sg.group_id).filter(Boolean);
-
   return formData.sub_groups.map((currentItem, currentIndex) => {
-    const otherSelectedIds = selectedIds.filter((_id, index) => index !== currentIndex);
+    const otherSelectedIds = formData.sub_groups
+      .filter((_item, idx) => idx !== currentIndex)
+      .map(sg => sg.group_id)
+      .filter((id): id is number => id !== null);
 
     return getAvailableOptions.value.filter(option => {
-      // 如果是当前项已选择的值，允许显示
+      // If it's the current item's selected value, allow it to be displayed
       if (option.value === currentItem.group_id) {
         return true;
       }
-      // 否则只显示未被其他项选择的
-      return !otherSelectedIds.includes(option?.value || 0);
+      // Otherwise, only show options not selected by other items
+      return !otherSelectedIds.includes(option.value as number);
     });
   });
 });
 
-// 获取指定索引的选项
+// Get options for a given index
 function getOptionsForItem(index: number) {
   return getOptionsForItems.value[index] || [];
 }
 
-// 表单验证规则
+// Form validation rules
 const rules: FormRules = {
   sub_groups: {
     type: "array",
     required: true,
     validator: (_rule, value: SubGroupItem[]) => {
-      // 检查是否至少有一个有效的子分组
+      // Check if there's at least one valid sub-group
       const validItems = value.filter(item => item.group_id !== null);
       if (validItems.length === 0) {
         return new Error(t("keys.atLeastOneSubGroup"));
       }
 
-      // 检查权重是否合法
+      // Check if weights are valid
       for (const item of validItems) {
         if (item.weight < 0) {
           return new Error(t("keys.weightCannotBeNegative"));
         }
       }
 
-      // 检查是否有重复的子分组
+      // Check for duplicate sub-groups
       const groupIds = validItems.map(item => item.group_id);
       const uniqueIds = new Set(groupIds);
       if (uniqueIds.size !== groupIds.length) {
@@ -144,7 +145,7 @@ const rules: FormRules = {
   },
 };
 
-// 监听弹窗显示状态
+// Watch dialog visibility
 watch(
   () => props.show,
   show => {
@@ -154,59 +155,58 @@ watch(
   }
 );
 
-// 重置表单
+// Reset form
 function resetForm() {
   formData.sub_groups = [{ group_id: null, weight: 1 }];
 }
 
-// 添加子分组项
+// Add sub-group item
 function addSubGroupItem() {
   formData.sub_groups.push({ group_id: null, weight: 1 });
 }
 
-// 删除子分组项
+// Remove sub-group item
 function removeSubGroupItem(index: number) {
   if (formData.sub_groups.length > 1) {
     formData.sub_groups.splice(index, 1);
   }
 }
 
-// 关闭弹窗
+// Close modal
 function handleClose() {
   emit("update:show", false);
 }
 
-// 提交表单
+// Submit form
 async function handleSubmit() {
-  if (loading.value || !props.aggregateGroup?.id) {
+  const aggregateId = props.aggregateGroup?.id;
+  if (loading.value || typeof aggregateId !== "number") {
     return;
   }
 
   try {
-    await formRef.value?.validate();
     loading.value = true;
 
-    // 过滤出有效的子分组
+    await formRef.value?.validate();
+
+    // Filter out valid sub-groups
     const validSubGroups = formData.sub_groups.filter(sg => sg.group_id !== null);
 
-    if (validSubGroups.length === 0) {
-      message.error(t("keys.atLeastOneSubGroup"));
-      return;
-    }
-
     await keysApi.addSubGroups(
-      props.aggregateGroup.id,
+      aggregateId,
       validSubGroups as { group_id: number; weight: number }[]
     );
 
     emit("success");
     handleClose();
+  } catch (_error) {
+    message.error(t("common.error"));
   } finally {
     loading.value = false;
   }
 }
 
-// 是否可以添加更多子分组项
+// Whether more sub-group items can be added
 const canAddMore = computed(() => {
   return formData.sub_groups.length < getAvailableOptions.value.length;
 });
@@ -395,7 +395,7 @@ const canAddMore = computed(() => {
   border-radius: var(--border-radius-sm);
 }
 
-/* 响应式适配 */
+/* Responsive layout */
 @media (max-width: 768px) {
   .add-sub-group-modal {
     width: 90vw;
@@ -423,7 +423,7 @@ const canAddMore = computed(() => {
   }
 }
 
-/* 暗黑模式适配 */
+/* Dark mode adjustments */
 :root.dark .sub-group-item {
   background: var(--bg-tertiary);
   border-color: var(--border-color);

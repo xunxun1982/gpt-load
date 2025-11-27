@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DashboardStatsResponse } from "@/types/models";
 import { NCard, NGrid, NGridItem, NSpace, NTag, NTooltip } from "naive-ui";
-import { computed, onMounted, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -16,11 +16,11 @@ const props = withDefaults(defineProps<Props>(), {
   loading: false,
 });
 
-// 使用计算属性代替ref
+// Use computed properties instead of ref for stats
 const stats = computed(() => props.stats);
 const animatedValues = ref<Record<string, number>>({});
 
-// 格式化数值显示
+// Format numeric values for display
 const formatValue = (value: number, type: "count" | "rate" = "count"): string => {
   if (type === "rate") {
     return `${value.toFixed(1)}%`;
@@ -31,44 +31,67 @@ const formatValue = (value: number, type: "count" | "rate" = "count"): string =>
   return value.toString();
 };
 
-// 格式化趋势显示
+// Format trend value for display
 const formatTrend = (trend: number): string => {
   const sign = trend >= 0 ? "+" : "";
   return `${sign}${trend.toFixed(1)}%`;
 };
 
-// 监听stats变化并更新动画值
+// Update animated values when stats change
 const updateAnimatedValues = () => {
-  if (stats.value) {
-    setTimeout(() => {
-      animatedValues.value = {
-        key_count:
-          (stats.value?.key_count?.value ?? 0) /
-          ((stats.value?.key_count?.value ?? 1) + (stats.value?.key_count?.sub_value ?? 1)),
-        rpm: Math.min(100 + (stats.value?.rpm?.trend ?? 0), 100) / 100,
-        request_count: Math.min(100 + (stats.value?.request_count?.trend ?? 0), 100) / 100,
-        error_rate: (100 - (stats.value?.error_rate?.value ?? 0)) / 100,
-      };
-    }, 0);
+  if (!stats.value) {
+    animatedValues.value = {};
+    return;
   }
+
+  animatedValues.value = {
+    key_count: (() => {
+      const active = stats.value?.key_count?.value ?? 0;
+      const invalid = stats.value?.key_count?.sub_value ?? 0;
+      const total = active + invalid;
+      const denom = Math.max(total, 1);
+      return active / denom;
+    })(),
+    rpm: (() => {
+      const trend = stats.value?.rpm?.trend ?? 0;
+      const clamped = Math.max(Math.min(trend, 100), -100);
+      // Map trend from [-100, 100] to [0, 1], with 0 change at 0.5
+      return (clamped + 100) / 200;
+    })(),
+    request_count: (() => {
+      const trend = stats.value?.request_count?.trend ?? 0;
+      const clamped = Math.max(Math.min(trend, 100), -100);
+      // Map trend from [-100, 100] to [0, 1], with 0 change at 0.5
+      return (clamped + 100) / 200;
+    })(),
+    error_rate: (() => {
+      const raw = stats.value?.error_rate?.value ?? 0;
+      const clamped = Math.max(Math.min(raw, 100), 0);
+      return (100 - clamped) / 100;
+    })(),
+  };
 };
 
-// 监听stats变化
-onMounted(() => {
-  updateAnimatedValues();
-});
+// React to stats changes (and initialize on mount)
+watch(
+  () => stats.value,
+  () => {
+    updateAnimatedValues();
+  },
+  { immediate: true }
+);
 </script>
 
 <template>
   <div class="stats-container">
     <n-space vertical size="medium">
       <n-grid cols="2 s:4" :x-gap="20" :y-gap="20" responsive="screen">
-        <!-- 密钥数量 -->
+        <!-- Key count -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0s">
             <div class="stat-header">
               <div class="stat-icon key-icon">🔑</div>
-              <n-tooltip v-if="stats?.key_count.sub_value" trigger="hover">
+              <n-tooltip v-if="stats?.key_count?.sub_value" trigger="hover">
                 <template #trigger>
                   <n-tag type="error" size="small" class="stat-trend">
                     {{ stats.key_count.sub_value }}
@@ -96,14 +119,14 @@ onMounted(() => {
           </n-card>
         </n-grid-item>
 
-        <!-- RPM (10分钟) -->
+        <!-- RPM (10 minutes) -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0.05s">
             <div class="stat-header">
               <div class="stat-icon rpm-icon">⏱️</div>
               <n-tag
                 v-if="stats?.rpm && stats.rpm.trend !== undefined"
-                :type="stats?.rpm.trend_is_growth ? 'success' : 'error'"
+                :type="stats?.rpm?.trend_is_growth ? 'success' : 'error'"
                 size="small"
                 class="stat-trend"
               >
@@ -113,7 +136,7 @@ onMounted(() => {
 
             <div class="stat-content">
               <div class="stat-value">
-                {{ stats?.rpm?.value.toFixed(1) ?? 0 }}
+                {{ stats?.rpm?.value?.toFixed(1) ?? "0.0" }}
               </div>
               <div class="stat-title">{{ t("dashboard.rpm10Min") }}</div>
             </div>
@@ -129,7 +152,7 @@ onMounted(() => {
           </n-card>
         </n-grid-item>
 
-        <!-- 24小时请求 -->
+        <!-- 24h requests -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0.1s">
             <div class="stat-header">
@@ -146,7 +169,7 @@ onMounted(() => {
 
             <div class="stat-content">
               <div class="stat-value">
-                {{ stats ? formatValue(stats.request_count.value) : "--" }}
+                {{ stats?.request_count ? formatValue(stats.request_count.value) : "--" }}
               </div>
               <div class="stat-title">{{ t("dashboard.requests24h") }}</div>
             </div>
@@ -162,18 +185,18 @@ onMounted(() => {
           </n-card>
         </n-grid-item>
 
-        <!-- 24小时错误率 -->
+        <!-- 24h error rate -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0.15s">
             <div class="stat-header">
               <div class="stat-icon error-icon">🛡️</div>
               <n-tag
-                v-if="stats?.error_rate.trend !== 0"
-                :type="stats?.error_rate.trend_is_growth ? 'success' : 'error'"
+                v-if="stats?.error_rate?.trend !== undefined && stats.error_rate.trend !== 0"
+                :type="stats?.error_rate?.trend_is_growth ? 'success' : 'error'"
                 size="small"
                 class="stat-trend"
               >
-                {{ stats ? formatTrend(stats.error_rate.trend) : "--" }}
+                {{ formatTrend(stats.error_rate.trend) }}
               </n-tag>
             </div>
 
@@ -341,7 +364,7 @@ onMounted(() => {
   }
 }
 
-/* 响应式网格 */
+/* Responsive grid */
 :deep(.n-grid-item) {
   min-width: 0;
 }

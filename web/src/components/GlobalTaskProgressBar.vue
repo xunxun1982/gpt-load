@@ -11,7 +11,7 @@ const { t } = useI18n();
 const taskInfo = ref<TaskInfo>({ is_running: false, task_type: "KEY_VALIDATION" });
 const visible = ref(false);
 let pollTimer: number | null = null;
-let isPolling = false; // 添加标志位
+let isPolling = false; // Flag to indicate polling status
 const message = useMessage();
 
 onMounted(() => {
@@ -79,7 +79,7 @@ async function pollOnce() {
             },
           });
 
-          // 触发分组数据刷新
+          // Trigger group data refresh
           if (task.group_name && task.finished_at) {
             appState.lastCompletedTask = {
               groupName: task.group_name,
@@ -93,10 +93,10 @@ async function pollOnce() {
       return;
     }
   } catch (_error) {
-    // 错误已记录
+    // Error already logged elsewhere
   }
 
-  // 如果仍在轮询状态，1秒后发起下一次请求
+  // If still polling, schedule the next request after 1 second
   if (isPolling) {
     pollTimer = setTimeout(pollOnce, 1000);
   }
@@ -222,9 +222,9 @@ function getTaskTitle(): string {
   }
 }
 
-/* 暗黑模式特殊样式 */
+/* Dark mode specific styles */
 :root.dark .global-task-progress {
-  background: #323841; /* 浅灰色背景，比内容区域浅 */
+  background: #323841; /* Light gray background, lighter than content area */
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 

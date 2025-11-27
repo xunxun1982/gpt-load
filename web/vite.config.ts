@@ -1,28 +1,37 @@
 import vue from "@vitejs/plugin-vue";
+import { compression } from "vite-plugin-compression2";
 import path from "path";
 import { defineConfig, loadEnv } from "vite";
 
 /**
- * Vite 配置文件
- * 配置开发服务器、构建优化和代码分割策略
+ * Vite Configuration
+ * Configures dev server, build optimizations, and code splitting strategies
  * @see https://vite.dev/config/
  */
 export default defineConfig(({ mode }) => {
-  // 加载环境变量
+  // Load environment variables
   const env = loadEnv(mode, path.resolve(__dirname, "../"), "");
 
   return {
-    plugins: [vue()],
-    // 解析配置
+    plugins: [
+      vue(),
+      // Enable gzip compression for production builds
+      compression({
+        include: /\.(js|css|html|svg)$/,
+        threshold: 10240, // Compress files larger than 10KB
+        algorithms: ["gzip"],
+      }),
+    ],
+    // Resolve configuration
     resolve: {
-      // 配置路径别名
+      // Configure path aliases
       alias: {
         "@": path.resolve(__dirname, "./src"),
       },
     },
-    // 开发服务器配置
+    // Dev server configuration
     server: {
-      // 代理配置示例
+      // Proxy configuration example
       proxy: {
         "/api": {
           target: env.VITE_API_BASE_URL || "http://127.0.0.1:3001",
@@ -30,18 +39,18 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
-    // 构建配置
+    // Build configuration
     build: {
       outDir: "dist",
       assetsDir: "assets",
       rollupOptions: {
         output: {
           /**
-           * 手动分块配置 - 优化缓存和加载性能
-           * - vue-vendor: Vue 核心库，稳定且适合长期缓存
-           * - naive-ui: 大型 UI 库，独立更新
-           * - vendor: 工具类依赖，共享功能
-           * 使用对象形式避免循环依赖问题
+           * Manual chunk configuration - Optimize caching and loading performance
+           * - vue-vendor: Vue core libraries, stable and suitable for long-term caching
+           * - naive-ui: Large UI library, updated independently
+           * - vendor: Utility dependencies, shared functionality
+           * Use object format to avoid circular dependency issues
            */
           manualChunks: {
             "vue-vendor": ["vue", "vue-router", "vue-i18n"],
@@ -51,8 +60,8 @@ export default defineConfig(({ mode }) => {
         },
       },
       /**
-       * Chunk 大小警告限制
-       * 设置为 1400 KB 以适应 Naive UI 库（1332 KB 未压缩，354 KB gzip 后）
+       * Chunk size warning limit
+       * Set to 1400 KB to accommodate Naive UI library (1332 KB uncompressed, 354 KB gzipped)
        */
       chunkSizeWarningLimit: 1400,
     },

@@ -23,10 +23,10 @@ onMounted(async () => {
 <template>
   <div class="dashboard-container">
     <n-space vertical size="large" style="gap: 0 16px">
-      <!-- 加密配置错误警告（优先级最高） -->
+      <!-- Encryption configuration error warning (highest priority) -->
       <encryption-mismatch-alert />
 
-      <!-- 安全警告横幅 -->
+      <!-- Security warning banner -->
       <security-alert
         v-if="dashboardStats?.security_warnings"
         :warnings="dashboardStats.security_warnings"

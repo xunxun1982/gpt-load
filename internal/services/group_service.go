@@ -356,20 +356,27 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 	}
 	s.groupListCacheMu.RUnlock()
 
-// Cache miss, fetch from database without timeout for reliability
-// Group list queries should be fast with proper indexes
-groups := make([]models.Group, 0, 100)
-	if err := s.db.WithContext(ctx).Order("sort asc, id desc").Find(&groups).Error; err != nil {
-		// On failure, return stale cache if available to keep UI responsive
-		s.groupListCacheMu.RLock()
-		if s.groupListCache != nil {
-			stale := make([]models.Group, len(s.groupListCache.Groups))
-			copy(stale, s.groupListCache.Groups)
+	// Cache miss, fetch from database with timeout for reliability
+	// Group list queries should be fast with proper indexes
+	groups := make([]models.Group, 0, 100)
+
+	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
+	defer cancel()
+
+	if err := s.db.WithContext(queryCtx).Order("sort asc, id desc").Find(&groups).Error; err != nil {
+		// Only use stale cache for transient errors (timeout/canceled) to keep UI responsive
+		// For other errors (schema issues, query bugs), return the error immediately
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			s.groupListCacheMu.RLock()
+			if s.groupListCache != nil {
+				stale := make([]models.Group, len(s.groupListCache.Groups))
+				copy(stale, s.groupListCache.Groups)
+				s.groupListCacheMu.RUnlock()
+				logrus.WithContext(ctx).WithError(err).Warn("ListGroups timeout/canceled - returning stale cache")
+				return stale, nil
+			}
 			s.groupListCacheMu.RUnlock()
-			logrus.WithContext(ctx).WithError(err).Warn("ListGroups DB error - returning stale cache")
-			return stale, nil
 		}
-		s.groupListCacheMu.RUnlock()
 		return nil, app_errors.ParseDBError(err)
 	}
 
@@ -635,57 +642,13 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 	return nil
 }
 
-// deleteKeysInBatches deletes keys in small batches with separate transactions
-// This avoids long-running transactions that block other operations
-func (s *GroupService) deleteKeysInBatches(ctx context.Context, keyIDs []uint) int64 {
-	if len(keyIDs) == 0 {
-		return 0
-	}
-
-	const batchSize = 50
-	totalDeleted := int64(0)
-
-	for i := 0; i < len(keyIDs); i += batchSize {
-		end := i + batchSize
-		if end > len(keyIDs) {
-			end = len(keyIDs)
-		}
-		batchIDs := keyIDs[i:end]
-
-		// Each batch in its own transaction
-		var deleted int64
-		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			result := tx.Where("id IN ?", batchIDs).Delete(&models.APIKey{})
-			if result.Error != nil {
-				return result.Error
-			}
-			deleted = result.RowsAffected
-			return nil
-		})
-
-		if err != nil {
-			logrus.WithContext(ctx).WithError(err).WithField("batch", i/batchSize).Warn("Failed to delete batch of keys")
-			continue
-		}
-
-		totalDeleted += deleted
-
-		// Small delay between batches to allow other operations
-		if i+batchSize < len(keyIDs) {
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-
-	return totalDeleted
-}
-
 // DeleteAllGroups removes all groups and their associated resources.
 // This is a dangerous operation intended for debugging and testing purposes only.
 // It should only be accessible when DEBUG_MODE environment variable is enabled.
 //
 // The operation performs the following steps:
 // 1. Deletes all sub-group relationships
-// 2. Deletes all API keys in batches to avoid long-running transactions
+// 2. Deletes all API keys (with SQLite sequence reset)
 // 3. Deletes all groups
 // 4. Clears the key store cache
 // 5. Invalidates the group cache
@@ -703,40 +666,14 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 
 	logrus.WithContext(ctx).WithField("totalKeys", totalKeys).Info("Starting deletion of all groups and keys")
 
-	// Step 2: Optimize SQLite for bulk deletion BEFORE starting transaction
-	// Note: PRAGMA synchronous cannot be changed inside a transaction in SQLite
-	// We only disable foreign keys which provides significant performance improvement
-	// and is safe because we're deleting all related data anyway
-	originalForeignKeys := true
-	fkDisabled := false
-	var fkResult int
-	if err := s.db.WithContext(ctx).Raw("PRAGMA foreign_keys").Scan(&fkResult).Error; err == nil {
-		originalForeignKeys = fkResult == 1
-	}
-
-	// Disable foreign keys for better performance
-	if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Warn("failed to disable foreign keys, continuing anyway")
-	} else {
-		fkDisabled = true
-	}
-
 	// Step 3: Begin transaction
 	tx := s.db.WithContext(ctx).Begin()
 	if err := tx.Error; err != nil {
-		// Restore foreign keys if transaction fails to start (only if we successfully disabled them)
-		if fkDisabled && originalForeignKeys {
-			s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
-		}
 		return app_errors.ErrDatabase
 	}
 	defer func() {
 		if tx != nil {
 			tx.Rollback()
-			// Restore foreign keys on rollback (only if we successfully disabled them)
-			if fkDisabled && originalForeignKeys {
-				s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON")
-			}
 		}
 	}()
 
@@ -782,17 +719,9 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	// Step 7: Commit the transaction
 	if err := tx.Commit().Error; err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to commit transaction")
-		// Foreign keys will be restored by defer
 		return app_errors.ErrDatabase
 	}
 	tx = nil
-
-	// Step 8: Restore foreign keys setting (only if we successfully disabled them)
-	if fkDisabled && originalForeignKeys {
-		if err := s.db.WithContext(ctx).Exec("PRAGMA foreign_keys = ON").Error; err != nil {
-			logrus.WithContext(ctx).WithError(err).Warn("failed to restore foreign keys setting")
-		}
-	}
 
 	// Step 9: Clear the key store cache
 	// This removes all keys from memory to ensure consistency
@@ -938,23 +867,22 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 	return &newGroup, nil
 }
 
-// GetGroupStats returns aggregated usage statistics for a group.
 func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupStats, error) {
 	var group models.Group
-// Try cache first to avoid DB under heavy writes
-if cached, err := s.groupManager.GetGroupByID(groupID); err == nil && cached != nil {
-	group = *cached
-} else {
-	// Short DB lookup with small timeout
-	qctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
-	defer cancel()
-	if err := s.db.WithContext(qctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
-		return nil, app_errors.ParseDBError(err)
+	// Try cache first to avoid DB under heavy writes
+	if cached, err := s.groupManager.GetGroupByID(groupID); err == nil && cached != nil {
+		group = *cached
+	} else {
+		// Short DB lookup with small, configurable timeout
+		qctx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
+		defer cancel()
+		if err := s.db.WithContext(qctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
+			return nil, app_errors.ParseDBError(err)
+		}
 	}
-}
-if group.ID == 0 {
-	return nil, app_errors.ErrResourceNotFound
-}
+	if group.ID == 0 {
+		return nil, app_errors.ErrResourceNotFound
+	}
 
 	// Select different statistics logic based on group type
 	if group.GroupType == "aggregate" {
@@ -962,28 +890,6 @@ if group.ID == 0 {
 	}
 
 	return s.getStandardGroupStats(ctx, groupID)
-}
-
-// queryGroupHourlyStats queries aggregated hourly statistics from group_hourly_stats table
-func (s *GroupService) queryGroupHourlyStats(ctx context.Context, groupID uint, hours int) (RequestStats, error) {
-	var result struct {
-		SuccessCount int64
-		FailureCount int64
-	}
-
-	now := time.Now()
-	currentHour := now.Truncate(time.Hour)
-	endTime := currentHour.Add(time.Hour) // Include current hour
-	startTime := endTime.Add(-time.Duration(hours) * time.Hour)
-
-	if err := s.db.WithContext(ctx).Model(&models.GroupHourlyStat{}).
-		Select("SUM(success_count) as success_count, SUM(failure_count) as failure_count").
-		Where("group_id = ? AND time >= ? AND time < ?", groupID, startTime, endTime).
-		Scan(&result).Error; err != nil {
-		return RequestStats{}, err
-	}
-
-	return calculateRequestStats(result.SuccessCount+result.FailureCount, result.FailureCount), nil
 }
 
 // queryMultipleTimeRangeStats queries statistics for multiple time periods in a single SQL query
@@ -1007,7 +913,7 @@ func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID 
 	time7dAgo := endTime.Add(-7 * 24 * time.Hour)
 	time30dAgo := endTime.Add(-30 * 24 * time.Hour)
 
-// Single query with CASE WHEN for all three time ranges
+	// Single query with CASE WHEN for all three time ranges
 	query := `
 		SELECT
 			COALESCE(SUM(CASE WHEN time >= ? THEN success_count ELSE 0 END), 0) as success24h,
@@ -1020,33 +926,26 @@ func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID 
 		WHERE group_id = ? AND time >= ? AND time < ?
 	`
 
-	// Add a timeout to avoid blocking during heavy writes
-queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
 	defer cancel()
-	type qres struct{ err error }
-	done := make(chan qres, 1)
-	go func() {
-		err := s.db.WithContext(queryCtx).Raw(query,
-			time24hAgo, time24hAgo,
-			time7dAgo, time7dAgo,
-			groupID, time30dAgo, endTime,
-		).Scan(&result).Error
-		done <- qres{err: err}
-	}()
-	select {
-	case r := <-done:
-		if r.err != nil {
-			return RequestStats{}, RequestStats{}, RequestStats{}, r.err
+
+	if err := s.db.WithContext(queryCtx).Raw(query,
+		time24hAgo, time24hAgo,
+		time7dAgo, time7dAgo,
+		groupID, time30dAgo, endTime,
+	).Scan(&result).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			logrus.WithContext(ctx).WithField("groupID", groupID).
+				Warn("request stats query timed out or canceled, returning empty stats")
+			return RequestStats{}, RequestStats{}, RequestStats{}, nil
 		}
-		stats24h = calculateRequestStats(result.Success24h+result.Failure24h, result.Failure24h)
-		stats7d = calculateRequestStats(result.Success7d+result.Failure7d, result.Failure7d)
-		stats30d = calculateRequestStats(result.Success30d+result.Failure30d, result.Failure30d)
-		return stats24h, stats7d, stats30d, nil
-	case <-queryCtx.Done():
-		// Timeout: return zero stats to avoid blocking UI
-		logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Stats query timed out, returning zeros")
-		return RequestStats{}, RequestStats{}, RequestStats{}, nil
+		return RequestStats{}, RequestStats{}, RequestStats{}, err
 	}
+
+	stats24h = calculateRequestStats(result.Success24h+result.Failure24h, result.Failure24h)
+	stats7d = calculateRequestStats(result.Success7d+result.Failure7d, result.Failure7d)
+	stats30d = calculateRequestStats(result.Success30d+result.Failure30d, result.Failure30d)
+	return stats24h, stats7d, stats30d, nil
 }
 
 // fetchKeyStats retrieves API key statistics for a group with caching
@@ -1063,8 +962,8 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 
 	// Cache miss - query database with timeout to avoid blocking during bulk inserts
 	// Create a context with timeout for the query
-	// Use a longer timeout to ensure data is fetched properly during import operations
-queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	// Key stats queries may need more time during bulk imports
+	queryCtx, cancel := context.WithTimeout(ctx, 2*getDBLookupTimeout())
 	defer cancel()
 
 	// Use index-friendly COUNT queries to leverage composite indexes and avoid full table scans
@@ -1072,8 +971,8 @@ queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	// Use two index-friendly COUNT queries instead of a single aggregation to leverage composite indexes
 	var totalKeys int64
 	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalKeys).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats total count timed out, returning empty stats")
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats total count timed out or canceled, returning empty stats")
 			return KeyStats{TotalKeys: 0, ActiveKeys: 0, InvalidKeys: 0}, nil
 		}
 		return KeyStats{}, fmt.Errorf("failed to count total keys: %w", err)
@@ -1081,12 +980,12 @@ queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 
 	var activeKeys int64
 	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).Count(&activeKeys).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out, returning partial stats")
-			activeKeys = 0
-		} else {
-			return KeyStats{}, fmt.Errorf("failed to count active keys: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out or canceled, returning partial stats with unknown active/invalid breakdown")
+			// Return partial stats with known total but unknown active/invalid breakdown
+			return KeyStats{TotalKeys: totalKeys, ActiveKeys: 0, InvalidKeys: 0}, nil
 		}
+		return KeyStats{}, fmt.Errorf("failed to count active keys: %w", err)
 	}
 
 	stats := KeyStats{
@@ -1288,7 +1187,7 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 		return nil, NewI18nError(app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
 	}
 
-return finalMap, nil
+	return finalMap, nil
 }
 
 // normalizePathRedirects validates and normalizes path redirect rules.

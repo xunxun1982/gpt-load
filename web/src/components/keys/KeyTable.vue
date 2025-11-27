@@ -87,14 +87,14 @@ const isNextPageDisabled = computed(() => {
 const dialog = useDialog();
 const confirmInput = ref("");
 
-// 状态过滤选项
+// Status filter options
 const statusOptions = [
   { label: t("common.all"), value: "all" },
   { label: t("keys.valid"), value: "active" },
   { label: t("keys.invalid"), value: "invalid" },
 ];
 
-// 更多操作下拉菜单选项
+// More actions dropdown menu options
 const moreOptions = [
   { label: t("keys.exportAllKeys"), key: "copyAll" },
   { label: t("keys.exportValidKeys"), key: "copyValid" },
@@ -124,7 +124,7 @@ const isRestoring = ref(false);
 const createDialogShow = ref(false);
 const deleteDialogShow = ref(false);
 
-// 备注编辑相关
+// State related to editing key notes
 const notesDialogShow = ref(false);
 const editingKey = ref<KeyRow | null>(null);
 const editingNotes = ref("");
@@ -133,10 +133,10 @@ watch(
   () => props.selectedGroup,
   async newGroup => {
     if (newGroup) {
-      // 检查重置页面是否会触发分页观察者。
+      // Check whether resetting the page will trigger the pagination watcher
       const willWatcherTrigger = currentPage.value !== 1 || statusFilter.value !== "all";
       resetPage();
-      // 如果分页观察者不触发，则手动加载。
+      // If the pagination watcher does not trigger, manually load data
       if (!willWatcherTrigger) {
         await loadKeys();
       }
@@ -157,13 +157,13 @@ watch(statusFilter, async () => {
   }
 });
 
-// 监听任务完成事件，自动刷新密钥列表
+// Watch task completion events and automatically refresh key list
 watch(
   () => appState.groupDataRefreshTrigger,
   () => {
-    // 检查是否需要刷新当前分组的密钥列表
+    // Check whether the current group's key list should be refreshed
     if (appState.lastCompletedTask && props.selectedGroup) {
-      // 通过分组名称匹配
+      // Match by group name
       const isCurrentGroup = appState.lastCompletedTask.groupName === props.selectedGroup.name;
 
       const shouldRefresh =
@@ -172,14 +172,14 @@ watch(
         appState.lastCompletedTask.taskType === "KEY_DELETE";
 
       if (isCurrentGroup && shouldRefresh) {
-        // 刷新当前分组的密钥列表
+        // Refresh key list for current group
         loadKeys();
       }
     }
   }
 );
 
-// 处理搜索输入的防抖
+// Handle debounced search input
 function handleSearchInput() {
   if (currentPage.value !== 1) {
     currentPage.value = 1;
@@ -188,7 +188,7 @@ function handleSearchInput() {
   }
 }
 
-// 处理更多操作菜单
+// Handle selection from the more actions menu
 function handleMoreAction(key: string) {
   switch (key) {
     case "copyAll":
@@ -242,12 +242,13 @@ async function loadKeys() {
   }
 }
 
-// 处理批量删除成功后的刷新
+// Handle list refresh after batch delete succeeds
 async function handleBatchDeleteSuccess() {
+  const groupName = props.selectedGroup?.name;
   await loadKeys();
-  // 触发同步操作刷新
-  if (props.selectedGroup) {
-    triggerSyncOperationRefresh(props.selectedGroup.name, "BATCH_DELETE");
+  // Trigger sync operation refresh
+  if (groupName) {
+    triggerSyncOperationRefresh(groupName, "BATCH_DELETE");
   }
 }
 
@@ -261,7 +262,10 @@ async function copyKey(key: KeyRow) {
 }
 
 async function testKey(_key: KeyRow) {
-  if (!props.selectedGroup?.id || !_key.key_value || testingMsg) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || !_key.key_value || testingMsg) {
     return;
   }
 
@@ -270,8 +274,8 @@ async function testKey(_key: KeyRow) {
   });
 
   try {
-    const response = await keysApi.testKeys(props.selectedGroup.id, _key.key_value);
-    const curValid = response.results?.[0] || {};
+    const response = await keysApi.testKeys(groupId, _key.key_value);
+    const curValid = (response.results?.[0] ?? {}) as { is_valid?: boolean; error?: string };
     if (curValid.is_valid) {
       window.$message.success(
         t("keys.testSuccess", { duration: formatDuration(response.total_duration) })
@@ -284,8 +288,10 @@ async function testKey(_key: KeyRow) {
       });
     }
     await loadKeys();
-    // 触发同步操作刷新
-    triggerSyncOperationRefresh(props.selectedGroup.name, "TEST_SINGLE");
+    // Trigger sync operation refresh
+    if (groupName) {
+      triggerSyncOperationRefresh(groupName, "TEST_SINGLE");
+    }
   } catch (_error) {
     console.error("Test failed");
   } finally {
@@ -321,7 +327,7 @@ function toggleKeyVisibility(key: KeyRow) {
   key.is_visible = !key.is_visible;
 }
 
-// 获取要显示的值（备注优先，否则显示密钥）
+// Get the display value (show notes only when key is hidden, otherwise show key)
 function getDisplayValue(key: KeyRow): string {
   if (key.notes && !key.is_visible) {
     return key.notes;
@@ -329,14 +335,14 @@ function getDisplayValue(key: KeyRow): string {
   return key.is_visible ? key.key_value : maskKey(key.key_value);
 }
 
-// 编辑密钥备注
+// Open notes editor for a key
 function editKeyNotes(key: KeyRow) {
   editingKey.value = key;
   editingNotes.value = key.notes || "";
   notesDialogShow.value = true;
 }
 
-// 保存备注
+// Save notes for the current key
 async function saveKeyNotes() {
   if (!editingKey.value) {
     return;
@@ -350,11 +356,15 @@ async function saveKeyNotes() {
     notesDialogShow.value = false;
   } catch (error) {
     console.error("Update notes failed", error);
+    window.$message.error(t("keys.notesUpdateFailed"));
   }
 }
 
 async function restoreKey(key: KeyRow) {
-  if (!props.selectedGroup?.id || !key.key_value || isRestoring.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || !key.key_value || isRestoring.value) {
     return;
   }
 
@@ -364,18 +374,16 @@ async function restoreKey(key: KeyRow) {
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
-      if (!props.selectedGroup?.id) {
-        return;
-      }
-
       isRestoring.value = true;
       d.loading = true;
 
       try {
-        await keysApi.restoreKeys(props.selectedGroup.id, key.key_value);
+        await keysApi.restoreKeys(groupId, key.key_value);
         await loadKeys();
-        // 触发同步操作刷新
-        triggerSyncOperationRefresh(props.selectedGroup.name, "RESTORE_SINGLE");
+        // Trigger sync operation refresh
+        if (groupName) {
+          triggerSyncOperationRefresh(groupName, "RESTORE_SINGLE");
+        }
       } catch (_error) {
         console.error("Restore failed");
       } finally {
@@ -387,7 +395,10 @@ async function restoreKey(key: KeyRow) {
 }
 
 async function deleteKey(key: KeyRow) {
-  if (!props.selectedGroup?.id || !key.key_value || isDeling.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || !key.key_value || isDeling.value) {
     return;
   }
 
@@ -397,18 +408,16 @@ async function deleteKey(key: KeyRow) {
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
-      if (!props.selectedGroup?.id) {
-        return;
-      }
-
       d.loading = true;
       isDeling.value = true;
 
       try {
-        await keysApi.deleteKeys(props.selectedGroup.id, key.key_value);
+        await keysApi.deleteKeys(groupId, key.key_value);
         await loadKeys();
-        // 触发同步操作刷新
-        triggerSyncOperationRefresh(props.selectedGroup.name, "DELETE_SINGLE");
+        // Trigger sync operation refresh
+        if (groupName) {
+          triggerSyncOperationRefresh(groupName, "DELETE_SINGLE");
+        }
       } catch (_error) {
         console.error("Delete failed");
       } finally {
@@ -456,7 +465,7 @@ function getStatusClass(status: KeyStatus): string {
   }
 }
 
-async function copyAllKeys() {
+function copyAllKeys() {
   if (!props.selectedGroup?.id) {
     return;
   }
@@ -464,7 +473,7 @@ async function copyAllKeys() {
   keysApi.exportKeys(props.selectedGroup.id, "all");
 }
 
-async function copyValidKeys() {
+function copyValidKeys() {
   if (!props.selectedGroup?.id) {
     return;
   }
@@ -472,7 +481,7 @@ async function copyValidKeys() {
   keysApi.exportKeys(props.selectedGroup.id, "active");
 }
 
-async function copyInvalidKeys() {
+function copyInvalidKeys() {
   if (!props.selectedGroup?.id) {
     return;
   }
@@ -481,7 +490,10 @@ async function copyInvalidKeys() {
 }
 
 async function restoreAllInvalid() {
-  if (!props.selectedGroup?.id || isRestoring.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || isRestoring.value) {
     return;
   }
 
@@ -491,17 +503,15 @@ async function restoreAllInvalid() {
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
-      if (!props.selectedGroup?.id) {
-        return;
-      }
-
       isRestoring.value = true;
       d.loading = true;
       try {
-        await keysApi.restoreAllInvalidKeys(props.selectedGroup.id);
+        await keysApi.restoreAllInvalidKeys(groupId);
         await loadKeys();
-        // 触发同步操作刷新
-        triggerSyncOperationRefresh(props.selectedGroup.name, "RESTORE_ALL_INVALID");
+        // Trigger sync operation refresh
+        if (groupName) {
+          triggerSyncOperationRefresh(groupName, "RESTORE_ALL_INVALID");
+        }
       } catch (_error) {
         console.error("Restore failed");
       } finally {
@@ -541,7 +551,10 @@ async function validateKeys(status: "all" | "active" | "invalid") {
 }
 
 async function clearAllInvalid() {
-  if (!props.selectedGroup?.id || isDeling.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || isDeling.value) {
     return;
   }
 
@@ -551,18 +564,16 @@ async function clearAllInvalid() {
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
-      if (!props.selectedGroup?.id) {
-        return;
-      }
-
       isDeling.value = true;
       d.loading = true;
       try {
-        const { data } = await keysApi.clearAllInvalidKeys(props.selectedGroup.id);
+        const { data } = await keysApi.clearAllInvalidKeys(groupId);
         window.$message.success(data?.message || t("keys.clearSuccess"));
         await loadKeys();
-        // 触发同步操作刷新
-        triggerSyncOperationRefresh(props.selectedGroup.name, "CLEAR_ALL_INVALID");
+        // Trigger sync operation refresh
+        if (groupName) {
+          triggerSyncOperationRefresh(groupName, "CLEAR_ALL_INVALID");
+        }
       } catch (_error) {
         console.error("Delete failed");
       } finally {
@@ -574,7 +585,10 @@ async function clearAllInvalid() {
 }
 
 async function clearAll() {
-  if (!props.selectedGroup?.id || isDeling.value) {
+  const group = props.selectedGroup;
+  const groupId = group?.id;
+  const groupName = group?.name;
+  if (!groupId || !groupName || isDeling.value) {
     return;
   }
 
@@ -593,7 +607,7 @@ async function clearAll() {
               t("keys.dangerousOperationWarning1"),
               h("strong", null, t("common.all")),
               t("keys.dangerousOperationWarning2"),
-              h("strong", { style: { color: "#d03050" } }, props.selectedGroup?.name),
+              h("strong", { style: { color: "#d03050" } }, groupName),
               t("keys.toConfirm"),
             ]),
             h(NInput, {
@@ -607,22 +621,18 @@ async function clearAll() {
         positiveText: t("keys.confirmClear"),
         negativeText: t("common.cancel"),
         onPositiveClick: async () => {
-          if (confirmInput.value !== props.selectedGroup?.name) {
+          if (confirmInput.value !== groupName) {
             window.$message.error(t("keys.incorrectGroupName"));
             return false; // Prevent dialog from closing
           }
 
-          if (!props.selectedGroup?.id) {
-            return;
-          }
-
           isDeling.value = true;
           try {
-            await keysApi.clearAllKeys(props.selectedGroup.id);
+            await keysApi.clearAllKeys(groupId);
             window.$message.success(t("keys.clearAllKeysSuccess"));
             await loadKeys();
             // Trigger sync operation refresh
-            triggerSyncOperationRefresh(props.selectedGroup.name, "CLEAR_ALL");
+            triggerSyncOperationRefresh(groupName, "CLEAR_ALL");
           } catch (_error) {
             console.error("Clear all failed", _error);
           } finally {
@@ -652,7 +662,7 @@ function resetPage() {
 
 <template>
   <div class="key-table-container">
-    <!-- 工具栏 -->
+    <!-- Toolbar -->
     <div class="toolbar">
       <div class="toolbar-left">
         <n-button type="success" size="small" @click="createDialogShow = true">
@@ -711,10 +721,10 @@ function resetPage() {
       </div>
     </div>
 
-    <!-- 密钥卡片网格 -->
+    <!-- Key cards grid -->
     <div class="keys-grid-container">
       <n-spin :show="loading">
-        <div v-if="keys.length === 0 && !loading" class="empty-container">
+        <div v-if="keys.length === 0 && !loading" class="empty-state">
           <n-empty :description="t('keys.noMatchingKeys')" />
         </div>
         <div v-else class="keys-grid">
@@ -724,7 +734,7 @@ function resetPage() {
             class="key-card"
             :class="getStatusClass(key.status)"
           >
-            <!-- 主要信息行：Key + 快速操作 -->
+            <!-- Main info row: Key + Quick actions -->
             <div class="key-main">
               <div class="key-section">
                 <n-tag v-if="key.status === 'active'" type="success" :bordered="false" round>
@@ -770,7 +780,7 @@ function resetPage() {
               </div>
             </div>
 
-            <!-- 统计信息 + 操作按钮行 -->
+            <!-- Statistics + Action buttons row -->
             <div class="key-bottom">
               <div class="key-stats">
                 <span class="stat-item">
@@ -823,7 +833,7 @@ function resetPage() {
       </n-spin>
     </div>
 
-    <!-- 分页 -->
+    <!-- Pagination -->
     <div class="pagination-container">
       <div class="pagination-info">
         <span>{{ totalRecordsText }}</span>
@@ -870,7 +880,7 @@ function resetPage() {
     />
   </div>
 
-  <!-- 备注编辑对话框 -->
+  <!-- Notes edit dialog -->
   <n-modal v-model:show="notesDialogShow" preset="dialog" :title="t('keys.editKeyNotes')">
     <n-input
       v-model:value="editingNotes"
@@ -1048,7 +1058,7 @@ function resetPage() {
   box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
 }
 
-/* 密钥卡片网格 */
+/* Key cards grid */
 .keys-grid-container {
   flex: 1;
   overflow-y: auto;
@@ -1078,7 +1088,7 @@ function resetPage() {
   transform: translateY(-1px);
 }
 
-/* 状态相关样式 */
+/* Status-related styles */
 .key-card.status-valid {
   border-color: var(--success-border);
   background: var(--success-bg);
@@ -1096,7 +1106,7 @@ function resetPage() {
   background: var(--error-bg);
 }
 
-/* 主要信息行 */
+/* Main info row */
 .key-main {
   display: flex;
   justify-content: space-between;
@@ -1112,7 +1122,7 @@ function resetPage() {
   min-width: 0;
 }
 
-/* 底部统计和按钮行 */
+/* Bottom statistics and buttons row */
 .key-bottom {
   display: flex;
   justify-content: space-between;
@@ -1142,9 +1152,10 @@ function resetPage() {
 
 .key-actions {
   flex-shrink: 0;
-  &:deep(.n-button) {
-    padding: 0 4px;
-  }
+}
+
+.key-actions :deep(.n-button) {
+  padding: 0 4px;
 }
 
 .key-text {
@@ -1156,13 +1167,13 @@ function resetPage() {
   white-space: nowrap;
 }
 
-/* 浅色主题 */
+/* Light theme */
 :root:not(.dark) .key-text {
   color: #495057;
   background: #f8f9fa;
 }
 
-/* 暗黑主题 */
+/* Dark theme */
 :root.dark .key-text {
   color: var(--text-primary);
   background: var(--bg-tertiary);
@@ -1179,27 +1190,7 @@ function resetPage() {
   flex-shrink: 0;
 }
 
-.quick-btn {
-  padding: 4px 6px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  border-radius: 3px;
-  font-size: 12px;
-  transition: background-color 0.2s;
-}
-
-/* 浅色主题 */
-:root:not(.dark) .quick-btn:hover {
-  background: #e9ecef;
-}
-
-/* 暗黑主题 */
-:root.dark .quick-btn:hover {
-  background: var(--bg-tertiary);
-}
-
-/* 统计信息行 */
+/* Statistics row */
 
 .action-btn {
   padding: 2px 6px;
@@ -1248,8 +1239,7 @@ function resetPage() {
   color: white;
 }
 
-/* 加载和空状态 */
-.loading-state,
+/* Empty state */
 .empty-state {
   display: flex;
   justify-content: center;
@@ -1258,15 +1248,7 @@ function resetPage() {
   color: #6c757d;
 }
 
-.loading-spinner {
-  font-size: 14px;
-}
-
-.empty-text {
-  font-size: 14px;
-}
-
-/* 分页 */
+/* Pagination */
 .pagination-container {
   display: flex;
   justify-content: space-between;

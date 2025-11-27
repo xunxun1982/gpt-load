@@ -105,11 +105,11 @@ const filteredGroups = computed(() => {
   // Apply search filter
   if (searchText.value.trim()) {
     const search = searchText.value.toLowerCase().trim();
-    groups = groups.filter(
-      group =>
-        group.name.toLowerCase().includes(search) ||
-        group.display_name?.toLowerCase().includes(search)
-    );
+    groups = groups.filter(group => {
+      const name = group.name.toLowerCase();
+      const displayName = (group.display_name ?? "").toLowerCase();
+      return name.includes(search) || displayName.includes(search);
+    });
   }
 
   // Separate aggregate groups and standard groups
@@ -318,8 +318,9 @@ function openCreateAggregateGroupModal() {
 function handleGroupCreated(group: Group) {
   showGroupModal.value = false;
   showAggregateGroupModal.value = false;
-  if (group?.id) {
-    emit("refresh-and-select", group.id);
+  const groupId = group.id;
+  if (groupId != null) {
+    emit("refresh-and-select", groupId);
   }
 }
 
@@ -336,10 +337,11 @@ async function handleExportGroup(group: Group, event: Event) {
   const mode = await askExportMode(dialog, t);
 
   try {
-    await keysApi.exportGroup(group.id!, mode);
+    const groupId = group.id;
+    await keysApi.exportGroup(groupId, mode);
     message.success(t("keys.exportSuccess"));
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : t("keys.exportFailed");
+  } catch (_error: unknown) {
+    const errorMessage = _error instanceof Error ? _error.message : t("keys.exportFailed");
     message.error(errorMessage);
   }
 }
@@ -389,14 +391,14 @@ async function handleFileChange(event: Event) {
       } else {
         emit("refresh");
       }
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : t("keys.importFailed");
+    } catch (_error: unknown) {
+      const errorMessage = _error instanceof Error ? _error.message : t("keys.importFailed");
       message.error(errorMessage);
     } finally {
       loadingMessage.destroy();
       isImporting.value = false;
     }
-  } catch (error) {
+  } catch (_error) {
     message.error(t("keys.invalidImportFile"));
   } finally {
     // Clear file input to allow selecting the same file again

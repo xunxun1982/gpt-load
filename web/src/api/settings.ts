@@ -67,8 +67,12 @@ export const settingsApi = {
     opts?: { mode?: "plain" | "encrypted" | "auto"; filename?: string }
   ): Promise<void> {
     const params: Record<string, string> = {};
-    if (opts?.mode) params.mode = opts.mode;
-    if (opts?.filename) params.filename = opts.filename;
+    if (opts?.mode) {
+      params.mode = opts.mode;
+    }
+    if (opts?.filename) {
+      params.filename = opts.filename;
+    }
     await http.post("/system/import", data, { timeout: 300000, params });
   },
 
@@ -86,8 +90,12 @@ export const settingsApi = {
     opts?: { mode?: "plain" | "encrypted" | "auto"; filename?: string }
   ): Promise<void> {
     const params: Record<string, string> = {};
-    if (opts?.mode) params.mode = opts.mode;
-    if (opts?.filename) params.filename = opts.filename;
+    if (opts?.mode) {
+      params.mode = opts.mode;
+    }
+    if (opts?.filename) {
+      params.filename = opts.filename;
+    }
     await http.post("/system/import-groups-batch", data, { timeout: 300000, params });
   },
 };

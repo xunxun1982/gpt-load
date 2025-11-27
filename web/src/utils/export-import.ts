@@ -1,6 +1,5 @@
 import { h } from "vue";
-import type { DialogApi } from "naive-ui";
-import { NButton } from "naive-ui";
+import { NButton, type DialogApi } from "naive-ui";
 
 export type ExportMode = "plain" | "encrypted";
 export type ImportMode = "plain" | "encrypted" | "auto";

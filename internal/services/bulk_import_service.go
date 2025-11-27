@@ -164,6 +164,11 @@ func (s *BulkImportService) setDefaultBatchSizes() {
 func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numFields int) int {
 	// Estimate record size in bytes
 	recordSize := avgFieldSize * numFields
+	if recordSize <= 0 {
+		logrus.Debugf("Invalid recordSize calculated (avgFieldSize=%d, numFields=%d), using safe default batch size", avgFieldSize, numFields)
+		// Fallback to a small but safe default to avoid panics
+		return 10
+	}
 
 	var maxBatchSize int
 
@@ -351,6 +356,8 @@ func (s *BulkImportService) restoreConstraints() {
 	// Constraints are automatically restored when transaction commits/rollbacks
 	logrus.Debug("restoreConstraints called but no action needed (transaction-scoped optimizations)")
 }
+
+var _ = (*BulkImportService).restoreConstraints
 
 // BulkInsertGeneric performs optimized bulk insert for any model type
 func (s *BulkImportService) BulkInsertGeneric(records interface{}, recordCount int, avgRecordSize int) error {

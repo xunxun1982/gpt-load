@@ -27,6 +27,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const maxUpstreamErrorBodySize = 64 * 1024 // 64KB
+
 // ProxyServer represents the proxy server
 type ProxyServer struct {
 	keyProvider       *keypool.KeyProvider
@@ -41,66 +43,82 @@ type ProxyServer struct {
 // retryContext holds the retry state for a single request
 // This context is created per request and lives only for the request's lifetime
 type retryContext struct {
-	excludedSubGroups  map[uint]bool // Sub-group IDs that have failed in the current request (only for current aggregate group)
-	attemptCount       int           // Current attempt count
-	originalBodyBytes  []byte        // Original request body (before any sub-group mapping)
+	excludedSubGroups map[uint]bool // Sub-group IDs that have failed in the current request (only for current aggregate group)
+	attemptCount      int           // Current attempt count
+	originalBodyBytes []byte        // Original request body (before any sub-group mapping)
+}
+
+
+// parseRetryConfigInt extracts and validates a retry-related integer config value.
+// Returns a value clamped to the range [0, 5].
+func parseRetryConfigInt(config map[string]any, key string) int {
+	if config == nil {
+		return 0
+	}
+
+	val, ok := config[key]
+	if !ok {
+		return 0
+	}
+
+	retries := 0
+	// Try different type assertions
+	switch v := val.(type) {
+	case float64:
+		retries = int(v)
+	case int:
+		retries = v
+	case int64:
+		retries = int(v)
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			retries = int(parsed)
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"config_key": key,
+				"value":      v,
+				"error":      err,
+			}).Warn("Failed to parse json.Number for retry config value")
+		}
+	case string:
+		if parsed, err := strconv.Atoi(v); err == nil {
+			retries = parsed
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"config_key": key,
+				"value":      v,
+				"error":      err,
+			}).Warn("Failed to parse string for retry config value")
+		}
+	default:
+		logrus.WithFields(logrus.Fields{
+			"config_key": key,
+			"value":      val,
+			"type":       fmt.Sprintf("%T", val),
+		}).Warn("Unexpected type for retry config value")
+	}
+
+	// Clamp to 0-5 range
+	if retries < 0 {
+		return 0
+	}
+	if retries > 5 {
+		return 5
+	}
+
+	return retries
 }
 
 // parseMaxRetries extracts and validates max_retries from group config
 // Returns a value clamped to the range [0, 5]
 func parseMaxRetries(config map[string]any) int {
-	if config == nil {
-		return 0
-	}
+	return parseRetryConfigInt(config, "max_retries")
+}
 
-	val, ok := config["max_retries"]
-	if !ok {
-		return 0
-	}
-
-	maxRetries := 0
-	// Try different type assertions
-	switch v := val.(type) {
-	case float64:
-		maxRetries = int(v)
-	case int:
-		maxRetries = v
-	case int64:
-		maxRetries = int(v)
-	case json.Number:
-		if parsed, err := v.Int64(); err == nil {
-			maxRetries = int(parsed)
-		} else {
-			logrus.WithFields(logrus.Fields{
-				"value": v,
-				"error": err,
-			}).Warn("Failed to parse json.Number for max_retries")
-		}
-	case string:
-		if parsed, err := strconv.Atoi(v); err == nil {
-			maxRetries = parsed
-		} else {
-			logrus.WithFields(logrus.Fields{
-				"value": v,
-				"error": err,
-			}).Warn("Failed to parse string for max_retries")
-		}
-	default:
-		logrus.WithFields(logrus.Fields{
-			"value": val,
-			"type":  fmt.Sprintf("%T", val),
-		}).Warn("Unexpected type for max_retries")
-	}
-
-	// Clamp to 0-5 range
-	if maxRetries < 0 {
-		return 0
-	}
-	if maxRetries > 5 {
-		return 5
-	}
-
-	return maxRetries
+// parseSubMaxRetries extracts and validates sub_max_retries from group config
+// Returns a value clamped to the range [0, 5]
+func parseSubMaxRetries(config map[string]any) int {
+	return parseRetryConfigInt(config, "sub_max_retries")
 }
 
 // NewProxyServer creates a new proxy server
@@ -374,25 +392,23 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		}
 
 		var statusCode int
-		var errorMessage string
 		var parsedError string
 
 		if err != nil {
 			statusCode = 500
-			errorMessage = err.Error()
-			parsedError = errorMessage
+			parsedError = err.Error()
 			logrus.Debugf("Request failed (attempt %d/%d) for key %s: %v", retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), err)
 		} else {
 			// HTTP-level error (status >= 400)
 			statusCode = resp.StatusCode
-			errorBody, readErr := io.ReadAll(resp.Body)
+			// Limit error body read to a fixed size to prevent memory exhaustion
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {
 				logrus.Errorf("Failed to read error body: %v", readErr)
 				errorBody = []byte("Failed to read error body")
 			}
 
 			errorBody = handleGzipCompression(resp, errorBody)
-			errorMessage = string(errorBody)
 			parsedError = app_errors.ParseUpstreamError(errorBody)
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), parsedError)
 		}
@@ -411,12 +427,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 		// If this is the last attempt, return error directly without recursion
 		if isLastAttempt {
-			var errorJSON map[string]any
-			if err := json.Unmarshal([]byte(errorMessage), &errorJSON); err == nil {
-				c.JSON(statusCode, errorJSON)
-			} else {
-				response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", errorMessage))
-			}
+			response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", parsedError))
 			return
 		}
 
@@ -461,10 +472,20 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 ) {
 	// Get max retries from aggregate group config (default 0)
 	maxRetries := parseMaxRetries(originalGroup.Config)
+	// Get sub-group level max retries. When set to 0, it means no retries for sub-groups
+	// even if the aggregate group's max_retries is greater.
+	subMaxRetries := parseSubMaxRetries(originalGroup.Config)
+	if subMaxRetries == 0 {
+		maxRetries = 0
+	} else if subMaxRetries > 0 && maxRetries > subMaxRetries {
+		// For positive values, further cap aggregate retries by sub-group max retries.
+		maxRetries = subMaxRetries
+	}
 
 	logrus.WithFields(logrus.Fields{
 		"aggregate_group": originalGroup.Name,
 		"max_retries":     maxRetries,
+		"sub_max_retries": subMaxRetries,
 		"attempt_count":   retryCtx.attemptCount,
 	}).Debug("Aggregate retry configuration")
 
@@ -672,25 +693,23 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 
 		var statusCode int
-		var errorMessage string
 		var parsedError string
 
 		if err != nil {
 			statusCode = 500
-			errorMessage = err.Error()
-			parsedError = errorMessage
+			parsedError = err.Error()
 			logrus.Debugf("Request failed (attempt %d/%d) for key %s: %v", retryCtx.attemptCount+1, maxRetries, utils.MaskAPIKey(apiKey.KeyValue), err)
 		} else {
 			// HTTP-level error (status >= 400)
 			statusCode = resp.StatusCode
-			errorBody, readErr := io.ReadAll(resp.Body)
+			// Limit error body read to a fixed size to prevent memory exhaustion
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {
 				logrus.Errorf("Failed to read error body: %v", readErr)
 				errorBody = []byte("Failed to read error body")
 			}
 
 			errorBody = handleGzipCompression(resp, errorBody)
-			errorMessage = string(errorBody)
 			parsedError = app_errors.ParseUpstreamError(errorBody)
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCtx.attemptCount+1, maxRetries, utils.MaskAPIKey(apiKey.KeyValue), parsedError)
 		}
