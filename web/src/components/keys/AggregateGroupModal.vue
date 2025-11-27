@@ -18,6 +18,10 @@ import {
 import type { FormInst, FormRules } from "naive-ui";
 
 // Type definitions for better type safety
+// Note: These are component-local interfaces. While shared types could be considered,
+// GroupConfig here is specifically for this modal's config structure (max_retries, sub_max_retries)
+// which differs from the broader GroupConfigOption in models.ts. ApiError is a simple
+// error wrapper specific to this component's API mutation pattern.
 interface GroupConfig {
   max_retries?: number;
   sub_max_retries?: number;
@@ -174,10 +178,11 @@ async function handleSubmit() {
     // Nested try-catch for validation deliberately separates validation errors from API errors.
     // AI review suggested flattening, but this pattern keeps validation logic scoped and allows
     // NaiveUI to handle validation display while preventing API calls on invalid forms.
+    // Note: Validation errors are expected user behavior, not exceptions requiring logging.
     try {
       await formRef.value?.validate();
     } catch {
-      // Validation errors are already displayed by the form
+      // Validation errors are already displayed by NaiveUI form component
       return;
     }
 
