@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 	"gorm.io/datatypes"
 )
@@ -405,4 +406,38 @@ func mergeModelLists(upstream []any, configured []any) []any {
 	}
 
 	return result
+}
+
+// IsStreamRequest checks if the request is for a streaming response.
+// It checks the Accept header, query parameter, and JSON body.
+func (b *BaseChannel) IsStreamRequest(c *gin.Context, bodyBytes []byte) bool {
+	if strings.Contains(c.GetHeader("Accept"), "text/event-stream") {
+		return true
+	}
+
+	if c.Query("stream") == "true" {
+		return true
+	}
+
+	type streamPayload struct {
+		Stream bool `json:"stream"`
+	}
+	var p streamPayload
+	if err := json.Unmarshal(bodyBytes, &p); err == nil {
+		return p.Stream
+	}
+
+	return false
+}
+
+// ExtractModel extracts the model name from the request body (OpenAI format).
+func (b *BaseChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
+	type modelPayload struct {
+		Model string `json:"model"`
+	}
+	var p modelPayload
+	if err := json.Unmarshal(bodyBytes, &p); err == nil {
+		return p.Model
+	}
+	return ""
 }

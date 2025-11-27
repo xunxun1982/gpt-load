@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -44,37 +43,6 @@ func (ch *AnthropicChannel) ModifyRequest(req *http.Request, apiKey *models.APIK
 	req.Header.Set("anthropic-version", "2023-06-01")
 }
 
-// IsStreamRequest checks if the request is for a streaming response using the pre-read body.
-func (ch *AnthropicChannel) IsStreamRequest(c *gin.Context, bodyBytes []byte) bool {
-	if strings.Contains(c.GetHeader("Accept"), "text/event-stream") {
-		return true
-	}
-
-	if c.Query("stream") == "true" {
-		return true
-	}
-
-	type streamPayload struct {
-		Stream bool `json:"stream"`
-	}
-	var p streamPayload
-	if err := json.Unmarshal(bodyBytes, &p); err == nil {
-		return p.Stream
-	}
-
-	return false
-}
-
-func (ch *AnthropicChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
-	type modelPayload struct {
-		Model string `json:"model"`
-	}
-	var p modelPayload
-	if err := json.Unmarshal(bodyBytes, &p); err == nil {
-		return p.Model
-	}
-	return ""
-}
 
 // ValidateKey checks if the given API key is valid by making a messages request.
 // It now uses BaseChannel.SelectValidationUpstream so that upstream-specific proxy configuration

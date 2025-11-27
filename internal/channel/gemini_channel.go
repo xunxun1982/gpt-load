@@ -54,23 +54,7 @@ func (ch *GeminiChannel) IsStreamRequest(c *gin.Context, bodyBytes []byte) bool 
 		return true
 	}
 
-	// Also check for standard streaming indicators as a fallback.
-	if strings.Contains(c.GetHeader("Accept"), "text/event-stream") {
-		return true
-	}
-	if c.Query("stream") == "true" {
-		return true
-	}
-
-	type streamPayload struct {
-		Stream bool `json:"stream"`
-	}
-	var p streamPayload
-	if err := json.Unmarshal(bodyBytes, &p); err == nil {
-		return p.Stream
-	}
-
-	return false
+	return ch.BaseChannel.IsStreamRequest(c, bodyBytes)
 }
 
 func (ch *GeminiChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
@@ -84,16 +68,8 @@ func (ch *GeminiChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
 		}
 	}
 
-	// openai format
-	type modelPayload struct {
-		Model string `json:"model"`
-	}
-	var p modelPayload
-	if err := json.Unmarshal(bodyBytes, &p); err == nil && p.Model != "" {
-		return p.Model
-	}
-
-	return ""
+	// openai format fallback
+	return ch.BaseChannel.ExtractModel(c, bodyBytes)
 }
 
 // ValidateKey checks if the given API key is valid by making a generateContent request.
