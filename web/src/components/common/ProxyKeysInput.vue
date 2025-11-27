@@ -57,6 +57,7 @@ function generateRandomString(length: number): string {
 // Generate keys
 function generateKeys(): string[] {
   const keys: string[] = [];
+  // Defensive bounds check (UI already enforces 1-100 via NInputNumber)
   const count = Math.min(Math.max(keyCount.value, 1), 100);
   for (let i = 0; i < count; i++) {
     keys.push(`sk-${generateRandomString(48)}`);

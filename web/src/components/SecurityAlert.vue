@@ -21,6 +21,9 @@ interface Props {
 
 const props = defineProps<Props>();
 
+// Severity level ordering for comparison
+const SEVERITY_ORDER = { high: 3, medium: 2, low: 1 } as const;
+
 // Local storage key name
 const STORAGE_KEY = "security-alert-dismissed";
 
@@ -44,10 +47,9 @@ const highestSeverity = computed(() => {
     return "low";
   }
 
-  const severityOrder = { high: 3, medium: 2, low: 1 };
   return props.warnings.reduce((highest, warning) => {
-    const currentLevel = severityOrder[warning.severity as keyof typeof severityOrder] || 1;
-    const highestLevel = severityOrder[highest as keyof typeof severityOrder] || 1;
+    const currentLevel = SEVERITY_ORDER[warning.severity as keyof typeof SEVERITY_ORDER] || 1;
+    const highestLevel = SEVERITY_ORDER[highest as keyof typeof SEVERITY_ORDER] || 1;
     return currentLevel > highestLevel ? warning.severity : highest;
   }, "low");
 });
@@ -107,8 +109,14 @@ const handleClose = () => {
 
 // Do not remind again (persist choice)
 const handleDismissPermanently = () => {
-  localStorage.setItem(STORAGE_KEY, "true");
-  isDismissedPermanently.value = true;
+  try {
+    localStorage.setItem(STORAGE_KEY, "true");
+    isDismissedPermanently.value = true;
+  } catch (error) {
+    console.warn("Failed to save security alert dismissal preference:", error);
+    // Still close for this session even if persistence fails
+    isClosedThisSession.value = true;
+  }
 };
 
 // Open security configuration documentation

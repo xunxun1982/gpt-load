@@ -65,11 +65,11 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
         bodyColor: "#2b3038", // Outer background - light gray
         cardColor: "#0f1115", // Card content - deep dark
         modalColor: "#0f1115", // Modal - deep dark
-        popoverColor: "#0f1115", // 弹出层 - 深黑色
-        tableColor: "#0f1115", // 表格 - 深黑色
-        inputColor: "#1a1d23", // 输入框 - 稍深一点
-        actionColor: "#1a1d23", // 操作区域
-        textColorBase: "#e8e8e8", // 文字 - 浅色高对比
+        popoverColor: "#0f1115", // Popover - deep dark
+        tableColor: "#0f1115", // Table - deep dark
+        inputColor: "#1a1d23", // Input - slightly deeper
+        actionColor: "#1a1d23", // Action area
+        textColorBase: "#e8e8e8", // Text - light high contrast
         textColor1: "#e8e8e8",
         textColor2: "#b4b4b4",
         textColor3: "#888888",
@@ -78,7 +78,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
       },
       Card: {
         ...baseOverrides.Card,
-        color: "#0f1115", // 卡片背景 - 深黑色
+        color: "#0f1115", // Card background - deep dark
         textColor: "#e8e8e8",
         borderColor: "rgba(255, 255, 255, 0.08)",
       },
@@ -101,8 +101,8 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
         },
       },
       DataTable: {
-        tdColor: "#0f1115", // 表格单元格 - 深黑色
-        thColor: "#1a1d23", // 表头 - 稍深
+        tdColor: "#0f1115", // Table cell - deep dark
+        thColor: "#1a1d23", // Table header - slightly deeper
         thTextColor: "#e8e8e8",
         tdTextColor: "#e8e8e8",
         borderColor: "rgba(255, 255, 255, 0.08)",
@@ -122,7 +122,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
         panelColor: "#0f1115",
       },
       Message: {
-        color: "#323841", // 消息背景 - 浅灰色，比内容区域浅
+        color: "#323841", // Message background - light gray, lighter than content area
         textColor: "#e8e8e8",
         iconColor: "#e8e8e8",
         borderRadius: "8px",
@@ -136,7 +136,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
         ...baseOverrides.LoadingBar,
       },
       Notification: {
-        color: "#323841", // 通知背景 - 浅灰色
+        color: "#323841", // Notification background - light gray
         textColor: "#e8e8e8",
         titleTextColor: "#e8e8e8",
         descriptionTextColor: "#b4b4b4",

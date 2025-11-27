@@ -96,8 +96,8 @@ const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
     percentage: total > 0 ? Math.round((sg.weight / total) * 100) : 0,
   }));
 
-  // Sort by weight in descending order
-  return withPercentage.sort((a, b) => b.weight - a.weight);
+  // Sort by weight in descending order (non-mutating)
+  return [...withPercentage].sort((a, b) => b.weight - a.weight);
 });
 
 // Filtered sub-groups (apply search and status filters)

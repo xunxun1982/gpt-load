@@ -3,6 +3,7 @@ import { getDashboardChart, getGroupList } from "@/api/dashboard";
 import type { ChartData } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
 import { NSelect, NSpin } from "naive-ui";
+import type { SelectOption } from "naive-ui";
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -14,7 +15,6 @@ const selectedGroup = ref<number | null>(null);
 const loading = ref(true);
 const animationProgress = ref(0);
 const hoveredPoint = ref<{
-  datasetIndex: number;
   pointIndex: number;
   x: number;
   y: number;
@@ -36,7 +36,7 @@ const chartHeight = 260;
 const padding = { top: 40, right: 40, bottom: 60, left: 80 };
 
 // Group selection options for dropdown
-const groupOptions = ref<Array<{ label: string; value: number | null }>>([]);
+const groupOptions = ref<SelectOption[]>([]);
 
 // Derived drawable area size
 const plotWidth = chartWidth - padding.left - padding.right;
@@ -212,9 +212,6 @@ const generateAreaPath = (data: number[]) => {
 
 // Format numbers for axis labels and tooltip values
 const formatNumber = (value: number) => {
-  // if (value >= 1000000) {
-  //   return `${(value / 1000000).toFixed(1)}M`;
-  // } else
   if (value >= 1000) {
     return `${(value / 1000).toFixed(1)}K`;
   }
@@ -300,7 +297,6 @@ const handleMouseMove = (event: MouseEvent) => {
 
   if (closestTimeIndex >= 0) {
     hoveredPoint.value = {
-      datasetIndex: 0, // No longer need a specific dataset index
       pointIndex: closestTimeIndex,
       x: mouseX,
       y: mouseY,
@@ -348,13 +344,14 @@ const hideTooltip = () => {
 const fetchGroups = async () => {
   try {
     const response = await getGroupList();
-    groupOptions.value = [
-      { label: t("charts.allGroups"), value: null },
+    const options: SelectOption[] = [
+      { label: t("charts.allGroups"), value: undefined },
       ...response.data.map(group => ({
         label: getGroupDisplayName(group),
         value: group.id || 0,
       })),
     ];
+    groupOptions.value = options;
   } catch (error) {
     console.error("Failed to fetch groups:", error);
   }
@@ -397,7 +394,7 @@ onMounted(() => {
       </div>
       <n-select
         v-model:value="selectedGroup"
-        :options="groupOptions as any"
+        :options="groupOptions"
         :placeholder="t('charts.allGroups')"
         size="small"
         style="width: 150px"
@@ -618,7 +615,6 @@ onMounted(() => {
 }
 
 .chart-title {
-  /* margin: 0 0 4px 0; */
   font-size: 24px;
   line-height: 28px;
   font-weight: 600;
@@ -656,13 +652,6 @@ onMounted(() => {
 :root.dark .chart-subtitle {
   color: var(--text-secondary);
 }
-
-/* .chart-content {
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 12px;
-  padding: 12px;
-  color: #333;
-} */
 
 .chart-legend {
   position: absolute;

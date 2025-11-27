@@ -95,11 +95,15 @@ func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group, _ int) {
 
 	deleted, err := s.KeyService.KeyProvider.RemoveAllKeys(ctx, group.ID)
 	if err != nil {
-		_ = s.TaskService.EndTask(nil, err)
+		if endErr := s.TaskService.EndTask(nil, err); endErr != nil {
+			logrus.Warnf("Failed to end delete-all-keys task for group %d: %v (original: %v)", group.ID, endErr, err)
+		}
 		return
 	}
 	// Best-effort: mark progress as complete
-	_ = s.TaskService.UpdateProgress(int(deleted))
+	if progressErr := s.TaskService.UpdateProgress(int(deleted)); progressErr != nil {
+		logrus.Warnf("Failed to update delete-all-keys task progress for group %d: %v", group.ID, progressErr)
+	}
 
 	// Invalidate cache after deleting keys
 	if s.KeyService.CacheInvalidationCallback != nil && deleted > 0 {
@@ -107,7 +111,9 @@ func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group, _ int) {
 	}
 
 	result := KeyDeleteResult{DeletedCount: int(deleted), IgnoredCount: 0}
-	_ = s.TaskService.EndTask(result, nil)
+	if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
+		logrus.Warnf("Failed to end delete-all-keys task with success result for group %d: %v", group.ID, endErr)
+	}
 }
 
 // processAndDeleteKeys is the core function for deleting keys with progress tracking.

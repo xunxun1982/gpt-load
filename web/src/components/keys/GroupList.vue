@@ -105,11 +105,11 @@ const filteredGroups = computed(() => {
   // Apply search filter
   if (searchText.value.trim()) {
     const search = searchText.value.toLowerCase().trim();
-    groups = groups.filter(
-      group =>
-        group.name.toLowerCase().includes(search) ||
-        group.display_name?.toLowerCase().includes(search)
-    );
+    groups = groups.filter(group => {
+      const name = group.name.toLowerCase();
+      const displayName = (group.display_name ?? "").toLowerCase();
+      return name.includes(search) || displayName.includes(search);
+    });
   }
 
   // Separate aggregate groups and standard groups
@@ -319,7 +319,7 @@ function handleGroupCreated(group: Group) {
   showGroupModal.value = false;
   showAggregateGroupModal.value = false;
   const groupId = group.id;
-  if (groupId) {
+  if (groupId != null) {
     emit("refresh-and-select", groupId);
   }
 }

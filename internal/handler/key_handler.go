@@ -61,6 +61,8 @@ func (s *Server) findGroupByID(c *gin.Context, groupID uint) (*models.Group, boo
 	timeoutMs := utils.ParseInteger(utils.GetEnvOrDefault("DB_LOOKUP_TIMEOUT_MS", "300"), 300)
 	if timeoutMs < 50 {
 		timeoutMs = 50
+	} else if timeoutMs > 5000 {
+		timeoutMs = 5000
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()

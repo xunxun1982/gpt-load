@@ -981,9 +981,9 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 	var activeKeys int64
 	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).Count(&activeKeys).Error; err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out or canceled, returning empty stats")
-			// Return empty stats to avoid misleading InvalidKeys when active count is unknown
-			return KeyStats{TotalKeys: 0, ActiveKeys: 0, InvalidKeys: 0}, nil
+			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out or canceled, returning partial stats with unknown active/invalid breakdown")
+			// Return partial stats with known total but unknown active/invalid breakdown
+			return KeyStats{TotalKeys: totalKeys, ActiveKeys: 0, InvalidKeys: 0}, nil
 		}
 		return KeyStats{}, fmt.Errorf("failed to count active keys: %w", err)
 	}

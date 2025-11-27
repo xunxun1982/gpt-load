@@ -363,14 +363,13 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			floatVal, ok := value.(float64)
 			if !ok {
 				// For safety, accept integer-like types from potential import flows.
-				switch v := value.(type) {
+				switch numVal := value.(type) {
 				case int:
-					floatVal = float64(v)
+					floatVal = float64(numVal)
 				case int64:
-					floatVal = float64(v)
+					floatVal = float64(numVal)
 				default:
-					// If type is not numeric, skip strict validation here and let runtime clamping handle it.
-					continue
+					return fmt.Errorf("invalid type for %s: expected a number, got %T", key, value)
 				}
 			}
 			intVal := int(floatVal)

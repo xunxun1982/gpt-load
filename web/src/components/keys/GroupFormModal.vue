@@ -399,9 +399,12 @@ function loadGroupData() {
     validation_endpoint: props.group.validation_endpoint || "",
     param_overrides: JSON.stringify(props.group.param_overrides || {}, null, 2),
     model_redirect_rules: JSON.stringify(props.group.model_redirect_rules || {}, null, 2),
-    model_redirect_items: parseModelRedirect(
-      JSON.stringify(props.group.model_redirect_rules || {}, null, 2)
-    ),
+    model_redirect_items: Object.entries(props.group.model_redirect_rules || {})
+      .filter(([, to]) => typeof to === "string")
+      .map(([from, to]) => ({
+        from: (from as string).trim(),
+        to: (to as string).trim(),
+      })),
     model_redirect_strict: props.group.model_redirect_strict || false,
     config: {},
     configItems,
@@ -533,7 +536,8 @@ function formatModelRedirectJson() {
     const obj = JSON.parse(formData.model_redirect_rules);
     formData.model_redirect_rules = JSON.stringify(obj, null, 2);
   } catch {
-    // If parsing fails, do nothing (silent failure)
+    // JSON is invalid - user will see validation error on submit
+    // Optionally: message.warning(t("keys.modelRedirectInvalidJson"));
   }
 }
 

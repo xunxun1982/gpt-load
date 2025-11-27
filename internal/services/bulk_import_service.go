@@ -165,6 +165,7 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 	// Estimate record size in bytes
 	recordSize := avgFieldSize * numFields
 	if recordSize <= 0 {
+		logrus.Debugf("Invalid recordSize calculated (avgFieldSize=%d, numFields=%d), using safe default batch size", avgFieldSize, numFields)
 		// Fallback to a small but safe default to avoid panics
 		return 10
 	}

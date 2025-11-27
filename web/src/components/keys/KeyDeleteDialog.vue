@@ -96,7 +96,12 @@ async function handleSubmit() {
       <template #footer>
         <div style="display: flex; justify-content: flex-end; gap: 12px">
           <n-button @click="handleClose">{{ t("common.cancel") }}</n-button>
-          <n-button type="error" @click="handleSubmit" :loading="loading" :disabled="!keysText">
+          <n-button
+            type="error"
+            @click="handleSubmit"
+            :loading="loading"
+            :disabled="!keysText.trim()"
+          >
             {{ t("common.delete") }}
           </n-button>
         </div>

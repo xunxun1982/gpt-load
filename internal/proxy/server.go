@@ -27,6 +27,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const maxUpstreamErrorBodySize = 64 * 1024 // 64KB
+
 // ProxyServer represents the proxy server
 type ProxyServer struct {
 	keyProvider       *keypool.KeyProvider
@@ -399,8 +401,8 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		} else {
 			// HTTP-level error (status >= 400)
 			statusCode = resp.StatusCode
-			// Limit error body read to 64KB to prevent memory exhaustion
-			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+			// Limit error body read to a fixed size to prevent memory exhaustion
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {
 				logrus.Errorf("Failed to read error body: %v", readErr)
 				errorBody = []byte("Failed to read error body")
@@ -700,8 +702,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		} else {
 			// HTTP-level error (status >= 400)
 			statusCode = resp.StatusCode
-			// Limit error body read to 64KB to prevent memory exhaustion
-			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+			// Limit error body read to a fixed size to prevent memory exhaustion
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {
 				logrus.Errorf("Failed to read error body: %v", readErr)
 				errorBody = []byte("Failed to read error body")

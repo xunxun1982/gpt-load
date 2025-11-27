@@ -104,12 +104,14 @@ async function handleSubmit() {
     return;
   }
 
-  if (!props.subGroup) {
+  const subGroupId = props.subGroup?.group.id;
+  if (subGroupId === undefined) {
     message.error(t("keys.invalidSubGroup"));
     return;
   }
 
-  if (!props.aggregateGroup) {
+  const aggregateGroupId = props.aggregateGroup?.id;
+  if (aggregateGroupId === undefined) {
     message.error(t("keys.invalidAggregateGroup"));
     return;
   }
@@ -123,18 +125,6 @@ async function handleSubmit() {
 
   try {
     loading.value = true;
-    const subGroupId = props.subGroup.group.id;
-    if (subGroupId === undefined) {
-      message.error(t("keys.invalidSubGroup"));
-      return;
-    }
-
-    const aggregateGroupId = props.aggregateGroup.id;
-    if (aggregateGroupId === undefined) {
-      message.error(t("keys.invalidAggregateGroup"));
-      return;
-    }
-
     await keysApi.updateSubGroupWeight(
       aggregateGroupId,
       subGroupId,

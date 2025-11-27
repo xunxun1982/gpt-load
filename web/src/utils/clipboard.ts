@@ -8,7 +8,7 @@ export async function copy(text: string): Promise<boolean> {
       await navigator.clipboard.writeText(text);
       return true;
     } catch (e) {
-      console.error("使用 navigator.clipboard 复制失败:", e);
+      console.error("Failed to copy text using navigator.clipboard:", e);
     }
   }
 
@@ -24,12 +24,12 @@ export async function copy(text: string): Promise<boolean> {
     document.body.removeChild(input);
 
     if (!result) {
-      console.error("使用 execCommand 复制失败");
+      console.error("Failed to copy text using document.execCommand");
       return false;
     }
     return true;
   } catch (e) {
-    console.error("后备复制方法执行出错:", e);
+    console.error("Fallback copy method threw an error:", e);
     return false;
   }
 }
