@@ -128,12 +128,12 @@ const getYPosition = (value: number) => {
 };
 
 // Helper to find segments of non-zero data (used for filled areas)
-const getSegments = (data: number[]) => {
+const getSegments = (data: (number | undefined)[]) => {
   const segments: Array<Array<{ value: number; index: number }>> = [];
   let currentSegment: Array<{ value: number; index: number }> = [];
 
   data.forEach((value, index) => {
-    if (value > 0) {
+    if (value !== undefined && value > 0) {
       currentSegment.push({ value, index });
     } else {
       if (currentSegment.length > 0) {
@@ -193,7 +193,7 @@ const generateLinePath = (data: number[]) => {
 };
 
 // Generate area paths only for ranges that have data
-const generateAreaPath = (data: number[]) => {
+const generateAreaPath = (data: (number | undefined)[]) => {
   const segments = getSegments(data);
   const pathParts: string[] = [];
   const baseY = getYPosition(dataRange.value.min);
@@ -401,6 +401,10 @@ const fetchChartData = async () => {
 
 // Refresh chart when selected group changes
 watch(selectedGroup, () => {
+  if (selectedGroup.value === null) {
+    selectedGroup.value = ALL_GROUPS_VALUE;
+    return;
+  }
   fetchChartData();
 });
 

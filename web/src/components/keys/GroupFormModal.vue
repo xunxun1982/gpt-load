@@ -250,7 +250,7 @@ watch(
       try {
         formData.model_redirect_items = parseModelRedirect(jsonStr);
       } catch {
-        void 0;
+        // Ignore parse errors during typing; validation will run on submit
       }
     }
   }
@@ -548,12 +548,15 @@ function removeHeaderRule(index: number) {
   formData.header_rules.splice(index, 1);
 }
 
-// Add path redirect rule
 function addPathRedirect() {
   formData.path_redirects.push({
     from: "",
     to: "",
   });
+}
+
+function removePathRedirect(index: number) {
+  formData.path_redirects.splice(index, 1);
 }
 
 // Validate uniqueness of path redirect "from" value
@@ -1534,7 +1537,7 @@ async function handleSubmit() {
                     <n-button
                       text
                       type="error"
-                      @click="formData.path_redirects.splice(index, 1)"
+                      @click="removePathRedirect(index)"
                       class="redirect-item-remove-btn"
                     >
                       <template #icon>
@@ -1604,6 +1607,11 @@ async function handleSubmit() {
 
 .group-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.3);
+}
+
+.group-form-card :deep(.n-card__content) {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
 }
 
 .form-section {
@@ -1683,7 +1691,7 @@ async function handleSubmit() {
 /* Enhanced form styles - force compact spacing */
 :deep(.n-form-item) {
   margin-bottom: 8px !important;
-  --n-feedback-height: 0 !important;
+  --n-feedback-height: auto;
 }
 
 :deep(.n-form-item-label) {
