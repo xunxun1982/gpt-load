@@ -1,9 +1,15 @@
 /**
- * Copy text
+ * Copy text to clipboard with best-effort cross-browser support.
  */
 export async function copy(text: string): Promise<boolean> {
-  // navigator.clipboard is only available in secure contexts (HTTPS) or localhost
-  if (navigator.clipboard && window.isSecureContext) {
+  if (!text) {
+    return false;
+  }
+
+  // Prefer modern async clipboard API when available.
+  // navigator.clipboard is typically only exposed in secure contexts (HTTPS or localhost),
+  // but some environments may provide it conditionally. Errors are caught and we fall back.
+  if (navigator.clipboard) {
     try {
       await navigator.clipboard.writeText(text);
       return true;
@@ -12,16 +18,39 @@ export async function copy(text: string): Promise<boolean> {
     }
   }
 
-  // Fallback: use the deprecated but more compatible execCommand API
+  // Fallback: use the deprecated execCommand API with an off-screen textarea.
+  // This approach is widely used and works in more browsers and HTTP contexts.
   try {
-    const input = document.createElement("input");
-    input.style.position = "fixed";
-    input.style.opacity = "0";
-    input.value = text;
-    document.body.appendChild(input);
-    input.select();
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.top = "0";
+    textarea.style.left = "-9999px";
+    textarea.style.opacity = "0";
+
+    if (!document.body) {
+      console.error("document.body is not available for clipboard copy");
+      return false;
+    }
+
+    document.body.appendChild(textarea);
+
+    const selection = document.getSelection();
+    const originalRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
+    textarea.select();
+
     const result = document.execCommand("copy");
-    document.body.removeChild(input);
+
+    document.body.removeChild(textarea);
+
+    if (selection) {
+      selection.removeAllRanges();
+      if (originalRange) {
+        selection.addRange(originalRange);
+      }
+    }
 
     if (!result) {
       console.error("Failed to copy text using document.execCommand");
