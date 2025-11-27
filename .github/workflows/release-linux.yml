@@ -9,6 +9,8 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      GO_VERSION: "1.25.x" # Keep in sync with go.mod and other release workflows
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,7 +28,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23.x"
+          go-version: ${{ env.GO_VERSION }}
           cache: true
           cache-dependency-path: go.sum
       - name: Build Backend for amd64
