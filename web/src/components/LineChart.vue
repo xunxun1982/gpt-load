@@ -343,6 +343,9 @@ const hideTooltip = () => {
 const fetchGroups = async () => {
   try {
     const response = await getGroupList();
+    // Use value: undefined for "All Groups" because SelectOption.value only supports
+    // string | number | undefined. We normalize selectedGroup via `selectedGroup.value ?? undefined`
+    // when calling the API, so both null (cleared state) and undefined are treated as "all".
     const options: SelectOption[] = [
       { label: t("charts.allGroups"), value: undefined },
       ...response.data.map(group => ({
@@ -372,6 +375,7 @@ const fetchChartData = async () => {
   } catch (error) {
     console.error("Failed to fetch chart data:", error);
     errorMessage.value = t("charts.loadError");
+    chartData.value = null;
   } finally {
     loading.value = false;
   }

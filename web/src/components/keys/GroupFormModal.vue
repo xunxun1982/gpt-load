@@ -706,6 +706,21 @@ async function handleSubmit() {
       }
     }
 
+    // Validate path redirects for duplicates
+    const redirects = formData.path_redirects || [];
+    const seen = new Set<string>();
+    for (const r of redirects) {
+      const from = (r.from || "").trim();
+      if (!from) {
+        continue;
+      }
+      if (seen.has(from)) {
+        message.error(t("keys.duplicatePathRedirect"));
+        return;
+      }
+      seen.add(from);
+    }
+
     // Build submit payload
     const submitData = {
       name: formData.name,

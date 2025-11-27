@@ -116,15 +116,16 @@ async function handleSubmit() {
     return;
   }
 
-  // Short-circuit on validation failure and avoid noisy rejections.
+  // Short-circuit on validation failure and guard against double-submit.
+  loading.value = true;
   try {
     await formRef.value?.validate();
   } catch {
+    loading.value = false;
     return;
   }
 
   try {
-    loading.value = true;
     await keysApi.updateSubGroupWeight(
       aggregateGroupId,
       subGroupId,
