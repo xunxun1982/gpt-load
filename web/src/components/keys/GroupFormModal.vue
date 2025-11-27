@@ -1692,7 +1692,7 @@ async function handleSubmit() {
 /* Enhanced form styles - force compact spacing */
 /* Note: --n-feedback-height: 0 intentionally set to minimize vertical spacing.
  * AI review suggested this could hide validation feedback, but this approach is
- * based on proven solution from 123.diff that successfully passed testing.
+ * based on a prior validated compact layout solution that successfully passed testing.
  * The compact layout is a design requirement for this admin panel.
  * Validation errors are still visible inline due to NaiveUI's internal rendering. */
 :deep(.n-form-item) {

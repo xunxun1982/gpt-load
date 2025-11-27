@@ -1,6 +1,6 @@
 # Frontend build stage
-# Note: Node.js 22 has been tested and verified with this project.
-# All npm dependencies build cleanly, no import assertion or crypto issues found.
+# Note: Node.js 22 is used for consistency with all CI workflows.
+# Dependencies build successfully as of the latest workflow runs.
 FROM node:22-alpine AS node-builder
 
 ARG VERSION=1.0.0
