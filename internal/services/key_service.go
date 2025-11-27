@@ -101,8 +101,8 @@ func (s *KeyService) AddMultipleKeys(groupID uint, keysText string) (*AddKeysRes
 		return nil, err
 	}
 
-	var totalInGroup int64
-	if err := s.DB.Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalInGroup).Error; err != nil {
+	totalInGroup, err := s.getTotalKeysInGroup(groupID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -257,8 +257,8 @@ err := utils.ProcessInChunks(keysToRestore, s.insertChunkSize(), func(chunk []st
 
 	ignoredCount := len(keysToRestore) - int(totalRestoredCount)
 
-	var totalInGroup int64
-	if err := s.DB.Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalInGroup).Error; err != nil {
+	totalInGroup, err := s.getTotalKeysInGroup(groupID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -322,8 +322,8 @@ err := utils.ProcessInChunks(keysToDelete, s.insertChunkSize(), func(chunk []str
 
 	ignoredCount := len(keysToDelete) - int(totalDeletedCount)
 
-	var totalInGroup int64
-	if err := s.DB.Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalInGroup).Error; err != nil {
+	totalInGroup, err := s.getTotalKeysInGroup(groupID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -449,4 +449,17 @@ err := query.FindInBatches(&keys, s.insertChunkSize(), func(tx *gorm.DB, batch i
 	}).Error
 
 	return err
+}
+
+// getTotalKeysInGroup returns the total number of keys in a group.
+// This uses a simple indexed COUNT(*) on group_id and is safe for SQLite, MySQL, and PostgreSQL.
+// Keeping this logic centralized ensures consistent behavior and makes it easier to tune in the future.
+func (s *KeyService) getTotalKeysInGroup(groupID uint) (int64, error) {
+	var totalInGroup int64
+	if err := s.DB.Model(&models.APIKey{}).
+			Where("group_id = ?", groupID).
+			Count(&totalInGroup).Error; err != nil {
+		return 0, err
+	}
+	return totalInGroup, nil
 }

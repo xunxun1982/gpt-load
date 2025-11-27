@@ -7,7 +7,7 @@
 VERSION ?= dev
 BINARY_NAME := gpt-load
 LDFLAGS := -s -w -X gpt-load/internal/version.Version=$(VERSION)
-BUILD_FLAGS := -trimpath -ldflags="$(LDFLAGS)"
+BUILD_FLAGS := -trimpath -buildvcs=false -ldflags="$(LDFLAGS)"
 # Allow extra go flags to be passed via environment
 GOFLAGS ?=
 # CPU Architecture Level: v2 (SSE4.2, POPCNT) is safe for user's CPU. v3 requires AVX/AVX2 which is missing.
