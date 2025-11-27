@@ -7,7 +7,7 @@ import "regexp"
 var (
 	// DelimitersPattern matches common delimiters used in key text parsing.
 	// Matches whitespace, commas, semicolons, pipes, newlines, carriage returns, and tabs.
-	DelimitersPattern = regexp.MustCompile(`[\s,;|\n\r\t]+`)
+	DelimitersPattern = regexp.MustCompile(`[\s,;\n\r\t]+`)
 
 	// ValidKeyCharsPattern validates that a key contains only allowed characters.
 	// Allowed characters: alphanumeric, underscore, hyphen, dot, slash, plus, equals, and colon.

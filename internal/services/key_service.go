@@ -225,12 +225,7 @@ func (s *KeyService) filterValidKeys(keys []string) []string {
 
 // isValidKeyFormat performs basic validation on key format
 func (s *KeyService) isValidKeyFormat(key string) bool {
-	if key == "" ||
-		strings.TrimSpace(key) == "" {
-		return false
-	}
-
-	return utils.ValidKeyCharsPattern.MatchString(key)
+	return strings.TrimSpace(key) != ""
 }
 
 // RestoreMultipleKeys handles the business logic of restoring keys from a text block.
