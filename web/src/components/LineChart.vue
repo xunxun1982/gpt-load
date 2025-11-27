@@ -11,7 +11,7 @@ const { t } = useI18n();
 
 // Chart data and reactive state
 const chartData = ref<ChartData | null>(null);
-const ALL_GROUPS_VALUE = -1;
+const ALL_GROUPS_VALUE = -1; // Safe sentinel: Backend IDs are uint (always >= 0)
 const selectedGroup = ref<number | null>(ALL_GROUPS_VALUE);
 const loading = ref(true);
 // Error state for chart loading
@@ -69,7 +69,7 @@ const dataRange = computed(() => {
   // Add visual padding so the chart looks better
   const paddingValue = Math.max((max - min) * 0.1, 1);
   return {
-    min: Math.max(0, min - paddingValue),
+    min: Math.max(0, min - paddingValue), // Clamp min to 0 as request counts cannot be negative
     max: max + paddingValue,
   };
 });
@@ -151,7 +151,7 @@ const getSegments = (data: (number | undefined)[]) => {
 };
 
 // Generate line path for data between the first and last positive values (bridging zeros)
-const generateLinePath = (data: number[]) => {
+const generateLinePath = (data: (number | undefined)[]) => {
   if (data.length === 0) {
     return "";
   }
@@ -307,6 +307,7 @@ const handleMouseMove = (event: MouseEvent) => {
   }
 
   // Collect values of all datasets at this time index
+  // Treat missing data as 0 requests
   const datasetsAtTime = chartData.value.datasets.map(dataset => ({
     label: dataset.label,
     value: dataset.data[closestTimeIndex] ?? 0,
@@ -944,7 +945,8 @@ onUnmounted(() => {
     justify-content: center;
   }
 
-  .legend-item {
+  :root:not(.dark) .legend-item,
+  :root.dark .legend-item {
     padding: 4px 10px;
     font-size: 12px;
     color: #333;
