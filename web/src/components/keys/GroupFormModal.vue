@@ -130,45 +130,48 @@ const userModifiedFields = ref({
   test_model: false,
   upstream: false,
 });
+const channelDefaults: Record<
+  "openai" | "gemini" | "anthropic",
+  { testModel: string; upstream: string; validationEndpoint: string }
+> = {
+  openai: {
+    testModel: "gpt-4.1-nano",
+    upstream: "https://api.openai.com",
+    validationEndpoint: "/v1/chat/completions",
+  },
+  gemini: {
+    testModel: "gemini-2.0-flash-lite",
+    upstream: "https://generativelanguage.googleapis.com",
+    validationEndpoint: "",
+  },
+  anthropic: {
+    testModel: "claude-3-haiku-20240307",
+    upstream: "https://api.anthropic.com",
+    validationEndpoint: "/v1/messages",
+  },
+};
+
+function getChannelDefaults(channelType: string) {
+  return channelDefaults[channelType as keyof typeof channelDefaults] || null;
+}
 
 // Generate placeholders dynamically based on channel type
 const testModelPlaceholder = computed(() => {
-  switch (formData.channel_type) {
-    case "openai":
-      return "gpt-4.1-nano";
-    case "gemini":
-      return "gemini-2.0-flash-lite";
-    case "anthropic":
-      return "claude-3-haiku-20240307";
-    default:
-      return t("keys.enterModelName");
-  }
+  const defaults = getChannelDefaults(formData.channel_type);
+  return defaults?.testModel || t("keys.enterModelName");
 });
 
 const upstreamPlaceholder = computed(() => {
-  switch (formData.channel_type) {
-    case "openai":
-      return "https://api.openai.com";
-    case "gemini":
-      return "https://generativelanguage.googleapis.com";
-    case "anthropic":
-      return "https://api.anthropic.com";
-    default:
-      return t("keys.enterUpstreamUrl");
-  }
+  const defaults = getChannelDefaults(formData.channel_type);
+  return defaults?.upstream || t("keys.enterUpstreamUrl");
 });
 
 const validationEndpointPlaceholder = computed(() => {
-  switch (formData.channel_type) {
-    case "openai":
-      return "/v1/chat/completions";
-    case "anthropic":
-      return "/v1/messages";
-    case "gemini":
-      return ""; // Field is hidden for Gemini
-    default:
-      return t("keys.enterValidationPath");
+  if (formData.channel_type === "gemini") {
+    return ""; // Field is hidden for Gemini
   }
+  const defaults = getChannelDefaults(formData.channel_type);
+  return defaults?.validationEndpoint || t("keys.enterValidationPath");
 });
 
 // Form validation rules
@@ -304,29 +307,13 @@ watch(
 
 // Get default values for previous channel type (for comparison)
 function getOldDefaultTestModel(channelType: string): string {
-  switch (channelType) {
-    case "openai":
-      return "gpt-4.1-nano";
-    case "gemini":
-      return "gemini-2.0-flash-lite";
-    case "anthropic":
-      return "claude-3-haiku-20240307";
-    default:
-      return "";
-  }
+  const defaults = getChannelDefaults(channelType);
+  return defaults?.testModel || "";
 }
 
 function getOldDefaultUpstream(channelType: string): string {
-  switch (channelType) {
-    case "openai":
-      return "https://api.openai.com";
-    case "gemini":
-      return "https://generativelanguage.googleapis.com";
-    case "anthropic":
-      return "https://api.anthropic.com";
-    default:
-      return "";
-  }
+  const defaults = getChannelDefaults(channelType);
+  return defaults?.upstream || "";
 }
 
 // Reset form
@@ -721,6 +708,22 @@ async function handleSubmit() {
       seen.add(from);
     }
 
+    // Validate header key uniqueness using canonical format
+    const headerRulesForValidation = formData.header_rules || [];
+    const seenHeaderKeys = new Set<string>();
+    for (const rule of headerRulesForValidation) {
+      const key = (rule.key || "").trim();
+      if (!key) {
+        continue;
+      }
+      const canonicalKey = canonicalHeaderKey(key);
+      if (seenHeaderKeys.has(canonicalKey)) {
+        message.error(t("keys.duplicateHeader"));
+        return;
+      }
+      seenHeaderKeys.add(canonicalKey);
+    }
+
     // Build submit payload
     const submitData = {
       name: formData.name,
@@ -815,7 +818,7 @@ async function handleSubmit() {
               <template #label>
                 <div class="form-label-with-tooltip">
                   {{ t("keys.groupName") }}
-                  <n-tooltip trigger="hover" placement="top">
+                  <n-tooltip trigger="hover" placement="right-start">
                     <template #trigger>
                       <n-icon :component="HelpCircleOutline" class="help-icon" />
                     </template>
@@ -830,7 +833,7 @@ async function handleSubmit() {
               <template #label>
                 <div class="form-label-with-tooltip">
                   {{ t("keys.displayName") }}
-                  <n-tooltip trigger="hover" placement="top">
+                  <n-tooltip trigger="hover" placement="right-start">
                     <template #trigger>
                       <n-icon :component="HelpCircleOutline" class="help-icon" />
                     </template>
@@ -848,7 +851,7 @@ async function handleSubmit() {
               <template #label>
                 <div class="form-label-with-tooltip">
                   {{ t("keys.channelType") }}
-                  <n-tooltip trigger="hover" placement="top">
+                  <n-tooltip trigger="hover" placement="right-start">
                     <template #trigger>
                       <n-icon :component="HelpCircleOutline" class="help-icon" />
                     </template>
@@ -867,7 +870,7 @@ async function handleSubmit() {
               <template #label>
                 <div class="form-label-with-tooltip">
                   {{ t("keys.sortOrder") }}
-                  <n-tooltip trigger="hover" placement="top">
+                  <n-tooltip trigger="hover" placement="right-start">
                     <template #trigger>
                       <n-icon :component="HelpCircleOutline" class="help-icon" />
                     </template>
@@ -890,7 +893,7 @@ async function handleSubmit() {
               <template #label>
                 <div class="form-label-with-tooltip">
                   {{ t("keys.testModel") }}
-                  <n-tooltip trigger="hover" placement="top">
+                  <n-tooltip trigger="hover" placement="right-start">
                     <template #trigger>
                       <n-icon :component="HelpCircleOutline" class="help-icon" />
                     </template>
@@ -914,7 +917,7 @@ async function handleSubmit() {
               <template #label>
                 <div class="form-label-with-tooltip">
                   {{ t("keys.testPath") }}
-                  <n-tooltip trigger="hover" placement="top">
+                  <n-tooltip trigger="hover" placement="right-start">
                     <template #trigger>
                       <n-icon :component="HelpCircleOutline" class="help-icon" />
                     </template>
@@ -947,7 +950,7 @@ async function handleSubmit() {
             <template #label>
               <div class="form-label-with-tooltip">
                 {{ t("keys.proxyKeys") }}
-                <n-tooltip trigger="hover" placement="top">
+                <n-tooltip trigger="hover" placement="right-start">
                   <template #trigger>
                     <n-icon :component="HelpCircleOutline" class="help-icon" />
                   </template>
@@ -967,7 +970,7 @@ async function handleSubmit() {
             <template #label>
               <div class="form-label-with-tooltip">
                 {{ t("common.description") }}
-                <n-tooltip trigger="hover" placement="top">
+                <n-tooltip trigger="hover" placement="right-start">
                   <template #trigger>
                     <n-icon :component="HelpCircleOutline" class="help-icon" />
                   </template>
@@ -1003,7 +1006,7 @@ async function handleSubmit() {
             <template #label>
               <div class="form-label-with-tooltip">
                 {{ t("keys.upstream") }} {{ index + 1 }}
-                <n-tooltip trigger="hover" placement="top">
+                <n-tooltip trigger="hover" placement="right-start">
                   <template #trigger>
                     <n-icon :component="HelpCircleOutline" class="help-icon" />
                   </template>
@@ -1082,7 +1085,7 @@ async function handleSubmit() {
               <div class="config-section">
                 <h5 class="config-title-with-tooltip">
                   {{ t("keys.groupConfig") }}
-                  <n-tooltip trigger="hover" placement="top">
+                  <n-tooltip trigger="hover" placement="right-start">
                     <template #trigger>
                       <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
                     </template>
@@ -1106,7 +1109,7 @@ async function handleSubmit() {
                     <template #label>
                       <div class="form-label-with-tooltip">
                         {{ t("keys.config") }} {{ index + 1 }}
-                        <n-tooltip trigger="hover" placement="top">
+                        <n-tooltip trigger="hover" placement="right-start">
                           <template #trigger>
                             <n-icon :component="HelpCircleOutline" class="help-icon" />
                           </template>
@@ -1194,7 +1197,7 @@ async function handleSubmit() {
               <div class="config-section">
                 <h5 class="config-title-with-tooltip">
                   {{ t("keys.customHeaders") }}
-                  <n-tooltip trigger="hover" placement="top">
+                  <n-tooltip trigger="hover" placement="right-start">
                     <template #trigger>
                       <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
                     </template>
@@ -1226,7 +1229,7 @@ async function handleSubmit() {
                     <template #label>
                       <div class="form-label-with-tooltip">
                         {{ t("keys.header") }} {{ index + 1 }}
-                        <n-tooltip trigger="hover" placement="top">
+                        <n-tooltip trigger="hover" placement="right-start">
                           <template #trigger>
                             <n-icon :component="HelpCircleOutline" class="help-icon" />
                           </template>
@@ -1317,7 +1320,7 @@ async function handleSubmit() {
                   <template #label>
                     <div class="form-label-with-tooltip">
                       {{ t("keys.modelRedirectPolicy") }}
-                      <n-tooltip trigger="hover" placement="top">
+                      <n-tooltip trigger="hover" placement="right-start">
                         <template #trigger>
                           <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
                         </template>
@@ -1351,7 +1354,7 @@ async function handleSubmit() {
                   <template #label>
                     <div class="form-label-with-tooltip">
                       {{ t("keys.modelRedirectRules") }}
-                      <n-tooltip trigger="hover" placement="top">
+                      <n-tooltip trigger="hover" placement="right-start">
                         <template #trigger>
                           <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
                         </template>
@@ -1432,7 +1435,7 @@ async function handleSubmit() {
                   <template #label>
                     <div class="form-label-with-tooltip">
                       {{ t("keys.paramOverrides") }}
-                      <n-tooltip trigger="hover" placement="top">
+                      <n-tooltip trigger="hover" placement="right-start">
                         <template #trigger>
                           <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
                         </template>
@@ -1453,7 +1456,7 @@ async function handleSubmit() {
               <div class="config-section" v-if="formData.channel_type === 'openai'">
                 <h5 class="config-title-with-tooltip">
                   {{ t("keys.pathRedirects") }}
-                  <n-tooltip trigger="hover" placement="top">
+                  <n-tooltip trigger="hover" placement="right-start">
                     <template #trigger>
                       <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
                     </template>
@@ -1600,6 +1603,9 @@ async function handleSubmit() {
 
 :deep(.n-form-item-blank) {
   flex-grow: 1;
+  display: flex;
+  align-items: center;
+  min-height: 32px;
 }
 
 /* Tooltip related styles */
@@ -1676,12 +1682,6 @@ async function handleSubmit() {
   display: flex;
   align-items: center;
   height: 32px;
-}
-
-:deep(.n-form-item-blank) {
-  display: flex;
-  align-items: center;
-  min-height: 32px;
 }
 
 :deep(.n-input) {

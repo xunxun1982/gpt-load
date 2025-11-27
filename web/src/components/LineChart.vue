@@ -11,7 +11,8 @@ const { t } = useI18n();
 
 // Chart data and reactive state
 const chartData = ref<ChartData | null>(null);
-const selectedGroup = ref<number | null>(null);
+const ALL_GROUPS_VALUE = -1;
+const selectedGroup = ref<number | null>(ALL_GROUPS_VALUE);
 const loading = ref(true);
 // Error state for chart loading
 const errorMessage = ref<string | null>(null);
@@ -343,11 +344,11 @@ const hideTooltip = () => {
 const fetchGroups = async () => {
   try {
     const response = await getGroupList();
-    // Use value: undefined for "All Groups" because SelectOption.value only supports
-    // string | number | undefined. We normalize selectedGroup via `selectedGroup.value ?? undefined`
-    // when calling the API, so both null (cleared state) and undefined are treated as "all".
+    // Use a numeric sentinel for "All Groups" to keep SelectOption.value and v-model types aligned.
+    // We normalize the selected value when calling the API so the sentinel is converted
+    // back to an undefined groupId parameter for the backend.
     const options: SelectOption[] = [
-      { label: t("charts.allGroups"), value: undefined },
+      { label: t("charts.allGroups"), value: ALL_GROUPS_VALUE },
       ...response.data.map(group => ({
         label: getGroupDisplayName(group),
         value: group.id ?? 0,
@@ -365,7 +366,9 @@ const fetchChartData = async () => {
   try {
     loading.value = true;
     errorMessage.value = null;
-    const response = await getDashboardChart(selectedGroup.value ?? undefined);
+    const groupId =
+      selectedGroup.value === ALL_GROUPS_VALUE ? undefined : (selectedGroup.value ?? undefined);
+    const response = await getDashboardChart(groupId);
     chartData.value = response.data;
 
     // Start animation after a short delay to ensure DOM is updated
