@@ -683,6 +683,7 @@ export default {
   charts: {
     requestTrend24h: "24h Request Trend",
     allGroups: "All Groups",
+    loadError: "Failed to load chart data. Please try again.",
   },
   security: {
     warningsWithHigh:

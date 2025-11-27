@@ -13,6 +13,8 @@ const { t } = useI18n();
 const chartData = ref<ChartData | null>(null);
 const selectedGroup = ref<number | null>(null);
 const loading = ref(true);
+// Error state for chart loading
+const errorMessage = ref<string | null>(null);
 const animationProgress = ref(0);
 const hoveredPoint = ref<{
   pointIndex: number;
@@ -195,9 +197,6 @@ const generateAreaPath = (data: number[]) => {
         x: getXPosition(p.index),
         y: getYPosition(p.value),
       }));
-      if (points.length === 0) {
-        return;
-      }
       const firstPoint = points[0]!;
       const lastPoint = points[points.length - 1]!;
 
@@ -348,12 +347,13 @@ const fetchGroups = async () => {
       { label: t("charts.allGroups"), value: undefined },
       ...response.data.map(group => ({
         label: getGroupDisplayName(group),
-        value: group.id || 0,
+        value: group.id ?? 0,
       })),
     ];
     groupOptions.value = options;
   } catch (error) {
     console.error("Failed to fetch groups:", error);
+    errorMessage.value = t("charts.loadError");
   }
 };
 
@@ -361,7 +361,8 @@ const fetchGroups = async () => {
 const fetchChartData = async () => {
   try {
     loading.value = true;
-    const response = await getDashboardChart(selectedGroup.value || undefined);
+    errorMessage.value = null;
+    const response = await getDashboardChart(selectedGroup.value ?? undefined);
     chartData.value = response.data;
 
     // Start animation after a short delay to ensure DOM is updated
@@ -370,6 +371,7 @@ const fetchChartData = async () => {
     }, 100);
   } catch (error) {
     console.error("Failed to fetch chart data:", error);
+    errorMessage.value = t("charts.loadError");
   } finally {
     loading.value = false;
   }
@@ -574,8 +576,9 @@ onMounted(() => {
     </div>
 
     <div v-else class="chart-loading">
-      <n-spin size="large" />
-      <p>{{ t("common.loading") }}</p>
+      <n-spin v-if="loading" size="large" />
+      <p v-if="loading">{{ t("common.loading") }}</p>
+      <p v-else>{{ errorMessage || t("charts.loadError") }}</p>
     </div>
   </div>
 </template>

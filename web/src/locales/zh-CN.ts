@@ -656,6 +656,7 @@ export default {
   charts: {
     requestTrend24h: "24小时请求趋势",
     allGroups: "全部分组",
+    loadError: "图表数据加载失败，请稍后重试",
   },
   security: {
     warningsWithHigh: "发现 {count} 个安全配置问题，{highCount} 个需要优先处理",

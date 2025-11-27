@@ -14,7 +14,7 @@ export const getDashboardStats = () => {
  */
 export const getDashboardChart = (groupId?: number) => {
   return http.get<ChartData>("/dashboard/chart", {
-    params: groupId ? { groupId } : {},
+    params: groupId != null ? { groupId } : {},
   });
 };
 
