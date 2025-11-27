@@ -4,7 +4,7 @@ import type { ChartData } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
 import { NSelect, NSpin } from "naive-ui";
 import type { SelectOption } from "naive-ui";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -226,9 +226,16 @@ const isErrorDataset = (label: string) => {
 const animatedStroke = ref("0");
 const animatedOffset = ref("0");
 
+let animationFrameId: number | null = null;
+
 const startAnimation = () => {
   if (!chartData.value) {
     return;
+  }
+
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
   }
 
   // Approximate total path length for stroke animation
@@ -247,10 +254,12 @@ const startAnimation = () => {
     animationProgress.value = progress;
 
     if (progress < 1) {
-      requestAnimationFrame(animate);
+      animationFrameId = requestAnimationFrame(animate);
+    } else {
+      animationFrameId = null;
     }
   };
-  requestAnimationFrame(animate);
+  animationFrameId = requestAnimationFrame(animate);
 };
 
 // Mouse interaction handlers
@@ -392,6 +401,13 @@ watch(selectedGroup, () => {
 onMounted(() => {
   fetchGroups();
   fetchChartData();
+});
+
+onUnmounted(() => {
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
+  }
 });
 </script>
 

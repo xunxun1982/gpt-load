@@ -247,7 +247,11 @@ watch(
   () => formData.model_redirect_rules,
   jsonStr => {
     if (modelRedirectEditMode.value === "json") {
-      formData.model_redirect_items = parseModelRedirect(jsonStr);
+      try {
+        formData.model_redirect_items = parseModelRedirect(jsonStr);
+      } catch {
+        void 0;
+      }
     }
   }
 );
@@ -269,7 +273,11 @@ watch(
       }
     } else if (newMode === "visual" && oldMode === "json") {
       // When switching to visual mode, parse JSON
-      formData.model_redirect_items = parseModelRedirect(formData.model_redirect_rules);
+      try {
+        formData.model_redirect_items = parseModelRedirect(formData.model_redirect_rules);
+      } catch {
+        message.warning(t("keys.modelRedirectInvalidJson"));
+      }
     }
   }
 );
@@ -387,11 +395,15 @@ function loadGroupData() {
     param_overrides: JSON.stringify(props.group.param_overrides || {}, null, 2),
     model_redirect_rules: JSON.stringify(props.group.model_redirect_rules || {}, null, 2),
     model_redirect_items: Object.entries(props.group.model_redirect_rules || {})
-      .filter(([, to]) => typeof to === "string")
-      .map(([from, to]) => ({
-        from: (from as string).trim(),
-        to: (to as string).trim(),
-      })),
+      .map(([from, to]) => {
+        const fromStr = String(from).trim();
+        const toStr = String(to).trim();
+        return {
+          from: fromStr,
+          to: toStr,
+        };
+      })
+      .filter(item => item.from && item.to),
     model_redirect_strict: props.group.model_redirect_strict || false,
     config: {},
     configItems,
@@ -469,17 +481,17 @@ function parseModelRedirect(jsonStr: string): ModelRedirectItem[] {
   if (!jsonStr || jsonStr.trim() === "" || jsonStr.trim() === "{}") {
     return [];
   }
-  try {
-    const obj = JSON.parse(jsonStr);
-    return Object.entries(obj)
-      .filter(([, to]) => typeof to === "string")
-      .map(([from, to]) => ({
-        from: (from as string).trim(),
-        to: (to as string).trim(),
-      }));
-  } catch {
-    return [];
-  }
+  const obj = JSON.parse(jsonStr);
+  return Object.entries(obj)
+    .map(([from, to]) => {
+      const fromStr = String(from).trim();
+      const toStr = String(to).trim();
+      return {
+        from: fromStr,
+        to: toStr,
+      };
+    })
+    .filter(item => item.from && item.to);
 }
 
 // Convert model redirect array to JSON string
@@ -676,14 +688,12 @@ async function handleSubmit() {
 
         if (typeof rawValue === "string" && rawValue.trim() === "") {
           message.error(t("keys.invalidNumericConfig", { key: item.key }));
-          loading.value = false;
           return;
         }
         const numValue = Number(strValue);
 
         if (Number.isNaN(numValue)) {
           message.error(t("keys.invalidNumericConfig", { key: item.key }));
-          loading.value = false;
           return;
         }
 
