@@ -14,9 +14,22 @@ import {
   NModal,
   NSelect,
   useMessage,
-  type FormRules,
-  type FormInst,
 } from "naive-ui";
+import type { FormInst, FormRules } from "naive-ui";
+
+// Type definitions for better type safety
+interface GroupConfig {
+  max_retries?: number;
+  sub_max_retries?: number;
+}
+
+interface ApiError {
+  response?: {
+    data?: {
+      message?: string;
+    };
+  };
+}
 import { reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -115,9 +128,9 @@ function loadGroupData() {
 
   formRef.value?.restoreValidation();
 
-  const config = (props.group.config || {}) as Record<string, unknown>;
-  const maxRetries = (config["max_retries"] as number | undefined) ?? 0;
-  const subMaxRetries = (config["sub_max_retries"] as number | undefined) ?? 0;
+  const config = (props.group.config || {}) as GroupConfig;
+  const maxRetries = config.max_retries ?? 0;
+  const subMaxRetries = config.sub_max_retries ?? 0;
 
   Object.assign(formData, {
     name: props.group.name || "",
@@ -145,8 +158,7 @@ async function executeGroupMutation(
   } catch (error) {
     console.error(`Error ${action} group:`, error);
     // Extract API error message if available
-    const apiMessage = (error as { response?: { data?: { message?: string } } })?.response?.data
-      ?.message;
+    const apiMessage = (error as ApiError)?.response?.data?.message;
     message.error(apiMessage || t("common.operationFailed"));
     return null;
   }
@@ -159,6 +171,9 @@ async function handleSubmit() {
   }
 
   try {
+    // Nested try-catch for validation deliberately separates validation errors from API errors.
+    // AI review suggested flattening, but this pattern keeps validation logic scoped and allows
+    // NaiveUI to handle validation display while preventing API calls on invalid forms.
     try {
       await formRef.value?.validate();
     } catch {
