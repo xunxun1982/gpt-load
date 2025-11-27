@@ -30,7 +30,7 @@ function getDefaultLocale(): Locale {
   }
 
   // Fuzzy match (e.g. "zh" matches "zh-CN")
-  const shortLang = browserLang.split("-")[0];
+  const shortLang = browserLang.split("-")[0] || browserLang;
   const matched = SUPPORTED_LOCALES.find(l => l.key.startsWith(shortLang));
   if (matched) {
     return matched.key;

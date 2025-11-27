@@ -52,7 +52,8 @@ export function toggleTheme() {
   const modes: ThemeMode[] = ["auto", "light", "dark"];
   const currentIndex = modes.indexOf(themeMode.value);
   const nextIndex = (currentIndex + 1) % modes.length;
-  setThemeMode(modes[nextIndex]);
+  const nextMode = modes[nextIndex] ?? "auto";
+  setThemeMode(nextMode);
 }
 
 // Listen to system theme changes

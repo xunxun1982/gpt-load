@@ -1,4 +1,4 @@
-FROM node:20-alpine AS node-builder
+FROM node:22-alpine AS node-builder
 
 ARG VERSION=1.0.0
 WORKDIR /build
@@ -7,7 +7,7 @@ RUN npm install
 RUN VITE_VERSION=${VERSION} npm run build
 
 
-FROM golang:alpine AS go-builder
+FROM golang:1.25-alpine AS go-builder
 
 ARG VERSION=1.0.0
 ENV GO111MODULE=on \

@@ -41,7 +41,8 @@ function generateRandomString(length: number): string {
     const randomValues = new Uint32Array(length);
     crypto.getRandomValues(randomValues);
     for (let i = 0; i < length; i++) {
-      result += chars.charAt(randomValues[i] % charsLength);
+      const value = randomValues[i]!;
+      result += chars.charAt(value % charsLength);
     }
     return result;
   }

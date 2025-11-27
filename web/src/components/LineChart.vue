@@ -152,7 +152,8 @@ const generateLinePath = (data: number[]) => {
   let lastNonZeroIndex = -1;
 
   for (let i = 0; i < data.length; i++) {
-    if (data[i] > 0) {
+    const value = data[i];
+    if (value !== undefined && value > 0) {
       if (firstNonZeroIndex === -1) {
         firstNonZeroIndex = i;
       }
@@ -170,7 +171,11 @@ const generateLinePath = (data: number[]) => {
 
   for (let i = firstNonZeroIndex; i <= lastNonZeroIndex; i++) {
     const x = getXPosition(i);
-    const y = getYPosition(data[i]);
+    const value = data[i];
+    if (value === undefined) {
+      continue;
+    }
+    const y = getYPosition(value);
     const command = i === firstNonZeroIndex ? "M" : "L";
     pathCommands.push(`${command} ${x},${y}`);
   }
@@ -190,8 +195,11 @@ const generateAreaPath = (data: number[]) => {
         x: getXPosition(p.index),
         y: getYPosition(p.value),
       }));
-      const firstPoint = points[0];
-      const lastPoint = points[points.length - 1];
+      if (points.length === 0) {
+        return;
+      }
+      const firstPoint = points[0]!;
+      const lastPoint = points[points.length - 1]!;
 
       const lineCommands = points.map(p => `L ${p.x},${p.y}`).join(" ");
 
@@ -286,7 +294,7 @@ const handleMouseMove = (event: MouseEvent) => {
   // Collect values of all datasets at this time index
   const datasetsAtTime = chartData.value.datasets.map(dataset => ({
     label: dataset.label,
-    value: dataset.data[closestTimeIndex],
+    value: dataset.data[closestTimeIndex] ?? 0,
     color: dataset.color,
   }));
 
@@ -300,9 +308,11 @@ const handleMouseMove = (event: MouseEvent) => {
 
     // Show tooltip: convert from SVG viewBox coords to rendered pixel coords
     const x = getXPosition(closestTimeIndex);
+    const totalY = datasetsAtTime.reduce((sum, item) => sum + getYPosition(item.value), 0);
     const avgY =
-      datasetsAtTime.reduce((sum, item) => sum + getYPosition(item.value), 0) /
-      datasetsAtTime.length;
+      datasetsAtTime.length > 0
+        ? totalY / datasetsAtTime.length
+        : getYPosition(dataRange.value.min);
 
     const tooltipX = (x / chartWidth) * rect.width;
     const tooltipY = ((avgY - 20) / chartHeight) * rect.height;
@@ -312,8 +322,15 @@ const handleMouseMove = (event: MouseEvent) => {
       y: tooltipY,
     };
 
+    const label = chartData.value.labels[closestTimeIndex];
+    if (!label) {
+      hoveredPoint.value = null;
+      tooltipData.value = null;
+      return;
+    }
+
     tooltipData.value = {
-      time: formatTimeLabel(chartData.value.labels[closestTimeIndex]),
+      time: formatTimeLabel(label),
       datasets: datasetsAtTime,
     };
   } else {

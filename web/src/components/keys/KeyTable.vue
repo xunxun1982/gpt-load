@@ -275,7 +275,7 @@ async function testKey(_key: KeyRow) {
 
   try {
     const response = await keysApi.testKeys(groupId, _key.key_value);
-    const curValid = response.results?.[0] || {};
+    const curValid = (response.results?.[0] ?? {}) as { is_valid?: boolean; error?: string };
     if (curValid.is_valid) {
       window.$message.success(
         t("keys.testSuccess", { duration: formatDuration(response.total_duration) })

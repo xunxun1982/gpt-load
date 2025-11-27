@@ -287,13 +287,16 @@ watch(
       }
 
       // Check whether the first upstream URL should be updated
-      if (
-        formData.upstreams.length > 0 &&
-        (!userModifiedFields.value.upstream ||
-          formData.upstreams[0].url === getOldDefaultUpstream(oldChannelType))
-      ) {
-        formData.upstreams[0].url = upstreamPlaceholder.value;
-        userModifiedFields.value.upstream = false;
+      if (formData.upstreams.length > 0) {
+        const firstUpstream = formData.upstreams[0];
+        if (
+          firstUpstream &&
+          (!userModifiedFields.value.upstream ||
+            firstUpstream.url === getOldDefaultUpstream(oldChannelType))
+        ) {
+          firstUpstream.url = upstreamPlaceholder.value;
+          userModifiedFields.value.upstream = false;
+        }
       }
     }
   }
@@ -593,8 +596,9 @@ function validateHeaderKeyUniqueness(
 // Set default value when config key changes
 function handleConfigKeyChange(index: number, key: string) {
   const option = configOptions.value.find(opt => opt.key === key);
-  if (option) {
-    formData.configItems[index].value = option.default_value;
+  const target = formData.configItems[index];
+  if (option && target) {
+    target.value = option.default_value;
   }
 }
 

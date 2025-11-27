@@ -32,7 +32,7 @@ async function loadGroups() {
       if (found) {
         selectedGroup.value = found;
       } else {
-        handleGroupSelect(groups.value[0]);
+        handleGroupSelect(groups.value[0] ?? null);
       }
     }
   } catch (error) {
@@ -100,7 +100,7 @@ async function refreshGroupsAndSelect(targetGroupId?: number, selectFirst = true
   }
 
   if (selectFirst && groups.value.length > 0) {
-    handleGroupSelect(groups.value[0]);
+    handleGroupSelect(groups.value[0] ?? null);
   }
 }
 

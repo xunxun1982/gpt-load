@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => {
       compression({
         include: /\.(js|css|html|svg)$/,
         threshold: 10240, // Compress files larger than 10KB
-        algorithm: "gzip",
+        algorithms: ["gzip"],
       }),
     ],
     // Resolve configuration
