@@ -36,6 +36,7 @@ jobs:
           go mod download
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
             -trimpath \
+            -buildvcs=false \
             -ldflags="-s -w -X gpt-load/internal/version.Version=${{ github.ref_name }}" \
             -o gpt-load-macos-arm64
 
@@ -43,6 +44,7 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build \
             -trimpath \
+            -buildvcs=false \
             -ldflags="-s -w -X gpt-load/internal/version.Version=${{ github.ref_name }}" \
             -o gpt-load-macos-amd64
 

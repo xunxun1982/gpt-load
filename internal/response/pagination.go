@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 const (
@@ -67,7 +68,11 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 
 	go func() {
 		var total int64 = -1
-		countQuery := query.Session(&gorm.Session{NewDB: true})
+		// Use a silent logger for COUNT to avoid noisy logs when the context is intentionally cancelled
+		countQuery := query.Session(&gorm.Session{
+			NewDB:  true,
+			Logger: logger.Default.LogMode(logger.Silent),
+		})
 		err := countQuery.WithContext(countCtx).Count(&total).Error
 
 		result := countResult{totalItems: -1, totalPages: -1}

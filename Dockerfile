@@ -34,6 +34,7 @@ COPY --from=node-builder /build/dist ./web/dist
 # Note: Go compiler already has built-in optimizations like LTO (inlining, escape analysis, etc.), no extra config needed
 RUN go build \
     -trimpath \
+    -buildvcs=false \
     -ldflags="-s -w -X gpt-load/internal/version.Version=${VERSION}" \
     -o gpt-load
 
