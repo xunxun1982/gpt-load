@@ -223,7 +223,11 @@ func (s *KeyService) filterValidKeys(keys []string) []string {
 	return validKeys
 }
 
-// isValidKeyFormat performs basic validation on key format
+// isValidKeyFormat performs basic validation on key format.
+// NOTE: We intentionally accept any non-empty key (after trimming) to support a wide
+// range of upstream key formats. Call sites already trim keys for deduplication, but
+// we still trim defensively here instead of inlining this logic to keep a single
+// validation point and avoid subtle behavior changes if new callers are added.
 func (s *KeyService) isValidKeyFormat(key string) bool {
 	return strings.TrimSpace(key) != ""
 }

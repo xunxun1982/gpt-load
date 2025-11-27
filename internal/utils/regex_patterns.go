@@ -6,7 +6,7 @@ import "regexp"
 // These patterns are compiled once at package initialization for better performance.
 var (
 	// DelimitersPattern matches common delimiters used in key text parsing.
-	// Matches whitespace, commas, semicolons, pipes, newlines, carriage returns, and tabs.
+	// Matches whitespace (including newlines, carriage returns, and tabs), commas, and semicolons.
 	DelimitersPattern = regexp.MustCompile(`[\s,;\n\r\t]+`)
 
 	// ValidKeyCharsPattern validates that a key contains only allowed characters.
