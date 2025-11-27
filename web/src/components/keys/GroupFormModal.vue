@@ -483,7 +483,7 @@ function parseModelRedirect(jsonStr: string): ModelRedirectItem[] {
   }
   const obj = JSON.parse(jsonStr);
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
-    return [];
+    throw new Error("Invalid model redirect format: expected object");
   }
   return Object.entries(obj)
     .map(([from, to]) => {

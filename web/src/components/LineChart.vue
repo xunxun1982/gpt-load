@@ -204,6 +204,9 @@ const generateAreaPath = (data: (number | undefined)[]) => {
         x: getXPosition(p.index),
         y: getYPosition(p.value),
       }));
+      if (points.length === 0) {
+        return;
+      }
       const firstPoint = points[0]!;
       const lastPoint = points[points.length - 1]!;
 
@@ -364,10 +367,12 @@ const fetchGroups = async () => {
     // back to an undefined groupId parameter for the backend.
     const options: SelectOption[] = [
       { label: t("charts.allGroups"), value: ALL_GROUPS_VALUE },
-      ...response.data.map(group => ({
-        label: getGroupDisplayName(group),
-        value: group.id ?? 0,
-      })),
+      ...response.data
+        .filter(group => group.id != null)
+        .map(group => ({
+          label: getGroupDisplayName(group),
+          value: group.id,
+        })),
     ];
     groupOptions.value = options;
   } catch (error) {
