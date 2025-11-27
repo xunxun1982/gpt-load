@@ -28,6 +28,12 @@ export async function copy(text: string): Promise<boolean> {
     textarea.style.top = "0";
     textarea.style.left = "-9999px";
     textarea.style.opacity = "0";
+
+    if (!document.body) {
+      console.error("document.body is not available for clipboard copy");
+      return false;
+    }
+
     document.body.appendChild(textarea);
 
     const selection = document.getSelection();
