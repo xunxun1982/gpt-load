@@ -51,7 +51,13 @@ const dataRange = computed(() => {
     return { min: 0, max: 100 };
   }
 
-  const allValues = chartData.value.datasets.flatMap(d => d.data);
+  const rawValues = chartData.value.datasets.flatMap(d => d.data);
+  const allValues = rawValues.filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
+
+  if (allValues.length === 0) {
+    return { min: 0, max: 10 };
+  }
+
   const max = Math.max(...allValues, 0);
   const min = Math.min(...allValues, 0);
 
@@ -144,7 +150,7 @@ const getSegments = (data: number[]) => {
   return segments;
 };
 
-// Generate line path (continuous line including zero-value points)
+// Generate line path for data between the first and last positive values (bridging zeros)
 const generateLinePath = (data: number[]) => {
   if (data.length === 0) {
     return "";

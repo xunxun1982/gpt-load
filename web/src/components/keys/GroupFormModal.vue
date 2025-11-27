@@ -482,6 +482,9 @@ function parseModelRedirect(jsonStr: string): ModelRedirectItem[] {
     return [];
   }
   const obj = JSON.parse(jsonStr);
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    return [];
+  }
   return Object.entries(obj)
     .map(([from, to]) => {
       const fromStr = String(from).trim();
@@ -621,9 +624,9 @@ async function handleSubmit() {
   }
 
   try {
-    await formRef.value?.validate();
-
     loading.value = true;
+
+    await formRef.value?.validate();
 
     // Validate JSON format
     let paramOverrides = {};
@@ -654,7 +657,12 @@ async function handleSubmit() {
       formatModelRedirectJson();
       if (formData.model_redirect_rules) {
         try {
-          modelRedirectRules = JSON.parse(formData.model_redirect_rules);
+          const parsed = JSON.parse(formData.model_redirect_rules);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            message.error(t("keys.modelRedirectInvalidFormat"));
+            return;
+          }
+          modelRedirectRules = parsed;
 
           // Validate rule format
           for (const [key, value] of Object.entries(modelRedirectRules)) {
