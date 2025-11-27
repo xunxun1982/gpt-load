@@ -825,9 +825,10 @@ async function handleSubmit() {
         :model="formData"
         :rules="rules"
         label-placement="left"
-        label-width="120px"
+        label-width="auto"
         require-mark-placement="right-hanging"
         class="group-form"
+        :style="{ '--n-label-height': '32px' }"
       >
         <!-- Basic Information -->
         <div class="form-section">
@@ -1691,7 +1692,7 @@ async function handleSubmit() {
 /* Enhanced form styles - force compact spacing */
 :deep(.n-form-item) {
   margin-bottom: 8px !important;
-  --n-feedback-height: auto;
+  --n-feedback-height: 0 !important;
 }
 
 :deep(.n-form-item-label) {

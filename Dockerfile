@@ -13,7 +13,6 @@ ARG VERSION=1.0.0
 ENV GO111MODULE=on \
     CGO_ENABLED=0 \
     GOOS=linux \
-    GOARCH=amd64 \
     GOARCH=amd64
 
 ARG GOAMD64=v2

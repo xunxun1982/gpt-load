@@ -239,6 +239,8 @@ async function handleSubmit() {
         :rules="rules"
         label-placement="left"
         label-width="120px"
+        class="aggregate-form"
+        :style="{ '--n-label-height': '32px' }"
       >
         <!-- Basic information -->
         <div class="form-section">
@@ -348,9 +350,19 @@ async function handleSubmit() {
   border-bottom: 1px solid var(--border-color);
 }
 
+/* ===== CRITICAL FIX: Force compact form spacing ===== */
+/* Using !important as last resort to override NaiveUI defaults */
 :deep(.n-form-item) {
   margin-bottom: 8px !important;
   --n-feedback-height: 0 !important;
+}
+
+.aggregate-form :deep(.n-form-item) {
+  margin-bottom: 12px !important;
+}
+
+:deep(.n-form .n-form-item) {
+  margin-bottom: 12px !important;
 }
 
 :deep(.n-form-item-label) {
