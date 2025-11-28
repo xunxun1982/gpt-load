@@ -145,9 +145,9 @@ async function copyProxyKeys() {
     return;
   }
 
-  // We still attempt programmatic copy in insecure contexts to opportunistically
-  // update the clipboard when the browser allows it, even though we always show
-  // the manual fallback dialog for transparency.
+  // We attempt programmatic copy in all contexts. In secure contexts, we only show
+  // the manual fallback dialog if copy fails. In insecure contexts, we always show
+  // the manual fallback dialog for transparency, even if copy appears to succeed.
   let success = false;
   try {
     success = await copy(formattedKeys);
@@ -250,6 +250,7 @@ function handleInput(value: string) {
         ref="manualCopyTextareaRef"
         :value="manualCopyText"
         readonly
+        aria-label="Proxy keys for manual copying"
         style="
           width: 100%;
           min-height: 120px;
