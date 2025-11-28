@@ -145,6 +145,9 @@ async function copyProxyKeys() {
     return;
   }
 
+  // We still attempt programmatic copy in insecure contexts to opportunistically
+  // update the clipboard when the browser allows it, even though we always show
+  // the manual fallback dialog for transparency.
   const success = await copy(formattedKeys);
   const isSecureContext = typeof window !== "undefined" && window.isSecureContext;
 
@@ -226,6 +229,7 @@ function handleInput(value: string) {
       preset="dialog"
       :title="t('common.copy')"
       :positive-text="t('common.close')"
+      @positive-click="showManualCopyModal = false"
     >
       <p style="margin: 0 0 8px 0; color: #666; font-size: 14px">
         {{ t("keys.copyFailedManual") }}
