@@ -6,24 +6,7 @@ FROM node:22-alpine AS node-builder
 ARG VERSION=1.0.0
 WORKDIR /build
 COPY ./web .
-
-# Intentionally upgrade npm to latest version to eliminate version mismatch warnings
-# This is a deliberate choice to ensure we always use the latest npm features and security fixes
-# AI Review: Not accepting version pinning suggestion as our goal is to eliminate version warnings
-RUN npm install -g npm@latest
-
-# Install dependencies using npm ci for reproducible builds
-# AI Review: Accepted - removed fallback to npm install per CI/CD best practices
-# If npm ci fails, the build should fail loudly so developers fix the lockfile mismatch
-# Note: Cannot use --omit=dev because build tools (vue-tsc, vite, etc.) are devDependencies
-RUN npm ci --no-audit --no-fund
-
-# Attempt to fix security vulnerabilities (production dependencies only)
-# Failures are logged but do not stop the build (non-critical security issues)
-RUN npm audit fix --only=prod --audit-level=moderate || \
-    (echo "npm audit fix encountered issues but continuing build" && true)
-
-# Build frontend
+RUN npm install
 RUN VITE_VERSION=${VERSION} npm run build
 
 
