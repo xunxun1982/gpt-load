@@ -2,13 +2,28 @@
 import { copy } from "@/utils/clipboard";
 import { Copy, Key } from "@vicons/ionicons5";
 import { NButton, NIcon, NInput, NInputNumber, NModal, NSpace, useMessage } from "naive-ui";
-import { ref } from "vue";
+import { nextTick, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 interface Props {
   modelValue: string;
   placeholder?: string;
   size?: "small" | "medium" | "large";
+}
+
+// Open manual copy fallback modal
+function openManualCopyModal(text: string) {
+  manualCopyText.value = text;
+  showManualCopyModal.value = true;
+
+  // Auto-select content to let user press Ctrl+C / Command+C quickly
+  nextTick(() => {
+    const textarea = manualCopyTextareaRef.value;
+    if (textarea) {
+      textarea.focus();
+      textarea.select();
+    }
+  });
 }
 
 interface Emits {
@@ -29,6 +44,11 @@ const message = useMessage();
 const showKeyGeneratorModal = ref(false);
 const keyCount = ref(1);
 const isGenerating = ref(false);
+
+// Manual copy fallback modal state
+const showManualCopyModal = ref(false);
+const manualCopyText = ref("");
+const manualCopyTextareaRef = ref<HTMLTextAreaElement | null>(null);
 
 // Generate random string
 function generateRandomString(length: number): string {
@@ -125,9 +145,25 @@ async function copyProxyKeys() {
     return;
   }
 
-  const success = await copy(formattedKeys);
-  if (success) {
+  // We attempt programmatic copy in all contexts. In secure contexts, we only show
+  // the manual fallback dialog if copy fails. In insecure contexts, we always show
+  // the manual fallback dialog for transparency, even if copy appears to succeed.
+  let success = false;
+  try {
+    success = await copy(formattedKeys);
+  } catch {
+    success = false;
+  }
+  const isSecureContext = typeof window !== "undefined" && window.isSecureContext;
+
+  if (success && isSecureContext) {
     message.success(t("keys.keysCopiedToClipboard"));
+    return;
+  }
+
+  openManualCopyModal(formattedKeys);
+  if (!isSecureContext) {
+    message.warning(t("keys.insecureContextWarning"));
   } else {
     message.error(t("keys.copyFailedManual"));
   }
@@ -194,6 +230,36 @@ function handleInput(value: string) {
           <p>{{ t("keys.generatedKeysWillAppend") }}</p>
         </div>
       </n-space>
+    </n-modal>
+
+    <!-- Manual copy fallback modal for insecure contexts or clipboard failures -->
+    <n-modal
+      v-model:show="showManualCopyModal"
+      preset="dialog"
+      :title="t('common.copy')"
+      :positive-text="t('common.close')"
+      @positive-click="showManualCopyModal = false"
+    >
+      <p style="margin: 0 0 8px 0; color: #666; font-size: 14px">
+        {{ t("keys.copyFailedManual") }}
+      </p>
+      <p style="margin: 0 0 12px 0; color: #999; font-size: 12px; line-height: 1.5">
+        {{ t("keys.manualCopyHint") }}
+      </p>
+      <textarea
+        ref="manualCopyTextareaRef"
+        :value="manualCopyText"
+        readonly
+        aria-label="Proxy keys for manual copying"
+        style="
+          width: 100%;
+          min-height: 120px;
+          font-family: monospace;
+          font-size: 13px;
+          resize: vertical;
+          box-sizing: border-box;
+        "
+      ></textarea>
     </n-modal>
   </div>
 </template>

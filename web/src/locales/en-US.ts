@@ -259,7 +259,11 @@ export default {
     keysGeneratedSuccess: "Successfully generated {count} keys",
     noKeysToCopy: "No keys to copy",
     keysCopiedToClipboard: "Keys copied to clipboard",
-    copyFailedManual: "Copy failed, please copy manually",
+    copyFailedManual:
+      "Current environment does not allow automatic clipboard access (e.g. non-HTTPS or browser restriction). Please copy manually.",
+    manualCopyHint: "Press Ctrl+C (or Command+C) to copy the selected content.",
+    insecureContextWarning:
+      "You are currently in a non-secure context, so automatic clipboard access may be unreliable. A manual copy dialog has been opened to ensure you can safely copy the keys.",
     sourceGroupNotExist: "Source group does not exist",
     noSubGroups: "No sub groups",
     activeSubGroups: "Active Sub Groups",

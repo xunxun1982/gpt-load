@@ -259,7 +259,11 @@ export default {
     keysGeneratedSuccess: "{count}個のキーを正常に生成しました",
     noKeysToCopy: "コピーできるキーがありません",
     keysCopiedToClipboard: "キーをクリップボードにコピーしました",
-    copyFailedManual: "コピーに失敗しました。手動でコピーしてください",
+    copyFailedManual:
+      "現在の環境ではクリップボードへの自動コピーが許可されていません（HTTPS でない、またはブラウザ制限など）。手動でコピーしてください。",
+    manualCopyHint: "選択されている内容を Ctrl+C（または Command+C）でコピーしてください。",
+    insecureContextWarning:
+      "現在のコンテキストは完全に安全ではないため、自動コピーが確実に動作しない可能性があります。キーを安全にコピーできるよう、手動コピー用のダイアログを開きました。",
     sourceGroupNotExist: "ソースグループが存在しません",
     noSubGroups: "サブグループがありません",
     activeSubGroups: "有効なサブグループ",
@@ -688,7 +692,7 @@ export default {
     importingKeys: "グループ [{groupName}] にキーをインポート中",
     deletingKeys: "グループ [{groupName}] からキーを削除中",
     validationCompleted:
-      "キー検証完了、{total}個のキーを処理、{valid}個成功、{invalid}個失敗。注意：検証失敗でもすぐにブラックリストに追加されるわけではありません。失敗回数が闾値に達する必要があります。",
+      "キー検証完了、{total}個のキーを処理、{valid}個成功、{invalid}個失敗。注意：検証失敗でもすぐにブラックリストに追加されるわけではありません。失敗回数が閾値に達する必要があります。",
     importCompleted: "キーインポート完了、{added}個追加、{ignored}個無視。",
     deleteCompleted: "キー削除完了、{deleted}個削除、{ignored}個無視。",
   },
