@@ -148,7 +148,12 @@ async function copyProxyKeys() {
   // We still attempt programmatic copy in insecure contexts to opportunistically
   // update the clipboard when the browser allows it, even though we always show
   // the manual fallback dialog for transparency.
-  const success = await copy(formattedKeys);
+  let success = false;
+  try {
+    success = await copy(formattedKeys);
+  } catch {
+    success = false;
+  }
   const isSecureContext = typeof window !== "undefined" && window.isSecureContext;
 
   if (success && isSecureContext) {
@@ -249,7 +254,7 @@ function handleInput(value: string) {
           resize: vertical;
           box-sizing: border-box;
         "
-      />
+      ></textarea>
     </n-modal>
   </div>
 </template>
