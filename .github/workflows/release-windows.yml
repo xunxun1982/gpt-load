@@ -31,13 +31,13 @@ jobs:
           # AI Review: Not accepting version pinning as our goal is to use latest npm
           npm install -g npm@latest
 
-          # Use npm ci for reproducible builds, fallback to npm install if lock file issues
-          npm ci --omit=dev --no-audit --no-fund 2>/dev/null || \
-            (echo "npm ci failed, falling back to npm install" && \
-             npm install --omit=dev --no-audit --no-fund)
+          # Use npm ci for reproducible builds (strict lockfile enforcement)
+          # AI Review: Accepted - removed fallback per CI/CD best practices
+          # If this fails, developers must fix the lockfile mismatch locally
+          npm ci --omit=dev --no-audit --no-fund
 
-          # Fix security issues, log output for transparency
-          npm audit fix --only=prod --audit-level=moderate 2>&1 | tee /tmp/audit.log || \
+          # Fix security issues (non-critical failures allowed)
+          npm audit fix --only=prod --audit-level=moderate || \
             (echo "npm audit fix encountered non-critical issues, continuing build" && true)
 
           # Build the frontend

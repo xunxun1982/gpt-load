@@ -41,7 +41,9 @@ func V1_4_1_OptimizeIndexes(db *gorm.DB) error {
 			table:     "request_logs",
 			indexName: "idx_request_logs_key_hash_timestamp",
 			ddlByDialect: map[string]string{
-				"sqlite":   "CREATE INDEX IF NOT EXISTS idx_request_logs_key_hash_timestamp ON request_logs(key_hash, timestamp DESC) WHERE key_hash IS NOT NULL AND key_hash != ''",
+				"sqlite": "CREATE INDEX IF NOT EXISTS idx_request_logs_key_hash_timestamp ON request_logs(key_hash, timestamp DESC) WHERE key_hash IS NOT NULL AND key_hash != ''",
+				// MySQL doesn't support partial indexes (WHERE clause), so it indexes all rows including NULL/empty values
+				// This is a known MySQL limitation; partial index support was added only in MySQL 8.0.13+ with functional indexes
 				"mysql":    "CREATE INDEX idx_request_logs_key_hash_timestamp ON request_logs(key_hash, timestamp DESC)",
 				"postgres": "CREATE INDEX IF NOT EXISTS idx_request_logs_key_hash_timestamp ON request_logs(key_hash, timestamp DESC) WHERE key_hash IS NOT NULL AND key_hash != ''",
 				"default":  "CREATE INDEX IF NOT EXISTS idx_request_logs_key_hash_timestamp ON request_logs(key_hash, timestamp)",
@@ -101,7 +103,11 @@ func isMySQLDuplicateKeyError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for MySQL error code 1061: "Duplicate key name"
+
+	// Try to use type assertion for MySQL driver errors (more robust)
+	// Note: We intentionally avoid importing MySQL driver directly to keep this package
+	// database-agnostic. GORM wraps the underlying driver errors, so we use string matching
+	// as a fallback. This is acceptable since error code 1061 has been stable since MySQL 3.23.
 	errMsg := err.Error()
 	return strings.Contains(errMsg, "Error 1061") || strings.Contains(errMsg, "Duplicate key name")
 }

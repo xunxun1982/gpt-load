@@ -13,15 +13,14 @@ COPY ./web .
 RUN npm install -g npm@latest
 
 # Install dependencies using npm ci for reproducible builds
-# Fallback to npm install only if package-lock.json is missing or corrupted
-RUN npm ci --omit=dev --no-audit --no-fund 2>/dev/null || \
-    (echo "npm ci failed, falling back to npm install (lock file may be missing)" && \
-     npm install --omit=dev --no-audit --no-fund)
+# AI Review: Accepted - removed fallback to npm install per CI/CD best practices
+# If npm ci fails, the build should fail loudly so developers fix the lockfile mismatch
+RUN npm ci --omit=dev --no-audit --no-fund
 
 # Attempt to fix security vulnerabilities (production dependencies only)
-# Exit code is checked: only continue if no critical errors occurred
-RUN npm audit fix --only=prod --audit-level=moderate 2>&1 | tee /tmp/audit.log && \
-    (grep -q "ELOCKVERIFY\|ERR!" /tmp/audit.log && echo "Audit fix encountered errors, but continuing" || true)
+# Failures are logged but do not stop the build (non-critical security issues)
+RUN npm audit fix --only=prod --audit-level=moderate || \
+    (echo "npm audit fix encountered issues but continuing build" && true)
 
 # Build frontend
 RUN VITE_VERSION=${VERSION} npm run build
