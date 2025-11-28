@@ -257,6 +257,8 @@ export default {
     copyFailedManual:
       "当前访问环境不支持自动复制到剪贴板（例如非 HTTPS 或浏览器限制），请手动复制。",
     manualCopyHint: "请在选中文本后按 Ctrl+C（或 Command+C）完成复制。",
+    insecureContextWarning:
+      "当前运行环境并非完全安全，自动复制可能不够可靠，已为你打开手动复制弹窗以确保可以安全复制密钥。",
     sourceGroupNotExist: "源分组不存在",
     noSubGroups: "暂无子分组",
     activeSubGroups: "有效子分组",

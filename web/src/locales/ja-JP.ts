@@ -262,6 +262,8 @@ export default {
     copyFailedManual:
       "現在の環境ではクリップボードへの自動コピーが許可されていません（HTTPS でない、またはブラウザ制限など）。手動でコピーしてください。",
     manualCopyHint: "選択されている内容を Ctrl+C（または Command+C）でコピーしてください。",
+    insecureContextWarning:
+      "現在のコンテキストは完全に安全ではないため、自動コピーが確実に動作しない可能性があります。キーを安全にコピーできるよう、手動コピー用のダイアログを開きました。",
     sourceGroupNotExist: "ソースグループが存在しません",
     noSubGroups: "サブグループがありません",
     activeSubGroups: "有効なサブグループ",

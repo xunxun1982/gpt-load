@@ -162,7 +162,11 @@ async function copyProxyKeys() {
   }
 
   openManualCopyModal(formattedKeys);
-  message.error(t("keys.copyFailedManual"));
+  if (!isSecureContext) {
+    message.warning(t("keys.insecureContextWarning"));
+  } else {
+    message.error(t("keys.copyFailedManual"));
+  }
 }
 
 // Handle input value changes
