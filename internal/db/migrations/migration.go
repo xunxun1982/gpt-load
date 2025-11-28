@@ -43,7 +43,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.4.0 migration - Add model redirect columns
-	return V1_4_0_AddModelRedirectColumns(db)
+	if err := V1_4_0_AddModelRedirectColumns(db); err != nil {
+		return err
+	}
+	// Run v1.4.1 migration - Add optimized composite indexes for performance
+	return V1_4_1_OptimizeIndexes(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

@@ -6,7 +6,17 @@ FROM node:22-alpine AS node-builder
 ARG VERSION=1.0.0
 WORKDIR /build
 COPY ./web .
-RUN npm install
+
+# Upgrade npm to latest version to eliminate version warnings
+RUN npm install -g npm@latest
+
+# Install dependencies with --omit=dev --no-audit --no-fund to suppress warnings
+RUN npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund
+
+# Run audit fix for security vulnerabilities (non-breaking changes only)
+RUN npm audit fix --only=prod --audit-level=moderate || true
+
+# Build frontend
 RUN VITE_VERSION=${VERSION} npm run build
 
 
