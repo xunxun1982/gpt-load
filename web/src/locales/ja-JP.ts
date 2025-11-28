@@ -259,7 +259,9 @@ export default {
     keysGeneratedSuccess: "{count}個のキーを正常に生成しました",
     noKeysToCopy: "コピーできるキーがありません",
     keysCopiedToClipboard: "キーをクリップボードにコピーしました",
-    copyFailedManual: "コピーに失敗しました。手動でコピーしてください",
+    copyFailedManual:
+      "現在の環境ではクリップボードへの自動コピーが許可されていません（HTTPS でない、またはブラウザ制限など）。手動でコピーしてください。",
+    manualCopyHint: "選択されている内容を Ctrl+C（または Command+C）でコピーしてください。",
     sourceGroupNotExist: "ソースグループが存在しません",
     noSubGroups: "サブグループがありません",
     activeSubGroups: "有効なサブグループ",

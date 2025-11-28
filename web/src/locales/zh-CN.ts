@@ -254,7 +254,9 @@ export default {
     keysGeneratedSuccess: "成功生成 {count} 个密钥",
     noKeysToCopy: "没有可复制的密钥",
     keysCopiedToClipboard: "密钥已复制到剪贴板",
-    copyFailedManual: "复制失败，请手动复制",
+    copyFailedManual:
+      "当前访问环境不支持自动复制到剪贴板（例如非 HTTPS 或浏览器限制），请手动复制。",
+    manualCopyHint: "请在选中文本后按 Ctrl+C（或 Command+C）完成复制。",
     sourceGroupNotExist: "源分组不存在",
     noSubGroups: "暂无子分组",
     activeSubGroups: "有效子分组",
