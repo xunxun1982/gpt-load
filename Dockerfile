@@ -15,7 +15,8 @@ RUN npm install -g npm@latest
 # Install dependencies using npm ci for reproducible builds
 # AI Review: Accepted - removed fallback to npm install per CI/CD best practices
 # If npm ci fails, the build should fail loudly so developers fix the lockfile mismatch
-RUN npm ci --omit=dev --no-audit --no-fund
+# Note: Cannot use --omit=dev because build tools (vue-tsc, vite, etc.) are devDependencies
+RUN npm ci --no-audit --no-fund
 
 # Attempt to fix security vulnerabilities (production dependencies only)
 # Failures are logged but do not stop the build (non-critical security issues)

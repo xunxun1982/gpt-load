@@ -34,7 +34,8 @@ jobs:
           # Use npm ci for reproducible builds (strict lockfile enforcement)
           # AI Review: Accepted - removed fallback per CI/CD best practices
           # If this fails, developers must fix the lockfile mismatch locally
-          npm ci --omit=dev --no-audit --no-fund
+          # Note: Cannot use --omit=dev because build tools (vue-tsc, vite) are devDependencies
+          npm ci --no-audit --no-fund
 
           # Fix security issues (non-critical failures allowed)
           npm audit fix --only=prod --audit-level=moderate || \
