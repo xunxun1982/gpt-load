@@ -5,8 +5,13 @@ FROM node:22-alpine AS node-builder
 
 ARG VERSION=1.0.0
 WORKDIR /build
+# Upgrade npm to latest stable version before copying source files
+# This leverages Docker layer caching - this layer only rebuilds when npm version changes
+RUN npm install -g npm@11.6.4
 COPY ./web .
-RUN npm install -g npm@11.6.4 && npm install && npm audit fix
+# Install dependencies and auto-fix security vulnerabilities
+# Note: npm audit fix automatically applies non-breaking security patches
+RUN npm install && npm audit fix
 RUN VITE_VERSION=${VERSION} npm run build
 
 
