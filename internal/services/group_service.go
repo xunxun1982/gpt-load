@@ -1639,6 +1639,11 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 			if strings.TrimSpace(key) == "" {
 				continue
 			}
+			if value == nil {
+				// Treat explicit null as no-op to avoid sending "<nil>" as query value
+				continue
+			}
+			// ParamOverrides intentionally overrides any existing query parameter with the same key
 			query.Set(key, fmt.Sprint(value))
 		}
 		clonedURL.RawQuery = query.Encode()
