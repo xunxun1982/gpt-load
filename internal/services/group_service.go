@@ -1625,6 +1625,26 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		"masked_key":   maskedKey,
 	}).Debug("Applied channel-specific authentication via ChannelProxy.ModifyRequest")
 
+	// Apply custom header rules for this group to the models request
+	if len(group.HeaderRuleList) > 0 {
+		headerCtx := utils.NewHeaderVariableContext(group, selectedKey)
+		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
+	}
+
+	// Apply parameter overrides as query parameters for the models request
+	if len(group.ParamOverrides) > 0 {
+		clonedURL := *req.URL
+		query := clonedURL.Query()
+		for key, value := range group.ParamOverrides {
+			if strings.TrimSpace(key) == "" {
+				continue
+			}
+			query.Set(key, fmt.Sprint(value))
+		}
+		clonedURL.RawQuery = query.Encode()
+		req.URL = &clonedURL
+	}
+
 	// Use the upstream-specific HTTP client configured by the channel (includes proxy and timeouts)
 	httpClient := selection.HTTPClient
 	if httpClient == nil {
