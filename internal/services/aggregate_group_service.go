@@ -348,12 +348,12 @@ func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Co
 
 // GetParentAggregateGroups returns the aggregate groups that use the specified group as a sub-group
 func (s *AggregateGroupService) GetParentAggregateGroups(ctx context.Context, subGroupID uint) ([]models.ParentAggregateGroupInfo, error) {
-queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 
 	var groupSubGroups []models.GroupSubGroup
-if err := s.db.WithContext(queryCtx).Where("sub_group_id = ?", subGroupID).Find(&groupSubGroups).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+	if err := s.db.WithContext(queryCtx).Where("sub_group_id = ?", subGroupID).Find(&groupSubGroups).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			// Gracefully degrade: return empty list instead of blocking
 			return []models.ParentAggregateGroupInfo{}, nil
 		}
@@ -373,8 +373,8 @@ if err := s.db.WithContext(queryCtx).Where("sub_group_id = ?", subGroupID).Find(
 	}
 
 	var aggregateGroupModels []models.Group
-if err := s.db.WithContext(queryCtx).Where("id IN ?", aggregateGroupIDs).Find(&aggregateGroupModels).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+	if err := s.db.WithContext(queryCtx).Where("id IN ?", aggregateGroupIDs).Find(&aggregateGroupModels).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return []models.ParentAggregateGroupInfo{}, nil
 		}
 		return nil, app_errors.ParseDBError(err)

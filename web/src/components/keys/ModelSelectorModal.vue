@@ -258,11 +258,11 @@ function handleConfirm() {
   display: flex;
   gap: 24px;
   padding: 8px 12px;
-  background: #f5f5f5;
+  background: var(--bg-secondary);
   border-radius: 4px;
   margin-bottom: 16px;
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .prefix-suffix-row {
@@ -282,20 +282,20 @@ function handleConfirm() {
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   transition: all 0.2s;
 }
 
 .model-item:hover {
-  border-color: #18a058;
-  background: #f8fef8;
+  border-color: var(--success-color);
+  background: var(--success-bg);
 }
 
 .model-id {
   font-family: "Consolas", "Monaco", monospace;
   font-size: 13px;
-  color: #333;
+  color: var(--text-primary);
   user-select: text;
 }
 

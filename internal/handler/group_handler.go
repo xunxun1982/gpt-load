@@ -556,10 +556,10 @@ func (s *Server) GetGroupModels(c *gin.Context) {
 		return
 	}
 
-	models, err := s.GroupService.FetchGroupModels(c.Request.Context(), uint(id))
+	groupModels, err := s.GroupService.FetchGroupModels(c.Request.Context(), uint(id))
 	if s.handleGroupError(c, err) {
 		return
 	}
 
-	response.Success(c, models)
+	response.Success(c, groupModels)
 }

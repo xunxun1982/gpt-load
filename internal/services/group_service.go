@@ -1590,10 +1590,17 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "no active API keys available in this group")
 	}
 
-	// Mask key for secure logging (show first 8 and last 4 chars)
+	// Mask key for secure logging (avoid leaking short keys in logs)
 	maskedKey := selectedKey.KeyValue
-	if len(maskedKey) > 12 {
+	if len(maskedKey) > 16 {
+		// Typical case: show first 8 and last 4 characters
 		maskedKey = maskedKey[:8] + "****" + maskedKey[len(maskedKey)-4:]
+	} else if len(maskedKey) > 8 {
+		// Shorter keys: only show the first 4 characters
+		maskedKey = maskedKey[:4] + "****"
+	} else {
+		// Very short keys: fully mask
+		maskedKey = "****"
 	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
@@ -1647,7 +1654,10 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 	// Check response status and provide user-friendly error messages
 	if resp.StatusCode != http.StatusOK {
 		// Read error response body for better diagnostics
-		errorBody, _ := io.ReadAll(resp.Body)
+		// Limit error response body size to avoid excessive memory usage on misconfigured upstreams.
+		// Note: we only use a short preview for logging, so truncation is acceptable here.
+		const maxErrorBodySize = 1 * 1024 * 1024 // 1MB limit for error body preview
+		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		errorPreview := string(errorBody)
 		if len(errorPreview) > 200 {
 			errorPreview = errorPreview[:200] + "..."
@@ -1659,7 +1669,10 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 			"content_type":  resp.Header.Get("Content-Type"),
 		}).Error("Upstream returned non-OK status")
 
-		// Provide specific error messages based on status code
+		// Provide specific error messages based on status code.
+		// Note: we intentionally map upstream HTTP errors to ErrBadRequest in this admin API.
+		// More granular error kinds (e.g. ErrUpstreamError, ErrUnauthorized) were suggested by AI review,
+		// but are not adopted here to avoid changing existing client error handling semantics.
 		switch resp.StatusCode {
 		case http.StatusBadRequest: // 400
 			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("bad request: %s", errorPreview))
@@ -1678,8 +1691,9 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		}
 	}
 
-	// Read response body
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// Read response body with size limit to prevent memory exhaustion on large model lists
+	const maxModelListBodySize = 10 * 1024 * 1024 // 10MB limit for model list responses
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxModelListBodySize))
 	if err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("Failed to read response body")
 		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to read upstream response")
