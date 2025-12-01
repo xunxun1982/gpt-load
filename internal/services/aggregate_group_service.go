@@ -321,6 +321,8 @@ func (s *AggregateGroupService) DeleteSubGroup(ctx context.Context, groupID, sub
 // CountAggregateGroupsUsingSubGroup returns the number of aggregate groups that use the specified group as a sub-group.
 // The query is bounded by a short timeout to avoid blocking standard group updates when the database is under pressure.
 // On timeout or cancellation, the function degrades gracefully by logging a warning and treating the count as zero.
+// An alternative would be to treat context deadlines as hard validation failures with a longer timeout, but we
+// intentionally keep this fast-fail behavior here to ensure that slow databases do not make group updates unusable.
 func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Context, subGroupID uint) (int64, error) {
 	// Use a short timeout to avoid slow COUNT queries blocking group updates
 	queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
@@ -346,9 +348,10 @@ func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Co
 	return count, nil
 }
 
-// GetParentAggregateGroups returns the aggregate groups that use the specified group as a sub-group
+// GetParentAggregateGroups returns the aggregate groups that use the specified group as a sub-group.
+// This is a read-only display query, so it can tolerate a slightly longer timeout than validation checks.
 func (s *AggregateGroupService) GetParentAggregateGroups(ctx context.Context, subGroupID uint) ([]models.ParentAggregateGroupInfo, error) {
-	queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	queryCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 	defer cancel()
 
 	var groupSubGroups []models.GroupSubGroup
