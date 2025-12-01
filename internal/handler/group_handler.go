@@ -545,3 +545,21 @@ func (s *Server) DeleteAllGroups(c *gin.Context) {
 
 	response.SuccessI18n(c, "success.all_groups_deleted", nil)
 }
+
+// GetGroupModels fetches available models from upstream service
+// This handler retrieves the complete model list from the group's upstream API endpoints,
+// considering proxy settings and path redirects configured for the group
+func (s *Server) GetGroupModels(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	groupModels, err := s.GroupService.FetchGroupModels(c.Request.Context(), uint(id))
+	if s.handleGroupError(c, err) {
+		return
+	}
+
+	response.Success(c, groupModels)
+}

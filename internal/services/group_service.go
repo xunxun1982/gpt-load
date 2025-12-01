@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
 
@@ -67,6 +69,8 @@ type GroupService struct {
 	db                    *gorm.DB
 	settingsManager       *config.SystemSettingsManager
 	groupManager          *GroupManager
+	channelFactory        *channel.Factory
+	keyProvider           *keypool.KeyProvider
 	keyService            *KeyService
 	keyImportSvc          *KeyImportService
 	keyDeleteSvc          *KeyDeleteService
@@ -82,11 +86,14 @@ type GroupService struct {
 	groupListCacheTTL     time.Duration
 }
 
+
 // NewGroupService constructs a GroupService.
 func NewGroupService(
 	db *gorm.DB,
 	settingsManager *config.SystemSettingsManager,
 	groupManager *GroupManager,
+	channelFactory *channel.Factory,
+	keyProvider *keypool.KeyProvider,
 	keyService *KeyService,
 	keyImportSvc *KeyImportService,
 	keyDeleteSvc *KeyDeleteService,
@@ -98,6 +105,8 @@ func NewGroupService(
 		db:                    db,
 		settingsManager:       settingsManager,
 		groupManager:          groupManager,
+		channelFactory:        channelFactory,
+		keyProvider:           keyProvider,
 		keyService:            keyService,
 		keyImportSvc:          keyImportSvc,
 		keyDeleteSvc:          keyDeleteSvc,
@@ -1494,4 +1503,239 @@ func validateModelRedirectRules(rules map[string]string) error {
 	}
 
 	return nil
+}
+
+// FetchGroupModels fetches available models from the upstream service for a specific group
+// It considers proxy settings and channel-specific API requirements
+func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[string]any, error) {
+	logrus.WithContext(ctx).WithField("group_id", groupID).Debug("Starting to fetch models for group")
+
+	// Prefer cached group with effective config and parsed path/model redirect rules
+	var group *models.Group
+	if s.groupManager != nil {
+		if cached, err := s.groupManager.GetGroupByID(groupID); err == nil {
+			group = cached
+		} else {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to load group from cache for model fetch, falling back to database")
+		}
+	}
+
+	if group == nil {
+		// Fallback: load from database for compatibility
+		var dbGroup models.Group
+		if err := s.db.WithContext(ctx).First(&dbGroup, groupID).Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Error("Failed to fetch group from database")
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, app_errors.ErrResourceNotFound
+			}
+			return nil, app_errors.ParseDBError(err)
+		}
+		group = &dbGroup
+	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"group_id":     group.ID,
+		"group_name":   group.Name,
+		"group_type":   group.GroupType,
+		"channel_type": group.ChannelType,
+	}).Debug("Group loaded successfully")
+
+	// Only standard groups can fetch models
+	if group.GroupType == "aggregate" {
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "cannot fetch models for aggregate group")
+	}
+
+	// Get channel proxy to reuse upstream selection, proxy configuration and path redirect rules
+	channelProxy, err := s.channelFactory.GetChannel(group)
+	if err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to get channel proxy")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to initialize channel proxy")
+	}
+
+	// Construct base models endpoint path based on channel type (before path redirects)
+	var modelsPath string
+	switch group.ChannelType {
+	case "openai":
+		modelsPath = "/v1/models"
+	case "gemini":
+		modelsPath = "/v1beta/models"
+	case "anthropic":
+		modelsPath = "/v1/models"
+	default:
+		modelsPath = "/v1/models"
+	}
+
+	logrus.WithContext(ctx).WithField("models_path", modelsPath).Debug("Determined models endpoint path")
+
+	// Build a synthetic proxy URL so we can reuse SelectUpstreamWithClients
+	// This ensures path redirects (e.g. /v1 -> /api/paas/v4) and per-upstream proxies are applied consistently.
+	proxyURL := &url.URL{Path: "/proxy/" + group.Name + modelsPath}
+	selection, err := channelProxy.SelectUpstreamWithClients(proxyURL, group.Name)
+	if err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to select upstream for model list fetch")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to select upstream for models endpoint")
+	}
+	if selection == nil || selection.URL == "" {
+		logrus.WithContext(ctx).Error("SelectUpstreamWithClients returned empty result for model list fetch")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "no active upstreams available for models endpoint")
+	}
+
+	logrus.WithContext(ctx).WithField("full_url", selection.URL).Debug("Built full request URL via channel proxy")
+
+	// Select an active key from cache (Redis/Memory) using existing key rotation logic
+	// This reuses the in-memory key pool loaded at startup, avoiding database queries
+	selectedKey, err := s.keyProvider.SelectKey(group.ID)
+	if err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to select API key from cache")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "no active API keys available in this group")
+	}
+
+	// Mask key for secure logging (avoid leaking short keys in logs)
+	maskedKey := selectedKey.KeyValue
+	if len(maskedKey) > 16 {
+		// Typical case: show first 8 and last 4 characters
+		maskedKey = maskedKey[:8] + "****" + maskedKey[len(maskedKey)-4:]
+	} else if len(maskedKey) > 8 {
+		// Shorter keys: only show the first 4 characters
+		maskedKey = maskedKey[:4] + "****"
+	} else {
+		// Very short keys: fully mask
+		maskedKey = "****"
+	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"key_id":     selectedKey.ID,
+		"key_status": selectedKey.Status,
+		"masked_key": maskedKey,
+	}).Debug("Selected API key from cache for upstream request")
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "GET", selection.URL, nil)
+	if err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to create HTTP request")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to create HTTP request")
+	}
+
+	// Apply channel-specific authentication headers using existing channel implementation
+	// This delegates to OpenAIChannel, GeminiChannel, or AnthropicChannel ModifyRequest methods
+	channelProxy.ModifyRequest(req, selectedKey, group)
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"channel_type": group.ChannelType,
+		"masked_key":   maskedKey,
+	}).Debug("Applied channel-specific authentication via ChannelProxy.ModifyRequest")
+
+	// Use the upstream-specific HTTP client configured by the channel (includes proxy and timeouts)
+	httpClient := selection.HTTPClient
+	if httpClient == nil {
+		// Defensive fallback: use channel-level client or a minimal default client
+		httpClient = channelProxy.GetHTTPClient()
+		if httpClient == nil {
+			httpClient = &http.Client{Timeout: 30 * time.Second}
+		}
+	}
+
+	logrus.WithContext(ctx).Debug("Sending HTTP request to upstream")
+
+	// Execute HTTP request
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to execute HTTP request")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to connect to upstream server: network error")
+	}
+	defer resp.Body.Close()
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"status_code":    resp.StatusCode,
+		"content_type":   resp.Header.Get("Content-Type"),
+		"content_length": resp.Header.Get("Content-Length"),
+	}).Debug("Received HTTP response")
+
+	// Check response status and provide user-friendly error messages
+	if resp.StatusCode != http.StatusOK {
+		// Read error response body for better diagnostics
+		// Limit error response body size to avoid excessive memory usage on misconfigured upstreams.
+		// Note: we only use a short preview for logging, so truncation is acceptable here.
+		const maxErrorBodySize = 1 * 1024 * 1024 // 1MB limit for error body preview
+		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
+		errorPreview := string(errorBody)
+		if len(errorPreview) > 200 {
+			errorPreview = errorPreview[:200] + "..."
+		}
+
+		logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"status_code":   resp.StatusCode,
+			"error_body":    errorPreview,
+			"content_type":  resp.Header.Get("Content-Type"),
+		}).Error("Upstream returned non-OK status")
+
+		// Provide specific error messages based on status code.
+		// Note: we intentionally map upstream HTTP errors to ErrBadRequest in this admin API.
+		// More granular error kinds (e.g. ErrUpstreamError, ErrUnauthorized) were suggested by AI review,
+		// but are not adopted here to avoid changing existing client error handling semantics.
+		switch resp.StatusCode {
+		case http.StatusBadRequest: // 400
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("bad request: %s", errorPreview))
+		case http.StatusUnauthorized: // 401
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "authentication failed: invalid or expired API key")
+		case http.StatusForbidden: // 403
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "access forbidden: insufficient permissions")
+		case http.StatusNotFound: // 404
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "models endpoint not found on upstream server")
+		case http.StatusTooManyRequests: // 429
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "rate limit exceeded on upstream server")
+		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable: // 500, 502, 503
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "upstream server error, please try again later")
+		default:
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream returned error status: %d", resp.StatusCode))
+		}
+	}
+
+	// Read response body with size limit to prevent memory exhaustion on large model lists
+	const maxModelListBodySize = 10 * 1024 * 1024 // 10MB limit for model list responses
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxModelListBodySize))
+	if err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to read response body")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to read upstream response")
+	}
+
+	// Decompress response body if needed (gzip/deflate), mirroring proxy model list handling
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	decompressed, err := utils.DecompressResponse(contentEncoding, bodyBytes)
+	if err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("Failed to decompress response body, using raw bytes")
+		decompressed = bodyBytes
+	}
+
+	// Log first 500 chars of (decompressed) response for debugging
+	bodyPreview := string(decompressed)
+	if len(bodyPreview) > 500 {
+		bodyPreview = bodyPreview[:500] + "..."
+	}
+	logrus.WithContext(ctx).WithField("body_preview", bodyPreview).Debug("Response body preview")
+
+	// Transform model list using channel-specific logic (includes redirect rules and formats)
+	result, err := channelProxy.TransformModelList(req, decompressed, group)
+	if err != nil {
+		// Show first 100 chars of body for error diagnosis
+		bodyStart := bodyPreview
+		if len(bodyStart) > 100 {
+			bodyStart = bodyStart[:100]
+		}
+		logrus.WithContext(ctx).WithError(err).WithField("body_start", bodyStart).Error("Failed to transform model list response")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to parse upstream response: invalid JSON format")
+	}
+
+	logrus.WithContext(ctx).WithField("result_keys", getMapKeys(result)).Debug("Successfully decoded and transformed model list response")
+
+	return result, nil
+}
+
+// getMapKeys returns the keys of a map for logging purposes
+func getMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

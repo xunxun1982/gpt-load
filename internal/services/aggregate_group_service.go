@@ -318,10 +318,14 @@ func (s *AggregateGroupService) DeleteSubGroup(ctx context.Context, groupID, sub
 	return nil
 }
 
-// CountAggregateGroupsUsingSubGroup returns the number of aggregate groups that use the specified group as a sub-group
+// CountAggregateGroupsUsingSubGroup returns the number of aggregate groups that use the specified group as a sub-group.
+// The query is bounded by a short timeout to avoid blocking standard group updates when the database is under pressure.
+// On timeout or cancellation, the function degrades gracefully by logging a warning and treating the count as zero.
+// An alternative would be to treat context deadlines as hard validation failures with a longer timeout, but we
+// intentionally keep this fast-fail behavior here to ensure that slow databases do not make group updates unusable.
 func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Context, subGroupID uint) (int64, error) {
-	// Add timeout to prevent blocking when group operations are in progress
-	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Use a short timeout to avoid slow COUNT queries blocking group updates
+	queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 
 	var count int64
@@ -331,20 +335,28 @@ func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Co
 		Count(&count).Error
 
 	if err != nil {
+		// Gracefully degrade on timeout/cancellation to keep updates fast
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			logrus.WithContext(ctx).WithError(err).
+				WithField("sub_group_id", subGroupID).
+				Warn("CountAggregateGroupsUsingSubGroup timed out, treating as zero references")
+			return 0, nil
+		}
 		return 0, app_errors.ParseDBError(err)
 	}
 
 	return count, nil
 }
 
-// GetParentAggregateGroups returns the aggregate groups that use the specified group as a sub-group
+// GetParentAggregateGroups returns the aggregate groups that use the specified group as a sub-group.
+// This is a read-only display query, so it can tolerate a slightly longer timeout than validation checks.
 func (s *AggregateGroupService) GetParentAggregateGroups(ctx context.Context, subGroupID uint) ([]models.ParentAggregateGroupInfo, error) {
-queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	queryCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 	defer cancel()
 
 	var groupSubGroups []models.GroupSubGroup
-if err := s.db.WithContext(queryCtx).Where("sub_group_id = ?", subGroupID).Find(&groupSubGroups).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+	if err := s.db.WithContext(queryCtx).Where("sub_group_id = ?", subGroupID).Find(&groupSubGroups).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			// Gracefully degrade: return empty list instead of blocking
 			return []models.ParentAggregateGroupInfo{}, nil
 		}
@@ -364,8 +376,8 @@ if err := s.db.WithContext(queryCtx).Where("sub_group_id = ?", subGroupID).Find(
 	}
 
 	var aggregateGroupModels []models.Group
-if err := s.db.WithContext(queryCtx).Where("id IN ?", aggregateGroupIDs).Find(&aggregateGroupModels).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+	if err := s.db.WithContext(queryCtx).Where("id IN ?", aggregateGroupIDs).Find(&aggregateGroupModels).Error; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return []models.ParentAggregateGroupInfo{}, nil
 		}
 		return nil, app_errors.ParseDBError(err)
