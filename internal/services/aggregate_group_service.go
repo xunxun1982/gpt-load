@@ -318,10 +318,12 @@ func (s *AggregateGroupService) DeleteSubGroup(ctx context.Context, groupID, sub
 	return nil
 }
 
-// CountAggregateGroupsUsingSubGroup returns the number of aggregate groups that use the specified group as a sub-group
+// CountAggregateGroupsUsingSubGroup returns the number of aggregate groups that use the specified group as a sub-group.
+// The query is bounded by a short timeout to avoid blocking standard group updates when the database is under pressure.
+// On timeout or cancellation, the function degrades gracefully by logging a warning and treating the count as zero.
 func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Context, subGroupID uint) (int64, error) {
-	// Add timeout to prevent blocking when group operations are in progress
-	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Use a short timeout to avoid slow COUNT queries blocking group updates
+	queryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 
 	var count int64
@@ -331,6 +333,13 @@ func (s *AggregateGroupService) CountAggregateGroupsUsingSubGroup(ctx context.Co
 		Count(&count).Error
 
 	if err != nil {
+		// Gracefully degrade on timeout/cancellation to keep updates fast
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			logrus.WithContext(ctx).WithError(err).
+				WithField("sub_group_id", subGroupID).
+				Warn("CountAggregateGroupsUsingSubGroup timed out, treating as zero references")
+			return 0, nil
+		}
 		return 0, app_errors.ParseDBError(err)
 	}
 

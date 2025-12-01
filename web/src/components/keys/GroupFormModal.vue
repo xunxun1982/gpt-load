@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import { settingsApi } from "@/api/settings";
+import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import type { Group, GroupConfigOption, UpstreamInfo, PathRedirectRule } from "@/types/models";
-import { Add, Close, HelpCircleOutline, Remove } from "@vicons/ionicons5";
+import { Add, Close, CloudDownloadOutline, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
   NButton,
   NButtonGroup,
@@ -66,6 +67,9 @@ const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
 const modelRedirectEditMode = ref<"visual" | "json">("visual");
+const fetchingModels = ref(false);
+const showModelSelector = ref(false);
+const availableModels = ref<string[]>([]);
 const modelRedirectTip = `{
   "gpt-5": "gpt-5-2025-08-07",
   "gemini-2.5-flash": "gemini-2.5-flash-preview-09-2025"
@@ -618,6 +622,88 @@ const getConfigOption = (key: string) => {
 // Close modal
 function handleClose() {
   emit("update:show", false);
+}
+
+// Fetch available models from upstream service and open selector modal
+async function fetchUpstreamModels() {
+  if (!props.group?.id) {
+    message.warning(t("keys.saveGroupFirst"));
+    return;
+  }
+
+  fetchingModels.value = true;
+  try {
+    const data = await keysApi.fetchGroupModels(props.group.id);
+
+    // Extract model list based on channel type
+    let models: string[] = [];
+
+    if (data.data && Array.isArray(data.data)) {
+      // OpenAI format: {"data": [{"id": "model-name"}]}
+      models = data.data.map((item: any) => item.id).filter((id: string) => id);
+    } else if (data.models && Array.isArray(data.models)) {
+      // Gemini format: {"models": [{"name": "model-name"}]}
+      models = data.models.map((item: any) => item.name).filter((name: string) => name);
+    }
+
+    if (models.length === 0) {
+      message.warning(t("keys.noModelsFound"));
+      return;
+    }
+
+    message.success(t("keys.modelsLoadedCount", { count: models.length }));
+
+    // Store models and open selector modal
+    availableModels.value = models;
+    showModelSelector.value = true;
+  } catch (error: any) {
+    console.error("Failed to fetch models:", error);
+    message.error(error?.message || t("keys.fetchModelsFailed"));
+  } finally {
+    fetchingModels.value = false;
+  }
+}
+
+// Handle model selector confirmation - add selected redirects to rules
+function handleModelSelectorConfirm(redirectRules: Record<string, string>) {
+  if (Object.keys(redirectRules).length === 0) {
+    message.warning(t("keys.noRedirectRulesAdded"));
+    return;
+  }
+
+  if (modelRedirectEditMode.value === "visual") {
+    // Add to visual edit items
+    Object.entries(redirectRules).forEach(([from, to]) => {
+      // Check if already exists
+      const existingIndex = formData.model_redirect_items.findIndex(item => item.from === from);
+      if (existingIndex >= 0 && formData.model_redirect_items[existingIndex]) {
+        // Update existing
+        formData.model_redirect_items[existingIndex]!.to = to;
+      } else {
+        // Add new
+        formData.model_redirect_items.push({ from, to });
+      }
+    });
+  } else {
+    // Add to JSON edit mode
+    try {
+      let existingRules: Record<string, string> = {};
+      if (formData.model_redirect_rules.trim()) {
+        existingRules = JSON.parse(formData.model_redirect_rules);
+      }
+
+      // Merge with new rules (new rules override existing ones)
+      const mergedRules = { ...existingRules, ...redirectRules };
+
+      // Format JSON with proper indentation
+      formData.model_redirect_rules = JSON.stringify(mergedRules, null, 2);
+    } catch (error) {
+      // If existing JSON is invalid, replace entirely
+      formData.model_redirect_rules = JSON.stringify(redirectRules, null, 2);
+    }
+  }
+
+  message.success(t("keys.redirectRulesAdded", { count: Object.keys(redirectRules).length }));
 }
 
 // Submit form
@@ -1386,20 +1472,33 @@ async function handleSubmit() {
                   </template>
 
                   <div class="model-redirect-wrapper">
-                    <n-button-group size="small" style="margin-bottom: 12px">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 12px">
+                      <n-button-group size="small">
+                        <n-button
+                          :type="modelRedirectEditMode === 'visual' ? 'primary' : 'default'"
+                          @click="modelRedirectEditMode = 'visual'"
+                        >
+                          {{ t("keys.visualEdit") }}
+                        </n-button>
+                        <n-button
+                          :type="modelRedirectEditMode === 'json' ? 'primary' : 'default'"
+                          @click="modelRedirectEditMode = 'json'"
+                        >
+                          {{ t("keys.jsonEdit") }}
+                        </n-button>
+                      </n-button-group>
                       <n-button
-                        :type="modelRedirectEditMode === 'visual' ? 'primary' : 'default'"
-                        @click="modelRedirectEditMode = 'visual'"
+                        size="small"
+                        @click="fetchUpstreamModels"
+                        :loading="fetchingModels"
+                        :disabled="!props.group"
                       >
-                        {{ t("keys.visualEdit") }}
+                        <template #icon>
+                          <n-icon :component="CloudDownloadOutline" />
+                        </template>
+                        {{ t("keys.fetchModels") }}
                       </n-button>
-                      <n-button
-                        :type="modelRedirectEditMode === 'json' ? 'primary' : 'default'"
-                        @click="modelRedirectEditMode = 'json'"
-                      >
-                        {{ t("keys.jsonEdit") }}
-                      </n-button>
-                    </n-button-group>
+                    </div>
 
                     <!-- Visual Edit Mode -->
                     <div v-if="modelRedirectEditMode === 'visual'">
@@ -1570,6 +1669,13 @@ async function handleSubmit() {
       </template>
     </n-card>
   </n-modal>
+
+  <!-- Model Selector Modal -->
+  <model-selector-modal
+    v-model:show="showModelSelector"
+    :models="availableModels"
+    @confirm="handleModelSelectorConfirm"
+  />
 </template>
 
 <style scoped>

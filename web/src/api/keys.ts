@@ -370,4 +370,12 @@ export const keysApi = {
     const res = await http.post("/groups/import", data, { params });
     return res.data;
   },
+
+  // Fetch available models from upstream service
+  async fetchGroupModels(groupId: number): Promise<any> {
+    const res = await http.get(`/groups/${groupId}/models`, {
+      hideMessage: true,
+    });
+    return res.data;
+  },
 };

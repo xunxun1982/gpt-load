@@ -126,6 +126,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		groups.PUT("/:id/sub-groups/:subGroupId/weight", serverHandler.UpdateSubGroupWeight)
 		groups.DELETE("/:id/sub-groups/:subGroupId", serverHandler.DeleteSubGroup)
 		groups.GET("/:id/parent-aggregate-groups", serverHandler.GetParentAggregateGroups)
+		groups.GET("/:id/models", serverHandler.GetGroupModels)
 
 		// Debug-only endpoint: Delete all groups
 		// This dangerous operation is only available when DEBUG_MODE environment variable is enabled
