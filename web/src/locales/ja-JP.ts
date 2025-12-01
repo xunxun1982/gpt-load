@@ -517,6 +517,7 @@ export default {
     redirectTarget: "リダイレクト先（オプション）",
     redirectPrefixPlaceholder: "任意のグローバルプレフィックス。例: cursor-",
     redirectSuffixPlaceholder: "任意のグローバルサフィックス。例: -2025",
+    lowercaseRedirect: "リダイレクト先モデル名を小文字に変換",
     selectAll: "すべて選択",
     addToRedirectRules: "リダイレクトルールに追加",
     noRedirectRulesAdded: "リダイレクトルールが選択されていません",

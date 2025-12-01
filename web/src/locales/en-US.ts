@@ -518,6 +518,7 @@ export default {
     redirectTarget: "Redirect Target (Optional)",
     redirectPrefixPlaceholder: "Optional global prefix, e.g. cursor-",
     redirectSuffixPlaceholder: "Optional global suffix, e.g. -2025",
+    lowercaseRedirect: "Lowercase redirect model names",
     selectAll: "Select All",
     addToRedirectRules: "Add to Redirect Rules",
     noRedirectRulesAdded: "No redirect rules selected",

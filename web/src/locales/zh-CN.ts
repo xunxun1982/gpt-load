@@ -499,6 +499,7 @@ export default {
     redirectTarget: "重定向目标（可选）",
     redirectPrefixPlaceholder: "可选，全局前缀，例如：cursor-",
     redirectSuffixPlaceholder: "可选，全局后缀，例如：-2025",
+    lowercaseRedirect: "重定向模型名转为小写",
     selectAll: "全选",
     addToRedirectRules: "添加到重定向规则",
     noRedirectRulesAdded: "未选择任何重定向规则",

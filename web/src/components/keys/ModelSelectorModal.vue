@@ -9,17 +9,22 @@
     :segmented="{ content: 'soft', footer: 'soft' }"
   >
     <div class="model-selector-content">
-      <!-- Search and filter -->
-      <n-input
-        v-model:value="searchKeyword"
-        :placeholder="t('keys.searchModels')"
-        clearable
-        style="margin-bottom: 16px"
-      >
-        <template #prefix>
-          <n-icon :component="Search" />
-        </template>
-      </n-input>
+      <!-- Search and options -->
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px">
+        <n-input
+          v-model:value="searchKeyword"
+          :placeholder="t('keys.searchModels')"
+          clearable
+          style="flex: 1"
+        >
+          <template #prefix>
+            <n-icon :component="Search" />
+          </template>
+        </n-input>
+        <n-checkbox v-model:checked="lowercaseRedirect" size="small">
+          {{ t("keys.lowercaseRedirect") }}
+        </n-checkbox>
+      </div>
 
       <!-- Stats -->
       <div class="stats-bar">
@@ -56,7 +61,8 @@
           <div v-if="selectedModelIds.includes(modelId)" class="redirect-input-container">
             <span class="redirect-arrow">→</span>
             <n-input
-              v-model:value="modelRedirects[modelId]"
+              :value="getDisplayRedirect(modelId)"
+              @update:value="val => handleRedirectInputChange(modelId, val)"
               :placeholder="t('keys.redirectTarget')"
               size="small"
               style="flex: 1"
@@ -124,6 +130,7 @@ const selectedModelIds = ref<string[]>([]);
 const modelRedirects = reactive<Record<string, string>>({});
 const redirectPrefix = ref("");
 const redirectSuffix = ref("");
+const lowercaseRedirect = ref(false);
 
 // Computed
 const filteredModels = computed(() => {
@@ -157,11 +164,21 @@ watch(
       });
       redirectPrefix.value = "";
       redirectSuffix.value = "";
+      lowercaseRedirect.value = false;
     }
   }
 );
 
 // Methods
+function getDisplayRedirect(modelId: string): string {
+  const base = modelRedirects[modelId] || "";
+  return lowercaseRedirect.value ? base.toLowerCase() : base;
+}
+
+function handleRedirectInputChange(modelId: string, value: string) {
+  modelRedirects[modelId] = value;
+}
+
 function handleModelToggle(modelId: string, checked: boolean) {
   if (checked) {
     if (!selectedModelIds.value.includes(modelId)) {
@@ -221,26 +238,28 @@ function handleConfirm() {
   const redirectRules: Record<string, string> = {};
 
   selectedModelIds.value.forEach(modelId => {
-    let redirectTarget = modelRedirects[modelId]?.trim();
+    // Use the current display value (which already reflects lowercase option) as base
+    let redirectTarget = getDisplayRedirect(modelId).trim();
 
-    // If redirect target is empty, try to build one from prefix/suffix
+    // If redirect target is empty, try to build one from prefix/suffix and update base value
     if (!redirectTarget) {
       const prefix = redirectPrefix.value || "";
       const suffix = redirectSuffix.value || "";
       if (prefix || suffix) {
-        redirectTarget = `${prefix}${modelId}${suffix}`;
+        const raw = `${prefix}${modelId}${suffix}`;
+        modelRedirects[modelId] = raw;
+        redirectTarget = getDisplayRedirect(modelId).trim();
       }
     }
 
-    // If still empty, fall back to using the original model id
+    // If still empty, fall back to using the original model id and sync base value
     if (!redirectTarget) {
-      redirectTarget = modelId;
+      modelRedirects[modelId] = modelId;
+      redirectTarget = getDisplayRedirect(modelId).trim();
     }
 
-    if (redirectTarget) {
-      // Only add when we have a non-empty redirect target
-      redirectRules[redirectTarget] = modelId;
-    }
+    // Add rule using the final redirect target as client-facing model name
+    redirectRules[redirectTarget] = modelId;
   });
 
   emit("confirm", redirectRules);
