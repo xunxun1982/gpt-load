@@ -291,14 +291,24 @@ function handleConfirm() {
   align-items: center;
   gap: 8px;
   margin-bottom: 16px;
-  /* Keep all controls on a single row to save vertical space */
+  /* Default: keep all controls on a single row on desktop to save vertical space.
+     For smaller screens, a media query relaxes this constraint to allow wrapping
+     and avoid horizontal scrolling. */
   flex-wrap: nowrap;
   /* Keep toolbar always visible when scrolling long model lists */
   position: sticky;
   top: 0;
-  /* Background color uses theme variable to support light and dark modes */
+  /* Background color uses theme variable to support light and dark modes.
+     When the variable is not defined, it safely falls back to white. */
   background-color: var(--bg-primary, #fff);
   z-index: 1;
+}
+
+@media (max-width: 640px) {
+  .toolbar-row {
+    /* Allow controls to wrap on small viewports to keep the toolbar usable */
+    flex-wrap: wrap;
+  }
 }
 
 .toolbar-stats {
