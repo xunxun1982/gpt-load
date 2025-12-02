@@ -472,13 +472,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 ) {
 	// Get max retries from aggregate group config (default 0)
 	maxRetries := parseMaxRetries(originalGroup.Config)
-	// Get sub-group level max retries. When set to 0, it means no retries for sub-groups
-	// even if the aggregate group's max_retries is greater.
+	// Get sub-group level max retries. When set to 0 or omitted, it does not override
+	// the aggregate group's max_retries. For positive values, it acts as an upper
+	// bound for aggregate retries to keep total attempts small.
 	subMaxRetries := parseSubMaxRetries(originalGroup.Config)
-	if subMaxRetries == 0 {
-		maxRetries = 0
-	} else if subMaxRetries > 0 && maxRetries > subMaxRetries {
-		// For positive values, further cap aggregate retries by sub-group max retries.
+	if subMaxRetries > 0 && maxRetries > subMaxRetries {
 		maxRetries = subMaxRetries
 	}
 
