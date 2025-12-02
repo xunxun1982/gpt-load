@@ -180,13 +180,23 @@ func isChatCompletionsEndpoint(path, method string) bool {
 		return false
 	}
 	// Router formats path as /proxy/{group}/v1/chat/completions. We also accept
-	// bare /v1/chat/completions for direct upstream-style integration. We keep
-	// the check simple here because it is always combined with
-	// isForceFunctionCallingEnabled, which already guarantees an OpenAI channel.
+	// bare /v1/chat/completions for direct upstream-style integration.
 	if path == "/v1/chat/completions" {
 		return true
 	}
 	return strings.HasSuffix(path, "/v1/chat/completions")
+}
+
+// isFunctionCallingEnabled returns true if the function-calling middleware
+// was successfully applied for the current request. It reads a boolean flag
+// from Gin context and treats missing or non-bool values as false.
+func isFunctionCallingEnabled(c *gin.Context) bool {
+	if v, ok := c.Get(ctxKeyFunctionCallingEnabled); ok {
+		if enabled, ok := v.(bool); ok && enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // NewProxyServer creates a new proxy server
@@ -541,7 +551,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// For streaming chat completions with function calling enabled, use the
 			// function-calling aware streaming handler. Other streaming requests keep
 			// the existing behavior.
-			if _, ok := c.Get(ctxKeyFunctionCallingEnabled); ok && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+			if isFunctionCallingEnabled(c) {
 				ps.handleFunctionCallingStreamingResponse(c, resp)
 			} else {
 				ps.handleStreamingResponse(c, resp)
@@ -549,7 +559,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		} else {
 			// For non-streaming chat completions with function calling enabled, use
 			// the function-calling aware response handler.
-			if _, ok := c.Get(ctxKeyFunctionCallingEnabled); ok && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+			if isFunctionCallingEnabled(c) {
 				ps.handleFunctionCallingNormalResponse(c, resp)
 			} else {
 				ps.handleNormalResponse(c, resp)
@@ -655,6 +665,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 
 	// Apply function-calling request rewrite for eligible OpenAI sub-groups.
+	// Clear any stale function-calling state from previous sub-group attempts
+	// so that downstream response handlers do not see outdated flags.
+	c.Set(ctxKeyFunctionCallingEnabled, false)
+	c.Set(ctxKeyTriggerSignal, "")
 	if isForceFunctionCallingEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
 		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallingRequestRewrite(group, finalBodyBytes)
 		if fcErr != nil {
@@ -861,7 +875,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// function-calling behavior is consistent between normal and
 		// aggregate groups.
 		if isStream {
-			if _, ok := c.Get(ctxKeyFunctionCallingEnabled); ok && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+			if isFunctionCallingEnabled(c) {
 				ps.handleFunctionCallingStreamingResponse(c, resp)
 			} else {
 				ps.handleStreamingResponse(c, resp)
@@ -877,7 +891,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}).Debug("Detected /models endpoint with model mapping, applying enhancement")
 			ps.handleModelsResponse(c, resp, group)
 		} else {
-			if _, ok := c.Get(ctxKeyFunctionCallingEnabled); ok && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+			if isFunctionCallingEnabled(c) {
 				ps.handleFunctionCallingNormalResponse(c, resp)
 			} else {
 				ps.handleNormalResponse(c, resp)
