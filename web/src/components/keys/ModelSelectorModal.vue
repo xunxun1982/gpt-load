@@ -9,41 +9,47 @@
     :segmented="{ content: 'soft', footer: 'soft' }"
   >
     <div class="model-selector-content">
-      <!-- Search and options -->
-      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px">
+      <!-- Search, stats and redirect options in a single toolbar row -->
+      <div class="toolbar-row">
         <n-input
           v-model:value="searchKeyword"
           :placeholder="t('keys.searchModels')"
           clearable
-          style="flex: 1"
+          size="small"
+          style="width: 220px"
         >
           <template #prefix>
             <n-icon :component="Search" />
           </template>
         </n-input>
-        <n-checkbox v-model:checked="lowercaseRedirect" size="small">
-          {{ t("keys.lowercaseRedirect") }}
-        </n-checkbox>
-      </div>
-
-      <!-- Stats -->
-      <div class="stats-bar">
-        <span>{{ t("keys.totalModels") }}: {{ filteredModels.length }}</span>
-        <span>{{ t("keys.selectedModels") }}: {{ selectedModelIds.length }}</span>
-      </div>
-
-      <!-- Global prefix/suffix for redirect targets -->
-      <div class="prefix-suffix-row">
+        <n-tooltip placement="bottom" trigger="hover">
+          <template #trigger>
+            <div class="toolbar-stats">
+              <span>{{ filteredModels.length }}/{{ selectedModelIds.length }}</span>
+            </div>
+          </template>
+          {{ t("keys.modelStatsTooltip") }}
+        </n-tooltip>
         <n-input
           v-model:value="redirectPrefix"
           :placeholder="t('keys.redirectPrefixPlaceholder')"
           size="small"
+          style="width: 140px"
         />
         <n-input
           v-model:value="redirectSuffix"
           :placeholder="t('keys.redirectSuffixPlaceholder')"
           size="small"
+          style="width: 140px"
         />
+        <n-tooltip placement="bottom" trigger="hover">
+          <template #trigger>
+            <n-checkbox v-model:checked="lowercaseRedirect" size="small">
+              {{ t("keys.lowercaseRedirectShort") }}
+            </n-checkbox>
+          </template>
+          {{ t("keys.lowercaseRedirect") }}
+        </n-tooltip>
       </div>
 
       <!-- Model list with checkboxes and redirect target -->
@@ -105,7 +111,7 @@
 
 <script setup lang="ts">
 import { Search } from "@vicons/ionicons5";
-import { NButton, NCheckbox, NEmpty, NIcon, NInput, NModal } from "naive-ui";
+import { NButton, NCheckbox, NEmpty, NIcon, NInput, NModal, NTooltip } from "naive-ui";
 import { computed, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -130,15 +136,21 @@ const selectedModelIds = ref<string[]>([]);
 const modelRedirects = reactive<Record<string, string>>({});
 const redirectPrefix = ref("");
 const redirectSuffix = ref("");
-const lowercaseRedirect = ref(false);
+const lowercaseRedirect = ref(true);
 
 // Computed
+const sortedModels = computed(() => {
+  // Sort models in a case-insensitive alphabetical order for easier browsing
+  return [...props.models].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+});
+
 const filteredModels = computed(() => {
-  if (!searchKeyword.value.trim()) {
-    return props.models;
+  const keyword = searchKeyword.value.trim().toLowerCase();
+  const source = sortedModels.value;
+  if (!keyword) {
+    return source;
   }
-  const keyword = searchKeyword.value.toLowerCase();
-  return props.models.filter(model => model.toLowerCase().includes(keyword));
+  return source.filter(model => model.toLowerCase().includes(keyword));
 });
 
 const selectAll = computed({
@@ -164,7 +176,8 @@ watch(
       });
       redirectPrefix.value = "";
       redirectSuffix.value = "";
-      lowercaseRedirect.value = false;
+      // Default to lowercasing redirect targets to keep naming consistent
+      lowercaseRedirect.value = true;
     }
   }
 );
@@ -271,6 +284,31 @@ function handleConfirm() {
 .model-selector-content {
   max-height: 60vh;
   overflow-y: auto;
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  /* Keep all controls on a single row to save vertical space */
+  flex-wrap: nowrap;
+  /* Keep toolbar always visible when scrolling long model lists */
+  position: sticky;
+  top: 0;
+  background-color: var(--bg-primary, #fff);
+  z-index: 1;
+}
+
+.toolbar-stats {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .stats-bar {
