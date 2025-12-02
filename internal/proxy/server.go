@@ -317,7 +317,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 						"group": group.Name,
 						"path":  c.Request.URL.Path,
 					}).Warn("Failed to apply function-calling request rewrite, falling back to original body")
-				} else if len(rewrittenBody) > 0 {
+				} else if len(rewrittenBody) > 0 && triggerSignal != "" {
 					finalBodyBytes = rewrittenBody
 					c.Set(ctxKeyTriggerSignal, triggerSignal)
 					c.Set(ctxKeyFunctionCallingEnabled, true)
@@ -652,6 +652,28 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			"sub_group":       group.Name,
 		}).Warn("Failed to apply parameter overrides for sub-group, using original body")
 		finalBodyBytes = bodyBytes
+	}
+
+	// Apply function-calling request rewrite for eligible OpenAI sub-groups.
+	if isForceFunctionCallingEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallingRequestRewrite(group, finalBodyBytes)
+		if fcErr != nil {
+			logrus.WithError(fcErr).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"path":            c.Request.URL.Path,
+			}).Warn("Failed to apply function-calling request rewrite for sub-group, falling back to original body")
+		} else if len(rewrittenBody) > 0 && triggerSignal != "" {
+			finalBodyBytes = rewrittenBody
+			c.Set(ctxKeyTriggerSignal, triggerSignal)
+			c.Set(ctxKeyFunctionCallingEnabled, true)
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"channel_type":    group.ChannelType,
+				"trigger_signal":  triggerSignal,
+			}).Debug("Function calling request rewrite applied for sub-group")
+		}
 	}
 
 	cfg := group.EffectiveConfig

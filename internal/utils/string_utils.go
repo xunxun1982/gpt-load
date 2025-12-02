@@ -28,15 +28,12 @@ func MaskAPIKey(key string) string {
 // it avoids allocating a []rune slice when no truncation is needed.
 func TruncateString(s string, maxLength int) string {
 	if maxLength <= 0 {
-		return s
+		return ""
 	}
 	if utf8.RuneCountInString(s) <= maxLength {
 		return s
 	}
 	runes := []rune(s)
-	if len(runes) <= maxLength {
-		return s
-	}
 	return string(runes[:maxLength])
 }
 
