@@ -25,7 +25,7 @@
         <n-tooltip placement="bottom" trigger="hover">
           <template #trigger>
             <div class="toolbar-stats">
-              <span>{{ filteredModels.length }}/{{ selectedModelIds.length }}</span>
+              <span>{{ sortedModels.length }}/{{ selectedModelIds.length }}</span>
             </div>
           </template>
           {{ t("keys.modelStatsTooltip") }}
@@ -296,6 +296,7 @@ function handleConfirm() {
   /* Keep toolbar always visible when scrolling long model lists */
   position: sticky;
   top: 0;
+  /* Background color uses theme variable to support light and dark modes */
   background-color: var(--bg-primary, #fff);
   z-index: 1;
 }
@@ -309,23 +310,6 @@ function handleConfirm() {
   font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
-}
-
-.stats-bar {
-  display: flex;
-  gap: 24px;
-  padding: 8px 12px;
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  margin-bottom: 16px;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.prefix-suffix-row {
-  display: flex;
-  gap: 12px;
-  margin: 12px 0;
 }
 
 .model-list {
