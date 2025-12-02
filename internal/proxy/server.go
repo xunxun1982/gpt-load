@@ -127,9 +127,14 @@ func parseSubMaxRetries(config map[string]any) int {
 	return parseRetryConfigInt(config, "sub_max_retries")
 }
 
-// isForceFunctionCallingEnabled reads the per-group force_function_calling flag from
-// the raw group config JSON. For now this only controls a debug placeholder and
-// does not change proxy behavior; it exists as a hook for future middleware.
+// isForceFunctionCallingEnabled checks whether the force_function_calling flag is enabled
+// for the given group. This flag is currently only meaningful for OpenAI channel groups
+// and is stored in the group-level JSON config rather than global system settings.
+//
+// NOTE: ForceFunctionCalling is a group-only override key and is not part of the
+// typed SystemSettings / EffectiveConfig. We intentionally read it from the raw
+// group.Config map to avoid introducing a separate system-wide knob and to stay
+// compatible with imported configs that may include this key only at group level.
 func isForceFunctionCallingEnabled(group *models.Group) bool {
 	if group == nil || group.Config == nil {
 		return false
@@ -156,6 +161,13 @@ func isForceFunctionCallingEnabled(group *models.Group) bool {
 		// Best-effort string parsing to be tolerant to imported configs.
 		lower := strings.ToLower(strings.TrimSpace(v))
 		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
+	case float64:
+		// Accept numeric JSON values (0/1) from legacy or imported configs.
+		return v != 0
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
 	}
 
 	return false

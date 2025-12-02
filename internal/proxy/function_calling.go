@@ -190,11 +190,12 @@ func (ps *ProxyServer) applyFunctionCallingRequestRewrite(
 func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp *http.Response) {
     shouldCapture := shouldCaptureResponse(c)
 
-    body, err := io.ReadAll(resp.Body)
+    rawBody, err := io.ReadAll(resp.Body)
     if err != nil {
         logUpstreamError("reading response body", err)
         return
     }
+    body := handleGzipCompression(resp, rawBody)
 
     // Fallback: if we cannot parse JSON, behave like normal response handler.
     var payload map[string]any
@@ -417,6 +418,7 @@ func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp 
         logUpstreamError("writing response body", werr)
     }
 }
+
 func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, resp *http.Response) {
     // Set standard SSE headers
     c.Header("Content-Type", "text/event-stream")
@@ -472,16 +474,28 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
         for {
             line, err := reader.ReadString('\n')
             if err != nil {
-                if err == io.EOF && line == "" {
-                    // Upstream closed without explicit [DONE], flush last event if any.
-                    if len(prevEventLines) > 0 {
-                        _ = writeEvent(prevEventLines)
+                if err == io.EOF {
+                    // Treat a non-empty line+EOF as part of the current event, then
+                    // process the accumulated event before returning. This avoids
+                    // dropping the last partial event when upstream closes without a
+                    // trailing newline.
+                    trimmed := strings.TrimRight(line, "\r\n")
+                    if trimmed != "" {
+                        rawLines = append(rawLines, line)
+                        if strings.HasPrefix(trimmed, "data:") {
+                            dataLine := strings.TrimSpace(trimmed[len("data:"):])
+                            if dataLine != "" {
+                                if dataBuf.Len() > 0 {
+                                    dataBuf.WriteByte('\n')
+                                }
+                                dataBuf.WriteString(dataLine)
+                            }
+                        }
                     }
-                    return
+                    break
                 }
-                if err != io.EOF {
-                    logUpstreamError("reading from upstream", err)
-                }
+                // Non-EOF error: abort streaming.
+                logUpstreamError("reading from upstream", err)
                 return
             }
 
@@ -685,12 +699,24 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
     }
     logrus.WithFields(streamFields).Debug("Function calling streaming response: last event before/after (truncated)")
 
-    // Emit the modified last event followed by [DONE].
-    if _, err := c.Writer.Write([]byte("data: " + string(out) + "\n\n")); err != nil {
+    // Emit the modified last event followed by [DONE]. We preserve any upstream
+    // SSE metadata lines (such as id: / event:) by reusing prevEventLines and
+    // only replacing data: lines with our modified payload.
+    finalLines := make([]string, 0, len(prevEventLines)+1)
+    for _, line := range prevEventLines {
+        trimmed := strings.TrimRight(line, "\r\n")
+        if strings.HasPrefix(trimmed, "data:") {
+            // Skip original data: lines; they will be replaced with the modified one
+            // below.
+            continue
+        }
+        finalLines = append(finalLines, line)
+    }
+    finalLines = append(finalLines, "data: "+string(out)+"\n")
+    if err := writeEvent(finalLines); err != nil {
         logUpstreamError("writing modified streaming event", err)
         return
     }
-    flusher.Flush()
     _, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
     flusher.Flush()
 }

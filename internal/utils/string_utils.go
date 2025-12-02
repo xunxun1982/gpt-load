@@ -2,6 +2,7 @@ package utils
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // MaskAPIKey masks an API key for safe logging.
@@ -23,9 +24,13 @@ func MaskAPIKey(key string) string {
 }
 
 // TruncateString shortens a string to a maximum length. It is rune-aware to
-// avoid cutting multi-byte UTF-8 characters in the middle.
+// avoid cutting multi-byte UTF-8 characters in the middle. For performance,
+// it avoids allocating a []rune slice when no truncation is needed.
 func TruncateString(s string, maxLength int) string {
 	if maxLength <= 0 {
+		return s
+	}
+	if utf8.RuneCountInString(s) <= maxLength {
 		return s
 	}
 	runes := []rune(s)
