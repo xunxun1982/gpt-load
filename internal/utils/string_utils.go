@@ -22,12 +22,17 @@ func MaskAPIKey(key string) string {
 	return b.String()
 }
 
-// TruncateString shortens a string to a maximum length.
+// TruncateString shortens a string to a maximum length. It is rune-aware to
+// avoid cutting multi-byte UTF-8 characters in the middle.
 func TruncateString(s string, maxLength int) string {
-	if len(s) > maxLength {
-		return s[:maxLength]
+	if maxLength <= 0 {
+		return s
 	}
-	return s
+	runes := []rune(s)
+	if len(runes) <= maxLength {
+		return s
+	}
+	return string(runes[:maxLength])
 }
 
 // SplitAndTrim splits a string by a separator

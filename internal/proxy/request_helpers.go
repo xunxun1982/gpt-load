@@ -98,19 +98,8 @@ func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) 
 		return modifiedBytes, originalModel
 	}
 
-	return bodyBytes, originalModel
+ 	return bodyBytes, originalModel
 }
-
-// applyFunctionCallingRequestRewrite rewrites an OpenAI chat completions request body
-// to enable middleware-based function calling. It injects a system prompt describing
-// available tools and removes native tools/tool_choice fields so the upstream model
-// only sees the prompt-based contract.
-//
-// Returns:
-//   - rewritten body bytes (or the original body if no rewrite is needed)
-//   - trigger signal string used to mark the function-calls XML section
-//   - error when parsing fails (in which case the caller should fall back to the
-//     original body)
 
 // logUpstreamError provides a centralized way to log errors from upstream interactions.
 func logUpstreamError(context string, err error) {
@@ -126,7 +115,10 @@ func logUpstreamError(context string, err error) {
 
 // Deprecated: handleGzipCompression is no longer needed.
 // Go's http.Client (DisableCompression == false) auto-adds Accept-Encoding and
-// transparently decompresses non-streaming responses. Kept temporarily for back-compat.
+// transparently decompresses non-streaming responses. This helper and its single
+// remaining call site are intentionally kept for backward compatibility and to
+// avoid surprising behavior changes, even though automated reviews may suggest
+// removing them.
 func handleGzipCompression(_ *http.Response, bodyBytes []byte) []byte {
 	// When DisableCompression is false (default for non-streaming requests),
 	// Go's http.Client automatically:

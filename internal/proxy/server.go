@@ -167,7 +167,13 @@ func isChatCompletionsEndpoint(path, method string) bool {
 	if method != http.MethodPost {
 		return false
 	}
-	// Router formats path as /proxy/{group}/v1/chat/completions
+	// Router formats path as /proxy/{group}/v1/chat/completions. We also accept
+	// bare /v1/chat/completions for direct upstream-style integration. We keep
+	// the check simple here because it is always combined with
+	// isForceFunctionCallingEnabled, which already guarantees an OpenAI channel.
+	if path == "/v1/chat/completions" {
+		return true
+	}
 	return strings.HasSuffix(path, "/v1/chat/completions")
 }
 
@@ -816,9 +822,16 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 		c.Status(resp.StatusCode)
 
-		// Fast path: handle response based on type
+		// Fast path: handle response based on type. We intentionally keep the
+		// routing logic aligned with the non-aggregate path so that
+		// function-calling behavior is consistent between normal and
+		// aggregate groups.
 		if isStream {
-			ps.handleStreamingResponse(c, resp)
+			if _, ok := c.Get(ctxKeyFunctionCallingEnabled); ok && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+				ps.handleFunctionCallingStreamingResponse(c, resp)
+			} else {
+				ps.handleStreamingResponse(c, resp)
+			}
 		} else if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
 			c.Writer.Header().Del("Content-Length")
 			c.Writer.Header().Del("ETag")
@@ -830,7 +843,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}).Debug("Detected /models endpoint with model mapping, applying enhancement")
 			ps.handleModelsResponse(c, resp, group)
 		} else {
-			ps.handleNormalResponse(c, resp)
+			if _, ok := c.Get(ctxKeyFunctionCallingEnabled); ok && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+				ps.handleFunctionCallingNormalResponse(c, resp)
+			} else {
+				ps.handleNormalResponse(c, resp)
+			}
 		}
 	}
 

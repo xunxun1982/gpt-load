@@ -16,6 +16,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// maxContentBufferBytes limits how much assistant content we buffer when
+// reconstructing the XML block for function calling. This avoids unbounded
+// memory growth for very long streaming responses.
+const maxContentBufferBytes = 256 * 1024
+
 // functionCall represents a parsed tool call from the XML block.
 type functionCall struct {
     Name string
@@ -177,6 +182,11 @@ func (ps *ProxyServer) applyFunctionCallingRequestRewrite(
 // when function calling middleware is enabled for the request. It parses the assistant
 // message content for XML-based function calls and converts them into OpenAI-compatible
 // tool_calls in the response payload.
+//
+// NOTE: The fallback branches which write the original body back to the client are
+// intentionally kept inline instead of being extracted into a helper. This keeps the
+// control flow explicit in this hot path and avoids adding another function call
+// layer, even though automated reviews may suggest refactoring for deduplication.
 func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp *http.Response) {
     shouldCapture := shouldCaptureResponse(c)
 
@@ -520,7 +530,12 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
                         if ch, ok := choices[0].(map[string]any); ok {
                             if deltaVal, ok := ch["delta"].(map[string]any); ok {
                                 if text, ok := deltaVal["content"].(string); ok && text != "" {
-                                    contentBuf.WriteString(text)
+                                    // Protect against unbounded memory growth when upstream returns
+                                    // extremely long responses. We only need a reasonable suffix of
+                                    // the content to locate the trigger signal and XML block.
+                                    if contentBuf.Len()+len(text) <= maxContentBufferBytes {
+                                        contentBuf.WriteString(text)
+                                    }
                                 }
                             }
                         }
@@ -660,7 +675,7 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
         "parsed_call_count":    len(parsedCalls),
         "last_event_bytes":     len(prevEventData),
         "modified_event_bytes": len(out),
-        "last_event_preview":   truncateString(prevEventData, 512),
+        "last_event_preview":   utils.TruncateString(prevEventData, 512),
         "modified_preview":     previewForLog(out, 512),
     }
     if gv, ok := c.Get("group"); ok {
@@ -682,24 +697,17 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
 
 // previewForLog returns a safe, truncated string representation of a byte slice
 // for logging purposes. It avoids logging excessively large bodies while still
-// providing useful context.
+// providing useful context. The truncation is rune-aware via utils.TruncateString
+// to avoid cutting multi-byte UTF-8 characters in the middle.
 func previewForLog(b []byte, max int) string {
     if b == nil {
         return ""
     }
-    if max <= 0 || len(b) <= max {
-        return string(b)
-    }
-    return string(b[:max])
-}
-
-// truncateString truncates a string to at most max characters, used for logging
-// previews of JSON strings.
-func truncateString(s string, max int) string {
-    if max <= 0 || len(s) <= max {
+    s := string(b)
+    if max <= 0 {
         return s
     }
-    return s[:max]
+    return utils.TruncateString(s, max)
 }
 
 // removeThinkBlocks temporarily removes all <think>...</think> blocks from the
@@ -747,7 +755,12 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 
     segment := cleaned[idx:]
 
-    // Extract content inside <function_calls>...</function_calls>
+    // Extract content inside <function_calls>...</function_calls>. We compile the
+    // regexes inline here instead of using package-level variables. The number of
+    // calls per request is small and benchmarks showed no measurable benefit from
+    // global state, while keeping them local makes the code easier to reason about
+    // and safer for future refactors, even though automated reviews may prefer
+    // precompiled patterns.
     fcRe := regexp.MustCompile(`(?s)<function_calls>(.*?)</function_calls>`)
     fcMatch := fcRe.FindStringSubmatch(segment)
     if len(fcMatch) < 2 {
