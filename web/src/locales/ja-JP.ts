@@ -437,6 +437,13 @@ export default {
     looseModeDesc: "設定されたモデルはリダイレクト、その他はパススルー",
     sourceModel: "ソースモデル",
     addModelRedirect: "モデルリダイレクトを追加",
+    functionCalling: "関数呼び出し",
+    functionCallingTooltip1:
+      "このグループ向けにミドルウェアベースの関数呼び出し機能（Toolify 風）を有効にします。",
+    functionCallingTooltip2:
+      "ネイティブで関数呼び出しをサポートしていないプロバイダーでのみ有効にしてください。すでにネイティブの関数呼び出しを持つチャンネルで有効にすると、二重呼び出しや予期しない動作を引き起こす可能性があります。",
+    functionCallingOpenAITip:
+      "このスイッチは OpenAI チャンネルのグループにのみ有効で、他のプロバイダーでは表示も効果もありません。",
     modelRedirectInvalidJson: "モデルリダイレクトルールのJSON形式が無効です",
     modelRedirectInvalidFormat:
       "モデルリダイレクトルールのキーと値はすべて文字列である必要があります",

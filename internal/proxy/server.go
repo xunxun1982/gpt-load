@@ -29,6 +29,12 @@ import (
 
 const maxUpstreamErrorBodySize = 64 * 1024 // 64KB
 
+// Context keys used for function calling middleware.
+const (
+	ctxKeyTriggerSignal          = "fc_trigger_signal"
+	ctxKeyFunctionCallingEnabled = "fc_enabled"
+)
+
 // ProxyServer represents the proxy server
 type ProxyServer struct {
 	keyProvider       *keypool.KeyProvider
@@ -119,6 +125,50 @@ func parseMaxRetries(config map[string]any) int {
 // Returns a value clamped to the range [0, 5]
 func parseSubMaxRetries(config map[string]any) int {
 	return parseRetryConfigInt(config, "sub_max_retries")
+}
+
+// isForceFunctionCallingEnabled reads the per-group force_function_calling flag from
+// the raw group config JSON. For now this only controls a debug placeholder and
+// does not change proxy behavior; it exists as a hook for future middleware.
+func isForceFunctionCallingEnabled(group *models.Group) bool {
+	if group == nil || group.Config == nil {
+		return false
+	}
+
+	// Only enable function calling middleware for OpenAI channel groups.
+	if group.ChannelType != "openai" {
+		return false
+	}
+
+	raw, ok := group.Config["force_function_calling"]
+	if !ok || raw == nil {
+		return false
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case *bool:
+		if v != nil {
+			return *v
+		}
+	case string:
+		// Best-effort string parsing to be tolerant to imported configs.
+		lower := strings.ToLower(strings.TrimSpace(v))
+		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
+	}
+
+	return false
+}
+
+// isChatCompletionsEndpoint checks whether the current request targets the
+// OpenAI-style chat completions endpoint.
+func isChatCompletionsEndpoint(path, method string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	// Router formats path as /proxy/{group}/v1/chat/completions
+	return strings.HasSuffix(path, "/v1/chat/completions")
 }
 
 // NewProxyServer creates a new proxy server
@@ -239,6 +289,26 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			if err != nil {
 				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
 				return
+			}
+
+			// Apply function-calling request rewrite for eligible OpenAI groups.
+			if isForceFunctionCallingEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+				rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallingRequestRewrite(group, finalBodyBytes)
+				if fcErr != nil {
+					logrus.WithError(fcErr).WithFields(logrus.Fields{
+						"group": group.Name,
+						"path":  c.Request.URL.Path,
+					}).Warn("Failed to apply function-calling request rewrite, falling back to original body")
+				} else if len(rewrittenBody) > 0 {
+					finalBodyBytes = rewrittenBody
+					c.Set(ctxKeyTriggerSignal, triggerSignal)
+					c.Set(ctxKeyFunctionCallingEnabled, true)
+					logrus.WithFields(logrus.Fields{
+						"group":         group.Name,
+						"channel_type":  group.ChannelType,
+						"trigger_signal": triggerSignal,
+					}).Debug("Function calling request rewrite applied")
+				}
 			}
 
 			isStream = channelHandler.IsStreamRequest(c, finalBodyBytes)
@@ -450,9 +520,22 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		c.Status(resp.StatusCode)
 
 		if isStream {
-			ps.handleStreamingResponse(c, resp)
+			// For streaming chat completions with function calling enabled, use the
+			// function-calling aware streaming handler. Other streaming requests keep
+			// the existing behavior.
+			if _, ok := c.Get(ctxKeyFunctionCallingEnabled); ok && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+				ps.handleFunctionCallingStreamingResponse(c, resp)
+			} else {
+				ps.handleStreamingResponse(c, resp)
+			}
 		} else {
-			ps.handleNormalResponse(c, resp)
+			// For non-streaming chat completions with function calling enabled, use
+			// the function-calling aware response handler.
+			if _, ok := c.Get(ctxKeyFunctionCallingEnabled); ok && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+				ps.handleFunctionCallingNormalResponse(c, resp)
+			} else {
+				ps.handleNormalResponse(c, resp)
+			}
 		}
 	}
 

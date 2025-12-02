@@ -2,10 +2,11 @@ package proxy
 
 import (
 	"encoding/json"
+	"net/http"
+
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"net/http"
 
 	"github.com/sirupsen/logrus"
 )
@@ -99,6 +100,17 @@ func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) 
 
 	return bodyBytes, originalModel
 }
+
+// applyFunctionCallingRequestRewrite rewrites an OpenAI chat completions request body
+// to enable middleware-based function calling. It injects a system prompt describing
+// available tools and removes native tools/tool_choice fields so the upstream model
+// only sees the prompt-based contract.
+//
+// Returns:
+//   - rewritten body bytes (or the original body if no rewrite is needed)
+//   - trigger signal string used to mark the function-calls XML section
+//   - error when parsing fails (in which case the caller should fall back to the
+//     original body)
 
 // logUpstreamError provides a centralized way to log errors from upstream interactions.
 func logUpstreamError(context string, err error) {
