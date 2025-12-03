@@ -131,16 +131,20 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
             }
         }
 
-        block := ""
-        block += fmt.Sprintf("%d. <tool name=\"%s\">\n", i+1, name)
-        block += "   Description:\n"
+        // Use strings.Builder for efficient string concatenation in loop.
+        var block strings.Builder
+        fmt.Fprintf(&block, "%d. <tool name=\"%s\">\n", i+1, name)
+        block.WriteString("   Description:\n")
         if desc != "" {
-            block += "```\n" + desc + "\n```\n"
+            block.WriteString("```\n")
+            block.WriteString(desc)
+            block.WriteString("\n```\n")
         } else {
-            block += "None\n"
+            block.WriteString("None\n")
         }
-        block += "   Parameters summary: " + paramSummary
-        toolBlocks = append(toolBlocks, block)
+        block.WriteString("   Parameters summary: ")
+        block.WriteString(paramSummary)
+        toolBlocks = append(toolBlocks, block.String())
     }
 
     if len(toolBlocks) == 0 {
@@ -203,10 +207,17 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *http.Response) {
     shouldCapture := shouldCaptureResponse(c)
 
-    rawBody, err := io.ReadAll(resp.Body)
+    // Security: limit response body size to prevent ReDoS attacks and memory exhaustion.
+    // This mirrors the protection in the streaming path which uses maxContentBufferBytes.
+    limitedReader := io.LimitReader(resp.Body, maxContentBufferBytes)
+    rawBody, err := io.ReadAll(limitedReader)
     if err != nil {
         logUpstreamError("reading response body", err)
         return
+    }
+    // Check if response was truncated due to size limit.
+    if len(rawBody) == maxContentBufferBytes {
+        logrus.Warn("Function call normal response: body size limit reached, response may be truncated")
     }
     body := handleGzipCompression(resp, rawBody)
 
@@ -566,6 +577,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                                     // Accumulate content for final XML parsing.
                                     if contentBuf.Len()+len(text) <= maxContentBufferBytes {
                                         contentBuf.WriteString(text)
+                                    } else if contentBuf.Len() < maxContentBufferBytes {
+                                        // Log once when buffer limit is first reached to aid debugging.
+                                        logrus.Warn("Function call streaming: content buffer limit reached, subsequent content will not be parsed for tool calls")
                                     }
 
                                     // State machine: suppress XML blocks from visible streaming output.
@@ -838,8 +852,6 @@ func removeFunctionCallsBlocks(text string) string {
 
     return cleaned
 }
-
-// ... (rest of the code remains the same)
 
 // parseFunctionCallsXML parses function calls from the assistant content using a
 // trigger signal and a simple XML-like convention:

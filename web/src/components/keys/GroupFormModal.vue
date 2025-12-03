@@ -817,8 +817,11 @@ async function handleSubmit() {
     }
 
     // Persist force_function_call toggle as a dedicated config key.
+    // Explicitly delete the key when disabled to ensure clean config state.
     if (formData.force_function_call) {
       config["force_function_call"] = true;
+    } else {
+      delete config["force_function_call"];
     }
 
     // Validate path redirects for duplicates
