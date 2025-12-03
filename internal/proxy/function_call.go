@@ -207,17 +207,13 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *http.Response) {
     shouldCapture := shouldCaptureResponse(c)
 
-    // Security: limit response body size to prevent ReDoS attacks and memory exhaustion.
-    // This mirrors the protection in the streaming path which uses maxContentBufferBytes.
-    limitedReader := io.LimitReader(resp.Body, maxContentBufferBytes)
-    rawBody, err := io.ReadAll(limitedReader)
+    // Read full response body. We bound the workload of XML parsing below by
+    // limiting the size of the assistant content string passed into the parser,
+    // instead of truncating the response returned to the client.
+    rawBody, err := io.ReadAll(resp.Body)
     if err != nil {
         logUpstreamError("reading response body", err)
         return
-    }
-    // Check if response was truncated due to size limit.
-    if len(rawBody) == maxContentBufferBytes {
-        logrus.Warn("Function call normal response: body size limit reached, response may be truncated")
     }
     body := handleGzipCompression(resp, rawBody)
 
@@ -337,7 +333,15 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
             continue
         }
 
-        calls := parseFunctionCallsXML(contentStr, triggerSignal)
+        // Bound parsing window to avoid feeding arbitrarily large content into
+        // the XML parser. We keep only the tail of the content where the
+        // <function_calls> block is expected to appear.
+        parseInput := contentStr
+        if len(parseInput) > maxContentBufferBytes {
+            parseInput = parseInput[len(parseInput)-maxContentBufferBytes:]
+        }
+
+        calls := parseFunctionCallsXML(parseInput, triggerSignal)
         if len(calls) == 0 {
             continue
         }
@@ -471,6 +475,8 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
     reader := bufio.NewReader(resp.Body)
     // contentBuf accumulates assistant text content across all chunks.
     var contentBuf strings.Builder
+    // contentBufFullWarned ensures we log the buffer-limit warning at most once.
+    contentBufFullWarned := false
 
     // prevEvent holds the last non-[DONE] event that we have not yet forwarded.
     var prevEventLines []string
@@ -577,12 +583,12 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                                     // Accumulate content for final XML parsing.
                                     if contentBuf.Len()+len(text) <= maxContentBufferBytes {
                                         contentBuf.WriteString(text)
-                                    } else if contentBuf.Len() < maxContentBufferBytes {
+                                    } else if !contentBufFullWarned {
                                         // Log once when buffer limit is first reached to aid debugging.
                                         logrus.Warn("Function call streaming: content buffer limit reached, subsequent content will not be parsed for tool calls")
+                                        contentBufFullWarned = true
                                     }
 
-                                    // State machine: suppress XML blocks from visible streaming output.
                                     hasOpen := strings.Contains(text, "<function_calls>")
                                     hasClose := strings.Contains(text, "</function_calls>")
 
@@ -611,7 +617,12 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                         }
                     }
                 }
-                // Re-serialize with modified content for forwarding.
+                // Re-serialize with modified content for forwarding. For intermediate
+                // events we rebuild only the data: line and intentionally drop any
+                // upstream SSE metadata (id:, event:) for simplicity. Most clients
+                // using OpenAI-style streaming rely only on data: lines. The final
+                // modified event below preserves upstream metadata by reusing
+                // prevEventLines and replacing only data: lines.
                 if modifiedData, err := json.Marshal(evt); err == nil {
                     modifiedLines = []string{"data: " + string(modifiedData) + "\n"}
                 } else {

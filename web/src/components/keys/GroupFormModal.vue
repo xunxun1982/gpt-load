@@ -470,7 +470,12 @@ function removeUpstream(index: number) {
 
 async function fetchGroupConfigOptions() {
   const options = await keysApi.getGroupConfigOptions();
-  configOptions.value = options || [];
+  // Hide force_function_call from generic config options so it is only
+  // controlled via the dedicated toggle. This avoids confusing UX where
+  // users could add the key manually in the advanced config list while the
+  // toggle remains the single source of truth.
+  const normalized = (options || []).filter(opt => opt.key !== "force_function_call");
+  configOptions.value = normalized;
   configOptionsFetched.value = true;
 }
 
