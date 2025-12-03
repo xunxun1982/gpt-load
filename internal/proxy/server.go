@@ -29,10 +29,10 @@ import (
 
 const maxUpstreamErrorBodySize = 64 * 1024 // 64KB
 
-// Context keys used for function calling middleware.
+// Context keys used for function call middleware.
 const (
 	ctxKeyTriggerSignal          = "fc_trigger_signal"
-	ctxKeyFunctionCallingEnabled = "fc_enabled"
+	ctxKeyFunctionCallEnabled = "fc_enabled"
 )
 
 // ProxyServer represents the proxy server
@@ -127,27 +127,34 @@ func parseSubMaxRetries(config map[string]any) int {
 	return parseRetryConfigInt(config, "sub_max_retries")
 }
 
-// isForceFunctionCallingEnabled checks whether the force_function_calling flag is enabled
+// isForceFunctionCallEnabled checks whether the force_function_call flag is enabled
 // for the given group. This flag is currently only meaningful for OpenAI channel groups
 // and is stored in the group-level JSON config rather than global system settings.
 //
-// NOTE: ForceFunctionCalling is a group-only override key and is not part of the
+// NOTE: ForceFunctionCall is a group-only override key and is not part of the
 // typed SystemSettings / EffectiveConfig. We intentionally read it from the raw
 // group.Config map to avoid introducing a separate system-wide knob and to stay
 // compatible with imported configs that may include this key only at group level.
-func isForceFunctionCallingEnabled(group *models.Group) bool {
+func isForceFunctionCallEnabled(group *models.Group) bool {
 	if group == nil || group.Config == nil {
 		return false
 	}
 
-	// Only enable function calling middleware for OpenAI channel groups.
+	// Only enable function call middleware for OpenAI channel groups.
 	if group.ChannelType != "openai" {
 		return false
 	}
 
-	raw, ok := group.Config["force_function_calling"]
+	raw, ok := group.Config["force_function_call"]
 	if !ok || raw == nil {
-		return false
+		// Backward compatibility: honor legacy key if present so that existing
+		// groups using force_function_calling continue to behave correctly
+		// until their configs are saved with the new key.
+		if legacy, legacyOk := group.Config["force_function_calling"]; legacyOk && legacy != nil {
+			raw = legacy
+		} else {
+			return false
+		}
 	}
 
 	switch v := raw.(type) {
@@ -187,11 +194,11 @@ func isChatCompletionsEndpoint(path, method string) bool {
 	return strings.HasSuffix(path, "/v1/chat/completions")
 }
 
-// isFunctionCallingEnabled returns true if the function-calling middleware
+// isFunctionCallEnabled returns true if the function-call middleware
 // was successfully applied for the current request. It reads a boolean flag
 // from Gin context and treats missing or non-bool values as false.
-func isFunctionCallingEnabled(c *gin.Context) bool {
-	if v, ok := c.Get(ctxKeyFunctionCallingEnabled); ok {
+func isFunctionCallEnabled(c *gin.Context) bool {
+	if v, ok := c.Get(ctxKeyFunctionCallEnabled); ok {
 		if enabled, ok := v.(bool); ok && enabled {
 			return true
 		}
@@ -319,23 +326,23 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				return
 			}
 
-			// Apply function-calling request rewrite for eligible OpenAI groups.
-			if isForceFunctionCallingEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
-				rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallingRequestRewrite(group, finalBodyBytes)
+			// Apply function call request rewrite for eligible OpenAI groups.
+			if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+				rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(group, finalBodyBytes)
 				if fcErr != nil {
 					logrus.WithError(fcErr).WithFields(logrus.Fields{
 						"group": group.Name,
 						"path":  c.Request.URL.Path,
-					}).Warn("Failed to apply function-calling request rewrite, falling back to original body")
+					}).Warn("Failed to apply function call request rewrite, falling back to original body")
 				} else if len(rewrittenBody) > 0 && triggerSignal != "" {
 					finalBodyBytes = rewrittenBody
 					c.Set(ctxKeyTriggerSignal, triggerSignal)
-					c.Set(ctxKeyFunctionCallingEnabled, true)
+					c.Set(ctxKeyFunctionCallEnabled, true)
 					logrus.WithFields(logrus.Fields{
-						"group":         group.Name,
-						"channel_type":  group.ChannelType,
+						"group":          group.Name,
+						"channel_type":   group.ChannelType,
 						"trigger_signal": triggerSignal,
-					}).Debug("Function calling request rewrite applied")
+					}).Debug("Function call request rewrite applied")
 				}
 			}
 
@@ -548,19 +555,19 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		c.Status(resp.StatusCode)
 
 		if isStream {
-			// For streaming chat completions with function calling enabled, use the
-			// function-calling aware streaming handler. Other streaming requests keep
+			// For streaming chat completions with function call enabled, use the
+			// function-call aware streaming handler. Other streaming requests keep
 			// the existing behavior.
-			if isFunctionCallingEnabled(c) {
-				ps.handleFunctionCallingStreamingResponse(c, resp)
+			if isFunctionCallEnabled(c) {
+				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
 				ps.handleStreamingResponse(c, resp)
 			}
 		} else {
-			// For non-streaming chat completions with function calling enabled, use
-			// the function-calling aware response handler.
-			if isFunctionCallingEnabled(c) {
-				ps.handleFunctionCallingNormalResponse(c, resp)
+			// For non-streaming chat completions with function call enabled, use
+			// the function-call aware response handler.
+			if isFunctionCallEnabled(c) {
+				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {
 				ps.handleNormalResponse(c, resp)
 			}
@@ -664,29 +671,29 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		finalBodyBytes = bodyBytes
 	}
 
-	// Apply function-calling request rewrite for eligible OpenAI sub-groups.
-	// Clear any stale function-calling state from previous sub-group attempts
+	// Apply function call request rewrite for eligible OpenAI sub-groups.
+	// Clear any stale function call state from previous sub-group attempts
 	// so that downstream response handlers do not see outdated flags.
-	c.Set(ctxKeyFunctionCallingEnabled, false)
+	c.Set(ctxKeyFunctionCallEnabled, false)
 	c.Set(ctxKeyTriggerSignal, "")
-	if isForceFunctionCallingEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
-		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallingRequestRewrite(group, finalBodyBytes)
+	if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(group, finalBodyBytes)
 		if fcErr != nil {
 			logrus.WithError(fcErr).WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,
 				"sub_group":       group.Name,
 				"path":            c.Request.URL.Path,
-			}).Warn("Failed to apply function-calling request rewrite for sub-group, falling back to original body")
+			}).Warn("Failed to apply function call request rewrite for sub-group, falling back to original body")
 		} else if len(rewrittenBody) > 0 && triggerSignal != "" {
 			finalBodyBytes = rewrittenBody
 			c.Set(ctxKeyTriggerSignal, triggerSignal)
-			c.Set(ctxKeyFunctionCallingEnabled, true)
+			c.Set(ctxKeyFunctionCallEnabled, true)
 			logrus.WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,
 				"sub_group":       group.Name,
 				"channel_type":    group.ChannelType,
 				"trigger_signal":  triggerSignal,
-			}).Debug("Function calling request rewrite applied for sub-group")
+			}).Debug("Function call request rewrite applied for sub-group")
 		}
 	}
 
@@ -872,11 +879,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 		// Fast path: handle response based on type. We intentionally keep the
 		// routing logic aligned with the non-aggregate path so that
-		// function-calling behavior is consistent between normal and
+		// function-call behavior is consistent between normal and
 		// aggregate groups.
 		if isStream {
-			if isFunctionCallingEnabled(c) {
-				ps.handleFunctionCallingStreamingResponse(c, resp)
+			if isFunctionCallEnabled(c) {
+				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
 				ps.handleStreamingResponse(c, resp)
 			}
@@ -891,8 +898,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}).Debug("Detected /models endpoint with model mapping, applying enhancement")
 			ps.handleModelsResponse(c, resp, group)
 		} else {
-			if isFunctionCallingEnabled(c) {
-				ps.handleFunctionCallingNormalResponse(c, resp)
+			if isFunctionCallEnabled(c) {
+				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {
 				ps.handleNormalResponse(c, resp)
 			}

@@ -383,9 +383,9 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
-		// Allow group-only boolean flag for experimental function calling middleware.
+		// Allow group-only boolean flag for experimental function call middleware.
 		// This flag is stored only at group level and is not part of system-level settings.
-		if key == "force_function_calling" {
+		if key == "force_function_call" {
 			// Accept only boolean values; nil is already skipped above.
 			if _, ok := value.(bool); !ok {
 				return fmt.Errorf("invalid type for %s: expected a boolean, got %T", key, value)

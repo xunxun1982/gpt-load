@@ -89,7 +89,7 @@ interface GroupFormData {
   model_redirect_rules: string;
   model_redirect_items: ModelRedirectItem[];
   model_redirect_strict: boolean;
-  force_function_calling: boolean;
+  force_function_call: boolean;
   config: Record<string, number | string | boolean>;
   configItems: ConfigItem[];
   header_rules: HeaderRuleItem[];
@@ -117,7 +117,7 @@ const formData = reactive<GroupFormData>({
   model_redirect_rules: "",
   model_redirect_items: [] as ModelRedirectItem[],
   model_redirect_strict: false,
-  force_function_calling: false,
+  force_function_call: false,
   config: {},
   configItems: [] as ConfigItem[],
   header_rules: [] as HeaderRuleItem[],
@@ -317,9 +317,9 @@ watch(
       }
     }
 
-    // Force disable function calling when channel is not OpenAI.
+    // Force disable function call when channel is not OpenAI.
     if (newChannelType !== "openai") {
-      formData.force_function_calling = false;
+      formData.force_function_call = false;
     }
   }
 );
@@ -363,7 +363,7 @@ function resetForm() {
     model_redirect_rules: "",
     model_redirect_items: [],
     model_redirect_strict: false,
-    force_function_calling: false,
+    force_function_call: false,
     config: {},
     configItems: [],
     header_rules: [],
@@ -388,12 +388,12 @@ function loadGroupData() {
   }
 
   const rawConfig = props.group.config || {};
-  const fcRaw = (rawConfig as any)["force_function_calling"];
-  const forceFunctionCalling =
+  const fcRaw = (rawConfig as any)["force_function_call"];
+  const forceFunctionCall =
     props.group.channel_type === "openai" && typeof fcRaw === "boolean" ? fcRaw : false;
 
   const configItems = Object.entries(rawConfig)
-    .filter(([key]) => key !== "force_function_calling")
+    .filter(([key]) => key !== "force_function_call")
     .map(([key, value]) => {
       return {
         key,
@@ -424,7 +424,7 @@ function loadGroupData() {
       })
       .filter(item => item.from && item.to),
     model_redirect_strict: props.group.model_redirect_strict || false,
-    force_function_calling: forceFunctionCalling,
+    force_function_call: forceFunctionCall,
     config: {},
     configItems,
     header_rules: (props.group.header_rules || []).map((rule: HeaderRuleItem) => ({
@@ -816,9 +816,9 @@ async function handleSubmit() {
       }
     }
 
-    // Persist force_function_calling toggle as a dedicated config key.
-    if (formData.force_function_calling) {
-      config["force_function_calling"] = true;
+    // Persist force_function_call toggle as a dedicated config key.
+    if (formData.force_function_call) {
+      config["force_function_call"] = true;
     }
 
     // Validate path redirects for duplicates
@@ -1676,33 +1676,33 @@ async function handleSubmit() {
                 </n-button>
               </div>
 
-              <!-- Function calling toggle (OpenAI channel only) -->
+              <!-- Function call toggle (OpenAI channel only) -->
               <div
                 class="config-section"
                 v-if="formData.group_type !== 'aggregate' && formData.channel_type === 'openai'"
               >
-                <n-form-item path="force_function_calling">
+                <n-form-item path="force_function_call">
                   <template #label>
                     <div class="form-label-with-tooltip">
-                      {{ t("keys.functionCalling") }}
+                      {{ t("keys.functionCall") }}
                       <n-tooltip trigger="hover" placement="right-start">
                         <template #trigger>
                           <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
                         </template>
                         <div>
-                          {{ t("keys.functionCallingTooltip1") }}
+                          {{ t("keys.functionCallTooltip1") }}
                           <br />
-                          {{ t("keys.functionCallingTooltip2") }}
+                          {{ t("keys.functionCallTooltip2") }}
                         </div>
                       </n-tooltip>
                     </div>
                   </template>
                   <div style="display: flex; align-items: center; gap: 12px">
-                    <n-switch v-model:value="formData.force_function_calling" size="small" />
+                    <n-switch v-model:value="formData.force_function_call" size="small" />
                   </div>
                   <template #feedback>
                     <div style="font-size: 12px; color: #999; margin-top: 4px">
-                      {{ t("keys.functionCallingOpenAITip") }}
+                      {{ t("keys.functionCallOpenAITip") }}
                     </div>
                   </template>
                 </n-form-item>

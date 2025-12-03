@@ -420,11 +420,11 @@ export default {
     looseModeDesc: "配置的模型重定向，其他透传",
     sourceModel: "源模型",
     addModelRedirect: "添加模型重定向",
-    functionCalling: "函数调用",
-    functionCallingTooltip1: "为此分组启用基于中间件的函数调用能力（类似 Toolify 的行为）",
-    functionCallingTooltip2:
+    functionCall: "函数调用",
+    functionCallTooltip1: "为此分组启用基于中间件的函数调用能力（类似 Toolify 的行为）",
+    functionCallTooltip2:
       "仅在上游模型本身不支持原生函数调用时启用。对于已经原生支持函数调用的渠道，请不要开启该开关，否则可能出现重复调用或未定义的行为。",
-    functionCallingOpenAITip:
+    functionCallOpenAITip:
       "此开关仅对 OpenAI 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
     modelRedirectInvalidJson: "模型重定向规则 JSON 格式错误",
     modelRedirectInvalidFormat: "模型重定向规则的键值必须都是字符串",

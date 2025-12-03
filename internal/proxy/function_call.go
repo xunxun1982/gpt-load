@@ -17,18 +17,31 @@ import (
 )
 
 // maxContentBufferBytes limits how much assistant content we buffer when
-// reconstructing the XML block for function calling. This avoids unbounded
+// reconstructing the XML block for function call. This avoids unbounded
 // memory growth for very long streaming responses.
 const maxContentBufferBytes = 256 * 1024
 
 // functionCall represents a parsed tool call from the XML block.
 type functionCall struct {
-    Name string
-    Args map[string]any
+	Name string
+	Args map[string]any
 }
 
-// applyFunctionCallingRequestRewrite rewrites an OpenAI chat completions request body
-// to enable middleware-based function calling. It injects a system prompt describing
+var (
+	reFunctionCallsBlock = regexp.MustCompile(`(?s)<function_calls>(.*?)</function_calls>`)
+	reFunctionCallBlock  = regexp.MustCompile(`(?s)<function_call>(.*?)</function_call>`)
+	reToolTag            = regexp.MustCompile(`(?s)<(?:tool|tool_name|invocationName)>(.*?)</(?:tool|tool_name|invocationName)>`)
+	reInvocationTag      = regexp.MustCompile(`(?s)<(?:invocation|invoke)\s+name="([^"]+)"[^>]*>(.*?)</(?:invocation|invoke)>`)
+	reArgsBlock          = regexp.MustCompile(`(?s)<args>(.*?)</args>`)
+	reParamsBlock        = regexp.MustCompile(`(?s)<parameters>(.*?)</parameters>`)
+	reMcpParam           = regexp.MustCompile(`(?s)<parameter\s+name="([^"]+)"[^>]*>(.*?)</parameter>`)
+	reGenericParam       = regexp.MustCompile(`(?s)<([^\s>/]+)>(.*?)</([^\s>/]+)>`)
+	reToolCallBlock      = regexp.MustCompile(`(?s)<tool_call\s+name="([^"]+)"[^>]*>(.*?)</tool_call>`)
+	reTriggerSignal      = regexp.MustCompile(`<Function_[a-zA-Z0-9]+_Start/>`)
+)
+
+// applyFunctionCallRequestRewrite rewrites an OpenAI chat completions request body
+// to enable middleware-based function call. It injects a system prompt describing
 // available tools and removes native tools/tool_choice fields so the upstream model
 // only sees the prompt-based contract.
 //
@@ -37,7 +50,7 @@ type functionCall struct {
 //   - trigger signal string used to mark the function-calls XML section
 //   - error when parsing fails (in which case the caller should fall back to the
 //     original body)
-func (ps *ProxyServer) applyFunctionCallingRequestRewrite(
+func (ps *ProxyServer) applyFunctionCallRequestRewrite(
     group *models.Group,
     bodyBytes []byte,
 ) ([]byte, string, error) {
@@ -48,7 +61,7 @@ func (ps *ProxyServer) applyFunctionCallingRequestRewrite(
     var req map[string]any
     if err := json.Unmarshal(bodyBytes, &req); err != nil {
         logrus.WithError(err).WithField("group", group.Name).
-            Warn("Failed to unmarshal request body for function-calling rewrite")
+            Warn("Failed to unmarshal request body for function call rewrite")
         return bodyBytes, "", err
     }
 
@@ -135,7 +148,7 @@ func (ps *ProxyServer) applyFunctionCallingRequestRewrite(
     }
 
     // Compose final prompt content injected as a new system message.
-    prompt := "You are a function-calling coordinator. After answering the user in natural language, " +
+    prompt := "You are a function call coordinator. After answering the user in natural language, " +
         "you MUST output function calls in an XML block after the trigger signal.\n" +
         "Trigger signal: " + triggerSignal + "\n\n" +
         "Tools:\n" + strings.Join(toolBlocks, "\n\n") + "\n\n" +
@@ -159,7 +172,7 @@ func (ps *ProxyServer) applyFunctionCallingRequestRewrite(
     rewritten, err := json.Marshal(req)
     if err != nil {
         logrus.WithError(err).WithField("group", group.Name).
-            Warn("Failed to marshal request after function-calling rewrite")
+            Warn("Failed to marshal request after function call rewrite")
         return bodyBytes, "", err
     }
 
@@ -173,13 +186,13 @@ func (ps *ProxyServer) applyFunctionCallingRequestRewrite(
         "original_preview":    previewForLog(bodyBytes, 512),
         "rewritten_preview":   previewForLog(rewritten, 512),
     }
-    logrus.WithFields(logFields).Debug("Function calling request rewrite: before/after body (truncated)")
+    logrus.WithFields(logFields).Debug("Function call request rewrite: before/after body (truncated)")
 
     return rewritten, triggerSignal, nil
 }
 
-// handleFunctionCallingNormalResponse handles non-streaming chat completion responses
-// when function calling middleware is enabled for the request. It parses the assistant
+// handleFunctionCallNormalResponse handles non-streaming chat completion responses
+// when function call middleware is enabled for the request. It parses the assistant
 // message content for XML-based function calls and converts them into OpenAI-compatible
 // tool_calls in the response payload.
 //
@@ -187,7 +200,7 @@ func (ps *ProxyServer) applyFunctionCallingRequestRewrite(
 // intentionally kept inline instead of being extracted into a helper. This keeps the
 // control flow explicit in this hot path and avoids adding another function call
 // layer, even though automated reviews may suggest refactoring for deduplication.
-func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp *http.Response) {
+func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *http.Response) {
     shouldCapture := shouldCaptureResponse(c)
 
     rawBody, err := io.ReadAll(resp.Body)
@@ -216,7 +229,7 @@ func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp 
     // Retrieve trigger signal stored during request rewrite.
     triggerVal, exists := c.Get(ctxKeyTriggerSignal)
     if !exists {
-        // No trigger signal means this request was not rewritten for function calling.
+        // No trigger signal means this request was not rewritten for function call.
         if shouldCapture {
             if len(body) > maxResponseCaptureBytes {
                 c.Set("response_body", string(body[:maxResponseCaptureBytes]))
@@ -278,14 +291,14 @@ func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp 
 
     modified := false
 
-    // Debug: basic info when normal function-calling handler is active.
+    // Debug: basic info when normal function-call handler is active.
     if gv, ok := c.Get("group"); ok {
         if g, ok := gv.(*models.Group); ok {
             logrus.WithFields(logrus.Fields{
                 "group":          g.Name,
                 "trigger_signal": triggerSignal,
                 "choices_len":    len(choices),
-            }).Debug("Function calling normal response: handler activated")
+            }).Debug("Function call normal response: handler activated")
         }
     }
 
@@ -346,11 +359,14 @@ func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp 
 
         // Debug per-choice: how many calls were parsed.
         logrus.WithFields(logrus.Fields{
-            "trigger_signal": triggerSignal,
+            "trigger_signal":  triggerSignal,
             "tool_call_count": len(toolCalls),
-        }).Debug("Function calling normal response: parsed tool calls for choice")
+        }).Debug("Function call normal response: parsed tool calls for choice")
 
         msg["tool_calls"] = toolCalls
+        // Remove function_calls XML blocks from visible content so end users
+        // only see natural language text, while AI internally processes tool calls.
+        msg["content"] = removeFunctionCallsBlocks(contentStr)
         chMap["message"] = msg
         chMap["finish_reason"] = "tool_calls"
         choices[i] = chMap
@@ -376,7 +392,7 @@ func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp 
 
     out, err := json.Marshal(payload)
     if err != nil {
-        logrus.WithError(err).Warn("Failed to marshal modified function-calling response, falling back to original body")
+        logrus.WithError(err).Warn("Failed to marshal modified function call response, falling back to original body")
         if shouldCapture {
             if len(body) > maxResponseCaptureBytes {
                 c.Set("response_body", string(body[:maxResponseCaptureBytes]))
@@ -403,7 +419,7 @@ func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp 
             fcFields["group"] = g.Name
         }
     }
-    logrus.WithFields(fcFields).Debug("Function calling normal response: body before/after (truncated)")
+    logrus.WithFields(fcFields).Debug("Function call normal response: body before/after (truncated)")
 
     // Store captured response in context for logging
     if shouldCapture {
@@ -419,7 +435,7 @@ func (ps *ProxyServer) handleFunctionCallingNormalResponse(c *gin.Context, resp 
     }
 }
 
-func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, resp *http.Response) {
+func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp *http.Response) {
     // Set standard SSE headers
     c.Header("Content-Type", "text/event-stream")
     c.Header("Cache-Control", "no-cache")
@@ -429,7 +445,7 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
     flusher, ok := c.Writer.(http.Flusher)
     if !ok {
         logrus.Error("Streaming unsupported by the writer, falling back to normal response")
-        ps.handleFunctionCallingNormalResponse(c, resp)
+        ps.handleFunctionCallNormalResponse(c, resp)
         return
     }
 
@@ -449,6 +465,8 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
     var prevEventLines []string
     var prevEventData string
     seenAnyEvent := false
+    // Track whether we are inside a <function_calls> block to suppress XML from streaming output.
+    insideFunctionCalls := false
 
     writeEvent := func(lines []string) error {
         if len(lines) == 0 {
@@ -535,7 +553,8 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
 
         seenAnyEvent = true
 
-        // Extract delta.content from this chunk to build the full assistant text.
+        // Parse current chunk, accumulate content, and strip XML blocks in real-time.
+        var modifiedLines []string
         if dataStr != "" {
             var evt map[string]any
             if err := json.Unmarshal([]byte(dataStr), &evt); err == nil {
@@ -544,29 +563,65 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
                         if ch, ok := choices[0].(map[string]any); ok {
                             if deltaVal, ok := ch["delta"].(map[string]any); ok {
                                 if text, ok := deltaVal["content"].(string); ok && text != "" {
-                                    // Protect against unbounded memory growth when upstream returns
-                                    // extremely long responses. We only need a reasonable suffix of
-                                    // the content to locate the trigger signal and XML block.
+                                    // Accumulate content for final XML parsing.
                                     if contentBuf.Len()+len(text) <= maxContentBufferBytes {
                                         contentBuf.WriteString(text)
                                     }
+
+                                    // State machine: suppress XML blocks from visible streaming output.
+                                    hasOpen := strings.Contains(text, "<function_calls>")
+                                    hasClose := strings.Contains(text, "</function_calls>")
+
+                                    if hasOpen && hasClose {
+                                        // Entire block in one chunk: strip everything between tags.
+                                        if idx := strings.Index(text, "<function_calls>"); idx >= 0 {
+                                            deltaVal["content"] = text[:idx]
+                                        }
+                                    } else if hasOpen {
+                                        // Start of XML block: keep text before tag, suppress rest.
+                                        insideFunctionCalls = true
+                                        if idx := strings.Index(text, "<function_calls>"); idx >= 0 {
+                                            deltaVal["content"] = text[:idx]
+                                        }
+                                    } else if hasClose {
+                                        // End of XML block: suppress this chunk entirely.
+                                        insideFunctionCalls = false
+                                        deltaVal["content"] = ""
+                                    } else if insideFunctionCalls {
+                                        // Inside XML block: suppress all content.
+                                        deltaVal["content"] = ""
+                                    }
+                                    // If none of above, text is normal and remains unchanged.
                                 }
                             }
                         }
                     }
                 }
+                // Re-serialize with modified content for forwarding.
+                if modifiedData, err := json.Marshal(evt); err == nil {
+                    modifiedLines = []string{"data: " + string(modifiedData) + "\n"}
+                } else {
+                    // Fallback to original on marshal error.
+                    modifiedLines = rawLines
+                }
+            } else {
+                // Fallback to original on unmarshal error.
+                modifiedLines = rawLines
             }
+        } else {
+            modifiedLines = rawLines
         }
 
-        // Shift previous event: now that we have a new event, the previous one is
-        // guaranteed not to be the last, so we can safely forward it.
+        // Forward previous event (which has already been processed).
         if len(prevEventLines) > 0 {
             if err := writeEvent(prevEventLines); err != nil {
                 logUpstreamError("writing stream to client", err)
                 return
             }
         }
-        prevEventLines = append([]string(nil), rawLines...)
+
+        // Save current event (with XML stripped) as the new previous event.
+        prevEventLines = append([]string(nil), modifiedLines...)
         prevEventData = dataStr
     }
 
@@ -624,8 +679,11 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
         return
     }
 
-    // Build tool_calls payload from parsed calls.
+    // Build tool_calls payload from parsed calls. We include an explicit
+    // zero-based index field to better align with OpenAI streaming examples
+    // and to help strict clients correlate incremental tool call events.
     toolCalls := make([]map[string]any, 0, len(parsedCalls))
+    index := 0
     for _, call := range parsedCalls {
         if call.Name == "" {
             continue
@@ -636,13 +694,15 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
             continue
         }
         toolCalls = append(toolCalls, map[string]any{
-            "id":   "call_" + utils.GenerateRandomSuffix(),
-            "type": "function",
+            "index": index,
+            "id":    "call_" + utils.GenerateRandomSuffix(),
+            "type":  "function",
             "function": map[string]any{
                 "name":      call.Name,
                 "arguments": string(argsJSON),
             },
         })
+        index++
     }
 
     if len(toolCalls) == 0 {
@@ -674,7 +734,7 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
 
     out, err := json.Marshal(lastEvt)
     if err != nil {
-        logUpstreamError("marshalling modified streaming function-calling event", err)
+        logUpstreamError("marshalling modified streaming function call event", err)
         if len(prevEventLines) > 0 {
             _ = writeEvent(prevEventLines)
         }
@@ -697,7 +757,7 @@ func (ps *ProxyServer) handleFunctionCallingStreamingResponse(c *gin.Context, re
             streamFields["group"] = g.Name
         }
     }
-    logrus.WithFields(streamFields).Debug("Function calling streaming response: last event before/after (truncated)")
+    logrus.WithFields(streamFields).Debug("Function call streaming response: last event before/after (truncated)")
 
     // Emit the modified last event followed by [DONE]. We preserve any upstream
     // SSE metadata lines (such as id: / event:) by reusing prevEventLines and
@@ -756,117 +816,216 @@ func removeThinkBlocks(text string) string {
     return text
 }
 
+// removeFunctionCallsBlocks removes all <function_calls>...</function_calls> blocks
+// from the text, including any trigger signals immediately preceding them. This ensures
+// that end users see only natural language output while the system internally extracts
+// and processes tool calls.
+func removeFunctionCallsBlocks(text string) string {
+	if text == "" {
+		return text
+	}
+
+	// Remove all <function_calls> blocks using a greedy approach. We use (?s) to
+	// enable dot-all mode for multi-line matching.
+	cleaned := reFunctionCallsBlock.ReplaceAllString(text, "")
+
+	// Also remove any orphaned trigger signals (format: <Function_xxx_Start/>).
+	// This regex matches the pattern generated by applyFunctionCallRequestRewrite.
+	cleaned = reTriggerSignal.ReplaceAllString(cleaned, "")
+
+    // Trim excessive whitespace that may remain after block removal.
+    cleaned = strings.TrimSpace(cleaned)
+
+    return cleaned
+}
+
+// ... (rest of the code remains the same)
+
 // parseFunctionCallsXML parses function calls from the assistant content using a
 // trigger signal and a simple XML-like convention:
 //
 // <function_calls>
-//   <function_call>
+//   <function_calls>
 //     <tool>tool_name</tool>
 //     <args>
 //       <param1>"value"</param1>
 //       <param2>123</param2>
 //     </args>
-//   </function_call>
 // </function_calls>
 func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
-    if text == "" || triggerSignal == "" || !strings.Contains(text, triggerSignal) {
-        return nil
+	if text == "" {
+		return nil
+	}
+
+	cleaned := removeThinkBlocks(text)
+
+	// Prefer to anchor parsing near the last trigger signal when the model
+	// respects it. However, some upstream models may emit the <function_calls>
+	// block without repeating the trigger. In that case, we gracefully fall
+	// back to the last <function_calls> occurrence so that function call behavior
+	// remains robust.
+	start := 0
+	if triggerSignal != "" {
+		if idx := strings.LastIndex(cleaned, triggerSignal); idx != -1 {
+			start = idx
+		} else if idx := strings.LastIndex(cleaned, "<function_calls>"); idx != -1 {
+			start = idx
+		}
+	} else {
+		if idx := strings.LastIndex(cleaned, "<function_calls>"); idx != -1 {
+			start = idx
+		}
+	}
+	segment := cleaned[start:]
+
+	// Extract content inside <function_calls>...</function_calls> using shared
+	// precompiled patterns.
+	fcMatch := reFunctionCallsBlock.FindStringSubmatch(segment)
+	if len(fcMatch) < 2 {
+		return nil
+	}
+	callsContent := fcMatch[1]
+
+	// Extract each <function_call>...</function_call> block. Some MCP-style
+	// models instead emit top-level <tool_call name="...">...
+	// blocks directly under <function_calls>, so we handle those separately
+	// below.
+	callMatches := reFunctionCallBlock.FindAllStringSubmatch(callsContent, -1)
+
+	// Pre-allocate with estimated capacity: each function_call block may contain
+	// multiple <invoke> tags, so we use a generous estimate to reduce reallocation.
+	results := make([]functionCall, 0, len(callMatches)*2)
+
+	// First, handle traditional <function_call> blocks.
+	for _, m := range callMatches {
+		block := m[1]
+
+		// Check for MCP-style invocation/invoke blocks with name attribute.
+		// Multiple invocation blocks within a single function_call are supported,
+		// and each becomes a separate tool call.
+		invMatches := reInvocationTag.FindAllStringSubmatch(block, -1)
+		if len(invMatches) > 0 {
+			for _, invMatch := range invMatches {
+				if len(invMatch) < 3 {
+					continue
+				}
+				name := strings.TrimSpace(invMatch[1])
+				if name == "" {
+					continue
+				}
+				argsContent := invMatch[2]
+				args := extractParameters(argsContent, reMcpParam, reGenericParam)
+				results = append(results, functionCall{Name: name, Args: args})
+			}
+			continue
+		}
+
+		// Fallback: resolve tool name from traditional <tool> or <tool_name> tags.
+		name := ""
+		var argsContent string
+		toolMatch := reToolTag.FindStringSubmatch(block)
+		if len(toolMatch) >= 2 {
+			name = strings.TrimSpace(toolMatch[1])
+		}
+		if name == "" {
+			continue
+		}
+
+		if argsContent == "" {
+			// Fallback to traditional <args> or <parameters> wrappers when no
+			// invocation inner block was detected or provided.
+			argsBlockMatch := reArgsBlock.FindStringSubmatch(block)
+			if len(argsBlockMatch) < 2 {
+				// Fallback: support <parameters>...</parameters> shape.
+				argsBlockMatch = reParamsBlock.FindStringSubmatch(block)
+			}
+			if len(argsBlockMatch) >= 2 {
+				argsContent = argsBlockMatch[1]
+			}
+		}
+
+		args := extractParameters(argsContent, reMcpParam, reGenericParam)
+		results = append(results, functionCall{Name: name, Args: args})
+	}
+
+	// Additionally support top-level MCP-style <tool_call name="..."> blocks
+	// directly under <function_calls>. Each  becomes a separate
+	// functionCall entry.
+	toolCallMatches := reToolCallBlock.FindAllStringSubmatch(callsContent, -1)
+	for _, tm := range toolCallMatches {
+		if len(tm) < 3 {
+			continue
+		}
+		name := strings.TrimSpace(tm[1])
+		if name == "" {
+			continue
+		}
+		argsContent := tm[2]
+		args := extractParameters(argsContent, reMcpParam, reGenericParam)
+		results = append(results, functionCall{Name: name, Args: args})
+	}
+
+	if len(results) == 0 {
+		return nil
+	}
+	return results
+}
+
+// extractParameters parses parameter tags from content, supporting both
+// MCP-style <parameter name="key" type="...">value</parameter> and
+// traditional <key>value</key> formats. Returns a map of parsed arguments.
+func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[string]any {
+    args := make(map[string]any)
+    if content == "" {
+        return args
     }
 
-    cleaned := removeThinkBlocks(text)
-    idx := strings.LastIndex(cleaned, triggerSignal)
-    if idx == -1 {
-        return nil
-    }
-
-    segment := cleaned[idx:]
-
-    // Extract content inside <function_calls>...</function_calls>. We compile the
-    // regexes inline here instead of using package-level variables. The number of
-    // calls per request is small and benchmarks showed no measurable benefit from
-    // global state, while keeping them local makes the code easier to reason about
-    // and safer for future refactors, even though automated reviews may prefer
-    // precompiled patterns.
-    fcRe := regexp.MustCompile(`(?s)<function_calls>(.*?)</function_calls>`)
-    fcMatch := fcRe.FindStringSubmatch(segment)
-    if len(fcMatch) < 2 {
-        return nil
-    }
-    callsContent := fcMatch[1]
-
-    // Extract each <function_call>...</function_call> block
-    callRe := regexp.MustCompile(`(?s)<function_call>(.*?)</function_call>`)
-    callMatches := callRe.FindAllStringSubmatch(callsContent, -1)
-    if len(callMatches) == 0 {
-        return nil
-    }
-
-    toolRe := regexp.MustCompile(`(?s)<tool>(.*?)</tool>`)
-    toolNameRe := regexp.MustCompile(`(?s)<tool_name>(.*?)</tool_name>`)
-    argsBlockRe := regexp.MustCompile(`(?s)<args>(.*?)</args>`)
-    paramsBlockRe := regexp.MustCompile(`(?s)<parameters>(.*?)</parameters>`)
-    // Match parameter tags with arbitrary names and nested content. We avoid
-    // using backreferences because Go's regexp engine does not support them.
-    // Instead, we capture both the opening and closing tag names and compare
-    // them in code.
-    argRe := regexp.MustCompile(`(?s)<([^\s>/]+)>(.*?)</([^\s>/]+)>`)
-
-    results := make([]functionCall, 0, len(callMatches))
-
-    for _, m := range callMatches {
-        block := m[1]
-        toolMatch := toolRe.FindStringSubmatch(block)
-        if len(toolMatch) < 2 {
-            // Fallback: support <tool_name>...</tool_name> shape.
-            toolMatch = toolNameRe.FindStringSubmatch(block)
-        }
-        if len(toolMatch) < 2 {
-            continue
-        }
-        name := strings.TrimSpace(toolMatch[1])
-        if name == "" {
-            continue
-        }
-
-        args := make(map[string]any)
-        argsBlockMatch := argsBlockRe.FindStringSubmatch(block)
-        if len(argsBlockMatch) < 2 {
-            // Fallback: support <parameters>...</parameters> shape.
-            argsBlockMatch = paramsBlockRe.FindStringSubmatch(block)
-        }
-        if len(argsBlockMatch) >= 2 {
-            argsContent := argsBlockMatch[1]
-            argMatches := argRe.FindAllStringSubmatch(argsContent, -1)
-            for _, am := range argMatches {
-                // Expect: 0 = full match, 1 = open tag, 2 = inner text, 3 = close tag.
-                if len(am) < 4 {
-                    continue
-                }
-                openTag := strings.TrimSpace(am[1])
-                closeTag := strings.TrimSpace(am[3])
-                if openTag == "" || closeTag == "" || openTag != closeTag {
-                    continue
-                }
-                key := openTag
-                valStr := strings.TrimSpace(am[2])
-                if key == "" {
-                    continue
-                }
-
-                // Try to interpret the value as JSON first, then fall back to raw string.
-                var anyVal any
-                if err := json.Unmarshal([]byte(valStr), &anyVal); err != nil {
-                    anyVal = valStr
-                }
-                args[key] = anyVal
+    // First attempt: MCP parameter blocks with name attributes.
+    mcpMatches := mcpParamRe.FindAllStringSubmatch(content, -1)
+    if len(mcpMatches) > 0 {
+        for _, pm := range mcpMatches {
+            if len(pm) < 3 {
+                continue
             }
+            key := strings.TrimSpace(pm[1])
+            valStr := strings.TrimSpace(pm[2])
+            if key == "" {
+                continue
+            }
+            args[key] = parseValueOrString(valStr)
         }
-
-        results = append(results, functionCall{Name: name, Args: args})
+        return args
     }
 
-    if len(results) == 0 {
-        return nil
+    // Fallback: traditional tag-based parameters.
+    argMatches := argRe.FindAllStringSubmatch(content, -1)
+    for _, am := range argMatches {
+        // Expect: 0 = full match, 1 = open tag, 2 = inner text, 3 = close tag.
+        if len(am) < 4 {
+            continue
+        }
+        openTag := strings.TrimSpace(am[1])
+        closeTag := strings.TrimSpace(am[3])
+        if openTag == "" || closeTag == "" || openTag != closeTag {
+            continue
+        }
+        key := openTag
+        valStr := strings.TrimSpace(am[2])
+        if key == "" {
+            continue
+        }
+        args[key] = parseValueOrString(valStr)
     }
-    return results
+    return args
+}
+
+// parseValueOrString attempts to parse the input string as JSON; if that fails,
+// it returns the string as-is. This avoids duplicating the same parse-or-fallback
+// logic across multiple call sites.
+func parseValueOrString(s string) any {
+    var val any
+    if err := json.Unmarshal([]byte(s), &val); err != nil {
+        return s
+    }
+    return val
 }

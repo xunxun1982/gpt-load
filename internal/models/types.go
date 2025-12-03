@@ -39,9 +39,9 @@ type GroupConfig struct {
 	KeyValidationConcurrency     *int    `json:"key_validation_concurrency,omitempty"`
 	KeyValidationTimeoutSeconds  *int    `json:"key_validation_timeout_seconds,omitempty"`
 	EnableRequestBodyLogging     *bool   `json:"enable_request_body_logging,omitempty"`
-	// ForceFunctionCalling enables experimental function calling middleware for this group.
+	// ForceFunctionCall enables experimental function call middleware for this group.
 	// This flag is stored in the group-level config JSON and is optional.
-	ForceFunctionCalling *bool `json:"force_function_calling,omitempty"`
+	ForceFunctionCall *bool `json:"force_function_call,omitempty"`
 }
 
 // HeaderRule defines a single rule for header manipulation.
