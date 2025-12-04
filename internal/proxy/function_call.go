@@ -472,7 +472,9 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
         }
 
         // Build OpenAI-compatible tool_calls array.
+        // Use index suffix to guarantee uniqueness within same response (avoid birthday paradox collision).
         toolCalls := make([]map[string]any, 0, len(calls))
+        callIndex := 0
         for _, call := range calls {
             if call.Name == "" {
                 continue
@@ -484,13 +486,14 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
             }
 
             toolCalls = append(toolCalls, map[string]any{
-                "id":   "call_" + utils.GenerateRandomSuffix(),
+                "id":   fmt.Sprintf("call_%s_%d", utils.GenerateRandomSuffix(), callIndex),
                 "type": "function",
                 "function": map[string]any{
                     "name":      call.Name,
                     "arguments": string(argsJSON),
                 },
             })
+            callIndex++
         }
 
         if len(toolCalls) == 0 {
@@ -896,6 +899,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
     // Build tool_calls payload from parsed calls. We include an explicit
     // zero-based index field to better align with OpenAI streaming examples
     // and to help strict clients correlate incremental tool call events.
+    // Use index suffix in ID to guarantee uniqueness within same response (avoid birthday paradox collision).
     toolCalls := make([]map[string]any, 0, len(parsedCalls))
     index := 0
     for _, call := range parsedCalls {
@@ -909,7 +913,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
         }
         toolCalls = append(toolCalls, map[string]any{
             "index": index,
-            "id":    "call_" + utils.GenerateRandomSuffix(),
+            "id":    fmt.Sprintf("call_%s_%d", utils.GenerateRandomSuffix(), index),
             "type":  "function",
             "function": map[string]any{
                 "name":      call.Name,
