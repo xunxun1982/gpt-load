@@ -27,6 +27,15 @@ type functionCall struct {
 	Args map[string]any
 }
 
+// safeGroupName returns the group name for logging, with nil-safe access.
+// This prevents panic when group is unexpectedly nil (e.g., tests, misconfiguration).
+func safeGroupName(group *models.Group) string {
+	if group == nil {
+		return "<nil>"
+	}
+	return group.Name
+}
+
 var (
 	reFunctionCallsBlock = regexp.MustCompile(`(?s)<function_calls>(.*?)</function_calls>`)
 	reFunctionCallBlock  = regexp.MustCompile(`(?s)<function_call>(.*?)</function_call>`)
@@ -79,7 +88,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 
     var req map[string]any
     if err := json.Unmarshal(bodyBytes, &req); err != nil {
-        logrus.WithError(err).WithField("group", group.Name).
+        logrus.WithError(err).WithField("group", safeGroupName(group)).
             Warn("Failed to unmarshal request body for function call rewrite")
         return bodyBytes, "", err
     }
@@ -258,7 +267,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
         if shouldRemove {
             delete(req, "max_tokens")
             logrus.WithFields(logrus.Fields{
-                "group":              group.Name,
+                "group":              safeGroupName(group),
                 "original_max_tokens": maxTokens,
             }).Debug("Function call rewrite: removed low max_tokens to prevent XML truncation")
         }
@@ -266,7 +275,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 
     rewritten, err := json.Marshal(req)
     if err != nil {
-        logrus.WithError(err).WithField("group", group.Name).
+        logrus.WithError(err).WithField("group", safeGroupName(group)).
             Warn("Failed to marshal request after function call rewrite")
         return bodyBytes, "", err
     }
@@ -277,7 +286,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
     // deployments should set log level to Info or higher, or operators can implement
     // log filtering/sanitization as needed for their compliance requirements.
     logFields := logrus.Fields{
-        "group":              group.Name,
+        "group":              safeGroupName(group),
         "trigger_signal":     triggerSignal,
         "tools_count":        len(toolsSlice),
         "original_body_bytes": len(bodyBytes),
@@ -1436,17 +1445,29 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
     }
 
     // Attempt to parse the entire content as JSON first.
-    // This handles cases where <args> contains a JSON object instead of XML tags.
+    // This handles cases where <args> contains JSON instead of XML tags.
     // IMPORTANT: Store trimmed result and check length to avoid panic on whitespace-only content.
     // See: Go best practice - always check string length before indexing.
     trimmed := strings.TrimSpace(content)
     if trimmed == "" {
         return args
     }
-    if trimmed[0] == '{' {
-        var jsonArgs map[string]any
-        if err := json.Unmarshal([]byte(trimmed), &jsonArgs); err == nil {
-            return jsonArgs
+    // Try JSON parsing for object, array, or primitive values.
+    // Objects are returned directly; arrays/primitives are wrapped under "value" key
+    // so callers always receive a map structure.
+    firstChar := trimmed[0]
+    if firstChar == '{' || firstChar == '[' || firstChar == '"' ||
+        (firstChar >= '0' && firstChar <= '9') || firstChar == '-' ||
+        trimmed == "true" || trimmed == "false" || trimmed == "null" {
+        var jsonVal any
+        if err := json.Unmarshal([]byte(trimmed), &jsonVal); err == nil {
+            // If it's already a map, return directly
+            if mapVal, ok := jsonVal.(map[string]any); ok {
+                return mapVal
+            }
+            // For arrays, primitives (string, number, bool, null), wrap under "value" key
+            // so the caller still gets a map structure with the parsed content.
+            return map[string]any{"value": jsonVal}
         }
         // If JSON parsing fails (e.g. due to unescaped characters), fall back to regex parsing.
     }
