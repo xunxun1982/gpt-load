@@ -735,6 +735,10 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                                         contentBufFullWarned = true
                                     }
 
+                                    // First, always strip trigger signals from content.
+                                    // These should never be visible to clients.
+                                    text = reTriggerSignal.ReplaceAllString(text, "")
+
                                     hasOpen := strings.Contains(text, "<function_calls>")
                                     hasClose := strings.Contains(text, "</function_calls>")
 
@@ -747,31 +751,33 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                                                 endIdx := startIdx + endRel + len("</function_calls>")
                                                 prefix := text[:startIdx]
                                                 suffix := text[endIdx:]
-                                                deltaVal["content"] = prefix + suffix
+                                                deltaVal["content"] = strings.TrimSpace(prefix + suffix)
                                             } else {
                                                 // Closing tag missing in this chunk, keep only prefix
-                                                deltaVal["content"] = text[:startIdx]
+                                                deltaVal["content"] = strings.TrimSpace(text[:startIdx])
                                             }
                                         }
                                     } else if hasOpen {
                                         // Start of XML block: keep text before tag, suppress rest.
                                         insideFunctionCalls = true
                                         if idx := strings.Index(text, "<function_calls>"); idx >= 0 {
-                                            deltaVal["content"] = text[:idx]
+                                            deltaVal["content"] = strings.TrimSpace(text[:idx])
                                         }
                                     } else if hasClose {
                                         // End of XML block: drop the XML portion but keep any trailing text.
                                         insideFunctionCalls = false
                                         if endIdx := strings.Index(text, "</function_calls>"); endIdx >= 0 {
-                                            deltaVal["content"] = text[endIdx+len("</function_calls>"):]
+                                            deltaVal["content"] = strings.TrimSpace(text[endIdx+len("</function_calls>"):])
                                         } else {
                                             deltaVal["content"] = ""
                                         }
                                     } else if insideFunctionCalls {
                                         // Inside XML block: suppress all content.
                                         deltaVal["content"] = ""
+                                    } else {
+                                        // Normal text (not inside XML block): update with trigger-stripped version
+                                        deltaVal["content"] = text
                                     }
-                                    // If none of above, text is normal and remains unchanged.
                                 }
                             }
                         }
@@ -1035,11 +1041,18 @@ func removeThinkBlocks(text string) string {
 }
 
 // removeFunctionCallsBlocks removes all <function_calls>...</function_calls> blocks
-// from the given text. This is used to strip the XML sections from the visible
-// content when displaying responses to end users, while preserving the natural
-// language portions.
+// and trigger signals (e.g. <Function_xxxx_Start/>) from the given text.
+// This ensures end users only see natural language text, while tool_calls are
+// delivered through the structured API response. Both streaming and non-streaming
+// responses should use this for content cleanup.
 func removeFunctionCallsBlocks(text string) string {
-    return reFunctionCallsBlock.ReplaceAllString(text, "")
+    // First remove function_calls XML blocks
+    text = reFunctionCallsBlock.ReplaceAllString(text, "")
+    // Then remove trigger signals
+    text = reTriggerSignal.ReplaceAllString(text, "")
+    // Clean up extra whitespace left by removals (multiple newlines -> single)
+    text = strings.TrimSpace(text)
+    return text
 }
 
 // hasToolResults checks if any message in the array has role="tool" or role="function",
