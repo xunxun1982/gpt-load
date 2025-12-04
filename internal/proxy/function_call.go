@@ -272,6 +272,10 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
     }
 
     // Debug: log a safe preview of request body before and after rewrite.
+    // NOTE: These previews may contain user prompts/PII. They are Debug-level only and
+    // are essential for troubleshooting function call behavior in development. Production
+    // deployments should set log level to Info or higher, or operators can implement
+    // log filtering/sanitization as needed for their compliance requirements.
     logFields := logrus.Fields{
         "group":              group.Name,
         "trigger_signal":     triggerSignal,
@@ -620,6 +624,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
         // Read a single SSE event (sequence of lines terminated by a blank line).
         var rawLines []string
         var dataBuf strings.Builder
+        eof := false // Track EOF to break outer loop when no more data
         for {
             line, err := reader.ReadString('\n')
             if err != nil {
@@ -640,6 +645,10 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                                 dataBuf.WriteString(dataLine)
                             }
                         }
+                    } else {
+                        // No more data in this event and EOF from upstream.
+                        // Mark eof to break outer loop after processing any pending event.
+                        eof = true
                     }
                     break
                 }
@@ -667,6 +676,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
         }
 
         if len(rawLines) == 0 && dataBuf.Len() == 0 {
+            if eof {
+                // Clean EOF with no pending event: terminate outer loop to prevent
+                // infinite loop / goroutine leak when upstream closes cleanly.
+                break
+            }
             // Skip spurious empty events
             continue
         }
@@ -713,9 +727,19 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                                     hasClose := strings.Contains(text, "</function_calls>")
 
                                     if hasOpen && hasClose {
-                                        // Entire block in one chunk: strip everything between tags.
-                                        if idx := strings.Index(text, "<function_calls>"); idx >= 0 {
-                                            deltaVal["content"] = text[:idx]
+                                        // Entire block in one chunk: strip only the XML block, keep prefix and suffix.
+                                        startIdx := strings.Index(text, "<function_calls>")
+                                        if startIdx >= 0 {
+                                            endRel := strings.Index(text[startIdx:], "</function_calls>")
+                                            if endRel >= 0 {
+                                                endIdx := startIdx + endRel + len("</function_calls>")
+                                                prefix := text[:startIdx]
+                                                suffix := text[endIdx:]
+                                                deltaVal["content"] = prefix + suffix
+                                            } else {
+                                                // Closing tag missing in this chunk, keep only prefix
+                                                deltaVal["content"] = text[:startIdx]
+                                            }
                                         }
                                     } else if hasOpen {
                                         // Start of XML block: keep text before tag, suppress rest.
@@ -724,9 +748,13 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                                             deltaVal["content"] = text[:idx]
                                         }
                                     } else if hasClose {
-                                        // End of XML block: suppress this chunk entirely.
+                                        // End of XML block: drop the XML portion but keep any trailing text.
                                         insideFunctionCalls = false
-                                        deltaVal["content"] = ""
+                                        if endIdx := strings.Index(text, "</function_calls>"); endIdx >= 0 {
+                                            deltaVal["content"] = text[endIdx+len("</function_calls>"):]
+                                        } else {
+                                            deltaVal["content"] = ""
+                                        }
                                     } else if insideFunctionCalls {
                                         // Inside XML block: suppress all content.
                                         deltaVal["content"] = ""
@@ -768,6 +796,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
         // Save current event (with XML stripped) as the new previous event.
         prevEventLines = append([]string(nil), modifiedLines...)
         prevEventData = dataStr
+
+        if eof {
+            // Upstream closed after this event; stop reading further.
+            break
+        }
     }
 
     // If we have never seen any event, simply send [DONE] and return.
