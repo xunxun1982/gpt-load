@@ -31,13 +31,24 @@ var (
 	reFunctionCallsBlock = regexp.MustCompile(`(?s)<function_calls>(.*?)</function_calls>`)
 	reFunctionCallBlock  = regexp.MustCompile(`(?s)<function_call>(.*?)</function_call>`)
 	reToolTag            = regexp.MustCompile(`(?s)<(?:tool|tool_name|invocationName)>(.*?)</(?:tool|tool_name|invocationName)>`)
-	reInvocationTag      = regexp.MustCompile(`(?s)<(?:invocation|invoke)\s+name="([^"]+)"[^>]*>(.*?)</(?:invocation|invoke)>`)
+	reNameTag            = regexp.MustCompile(`(?s)<name>(.*?)</name>`)
+	reInvocationTag      = regexp.MustCompile(`(?s)<(?:invocation|invoke)(?:\s+name="([^"]+)")?[^>]*>(.*?)</(?:invocation|invoke)>`)
 	reArgsBlock          = regexp.MustCompile(`(?s)<args>(.*?)</args>`)
 	reParamsBlock        = regexp.MustCompile(`(?s)<parameters>(.*?)</parameters>`)
-	reMcpParam           = regexp.MustCompile(`(?s)<parameter\s+name="([^"]+)"[^>]*>(.*?)</parameter>`)
-	reGenericParam       = regexp.MustCompile(`(?s)<([^\s>/]+)>(.*?)</([^\s>/]+)>`)
+	reMcpParam           = regexp.MustCompile(`(?s)<(?:parameter|param)\s+name="([^"]+)"[^>]*>(.*?)</(?:parameter|param)>`)
+	reGenericParam       = regexp.MustCompile(`(?s)<([^\s>/]+)(?:\s+[^>]*)?>(.*?)</([^\s>/]+)>`)
 	reToolCallBlock      = regexp.MustCompile(`(?s)<tool_call\s+name="([^"]+)"[^>]*>(.*?)</tool_call>`)
 	reTriggerSignal      = regexp.MustCompile(`<Function_[a-zA-Z0-9]+_Start/>`)
+
+	// Model-specific special tokens that may leak into parameter values.
+	// DeepSeek uses fullwidth pipes: <｜User｜>, <｜Assistant｜>, <｜System｜>
+	// Some models use ASCII pipes: <|user|>, <|assistant|>, <|im_start|>, <|im_end|>
+	reModelSpecialToken = regexp.MustCompile(`<[｜|][^｜|>]+[｜|]>`)
+
+	// Patterns to detect "execution intent" phrases where AI describes an action
+	// but doesn't actually call the tool. Used for auto-continuation detection.
+	// Covers both Chinese and English expressions.
+	reExecutionIntent = regexp.MustCompile(`(?i)(现在让我|让我立即|让我再次|我来|我现在|我将|现在执行|现在运行|接下来我(会|将)?(开始)?(运行|执行)|首先进行(联网)?搜索|先进行(联网)?搜索|首先(联网)?搜索|先(联网)?搜索|运行以下命令|运行下面的命令|执行以下命令|执行下面的命令|在(终端|命令行|shell)中运行|now let me|let me now|i will now|i'll now|let me run|let me execute|let me try|let's run|let's execute|let's try|we can run|you can run|run the (following )?command|run this command|execute the (following )?command|execute this command|open a terminal and run|from your terminal, run|running the|executing the)`)
 )
 
 // applyFunctionCallRequestRewrite rewrites an OpenAI chat completions request body
@@ -83,6 +94,28 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
         if arr, ok := msgsVal.([]any); ok {
             messages = arr
         }
+    }
+
+    // Check if this is a follow-up request with tool results.
+    // Multi-turn function calling flow: client sends user message + tools → model
+    // returns assistant message with tool_calls → client executes tools and appends
+    // role="tool" messages → client sends the full conversation back.
+    //
+    // IMPORTANT: Unlike previous implementation that skipped rewrite entirely,
+    // we now preprocess these messages to convert tool_calls and tool results
+    // into AI-understandable text format. This enables the upstream model to
+    // understand the conversation context even without native function calling.
+    //
+    // Reference: snow-cli useConversation.ts and Toolify preprocess_messages()
+    hasToolHistory := hasToolResults(messages)
+    hasToolErrors := false
+    if hasToolHistory {
+        // Preprocess messages: convert tool_calls and tool results to text format
+        messages, hasToolErrors = preprocessToolMessagesWithErrorDetection(messages)
+        logrus.WithFields(logrus.Fields{
+            "message_count":   len(messages),
+            "has_tool_errors": hasToolErrors,
+        }).Debug("Preprocessed messages with tool history for function call continuation")
     }
 
     // Generate a lightweight trigger signal for this request.
@@ -152,12 +185,37 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
     }
 
     // Compose final prompt content injected as a new system message.
-    prompt := "You are a function call coordinator. After answering the user in natural language, " +
-        "you MUST output function calls in an XML block after the trigger signal.\n" +
-        "Trigger signal: " + triggerSignal + "\n\n" +
-        "Tools:\n" + strings.Join(toolBlocks, "\n\n") + "\n\n" +
-        "When you need to call tools, append a block like:\n" +
-        "<function_calls>... XML ...</function_calls> after the trigger signal."
+    // Concise prompt based on extended/interleaved thinking research.
+    prompt := "You coordinate tool calls.\n" +
+        "- If no tool is needed, answer normally in the user's language.\n" +
+        "- If you need to read, write, search, run, inspect, or execute, you MUST call tools instead of only describing actions.\n" +
+        "- For multi-step tasks, keep calling tools → observe results → call tools again until the task is really finished. On errors, adjust arguments and retry.\n\n" +
+        "To call tools:\n" +
+        "1) First output this trigger on its own line:\n" +
+        triggerSignal + "\n" +
+        "2) Then output exactly one <function_calls> XML block:\n" +
+        "<function_calls>\n" +
+        "  <function_call>\n" +
+        "    <invocation>\n" +
+        "      <name>tool-name</name>\n" +
+        "      <parameters><param1>value1</param1></parameters>\n" +
+        "    </invocation>\n" +
+        "  </function_call>\n" +
+        "</function_calls>\n\n" +
+        "Tools:\n" + strings.Join(toolBlocks, "\n\n") + "\n"
+
+    // Add stronger continuation reminder for multi-turn conversations.
+    // This helps reasoning models (like deepseek-reasoner) that may plan in
+    // reasoning_content but fail to output actual XML in content.
+    if hasToolHistory {
+        continuation := "\n\nCRITICAL: Previous tool results are shown above. "
+        if hasToolErrors {
+            continuation += "Some tools failed - fix parameters and retry. "
+        }
+        continuation += "You MUST continue by calling more tools using the XML format above. " +
+            "Do NOT just describe or plan - actually output the trigger signal and <function_calls> XML block NOW."
+        prompt += continuation
+    }
 
     newMessages := make([]any, 0, len(messages)+1)
     newMessages = append(newMessages, map[string]any{
@@ -172,6 +230,11 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
     // Remove native tools-related fields to avoid confusing upstream implementations.
     delete(req, "tools")
     delete(req, "tool_choice")
+
+    // Remove max_tokens to prevent truncation of the XML block.
+    // The XML format requires more tokens than standard text, and low limits (e.g. 100)
+    // will cause the response to be cut off mid-XML, breaking parsing.
+    delete(req, "max_tokens")
 
     rewritten, err := json.Marshal(req)
     if err != nil {
@@ -342,7 +405,28 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
         }
 
         calls := parseFunctionCallsXML(parseInput, triggerSignal)
+
+        // Fallback: If no calls found with trigger signal, try parsing without it.
+        if len(calls) == 0 && strings.Contains(parseInput, "<function_calls>") {
+            calls = parseFunctionCallsXML(parseInput, "")
+            if len(calls) > 0 {
+                logrus.WithField("parsed_count", len(calls)).
+                    Debug("Function call normal response: parsed calls using fallback (no trigger signal)")
+            }
+        }
+
         if len(calls) == 0 {
+            // Log when we detect execution intent phrases but no function_calls XML.
+            if reExecutionIntent.MatchString(parseInput) && !strings.Contains(parseInput, "<function_calls>") {
+                fields := logrus.Fields{
+                    "trigger_signal":  triggerSignal,
+                    "content_preview": utils.TruncateString(parseInput, 200),
+                }
+                if fr, ok := chMap["finish_reason"].(string); ok {
+                    fields["finish_reason"] = fr
+                }
+                logrus.WithFields(fields).Debug("Function call normal response: detected execution intent without tool call XML")
+            }
             continue
         }
 
@@ -475,6 +559,8 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
     reader := bufio.NewReader(resp.Body)
     // contentBuf accumulates assistant text content across all chunks.
     var contentBuf strings.Builder
+    // reasoningBuf accumulates reasoning_content for detecting tool call intent in thinking.
+    var reasoningBuf strings.Builder
     // contentBufFullWarned ensures we log the buffer-limit warning at most once.
     contentBufFullWarned := false
 
@@ -579,6 +665,12 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                     if choices, ok := choicesVal.([]any); ok && len(choices) > 0 {
                         if ch, ok := choices[0].(map[string]any); ok {
                             if deltaVal, ok := ch["delta"].(map[string]any); ok {
+                                // Accumulate reasoning_content for intent detection.
+                                if reasoning, ok := deltaVal["reasoning_content"].(string); ok && reasoning != "" {
+                                    if reasoningBuf.Len()+len(reasoning) <= maxContentBufferBytes {
+                                        reasoningBuf.WriteString(reasoning)
+                                    }
+                                }
                                 if text, ok := deltaVal["content"].(string); ok && text != "" {
                                     // Accumulate content for final XML parsing.
                                     if contentBuf.Len()+len(text) <= maxContentBufferBytes {
@@ -659,8 +751,35 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
     // At this point, prevEventLines holds the last event before [DONE]. Attempt to
     // parse function calls from the accumulated content buffer.
-    parsedCalls := parseFunctionCallsXML(contentBuf.String(), triggerSignal)
+    contentStr := contentBuf.String()
+    parsedCalls := parseFunctionCallsXML(contentStr, triggerSignal)
+
+    // Fallback: If no calls found with trigger signal, try parsing without it.
+    // This handles cases where AI outputs <function_calls> directly without the trigger.
+    if len(parsedCalls) == 0 && strings.Contains(contentStr, "<function_calls>") {
+        parsedCalls = parseFunctionCallsXML(contentStr, "")
+        if len(parsedCalls) > 0 {
+            logrus.WithField("parsed_count", len(parsedCalls)).
+                Debug("Function call streaming: parsed calls using fallback (no trigger signal)")
+        }
+    }
+
     if len(parsedCalls) == 0 || prevEventData == "" {
+        // Log if we detected execution intent but no tool calls (helps with debugging)
+        reasoningStr := reasoningBuf.String()
+        hasContentIntent := reExecutionIntent.MatchString(contentStr) && !strings.Contains(contentStr, "<function_calls>")
+        hasReasoningIntent := detectToolIntentInReasoning(reasoningStr)
+
+        if hasContentIntent || hasReasoningIntent {
+            logrus.WithFields(logrus.Fields{
+                "trigger_signal":     triggerSignal,
+                "content_preview":    utils.TruncateString(contentStr, 200),
+                "reasoning_preview":  utils.TruncateString(reasoningStr, 200),
+                "content_intent":     hasContentIntent,
+                "reasoning_intent":   hasReasoningIntent,
+            }).Debug("Function call streaming: detected execution intent without tool call XML")
+        }
+
         // No function calls detected – forward last event as-is, then [DONE].
         if len(prevEventLines) > 0 {
             if err := writeEvent(prevEventLines); err != nil {
@@ -842,26 +961,242 @@ func removeThinkBlocks(text string) string {
 }
 
 // removeFunctionCallsBlocks removes all <function_calls>...</function_calls> blocks
-// from the text, including any trigger signals immediately preceding them. This ensures
-// that end users see only natural language output while the system internally extracts
-// and processes tool calls.
+// from the given text. This is used to strip the XML sections from the visible
+// content when displaying responses to end users, while preserving the natural
+// language portions.
 func removeFunctionCallsBlocks(text string) string {
-	if text == "" {
-		return text
-	}
+    return reFunctionCallsBlock.ReplaceAllString(text, "")
+}
 
-	// Remove all <function_calls> blocks using a greedy approach. We use (?s) to
-	// enable dot-all mode for multi-line matching.
-	cleaned := reFunctionCallsBlock.ReplaceAllString(text, "")
+// hasToolResults checks if any message in the array has role="tool" or role="function",
+// indicating this is a follow-up request after tool execution in a multi-turn
+// function calling conversation. Such requests should not be rewritten by the
+// function call middleware, as they already contain the tool outputs and the model
+// is expected to continue the conversation based on those results.
+func hasToolResults(messages []any) bool {
+    for _, m := range messages {
+        msg, ok := m.(map[string]any)
+        if !ok {
+            continue
+        }
+        role, ok := msg["role"].(string)
+        if !ok {
+            continue
+        }
+        if role == "tool" || role == "function" {
+            return true
+        }
+    }
+    return false
+}
 
-	// Also remove any orphaned trigger signals (format: <Function_xxx_Start/>).
-	// This regex matches the pattern generated by applyFunctionCallRequestRewrite.
-	cleaned = reTriggerSignal.ReplaceAllString(cleaned, "")
+// preprocessToolMessagesWithErrorDetection converts tool_calls and tool result
+// messages into AI-understandable text format for multi-turn function calling.
+// Also returns whether any tool execution errors were detected in the results.
+// This helps the prompt builder add stronger continuation hints when errors occurred.
+//
+// Conversion rules (based on Toolify preprocess_messages() and snow-cli):
+// 1. Assistant messages with tool_calls -> text description of the calls
+// 2. Tool result messages (role="tool") -> formatted user message with results
+func preprocessToolMessagesWithErrorDetection(messages []any) ([]any, bool) {
+    if len(messages) == 0 {
+        return messages, false
+    }
 
-    // Trim excessive whitespace that may remain after block removal.
-    cleaned = strings.TrimSpace(cleaned)
+    result := make([]any, 0, len(messages))
+    hasErrors := false
 
-    return cleaned
+    for _, m := range messages {
+        msg, ok := m.(map[string]any)
+        if !ok {
+            result = append(result, m)
+            continue
+        }
+
+        role, _ := msg["role"].(string)
+
+        // Handle assistant messages with tool_calls
+        if role == "assistant" {
+            if toolCallsVal, hasToolCalls := msg["tool_calls"]; hasToolCalls {
+                toolCalls, ok := toolCallsVal.([]any)
+                if ok && len(toolCalls) > 0 {
+                    // Convert tool_calls to XML text format
+                    content, _ := msg["content"].(string)
+                    toolCallsText := formatToolCallsAsText(toolCalls)
+
+                    // Create new assistant message with converted content
+                    newMsg := make(map[string]any)
+                    for k, v := range msg {
+                        if k != "tool_calls" {
+                            newMsg[k] = v
+                        }
+                    }
+                    if content != "" {
+                        newMsg["content"] = content + "\n" + toolCallsText
+                    } else {
+                        newMsg["content"] = toolCallsText
+                    }
+                    result = append(result, newMsg)
+                    continue
+                }
+            }
+        }
+
+        // Handle tool result messages
+        if role == "tool" || role == "function" {
+            toolCallID, _ := msg["tool_call_id"].(string)
+            content, _ := msg["content"].(string)
+            name, _ := msg["name"].(string)
+
+            // Check for error indicators in tool result
+            if containsToolError(content) {
+                hasErrors = true
+            }
+
+            // Convert tool result to user message format
+            formattedContent := formatToolResultAsText(toolCallID, name, content)
+            newMsg := map[string]any{
+                "role":    "user",
+                "content": formattedContent,
+            }
+            result = append(result, newMsg)
+            continue
+        }
+
+        // Keep other messages unchanged
+        result = append(result, msg)
+    }
+
+    return result, hasErrors
+}
+
+// containsToolError checks if tool result content indicates an error.
+// This uses simple heuristics to detect common error patterns.
+func containsToolError(content string) bool {
+    if content == "" {
+        return false
+    }
+    lower := strings.ToLower(content)
+    // Check for common error indicators
+    errorIndicators := []string{
+        `"iserror":true`,
+        `"iserror": true`,
+        `"error":`,
+        "error executing",
+        "failed to",
+        "cannot read",
+        "cannot find",
+        "not found",
+        "permission denied",
+        "enoent",
+        "timeout",
+    }
+    for _, indicator := range errorIndicators {
+        if strings.Contains(lower, indicator) {
+            return true
+        }
+    }
+    return false
+}
+
+// detectToolIntentInReasoning checks if reasoning_content contains indicators
+// that the model intended to call tools but failed to output actual XML.
+// This helps diagnose issues with reasoning models that plan in thinking
+// but don't execute in content.
+func detectToolIntentInReasoning(reasoning string) bool {
+    if reasoning == "" {
+        return false
+    }
+    lower := strings.ToLower(reasoning)
+    // Check for tool-related keywords in reasoning
+    intentIndicators := []string{
+        "function_call",
+        "tool_call",
+        "<function_calls>",
+        "invoke",
+        "call the tool",
+        "use the tool",
+        "execute the",
+        "run the command",
+        "filesystem-read",
+        "filesystem-write",
+        "todo-create",
+        "bash-exec",
+        "web-search",
+    }
+    for _, indicator := range intentIndicators {
+        if strings.Contains(lower, indicator) {
+            return true
+        }
+    }
+    return false
+}
+
+// formatToolCallsAsText converts tool_calls array into XML text format
+// that the AI can understand for context preservation.
+func formatToolCallsAsText(toolCalls []any) string {
+    if len(toolCalls) == 0 {
+        return ""
+    }
+
+    var sb strings.Builder
+    sb.WriteString("<function_calls>\n")
+
+    for _, tc := range toolCalls {
+        callMap, ok := tc.(map[string]any)
+        if !ok {
+            continue
+        }
+
+        funcVal, ok := callMap["function"]
+        if !ok {
+            continue
+        }
+        funcMap, ok := funcVal.(map[string]any)
+        if !ok {
+            continue
+        }
+
+        name, _ := funcMap["name"].(string)
+        arguments, _ := funcMap["arguments"].(string)
+
+        if name == "" {
+            continue
+        }
+
+        sb.WriteString("<function_call>\n")
+        sb.WriteString("<tool>")
+        sb.WriteString(name)
+        sb.WriteString("</tool>\n")
+        sb.WriteString("<args>")
+        sb.WriteString(arguments)
+        sb.WriteString("</args>\n")
+        sb.WriteString("</function_call>\n")
+    }
+
+    sb.WriteString("</function_calls>")
+    return sb.String()
+}
+
+// formatToolResultAsText converts a tool result message into a formatted
+// user message that the AI can understand.
+func formatToolResultAsText(toolCallID, name, content string) string {
+    var sb strings.Builder
+    sb.WriteString("Tool execution result:\n")
+    if name != "" {
+        sb.WriteString("- Tool name: ")
+        sb.WriteString(name)
+        sb.WriteString("\n")
+    }
+    if toolCallID != "" {
+        sb.WriteString("- Call ID: ")
+        sb.WriteString(toolCallID)
+        sb.WriteString("\n")
+    }
+    sb.WriteString("- Execution result:\n<tool_result>\n")
+    sb.WriteString(content)
+    sb.WriteString("\n</tool_result>")
+    return sb.String()
 }
 
 // parseFunctionCallsXML parses function calls from the assistant content using a
@@ -882,32 +1217,44 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 
 	cleaned := removeThinkBlocks(text)
 
-	// Prefer to anchor parsing near the last trigger signal when the model
-	// respects it. However, some upstream models may emit the <function_calls>
-	// block without repeating the trigger. In that case, we gracefully fall
-	// back to the last <function_calls> occurrence so that function call behavior
-	// remains robust.
+	// Prefer to anchor parsing near the trigger signal when the model
+	// correctly follows the prompt convention. Fall back to the first
+	// <function_calls> block if no trigger is found.
+	// NOTE: Use Index (first) instead of LastIndex because AI sometimes outputs
+	// multiple function_calls blocks, and the first one is typically correct
+	// while subsequent ones may have corrupted parameters.
 	start := 0
 	if triggerSignal != "" {
-		if idx := strings.LastIndex(cleaned, triggerSignal); idx != -1 {
+		if idx := strings.Index(cleaned, triggerSignal); idx != -1 {
 			start = idx
-		} else if idx := strings.LastIndex(cleaned, "<function_calls>"); idx != -1 {
+		} else if idx := strings.Index(cleaned, "<function_calls>"); idx != -1 {
 			start = idx
 		}
 	} else {
-		if idx := strings.LastIndex(cleaned, "<function_calls>"); idx != -1 {
+		if idx := strings.Index(cleaned, "<function_calls>"); idx != -1 {
 			start = idx
 		}
 	}
 	segment := cleaned[start:]
+	// Remove any orphaned trigger signals from the segment.
+	segment = reTriggerSignal.ReplaceAllString(segment, "")
 
 	// Extract content inside <function_calls>...</function_calls> using shared
 	// precompiled patterns.
 	fcMatch := reFunctionCallsBlock.FindStringSubmatch(segment)
-	if len(fcMatch) < 2 {
-		return nil
+	var callsContent string
+	if len(fcMatch) >= 2 {
+		callsContent = fcMatch[1]
+	} else {
+		// Fuzzy fallback: tolerate missing <function_calls> root as long as the
+		// content still contains <function_call> or <tool_call> blocks. This helps
+		// when the model omits the wrapper but emits valid inner call structures.
+		if strings.Contains(segment, "<function_call>") || strings.Contains(segment, "<tool_call") {
+			callsContent = segment
+		} else {
+			return nil
+		}
 	}
-	callsContent := fcMatch[1]
 
 	// Extract each <function_call>...</function_call> block. Some MCP-style
 	// models instead emit top-level <tool_call name="...">...
@@ -933,11 +1280,33 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 					continue
 				}
 				name := strings.TrimSpace(invMatch[1])
+				argsContent := invMatch[2]
+
+				// If name attribute is missing, try to find <name> tag inside the content.
+				// This handles the case where the model follows the prompt example which uses
+				// <name> as a child tag instead of an attribute.
+				if name == "" {
+					nameMatch := reNameTag.FindStringSubmatch(argsContent)
+					if len(nameMatch) >= 2 {
+						name = strings.TrimSpace(nameMatch[1])
+					}
+				}
+
 				if name == "" {
 					continue
 				}
-				argsContent := invMatch[2]
-				args := extractParameters(argsContent, reMcpParam, reGenericParam)
+
+				// If argsContent contains a nested <parameters> block, extract from there.
+				// This handles the format: <invocation><name>...</name><parameters>...</parameters></invocation>
+				paramsMatch := reParamsBlock.FindStringSubmatch(argsContent)
+				var paramSource string
+				if len(paramsMatch) >= 2 {
+					paramSource = paramsMatch[1]
+				} else {
+					paramSource = argsContent
+				}
+
+				args := extractParameters(paramSource, reMcpParam, reGenericParam)
 				results = append(results, functionCall{Name: name, Args: args})
 			}
 			continue
@@ -1003,6 +1372,16 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
         return args
     }
 
+    // Attempt to parse the entire content as JSON first.
+    // This handles cases where <args> contains a JSON object instead of XML tags.
+    if strings.TrimSpace(content)[0] == '{' {
+        var jsonArgs map[string]any
+        if err := json.Unmarshal([]byte(content), &jsonArgs); err == nil {
+            return jsonArgs
+        }
+        // If JSON parsing fails (e.g. due to unescaped characters), fall back to regex parsing.
+    }
+
     // First attempt: MCP parameter blocks with name attributes.
     mcpMatches := mcpParamRe.FindAllStringSubmatch(content, -1)
     if len(mcpMatches) > 0 {
@@ -1021,6 +1400,11 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
     }
 
     // Fallback: traditional tag-based parameters.
+    // Reserved tags that should not be treated as parameters.
+    reservedTags := map[string]bool{
+        "name": true, "parameters": true, "invocation": true,
+        "invoke": true, "tool": true, "args": true,
+    }
     argMatches := argRe.FindAllStringSubmatch(content, -1)
     for _, am := range argMatches {
         // Expect: 0 = full match, 1 = open tag, 2 = inner text, 3 = close tag.
@@ -1032,6 +1416,10 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
         if openTag == "" || closeTag == "" || openTag != closeTag {
             continue
         }
+        // Skip reserved tags that are part of the XML structure.
+        if reservedTags[strings.ToLower(openTag)] {
+            continue
+        }
         key := openTag
         valStr := strings.TrimSpace(am[2])
         if key == "" {
@@ -1039,16 +1427,88 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
         }
         args[key] = parseValueOrString(valStr)
     }
+
+    // Fallback for unclosed tags: <tag>value (without </tag>).
+    // This handles malformed AI output like <todos>["a","b","c"]</parameters>
+    if len(args) == 0 && strings.TrimSpace(content) != "" {
+        // Try to find patterns like <tagName>content where tagName is not reserved
+        reUnclosedTag := regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9_-]*)>(.+)`)
+        if m := reUnclosedTag.FindStringSubmatch(content); len(m) >= 3 {
+            tagName := strings.TrimSpace(m[1])
+            if !reservedTags[strings.ToLower(tagName)] {
+                // Extract content up to the next < or end of string
+                valueContent := m[2]
+                if idx := strings.Index(valueContent, "</"); idx != -1 {
+                    valueContent = valueContent[:idx]
+                }
+                args[tagName] = parseValueOrString(strings.TrimSpace(valueContent))
+            }
+        }
+    }
+
+    // Fallback for hybrid JSON-XML hallucination: {"key":"value...</key>
+    // This happens when AI starts writing JSON but switches to XML mid-stream.
+    // Example: {"content":"...code...</content>
+    if len(args) == 0 && strings.Contains(content, `{"`) {
+        reHybrid := regexp.MustCompile(`(?s)\{"([a-zA-Z0-9_]+)":"(.*?)</\1>`)
+        matches := reHybrid.FindAllStringSubmatch(content, -1)
+        for _, m := range matches {
+            if len(m) < 3 {
+                continue
+            }
+            key := m[1]
+            val := m[2]
+            // If the value ends with ", strip it (JSON closing quote)
+            val = strings.TrimSuffix(val, `"`)
+            args[key] = parseValueOrString(val)
+        }
+    }
+
     return args
 }
 
 // parseValueOrString attempts to parse the input string as JSON; if that fails,
-// it returns the string as-is. This avoids duplicating the same parse-or-fallback
-// logic across multiple call sites.
+// it returns the string as-is. Before returning, it sanitizes the value to remove
+// model-specific special tokens that may have leaked into the output.
 func parseValueOrString(s string) any {
+    // Sanitize special tokens first
+    s = sanitizeModelTokens(s)
+
     var val any
     if err := json.Unmarshal([]byte(s), &val); err != nil {
         return s
     }
-    return val
+    // Recursively sanitize string values within parsed JSON
+    return sanitizeJsonValue(val)
+}
+
+// sanitizeModelTokens removes model-specific special tokens from a string.
+// These tokens (e.g., DeepSeek's <｜User｜>, <｜Assistant｜>) indicate
+// token boundary leakage and should never appear in parameter values.
+func sanitizeModelTokens(s string) string {
+    if s == "" {
+        return s
+    }
+    // Only remove model special tokens, nothing else
+    return reModelSpecialToken.ReplaceAllString(s, "")
+}
+
+// sanitizeJsonValue recursively sanitizes string values within a parsed JSON structure.
+func sanitizeJsonValue(v any) any {
+    switch val := v.(type) {
+    case string:
+        return sanitizeModelTokens(val)
+    case map[string]any:
+        for k, v := range val {
+            val[k] = sanitizeJsonValue(v)
+        }
+        return val
+    case []any:
+        for i, v := range val {
+            val[i] = sanitizeJsonValue(v)
+        }
+        return val
+    default:
+        return v
+    }
 }
