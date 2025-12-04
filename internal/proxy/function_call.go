@@ -49,6 +49,14 @@ var (
 	// but doesn't actually call the tool. Used for auto-continuation detection.
 	// Covers both Chinese and English expressions.
 	reExecutionIntent = regexp.MustCompile(`(?i)(现在让我|让我立即|让我再次|我来|我现在|我将|现在执行|现在运行|接下来我(会|将)?(开始)?(运行|执行)|首先进行(联网)?搜索|先进行(联网)?搜索|首先(联网)?搜索|先(联网)?搜索|运行以下命令|运行下面的命令|执行以下命令|执行下面的命令|在(终端|命令行|shell)中运行|now let me|let me now|i will now|i'll now|let me run|let me execute|let me try|let's run|let's execute|let's try|we can run|you can run|run the (following )?command|run this command|execute the (following )?command|execute this command|open a terminal and run|from your terminal, run|running the|executing the)`)
+
+	// Precompiled patterns for extractParameters fallback parsing.
+	// These are compiled once at init to avoid repeated compilation in hot path.
+	// See: Go regex best practice - compile once, reuse often.
+	reUnclosedTag = regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9_-]*)>(.+)`)
+	// NOTE: reHybridJsonXml pattern requires backreference (\1) which Go RE2 doesn't support.
+	// The hybrid JSON-XML fallback uses a simpler pattern and verifies tag matching in code.
+	reHybridJsonXml = regexp.MustCompile(`(?s)\{"([a-zA-Z0-9_]+)":"(.*?)</([a-zA-Z0-9_]+)>`)
 )
 
 // applyFunctionCallRequestRewrite rewrites an OpenAI chat completions request body
@@ -231,10 +239,30 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
     delete(req, "tools")
     delete(req, "tool_choice")
 
-    // Remove max_tokens to prevent truncation of the XML block.
+    // Remove max_tokens only when it's too low to prevent truncation of the XML block.
     // The XML format requires more tokens than standard text, and low limits (e.g. 100)
     // will cause the response to be cut off mid-XML, breaking parsing.
-    delete(req, "max_tokens")
+    // We preserve caller's budget control when max_tokens >= 500 (sufficient for XML).
+    // This threshold is based on typical function call XML overhead (~200-400 tokens).
+    const minTokensForXml = 500
+    if maxTokens, ok := req["max_tokens"]; ok {
+        shouldRemove := false
+        switch v := maxTokens.(type) {
+        case float64:
+            shouldRemove = v < minTokensForXml
+        case int:
+            shouldRemove = v < minTokensForXml
+        case int64:
+            shouldRemove = v < minTokensForXml
+        }
+        if shouldRemove {
+            delete(req, "max_tokens")
+            logrus.WithFields(logrus.Fields{
+                "group":              group.Name,
+                "original_max_tokens": maxTokens,
+            }).Debug("Function call rewrite: removed low max_tokens to prevent XML truncation")
+        }
+    }
 
     rewritten, err := json.Marshal(req)
     if err != nil {
@@ -970,9 +998,11 @@ func removeFunctionCallsBlocks(text string) string {
 
 // hasToolResults checks if any message in the array has role="tool" or role="function",
 // indicating this is a follow-up request after tool execution in a multi-turn
-// function calling conversation. Such requests should not be rewritten by the
-// function call middleware, as they already contain the tool outputs and the model
-// is expected to continue the conversation based on those results.
+// function calling conversation. When detected, the middleware will preprocess
+// these messages to convert tool_calls and tool results into text format that
+// the upstream model can understand, then apply the standard function call rewrite
+// with additional continuation hints. This enables models without native function
+// calling to continue multi-turn tool conversations.
 func hasToolResults(messages []any) bool {
     for _, m := range messages {
         msg, ok := m.(map[string]any)
@@ -1374,9 +1404,15 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 
     // Attempt to parse the entire content as JSON first.
     // This handles cases where <args> contains a JSON object instead of XML tags.
-    if strings.TrimSpace(content)[0] == '{' {
+    // IMPORTANT: Store trimmed result and check length to avoid panic on whitespace-only content.
+    // See: Go best practice - always check string length before indexing.
+    trimmed := strings.TrimSpace(content)
+    if trimmed == "" {
+        return args
+    }
+    if trimmed[0] == '{' {
         var jsonArgs map[string]any
-        if err := json.Unmarshal([]byte(content), &jsonArgs); err == nil {
+        if err := json.Unmarshal([]byte(trimmed), &jsonArgs); err == nil {
             return jsonArgs
         }
         // If JSON parsing fails (e.g. due to unescaped characters), fall back to regex parsing.
@@ -1430,13 +1466,12 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 
     // Fallback for unclosed tags: <tag>value (without </tag>).
     // This handles malformed AI output like <todos>["a","b","c"]</parameters>
-    if len(args) == 0 && strings.TrimSpace(content) != "" {
-        // Try to find patterns like <tagName>content where tagName is not reserved
-        reUnclosedTag := regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9_-]*)>(.+)`)
+    // Uses precompiled reUnclosedTag for performance (avoid hot path compilation).
+    if len(args) == 0 && trimmed != "" {
         if m := reUnclosedTag.FindStringSubmatch(content); len(m) >= 3 {
             tagName := strings.TrimSpace(m[1])
             if !reservedTags[strings.ToLower(tagName)] {
-                // Extract content up to the next < or end of string
+                // Extract content up to the next </ or end of string
                 valueContent := m[2]
                 if idx := strings.Index(valueContent, "</"); idx != -1 {
                     valueContent = valueContent[:idx]
@@ -1449,18 +1484,24 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
     // Fallback for hybrid JSON-XML hallucination: {"key":"value...</key>
     // This happens when AI starts writing JSON but switches to XML mid-stream.
     // Example: {"content":"...code...</content>
+    // Uses precompiled reHybridJsonXml for performance (avoid hot path compilation).
+    // Since Go RE2 doesn't support backreferences, we capture both tag names and verify match.
     if len(args) == 0 && strings.Contains(content, `{"`) {
-        reHybrid := regexp.MustCompile(`(?s)\{"([a-zA-Z0-9_]+)":"(.*?)</\1>`)
-        matches := reHybrid.FindAllStringSubmatch(content, -1)
+        matches := reHybridJsonXml.FindAllStringSubmatch(content, -1)
         for _, m := range matches {
-            if len(m) < 3 {
+            if len(m) < 4 {
                 continue
             }
-            key := m[1]
+            openTag := m[1]
             val := m[2]
+            closeTag := m[3]
+            // Verify opening and closing tag names match (manual backreference check)
+            if openTag != closeTag {
+                continue
+            }
             // If the value ends with ", strip it (JSON closing quote)
             val = strings.TrimSuffix(val, `"`)
-            args[key] = parseValueOrString(val)
+            args[openTag] = parseValueOrString(val)
         }
     }
 
