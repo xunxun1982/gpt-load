@@ -769,12 +769,27 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                                         strings.Contains(text, "<todo") ||
                                         strings.Contains(text, "</todo")
 
-                                    // Detect partial XML: content starting with < but no complete tag
-                                    // This catches cases where AI streams character by character
-                                    hasPartialXmlStart := !insideFunctionCalls &&
-                                        strings.Contains(text, "<") &&
-                                        !strings.Contains(text, ">") &&
-                                        !hasOpen && !hasClose && !hasInternalXml
+                                    // Detect partial XML: content starting with < but no complete tag.
+                                    // This catches cases where AI streams character by character.
+                                    // To avoid false positives with comparison operators (e.g. "x < 5"),
+                                    // we only trigger if < is followed by a letter (valid XML tag start)
+                                    // or / (closing tag). XML tag names must start with a letter.
+                                    hasPartialXmlStart := false
+                                    if !insideFunctionCalls && !hasOpen && !hasClose && !hasInternalXml {
+                                        if ltIdx := strings.Index(text, "<"); ltIdx >= 0 && !strings.Contains(text, ">") {
+                                            // Check if < is followed by letter or /
+                                            remaining := text[ltIdx+1:]
+                                            if len(remaining) > 0 {
+                                                nextChar := remaining[0]
+                                                // XML tag names start with letter or underscore; / for closing tags
+                                                if (nextChar >= 'a' && nextChar <= 'z') ||
+                                                    (nextChar >= 'A' && nextChar <= 'Z') ||
+                                                    nextChar == '/' || nextChar == '_' {
+                                                    hasPartialXmlStart = true
+                                                }
+                                            }
+                                        }
+                                    }
 
                                     if hasOpen && hasClose {
                                         // Entire block in one chunk: strip only the XML block, keep prefix and suffix.
