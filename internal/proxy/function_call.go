@@ -768,27 +768,36 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
                                     hasOpen := strings.Contains(text, "<function_calls>")
                                     hasClose := strings.Contains(text, "</function_calls>")
-                                    // Also detect internal XML tags to better track XML block boundaries
+                                    // Detect internal XML tags to track XML block boundaries.
+                                    // Include both complete tags and partial patterns for robustness.
                                     hasInternalXml := strings.Contains(text, "<function_call") ||
-                                        strings.Contains(text, "</function_call>") ||
+                                        strings.Contains(text, "</function_call") ||
                                         strings.Contains(text, "<invocation") ||
-                                        strings.Contains(text, "</invocation>") ||
+                                        strings.Contains(text, "</invocation") ||
                                         strings.Contains(text, "<parameters") ||
-                                        strings.Contains(text, "</parameters>") ||
+                                        strings.Contains(text, "</parameters") ||
                                         strings.Contains(text, "<name>") ||
                                         strings.Contains(text, "</name>") ||
+                                        strings.Contains(text, "<args") ||
+                                        strings.Contains(text, "</args") ||
+                                        strings.Contains(text, "<tool>") ||
+                                        strings.Contains(text, "</tool>") ||
+                                        strings.Contains(text, "<tool_call") ||
+                                        strings.Contains(text, "</tool_call") ||
                                         strings.Contains(text, "<todo") ||
-                                        strings.Contains(text, "</todo")
+                                        strings.Contains(text, "</todo") ||
+                                        strings.Contains(text, "<command") ||
+                                        strings.Contains(text, "</command") ||
+                                        strings.Contains(text, "<filePath") ||
+                                        strings.Contains(text, "</filePath")
 
-                                    // Detect partial XML: content starting with < but no complete tag.
-                                    // This catches cases where AI streams character by character.
+                                    // Detect partial XML: content containing < followed by valid tag start character.
+                                    // This catches character-by-character streaming where tags are split.
                                     // To avoid false positives with comparison operators (e.g. "x < 5"),
-                                    // we only trigger if < is followed by a letter (valid XML tag start)
-                                    // or / (closing tag). XML tag names must start with a letter.
+                                    // we only trigger if < is followed by a letter or / for closing tags.
                                     hasPartialXmlStart := false
                                     if !insideFunctionCalls && !hasOpen && !hasClose && !hasInternalXml {
                                         if ltIdx := strings.Index(text, "<"); ltIdx >= 0 && !strings.Contains(text, ">") {
-                                            // Check if < is followed by letter or /
                                             remaining := text[ltIdx+1:]
                                             if len(remaining) > 0 {
                                                 nextChar := remaining[0]
