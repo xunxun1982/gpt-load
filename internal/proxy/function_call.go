@@ -1094,6 +1094,15 @@ func previewForLog(b []byte, max int) string {
 // removeThinkBlocks temporarily removes all <think>...</think> blocks from the
 // input text. This is used to avoid interfering with XML parsing while keeping
 // the original content intact for the user.
+// NOTE: This implementation does NOT handle nested <think> blocks correctly.
+// For example: <think>outer <think>inner</think> more</think> would leave
+// " more</think>" in the text. However:
+// 1. Nested think blocks are extremely rare in actual AI model output
+// 2. Regex lazy matching (.*?) cannot solve true nesting either - it would
+//    match to the first </think>, same as our current approach
+// 3. True nested handling requires a counter-based or recursive approach,
+//    adding significant complexity for a marginal edge case
+// We keep this simple implementation and document the limitation.
 func removeThinkBlocks(text string) string {
     for {
         start := strings.Index(text, "<think>")
