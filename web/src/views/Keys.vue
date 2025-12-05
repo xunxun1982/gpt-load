@@ -211,11 +211,17 @@ function handleNavigateToGroup(groupId: number) {
 @media (min-width: 768px) {
   .keys-container {
     flex-direction: row;
+    height: calc(100vh - 159px);
   }
 
   .sidebar {
     width: 242px;
-    height: calc(100vh - 159px);
+    height: 100%;
+  }
+
+  .main-content {
+    height: 100%;
+    overflow: hidden;
   }
 }
 

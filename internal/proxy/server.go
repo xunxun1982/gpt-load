@@ -490,7 +490,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 	// Unified error handling for retries. Exclude 404 from being a retryable error.
 	if err != nil || (resp != nil && resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound) {
-		if err != nil && app_errors.IsIgnorableError(err) {
+		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
 			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, models.RequestTypeFinal)
 			return
@@ -828,7 +828,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Unified error handling for retries. Exclude 404 from being a retryable error.
 	if err != nil || (resp != nil && resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound) {
-		if err != nil && app_errors.IsIgnorableError(err) {
+		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
 			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 			return
@@ -1001,6 +1001,20 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	retryCtx.attemptCount++
 	// Use original body bytes for retry to allow new sub-group to apply its own mapping
 	ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, startTime, retryCtx)
+}
+
+// shouldAbortOnIgnorableError checks if an error is ignorable (e.g. client disconnected)
+// and verifies if the client context is actually canceled.
+// Returns true if the request should be aborted, false if it should be retried.
+func (ps *ProxyServer) shouldAbortOnIgnorableError(c *gin.Context, err error) bool {
+	if err != nil && app_errors.IsIgnorableError(err) {
+		if c.Request.Context().Err() != nil {
+			return true
+		}
+		// If client is still connected, this is likely an upstream error (e.g. upstream reset connection), so we should retry.
+		logrus.Debugf("Ignorable error detected but client is still connected, treating as upstream error and retrying. Error: %v", err)
+	}
+	return false
 }
 
 // logRequest is a helper function to create and record a request log.
