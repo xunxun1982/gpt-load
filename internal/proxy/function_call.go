@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gpt-load/internal/models"
@@ -170,11 +171,21 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
         params, _ := fn["parameters"].(map[string]any)
 
         // Build a simple parameters summary from JSON schema properties.
+        // Sort parameter names for deterministic output across runs,
+        // which aids debugging and log comparison.
         paramSummary := "None"
         if params != nil {
             if props, ok := params["properties"].(map[string]any); ok && len(props) > 0 {
+                // Collect and sort parameter names for deterministic output
+                propNames := make([]string, 0, len(props))
+                for pName := range props {
+                    propNames = append(propNames, pName)
+                }
+                sort.Strings(propNames)
+
                 pairs := make([]string, 0, len(props))
-                for pName, pInfo := range props {
+                for _, pName := range propNames {
+                    pInfo := props[pName]
                     pType := "any"
                     if infoMap, ok := pInfo.(map[string]any); ok {
                         if tVal, ok := infoMap["type"].(string); ok && tVal != "" {
