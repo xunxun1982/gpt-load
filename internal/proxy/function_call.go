@@ -38,7 +38,10 @@ func safeGroupName(group *models.Group) string {
 
 var (
 	reFunctionCallsBlock = regexp.MustCompile(`(?s)<function_calls>(.*?)</function_calls>`)
-	reFunctionCallBlock  = regexp.MustCompile(`(?s)<function_call>(.*?)</function_call>`)
+	// NOTE: reFunctionCallBlock does not support attributes (e.g. <function_call id="1">)
+	// because our prompt doesn't instruct models to emit attributes. Keeping it simple
+	// reduces parsing complexity and avoids false matches with unrelated XML.
+	reFunctionCallBlock = regexp.MustCompile(`(?s)<function_call>(.*?)</function_call>`)
 	reToolTag            = regexp.MustCompile(`(?s)<(?:tool|tool_name|invocationName)>(.*?)</(?:tool|tool_name|invocationName)>`)
 	reNameTag            = regexp.MustCompile(`(?s)<name>(.*?)</name>`)
 	reInvocationTag      = regexp.MustCompile(`(?s)<(?:invocation|invoke)(?:\s+name="([^"]+)")?[^>]*>(.*?)</(?:invocation|invoke)>`)
@@ -412,7 +415,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
     if gv, ok := c.Get("group"); ok {
         if g, ok := gv.(*models.Group); ok {
             logrus.WithFields(logrus.Fields{
-                "group":          g.Name,
+                "group":          safeGroupName(g),
                 "trigger_signal": triggerSignal,
                 "choices_len":    len(choices),
             }).Debug("Function call normal response: handler activated")
@@ -556,6 +559,9 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
     }
 
     // Debug: log before/after preview for non-streaming response when modification succeeded.
+    // SECURITY NOTE: These debug previews may contain sensitive prompts/responses.
+    // Only enable debug level logging in trusted environments. Consider PII redaction
+    // if used in production with relaxed log levels.
     fcFields := logrus.Fields{
         "trigger_signal":      triggerSignal,
         "original_body_bytes": len(body),
@@ -565,7 +571,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
     }
     if gv, ok := c.Get("group"); ok {
         if g, ok := gv.(*models.Group); ok {
-            fcFields["group"] = g.Name
+            fcFields["group"] = safeGroupName(g)
         }
     }
     logrus.WithFields(fcFields).Debug("Function call normal response: body before/after (truncated)")
@@ -743,10 +749,32 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
                                     // First, always strip trigger signals from content.
                                     // These should never be visible to clients.
+                                    // Also, detecting trigger means XML block follows, enter suppression.
+                                    if reTriggerSignal.MatchString(text) {
+                                        insideFunctionCalls = true
+                                    }
                                     text = reTriggerSignal.ReplaceAllString(text, "")
 
                                     hasOpen := strings.Contains(text, "<function_calls>")
                                     hasClose := strings.Contains(text, "</function_calls>")
+                                    // Also detect internal XML tags to better track XML block boundaries
+                                    hasInternalXml := strings.Contains(text, "<function_call") ||
+                                        strings.Contains(text, "</function_call>") ||
+                                        strings.Contains(text, "<invocation") ||
+                                        strings.Contains(text, "</invocation>") ||
+                                        strings.Contains(text, "<parameters") ||
+                                        strings.Contains(text, "</parameters>") ||
+                                        strings.Contains(text, "<name>") ||
+                                        strings.Contains(text, "</name>") ||
+                                        strings.Contains(text, "<todo") ||
+                                        strings.Contains(text, "</todo")
+
+                                    // Detect partial XML: content starting with < but no complete tag
+                                    // This catches cases where AI streams character by character
+                                    hasPartialXmlStart := !insideFunctionCalls &&
+                                        strings.Contains(text, "<") &&
+                                        !strings.Contains(text, ">") &&
+                                        !hasOpen && !hasClose && !hasInternalXml
 
                                     if hasOpen && hasClose {
                                         // Entire block in one chunk: strip only the XML block, keep prefix and suffix.
@@ -780,6 +808,20 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
                                     } else if insideFunctionCalls {
                                         // Inside XML block: suppress all content.
                                         deltaVal["content"] = ""
+                                    } else if hasInternalXml {
+                                        // Detected internal XML without seeing opening tag - likely missed it.
+                                        // Mark as inside and suppress this content.
+                                        insideFunctionCalls = true
+                                        deltaVal["content"] = ""
+                                    } else if hasPartialXmlStart {
+                                        // Detected partial XML start (< without >) - enter suppression mode.
+                                        // This handles character-by-character streaming.
+                                        insideFunctionCalls = true
+                                        if idx := strings.Index(text, "<"); idx >= 0 {
+                                            deltaVal["content"] = strings.TrimSpace(text[:idx])
+                                        } else {
+                                            deltaVal["content"] = ""
+                                        }
                                     } else {
                                         // Normal text (not inside XML block): update with trigger-stripped version
                                         deltaVal["content"] = text
@@ -974,6 +1016,8 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
     }
 
     // Debug: log before/after preview for streaming last event when modification succeeded.
+    // SECURITY NOTE: These debug previews may contain sensitive prompts/responses.
+    // Only enable debug level logging in trusted environments.
     streamFields := logrus.Fields{
         "trigger_signal":       triggerSignal,
         "parsed_call_count":    len(parsedCalls),
@@ -984,7 +1028,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
     }
     if gv, ok := c.Get("group"); ok {
         if g, ok := gv.(*models.Group); ok {
-            streamFields["group"] = g.Name
+            streamFields["group"] = safeGroupName(g)
         }
     }
     logrus.WithFields(streamFields).Debug("Function call streaming response: last event before/after (truncated)")
@@ -1015,9 +1059,15 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 // for logging purposes. It avoids logging excessively large bodies while still
 // providing useful context. The truncation is rune-aware via utils.TruncateString
 // to avoid cutting multi-byte UTF-8 characters in the middle.
+// Optimization: slices the byte array before string conversion to avoid
+// allocating large string when only a small preview is needed.
 func previewForLog(b []byte, max int) string {
     if b == nil {
         return ""
+    }
+    // Optimization: avoid full string allocation for large slices
+    if max > 0 && len(b) > max {
+        b = b[:max]
     }
     s := string(b)
     if max <= 0 {
@@ -1229,6 +1279,10 @@ func detectToolIntentInReasoning(reasoning string) bool {
 
 // formatToolCallsAsText converts tool_calls array into XML text format
 // that the AI can understand for context preservation.
+// NOTE: We intentionally do NOT escape the arguments/content here because:
+// 1. This is only used for context in prompts, not for XML parsing
+// 2. Escaping would make the content less readable for AI
+// 3. Our parsers look for specific patterns, not general XML structure
 func formatToolCallsAsText(toolCalls []any) string {
     if len(toolCalls) == 0 {
         return ""
@@ -1298,12 +1352,13 @@ func formatToolResultAsText(toolCallID, name, content string) string {
 // trigger signal and a simple XML-like convention:
 //
 // <function_calls>
-//   <function_calls>
+//   <function_call>
 //     <tool>tool_name</tool>
 //     <args>
 //       <param1>"value"</param1>
 //       <param2>123</param2>
 //     </args>
+//   </function_call>
 // </function_calls>
 func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	if text == "" {
