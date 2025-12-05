@@ -1114,31 +1114,50 @@ func previewForLog(b []byte, max int) string {
     return utils.TruncateString(s, max)
 }
 
-// removeThinkBlocks temporarily removes all <think>...</think> blocks from the
-// input text. This is used to avoid interfering with XML parsing while keeping
-// the original content intact for the user.
-// NOTE: This implementation does NOT handle nested <think> blocks correctly.
-// For example: <think>outer <think>inner</think> more</think> would leave
-// " more</think>" in the text. However:
-// 1. Nested think blocks are extremely rare in actual AI model output
-// 2. Regex lazy matching (.*?) cannot solve true nesting either - it would
-//    match to the first </think>, same as our current approach
-// 3. True nested handling requires a counter-based or recursive approach,
-//    adding significant complexity for a marginal edge case
-// We keep this simple implementation and document the limitation.
+// removeThinkBlocks removes all <think>...</think> and <thinking>...</thinking>
+// blocks from input text, but FIRST extracts any <function_calls> blocks inside
+// them. This is critical for reasoning models (DeepSeek-R1, etc.) that may
+// embed tool calls within their thinking process.
+// Returns the cleaned text with function_calls preserved at the end.
 func removeThinkBlocks(text string) string {
-    for {
-        start := strings.Index(text, "<think>")
-        if start == -1 {
-            break
+    var extractedCalls strings.Builder
+
+    // Process both <think> and <thinking> tags
+    for _, tag := range []string{"<think>", "<thinking>"} {
+        closeTag := strings.Replace(tag, "<", "</", 1)
+        for {
+            start := strings.Index(text, tag)
+            if start == -1 {
+                break
+            }
+            end := strings.Index(text[start:], closeTag)
+            if end == -1 {
+                break
+            }
+            // Extract the content inside the think block
+            thinkContent := text[start+len(tag) : start+end]
+
+            // Look for function_calls blocks inside thinking content
+            fcStart := strings.Index(thinkContent, "<function_calls>")
+            if fcStart >= 0 {
+                fcEnd := strings.LastIndex(thinkContent, "</function_calls>")
+                if fcEnd > fcStart {
+                    // Extract the entire function_calls block
+                    fcBlock := thinkContent[fcStart : fcEnd+len("</function_calls>")]
+                    extractedCalls.WriteString("\n")
+                    extractedCalls.WriteString(fcBlock)
+                }
+            }
+
+            // Remove the think block (including its content)
+            end += start + len(closeTag)
+            text = text[:start] + text[end:]
         }
-        // Simple non-nested removal to keep implementation lightweight.
-        end := strings.Index(text[start:], "</think>")
-        if end == -1 {
-            break
-        }
-        end += start + len("</think>")
-        text = text[:start] + text[end:]
+    }
+
+    // Append extracted function_calls to the end of text
+    if extractedCalls.Len() > 0 {
+        text = strings.TrimSpace(text) + extractedCalls.String()
     }
     return text
 }
@@ -1435,6 +1454,25 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	segment := cleaned[start:]
 	// Remove any orphaned trigger signals from the segment.
 	segment = reTriggerSignal.ReplaceAllString(segment, "")
+
+	// Handle nested or double <function_calls> blocks.
+	// Reasoning models sometimes start with one format (e.g., <invocation><name>...)
+	// then mid-stream switch to another (nested <function_calls><function_call><tool>...).
+	// We find and use the INNERMOST complete <function_calls>...</function_calls> block.
+	for {
+		innerIdx := strings.Index(segment, "<function_calls>")
+		if innerIdx == -1 {
+			break
+		}
+		afterFirst := segment[innerIdx+len("<function_calls>"):]
+		nextOpen := strings.Index(afterFirst, "<function_calls>")
+		if nextOpen != -1 && strings.Contains(afterFirst[nextOpen:], "</function_calls>") {
+			// Found a nested complete block, use it instead
+			segment = afterFirst[nextOpen:]
+		} else {
+			break
+		}
+	}
 
 	// Handle double closing tags: </function_calls></function_calls>
 	// Find the first </function_calls> and truncate there to avoid parsing issues.
