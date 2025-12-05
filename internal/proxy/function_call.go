@@ -66,6 +66,11 @@ var (
 	// NOTE: reHybridJsonXml pattern requires backreference (\1) which Go RE2 doesn't support.
 	// The hybrid JSON-XML fallback uses a simpler pattern and verifies tag matching in code.
 	reHybridJsonXml = regexp.MustCompile(`(?s)\{"([a-zA-Z0-9_]+)":"(.*?)</([a-zA-Z0-9_]+)>`)
+
+	// Loose invocation pattern for fuzzy matching when standard parsing fails.
+	// Matches <invocation>...<name>tool</name>...<parameters>...</parameters>...</invocation>
+	// or even just <invocation>...<name>tool</name>... without proper closing.
+	reLooseInvocation = regexp.MustCompile(`(?s)<invocation[^>]*>\s*<name>([^<]+)</name>\s*(?:<parameters>([\s\S]*?)</parameters>)?`)
 )
 
 // applyFunctionCallRequestRewrite rewrites an OpenAI chat completions request body
@@ -210,7 +215,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
         "To call tools:\n" +
         "1) First output this trigger on its own line:\n" +
         triggerSignal + "\n" +
-        "2) Then output exactly one <function_calls> XML block:\n" +
+        "2) Immediately after the trigger, output exactly one <function_calls> XML block:\n" +
         "<function_calls>\n" +
         "  <function_call>\n" +
         "    <invocation>\n" +
@@ -219,18 +224,19 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
         "    </invocation>\n" +
         "  </function_call>\n" +
         "</function_calls>\n\n" +
+        "IMPORTANT: Output the trigger signal immediately followed by XML. Do NOT explain what you will do before the XML.\n\n" +
         "Tools:\n" + strings.Join(toolBlocks, "\n\n") + "\n"
 
     // Add stronger continuation reminder for multi-turn conversations.
     // This helps reasoning models (like deepseek-reasoner) that may plan in
     // reasoning_content but fail to output actual XML in content.
     if hasToolHistory {
-        continuation := "\n\nCRITICAL: Previous tool results are shown above. "
+        continuation := "\n\nCRITICAL CONTINUATION: Previous tool results shown above. "
         if hasToolErrors {
-            continuation += "Some tools failed - fix parameters and retry. "
+            continuation += "Some failed - fix and retry. "
         }
-        continuation += "You MUST continue by calling more tools using the XML format above. " +
-            "Do NOT just describe or plan - actually output the trigger signal and <function_calls> XML block NOW."
+        continuation += "You MUST output " + triggerSignal + " followed by <function_calls> XML NOW. " +
+            "Do NOT summarize or describe - just output the XML block."
         prompt += continuation
     }
 
@@ -1328,6 +1334,16 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	// Remove any orphaned trigger signals from the segment.
 	segment = reTriggerSignal.ReplaceAllString(segment, "")
 
+	// Handle double closing tags: </function_calls></function_calls>
+	// Find the first </function_calls> and truncate there to avoid parsing issues.
+	if openIdx := strings.Index(segment, "<function_calls>"); openIdx != -1 {
+		afterOpen := segment[openIdx+len("<function_calls>"):]
+		if closeIdx := strings.Index(afterOpen, "</function_calls>"); closeIdx != -1 {
+			// Truncate at first closing tag to ignore duplicates
+			segment = segment[:openIdx+len("<function_calls>")+closeIdx+len("</function_calls>")]
+		}
+	}
+
 	// Extract content inside <function_calls>...</function_calls> using shared
 	// precompiled patterns.
 	fcMatch := reFunctionCallsBlock.FindStringSubmatch(segment)
@@ -1336,9 +1352,9 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		callsContent = fcMatch[1]
 	} else {
 		// Fuzzy fallback: tolerate missing <function_calls> root as long as the
-		// content still contains <function_call> or <tool_call> blocks. This helps
-		// when the model omits the wrapper but emits valid inner call structures.
-		if strings.Contains(segment, "<function_call>") || strings.Contains(segment, "<tool_call") {
+		// content still contains <function_call>, <invocation>, or <tool_call> blocks.
+		// This helps when the model omits the wrapper but emits valid inner structures.
+		if strings.Contains(segment, "<function_call>") || strings.Contains(segment, "<tool_call") || strings.Contains(segment, "<invocation") {
 			callsContent = segment
 		} else {
 			return nil
@@ -1444,6 +1460,32 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		argsContent := tm[2]
 		args := extractParameters(argsContent, reMcpParam, reGenericParam)
 		results = append(results, functionCall{Name: name, Args: args})
+	}
+
+	// Fuzzy fallback: if standard parsing found nothing but content contains <invocation>,
+	// try the loose invocation pattern which is more tolerant of malformed XML.
+	if len(results) == 0 && strings.Contains(callsContent, "<invocation") {
+		looseMatches := reLooseInvocation.FindAllStringSubmatch(callsContent, -1)
+		for _, lm := range looseMatches {
+			if len(lm) < 2 {
+				continue
+			}
+			name := strings.TrimSpace(lm[1])
+			if name == "" {
+				continue
+			}
+			var paramContent string
+			if len(lm) >= 3 {
+				paramContent = lm[2]
+			}
+			args := extractParameters(paramContent, reMcpParam, reGenericParam)
+			results = append(results, functionCall{Name: name, Args: args})
+			logrus.WithFields(logrus.Fields{
+				"tool_name":     name,
+				"param_content": utils.TruncateString(paramContent, 200),
+				"args_count":    len(args),
+			}).Debug("Function call parsing: extracted via fuzzy invocation fallback")
+		}
 	}
 
 	if len(results) == 0 {
