@@ -47,11 +47,9 @@ RUN go build \
 FROM alpine
 
 WORKDIR /app
-RUN [ -e /bin/sh ] || ln -s /bin/busybox /bin/sh
-RUN apk upgrade --no-cache
-RUN apk add --no-cache ca-certificates
-RUN apk add --no-cache tzdata
-RUN update-ca-certificates
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates tzdata \
+    && update-ca-certificates
 
 # Runtime optimization environment variables
 # Limit memory usage to prevent container OOM
