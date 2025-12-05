@@ -113,13 +113,16 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
         return bodyBytes, "", nil
     }
 
-    // Extract messages array if present.
+    // Extract messages array. Skip rewrite if messages is missing or malformed,
+    // as this indicates a non-chat request that shouldn't be rewritten.
     msgsVal, hasMessages := req["messages"]
-    var messages []any
-    if hasMessages {
-        if arr, ok := msgsVal.([]any); ok {
-            messages = arr
-        }
+    if !hasMessages {
+        return bodyBytes, "", nil
+    }
+    messages, ok := msgsVal.([]any)
+    if !ok {
+        // Unexpected messages structure - skip rewrite to avoid breaking request
+        return bodyBytes, "", nil
     }
 
     // Check if this is a follow-up request with tool results.
