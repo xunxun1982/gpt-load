@@ -1584,6 +1584,11 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
     // Try JSON parsing for object, array, or primitive values.
     // Objects are returned directly; arrays/primitives are wrapped under "value" key
     // so callers always receive a map structure.
+    // DESIGN DECISION: We wrap non-object JSON in {"value": ...} to maintain consistent
+    // return type (map[string]any). This is intentional because:
+    // 1. Tool arguments are typically JSON objects; arrays/primitives are rare edge cases
+    // 2. Downstream code (json.Marshal for arguments field) handles both shapes correctly
+    // 3. Maintaining type consistency simplifies caller logic
     firstChar := trimmed[0]
     if firstChar == '{' || firstChar == '[' || firstChar == '"' ||
         (firstChar >= '0' && firstChar <= '9') || firstChar == '-' ||
