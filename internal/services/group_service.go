@@ -1154,6 +1154,14 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 		return nil, nil
 	}
 
+	// Backward compatibility: migrate legacy function calling key to the new function call key.
+	if legacyValue, ok := configMap["force_function_calling"]; ok {
+		if _, hasNewKey := configMap["force_function_call"]; !hasNewKey {
+			configMap["force_function_call"] = legacyValue
+		}
+		delete(configMap, "force_function_calling")
+	}
+
 	var tempGroupConfig models.GroupConfig
 	groupConfigType := reflect.TypeOf(tempGroupConfig)
 	validFields := make(map[string]bool)

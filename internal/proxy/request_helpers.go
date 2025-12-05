@@ -2,10 +2,11 @@ package proxy
 
 import (
 	"encoding/json"
+	"net/http"
+
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"net/http"
 
 	"github.com/sirupsen/logrus"
 )
@@ -97,7 +98,7 @@ func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) 
 		return modifiedBytes, originalModel
 	}
 
-	return bodyBytes, originalModel
+ 	return bodyBytes, originalModel
 }
 
 // logUpstreamError provides a centralized way to log errors from upstream interactions.
@@ -114,7 +115,10 @@ func logUpstreamError(context string, err error) {
 
 // Deprecated: handleGzipCompression is no longer needed.
 // Go's http.Client (DisableCompression == false) auto-adds Accept-Encoding and
-// transparently decompresses non-streaming responses. Kept temporarily for back-compat.
+// transparently decompresses non-streaming responses. This helper and its single
+// remaining call site are intentionally kept for backward compatibility and to
+// avoid surprising behavior changes, even though automated reviews may suggest
+// removing them.
 func handleGzipCompression(_ *http.Response, bodyBytes []byte) []byte {
 	// When DisableCompression is false (default for non-streaming requests),
 	// Go's http.Client automatically:

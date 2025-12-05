@@ -89,6 +89,7 @@ interface GroupFormData {
   model_redirect_rules: string;
   model_redirect_items: ModelRedirectItem[];
   model_redirect_strict: boolean;
+  force_function_call: boolean;
   config: Record<string, number | string | boolean>;
   configItems: ConfigItem[];
   header_rules: HeaderRuleItem[];
@@ -116,6 +117,7 @@ const formData = reactive<GroupFormData>({
   model_redirect_rules: "",
   model_redirect_items: [] as ModelRedirectItem[],
   model_redirect_strict: false,
+  force_function_call: false,
   config: {},
   configItems: [] as ConfigItem[],
   header_rules: [] as HeaderRuleItem[],
@@ -289,7 +291,7 @@ watch(
 // Watch channel type changes and intelligently update defaults in create mode
 watch(
   () => formData.channel_type,
-  (_newChannelType, oldChannelType) => {
+  (newChannelType, oldChannelType) => {
     if (!props.group && oldChannelType) {
       // Only handle in create mode and when this is not the initial setup
       // Check whether test model should be updated (empty or equals the old channel default)
@@ -313,6 +315,11 @@ watch(
           userModifiedFields.value.upstream = false;
         }
       }
+    }
+
+    // Force disable function call when channel is not OpenAI.
+    if (newChannelType !== "openai") {
+      formData.force_function_call = false;
     }
   }
 );
@@ -356,6 +363,7 @@ function resetForm() {
     model_redirect_rules: "",
     model_redirect_items: [],
     model_redirect_strict: false,
+    force_function_call: false,
     config: {},
     configItems: [],
     header_rules: [],
@@ -379,12 +387,19 @@ function loadGroupData() {
     return;
   }
 
-  const configItems = Object.entries(props.group.config || {}).map(([key, value]) => {
-    return {
-      key,
-      value,
-    };
-  });
+  const rawConfig = props.group.config || {};
+  const fcRaw = (rawConfig as any)["force_function_call"];
+  const forceFunctionCall =
+    props.group.channel_type === "openai" && typeof fcRaw === "boolean" ? fcRaw : false;
+
+  const configItems = Object.entries(rawConfig)
+    .filter(([key]) => key !== "force_function_call")
+    .map(([key, value]) => {
+      return {
+        key,
+        value,
+      };
+    });
   Object.assign(formData, {
     name: props.group.name || "",
     display_name: props.group.display_name || "",
@@ -409,6 +424,7 @@ function loadGroupData() {
       })
       .filter(item => item.from && item.to),
     model_redirect_strict: props.group.model_redirect_strict || false,
+    force_function_call: forceFunctionCall,
     config: {},
     configItems,
     header_rules: (props.group.header_rules || []).map((rule: HeaderRuleItem) => ({
@@ -454,7 +470,12 @@ function removeUpstream(index: number) {
 
 async function fetchGroupConfigOptions() {
   const options = await keysApi.getGroupConfigOptions();
-  configOptions.value = options || [];
+  // Hide force_function_call from generic config options so it is only
+  // controlled via the dedicated toggle. This avoids confusing UX where
+  // users could add the key manually in the advanced config list while the
+  // toggle remains the single source of truth.
+  const normalized = (options || []).filter(opt => opt.key !== "force_function_call");
+  configOptions.value = normalized;
   configOptionsFetched.value = true;
 }
 
@@ -798,6 +819,14 @@ async function handleSubmit() {
       } else {
         config[item.key] = item.value;
       }
+    }
+
+    // Persist force_function_call toggle as a dedicated config key.
+    // Explicitly delete the key when disabled to ensure clean config state.
+    if (formData.force_function_call) {
+      config["force_function_call"] = true;
+    } else {
+      delete config["force_function_call"];
     }
 
     // Validate path redirects for duplicates
@@ -1653,6 +1682,38 @@ async function handleSubmit() {
                   </template>
                   {{ t("keys.addPathRedirect") }}
                 </n-button>
+              </div>
+
+              <!-- Function call toggle (OpenAI channel only) -->
+              <div
+                class="config-section"
+                v-if="formData.group_type !== 'aggregate' && formData.channel_type === 'openai'"
+              >
+                <n-form-item path="force_function_call">
+                  <template #label>
+                    <div class="form-label-with-tooltip">
+                      {{ t("keys.functionCall") }}
+                      <n-tooltip trigger="hover" placement="right-start">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        <div>
+                          {{ t("keys.functionCallTooltip1") }}
+                          <br />
+                          {{ t("keys.functionCallTooltip2") }}
+                        </div>
+                      </n-tooltip>
+                    </div>
+                  </template>
+                  <div style="display: flex; align-items: center; gap: 12px">
+                    <n-switch v-model:value="formData.force_function_call" size="small" />
+                  </div>
+                  <template #feedback>
+                    <div style="font-size: 12px; color: #999; margin-top: 4px">
+                      {{ t("keys.functionCallOpenAITip") }}
+                    </div>
+                  </template>
+                </n-form-item>
               </div>
             </n-collapse-item>
           </n-collapse>

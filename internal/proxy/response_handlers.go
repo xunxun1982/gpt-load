@@ -2,9 +2,10 @@ package proxy
 
 import (
 	"bytes"
-	"gpt-load/internal/models"
 	"io"
 	"net/http"
+
+	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"

@@ -3,12 +3,12 @@ package keypool
 import (
 	"context"
 	"encoding/json"
-	"math/rand"
-	"strings"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
+	"math/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,8 +100,10 @@ func (s *CronChecker) submitValidationJobs() {
 	}
 
 	var groups []models.Group
-	// Short timeout and minimal column selection to avoid long blocking
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	// Short timeout and minimal column selection to avoid long blocking.
+	// 500ms allows for occasional I/O latency while still protecting against
+	// pathological cases. If this timeout is frequently hit, investigate DB load.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	if err := s.DB.WithContext(ctx).
 		Select("id, name, config, enabled, group_type, channel_type, last_validated_at").
