@@ -444,6 +444,19 @@ export default {
       "ネイティブで関数呼び出しをサポートしていないプロバイダーでのみ有効にしてください。すでにネイティブの関数呼び出しを持つチャンネルで有効にすると、二重呼び出しや予期しない動作を引き起こす可能性があります。",
     functionCallOpenAITip:
       "このスイッチは OpenAI チャンネルのグループにのみ有効で、他のプロバイダーでは表示も効果もありません。",
+    ccSupport: "CC サポート",
+    ccSupportTooltip1:
+      "Claude Code 互換モードを有効にし、Claude クライアントが /claude エンドポイント経由で接続できるようにします。",
+    ccSupportTooltip2:
+      "リクエストは自動的に Claude 形式から OpenAI 形式に変換されてから上流に転送されます。",
+    ccSupportTooltip3:
+      "上流が関数呼び出しをサポートしていない場合は、「関数呼び出し」スイッチも有効にする必要があります。",
+    ccSupportTip:
+      "有効にすると、クライアントは /proxy/グループ名/claude/v1/messages エンドポイントを使用でき、リクエストは自動的に OpenAI 形式に変換されます。",
+    ccSupportCompatibilityTip:
+      "このスイッチは OpenAI チャンネルのグループにのみ有効で、他のチャンネルではこの設定は無視され、表示されません。",
+    ccSupportRedirectTip:
+      "互換性のため、モデルリダイレクトルールに opus (claude-opus-4-5-20251101)、sonnet (claude-sonnet-4-5-20250929)、haiku (claude-haiku-4-5-20251001) 関連のモデルリダイレクトを追加してください。",
     modelRedirectInvalidJson: "モデルリダイレクトルールのJSON形式が無効です",
     modelRedirectInvalidFormat:
       "モデルリダイレクトルールのキーと値はすべて文字列である必要があります",

@@ -203,6 +203,10 @@ func registerProxyRoutes(
 	proxyGroup.Use(middleware.ProxyAuth(groupManager))
 
 	proxyGroup.Any("/*path", proxyServer.HandleProxy)
+
+	// Claude endpoint for CC support - routes to the same handler
+	// Path format: /proxy/{group}/claude/v1/messages
+	// The handler will detect /claude path and convert Claude requests to OpenAI format
 }
 
 // registerFrontendRoutes registers frontend routes

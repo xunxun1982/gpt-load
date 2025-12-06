@@ -52,6 +52,7 @@ type retryContext struct {
 	excludedSubGroups map[uint]bool // Sub-group IDs that have failed in the current request (only for current aggregate group)
 	attemptCount      int           // Current attempt count
 	originalBodyBytes []byte        // Original request body (before any sub-group mapping)
+	originalPath      string        // Original request path (before any CC support path rewriting)
 }
 
 
@@ -251,6 +252,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		retryCtx = &retryContext{
 			excludedSubGroups: make(map[uint]bool, len(originalGroup.SubGroups)),
 			attemptCount:      0,
+			originalPath:      c.Request.URL.Path, // Save original path for retry restoration
 		}
 	}
 
@@ -301,6 +303,18 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	var finalBodyBytes []byte
 	var isStream bool
 
+	// Handle CC support path rewriting for all requests (including GET)
+	// This must happen before body processing to ensure correct path for upstream
+	if isClaudePath(c.Request.URL.Path) && isCCSupportEnabled(group) {
+		originalPath := c.Request.URL.Path
+		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		logrus.WithFields(logrus.Fields{
+			"group":         group.Name,
+			"original_path": originalPath,
+			"new_path":      c.Request.URL.Path,
+		}).Debug("CC support: rewritten Claude path to OpenAI path")
+	}
+
 	if c.Request.Method == "GET" || len(bodyBytes) == 0 {
 		finalBodyBytes = bodyBytes
 		isStream = false
@@ -324,6 +338,28 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			if err != nil {
 				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
 				return
+			}
+
+			// Apply CC support: convert Claude requests to OpenAI format
+			// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
+			// We check for /v1/messages (after rewrite) and CC support enabled
+			if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+				convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
+				if ccErr != nil {
+					logrus.WithError(ccErr).WithFields(logrus.Fields{
+						"group": group.Name,
+						"path":  c.Request.URL.Path,
+					}).Warn("Failed to convert Claude request to OpenAI format")
+				} else if converted {
+					finalBodyBytes = convertedBody
+					// Rewrite path from /v1/messages to /v1/chat/completions
+					c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
+					logrus.WithFields(logrus.Fields{
+						"group":        group.Name,
+						"channel_type": group.ChannelType,
+						"new_path":     c.Request.URL.Path,
+					}).Debug("CC support: converted Claude request to OpenAI format")
+				}
 			}
 
 			// Apply function call request rewrite for eligible OpenAI groups.
@@ -558,7 +594,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// For streaming chat completions with function call enabled, use the
 			// function-call aware streaming handler. Other streaming requests keep
 			// the existing behavior.
-			if isFunctionCallEnabled(c) {
+			if isCCEnabled(c) {
+				ps.handleCCStreamingResponse(c, resp)
+			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
 				ps.handleStreamingResponse(c, resp)
@@ -566,7 +604,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		} else {
 			// For non-streaming chat completions with function call enabled, use
 			// the function-call aware response handler.
-			if isFunctionCallEnabled(c) {
+			if isCCEnabled(c) {
+				ps.handleCCNormalResponse(c, resp)
+			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {
 				ps.handleNormalResponse(c, resp)
@@ -588,6 +628,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	startTime time.Time,
 	retryCtx *retryContext,
 ) {
+	// Restore original path for retry attempts to allow each sub-group to apply its own CC support
+	// This is necessary because different sub-groups may have different CC support settings
+	if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {
+		c.Request.URL.Path = retryCtx.originalPath
+	}
+
 	// Get max retries from aggregate group config (default 0)
 	maxRetries := parseMaxRetries(originalGroup.Config)
 	// Get sub-group level max retries. When set to 0 or omitted, it does not override
@@ -669,6 +715,46 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			"sub_group":       group.Name,
 		}).Warn("Failed to apply parameter overrides for sub-group, using original body")
 		finalBodyBytes = bodyBytes
+	}
+
+	// Apply CC support for eligible OpenAI sub-groups.
+	// Clear any stale CC state from previous sub-group attempts.
+	c.Set(ctxKeyCCEnabled, false)
+
+	// Handle CC support path rewriting for sub-groups
+	// This rewrites /claude/ paths to standard OpenAI paths
+	if isClaudePath(c.Request.URL.Path) && isCCSupportEnabled(group) {
+		originalPath := c.Request.URL.Path
+		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group": originalGroup.Name,
+			"sub_group":       group.Name,
+			"original_path":   originalPath,
+			"new_path":        c.Request.URL.Path,
+		}).Debug("CC support: rewritten Claude path for sub-group")
+	}
+
+	// Convert Claude messages request to OpenAI format
+	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
+	if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+		convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
+		if ccErr != nil {
+			logrus.WithError(ccErr).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"path":            c.Request.URL.Path,
+			}).Warn("Failed to convert Claude request for sub-group")
+		} else if converted {
+			finalBodyBytes = convertedBody
+			// Rewrite path from /v1/messages to /v1/chat/completions
+			c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"channel_type":    group.ChannelType,
+				"new_path":        c.Request.URL.Path,
+			}).Debug("CC support: converted Claude request for sub-group")
+		}
 	}
 
 	// Apply function call request rewrite for eligible OpenAI sub-groups.
@@ -879,10 +965,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 		// Fast path: handle response based on type. We intentionally keep the
 		// routing logic aligned with the non-aggregate path so that
-		// function-call behavior is consistent between normal and
+		// function-call and CC support behavior is consistent between normal and
 		// aggregate groups.
 		if isStream {
-			if isFunctionCallEnabled(c) {
+			if isCCEnabled(c) {
+				ps.handleCCStreamingResponse(c, resp)
+			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
 				ps.handleStreamingResponse(c, resp)
@@ -898,7 +986,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}).Debug("Detected /models endpoint with model mapping, applying enhancement")
 			ps.handleModelsResponse(c, resp, group)
 		} else {
-			if isFunctionCallEnabled(c) {
+			if isCCEnabled(c) {
+				ps.handleCCNormalResponse(c, resp)
+			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {
 				ps.handleNormalResponse(c, resp)

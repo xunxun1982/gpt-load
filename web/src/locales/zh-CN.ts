@@ -426,6 +426,17 @@ export default {
       "仅在上游模型本身不支持原生函数调用时启用。对于已经原生支持函数调用的渠道，请不要开启该开关，否则可能出现重复调用或未定义的行为。",
     functionCallOpenAITip:
       "此开关仅对 OpenAI 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
+    ccSupport: "CC 支持",
+    ccSupportTooltip1: "启用 Claude Code 兼容模式，允许 Claude 客户端通过 /claude 端点连接。",
+    ccSupportTooltip2: "请求将自动从 Claude 格式转换为 OpenAI 格式后转发到上游。",
+    ccSupportTooltip3: "如果上游不支持函数调用，需要同时开启「函数调用」开关。",
+    ccSupportTip:
+      "开启后，客户端可使用 /proxy/分组名/claude/v1/messages 端点，请求会自动转换为 OpenAI 格式。",
+    ccSupportCompatibilityTip:
+      "此开关仅对 OpenAI 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
+    ccSupportRedirectTip:
+      "为了兼容性，请在模型重定向规则中加入 opus (claude-opus-4-5-20251101)、sonnet (claude-sonnet-4-5-20250929)、haiku (claude-haiku-4-5-20251001) 相关模型的重定向。",
+
     modelRedirectInvalidJson: "模型重定向规则 JSON 格式错误",
     modelRedirectInvalidFormat: "模型重定向规则的键值必须都是字符串",
     modelRedirectEmptyModel: "模型名称不能为空",

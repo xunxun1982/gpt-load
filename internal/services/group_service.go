@@ -408,11 +408,8 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	tx := s.db.WithContext(ctx).Begin()
-	if err := tx.Error; err != nil {
-		return nil, app_errors.ErrDatabase
-	}
-	defer tx.Rollback()
+	// Perform all validation BEFORE starting transaction to minimize lock time
+	// This is critical for SQLite which uses database-level locking
 
 	if params.Name != nil {
 		cleanedName := strings.TrimSpace(*params.Name)
@@ -550,12 +547,9 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		group.PathRedirects = pathRedirectsJSON
 	}
 
-	if err := tx.Save(&group).Error; err != nil {
+	// Start transaction only for the actual database write - minimizes lock time
+	if err := s.db.WithContext(ctx).Save(&group).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		return nil, app_errors.ErrDatabase
 	}
 
 	if err := s.groupManager.Invalidate(); err != nil {

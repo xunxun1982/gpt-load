@@ -446,6 +446,20 @@ export default {
       "Only enable this for providers that do NOT have native function call support. Enabling it on providers with built-in function call may cause duplicated or undefined behavior.",
     functionCallOpenAITip:
       "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
+    ccSupport: "CC Support",
+    ccSupportTooltip1:
+      "Enable Claude Code compatibility mode, allowing Claude clients to connect via /claude endpoint.",
+    ccSupportTooltip2:
+      "Requests will be automatically converted from Claude format to OpenAI format before forwarding to upstream.",
+    ccSupportTooltip3:
+      "If upstream does not support function calling, you need to enable the 'Function Call' switch as well.",
+    ccSupportTip:
+      "When enabled, clients can use /proxy/[group]/claude/v1/messages endpoint, requests will be auto-converted to OpenAI format.",
+    ccSupportCompatibilityTip:
+      "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
+    ccSupportRedirectTip:
+      "For compatibility, please add opus (claude-opus-4-5-20251101), sonnet (claude-sonnet-4-5-20250929), haiku (claude-haiku-4-5-20251001) related model redirections in model redirect rules.",
+
     modelRedirectInvalidJson: "Invalid JSON format for model redirect rules",
     modelRedirectInvalidFormat: "Model redirect rule keys and values must all be strings",
     modelRedirectEmptyModel: "Model name cannot be empty",
