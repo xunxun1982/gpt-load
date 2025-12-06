@@ -349,7 +349,9 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 					logrus.WithError(ccErr).WithFields(logrus.Fields{
 						"group": group.Name,
 						"path":  c.Request.URL.Path,
-					}).Warn("Failed to convert Claude request to OpenAI format")
+					}).Error("Failed to convert Claude request to OpenAI format")
+					response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("CC conversion failed: %v", ccErr)))
+					return
 				} else if converted {
 					finalBodyBytes = convertedBody
 					// Rewrite path from /v1/messages to /v1/chat/completions
@@ -743,7 +745,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"aggregate_group": originalGroup.Name,
 				"sub_group":       group.Name,
 				"path":            c.Request.URL.Path,
-			}).Warn("Failed to convert Claude request for sub-group")
+			}).Error("Failed to convert Claude request for sub-group")
+			// For aggregate groups, we might want to try another sub-group, but conversion failure usually implies
+			// malformed input which will fail for all. So we return error.
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("CC conversion failed: %v", ccErr)))
+			return
 		} else if converted {
 			finalBodyBytes = convertedBody
 			// Rewrite path from /v1/messages to /v1/chat/completions

@@ -324,6 +324,7 @@ watch(
     // Force disable function call when channel is not OpenAI.
     if (newChannelType !== "openai") {
       formData.force_function_call = false;
+      formData.cc_support = false;
     }
   }
 );
@@ -1275,7 +1276,7 @@ async function handleSubmit() {
                         <n-select
                           v-model:value="configItem.key"
                           :options="
-                            configOptions.map(opt => ({
+                            configOptions.map((opt: GroupConfigOption) => ({
                               label: opt.name,
                               value: opt.key,
                               disabled:
@@ -1285,7 +1286,7 @@ async function handleSubmit() {
                             }))
                           "
                           :placeholder="t('keys.selectConfigParam')"
-                          @update:value="value => handleConfigKeyChange(index, value)"
+                          @update:value="(value: string) => handleConfigKeyChange(index, value)"
                           clearable
                         />
                       </div>

@@ -395,12 +395,14 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 
 		// Allow CC model mapping string fields (opus/sonnet/haiku model names).
 		// These are optional string fields for CC support model name replacement.
+		/*
 		if key == "cc_opus_model" || key == "cc_sonnet_model" || key == "cc_haiku_model" {
 			if _, ok := value.(string); !ok {
 				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
 			}
 			continue
 		}
+		*/
 
 		field, ok := jsonToField[key]
 		if !ok {

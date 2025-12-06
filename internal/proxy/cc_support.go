@@ -221,8 +221,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 	for _, msg := range claudeReq.Messages {
 		openaiMsg, err := convertClaudeMessageToOpenAI(msg)
 		if err != nil {
-			logrus.WithError(err).Warn("Failed to convert Claude message, skipping")
-			continue
+			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
 		}
 		messages = append(messages, openaiMsg...)
 	}
@@ -569,7 +568,8 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		c.Status(http.StatusInternalServerError)
 		return
 	}
-	defer resp.Body.Close()
+	// defer resp.Body.Close() - caller (executeRequestWithRetry) handles this
+
 
 	// Parse OpenAI response
 	var openaiResp OpenAIResponse
@@ -653,7 +653,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	}
 
 	// Send message_start event with required usage field
-	msgID := "msg_" + uuid.New().String()[:24]
+	msgID := "msg_" + strings.ReplaceAll(uuid.New().String(), "-", "")
 	startEvent := ClaudeStreamEvent{
 		Type: "message_start",
 		Message: &ClaudeResponse{
@@ -661,7 +661,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			Type:    "message",
 			Role:    "assistant",
 			Content: []ClaudeContentBlock{},
-			Model:   c.GetString("original_model"),
+			Model: func() string {
+				if m := c.GetString("original_model"); m != "" {
+					return m
+				}
+				return "unknown"
+			}(),
 			// Usage is required by Claude clients, provide default values
 			Usage: &ClaudeUsage{
 				InputTokens:  0,
