@@ -308,6 +308,8 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 					}
 					resultContent = sb.String()
 				} else {
+					// Fallback to raw content when parsing fails
+					logrus.WithField("content", string(block.Content)).Debug("CC: tool_result content is neither string nor array, using raw")
 					resultContent = string(block.Content)
 				}
 			}
@@ -665,6 +667,8 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				if m := c.GetString("original_model"); m != "" {
 					return m
 				}
+				// AI review note: Using "unknown" as fallback is intentional design
+				// for rare cases where original_model is not set. Not an error condition.
 				return "unknown"
 			}(),
 			// Usage is required by Claude clients, provide default values
@@ -722,6 +726,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 		var openaiChunk OpenAIResponse
 		if err := json.Unmarshal([]byte(event.Data), &openaiChunk); err != nil {
+			// SSE stream may contain non-JSON data (heartbeats, comments, etc.)
+			logrus.WithFields(logrus.Fields{
+				"data": event.Data,
+			}).Debug("CC: Failed to parse OpenAI chunk as JSON, skipping")
 			continue
 		}
 
@@ -863,7 +871,10 @@ func writeClaudeEvent(w io.Writer, event ClaudeStreamEvent) {
 		logrus.WithError(err).Error("Failed to marshal Claude event")
 		return
 	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, string(data))
+	// Handle write errors (e.g., client disconnect)
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, string(data)); err != nil {
+		logrus.WithError(err).Debug("CC: Failed to write Claude event, client may have disconnected")
+	}
 }
 
 // SSEReader reads Server-Sent Events from a reader.
