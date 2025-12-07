@@ -10,7 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
@@ -236,7 +238,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 			}
 		}
 		if systemContent != "" {
-			contentJSON, _ := json.Marshal(systemContent)
+			contentJSON := marshalStringAsJSONRaw("system", systemContent)
 			messages = append(messages, OpenAIMessage{
 				Role:    "system",
 				Content: contentJSON,
@@ -247,7 +249,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 	// Treat prompt as a single user message when no explicit messages are provided.
 	if len(claudeReq.Messages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
 		promptText := strings.TrimSpace(claudeReq.Prompt)
-		contentJSON, _ := json.Marshal(promptText)
+		contentJSON := marshalStringAsJSONRaw("prompt", promptText)
 		messages = append(messages, OpenAIMessage{
 			Role:    "user",
 			Content: contentJSON,
@@ -278,6 +280,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 		// overall instruction content while satisfying provider requirements.
 		if messages[0].Role == "system" {
 			messages[0].Role = "user"
+			logrus.Warn("CC: Downgraded system message to user role (no user/assistant messages present)")
 		}
 	}
 
@@ -303,7 +306,12 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 	// For compatibility with OpenAI-style and z.ai chat-completion APIs, always
 	// encode stop as an array of strings (even when there is only one element).
 	if len(claudeReq.StopSequences) > 0 {
-		openaiReq.Stop, _ = json.Marshal(claudeReq.StopSequences)
+		stopBytes, err := json.Marshal(claudeReq.StopSequences)
+		if err != nil {
+			logrus.WithError(err).Warn("CC: Failed to marshal stop sequences, skipping")
+		} else {
+			openaiReq.Stop = stopBytes
+		}
 	}
 
 	return openaiReq, nil
@@ -316,7 +324,7 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	// Try to parse content as string first
 	var contentStr string
 	if err := json.Unmarshal(msg.Content, &contentStr); err == nil {
-		contentJSON, _ := json.Marshal(contentStr)
+		contentJSON := marshalStringAsJSONRaw("message_text", contentStr)
 		result = append(result, OpenAIMessage{
 			Role:    msg.Role,
 			Content: contentJSON,
@@ -367,7 +375,7 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 					resultContent = string(block.Content)
 				}
 			}
-			contentJSON, _ := json.Marshal(resultContent)
+			contentJSON := marshalStringAsJSONRaw("tool_result", resultContent)
 			toolResults = append(toolResults, OpenAIMessage{
 				Role:       "tool",
 				Content:    contentJSON,
@@ -384,7 +392,7 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		assistantMsg := OpenAIMessage{Role: "assistant"}
 		if len(textParts) > 0 {
 			combined := strings.Join(textParts, "")
-			assistantMsg.Content, _ = json.Marshal(combined)
+			assistantMsg.Content = marshalStringAsJSONRaw("assistant_delta", combined)
 		}
 		if len(toolCalls) > 0 {
 			assistantMsg.ToolCalls = toolCalls
@@ -396,13 +404,16 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		// User message with tool results
 		if len(textParts) > 0 {
 			combined := strings.Join(textParts, "")
-			contentJSON, _ := json.Marshal(combined)
+			contentJSON := marshalStringAsJSONRaw("user_text", combined)
 			result = append(result, OpenAIMessage{
 				Role:    "user",
 				Content: contentJSON,
 			})
 		}
 		result = append(result, toolResults...)
+	default:
+		// Unknown roles are skipped but logged for easier debugging of API changes.
+		logrus.WithField("role", msg.Role).Warn("CC: Unknown Claude message role, skipping message")
 	}
 
 	return result, nil
@@ -766,7 +777,16 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	}
 
 	// Send message_start event with required usage field
-	msgID := "msg_" + strings.ReplaceAll(uuid.New().String(), "-", "")
+	msgID := ""
+	msgUUID, err := uuid.NewRandom()
+	if err != nil {
+		// Fallback to time-based ID if crypto/rand fails; this is extremely rare
+		// but avoids panicking in the hot streaming path.
+		msgID = "msg_fallback_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		logrus.WithError(err).Warn("CC: Failed to generate UUID for message_id, using fallback ID")
+	} else {
+		msgID = "msg_" + strings.ReplaceAll(msgUUID.String(), "-", "")
+	}
 	startEvent := ClaudeStreamEvent{
 		Type: "message_start",
 		Message: &ClaudeResponse{
@@ -799,6 +819,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	var currentToolCall *OpenAIToolCall
 	var accumulatedContent strings.Builder
 
+	// ReadEvent blocks while waiting for SSE data. We intentionally do not add
+	// an additional read deadline here to avoid prematurely terminating long-
+	// lived Claude streams. Upstream timeouts and the client request context
+	// are responsible for canceling stalled connections.
 	for {
 		event, err := reader.ReadEvent()
 		if err != nil {
@@ -987,6 +1011,20 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			break
 		}
 	}
+}
+
+// marshalStringAsJSONRaw safely marshals a string into json.RawMessage for CC conversion paths.
+// When marshalling fails (which is rare for plain strings), it logs a warning and returns an
+// empty JSON string literal to keep the upstream payload structurally valid.
+func marshalStringAsJSONRaw(label string, value string) json.RawMessage {
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"label": label,
+		}).WithError(err).Warn("CC: Failed to marshal string content, using empty")
+		return json.RawMessage(`""`)
+	}
+	return json.RawMessage(bytes)
 }
 
 // writeClaudeEvent writes a Claude streaming event to the writer.

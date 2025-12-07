@@ -511,11 +511,14 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			return nil, err
 		}
 
-		// Check if cc_support is being disabled for OpenAI groups
+		// Check if cc_support is being disabled for OpenAI groups before performing any database write
 		// If so, verify that this group is not used as a sub-group in any Anthropic aggregate groups
 		if group.ChannelType == "openai" && group.GroupType != "aggregate" {
+			// Note: models.Group.Config is stored as datatypes.JSONMap while validateAndCleanConfig
+			// returns a map[string]any. We intentionally convert cleanedConfig to JSONMap here to
+			// keep the helper signature strongly typed and avoid accidental misuse.
 			oldCCEnabled := isConfigCCSupportEnabled(group.Config)
-			newCCEnabled := isConfigCCSupportEnabled(cleanedConfig)
+			newCCEnabled := isConfigCCSupportEnabled(datatypes.JSONMap(cleanedConfig))
 
 			// CC support is being disabled (true -> false)
 			if oldCCEnabled && !newCCEnabled {
@@ -558,7 +561,8 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			}
 		}
 
-		group.Config = cleanedConfig
+		// Persist validated config as JSONMap for consistency with models.Group.
+		group.Config = datatypes.JSONMap(cleanedConfig)
 	}
 
 	if params.ProxyKeys != nil {
@@ -1469,6 +1473,8 @@ func (s *GroupService) generateUniqueGroupNameForCopy(ctx context.Context, baseN
 }
 
 // isConfigCCSupportEnabled checks whether cc_support is enabled in a config map.
+// Accepted value types are: bool, numeric (float64/int) and others are treated as disabled.
+// String values such as "true"/"false" are intentionally ignored to avoid ambiguous parsing.
 func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
 	if config == nil {
 		return false

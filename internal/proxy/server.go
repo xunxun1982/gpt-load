@@ -56,6 +56,19 @@ type retryContext struct {
 	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 }
 
+// restoreOriginalPath restores the original request path for retry attempts.
+// This is used by aggregate retry logic to ensure each sub-group can apply its
+// own CC support and path rewriting without inheriting state from previous
+// attempts.
+func restoreOriginalPath(c *gin.Context, retryCtx *retryContext) {
+	if retryCtx == nil {
+		return
+	}
+	if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {
+		c.Request.URL.Path = retryCtx.originalPath
+	}
+}
+
 // parseRetryConfigInt extracts and validates a retry-related integer config value.
 // Returns a value clamped to the range [0, 100].
 func parseRetryConfigInt(config map[string]any, key string) int {
@@ -640,10 +653,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	retryCtx *retryContext,
 ) {
 	// Restore original path for retry attempts to allow each sub-group to apply its own CC support
-	// This is necessary because different sub-groups may have different CC support settings
-	if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {
-		c.Request.URL.Path = retryCtx.originalPath
-	}
+	// This is necessary because different sub-groups may have different CC support settings.
+	restoreOriginalPath(c, retryCtx)
 
 	// Get max retries from aggregate group config
 	maxRetries := parseMaxRetries(originalGroup.Config)
@@ -1015,15 +1026,20 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeRetry)
 
 			logrus.WithFields(logrus.Fields{
-				"sub_group":              group.Name,
-				"sub_group_key_retry":    subGroupKeyRetryCount + 1,
-				"sub_group_max_retries":  subGroupMaxRetries,
+				"sub_group":             group.Name,
+				"sub_group_key_retry":   subGroupKeyRetryCount + 1,
+				"sub_group_max_retries": subGroupMaxRetries,
 			}).Debug("Retrying with another key; sub-group may be re-selected if not excluded")
 
+			// Note: we intentionally do not exclude the previously failed key at this
+			// layer. Key-level health and blacklisting are handled centrally by
+			// KeyProvider.UpdateStatus and the underlying store.Rotate logic. The
+			// per-request retry here simply gives the rotation logic another chance
+			// to pick a different healthy key when available, while keeping
+			// semantics consistent with non-aggregate retry paths.
+
 			// Restore original path for retry (CC support may have modified it)
-			if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {
-				c.Request.URL.Path = retryCtx.originalPath
-			}
+			restoreOriginalPath(c, retryCtx)
 
 			// Retry with same sub-group but different key (SelectKey will choose a different one)
 			ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, startTime, retryCtx)
