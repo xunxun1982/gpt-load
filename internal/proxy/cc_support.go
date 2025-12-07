@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -53,10 +55,18 @@ func isCCSupportEnabled(group *models.Group) bool {
 	}
 }
 
+// sanitizeCCQueryParams removes Claude-specific query parameters from the URL.
+// This is used by CC support to avoid forwarding Anthropic beta flags to OpenAI-style upstreams.
+func sanitizeCCQueryParams(u *url.URL) {
+	if u == nil || u.RawQuery == "" {
+		return
+	}
 
-
-
-
+	query := u.Query()
+	// Remove Claude-specific beta flag
+	query.Del("beta")
+	u.RawQuery = query.Encode()
+}
 
 // isClaudePath checks if the request path contains /claude/v1 segment after the group name.
 // This is used to detect any Claude-style path that needs to be rewritten.
@@ -120,16 +130,24 @@ type ClaudeTool struct {
 }
 
 // ClaudeRequest represents a Claude API request.
+// It is intentionally a superset of the basic fields to support newer Claude Code features
+// such as prompt-only requests, alternative max token fields, tool_choice and MCP metadata.
 type ClaudeRequest struct {
-	Model         string          `json:"model"`
-	Messages      []ClaudeMessage `json:"messages"`
-	System        json.RawMessage `json:"system,omitempty"`
-	MaxTokens     int             `json:"max_tokens"`
-	Temperature   *float64        `json:"temperature,omitempty"`
-	TopP          *float64        `json:"top_p,omitempty"`
-	Stream        bool            `json:"stream"`
-	Tools         []ClaudeTool    `json:"tools,omitempty"`
-	StopSequences []string        `json:"stop_sequences,omitempty"`
+	Model             string          `json:"model"`
+	Prompt            string          `json:"prompt,omitempty"`
+	System            json.RawMessage `json:"system,omitempty"`
+	Messages          []ClaudeMessage `json:"messages"`
+	MaxTokens         int             `json:"max_tokens,omitempty"`
+	MaxTokensToSample int             `json:"max_tokens_to_sample,omitempty"`
+	Temperature       *float64        `json:"temperature,omitempty"`
+	TopP              *float64        `json:"top_p,omitempty"`
+	Stream            bool            `json:"stream"`
+	Tools             []ClaudeTool    `json:"tools,omitempty"`
+	StopSequences     []string        `json:"stop_sequences,omitempty"`
+	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
+	McpServers        json.RawMessage `json:"mcp_servers,omitempty"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
+	Container         json.RawMessage `json:"container,omitempty"`
 }
 
 // OpenAIMessage represents a message in OpenAI format.
@@ -167,6 +185,9 @@ type OpenAIFunction struct {
 }
 
 // OpenAIRequest represents an OpenAI API request.
+// Only include fields that are known to be compatible with OpenAI-style and
+// z.ai chat-completion APIs. Advanced fields like metadata and Anthropic-style
+// tool_choice objects are intentionally not forwarded to avoid parameter errors.
 type OpenAIRequest struct {
 	Model       string          `json:"model"`
 	Messages    []OpenAIMessage `json:"messages"`
@@ -187,8 +208,14 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 		TopP:        claudeReq.TopP,
 	}
 
-	if claudeReq.MaxTokens > 0 {
-		openaiReq.MaxTokens = &claudeReq.MaxTokens
+	// Prefer MaxTokens; fall back to MaxTokensToSample for compatibility with
+	// newer Claude APIs that use max_tokens_to_sample.
+	effectiveMaxTokens := claudeReq.MaxTokens
+	if effectiveMaxTokens <= 0 && claudeReq.MaxTokensToSample > 0 {
+		effectiveMaxTokens = claudeReq.MaxTokensToSample
+	}
+	if effectiveMaxTokens > 0 {
+		openaiReq.MaxTokens = &effectiveMaxTokens
 	}
 
 	// Convert system message
@@ -217,6 +244,16 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 		}
 	}
 
+	// Treat prompt as a single user message when no explicit messages are provided.
+	if len(claudeReq.Messages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
+		promptText := strings.TrimSpace(claudeReq.Prompt)
+		contentJSON, _ := json.Marshal(promptText)
+		messages = append(messages, OpenAIMessage{
+			Role:    "user",
+			Content: contentJSON,
+		})
+	}
+
 	// Convert messages
 	for _, msg := range claudeReq.Messages {
 		openaiMsg, err := convertClaudeMessageToOpenAI(msg)
@@ -225,6 +262,25 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 		}
 		messages = append(messages, openaiMsg...)
 	}
+
+	// Some upstream providers (including GLM chat-completion) require that the
+	// messages list does not consist of only system/assistant messages. As a
+	// defensive fallback, ensure there is at least one user/assistant message.
+	hasUserOrAssistant := false
+	for _, m := range messages {
+		if m.Role == "user" || m.Role == "assistant" {
+			hasUserOrAssistant = true
+			break
+		}
+	}
+	if !hasUserOrAssistant && len(messages) > 0 {
+		// Downgrade the first system message to a user message. This keeps the
+		// overall instruction content while satisfying provider requirements.
+		if messages[0].Role == "system" {
+			messages[0].Role = "user"
+		}
+	}
+
 	openaiReq.Messages = messages
 
 	// Convert tools
@@ -243,13 +299,11 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 		openaiReq.Tools = tools
 	}
 
-	// Convert stop sequences
+	// Convert stop sequences.
+	// For compatibility with OpenAI-style and z.ai chat-completion APIs, always
+	// encode stop as an array of strings (even when there is only one element).
 	if len(claudeReq.StopSequences) > 0 {
-		if len(claudeReq.StopSequences) == 1 {
-			openaiReq.Stop, _ = json.Marshal(claudeReq.StopSequences[0])
-		} else {
-			openaiReq.Stop, _ = json.Marshal(claudeReq.StopSequences)
-		}
+		openaiReq.Stop, _ = json.Marshal(claudeReq.StopSequences)
 	}
 
 	return openaiReq, nil
@@ -323,6 +377,8 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	}
 
 	// Build assistant message with text and tool_calls
+	// Note: Claude API only supports "user" and "assistant" roles per specification.
+	// Any other roles are invalid and will result in the message being excluded from conversion.
 	switch msg.Role {
 	case "assistant":
 		assistantMsg := OpenAIMessage{Role: "assistant"}
@@ -389,6 +445,18 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 		return bodyBytes, false, fmt.Errorf("failed to marshal OpenAI request: %w", err)
 	}
 
+	// Optionally log request conversion previews when body logging is enabled.
+	if group != nil && group.EffectiveConfig.EnableRequestBodyLogging {
+		logrus.WithFields(logrus.Fields{
+			"group":               group.Name,
+			"original_model":      originalModel,
+			"claude_body_preview": utils.TruncateString(string(bodyBytes), 1024),
+			"openai_body_preview": utils.TruncateString(string(convertedBody), 1024),
+			"tools_count":         len(claudeReq.Tools),
+			"has_mcp_servers":     len(claudeReq.McpServers) > 0,
+		}).Debug("CC: Request conversion preview (truncated)")
+	}
+
 	// Mark CC conversion as enabled
 	c.Set(ctxKeyCCEnabled, true)
 	c.Set(ctxKeyOriginalFormat, "claude")
@@ -396,7 +464,6 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	logrus.WithFields(logrus.Fields{
 		"group":          group.Name,
 		"original_model": originalModel,
-		"mapped_model":   claudeReq.Model,
 		"stream":         claudeReq.Stream,
 		"tools_count":    len(claudeReq.Tools),
 	}).Debug("CC: Converted Claude request to OpenAI format")
@@ -572,11 +639,17 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	}
 	// defer resp.Body.Close() - caller (executeRequestWithRetry) handles this
 
+	// Decompress response body if it is encoded (e.g., gzip) before JSON parsing.
+	// This avoids returning compressed bytes to Claude clients and matches CC API expectations.
+	bodyBytes, _ = utils.DecompressResponse(resp.Header.Get("Content-Encoding"), bodyBytes)
 
 	// Parse OpenAI response
 	var openaiResp OpenAIResponse
 	if err := json.Unmarshal(bodyBytes, &openaiResp); err != nil {
-		logrus.WithError(err).Warn("Failed to parse OpenAI response for CC conversion, returning original")
+		logrus.WithError(err).WithField("body_preview", utils.TruncateString(string(bodyBytes), 512)).
+			Warn("Failed to parse OpenAI response for CC conversion, returning original")
+		// Store original body for downstream logging (will be truncated by logger).
+		c.Set("response_body", string(bodyBytes))
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
@@ -617,6 +690,9 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
+
+	// Store Claude response body for downstream logging (will be truncated by logger).
+	c.Set("response_body", string(claudeBody))
 
 	c.Header("Content-Type", "application/json")
 	c.Data(resp.StatusCode, "application/json", claudeBody)
@@ -696,6 +772,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				break
 			}
 			logrus.WithError(err).Error("CC: Error reading SSE event for CC conversion")
+			// Note: We don't send an error event to the client because:
+			// 1. Claude streaming API spec does not define a standard error event type
+			// 2. Client will detect stream interruption via connection close
+			// 3. Sending non-standard events may cause client parse errors
 			break
 		}
 
@@ -727,8 +807,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		var openaiChunk OpenAIResponse
 		if err := json.Unmarshal([]byte(event.Data), &openaiChunk); err != nil {
 			// SSE stream may contain non-JSON data (heartbeats, comments, etc.)
-			logrus.WithFields(logrus.Fields{
-				"data": event.Data,
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"event_type":   event.Event,
+				"data_preview": utils.TruncateString(event.Data, 512),
 			}).Debug("CC: Failed to parse OpenAI chunk as JSON, skipping")
 			continue
 		}

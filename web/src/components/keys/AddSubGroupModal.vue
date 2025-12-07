@@ -66,9 +66,19 @@ const getAvailableOptions = computed(() => {
         return false;
       }
 
-      // Must have the same channel type
-      if (group.channel_type !== props.aggregateGroup?.channel_type) {
-        return false;
+      // Channel type compatibility check
+      // For Anthropic (Claude) aggregate groups, allow both Anthropic channels and OpenAI channels with CC support
+      if (props.aggregateGroup?.channel_type === "anthropic") {
+        const isAnthropic = group.channel_type === "anthropic";
+        const isOpenAIWithCC = group.channel_type === "openai" && group.config?.cc_support === true;
+        if (!isAnthropic && !isOpenAIWithCC) {
+          return false;
+        }
+      } else {
+        // For non-Anthropic aggregate groups, require exact channel type match
+        if (group.channel_type !== props.aggregateGroup?.channel_type) {
+          return false;
+        }
       }
 
       // Cannot be the aggregate group itself
@@ -83,10 +93,28 @@ const getAvailableOptions = computed(() => {
 
       return true;
     })
-    .map(group => ({
-      label: getGroupDisplayName(group),
-      value: group?.id,
-    }));
+    .map(group => {
+      // Add CC support suffix for OpenAI channels with CC support (i18n)
+      let label = getGroupDisplayName(group);
+      const isOpenAIWithCC = group.channel_type === "openai" && group.config?.cc_support === true;
+      if (isOpenAIWithCC) {
+        label = `${label}${t("keys.ccSupportSuffix")}`;
+      }
+      return {
+        label,
+        value: group?.id,
+        // Store additional info for sorting
+        isAnthropic: group.channel_type === "anthropic",
+        isOpenAIWithCC,
+      };
+    })
+    .sort((a, b) => {
+      // Sort order: Anthropic channels first, then OpenAI with CC support
+      if (a.isAnthropic && !b.isAnthropic) return -1;
+      if (!a.isAnthropic && b.isAnthropic) return 1;
+      // Within same type, sort by label
+      return a.label.localeCompare(b.label, "zh-CN");
+    });
 });
 
 // Compute available options for each sub-group item

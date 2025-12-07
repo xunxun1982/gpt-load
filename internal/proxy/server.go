@@ -307,12 +307,18 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	// This must happen before body processing to ensure correct path for upstream
 	if isClaudePath(c.Request.URL.Path) && isCCSupportEnabled(group) {
 		originalPath := c.Request.URL.Path
+		originalQuery := c.Request.URL.RawQuery
 		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		// Sanitize query parameters for CC support (e.g., remove beta=true)
+		// These are Claude-specific and should not be passed to OpenAI-style upstreams
+		sanitizeCCQueryParams(c.Request.URL)
 		logrus.WithFields(logrus.Fields{
-			"group":         group.Name,
-			"original_path": originalPath,
-			"new_path":      c.Request.URL.Path,
-		}).Debug("CC support: rewritten Claude path to OpenAI path")
+			"group":           group.Name,
+			"original_path":   originalPath,
+			"new_path":        c.Request.URL.Path,
+			"original_query":  originalQuery,
+			"sanitized_query": c.Request.URL.RawQuery,
+		}).Debug("CC support: rewritten Claude path to OpenAI path and sanitized query params")
 	}
 
 	if c.Request.Method == "GET" || len(bodyBytes) == 0 {
@@ -344,6 +350,9 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
 			// We check for /v1/messages (after rewrite) and CC support enabled
 			if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+				// Sanitize query parameters for CC support so Claude-specific flags are not forwarded
+				sanitizeCCQueryParams(c.Request.URL)
+
 				convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
 				if ccErr != nil {
 					logrus.WithError(ccErr).WithFields(logrus.Fields{
@@ -727,18 +736,27 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// This rewrites /claude/ paths to standard OpenAI paths
 	if isClaudePath(c.Request.URL.Path) && isCCSupportEnabled(group) {
 		originalPath := c.Request.URL.Path
+		originalQuery := c.Request.URL.RawQuery
 		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		// Sanitize query parameters for CC support (e.g., remove beta=true)
+		// These are Claude-specific and should not be passed to OpenAI-style upstreams
+		sanitizeCCQueryParams(c.Request.URL)
 		logrus.WithFields(logrus.Fields{
-			"aggregate_group": originalGroup.Name,
-			"sub_group":       group.Name,
-			"original_path":   originalPath,
-			"new_path":        c.Request.URL.Path,
-		}).Debug("CC support: rewritten Claude path for sub-group")
+			"aggregate_group":  originalGroup.Name,
+			"sub_group":        group.Name,
+			"original_path":    originalPath,
+			"new_path":         c.Request.URL.Path,
+			"original_query":   originalQuery,
+			"sanitized_query":  c.Request.URL.RawQuery,
+		}).Debug("CC support: rewritten Claude path for sub-group and sanitized query params")
 	}
 
 	// Convert Claude messages request to OpenAI format
 	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
 	if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+		// Sanitize query parameters for CC support so Claude-specific flags are not forwarded
+		sanitizeCCQueryParams(c.Request.URL)
+
 		convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
 		if ccErr != nil {
 			logrus.WithError(ccErr).WithFields(logrus.Fields{

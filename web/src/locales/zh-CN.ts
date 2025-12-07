@@ -139,6 +139,7 @@ export default {
     atLeastOneSubGroup: "至少需要一个子分组",
     noAvailableSubGroups: "没有可用的子分组，请先创建标准分组",
     noMoreAvailableSubGroups: "没有更多可用的子分组",
+    ccSupportSuffix: " - CC支持",
     allSubGroupsSelected: "所有可用的子分组已被选择",
     selectChannelTypeFirst: "请先选择渠道类型",
     channelTypeChanged: "渠道类型已变更，子分组配置已清空",

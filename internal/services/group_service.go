@@ -510,6 +510,41 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		if err != nil {
 			return nil, err
 		}
+
+		// Check if cc_support is being disabled for OpenAI groups
+		// If so, verify that this group is not used as a sub-group in any Anthropic aggregate groups
+		if group.ChannelType == "openai" && group.GroupType != "aggregate" {
+			oldCCEnabled := isConfigCCSupportEnabled(group.Config)
+			newCCEnabled := isConfigCCSupportEnabled(cleanedConfig)
+
+			// CC support is being disabled (true -> false)
+			if oldCCEnabled && !newCCEnabled {
+				// Get parent aggregate groups
+				parentGroups, err := s.aggregateGroupService.GetParentAggregateGroups(ctx, group.ID)
+				if err != nil {
+					return nil, err
+				}
+
+				// Filter to only Anthropic aggregate groups
+				anthropicParents := make([]string, 0)
+				for _, parent := range parentGroups {
+					// Fetch parent group to check channel type
+					var parentGroup models.Group
+					if err := s.db.WithContext(ctx).Select("channel_type").First(&parentGroup, parent.GroupID).Error; err == nil {
+						if parentGroup.ChannelType == "anthropic" {
+							anthropicParents = append(anthropicParents, parent.Name)
+						}
+					}
+				}
+
+				// If used by Anthropic aggregate groups, disallow disabling CC support
+				if len(anthropicParents) > 0 {
+					return nil, NewI18nError(app_errors.ErrValidation, "validation.cc_support_cannot_disable_used_by_anthropic",
+						map[string]any{"groups": strings.Join(anthropicParents, ", ")})
+				}
+			}
+		}
+
 		group.Config = cleanedConfig
 	}
 
@@ -1418,6 +1453,29 @@ func (s *GroupService) generateUniqueGroupNameForCopy(ctx context.Context, baseN
 	groupName := fmt.Sprintf("%s%d", trimmedBaseName, time.Now().Unix())
 	logrus.WithContext(ctx).Warnf("Failed to generate unique group name after %d attempts, using timestamp suffix", maxAttempts)
 	return groupName
+}
+
+// isConfigCCSupportEnabled checks whether cc_support is enabled in a config map.
+func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
+	if config == nil {
+		return false
+	}
+
+	raw, ok := config["cc_support"]
+	if !ok || raw == nil {
+		return false
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	default:
+		return false
+	}
 }
 
 // isValidGroupName validates the group name.

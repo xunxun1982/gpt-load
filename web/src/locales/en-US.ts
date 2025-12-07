@@ -140,6 +140,7 @@ export default {
     atLeastOneSubGroup: "At least one sub group is required",
     noAvailableSubGroups: "No available sub groups, please create standard groups first",
     noMoreAvailableSubGroups: "No more available sub groups",
+    ccSupportSuffix: " - CC Support",
     allSubGroupsSelected: "All available sub groups have been selected",
     selectChannelTypeFirst: "Please select channel type first",
     channelTypeChanged: "Channel type changed, sub groups configuration has been cleared",
