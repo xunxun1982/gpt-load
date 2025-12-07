@@ -77,9 +77,9 @@ func sanitizeCCQueryParams(u *url.URL) {
 //   - /proxy/claude/v1/models -> true (group named "claude", no CC path)
 //   - /proxy/claude/claude/v1/models -> true (group named "claude", with CC path)
 func isClaudePath(path string) bool {
-	// Look for /claude/v1 pattern which indicates CC endpoint
+	// Look for /claude/v1/ or /claude/v1 at end of path
 	// This avoids matching group names that contain "claude"
-	return strings.Contains(path, "/claude/v1")
+	return strings.Contains(path, "/claude/v1/") || strings.HasSuffix(path, "/claude/v1")
 }
 
 // rewriteClaudePathToOpenAIGeneric removes the /claude segment from the path.
@@ -1034,6 +1034,11 @@ func (r *SSEReader) ReadEvent() (*SSEEvent, error) {
 			if event.Data != "" {
 				return event, nil
 			}
+			continue
+		}
+
+		// Skip SSE comment lines
+		if strings.HasPrefix(line, ":") {
 			continue
 		}
 

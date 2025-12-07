@@ -353,9 +353,6 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
 			// We check for /v1/messages (after rewrite) and CC support enabled
 			if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
-				// Sanitize query parameters for CC support so Claude-specific flags are not forwarded
-				sanitizeCCQueryParams(c.Request.URL)
-
 				convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
 				if ccErr != nil {
 					logrus.WithError(ccErr).WithFields(logrus.Fields{
@@ -771,9 +768,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Convert Claude messages request to OpenAI format
 	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
 	if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
-		// Sanitize query parameters for CC support so Claude-specific flags are not forwarded
-		sanitizeCCQueryParams(c.Request.URL)
-
 		convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
 		if ccErr != nil {
 			logrus.WithError(ccErr).WithFields(logrus.Fields{

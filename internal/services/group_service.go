@@ -535,7 +535,7 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 					var parentGroupModels []models.Group
 					if err := s.db.WithContext(ctx).Select("id", "channel_type").Where("id IN ?", parentIDs).Find(&parentGroupModels).Error; err != nil {
-						return nil, err
+						return nil, fmt.Errorf("failed to fetch parent groups for CC validation: %w", err)
 					}
 
 					channelTypeMap := make(map[uint]string, len(parentGroupModels))
