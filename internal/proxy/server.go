@@ -54,11 +54,10 @@ type retryContext struct {
 	originalBodyBytes   []byte        // Original request body (before any sub-group mapping)
 	originalPath        string        // Original request path (for CC support restoration)
 	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
-	currentSubGroupID   uint          // Currently selected sub-group ID
 }
 
 // parseRetryConfigInt extracts and validates a retry-related integer config value.
-// Returns a value clamped to the range [0, 5].
+// Returns a value clamped to the range [0, 100].
 func parseRetryConfigInt(config map[string]any, key string) int {
 	if config == nil {
 		return 0
@@ -729,7 +728,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Store current sub-group ID for failure handling
 	c.Set("current_sub_group_id", subGroupID)
-	retryCtx.currentSubGroupID = subGroupID
 
 	// Apply model mapping for the selected sub-group
 	finalBodyBytes, originalModel := ps.applyModelMapping(bodyBytes, group)
@@ -992,6 +990,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		subGroupCfg := group.EffectiveConfig
 		subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
 		subGroupMaxRetries := subGroupCfg.MaxRetries
+		if subGroupMaxRetries < 0 {
+			subGroupMaxRetries = 0
+		} else if subGroupMaxRetries > 100 {
+			subGroupMaxRetries = 100
+		}
 
 		// Determine if sub-group has exhausted its key retries
 		isSubGroupKeyRetryExhausted := subGroupKeyRetryCount >= subGroupMaxRetries
@@ -1021,7 +1024,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"sub_group":              group.Name,
 				"sub_group_key_retry":    subGroupKeyRetryCount + 1,
 				"sub_group_max_retries":  subGroupMaxRetries,
-			}).Debug("Retrying with different key in same sub-group")
+			}).Debug("Retrying with another key; sub-group may be re-selected if not excluded")
 
 			// Restore original path for retry (CC support may have modified it)
 			if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {

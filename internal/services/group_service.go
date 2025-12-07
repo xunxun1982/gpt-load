@@ -595,7 +595,7 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		group.PathRedirects = pathRedirectsJSON
 	}
 
-	// Start transaction only for the actual database write - minimizes lock time
+	// Perform the actual database write - minimizes lock time
 	if err := s.db.WithContext(ctx).Save(&group).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}

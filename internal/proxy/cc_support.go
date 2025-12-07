@@ -463,8 +463,13 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	c.Set(ctxKeyCCEnabled, true)
 	c.Set(ctxKeyOriginalFormat, "claude")
 
+	groupName := "unknown"
+	if group != nil {
+		groupName = group.Name
+	}
+
 	logrus.WithFields(logrus.Fields{
-		"group":          group.Name,
+		"group":          groupName,
 		"original_model": originalModel,
 		"stream":         claudeReq.Stream,
 		"tools_count":    len(claudeReq.Tools),

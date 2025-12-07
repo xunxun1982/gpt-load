@@ -563,27 +563,6 @@ function formatNumber(num: number): string {
   min-width: 0;
 }
 
-/* CC Support Badge styles */
-.cc-support-badge {
-  flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  animation: subtle-pulse 2s ease-in-out infinite;
-}
-
-@keyframes subtle-pulse {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.02);
-    opacity: 0.95;
-  }
-}
-
 .group-name {
   font-size: 13px;
   font-weight: 500;
