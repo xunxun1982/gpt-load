@@ -49,12 +49,13 @@ type ProxyServer struct {
 // retryContext holds the retry state for a single request
 // This context is created per request and lives only for the request's lifetime
 type retryContext struct {
-	excludedSubGroups map[uint]bool // Sub-group IDs that have failed in the current request (only for current aggregate group)
-	attemptCount      int           // Current attempt count
-	originalBodyBytes []byte        // Original request body (before any sub-group mapping)
-	originalPath      string        // Original request path (before any CC support path rewriting)
+	excludedSubGroups   map[uint]bool // Sub-group IDs that have failed in the current request (only for current aggregate group)
+	attemptCount        int           // Current attempt count (aggregate-level sub-group switches)
+	originalBodyBytes   []byte        // Original request body (before any sub-group mapping)
+	originalPath        string        // Original request path (for CC support restoration)
+	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
+	currentSubGroupID   uint          // Currently selected sub-group ID
 }
-
 
 // parseRetryConfigInt extracts and validates a retry-related integer config value.
 // Returns a value clamped to the range [0, 5].
@@ -105,25 +106,27 @@ func parseRetryConfigInt(config map[string]any, key string) int {
 		}).Warn("Unexpected type for retry config value")
 	}
 
-	// Clamp to 0-5 range
+	// Clamp to reasonable range: 0-100
+	// Note: Previously limited to 5, but users may need higher retry counts
+	// for high-availability scenarios with many upstreams or sub-groups.
 	if retries < 0 {
 		return 0
 	}
-	if retries > 5 {
-		return 5
+	if retries > 100 {
+		return 100
 	}
 
 	return retries
 }
 
 // parseMaxRetries extracts and validates max_retries from group config
-// Returns a value clamped to the range [0, 5]
+// Returns a value clamped to the range [0, 100]
 func parseMaxRetries(config map[string]any) int {
 	return parseRetryConfigInt(config, "max_retries")
 }
 
 // parseSubMaxRetries extracts and validates sub_max_retries from group config
-// Returns a value clamped to the range [0, 5]
+// Returns a value clamped to the range [0, 100]
 func parseSubMaxRetries(config map[string]any) int {
 	return parseRetryConfigInt(config, "sub_max_retries")
 }
@@ -250,9 +253,10 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	if originalGroup.GroupType == "aggregate" {
 		// Pre-allocate map with capacity equal to number of sub-groups for performance
 		retryCtx = &retryContext{
-			excludedSubGroups: make(map[uint]bool, len(originalGroup.SubGroups)),
-			attemptCount:      0,
-			originalPath:      c.Request.URL.Path, // Save original path for retry restoration
+			excludedSubGroups:   make(map[uint]bool, len(originalGroup.SubGroups)),
+			attemptCount:        0,
+			originalPath:        c.Request.URL.Path, // Save original path for retry restoration
+			subGroupKeyRetryMap: make(map[uint]int, len(originalGroup.SubGroups)),
 		}
 	}
 
@@ -645,8 +649,22 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		c.Request.URL.Path = retryCtx.originalPath
 	}
 
-	// Get max retries from aggregate group config (default 0)
+	// Get max retries from aggregate group config
 	maxRetries := parseMaxRetries(originalGroup.Config)
+
+	// CRITICAL FIX: If aggregate group has no max_retries configured (default 0),
+	// provide intelligent default based on sub-group count to prevent immediate failure.
+	// Without this, first sub-group failure is marked as "final" (0 >= 0 = true) with no retry.
+	if maxRetries == 0 && len(originalGroup.SubGroups) > 1 {
+		// Default: try each sub-group once (subgroup_count - 1 retries)
+		maxRetries = len(originalGroup.SubGroups) - 1
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group":   originalGroup.Name,
+			"sub_group_count":   len(originalGroup.SubGroups),
+			"default_max_retries": maxRetries,
+		}).Debug("Aggregate group has no max_retries config, using sub-group count as default")
+	}
+
 	// Get sub-group level max retries. When set to 0 or omitted, it does not override
 	// the aggregate group's max_retries. For positive values, it acts as an upper
 	// bound for aggregate retries to keep total attempts small.
@@ -711,6 +729,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Store current sub-group ID for failure handling
 	c.Set("current_sub_group_id", subGroupID)
+	retryCtx.currentSubGroupID = subGroupID
 
 	// Apply model mapping for the selected sub-group
 	finalBodyBytes, originalModel := ps.applyModelMapping(bodyBytes, group)
@@ -969,7 +988,58 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// Update key status
 		ps.keyProvider.UpdateStatus(apiKey, group, false, parsedError)
 
-		// Handle sub-group failure
+		// Check sub-group's key retry limit
+		subGroupCfg := group.EffectiveConfig
+		subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
+		subGroupMaxRetries := subGroupCfg.MaxRetries
+
+		// Determine if sub-group has exhausted its key retries
+		isSubGroupKeyRetryExhausted := subGroupKeyRetryCount >= subGroupMaxRetries
+
+		// Log detailed retry status
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group":        originalGroup.Name,
+			"sub_group":              group.Name,
+			"sub_group_key_retry":    subGroupKeyRetryCount,
+			"sub_group_max_retries":  subGroupMaxRetries,
+			"aggregate_attempt":      retryCtx.attemptCount,
+			"aggregate_max_retries":  maxRetries,
+			"status_code":            statusCode,
+			"key_retries_exhausted":  isSubGroupKeyRetryExhausted,
+		}).Debug("Sub-group request failed, checking retry strategy")
+
+		// If sub-group still has key retries left, retry with a different key in the same sub-group
+		if !isSubGroupKeyRetryExhausted {
+			// Increment sub-group key retry count
+			retryCtx.subGroupKeyRetryMap[subGroupID]++
+
+			// Log retry request for sub-group key retry
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream,
+				upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeRetry)
+
+			logrus.WithFields(logrus.Fields{
+				"sub_group":              group.Name,
+				"sub_group_key_retry":    subGroupKeyRetryCount + 1,
+				"sub_group_max_retries":  subGroupMaxRetries,
+			}).Debug("Retrying with different key in same sub-group")
+
+			// Restore original path for retry (CC support may have modified it)
+			if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {
+				c.Request.URL.Path = retryCtx.originalPath
+			}
+
+			// Retry with same sub-group but different key (SelectKey will choose a different one)
+			ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, startTime, retryCtx)
+			return
+		}
+
+		// Sub-group key retries exhausted, handle aggregate-level retry (switch to next sub-group)
+		logrus.WithFields(logrus.Fields{
+			"sub_group":              group.Name,
+			"sub_group_key_retries":  subGroupKeyRetryCount,
+			"sub_group_max_retries":  subGroupMaxRetries,
+		}).Debug("Sub-group key retries exhausted, switching to next sub-group")
+
 		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, statusCode, errors.New(parsedError), apiKey)
 		return
 	}

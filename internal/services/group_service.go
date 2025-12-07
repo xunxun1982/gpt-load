@@ -525,13 +525,26 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 					return nil, err
 				}
 
-				// Filter to only Anthropic aggregate groups
+				// Batch fetch channel types for all parent groups to avoid N+1 queries
 				anthropicParents := make([]string, 0)
-				for _, parent := range parentGroups {
-					// Fetch parent group to check channel type
-					var parentGroup models.Group
-					if err := s.db.WithContext(ctx).Select("channel_type").First(&parentGroup, parent.GroupID).Error; err == nil {
-						if parentGroup.ChannelType == "anthropic" {
+				if len(parentGroups) > 0 {
+					parentIDs := make([]uint, 0, len(parentGroups))
+					for _, parent := range parentGroups {
+						parentIDs = append(parentIDs, parent.GroupID)
+					}
+
+					var parentGroupModels []models.Group
+					if err := s.db.WithContext(ctx).Select("id", "channel_type").Where("id IN ?", parentIDs).Find(&parentGroupModels).Error; err != nil {
+						return nil, err
+					}
+
+					channelTypeMap := make(map[uint]string, len(parentGroupModels))
+					for _, pg := range parentGroupModels {
+						channelTypeMap[pg.ID] = pg.ChannelType
+					}
+
+					for _, parent := range parentGroups {
+						if channelTypeMap[parent.GroupID] == "anthropic" {
 							anthropicParents = append(anthropicParents, parent.Name)
 						}
 					}

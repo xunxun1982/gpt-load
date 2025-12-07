@@ -427,10 +427,12 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	// Store original model for logging
 	originalModel := claudeReq.Model
 
-	// Store original model in context for request logging
-	// This ensures the mapped_model field is populated in logs
+	// Preserve any existing original_model (from model mapping) so
+	// MappedModel logging continues to work. Only set it when absent.
 	if originalModel != "" {
-		c.Set("original_model", originalModel)
+		if _, exists := c.Get("original_model"); !exists {
+			c.Set("original_model", originalModel)
+		}
 	}
 
 	// Convert to OpenAI format
@@ -614,6 +616,7 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
 }
 
 // convertFinishReasonToStopReason converts OpenAI finish_reason to Claude stop_reason.
+// Also handles non-standard finish reasons from various upstream providers.
 func convertFinishReasonToStopReason(finishReason string) string {
 	switch finishReason {
 	case "stop":
@@ -624,7 +627,20 @@ func convertFinishReasonToStopReason(finishReason string) string {
 		return "tool_use"
 	case "content_filter":
 		return "refusal"
+	// Handle non-standard error-related finish reasons from upstream providers.
+	// Convert these to end_turn to prevent Claude Code from treating them as
+	// abnormal terminations. Log the original reason for debugging.
+	case "network_error", "error", "timeout", "rate_limit", "server_error":
+		logrus.WithField("original_finish_reason", finishReason).
+			Warn("CC: Received non-standard finish_reason from upstream, converting to end_turn")
+		return "end_turn"
 	default:
+		// For any other unknown finish reason, log it but still return as-is
+		// to maintain compatibility with potential future OpenAI/Claude API changes
+		if finishReason != "" {
+			logrus.WithField("finish_reason", finishReason).
+				Debug("CC: Unknown finish_reason, passing through as-is")
+		}
 		return finishReason
 	}
 }
@@ -694,6 +710,13 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// Store Claude response body for downstream logging (will be truncated by logger).
 	c.Set("response_body", string(claudeBody))
 
+	// Clear upstream encoding/length headers before writing synthesized response.
+	// The proxy decompresses and re-encodes the response, so upstream headers no longer match.
+	// Per RFC 7230, mismatched Content-Length causes client to treat response as incomplete.
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
+
 	c.Header("Content-Type", "application/json")
 	c.Data(resp.StatusCode, "application/json", claudeBody)
 }
@@ -718,6 +741,13 @@ type ClaudeStreamDelta struct {
 
 // handleCCStreamingResponse handles streaming response conversion for CC support.
 func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Response) {
+	// Clear upstream encoding/length headers before writing synthesized SSE stream.
+	// The proxy reconstructs the event stream from OpenAI format to Claude format,
+	// so upstream headers (Content-Encoding, Content-Length, Transfer-Encoding) no longer apply.
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -941,6 +971,15 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			}
 			writeClaudeEvent(c.Writer, deltaEvent)
 			flusher.Flush()
+
+			// Send message_stop to properly close the stream
+			// Claude clients expect this event after message_delta with stop_reason
+			stopEvent := ClaudeStreamEvent{Type: "message_stop"}
+			writeClaudeEvent(c.Writer, stopEvent)
+			flusher.Flush()
+
+			logrus.WithField("stop_reason", stopReason).Debug("CC: Stream finished with finish_reason")
+			break
 		}
 	}
 }

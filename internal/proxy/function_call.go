@@ -490,6 +490,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
                     msg["content"] = cleaned
                     chMap["message"] = msg
                     choices[i] = chMap
+                    modified = true // Mark response as modified to write cleaned content back to client
                     logrus.WithFields(logrus.Fields{
                         "trigger_signal":  triggerSignal,
                         "content_preview": utils.TruncateString(parseInput, 200),

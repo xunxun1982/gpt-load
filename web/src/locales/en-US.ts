@@ -140,7 +140,8 @@ export default {
     atLeastOneSubGroup: "At least one sub group is required",
     noAvailableSubGroups: "No available sub groups, please create standard groups first",
     noMoreAvailableSubGroups: "No more available sub groups",
-    ccSupportSuffix: " - CC Support",
+    ccSupportSuffix: " - Force CC Support",
+    ccSupportBadge: "Force CC",
     allSubGroupsSelected: "All available sub groups have been selected",
     selectChannelTypeFirst: "Please select channel type first",
     channelTypeChanged: "Channel type changed, sub groups configuration has been cleared",
@@ -440,14 +441,14 @@ export default {
     looseModeDesc: "Configured models redirect, others pass through",
     sourceModel: "Source Model",
     addModelRedirect: "Add Model Redirect",
-    functionCall: "Function Call",
+    functionCall: "Force Function Call",
     functionCallTooltip1:
       "Enable middleware-based function call for this group (Toolify-style behavior).",
     functionCallTooltip2:
       "Only enable this for providers that do NOT have native function call support. Enabling it on providers with built-in function call may cause duplicated or undefined behavior.",
     functionCallOpenAITip:
       "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
-    ccSupport: "CC Support",
+    ccSupport: "Force CC Support",
     ccSupportTooltip1:
       "Enable Claude Code compatibility mode, allowing Claude clients to connect via /claude endpoint.",
     ccSupportTooltip2:

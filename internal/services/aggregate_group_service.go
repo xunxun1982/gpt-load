@@ -14,7 +14,6 @@ import (
 	"gpt-load/internal/utils"
 
 	"github.com/sirupsen/logrus"
-	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -79,6 +78,30 @@ func isGroupCCSupportEnabled(group *models.Group) bool {
 	}
 }
 
+// getEffectiveEndpointForAggregation returns the effective validation endpoint for a sub-group
+// in the context of an aggregate group. For OpenAI+CC sub-groups in Anthropic aggregates,
+// requests go through /claude/v1/messages route which uses Claude's endpoint, not OpenAI's.
+func getEffectiveEndpointForAggregation(subGroup *models.Group, aggregateChannelType string, isOpenAIWithCC bool) string {
+	// If sub-group has custom validation endpoint, use it
+	if subGroup.ValidationEndpoint != "" {
+		// For OpenAI+CC in Anthropic aggregate, the effective endpoint should be Claude's
+		// because CC routes go through /claude/v1/messages
+		if aggregateChannelType == "anthropic" && isOpenAIWithCC {
+			return "/v1/messages"
+		}
+		return subGroup.ValidationEndpoint
+	}
+
+	// For OpenAI+CC sub-groups in Anthropic aggregates, use Claude's endpoint
+	// because CC mode routes requests through /claude/v1/messages
+	if aggregateChannelType == "anthropic" && isOpenAIWithCC {
+		return "/v1/messages"
+	}
+
+	// Otherwise use the standard endpoint for the sub-group's channel type
+	return utils.GetValidationEndpoint(subGroup)
+}
+
 // ValidateSubGroups validates sub-groups with an optional existing validation endpoint for consistency check.
 func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelType string, inputs []SubGroupInput, existingEndpoint string) (*AggregateValidationResult, error) {
 	if len(inputs) == 0 {
@@ -123,9 +146,9 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 
 		// Channel type compatibility check
 		// For Anthropic aggregate groups, allow both Anthropic channels and OpenAI channels with CC support
+		isOpenAIWithCC := sg.ChannelType == "openai" && isGroupCCSupportEnabled(&sg)
 		if channelType == "anthropic" {
 			isAnthropic := sg.ChannelType == "anthropic"
-			isOpenAIWithCC := sg.ChannelType == "openai" && isGroupCCSupportEnabled(&sg)
 			if !isAnthropic && !isOpenAIWithCC {
 				return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_channel_mismatch", nil)
 			}
@@ -136,10 +159,15 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 			}
 		}
 
-		// If no existing endpoint, use the first sub-group's effective endpoint
+		// Calculate effective endpoint for this sub-group in the context of the aggregate group.
+		// For Anthropic aggregates with OpenAI+CC sub-groups, the CC endpoint uses /v1/messages
+		// (via /claude/v1/messages route) instead of OpenAI's /v1/chat/completions.
+		effectiveEndpoint := getEffectiveEndpointForAggregation(&sg, channelType, isOpenAIWithCC)
+
+		// Validate endpoint consistency
 		if validationEndpoint == "" {
-			validationEndpoint = utils.GetValidationEndpoint(&sg)
-		} else if validationEndpoint != utils.GetValidationEndpoint(&sg) {
+			validationEndpoint = effectiveEndpoint
+		} else if validationEndpoint != effectiveEndpoint {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_validation_endpoint_mismatch", nil)
 		}
 		subGroupMap[sg.ID] = sg
@@ -232,7 +260,9 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 	if len(existingSubGroups) > 0 {
 		var existingGroup models.Group
 		if err := s.db.WithContext(ctx).Where("id = ?", existingSubGroups[0].SubGroupID).Limit(1).Find(&existingGroup).Error; err == nil && existingGroup.ID != 0 {
-			existingEndpoint = utils.GetValidationEndpoint(&existingGroup)
+			// Use effective endpoint for the aggregate context, not the raw endpoint
+			isOpenAIWithCC := existingGroup.ChannelType == "openai" && isGroupCCSupportEnabled(&existingGroup)
+			existingEndpoint = getEffectiveEndpointForAggregation(&existingGroup, group.ChannelType, isOpenAIWithCC)
 		}
 	}
 
@@ -255,14 +285,6 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 		}
 	}
 
-	// For Claude sub-groups, automatically create corresponding OpenAI sub-groups with CC support enabled
-	ccEnabledSubGroups, err := s.createCCEnabledSubGroupsForClaude(ctx, result.SubGroups)
-	if err != nil {
-		logrus.WithContext(ctx).WithError(err).Warn("Failed to create CC-enabled OpenAI sub-groups for Claude, adding original sub-groups only")
-		// Continue with original sub-groups even if CC sub-group creation fails
-		ccEnabledSubGroups = nil
-	}
-
 	// Add new sub groups using batch insert for better performance
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Set groupID for all sub groups
@@ -274,17 +296,6 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 		const batchSize = 100
 		if err := tx.CreateInBatches(result.SubGroups, batchSize).Error; err != nil {
 			return app_errors.ParseDBError(err)
-		}
-
-		// Add CC-enabled OpenAI sub-groups if any were created
-		if len(ccEnabledSubGroups) > 0 {
-			for i := range ccEnabledSubGroups {
-				ccEnabledSubGroups[i].GroupID = groupID
-			}
-			if err := tx.CreateInBatches(ccEnabledSubGroups, batchSize).Error; err != nil {
-				logrus.WithContext(ctx).WithError(err).Warn("Failed to insert CC-enabled OpenAI sub-groups, continuing with original sub-groups")
-				// Don't fail the whole transaction, just log the warning
-			}
 		}
 		return nil
 	})
@@ -592,120 +603,4 @@ func (s *AggregateGroupService) cleanupExpiredCacheEntries() {
 			delete(s.statsCache, key)
 		}
 	}
-}
-
-// createCCEnabledSubGroupsForClaude creates OpenAI sub-groups with CC support for Claude sub-groups
-// This allows aggregate groups to include both native Claude API and CC-converted OpenAI API
-func (s *AggregateGroupService) createCCEnabledSubGroupsForClaude(ctx context.Context, subGroups []models.GroupSubGroup) ([]models.GroupSubGroup, error) {
-	if len(subGroups) == 0 {
-		return nil, nil
-	}
-
-	// Collect sub-group IDs
-	subGroupIDs := make([]uint, 0, len(subGroups))
-	for _, sg := range subGroups {
-		subGroupIDs = append(subGroupIDs, sg.SubGroupID)
-	}
-
-	// Fetch sub-group details
-	var subGroupModels []models.Group
-	if err := s.db.WithContext(ctx).Where("id IN ?", subGroupIDs).Find(&subGroupModels).Error; err != nil {
-		return nil, err
-	}
-
-	// Build map for quick lookup
-	subGroupMap := make(map[uint]*models.Group, len(subGroupModels))
-	for i := range subGroupModels {
-		subGroupMap[subGroupModels[i].ID] = &subGroupModels[i]
-	}
-
-	// Create CC-enabled OpenAI sub-groups for Claude sub-groups
-	ccEnabledGroups := make([]models.GroupSubGroup, 0)
-	for _, sg := range subGroups {
-		origGroup, exists := subGroupMap[sg.SubGroupID]
-		if !exists {
-			continue
-		}
-
-		// Only create CC sub-groups for Anthropic (Claude) channel type
-		if origGroup.ChannelType != "anthropic" {
-			continue
-		}
-
-		// Create new OpenAI group with CC support
-		ccGroupName := origGroup.Name + "-CC支持"
-
-		// Check if CC group already exists
-		var existingGroup models.Group
-		if err := s.db.WithContext(ctx).Where("name = ?", ccGroupName).First(&existingGroup).Error; err == nil {
-			// CC group already exists, add it to sub-groups
-			logrus.WithContext(ctx).WithFields(logrus.Fields{
-				"claude_group": origGroup.Name,
-				"cc_group":     ccGroupName,
-			}).Debug("CC-enabled OpenAI sub-group already exists, reusing")
-			ccEnabledGroups = append(ccEnabledGroups, models.GroupSubGroup{
-				SubGroupID: existingGroup.ID,
-				Weight:     sg.Weight, // Use same weight as Claude sub-group
-			})
-			continue
-		} else if err != gorm.ErrRecordNotFound {
-			logrus.WithContext(ctx).WithError(err).Warn("Failed to check existing CC group")
-			continue
-		}
-
-		// Create new CC-enabled OpenAI group
-		ccConfig := make(map[string]interface{})
-		if origGroup.Config != nil {
-			// Copy existing config
-			for k, v := range origGroup.Config {
-				ccConfig[k] = v
-			}
-		}
-		// Force enable CC support
-		ccConfig["cc_support"] = true
-
-		ccGroup := models.Group{
-			Name:                origGroup.Name + "-CC支持",
-			DisplayName:         origGroup.DisplayName + " (CC支持)",
-			Description:         "Auto-generated OpenAI sub-group with CC support for " + origGroup.Name,
-			GroupType:           "standard",
-			Upstreams:           origGroup.Upstreams, // Copy upstreams from Claude group
-			ChannelType:         "openai",            // Use OpenAI channel type
-			Sort:                origGroup.Sort,
-			TestModel:           origGroup.TestModel,
-			ValidationEndpoint:  origGroup.ValidationEndpoint,
-			ParamOverrides:      origGroup.ParamOverrides,
-			Config:              datatypes.JSONMap(ccConfig),
-			HeaderRules:         origGroup.HeaderRules,
-			ModelMapping:        origGroup.ModelMapping,
-			ModelRedirectRules:  origGroup.ModelRedirectRules,
-			ModelRedirectStrict: origGroup.ModelRedirectStrict,
-			PathRedirects:       origGroup.PathRedirects,
-			ProxyKeys:           origGroup.ProxyKeys,
-			Enabled:             true,
-		}
-
-		// Create the CC group
-		if err := s.db.WithContext(ctx).Create(&ccGroup).Error; err != nil {
-			logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
-				"claude_group": origGroup.Name,
-				"cc_group":     ccGroupName,
-			}).Warn("Failed to create CC-enabled OpenAI sub-group")
-			continue
-		}
-
-		logrus.WithContext(ctx).WithFields(logrus.Fields{
-			"claude_group":  origGroup.Name,
-			"cc_group":      ccGroupName,
-			"cc_group_id":   ccGroup.ID,
-			"weight":        sg.Weight,
-		}).Info("Created CC-enabled OpenAI sub-group for Claude")
-
-		ccEnabledGroups = append(ccEnabledGroups, models.GroupSubGroup{
-			SubGroupID: ccGroup.ID,
-			Weight:     sg.Weight, // Use same weight as Claude sub-group
-		})
-	}
-
-	return ccEnabledGroups, nil
 }
