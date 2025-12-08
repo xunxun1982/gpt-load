@@ -426,23 +426,27 @@ func (s *MemoryStore) Publish(channel string, message []byte) error {
 	if subs, ok := s.subscribers[channel]; ok {
 		subscriberCount := len(subs)
 		payloadSize := len(message)
+		droppedCount := 0
 
 		for subCh := range subs {
 			select {
 			case subCh <- msg:
 			default:
-				// Buffer full, drop message to prevent blocking and memory leaks
-				// In a high-throughput system, dropping is better than OOM
-				s.droppedMessages.Add(1)
+				droppedCount++
+			}
+		}
 
-				if logrus.IsLevelEnabled(logrus.DebugLevel) {
-					logrus.WithFields(logrus.Fields{
-						"channel":            channel,
-						"subscribers":        subscriberCount,
-						"payload_size_bytes": payloadSize,
-						"dropped_total":      s.droppedMessages.Load(),
-					}).Debug("Dropping message due to full subscriber buffer")
-				}
+		if droppedCount > 0 {
+			s.droppedMessages.Add(int64(droppedCount))
+
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"channel":            channel,
+					"subscribers":        subscriberCount,
+					"dropped_this_call":  droppedCount,
+					"payload_size_bytes": payloadSize,
+					"dropped_total":      s.droppedMessages.Load(),
+				}).Debug("Dropped messages due to full subscriber buffers")
 			}
 		}
 	}
