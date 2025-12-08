@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -17,10 +18,11 @@ type memoryStoreItem struct {
 
 // MemoryStore is an in-memory key-value store that is safe for concurrent use.
 type MemoryStore struct {
-	mu            sync.RWMutex
-	data          map[string]any
-	muSubscribers sync.RWMutex
-	subscribers   map[string]map[chan *Message]struct{}
+	mu              sync.RWMutex
+	data            map[string]any
+	muSubscribers   sync.RWMutex
+	subscribers     map[string]map[chan *Message]struct{}
+	droppedMessages atomic.Int64
 }
 
 // NewMemoryStore creates and returns a new MemoryStore instance.
@@ -411,6 +413,7 @@ func (ms *memorySubscription) Close() error {
 // Publish sends a message to all subscribers of a channel.
 // NOTE: This uses at-most-once delivery semantics. Messages may be dropped under backpressure
 // to avoid blocking publishers and to prevent unbounded memory or goroutine growth.
+// High-throughput benchmarks and acceptable drop thresholds should be validated by callers.
 func (s *MemoryStore) Publish(channel string, message []byte) error {
 	s.muSubscribers.RLock()
 	defer s.muSubscribers.RUnlock()
@@ -421,13 +424,25 @@ func (s *MemoryStore) Publish(channel string, message []byte) error {
 	}
 
 	if subs, ok := s.subscribers[channel]; ok {
+		subscriberCount := len(subs)
+		payloadSize := len(message)
+
 		for subCh := range subs {
 			select {
 			case subCh <- msg:
 			default:
 				// Buffer full, drop message to prevent blocking and memory leaks
 				// In a high-throughput system, dropping is better than OOM
-				logrus.WithField("channel", channel).Debug("Dropping message due to full subscriber buffer")
+				s.droppedMessages.Add(1)
+
+				if logrus.IsLevelEnabled(logrus.DebugLevel) {
+					logrus.WithFields(logrus.Fields{
+						"channel":            channel,
+						"subscribers":        subscriberCount,
+						"payload_size_bytes": payloadSize,
+						"dropped_total":      s.droppedMessages.Load(),
+					}).Debug("Dropping message due to full subscriber buffer")
+				}
 			}
 		}
 	}
@@ -464,4 +479,10 @@ func (s *MemoryStore) Clear() error {
 	s.data = make(map[string]any)
 
 	return nil
+}
+
+// DroppedMessages returns the total number of messages dropped due to subscriber backpressure.
+// This is a lightweight metric for observability and does not reset the internal counter.
+func (s *MemoryStore) DroppedMessages() int64 {
+	return s.droppedMessages.Load()
 }
