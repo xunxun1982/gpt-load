@@ -1479,6 +1479,9 @@ func (s *GroupService) generateUniqueGroupNameForCopy(ctx context.Context, baseN
 // isConfigCCSupportEnabled checks whether cc_support is enabled in a config map.
 // Accepted value types are: bool, numeric values (treated as enabled when non-zero), and
 // string values like "true"/"1"/"yes"/"on" for backward compatibility with runtime checks.
+// NOTE: This helper intentionally mirrors the runtime isCCSupportEnabled parsing logic instead
+// of using a shared cross-package utility to keep validation self-contained and avoid extra
+// coupling between proxy and services layers.
 func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
 	if config == nil {
 		return false
