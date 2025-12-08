@@ -176,7 +176,10 @@ func (s *KeyService) processAndCreateKeys(
 
 		encryptedKey, err := s.EncryptionSvc.Encrypt(trimmedKey)
 		if err != nil {
-			logrus.WithError(err).WithField("key", trimmedKey).Error("Failed to encrypt key, skipping")
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"group_id": groupID,
+				"key_hash": keyHash,
+			}).Error("Failed to encrypt key, skipping")
 			continue
 		}
 

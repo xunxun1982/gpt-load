@@ -409,6 +409,8 @@ func (ms *memorySubscription) Close() error {
 }
 
 // Publish sends a message to all subscribers of a channel.
+// NOTE: This uses at-most-once delivery semantics. Messages may be dropped under backpressure
+// to avoid blocking publishers and to prevent unbounded memory or goroutine growth.
 func (s *MemoryStore) Publish(channel string, message []byte) error {
 	s.muSubscribers.RLock()
 	defer s.muSubscribers.RUnlock()
