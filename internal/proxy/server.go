@@ -659,17 +659,19 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Get max retries from aggregate group config
 	maxRetries := parseMaxRetries(originalGroup.Config)
 
-	// CRITICAL FIX: If aggregate group has no max_retries configured (default 0),
-	// provide intelligent default based on sub-group count to prevent immediate failure.
-	// Without this, first sub-group failure is marked as "final" (0 >= 0 = true) with no retry.
-	if maxRetries == 0 && len(originalGroup.SubGroups) > 1 {
+	// When aggregate group has no explicit max_retries configured (key not present),
+	// provide an intelligent default based on sub-group count to prevent immediate
+	// failure on the first sub-group. For explicit max_retries: 0 we preserve the
+	// "no aggregate retries" semantics for backward compatibility.
+	_, hasMaxRetriesKey := originalGroup.Config["max_retries"]
+	if !hasMaxRetriesKey && maxRetries == 0 && len(originalGroup.SubGroups) > 1 {
 		// Default: try each sub-group once (subgroup_count - 1 retries)
 		maxRetries = len(originalGroup.SubGroups) - 1
 		logrus.WithFields(logrus.Fields{
-			"aggregate_group":   originalGroup.Name,
-			"sub_group_count":   len(originalGroup.SubGroups),
+			"aggregate_group":     originalGroup.Name,
+			"sub_group_count":     len(originalGroup.SubGroups),
 			"default_max_retries": maxRetries,
-		}).Debug("Aggregate group has no max_retries config, using sub-group count as default")
+		}).Debug("Aggregate group has no explicit max_retries config, using sub-group count as default")
 	}
 
 	// Get sub-group level max retries. When set to 0 or omitted, it does not override

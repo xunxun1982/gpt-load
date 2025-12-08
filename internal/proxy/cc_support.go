@@ -33,6 +33,16 @@ const maxUpstreamResponseBodySize = 32 * 1024 * 1024
 
 var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum allowed size")
 
+// clearUpstreamEncodingHeaders removes upstream transfer-related headers before
+// writing a synthesized response body for CC support. This avoids mismatches
+// between headers and the rewritten body (for example after decompression).
+func clearUpstreamEncodingHeaders(c *gin.Context) {
+	h := c.Writer.Header()
+	h.Del("Content-Encoding")
+	h.Del("Content-Length")
+	h.Del("Transfer-Encoding")
+}
+
 // readAllWithLimit reads all data from the reader up to the given limit.
 // If the response exceeds the limit, ErrBodyTooLarge is returned and the
 // caller should not attempt to parse the partial payload.
@@ -991,11 +1001,13 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 					Message: message,
 				},
 			}
+			clearUpstreamEncodingHeaders(c)
 			c.JSON(http.StatusBadGateway, claudeErr)
 			return
 		}
 
 		logrus.WithError(err).Error("Failed to read OpenAI response body for CC conversion")
+		clearUpstreamEncodingHeaders(c)
 		c.Status(http.StatusInternalServerError)
 		return
 	}
@@ -1016,9 +1028,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		// Clear upstream encoding/length headers since we may have decompressed the body above.
 		// Returning decompressed bytes with a stale Content-Encoding header would cause clients
 		// to attempt decompression again and corrupt the payload.
-		c.Writer.Header().Del("Content-Encoding")
-		c.Writer.Header().Del("Content-Length")
-		c.Writer.Header().Del("Transfer-Encoding")
+		clearUpstreamEncodingHeaders(c)
 
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
@@ -1039,6 +1049,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 				Message: openaiResp.Error.Message,
 			},
 		}
+		clearUpstreamEncodingHeaders(c)
 		c.JSON(resp.StatusCode, claudeErr)
 		return
 	}
@@ -1112,9 +1123,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// Clear upstream encoding/length headers before writing synthesized response.
 	// The proxy decompresses and re-encodes the response, so upstream headers no longer match.
 	// Per RFC 7230, mismatched Content-Length causes client to treat response as incomplete.
-	c.Writer.Header().Del("Content-Encoding")
-	c.Writer.Header().Del("Content-Length")
-	c.Writer.Header().Del("Transfer-Encoding")
+	clearUpstreamEncodingHeaders(c)
 
 	c.Header("Content-Type", "application/json")
 	c.Data(resp.StatusCode, "application/json", claudeBody)
@@ -1143,9 +1152,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	// Clear upstream encoding/length headers before writing synthesized SSE stream.
 	// The proxy reconstructs the event stream from OpenAI format to Claude format,
 	// so upstream headers (Content-Encoding, Content-Length, Transfer-Encoding) no longer apply.
-	c.Writer.Header().Del("Content-Encoding")
-	c.Writer.Header().Del("Content-Length")
-	c.Writer.Header().Del("Transfer-Encoding")
+	clearUpstreamEncodingHeaders(c)
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
