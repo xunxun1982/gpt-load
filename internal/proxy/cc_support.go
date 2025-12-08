@@ -403,6 +403,8 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 					for _, cb := range contentBlocks {
 						if cb.Type == "text" {
 							sb.WriteString(cb.Text)
+						} else {
+							logrus.WithField("type", cb.Type).Debug("CC: Skipping non-text content block in tool_result")
 						}
 					}
 					resultContent = sb.String()

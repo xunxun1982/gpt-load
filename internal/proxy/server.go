@@ -995,6 +995,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// Check sub-group's key retry limit
 		subGroupCfg := group.EffectiveConfig
 		subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
+		// Clamp sub-group max retries defensively. We intentionally do not reuse
+		// parseRetryConfigInt here because this value comes from EffectiveConfig
+		// (already parsed from raw config) and we want to avoid changing its
+		// existing parsing semantics while still enforcing a hard upper bound.
 		subGroupMaxRetries := subGroupCfg.MaxRetries
 		if subGroupMaxRetries < 0 {
 			subGroupMaxRetries = 0
