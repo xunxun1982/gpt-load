@@ -71,6 +71,7 @@ var MessagesJaJP = map[string]string{
 	"validation.sub_group_weight_negative":     "サブグループの重みは負の値にできません",
 	"validation.sub_group_weight_max_exceeded": "サブグループの重みは1000を超えることはできません",
 	"validation.sub_group_referenced_cannot_modify": "このグループは {{.count}} 個の集約グループでサブグループとして参照されています。チャンネルタイプまたは検証エンドポイントは変更できません。変更前に関連する集約グループからこのグループを削除してください",
+	"validation.cc_support_cannot_disable_used_by_anthropic": "CCサポートを無効化できません。このOpenAIグループは現在次のAnthropic集約グループで使用されています：{{.groups}}。まずこれらの集約グループからこのグループを削除してから、CCサポートを無効化してください",
 	"validation.standard_group_requires_upstreams_testmodel": "標準グループへの変換にはアップストリームサーバーとテストモデルの提供が必要です",
 	"validation.invalid_model_mapping":                       "モデルマッピング形式が無効です：{{.error}}",
 	"validation.aggregate_no_model_redirect": "集約グループはモデル��ダイレクトルールをサポートしていません",

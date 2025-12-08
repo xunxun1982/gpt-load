@@ -55,6 +55,53 @@ func NewAggregateGroupService(db *gorm.DB, groupManager *GroupManager) *Aggregat
 	}
 }
 
+// isGroupCCSupportEnabled checks whether cc_support is enabled for a group.
+func isGroupCCSupportEnabled(group *models.Group) bool {
+	if group == nil || group.Config == nil {
+		return false
+	}
+
+	raw, ok := group.Config["cc_support"]
+	if !ok || raw == nil {
+		return false
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	default:
+		return false
+	}
+}
+
+// getEffectiveEndpointForAggregation returns the effective validation endpoint for a sub-group
+// in the context of an aggregate group. For OpenAI+CC sub-groups in Anthropic aggregates,
+// requests go through /claude/v1/messages route which uses Claude's endpoint, not OpenAI's.
+func getEffectiveEndpointForAggregation(subGroup *models.Group, aggregateChannelType string, isOpenAIWithCC bool) string {
+	// If sub-group has custom validation endpoint, use it
+	if subGroup.ValidationEndpoint != "" {
+		// For OpenAI+CC in Anthropic aggregate, the effective endpoint should be Claude's
+		// because CC routes go through /claude/v1/messages
+		if aggregateChannelType == "anthropic" && isOpenAIWithCC {
+			return "/v1/messages"
+		}
+		return subGroup.ValidationEndpoint
+	}
+
+	// For OpenAI+CC sub-groups in Anthropic aggregates, use Claude's endpoint
+	// because CC mode routes requests through /claude/v1/messages
+	if aggregateChannelType == "anthropic" && isOpenAIWithCC {
+		return "/v1/messages"
+	}
+
+	// Otherwise use the standard endpoint for the sub-group's channel type
+	return utils.GetValidationEndpoint(subGroup)
+}
+
 // ValidateSubGroups validates sub-groups with an optional existing validation endpoint for consistency check.
 func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelType string, inputs []SubGroupInput, existingEndpoint string) (*AggregateValidationResult, error) {
 	if len(inputs) == 0 {
@@ -96,14 +143,31 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		if sg.GroupType == "aggregate" {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_cannot_be_aggregate", nil)
 		}
-		if sg.ChannelType != channelType {
-			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_channel_mismatch", nil)
+
+		// Channel type compatibility check
+		// For Anthropic aggregate groups, allow both Anthropic channels and OpenAI channels with CC support
+		isOpenAIWithCC := sg.ChannelType == "openai" && isGroupCCSupportEnabled(&sg)
+		if channelType == "anthropic" {
+			isAnthropic := sg.ChannelType == "anthropic"
+			if !isAnthropic && !isOpenAIWithCC {
+				return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_channel_mismatch", nil)
+			}
+		} else {
+			// For non-Anthropic aggregate groups, require exact channel type match
+			if sg.ChannelType != channelType {
+				return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_channel_mismatch", nil)
+			}
 		}
 
-		// If no existing endpoint, use the first sub-group's effective endpoint
+		// Calculate effective endpoint for this sub-group in the context of the aggregate group.
+		// For Anthropic aggregates with OpenAI+CC sub-groups, the CC endpoint uses /v1/messages
+		// (via /claude/v1/messages route) instead of OpenAI's /v1/chat/completions.
+		effectiveEndpoint := getEffectiveEndpointForAggregation(&sg, channelType, isOpenAIWithCC)
+
+		// Validate endpoint consistency
 		if validationEndpoint == "" {
-			validationEndpoint = utils.GetValidationEndpoint(&sg)
-		} else if validationEndpoint != utils.GetValidationEndpoint(&sg) {
+			validationEndpoint = effectiveEndpoint
+		} else if validationEndpoint != effectiveEndpoint {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_validation_endpoint_mismatch", nil)
 		}
 		subGroupMap[sg.ID] = sg
@@ -196,7 +260,9 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 	if len(existingSubGroups) > 0 {
 		var existingGroup models.Group
 		if err := s.db.WithContext(ctx).Where("id = ?", existingSubGroups[0].SubGroupID).Limit(1).Find(&existingGroup).Error; err == nil && existingGroup.ID != 0 {
-			existingEndpoint = utils.GetValidationEndpoint(&existingGroup)
+			// Use effective endpoint for the aggregate context, not the raw endpoint
+			isOpenAIWithCC := existingGroup.ChannelType == "openai" && isGroupCCSupportEnabled(&existingGroup)
+			existingEndpoint = getEffectiveEndpointForAggregation(&existingGroup, group.ChannelType, isOpenAIWithCC)
 		}
 	}
 

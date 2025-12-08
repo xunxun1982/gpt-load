@@ -25,6 +25,7 @@ import {
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import AddSubGroupModal from "./AddSubGroupModal.vue";
+import CCBadge from "./CCBadge.vue";
 import EditSubGroupWeightModal from "./EditSubGroupWeightModal.vue";
 
 const { t } = useI18n();
@@ -50,6 +51,10 @@ function getSubGroupStatus(subGroup: SubGroupInfo): {
 
 interface SubGroupRow extends SubGroupInfo {
   percentage: number;
+  // Canonical group object from the main group list (props.groups).
+  // This lets us reuse the exact same config (including cc_support)
+  // that is used by the dropdown in AddSubGroupModal.
+  canonicalGroup?: Group;
 }
 
 interface Props {
@@ -67,6 +72,18 @@ interface Emits {
 const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 
+// Build a map from group ID to the full Group object from props.groups.
+// This ensures we reuse the same config (especially cc_support) that is
+// used when rendering the sub-group selector dropdown.
+const groupById = computed(() => {
+  const map = new Map<number, Group>();
+  (props.groups || []).forEach(group => {
+    if (typeof group.id === "number") {
+      map.set(group.id, group);
+    }
+  });
+  return map;
+});
 const dialog = useDialog();
 
 const addModalShow = ref(false);
@@ -94,6 +111,7 @@ const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
   const withPercentage = props.subGroups.map(sg => ({
     ...sg,
     percentage: total > 0 ? Math.round((sg.weight / total) * 100) : 0,
+    canonicalGroup: typeof sg.group.id === "number" ? groupById.value.get(sg.group.id) : undefined,
   }));
 
   // Sort by weight in descending order (non-mutating)
@@ -234,6 +252,14 @@ function formatNumber(num: number): string {
               <div class="key-section">
                 <div class="sub-group-names">
                   <span class="display-name">{{ getGroupDisplayName(subGroup) }}</span>
+                  <!-- CC Support Badge (reuse same cc_support flag as dropdown) -->
+                  <CCBadge
+                    :channel-type="(subGroup.canonicalGroup || subGroup.group).channel_type"
+                    :cc-support="
+                      (subGroup.canonicalGroup || subGroup.group).config &&
+                      (subGroup.canonicalGroup || subGroup.group).config.cc_support === true
+                    "
+                  />
                 </div>
                 <div class="quick-actions">
                   <span class="group-name">#{{ subGroup.group.name }}</span>
@@ -520,7 +546,8 @@ function formatNumber(num: number): string {
 /* Sub-group name styles */
 .sub-group-names {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  gap: 8px;
   flex: 1;
   min-width: 0;
 }
@@ -532,7 +559,8 @@ function formatNumber(num: number): string {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .group-name {

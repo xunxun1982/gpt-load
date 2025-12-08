@@ -14,9 +14,11 @@ import {
   NSelect,
   useMessage,
   type FormRules,
+  type SelectOption,
 } from "naive-ui";
-import { computed, reactive, ref, watch } from "vue";
+import { computed, h, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import CCBadge from "./CCBadge.vue";
 
 interface Props {
   show: boolean;
@@ -66,9 +68,29 @@ const getAvailableOptions = computed(() => {
         return false;
       }
 
-      // Must have the same channel type
-      if (group.channel_type !== props.aggregateGroup?.channel_type) {
+      // Exclude auto-generated CC groups (created by old buggy code)
+      // These have names ending with -cc or display names containing (CC Support)
+      // combined with auto-generated description
+      if (
+        group.description?.includes("Auto-generated") &&
+        (group.name?.endsWith("-cc") || group.display_name?.includes("(CC Support)"))
+      ) {
         return false;
+      }
+
+      // Channel type compatibility check
+      // For Anthropic (Claude) aggregate groups, allow both Anthropic channels and OpenAI channels with CC support
+      if (props.aggregateGroup?.channel_type === "anthropic") {
+        const isAnthropic = group.channel_type === "anthropic";
+        const isOpenAIWithCC = group.channel_type === "openai" && group.config?.cc_support === true;
+        if (!isAnthropic && !isOpenAIWithCC) {
+          return false;
+        }
+      } else {
+        // For non-Anthropic aggregate groups, require exact channel type match
+        if (group.channel_type !== props.aggregateGroup?.channel_type) {
+          return false;
+        }
       }
 
       // Cannot be the aggregate group itself
@@ -83,10 +105,23 @@ const getAvailableOptions = computed(() => {
 
       return true;
     })
-    .map(group => ({
-      label: getGroupDisplayName(group),
-      value: group?.id,
-    }));
+    .map(group => {
+      let label = getGroupDisplayName(group);
+      return {
+        label,
+        value: group?.id,
+        // Store additional info for sorting
+        isAnthropic: group.channel_type === "anthropic",
+        isOpenAIWithCC: group.channel_type === "openai" && group.config?.cc_support === true,
+      };
+    })
+    .sort((a, b) => {
+      // Sort order: Anthropic channels first, then OpenAI with CC support
+      if (a.isAnthropic && !b.isAnthropic) return -1;
+      if (!a.isAnthropic && b.isAnthropic) return 1;
+      // Within same type, sort by label
+      return a.label.localeCompare(b.label, "zh-CN");
+    });
 });
 
 // Compute available options for each sub-group item
@@ -210,6 +245,24 @@ async function handleSubmit() {
 const canAddMore = computed(() => {
   return formData.sub_groups.length < getAvailableOptions.value.length;
 });
+
+// Render label with badge for CC support groups
+// Use shared CCBadge component for consistency
+function renderLabel(option: SelectOption) {
+  const isOpenAIWithCC = option.isOpenAIWithCC as boolean;
+  const displayName = option.label as string;
+
+  if (isOpenAIWithCC) {
+    return [
+      displayName + " ",
+      h(CCBadge, {
+        channelType: "openai",
+        ccSupport: true,
+      }),
+    ];
+  }
+  return displayName;
+}
 </script>
 
 <template>
@@ -258,6 +311,7 @@ const canAddMore = computed(() => {
                   v-model:value="item.group_id"
                   :options="getOptionsForItem(index)"
                   :placeholder="t('keys.selectSubGroup')"
+                  :render-label="renderLabel"
                   clearable
                 />
               </n-form-item>

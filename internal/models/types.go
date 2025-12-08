@@ -42,6 +42,11 @@ type GroupConfig struct {
 	// ForceFunctionCall enables experimental function call middleware for this group.
 	// This flag is stored in the group-level config JSON and is optional.
 	ForceFunctionCall *bool `json:"force_function_call,omitempty"`
+	// CCSupport enables Claude Code compatibility mode for this group.
+	// When enabled, clients can connect via /claude endpoint and requests will be
+	// converted from Claude format to OpenAI format before forwarding to upstream.
+	CCSupport *bool `json:"cc_support,omitempty"`
+
 }
 
 // HeaderRule defines a single rule for header manipulation.

@@ -49,14 +49,28 @@ type ProxyServer struct {
 // retryContext holds the retry state for a single request
 // This context is created per request and lives only for the request's lifetime
 type retryContext struct {
-	excludedSubGroups map[uint]bool // Sub-group IDs that have failed in the current request (only for current aggregate group)
-	attemptCount      int           // Current attempt count
-	originalBodyBytes []byte        // Original request body (before any sub-group mapping)
+	excludedSubGroups   map[uint]bool // Sub-group IDs that have failed in the current request (only for current aggregate group)
+	attemptCount        int           // Current attempt count (aggregate-level sub-group switches)
+	originalBodyBytes   []byte        // Original request body (before any sub-group mapping)
+	originalPath        string        // Original request path (for CC support restoration)
+	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 }
 
+// restoreOriginalPath restores the original request path for retry attempts.
+// This is used by aggregate retry logic to ensure each sub-group can apply its
+// own CC support and path rewriting without inheriting state from previous
+// attempts.
+func restoreOriginalPath(c *gin.Context, retryCtx *retryContext) {
+	if retryCtx == nil {
+		return
+	}
+	if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {
+		c.Request.URL.Path = retryCtx.originalPath
+	}
+}
 
 // parseRetryConfigInt extracts and validates a retry-related integer config value.
-// Returns a value clamped to the range [0, 5].
+// Returns a value clamped to the range [0, 100].
 func parseRetryConfigInt(config map[string]any, key string) int {
 	if config == nil {
 		return 0
@@ -104,25 +118,27 @@ func parseRetryConfigInt(config map[string]any, key string) int {
 		}).Warn("Unexpected type for retry config value")
 	}
 
-	// Clamp to 0-5 range
+	// Clamp to reasonable range: 0-100
+	// Note: Previously limited to 5, but users may need higher retry counts
+	// for high-availability scenarios with many upstreams or sub-groups.
 	if retries < 0 {
 		return 0
 	}
-	if retries > 5 {
-		return 5
+	if retries > 100 {
+		return 100
 	}
 
 	return retries
 }
 
 // parseMaxRetries extracts and validates max_retries from group config
-// Returns a value clamped to the range [0, 5]
+// Returns a value clamped to the range [0, 100]
 func parseMaxRetries(config map[string]any) int {
 	return parseRetryConfigInt(config, "max_retries")
 }
 
 // parseSubMaxRetries extracts and validates sub_max_retries from group config
-// Returns a value clamped to the range [0, 5]
+// Returns a value clamped to the range [0, 100]
 func parseSubMaxRetries(config map[string]any) int {
 	return parseRetryConfigInt(config, "sub_max_retries")
 }
@@ -249,8 +265,10 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	if originalGroup.GroupType == "aggregate" {
 		// Pre-allocate map with capacity equal to number of sub-groups for performance
 		retryCtx = &retryContext{
-			excludedSubGroups: make(map[uint]bool, len(originalGroup.SubGroups)),
-			attemptCount:      0,
+			excludedSubGroups:   make(map[uint]bool, len(originalGroup.SubGroups)),
+			attemptCount:        0,
+			originalPath:        c.Request.URL.Path, // Save original path for retry restoration
+			subGroupKeyRetryMap: make(map[uint]int, len(originalGroup.SubGroups)),
 		}
 	}
 
@@ -301,6 +319,24 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	var finalBodyBytes []byte
 	var isStream bool
 
+	// Handle CC support path rewriting for all requests (including GET)
+	// This must happen before body processing to ensure correct path for upstream
+	if isCCSupportEnabled(group) && isClaudePath(c.Request.URL.Path, group.Name) {
+		originalPath := c.Request.URL.Path
+		originalQuery := c.Request.URL.RawQuery
+		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		// Sanitize query parameters for CC support (e.g., remove beta=true)
+		// These are Claude-specific and should not be passed to OpenAI-style upstreams
+		sanitizeCCQueryParams(c.Request.URL)
+		logrus.WithFields(logrus.Fields{
+			"group":           group.Name,
+			"original_path":   originalPath,
+			"new_path":        c.Request.URL.Path,
+			"original_query":  originalQuery,
+			"sanitized_query": c.Request.URL.RawQuery,
+		}).Debug("CC support: rewritten Claude path to OpenAI path and sanitized query params")
+	}
+
 	if c.Request.Method == "GET" || len(bodyBytes) == 0 {
 		finalBodyBytes = bodyBytes
 		isStream = false
@@ -324,6 +360,30 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			if err != nil {
 				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
 				return
+			}
+
+			// Apply CC support: convert Claude requests to OpenAI format
+			// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
+			// We check for /v1/messages (after rewrite) and CC support enabled
+			if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+				convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
+				if ccErr != nil {
+					logrus.WithError(ccErr).WithFields(logrus.Fields{
+						"group": group.Name,
+						"path":  c.Request.URL.Path,
+					}).Error("Failed to convert Claude request to OpenAI format")
+					response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("CC conversion failed: %v", ccErr)))
+					return
+				} else if converted {
+					finalBodyBytes = convertedBody
+					// Rewrite path from /v1/messages to /v1/chat/completions
+					c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
+					logrus.WithFields(logrus.Fields{
+						"group":        group.Name,
+						"channel_type": group.ChannelType,
+						"new_path":     c.Request.URL.Path,
+					}).Debug("CC support: converted Claude request to OpenAI format")
+				}
 			}
 
 			// Apply function call request rewrite for eligible OpenAI groups.
@@ -558,7 +618,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// For streaming chat completions with function call enabled, use the
 			// function-call aware streaming handler. Other streaming requests keep
 			// the existing behavior.
-			if isFunctionCallEnabled(c) {
+			if isCCEnabled(c) {
+				ps.handleCCStreamingResponse(c, resp)
+			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
 				ps.handleStreamingResponse(c, resp)
@@ -566,7 +628,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		} else {
 			// For non-streaming chat completions with function call enabled, use
 			// the function-call aware response handler.
-			if isFunctionCallEnabled(c) {
+			if isCCEnabled(c) {
+				ps.handleCCNormalResponse(c, resp)
+			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {
 				ps.handleNormalResponse(c, resp)
@@ -588,8 +652,28 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	startTime time.Time,
 	retryCtx *retryContext,
 ) {
-	// Get max retries from aggregate group config (default 0)
+	// Restore original path for retry attempts to allow each sub-group to apply its own CC support
+	// This is necessary because different sub-groups may have different CC support settings.
+	restoreOriginalPath(c, retryCtx)
+
+	// Get max retries from aggregate group config
 	maxRetries := parseMaxRetries(originalGroup.Config)
+
+	// When aggregate group has no explicit max_retries configured (key not present),
+	// provide an intelligent default based on sub-group count to prevent immediate
+	// failure on the first sub-group. For explicit max_retries: 0 we preserve the
+	// "no aggregate retries" semantics for backward compatibility.
+	_, hasMaxRetriesKey := originalGroup.Config["max_retries"]
+	if !hasMaxRetriesKey && maxRetries == 0 && len(originalGroup.SubGroups) > 1 {
+		// Default: try each sub-group once (subgroup_count - 1 retries)
+		maxRetries = len(originalGroup.SubGroups) - 1
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group":     originalGroup.Name,
+			"sub_group_count":     len(originalGroup.SubGroups),
+			"default_max_retries": maxRetries,
+		}).Debug("Aggregate group has no explicit max_retries config, using sub-group count as default")
+	}
+
 	// Get sub-group level max retries. When set to 0 or omitted, it does not override
 	// the aggregate group's max_retries. For positive values, it acts as an upper
 	// bound for aggregate retries to keep total attempts small.
@@ -669,6 +753,57 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			"sub_group":       group.Name,
 		}).Warn("Failed to apply parameter overrides for sub-group, using original body")
 		finalBodyBytes = bodyBytes
+	}
+
+	// Apply CC support for eligible OpenAI sub-groups.
+	// Clear any stale CC state from previous sub-group attempts.
+	c.Set(ctxKeyCCEnabled, false)
+
+	// Handle CC support path rewriting for sub-groups
+	// This rewrites /claude/ paths to standard OpenAI paths. For groups named "claude",
+	// OpenAI-style paths like /proxy/claude/v1/messages are not treated as CC paths.
+	if isCCSupportEnabled(group) && isClaudePath(c.Request.URL.Path, group.Name) {
+		originalPath := c.Request.URL.Path
+		originalQuery := c.Request.URL.RawQuery
+		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		// Sanitize query parameters for CC support (e.g., remove beta=true)
+		// These are Claude-specific and should not be passed to OpenAI-style upstreams
+		sanitizeCCQueryParams(c.Request.URL)
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group":  originalGroup.Name,
+			"sub_group":        group.Name,
+			"original_path":    originalPath,
+			"new_path":         c.Request.URL.Path,
+			"original_query":   originalQuery,
+			"sanitized_query":  c.Request.URL.RawQuery,
+		}).Debug("CC support: rewritten Claude path for sub-group and sanitized query params")
+	}
+
+	// Convert Claude messages request to OpenAI format
+	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
+	if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+		convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
+		if ccErr != nil {
+			logrus.WithError(ccErr).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"path":            c.Request.URL.Path,
+			}).Error("Failed to convert Claude request for sub-group")
+			// For aggregate groups, we might want to try another sub-group, but conversion failure usually implies
+			// malformed input which will fail for all. So we return error.
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("CC conversion failed: %v", ccErr)))
+			return
+		} else if converted {
+			finalBodyBytes = convertedBody
+			// Rewrite path from /v1/messages to /v1/chat/completions
+			c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"channel_type":    group.ChannelType,
+				"new_path":        c.Request.URL.Path,
+			}).Debug("CC support: converted Claude request for sub-group")
+		}
 	}
 
 	// Apply function call request rewrite for eligible OpenAI sub-groups.
@@ -859,7 +994,72 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// Update key status
 		ps.keyProvider.UpdateStatus(apiKey, group, false, parsedError)
 
-		// Handle sub-group failure
+		// Check sub-group's key retry limit
+		subGroupCfg := group.EffectiveConfig
+		subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
+		// Clamp sub-group max retries defensively. We intentionally do not reuse
+		// parseRetryConfigInt here because this value comes from EffectiveConfig
+		// (already parsed from raw config) and we want to avoid changing its
+		// existing parsing semantics while still enforcing a hard upper bound.
+		subGroupMaxRetries := subGroupCfg.MaxRetries
+		if subGroupMaxRetries < 0 {
+			subGroupMaxRetries = 0
+		} else if subGroupMaxRetries > 100 {
+			subGroupMaxRetries = 100
+		}
+
+		// Determine if sub-group has exhausted its key retries
+		isSubGroupKeyRetryExhausted := subGroupKeyRetryCount >= subGroupMaxRetries
+
+		// Log detailed retry status
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group":        originalGroup.Name,
+			"sub_group":              group.Name,
+			"sub_group_key_retry":    subGroupKeyRetryCount,
+			"sub_group_max_retries":  subGroupMaxRetries,
+			"aggregate_attempt":      retryCtx.attemptCount,
+			"aggregate_max_retries":  maxRetries,
+			"status_code":            statusCode,
+			"key_retries_exhausted":  isSubGroupKeyRetryExhausted,
+		}).Debug("Sub-group request failed, checking retry strategy")
+
+		// If sub-group still has key retries left, retry with a different key in the same sub-group
+		if !isSubGroupKeyRetryExhausted {
+			// Increment sub-group key retry count
+			retryCtx.subGroupKeyRetryMap[subGroupID]++
+
+			// Log retry request for sub-group key retry
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream,
+				upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeRetry)
+
+			logrus.WithFields(logrus.Fields{
+				"sub_group":             group.Name,
+				"sub_group_key_retry":   subGroupKeyRetryCount + 1,
+				"sub_group_max_retries": subGroupMaxRetries,
+			}).Debug("Retrying with another key; sub-group may be re-selected if not excluded")
+
+			// Note: we intentionally do not exclude the previously failed key at this
+			// layer. Key-level health and blacklisting are handled centrally by
+			// KeyProvider.UpdateStatus and the underlying store.Rotate logic. The
+			// per-request retry here simply gives the rotation logic another chance
+			// to pick a different healthy key when available, while keeping
+			// semantics consistent with non-aggregate retry paths.
+
+			// Restore original path for retry (CC support may have modified it)
+			restoreOriginalPath(c, retryCtx)
+
+			// Retry with same sub-group but different key (SelectKey will choose a different one)
+			ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, startTime, retryCtx)
+			return
+		}
+
+		// Sub-group key retries exhausted, handle aggregate-level retry (switch to next sub-group)
+		logrus.WithFields(logrus.Fields{
+			"sub_group":              group.Name,
+			"sub_group_key_retries":  subGroupKeyRetryCount,
+			"sub_group_max_retries":  subGroupMaxRetries,
+		}).Debug("Sub-group key retries exhausted, switching to next sub-group")
+
 		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, statusCode, errors.New(parsedError), apiKey)
 		return
 	}
@@ -879,10 +1079,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 		// Fast path: handle response based on type. We intentionally keep the
 		// routing logic aligned with the non-aggregate path so that
-		// function-call behavior is consistent between normal and
+		// function-call and CC support behavior is consistent between normal and
 		// aggregate groups.
 		if isStream {
-			if isFunctionCallEnabled(c) {
+			if isCCEnabled(c) {
+				ps.handleCCStreamingResponse(c, resp)
+			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
 				ps.handleStreamingResponse(c, resp)
@@ -898,7 +1100,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}).Debug("Detected /models endpoint with model mapping, applying enhancement")
 			ps.handleModelsResponse(c, resp, group)
 		} else {
-			if isFunctionCallEnabled(c) {
+			if isCCEnabled(c) {
+				ps.handleCCNormalResponse(c, resp)
+			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {
 				ps.handleNormalResponse(c, resp)

@@ -408,11 +408,8 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	tx := s.db.WithContext(ctx).Begin()
-	if err := tx.Error; err != nil {
-		return nil, app_errors.ErrDatabase
-	}
-	defer tx.Rollback()
+	// Perform all validation before the final database write to minimize lock time.
+	// This is especially important for SQLite which uses database-level locking.
 
 	if params.Name != nil {
 		cleanedName := strings.TrimSpace(*params.Name)
@@ -513,7 +510,63 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		if err != nil {
 			return nil, err
 		}
-		group.Config = cleanedConfig
+
+		// Check if cc_support is being disabled for OpenAI groups before performing any database write.
+		// If so, verify that this group is not used as a sub-group in any Anthropic aggregate groups.
+		// NOTE: This guard is best-effort and not wrapped in an explicit transaction. There is a small
+		// time-of-check-to-time-of-use window where aggregate membership can change concurrently, but
+		// we intentionally keep lock time minimal (especially for SQLite). Any misconfiguration will
+		// surface quickly via failing aggregate requests and can be corrected via configuration.
+		if group.ChannelType == "openai" && group.GroupType != "aggregate" {
+			// Note: models.Group.Config is stored as datatypes.JSONMap while validateAndCleanConfig
+			// returns a map[string]any. We intentionally convert cleanedConfig to JSONMap here to
+			// keep the helper signature strongly typed and avoid accidental misuse.
+			oldCCEnabled := isConfigCCSupportEnabled(group.Config)
+			newCCEnabled := isConfigCCSupportEnabled(datatypes.JSONMap(cleanedConfig))
+
+			// CC support is being disabled (true -> false)
+			if oldCCEnabled && !newCCEnabled {
+				// Get parent aggregate groups
+				parentGroups, err := s.aggregateGroupService.GetParentAggregateGroups(ctx, group.ID)
+				if err != nil {
+					return nil, app_errors.ParseDBError(err)
+				}
+
+				// Batch fetch channel types for all parent groups to avoid N+1 queries
+				anthropicParents := make([]string, 0)
+				if len(parentGroups) > 0 {
+					parentIDs := make([]uint, 0, len(parentGroups))
+					for _, parent := range parentGroups {
+						parentIDs = append(parentIDs, parent.GroupID)
+					}
+
+					var parentGroupModels []models.Group
+					if err := s.db.WithContext(ctx).Select("id", "channel_type").Where("id IN ?", parentIDs).Find(&parentGroupModels).Error; err != nil {
+						return nil, app_errors.ParseDBError(err)
+					}
+
+					channelTypeMap := make(map[uint]string, len(parentGroupModels))
+					for _, pg := range parentGroupModels {
+						channelTypeMap[pg.ID] = pg.ChannelType
+					}
+
+					for _, parent := range parentGroups {
+						if channelTypeMap[parent.GroupID] == "anthropic" {
+							anthropicParents = append(anthropicParents, parent.Name)
+						}
+					}
+				}
+
+				// If used by Anthropic aggregate groups, disallow disabling CC support
+				if len(anthropicParents) > 0 {
+					return nil, NewI18nError(app_errors.ErrValidation, "validation.cc_support_cannot_disable_used_by_anthropic",
+						map[string]any{"groups": strings.Join(anthropicParents, ", ")})
+				}
+			}
+		}
+
+		// Persist validated config as JSONMap for consistency with models.Group.
+		group.Config = datatypes.JSONMap(cleanedConfig)
 	}
 
 	if params.ProxyKeys != nil {
@@ -550,12 +603,9 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		group.PathRedirects = pathRedirectsJSON
 	}
 
-	if err := tx.Save(&group).Error; err != nil {
+	// Perform the actual database write - minimizes lock time
+	if err := s.db.WithContext(ctx).Save(&group).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		return nil, app_errors.ErrDatabase
 	}
 
 	if err := s.groupManager.Invalidate(); err != nil {
@@ -1424,6 +1474,49 @@ func (s *GroupService) generateUniqueGroupNameForCopy(ctx context.Context, baseN
 	groupName := fmt.Sprintf("%s%d", trimmedBaseName, time.Now().Unix())
 	logrus.WithContext(ctx).Warnf("Failed to generate unique group name after %d attempts, using timestamp suffix", maxAttempts)
 	return groupName
+}
+
+// isConfigCCSupportEnabled checks whether cc_support is enabled in a config map.
+// Accepted value types are: bool, numeric values (treated as enabled when non-zero), and
+// string values like "true"/"1"/"yes"/"on" for backward compatibility with runtime checks.
+// NOTE: This helper intentionally mirrors the runtime isCCSupportEnabled parsing logic instead
+// of using a shared cross-package utility to keep validation self-contained and avoid extra
+// coupling between proxy and services layers.
+func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
+	if config == nil {
+		return false
+	}
+
+	raw, ok := config["cc_support"]
+	if !ok || raw == nil {
+		return false
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
+	default:
+		rv := reflect.ValueOf(raw)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return rv.Int() != 0
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return rv.Uint() != 0
+		case reflect.Float32, reflect.Float64:
+			return rv.Float() != 0
+		default:
+			return false
+		}
+	}
 }
 
 // isValidGroupName validates the group name.

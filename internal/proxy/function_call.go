@@ -480,7 +480,25 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
         }
 
         if len(calls) == 0 {
-            // Log when we detect execution intent phrases but no function_calls XML.
+            // If we see a <function_calls> block but could not parse any valid calls,
+            // treat it as invalid tool XML and strip it from the visible content. This
+            // prevents downstream clients (including Claude Code) from seeing malformed
+            // <function_calls> markers without corresponding structured tool_calls.
+            if strings.Contains(parseInput, "<function_calls>") {
+                cleaned := removeFunctionCallsBlocks(contentStr)
+                if cleaned != contentStr {
+                    msg["content"] = cleaned
+                    chMap["message"] = msg
+                    choices[i] = chMap
+                    modified = true // Mark response as modified to write cleaned content back to client
+                    logrus.WithFields(logrus.Fields{
+                        "trigger_signal":  triggerSignal,
+                        "content_preview": utils.TruncateString(parseInput, 200),
+                    }).Debug("Function call normal response: removed invalid <function_calls> block with no parsed tool calls")
+                }
+            }
+
+            // Log when we detect execution intent phrases but no function_calls XML at all.
             if reExecutionIntent.MatchString(parseInput) && !strings.Contains(parseInput, "<function_calls>") {
                 fields := logrus.Fields{
                     "trigger_signal":  triggerSignal,

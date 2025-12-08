@@ -140,6 +140,8 @@ export default {
     atLeastOneSubGroup: "At least one sub group is required",
     noAvailableSubGroups: "No available sub groups, please create standard groups first",
     noMoreAvailableSubGroups: "No more available sub groups",
+    ccSupportSuffix: " - Force CC Support",
+    ccSupportBadge: "Force CC",
     allSubGroupsSelected: "All available sub groups have been selected",
     selectChannelTypeFirst: "Please select channel type first",
     channelTypeChanged: "Channel type changed, sub groups configuration has been cleared",
@@ -439,13 +441,27 @@ export default {
     looseModeDesc: "Configured models redirect, others pass through",
     sourceModel: "Source Model",
     addModelRedirect: "Add Model Redirect",
-    functionCall: "Function Call",
+    functionCall: "Force Function Call",
     functionCallTooltip1:
       "Enable middleware-based function call for this group (Toolify-style behavior).",
     functionCallTooltip2:
       "Only enable this for providers that do NOT have native function call support. Enabling it on providers with built-in function call may cause duplicated or undefined behavior.",
     functionCallOpenAITip:
       "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
+    ccSupport: "Force CC Support",
+    ccSupportTooltip1:
+      "Enable Claude Code compatibility mode, allowing Claude clients to connect via /claude endpoint.",
+    ccSupportTooltip2:
+      "Requests will be automatically converted from Claude format to OpenAI format before forwarding to upstream.",
+    ccSupportTooltip3:
+      "If upstream does not support function calling, you need to enable the 'Function Call' switch as well.",
+    ccSupportTip:
+      "When enabled, clients can use /proxy/[group]/claude/v1/messages endpoint, requests will be auto-converted to OpenAI format.",
+    ccSupportCompatibilityTip:
+      "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
+    ccSupportRedirectTip:
+      "For compatibility, please add opus (claude-opus-4-5-20251101), sonnet (claude-sonnet-4-5-20250929), haiku (claude-haiku-4-5-20251001) related model redirections in model redirect rules.",
+
     modelRedirectInvalidJson: "Invalid JSON format for model redirect rules",
     modelRedirectInvalidFormat: "Model redirect rule keys and values must all be strings",
     modelRedirectEmptyModel: "Model name cannot be empty",

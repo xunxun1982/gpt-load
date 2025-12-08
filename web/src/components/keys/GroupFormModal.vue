@@ -90,6 +90,8 @@ interface GroupFormData {
   model_redirect_items: ModelRedirectItem[];
   model_redirect_strict: boolean;
   force_function_call: boolean;
+  cc_support: boolean;
+
   config: Record<string, number | string | boolean>;
   configItems: ConfigItem[];
   header_rules: HeaderRuleItem[];
@@ -118,6 +120,8 @@ const formData = reactive<GroupFormData>({
   model_redirect_items: [] as ModelRedirectItem[],
   model_redirect_strict: false,
   force_function_call: false,
+  cc_support: false,
+
   config: {},
   configItems: [] as ConfigItem[],
   header_rules: [] as HeaderRuleItem[],
@@ -320,6 +324,7 @@ watch(
     // Force disable function call when channel is not OpenAI.
     if (newChannelType !== "openai") {
       formData.force_function_call = false;
+      formData.cc_support = false;
     }
   }
 );
@@ -364,6 +369,8 @@ function resetForm() {
     model_redirect_items: [],
     model_redirect_strict: false,
     force_function_call: false,
+    cc_support: false,
+
     config: {},
     configItems: [],
     header_rules: [],
@@ -391,9 +398,21 @@ function loadGroupData() {
   const fcRaw = (rawConfig as any)["force_function_call"];
   const forceFunctionCall =
     props.group.channel_type === "openai" && typeof fcRaw === "boolean" ? fcRaw : false;
+  const ccRaw = (rawConfig as any)["cc_support"];
+  const ccSupport =
+    props.group.channel_type === "openai" && typeof ccRaw === "boolean" ? ccRaw : false;
 
   const configItems = Object.entries(rawConfig)
-    .filter(([key]) => key !== "force_function_call")
+    .filter(([key]) => {
+      const ignoredKeys = [
+        "force_function_call",
+        "cc_support",
+        "cc_opus_model",
+        "cc_sonnet_model",
+        "cc_haiku_model",
+      ];
+      return !ignoredKeys.includes(key);
+    })
     .map(([key, value]) => {
       return {
         key,
@@ -425,6 +444,8 @@ function loadGroupData() {
       .filter(item => item.from && item.to),
     model_redirect_strict: props.group.model_redirect_strict || false,
     force_function_call: forceFunctionCall,
+    cc_support: ccSupport,
+
     config: {},
     configItems,
     header_rules: (props.group.header_rules || []).map((rule: HeaderRuleItem) => ({
@@ -827,6 +848,13 @@ async function handleSubmit() {
       config["force_function_call"] = true;
     } else {
       delete config["force_function_call"];
+    }
+
+    // Persist cc_support toggle as a dedicated config key.
+    if (formData.cc_support) {
+      config["cc_support"] = true;
+    } else {
+      delete config["cc_support"];
     }
 
     // Validate path redirects for duplicates
@@ -1234,7 +1262,7 @@ async function handleSubmit() {
                   <n-form-item
                     v-for="(configItem, index) in formData.configItems"
                     :key="index"
-                    class="config-item-row"
+                    class="config-item-row path-redirect-form-item"
                     :label="`${t('keys.config')} ${index + 1}`"
                     :path="`configItems[${index}].key`"
                     :rule="{
@@ -1243,23 +1271,12 @@ async function handleSubmit() {
                       trigger: ['blur', 'change'],
                     }"
                   >
-                    <template #label>
-                      <div class="form-label-with-tooltip">
-                        {{ t("keys.config") }} {{ index + 1 }}
-                        <n-tooltip trigger="hover" placement="right-start">
-                          <template #trigger>
-                            <n-icon :component="HelpCircleOutline" class="help-icon" />
-                          </template>
-                          {{ t("keys.configTooltip") }}
-                        </n-tooltip>
-                      </div>
-                    </template>
                     <div class="config-item-content">
                       <div class="config-select">
                         <n-select
                           v-model:value="configItem.key"
                           :options="
-                            configOptions.map(opt => ({
+                            configOptions.map((opt: GroupConfigOption) => ({
                               label: opt.name,
                               value: opt.key,
                               disabled:
@@ -1269,7 +1286,7 @@ async function handleSubmit() {
                             }))
                           "
                           :placeholder="t('keys.selectConfigParam')"
-                          @update:value="value => handleConfigKeyChange(index, value)"
+                          @update:value="(value: string) => handleConfigKeyChange(index, value)"
                           clearable
                         />
                       </div>
@@ -1715,6 +1732,44 @@ async function handleSubmit() {
                   </template>
                 </n-form-item>
               </div>
+
+              <!-- CC Support toggle (OpenAI channel only) -->
+              <div
+                class="config-section"
+                v-if="formData.group_type !== 'aggregate' && formData.channel_type === 'openai'"
+              >
+                <n-form-item path="cc_support">
+                  <template #label>
+                    <div class="form-label-with-tooltip">
+                      {{ t("keys.ccSupport") }}
+                      <n-tooltip trigger="hover" placement="right-start">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        <div>
+                          {{ t("keys.ccSupportTooltip1") }}
+                          <br />
+                          {{ t("keys.ccSupportTooltip2") }}
+                          <br />
+                          {{ t("keys.ccSupportTooltip3") }}
+                        </div>
+                      </n-tooltip>
+                    </div>
+                  </template>
+                  <div style="width: 100%">
+                    <div style="display: flex; align-items: center; height: 32px">
+                      <n-switch v-model:value="formData.cc_support" size="small" />
+                    </div>
+                    <div style="font-size: 12px; color: #999; margin-top: 4px; line-height: 1.5">
+                      <div>{{ t("keys.ccSupportTip") }}</div>
+                      <div v-if="formData.cc_support" style="margin-top: 8px">
+                        <div>⚠️ {{ t("keys.ccSupportCompatibilityTip") }}</div>
+                        <div style="margin-top: 4px">{{ t("keys.ccSupportRedirectTip") }}</div>
+                      </div>
+                    </div>
+                  </div>
+                </n-form-item>
+              </div>
             </n-collapse-item>
           </n-collapse>
         </div>
@@ -1852,8 +1907,43 @@ async function handleSubmit() {
   margin: 0 0 12px 0;
 }
 
+/* Unified label style for config sections (function call, CC support, param overrides, model redirect) */
+.config-section .form-label-with-tooltip {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .config-help {
   font-size: 13px;
+}
+
+/* CC Model Mapping row - 3 inputs in one row */
+.cc-model-mapping-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  margin-left: 0;
+}
+
+.cc-model-mapping-row .cc-model-item {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+}
+
+.cc-model-mapping-row .cc-model-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.cc-model-mapping-row .cc-model-item :deep(.n-input) {
+  flex: 1;
+  min-width: 80px;
 }
 
 /* Enhanced form styles - force compact spacing */
@@ -2211,6 +2301,10 @@ async function handleSubmit() {
   align-items: center;
   height: var(--redirect-item-height);
   line-height: var(--redirect-item-height);
+}
+
+.path-redirect-form-item :deep(.n-form-item-label) {
+  font-weight: normal !important;
 }
 
 .redirect-item-content {

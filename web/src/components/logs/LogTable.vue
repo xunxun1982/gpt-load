@@ -330,6 +330,17 @@ const allColumnConfigs: ColumnConfig[] = [
     width: 240,
     defaultVisible: true,
     required: true, // Required field
+    render: (row: LogRow) => {
+      // Show mapped_model → model if mapping exists
+      if (row.mapped_model && row.mapped_model !== row.model) {
+        return h("span", {}, [
+          h("span", { style: "color: var(--text-tertiary)" }, row.mapped_model),
+          h("span", { style: "color: var(--text-tertiary); margin: 0 4px" }, "→"),
+          h("span", {}, row.model),
+        ]);
+      }
+      return row.model || "-";
+    },
   },
   {
     key: "key_value",

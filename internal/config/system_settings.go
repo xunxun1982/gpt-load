@@ -383,15 +383,26 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
-		// Allow group-only boolean flag for experimental function call middleware.
-		// This flag is stored only at group level and is not part of system-level settings.
-		if key == "force_function_call" {
+		// Allow group-only boolean flags for experimental features.
+		// These flags are stored only at group level and are not part of system-level settings.
+		if key == "force_function_call" || key == "cc_support" {
 			// Accept only boolean values; nil is already skipped above.
 			if _, ok := value.(bool); !ok {
 				return fmt.Errorf("invalid type for %s: expected a boolean, got %T", key, value)
 			}
 			continue
 		}
+
+		// Allow CC model mapping string fields (opus/sonnet/haiku model names).
+		// These are optional string fields for CC support model name replacement.
+		/*
+		if key == "cc_opus_model" || key == "cc_sonnet_model" || key == "cc_haiku_model" {
+			if _, ok := value.(string); !ok {
+				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
+			}
+			continue
+		}
+		*/
 
 		field, ok := jsonToField[key]
 		if !ok {
