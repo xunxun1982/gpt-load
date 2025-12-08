@@ -25,6 +25,10 @@ type MemoryStore struct {
 	droppedMessages atomic.Int64
 }
 
+// NOTE: This store uses the global logrus logger configured at application startup to stay aligned
+// with the rest of the project. If pluggable logging is required in the future, this can be
+// refactored to depend on an internal logging interface instead of the package-level logger.
+
 // NewMemoryStore creates and returns a new MemoryStore instance.
 func NewMemoryStore() *MemoryStore {
 	s := &MemoryStore{
@@ -486,7 +490,9 @@ func (s *MemoryStore) Clear() error {
 }
 
 // DroppedMessages returns the total number of messages dropped due to subscriber backpressure.
-// This is a lightweight metric for observability and does not reset the internal counter.
+// This is a lightweight global metric for observability and does not reset the internal counter.
+// Per-channel drop statistics are intentionally not tracked here to keep the implementation simple
+// and fast; callers can layer additional metrics if needed.
 func (s *MemoryStore) DroppedMessages() int64 {
 	return s.droppedMessages.Load()
 }
