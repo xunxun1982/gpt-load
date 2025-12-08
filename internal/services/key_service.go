@@ -121,20 +121,30 @@ func (s *KeyService) processAndCreateKeys(
 ) (addedCount int, ignoredCount int, err error) {
 	// 1. Get existing key hashes in the group for deduplication (optimized)
 	// Calculate hashes for new keys first to avoid loading all existing keys
+	keyToHashMap := make(map[string]string, len(keys))
 	chunkHashes := make([]string, 0, len(keys))
 	for _, k := range keys {
 		trimmed := strings.TrimSpace(k)
 		if trimmed != "" {
-			chunkHashes = append(chunkHashes, s.EncryptionSvc.Hash(trimmed))
+			h := s.EncryptionSvc.Hash(trimmed)
+			keyToHashMap[trimmed] = h
+			chunkHashes = append(chunkHashes, h)
 		}
 	}
 
 	var existingInBatch []string
 	if len(chunkHashes) > 0 {
-		if err := s.DB.Model(&models.APIKey{}).
-			Where("group_id = ?", groupID).
-			Where("key_hash IN ?", chunkHashes).
-			Pluck("key_hash", &existingInBatch).Error; err != nil {
+		if err := utils.ProcessInChunks(chunkHashes, s.insertChunkSize(), func(chunk []string) error {
+			var batch []string
+			if err := s.DB.Model(&models.APIKey{}).
+				Where("group_id = ?", groupID).
+				Where("key_hash IN ?", chunk).
+				Pluck("key_hash", &batch).Error; err != nil {
+				return err
+			}
+			existingInBatch = append(existingInBatch, batch...)
+			return nil
+		}); err != nil {
 			return 0, 0, err
 		}
 	}
@@ -155,7 +165,11 @@ func (s *KeyService) processAndCreateKeys(
 		}
 
 		// Generate hash for deduplication check
-		keyHash := s.EncryptionSvc.Hash(trimmedKey)
+		keyHash, ok := keyToHashMap[trimmedKey]
+		if !ok {
+			keyHash = s.EncryptionSvc.Hash(trimmedKey)
+		}
+
 		if existingHashMap[keyHash] {
 			continue
 		}

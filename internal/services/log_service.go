@@ -48,17 +48,17 @@ func escapeLike(s string) string {
 func (s *LogService) logFiltersScope(c *gin.Context) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		if parentGroupName := c.Query("parent_group_name"); parentGroupName != "" {
-			db = db.Where("parent_group_name LIKE ?", "%"+escapeLike(parentGroupName)+"%")
+			db = db.Where("parent_group_name LIKE ? ESCAPE '\\\\'", "%"+escapeLike(parentGroupName)+"%")
 		}
 		if groupName := c.Query("group_name"); groupName != "" {
-			db = db.Where("group_name LIKE ?", "%"+escapeLike(groupName)+"%")
+			db = db.Where("group_name LIKE ? ESCAPE '\\\\'", "%"+escapeLike(groupName)+"%")
 		}
 		if keyValue := c.Query("key_value"); keyValue != "" {
 			keyHash := s.EncryptionSvc.Hash(keyValue)
 			db = db.Where("key_hash = ?", keyHash)
 		}
 		if model := c.Query("model"); model != "" {
-			db = db.Where("model LIKE ?", "%"+escapeLike(model)+"%")
+			db = db.Where("model LIKE ? ESCAPE '\\\\'", "%"+escapeLike(model)+"%")
 		}
 		if isSuccessStr := c.Query("is_success"); isSuccessStr != "" {
 			if isSuccess, err := strconv.ParseBool(isSuccessStr); err == nil {
@@ -77,7 +77,7 @@ func (s *LogService) logFiltersScope(c *gin.Context) func(db *gorm.DB) *gorm.DB 
 			db = db.Where("source_ip = ?", sourceIP)
 		}
 		if errorContains := c.Query("error_contains"); errorContains != "" {
-			db = db.Where("error_message LIKE ?", "%"+escapeLike(errorContains)+"%")
+			db = db.Where("error_message LIKE ? ESCAPE '\\\\'", "%"+escapeLike(errorContains)+"%")
 		}
 		if startTimeStr := c.Query("start_time"); startTimeStr != "" {
 			if startTime, err := time.Parse(time.RFC3339, startTimeStr); err == nil {

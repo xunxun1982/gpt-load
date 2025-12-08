@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // memoryStoreItem holds the value and expiration timestamp for a key.
@@ -423,6 +425,7 @@ func (s *MemoryStore) Publish(channel string, message []byte) error {
 			default:
 				// Buffer full, drop message to prevent blocking and memory leaks
 				// In a high-throughput system, dropping is better than OOM
+				logrus.WithField("channel", channel).Debug("Dropping message due to full subscriber buffer")
 			}
 		}
 	}
