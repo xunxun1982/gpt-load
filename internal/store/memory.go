@@ -418,12 +418,12 @@ func (s *MemoryStore) Publish(channel string, message []byte) error {
 
 	if subs, ok := s.subscribers[channel]; ok {
 		for subCh := range subs {
-			go func(c chan *Message) {
-				select {
-				case c <- msg:
-				case <-time.After(1 * time.Second):
-				}
-			}(subCh)
+			select {
+			case subCh <- msg:
+			default:
+				// Buffer full, drop message to prevent blocking and memory leaks
+				// In a high-throughput system, dropping is better than OOM
+			}
 		}
 	}
 	return nil

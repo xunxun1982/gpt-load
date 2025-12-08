@@ -423,7 +423,7 @@ export default {
     sourceModel: "源模型",
     addModelRedirect: "添加模型重定向",
     functionCall: "强制函数调用",
-    functionCallTooltip1: "为此分组启用基于中间件的函数调用能力（类似 Toolify 的行为）",
+    functionCallTooltip1: "为此分组启用基于中间件的函数调用能力",
     functionCallTooltip2:
       "仅在上游模型本身不支持原生函数调用时启用。对于已经原生支持函数调用的渠道，请不要开启该开关，否则可能出现重复调用或未定义的行为。",
     functionCallOpenAITip:

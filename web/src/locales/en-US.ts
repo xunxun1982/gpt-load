@@ -442,8 +442,7 @@ export default {
     sourceModel: "Source Model",
     addModelRedirect: "Add Model Redirect",
     functionCall: "Force Function Call",
-    functionCallTooltip1:
-      "Enable middleware-based function call for this group (Toolify-style behavior).",
+    functionCallTooltip1: "Enable middleware-based function call for this group.",
     functionCallTooltip2:
       "Only enable this for providers that do NOT have native function call support. Enabling it on providers with built-in function call may cause duplicated or undefined behavior.",
     functionCallOpenAITip:

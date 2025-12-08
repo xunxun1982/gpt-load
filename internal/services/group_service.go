@@ -755,8 +755,10 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 		// Reset auto-increment counter (SQLite-specific)
 		// This is optional but keeps the database clean for future inserts
 		// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
-		if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='api_keys'").Error; err != nil {
-			logrus.WithContext(ctx).WithError(err).Warn("failed to reset api_keys sequence, continuing anyway")
+		if s.db.Dialector.Name() == "sqlite" {
+			if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='api_keys'").Error; err != nil {
+				logrus.WithContext(ctx).WithError(err).Warn("failed to reset api_keys sequence, continuing anyway")
+			}
 		}
 	}
 
@@ -771,8 +773,10 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	// Reset auto-increment counter (SQLite-specific)
 	// This is optional but keeps the database clean for future inserts
 	// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
-	if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='groups'").Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Warn("failed to reset groups sequence, continuing anyway")
+	if s.db.Dialector.Name() == "sqlite" {
+		if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='groups'").Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("failed to reset groups sequence, continuing anyway")
+		}
 	}
 
 	// Step 7: Commit the transaction

@@ -7,6 +7,7 @@ import (
 	"gpt-load/internal/models"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -35,21 +36,29 @@ func NewLogService(db *gorm.DB, encryptionSvc encryption.Service) *LogService {
 	}
 }
 
+// escapeLike escapes special characters in LIKE pattern
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
+}
+
 // logFiltersScope returns a GORM scope function that applies filters from the Gin context.
 func (s *LogService) logFiltersScope(c *gin.Context) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		if parentGroupName := c.Query("parent_group_name"); parentGroupName != "" {
-			db = db.Where("parent_group_name LIKE ?", "%"+parentGroupName+"%")
+			db = db.Where("parent_group_name LIKE ?", "%"+escapeLike(parentGroupName)+"%")
 		}
 		if groupName := c.Query("group_name"); groupName != "" {
-			db = db.Where("group_name LIKE ?", "%"+groupName+"%")
+			db = db.Where("group_name LIKE ?", "%"+escapeLike(groupName)+"%")
 		}
 		if keyValue := c.Query("key_value"); keyValue != "" {
 			keyHash := s.EncryptionSvc.Hash(keyValue)
 			db = db.Where("key_hash = ?", keyHash)
 		}
 		if model := c.Query("model"); model != "" {
-			db = db.Where("model LIKE ?", "%"+model+"%")
+			db = db.Where("model LIKE ?", "%"+escapeLike(model)+"%")
 		}
 		if isSuccessStr := c.Query("is_success"); isSuccessStr != "" {
 			if isSuccess, err := strconv.ParseBool(isSuccessStr); err == nil {
@@ -68,7 +77,7 @@ func (s *LogService) logFiltersScope(c *gin.Context) func(db *gorm.DB) *gorm.DB 
 			db = db.Where("source_ip = ?", sourceIP)
 		}
 		if errorContains := c.Query("error_contains"); errorContains != "" {
-			db = db.Where("error_message LIKE ?", "%"+errorContains+"%")
+			db = db.Where("error_message LIKE ?", "%"+escapeLike(errorContains)+"%")
 		}
 		if startTimeStr := c.Query("start_time"); startTimeStr != "" {
 			if startTime, err := time.Parse(time.RFC3339, startTimeStr); err == nil {
@@ -105,22 +114,19 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 
 	baseQuery := s.DB.Model(&models.RequestLog{}).Scopes(s.logFiltersScope(c)).Where("key_hash IS NOT NULL AND key_hash != ''")
 
-	// Use window function to get the latest record for each key_hash (avoid duplicates from multiple encryptions of the same key)
+	// Use GROUP BY to get the latest record for each key_hash (avoid duplicates from multiple encryptions of the same key)
+	// This is more efficient and compatible than window functions
 	err := s.DB.Raw(`
 		SELECT
 			key_value,
 			group_name,
 			status_code
-		FROM (
-			SELECT
-				key_value,
-				key_hash,
-				group_name,
-				status_code,
-				ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC) as rn
+		FROM request_logs
+		WHERE id IN (
+			SELECT MAX(id)
 			FROM (?) as filtered_logs
-		) ranked
-		WHERE rn = 1
+			GROUP BY key_hash
+		)
 		ORDER BY key_hash
 	`, baseQuery).Scan(&results).Error
 

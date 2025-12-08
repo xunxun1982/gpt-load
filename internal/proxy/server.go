@@ -310,10 +310,10 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	}
 	c.Request.Body.Close()
 
-	// Create a copy of the body bytes as the buffer will be returned to the pool
-	// This avoids the dynamic resizing allocations of io.ReadAll
-	bodyBytes := make([]byte, buf.Len())
-	copy(bodyBytes, buf.Bytes())
+	// Use the buffer bytes directly to avoid allocation
+	// The buffer is returned to the pool when HandleProxy returns, which is safe
+	// as executeRequestWithRetry is synchronous.
+	bodyBytes := buf.Bytes()
 
 	// For GET requests (like /v1/models), skip body processing
 	var finalBodyBytes []byte
