@@ -511,8 +511,12 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			return nil, err
 		}
 
-		// Check if cc_support is being disabled for OpenAI groups before performing any database write
-		// If so, verify that this group is not used as a sub-group in any Anthropic aggregate groups
+		// Check if cc_support is being disabled for OpenAI groups before performing any database write.
+		// If so, verify that this group is not used as a sub-group in any Anthropic aggregate groups.
+		// NOTE: This guard is best-effort and not wrapped in an explicit transaction. There is a small
+		// time-of-check-to-time-of-use window where aggregate membership can change concurrently, but
+		// we intentionally keep lock time minimal (especially for SQLite). Any misconfiguration will
+		// surface quickly via failing aggregate requests and can be corrected via configuration.
 		if group.ChannelType == "openai" && group.GroupType != "aggregate" {
 			// Note: models.Group.Config is stored as datatypes.JSONMap while validateAndCleanConfig
 			// returns a map[string]any. We intentionally convert cleanedConfig to JSONMap here to
@@ -1473,8 +1477,8 @@ func (s *GroupService) generateUniqueGroupNameForCopy(ctx context.Context, baseN
 }
 
 // isConfigCCSupportEnabled checks whether cc_support is enabled in a config map.
-// Accepted value types are: bool and numeric values, which are treated as enabled when non-zero.
-// String values such as "true"/"false" are intentionally ignored to avoid ambiguous parsing.
+// Accepted value types are: bool, numeric values (treated as enabled when non-zero), and
+// string values like "true"/"1"/"yes"/"on" for backward compatibility with runtime checks.
 func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
 	if config == nil {
 		return false
@@ -1494,6 +1498,9 @@ func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
 		return v != 0
 	case int64:
 		return v != 0
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
 	default:
 		rv := reflect.ValueOf(raw)
 		switch rv.Kind() {
