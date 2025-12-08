@@ -99,17 +99,25 @@ func sanitizeCCQueryParams(u *url.URL) {
 	u.RawQuery = query.Encode()
 }
 
-// isClaudePath checks if the request path contains /claude/v1 segment after the group name.
+// isClaudePath checks if the request path contains a Claude-style segment after the group name.
 // This is used to detect any Claude-style path that needs to be rewritten.
 // Path format: /proxy/{group}/claude/v1/...
-// We check for /claude/v1 to avoid false positives when group name contains "claude".
+// For groups literally named "claude", OpenAI-style paths like /proxy/claude/v1/messages are NOT treated as CC paths.
 // Examples:
 //   - /proxy/mygroup/claude/v1/models -> true
-//   - /proxy/claude/v1/models -> true (group named "claude", no CC path)
+//   - /proxy/claude/v1/models -> false (group named "claude", OpenAI-style path)
 //   - /proxy/claude/claude/v1/models -> true (group named "claude", with CC path)
-func isClaudePath(path string) bool {
-	// Look for /claude/v1/ or /claude/v1 at end of path
-	// This avoids matching group names that contain "claude"
+func isClaudePath(path, groupName string) bool {
+	// For proxy routes, require /proxy/{group}/claude/v1 prefix to avoid dropping the group segment.
+	if groupName != "" {
+		prefix := "/proxy/" + groupName + "/"
+		if strings.HasPrefix(path, prefix) {
+			suffix := strings.TrimPrefix(path, prefix)
+			return strings.HasPrefix(suffix, "claude/v1/") || suffix == "claude/v1"
+		}
+	}
+
+	// Fallback for non-proxy paths or when groupName is unknown.
 	return strings.Contains(path, "/claude/v1/") || strings.HasSuffix(path, "/claude/v1")
 }
 
@@ -999,9 +1007,17 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	var openaiResp OpenAIResponse
 	if err := json.Unmarshal(bodyBytes, &openaiResp); err != nil {
 		logrus.WithError(err).WithField("body_preview", utils.TruncateString(string(bodyBytes), 512)).
-			Warn("Failed to parse OpenAI response for CC conversion, returning original")
+			Warn("Failed to parse OpenAI response for CC conversion, returning body without CC conversion")
 		// Store original body for downstream logging (will be truncated by logger).
 		c.Set("response_body", string(bodyBytes))
+
+		// Clear upstream encoding/length headers since we may have decompressed the body above.
+		// Returning decompressed bytes with a stale Content-Encoding header would cause clients
+		// to attempt decompression again and corrupt the payload.
+		c.Writer.Header().Del("Content-Encoding")
+		c.Writer.Header().Del("Content-Length")
+		c.Writer.Header().Del("Transfer-Encoding")
+
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
@@ -1360,8 +1376,11 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if len(delta.ToolCalls) > 0 {
 			for _, tc := range delta.ToolCalls {
 				if tc.ID != "" {
-					// New tool call - close previous content block if any
-					if accumulatedContent.Len() > 0 {
+					// Determine whether this is a new tool call ID or a continuation of the current one.
+					isNewToolCall := currentToolCall == nil || currentToolCall.ID != tc.ID
+
+					// If we are switching from text content to a tool call, close the text block first.
+					if isNewToolCall && accumulatedContent.Len() > 0 {
 						stopBlockEvent := ClaudeStreamEvent{
 							Type:  "content_block_stop",
 							Index: contentBlockIndex,
@@ -1372,24 +1391,37 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 						accumulatedContent.Reset()
 					}
 
-					currentToolCall = &tc
-
-					// Send content_block_start for tool_use
-					startToolEvent := ClaudeStreamEvent{
-						Type:  "content_block_start",
-						Index: contentBlockIndex,
-						ContentBlock: &ClaudeContentBlock{
-							Type: "tool_use",
-							ID:   tc.ID,
-							Name: tc.Function.Name,
-						},
+					// If there is an existing tool_use block with a different ID, close it before starting a new one.
+					if currentToolCall != nil && currentToolCall.ID != "" && currentToolCall.ID != tc.ID {
+						stopToolEvent := ClaudeStreamEvent{
+							Type:  "content_block_stop",
+							Index: contentBlockIndex,
+						}
+						writeClaudeEvent(c.Writer, stopToolEvent)
+						flusher.Flush()
+						contentBlockIndex++
 					}
-					writeClaudeEvent(c.Writer, startToolEvent)
-					flusher.Flush()
+
+					if isNewToolCall {
+						currentToolCall = &tc
+
+						// Send content_block_start for tool_use
+						startToolEvent := ClaudeStreamEvent{
+							Type:  "content_block_start",
+							Index: contentBlockIndex,
+							ContentBlock: &ClaudeContentBlock{
+								Type: "tool_use",
+								ID:   tc.ID,
+								Name: tc.Function.Name,
+							},
+						}
+						writeClaudeEvent(c.Writer, startToolEvent)
+						flusher.Flush()
+					}
 				}
 
 				if tc.Function.Arguments != "" && currentToolCall != nil {
-					// Send input_json_delta
+					// Send input_json_delta for the active tool_use block.
 					deltaToolEvent := ClaudeStreamEvent{
 						Type:  "content_block_delta",
 						Index: contentBlockIndex,

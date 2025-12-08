@@ -321,7 +321,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 	// Handle CC support path rewriting for all requests (including GET)
 	// This must happen before body processing to ensure correct path for upstream
-	if isClaudePath(c.Request.URL.Path) && isCCSupportEnabled(group) {
+	if isCCSupportEnabled(group) && isClaudePath(c.Request.URL.Path, group.Name) {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
 		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
@@ -758,8 +758,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	c.Set(ctxKeyCCEnabled, false)
 
 	// Handle CC support path rewriting for sub-groups
-	// This rewrites /claude/ paths to standard OpenAI paths
-	if isClaudePath(c.Request.URL.Path) && isCCSupportEnabled(group) {
+	// This rewrites /claude/ paths to standard OpenAI paths. For groups named "claude",
+	// OpenAI-style paths like /proxy/claude/v1/messages are not treated as CC paths.
+	if isCCSupportEnabled(group) && isClaudePath(c.Request.URL.Path, group.Name) {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
 		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
