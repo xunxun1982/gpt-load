@@ -6,6 +6,7 @@ package proxy
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,9 +25,34 @@ import (
 
 // Context keys for CC support middleware.
 const (
-	ctxKeyCCEnabled       = "cc_enabled"
-	ctxKeyOriginalFormat  = "cc_original_format"
+	ctxKeyCCEnabled      = "cc_enabled"
+	ctxKeyOriginalFormat = "cc_original_format"
 )
+
+const maxUpstreamResponseBodySize = 32 * 1024 * 1024
+
+var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum allowed size")
+
+// readAllWithLimit reads all data from the reader up to the given limit.
+// If the response exceeds the limit, ErrBodyTooLarge is returned and the
+// caller should not attempt to parse the partial payload.
+func readAllWithLimit(r io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		return io.ReadAll(r)
+	}
+
+	// Read up to limit+1 bytes so we can detect overflow without keeping
+	// more than a small constant above the configured limit in memory.
+	limited := io.LimitReader(r, limit+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, ErrBodyTooLarge
+	}
+	return data, nil
+}
 
 // isCCSupportEnabled checks whether the cc_support flag is enabled for the given group.
 // This flag is stored in the group-level JSON config.
@@ -52,6 +78,9 @@ func isCCSupportEnabled(group *models.Group) bool {
 		return v != 0
 	case int:
 		return v != 0
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
 	default:
 		return false
 	}
@@ -663,8 +692,26 @@ func convertFinishReasonToStopReason(finishReason string) string {
 
 // handleCCNormalResponse handles non-streaming response conversion for CC support.
 func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Response) {
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := readAllWithLimit(resp.Body, maxUpstreamResponseBodySize)
 	if err != nil {
+		if errors.Is(err, ErrBodyTooLarge) {
+			// Upstream response is too large to safely convert. Return a structured
+			// Claude error instead of attempting to parse a truncated JSON payload.
+			maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
+			message := fmt.Sprintf("Upstream response exceeded maximum allowed size (%dMB) for CC conversion", maxMB)
+			logrus.WithField("limit_mb", maxMB).
+				Warn("CC: Upstream response body too large for CC conversion")
+			claudeErr := ClaudeErrorResponse{
+				Type: "error",
+				Error: ClaudeError{
+					Type:    "invalid_request_error",
+					Message: message,
+				},
+			}
+			c.JSON(http.StatusBadGateway, claudeErr)
+			return
+		}
+
 		logrus.WithError(err).Error("Failed to read OpenAI response body for CC conversion")
 		c.Status(http.StatusInternalServerError)
 		return

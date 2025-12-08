@@ -408,8 +408,8 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	// Perform all validation BEFORE starting transaction to minimize lock time
-	// This is critical for SQLite which uses database-level locking
+	// Perform all validation before the final database write to minimize lock time.
+	// This is especially important for SQLite which uses database-level locking.
 
 	if params.Name != nil {
 		cleanedName := strings.TrimSpace(*params.Name)
@@ -525,7 +525,7 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 				// Get parent aggregate groups
 				parentGroups, err := s.aggregateGroupService.GetParentAggregateGroups(ctx, group.ID)
 				if err != nil {
-					return nil, err
+					return nil, app_errors.ParseDBError(err)
 				}
 
 				// Batch fetch channel types for all parent groups to avoid N+1 queries
@@ -538,7 +538,7 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 					var parentGroupModels []models.Group
 					if err := s.db.WithContext(ctx).Select("id", "channel_type").Where("id IN ?", parentIDs).Find(&parentGroupModels).Error; err != nil {
-						return nil, fmt.Errorf("failed to fetch parent groups for CC validation: %w", err)
+						return nil, app_errors.ParseDBError(err)
 					}
 
 					channelTypeMap := make(map[uint]string, len(parentGroupModels))
@@ -1473,7 +1473,7 @@ func (s *GroupService) generateUniqueGroupNameForCopy(ctx context.Context, baseN
 }
 
 // isConfigCCSupportEnabled checks whether cc_support is enabled in a config map.
-// Accepted value types are: bool, numeric (float64/int) and others are treated as disabled.
+// Accepted value types are: bool and numeric values, which are treated as enabled when non-zero.
 // String values such as "true"/"false" are intentionally ignored to avoid ambiguous parsing.
 func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
 	if config == nil {
@@ -1492,8 +1492,20 @@ func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
 		return v != 0
 	case int:
 		return v != 0
+	case int64:
+		return v != 0
 	default:
-		return false
+		rv := reflect.ValueOf(raw)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return rv.Int() != 0
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return rv.Uint() != 0
+		case reflect.Float32, reflect.Float64:
+			return rv.Float() != 0
+		default:
+			return false
+		}
 	}
 }
 
