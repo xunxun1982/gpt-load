@@ -690,6 +690,279 @@ func convertFinishReasonToStopReason(finishReason string) string {
 	}
 }
 
+// parseFunctionCallsFromContentForCC parses function calls from content when force_function_call
+// is enabled in CC mode. It extracts XML-based function calls and converts them to Claude
+// tool_use format. Returns the cleaned content (with XML removed) and parsed tool_use blocks.
+//
+// This function bridges the gap between force_function_call (which injects XML-based prompts)
+// and CC support (which expects Claude-style tool_use blocks).
+func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string, []ClaudeContentBlock) {
+	// Only process if function call is enabled for this request
+	if !isFunctionCallEnabled(c) {
+		return content, nil
+	}
+
+	// Retrieve trigger signal stored during request rewrite
+	triggerVal, exists := c.Get(ctxKeyTriggerSignal)
+	if !exists {
+		return content, nil
+	}
+	triggerSignal, ok := triggerVal.(string)
+	if !ok || triggerSignal == "" {
+		return content, nil
+	}
+
+	// Parse function calls from the content
+	calls := parseFunctionCallsXML(content, triggerSignal)
+
+	// Fallback: try parsing without trigger signal if none found
+	if len(calls) == 0 && strings.Contains(content, "<function_calls>") {
+		calls = parseFunctionCallsXML(content, "")
+		if len(calls) > 0 {
+			logrus.WithField("parsed_count", len(calls)).
+				Debug("CC+FC: Parsed function calls using fallback (no trigger signal)")
+		}
+	}
+
+	if len(calls) == 0 {
+		return content, nil
+	}
+
+	// Convert to Claude tool_use blocks
+	var toolUseBlocks []ClaudeContentBlock
+	for i, call := range calls {
+		if call.Name == "" {
+			continue
+		}
+
+		// Fix tool-specific parameter issues to handle common model errors
+		// We apply generic fixes based on parameter types and names to cover more tools
+		for key, val := range call.Args {
+			if strVal, ok := val.(string); ok {
+				// 1. Try to unmarshal JSON strings (arrays/objects)
+				// This handles cases like TodoWrite's 'todos' passed as string
+				trimmed := strings.TrimSpace(strVal)
+				if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+					(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+					var jsonVal any
+					if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
+						call.Args[key] = jsonVal
+						continue // Skip other fixes if it was valid JSON
+					}
+				}
+
+				// 2. Fix escaped newlines in content-heavy parameters
+				// This handles cases like Write/Edit 'content' or Bash 'command'
+				// where models might double-escape newlines (e.g. \\n instead of \n)
+				if key == "content" || key == "command" || key == "script" || key == "code" {
+					if strings.Contains(strVal, "\\n") {
+						call.Args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
+					}
+				}
+			}
+		}
+
+		// Specific normalization for tools to handle schema strictness
+		switch call.Name {
+		case "TodoWrite":
+			if todos, ok := call.Args["todos"]; ok {
+				// Ensure todos is a slice
+				var todoList []any
+				if list, ok := todos.([]any); ok {
+					todoList = list
+				} else if strVal, ok := todos.(string); ok {
+					// Try parsing if it's still a string (failed generic JSON parse or malformed)
+					if err := json.Unmarshal([]byte(strVal), &todoList); err != nil {
+						// If not JSON array, treat as single item description
+						todoList = []any{strVal}
+					}
+				} else if mapVal, ok := todos.(map[string]any); ok {
+					// Handle case where XML parsing resulted in a map instead of list
+					// e.g. <todos><todo>...</todo></todos> -> {"todo": {...}}
+					// or <todos><item>...</item><item>...</item></todos> -> {"item": [...]}
+					foundList := false
+					for _, key := range []string{"todo", "item", "task"} {
+						if val, exists := mapVal[key]; exists {
+							if list, ok := val.([]any); ok {
+								todoList = list
+								foundList = true
+								break
+							} else {
+								// Single item in map
+								todoList = []any{val}
+								foundList = true
+								break
+							}
+						}
+					}
+					if !foundList {
+						// If no known inner key, treat the map itself as a single item
+						todoList = []any{mapVal}
+					}
+				}
+
+				// Normalize items to objects with strict field whitelisting and value mapping
+				var normalizedTodos []map[string]any
+				for _, item := range todoList {
+					if strItem, ok := item.(string); ok {
+						// Convert string item to object
+						normalizedTodos = append(normalizedTodos, map[string]any{
+							"content": strItem,
+							"status":  "todo", // Default to todo (pending)
+						})
+					} else if mapItem, ok := item.(map[string]any); ok {
+						// Create a new clean map to avoid extra fields like "activeForm"
+						cleanItem := make(map[string]any)
+
+						// 1. Extract Content
+						if content, ok := mapItem["content"]; ok {
+							cleanItem["content"] = content
+						} else if task, ok := mapItem["task"]; ok {
+							cleanItem["content"] = task
+						} else if desc, ok := mapItem["description"]; ok {
+							cleanItem["content"] = desc
+						}
+
+						// 2. Extract and Map Status
+						var rawStatus any
+						if status, ok := mapItem["status"]; ok {
+							rawStatus = status
+						} else if state, ok := mapItem["state"]; ok {
+							rawStatus = state
+						}
+
+						finalStatus := "todo" // Default
+						if strStatus, ok := rawStatus.(string); ok {
+							lowerStatus := strings.ToLower(strStatus)
+							switch lowerStatus {
+							case "completed", "finished", "done":
+								finalStatus = "done"
+							case "pending", "todo", "in_progress":
+								finalStatus = "todo"
+							default:
+								finalStatus = "todo"
+							}
+						}
+						cleanItem["status"] = finalStatus
+
+						// Only append if content exists
+						if _, hasContent := cleanItem["content"]; hasContent {
+							normalizedTodos = append(normalizedTodos, cleanItem)
+						}
+					}
+				}
+				call.Args["todos"] = normalizedTodos
+			}
+
+		case "AskUserQuestion":
+			// Ensure 'questions' is an array
+			if questions, ok := call.Args["questions"]; ok {
+				if _, isSlice := questions.([]any); !isSlice {
+					if strVal, ok := questions.(string); ok {
+						var qList []any
+						if err := json.Unmarshal([]byte(strVal), &qList); err == nil {
+							call.Args["questions"] = qList
+						} else {
+							// Wrap single string as array
+							call.Args["questions"] = []any{strVal}
+						}
+					}
+				}
+			}
+			// Ensure 'answers' is an object
+			if answers, ok := call.Args["answers"]; ok {
+				if _, isMap := answers.(map[string]any); !isMap {
+					if strVal, ok := answers.(string); ok {
+						var aMap map[string]any
+						if err := json.Unmarshal([]byte(strVal), &aMap); err == nil {
+							call.Args["answers"] = aMap
+						}
+					}
+				}
+			}
+
+		case "list_dir":
+			// Ensure 'recursive' field exists, default to false
+			// MCP list_dir tool requires this field, but models often omit it
+			if _, ok := call.Args["recursive"]; !ok {
+				call.Args["recursive"] = false
+			}
+
+		case "WebSearch":
+			// Ensure 'allowed_domains' is an array
+			if allowed, ok := call.Args["allowed_domains"]; ok {
+				if _, isSlice := allowed.([]any); !isSlice {
+					if strVal, ok := allowed.(string); ok {
+						var list []any
+						if err := json.Unmarshal([]byte(strVal), &list); err == nil {
+							call.Args["allowed_domains"] = list
+						} else {
+							call.Args["allowed_domains"] = []any{strVal}
+						}
+					}
+				}
+			}
+			// Ensure 'blocked_domains' is an array
+			if blocked, ok := call.Args["blocked_domains"]; ok {
+				if _, isSlice := blocked.([]any); !isSlice {
+					if strVal, ok := blocked.(string); ok {
+						var list []any
+						if err := json.Unmarshal([]byte(strVal), &list); err == nil {
+							call.Args["blocked_domains"] = list
+						} else {
+							call.Args["blocked_domains"] = []any{strVal}
+						}
+					}
+				}
+			}
+
+		case "Edit":
+			// Fix newlines in old_string and new_string
+			for _, key := range []string{"old_string", "new_string"} {
+				if val, ok := call.Args[key]; ok {
+					if strVal, ok := val.(string); ok {
+						if strings.Contains(strVal, "\\n") {
+							call.Args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
+						}
+					}
+				}
+			}
+		}
+
+		// Marshal arguments to JSON
+		inputJSON, err := json.Marshal(call.Args)
+		if err != nil {
+			logrus.WithError(err).Debug("CC+FC: Failed to marshal function call arguments, skipping")
+			continue
+		}
+
+		// Generate unique tool use ID
+		toolUseID := fmt.Sprintf("toolu_%s_%d", utils.GenerateRandomSuffix(), i)
+
+		toolUseBlocks = append(toolUseBlocks, ClaudeContentBlock{
+			Type:  "tool_use",
+			ID:    toolUseID,
+			Name:  call.Name,
+			Input: json.RawMessage(inputJSON),
+		})
+	}
+
+	if len(toolUseBlocks) == 0 {
+		return content, nil
+	}
+
+	// Remove function call XML blocks from content
+	cleanedContent := removeFunctionCallsBlocks(content)
+
+	logrus.WithFields(logrus.Fields{
+		"trigger_signal":   triggerSignal,
+		"tool_use_count":   len(toolUseBlocks),
+		"content_cleaned":  len(cleanedContent) != len(content),
+	}).Debug("CC+FC: Converted XML function calls to Claude tool_use blocks")
+
+	return cleanedContent, toolUseBlocks
+}
+
 // handleCCNormalResponse handles non-streaming response conversion for CC support.
 func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Response) {
 	bodyBytes, err := readAllWithLimit(resp.Body, maxUpstreamResponseBodySize)
@@ -754,6 +1027,51 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 
 	// Convert to Claude format
 	claudeResp := convertOpenAIToClaudeResponse(&openaiResp)
+
+	// When force_function_call is enabled in CC mode, parse XML function calls
+	// from the response content and convert them to Claude tool_use blocks.
+	// This bridges the gap between the XML-based function call prompt injection
+	// and Claude Code's expected tool_use format.
+	if isFunctionCallEnabled(c) && len(claudeResp.Content) > 0 {
+		// Extract text content for function call parsing
+		var textContent string
+		for _, block := range claudeResp.Content {
+			if block.Type == "text" {
+				textContent += block.Text
+			}
+		}
+
+		if textContent != "" {
+			cleanedContent, toolUseBlocks := parseFunctionCallsFromContentForCC(c, textContent)
+
+			if len(toolUseBlocks) > 0 {
+				// Rebuild content: clean text block(s) + tool_use blocks
+				var newContent []ClaudeContentBlock
+
+				// Add cleaned text content if not empty
+				if strings.TrimSpace(cleanedContent) != "" {
+					newContent = append(newContent, ClaudeContentBlock{
+						Type: "text",
+						Text: cleanedContent,
+					})
+				}
+
+				// Add tool_use blocks
+				newContent = append(newContent, toolUseBlocks...)
+
+				claudeResp.Content = newContent
+
+				// Update stop_reason to tool_use since we have tool calls
+				toolUseReason := "tool_use"
+				claudeResp.StopReason = &toolUseReason
+
+				logrus.WithFields(logrus.Fields{
+					"tool_use_count": len(toolUseBlocks),
+					"text_retained":  strings.TrimSpace(cleanedContent) != "",
+				}).Debug("CC+FC: Added tool_use blocks to Claude response")
+			}
+		}
+	}
 
 	logrus.WithFields(logrus.Fields{
 		"openai_id":   openaiResp.ID,
@@ -886,11 +1204,88 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}
 
 		if event.Data == "[DONE]" {
+			// Close any pending content block first
+			if accumulatedContent.Len() > 0 || currentToolCall != nil {
+				stopBlockEvent := ClaudeStreamEvent{
+					Type:  "content_block_stop",
+					Index: contentBlockIndex,
+				}
+				writeClaudeEvent(c.Writer, stopBlockEvent)
+				flusher.Flush()
+				contentBlockIndex++
+			}
+
+			stopReason := "end_turn"
+
+			// When force_function_call is enabled in CC mode, parse XML function calls
+			// from the accumulated content and emit tool_use blocks.
+			if isFunctionCallEnabled(c) && accumulatedContent.Len() > 0 {
+				content := accumulatedContent.String()
+				cleanedContent, toolUseBlocks := parseFunctionCallsFromContentForCC(c, content)
+
+				if len(toolUseBlocks) > 0 {
+					// Emit tool_use blocks for each parsed function call
+					for i, toolUse := range toolUseBlocks {
+						// Send content_block_start for tool_use
+						startToolEvent := ClaudeStreamEvent{
+							Type:  "content_block_start",
+							Index: contentBlockIndex,
+							ContentBlock: &ClaudeContentBlock{
+								Type: "tool_use",
+								ID:   toolUse.ID,
+								Name: toolUse.Name,
+							},
+						}
+						writeClaudeEvent(c.Writer, startToolEvent)
+						flusher.Flush()
+
+						// Send input_json_delta with full arguments
+						inputStr := string(toolUse.Input)
+						if inputStr != "" {
+							deltaToolEvent := ClaudeStreamEvent{
+								Type:  "content_block_delta",
+								Index: contentBlockIndex,
+								Delta: &ClaudeStreamDelta{
+									Type:        "input_json_delta",
+									PartialJSON: inputStr,
+								},
+							}
+							writeClaudeEvent(c.Writer, deltaToolEvent)
+							flusher.Flush()
+						}
+
+						// Send content_block_stop
+						stopToolEvent := ClaudeStreamEvent{
+							Type:  "content_block_stop",
+							Index: contentBlockIndex,
+						}
+						writeClaudeEvent(c.Writer, stopToolEvent)
+						flusher.Flush()
+
+						contentBlockIndex++
+
+						logrus.WithFields(logrus.Fields{
+							"tool_index": i,
+							"tool_name":  toolUse.Name,
+							"tool_id":    toolUse.ID,
+						}).Debug("CC+FC: Emitted tool_use block in [DONE] streaming response")
+					}
+
+					// Update stop reason to tool_use since we have tool calls
+					stopReason = "tool_use"
+
+					logrus.WithFields(logrus.Fields{
+						"tool_use_count":  len(toolUseBlocks),
+						"content_cleaned": len(cleanedContent) != len(content),
+					}).Debug("CC+FC: Converted XML function calls to tool_use blocks at [DONE]")
+				}
+			}
+
 			// Send message_delta with stop_reason and usage
 			deltaEvent := ClaudeStreamEvent{
 				Type: "message_delta",
 				Delta: &ClaudeStreamDelta{
-					StopReason: "end_turn",
+					StopReason: stopReason,
 				},
 				// Usage is required by Claude clients
 				Usage: &ClaudeUsage{
@@ -906,7 +1301,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			writeClaudeEvent(c.Writer, stopEvent)
 			flusher.Flush()
 
-			logrus.Debug("CC: Stream finished successfully")
+			logrus.WithField("stop_reason", stopReason).Debug("CC: Stream finished successfully")
 			break
 		}
 
@@ -1019,9 +1414,75 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				}
 				writeClaudeEvent(c.Writer, stopBlockEvent)
 				flusher.Flush()
+				contentBlockIndex++
 			}
 
 			stopReason := convertFinishReasonToStopReason(*choice.FinishReason)
+
+			// When force_function_call is enabled in CC mode, parse XML function calls
+			// from the accumulated content and emit tool_use blocks.
+			// This bridges the gap between XML-based function call prompts and Claude's tool_use format.
+			if isFunctionCallEnabled(c) && accumulatedContent.Len() > 0 {
+				content := accumulatedContent.String()
+				cleanedContent, toolUseBlocks := parseFunctionCallsFromContentForCC(c, content)
+
+				if len(toolUseBlocks) > 0 {
+					// Emit tool_use blocks for each parsed function call
+					for i, toolUse := range toolUseBlocks {
+						// Send content_block_start for tool_use
+						startToolEvent := ClaudeStreamEvent{
+							Type:  "content_block_start",
+							Index: contentBlockIndex,
+							ContentBlock: &ClaudeContentBlock{
+								Type: "tool_use",
+								ID:   toolUse.ID,
+								Name: toolUse.Name,
+							},
+						}
+						writeClaudeEvent(c.Writer, startToolEvent)
+						flusher.Flush()
+
+						// Send input_json_delta with full arguments
+						inputStr := string(toolUse.Input)
+						if inputStr != "" {
+							deltaToolEvent := ClaudeStreamEvent{
+								Type:  "content_block_delta",
+								Index: contentBlockIndex,
+								Delta: &ClaudeStreamDelta{
+									Type:        "input_json_delta",
+									PartialJSON: inputStr,
+								},
+							}
+							writeClaudeEvent(c.Writer, deltaToolEvent)
+							flusher.Flush()
+						}
+
+						// Send content_block_stop
+						stopToolEvent := ClaudeStreamEvent{
+							Type:  "content_block_stop",
+							Index: contentBlockIndex,
+						}
+						writeClaudeEvent(c.Writer, stopToolEvent)
+						flusher.Flush()
+
+						contentBlockIndex++
+
+						logrus.WithFields(logrus.Fields{
+							"tool_index": i,
+							"tool_name":  toolUse.Name,
+							"tool_id":    toolUse.ID,
+						}).Debug("CC+FC: Emitted tool_use block in streaming response")
+					}
+
+					// Update stop reason to tool_use since we have tool calls
+					stopReason = "tool_use"
+
+					logrus.WithFields(logrus.Fields{
+						"tool_use_count":   len(toolUseBlocks),
+						"content_cleaned":  len(cleanedContent) != len(content),
+					}).Debug("CC+FC: Converted XML function calls to tool_use blocks in streaming response")
+				}
+			}
 
 			// Build usage from OpenAI response if available
 			var usage *ClaudeUsage
