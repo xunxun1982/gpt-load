@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -63,14 +64,30 @@ func WeightedRandomSelect(weights []int) int {
 	return -1
 }
 
-// GenerateRandomSuffix generates a random 4-character suffix using lowercase letters and numbers
-func GenerateRandomSuffix() string {
+// generateRandomSuffixWithLength generates a random suffix of the given length using
+// lowercase letters and numbers. Lengths less than or equal to zero fall back to 4.
+func generateRandomSuffixWithLength(length int) string {
+	if length <= 0 {
+		length = 4
+	}
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	const length = 4
 	rng := GetRand()
 	suffix := make([]byte, length)
 	for i := range suffix {
 		suffix[i] = charset[rng.Intn(len(charset))]
 	}
 	return string(suffix)
+}
+
+// GenerateRandomSuffix generates a random 4-character suffix using lowercase letters and numbers.
+// The dedicated helper preserves backward compatibility for existing callers that expect 4 chars.
+func GenerateRandomSuffix() string {
+	return generateRandomSuffixWithLength(4)
+}
+
+// GenerateTriggerSignal returns the preferred b4u2cc-style trigger signal used by the
+// function call prompt. The format is <<CALL_xxxxxx>> with a six-character random suffix.
+func GenerateTriggerSignal() string {
+	suffix := generateRandomSuffixWithLength(6)
+	return fmt.Sprintf("<<CALL_%s>>", suffix)
 }
