@@ -274,7 +274,10 @@ type OpenAIRequest struct {
 	Stream      bool            `json:"stream"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
 	Stop        json.RawMessage `json:"stop,omitempty"`
-	ToolChoice  interface{}     `json:"tool_choice,omitempty"`
+	// interface{} is used here for flexibility to handle both string ("auto"/"none") and
+	// object forms ({"type": "tool", "name": "..."}) from OpenAI API. json.Marshal ensures
+	// type safety during serialization. This design is intentional for simplicity.
+	ToolChoice interface{} `json:"tool_choice,omitempty"`
 }
 
 // convertClaudeToOpenAI converts a Claude request to OpenAI format.
@@ -1504,6 +1507,14 @@ const (
 	ThinkingAltEndTag   = "</think>"
 )
 
+// Pre-computed rune slices for tag matching to avoid repeated allocations in hot path
+var (
+	thinkingEndTagRunes      = []rune(ThinkingEndTag)
+	thinkingAltEndTagRunes   = []rune(ThinkingAltEndTag)
+	thinkingStartTagRunes    = []rune(ThinkingStartTag)
+	thinkingAltStartTagRunes = []rune(ThinkingAltStartTag)
+)
+
 type ThinkingEvent struct {
 	Type    string
 	Content string
@@ -1546,16 +1557,18 @@ func (p *ThinkingParser) FeedRune(char rune) {
 		// Write to buffer first, then check for end tag using ring buffer
 		p.thinkingBuffer.WriteString(charStr)
 		p.addToThinkingRing(char)
-		if p.thinkingRingSuffixMatches(ThinkingEndTag) || p.thinkingRingSuffixMatches(ThinkingAltEndTag) {
+		if p.thinkingRingSuffixMatches(thinkingEndTagRunes) || p.thinkingRingSuffixMatches(thinkingAltEndTagRunes) {
 			// Extract content by trimming the matched end tag
 			fullContent := p.thinkingBuffer.String()
 			var tagLen int
-			if p.thinkingRingSuffixMatches(ThinkingEndTag) {
+			if p.thinkingRingSuffixMatches(thinkingEndTagRunes) {
 				tagLen = len(ThinkingEndTag)
 			} else {
 				tagLen = len(ThinkingAltEndTag)
 			}
 			content := fullContent[:len(fullContent)-tagLen]
+			// Remove leading ">" artifact from parsing logic per b4u2cc reference implementation
+			// See: b4u2cc/deno-proxy/src/parser.ts lines 122, 274, 338
 			content = strings.TrimPrefix(strings.TrimSpace(content), ">")
 			if trimmed := strings.TrimSpace(content); trimmed != "" {
 				p.events = append(p.events, ThinkingEvent{Type: "thinking", Content: trimmed})
@@ -1573,11 +1586,11 @@ func (p *ThinkingParser) FeedRune(char rune) {
 	p.addToRing(char)
 
 	// Check if ring buffer ends with start tags using O(1) suffix check
-	if p.ringSuffixMatches(ThinkingStartTag) || p.ringSuffixMatches(ThinkingAltStartTag) {
+	if p.ringSuffixMatches(thinkingStartTagRunes) || p.ringSuffixMatches(thinkingAltStartTagRunes) {
 		// Extract text portion by removing the matched tag
 		textLen := p.buffer.Len()
 		var tagLen int
-		if p.ringSuffixMatches(ThinkingStartTag) {
+		if p.ringSuffixMatches(thinkingStartTagRunes) {
 			tagLen = len(ThinkingStartTag)
 		} else {
 			tagLen = len(ThinkingAltStartTag)
@@ -1636,9 +1649,8 @@ func (p *ThinkingParser) resetThinkingRing() {
 	p.thinkingRingSize = 0
 }
 
-// thinkingRingSuffixMatches checks if the thinking ring buffer ends with the given tag
-func (p *ThinkingParser) thinkingRingSuffixMatches(tag string) bool {
-	tagRunes := []rune(tag)
+// thinkingRingSuffixMatches checks if the thinking ring buffer ends with the given tag runes
+func (p *ThinkingParser) thinkingRingSuffixMatches(tagRunes []rune) bool {
 	tagLen := len(tagRunes)
 
 	if p.thinkingRingSize < tagLen {
@@ -1655,9 +1667,8 @@ func (p *ThinkingParser) thinkingRingSuffixMatches(tag string) bool {
 	return true
 }
 
-// ringSuffixMatches checks if the ring buffer ends with the given tag (O(1) operation)
-func (p *ThinkingParser) ringSuffixMatches(tag string) bool {
-	tagRunes := []rune(tag)
+// ringSuffixMatches checks if the ring buffer ends with the given tag runes (O(1) operation)
+func (p *ThinkingParser) ringSuffixMatches(tagRunes []rune) bool {
 	tagLen := len(tagRunes)
 
 	if p.suffixRingSize < tagLen {
@@ -2284,7 +2295,11 @@ func appendToContent(content json.RawMessage, suffix string) json.RawMessage {
 	// Fallback: return original content if unable to append
 	// This prevents corruption but hints may be lost for unexpected content shapes
 	if logrus.IsLevelEnabled(logrus.DebugLevel) {
-		logrus.WithField("content_preview", string(content[:min(len(content), 100)])).Debug("CC: Unable to append thinking hint, unexpected content format")
+		// Only log metadata to avoid potential PII leakage
+		logrus.WithFields(logrus.Fields{
+			"content_len":  len(content),
+			"content_type": "json.RawMessage",
+		}).Debug("CC: Unable to append thinking hint, unexpected content format")
 	}
 	return content
 }
