@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -56,14 +57,37 @@ type retryContext struct {
 	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 }
 
-// safeProxyURL returns the proxy URL value or "none" when the pointer
-// is nil or the underlying string is empty. This avoids duplicating the
-// inline lambda used for logging in multiple call sites.
+// safeProxyURL returns the proxy URL value with credentials redacted for safe logging.
+// Returns "none" when the pointer is nil or the underlying string is empty.
+// If the URL contains user credentials (user:pass@host), they are redacted to prevent
+// password leakage in logs.
 func safeProxyURL(proxyURL *string) string {
-	if proxyURL != nil && *proxyURL != "" {
-		return *proxyURL
+	if proxyURL == nil || *proxyURL == "" {
+		return "none"
 	}
-	return "none"
+
+	// Parse URL to redact credentials
+	parsedURL, err := url.Parse(*proxyURL)
+	if err != nil {
+		// If parsing fails, return a redacted version to be safe
+		return "[invalid-url]"
+	}
+
+	// If URL has user credentials, redact them
+	if parsedURL.User != nil {
+		username := parsedURL.User.Username()
+		if username != "" {
+			// Redact password but keep username (first 3 chars) for debugging
+			if len(username) > 3 {
+				username = username[:3] + "***"
+			} else {
+				username = "***"
+			}
+			parsedURL.User = url.User(username)
+		}
+	}
+
+	return parsedURL.String()
 }
 
 // restoreOriginalPath restores the original request path for retry attempts.
@@ -320,9 +344,12 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	}
 	c.Request.Body.Close()
 
-	// Use the buffer bytes directly to avoid allocation
-	// The buffer is returned to the pool when HandleProxy returns, which is safe
-	// as executeRequestWithRetry is synchronous.
+	// Use the buffer bytes directly to avoid allocation.
+	// SAFETY: This is safe because:
+	// 1. PutBuffer() calls buf.Reset() which clears the buffer contents
+	// 2. executeRequestWithRetry() is synchronous and doesn't spawn goroutines that retain bodyBytes
+	// 3. The buffer is returned to pool only after HandleProxy returns (via defer)
+	// 4. No downstream handlers store the bodyBytes slice beyond the request scope
 	bodyBytes := buf.Bytes()
 
 	// For GET requests (like /v1/models), skip body processing
@@ -375,7 +402,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			}
 
 			// Handle Claude count_tokens endpoint (CC only).
-			if ps.handleTokenCount(c, group, channelHandler, finalBodyBytes) {
+			if ps.handleTokenCount(c, group, finalBodyBytes) {
 				return
 			}
 
@@ -768,7 +795,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 
 	// Handle Claude count_tokens endpoint for aggregate sub-group (CC only).
-	if ps.handleTokenCount(c, group, subGroupChannelHandler, finalBodyBytes) {
+	if ps.handleTokenCount(c, group, finalBodyBytes) {
 		return
 	}
 

@@ -5,8 +5,6 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"gpt-load/internal/channel"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
 
@@ -948,66 +945,7 @@ func (ps *ProxyServer) countTokensLocally(bodyBytes []byte) int {
 	return estimateTokensLocal(chunks)
 }
 
-func (ps *ProxyServer) countTokensUpstream(c *gin.Context, group *models.Group, channelHandler channel.ChannelProxy, bodyBytes []byte) (int, error) {
-	apiKey, err := ps.keyProvider.SelectKey(group.ID)
-	if err != nil {
-		return 0, err
-	}
-
-	selection, err := channelHandler.SelectUpstreamWithClients(c.Request.URL, group.Name)
-	if err != nil {
-		return 0, err
-	}
-	if selection == nil || selection.URL == "" {
-		return 0, fmt.Errorf("empty upstream url")
-	}
-
-	client := selection.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, selection.URL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return 0, err
-	}
-	req.ContentLength = int64(len(bodyBytes))
-	req.Header = c.Request.Header.Clone()
-	utils.CleanClientAuthHeaders(req)
-	utils.CleanAnonymizationHeaders(req)
-	channelHandler.ModifyRequest(req, apiKey, group)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-	if err != nil {
-		return 0, err
-	}
-	if resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("upstream count_tokens failed: %s", resp.Status)
-	}
-
-	var parsed struct {
-		InputTokens int `json:"input_tokens"`
-	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return 0, err
-	}
-	if parsed.InputTokens < 0 {
-		parsed.InputTokens = 0
-	}
-	multiplier := getTokenMultiplier()
-	return int(float64(parsed.InputTokens) * multiplier), nil
-}
-
-func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, channelHandler channel.ChannelProxy, bodyBytes []byte) bool {
+func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bodyBytes []byte) bool {
 	if group == nil || !isCCSupportEnabled(group) {
 		return false
 	}
@@ -1018,17 +956,13 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, cha
 		return false
 	}
 
-	if strings.EqualFold(group.ChannelType, "anthropic") {
-		tokens, err := ps.countTokensUpstream(c, group, channelHandler, bodyBytes)
-		if err == nil {
-			c.JSON(http.StatusOK, gin.H{"input_tokens": tokens})
-			return true
-		}
-		// Log upstream failures at debug level and fall back to local estimation.
-		logrus.WithError(err).WithField("group", group.Name).
-			Debug("CC: Failed to count tokens upstream, falling back to local estimation")
-	}
+	// NOTE: The anthropic channel type upstream counting branch was removed here because
+	// isCCSupportEnabled() requires group.ChannelType == "openai", making the anthropic
+	// branch unreachable. CC support currently only works with OpenAI-compatible channels.
+	// If future support for direct Anthropic channels is needed, isCCSupportEnabled() must
+	// be relaxed first.
 
+	// For now, always use local token estimation for CC-enabled OpenAI groups.
 	tokens := ps.countTokensLocally(bodyBytes)
 	c.JSON(http.StatusOK, gin.H{"input_tokens": tokens})
 	return true
@@ -1575,10 +1509,21 @@ type ThinkingParser struct {
 	thinkingBuffer strings.Builder
 	thinkingMode   bool
 	events         []ThinkingEvent
+	// Ring buffer to track last N characters for efficient suffix matching
+	// This avoids O(n²) cost of calling buffer.String() on every rune
+	suffixRing     []rune
+	suffixRingPos  int
+	suffixRingSize int
 }
 
 func NewThinkingParser() *ThinkingParser {
-	return &ThinkingParser{}
+	// Ring buffer size needs to hold the longest tag we need to match
+	// Max tag length is len("</thinking>") = 11
+	maxTagLen := 11
+	return &ThinkingParser{
+		suffixRing:     make([]rune, maxTagLen),
+		suffixRingSize: 0,
+	}
 }
 
 func (p *ThinkingParser) FeedRune(char rune) {
@@ -1602,15 +1547,32 @@ func (p *ThinkingParser) FeedRune(char rune) {
 		return
 	}
 
-	temp := p.buffer.String() + charStr
-	if strings.HasSuffix(temp, ThinkingStartTag) || strings.HasSuffix(temp, ThinkingAltStartTag) {
-		textPortion := strings.TrimSuffix(strings.TrimSuffix(temp, ThinkingStartTag), ThinkingAltStartTag)
-		if textPortion != "" {
-			p.events = append(p.events, ThinkingEvent{Type: "text", Content: textPortion})
+	// Add character to ring buffer for efficient suffix matching
+	p.addToRing(char)
+
+	// Check if ring buffer ends with start tags using O(1) suffix check
+	if p.ringSuffixMatches(ThinkingStartTag) || p.ringSuffixMatches(ThinkingAltStartTag) {
+		// Extract text portion by removing the matched tag
+		textLen := p.buffer.Len()
+		var tagLen int
+		if p.ringSuffixMatches(ThinkingStartTag) {
+			tagLen = len(ThinkingStartTag)
+		} else {
+			tagLen = len(ThinkingAltStartTag)
+		}
+
+		if textLen > tagLen {
+			// Get text before the tag
+			fullText := p.buffer.String()
+			textPortion := fullText[:textLen-tagLen]
+			if textPortion != "" {
+				p.events = append(p.events, ThinkingEvent{Type: "text", Content: textPortion})
+			}
 		}
 		p.buffer.Reset()
 		p.thinkingMode = true
 		p.thinkingBuffer.Reset()
+		p.resetRing()
 		return
 	}
 
@@ -1620,6 +1582,43 @@ func (p *ThinkingParser) FeedRune(char rune) {
 func (p *ThinkingParser) endsWithThinkingEnd() bool {
 	buf := p.thinkingBuffer.String()
 	return strings.HasSuffix(buf, ThinkingEndTag) || strings.HasSuffix(buf, ThinkingAltEndTag)
+}
+
+// addToRing adds a rune to the ring buffer for efficient suffix matching
+func (p *ThinkingParser) addToRing(r rune) {
+	maxSize := cap(p.suffixRing)
+	if p.suffixRingSize < maxSize {
+		p.suffixRing[p.suffixRingSize] = r
+		p.suffixRingSize++
+	} else {
+		// Ring is full, shift left and add new rune at end
+		copy(p.suffixRing, p.suffixRing[1:])
+		p.suffixRing[maxSize-1] = r
+	}
+}
+
+// resetRing clears the ring buffer
+func (p *ThinkingParser) resetRing() {
+	p.suffixRingSize = 0
+}
+
+// ringSuffixMatches checks if the ring buffer ends with the given tag (O(1) operation)
+func (p *ThinkingParser) ringSuffixMatches(tag string) bool {
+	tagRunes := []rune(tag)
+	tagLen := len(tagRunes)
+
+	if p.suffixRingSize < tagLen {
+		return false
+	}
+
+	// Compare the last tagLen runes in the ring with the tag
+	start := p.suffixRingSize - tagLen
+	for i := 0; i < tagLen; i++ {
+		if p.suffixRing[start+i] != tagRunes[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *ThinkingParser) FlushText() {
@@ -1742,6 +1741,11 @@ const (
 // SSEWriter implements a lightweight backpressure-aware SSE writer.
 // It uses a small in-memory queue and short sleep-based backoff to avoid
 // overwhelming slow clients while keeping latency low for typical workloads.
+//
+// CONCURRENCY: This writer is designed for single-producer usage (one goroutine calling Send).
+// Multiple concurrent producers will serialize through the mutex and may experience
+// blocking during sleep/write operations. For multi-producer scenarios, consider using
+// a buffered channel with a dedicated writer goroutine instead.
 type SSEWriter struct {
 	writer   io.Writer
 	flusher  http.Flusher
