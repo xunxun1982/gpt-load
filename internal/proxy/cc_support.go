@@ -168,6 +168,22 @@ func isCCEnabled(c *gin.Context) bool {
 	return false
 }
 
+// isCCRequest returns true if the current request is a Claude Code request,
+// checking both the original path and context flags set during request processing.
+// This helper consolidates the three-way check pattern used across CC handlers.
+func isCCRequest(c *gin.Context) bool {
+	// Check original path contains Claude segment
+	if strings.Contains(c.Request.URL.Path, "/claude/") {
+		return true
+	}
+	// Check if CC was detected during path rewriting
+	if c.GetBool("cc_was_claude_path") {
+		return true
+	}
+	// Check if CC conversion was applied
+	return c.GetString(ctxKeyOriginalFormat) == "claude"
+}
+
 func getTriggerSignal(c *gin.Context) string {
 	if v, ok := c.Get(ctxKeyTriggerSignal); ok {
 		if s, ok := v.(string); ok {
@@ -1005,7 +1021,7 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 	if !isCountTokensEndpoint(c.Request.URL.Path, c.Request.Method) {
 		return false
 	}
-	if !strings.Contains(c.Request.URL.Path, "/claude/") && !c.GetBool("cc_was_claude_path") && c.GetString(ctxKeyOriginalFormat) != "claude" {
+	if !isCCRequest(c) {
 		return false
 	}
 
@@ -2229,7 +2245,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			if accumulatedContent.Len()+len(contentStr) <= maxContentBufferBytes {
 				accumulatedContent.WriteString(contentStr)
 			} else if !contentBufFullWarned {
-				logrus.Warn("CC: content buffer limit reached during streaming; tool call parsing may be incomplete")
+				logrus.WithFields(logrus.Fields{
+					"buffer_limit_kb": maxContentBufferBytes / 1024,
+					"accumulated_len": accumulatedContent.Len(),
+				}).Warn("CC: content buffer limit reached during streaming; tool call parsing may be incomplete")
 				contentBufFullWarned = true
 			}
 
