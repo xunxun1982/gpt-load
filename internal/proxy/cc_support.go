@@ -30,9 +30,13 @@ const (
 	ctxKeyOriginalFormat = "cc_original_format"
 )
 
+// Note: ctxKeyTriggerSignal is defined in server.go and shared across function call and CC support
+
 const maxUpstreamResponseBodySize = 32 * 1024 * 1024
 
 var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum allowed size")
+
+// Note: maxContentBufferBytes is defined in function_call.go (256KB) and shared for content buffering
 
 const (
 	// Thinking hints injected into user messages when extended thinking is enabled.
@@ -2242,6 +2246,8 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			stopReason := convertFinishReasonToStopReason(*choice.FinishReason)
 			// If upstream says tool_calls but we didn't receive any valid tool calls,
 			// convert to end_turn to prevent Claude Code from hanging waiting for tool results
+			// NOTE: Similar to non-streaming handler but NOT extracted - checks accumulated
+			// hasValidToolCalls flag vs. claudeResp.Content array. KISS principle applies.
 			if *choice.FinishReason == "tool_calls" && !hasValidToolCalls {
 				logrus.WithField("original_finish_reason", *choice.FinishReason).
 					Warn("CC: Received tool_calls finish_reason but no valid tool calls were processed, converting to end_turn")
