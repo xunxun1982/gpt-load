@@ -421,7 +421,12 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 	// KNOWN LIMITATION: Azure OpenAI API versions 2024-06-01 and 2024-07-01-preview do not support
 	// "required" for tool_choice (see GitHub issue Azure/azure-rest-api-specs#29844).
 	// If using Azure OpenAI, the upstream may reject "required" with a 400 error.
-	// Consider implementing provider-specific detection or fallback to "auto" if needed.
+	// DESIGN DECISION (rejected AI suggestion): We intentionally do NOT implement provider-specific
+	// detection or fallback logic here to maintain simplicity (KISS principle). The b4u2cc reference
+	// implementation uses a prompt-based approach that bypasses tool_choice entirely. Users should
+	// configure their upstream provider appropriately or use group-level routing to avoid incompatible
+	// combinations. Adding provider detection would violate our commitment to minimal complexity and
+	// introduce maintenance burden for edge cases better handled at configuration level.
 	if len(claudeReq.ToolChoice) > 0 {
 		var toolChoice map[string]interface{}
 		if err := json.Unmarshal(claudeReq.ToolChoice, &toolChoice); err == nil {
