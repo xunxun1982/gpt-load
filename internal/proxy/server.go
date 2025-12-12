@@ -56,6 +56,16 @@ type retryContext struct {
 	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 }
 
+// safeProxyURL returns the proxy URL value or "none" when the pointer
+// is nil or the underlying string is empty. This avoids duplicating the
+// inline lambda used for logging in multiple call sites.
+func safeProxyURL(proxyURL *string) string {
+	if proxyURL != nil && *proxyURL != "" {
+		return *proxyURL
+	}
+	return "none"
+}
+
 // restoreOriginalPath restores the original request path for retry attempts.
 // This is used by aggregate retry logic to ensure each sub-group can apply its
 // own CC support and path rewriting without inheriting state from previous
@@ -541,12 +551,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		"group":     group.Name,
 		"upstream":  upstreamSelection.URL,
 		"has_proxy": upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
-		"proxy_url": func() string {
-			if upstreamSelection.ProxyURL != nil {
-				return *upstreamSelection.ProxyURL
-			}
-			return "none"
-		}(),
+		"proxy_url": safeProxyURL(upstreamSelection.ProxyURL),
 		"is_stream": isStream,
 	}).Debug("Using HTTP client for request")
 
@@ -961,12 +966,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		"group":     group.Name,
 		"upstream":  upstreamSelection.URL,
 		"has_proxy": upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
-		"proxy_url": func() string {
-			if upstreamSelection.ProxyURL != nil {
-				return *upstreamSelection.ProxyURL
-			}
-			return "none"
-		}(),
+		"proxy_url": safeProxyURL(upstreamSelection.ProxyURL),
 		"is_stream": isStream,
 	}).Debug("Using HTTP client for aggregate sub-group request")
 

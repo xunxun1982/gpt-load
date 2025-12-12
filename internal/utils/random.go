@@ -7,17 +7,15 @@ import (
 	"time"
 )
 
-var (
-	rng     *rand.Rand
-	rngOnce sync.Once
-)
+var randSeedOnce sync.Once
 
-// GetRand returns a thread-safe random number generator
-func GetRand() *rand.Rand {
-	rngOnce.Do(func() {
-		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+// ensureRandSeeded initializes the global math/rand source once.
+// The top-level math/rand functions use a locked source internally
+// and are safe for concurrent use after seeding.
+func ensureRandSeeded() {
+	randSeedOnce.Do(func() {
+		rand.Seed(time.Now().UnixNano())
 	})
-	return rng
 }
 
 // WeightedRandomSelect selects an index from a list based on weights
@@ -41,7 +39,8 @@ func WeightedRandomSelect(weights []int) int {
 	}
 
 	// Generate random number in range [0, totalWeight)
-	randomWeight := GetRand().Intn(totalWeight)
+	ensureRandSeeded()
+	randomWeight := rand.Intn(totalWeight)
 
 	// Select based on cumulative weight
 	cumulativeWeight := 0
@@ -66,15 +65,16 @@ func WeightedRandomSelect(weights []int) int {
 
 // generateRandomSuffixWithLength generates a random suffix of the given length using
 // lowercase letters and numbers. Lengths less than or equal to zero fall back to 4.
+// It relies on math/rand's global locked source, which is concurrency-safe.
 func generateRandomSuffixWithLength(length int) string {
 	if length <= 0 {
 		length = 4
 	}
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	rng := GetRand()
+	ensureRandSeeded()
 	suffix := make([]byte, length)
 	for i := range suffix {
-		suffix[i] = charset[rng.Intn(len(charset))]
+		suffix[i] = charset[rand.Intn(len(charset))]
 	}
 	return string(suffix)
 }

@@ -39,6 +39,10 @@ var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum al
 
 const (
 	// Thinking hints injected into user messages when extended thinking is enabled.
+	// NOTE: The closing tag </antml> is intentionally kept for compatibility with
+	// ANTML-style hints used in the b4u2cc reference implementation. The upstream
+	// parser looks for these generic </antml> closers rather than matching the
+	// opening tag name, so do not change them to </thinking_mode> / </max_thinking_length>.
 	ThinkingHintInterleaved = "<thinking_mode>interleaved</antml>"
 	ThinkingHintMaxLength   = "<max_thinking_length>%d</antml>"
 )
@@ -839,7 +843,9 @@ func getTokenMultiplier() float64 {
 			return
 		}
 		val, err := strconv.ParseFloat(raw, 64)
-		if err != nil || val <= 0 {
+		// Clamp multiplier to a safe range to avoid overflow or unrealistic scaling.
+		// Values outside (0, 1000] fall back to the default 1.0.
+		if err != nil || val <= 0 || val > 1000 {
 			logrus.WithFields(logrus.Fields{"raw": raw}).WithError(err).Warn("CC: Invalid TOKEN_MULTIPLIER, falling back to 1.0")
 			cachedTokenMultiplier = 1.0
 			return
@@ -1013,10 +1019,14 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, cha
 	}
 
 	if strings.EqualFold(group.ChannelType, "anthropic") {
-		if tokens, err := ps.countTokensUpstream(c, group, channelHandler, bodyBytes); err == nil {
+		tokens, err := ps.countTokensUpstream(c, group, channelHandler, bodyBytes)
+		if err == nil {
 			c.JSON(http.StatusOK, gin.H{"input_tokens": tokens})
 			return true
 		}
+		// Log upstream failures at debug level and fall back to local estimation.
+		logrus.WithError(err).WithField("group", group.Name).
+			Debug("CC: Failed to count tokens upstream, falling back to local estimation")
 	}
 
 	tokens := ps.countTokensLocally(bodyBytes)
@@ -1100,6 +1110,12 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 		skipCall := false
 		switch call.Name {
 		case "TodoWrite":
+			// NOTE: An earlier automated review suggested extracting this TodoWrite
+			// normalization into a helper. We intentionally keep it inline here to
+			// avoid extra indirection on this hot path and to keep all TodoWrite-
+			// specific fixes co-located. Behavior is covered by cc_function_test.go
+			// (TodoWrite-related tests) and should not be modified without updating
+			// the corresponding tests.
 			// For TodoWrite, require a structurally valid todos list. If we cannot
 			// parse a non-empty list of items, we skip this function call entirely
 			// to avoid sending malformed plans to Claude Code (which would cause
@@ -1714,6 +1730,18 @@ func (a *TextAggregator) Close() {
 	}
 }
 
+// SSE writer tuning constants for lightweight backpressure.
+// These values are tuned for interactive latency rather than bulk throughput.
+const (
+	sseWriterMaxQueue          = 100
+	sseWriterDrainResetWindow  = 20 * time.Millisecond
+	sseWriterBackoffOnOverflow = 10 * time.Millisecond
+	sseWriterRetryBackoff      = 5 * time.Millisecond
+)
+
+// SSEWriter implements a lightweight backpressure-aware SSE writer.
+// It uses a small in-memory queue and short sleep-based backoff to avoid
+// overwhelming slow clients while keeping latency low for typical workloads.
 type SSEWriter struct {
 	writer   io.Writer
 	flusher  http.Flusher
@@ -1728,7 +1756,7 @@ func NewSSEWriter(w io.Writer, f http.Flusher) *SSEWriter {
 	return &SSEWriter{
 		writer:   w,
 		flusher:  f,
-		maxQueue: 100,
+		maxQueue: sseWriterMaxQueue,
 	}
 }
 
@@ -1752,11 +1780,11 @@ func (s *SSEWriter) Send(event ClaudeStreamEvent, critical bool) error {
 	payload := fmt.Sprintf("event: %s\ndata: %s\n\n", event.Type, string(data))
 
 	for retry := 0; retry < maxRetries; retry++ {
-		if time.Since(s.lastSend) > 20*time.Millisecond {
+		if time.Since(s.lastSend) > sseWriterDrainResetWindow {
 			s.pending = 0
 		}
 		if s.pending >= s.maxQueue {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(sseWriterBackoffOnOverflow)
 			s.pending = 0
 		}
 
@@ -1765,7 +1793,7 @@ func (s *SSEWriter) Send(event ClaudeStreamEvent, critical bool) error {
 				s.closed = true
 				return err
 			}
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(sseWriterRetryBackoff)
 			continue
 		}
 

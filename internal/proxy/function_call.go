@@ -67,6 +67,12 @@ var (
 	// Performance: O(n) over the line via character classes.
 	reMalformedParamTagClosed = regexp.MustCompile(`<>[\s.]*<(?:parameter|param|invoke)(?:name)?[^>]*>[^<]*?</(?:parameter|param|invoke)>(?:<(?:parameter|param)\s+name="[^"]+"[^>]*>[^<]*?</(?:parameter|param)>)*`)
 
+	// Pattern to match malformed ANTML role tags that leak to output
+	// Examples: "</antml\b:role>", "<antml\b:role>", "</antml>"
+	// These are internal markers that should never be visible to users
+	// Performance: Simple string matching, O(n)
+	reANTMLRoleTag = regexp.MustCompile(`</?antml[^>]*>`)
+
 	// Pattern to match malformed invokename with JSON array value (no closing tag)
 	// Examples: "<><invokename=\"TodoWrite\">[{\"id\":\"1\"...}]"
 	// This handles cases where the model outputs malformed JSON directly after invokename
@@ -96,12 +102,13 @@ var (
 	reMalformedMergedTag = regexp.MustCompile(`[ \t]*<(?:invoke|parameter)name[^>]*>[^\r\n]*`)
 
 	// Pattern to match CC preamble text that describes tool usage plans
-	// Examples: "### 调研结果分析", "**实施方案构思**", "实施步骤", "技术方案"
-	// These are meta-commentary about what the AI is going to do, not actual content
-	// Strategy: Match lines that start with markdown headers or bold text containing plan keywords
+	// STRUCTURAL APPROACH: Instead of keyword matching, detect markdown structure patterns
+	// Examples: "### ...", "**...**", "1. ...", "- ..."
+	// These are meta-commentary headers that should be filtered based on structure, not content
+	// Strategy: Match markdown headers (###) or bold markers (**) at line start
 	// Performance: O(n) character class matching
-	// ENHANCED: Added more patterns based on real production logs, including English patterns
-	reCCPlanHeader = regexp.MustCompile(`(?m)^[ \t]*(?:#{1,6}[ \t]*|[*_]{2})?(?:调研结果|实施方案|实施步骤|技术方案|任务清单|选择建议|轻量级|框架对比|实施计划|Implementation\s*Plan|Task\s*List|Thought\s*in\s*Chinese|技术选型|代码亮点|任务完成情况|文件位置|运行方式)[^*\r\n]*(?:[*_]{2})?[ \t]*$`)
+	// NOTE: Only filter explicit markdown headers, preserve all natural language text
+	reCCPlanHeader = regexp.MustCompile(`(?m)^[ \t]*(?:#{1,6}[ \t]+[^\r\n]*|[*_]{2}[^*_\r\n]+[*_]{2}[ \t]*)$$`)
 
 	// Pattern to match CC citation markers like [citation:1], [citation:5]
 	// These are internal references that should not be shown to users
@@ -140,6 +147,18 @@ var (
 	// Performance: O(n) greedy matching with character class
 	// NOTE: For multi-line JSON, multiple applications will clean subsequent lines
 	reBareJSONAfterEmpty = regexp.MustCompile(`[ \t]*<>[ \t.]*[^\r\n]+`)
+
+	// Pattern to match CJK text followed by <> and JSON (entire line should be removed)
+	// Examples: "任务清单<>[{...}]", "实施方案<>[{...}]"
+	// This handles cases where CJK header text (without bullets) precedes malformed JSON
+	// Pattern explanation:
+	//   - ^[ \t]* : start of line with optional leading spaces/tabs
+	//   - [\x{4E00}-\x{9FFF}\x{3400}-\x{4DBF}]+ : CJK characters (Chinese/Japanese/Korean)
+	//   - <> : the malformed prefix
+	//   - [\[\{] : JSON array or object start
+	//   - [^\r\n]* : rest of line
+	// NOTE: Only matches lines with CJK text before <>, preserves English text
+	reTextBeforeMalformedJSON = regexp.MustCompile(`(?m)^[ \t]*[\x{4E00}-\x{9FFF}\x{3400}-\x{4DBF}]+<>[\[\{][^\r\n]*`)
 
 	// Pattern to match standalone <> on a line (with only trailing whitespace)
 	// Examples: "  <>", "<> ", "● <>"
@@ -186,6 +205,18 @@ var (
 	// NOTE: This pattern matches until bullet, newline, or opening tag, allowing for values without closing tags
 	// FIXED: Use [^\r\n]* to match entire line content including nested JSON brackets
 	reMalformedParam = regexp.MustCompile(`<parametername="([^"]+)"[^>]*>([^\r\n]*)`)
+
+	// Pattern to parse malformed property tags (new format from production logs)
+	// Examples: "<propertyname=\"activeForm\"value=\"正在分析\">", "<property name=\"id\"value=\"2\">"
+	// This handles cases where models output property tags instead of parameter tags
+	// Captures: group 1 = property name, group 2 = property value
+	// Performance: O(n) character class matching
+	reMalformedProperty = regexp.MustCompile(`<property\s*name="([^"]+)"\s*value="([^"]*)"[^>]*>`)
+
+	// Pattern to match malformed property tags for removal (entire tag)
+	// Examples: "<propertyname=\"activeForm\"value=\"正在分析\">"
+	// Strategy: Match the entire property tag for removal from output
+	reMalformedPropertyTag = regexp.MustCompile(`<property\s*name="[^"]*"\s*value="[^"]*"[^>]*>`)
 
 	// Pattern to match incomplete/unclosed invoke or parameter tags at end of content
 	// Examples: "<invoke name=\"Read\">F:/path/file.py", "<parameter name=\"todos\">[{...}]"
@@ -240,10 +271,14 @@ var (
 	// NOTE: Intentionally set to never match to preserve all natural language text.
 	reCCToolDescIndicator = regexp.MustCompile(`^\x00NEVER_MATCH\x00$`)
 	// Pattern to detect JSON structure indicators from Claude Code tool outputs
-	// Matches common field names used in TodoWrite, task lists, and other tool outputs
-	// ENHANCED: Added more field names to catch leaked JSON from various tools
-	// Derived from real production log analysis: file_path, pattern, command, relative_path, recursive, query, tokensNum
-	reCCJSONStructIndicator = regexp.MustCompile(`(?:["'](?:id|content|status|state|priority|activeForm|todos|Form|task|description|pending|completed|in_progress|file_path|pattern|command|relative_path|recursive|query|tokensNum|name|type|value)["']\s*:|\{\s*["'](?:id|content|status|task|name))`)
+	// STRUCTURAL APPROACH: Detect JSON structure patterns instead of keyword matching
+	// This matches:
+	//   1. JSON object start with quoted field: {"field": or {'field':
+	//   2. JSON field pattern: "field": or 'field':
+	//   3. JSON array of objects: [{"
+	// Performance: O(n) character class matching, no backtracking
+	// NOTE: This is intentionally broad to catch any leaked JSON, not just specific fields
+	reCCJSONStructIndicator = regexp.MustCompile(`(?:^\s*[\[{]|["'][a-zA-Z_][a-zA-Z0-9_]*["']\s*:)`)
 
 	xmlEscaper = strings.NewReplacer(
 		"&", "&amp;",
@@ -264,11 +299,47 @@ var (
 	reJSONTrailingComma  = regexp.MustCompile(`,\s*[\]\}]`)
 	reJSONMalformedTodo  = regexp.MustCompile(`\{"id":\s*"(\d+)",\s*:\s*`)
 	reJSONMissingQuotes  = regexp.MustCompile(`:\s*([a-zA-Z][a-zA-Z0-9_]*)([,}\]])`)
-	// Pattern to fix malformed field patterns from real-world production log
-	// Matches: {"id": "1",": " (id field followed by malformed field separator)
+	// Pattern to fix malformed field patterns from real-world production log (real production log)
+	// Matches: {"id": "1",": " or {"id":"1",":"  (id field followed by malformed field separator)
 	// This handles cases where the model outputs: {"id": "1",": "content value"
 	// and converts it to: {"id": "1", "content": "content value"
-	reJSONMalformedField = regexp.MustCompile(`"id":\s*"(\d+)",": "`)
+	// ENHANCED: Also matches without spaces and with various quote patterns
+	reJSONMalformedField = regexp.MustCompile(`"id"\s*:\s*"([^"]+)"\s*,\s*"\s*:\s*"`)
+	// Pattern to fix malformed field with state instead of status
+	// Matches: "state": "pending" -> "status": "pending"
+	reJSONMalformedState = regexp.MustCompile(`"state"\s*:\s*"(pending|in_progress|completed)"`)
+	// Pattern to fix malformed activeForm field (Form instead of activeForm)
+	// Matches: "Form": "..." -> "activeForm": "..."
+	reJSONMalformedForm = regexp.MustCompile(`"Form"\s*:\s*"`)
+	// Pattern to fix malformed content field from real production log
+	// Matches: ,": "探索... or ,": "正在... (missing field name after comma)
+	// This handles cases where the model outputs: {"id": "1",": "探索最佳实践"
+	// and converts it to: {"id": "1", "content": "探索最佳实践"
+	// ENHANCED: Use non-greedy match with lookahead simulation for better accuracy
+	// Pattern matches: ,": " followed by content until next ", or "}
+	reJSONMalformedContent = regexp.MustCompile(`,\s*"\s*:\s*"([^"]*)"`)
+	// Pattern to fix malformed field with colon-only separator (no field name at all)
+	// Matches: {"id":"1",:"content" -> {"id":"1","content":"content"
+	// This handles severely malformed JSON where field name is completely missing
+	reJSONMalformedColonOnly = regexp.MustCompile(`([,{])\s*:\s*"([^"]*)"`)
+	// Pattern to fix malformed priority field
+	// Matches: "priority":medium -> "priority":"medium"
+	reJSONMalformedPriority = regexp.MustCompile(`"priority"\s*:\s*(medium|high|low)([,}\]])`)
+	// Pattern to fix malformed status field with unquoted value
+	// Matches: "status":pending -> "status":"pending"
+	reJSONMalformedStatusUnquoted = regexp.MustCompile(`"status"\s*:\s*(pending|in_progress|completed)([,}\]])`)
+)
+
+var (
+	_ = reCCPlanHeader
+	_ = reJSONMalformedTodo
+	_ = reJSONMalformedField
+	_ = reJSONMalformedState
+	_ = reJSONMalformedForm
+	_ = reJSONMalformedContent
+	_ = reJSONMalformedPriority
+	_ = reJSONMalformedStatusUnquoted
+	_ = isMarkdownHeader
 )
 
 // applyFunctionCallRequestRewrite rewrites an OpenAI chat completions request body
@@ -353,29 +424,46 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	toolSummaries := buildToolSummaries(toolDefs)
 
 	// Compose final prompt content injected as a new system message.
-	// Only a strict <invoke>/<parameter name="..."> format is allowed to reduce
-	// malformed XML outputs in CC + force_function_call mode.
+	// Enhanced based on b4u2cc reference implementation with ANTML-style tags and
+	// detailed tool call procedure. Only strict <invoke>/<parameter name="...">
+	// format is allowed to reduce malformed XML outputs in CC + force_function_call mode.
 	prompt := fmt.Sprintf(
-		"You coordinate tool calls.\n"+
-			"- If no tool is needed, answer normally in the user's language.\n"+
-			"- If you need to read, write, search, run, inspect, or execute, you MUST call tools instead of only describing actions.\n"+
-			"- Call only ONE tool at a time and wait for the result before calling another.\n"+
-			"- Always place the trigger signal on its own line, immediately followed by XML.\n\n"+
-			"Trigger signal (STRICT):\n%s\n\n"+
-			"Tool call XML format (STRICT, only this format is allowed):\n"+
-			"<invoke name=\"tool_name\">\n"+
-			"<parameter name=\"param1\">value1</parameter>\n"+
-			"</invoke>\n\n"+
-			"XML rules:\n"+
-			"- Use <invoke> and <parameter name=\"...\"> tags only.\n"+
-			"- Do NOT use tags like <function_calls>, <invocation>, <invokename>, <parametername>.\n"+
-			"- Do NOT prefix XML with \"<>\" or any other markers.\n"+
-			"- Encode arrays and objects as JSON inside <parameter> values.\n"+
-			"- Do NOT add any extra text before or after the XML block.\n\n"+
-			"Available tools (structured):\n%s\n\n"+
+		"In this environment you have access to a set of tools you can use to answer the user's question.\n\n"+
+			"When you need to use a tool, you MUST strictly follow the format below.\n\n"+
+			"**1. Available Tools:**\n"+
+			"Here is the list of tools you can use. You have access ONLY to these tools and no others.\n"+
+			"<antml\\b:tools>\n%s\n</antml\\b:tools>\n\n"+
+			"**2. Tool Call Procedure:**\n"+
+			"When you decide to call a tool, you MUST output EXACTLY this trigger signal: %s\n"+
+			"The trigger signal MUST be output on a completely empty line by itself before any tool calls.\n"+
+			"Do NOT add any other text, spaces, or characters before or after %s on that line.\n"+
+			"You may provide explanations or reasoning before outputting %s, but once you decide to make a tool call, %s must come first.\n"+
+			"You MUST output the trigger signal %s ONLY ONCE per response. Never output multiple trigger signals in a single response.\n\n"+
+			"After outputting the trigger signal, immediately provide your tool calls enclosed in <invoke> XML tags.\n\n"+
+			"**3. XML Format for Tool Calls:**\n"+
+			"Your tool calls must be structured EXACTLY as follows. This is the ONLY format you can use, and any deviation will result in failure.\n\n"+
+			"<antml\\b:format>\n"+
+			"%s\n"+
+			"<invoke name=\"Write\">\n"+
+			"<parameter name=\"file_path\">C:\\\\path\\\\weather.css</parameter>\n"+
+			"<parameter name=\"content\"> body {{ background-color: lightblue; }} </parameter>\n"+
+			"</invoke>\n"+
+			"</antml\\b:format>\n\n"+
+			"IMPORTANT RULES:\n"+
+			"- You may provide explanations or reasoning before deciding to call a tool.\n"+
+			"- Once you decide to call a tool, you must first output the trigger signal %s on a separate line by itself.\n"+
+			"- The trigger signal may only appear once per response and must not be repeated.\n"+
+			"- Tool calls must use the exact XML format: immediately after the trigger signal, use <invoke> and <parameter> tags.\n"+
+			"- No additional text may be added after the closing </invoke> tag.\n"+
+			"- Parameters must retain punctuation (including hyphen prefixes) exactly as defined.\n"+
+			"- Encode arrays and objects in JSON before placing inside <parameter>.\n"+
+			"- Be concise when not using tools.\n"+
+			"- After calling a tool, you will receive the tool execution result, so please wait for the result before calling the next tool.\n\n"+
 			"Quick reference:\n%s\n",
-		triggerSignal,
 		toolsXml,
+		triggerSignal, triggerSignal, triggerSignal, triggerSignal, triggerSignal,
+		triggerSignal,
+		triggerSignal,
 		strings.Join(toolSummaries, "\n\n"),
 	)
 
@@ -400,6 +488,19 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	if len(messages) > 0 {
 		newMessages = append(newMessages, messages...)
 	}
+
+	// Append ANTML role hint to the last message to guide the model to continue
+	// responding as an assistant. This follows b4u2cc reference implementation.
+	if len(newMessages) > 0 {
+		lastIdx := len(newMessages) - 1
+		if lastMsg, ok := newMessages[lastIdx].(map[string]any); ok {
+			if content, ok := lastMsg["content"].(string); ok {
+				lastMsg["content"] = content + "\n\n<antml\\b:role>\n\nPlease continue responding as an assistant.\n\n</antml>"
+				newMessages[lastIdx] = lastMsg
+			}
+		}
+	}
+
 	req["messages"] = newMessages
 
 	// Remove native tools-related fields to avoid confusing upstream implementations.
@@ -946,26 +1047,28 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 									// These are output by models when forced function calling is enabled.
 									// Examples: "<>", "<><invokename=", "<parametername="
 									// Detection: Check for specific malformed patterns that indicate tool call fragments.
+									// ENHANCED: Also detect JSON arrays with task fields
 									hasMalformedXml := strings.Contains(text, "<>") ||
 										strings.Contains(text, "<invokename") ||
-										strings.Contains(text, "<parametername")
+										strings.Contains(text, "<parametername") ||
+										(strings.Contains(text, `"todos"`) && strings.Contains(text, `[{`)) ||
+										(strings.Contains(text, `"activeForm"`) && strings.Contains(text, `"`))
 
 									// If malformed XML is detected, use full removeFunctionCallsBlocks cleanup.
 									// This ensures malformed fragments are never sent to the client.
 									if hasMalformedXml {
 										// Apply full cleanup to remove malformed tags and their content
 										cleaned := removeFunctionCallsBlocks(text)
-										if cleaned != text {
+										if cleaned != text && logrus.IsLevelEnabled(logrus.DebugLevel) {
 											logrus.WithFields(logrus.Fields{
-												"original_length": len(text),
-												"cleaned_length":  len(cleaned),
-												"original_preview": utils.TruncateString(text, 100),
-												"cleaned_preview":  utils.TruncateString(cleaned, 100),
-											}).Debug("Function call streaming: cleaned malformed XML fragments from content")
+												"removed_bytes":    len(text) - len(cleaned),
+												"original_preview": utils.TruncateString(text, 80),
+												"cleaned_preview":  utils.TruncateString(cleaned, 80),
+											}).Debug("FC streaming: cleaned malformed XML/JSON from content chunk")
 										}
 										text = cleaned
-										// Mark as inside function calls to suppress subsequent related content
-										insideFunctionCalls = true
+										// Do NOT set insideFunctionCalls = true here
+										// Let the normal <function_calls> block detection handle suppression
 									}
 
 									// Detect partial XML: content containing < followed by valid tag start character.
@@ -1389,7 +1492,10 @@ func removeFunctionCallsBlocks(text string) string {
 	// removed earlier in the stream. This is critical for CC streaming where
 	// models often output "<>\n  [{...}]" and the JSON lines are delivered in
 	// separate chunks without any remaining "<>" prefix.
-	hasMalformed := strings.Contains(text, "<>") || strings.Contains(text, "<invokename") || strings.Contains(text, "<parametername") || hasOrphanJson
+	// ENHANCED: Added <propertyname and <property detection for new malformed format
+	hasMalformed := strings.Contains(text, "<>") || strings.Contains(text, "<invokename") || strings.Contains(text, "<parametername") || strings.Contains(text, "<propertyname") || strings.Contains(text, "<property ") || hasOrphanJson
+	// Check for ANTML role tags that should be removed (internal markers)
+	hasANTML := strings.Contains(text, "<antml") || strings.Contains(text, "</antml")
 
 	// Apply regex only when markers are detected
 	if hasFunctionCalls {
@@ -1410,23 +1516,37 @@ func removeFunctionCallsBlocks(text string) string {
 	if hasTrigger {
 		text = reTriggerSignal.ReplaceAllString(text, "")
 	}
+	// Remove ANTML role tags (internal markers that should not be visible)
+	if hasANTML {
+		text = reANTMLRoleTag.ReplaceAllString(text, "")
+	}
 	if hasMalformed {
 		// Remove malformed patterns in order of specificity
 		// CRITICAL: Remove JSON-containing tags first (match to end of line),
 		// then chained tags, then non-JSON tags (preserve trailing text).
 		// Loop until no more malformed tags found (handles multiple tags on same line)
 		// Limit iterations to prevent infinite loops on pathological input
+		// OPTIMIZATION: Use const for max iterations to allow compiler optimization
 		const maxIterations = 10
 		for i := 0; i < maxIterations; i++ {
 			before := text
-			text = reMalformedInvokeJSON.ReplaceAllString(text, "")             // First remove <><invokename=...>[JSON] (match to end of line)
-			text = reMalformedEmptyTagPrefixJSON.ReplaceAllString(text, "")     // Then remove <><tagname=...>[JSON] (match to end of line)
-			text = reMalformedEmptyTagPrefixChained.ReplaceAllString(text, "")  // Then remove <><tagname=...>val<tagname=...> (chained tags)
-			text = reMalformedEmptyTagPrefix.ReplaceAllString(text, "")         // Then remove <><tagname=...>value (preserves trailing text)
-			text = reMalformedParamTagClosed.ReplaceAllString(text, "")         // Then remove <><parameter ...>value</parameter> (with closing tag)
-			text = reMalformedParamTag.ReplaceAllString(text, "")               // Then remove <><parameter ...> (without closing tag)
-			text = reMalformedMergedTag.ReplaceAllString(text, "")              // Then remove <parametername=...> (no <> prefix)
-			text = reBareJSONAfterEmpty.ReplaceAllString(text, "")              // Finally remove <>[...] and <>{...} on same line
+			// Phase 1: Remove malformed tags with JSON content (highest priority)
+			text = reMalformedInvokeJSON.ReplaceAllString(text, "")             // <><invokename=...>[JSON]
+			text = reMalformedEmptyTagPrefixJSON.ReplaceAllString(text, "")     // <><tagname=...>[JSON]
+			// Phase 2: Remove chained malformed tags
+			text = reMalformedEmptyTagPrefixChained.ReplaceAllString(text, "")  // <><tag1=...>val<tag2=...>
+			// Phase 3: Remove malformed tags with proper closing (with context)
+			text = reMalformedParamTagClosed.ReplaceAllString(text, "")         // <><parameter ...>value</parameter>
+			// Phase 4: Remove malformed tags without closing
+			text = reMalformedParamTag.ReplaceAllString(text, "")               // <><parameter ...>
+			text = reMalformedMergedTag.ReplaceAllString(text, "")              // <parametername=...>
+			text = reMalformedPropertyTag.ReplaceAllString(text, "")            // <propertyname=...value=...>
+			// Phase 5: Remove general malformed prefixes
+			text = reMalformedEmptyTagPrefix.ReplaceAllString(text, "")         // <><tagname=...>value
+			// Phase 6: Remove text followed by malformed JSON (entire line)
+			// MUST be before reBareJSONAfterEmpty to catch "任务清单<>[...]" pattern
+			text = reTextBeforeMalformedJSON.ReplaceAllString(text, "")         // 任务清单<>[...]
+			text = reBareJSONAfterEmpty.ReplaceAllString(text, "")              // <>[...] or <>{...}
 			// If no change after replacement, all malformed tags are removed
 			if text == before {
 				break
@@ -1448,123 +1568,8 @@ func removeFunctionCallsBlocks(text string) string {
 		cleanedLines := make([]string, 0, len(lines))
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			// Skip lines that are obviously malformed JSON arrays/objects
-			if strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, `"Form":`) {
-				continue
-			}
-			if strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, `"Form":`) {
-				continue
-			}
-			if strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, `"Form"`) {
-				continue
-			}
-			if strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, `"Form"`) {
-				continue
-			}
-			// Skip lines with malformed todo items
-			if strings.Contains(trimmed, `"id": "1",:`) ||
-			   strings.Contains(trimmed, `"Form":`) ||
-			   strings.Contains(trimmed, `"status":"}"`) {
-				continue
-			}
-			// Skip lines that look like JSON structure indicators (arrays/objects with specific fields)
-			// This catches TodoWrite leaked JSON that doesn't have "Form" but has structure
-			if (strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")) &&
-			   reCCJSONStructIndicator.MatchString(trimmed) {
-				continue
-			}
-			// Skip lines that contain malformed JSON fragments from real-world production log patterns
-			// Pattern: "1",": "content" (malformed JSON with extra quotes)
-			if strings.Contains(trimmed, `",": "`) || strings.Contains(trimmed, `": "pending"},`) {
-				continue
-			}
-			// Skip lines that look like leaked activeForm/status fields
-			if strings.Contains(trimmed, `"activeForm":`) || strings.Contains(trimmed, `"activeForm"`) {
-				continue
-			}
-			// Skip lines that start with malformed JSON array elements
-			// Pattern: [":text or ["":text (severely malformed JSON)
-			if strings.HasPrefix(trimmed, `[":`) || strings.HasPrefix(trimmed, `["":`) {
-				continue
-			}
-			// Skip lines that contain malformed field separators
-			// Pattern: "},content": or ",content": or _progress
-			if strings.Contains(trimmed, `"},content":`) ||
-			   strings.Contains(trimmed, `",content":`) ||
-			   strings.Contains(trimmed, `_progress"}`) ||
-			   strings.Contains(trimmed, `_progress",`) {
-				continue
-			}
-			// Skip lines that look like malformed JSON with missing field names
-			// Pattern: "status":"}  or pending"}
-			if strings.Contains(trimmed, `"status":"}`) ||
-			   (strings.Contains(trimmed, `pending"}`) && !strings.Contains(trimmed, `"pending"}`)) {
-				continue
-			}
-			// Skip lines that contain malformed state/status fields from real-world production log
-			// Pattern: "state":"in_progress" or "state":", or state":
-			if strings.Contains(trimmed, `"state":`) || strings.Contains(trimmed, `state":`) {
-				continue
-			}
-			// Skip lines that contain truncated field names from real-world production log
-			// Pattern: Form": or ,Form": (truncated activeForm)
-			if strings.Contains(trimmed, `Form":`) && !strings.Contains(trimmed, `"Form":`) {
-				continue
-			}
-			// Skip lines that look like malformed JSON with unquoted values
-			// Pattern: "content":WebSearch (missing quotes around value)
-			if strings.Contains(trimmed, `":`) && !strings.Contains(trimmed, `":"`) &&
-			   !strings.Contains(trimmed, `":}`) && !strings.Contains(trimmed, `":]`) {
-				// Check if there's a colon followed by non-JSON character
-				if idx := strings.Index(trimmed, `":`); idx >= 0 && idx+2 < len(trimmed) {
-					nextChar := trimmed[idx+2]
-					if nextChar != '"' && nextChar != '[' && nextChar != '{' &&
-					   nextChar != ' ' && nextChar != '\t' &&
-					   !(nextChar >= '0' && nextChar <= '9') && nextChar != '-' {
-						continue
-					}
-				}
-			}
-			// Skip lines that contain malformed JSON array with state/content fields
-			// Pattern: [{"state":"in_progress", "content":WebSearch...
-			if strings.HasPrefix(trimmed, `[{"`) && strings.Contains(trimmed, `"state"`) {
-				continue
-			}
-			// Skip lines that look like leaked JSON from TodoWrite (from real production logs)
-			// Pattern: {"id":"1","content":"...", or [{"id":"1",...
-			if (strings.HasPrefix(trimmed, `{"id":`) || strings.HasPrefix(trimmed, `[{"id":`)) &&
-			   (strings.Contains(trimmed, `"content":`) || strings.Contains(trimmed, `"status":`)) {
-				continue
-			}
-			// Skip lines that contain CC internal markers (from real production logs)
-			// Pattern: ImplementationPlan, TaskList, ThoughtinChinese
-			if strings.Contains(trimmed, "ImplementationPlan") ||
-			   strings.Contains(trimmed, "TaskList") ||
-			   strings.Contains(trimmed, "ThoughtinChinese") ||
-			   strings.Contains(trimmed, "Implementation Plan") ||
-			   strings.Contains(trimmed, "Task List") ||
-			   strings.Contains(trimmed, "Thought in Chinese") {
-				continue
-			}
-			// Skip lines that look like CC tool output markers (from real production logs)
-			// Pattern: ● Bash(...), ● Search(...), ● Read(...), ● Write(...)
-			// But preserve actual tool result descriptions
-			if strings.HasPrefix(trimmed, "●") && strings.Contains(trimmed, "(") {
-				// Check if it's a tool invocation marker vs result description
-				// Tool markers have format: ● ToolName(args) without "⎿" result indicator
-				if !strings.Contains(trimmed, "⎿") && !strings.Contains(trimmed, "Done") {
-					// Check for common tool names that should be filtered
-					toolMarkers := []string{"● Bash(", "● Search(", "● Read(", "● Write(", "● Glob(", "● Task(", "● TodoWrite(", "● Update(", "● Edit("}
-					for _, marker := range toolMarkers {
-						if strings.HasPrefix(trimmed, marker) {
-							continue
-						}
-					}
-				}
-			}
-			// Skip lines that contain malformed XML tag fragments (from real production logs)
-			// Pattern: <><parameter..., <><invoke..., <invokename=..., <parametername=...
-			if strings.Contains(trimmed, "<><") || strings.Contains(trimmed, "<invokename") || strings.Contains(trimmed, "<parametername") {
+			// Use helper function to check if line should be skipped
+			if shouldSkipMalformedLine(trimmed) {
 				continue
 			}
 			cleanedLines = append(cleanedLines, line)
@@ -1602,6 +1607,156 @@ func removeFunctionCallsBlocks(text string) string {
 	return strings.TrimSpace(text)
 }
 
+// shouldSkipMalformedLine checks if a line should be skipped during malformed content cleanup.
+// STRUCTURAL APPROACH: Uses structure-based detection instead of keyword matching.
+// Returns true if the line contains malformed JSON/XML patterns that should be removed.
+//
+// Structural patterns detected:
+// 1. Pure JSON lines: lines starting with { or [ that contain JSON field patterns
+// 2. Malformed XML tags: <tagname (no space before attribute name)
+// 3. Malformed JSON fragments: orphaned field values, truncated structures
+//
+// Performance: Uses fast string operations with early exit on common cases.
+func shouldSkipMalformedLine(trimmed string) bool {
+	// Empty lines are kept
+	if trimmed == "" {
+		return false
+	}
+
+	// Fast path: lines without JSON/XML indicators are kept
+	hasJSONIndicator := strings.ContainsAny(trimmed, `"{}[]`)
+	hasXMLIndicator := strings.Contains(trimmed, "<")
+	if !hasJSONIndicator && !hasXMLIndicator {
+		return false
+	}
+
+	// STRUCTURAL CHECK 1: Malformed XML tag fragments
+	// Pattern: <tagname=" (no space between tag and attribute) indicates malformed XML
+	if hasXMLIndicator {
+		// Check for <> followed by < (chained malformed tags)
+		if strings.Contains(trimmed, "<><") {
+			return true
+		}
+		// Check for malformed tags: <tagname=" pattern (no space before attribute)
+		// This catches <invokename=", <parametername=", <propertyname=", etc.
+		if isMalformedXMLTagPattern(trimmed) {
+			return true
+		}
+	}
+
+	// STRUCTURAL CHECK 2: Pure JSON structures (lines starting with { or [)
+	// Only skip if it's a pure JSON line with field patterns
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		// Count JSON structural elements to determine if it's pure JSON
+		// A line with 2+ field patterns ("field":) is likely leaked JSON
+		fieldPatternCount := strings.Count(trimmed, `":`)
+		if fieldPatternCount >= 2 {
+			return true
+		}
+		// Single field pattern with JSON brackets is also likely leaked
+		if fieldPatternCount >= 1 && (strings.Contains(trimmed, `},`) || strings.Contains(trimmed, `}]`)) {
+			return true
+		}
+	}
+
+	// STRUCTURAL CHECK 3: Orphaned JSON field values at line start
+	// Pattern: line starts with "field": which indicates leaked JSON
+	if strings.HasPrefix(trimmed, `"`) && strings.Contains(trimmed, `":`) {
+		colonIdx := strings.Index(trimmed, `":`)
+		if colonIdx > 0 && colonIdx < 30 { // Field name should be short identifier
+			fieldName := trimmed[1:colonIdx]
+			// Check if field name is a valid identifier (alphanumeric + underscore)
+			if isValidJSONFieldName(fieldName) {
+				return true
+			}
+		}
+	}
+
+	// STRUCTURAL CHECK 4: Malformed JSON fragments (structural patterns)
+	// These patterns indicate broken JSON structure
+	if strings.Contains(trimmed, `,:`) || // Missing field name before colon
+		strings.Contains(trimmed, `",": "`) || // Malformed field separator
+		strings.HasPrefix(trimmed, `[":`) || // Malformed array start
+		strings.HasPrefix(trimmed, `["":`) { // Empty string in array
+		return true
+	}
+
+	// STRUCTURAL CHECK 5: Lines with high JSON field density
+	// If a line has many "field": patterns, it's likely leaked JSON
+	if hasJSONIndicator {
+		fieldPatternCount := strings.Count(trimmed, `":`)
+		// Lines with 3+ field patterns are almost certainly leaked JSON
+		if fieldPatternCount >= 3 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isMalformedXMLTagPattern checks if text contains malformed XML tag pattern.
+// Pattern: <tagname=" where there's no space between tag name and attribute.
+// This is a structural check that catches any malformed tag, not just specific ones.
+func isMalformedXMLTagPattern(text string) bool {
+	// Find all < characters and check what follows
+	idx := 0
+	for {
+		pos := strings.Index(text[idx:], "<")
+		if pos == -1 {
+			break
+		}
+		pos += idx
+		// Check if this is a malformed tag: <tagname=" pattern
+		// Valid XML: <tag name="..."> (space before attribute)
+		// Malformed: <tagname="..."> (no space before attribute)
+		remaining := text[pos+1:]
+		if len(remaining) < 3 {
+			break
+		}
+		// Skip closing tags </...>
+		if remaining[0] == '/' {
+			idx = pos + 1
+			continue
+		}
+		// Skip special tags like <? or <!
+		if remaining[0] == '?' || remaining[0] == '!' {
+			idx = pos + 1
+			continue
+		}
+		// Find the end of tag name (first non-alphanumeric character)
+		tagEnd := 0
+		for i, c := range remaining {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+				tagEnd = i
+				break
+			}
+		}
+		if tagEnd > 0 && tagEnd < len(remaining) {
+			// Check if immediately followed by =" (malformed) vs space (valid)
+			afterTag := remaining[tagEnd:]
+			if strings.HasPrefix(afterTag, `="`) || strings.HasPrefix(afterTag, `='`) {
+				return true
+			}
+		}
+		idx = pos + 1
+	}
+	return false
+}
+
+// isValidJSONFieldName checks if a string is a valid JSON field name (identifier).
+// Valid field names are short alphanumeric strings with underscores.
+func isValidJSONFieldName(name string) bool {
+	if len(name) == 0 || len(name) > 30 {
+		return false
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 // cleanTrailingSpacesPerLine removes trailing spaces from each line.
 // This is used after XML block removal to clean up residual spaces.
 // Performance: Uses strings.Builder for efficient string concatenation.
@@ -1624,27 +1779,24 @@ func cleanTrailingSpacesPerLine(text string) string {
 }
 
 // removeClaudeCodePreamble removes explanatory text (preambles) that Claude Code
-// outputs before function calls. This removes:
-// - Pure JSON structures (leaked JSON from tool parameters)
-// - Plan headers and meta-commentary (调研结果, 实施方案, etc.)
-// - Citation markers [citation:N]
-// - CC internal markers (ImplementationPlan, TaskList, etc.)
-// - Malformed tool invocation markers
+// outputs before function calls.
 //
-// Natural language descriptions of actual work are preserved.
+// STRUCTURAL APPROACH: All filtering is based on structure detection, not keywords.
+// This removes:
+// - Pure JSON structures (detected by { or [ prefix + field patterns)
+// - Citation markers (detected by [citation:N] pattern)
+// - Internal markers (detected by CamelCase structure or space-separated title words)
+// - Malformed XML fragments (detected by tag structure)
+// - Lines with text followed by malformed JSON/XML (entire line removed)
+// - Standalone bold headers (**Title**) that are meta-commentary
+//
+// Natural language descriptions and content headers (## Title) are preserved.
 //
 // Performance: Line-by-line filtering with early exit for lines without indicators.
 func removeClaudeCodePreamble(text string) string {
-	// First pass: remove citation markers
+	// First pass: remove citation markers (structural pattern [citation:N])
 	if strings.Contains(text, "[citation:") {
 		text = reCCCitation.ReplaceAllString(text, "")
-	}
-
-	// Second pass: remove plan headers (Chinese and English)
-	if strings.Contains(text, "调研") || strings.Contains(text, "实施") ||
-		strings.Contains(text, "方案") || strings.Contains(text, "任务清单") ||
-		strings.Contains(text, "Implementation") || strings.Contains(text, "Task") {
-		text = reCCPlanHeader.ReplaceAllString(text, "")
 	}
 
 	lines := strings.Split(text, "\n")
@@ -1665,49 +1817,60 @@ func removeClaudeCodePreamble(text string) string {
 			continue
 		}
 
-		// Skip CC internal markers (from real production logs)
-		if strings.Contains(trimmed, "ImplementationPlan") ||
-		   strings.Contains(trimmed, "TaskList") ||
-		   strings.Contains(trimmed, "ThoughtinChinese") ||
-		   strings.Contains(trimmed, "Implementation Plan") ||
-		   strings.Contains(trimmed, "Task List") ||
-		   strings.Contains(trimmed, "Thought in Chinese") {
+		// STRUCTURAL CHECK: Skip lines that are internal markers
+		// Detected by CamelCase structure (e.g., ImplementationPlan, TaskList)
+		// or space-separated title words (e.g., "Task List and Thought in Chinese")
+		if isInternalMarkerLine(trimmed) {
 			continue
 		}
 
-		// Skip lines that look like CC code block markers (from real production logs)
-		// Pattern: ```python, ```bash, etc. followed by code
-		// But preserve actual code blocks that are part of the response
-		if strings.HasPrefix(trimmed, "```") && len(trimmed) > 3 {
-			// Check if this is a language marker (```python, ```bash, etc.)
-			lang := strings.TrimPrefix(trimmed, "```")
-			if lang == "python" || lang == "bash" || lang == "json" || lang == "go" ||
-			   lang == "javascript" || lang == "typescript" || lang == "html" || lang == "css" {
-				// This is a code block start - keep it
-				cleanedLines = append(cleanedLines, line)
-				continue
-			}
-		}
-
-		// Only remove pure JSON structures (short lines starting with { or [)
-		// Keep everything else, including all natural language text
-		isPureJSON := (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) &&
-			len(trimmed) < 500 &&
-			reCCJSONStructIndicator.MatchString(trimmed)
-
-		if isPureJSON {
+		// STRUCTURAL CHECK: Skip standalone bold headers (**Title**)
+		// These are meta-commentary headers, not content headers
+		// Content headers with # are preserved
+		if isStandaloneBoldHeader(trimmed) {
 			continue
 		}
 
-		// Skip lines that contain malformed XML fragments
-		if strings.Contains(trimmed, "<><") || strings.Contains(trimmed, "<invokename") || strings.Contains(trimmed, "<parametername") {
+		// STRUCTURAL CHECK: Skip code block markers (```lang)
+		// Keep actual code blocks that are part of the response
+		if strings.HasPrefix(trimmed, "```") {
+			cleanedLines = append(cleanedLines, line)
 			continue
 		}
 
-		// Skip lines that look like leaked JSON field values
-		// Pattern: "activeForm": "...", "status": "pending", etc.
-		if strings.HasPrefix(trimmed, `"activeForm":`) || strings.HasPrefix(trimmed, `"status":`) ||
-		   strings.HasPrefix(trimmed, `"Form":`) || strings.HasPrefix(trimmed, `"id":`) {
+		// STRUCTURAL CHECK: Skip pure JSON structures
+		// Detected by { or [ prefix + field patterns
+		if isPureJSONLine(trimmed) {
+			continue
+		}
+
+		// STRUCTURAL CHECK: Skip malformed XML fragments
+		// Detected by <> or <tagname patterns
+		if isMalformedXMLLine(trimmed) {
+			continue
+		}
+
+		// STRUCTURAL CHECK: Skip leaked JSON field values at line start
+		// Detected by "field": pattern at line start
+		if isLeakedJSONFieldLine(trimmed) {
+			continue
+		}
+
+		// STRUCTURAL CHECK: Skip standalone tool markers (not part of bullet points)
+		// Detected by ToolName( pattern
+		if isStandaloneToolMarker(line, trimmed) {
+			continue
+		}
+
+		// STRUCTURAL CHECK: Skip lines with text followed by malformed JSON/XML
+		// Pattern: "任务清单<>[...]" - text immediately followed by malformed structure
+		if hasTrailingMalformedStructure(trimmed) {
+			continue
+		}
+
+		// STRUCTURAL CHECK: Skip orphaned header text left after malformed structure removal
+		// Pattern: "任务清单" (short text without punctuation, not a sentence)
+		if isOrphanedHeaderText(trimmed) {
 			continue
 		}
 
@@ -1715,6 +1878,364 @@ func removeClaudeCodePreamble(text string) string {
 	}
 
 	return strings.Join(cleanedLines, "\n")
+}
+
+// isInternalMarkerLine checks if a line is an internal marker that should be filtered.
+// STRUCTURAL APPROACH: Detects internal markers by structure patterns only, no keyword matching.
+// Patterns detected:
+// 1. CamelCase concatenated words (e.g., "ImplementationPlan", "TaskList")
+// 2. Space-separated title words with "and" connector (e.g., "Task List and Thought in Chinese")
+// 3. Comma-separated CamelCase markers (e.g., "ImplementationPlan, TaskList")
+// 4. Lines with only CamelCase words and connectors (no natural language content)
+// Performance: O(n) character scanning
+func isInternalMarkerLine(trimmed string) bool {
+	if len(trimmed) < 8 || len(trimmed) > 150 {
+		return false
+	}
+
+	// Remove leading # symbols for markdown headers
+	cleanedTrimmed := strings.TrimLeft(trimmed, "# \t")
+	if len(cleanedTrimmed) < 8 {
+		return false
+	}
+
+	// STRUCTURAL PATTERN 1: Check for comma-separated or "and"-connected words
+	// If line contains ", " or " and ", check if it's composed mainly of CamelCase/TitleCase words
+	if strings.Contains(trimmed, ", ") || strings.Contains(trimmed, " and ") {
+		camelCount := 0
+		titleWordCount := 0
+		totalWords := 0
+		words := strings.FieldsFunc(trimmed, func(r rune) bool {
+			return r == ',' || r == ' '
+		})
+		for _, word := range words {
+			// Skip common connectors
+			lowerWord := strings.ToLower(word)
+			if lowerWord == "and" || lowerWord == "in" || lowerWord == "the" || lowerWord == "a" || lowerWord == "of" {
+				continue
+			}
+			if len(word) < 2 {
+				continue
+			}
+			totalWords++
+			if isCamelCaseWord(word) {
+				camelCount++
+			}
+			if isTitleCaseWord(word) {
+				titleWordCount++
+			}
+		}
+		// If most words are CamelCase or TitleCase, it's likely an internal marker
+		// Require at least 2 CamelCase words OR 4+ TitleCase words (to avoid filtering normal sentences)
+		if camelCount >= 2 || (titleWordCount >= 4 && totalWords > 0 && float64(titleWordCount)/float64(totalWords) > 0.7) {
+			return true
+		}
+	}
+
+	// STRUCTURAL PATTERN 2: Check for single CamelCase marker (no spaces, multiple uppercase)
+	// This catches patterns like "ImplementationPlan", "TaskListandThought"
+	return isCamelCaseWord(cleanedTrimmed)
+}
+
+// isTitleCaseWord checks if a word starts with uppercase (title case).
+// Used to detect space-separated title words like "Task", "List", "Thought".
+func isTitleCaseWord(word string) bool {
+	if len(word) < 2 {
+		return false
+	}
+	// Must start with uppercase letter
+	if word[0] < 'A' || word[0] > 'Z' {
+		return false
+	}
+	// Rest should be lowercase letters only
+	for _, r := range word[1:] {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
+// isCamelCaseWord checks if a word is CamelCase (internal marker pattern)
+// Examples: "ImplementationPlan", "TaskList", "ThoughtinChinese"
+func isCamelCaseWord(word string) bool {
+	if len(word) < 8 {
+		return false
+	}
+	// Must start with uppercase letter
+	if word[0] < 'A' || word[0] > 'Z' {
+		return false
+	}
+	// Count uppercase letters - internal markers have multiple
+	upperCount := 0
+	hasLower := false
+	for _, r := range word {
+		if r >= 'A' && r <= 'Z' {
+			upperCount++
+		} else if r >= 'a' && r <= 'z' {
+			hasLower = true
+		} else if r != '_' {
+			// Contains non-letter characters, not a pure marker
+			return false
+		}
+	}
+	// Internal markers have 2+ uppercase letters and some lowercase
+	return upperCount >= 2 && hasLower
+}
+
+// isMarkdownHeader checks if a line is a markdown header that should be filtered.
+// STRUCTURAL APPROACH: Detects markdown structure patterns.
+// Examples: "## Implementation Plan", "**实施方案**", "### 任务清单"
+// Performance: O(1) prefix checks
+func isMarkdownHeader(trimmed string) bool {
+	// Check for # headers (## Title, ### Title, etc.)
+	if strings.HasPrefix(trimmed, "#") {
+		// Count # characters
+		hashCount := 0
+		for _, r := range trimmed {
+			if r == '#' {
+				hashCount++
+			} else {
+				break
+			}
+		}
+		// Valid markdown header has 1-6 # followed by space
+		if hashCount >= 1 && hashCount <= 6 && len(trimmed) > hashCount {
+			nextChar := trimmed[hashCount]
+			if nextChar == ' ' || nextChar == '\t' {
+				return true
+			}
+		}
+	}
+
+	// Check for bold text headers (**Title** or __Title__)
+	if (strings.HasPrefix(trimmed, "**") && strings.HasSuffix(trimmed, "**")) ||
+		(strings.HasPrefix(trimmed, "__") && strings.HasSuffix(trimmed, "__")) {
+		// This is a standalone bold line, likely a header
+		return true
+	}
+
+	return false
+}
+
+// isStandaloneBoldHeader checks if a line is a standalone bold header (**Title**).
+// These are meta-commentary headers that should be filtered.
+// Content headers with # prefix are preserved.
+func isStandaloneBoldHeader(trimmed string) bool {
+	if len(trimmed) < 5 {
+		return false
+	}
+	// Check for **Title** or __Title__ pattern
+	if (strings.HasPrefix(trimmed, "**") && strings.HasSuffix(trimmed, "**")) ||
+		(strings.HasPrefix(trimmed, "__") && strings.HasSuffix(trimmed, "__")) {
+		return true
+	}
+	return false
+}
+
+// hasTrailingMalformedStructure checks if a line has text followed by malformed JSON/XML.
+// Pattern: "任务清单<>[...]" or "实施方案[{...}]"
+// The entire line should be removed when text is immediately followed by malformed structure.
+// Lines with bullet points (●, •, ‣) are preserved as they are user-facing content.
+func hasTrailingMalformedStructure(trimmed string) bool {
+	// Preserve lines with bullet points - these are user-facing content
+	if strings.HasPrefix(trimmed, "●") || strings.HasPrefix(trimmed, "•") || strings.HasPrefix(trimmed, "‣") {
+		return false
+	}
+
+	// Check for <> followed by [ or {
+	if idx := strings.Index(trimmed, "<>"); idx > 0 {
+		rest := trimmed[idx+2:]
+		if strings.HasPrefix(rest, "[") || strings.HasPrefix(rest, "{") ||
+			strings.HasPrefix(rest, "<") {
+			return true
+		}
+	}
+	// Check for text followed directly by [{ (malformed JSON array/object)
+	// Pattern: non-JSON text ending with [{
+	if idx := strings.Index(trimmed, "[{"); idx > 0 {
+		// Check if there's non-JSON text before [{
+		prefix := trimmed[:idx]
+		// If prefix doesn't look like JSON (no quotes, colons), it's text + malformed JSON
+		if !strings.Contains(prefix, `":`) && !strings.HasPrefix(prefix, "{") {
+			return true
+		}
+	}
+	return false
+}
+
+// isOrphanedHeaderText is disabled to avoid over-filtering.
+// The reTextBeforeMalformedJSON regex handles "CJK text + <> + JSON" patterns.
+// Standalone CJK text without malformed JSON should be preserved.
+func isOrphanedHeaderText(trimmed string) bool {
+	_ = trimmed
+	return false
+}
+
+// isPureJSONLine checks if a line is pure JSON that should be filtered.
+// STRUCTURAL APPROACH: Detects JSON by structure, not content.
+// Performance: O(n) character counting
+func isPureJSONLine(trimmed string) bool {
+	if len(trimmed) == 0 || len(trimmed) > 500 {
+		return false
+	}
+	// Must start with { or [
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return false
+	}
+	// Count JSON structural elements
+	fieldPatternCount := strings.Count(trimmed, `":`)
+	// A line with 2+ field patterns is likely leaked JSON
+	if fieldPatternCount >= 2 {
+		return true
+	}
+	// Single field pattern with JSON brackets is also likely leaked
+	if fieldPatternCount >= 1 && (strings.Contains(trimmed, `},`) || strings.Contains(trimmed, `}]`)) {
+		return true
+	}
+	return false
+}
+
+// isMalformedXMLLine checks if a line contains malformed XML fragments.
+// STRUCTURAL APPROACH: Detects malformed XML by tag structure.
+// Performance: O(n) string contains checks
+func isMalformedXMLLine(trimmed string) bool {
+	if !strings.Contains(trimmed, "<") {
+		return false
+	}
+	return strings.Contains(trimmed, "<><") ||
+		strings.Contains(trimmed, "<invokename") ||
+		strings.Contains(trimmed, "<parametername") ||
+		strings.Contains(trimmed, "<propertyname")
+}
+
+// isLeakedJSONFieldLine checks if a line is a leaked JSON field value.
+// STRUCTURAL APPROACH: Detects lines starting with "field": pattern.
+// Performance: O(1) prefix check + O(n) index search
+func isLeakedJSONFieldLine(trimmed string) bool {
+	if !strings.HasPrefix(trimmed, `"`) {
+		return false
+	}
+	// Find the closing quote and colon
+	colonIdx := strings.Index(trimmed, `":`)
+	if colonIdx <= 0 || colonIdx > 30 {
+		return false
+	}
+	// Check if the field name is a short identifier (not natural text)
+	fieldName := trimmed[1:colonIdx]
+	// Field names are typically short alphanumeric identifiers
+	if len(fieldName) > 20 {
+		return false
+	}
+	for _, r := range fieldName {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// isStandaloneToolMarker checks if a line is a standalone tool marker.
+// STRUCTURAL APPROACH: Detects tool markers by function call pattern.
+// Performance: O(1) prefix checks
+func isStandaloneToolMarker(line, trimmed string) bool {
+	// Tool markers look like: "ToolName(args)"
+	// But we keep them if they're part of bullet points
+	if strings.HasPrefix(line, "●") || strings.HasPrefix(line, "•") {
+		return false
+	}
+	// Check for common tool marker patterns
+	toolPrefixes := []string{"Update(", "Read(", "Write(", "Bash(", "Glob(", "Grep(", "Edit("}
+	for _, prefix := range toolPrefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRetryPhrase checks if a line contains retry/correction phrases
+// that indicate tool call retries.
+//
+// STRUCTURAL APPROACH: Detects retry intent by semantic structure patterns:
+// 1. First-person pronoun + action verb (fix/retry/redo/correct)
+// 2. Action verb + object (call/format/issue)
+// 3. Works for both Chinese and English through pattern matching
+//
+// NOTE: This function is currently used for TEST VALIDATION ONLY.
+// Retry phrase filtering in removeClaudeCodePreamble is intentionally DISABLED
+// to avoid over-filtering in streaming mode.
+//
+// Performance: Uses structural pattern detection instead of keyword lists.
+func isRetryPhrase(line string) bool {
+	// Check for bullet prefix and remove it for matching
+	trimmed := line
+	if strings.HasPrefix(trimmed, "●") || strings.HasPrefix(trimmed, "•") || strings.HasPrefix(trimmed, "‣") {
+		trimmed = strings.TrimSpace(trimmed[len("●"):])
+	}
+
+	// Convert to lowercase for English matching
+	lower := strings.ToLower(trimmed)
+
+	// STRUCTURAL PATTERN 1: Chinese first-person + action structure
+	// Pattern: [我/让我/我来/需要] + [修正/修复/重新/重试]
+	if containsRetryStructureChinese(trimmed) {
+		return true
+	}
+
+	// STRUCTURAL PATTERN 2: English first-person + action structure
+	// Pattern: [I/Let me/I'll/I need to] + [fix/retry/redo/correct/recreate]
+	if containsRetryStructureEnglish(lower) {
+		return true
+	}
+
+	return false
+}
+
+// containsRetryStructureChinese detects Chinese retry patterns by structure.
+// Pattern: subject marker + action verb for correction/retry
+func containsRetryStructureChinese(text string) bool {
+	// Subject markers that indicate self-action
+	subjectMarkers := []string{"我", "让我", "我来", "需要"}
+	// Action verbs for correction/retry
+	actionVerbs := []string{"修正", "修复", "重新", "重试", "再次", "纠正"}
+
+	for _, subject := range subjectMarkers {
+		if strings.Contains(text, subject) {
+			for _, action := range actionVerbs {
+				if strings.Contains(text, action) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// containsRetryStructureEnglish detects English retry patterns by structure.
+// Pattern: first-person subject + action verb for correction/retry
+func containsRetryStructureEnglish(lower string) bool {
+	// First-person patterns (already lowercased)
+	firstPersonPatterns := []string{
+		"i need to ", "i'll ", "i will ", "let me ", "i should ",
+		"i have to ", "i must ", "i'm going to ", "i am going to ",
+	}
+	// Action verbs for correction/retry
+	actionVerbs := []string{
+		"fix", "retry", "redo", "correct", "recreate", "regenerate",
+		"rewrite", "revise", "update", "modify", "adjust", "repair",
+	}
+
+	for _, pattern := range firstPersonPatterns {
+		if strings.Contains(lower, pattern) {
+			for _, action := range actionVerbs {
+				if strings.Contains(lower, action) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // cleanConsecutiveBlankLines compresses consecutive blank lines into single blank lines.
@@ -2183,8 +2704,17 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	}
 
 	// Prefer the flat <invoke name="..."> format when present to reduce parsing overhead.
+	// Use content check to fall back to text mode if there's non-tool content after </invoke>
+	// (b4u2cc behavior: prevents treating explanatory text as tool calls).
 	if flatMatches := reInvokeFlat.FindAllStringSubmatch(segment, -1); len(flatMatches) > 0 {
-		flatCalls := parseFlatInvokes(flatMatches)
+		// First try with content check (b4u2cc strict mode)
+		flatCalls := parseFlatInvokesWithContentCheck(segment, flatMatches)
+		if flatCalls == nil {
+			// Content check failed, try without content check as fallback
+			// This handles cases where the model outputs valid tool calls with trailing content
+			// that should still be processed (e.g., thinking content after tool call)
+			flatCalls = parseFlatInvokes(flatMatches)
+		}
 		if len(flatCalls) > 0 {
 			if logrus.IsLevelEnabled(logrus.DebugLevel) {
 				logrus.WithField("parsed_count", len(flatCalls)).Debug("Function call parsing: parsed flat invoke format")
@@ -2381,12 +2911,18 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	return results
 }
 
+// parseFlatInvokes parses flat <invoke name="...">...</invoke> format tool calls.
+// Following b4u2cc reference implementation, only the FIRST valid tool call is returned.
+// This prevents issues when models output multiple tool calls in a single response,
+// which can cause confusion and errors in multi-turn conversations.
+// Subsequent tool calls are logged and filtered out.
 func parseFlatInvokes(matches [][]string) []functionCall {
 	if len(matches) == 0 {
 		return nil
 	}
-	results := make([]functionCall, 0, len(matches))
-	for _, m := range matches {
+	// Only return the first valid tool call (b4u2cc behavior)
+	// This ensures one tool call per response for cleaner multi-turn conversations
+	for i, m := range matches {
 		if len(m) < 3 {
 			continue
 		}
@@ -2395,14 +2931,99 @@ func parseFlatInvokes(matches [][]string) []functionCall {
 			continue
 		}
 		args := extractParameters(m[2], reMcpParam, reGenericParam)
-		results = append(results, functionCall{Name: name, Args: args})
+
+		// Log if there are additional tool calls being filtered
+		if i < len(matches)-1 {
+			filteredCount := 0
+			for j := i + 1; j < len(matches); j++ {
+				if len(matches[j]) >= 3 && strings.TrimSpace(matches[j][1]) != "" {
+					filteredCount++
+				}
+			}
+			if filteredCount > 0 {
+				logrus.WithFields(logrus.Fields{
+					"first_tool":     name,
+					"filtered_count": filteredCount,
+				}).Debug("Function call parsing: filtered subsequent tool calls (b4u2cc single-call policy)")
+			}
+		}
+
+		return []functionCall{{Name: name, Args: args}}
 	}
-	return results
+	return nil
+}
+
+// parseFlatInvokesWithContentCheck parses flat <invoke> format and checks for content after </invoke>.
+// Following b4u2cc reference implementation: if there is non-whitespace content after </invoke>
+// that is NOT another <invoke> tag or closing tag, it falls back to text mode (returns nil).
+// This prevents issues when models output explanatory text after tool calls.
+// Parameters:
+//   - segment: the full text segment containing potential invoke tags
+//   - matches: regex matches from reInvokeFlat
+//
+// Returns nil if content after </invoke> indicates this should be treated as text.
+func parseFlatInvokesWithContentCheck(segment string, matches [][]string) []functionCall {
+	if len(matches) == 0 {
+		return nil
+	}
+
+	// Find the first valid match
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		name := strings.TrimSpace(m[1])
+		if name == "" {
+			continue
+		}
+
+		// Find the position of this invoke block in the segment
+		fullMatch := m[0] // The full matched string including <invoke>...</invoke>
+		matchIdx := strings.Index(segment, fullMatch)
+		if matchIdx == -1 {
+			continue
+		}
+
+		// Check content after </invoke>
+		afterInvoke := segment[matchIdx+len(fullMatch):]
+		afterTrimmed := strings.TrimSpace(afterInvoke)
+
+		// If there's non-whitespace content after </invoke>, check if it's acceptable
+		// Acceptable patterns:
+		// 1. Empty or whitespace only
+		// 2. Another <invoke> tag
+		// 3. Closing tags like </invoke>, </function_calls>, </function_call>
+		// 4. Orphaned closing tags (model sometimes outputs extra </invoke>)
+		// 5. Malformed closing tags like </antlinvoke>, </antml>, </antinvoke> (model typos)
+		if afterTrimmed != "" {
+			afterLower := strings.ToLower(afterTrimmed)
+			isAcceptable := strings.HasPrefix(afterLower, "<invoke") ||
+				strings.HasPrefix(afterLower, "</invoke>") ||
+				strings.HasPrefix(afterLower, "</function") ||
+				strings.HasPrefix(afterLower, "</tool") ||
+				strings.HasPrefix(afterLower, "</ant") || // Handles </antlinvoke>, </antml>, </antinvoke>
+				strings.HasPrefix(afterLower, "</antml")
+
+			if !isAcceptable {
+				logrus.WithFields(logrus.Fields{
+					"tool_name":     name,
+					"after_content": utils.TruncateString(afterTrimmed, 100),
+				}).Debug("Function call parsing: non-tool content after </invoke>, falling back to text mode (b4u2cc behavior)")
+				return nil
+			}
+		}
+
+		// Parse and return the first valid tool call
+		args := extractParameters(m[2], reMcpParam, reGenericParam)
+		return []functionCall{{Name: name, Args: args}}
+	}
+	return nil
 }
 
 // parseMalformedInvokes parses malformed <invokename="..."> format tool calls.
 // This handles cases where models output <><invokename="TodoWrite"><parametername="todos">[...]
 // instead of the correct <invoke name="TodoWrite"><parameter name="todos">[...]</parameter></invoke>
+// Following b4u2cc reference implementation, only the FIRST valid tool call is returned.
 // Performance: Uses strings.Contains for fast pre-check before regex matching.
 func parseMalformedInvokes(text string) []functionCall {
 	// Fast path: check if malformed invokename pattern exists
@@ -2415,8 +3036,8 @@ func parseMalformedInvokes(text string) []functionCall {
 		return nil
 	}
 
-	results := make([]functionCall, 0, len(matches))
-	for _, m := range matches {
+	// Only return the first valid tool call (b4u2cc single-call policy)
+	for i, m := range matches {
 		if len(m) < 3 {
 			continue
 		}
@@ -2427,21 +3048,53 @@ func parseMalformedInvokes(text string) []functionCall {
 
 		// Parse malformed parameter tags from the remaining content
 		args := extractMalformedParameters(m[2])
-		results = append(results, functionCall{Name: name, Args: args})
+
+		// Log if there are additional tool calls being filtered
+		if i < len(matches)-1 {
+			filteredCount := len(matches) - i - 1
+			if filteredCount > 0 {
+				logrus.WithFields(logrus.Fields{
+					"first_tool":     name,
+					"filtered_count": filteredCount,
+				}).Debug("Function call parsing: filtered subsequent malformed tool calls (b4u2cc single-call policy)")
+			}
+		}
+
+		return []functionCall{{Name: name, Args: args}}
 	}
-	return results
+	return nil
 }
 
 // extractMalformedParameters parses malformed <parametername="..."> format parameters.
 // This handles cases where models output <parametername="todos">[...] instead of
 // <parameter name="todos">[...]</parameter>
 // Also handles cases without closing tags and partially malformed JSON.
+// ENHANCED: Also handles <propertyname="..."value="..."> format from production logs.
 // Performance: Uses strings.Contains for fast pre-check before regex matching.
 // Robustness: Attempts to fix common JSON formatting issues before parsing.
 func extractMalformedParameters(content string) map[string]any {
 	args := make(map[string]any)
 	if content == "" {
 		return args
+	}
+
+	// Check for malformed property tags first (new format from production logs)
+	// Pattern: <propertyname="activeForm"value="正在分析"> or <property name="id"value="2">
+	if strings.Contains(content, "<property") && strings.Contains(content, `value="`) {
+		propMatches := reMalformedProperty.FindAllStringSubmatch(content, -1)
+		for _, pm := range propMatches {
+			if len(pm) >= 3 {
+				propName := strings.TrimSpace(pm[1])
+				propValue := strings.TrimSpace(pm[2])
+				if propName != "" {
+					args[propName] = propValue
+				}
+			}
+		}
+		// If we found property tags, return the args
+		if len(args) > 0 {
+			return args
+		}
 	}
 
 	// Fast path: check if malformed parametername pattern exists
@@ -2594,121 +3247,65 @@ func tryParseJSON(s string) (any, bool) {
 }
 
 // repairMalformedJSON attempts to fix common JSON malformations from Claude Code output.
-// Known issues derived from real production log analysis:
-// 1. Incorrect field names: "Form": instead of "activeForm":
-// 2. Missing commas between array elements or object items
-// 3. Extra quotes inside strings: \",Form\": (extra quotes before field name)
-// 4. Malformed numeric keys in arrays: 3,\"\": (should be {"id":3,...})
-// 5. Unbalanced braces/brackets
-// 6. Malformed todo items with missing values: {"id": "1",: (missing value after colon)
-// 7. Malformed field patterns: "id": "1",": " (extra quotes in field names)
-// 8. Truncated field names: Form": instead of "activeForm":
-// 9. Missing quotes around values: "content":WebSearch instead of "content":"WebSearch"
-// 10. Malformed state/status values: _progress instead of in_progress
-// 11. Severely malformed arrays: [":text instead of [{"content":"text"
-// 7. Missing quotes around field values
-// 8. Malformed field patterns from real-world production log: "1",": " (extra quotes in field names)
-// 9. Severely malformed JSON like [":text", "activeForm": "text","status":"}
-// 10. Missing quotes around field values: "content":WebSearch -> "content":"WebSearch"
-// 11. Truncated field names: Form": -> "activeForm":
+// STRUCTURAL APPROACH: Fixes JSON based on structural patterns, not specific field names.
+// Known structural issues:
+// 1. Missing commas between array elements or object items: }{ -> },{
+// 2. Unbalanced braces/brackets: add missing closing brackets
+// 3. Missing field names after comma: ,": " -> ,"_": " (placeholder field)
+// 4. Truncated field names: fieldName": -> "fieldName":
+// 5. Missing quotes around values: "field":value -> "field":"value"
+// 6. Trailing commas: ,} or ,] -> } or ]
+// 7. Severely malformed arrays: [": -> []
 // Returns a potentially repaired JSON string (best effort).
 // Performance: Uses precompiled regex patterns where possible.
 func repairMalformedJSON(s string) string {
 	// Work on a copy
 	result := s
 
-	// Fix 0: Handle severely malformed JSON arrays starting with ":
-	// Pattern: [":text" -> [{"content":"text"
-	// This handles cases like [":分析Python GUI库选择并制定实施方案", "activeForm":...
+	// STRUCTURAL FIX 0: Handle severely malformed JSON arrays starting with ":
+	// Pattern: [":text" or ["":text" - these are too broken to repair
 	if strings.HasPrefix(result, `[":`) || strings.HasPrefix(result, `["":`) {
-		// This JSON is too malformed to repair - return empty array
 		return "[]"
 	}
 
-	// Fix 0a: Handle missing quotes around field values (from real-world production log)
-	// Pattern: "content":WebSearch -> "content":"WebSearch"
-	// This handles cases where the model outputs unquoted string values
+	// STRUCTURAL FIX 1: Fix missing quotes around field values
+	// Pattern: "field":unquotedValue -> "field":"unquotedValue"
 	result = fixUnquotedFieldValues(result)
 
-	// Fix 0b: Handle malformed field separators like ","status":"}
-	// Pattern: ","status":"} -> ,"status":"pending"}
-	result = strings.ReplaceAll(result, `","status":"}`, `,"status":"pending"}`)
-	result = strings.ReplaceAll(result, `"status":"}`, `"status":"pending"}`)
-
-	// Fix 0c: Handle malformed content fields like "},content":
-	// Pattern: "},content": -> },"content":
-	result = strings.ReplaceAll(result, `"},content":`, `},"content":`)
-	result = strings.ReplaceAll(result, `",content":`, `,"content":`)
-
-	// Fix 0d: Handle _progress pattern (malformed status value)
-	// Pattern: "_progress" -> "in_progress"
-	result = strings.ReplaceAll(result, `"_progress"`, `"in_progress"`)
-	result = strings.ReplaceAll(result, `_progress"}`, `in_progress"}`)
-	result = strings.ReplaceAll(result, `_progress",`, `in_progress",`)
-
-	// Fix 0e: Handle truncated field names (from real-world production log)
-	// Pattern: Form": -> "activeForm":
-	// Pattern: state":", -> "state":"
+	// STRUCTURAL FIX 2: Fix truncated field names (missing opening quote)
+	// Pattern: ,fieldName": -> ,"fieldName":
 	result = fixTruncatedFieldNames(result)
 
-	// Fix 1: Replace "Form": with "activeForm": (common mistake in TodoWrite)
-	result = strings.ReplaceAll(result, `"Form":`, `"activeForm":`)
-
-	// Fix 2: Add missing commas between objects in arrays
-	// Pattern: }[ \t\n]*{ (missing comma between objects)
+	// STRUCTURAL FIX 3: Add missing commas between objects in arrays
+	// Pattern: }{ -> },{
 	result = reJSONMissingComma.ReplaceAllString(result, `},{`)
 
-	// Fix 3: Remove extra quotes before field names (e.g., \",Form\": -> ,"Form":
-	// Common pattern: \"",Form\": (extra quote after comma)
-	// Replace \"", with ," (when followed by letter)
+	// STRUCTURAL FIX 4: Remove extra quotes before field names
+	// Pattern: \"", -> ," (extra quote after comma)
 	result = reJSONExtraQuote.ReplaceAllString(result, `,"`)
 
-	// Fix 4: Fix "status":"}" (string value that's just a closing brace)
-	// Replace "status":"}" with "status":"pending"
-	result = strings.ReplaceAll(result, `"status":"}"`, `"status":"pending"`)
-
-	// Fix 5: Remove trailing commas before } or ]
+	// STRUCTURAL FIX 5: Remove trailing commas before } or ]
+	// Pattern: ,} -> } or ,] -> ]
 	result = reJSONTrailingComma.ReplaceAllStringFunc(result, func(match string) string {
-		// Keep only the closing bracket/brace
 		return string(match[len(match)-1])
 	})
 
-	// Fix 6: Fix malformed todo items with missing values
-	// Pattern: {"id": "1",: -> {"id": "1", "task": "pending",
-	result = reJSONMalformedTodo.ReplaceAllString(result, `{"id": "$1", "task": "pending", `)
-
-	// Fix 7: Fix missing quotes around string values that aren't already quoted
-	// Pattern: : [a-zA-Z][^",}\]\[]*: (word followed by colon, not already quoted)
-	// This is a simplified heuristic - only fix common cases
+	// STRUCTURAL FIX 6: Fix missing quotes around string values
+	// Pattern: :"unquotedWord" -> :"quotedWord"
 	result = reJSONMissingQuotes.ReplaceAllString(result, `: "$1"$2`)
 
-	// Fix 8: Fix malformed field patterns from real-world production log
-	// Pattern: "id": "1",": " -> "id": "1", "content": "
-	// This handles cases where the model outputs malformed JSON like:
-	// [{"id": "1",": "研究PythonGUI框架最佳实践", "activeForm":...}]
-	result = reJSONMalformedField.ReplaceAllString(result, `"id": "$1", "content": "`)
+	// STRUCTURAL FIX 7: Fix missing field name after comma (structural pattern)
+	// Pattern: ,": " or , ": " -> ,"_field": " (use placeholder field name)
+	// This handles cases where model outputs: {"id": "1",": "value"
+	result = fixMissingFieldName(result)
 
-	// Fix 9: Handle malformed Form field (should be activeForm)
-	// Pattern: "Form": -> "activeForm":
-	result = strings.ReplaceAll(result, `"Form":`, `"activeForm":`)
-	result = strings.ReplaceAll(result, `Form":`, `activeForm":`)
-	result = strings.ReplaceAll(result, `Form"`, `activeForm"`)
-
-	// Fix 10: Handle pending" pattern (malformed status value)
-	// Pattern: pending" -> "pending"
-	if strings.Contains(result, `pending"`) && !strings.Contains(result, `"pending"`) {
-		result = strings.ReplaceAll(result, `pending"`, `"pending"`)
+	// STRUCTURAL FIX 8: Fix colon-only separator (no field name at all)
+	// Pattern: {:"value" or ,:"value" -> {"_field":"value" or ,"_field":"value"
+	if strings.Contains(result, `{:`) || strings.Contains(result, `,:`) {
+		result = reJSONMalformedColonOnly.ReplaceAllString(result, `$1"_field": "$2"`)
 	}
 
-	// Fix 11: Handle malformed array elements starting with :
-	// Pattern: [":text -> [{"content":"text
-	// This is a severe malformation that cannot be reliably fixed
-	if strings.Contains(result, `[":`) {
-		// Try to extract valid JSON objects from the malformed array
-		result = extractValidJSONFromMalformed(result)
-	}
-
-	// Fix 9: Balance braces/brackets - count and add missing ones at the end
+	// STRUCTURAL FIX 9: Balance braces/brackets - add missing closing brackets
 	openBraces := strings.Count(result, "{")
 	closeBraces := strings.Count(result, "}")
 	openBrackets := strings.Count(result, "[")
@@ -2722,6 +3319,18 @@ func repairMalformedJSON(s string) string {
 	}
 
 	return result
+}
+
+// fixMissingFieldName fixes JSON patterns where field name is missing after comma.
+// Pattern: ,": " or , ": " -> ,"_field": " (use placeholder field name)
+// This is a structural fix that doesn't assume specific field names.
+func fixMissingFieldName(s string) string {
+	// Pattern 1: ,": " (comma, colon, space, quote)
+	s = strings.ReplaceAll(s, `",": "`, `","_field": "`)
+	s = strings.ReplaceAll(s, `", ": "`, `", "_field": "`)
+	// Pattern 2: ,":"  (comma, colon, quote without space)
+	s = strings.ReplaceAll(s, `",":"`, `","_field":"`)
+	return s
 }
 
 // extractValidJSONFromMalformed attempts to extract valid JSON objects from severely malformed JSON.
@@ -2792,11 +3401,12 @@ func extractValidJSONFromMalformed(s string) string {
 }
 
 // fixUnquotedFieldValues fixes missing quotes around field values in JSON.
-// Pattern: "content":WebSearch -> "content":"WebSearch"
-// This handles cases where the model outputs unquoted string values.
+// Pattern 1: "content":WebSearch -> "content":"WebSearch" (completely unquoted)
+// Pattern 2: "content":正在搜索" -> "content":"正在搜索" (missing opening quote only)
+// This handles cases where the model outputs unquoted or partially quoted string values.
 // Performance: O(n) single pass through the string.
 func fixUnquotedFieldValues(s string) string {
-	// Fast path: if no colon followed by letter, no fix needed
+	// Fast path: if no colon, no fix needed
 	if !strings.Contains(s, `:`) {
 		return s
 	}
@@ -2838,20 +3448,31 @@ func fixUnquotedFieldValues(s string) string {
 				// Found unquoted string value - add opening quote
 				result.WriteByte('"')
 
-				// Read until comma, closing bracket/brace, or end of line
+				// Read until comma, closing bracket/brace, quote, or end of line
 				valueStart := i
+				hasTrailingQuote := false
 				for i < len(s) {
 					c := s[i]
 					if c == ',' || c == '}' || c == ']' || c == '\n' || c == '\r' {
 						break
 					}
+					// Check for trailing quote (missing opening quote case)
+					if c == '"' {
+						hasTrailingQuote = true
+						i++
+						break
+					}
 					i++
 				}
 
-				// Write the value and closing quote
-				value := strings.TrimSpace(s[valueStart:i])
-				result.WriteString(value)
-				result.WriteByte('"')
+				// Write the value
+				value := s[valueStart:i]
+				if hasTrailingQuote && len(value) > 0 && value[len(value)-1] == '"' {
+					// Remove trailing quote from value since we need to write it separately
+					value = value[:len(value)-1]
+				}
+				result.WriteString(strings.TrimSpace(value))
+				result.WriteByte('"') // Always add closing quote
 			}
 		} else {
 			result.WriteByte(s[i])
@@ -2951,6 +3572,7 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 		(firstChar >= '0' && firstChar <= '9') || firstChar == '-' ||
 		trimmed == "true" || trimmed == "false" || trimmed == "null" {
 		var jsonVal any
+		// First try direct parsing
 		if err := json.Unmarshal([]byte(trimmed), &jsonVal); err == nil {
 			// If it's already a map, return directly
 			if mapVal, ok := jsonVal.(map[string]any); ok {
@@ -2960,7 +3582,16 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 			// so the caller still gets a map structure with the parsed content.
 			return map[string]any{"value": jsonVal}
 		}
-		// If JSON parsing fails (e.g. due to unescaped characters), fall back to regex parsing.
+		// If direct parsing fails, try repairing malformed JSON first
+		// This handles cases like {"id": "1",": "content"} (missing field name)
+		repaired := repairMalformedJSON(trimmed)
+		if err := json.Unmarshal([]byte(repaired), &jsonVal); err == nil {
+			if mapVal, ok := jsonVal.(map[string]any); ok {
+				return mapVal
+			}
+			return map[string]any{"value": jsonVal}
+		}
+		// If JSON parsing still fails (e.g. due to unescaped characters), fall back to regex parsing.
 	}
 
 	// First attempt: MCP parameter blocks with name attributes.
@@ -3056,16 +3687,31 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 // parseValueOrString attempts to parse the input string as JSON; if that fails,
 // it returns the string as-is. Before returning, it sanitizes the value to remove
 // model-specific special tokens that may have leaked into the output.
+// Also attempts to repair malformed JSON before parsing.
 func parseValueOrString(s string) any {
 	// Sanitize special tokens first
 	s = sanitizeModelTokens(s)
 
 	var val any
-	if err := json.Unmarshal([]byte(s), &val); err != nil {
-		return s
+	// First try direct parsing
+	if err := json.Unmarshal([]byte(s), &val); err == nil {
+		// Recursively sanitize string values within parsed JSON
+		return sanitizeJsonValue(val)
 	}
-	// Recursively sanitize string values within parsed JSON
-	return sanitizeJsonValue(val)
+
+	// If direct parsing fails and it looks like JSON, try repairing
+	trimmed := strings.TrimSpace(s)
+	if len(trimmed) > 0 {
+		firstChar := trimmed[0]
+		if firstChar == '{' || firstChar == '[' {
+			repaired := repairMalformedJSON(trimmed)
+			if err := json.Unmarshal([]byte(repaired), &val); err == nil {
+				return sanitizeJsonValue(val)
+			}
+		}
+	}
+
+	return s
 }
 
 // sanitizeModelTokens removes model-specific special tokens from a string.
