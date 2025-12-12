@@ -418,6 +418,10 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 	// - "required" (used for Claude "any" type) vs "any" semantics
 	// - Object format {"type":"function","function":{"name":...}} for specific tool forcing
 	// This mapping follows OpenAI's documented API but may need provider-specific adjustments.
+	// KNOWN LIMITATION: Azure OpenAI API versions 2024-06-01 and 2024-07-01-preview do not support
+	// "required" for tool_choice (see GitHub issue Azure/azure-rest-api-specs#29844).
+	// If using Azure OpenAI, the upstream may reject "required" with a 400 error.
+	// Consider implementing provider-specific detection or fallback to "auto" if needed.
 	if len(claudeReq.ToolChoice) > 0 {
 		var toolChoice map[string]interface{}
 		if err := json.Unmarshal(claudeReq.ToolChoice, &toolChoice); err == nil {
@@ -601,11 +605,17 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	// Optionally log request conversion info when body logging is enabled.
 	// Reduced logging to avoid excessive output in production
 	if group != nil && group.EffectiveConfig.EnableRequestBodyLogging && logrus.IsLevelEnabled(logrus.DebugLevel) {
+		// Check if mcp_servers is actually present (not just empty json.RawMessage)
+		hasMcpServers := false
+		if len(claudeReq.McpServers) > 0 {
+			raw := strings.TrimSpace(string(claudeReq.McpServers))
+			hasMcpServers = raw != "" && raw != "null"
+		}
 		logrus.WithFields(logrus.Fields{
 			"group":           group.Name,
 			"original_model":  originalModel,
 			"tools_count":     len(claudeReq.Tools),
-			"has_mcp_servers": len(claudeReq.McpServers) > 0,
+			"has_mcp_servers": hasMcpServers,
 		}).Debug("CC: Request conversion completed")
 	}
 
@@ -831,7 +841,14 @@ func splitThinkingContent(content string) []ClaudeContentBlock {
 				blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: cleaned})
 			}
 		case "thinking":
-			thinking := strings.TrimSpace(evt.Content)
+			thinking := evt.Content
+			// Apply same artifact removal pattern as ThinkingParser
+			thinking = strings.TrimSpace(thinking)
+			if strings.HasPrefix(thinking, ">") && len(thinking) > 1 {
+				if thinking[1] == ' ' || thinking[1] == '\n' || thinking[1] == '\r' || thinking[1] == '\t' {
+					thinking = strings.TrimSpace(thinking[1:])
+				}
+			}
 			if thinking != "" {
 				blocks = append(blocks, ClaudeContentBlock{Type: "thinking", Thinking: thinking})
 			}
@@ -873,8 +890,21 @@ func applyTokenMultiplier(usage *ClaudeUsage) {
 	if multiplier == 1.0 {
 		return
 	}
-	usage.InputTokens = int(float64(usage.InputTokens) * multiplier)
-	usage.OutputTokens = int(float64(usage.OutputTokens) * multiplier)
+	// Apply multiplier only to non-zero values to preserve 0-usage semantics
+	if usage.InputTokens > 0 {
+		scaled := int(float64(usage.InputTokens) * multiplier)
+		if scaled < 1 {
+			scaled = 1
+		}
+		usage.InputTokens = scaled
+	}
+	if usage.OutputTokens > 0 {
+		scaled := int(float64(usage.OutputTokens) * multiplier)
+		if scaled < 1 {
+			scaled = 1
+		}
+		usage.OutputTokens = scaled
+	}
 }
 
 func isCountTokensEndpoint(path, method string) bool {
@@ -906,7 +936,12 @@ func estimateTokensLocal(chunks []string) int {
 		tokens = 1
 	}
 	multiplier := getTokenMultiplier()
-	return int(float64(tokens) * multiplier)
+	scaled := int(float64(tokens) * multiplier)
+	// Ensure non-empty input always returns at least 1 token after scaling
+	if scaled < 1 {
+		scaled = 1
+	}
+	return scaled
 }
 
 func extractTextFromRawContent(raw json.RawMessage) string {
@@ -1573,7 +1608,14 @@ func (p *ThinkingParser) FeedRune(char rune) {
 			content := fullContent[:len(fullContent)-tagLen]
 			// Remove leading ">" artifact from parsing logic per b4u2cc reference implementation
 			// See: b4u2cc/deno-proxy/src/parser.ts lines 122, 274, 338
-			content = strings.TrimPrefix(strings.TrimSpace(content), ">")
+			// Pattern: /^\s*>\s*/ - only strip if it's specifically whitespace + ">" + whitespace
+			content = strings.TrimSpace(content)
+			if strings.HasPrefix(content, ">") {
+				// Only strip the ">" if followed by space/newline (known artifact pattern)
+				if len(content) > 1 && (content[1] == ' ' || content[1] == '\n' || content[1] == '\r' || content[1] == '\t') {
+					content = strings.TrimSpace(content[1:])
+				}
+			}
 			if trimmed := strings.TrimSpace(content); trimmed != "" {
 				p.events = append(p.events, ThinkingEvent{Type: "thinking", Content: trimmed})
 			}
