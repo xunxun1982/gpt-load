@@ -363,6 +363,8 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 	openaiReq.Messages = messages
 
 	// Inject thinking hints when extended thinking is enabled.
+	// NOTE: Only "enabled" type is currently supported. Other values like "disabled"
+	// are silently ignored to allow graceful degradation.
 	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
 		for i := len(openaiReq.Messages) - 1; i >= 0; i-- {
 			if openaiReq.Messages[i].Role == "user" {
@@ -405,6 +407,10 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 	}
 
 	// Convert tool_choice from Claude format to OpenAI format
+	// COMPATIBILITY NOTE: Different OpenAI-compatible providers may have varying support for:
+	// - "required" (used for Claude "any" type) vs "any" semantics
+	// - Object format {"type":"function","function":{"name":...}} for specific tool forcing
+	// This mapping follows OpenAI's documented API but may need provider-specific adjustments.
 	if len(claudeReq.ToolChoice) > 0 {
 		var toolChoice map[string]interface{}
 		if err := json.Unmarshal(claudeReq.ToolChoice, &toolChoice); err == nil {
@@ -1509,11 +1515,13 @@ type ThinkingParser struct {
 	thinkingBuffer strings.Builder
 	thinkingMode   bool
 	events         []ThinkingEvent
-	// Ring buffer to track last N characters for efficient suffix matching
+	// Ring buffer to track last N characters for efficient suffix matching in normal mode
 	// This avoids O(n²) cost of calling buffer.String() on every rune
 	suffixRing     []rune
-	suffixRingPos  int
 	suffixRingSize int
+	// Ring buffer for thinking mode end-tag detection to avoid O(n²) String() calls
+	thinkingRing     []rune
+	thinkingRingSize int
 }
 
 func NewThinkingParser() *ThinkingParser {
@@ -1521,8 +1529,10 @@ func NewThinkingParser() *ThinkingParser {
 	// Max tag length is len("</thinking>") = 11
 	maxTagLen := 11
 	return &ThinkingParser{
-		suffixRing:     make([]rune, maxTagLen),
-		suffixRingSize: 0,
+		suffixRing:       make([]rune, maxTagLen),
+		suffixRingSize:   0,
+		thinkingRing:     make([]rune, maxTagLen),
+		thinkingRingSize: 0,
 	}
 }
 
@@ -1533,21 +1543,33 @@ func (p *ThinkingParser) FeedRune(char rune) {
 	charStr := string(char)
 
 	if p.thinkingMode {
+		// Write to buffer first, then check for end tag using ring buffer
 		p.thinkingBuffer.WriteString(charStr)
-		if p.endsWithThinkingEnd() {
-			content := strings.TrimSuffix(p.thinkingBuffer.String(), ThinkingEndTag)
-			content = strings.TrimSuffix(content, ThinkingAltEndTag)
+		p.addToThinkingRing(char)
+		if p.thinkingRingSuffixMatches(ThinkingEndTag) || p.thinkingRingSuffixMatches(ThinkingAltEndTag) {
+			// Extract content by trimming the matched end tag
+			fullContent := p.thinkingBuffer.String()
+			var tagLen int
+			if p.thinkingRingSuffixMatches(ThinkingEndTag) {
+				tagLen = len(ThinkingEndTag)
+			} else {
+				tagLen = len(ThinkingAltEndTag)
+			}
+			content := fullContent[:len(fullContent)-tagLen]
 			content = strings.TrimPrefix(strings.TrimSpace(content), ">")
 			if trimmed := strings.TrimSpace(content); trimmed != "" {
 				p.events = append(p.events, ThinkingEvent{Type: "thinking", Content: trimmed})
 			}
 			p.thinkingBuffer.Reset()
+			p.resetThinkingRing()
 			p.thinkingMode = false
 		}
 		return
 	}
 
-	// Add character to ring buffer for efficient suffix matching
+	// Write to buffer first, then add to ring and check for start tags
+	// This ensures buffer.Len() includes the current character when calculating text portion
+	p.buffer.WriteString(charStr)
 	p.addToRing(char)
 
 	// Check if ring buffer ends with start tags using O(1) suffix check
@@ -1573,15 +1595,9 @@ func (p *ThinkingParser) FeedRune(char rune) {
 		p.thinkingMode = true
 		p.thinkingBuffer.Reset()
 		p.resetRing()
+		p.resetThinkingRing()
 		return
 	}
-
-	p.buffer.WriteString(charStr)
-}
-
-func (p *ThinkingParser) endsWithThinkingEnd() bool {
-	buf := p.thinkingBuffer.String()
-	return strings.HasSuffix(buf, ThinkingEndTag) || strings.HasSuffix(buf, ThinkingAltEndTag)
 }
 
 // addToRing adds a rune to the ring buffer for efficient suffix matching
@@ -1600,6 +1616,43 @@ func (p *ThinkingParser) addToRing(r rune) {
 // resetRing clears the ring buffer
 func (p *ThinkingParser) resetRing() {
 	p.suffixRingSize = 0
+}
+
+// addToThinkingRing adds a rune to the thinking ring buffer for end-tag detection
+func (p *ThinkingParser) addToThinkingRing(r rune) {
+	maxSize := cap(p.thinkingRing)
+	if p.thinkingRingSize < maxSize {
+		p.thinkingRing[p.thinkingRingSize] = r
+		p.thinkingRingSize++
+	} else {
+		// Ring is full, shift left and add new rune at end
+		copy(p.thinkingRing, p.thinkingRing[1:])
+		p.thinkingRing[maxSize-1] = r
+	}
+}
+
+// resetThinkingRing clears the thinking ring buffer
+func (p *ThinkingParser) resetThinkingRing() {
+	p.thinkingRingSize = 0
+}
+
+// thinkingRingSuffixMatches checks if the thinking ring buffer ends with the given tag
+func (p *ThinkingParser) thinkingRingSuffixMatches(tag string) bool {
+	tagRunes := []rune(tag)
+	tagLen := len(tagRunes)
+
+	if p.thinkingRingSize < tagLen {
+		return false
+	}
+
+	// Compare the last tagLen runes in the ring with the tag
+	start := p.thinkingRingSize - tagLen
+	for i := 0; i < tagLen; i++ {
+		if p.thinkingRing[start+i] != tagRunes[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ringSuffixMatches checks if the ring buffer ends with the given tag (O(1) operation)
@@ -1657,21 +1710,23 @@ func (p *ThinkingParser) ConsumeEvents() []ThinkingEvent {
 }
 
 type TextAggregator struct {
-	mu       sync.Mutex
-	buffer   strings.Builder
-	interval time.Duration
-	onFlush  func(string)
-	timer    *time.Timer
-	closed   bool
+	mu        sync.Mutex
+	buffer    strings.Builder
+	interval  time.Duration
+	onFlush   func(string)
+	lastFlush time.Time
+	closed    bool
 }
 
 func NewTextAggregator(intervalMs int, onFlush func(string)) *TextAggregator {
 	return &TextAggregator{
-		interval: time.Duration(intervalMs) * time.Millisecond,
-		onFlush:  onFlush,
+		interval:  time.Duration(intervalMs) * time.Millisecond,
+		onFlush:   onFlush,
+		lastFlush: time.Now(),
 	}
 }
 
+// Add appends text to the buffer. Call MaybeFlush() periodically to check if flush is needed.
 func (a *TextAggregator) Add(text string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1681,22 +1736,36 @@ func (a *TextAggregator) Add(text string) {
 	}
 
 	a.buffer.WriteString(text)
-	if a.timer == nil {
-		a.timer = time.AfterFunc(a.interval, func() {
-			a.Flush()
-		})
-	}
 }
 
+// MaybeFlush flushes the buffer if the interval has elapsed since last flush.
+// Returns true if flushed. This must be called from the same goroutine as Add/Flush/Close
+// to maintain single-producer semantics.
+func (a *TextAggregator) MaybeFlush() bool {
+	a.mu.Lock()
+	if a.closed || a.buffer.Len() == 0 {
+		a.mu.Unlock()
+		return false
+	}
+	if time.Since(a.lastFlush) < a.interval {
+		a.mu.Unlock()
+		return false
+	}
+	chunk := a.buffer.String()
+	a.buffer.Reset()
+	a.lastFlush = time.Now()
+	a.mu.Unlock()
+
+	a.onFlush(chunk)
+	return true
+}
+
+// Flush immediately flushes any buffered content regardless of interval.
 func (a *TextAggregator) Flush() {
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
 		return
-	}
-	if a.timer != nil {
-		a.timer.Stop()
-		a.timer = nil
 	}
 	if a.buffer.Len() == 0 {
 		a.mu.Unlock()
@@ -1704,11 +1773,13 @@ func (a *TextAggregator) Flush() {
 	}
 	chunk := a.buffer.String()
 	a.buffer.Reset()
+	a.lastFlush = time.Now()
 	a.mu.Unlock()
 
 	a.onFlush(chunk)
 }
 
+// Close flushes any remaining content and marks the aggregator as closed.
 func (a *TextAggregator) Close() {
 	a.mu.Lock()
 	if a.closed {
@@ -1716,10 +1787,6 @@ func (a *TextAggregator) Close() {
 		return
 	}
 	a.closed = true
-	if a.timer != nil {
-		a.timer.Stop()
-		a.timer = nil
-	}
 	chunk := a.buffer.String()
 	a.buffer.Reset()
 	a.mu.Unlock()
@@ -2116,6 +2183,8 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					emitThinking(evt.Content)
 				}
 			}
+			// Check if aggregator needs flushing (single-producer: called from main loop)
+			aggregator.MaybeFlush()
 		}
 
 		if len(delta.ToolCalls) > 0 {
@@ -2212,6 +2281,11 @@ func appendToContent(content json.RawMessage, suffix string) json.RawMessage {
 		}
 	}
 
+	// Fallback: return original content if unable to append
+	// This prevents corruption but hints may be lost for unexpected content shapes
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithField("content_preview", string(content[:min(len(content), 100)])).Debug("CC: Unable to append thinking hint, unexpected content format")
+	}
 	return content
 }
 
