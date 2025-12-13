@@ -1343,10 +1343,12 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 
 				if !hasValidTodos {
 					skipCall = true
+					logrus.Debug("CC+FC: Skipping TodoWrite call - no valid todos found")
 				}
 			} else {
 				// No todos-like field present at all; skip this TodoWrite call.
 				skipCall = true
+				logrus.Debug("CC+FC: Skipping TodoWrite call - missing todos field")
 			}
 
 		case "AskUserQuestion":
@@ -2256,6 +2258,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}
 	}
 
+	// NOTE: TextAggregator interval is set to 35ms to balance interactive latency with network efficiency.
+	// This value has been tested and provides good responsiveness for streaming responses.
+	// Making it configurable would add unnecessary complexity without clear benefit (KISS principle).
 	aggregator = NewTextAggregator(35, func(text string) {
 		cleaned := sanitizeText(text)
 		if cleaned == "" {
