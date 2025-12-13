@@ -432,7 +432,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 			// Apply function call request rewrite for eligible OpenAI groups.
 			if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
-				rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(group, finalBodyBytes)
+				rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(c, group, finalBodyBytes)
 				if fcErr != nil {
 					logrus.WithError(fcErr).WithFields(logrus.Fields{
 						"group": group.Name,
@@ -858,7 +858,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	c.Set(ctxKeyFunctionCallEnabled, false)
 	c.Set(ctxKeyTriggerSignal, "")
 	if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
-		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(group, finalBodyBytes)
+		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(c, group, finalBodyBytes)
 		if fcErr != nil {
 			logrus.WithError(fcErr).WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,

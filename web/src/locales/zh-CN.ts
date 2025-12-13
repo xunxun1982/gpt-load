@@ -438,6 +438,10 @@ export default {
       "此开关仅对 OpenAI 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
     ccSupportRedirectTip:
       "为了兼容性，请在模型重定向规则中加入 opus (claude-opus-4-5-20251101)、sonnet (claude-sonnet-4-5-20250929)、haiku (claude-haiku-4-5-20251001) 相关模型的重定向。",
+    thinkingModel: "思考模型",
+    thinkingModelTooltip:
+      "当 Claude Code 启用扩展思考模式时，自动使用此模型。留空则使用请求中的原始模型。例如：deepseek-reasoner",
+    thinkingModelPlaceholder: "例如：deepseek-reasoner",
 
     modelRedirectInvalidJson: "模型重定向规则 JSON 格式错误",
     modelRedirectInvalidFormat: "模型重定向规则的键值必须都是字符串",

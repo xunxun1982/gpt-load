@@ -460,6 +460,10 @@ export default {
       "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
     ccSupportRedirectTip:
       "For compatibility, please add opus (claude-opus-4-5-20251101), sonnet (claude-sonnet-4-5-20250929), haiku (claude-haiku-4-5-20251001) related model redirections in model redirect rules.",
+    thinkingModel: "Thinking Model",
+    thinkingModelTooltip:
+      "When Claude Code enables extended thinking mode, this model will be used automatically. Leave empty to use the original model from request. e.g., deepseek-reasoner",
+    thinkingModelPlaceholder: "e.g., deepseek-reasoner",
 
     modelRedirectInvalidJson: "Invalid JSON format for model redirect rules",
     modelRedirectInvalidFormat: "Model redirect rule keys and values must all be strings",

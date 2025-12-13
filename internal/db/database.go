@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"github.com/sirupsen/logrus"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -29,8 +30,9 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 
 	var newLogger logger.Interface
 	if configManager.GetLogConfig().Level == "debug" {
+		// Use logrus output to ensure GORM logs go to both console and file
 		newLogger = logger.New(
-			log.New(os.Stdout, "\r\n", log.LstdFlags), // io writer
+			log.New(logrus.StandardLogger().Out, "\r\n", log.LstdFlags), // io writer
 			logger.Config{
 				SlowThreshold:             time.Second, // Slow SQL threshold
 				LogLevel:                  logger.Info, // Log level

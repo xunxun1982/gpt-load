@@ -40,12 +40,13 @@ var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum al
 
 const (
 	// Thinking hints injected into user messages when extended thinking is enabled.
-	// NOTE: The closing tag </antml> is intentionally kept for compatibility with
-	// ANTML-style hints used in the b4u2cc reference implementation. The upstream
-	// parser looks for these generic </antml> closers rather than matching the
-	// opening tag name, so do not change them to </thinking_mode> / </max_thinking_length>.
-	ThinkingHintInterleaved = "<thinking_mode>interleaved</antml>"
-	ThinkingHintMaxLength   = "<max_thinking_length>%d</antml>"
+	// Format follows b4u2cc reference implementation using ANTML-style tags with
+	// backslash-b escape sequence. The upstream parser looks for these generic
+	// </antml> closers rather than matching the opening tag name.
+	// NOTE: The \b in the tag name is intentional - it's a marker used by some
+	// models to identify internal control tags that should not be echoed to users.
+	ThinkingHintInterleaved = "<antml\\b:thinking_mode>interleaved</antml>"
+	ThinkingHintMaxLength   = "<antml\\b:max_thinking_length>%d</antml>"
 )
 
 // clearUpstreamEncodingHeaders removes upstream transfer-related headers before
@@ -586,9 +587,31 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	return result, nil
 }
 
+// getThinkingModel returns the thinking model configured for the group.
+// Returns empty string if not configured.
+func getThinkingModel(group *models.Group) string {
+	if group == nil || group.Config == nil {
+		return ""
+	}
+
+	raw, ok := group.Config["thinking_model"]
+	if !ok || raw == nil {
+		return ""
+	}
+
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
+}
+
 // applyCCRequestConversionDirect converts Claude request to OpenAI format directly.
 // This function does not check the path, assuming the caller has already verified
 // that this is a Claude messages endpoint. Used when path has been pre-rewritten.
+// When thinking mode is enabled, the model will be set to the source model from
+// redirect rules (if available) to allow Claude Code to find thinking-capable models.
 func (ps *ProxyServer) applyCCRequestConversionDirect(
 	c *gin.Context,
 	group *models.Group,
@@ -611,6 +634,28 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 		}
 	}
 
+	// Auto-select thinking model when thinking mode is enabled
+	// This allows Claude Code to automatically use thinking-capable models
+	// (like deepseek-reasoner) when the user enables extended thinking.
+	// Each group can configure its own thinking_model in the group config.
+	thinkingModelApplied := false
+	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
+		thinkingModel := getThinkingModel(group)
+		if thinkingModel != "" && thinkingModel != claudeReq.Model {
+			logrus.WithFields(logrus.Fields{
+				"group":          group.Name,
+				"original_model": claudeReq.Model,
+				"thinking_model": thinkingModel,
+				"budget_tokens":  claudeReq.Thinking.BudgetTokens,
+			}).Info("CC: Auto-selecting thinking model for extended thinking")
+			claudeReq.Model = thinkingModel
+			thinkingModelApplied = true
+			// Store thinking model info in context for logging
+			c.Set("thinking_model_applied", true)
+			c.Set("thinking_model", thinkingModel)
+		}
+	}
+
 	// Convert to OpenAI format
 	openaiReq, err := convertClaudeToOpenAI(&claudeReq)
 	if err != nil {
@@ -621,6 +666,15 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	convertedBody, err := json.Marshal(openaiReq)
 	if err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to marshal OpenAI request: %w", err)
+	}
+
+	// Log thinking model application
+	if thinkingModelApplied {
+		logrus.WithFields(logrus.Fields{
+			"group":          group.Name,
+			"original_model": originalModel,
+			"final_model":    claudeReq.Model,
+		}).Debug("CC: Thinking model applied to request")
 	}
 
 	// Optionally log request conversion info when body logging is enabled.
@@ -700,9 +754,10 @@ type OpenAIChoice struct {
 
 // OpenAIRespMessage represents a message in OpenAI response.
 type OpenAIRespMessage struct {
-	Role      string           `json:"role,omitempty"`
-	Content   *string          `json:"content,omitempty"`
-	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role,omitempty"`
+	Content          *string          `json:"content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ReasoningContent *string          `json:"reasoning_content,omitempty"` // DeepSeek reasoner thinking content
 }
 
 // OpenAIUsage represents usage info in OpenAI response.
@@ -749,6 +804,18 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
 
 		if msg != nil {
 			var content []ClaudeContentBlock
+
+			// Handle reasoning_content from DeepSeek reasoner models (non-streaming).
+			// This is emitted as thinking content in Claude format.
+			if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
+				thinking := strings.TrimSpace(*msg.ReasoningContent)
+				if thinking != "" {
+					content = append(content, ClaudeContentBlock{
+						Type:     "thinking",
+						Thinking: thinking,
+					})
+				}
+			}
 
 			// Add text and thinking content
 			if msg.Content != nil && *msg.Content != "" {
@@ -1466,51 +1533,60 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		return
 	}
 
+	// When force_function_call is enabled in CC mode, extract original content
+	// BEFORE conversion for function call parsing. This is necessary because
+	// convertOpenAIToClaudeResponse calls splitThinkingContent which removes
+	// XML function call blocks via removeFunctionCallsBlocks.
+	var originalContent string
+	if isFunctionCallEnabled(c) && len(openaiResp.Choices) > 0 {
+		if msg := openaiResp.Choices[0].Message; msg != nil && msg.Content != nil {
+			originalContent = *msg.Content
+		}
+	}
+
 	// Convert to Claude format
 	claudeResp := convertOpenAIToClaudeResponse(&openaiResp)
 
 	// When force_function_call is enabled in CC mode, parse XML function calls
-	// from the response content and convert them to Claude tool_use blocks.
+	// from the ORIGINAL response content and convert them to Claude tool_use blocks.
 	// This bridges the gap between the XML-based function call prompt injection
 	// and Claude Code's expected tool_use format.
-	if isFunctionCallEnabled(c) && len(claudeResp.Content) > 0 {
-		// Extract text content for function call parsing
-		var textContent string
-		for _, block := range claudeResp.Content {
-			if block.Type == "text" {
-				textContent += block.Text
-			}
-		}
+	if isFunctionCallEnabled(c) && originalContent != "" {
+		cleanedContent, toolUseBlocks := parseFunctionCallsFromContentForCC(c, originalContent)
 
-		if textContent != "" {
-			cleanedContent, toolUseBlocks := parseFunctionCallsFromContentForCC(c, textContent)
+		if len(toolUseBlocks) > 0 {
+			// Rebuild content: preserve thinking blocks + clean text + tool_use blocks
+			var newContent []ClaudeContentBlock
 
-			if len(toolUseBlocks) > 0 {
-				// Rebuild content: clean text block(s) + tool_use blocks
-				var newContent []ClaudeContentBlock
-
-				// Add cleaned text content if not empty
-				if strings.TrimSpace(cleanedContent) != "" {
-					newContent = append(newContent, ClaudeContentBlock{
-						Type: "text",
-						Text: cleanedContent,
-					})
+			// Preserve existing thinking blocks from reasoning_content
+			for _, block := range claudeResp.Content {
+				if block.Type == "thinking" {
+					newContent = append(newContent, block)
 				}
-
-				// Add tool_use blocks
-				newContent = append(newContent, toolUseBlocks...)
-
-				claudeResp.Content = newContent
-
-				// Update stop_reason to tool_use since we have tool calls
-				toolUseReason := "tool_use"
-				claudeResp.StopReason = &toolUseReason
-
-				logrus.WithFields(logrus.Fields{
-					"tool_use_count": len(toolUseBlocks),
-					"text_retained":  strings.TrimSpace(cleanedContent) != "",
-				}).Debug("CC+FC: Added tool_use blocks to Claude response")
 			}
+
+			// Add cleaned text content if not empty
+			cleanedText := removeFunctionCallsBlocks(cleanedContent)
+			if strings.TrimSpace(cleanedText) != "" {
+				newContent = append(newContent, ClaudeContentBlock{
+					Type: "text",
+					Text: cleanedText,
+				})
+			}
+
+			// Add tool_use blocks
+			newContent = append(newContent, toolUseBlocks...)
+
+			claudeResp.Content = newContent
+
+			// Update stop_reason to tool_use since we have tool calls
+			toolUseReason := "tool_use"
+			claudeResp.StopReason = &toolUseReason
+
+			logrus.WithFields(logrus.Fields{
+				"tool_use_count": len(toolUseBlocks),
+				"text_retained":  strings.TrimSpace(cleanedText) != "",
+			}).Debug("CC+FC: Added tool_use blocks to Claude response")
 		}
 	}
 
@@ -2025,6 +2101,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	triggerSignal := getTriggerSignal(c)
 	parser := NewThinkingParser()
 	textBlockOpen := false
+	thinkingBlockOpen := false // Track if thinking block is open for content merging
 	var aggregator *TextAggregator
 	hasValidToolCalls := false // Track if any valid tool_calls were processed
 
@@ -2071,6 +2148,21 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		textBlockOpen = false
 	}
 
+	// closeThinkingBlock closes the current thinking block if open.
+	// This is called before switching to text or tool_use blocks.
+	closeThinkingBlock := func() {
+		if !thinkingBlockOpen {
+			return
+		}
+		stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
+		if err := writer.Send(stopEvent, true); err != nil {
+			logrus.WithError(err).Debug("CC: Failed to stop thinking block")
+			return
+		}
+		contentBlockIndex++
+		thinkingBlockOpen = false
+	}
+
 	closeToolBlock := func() {
 		if currentToolCall == nil {
 			return
@@ -2084,12 +2176,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		currentToolCall = nil
 	}
 
-	emitThinking := func(content string) {
-		aggregator.Flush()
-		closeTextBlock()
-		thinking := strings.TrimSpace(content)
-		if thinking == "" {
-			return
+	// ensureThinkingBlock ensures a thinking block is open for content merging.
+	// Following b4u2cc reference: thinking content should be merged into a single block
+	// instead of creating separate blocks for each fragment.
+	ensureThinkingBlock := func() error {
+		if thinkingBlockOpen {
+			return nil
 		}
 		startEvent := ClaudeStreamEvent{
 			Type:         "content_block_start",
@@ -2097,6 +2189,27 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			ContentBlock: &ClaudeContentBlock{Type: "thinking", Thinking: ""},
 		}
 		if err := writer.Send(startEvent, true); err != nil {
+			return err
+		}
+		thinkingBlockOpen = true
+		return nil
+	}
+
+	// emitThinking emits thinking content, merging into the current thinking block.
+	// Per b4u2cc reference implementation: thinking content should be accumulated
+	// into a single thinking block rather than creating separate blocks for each fragment.
+	// This ensures Claude Code displays "∴ Thinking…" as a single merged block.
+	emitThinking := func(content string) {
+		aggregator.Flush()
+		closeTextBlock()
+		// CRITICAL: Sanitize thinking content to remove malformed XML/JSON that can cause
+		// CC auto-pause issues. This handles cases where model outputs malformed content
+		// like <>[": "task",Form":...] or </antml\b:format> inside thinking blocks.
+		thinking := sanitizeText(strings.TrimSpace(content))
+		if thinking == "" {
+			return
+		}
+		if err := ensureThinkingBlock(); err != nil {
 			logrus.WithError(err).Debug("CC: Failed to start thinking block")
 			return
 		}
@@ -2108,11 +2221,6 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if err := writer.Send(deltaEvent, false); err != nil {
 			logrus.WithError(err).Debug("CC: Failed to send thinking delta")
 		}
-		stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
-		if err := writer.Send(stopEvent, true); err != nil {
-			logrus.WithError(err).Debug("CC: Failed to stop thinking block")
-		}
-		contentBlockIndex++
 	}
 
 	emitToolUseBlocks := func(blocks []ClaudeContentBlock) {
@@ -2153,6 +2261,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if cleaned == "" {
 			return
 		}
+		// Close thinking block before opening text block per b4u2cc reference
+		// This ensures proper block sequencing: thinking -> text -> tool_use
+		closeThinkingBlock()
 		if err := ensureTextBlock(); err != nil {
 			logrus.WithError(err).Debug("CC: Failed to start text block")
 			return
@@ -2169,6 +2280,13 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	defer aggregator.Close()
 
 	finalize := func(stopReason string, usage *OpenAIUsage) {
+		initialStopReason := stopReason
+		logrus.WithFields(logrus.Fields{
+			"initial_stop_reason":     initialStopReason,
+			"accumulated_content_len": accumulatedContent.Len(),
+			"function_call_enabled":   isFunctionCallEnabled(c),
+		}).Info("CC: finalize() called - DEBUGGING AUTO-PAUSE")
+
 		parser.Finish()
 		for _, evt := range parser.ConsumeEvents() {
 			switch evt.Type {
@@ -2180,16 +2298,35 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}
 
 		aggregator.Flush()
+		closeThinkingBlock() // Close thinking block before text block per b4u2cc reference
 		closeTextBlock()
 		closeToolBlock()
 
 		if accumulatedContent.Len() > 0 && isFunctionCallEnabled(c) {
 			content := accumulatedContent.String()
+			logrus.WithField("content_preview", utils.TruncateString(content, 300)).Info("CC+FC: Parsing accumulated content for tool calls")
 			_, toolUseBlocks := parseFunctionCallsFromContentForCC(c, content)
+			logrus.WithField("tool_use_blocks_count", len(toolUseBlocks)).Info("CC+FC: parseFunctionCallsFromContentForCC returned")
 			if len(toolUseBlocks) > 0 {
+				for i, block := range toolUseBlocks {
+					logrus.WithFields(logrus.Fields{
+						"index":     i,
+						"tool_name": block.Name,
+						"tool_id":   block.ID,
+					}).Info("CC+FC: Tool block to emit")
+				}
 				emitToolUseBlocks(toolUseBlocks)
 				stopReason = "tool_use"
+				logrus.WithFields(logrus.Fields{
+					"tool_use_count":      len(toolUseBlocks),
+					"stop_reason_changed": stopReason,
+				}).Info("CC+FC: Changed stop_reason to tool_use")
 			}
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"accumulated_content_len": accumulatedContent.Len(),
+				"function_call_enabled":   isFunctionCallEnabled(c),
+			}).Info("CC+FC: Skipped tool call parsing (no content or FC disabled)")
 		}
 
 		usagePayload := &ClaudeUsage{InputTokens: 0, OutputTokens: 0}
@@ -2199,14 +2336,21 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}
 		applyTokenMultiplier(usagePayload)
 
+		logrus.WithFields(logrus.Fields{
+			"final_stop_reason": stopReason,
+			"initial_was":       initialStopReason,
+			"changed":           stopReason != initialStopReason,
+		}).Info("CC: FINAL stop_reason for message_delta")
+
 		deltaEvent := ClaudeStreamEvent{Type: "message_delta", Delta: &ClaudeStreamDelta{StopReason: stopReason}, Usage: usagePayload}
 		if err := writer.Send(deltaEvent, true); err != nil {
-			logrus.WithError(err).Debug("CC: Failed to write message_delta")
+			logrus.WithError(err).Error("CC: Failed to write message_delta")
 			return
 		}
 		if err := writer.Send(ClaudeStreamEvent{Type: "message_stop"}, true); err != nil {
-			logrus.WithError(err).Debug("CC: Failed to write message_stop")
+			logrus.WithError(err).Error("CC: Failed to write message_stop")
 		}
+		logrus.WithField("stop_reason", stopReason).Info("CC: Stream finalized successfully with stop_reason")
 	}
 
 	for {
@@ -2240,6 +2384,27 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			continue
 		}
 
+		// Handle reasoning_content from DeepSeek reasoner models.
+		// DeepSeek reasoner outputs: reasoning_content first, then content.
+		// Tool calls may appear in either field or both, so we accumulate both.
+		// This is emitted as thinking content in Claude format.
+		if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
+			reasoningStr := *delta.ReasoningContent
+			// Accumulate for tool call parsing in finalize()
+			if accumulatedContent.Len()+len(reasoningStr) <= maxContentBufferBytes {
+				accumulatedContent.WriteString(reasoningStr)
+			} else if !contentBufFullWarned {
+				logrus.WithFields(logrus.Fields{
+					"buffer_limit_kb": maxContentBufferBytes / 1024,
+					"accumulated_len": accumulatedContent.Len(),
+				}).Warn("CC: content buffer limit reached during reasoning streaming; tool call parsing may be incomplete")
+				contentBufFullWarned = true
+			}
+			// Emit reasoning content as thinking block
+			emitThinking(reasoningStr)
+		}
+
+		// Handle content field (may contain tool calls after reasoning_content)
 		if delta.Content != nil && *delta.Content != "" {
 			contentStr := *delta.Content
 			if accumulatedContent.Len()+len(contentStr) <= maxContentBufferBytes {
@@ -2270,6 +2435,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 		if len(delta.ToolCalls) > 0 {
 			aggregator.Flush()
+			closeThinkingBlock() // Close thinking block before tool_use per b4u2cc reference
 			closeTextBlock()
 			for _, tc := range delta.ToolCalls {
 				call := tc
@@ -2320,7 +2486,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				stopReason = "end_turn"
 			}
 			finalize(stopReason, openaiChunk.Usage)
-			logrus.WithField("stop_reason", *choice.FinishReason).Debug("CC: Stream finished with finish_reason")
+			logrus.WithField("upstream_finish_reason", *choice.FinishReason).Debug("CC: Stream finished with upstream finish_reason")
 			break
 		}
 	}

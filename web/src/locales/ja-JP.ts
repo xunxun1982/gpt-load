@@ -458,6 +458,10 @@ export default {
       "このスイッチは OpenAI チャンネルのグループにのみ有効で、他のチャンネルではこの設定は無視され、表示されません。",
     ccSupportRedirectTip:
       "互換性のため、モデルリダイレクトルールに opus (claude-opus-4-5-20251101)、sonnet (claude-sonnet-4-5-20250929)、haiku (claude-haiku-4-5-20251001) 関連のモデルリダイレクトを追加してください。",
+    thinkingModel: "思考モデル",
+    thinkingModelTooltip:
+      "Claude Code が拡張思考モードを有効にすると、このモデルが自動的に使用されます。空のままにすると、リクエストの元のモデルが使用されます。例：deepseek-reasoner",
+    thinkingModelPlaceholder: "例：deepseek-reasoner",
     modelRedirectInvalidJson: "モデルリダイレクトルールのJSON形式が無効です",
     modelRedirectInvalidFormat:
       "モデルリダイレクトルールのキーと値はすべて文字列である必要があります",
