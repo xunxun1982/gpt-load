@@ -75,16 +75,7 @@ func safeProxyURL(proxyURL *string) string {
 
 	// If URL has user credentials, redact them
 	if parsedURL.User != nil {
-		username := parsedURL.User.Username()
-		if username != "" {
-			// Redact password but keep username (first 3 chars) for debugging
-			if len(username) > 3 {
-				username = username[:3] + "***"
-			} else {
-				username = "***"
-			}
-			parsedURL.User = url.User(username)
-		}
+		parsedURL.User = url.User("***")
 	}
 
 	return parsedURL.String()

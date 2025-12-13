@@ -396,8 +396,15 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 		// Allow thinking_model string field for CC support extended thinking.
 		// This specifies the model to use when Claude Code enables extended thinking mode.
 		if key == "thinking_model" {
-			if _, ok := value.(string); !ok {
+			strVal, ok := value.(string)
+			if !ok {
 				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
+			}
+			if strings.TrimSpace(strVal) != "" {
+				ccEnabled, ok := configMap["cc_support"].(bool)
+				if !ok || !ccEnabled {
+					return fmt.Errorf("thinking_model can only be set when cc_support is enabled")
+				}
 			}
 			continue
 		}

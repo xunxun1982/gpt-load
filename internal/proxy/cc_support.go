@@ -2285,7 +2285,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			"initial_stop_reason":     initialStopReason,
 			"accumulated_content_len": accumulatedContent.Len(),
 			"function_call_enabled":   isFunctionCallEnabled(c),
-		}).Info("CC: finalize() called - DEBUGGING AUTO-PAUSE")
+		}).Debug("CC: finalize() called")
 
 		parser.Finish()
 		for _, evt := range parser.ConsumeEvents() {
@@ -2304,29 +2304,29 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 		if accumulatedContent.Len() > 0 && isFunctionCallEnabled(c) {
 			content := accumulatedContent.String()
-			logrus.WithField("content_preview", utils.TruncateString(content, 300)).Info("CC+FC: Parsing accumulated content for tool calls")
+			logrus.WithField("content_preview", utils.TruncateString(content, 300)).Debug("CC+FC: Parsing accumulated content for tool calls")
 			_, toolUseBlocks := parseFunctionCallsFromContentForCC(c, content)
-			logrus.WithField("tool_use_blocks_count", len(toolUseBlocks)).Info("CC+FC: parseFunctionCallsFromContentForCC returned")
+			logrus.WithField("tool_use_blocks_count", len(toolUseBlocks)).Debug("CC+FC: parseFunctionCallsFromContentForCC returned")
 			if len(toolUseBlocks) > 0 {
 				for i, block := range toolUseBlocks {
 					logrus.WithFields(logrus.Fields{
 						"index":     i,
 						"tool_name": block.Name,
 						"tool_id":   block.ID,
-					}).Info("CC+FC: Tool block to emit")
+					}).Debug("CC+FC: Tool block to emit")
 				}
 				emitToolUseBlocks(toolUseBlocks)
 				stopReason = "tool_use"
 				logrus.WithFields(logrus.Fields{
 					"tool_use_count":      len(toolUseBlocks),
 					"stop_reason_changed": stopReason,
-				}).Info("CC+FC: Changed stop_reason to tool_use")
+				}).Debug("CC+FC: Changed stop_reason to tool_use")
 			}
 		} else {
 			logrus.WithFields(logrus.Fields{
 				"accumulated_content_len": accumulatedContent.Len(),
 				"function_call_enabled":   isFunctionCallEnabled(c),
-			}).Info("CC+FC: Skipped tool call parsing (no content or FC disabled)")
+			}).Debug("CC+FC: Skipped tool call parsing (no content or FC disabled)")
 		}
 
 		usagePayload := &ClaudeUsage{InputTokens: 0, OutputTokens: 0}
@@ -2340,7 +2340,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			"final_stop_reason": stopReason,
 			"initial_was":       initialStopReason,
 			"changed":           stopReason != initialStopReason,
-		}).Info("CC: FINAL stop_reason for message_delta")
+		}).Debug("CC: FINAL stop_reason for message_delta")
 
 		deltaEvent := ClaudeStreamEvent{Type: "message_delta", Delta: &ClaudeStreamDelta{StopReason: stopReason}, Usage: usagePayload}
 		if err := writer.Send(deltaEvent, true); err != nil {
