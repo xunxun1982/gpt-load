@@ -95,7 +95,7 @@ var (
 	// ENHANCED: Also matches </antml\b:format>, </antml\b:role> closing tags that may leak
 	// Performance: Uses (?s) for multiline matching, O(n)
 	// NOTE: Unclosed ANTML blocks are handled by reANTMLRoleTag to avoid over-matching
-	reANTMLBlockWithContent = regexp.MustCompile(`(?s)<antml\\{0,2}b:(format|tools|role|thinking_mode|max_thinking_length)[^>]*>.*?</antml\\{0,2}b?(?::(format|tools|role|thinking_mode|max_thinking_length))?>|<antml\\{0,2}b:(format|tools|role|thinking_mode|max_thinking_length)[^>]*>.*?</antml>`)
+	reANTMLBlockWithContent = regexp.MustCompile(`(?s)<antml\\{0,2}b:(format|tools|role|thinking|thinking_mode|max_thinking_length)[^>]*>.*?</antml\\{0,2}b?(?::(format|tools|role|thinking|thinking_mode|max_thinking_length))?>|<antml\\{0,2}b:(format|tools|role|thinking|thinking_mode|max_thinking_length)[^>]*>.*?</antml>`)
 
 	// Pattern to match malformed ANTML role tags that leak to output
 	// Examples: "</antml\b:role>", "<antml\b:role>", "</antml>", "<antml\b:format>"
@@ -107,6 +107,15 @@ var (
 	// NOTE: Only matches individual tags, NOT content between tags (to preserve user text)
 	// NOTE: </invoke> and </parameter> are handled separately to avoid removing valid XML
 	reANTMLRoleTag = regexp.MustCompile(`</?antml[^>]*>|<>[\s.]*\*?</antml[^>]*>|</function_calls>|</antml\\{1,2}b:[^>]*>`)
+
+	// Pattern to match incomplete/truncated ANTML tags (without closing >)
+	// Examples: "<antml\", "<antml\b", "<antml\b:", "<antml\b:thinking", "</antml\b:thinking"
+	// Also matches: "<antml\ some text" where incomplete tag is followed by space and text
+	// These occur when streaming is interrupted or model outputs partial tags
+	// Strategy: Match <antml or </antml followed by backslash and optional content until end of line
+	// Performance: O(n) character class matching
+	// NOTE: Matches incomplete ANTML tags with backslash escape sequence
+	reIncompleteANTMLTag = regexp.MustCompile(`</?antml\\[^>]*`)
 
 	// Pattern to match malformed invokename with JSON array value (no closing tag)
 	// Examples: "<><invokename=\"TodoWrite\">[{\"id\":\"1\"...}]"
@@ -123,6 +132,13 @@ var (
 	// Performance: O(n) greedy match to line end
 	// NOTE: Changed from [^\s]* to [^\r\n]* to match entire parameter value including spaces
 	reMalformedParamTag = regexp.MustCompile(`<>[\s.]*<(?:parameter|param|invoke)(?:\s+name)?[^>]*>[^\r\n]*`)
+
+	// Pattern to match malformed parameter tags with JSON-like name attribute
+	// Examples: "<><parameter name="todosid":"1","content":"..."
+	// This handles cases where model outputs malformed name attribute with JSON content
+	// Pattern: <><parameter name="fieldname":"value" followed by rest of line
+	// Performance: O(n) character class negation
+	reMalformedParamJSONName = regexp.MustCompile(`<>[\s.]*<(?:parameter|param)\s+name="[^"]*":[^\r\n]*`)
 
 	// Pattern to match malformed invokename/parametername tags without proper spacing (NO <> prefix)
 	// Examples: "<invokename=...", "<parametername=...", "<invokename=\"\">..."
@@ -215,6 +231,22 @@ var (
 	// NOTE: Only removes the <>[...] part, preserves text before <>
 	// ENHANCED: Also matches truncated JSON patterns like [content": or [id":
 	reTextBeforeMalformedJSON = regexp.MustCompile(`<>[\[\{][^\r\n]*`)
+
+	// Pattern to match <> followed by truncated JSON field (no opening bracket)
+	// Examples from production log:
+	//   - "<>id":"1","content":"联网搜索..." (field without opening bracket)
+	//   - "<>联网搜索Python GUI最佳实践","activeForm":"..." (value without field name)
+	//   - "<>content":"task","status":"pending"}" (field in middle of object)
+	// This handles cases where model outputs truncated JSON fragments after <>
+	// Pattern explanation:
+	//   - <> : the malformed prefix
+	//   - (?:...) : one of several JSON fragment patterns:
+	//     - [a-zA-Z_][a-zA-Z0-9_]*"\s*: : field name followed by quote-colon
+	//     - "[^"]*"\s*[,:] : quoted value followed by comma or colon
+	//     - [^\s"<>]+"\s*[,:] : unquoted content (CJK/text) followed by quote and separator
+	//   - [^\r\n]* : rest of line
+	// NOTE: Structural detection - matches JSON field patterns, not keywords
+	reTruncatedJSONField = regexp.MustCompile(`<>(?:[a-zA-Z_][a-zA-Z0-9_]*"\s*:|"[^"]*"\s*[,:]|[^\s"<>\[\{][^\r\n]*"\s*[,:])[^\r\n]*`)
 
 	// Pattern to match standalone <> on a line (with only trailing whitespace)
 	// Examples: "  <>", "<> ", "● <>"
@@ -427,6 +459,55 @@ var (
 	// Pattern to fix empty field name pattern
 	// Matches: "": "value" -> "content": "value" (infer content field)
 	reJSONEmptyFieldName = regexp.MustCompile(`""\s*:\s*"`)
+
+	// --- New patterns for production log malformed JSON ---
+
+	// Pattern to fix malformed start of array with id field
+	// Matches: [id":": "..." -> [{"id": "..."
+	// Pattern to fix malformed start of array with id field
+	// Matches: [id":": "..." -> [{"id": "..."
+	reJSONMalformedIdStart = regexp.MustCompile(`\[\s*id":":`)
+
+	// Pattern to fix merged status field (e.g. "Hellostatus": "pending")
+	// Matches: [text]status": "..." -> [text]", "status": "..."
+	reJSONMalformedStatusMerged = regexp.MustCompile(`([a-zA-Z0-9\p{L}]+)status":`)
+
+	// Pattern to fix truncated id field (e.g. d": "4")
+	// Matches: d": "..." -> "id": "..."
+	// Use \b to avoid matching "id": (which contains "d":)
+	reJSONMalformedIdShort = regexp.MustCompile(`\bd":\s*"`)
+
+	// Pattern to fix content text between objects without field name
+	// Matches: },检查hello.py是否存在", -> }, {"content": "检查hello.py是否存在",
+	// Note: Captures the text content to wrap it properly
+	reJSONMalformedContentText = regexp.MustCompile(`\}\s*,([^"{}\[\]]+)",`)
+
+	// Pattern to fix "activeForm": "..."} without closing brace for previous object?
+	// Actually the log shows: "status": "in_progress"},检查...
+	// This is handled by reJSONMalformedContentText.
+
+	// Pattern to fix missing opening brace for new object
+	// Matches: , "activeForm": -> , {"activeForm":
+	// Only if preceded by a comma and not inside an object? Hard to tell with regex.
+	// But in the log: ...是否存在", "activeForm": ...
+	// If we fix the content text first, it becomes: ...", "activeForm": ...
+	// We need to ensure the object structure is valid.
+
+	// Pattern to match orphaned thinking block (missing opening tag)
+	// Matches from start of string to closing tag (removed ^ to handle leading text)
+	// Uses \\{0,2}b to match antmlb, antml\b, antml\\b (need 4 backslashes in Go string for 2 in regex)
+	reOrphanedThinkingBlock = regexp.MustCompile(`(?s).*?</antml\\\\{0,2}b:thinking>`)
+
+	// Pattern to fix missing object start after comma
+	// Matches: }, "id": -> }, {"id":
+	reJSONMalformedMissingObjectStart = regexp.MustCompile(`\},\s*"id":`)
+
+	// Pattern to fix status field ending with bracket
+	// Matches: "status":] -> "status": "pending"]
+	reJSONMalformedStatusBracket = regexp.MustCompile(`"status":\s*\]`)
+
+	// Pattern to match just the closing thinking tag for manual scanning
+	reANTMLClosingTag = regexp.MustCompile(`(?s)</antml\\{0,2}b:thinking>`)
 )
 
 var (
@@ -446,8 +527,66 @@ var (
 	_ = reJSONMalformedStatusUnquoted
 	_ = reJSONTruncatedFieldChain
 	_ = reJSONEmptyFieldName
+	_ = reJSONMalformedIdStart
+	_ = reJSONMalformedStatusMerged
+	_ = reJSONMalformedIdShort
+	_ = reJSONMalformedContentText
 	_ = isMarkdownHeader
 )
+
+// isPotentialMalformedTagStart checks if a string could be the start of a malformed
+// XML tag pattern that should be buffered during streaming. This is used to prevent
+// partial malformed tags from being emitted to the client.
+//
+// Patterns detected:
+//   - <> (empty tag prefix)
+//   - <><invokename, <><parametername (malformed merged tags)
+//   - <invokename, <parametername (malformed tags without <> prefix)
+//   - <<CALL_ (trigger signal)
+//   - <function_calls, <invoke, <parameter (standard XML tags)
+func isPotentialMalformedTagStart(s string) bool {
+	// Must start with < to be a potential tag
+	if len(s) == 0 || s[0] != '<' {
+		return false
+	}
+
+	// Single < at end of content - could be start of any tag
+	if len(s) == 1 {
+		return true
+	}
+
+	// Check for known tag prefixes
+	prefixes := []string{
+		"<>",
+		"<<CALL_",
+		"<invokename",
+		"<parametername",
+		"<propertyname",
+		"<function_calls",
+		"<function_call",
+		"<invoke",
+		"<parameter",
+		"<tool_call",
+		"<invocation",
+		"<antml",
+		"</antml",
+		"<thinking",
+		"</thinking",
+		"<think",
+		"</think",
+	}
+
+	for _, prefix := range prefixes {
+		// Check if s is a prefix of the pattern (partial match)
+		if len(s) <= len(prefix) {
+			if prefix[:len(s)] == s {
+				return true
+			}
+		}
+	}
+
+	return false
+}
 
 // applyFunctionCallRequestRewrite rewrites an OpenAI chat completions request body
 // to enable middleware-based function call. It injects a system prompt describing
@@ -853,7 +992,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			// prevents downstream clients (including Claude Code) from seeing malformed
 			// <function_calls> markers without corresponding structured tool_calls.
 			if strings.Contains(parseInput, "<function_calls>") {
-				cleaned := removeFunctionCallsBlocks(contentStr)
+				cleaned := removeFunctionCallsBlocks(contentStr, cleanupModeFull)
 				if cleaned != contentStr {
 					msg["content"] = cleaned
 					chMap["message"] = msg
@@ -918,7 +1057,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		msg["tool_calls"] = toolCalls
 		// Remove function_calls XML blocks from visible content so end users
 		// only see natural language text, while AI internally processes tool calls.
-		msg["content"] = removeFunctionCallsBlocks(contentStr)
+		msg["content"] = removeFunctionCallsBlocks(contentStr, cleanupModeFull)
 		chMap["message"] = msg
 		chMap["finish_reason"] = "tool_calls"
 		choices[i] = chMap
@@ -1193,7 +1332,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 									// This ensures malformed fragments are never sent to the client.
 									if hasMalformedXml {
 										// Apply full cleanup to remove malformed tags and their content
-										cleaned := removeFunctionCallsBlocks(text)
+										cleaned := removeFunctionCallsBlocks(text, cleanupModeFull)
 										if cleaned != text && logrus.IsLevelEnabled(logrus.DebugLevel) {
 											logrus.WithFields(logrus.Fields{
 												"removed_bytes":    len(text) - len(cleaned),
@@ -1611,7 +1750,19 @@ func removeUnclosedTagLines(text string) string {
 	return strings.Join(result, "\n")
 }
 
-func removeFunctionCallsBlocks(text string) string {
+type functionCallCleanupMode uint8
+
+const (
+	cleanupModeFull functionCallCleanupMode = iota
+	cleanupModeArtifactsOnly
+)
+
+func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) string {
+	cleanupMode := cleanupModeFull
+	if len(mode) > 0 {
+		cleanupMode = mode[0]
+	}
+
 	// Fast path: if no XML-like content and no orphaned JSON fragments, return early.
 	// strings.Contains is ~8x faster than regex for simple checks; reOrphanedJSON
 	// is only used here to catch bare JSON lines that may appear in separate
@@ -1619,8 +1770,16 @@ func removeFunctionCallsBlocks(text string) string {
 	hasOrphanJson := reOrphanedJSON.MatchString(text)
 	if !strings.Contains(text, "<") && !hasOrphanJson {
 		// Even without XML tags, check for Claude Code preambles and remove them
-		text = removeClaudeCodePreamble(text)
+		if cleanupMode == cleanupModeFull {
+			text = removeClaudeCodePreamble(text)
+		}
 		return strings.TrimSpace(text)
+	}
+
+	// Phase 0: Remove orphaned thinking blocks (missing opening tag)
+	// This must be done first to remove the "useless info" described by user
+	if strings.Contains(text, "</antml") {
+		text = removeOrphanedThinkingBlocks(text)
 	}
 
 	// Check for function call markers using fast string operations
@@ -1670,6 +1829,9 @@ func removeFunctionCallsBlocks(text string) string {
 		// Then remove individual ANTML tags
 		text = reANTMLRoleTag.ReplaceAllString(text, "")
 		text = reMalformedANTMLBackslash.ReplaceAllString(text, "")
+		// Finally remove incomplete/truncated ANTML tags at end of string
+		// These occur when streaming is interrupted or model outputs partial tags
+		text = reIncompleteANTMLTag.ReplaceAllString(text, "")
 	}
 	// Remove truncated thinking tags (e.g., "● <thinking" without closing)
 	if hasTruncatedThinking {
@@ -1688,6 +1850,7 @@ func removeFunctionCallsBlocks(text string) string {
 			// Phase 1: Remove malformed tags with JSON content (highest priority)
 			text = reMalformedInvokeJSON.ReplaceAllString(text, "")             // <><invokename=...>[JSON]
 			text = reMalformedEmptyTagPrefixJSON.ReplaceAllString(text, "")     // <><tagname=...>[JSON]
+			text = reMalformedParamJSONName.ReplaceAllString(text, "")          // <><parameter name="field":"value"...
 			// Phase 2: Remove chained malformed tags
 			text = reMalformedEmptyTagPrefixChained.ReplaceAllString(text, "")  // <><tag1=...>val<tag2=...>
 			// Phase 3: Remove malformed tags with proper closing (with context)
@@ -1703,6 +1866,7 @@ func removeFunctionCallsBlocks(text string) string {
 			text = reShortCJKHeaderWithJSON.ReplaceAllString(text, "")          // 任务清单<>[...]
 			// Phase 7: Remove <> followed by JSON (preserves longer text before <>)
 			text = reTextBeforeMalformedJSON.ReplaceAllString(text, "")         // <>[...]
+			text = reTruncatedJSONField.ReplaceAllString(text, "")              // <>id":"1",...
 			text = reBareJSONAfterEmpty.ReplaceAllString(text, "")              // <>[...] or <>{...}
 			// If no change after replacement, all malformed tags are removed
 			if text == before {
@@ -1757,7 +1921,9 @@ func removeFunctionCallsBlocks(text string) string {
 
 	// Remove Claude Code preamble/explanatory text
 	// This must be done AFTER XML tag removal to catch explanations that contain XML
-	text = removeClaudeCodePreamble(text)
+	if cleanupMode == cleanupModeFull {
+		text = removeClaudeCodePreamble(text)
+	}
 
 	// Clean up consecutive blank lines left after tag removal
 	// This compresses multiple blank lines into single blank lines
@@ -1766,8 +1932,47 @@ func removeFunctionCallsBlocks(text string) string {
 	return strings.TrimSpace(text)
 }
 
-// shouldSkipMalformedLine checks if a line should be skipped during malformed content cleanup.
-// STRUCTURAL APPROACH: Uses structure-based detection instead of keyword matching.
+// removeOrphanedThinkingBlocks removes thinking blocks that are missing their opening tag.
+// It scans backwards from the closing tag </antml:thinking> until it hits a "safe" boundary
+// (start of string, or > / ] / } characters indicating end of previous structure).
+func removeOrphanedThinkingBlocks(text string) string {
+	// Find all closing tags
+	locs := reANTMLClosingTag.FindAllStringIndex(text, -1)
+	if len(locs) == 0 {
+		return text
+	}
+
+	var sb strings.Builder
+	lastPos := 0
+
+	for _, loc := range locs {
+		end := loc[1]
+		// Start scanning backwards from loc[0] (start of closing tag)
+		start := loc[0]
+
+		// Find the "safe" start of this thinking block
+		// We look for the last occurrence of >, ], or } before this tag
+		safeStart := lastPos
+		for i := start - 1; i >= lastPos; i-- {
+			c := text[i]
+			if c == '>' || c == ']' || c == '}' {
+				safeStart = i + 1
+				break
+			}
+		}
+
+		// Append text from lastPos to safeStart (this is the preserved content)
+		sb.WriteString(text[lastPos:safeStart])
+
+		// The text from safeStart to end is the thinking block, skip it (remove it)
+		lastPos = end
+	}
+
+	// Append remaining text
+	sb.WriteString(text[lastPos:])
+
+	return sb.String()
+}
 // Returns true if the line contains malformed JSON/XML patterns that should be removed.
 //
 // Structural patterns detected:
@@ -1826,6 +2031,21 @@ func shouldSkipMalformedLine(trimmed string) bool {
 			fieldName := trimmed[1:colonIdx]
 			// Check if field name is a valid identifier (alphanumeric + underscore)
 			if isValidJSONFieldName(fieldName) {
+				return true
+			}
+		}
+	}
+
+	// STRUCTURAL CHECK 3b: Truncated JSON field without opening quote
+	// Pattern: field": which indicates leaked JSON (e.g., id":"1","content":"...")
+	// This handles cases where the opening quote was in a previous chunk
+	if hasJSONIndicator {
+		// Look for pattern: identifier followed by ": (field name without opening quote)
+		quoteColonIdx := strings.Index(trimmed, `":`)
+		if quoteColonIdx > 0 && quoteColonIdx < 30 {
+			// Check if characters before ": form a valid field name
+			potentialField := trimmed[:quoteColonIdx]
+			if isValidJSONFieldName(potentialField) && strings.Count(trimmed, `":`) >= 2 {
 				return true
 			}
 		}
@@ -3479,6 +3699,12 @@ func repairMalformedJSON(s string) string {
 	// Work on a copy
 	result := s
 
+	// Replace newlines with spaces to prevent "invalid character '\n' in string literal" errors
+	// This is safe because JSON allows whitespace between tokens, and we want to preserve
+	// the content even if it loses formatting.
+	result = strings.ReplaceAll(result, "\n", " ")
+	result = strings.ReplaceAll(result, "\r", " ")
+
 	// STRUCTURAL FIX 0: Handle severely malformed JSON arrays starting with ":
 	// Pattern: [": "text",Form":... - try to extract content from malformed structure
 	// These patterns occur when model outputs truncated field names
@@ -3587,6 +3813,23 @@ func repairMalformedJSON(s string) string {
 	if strings.Contains(result, `"status":""`) {
 		result = reJSONMalformedStatusEmpty.ReplaceAllString(result, `"status":"pending"}`)
 	}
+
+	// --- Fixes for production log malformed JSON ---
+	// --- Fixes for production log malformed JSON ---
+	// Remove strings.Contains checks to ensure regexes run (they are fast enough)
+	result = reJSONMalformedIdStart.ReplaceAllString(result, `[{"id":`)
+	result = reJSONMalformedStatusMerged.ReplaceAllString(result, `$1", "status":`)
+	result = reJSONMalformedIdShort.ReplaceAllString(result, `"id": "`)
+
+	// Fix content text between objects: },text", -> },{"content":"text",
+	result = reJSONMalformedContentText.ReplaceAllString(result, `},{"content": "$1",`)
+
+	// Fix missing object start: }, "id": -> }, {"id":
+	result = reJSONMalformedMissingObjectStart.ReplaceAllString(result, `}, {"id":`)
+
+	// Fix status ending with bracket: "status":] -> "status": "pending"}]
+	// We need to close the object before closing the array
+	result = reJSONMalformedStatusBracket.ReplaceAllString(result, `"status": "pending"}]`)
 
 	// STRUCTURAL FIX 12: Balance braces/brackets - add missing closing brackets
 	openBraces := strings.Count(result, "{")
@@ -3849,7 +4092,7 @@ func fixUnquotedFieldValues(s string) string {
 				c := s[i]
 				// If it's already quoted, a number, or JSON structure, skip
 				if c == '"' || c == '[' || c == '{' || c == 't' || c == 'f' || c == 'n' ||
-					(c >= '0' && c <= '9') || c == '-' {
+					(c >= '0' && c <= '9') || c == '-' || c == ']' || c == '}' {
 					continue
 				}
 

@@ -1844,19 +1844,33 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 	}
 	logrus.WithContext(ctx).WithField("body_preview", bodyPreview).Debug("Response body preview")
 
-	// Transform model list using channel-specific logic (includes redirect rules and formats)
-	result, err := channelProxy.TransformModelList(req, decompressed, group)
-	if err != nil {
+	// Parse upstream model list response directly without applying redirect rules.
+	// This is intentional: FetchGroupModels is used by the "Fetch Models" button in the
+	// model redirect configuration UI, which should only show upstream models.
+	// Redirect rules are applied separately when external clients access the model list API.
+	var result map[string]any
+	if err := json.Unmarshal(decompressed, &result); err != nil {
 		// Show first 100 chars of body for error diagnosis
 		bodyStart := bodyPreview
 		if len(bodyStart) > 100 {
 			bodyStart = bodyStart[:100]
 		}
-		logrus.WithContext(ctx).WithError(err).WithField("body_start", bodyStart).Error("Failed to transform model list response")
+		logrus.WithContext(ctx).WithError(err).WithField("body_start", bodyStart).Error("Failed to parse upstream model list response")
 		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to parse upstream response: invalid JSON format")
 	}
 
-	logrus.WithContext(ctx).WithField("result_keys", getMapKeys(result)).Debug("Successfully decoded and transformed model list response")
+	// Log model count for debugging
+	modelCount := 0
+	if data, ok := result["data"].([]any); ok {
+		modelCount = len(data)
+	} else if models, ok := result["models"].([]any); ok {
+		modelCount = len(models)
+	}
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"result_keys":  getMapKeys(result),
+		"model_count":  modelCount,
+		"upstream_only": true,
+	}).Debug("Successfully decoded upstream model list response (redirect rules not applied)")
 
 	return result, nil
 }

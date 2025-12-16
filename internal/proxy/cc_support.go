@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -786,7 +788,7 @@ type ClaudeUsage struct {
 }
 
 // convertOpenAIToClaudeResponse converts OpenAI response to Claude format.
-func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
+func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode functionCallCleanupMode) *ClaudeResponse {
 	claudeResp := &ClaudeResponse{
 		ID:      openaiResp.ID,
 		Type:    "message",
@@ -807,8 +809,10 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
 
 			// Handle reasoning_content from DeepSeek reasoner models (non-streaming).
 			// This is emitted as thinking content in Claude format.
+			// CRITICAL: Apply removeFunctionCallsBlocks to clean malformed XML/JSON
+			// that may leak into thinking content (same as streaming mode).
 			if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
-				thinking := strings.TrimSpace(*msg.ReasoningContent)
+				thinking := removeFunctionCallsBlocks(strings.TrimSpace(*msg.ReasoningContent), cleanupMode)
 				if thinking != "" {
 					content = append(content, ClaudeContentBlock{
 						Type:     "thinking",
@@ -819,14 +823,22 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
 
 			// Add text and thinking content
 			if msg.Content != nil && *msg.Content != "" {
-				content = append(content, splitThinkingContent(*msg.Content)...)
+				content = append(content, splitThinkingContent(*msg.Content, cleanupMode)...)
 			}
 
 			// Add tool_use blocks
 			for _, tc := range msg.ToolCalls {
+				if tc.ID == "" || tc.Function.Name == "" {
+					continue
+				}
 				inputJSON := json.RawMessage("{}")
 				if tc.Function.Arguments != "" {
-					inputJSON = json.RawMessage(tc.Function.Arguments)
+					normalized, ok := normalizeOpenAIToolCallArguments(tc.Function.Name, tc.Function.Arguments)
+					if ok {
+						inputJSON = json.RawMessage(normalized)
+					} else {
+						inputJSON = json.RawMessage(tc.Function.Arguments)
+					}
 				}
 				content = append(content, ClaudeContentBlock{
 					Type:  "tool_use",
@@ -878,255 +890,423 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
 	return claudeResp
 }
 
-// convertFinishReasonToStopReason converts OpenAI finish_reason to Claude stop_reason.
-// Also handles non-standard finish reasons from various upstream providers.
-func convertFinishReasonToStopReason(finishReason string) string {
-	switch finishReason {
-	case "stop":
-		return "end_turn"
-	case "length":
-		return "max_tokens"
-	case "tool_calls":
-		return "tool_use"
-	case "content_filter":
-		return "refusal"
-	// Handle non-standard error-related finish reasons from upstream providers.
-	// Convert these to end_turn to prevent Claude Code from treating them as
-	// abnormal terminations. Log the original reason for debugging.
-	case "network_error", "error", "timeout", "rate_limit", "server_error":
-		logrus.WithField("original_finish_reason", finishReason).
-			Warn("CC: Received non-standard finish_reason from upstream, converting to end_turn")
-		return "end_turn"
-	default:
-		// For any other unknown finish reason, log it but still return as-is
-		// to maintain compatibility with potential future OpenAI/Claude API changes
-		if finishReason != "" {
-			logrus.WithField("finish_reason", finishReason).
-				Debug("CC: Unknown finish_reason, passing through as-is")
-		}
-		return finishReason
-	}
-}
-
-func splitThinkingContent(content string) []ClaudeContentBlock {
+func splitThinkingContent(content string, cleanupMode functionCallCleanupMode) []ClaudeContentBlock {
 	if content == "" {
 		return nil
 	}
+
 	parser := NewThinkingParser()
 	for _, r := range content {
 		parser.FeedRune(r)
 	}
+	parser.FlushText()
 	parser.Finish()
 
 	events := parser.ConsumeEvents()
 	blocks := make([]ClaudeContentBlock, 0, len(events))
 	for _, evt := range events {
 		switch evt.Type {
-		case "text":
-			// removeFunctionCallsBlocks already handles trigger signals, so no need to call reTriggerSignal separately
-			cleaned := removeFunctionCallsBlocks(evt.Content)
-			if cleaned != "" {
-				blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: cleaned})
-			}
 		case "thinking":
-			thinking := evt.Content
-			// Apply same artifact removal pattern as ThinkingParser
-			thinking = strings.TrimSpace(thinking)
-			if strings.HasPrefix(thinking, ">") && len(thinking) > 1 {
-				if thinking[1] == ' ' || thinking[1] == '\n' || thinking[1] == '\r' || thinking[1] == '\t' {
-					thinking = strings.TrimSpace(thinking[1:])
+			thinking := removeFunctionCallsBlocks(strings.TrimSpace(evt.Content), cleanupMode)
+			if thinking == "" {
+				continue
+			}
+			blocks = append(blocks, ClaudeContentBlock{Type: "thinking", Thinking: thinking})
+		case "text":
+			orig := evt.Content
+			start := 0
+			for start < len(orig) {
+				switch orig[start] {
+				case ' ', '\n', '\r', '\t':
+					start++
+				default:
+					goto splitTextDoneStart
 				}
 			}
-			if thinking != "" {
-				blocks = append(blocks, ClaudeContentBlock{Type: "thinking", Thinking: thinking})
+		splitTextDoneStart:
+			end := len(orig)
+			for end > start {
+				switch orig[end-1] {
+				case ' ', '\n', '\r', '\t':
+					end--
+				default:
+					goto splitTextDoneEnd
+				}
 			}
+		splitTextDoneEnd:
+			leading := orig[:start]
+			trailing := orig[end:]
+			core := orig[start:end]
+			cleanedCore := removeFunctionCallsBlocks(core, cleanupMode)
+			text := leading + cleanedCore + trailing
+			if text == "" {
+				continue
+			}
+			blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: text})
 		}
 	}
 	return blocks
 }
 
-var (
-	tokenMultiplierOnce   sync.Once
-	cachedTokenMultiplier float64 = 1.0
-)
+func convertFinishReasonToStopReason(finishReason string) string {
+	switch finishReason {
+	case "stop":
+		return "end_turn"
+	case "length":
+		return "max_tokens"
+	case "tool_calls", "function_call":
+		return "tool_use"
+	default:
+		return "end_turn"
+	}
+}
+
+func parseTokenMultiplier(raw string) float64 {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return 1
+	}
+
+	s = strings.TrimPrefix(s, "x")
+	isPercent := strings.HasSuffix(s, "%")
+	s = strings.TrimSuffix(s, "%")
+	s = strings.TrimSuffix(s, "x")
+	if s == "" {
+		return 1
+	}
+
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 1
+	}
+	if isPercent {
+		v = v / 100
+		if v <= 0 {
+			return 1
+		}
+	}
+	return v
+}
 
 func getTokenMultiplier() float64 {
-	tokenMultiplierOnce.Do(func() {
-		raw := strings.TrimSpace(utils.GetEnvOrDefault("TOKEN_MULTIPLIER", ""))
-		if raw == "" {
-			cachedTokenMultiplier = 1.0
-			return
-		}
-		val, err := strconv.ParseFloat(raw, 64)
-		// Clamp multiplier to a safe range to avoid overflow or unrealistic scaling.
-		// Values outside (0, 1000] fall back to the default 1.0.
-		if err != nil || val <= 0 || val > 1000 {
-			logrus.WithFields(logrus.Fields{"raw": raw}).WithError(err).Warn("CC: Invalid TOKEN_MULTIPLIER, falling back to 1.0")
-			cachedTokenMultiplier = 1.0
-			return
-		}
-		cachedTokenMultiplier = val
-	})
-	return cachedTokenMultiplier
+	return parseTokenMultiplier(os.Getenv("TOKEN_MULTIPLIER"))
 }
 
 func applyTokenMultiplier(usage *ClaudeUsage) {
 	if usage == nil {
 		return
 	}
+
 	multiplier := getTokenMultiplier()
-	if multiplier == 1.0 {
-		return
+	raw := float64(usage.OutputTokens) * multiplier
+	adjusted := 0
+	if !math.IsNaN(raw) && !math.IsInf(raw, 0) {
+		adjusted = int(math.Ceil(raw))
 	}
-	// Apply multiplier only to non-zero values to preserve 0-usage semantics
-	if usage.InputTokens > 0 {
-		scaled := int(float64(usage.InputTokens) * multiplier)
-		if scaled < 1 {
-			scaled = 1
+	if adjusted <= 0 {
+		if usage.OutputTokens > 0 {
+			adjusted = usage.OutputTokens
+		} else {
+			adjusted = 1
 		}
-		usage.InputTokens = scaled
 	}
-	if usage.OutputTokens > 0 {
-		scaled := int(float64(usage.OutputTokens) * multiplier)
-		if scaled < 1 {
-			scaled = 1
-		}
-		usage.OutputTokens = scaled
-	}
+	usage.OutputTokens = adjusted
 }
 
-func isCountTokensEndpoint(path, method string) bool {
-	if method != http.MethodPost {
-		return false
+func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string, bool) {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return "{}", true
 	}
-	return strings.HasSuffix(path, "/v1/messages/count_tokens")
-}
 
-func estimateTokensLocal(chunks []string) int {
-	if len(chunks) == 0 {
-		return 0
+	var args map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+		var raw any
+		if err2 := json.Unmarshal([]byte(trimmed), &raw); err2 == nil {
+			args = map[string]any{"value": raw}
+		} else {
+			return arguments, false
+		}
 	}
-	asciiCount := 0
-	nonASCII := 0
-	for _, chunk := range chunks {
-		for _, r := range chunk {
-			if r < 128 {
-				asciiCount++
-			} else {
-				nonASCII++
+	if args == nil {
+		args = map[string]any{}
+	}
+
+	for key, val := range args {
+		strVal, ok := val.(string)
+		if !ok {
+			continue
+		}
+		trimmedStr := strings.TrimSpace(strVal)
+		if trimmedStr == "" {
+			continue
+		}
+		if (strings.HasPrefix(trimmedStr, "{") && strings.HasSuffix(trimmedStr, "}")) ||
+			(strings.HasPrefix(trimmedStr, "[") && strings.HasSuffix(trimmedStr, "]")) {
+			var jsonVal any
+			if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
+				args[key] = jsonVal
+				continue // Skip other fixes if it was valid JSON
+			}
+		}
+
+		// 2. Fix escaped newlines in content-heavy parameters
+		// This handles cases like TodoWrite's 'todos' passed as string
+		// where models might double-escape newlines (e.g. \\n instead of \n)
+		if key == "content" || key == "command" || key == "script" || key == "code" {
+			if strings.Contains(strVal, "\\n") {
+				args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
 			}
 		}
 	}
-	// Heuristic: ASCII ~4 chars/token, non-ASCII ~1 rune/token.
-	tokens := (asciiCount + 3) / 4
-	tokens += nonASCII
-	if tokens == 0 {
-		tokens = 1
-	}
-	multiplier := getTokenMultiplier()
-	scaled := int(float64(tokens) * multiplier)
-	// Ensure non-empty input always returns at least 1 token after scaling
-	if scaled < 1 {
-		scaled = 1
-	}
-	return scaled
-}
 
-func extractTextFromRawContent(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
-	}
-
-	var blocks []ClaudeContentBlock
-	if err := json.Unmarshal(raw, &blocks); err == nil {
-		var sb strings.Builder
-		for _, b := range blocks {
-			switch b.Type {
-			case "text":
-				sb.WriteString(b.Text)
-			case "thinking":
-				sb.WriteString(b.Thinking)
-			case "tool_result":
-				sb.Write(b.Content)
+	switch toolName {
+	case "TodoWrite":
+		// NOTE: An earlier automated review suggested extracting this TodoWrite
+		// normalization into a helper. We intentionally keep it inline here to
+		// avoid extra indirection on this hot path and to keep all TodoWrite-
+		// specific fixes co-located. Behavior is covered by cc_function_test.go
+		// (TodoWrite-related tests) and should not be modified without updating
+		// the corresponding tests.
+		// For TodoWrite, require a structurally valid todos list. If we cannot
+		// parse a non-empty list of items, we skip this function call entirely
+		// to avoid sending malformed plans to Claude Code (which would cause
+		// repeated correction attempts and noisy output).
+		todos, ok := args["todos"]
+		if !ok {
+			if v, exists := args["value"]; exists {
+				// Some malformed outputs place the todos array under a generic
+				// "value" key. Treat this as the candidate todos source.
+				todos = v
+				ok = true
 			}
 		}
-		return sb.String()
-	}
+		if ok {
+			var todoList []any
+			hasValidTodos := false
 
-	return string(raw)
-}
+			switch v := todos.(type) {
+			case []any:
+				if len(v) > 0 {
+					todoList = v
+					hasValidTodos = true
+				}
+			case string:
+				trimmedStr := strings.TrimSpace(v)
+				if trimmedStr != "" {
+					var parsed []any
+					if err := json.Unmarshal([]byte(trimmedStr), &parsed); err == nil && len(parsed) > 0 {
+						todoList = parsed
+						hasValidTodos = true
+					}
+				}
+			case map[string]any:
+				mapVal := v
+				foundList := false
+				for _, k := range []string{"todos", "todo", "item", "task", "value"} {
+					if val, exists := mapVal[k]; exists {
+						if list, ok := val.([]any); ok && len(list) > 0 {
+							todoList = list
+							foundList = true
+							break
+						} else if val != nil {
+							todoList = []any{val}
+							foundList = true
+							break
+						}
+					}
+				}
+				if !foundList && len(mapVal) > 0 {
+					todoList = []any{mapVal}
+					foundList = true
+				}
+				hasValidTodos = foundList && len(todoList) > 0
+			}
 
-func (ps *ProxyServer) countTokensLocally(bodyBytes []byte) int {
-	var req ClaudeRequest
-	if err := json.Unmarshal(bodyBytes, &req); err != nil {
-		return estimateTokensLocal([]string{string(bodyBytes)})
-	}
+			if !hasValidTodos {
+				return arguments, false
+			}
 
-	var chunks []string
-	if len(req.System) > 0 {
-		if sys := extractTextFromRawContent(req.System); sys != "" {
-			chunks = append(chunks, sys)
+			normalizedTodos := make([]map[string]any, 0, len(todoList))
+			for idx, item := range todoList {
+				defaultID := fmt.Sprintf("task-%d", idx+1)
+
+				if strItem, ok := item.(string); ok {
+					normalizedTodos = append(normalizedTodos, map[string]any{
+						"activeForm": strItem,
+						"content":  strItem,
+						"status":   "pending",
+						"priority": "medium",
+						"id":       defaultID,
+					})
+					continue
+				}
+
+				mapItem, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+
+				cleanItem := make(map[string]any)
+				if content, ok := mapItem["content"]; ok {
+					cleanItem["content"] = content
+				} else if task, ok := mapItem["task"]; ok {
+					cleanItem["content"] = task
+				} else if desc, ok := mapItem["description"]; ok {
+					cleanItem["content"] = desc
+				}
+				if existingAF, ok := mapItem["activeForm"]; ok {
+					cleanItem["activeForm"] = existingAF
+				} else {
+					switch v := cleanItem["content"].(type) {
+					case string:
+						cleanItem["activeForm"] = v
+					default:
+						cleanItem["activeForm"] = fmt.Sprint(v)
+					}
+				}
+
+				var rawStatus any
+				if status, ok := mapItem["status"]; ok {
+					rawStatus = status
+				} else if state, ok := mapItem["state"]; ok {
+					rawStatus = state
+				}
+
+				finalStatus := "pending"
+				if strStatus, ok := rawStatus.(string); ok {
+					lowerStatus := strings.ToLower(strings.TrimSpace(strStatus))
+					switch lowerStatus {
+					case "completed", "complete", "finished", "done", "success", "succeeded":
+						finalStatus = "completed"
+					case "in_progress", "in progress", "working", "doing", "running", "active":
+						finalStatus = "in_progress"
+					case "pending", "todo", "not_started", "not started", "planned":
+						finalStatus = "pending"
+					default:
+						finalStatus = "pending"
+					}
+				}
+				cleanItem["status"] = finalStatus
+
+				var rawPriority any
+				if p, ok := mapItem["priority"]; ok {
+					rawPriority = p
+				}
+				finalPriority := "medium"
+				if strP, ok := rawPriority.(string); ok {
+					lowerP := strings.ToLower(strings.TrimSpace(strP))
+					switch lowerP {
+					case "high":
+						finalPriority = "high"
+					case "low":
+						finalPriority = "low"
+					case "medium":
+						finalPriority = "medium"
+					}
+				}
+				cleanItem["priority"] = finalPriority
+
+				var idStr string
+				if rawID, ok := mapItem["id"]; ok {
+					switch v := rawID.(type) {
+					case string:
+						idStr = strings.TrimSpace(v)
+					case float64:
+						idStr = fmt.Sprintf("task-%d", int(v))
+					case int:
+						idStr = fmt.Sprintf("task-%d", v)
+					}
+				}
+				if len(idStr) < 3 {
+					idStr = defaultID
+				}
+				cleanItem["id"] = idStr
+
+				normalizedTodos = append(normalizedTodos, cleanItem)
+			}
+			if len(normalizedTodos) == 0 {
+				return arguments, false
+			}
+			args = map[string]any{"todos": normalizedTodos}
+		} else {
+			return arguments, false
 		}
-	}
-	for _, msg := range req.Messages {
-		if text := extractTextFromRawContent(msg.Content); text != "" {
-			chunks = append(chunks, text)
+
+	case "AskUserQuestion":
+		if questions, ok := args["questions"]; ok {
+			if _, isSlice := questions.([]any); !isSlice {
+				if strVal, ok := questions.(string); ok {
+					var qList []any
+					if err := json.Unmarshal([]byte(strVal), &qList); err == nil {
+						args["questions"] = qList
+					} else {
+						args["questions"] = []any{strVal}
+					}
+				}
+			}
 		}
+		if answers, ok := args["answers"]; ok {
+			if _, isMap := answers.(map[string]any); !isMap {
+				if strVal, ok := answers.(string); ok {
+					var aMap map[string]any
+					if err := json.Unmarshal([]byte(strVal), &aMap); err == nil {
+						args["answers"] = aMap
+					}
+				}
+			}
+		}
+
+	case "list_dir":
+		if _, ok := args["recursive"]; !ok {
+			args["recursive"] = false
+		}
+
+	case "WebSearch":
+		for _, key := range []string{"allowed_domains", "blocked_domains"} {
+			if v, ok := args[key]; ok {
+				if _, isSlice := v.([]any); !isSlice {
+					if strVal, ok := v.(string); ok {
+						var list []any
+						if err := json.Unmarshal([]byte(strVal), &list); err == nil {
+							args[key] = list
+						} else {
+							args[key] = []any{strVal}
+						}
+					}
+				}
+			}
+		}
+
+	case "Edit":
+		for _, key := range []string{"old_string", "new_string"} {
+			if val, ok := args[key]; ok {
+				if strVal, ok := val.(string); ok {
+					if strings.Contains(strVal, "\\n") {
+						args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
+					}
+				}
+			}
+		}
+
+	default:
+		return arguments, false
 	}
 
-	return estimateTokensLocal(chunks)
+	out, err := json.Marshal(args)
+	if err != nil {
+		return arguments, false
+	}
+	return string(out), true
 }
 
-func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bodyBytes []byte) bool {
-	if group == nil || !isCCSupportEnabled(group) {
-		return false
-	}
-	if !isCountTokensEndpoint(c.Request.URL.Path, c.Request.Method) {
-		return false
-	}
-	if !isCCRequest(c) {
-		return false
-	}
+// ...
 
-	// NOTE: The anthropic channel type upstream counting branch was removed here because
-	// isCCSupportEnabled() requires group.ChannelType == "openai", making the anthropic
-	// branch unreachable. CC support currently only works with OpenAI-compatible channels.
-	// If future support for direct Anthropic channels is needed, isCCSupportEnabled() must
-	// be relaxed first.
-
-	// For now, always use local token estimation for CC-enabled OpenAI groups.
-	tokens := ps.countTokensLocally(bodyBytes)
-	c.JSON(http.StatusOK, gin.H{"input_tokens": tokens})
-	return true
-}
-
-// parseFunctionCallsFromContentForCC parses function calls from content when force_function_call
-// is enabled in CC mode. It extracts XML-based function calls and converts them to Claude
-// tool_use format. Returns the cleaned content (with XML removed) and parsed tool_use blocks.
-//
-// This function bridges the gap between force_function_call (which injects XML-based prompts)
-// and CC support (which expects Claude-style tool_use blocks).
 func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string, []ClaudeContentBlock) {
-	// Only process if function call is enabled for this request
-	if !isFunctionCallEnabled(c) {
-		return content, nil
-	}
-
-	// Retrieve trigger signal stored during request rewrite
-	triggerVal, exists := c.Get(ctxKeyTriggerSignal)
-	if !exists {
-		return content, nil
-	}
-	triggerSignal, ok := triggerVal.(string)
-	if !ok || triggerSignal == "" {
-		return content, nil
-	}
+	// ...
 
 	// Parse function calls from the content
+	triggerSignal := getTriggerSignal(c)
 	calls := parseFunctionCallsXML(content, triggerSignal)
 
 	// Fallback: try parsing without trigger signal if none found
@@ -1248,6 +1428,7 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 
 						if strItem, ok := item.(string); ok {
 							normalizedTodos = append(normalizedTodos, map[string]any{
+								"activeForm": strItem,
 								"content":  strItem,
 								"status":   "pending",
 								"priority": "medium",
@@ -1268,6 +1449,16 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 							cleanItem["content"] = task
 						} else if desc, ok := mapItem["description"]; ok {
 							cleanItem["content"] = desc
+						}
+						if existingAF, ok := mapItem["activeForm"]; ok {
+							cleanItem["activeForm"] = existingAF
+						} else {
+							switch v := cleanItem["content"].(type) {
+							case string:
+								cleanItem["activeForm"] = v
+							default:
+								cleanItem["activeForm"] = fmt.Sprint(v)
+							}
 						}
 
 						var rawStatus any
@@ -1453,7 +1644,7 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 	}
 
 	// Remove function call XML blocks from content
-	cleanedContent := removeFunctionCallsBlocks(content)
+	cleanedContent := removeFunctionCallsBlocks(content, cleanupModeFull)
 
 	logrus.WithFields(logrus.Fields{
 		"trigger_signal":  triggerSignal,
@@ -1546,8 +1737,13 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		}
 	}
 
+	cleanupMode := cleanupModeArtifactsOnly
+	if isFunctionCallEnabled(c) {
+		cleanupMode = cleanupModeFull
+	}
+
 	// Convert to Claude format
-	claudeResp := convertOpenAIToClaudeResponse(&openaiResp)
+	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode)
 
 	// When force_function_call is enabled in CC mode, parse XML function calls
 	// from the ORIGINAL response content and convert them to Claude tool_use blocks.
@@ -1568,7 +1764,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			}
 
 			// Add cleaned text content if not empty
-			cleanedText := removeFunctionCallsBlocks(cleanedContent)
+			cleanedText := removeFunctionCallsBlocks(cleanedContent, cleanupModeFull)
 			if strings.TrimSpace(cleanedText) != "" {
 				newContent = append(newContent, ClaudeContentBlock{
 					Type: "text",
@@ -1643,6 +1839,12 @@ const (
 	ThinkingEndTag      = "</thinking>"
 	ThinkingAltStartTag = "<think>"
 	ThinkingAltEndTag   = "</think>"
+	// ANTML format thinking tags used by some models (e.g., claude-opus-4-5-thinking)
+	// The \b in the tag name is a marker used by models to identify internal control tags
+	// Format: <antml\b:thinking>...</antml\b:thinking> or </antml> as generic closer
+	ThinkingANTMLStartTag = "<antml\\b:thinking>"
+	ThinkingANTMLEndTag   = "</antml\\b:thinking>"
+	ThinkingANTMLAltEnd   = "</antml>" // Generic ANTML closer
 )
 
 // Pre-computed rune slices for tag matching to avoid repeated allocations in hot path
@@ -1651,6 +1853,10 @@ var (
 	thinkingAltEndTagRunes   = []rune(ThinkingAltEndTag)
 	thinkingStartTagRunes    = []rune(ThinkingStartTag)
 	thinkingAltStartTagRunes = []rune(ThinkingAltStartTag)
+	// ANTML format rune slices
+	thinkingANTMLStartTagRunes = []rune(ThinkingANTMLStartTag)
+	thinkingANTMLEndTagRunes   = []rune(ThinkingANTMLEndTag)
+	thinkingANTMLAltEndRunes   = []rune(ThinkingANTMLAltEnd)
 )
 
 type ThinkingEvent struct {
@@ -1675,8 +1881,8 @@ type ThinkingParser struct {
 
 func NewThinkingParser() *ThinkingParser {
 	// Ring buffer size needs to hold the longest tag we need to match
-	// Max tag length is len("</thinking>") = 11
-	maxTagLen := 11
+	// Max tag length is len("</antml\\b:thinking>") = 19 (ANTML format)
+	maxTagLen := 19
 	return &ThinkingParser{
 		suffixRing:       make([]rune, maxTagLen),
 		suffixRingSize:   0,
@@ -1695,14 +1901,22 @@ func (p *ThinkingParser) FeedRune(char rune) {
 		// Write to buffer first, then check for end tag using ring buffer
 		p.thinkingBuffer.WriteString(charStr)
 		p.addToThinkingRing(char)
-		if p.thinkingRingSuffixMatches(thinkingEndTagRunes) || p.thinkingRingSuffixMatches(thinkingAltEndTagRunes) {
+		// Check for all supported end tag formats: </thinking>, </think>, </antml\b:thinking>, </antml>
+		if p.thinkingRingSuffixMatches(thinkingEndTagRunes) ||
+			p.thinkingRingSuffixMatches(thinkingAltEndTagRunes) ||
+			p.thinkingRingSuffixMatches(thinkingANTMLEndTagRunes) ||
+			p.thinkingRingSuffixMatches(thinkingANTMLAltEndRunes) {
 			// Extract content by trimming the matched end tag
 			fullContent := p.thinkingBuffer.String()
 			var tagLen int
 			if p.thinkingRingSuffixMatches(thinkingEndTagRunes) {
 				tagLen = len(ThinkingEndTag)
-			} else {
+			} else if p.thinkingRingSuffixMatches(thinkingAltEndTagRunes) {
 				tagLen = len(ThinkingAltEndTag)
+			} else if p.thinkingRingSuffixMatches(thinkingANTMLEndTagRunes) {
+				tagLen = len(ThinkingANTMLEndTag)
+			} else {
+				tagLen = len(ThinkingANTMLAltEnd)
 			}
 			content := fullContent[:len(fullContent)-tagLen]
 			// Remove leading ">" artifact from parsing logic per b4u2cc reference implementation
@@ -1731,14 +1945,19 @@ func (p *ThinkingParser) FeedRune(char rune) {
 	p.addToRing(char)
 
 	// Check if ring buffer ends with start tags using O(1) suffix check
-	if p.ringSuffixMatches(thinkingStartTagRunes) || p.ringSuffixMatches(thinkingAltStartTagRunes) {
+	// Support all formats: <thinking>, <think>, <antml\b:thinking>
+	if p.ringSuffixMatches(thinkingStartTagRunes) ||
+		p.ringSuffixMatches(thinkingAltStartTagRunes) ||
+		p.ringSuffixMatches(thinkingANTMLStartTagRunes) {
 		// Extract text portion by removing the matched tag
 		textLen := p.buffer.Len()
 		var tagLen int
 		if p.ringSuffixMatches(thinkingStartTagRunes) {
 			tagLen = len(ThinkingStartTag)
-		} else {
+		} else if p.ringSuffixMatches(thinkingAltStartTagRunes) {
 			tagLen = len(ThinkingAltStartTag)
+		} else {
+			tagLen = len(ThinkingANTMLStartTag)
 		}
 
 		if textLen > tagLen {
@@ -1837,10 +2056,71 @@ func (p *ThinkingParser) FlushText() {
 	if p.thinkingMode {
 		return
 	}
-	if p.buffer.Len() > 0 {
-		p.events = append(p.events, ThinkingEvent{Type: "text", Content: p.buffer.String()})
+	if p.buffer.Len() == 0 {
+		return
+	}
+
+	content := p.buffer.String()
+
+	// Check if buffer ends with a potential partial tag that we should hold back
+	// This handles streaming cases where tags are split across chunks
+	// e.g., "<antml\" in one chunk and "b:thinking>" in the next
+	holdBackLen := 0
+	for i := len(content) - 1; i >= 0 && i >= len(content)-19; i-- {
+		if content[i] == '<' {
+			// Found a '<' near the end - check if it could be start of a tag we recognize
+			suffix := content[i:]
+			// Check if this could be the start of any thinking tag
+			if isPotentialThinkingTagStart(suffix) {
+				holdBackLen = len(content) - i
+				break
+			}
+		}
+	}
+
+	if holdBackLen > 0 {
+		if holdBackLen < len(content) {
+			// Emit text before the potential tag start
+			textToEmit := content[:len(content)-holdBackLen]
+			if textToEmit != "" {
+				p.events = append(p.events, ThinkingEvent{Type: "text", Content: textToEmit})
+			}
+			// Keep the potential tag start in buffer
+			p.buffer.Reset()
+			p.buffer.WriteString(content[len(content)-holdBackLen:])
+			// Also update ring buffer to match
+			p.resetRing()
+			for _, r := range content[len(content)-holdBackLen:] {
+				p.addToRing(r)
+			}
+		}
+		// If holdBackLen == len(content), keep entire buffer (don't emit anything yet)
+		// This handles cases where the entire content is a potential tag start
+	} else {
+		// No potential tag start, emit all content
+		p.events = append(p.events, ThinkingEvent{Type: "text", Content: content})
 		p.buffer.Reset()
 	}
+}
+
+// isPotentialThinkingTagStart checks if a string could be the start of a thinking tag
+func isPotentialThinkingTagStart(s string) bool {
+	// Check against all supported thinking tag prefixes
+	prefixes := []string{
+		"<thinking>",
+		"<think>",
+		"<antml\\b:thinking>",
+		"</thinking>",
+		"</think>",
+		"</antml\\b:thinking>",
+		"</antml>",
+	}
+	for _, prefix := range prefixes {
+		if len(s) <= len(prefix) && prefix[:len(s)] == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *ThinkingParser) Finish() {
@@ -2098,14 +2378,23 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	reader := NewSSEReader(resp.Body)
 	contentBlockIndex := 0
 	var currentToolCall *OpenAIToolCall
+	var currentToolCallName string
+	var currentToolCallArgs strings.Builder
 	var accumulatedContent strings.Builder
 	contentBufFullWarned := false
 	triggerSignal := getTriggerSignal(c)
+	cleanupMode := cleanupModeArtifactsOnly
+	if isFunctionCallEnabled(c) {
+		cleanupMode = cleanupModeFull
+	}
 	parser := NewThinkingParser()
 	textBlockOpen := false
 	thinkingBlockOpen := false // Track if thinking block is open for content merging
 	var aggregator *TextAggregator
 	hasValidToolCalls := false // Track if any valid tool_calls were processed
+
+	// Buffer to hold potential partial malformed tags across aggregator flushes
+	var partialTagBuffer strings.Builder
 
 	sanitizeText := func(text string) string {
 		if triggerSignal != "" {
@@ -2114,8 +2403,56 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		// Use the comprehensive removeFunctionCallsBlocks function to clean all
 		// function call XML formats (function_calls, function_call, invoke,
 		// invocation, tool_call, and trigger signals)
-		text = removeFunctionCallsBlocks(text)
+		text = removeFunctionCallsBlocks(text, cleanupMode)
 		return text
+	}
+
+	// sanitizeTextWithPartialDetection handles streaming text that may contain
+	// partial malformed tags split across chunks. It buffers potential partial
+	// tags and only emits text that is safe to display.
+	sanitizeTextWithPartialDetection := func(text string) string {
+		// Prepend any buffered partial content from previous flush
+		if partialTagBuffer.Len() > 0 {
+			text = partialTagBuffer.String() + text
+			partialTagBuffer.Reset()
+		}
+
+		// Check if text ends with a potential partial malformed tag
+		// Patterns to detect: <>, <><, <><invokename, <><parametername, etc.
+		holdBackLen := 0
+		for i := len(text) - 1; i >= 0 && i >= len(text)-100; i-- {
+			if text[i] == '<' {
+				suffix := text[i:]
+				// Check if this could be start of a malformed tag pattern
+				if isPotentialMalformedTagStart(suffix) {
+					holdBackLen = len(text) - i
+					break
+				}
+			}
+		}
+
+		if holdBackLen > 0 && holdBackLen < len(text) {
+			// Hold back the potential partial tag
+			partialTagBuffer.WriteString(text[len(text)-holdBackLen:])
+			text = text[:len(text)-holdBackLen]
+		} else if holdBackLen == len(text) {
+			// Entire text is a potential partial tag, buffer it all
+			partialTagBuffer.WriteString(text)
+			return ""
+		}
+
+		return sanitizeText(text)
+	}
+
+	// flushPartialTagBuffer flushes any remaining partial tag buffer content
+	// This is called at finalize to ensure no content is lost
+	flushPartialTagBuffer := func() string {
+		if partialTagBuffer.Len() == 0 {
+			return ""
+		}
+		content := partialTagBuffer.String()
+		partialTagBuffer.Reset()
+		return sanitizeText(content)
 	}
 
 	ensureTextBlock := func() error {
@@ -2169,6 +2506,21 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if currentToolCall == nil {
 			return
 		}
+		if currentToolCallName != "" && currentToolCallArgs.Len() > 0 {
+			argsStr := currentToolCallArgs.String()
+			if normalized, ok := normalizeOpenAIToolCallArguments(currentToolCallName, argsStr); ok {
+				argsStr = normalized
+			}
+			deltaEvent := ClaudeStreamEvent{
+				Type:  "content_block_delta",
+				Index: contentBlockIndex,
+				Delta: &ClaudeStreamDelta{Type: "input_json_delta", PartialJSON: argsStr},
+			}
+			if err := writer.Send(deltaEvent, false); err != nil {
+				logrus.WithError(err).Debug("CC: Failed to write tool_use delta")
+			}
+		}
+
 		stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
 		if err := writer.Send(stopEvent, true); err != nil {
 			logrus.WithError(err).Debug("CC: Failed to stop tool block")
@@ -2176,6 +2528,8 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}
 		contentBlockIndex++
 		currentToolCall = nil
+		currentToolCallName = ""
+		currentToolCallArgs.Reset()
 	}
 
 	// ensureThinkingBlock ensures a thinking block is open for content merging.
@@ -2258,11 +2612,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}
 	}
 
-	// NOTE: TextAggregator interval is set to 35ms to balance interactive latency with network efficiency.
-	// This value has been tested and provides good responsiveness for streaming responses.
-	// Making it configurable would add unnecessary complexity without clear benefit (KISS principle).
-	aggregator = NewTextAggregator(35, func(text string) {
-		cleaned := sanitizeText(text)
+	// NOTE: TextAggregator interval is set to 50ms to balance interactive latency with network efficiency.
+	// This value provides good responsiveness while reducing processing overhead for streaming responses.
+	// Increased from 35ms to allow more content aggregation per flush, improving parsing accuracy.
+	aggregator = NewTextAggregator(50, func(text string) {
+		// Use partial detection to handle malformed tags split across chunks
+		cleaned := sanitizeTextWithPartialDetection(text)
 		if cleaned == "" {
 			return
 		}
@@ -2303,6 +2658,20 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}
 
 		aggregator.Flush()
+
+		// Flush any remaining partial tag buffer content
+		if remaining := flushPartialTagBuffer(); remaining != "" {
+			closeThinkingBlock()
+			if err := ensureTextBlock(); err == nil {
+				deltaEvent := ClaudeStreamEvent{
+					Type:  "content_block_delta",
+					Index: contentBlockIndex,
+					Delta: &ClaudeStreamDelta{Type: "text_delta", Text: remaining},
+				}
+				_ = writer.Send(deltaEvent, false)
+			}
+		}
+
 		closeThinkingBlock() // Close thinking block before text block per b4u2cc reference
 		closeTextBlock()
 		closeToolBlock()
@@ -2452,7 +2821,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					closeToolBlock()
 				}
 				if isNew {
+					if call.Function.Name == "" {
+						continue
+					}
 					currentToolCall = &call
+					currentToolCallName = call.Function.Name
+					currentToolCallArgs.Reset()
 					hasValidToolCalls = true // Mark that we have valid tool calls
 					startEvent := ClaudeStreamEvent{
 						Type:         "content_block_start",
@@ -2466,14 +2840,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				}
 
 				if call.Function.Arguments != "" && currentToolCall != nil {
-					deltaEvent := ClaudeStreamEvent{
-						Type:  "content_block_delta",
-						Index: contentBlockIndex,
-						Delta: &ClaudeStreamDelta{Type: "input_json_delta", PartialJSON: call.Function.Arguments},
-					}
-					if err := writer.Send(deltaEvent, false); err != nil {
-						logrus.WithError(err).Debug("CC: Failed to write tool_use delta")
-					}
+					currentToolCallArgs.WriteString(call.Function.Arguments)
 				}
 			}
 		}

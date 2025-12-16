@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
@@ -245,6 +247,145 @@ func isFunctionCallEnabled(c *gin.Context) bool {
 		}
 	}
 	return false
+}
+
+func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bodyBytes []byte) bool {
+	if c == nil || c.Request == nil || group == nil {
+		return false
+	}
+	if c.Request.Method != http.MethodPost {
+		return false
+	}
+	if !isCCSupportEnabled(group) {
+		return false
+	}
+
+	path := c.Request.URL.Path
+	if path != "/v1/messages/count_tokens" && !strings.HasSuffix(path, "/v1/messages/count_tokens") {
+		return false
+	}
+
+	// Local heuristic estimation: count runes and assume ~4 chars per token.
+	estimatedTokens := estimateTokensForClaudeCountTokens(bodyBytes)
+
+	// Apply multiplier (billing adjustment).
+	multiplier := getTokenMultiplier()
+	rawAdjusted := float64(estimatedTokens) * multiplier
+	adjustedTokens := 0
+	if !math.IsNaN(rawAdjusted) && !math.IsInf(rawAdjusted, 0) && rawAdjusted > 0 {
+		adjustedTokens = int(math.Ceil(rawAdjusted))
+	}
+	if adjustedTokens <= 0 {
+		if estimatedTokens > 0 {
+			adjustedTokens = estimatedTokens
+		} else {
+			adjustedTokens = 1
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"input_tokens":  adjustedTokens,
+		"output_tokens": nil,
+		"token_count":   adjustedTokens,
+		"tokens":        adjustedTokens,
+	})
+	return true
+}
+
+func estimateTokensForClaudeCountTokens(bodyBytes []byte) int {
+	if len(bodyBytes) == 0 {
+		return 0
+	}
+
+	var req ClaudeRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		return estimateTokensFromBytes(bodyBytes)
+	}
+
+	var sb strings.Builder
+	if strings.TrimSpace(req.Prompt) != "" {
+		sb.WriteString(req.Prompt)
+		sb.WriteByte('\n')
+	}
+	if len(req.System) > 0 {
+		sb.WriteString(extractTextFromClaudeRaw(req.System))
+		sb.WriteByte('\n')
+	}
+	for _, msg := range req.Messages {
+		if len(msg.Content) == 0 {
+			continue
+		}
+		sb.WriteString(extractTextFromClaudeRaw(msg.Content))
+		sb.WriteByte('\n')
+	}
+	if len(req.Tools) > 0 {
+		if b, err := json.Marshal(req.Tools); err == nil {
+			sb.Write(b)
+		}
+	}
+
+	return estimateTokensFromString(sb.String())
+}
+
+func extractTextFromClaudeRaw(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+
+	var blocks []ClaudeContentBlock
+	if err := json.Unmarshal(raw, &blocks); err == nil && len(blocks) > 0 {
+		var sb strings.Builder
+		for _, block := range blocks {
+			switch block.Type {
+			case "text":
+				sb.WriteString(block.Text)
+			case "tool_use":
+				sb.WriteString("<invoke name=\"")
+				sb.WriteString(block.Name)
+				sb.WriteString("\">")
+				if len(block.Input) > 0 {
+					sb.Write(block.Input)
+				}
+				sb.WriteString("</invoke>")
+			case "tool_result":
+				sb.WriteString("<tool_result>")
+				if len(block.Content) > 0 {
+					sb.Write(block.Content)
+				}
+				sb.WriteString("</tool_result>")
+			}
+		}
+		return sb.String()
+	}
+
+	return string(raw)
+}
+
+func estimateTokensFromString(text string) int {
+	if text == "" {
+		return 0
+	}
+	count := utf8.RuneCountInString(text)
+	if count <= 0 {
+		return 0
+	}
+	return (count + 3) / 4
+}
+
+func estimateTokensFromBytes(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
+	count := utf8.RuneCount(b)
+	if count <= 0 {
+		return 0
+	}
+	return (count + 3) / 4
 }
 
 // NewProxyServer creates a new proxy server
