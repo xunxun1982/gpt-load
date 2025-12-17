@@ -119,24 +119,34 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 		Scopes(s.logFiltersScope(c)).
 		Where("key_hash IS NOT NULL AND key_hash != ''")
 
-	// Use a window function to pick the latest record for each key_hash.
-	// Note: This requires modern database versions (MySQL 8+, PostgreSQL, SQLite 3.25+).
+	// Pick the latest record for each key_hash.
+	// We intentionally avoid window functions to reduce sort overhead on large datasets.
+	// Note: request_logs.id is a UUID string, so MAX(id) is NOT a reliable proxy for "latest".
+	// Instead, we use MAX(timestamp) as the latest marker, then use MAX(id) only as a deterministic tie-breaker
+	// when multiple rows share the same timestamp.
 	err := s.DB.Raw(`
+		WITH filtered_logs AS (
+			SELECT * FROM (?) AS base
+		),
+		latest_ts AS (
+			SELECT key_hash, MAX(timestamp) AS max_ts
+			FROM filtered_logs
+			GROUP BY key_hash
+		),
+		latest_id AS (
+			SELECT fl.key_hash, MAX(fl.id) AS max_id
+			FROM filtered_logs fl
+			INNER JOIN latest_ts lt ON fl.key_hash = lt.key_hash AND fl.timestamp = lt.max_ts
+			GROUP BY fl.key_hash
+		)
 		SELECT
-			key_value,
-			group_name,
-			status_code
-		FROM (
-			SELECT
-				key_value,
-				group_name,
-				status_code,
-				key_hash,
-				ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
-			FROM (?) as filtered_logs
-		) AS ranked_logs
-		WHERE rn = 1
-		ORDER BY key_hash
+			fl.key_value,
+			fl.group_name,
+			fl.status_code
+		FROM filtered_logs fl
+		INNER JOIN latest_ts lt ON fl.key_hash = lt.key_hash AND fl.timestamp = lt.max_ts
+		INNER JOIN latest_id li ON fl.key_hash = li.key_hash AND fl.id = li.max_id
+		ORDER BY fl.key_hash
 	`, baseQuery).Scan(&results).Error
 
 	if err != nil {

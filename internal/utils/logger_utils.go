@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"bufio"
 	"gpt-load/internal/types"
 	"io"
 	"os"
@@ -24,28 +23,23 @@ func (sw *syncWriter) Write(p []byte) (n int, err error) {
 	return sw.writer.Write(p)
 }
 
-// flushWriter wraps a buffered writer and flushes after each write.
-// This ensures log entries are immediately written to the file.
+// flushWriter wraps an *os.File and ensures log entries are written immediately.
+// This ensures log entries are immediately visible in debug/trace mode.
 // NOTE: flushWriter is not thread-safe by itself and must be wrapped by syncWriter.
 type flushWriter struct {
-	file   *os.File
-	writer *bufio.Writer
+	file *os.File
 }
 
 func newFlushWriter(file *os.File) *flushWriter {
 	return &flushWriter{
-		file:   file,
-		writer: bufio.NewWriter(file),
+		file: file,
 	}
 }
 
 func (fw *flushWriter) Write(p []byte) (n int, err error) {
-	n, err = fw.writer.Write(p)
-	if err != nil {
-		return n, err
-	}
-	// Flush immediately to ensure log entries are written to file
-	return n, fw.writer.Flush()
+	// Write directly so logs are visible immediately in debug/trace mode.
+	// We intentionally avoid calling fw.file.Sync() on every write to prevent slow I/O.
+	return fw.file.Write(p)
 }
 
 // SetupLogger configures the logging system based on the provided configuration.
