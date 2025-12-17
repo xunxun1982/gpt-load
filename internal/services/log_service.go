@@ -15,6 +15,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const likeEscapeChar = "!"
+
 // ExportableLogKey defines the structure for the data to be exported to CSV.
 type ExportableLogKey struct {
 	KeyValue   string `gorm:"column:key_value"`
@@ -36,11 +38,11 @@ func NewLogService(db *gorm.DB, encryptionSvc encryption.Service) *LogService {
 	}
 }
 
-// escapeLike escapes special characters in LIKE pattern
+// escapeLike escapes special characters in LIKE pattern.
 func escapeLike(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "%", "\\%")
-	s = strings.ReplaceAll(s, "_", "\\_")
+	s = strings.ReplaceAll(s, likeEscapeChar, likeEscapeChar+likeEscapeChar)
+	s = strings.ReplaceAll(s, "%", likeEscapeChar+"%")
+	s = strings.ReplaceAll(s, "_", likeEscapeChar+"_")
 	return s
 }
 
@@ -48,17 +50,17 @@ func escapeLike(s string) string {
 func (s *LogService) logFiltersScope(c *gin.Context) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		if parentGroupName := c.Query("parent_group_name"); parentGroupName != "" {
-			db = db.Where("parent_group_name LIKE ? ESCAPE '\\\\'", "%"+escapeLike(parentGroupName)+"%")
+			db = db.Where("parent_group_name LIKE ? ESCAPE '!'", "%"+escapeLike(parentGroupName)+"%")
 		}
 		if groupName := c.Query("group_name"); groupName != "" {
-			db = db.Where("group_name LIKE ? ESCAPE '\\\\'", "%"+escapeLike(groupName)+"%")
+			db = db.Where("group_name LIKE ? ESCAPE '!'", "%"+escapeLike(groupName)+"%")
 		}
 		if keyValue := c.Query("key_value"); keyValue != "" {
 			keyHash := s.EncryptionSvc.Hash(keyValue)
 			db = db.Where("key_hash = ?", keyHash)
 		}
 		if model := c.Query("model"); model != "" {
-			db = db.Where("model LIKE ? ESCAPE '\\\\'", "%"+escapeLike(model)+"%")
+			db = db.Where("model LIKE ? ESCAPE '!'", "%"+escapeLike(model)+"%")
 		}
 		if isSuccessStr := c.Query("is_success"); isSuccessStr != "" {
 			if isSuccess, err := strconv.ParseBool(isSuccessStr); err == nil {
@@ -77,7 +79,7 @@ func (s *LogService) logFiltersScope(c *gin.Context) func(db *gorm.DB) *gorm.DB 
 			db = db.Where("source_ip = ?", sourceIP)
 		}
 		if errorContains := c.Query("error_contains"); errorContains != "" {
-			db = db.Where("error_message LIKE ? ESCAPE '\\\\'", "%"+escapeLike(errorContains)+"%")
+			db = db.Where("error_message LIKE ? ESCAPE '!'", "%"+escapeLike(errorContains)+"%")
 		}
 		if startTimeStr := c.Query("start_time"); startTimeStr != "" {
 			if startTime, err := time.Parse(time.RFC3339, startTimeStr); err == nil {
@@ -112,21 +114,28 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 
 	var results []ExportableLogKey
 
-	baseQuery := s.DB.Model(&models.RequestLog{}).Scopes(s.logFiltersScope(c)).Where("key_hash IS NOT NULL AND key_hash != ''")
+	baseQuery := s.DB.Model(&models.RequestLog{}).
+		Select("id", "key_hash", "key_value", "group_name", "status_code", "timestamp").
+		Scopes(s.logFiltersScope(c)).
+		Where("key_hash IS NOT NULL AND key_hash != ''")
 
-	// Use GROUP BY to get the latest record for each key_hash (avoid duplicates from multiple encryptions of the same key)
-	// This is more efficient and compatible than window functions
+	// Use a window function to pick the latest record for each key_hash.
+	// Note: This requires modern database versions (MySQL 8+, PostgreSQL, SQLite 3.25+).
 	err := s.DB.Raw(`
 		SELECT
 			key_value,
 			group_name,
 			status_code
-		FROM request_logs
-		WHERE id IN (
-			SELECT MAX(id)
+		FROM (
+			SELECT
+				key_value,
+				group_name,
+				status_code,
+				key_hash,
+				ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
 			FROM (?) as filtered_logs
-			GROUP BY key_hash
-		)
+		) AS ranked_logs
+		WHERE rn = 1
 		ORDER BY key_hash
 	`, baseQuery).Scan(&results).Error
 

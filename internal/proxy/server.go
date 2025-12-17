@@ -1435,14 +1435,20 @@ func (ps *ProxyServer) logRequest(
 	// Format upstream address with proxy info if available
 	upstreamAddrWithProxy := upstreamAddr
 	if proxyURL != nil && *proxyURL != "" {
-		// Use strings.Builder for better performance in hot path
-		var b strings.Builder
-		b.Grow(len(upstreamAddr) + len(*proxyURL) + 10) // Pre-allocate capacity
-		b.WriteString(upstreamAddr)
-		b.WriteString(" (proxy: ")
-		b.WriteString(*proxyURL)
-		b.WriteByte(')')
-		upstreamAddrWithProxy = b.String()
+		safe := safeProxyURL(proxyURL)
+		if safe == "none" {
+			// Defensive: safeProxyURL returns "none" only when proxyURL is nil/empty.
+			// Keep upstreamAddr unchanged.
+		} else {
+			// Use strings.Builder for better performance in hot path
+			var b strings.Builder
+			b.Grow(len(upstreamAddr) + len(safe) + 10) // Pre-allocate capacity
+			b.WriteString(upstreamAddr)
+			b.WriteString(" (proxy: ")
+			b.WriteString(safe)
+			b.WriteByte(')')
+			upstreamAddrWithProxy = b.String()
+		}
 	}
 
 	logEntry := &models.RequestLog{

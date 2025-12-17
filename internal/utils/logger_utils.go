@@ -26,15 +26,10 @@ func (sw *syncWriter) Write(p []byte) (n int, err error) {
 
 // flushWriter wraps a buffered writer and flushes after each write.
 // This ensures log entries are immediately written to the file.
-// NOTE: This type has its own mutex even though it's wrapped by syncWriter.
-// This is intentional: flushWriter.mu protects the buffered writer state,
-// while syncWriter.mu ensures atomic writes across multiple destinations (stdout + file).
-// The nested locking is safe because flushWriter is always called through syncWriter,
-// maintaining a consistent lock order (syncWriter.mu -> flushWriter.mu).
+// NOTE: flushWriter is not thread-safe by itself and must be wrapped by syncWriter.
 type flushWriter struct {
 	file   *os.File
 	writer *bufio.Writer
-	mu     sync.Mutex
 }
 
 func newFlushWriter(file *os.File) *flushWriter {
@@ -45,8 +40,6 @@ func newFlushWriter(file *os.File) *flushWriter {
 }
 
 func (fw *flushWriter) Write(p []byte) (n int, err error) {
-	fw.mu.Lock()
-	defer fw.mu.Unlock()
 	n, err = fw.writer.Write(p)
 	if err != nil {
 		return n, err

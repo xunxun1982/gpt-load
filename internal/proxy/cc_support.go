@@ -2268,7 +2268,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		for i := len(text) - 1; i >= 0 && i >= len(text)-100; i-- {
 			if text[i] == '<' {
 				suffix := text[i:]
-				// Check if this could be start of a malformed tag pattern
+				// Check if this could be start of a malformed tag pattern.
+				// NOTE: isPotentialMalformedTagStart is implemented in function_call.go and shared
+				// between CC support and function call sanitizers.
 				if isPotentialMalformedTagStart(suffix) {
 					holdBackLen = len(text) - i
 					break
@@ -2523,7 +2525,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 		if accumulatedContent.Len() > 0 && isFunctionCallEnabled(c) {
 			content := accumulatedContent.String()
-			logrus.WithField("content_preview", utils.TruncateString(content, 300)).Debug("CC+FC: Parsing accumulated content for tool calls")
+			logrus.WithFields(logrus.Fields{
+				"content_len": len(content),
+			}).Debug("CC+FC: Parsing accumulated content for tool calls")
 			_, toolUseBlocks := parseFunctionCallsFromContentForCC(c, content)
 			logrus.WithField("tool_use_blocks_count", len(toolUseBlocks)).Debug("CC+FC: parseFunctionCallsFromContentForCC returned")
 			if len(toolUseBlocks) > 0 {
