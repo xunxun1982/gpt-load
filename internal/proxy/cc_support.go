@@ -1004,10 +1004,12 @@ func applyTokenMultiplier(usage *ClaudeUsage) {
 		adjusted = int(math.Ceil(raw))
 	}
 	if adjusted <= 0 {
+		// Preserve genuine zero-usage responses; only enforce a >=1 floor
+		// when there were non-zero tokens before scaling.
 		if usage.OutputTokens > 0 {
 			adjusted = usage.OutputTokens
 		} else {
-			adjusted = 1
+			adjusted = 0
 		}
 	}
 	usage.OutputTokens = adjusted
@@ -1065,7 +1067,7 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 		// NOTE: An earlier automated review suggested extracting this TodoWrite
 		// normalization into a helper. We intentionally keep it inline here to
 		// avoid extra indirection on this hot path and to keep all TodoWrite-
-		// specific fixes co-located. Behavior is covered by cc_function_test.go
+		// specific fixes co-located. Behavior is covered by cc_support_test.go
 		// (TodoWrite-related tests) and should not be modified without updating
 		// the corresponding tests.
 		// For TodoWrite, require a structurally valid todos list. If we cannot
@@ -1222,8 +1224,11 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 					idStr = defaultID
 				}
 				cleanItem["id"] = idStr
-
-				normalizedTodos = append(normalizedTodos, cleanItem)
+				// Only keep todos that have meaningful content, matching the
+				// CC XML parsing path behavior.
+				if _, hasContent := cleanItem["content"]; hasContent {
+					normalizedTodos = append(normalizedTodos, cleanItem)
+				}
 			}
 			if len(normalizedTodos) == 0 {
 				return arguments, false
@@ -1363,7 +1368,7 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 			// NOTE: An earlier automated review suggested extracting this TodoWrite
 			// normalization into a helper. We intentionally keep it inline here to
 			// avoid extra indirection on this hot path and to keep all TodoWrite-
-			// specific fixes co-located. Behavior is covered by cc_function_test.go
+			// specific fixes co-located. Behavior is covered by cc_support_test.go
 			// (TodoWrite-related tests) and should not be modified without updating
 			// the corresponding tests.
 			// For TodoWrite, require a structurally valid todos list. If we cannot

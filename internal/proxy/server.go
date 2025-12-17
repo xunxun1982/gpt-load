@@ -261,11 +261,11 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 	}
 
 	path := c.Request.URL.Path
-	if path != "/v1/messages/count_tokens" && !strings.HasSuffix(path, "/v1/messages/count_tokens") {
+	if !strings.HasSuffix(path, "/v1/messages/count_tokens") {
 		return false
 	}
 
-	// Local heuristic estimation: count runes and assume ~4 chars per token.
+	// Local heuristic estimation: count runes and assume ~4 runes per token.
 	estimatedTokens := estimateTokensForClaudeCountTokens(bodyBytes)
 
 	// Apply multiplier (billing adjustment).
@@ -283,12 +283,8 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"input_tokens":  adjustedTokens,
-		"output_tokens": nil,
-		"token_count":   adjustedTokens,
-		"tokens":        adjustedTokens,
-	})
+	// Claude /v1/messages/count_tokens returns only input_tokens.
+	c.JSON(http.StatusOK, gin.H{"input_tokens": adjustedTokens})
 	return true
 }
 
@@ -374,6 +370,9 @@ func estimateTokensFromString(text string) int {
 	if count <= 0 {
 		return 0
 	}
+	// Heuristic: ~4 runes per token.
+	// NOTE: This is an approximation and may differ from actual tokenizers
+	// (language mix, code/JSON, and model-specific tokenization).
 	return (count + 3) / 4
 }
 
@@ -385,6 +384,9 @@ func estimateTokensFromBytes(b []byte) int {
 	if count <= 0 {
 		return 0
 	}
+	// Heuristic: ~4 runes per token.
+	// NOTE: This is an approximation and may differ from actual tokenizers
+	// (language mix, code/JSON, and model-specific tokenization).
 	return (count + 3) / 4
 }
 
