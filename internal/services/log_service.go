@@ -121,6 +121,9 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 
 	// Pick the latest record for each key_hash.
 	// We intentionally avoid window functions to reduce sort overhead on large datasets.
+	// NOTE: Some databases (e.g. PostgreSQL/MySQL) can optimize window functions well.
+	// We keep this aggregation-based query for consistent cross-database behavior.
+	// Revisit with realistic benchmarks before adding database-specific query paths.
 	// Note: request_logs.id is a UUID string, so MAX(id) is NOT a reliable proxy for "latest".
 	// Instead, we use MAX(timestamp) as the latest marker, then use MAX(id) only as a deterministic tie-breaker
 	// when multiple rows share the same timestamp.

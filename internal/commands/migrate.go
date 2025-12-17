@@ -64,6 +64,7 @@ func RunMigrateKeys(args []string) {
 	}); err != nil {
 		logrus.Fatalf("Failed to setup logger: %v", err)
 	}
+	defer utils.CloseLogger()
 
 	// Execute migration command
 	if err := cont.Invoke(func(db *gorm.DB, configManager types.ConfigManager, cacheStore store.Store) {

@@ -23,27 +23,33 @@ func (sw *syncWriter) Write(p []byte) (n int, err error) {
 	return sw.writer.Write(p)
 }
 
-// flushWriter wraps an *os.File and ensures log entries are written immediately.
-// This ensures log entries are immediately visible in debug/trace mode.
-// NOTE: flushWriter is not thread-safe by itself and must be wrapped by syncWriter.
-type flushWriter struct {
-	file *os.File
-}
+var (
+	loggerFileMu sync.Mutex
+	loggerFile   *os.File
+	exitHandler  sync.Once
+)
 
-func newFlushWriter(file *os.File) *flushWriter {
-	return &flushWriter{
-		file: file,
+func CloseLogger() {
+	loggerFileMu.Lock()
+	file := loggerFile
+	loggerFile = nil
+	loggerFileMu.Unlock()
+
+	if file == nil {
+		return
 	}
-}
 
-func (fw *flushWriter) Write(p []byte) (n int, err error) {
-	// Write directly so logs are visible immediately in debug/trace mode.
-	// We intentionally avoid calling fw.file.Sync() on every write to prevent slow I/O.
-	return fw.file.Write(p)
+	logrus.SetOutput(os.Stdout)
+	_ = file.Sync()
+	_ = file.Close()
 }
 
 // SetupLogger configures the logging system based on the provided configuration.
 func SetupLogger(configManager types.ConfigManager) {
+	CloseLogger()
+	exitHandler.Do(func() {
+		logrus.RegisterExitHandler(CloseLogger)
+	})
 	logConfig := configManager.GetLogConfig()
 
 	// Set log level
@@ -76,17 +82,18 @@ func SetupLogger(configManager types.ConfigManager) {
 			if err != nil {
 				logrus.Warnf("Failed to open log file: %v", err)
 			} else {
-				var fileWriter io.Writer
-				// Only use flushWriter in debug mode for immediate log visibility
-				// In other modes, use direct file write for better performance
-				if level == logrus.DebugLevel || level == logrus.TraceLevel {
-					fileWriter = newFlushWriter(logFile)
-				} else {
-					fileWriter = logFile
+				loggerFileMu.Lock()
+				oldFile := loggerFile
+				loggerFile = logFile
+				loggerFileMu.Unlock()
+				if oldFile != nil && oldFile != logFile {
+					_ = oldFile.Close()
 				}
+				// NOTE: We intentionally avoid calling Sync() on every write, even in debug/trace,
+				// because fsync is extremely slow and can significantly degrade performance.
 				// Use syncWriter to ensure thread-safe writes to both outputs
 				multiWriter := &syncWriter{
-					writer: io.MultiWriter(os.Stdout, fileWriter),
+					writer: io.MultiWriter(os.Stdout, logFile),
 				}
 				logrus.SetOutput(multiWriter)
 			}
