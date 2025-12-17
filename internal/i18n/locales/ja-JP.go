@@ -76,6 +76,7 @@ var MessagesJaJP = map[string]string{
 	"validation.invalid_model_mapping":                       "モデルマッピング形式が無効です：{{.error}}",
 	"validation.aggregate_no_model_redirect": "集約グループはモデル��ダイレクトルールをサポートしていません",
 	"validation.invalid_model_redirect":      "無効なモデルリダイレクトルール：{{.error}}",
+	"validation.invalid_param_overrides":     "パラメータ上書きフィールド {{.field}} の型が無効です：期待 {{.expected}}、実際 {{.got}}",
 
 	// Task related
 	"task.validation_started": "キー検証タスクが開始されました",

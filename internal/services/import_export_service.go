@@ -420,6 +420,9 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 		}
 		newGroup.Config = cleanedConfig
 	}
+	if err := validateParamOverrides(newGroup.ParamOverrides); err != nil {
+		return 0, err
+	}
 
 	if err := tx.Create(&newGroup).Error; err != nil {
 		return 0, fmt.Errorf("failed to create group: %w", err)

@@ -76,6 +76,7 @@ var MessagesZhCN = map[string]string{
 	"validation.invalid_model_mapping":                       "模型映射格式无效：{{.error}}",
 	"validation.aggregate_no_model_redirect": "聚合分组不支持模型重定向规则",
 	"validation.invalid_model_redirect":      "无效的模型重定向规则：{{.error}}",
+	"validation.invalid_param_overrides":     "参数覆盖字段 {{.field}} 类型无效：期望 {{.expected}}，实际 {{.got}}",
 
 	// Task related
 	"task.validation_started": "密钥验证任务已开始",
