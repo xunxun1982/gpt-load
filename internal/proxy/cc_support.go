@@ -1015,6 +1015,178 @@ func applyTokenMultiplier(usage *ClaudeUsage) {
 	usage.OutputTokens = adjusted
 }
 
+func normalizeTodoWriteTodos(args map[string]any) ([]map[string]any, bool) {
+	todos, ok := args["todos"]
+	if !ok {
+		if v, exists := args["value"]; exists {
+			// Some malformed outputs place the todos array under a generic
+			// "value" key. Treat this as the candidate todos source.
+			todos = v
+			ok = true
+		}
+	}
+
+	if !ok {
+		return nil, false
+	}
+
+	var todoList []any
+	hasValidTodos := false
+
+	switch v := todos.(type) {
+	case []any:
+		if len(v) > 0 {
+			todoList = v
+			hasValidTodos = true
+		}
+	case string:
+		trimmedStr := strings.TrimSpace(v)
+		if trimmedStr != "" {
+			var parsed []any
+			if err := json.Unmarshal([]byte(trimmedStr), &parsed); err == nil && len(parsed) > 0 {
+				todoList = parsed
+				hasValidTodos = true
+			}
+		}
+	case map[string]any:
+		mapVal := v
+		foundList := false
+		for _, k := range []string{"todos", "todo", "item", "task", "value"} {
+			if val, exists := mapVal[k]; exists {
+				if list, ok := val.([]any); ok && len(list) > 0 {
+					todoList = list
+					foundList = true
+					break
+				} else if val != nil {
+					todoList = []any{val}
+					foundList = true
+					break
+				}
+			}
+		}
+		if !foundList && len(mapVal) > 0 {
+			todoList = []any{mapVal}
+			foundList = true
+		}
+		hasValidTodos = foundList && len(todoList) > 0
+	}
+
+	if !hasValidTodos {
+		return nil, false
+	}
+
+	normalizedTodos := make([]map[string]any, 0, len(todoList))
+	for idx, item := range todoList {
+		defaultID := fmt.Sprintf("task-%d", idx+1)
+
+		if strItem, ok := item.(string); ok {
+			normalizedTodos = append(normalizedTodos, map[string]any{
+				"activeForm": strItem,
+				"content":    strItem,
+				"status":     "pending",
+				"priority":   "medium",
+				"id":         defaultID,
+			})
+			continue
+		}
+
+		mapItem, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		cleanItem := make(map[string]any)
+		if content, ok := mapItem["content"]; ok {
+			cleanItem["content"] = content
+		} else if task, ok := mapItem["task"]; ok {
+			cleanItem["content"] = task
+		} else if desc, ok := mapItem["description"]; ok {
+			cleanItem["content"] = desc
+		}
+		if existingAF, ok := mapItem["activeForm"]; ok {
+			cleanItem["activeForm"] = existingAF
+		} else {
+			switch v := cleanItem["content"].(type) {
+			case string:
+				cleanItem["activeForm"] = v
+			default:
+				cleanItem["activeForm"] = fmt.Sprint(v)
+			}
+		}
+
+		var rawStatus any
+		if status, ok := mapItem["status"]; ok {
+			rawStatus = status
+		} else if state, ok := mapItem["state"]; ok {
+			rawStatus = state
+		}
+
+		finalStatus := "pending"
+		if strStatus, ok := rawStatus.(string); ok {
+			lowerStatus := strings.ToLower(strings.TrimSpace(strStatus))
+			switch lowerStatus {
+			case "completed", "complete", "finished", "done", "success", "succeeded":
+				finalStatus = "completed"
+			case "in_progress", "in progress", "working", "doing", "running", "active":
+				finalStatus = "in_progress"
+			case "pending", "todo", "not_started", "not started", "planned":
+				finalStatus = "pending"
+			default:
+				finalStatus = "pending"
+			}
+		}
+		cleanItem["status"] = finalStatus
+
+		var rawPriority any
+		if p, ok := mapItem["priority"]; ok {
+			rawPriority = p
+		}
+		finalPriority := "medium"
+		if strP, ok := rawPriority.(string); ok {
+			lowerP := strings.ToLower(strings.TrimSpace(strP))
+			switch lowerP {
+			case "high":
+				finalPriority = "high"
+			case "low":
+				finalPriority = "low"
+			case "medium":
+				finalPriority = "medium"
+			}
+		}
+		cleanItem["priority"] = finalPriority
+
+		var idStr string
+		if rawID, ok := mapItem["id"]; ok {
+			switch v := rawID.(type) {
+			case string:
+				idStr = strings.TrimSpace(v)
+			case float64:
+				idStr = fmt.Sprintf("task-%d", int(v))
+			case int:
+				idStr = fmt.Sprintf("task-%d", v)
+			default:
+				idStr = ""
+			}
+		}
+		if len(idStr) < 3 {
+			idStr = defaultID
+		}
+		cleanItem["id"] = idStr
+
+		// Only keep todos that have meaningful content, matching the
+		// CC XML parsing path behavior.
+		if _, hasContent := cleanItem["content"]; hasContent {
+			normalizedTodos = append(normalizedTodos, cleanItem)
+		}
+	}
+
+	if len(normalizedTodos) == 0 {
+		return nil, false
+	}
+
+	return normalizedTodos, true
+}
+
 func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string, bool) {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" {
@@ -1064,175 +1236,7 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 
 	switch toolName {
 	case "TodoWrite":
-		// NOTE: An earlier automated review suggested extracting this TodoWrite
-		// normalization into a helper. We intentionally keep it inline here to
-		// avoid extra indirection on this hot path and to keep all TodoWrite-
-		// specific fixes co-located. Behavior is covered by cc_support_test.go
-		// (TodoWrite-related tests) and should not be modified without updating
-		// the corresponding tests.
-		// For TodoWrite, require a structurally valid todos list. If we cannot
-		// parse a non-empty list of items, we skip this function call entirely
-		// to avoid sending malformed plans to Claude Code (which would cause
-		// repeated correction attempts and noisy output).
-		todos, ok := args["todos"]
-		if !ok {
-			if v, exists := args["value"]; exists {
-				// Some malformed outputs place the todos array under a generic
-				// "value" key. Treat this as the candidate todos source.
-				todos = v
-				ok = true
-			}
-		}
-		if ok {
-			var todoList []any
-			hasValidTodos := false
-
-			switch v := todos.(type) {
-			case []any:
-				if len(v) > 0 {
-					todoList = v
-					hasValidTodos = true
-				}
-			case string:
-				trimmedStr := strings.TrimSpace(v)
-				if trimmedStr != "" {
-					var parsed []any
-					if err := json.Unmarshal([]byte(trimmedStr), &parsed); err == nil && len(parsed) > 0 {
-						todoList = parsed
-						hasValidTodos = true
-					}
-				}
-			case map[string]any:
-				mapVal := v
-				foundList := false
-				for _, k := range []string{"todos", "todo", "item", "task", "value"} {
-					if val, exists := mapVal[k]; exists {
-						if list, ok := val.([]any); ok && len(list) > 0 {
-							todoList = list
-							foundList = true
-							break
-						} else if val != nil {
-							todoList = []any{val}
-							foundList = true
-							break
-						}
-					}
-				}
-				if !foundList && len(mapVal) > 0 {
-					todoList = []any{mapVal}
-					foundList = true
-				}
-				hasValidTodos = foundList && len(todoList) > 0
-			}
-
-			if !hasValidTodos {
-				return arguments, false
-			}
-
-			normalizedTodos := make([]map[string]any, 0, len(todoList))
-			for idx, item := range todoList {
-				defaultID := fmt.Sprintf("task-%d", idx+1)
-
-				if strItem, ok := item.(string); ok {
-					normalizedTodos = append(normalizedTodos, map[string]any{
-						"activeForm": strItem,
-						"content":  strItem,
-						"status":   "pending",
-						"priority": "medium",
-						"id":       defaultID,
-					})
-					continue
-				}
-
-				mapItem, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-
-				cleanItem := make(map[string]any)
-				if content, ok := mapItem["content"]; ok {
-					cleanItem["content"] = content
-				} else if task, ok := mapItem["task"]; ok {
-					cleanItem["content"] = task
-				} else if desc, ok := mapItem["description"]; ok {
-					cleanItem["content"] = desc
-				}
-				if existingAF, ok := mapItem["activeForm"]; ok {
-					cleanItem["activeForm"] = existingAF
-				} else {
-					switch v := cleanItem["content"].(type) {
-					case string:
-						cleanItem["activeForm"] = v
-					default:
-						cleanItem["activeForm"] = fmt.Sprint(v)
-					}
-				}
-
-				var rawStatus any
-				if status, ok := mapItem["status"]; ok {
-					rawStatus = status
-				} else if state, ok := mapItem["state"]; ok {
-					rawStatus = state
-				}
-
-				finalStatus := "pending"
-				if strStatus, ok := rawStatus.(string); ok {
-					lowerStatus := strings.ToLower(strings.TrimSpace(strStatus))
-					switch lowerStatus {
-					case "completed", "complete", "finished", "done", "success", "succeeded":
-						finalStatus = "completed"
-					case "in_progress", "in progress", "working", "doing", "running", "active":
-						finalStatus = "in_progress"
-					case "pending", "todo", "not_started", "not started", "planned":
-						finalStatus = "pending"
-					default:
-						finalStatus = "pending"
-					}
-				}
-				cleanItem["status"] = finalStatus
-
-				var rawPriority any
-				if p, ok := mapItem["priority"]; ok {
-					rawPriority = p
-				}
-				finalPriority := "medium"
-				if strP, ok := rawPriority.(string); ok {
-					lowerP := strings.ToLower(strings.TrimSpace(strP))
-					switch lowerP {
-					case "high":
-						finalPriority = "high"
-					case "low":
-						finalPriority = "low"
-					case "medium":
-						finalPriority = "medium"
-					}
-				}
-				cleanItem["priority"] = finalPriority
-
-				var idStr string
-				if rawID, ok := mapItem["id"]; ok {
-					switch v := rawID.(type) {
-					case string:
-						idStr = strings.TrimSpace(v)
-					case float64:
-						idStr = fmt.Sprintf("task-%d", int(v))
-					case int:
-						idStr = fmt.Sprintf("task-%d", v)
-					}
-				}
-				if len(idStr) < 3 {
-					idStr = defaultID
-				}
-				cleanItem["id"] = idStr
-				// Only keep todos that have meaningful content, matching the
-				// CC XML parsing path behavior.
-				if _, hasContent := cleanItem["content"]; hasContent {
-					normalizedTodos = append(normalizedTodos, cleanItem)
-				}
-			}
-			if len(normalizedTodos) == 0 {
-				return arguments, false
-			}
+		if normalizedTodos, ok := normalizeTodoWriteTodos(args); ok {
 			args = map[string]any{"todos": normalizedTodos}
 		} else {
 			return arguments, false
@@ -1365,186 +1369,12 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 		skipCall := false
 		switch call.Name {
 		case "TodoWrite":
-			// NOTE: An earlier automated review suggested extracting this TodoWrite
-			// normalization into a helper. We intentionally keep it inline here to
-			// avoid extra indirection on this hot path and to keep all TodoWrite-
-			// specific fixes co-located. Behavior is covered by cc_support_test.go
-			// (TodoWrite-related tests) and should not be modified without updating
-			// the corresponding tests.
-			// For TodoWrite, require a structurally valid todos list. If we cannot
-			// parse a non-empty list of items, we skip this function call entirely
-			// to avoid sending malformed plans to Claude Code (which would cause
-			// repeated correction attempts and noisy output).
-			todos, ok := call.Args["todos"]
-			if !ok {
-				if v, exists := call.Args["value"]; exists {
-					// Some malformed outputs place the todos array under a generic
-					// "value" key. Treat this as the candidate todos source.
-					todos = v
-					ok = true
-				}
-			}
-			if ok {
-				var todoList []any
-				hasValidTodos := false
-
-				switch v := todos.(type) {
-				case []any:
-					if len(v) > 0 {
-						todoList = v
-						hasValidTodos = true
-					}
-				case string:
-					trimmedStr := strings.TrimSpace(v)
-					if trimmedStr != "" {
-						var parsed []any
-						if err := json.Unmarshal([]byte(trimmedStr), &parsed); err == nil && len(parsed) > 0 {
-							todoList = parsed
-							hasValidTodos = true
-						}
-					}
-				case map[string]any:
-					mapVal := v
-					foundList := false
-					for _, k := range []string{"todos", "todo", "item", "task", "value"} {
-						if val, exists := mapVal[k]; exists {
-							if list, ok := val.([]any); ok && len(list) > 0 {
-								todoList = list
-								foundList = true
-								break
-							} else if val != nil {
-								todoList = []any{val}
-								foundList = true
-								break
-							}
-						}
-					}
-					if !foundList && len(mapVal) > 0 {
-						todoList = []any{mapVal}
-						foundList = true
-					}
-					hasValidTodos = foundList && len(todoList) > 0
-				}
-
-				if hasValidTodos {
-					normalizedTodos := make([]map[string]any, 0, len(todoList))
-					for idx, item := range todoList {
-						defaultID := fmt.Sprintf("task-%d", idx+1)
-
-						if strItem, ok := item.(string); ok {
-							normalizedTodos = append(normalizedTodos, map[string]any{
-								"activeForm": strItem,
-								"content":  strItem,
-								"status":   "pending",
-								"priority": "medium",
-								"id":       defaultID,
-							})
-							continue
-						}
-
-						mapItem, ok := item.(map[string]any)
-						if !ok {
-							continue
-						}
-
-						cleanItem := make(map[string]any)
-						if content, ok := mapItem["content"]; ok {
-							cleanItem["content"] = content
-						} else if task, ok := mapItem["task"]; ok {
-							cleanItem["content"] = task
-						} else if desc, ok := mapItem["description"]; ok {
-							cleanItem["content"] = desc
-						}
-						if existingAF, ok := mapItem["activeForm"]; ok {
-							cleanItem["activeForm"] = existingAF
-						} else {
-							switch v := cleanItem["content"].(type) {
-							case string:
-								cleanItem["activeForm"] = v
-							default:
-								cleanItem["activeForm"] = fmt.Sprint(v)
-							}
-						}
-
-						var rawStatus any
-						if status, ok := mapItem["status"]; ok {
-							rawStatus = status
-						} else if state, ok := mapItem["state"]; ok {
-							rawStatus = state
-						}
-
-						finalStatus := "pending"
-						if strStatus, ok := rawStatus.(string); ok {
-							lowerStatus := strings.ToLower(strings.TrimSpace(strStatus))
-							switch lowerStatus {
-							case "completed", "complete", "finished", "done", "success", "succeeded":
-								finalStatus = "completed"
-							case "in_progress", "in progress", "working", "doing", "running", "active":
-								finalStatus = "in_progress"
-							case "pending", "todo", "not_started", "not started", "planned":
-								finalStatus = "pending"
-							default:
-								finalStatus = "pending"
-							}
-						}
-						cleanItem["status"] = finalStatus
-
-						var rawPriority any
-						if p, ok := mapItem["priority"]; ok {
-							rawPriority = p
-						}
-						finalPriority := "medium"
-						if strP, ok := rawPriority.(string); ok {
-							lowerP := strings.ToLower(strings.TrimSpace(strP))
-							switch lowerP {
-							case "high":
-								finalPriority = "high"
-							case "low":
-								finalPriority = "low"
-							case "medium":
-								finalPriority = "medium"
-							}
-						}
-						cleanItem["priority"] = finalPriority
-
-						var idStr string
-						if rawID, ok := mapItem["id"]; ok {
-							switch v := rawID.(type) {
-							case string:
-								idStr = strings.TrimSpace(v)
-							case float64:
-								idStr = fmt.Sprintf("task-%d", int(v))
-							case int:
-								idStr = fmt.Sprintf("task-%d", v)
-							default:
-								idStr = ""
-							}
-						}
-						if len(idStr) < 3 {
-							idStr = defaultID
-						}
-						cleanItem["id"] = idStr
-
-						if _, hasContent := cleanItem["content"]; hasContent {
-							normalizedTodos = append(normalizedTodos, cleanItem)
-						}
-					}
-
-					if len(normalizedTodos) > 0 {
-						call.Args["todos"] = normalizedTodos
-					} else {
-						hasValidTodos = false
-					}
-				}
-
-				if !hasValidTodos {
-					skipCall = true
-					logrus.Debug("CC+FC: Skipping TodoWrite call - no valid todos found")
-				}
+			// Use shared helper for TodoWrite normalization
+			if normalizedTodos, ok := normalizeTodoWriteTodos(call.Args); ok {
+				call.Args["todos"] = normalizedTodos
 			} else {
-				// No todos-like field present at all; skip this TodoWrite call.
 				skipCall = true
-				logrus.Debug("CC+FC: Skipping TodoWrite call - missing todos field")
+				logrus.Debug("CC+FC: Skipping TodoWrite call - validation failed or no todos found")
 			}
 
 		case "AskUserQuestion":
