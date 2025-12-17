@@ -297,9 +297,12 @@ type OpenAIRequest struct {
 	Stream      bool            `json:"stream"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
 	Stop        json.RawMessage `json:"stop,omitempty"`
-	// interface{} is used here for flexibility to handle both string ("auto"/"none") and
-	// object forms ({"type": "tool", "name": "..."}) from OpenAI API. json.Marshal ensures
-	// type safety during serialization. This design is intentional for simplicity.
+	// NOTE: We intentionally keep interface{} here (instead of json.RawMessage).
+	// This field is only used for outbound serialization to upstream OpenAI-style APIs,
+	// not for inbound JSON parsing. Using json.RawMessage would require manual JSON
+	// quoting for string values (e.g. "auto") and increases the chance of producing
+	// invalid JSON. With interface{}, json.Marshal guarantees correct JSON encoding
+	// for both string and object forms while keeping the code simple (KISS).
 	ToolChoice interface{} `json:"tool_choice,omitempty"`
 }
 
@@ -1004,8 +1007,11 @@ func applyTokenMultiplier(usage *ClaudeUsage) {
 		adjusted = int(math.Ceil(raw))
 	}
 	if adjusted <= 0 {
-		// Preserve genuine zero-usage responses; only enforce a >=1 floor
-		// when there were non-zero tokens before scaling.
+		// Preserve genuine zero-usage responses.
+		// For valid multipliers (>0) and non-zero OutputTokens, math.Ceil(raw)
+		// already guarantees adjusted >= 1. This fallback is only for unexpected
+		// numeric edge cases (e.g. NaN/Inf) where we prefer not to drop a non-zero
+		// usage to 0.
 		if usage.OutputTokens > 0 {
 			adjusted = usage.OutputTokens
 		} else {
@@ -1365,7 +1371,11 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 			}
 		}
 
-		// Specific normalization for tools to handle schema strictness
+		// Specific normalization for tools to handle schema strictness.
+		// NOTE: We intentionally do NOT route this through normalizeOpenAIToolCallArguments.
+		// Doing so would require json.Marshal + json.Unmarshal per call, which adds extra
+		// allocations in the CC hot path. Keeping direct per-tool normalization here is
+		// faster and easier to reason about.
 		skipCall := false
 		switch call.Name {
 		case "TodoWrite":
