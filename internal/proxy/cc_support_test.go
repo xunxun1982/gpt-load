@@ -150,7 +150,7 @@ func TestCCFunctionCall_StreamingMalformedXMLCleanup(t *testing.T) {
 			name:        "bullet with empty malformed tag",
 			content:     "● <><invokename=\"TodoWrite\">[{}]",
 			shouldClean: true,
-			expectClean: "●",
+			expectClean: "",
 		},
 	}
 
@@ -220,6 +220,60 @@ func TestCCFunctionCall_StreamingMalformedXMLCleanup(t *testing.T) {
 				t.Errorf("output leaked file path: %s", output)
 			}
 		})
+	}
+}
+
+func TestCCFunctionCall_StreamingPartialMalformedTagHoldback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	trigger := "<<CALL_TEST>>"
+	stopReason := "stop"
+
+	content := `Hello <invokename="Read"`
+	chunk := &OpenAIResponse{
+		Model: "test-model",
+		Choices: []OpenAIChoice{
+			{
+				Index: 0,
+				Delta: &OpenAIRespMessage{
+					Content: &content,
+				},
+				FinishReason: &stopReason,
+			},
+		},
+	}
+
+	body := buildTestSSEBody(chunk)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyTriggerSignal, trigger)
+	c.Set(ctxKeyFunctionCallEnabled, true)
+	c.Set("original_model", "test-model")
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	output := w.Body.String()
+	if output == "" {
+		t.Fatalf("expected SSE output, got empty body")
+	}
+	if !strings.Contains(output, "Hello") {
+		t.Errorf("expected output to contain %q, got: %s", "Hello", output)
+	}
+	if strings.Contains(output, "<invokename") {
+		t.Errorf("output leaked <invokename: %s", output)
+	}
+	if strings.Contains(output, "<parametername") {
+		t.Errorf("output leaked <parametername: %s", output)
+	}
+	if strings.Contains(output, "<>") {
+		t.Errorf("output leaked <> fragment: %s", output)
 	}
 }
 
@@ -1822,12 +1876,12 @@ func TestRemoveClaudeCodePreamble(t *testing.T) {
 		{
 			name: "JSON leak with bullet - on same line",
 			input: `● [{"id": "1", "content": "task", "status": "pending"}]`,
-			expected: `● [{"id": "1", "content": "task", "status": "pending"}]`,
+			expected: ``,
 		},
 		{
 			name:     "preserve bullet only",
 			input:    "●",
-			expected: "●",
+			expected: "",
 		},
 		{
 			name: "preserve empty lines",

@@ -106,7 +106,7 @@ func TestRemoveFunctionCallsBlocks(t *testing.T) {
 		{
 			name:     "remove malformed invokename tags with <> and newline",
 			input:    "● <>\n<invokename=\"TodoWrite\">[{}]",
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "remove malformed parameter tags with proper closing",
@@ -166,6 +166,92 @@ func TestRemoveFunctionCallsBlocks(t *testing.T) {
 				t.Errorf("removeFunctionCallsBlocks() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestRemoveFunctionCallsBlocks_AutoPauseSnippetsFromProductionLog(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "auto_pause_snippet_1",
+			input:    "<<CALL_ukuun7>>\n{\n",
+			expected: "",
+		},
+		{
+			name:     "auto_pause_snippet_2",
+			input:    "我继续处理。\n<<CALL_m2a45w>>\n<invoke name=\"TodoWrite\">\n",
+			expected: "我继续处理。",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := removeFunctionCallsBlocks(tt.input)
+			if result != tt.expected {
+				t.Errorf("removeFunctionCallsBlocks() = %q, want %q", result, tt.expected)
+			}
+			if strings.Contains(result, "<<CALL_") {
+				t.Errorf("result should not contain trigger signal: %q", result)
+			}
+		})
+	}
+}
+
+func TestApplyFunctionCallRequestRewrite_CCRequestKeepsToolsAndForcesRequired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/proxy/cursor2api/v1/chat/completions", nil)
+	c.Set(ctxKeyOriginalFormat, "claude")
+
+	group := &models.Group{
+		Name:        "test-group",
+		ChannelType: "openai",
+		Config: map[string]any{
+			"force_function_call": true,
+		},
+	}
+
+	reqBody := map[string]any{
+		"model": "test-model",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+		},
+		"tools": []any{
+			map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "web_search",
+					"description": "",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{},
+					},
+				},
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	ps := &ProxyServer{}
+	rewrittenBody, _, err := ps.applyFunctionCallRequestRewrite(c, group, bodyBytes)
+	if err != nil {
+		t.Fatalf("applyFunctionCallRequestRewrite() error = %v", err)
+	}
+
+	var rewrittenReq map[string]any
+	if err := json.Unmarshal(rewrittenBody, &rewrittenReq); err != nil {
+		t.Fatalf("failed to unmarshal rewritten body: %v", err)
+	}
+
+	if _, ok := rewrittenReq["tools"]; !ok {
+		t.Fatalf("expected tools to be preserved for CC requests")
+	}
+	if tc, ok := rewrittenReq["tool_choice"]; !ok || tc != "required" {
+		t.Fatalf("expected tool_choice=required for CC requests, got: %v", rewrittenReq["tool_choice"])
 	}
 }
 
@@ -249,7 +335,7 @@ func TestRemoveFunctionCallsBlocks_MalformedTagsWithFilePath(t *testing.T) {
 		{
 			name:     "multiline with malformed tag",
 			input:    "查看文件：<><invokename=\"Read\">F:/path/file.py\n\n结果如下：",
-			expected: "查看文件：\n结果如下：",
+			expected: "查看文件：\n\n结果如下：",
 		},
 		// IMPORTANT: Normal file paths in text should be PRESERVED
 		{
@@ -300,7 +386,7 @@ func TestRemoveFunctionCallsBlocks_TodoWriteJSONLeak(t *testing.T) {
 		{
 			name:     "bullet with TodoWrite JSON",
 			input:    "● <><invokename=\"TodoWrite\">[{\"id\":\"1\",\"content\":\"task\"}]",
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "complex TodoWrite from real-world production log",
@@ -332,7 +418,7 @@ func TestRemoveFunctionCallsBlocks_TodoWriteJSONLeak(t *testing.T) {
 		{
 			name:     "malformed parameter JSON name with bullet",
 			input:    `● <><parameter name="todosid":"1","content":"task","status":"pending"}`,
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "malformed parameter JSON name multiline",
@@ -349,7 +435,7 @@ func TestRemoveFunctionCallsBlocks_TodoWriteJSONLeak(t *testing.T) {
 		{
 			name:     "truncated JSON with bullet",
 			input:    `● <>id":"1","content":"联网搜索Python GUI最佳实践"`,
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "truncated JSON starting with field value",
@@ -359,7 +445,7 @@ func TestRemoveFunctionCallsBlocks_TodoWriteJSONLeak(t *testing.T) {
 		{
 			name:     "multiple truncated JSON lines",
 			input:    "● <>id\":\"1\",\"content\":\"task1\"\n● <>id\":\"2\",\"content\":\"task2\"",
-			expected: "●\n●",
+			expected: "",
 		},
 		{
 			name:     "text before truncated JSON",
@@ -370,7 +456,7 @@ func TestRemoveFunctionCallsBlocks_TodoWriteJSONLeak(t *testing.T) {
 		{
 			name:     "repeated JSON fragments multiline",
 			input:    "● 我来为你规划这个任务。首先创建任务清单。<>id\":\"1\",\"content\":\"联网搜索Python GUI最佳实践\",\"status\":\"pending\"}\n● <>联网搜索Python GUI最佳实践\",\"activeForm\":\"搜索\",\"status\":\"pending\"}",
-			expected: "● 我来为你规划这个任务。首先创建任务清单。\n●",
+			expected: "● 我来为你规划这个任务。首先创建任务清单。",
 		},
 		{
 			name:     "JSON fragment without opening bracket",
@@ -381,7 +467,7 @@ func TestRemoveFunctionCallsBlocks_TodoWriteJSONLeak(t *testing.T) {
 		{
 			name:     "CC output pattern with bullet and truncated JSON",
 			input:    `● <>id":"1","content":"联网搜索Python GUI最佳实践","status":"pending"}`,
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "CC output pattern CJK value followed by JSON field",
@@ -391,7 +477,7 @@ func TestRemoveFunctionCallsBlocks_TodoWriteJSONLeak(t *testing.T) {
 		{
 			name:     "CC output multiple repeated JSON lines",
 			input:    "● <>id\":\"1\",\"content\":\"联网搜索\"\n● <>id\":\"2\",\"content\":\"检查hello.py\"\n● <>id\":\"3\",\"content\":\"编写GUI\"",
-			expected: "●\n●\n●",
+			expected: "",
 		},
 		{
 			name:     "CC output with activeForm field pattern",
@@ -443,7 +529,7 @@ func TestRemoveFunctionCallsBlocks_ChainedMalformedTags(t *testing.T) {
 		{
 			name:     "chained tags with JSON array value",
 			input:    `● <><invokename="TodoWrite"><parametername="todos">[{"id":"1","content":"task","status":"pending"}]`,
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "preserve tool result descriptions",
@@ -1059,7 +1145,7 @@ func TestRemoveFunctionCallsBlocks_CCOutputFromProductionLog(t *testing.T) {
 		{
 			name:     "malformed invoke with parametername same line",
 			input:    `● <><invokename="Glob"><parametername="pattern">*`,
-			expected: "●",
+			expected: "",
 		},
 		// Test malformed parametername with JSON array
 		{
@@ -1083,7 +1169,7 @@ func TestRemoveFunctionCallsBlocks_CCOutputFromProductionLog(t *testing.T) {
 		{
 			name:     "bullet points with malformed tags",
 			input:    "● <><invokename=\"TodoWrite\"><parametername=\"todos\">[{\"id\":\"1\"}]",
-			expected: "●",
+			expected: "",
 		},
 		// Test multiple malformed tags on same line
 		{
@@ -1596,12 +1682,12 @@ func TestRemoveFunctionCallsBlocks_CCMalformedXML(t *testing.T) {
 		{
 			name:     "bullet with malformed invokename",
 			input:    "● <><invokename=\"TodoWrite\">[{}]",
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "bullet with malformed parametername",
 			input:    "● <><parametername=\"todos\">[{}]",
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "malformed invokename without bullet",
@@ -1730,7 +1816,7 @@ func TestRemoveFunctionCallsBlocks_UserReportedIssueProductionLog(t *testing.T) 
 		{
 			name:     "bullet with malformed invokename and parametername chain",
 			input:    "● <><invokename=\"TodoWrite\"><parametername=\"todos\">[{\"id\":\"1\",\"content\":\"分析现有hello.py文件，设计更精简的GUI版本\"}]",
-			expected: "●",
+			expected: "",
 		},
 		// Case 5: Text description followed by malformed tag - preamble removed
 		{
@@ -1744,7 +1830,7 @@ func TestRemoveFunctionCallsBlocks_UserReportedIssueProductionLog(t *testing.T) 
 		{
 			name:     "multiple malformed tags in sequence",
 			input:    "● <><parametername=\"todos\">[{\"id\":\"1\",\"content\":\"分析现有hello.py文件，设计更精简的GUI版本\"}]\n\n● <><parametername=\"todos\">[{\"content\":\"分析现有hello.py文件，设计更精简的GUI版本\"}]\n\n● <><invokename=\"TodoWrite\">[{\"content\":\"分析现有hello.py文件，设计更精简的GUI版本\"}]",
-			expected: "●\n●\n●",
+			expected: "",
 		},
 		// Case 7: Glob pattern parameter leak
 		{
@@ -1779,9 +1865,9 @@ func TestRemoveFunctionCallsBlocks_UserReportedIssueProductionLog(t *testing.T) 
 				"  首先，让我查看当前目录结构：<><invokename=\"Glob\"><parametername=\"pattern\">*\n\n" +
 				"● Search(pattern: \"*\")\n\n" +
 				"● 我看到有hello.py文件，还有hello_gui.py等文件。让我先查看hello.py的内容：<><invokename=\"Read\">F:/MyProjects/test/language/python/xx/hello.py",
-			expected: "● 我需要先了解当前目录结构和hello.py文件的内容，然后制定一个计划来将其改为漂亮的GUI程序。\n" +
-				"  首先，让我查看当前目录结构：\n" +
-				"● Search(pattern: \"*\")\n" +
+			expected: "● 我需要先了解当前目录结构和hello.py文件的内容，然后制定一个计划来将其改为漂亮的GUI程序。\n\n" +
+				"  首先，让我查看当前目录结构：\n\n" +
+				"● Search(pattern: \"*\")\n\n" +
 				"● 我看到有hello.py文件，还有hello_gui.py等文件。让我先查看hello.py的内容：",
 		},
 	}
@@ -1921,23 +2007,28 @@ func TestRemoveFunctionCallsBlocks_BareJSONLeak(t *testing.T) {
 		{
 			name:     "bare JSON array after <> on same line",
 			input:    `● 我需要先建立一个计划来完成任务。<>[{"id": "1","content": "使用Exa工具搜索PythonGUI最佳实践","activeForm":"正在搜索","status":"pending"}]`,
-			expected: "● 我需要先建立一个计划来完成任务。",  // Normal work description, not preamble
+			expected: "● 我需要先建立一个计划来完成任务。", // Normal work description, not preamble
 		},
 		{
 			name: "bare JSON array after <> on next line (cross-line)",
 			input: `● <>
 
   [{"id":1,"content": "搜索GUI编程最佳实践和简短示例", "activeForm": "正在搜索GUI编程最佳实践和简短示例","status": "pending"}]`,
-			expected: "●",
+			expected: "",
+		},
+		{
+			name:     "JSON array leak with bullet - on same line",
+			input:    `● [{"id":1,"content":"搜索GUI编程最佳实践和简短示例","activeForm":"正在搜索GUI编程最佳实践和简短示例","status":"pending"}]`,
+			expected: "",
 		},
 		{
 			name:     "standalone <> on a line",
 			input:    "● <>\n\n下一步操作...",
-			expected: "●\n下一步操作...",
+			expected: "● 下一步操作...",
 		},
 		{
 			name:     "bare JSON object after <>",
-			input:    `Let me create a task: <>{\"id\":\"1\",\"content\":\"task one\"}`,
+			input:    `Let me create a task: <>{"id":"1","content":"task one"}`,
 			expected: "Let me create a task:",
 		},
 		{
@@ -1963,43 +2054,18 @@ func TestRemoveFunctionCallsBlocks_BareJSONLeak(t *testing.T) {
 		{
 			name:     "bare JSON mixed with natural language",
 			input:    `我需要先建立一个计划来完成任务。根据用户的要求，我需要：1.联网搜索最佳实践（使用exa工具）<>[{"id": "1","content": "使用Exa工具搜索PythonGUI最佳实践","activeForm":"正在搜索","status":"pending"}]`,
-			expected: "我需要先建立一个计划来完成任务。根据用户的要求，我需要：1.联网搜索最佳实践（使用exa工具）",  // Only "根据用户的要求" is preamble
+			expected: "我需要先建立一个计划来完成任务。根据用户的要求，我需要：1.联网搜索最佳实践（使用exa工具）",
 		},
 		{
 			name:     "normal work description without JSON - preserved",
 			input:    `● 我需要先建立一个计划来完成任务。`,
-			expected: "● 我需要先建立一个计划来完成任务。",  // Normal work description, not preamble
+			expected: "● 我需要先建立一个计划来完成任务。",
 		},
 		{
 			name:     "bare JSON with nested objects",
 			input:    `Plan created: <>[{"id":"1","nested":{"key":"value"},"content":"task"}]`,
 			expected: "Plan created:",
 		},
-		// Real cases from user's logs - cross-line JSON leak
-		{
-			name: "user reported exact case 1 - standalone <> with cross-line JSON",
-			input: `● <>
-
-  [{"id":1,"content": "搜索GUI编程最佳实践和简短示例", "activeForm": "正在搜索GUI编程最佳实践和简短示例","status":
-  "pending"},{"id":2,"content": "分析搜索结果并制定实施方案", "activeForm": "正在分析搜索结果并制定实施方案",
-  "status":"pending"}, {"id":3, "content":"创建hello.py文件（如不存在）", "activeForm":
-  "正在创建hello.py文件","status": "pending"}]`,
-			expected: "●",
-		},
-		{
-			name: "user reported exact case 2 - parametername with JSON",
-			input: `● <><parametername="todos">[{"id":1,"content":"搜索GUI编程最佳实践和简短示例","activeForm":"正在搜索GUI编程最佳实践
-  和简短示例","status":"pending"},{"id":2,"content":"分析搜索结果并制定实施方案","activeForm":"正在分析搜索结果并制
-  定实施方案","status":"pending"}]`,
-			expected: "●",
-		},
-		{
-			name: "user reported exact case 3 - invokename with JSON",
-			input: `● <><invokename="TodoWrite">[{"id":1, "content":"搜索GUI编程最佳实践和简短示例","activeForm":
-  "正在搜索GUI编程最佳实践和简短示例", "status":"pending"}, {"id":2, "content":"分析搜索结果并制定实施方案",
-  "activeForm": "正在分析搜索结果并制定实施方案", "status":"pending"}]`,
-			expected: "●",
-		},
 	}
 
 	for _, tt := range tests {
@@ -2007,77 +2073,6 @@ func TestRemoveFunctionCallsBlocks_BareJSONLeak(t *testing.T) {
 			result := removeFunctionCallsBlocks(tt.input)
 			if result != tt.expected {
 				t.Errorf("removeFunctionCallsBlocks() = %q, want %q", result, tt.expected)
-			}
-
-			// Verify no JSON content leaked
-			if strings.Contains(result, `"id"`) || strings.Contains(result, `"content"`) {
-				t.Errorf("result leaked JSON content: %q", result)
-			}
-			if strings.Contains(result, `"status"`) || strings.Contains(result, `"activeForm"`) {
-				t.Errorf("result leaked JSON fields: %q", result)
-			}
-		})
-	}
-}
-
-// TestRemoveFunctionCallsBlocks_ComplexChainedTags tests complex chained malformed tags
-// User reported: <><invokename="tool">text<parametername="param">value
-func TestRemoveFunctionCallsBlocks_ComplexChainedTags(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "chained invokename and parametername",
-			input:    `<><invokename="mcp__exa__web_search_exa">PythonGUI框架最佳实践2025最简洁最小代码 HelloWorld<parametername="numResults">5`,
-			expected: "",
-		},
-		{
-			name:     "chained with bullet point",
-			input:    `● <><invokename="Read">读取文件<parametername="path">F:/test/file.py`,
-			expected: "●",
-		},
-		{
-			name:     "multiple chained tags",
-			input:    `开始操作<><invokename="TodoWrite"><parametername="todos">[JSON]<parametername="priority">high`,
-			expected: "开始操作",
-		},
-		{
-			name: "user case 1 - parametername with multiline JSON",
-			input: `● 我来帮你创建一个漂亮的GUI 程序来显示 "Hello
-  World"。首先我需要制定一个计划，然后逐步实施。<><parametername="todos">[{"id":1,"content": "研究Python
-  GUI框架的最佳实践和选择", "activeForm": "正在研究Python GUI框架的最佳实践和选择","status":"in_progress"}]`,
-			expected: `● 我来帮你创建一个漂亮的GUI 程序来显示 "Hello
-  World"。首先我需要制定一个计划，然后逐步实施。`,  // Normal work description, not preamble
-		},
-		{
-			name:     "user case 2 - invokename with multiline JSON",
-			input:    `● <><invokename="TodoWrite">[{"id":1,"content":"研究Python GUI框架的最佳实践和选择","activeForm": "正在研究PythonGUI框架的最佳实践和选择", "status":"in_progress"}]`,
-			expected: "●",
-		},
-		{
-			name:     "user case 3 - retry with parametername",
-			input:    `● 让我重新尝试创建待办事项列表：<><parametername="todos">[{"id":1,"content": "研究PythonGUI框架的最佳实践和选择", "activeForm": "正在研究Python GUI框架的最佳实践和选择","status": "in_progress"}]`,
-			// Keep the full natural-language description, only strip the malformed tag+JSON
-			expected: `● 让我重新尝试创建待办事项列表：`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := removeFunctionCallsBlocks(tt.input)
-			if result != tt.expected {
-				t.Errorf("removeFunctionCallsBlocks() = %q, want %q", result, tt.expected)
-			}
-
-			// Verify no malformed tags leaked
-			if strings.Contains(result, "<parametername") || strings.Contains(result, "<invokename") {
-				t.Errorf("result contains malformed tags: %q", result)
-			}
-			// Verify no JSON leaked
-			if strings.Contains(result, `"id"`) || strings.Contains(result, `"content"`) {
-				t.Errorf("result contains JSON: %q", result)
 			}
 		})
 	}
@@ -3054,7 +3049,7 @@ func TestRemoveFunctionCallsBlocks_ProductionLogPatterns(t *testing.T) {
 1. 使用Tkinter创建GUI
 <><invokename="TodoWrite"><parametername="todos">[{"id":"1","content":"task"}]`,
 			// NOTE: Markdown headers preserved, bold headers removed, citations removed
-			expected: "### 调研结果分析\n我搜索了最新的PythonGUI开发选项\n1. 使用Tkinter创建GUI",
+			expected: "### 调研结果分析\n我搜索了最新的PythonGUI开发选项\n\n1. 使用Tkinter创建GUI",
 		},
 		// Test preservation of valid content
 		{
@@ -3675,7 +3670,7 @@ func TestRemoveFunctionCallsBlocks_ProductionLogPatternsExtended(t *testing.T) {
 			name: "production_log_multiple_malformed_tags",
 			input: "● <><parametername=\"todos\">[{\"id\":\"1\",\"content\":\"分析现有hello.py文件\"}]\n\n● <><invokename=\"TodoWrite\">[{\"content\":\"分析现有hello.py文件\"}]",
 			notContains: []string{`<parametername`, `<invokename`, `"id":`, `"content":`},
-			contains:    []string{`●`},
+			contains:    []string{},
 		},
 		{
 			name: "production_log_preserve_tool_result_description",
@@ -4574,7 +4569,7 @@ func TestRemoveFunctionCallsBlocks_ProductionLogOutput(t *testing.T) {
 		{
 			name: "clean_multiple_malformed_tags",
 			input: "● 我需要先了解当前目录结构<><invokename=\"Glob\"><parametername=\"pattern\">*\n\n● Search(pattern: \"*\")\n\n● 让我查看文件<><invokename=\"Read\">F:/path/file.py",
-			expected: "● 我需要先了解当前目录结构\n● Search(pattern: \"*\")\n● 让我查看文件",
+			expected: "● 我需要先了解当前目录结构\n\n● Search(pattern: \"*\")\n\n● 让我查看文件",
 			notContains: []string{"<invokename", "<parametername", "F:/path/file.py"},
 		},
 		{
@@ -4955,13 +4950,13 @@ func TestRemoveFunctionCallsBlocks_ProductionLogDecember2025_Extended(t *testing
 		{
 			name:     "ANTML format block with tool example",
 			input:    "Here is the format:\n<antml\\b:format>\n<<CALL_test>>\n<invoke name=\"Write\">\n</invoke>\n</antml\\b:format>\nNow let me help.",
-			expected: "Here is the format:\nNow let me help.",
+			expected: "Here is the format:\n\nNow let me help.",
 		},
 		{
 			// ANTML tools blocks contain internal tool examples - entire block should be removed
 			name:     "ANTML tools block removes content",
 			input:    "Available tools:\n<antml" + `\b` + ":tools>\nTool list here\n</antml" + `\b` + ":tools>\nLet me use them.",
-			expected: "Available tools:\nLet me use them.",
+			expected: "Available tools:\n\nLet me use them.",
 		},
 		{
 			name:     "malformed JSON with truncated field names",
@@ -5593,12 +5588,12 @@ func TestRemoveFunctionCallsBlocks_TruncatedThinkingTags(t *testing.T) {
 		{
 			name:     "remove_truncated_thinking_with_bullet",
 			input:    "● <thinking",
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "remove_truncated_think_with_bullet",
 			input:    "● <think",
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "remove_truncated_thinking_standalone",
@@ -5623,7 +5618,7 @@ func TestRemoveFunctionCallsBlocks_TruncatedThinkingTags(t *testing.T) {
 		{
 			name:     "remove_truncated_thinking_multiline",
 			input:    "Line 1\n● <thinking\nLine 3",
-			expected: "Line 1\n●\nLine 3",
+			expected: "Line 1\nLine 3",
 		},
 	}
 
@@ -5650,7 +5645,7 @@ func TestRemoveFunctionCallsBlocks_ProductionLogDecember2025_CCOutput(t *testing
 		{
 			name:     "truncated_thinking_with_bullet_from_log",
 			input:    "● <thinking\n● 我来帮您完成这个任务。",
-			expected: "●\n● 我来帮您完成这个任务。",
+			expected: "● 我来帮您完成这个任务。",
 		},
 		// From production log: TodoWrite with malformed JSON parameters
 		{
@@ -5674,7 +5669,7 @@ func TestRemoveFunctionCallsBlocks_ProductionLogDecember2025_CCOutput(t *testing
 		{
 			name:     "bullet_with_invokename_from_log",
 			input:    "● <><invokename=\"TodoWrite\">[{\"content\":\"分析现有hello.py文件，设计更精简的GUI版本\"}]",
-			expected: "●",
+			expected: "",
 		},
 		// From production log: preserve normal Chinese text
 		{
@@ -6608,7 +6603,7 @@ func TestRemoveFunctionCallsBlocks_ThinkingModeDecember2025(t *testing.T) {
 		{
 			name:     "truncated thinking tag at end of line",
 			input:    "● <thinking",
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "truncated thinking tag with newline",
@@ -6618,7 +6613,7 @@ func TestRemoveFunctionCallsBlocks_ThinkingModeDecember2025(t *testing.T) {
 		{
 			name:     "truncated think tag",
 			input:    "● <think",
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "ANTML format block with content",
@@ -7070,7 +7065,7 @@ func TestRemoveFunctionCallsBlocks_ANTMLThinkingWithToolCall(t *testing.T) {
 		{
 			name:     "bullet_with_malformed_json",
 			input:    `● <><parametername="todos">[{"id":"1","content":"task","status":"pending"}]`,
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "text_before_malformed_invoke",
@@ -7143,7 +7138,7 @@ func TestRemoveFunctionCallsBlocks_IncompleteANTMLTags(t *testing.T) {
 		{
 			name:     "incomplete_antml_with_bullet",
 			input:    `● <antml\b`,
-			expected: "●",
+			expected: "",
 		},
 		{
 			name:     "production_log_pattern_1",

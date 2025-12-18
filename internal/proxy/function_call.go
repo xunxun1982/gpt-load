@@ -312,6 +312,7 @@ var (
 	// NOTE: This pattern is applied only when no closing tag exists (checked in removeFunctionCallsBlocks)
 	// Matches content until newline or end of string
 	reUnclosedInvokeParam = regexp.MustCompile(`<(?:invoke|parameter)\s+name="[^"]*">[^\n]*(?:\n|$)`)
+	reUnclosedMalformedNameTag = regexp.MustCompile(`(?m)<(?:invoke|parameter|property)name[^>\r\n]*$`)
 
 	// ANTML (Anthropic Markup Language) patterns used by Claude Code and Kiro
 	// Format: <function_calls><invoke name="..."><parameter name="...">...
@@ -377,7 +378,7 @@ var (
 	)
 
 	// Precompiled pattern for compressing consecutive blank lines.
-	reConsecutiveNewlines = regexp.MustCompile(`\n\n+`)
+	reConsecutiveNewlines = regexp.MustCompile(`\n{3,}`)
 
 	// Precompiled patterns for repairMalformedJSON function.
 	// These are compiled once at init to avoid repeated compilation in hot path.
@@ -577,6 +578,10 @@ func isPotentialMalformedTagStart(s string) bool {
 	}
 
 	for _, prefix := range prefixes {
+		if strings.HasPrefix(s, prefix) {
+			return true
+		}
+
 		// Check if s is a prefix of the pattern (partial match)
 		if len(s) <= len(prefix) {
 			if prefix[:len(s)] == s {
@@ -776,10 +781,16 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	}
 
 	req["messages"] = newMessages
+	if isCCRequest(c) {
+		if _, ok := req["tool_choice"]; !ok {
+			req["tool_choice"] = "required"
+		}
+	}
 
-	// Remove native tools-related fields to avoid confusing upstream implementations.
-	delete(req, "tools")
-	delete(req, "tool_choice")
+	if !isCCRequest(c) {
+		delete(req, "tools")
+		delete(req, "tool_choice")
+	}
 
 	// Remove max_tokens only when it's too low to prevent truncation of the XML block.
 	// The XML format requires more tokens than standard text, and low limits (e.g. 100)
@@ -1769,6 +1780,27 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 	// chunks after "<>" prefix was removed earlier in the stream.
 	hasOrphanJson := reOrphanedJSON.MatchString(text)
 	if !strings.Contains(text, "<") && !hasOrphanJson {
+		if strings.ContainsAny(text, "\n\r") {
+			lines := strings.Split(text, "\n")
+			for _, line := range lines {
+				trimmedLine := strings.TrimSpace(line)
+				if trimmedLine == "" {
+					continue
+				}
+				if shouldSkipMalformedLine(trimmedLine) {
+					hasOrphanJson = true
+					break
+				}
+			}
+		}
+	}
+	if !strings.Contains(text, "<") && !hasOrphanJson {
+		trimmed := strings.TrimSpace(text)
+		if (trimmed == "●" || trimmed == "•" || trimmed == "‣") &&
+			!strings.ContainsAny(text, "\n\r") &&
+			(strings.HasSuffix(text, " ") || strings.HasSuffix(text, "\t")) {
+			return trimmed
+		}
 		// Even without XML tags, check for Claude Code preambles and remove them
 		if cleanupMode == cleanupModeFull {
 			text = removeClaudeCodePreamble(text)
@@ -1884,6 +1916,7 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 		// a well-formed malformed tag pattern (e.g., "...<>"). In practice, "<>"
 		// is only used by models as a broken prefix, so stripping it is safe.
 		text = strings.ReplaceAll(text, "<>", "")
+		text = reUnclosedMalformedNameTag.ReplaceAllString(text, "")
 
 		// Additional cleanup for malformed JSON arrays and objects from TodoWrite
 		// Remove lines that look like malformed JSON arrays/objects
@@ -1992,6 +2025,38 @@ func shouldSkipMalformedLine(trimmed string) bool {
 	hasXMLIndicator := strings.Contains(trimmed, "<")
 	if !hasJSONIndicator && !hasXMLIndicator {
 		return false
+	}
+
+	if hasJSONIndicator && !hasXMLIndicator {
+		hasNonPunct := false
+	loopPunctScan:
+		for _, r := range trimmed {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+				hasNonPunct = true
+				break
+			}
+			if r > 127 {
+				hasNonPunct = true
+				break
+			}
+			switch r {
+			case ' ', '\t', '\r', '\n', '{', '}', '[', ']', '"', ':', ',', '.':
+				continue
+			default:
+				hasNonPunct = true
+				break loopPunctScan
+			}
+		}
+		if !hasNonPunct {
+			return true
+		}
+	}
+
+	if len(trimmed) >= 2 && (trimmed[0] == ']' || trimmed[0] == '}') && trimmed[1] != ' ' && trimmed[1] != '\t' {
+		tail := trimmed[1:]
+		if strings.ContainsAny(tail, `":,`) || strings.Contains(tail, ".py") {
+			return true
+		}
 	}
 
 	// STRUCTURAL CHECK 1: Malformed XML tag fragments
@@ -2180,9 +2245,21 @@ func removeClaudeCodePreamble(text string) string {
 
 	lines := strings.Split(text, "\n")
 	cleanedLines := make([]string, 0, len(lines))
+	inCodeBlock := false
 
-	for _, line := range lines {
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+			cleanedLines = append(cleanedLines, line)
+			continue
+		}
+		if inCodeBlock {
+			cleanedLines = append(cleanedLines, line)
+			continue
+		}
 
 		// Empty lines are kept (will be compressed later)
 		if trimmed == "" {
@@ -2190,8 +2267,128 @@ func removeClaudeCodePreamble(text string) string {
 			continue
 		}
 
-		// Keep bullet points without content (●, •, ‣)
+		// Keep tool output lines (Claude Code uses "⎿" prefix)
+		if strings.HasPrefix(trimmed, "⎿") {
+			cleanedLines = append(cleanedLines, line)
+			continue
+		}
+		if shouldSkipMalformedLine(trimmed) {
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "●") || strings.HasPrefix(trimmed, "•") || strings.HasPrefix(trimmed, "‣") {
+			bulletLen := len("●")
+			if strings.HasPrefix(trimmed, "•") {
+				bulletLen = len("•")
+			} else if strings.HasPrefix(trimmed, "‣") {
+				bulletLen = len("‣")
+			}
+			rest := strings.TrimSpace(trimmed[bulletLen:])
+			if rest != "" && isStandaloneToolMarker(rest) {
+				cleanedLines = append(cleanedLines, line)
+				continue
+			}
+		}
+		if (strings.HasPrefix(trimmed, "●") || strings.HasPrefix(trimmed, "•") || strings.HasPrefix(trimmed, "‣")) && strings.Contains(trimmed, ".py") {
+			idx := -1
+			for k := 1; k+1 < len(trimmed); k++ {
+				if trimmed[k] == ':' && (trimmed[k+1] == '\\' || trimmed[k+1] == '/') {
+					prev := trimmed[k-1]
+					if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') {
+						idx = k - 1
+						break
+					}
+				}
+			}
+			if idx == -1 {
+				idx = strings.LastIndex(trimmed, "**/")
+			}
+			if idx > 0 {
+				prev := trimmed[idx-1]
+				if prev != ' ' && prev != '\t' && prev != '(' && prev != '[' && prev != '{' {
+					tail := trimmed[idx:]
+					if !strings.ContainsAny(tail, " \t") && (strings.Contains(tail, ".py") || strings.Contains(tail, ".pyw")) {
+						trimmed = strings.TrimSpace(trimmed[:idx])
+						line = trimmed
+						if trimmed == "" {
+							continue
+						}
+					}
+				}
+			}
+		}
+
+		// Drop standalone bullet markers (●, •, ‣)
 		if trimmed == "●" || trimmed == "•" || trimmed == "‣" {
+			seenBlank := false
+			for j := i + 1; j < len(lines); j++ {
+				nextTrimmed := strings.TrimSpace(lines[j])
+				if nextTrimmed == "" {
+					seenBlank = true
+					continue
+				}
+				if !seenBlank {
+					break
+				}
+				if strings.HasPrefix(nextTrimmed, "```") || strings.HasPrefix(nextTrimmed, "⎿") {
+					break
+				}
+				if nextTrimmed == "●" || nextTrimmed == "•" || nextTrimmed == "‣" {
+					break
+				}
+				if strings.HasPrefix(nextTrimmed, "●") || strings.HasPrefix(nextTrimmed, "•") || strings.HasPrefix(nextTrimmed, "‣") {
+					break
+				}
+				if isPureJSONLine(nextTrimmed) || isMalformedXMLLine(nextTrimmed) || isLeakedJSONFieldLine(nextTrimmed) {
+					break
+				}
+				if isInternalMarkerLine(nextTrimmed) || isStandaloneBoldHeader(nextTrimmed) {
+					break
+				}
+
+				lines[j] = trimmed + " " + nextTrimmed
+				i = j - 1
+				break
+			}
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "●") || strings.HasPrefix(trimmed, "•") || strings.HasPrefix(trimmed, "‣") {
+			bullet := "●"
+			bulletLen := len("●")
+			if strings.HasPrefix(trimmed, "•") {
+				bullet = "•"
+				bulletLen = len("•")
+			} else if strings.HasPrefix(trimmed, "‣") {
+				bullet = "‣"
+				bulletLen = len("‣")
+			}
+
+			rest := strings.TrimSpace(trimmed[bulletLen:])
+			if rest == "" {
+				continue
+			}
+			if isStandaloneToolMarker(rest) {
+				cleanedLines = append(cleanedLines, line)
+				continue
+			}
+			if isPureJSONLine(rest) {
+				continue
+			}
+			if cut := findJSONLeakStartIndex(rest); cut >= 0 {
+				kept := strings.TrimSpace(rest[:cut])
+				if kept == "" {
+					continue
+				}
+				bulletIndex := strings.Index(line, bullet)
+				if bulletIndex < 0 {
+					cleanedLines = append(cleanedLines, bullet+" "+kept)
+					continue
+				}
+				leading := line[:bulletIndex]
+				cleanedLines = append(cleanedLines, leading+bullet+" "+kept)
+				continue
+			}
 			cleanedLines = append(cleanedLines, line)
 			continue
 		}
@@ -2207,13 +2404,6 @@ func removeClaudeCodePreamble(text string) string {
 		// These are meta-commentary headers, not content headers
 		// Content headers with # are preserved
 		if isStandaloneBoldHeader(trimmed) {
-			continue
-		}
-
-		// STRUCTURAL CHECK: Skip code block markers (```lang)
-		// Keep actual code blocks that are part of the response
-		if strings.HasPrefix(trimmed, "```") {
-			cleanedLines = append(cleanedLines, line)
 			continue
 		}
 
@@ -2237,7 +2427,7 @@ func removeClaudeCodePreamble(text string) string {
 
 		// STRUCTURAL CHECK: Skip standalone tool markers (not part of bullet points)
 		// Detected by ToolName( pattern
-		if isStandaloneToolMarker(line, trimmed) {
+		if isStandaloneToolMarker(trimmed) {
 			continue
 		}
 
@@ -2257,6 +2447,83 @@ func removeClaudeCodePreamble(text string) string {
 	}
 
 	return strings.Join(cleanedLines, "\n")
+}
+
+func findJSONLeakStartIndex(text string) int {
+	if text == "" {
+		return -1
+	}
+	if (text[0] == '{' || text[0] == '[') && isPureJSONLine(text) {
+		return 0
+	}
+
+	fieldCount := 0
+	fieldStart := -1
+	for i := 0; i < len(text); i++ {
+		if text[i] != '"' {
+			continue
+		}
+
+		j := i + 1
+		for ; j < len(text) && j-i <= 32; j++ {
+			c := text[j]
+			if c == '"' {
+				break
+			}
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+				j = -1
+				break
+			}
+		}
+		if j > i+1 && j < len(text) && text[j] == '"' {
+			name := text[i+1 : j]
+			if isValidJSONFieldName(name) {
+				k := j + 1
+				for k < len(text) && (text[k] == ' ' || text[k] == '\t') {
+					k++
+				}
+				if k < len(text) && text[k] == ':' {
+					fieldCount++
+					if fieldStart == -1 {
+						fieldStart = i
+					}
+					i = k
+					continue
+				}
+			}
+		}
+
+		k := i + 1
+		for k < len(text) && (text[k] == ' ' || text[k] == '\t') {
+			k++
+		}
+		if k < len(text) && text[k] == ':' {
+			start := i
+			for start > 0 {
+				c := text[start-1]
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+					start--
+					continue
+				}
+				break
+			}
+			if start < i {
+				name := text[start:i]
+				if isValidJSONFieldName(name) {
+					fieldCount++
+					if fieldStart == -1 {
+						fieldStart = start
+					}
+					i = k
+					continue
+				}
+			}
+		}
+	}
+	if fieldCount >= 1 {
+		return fieldStart
+	}
+	return -1
 }
 
 // isInternalMarkerLine checks if a line is an internal marker that should be filtered.
@@ -2575,20 +2842,45 @@ func isLeakedJSONFieldLine(trimmed string) bool {
 // isStandaloneToolMarker checks if a line is a standalone tool marker.
 // STRUCTURAL APPROACH: Detects tool markers by function call pattern.
 // Performance: O(1) prefix checks
-func isStandaloneToolMarker(line, trimmed string) bool {
-	// Tool markers look like: "ToolName(args)"
-	// But we keep them if they're part of bullet points
-	if strings.HasPrefix(line, "●") || strings.HasPrefix(line, "•") {
+func isStandaloneToolMarker(trimmed string) bool {
+	if strings.HasPrefix(trimmed, "●") || strings.HasPrefix(trimmed, "•") || strings.HasPrefix(trimmed, "‣") {
 		return false
 	}
-	// Check for common tool marker patterns
-	toolPrefixes := []string{"Update(", "Read(", "Write(", "Bash(", "Glob(", "Grep(", "Edit("}
-	for _, prefix := range toolPrefixes {
-		if strings.HasPrefix(trimmed, prefix) {
-			return true
-		}
+
+	candidate := trimmed
+	if strings.HasPrefix(candidate, "●") {
+		candidate = strings.TrimSpace(candidate[len("●"):])
+	} else if strings.HasPrefix(candidate, "•") {
+		candidate = strings.TrimSpace(candidate[len("•"):])
+	} else if strings.HasPrefix(candidate, "‣") {
+		candidate = strings.TrimSpace(candidate[len("‣"):])
 	}
-	return false
+
+	op := strings.IndexByte(candidate, '(')
+	if op <= 0 || op > 40 {
+		return false
+	}
+	if op > 0 && candidate[op-1] == ' ' {
+		return false
+	}
+	if !strings.Contains(candidate[op+1:], ")") {
+		return false
+	}
+
+	name := candidate[:op]
+	if name == "" {
+		return false
+	}
+	if name[0] < 'A' || name[0] > 'z' || (name[0] > 'Z' && name[0] < 'a') {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == ' ' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // isRetryPhrase checks if a line contains retry/correction phrases
@@ -2680,10 +2972,10 @@ func containsRetryStructureEnglish(lower string) bool {
 // Performance: Uses regexp to replace multiple consecutive newlines with single newline.
 func cleanConsecutiveBlankLines(text string) string {
 	// Fast path: if no consecutive blank lines, return early
-	if !strings.Contains(text, "\n\n") {
+	if !strings.Contains(text, "\n\n\n") {
 		return text
 	}
-	return reConsecutiveNewlines.ReplaceAllString(text, "\n")
+	return reConsecutiveNewlines.ReplaceAllString(text, "\n\n")
 }
 
 // hasToolResults checks if any message in the array has role="tool" or role="function",

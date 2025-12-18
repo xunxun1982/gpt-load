@@ -175,6 +175,9 @@ func isCCEnabled(c *gin.Context) bool {
 // checking both the original path and context flags set during request processing.
 // This helper consolidates the three-way check pattern used across CC handlers.
 func isCCRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return c.GetBool("cc_was_claude_path") || c.GetString(ctxKeyOriginalFormat) == "claude"
+	}
 	// Check original path contains Claude segment
 	if strings.Contains(c.Request.URL.Path, "/claude/") {
 		return true
@@ -2188,6 +2191,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	writer := NewSSEWriter(c.Writer, flusher)
 	defer writer.Close()
 
+	reqID := ""
+	if c.Request != nil {
+		reqID = c.Request.Header.Get("X-Request-ID")
+	}
+	triggerSignal := getTriggerSignal(c)
+
 	msgID := ""
 	msgUUID, err := uuid.NewRandom()
 	if err != nil {
@@ -2218,7 +2227,11 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		return
 	}
 
-	logrus.WithField("msg_id", msgID).Debug("CC: Started streaming response")
+	logrus.WithFields(logrus.Fields{
+		"msg_id":         msgID,
+		"request_id":     reqID,
+		"trigger_signal": triggerSignal,
+	}).Debug("CC: Started streaming response")
 
 	reader := NewSSEReader(resp.Body)
 	contentBlockIndex := 0
@@ -2227,7 +2240,6 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	var currentToolCallArgs strings.Builder
 	var accumulatedContent strings.Builder
 	contentBufFullWarned := false
-	triggerSignal := getTriggerSignal(c)
 	cleanupMode := cleanupModeArtifactsOnly
 	if isFunctionCallEnabled(c) {
 		cleanupMode = cleanupModeFull
@@ -2489,6 +2501,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	finalize := func(stopReason string, usage *OpenAIUsage) {
 		initialStopReason := stopReason
 		logrus.WithFields(logrus.Fields{
+			"msg_id":                 msgID,
+			"request_id":             reqID,
+			"trigger_signal":         triggerSignal,
 			"initial_stop_reason":     initialStopReason,
 			"accumulated_content_len": accumulatedContent.Len(),
 			"function_call_enabled":   isFunctionCallEnabled(c),
@@ -2573,7 +2588,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if err := writer.Send(ClaudeStreamEvent{Type: "message_stop"}, true); err != nil {
 			logrus.WithError(err).Error("CC: Failed to write message_stop")
 		}
-		logrus.WithField("stop_reason", stopReason).Info("CC: Stream finalized successfully with stop_reason")
+		logrus.WithFields(logrus.Fields{
+			"msg_id":         msgID,
+			"request_id":     reqID,
+			"trigger_signal": triggerSignal,
+			"stop_reason":    stopReason,
+		}).Info("CC: Stream finalized successfully with stop_reason")
 	}
 
 	for {
