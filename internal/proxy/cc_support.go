@@ -1015,6 +1015,10 @@ func applyTokenMultiplier(usage *ClaudeUsage) {
 		// already guarantees adjusted >= 1. This fallback is only for unexpected
 		// numeric edge cases (e.g. NaN/Inf) where we prefer not to drop a non-zero
 		// usage to 0.
+		// Note: This branch is not reachable for normal small multipliers such as
+		// 0.1 or 0.01 when OutputTokens > 0, because Ceil(raw) is always >= 1 for
+		// any positive raw. It only matters for numeric failures (NaN/Inf) or when
+		// upstream reports zero output tokens.
 		// We intentionally restore the original token count instead of flooring to 1
 		// so we don't mask upstream usage in edge-case numeric failures.
 		if usage.OutputTokens > 0 {
