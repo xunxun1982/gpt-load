@@ -32,14 +32,14 @@ const (
 	ctxKeyOriginalFormat = "cc_original_format"
 )
 
-// Note: ctxKeyTriggerSignal is defined in server.go and shared across function call and CC support
-
+// ctxKeyTriggerSignal and ctxKeyFunctionCallEnabled are declared in server.go (same package proxy).
+// We keep them there to avoid introducing an extra constants file.
 const maxUpstreamResponseBodySize = 32 * 1024 * 1024
 
 var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum allowed size")
 
-// Note: maxContentBufferBytes is defined in function_call.go (256KB) and shared for content buffering
-
+// maxContentBufferBytes is declared in function_call.go (same package proxy).
+// We keep the single source of truth there to avoid drift without adding extra files.
 const (
 	// Thinking hints injected into user messages when extended thinking is enabled.
 	// Format follows b4u2cc reference implementation using ANTML-style tags with
@@ -1015,6 +1015,8 @@ func applyTokenMultiplier(usage *ClaudeUsage) {
 		// already guarantees adjusted >= 1. This fallback is only for unexpected
 		// numeric edge cases (e.g. NaN/Inf) where we prefer not to drop a non-zero
 		// usage to 0.
+		// We intentionally restore the original token count instead of flooring to 1
+		// so we don't mask upstream usage in edge-case numeric failures.
 		if usage.OutputTokens > 0 {
 			adjusted = usage.OutputTokens
 		} else {
@@ -1022,6 +1024,106 @@ func applyTokenMultiplier(usage *ClaudeUsage) {
 		}
 	}
 	usage.OutputTokens = adjusted
+}
+
+func normalizeArgsGenericInPlace(args map[string]any) {
+	if args == nil {
+		return
+	}
+	for key, val := range args {
+		strVal, ok := val.(string)
+		if !ok {
+			continue
+		}
+		trimmedStr := strings.TrimSpace(strVal)
+		if trimmedStr == "" {
+			continue
+		}
+		if (strings.HasPrefix(trimmedStr, "{") && strings.HasSuffix(trimmedStr, "}")) ||
+			(strings.HasPrefix(trimmedStr, "[") && strings.HasSuffix(trimmedStr, "]")) {
+			var jsonVal any
+			if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
+				args[key] = jsonVal
+				continue
+			}
+		}
+
+		if key == "content" || key == "command" || key == "script" || key == "code" {
+			if strings.Contains(strVal, "\\n") {
+				args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
+			}
+		}
+	}
+}
+
+func normalizeArgsEnsureSlice(args map[string]any, key string) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return
+	}
+	if _, isSlice := v.([]any); isSlice {
+		return
+	}
+	strVal, ok := v.(string)
+	if !ok {
+		return
+	}
+	var list []any
+	if err := json.Unmarshal([]byte(strVal), &list); err == nil {
+		args[key] = list
+		return
+	}
+	args[key] = []any{strVal}
+}
+
+func normalizeArgsEnsureMap(args map[string]any, key string) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return
+	}
+	if _, isMap := v.(map[string]any); isMap {
+		return
+	}
+	strVal, ok := v.(string)
+	if !ok {
+		return
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(strVal), &out); err == nil {
+		args[key] = out
+	}
+}
+
+func normalizeAskUserQuestionArgs(args map[string]any) {
+	normalizeArgsEnsureSlice(args, "questions")
+	normalizeArgsEnsureMap(args, "answers")
+}
+
+func normalizeListDirArgs(args map[string]any) {
+	if _, ok := args["recursive"]; !ok {
+		args["recursive"] = false
+	}
+}
+
+func normalizeWebSearchArgs(args map[string]any) {
+	normalizeArgsEnsureSlice(args, "allowed_domains")
+	normalizeArgsEnsureSlice(args, "blocked_domains")
+}
+
+func normalizeEditArgs(args map[string]any) {
+	for _, key := range []string{"old_string", "new_string"} {
+		v, ok := args[key]
+		if !ok || v == nil {
+			continue
+		}
+		strVal, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(strVal, "\\n") {
+			args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
+		}
+	}
 }
 
 func normalizeTodoWriteTodos(args map[string]any) ([]map[string]any, bool) {
@@ -1214,34 +1316,7 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 	if args == nil {
 		args = map[string]any{}
 	}
-
-	for key, val := range args {
-		strVal, ok := val.(string)
-		if !ok {
-			continue
-		}
-		trimmedStr := strings.TrimSpace(strVal)
-		if trimmedStr == "" {
-			continue
-		}
-		if (strings.HasPrefix(trimmedStr, "{") && strings.HasSuffix(trimmedStr, "}")) ||
-			(strings.HasPrefix(trimmedStr, "[") && strings.HasSuffix(trimmedStr, "]")) {
-			var jsonVal any
-			if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
-				args[key] = jsonVal
-				continue // Skip other fixes if it was valid JSON
-			}
-		}
-
-		// 2. Fix escaped newlines in content-heavy parameters
-		// This handles cases like TodoWrite's 'todos' passed as string
-		// where models might double-escape newlines (e.g. \\n instead of \n)
-		if key == "content" || key == "command" || key == "script" || key == "code" {
-			if strings.Contains(strVal, "\\n") {
-				args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
-			}
-		}
-	}
+	normalizeArgsGenericInPlace(args)
 
 	switch toolName {
 	case "TodoWrite":
@@ -1252,60 +1327,16 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 		}
 
 	case "AskUserQuestion":
-		if questions, ok := args["questions"]; ok {
-			if _, isSlice := questions.([]any); !isSlice {
-				if strVal, ok := questions.(string); ok {
-					var qList []any
-					if err := json.Unmarshal([]byte(strVal), &qList); err == nil {
-						args["questions"] = qList
-					} else {
-						args["questions"] = []any{strVal}
-					}
-				}
-			}
-		}
-		if answers, ok := args["answers"]; ok {
-			if _, isMap := answers.(map[string]any); !isMap {
-				if strVal, ok := answers.(string); ok {
-					var aMap map[string]any
-					if err := json.Unmarshal([]byte(strVal), &aMap); err == nil {
-						args["answers"] = aMap
-					}
-				}
-			}
-		}
+		normalizeAskUserQuestionArgs(args)
 
 	case "list_dir":
-		if _, ok := args["recursive"]; !ok {
-			args["recursive"] = false
-		}
+		normalizeListDirArgs(args)
 
 	case "WebSearch":
-		for _, key := range []string{"allowed_domains", "blocked_domains"} {
-			if v, ok := args[key]; ok {
-				if _, isSlice := v.([]any); !isSlice {
-					if strVal, ok := v.(string); ok {
-						var list []any
-						if err := json.Unmarshal([]byte(strVal), &list); err == nil {
-							args[key] = list
-						} else {
-							args[key] = []any{strVal}
-						}
-					}
-				}
-			}
-		}
+		normalizeWebSearchArgs(args)
 
 	case "Edit":
-		for _, key := range []string{"old_string", "new_string"} {
-			if val, ok := args[key]; ok {
-				if strVal, ok := val.(string); ok {
-					if strings.Contains(strVal, "\\n") {
-						args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
-					}
-				}
-			}
-		}
+		normalizeEditArgs(args)
 
 	default:
 		return arguments, false
@@ -1347,38 +1378,13 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 			continue
 		}
 
-		// Fix tool-specific parameter issues to handle common model errors
-		// We apply generic fixes based on parameter types and names to cover more tools
-		for key, val := range call.Args {
-			if strVal, ok := val.(string); ok {
-				// 1. Try to unmarshal JSON strings (arrays/objects)
-				// This handles cases like TodoWrite's 'todos' passed as string
-				trimmed := strings.TrimSpace(strVal)
-				if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
-					(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
-					var jsonVal any
-					if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
-						call.Args[key] = jsonVal
-						continue // Skip other fixes if it was valid JSON
-					}
-				}
-
-				// 2. Fix escaped newlines in content-heavy parameters
-				// This handles cases like Write/Edit 'content' or Bash 'command'
-				// where models might double-escape newlines (e.g. \\n instead of \n)
-				if key == "content" || key == "command" || key == "script" || key == "code" {
-					if strings.Contains(strVal, "\\n") {
-						call.Args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
-					}
-				}
-			}
-		}
+		normalizeArgsGenericInPlace(call.Args)
 
 		// Specific normalization for tools to handle schema strictness.
 		// NOTE: We intentionally do NOT route this through normalizeOpenAIToolCallArguments.
 		// Doing so would require json.Marshal + json.Unmarshal per call, which adds extra
-		// allocations in the CC hot path. Keeping direct per-tool normalization here is
-		// faster and easier to reason about.
+		// allocations in the CC hot path. We reuse the same in-place helpers as the
+		// OpenAI tool-call path to avoid drift without adding JSON overhead.
 		skipCall := false
 		switch call.Name {
 		case "TodoWrite":
@@ -1391,78 +1397,16 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 			}
 
 		case "AskUserQuestion":
-			// Ensure 'questions' is an array
-			if questions, ok := call.Args["questions"]; ok {
-				if _, isSlice := questions.([]any); !isSlice {
-					if strVal, ok := questions.(string); ok {
-						var qList []any
-						if err := json.Unmarshal([]byte(strVal), &qList); err == nil {
-							call.Args["questions"] = qList
-						} else {
-							// Wrap single string as array
-							call.Args["questions"] = []any{strVal}
-						}
-					}
-				}
-			}
-			// Ensure 'answers' is an object
-			if answers, ok := call.Args["answers"]; ok {
-				if _, isMap := answers.(map[string]any); !isMap {
-					if strVal, ok := answers.(string); ok {
-						var aMap map[string]any
-						if err := json.Unmarshal([]byte(strVal), &aMap); err == nil {
-							call.Args["answers"] = aMap
-						}
-					}
-				}
-			}
+			normalizeAskUserQuestionArgs(call.Args)
 
 		case "list_dir":
-			// Ensure 'recursive' field exists, default to false
-			// MCP list_dir tool requires this field, but models often omit it
-			if _, ok := call.Args["recursive"]; !ok {
-				call.Args["recursive"] = false
-			}
+			normalizeListDirArgs(call.Args)
 
 		case "WebSearch":
-			// Ensure 'allowed_domains' is an array
-			if allowed, ok := call.Args["allowed_domains"]; ok {
-				if _, isSlice := allowed.([]any); !isSlice {
-					if strVal, ok := allowed.(string); ok {
-						var list []any
-						if err := json.Unmarshal([]byte(strVal), &list); err == nil {
-							call.Args["allowed_domains"] = list
-						} else {
-							call.Args["allowed_domains"] = []any{strVal}
-						}
-					}
-				}
-			}
-			// Ensure 'blocked_domains' is an array
-			if blocked, ok := call.Args["blocked_domains"]; ok {
-				if _, isSlice := blocked.([]any); !isSlice {
-					if strVal, ok := blocked.(string); ok {
-						var list []any
-						if err := json.Unmarshal([]byte(strVal), &list); err == nil {
-							call.Args["blocked_domains"] = list
-						} else {
-							call.Args["blocked_domains"] = []any{strVal}
-						}
-					}
-				}
-			}
+			normalizeWebSearchArgs(call.Args)
 
 		case "Edit":
-			// Fix newlines in old_string and new_string
-			for _, key := range []string{"old_string", "new_string"} {
-				if val, ok := call.Args[key]; ok {
-					if strVal, ok := val.(string); ok {
-						if strings.Contains(strVal, "\\n") {
-							call.Args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
-						}
-					}
-				}
-			}
+			normalizeEditArgs(call.Args)
 		}
 
 		if skipCall {
