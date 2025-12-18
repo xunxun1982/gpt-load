@@ -1,6 +1,9 @@
 // Package proxy provides CC (Claude Code) support functionality.
 // CC support enables Claude clients to connect via /claude endpoint and have
 // requests converted from Claude format to OpenAI format before forwarding.
+// NOTE: This file intentionally keeps the CC conversion + streaming logic in one place.
+// Splitting into multiple files would improve navigation, but we avoid it here to
+// minimize refactor risk and keep performance-sensitive paths localized.
 package proxy
 
 import (
@@ -1002,32 +1005,29 @@ func applyTokenMultiplier(usage *ClaudeUsage) {
 	if usage == nil {
 		return
 	}
+	if usage.OutputTokens < 0 {
+		usage.OutputTokens = 0
+		return
+	}
+	if usage.OutputTokens == 0 {
+		// Preserve genuine zero-usage responses.
+		return
+	}
 
 	multiplier := getTokenMultiplier()
 	raw := float64(usage.OutputTokens) * multiplier
-	adjusted := 0
-	if !math.IsNaN(raw) && !math.IsInf(raw, 0) {
-		adjusted = int(math.Ceil(raw))
+	if math.IsNaN(raw) || math.IsInf(raw, 0) {
+		// Handle numeric edge cases from invalid multipliers by preserving the
+		// upstream count.
+		return
 	}
-	if adjusted <= 0 {
-		// Preserve genuine zero-usage responses.
-		// For valid multipliers (>0) and non-zero OutputTokens, math.Ceil(raw)
-		// already guarantees adjusted >= 1. This fallback is only for unexpected
-		// numeric edge cases (e.g. NaN/Inf) where we prefer not to drop a non-zero
-		// usage to 0.
-		// Note: This branch is not reachable for normal small multipliers such as
-		// 0.1 or 0.01 when OutputTokens > 0, because Ceil(raw) is always >= 1 for
-		// any positive raw. It only matters for numeric failures (NaN/Inf) or when
-		// upstream reports zero output tokens.
-		// We intentionally restore the original token count instead of flooring to 1
-		// so we don't mask upstream usage in edge-case numeric failures.
-		if usage.OutputTokens > 0 {
-			adjusted = usage.OutputTokens
-		} else {
-			adjusted = 0
-		}
+	if raw <= 0 {
+		// This should not happen when OutputTokens > 0 and multiplier > 0.
+		return
 	}
-	usage.OutputTokens = adjusted
+
+	// Ceil() guarantees >= 1 for any positive raw.
+	usage.OutputTokens = int(math.Ceil(raw))
 }
 
 func normalizeArgsGenericInPlace(args map[string]any) {
@@ -2119,6 +2119,10 @@ func (s *SSEWriter) Close() {
 
 // handleCCStreamingResponse handles streaming response conversion for CC support.
 func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Response) {
+	// NOTE: This handler is intentionally implemented as a single function.
+	// Splitting into multiple files/types is desirable for maintainability, but it
+	// can introduce subtle streaming regressions and extra allocations. Refactor
+	// should be done only with dedicated benchmarks and test coverage.
 	// Clear upstream encoding/length headers before writing synthesized SSE stream.
 	// The proxy reconstructs the event stream from OpenAI format to Claude format,
 	// so upstream headers (Content-Encoding, Content-Length, Transfer-Encoding) no longer apply.
