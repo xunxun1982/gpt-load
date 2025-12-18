@@ -456,8 +456,7 @@ export default {
       "有効にすると、クライアントは /proxy/グループ名/claude/v1/messages エンドポイントを使用でき、リクエストは自動的に OpenAI 形式に変換されます。",
     ccSupportCompatibilityTip:
       "このスイッチは OpenAI チャンネルのグループにのみ有効で、他のチャンネルではこの設定は無視され、表示されません。",
-    ccSupportRedirectTip:
-      "互換性のため、モデルリダイレクトルールに opus (claude-opus-4-5-20251101)、sonnet (claude-sonnet-4-5-20250929)、haiku (claude-haiku-4-5-20251001) 関連のモデルリダイレクトを追加してください。",
+    ccSupportRedirectTip: `Claude Code 互換性のため、次の手順を推奨します。1）モデル別名とフルモデル名の両方を「モデルリダイレクトルール」に追加：opus、claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001（ターゲットは実際に使う上流モデル。例：opus → deepseek-chat）；2）任意：クライアント側フォールバックとして、Claude Code の settings.json で env を設定（例："env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-chat", "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-chat", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-chat"}）または環境変数を設定：ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-chat、ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-chat、ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-chat（同様の変数も可）。`,
     thinkingModel: "思考モデル",
     thinkingModelTooltip:
       "Claude Code が拡張思考モードを有効にすると、このモデルが自動的に使用されます。空のままにすると、リクエストの元のモデルが使用されます。例：deepseek-reasoner",
