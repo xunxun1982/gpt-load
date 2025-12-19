@@ -393,16 +393,21 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
-		// Allow CC model mapping string fields (opus/sonnet/haiku model names).
-		// These are optional string fields for CC support model name replacement.
-		/*
-		if key == "cc_opus_model" || key == "cc_sonnet_model" || key == "cc_haiku_model" {
-			if _, ok := value.(string); !ok {
+		// Allow thinking_model string field for CC support extended thinking.
+		// This specifies the model to use when Claude Code enables extended thinking mode.
+		if key == "thinking_model" {
+			strVal, ok := value.(string)
+			if !ok {
 				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
+			}
+			if strings.TrimSpace(strVal) != "" {
+				ccEnabled, ok := configMap["cc_support"].(bool)
+				if !ok || !ccEnabled {
+					return fmt.Errorf("thinking_model can only be set when cc_support is enabled")
+				}
 			}
 			continue
 		}
-		*/
 
 		field, ok := jsonToField[key]
 		if !ok {

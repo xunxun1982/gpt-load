@@ -76,6 +76,7 @@ var MessagesEnUS = map[string]string{
 	"validation.invalid_model_mapping":                       "Invalid model mapping format: {{.error}}",
 	"validation.aggregate_no_model_redirect":                 "Aggregate groups do not support model redirect rules",
 	"validation.invalid_model_redirect":                      "Invalid model redirect rules: {{.error}}",
+	"validation.invalid_param_overrides":                     "Invalid param override field {{.field}}: expected {{.expected}}, got {{.got}}",
 
 	// Task related
 	"task.validation_started": "Key validation task started",

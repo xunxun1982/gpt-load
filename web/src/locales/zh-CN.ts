@@ -423,7 +423,7 @@ export default {
     sourceModel: "源模型",
     addModelRedirect: "添加模型重定向",
     functionCall: "强制函数调用",
-    functionCallTooltip1: "为此分组启用基于中间件的函数调用能力（类似 Toolify 的行为）",
+    functionCallTooltip1: "为此分组启用基于中间件的函数调用能力",
     functionCallTooltip2:
       "仅在上游模型本身不支持原生函数调用时启用。对于已经原生支持函数调用的渠道，请不要开启该开关，否则可能出现重复调用或未定义的行为。",
     functionCallOpenAITip:
@@ -436,8 +436,11 @@ export default {
       "开启后，客户端可使用 /proxy/分组名/claude/v1/messages 端点，请求会自动转换为 OpenAI 格式。",
     ccSupportCompatibilityTip:
       "此开关仅对 OpenAI 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
-    ccSupportRedirectTip:
-      "为了兼容性，请在模型重定向规则中加入 opus (claude-opus-4-5-20251101)、sonnet (claude-sonnet-4-5-20250929)、haiku (claude-haiku-4-5-20251001) 相关模型的重定向。",
+    ccSupportRedirectTip: `为了兼容 Claude Code 的模型别名与完整模型名，建议按以下方式配置：1）在「模型重定向规则」中同时为别名与全名添加重定向：opus、claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001（目标可指向你实际使用的上游模型，例如：opus → deepseek-chat）；2）可选：在 Claude Code 的 settings.json 中配置 env 作为客户端兜底，例如："env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-chat", "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-chat", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-chat"}；也可以直接设置环境变量：ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-chat、ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-chat、ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-chat（类似变量同理）。`,
+    thinkingModel: "思考模型",
+    thinkingModelTooltip:
+      "当 Claude Code 启用扩展思考模式时，自动使用此模型。留空则使用请求中的原始模型。例如：deepseek-reasoner",
+    thinkingModelPlaceholder: "例如：deepseek-reasoner",
 
     modelRedirectInvalidJson: "模型重定向规则 JSON 格式错误",
     modelRedirectInvalidFormat: "模型重定向规则的键值必须都是字符串",

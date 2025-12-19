@@ -91,6 +91,7 @@ interface GroupFormData {
   model_redirect_strict: boolean;
   force_function_call: boolean;
   cc_support: boolean;
+  thinking_model: string;
 
   config: Record<string, number | string | boolean>;
   configItems: ConfigItem[];
@@ -121,6 +122,7 @@ const formData = reactive<GroupFormData>({
   model_redirect_strict: false,
   force_function_call: false,
   cc_support: false,
+  thinking_model: "",
 
   config: {},
   configItems: [] as ConfigItem[],
@@ -370,6 +372,7 @@ function resetForm() {
     model_redirect_strict: false,
     force_function_call: false,
     cc_support: false,
+    thinking_model: "",
 
     config: {},
     configItems: [],
@@ -401,12 +404,15 @@ function loadGroupData() {
   const ccRaw = (rawConfig as any)["cc_support"];
   const ccSupport =
     props.group.channel_type === "openai" && typeof ccRaw === "boolean" ? ccRaw : false;
+  const thinkingModelRaw = (rawConfig as any)["thinking_model"];
+  const thinkingModel = typeof thinkingModelRaw === "string" ? thinkingModelRaw : "";
 
   const configItems = Object.entries(rawConfig)
     .filter(([key]) => {
       const ignoredKeys = [
         "force_function_call",
         "cc_support",
+        "thinking_model",
         "cc_opus_model",
         "cc_sonnet_model",
         "cc_haiku_model",
@@ -445,6 +451,7 @@ function loadGroupData() {
     model_redirect_strict: props.group.model_redirect_strict || false,
     force_function_call: forceFunctionCall,
     cc_support: ccSupport,
+    thinking_model: thinkingModel,
 
     config: {},
     configItems,
@@ -855,6 +862,13 @@ async function handleSubmit() {
       config["cc_support"] = true;
     } else {
       delete config["cc_support"];
+    }
+
+    // Persist thinking_model as a dedicated config key (only when cc_support is enabled).
+    if (formData.cc_support && formData.thinking_model.trim()) {
+      config["thinking_model"] = formData.thinking_model.trim();
+    } else {
+      delete config["thinking_model"];
     }
 
     // Validate path redirects for duplicates
@@ -1766,6 +1780,30 @@ async function handleSubmit() {
                         <div>⚠️ {{ t("keys.ccSupportCompatibilityTip") }}</div>
                         <div style="margin-top: 4px">{{ t("keys.ccSupportRedirectTip") }}</div>
                       </div>
+                    </div>
+                    <!-- Thinking Model Input (only shown when cc_support is enabled) -->
+                    <div v-if="formData.cc_support" style="margin-top: 12px">
+                      <div style="font-size: 13px; color: #666; margin-bottom: 4px">
+                        {{ t("keys.thinkingModel") }}
+                        <n-tooltip trigger="hover" placement="right">
+                          <template #trigger>
+                            <n-icon
+                              :component="HelpCircleOutline"
+                              class="help-icon config-help"
+                              style="margin-left: 4px"
+                            />
+                          </template>
+                          <div style="max-width: 300px">
+                            {{ t("keys.thinkingModelTooltip") }}
+                          </div>
+                        </n-tooltip>
+                      </div>
+                      <n-input
+                        v-model:value="formData.thinking_model"
+                        :placeholder="t('keys.thinkingModelPlaceholder')"
+                        size="small"
+                        style="width: 100%"
+                      />
                     </div>
                   </div>
                 </n-form-item>

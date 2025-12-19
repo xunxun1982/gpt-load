@@ -251,6 +251,9 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 	if err != nil {
 		return nil, err
 	}
+	if err := validateParamOverrides(params.ParamOverrides); err != nil {
+		return nil, err
+	}
 
 	headerRulesJSON, err := s.normalizeHeaderRules(params.HeaderRules)
 	if err != nil {
@@ -477,6 +480,9 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	}
 
 	if params.ParamOverrides != nil {
+		if err := validateParamOverrides(params.ParamOverrides); err != nil {
+			return nil, err
+		}
 		group.ParamOverrides = params.ParamOverrides
 	}
 
@@ -755,8 +761,10 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 		// Reset auto-increment counter (SQLite-specific)
 		// This is optional but keeps the database clean for future inserts
 		// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
-		if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='api_keys'").Error; err != nil {
-			logrus.WithContext(ctx).WithError(err).Warn("failed to reset api_keys sequence, continuing anyway")
+		if s.db.Dialector.Name() == "sqlite" {
+			if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='api_keys'").Error; err != nil {
+				logrus.WithContext(ctx).WithError(err).Warn("failed to reset api_keys sequence, continuing anyway")
+			}
 		}
 	}
 
@@ -771,8 +779,10 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	// Reset auto-increment counter (SQLite-specific)
 	// This is optional but keeps the database clean for future inserts
 	// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
-	if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='groups'").Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Warn("failed to reset groups sequence, continuing anyway")
+	if s.db.Dialector.Name() == "sqlite" {
+		if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='groups'").Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("failed to reset groups sequence, continuing anyway")
+		}
 	}
 
 	// Step 7: Commit the transaction
@@ -1519,6 +1529,191 @@ func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
 	}
 }
 
+func validateParamOverrides(overrides map[string]any) error {
+	if len(overrides) == 0 {
+		return nil
+	}
+
+	checkBool := func(key string) error {
+		raw, ok := overrides[key]
+		if !ok || raw == nil {
+			return nil
+		}
+		if _, ok := raw.(bool); ok {
+			return nil
+		}
+		return NewI18nError(app_errors.ErrValidation, "validation.invalid_param_overrides", map[string]any{
+			"field":    key,
+			"expected": "bool",
+			"got":      paramOverrideTypeName(raw),
+		})
+	}
+
+	checkNumber := func(key string) error {
+		raw, ok := overrides[key]
+		if !ok || raw == nil {
+			return nil
+		}
+		if isNumberLike(raw) {
+			return nil
+		}
+		return NewI18nError(app_errors.ErrValidation, "validation.invalid_param_overrides", map[string]any{
+			"field":    key,
+			"expected": "number",
+			"got":      paramOverrideTypeName(raw),
+		})
+	}
+
+	checkInteger := func(key string) error {
+		raw, ok := overrides[key]
+		if !ok || raw == nil {
+			return nil
+		}
+		if isIntegerLike(raw) {
+			return nil
+		}
+		return NewI18nError(app_errors.ErrValidation, "validation.invalid_param_overrides", map[string]any{
+			"field":    key,
+			"expected": "integer",
+			"got":      paramOverrideTypeName(raw),
+		})
+	}
+
+	checkStringOrStringArray := func(key string) error {
+		raw, ok := overrides[key]
+		if !ok || raw == nil {
+			return nil
+		}
+		if _, ok := raw.(string); ok {
+			return nil
+		}
+		if arr, ok := raw.([]any); ok {
+			for _, item := range arr {
+				if item == nil {
+					continue
+				}
+				if _, ok := item.(string); !ok {
+					return NewI18nError(app_errors.ErrValidation, "validation.invalid_param_overrides", map[string]any{
+						"field":    key,
+						"expected": "string_or_string_array",
+						"got":      paramOverrideTypeName(raw),
+					})
+				}
+			}
+			return nil
+		}
+		return NewI18nError(app_errors.ErrValidation, "validation.invalid_param_overrides", map[string]any{
+			"field":    key,
+			"expected": "string_or_string_array",
+			"got":      paramOverrideTypeName(raw),
+		})
+	}
+
+	// Boolean
+	if err := checkBool("stream"); err != nil {
+		return err
+	}
+
+	// Numbers (float)
+	for _, k := range []string{"temperature", "top_p", "presence_penalty", "frequency_penalty"} {
+		if err := checkNumber(k); err != nil {
+			return err
+		}
+	}
+
+	// Integers
+	for _, k := range []string{"max_tokens", "max_tokens_to_sample", "max_output_tokens", "n", "seed"} {
+		if err := checkInteger(k); err != nil {
+			return err
+		}
+	}
+
+	// String or []string
+	if err := checkStringOrStringArray("stop"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func isNumberLike(v any) bool {
+	if v == nil {
+		return false
+	}
+	if _, ok := v.(float64); ok {
+		return true
+	}
+	if _, ok := v.(float32); ok {
+		return true
+	}
+
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return true
+	case reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
+}
+
+func isIntegerLike(v any) bool {
+	if v == nil {
+		return false
+	}
+	if f, ok := v.(float64); ok {
+		return f == math.Trunc(f)
+	}
+	if f, ok := v.(float32); ok {
+		return float64(f) == math.Trunc(float64(f))
+	}
+
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return true
+	default:
+		return false
+	}
+}
+
+func paramOverrideTypeName(v any) string {
+	if v == nil {
+		return "null"
+	}
+	switch v.(type) {
+	case bool:
+		return "bool"
+	case string:
+		return "string"
+	case float64, float32:
+		return "number"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		rv := reflect.ValueOf(v)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+			reflect.Float32, reflect.Float64:
+			return "number"
+		case reflect.Slice, reflect.Array:
+			return "array"
+		case reflect.Map, reflect.Struct:
+			return "object"
+		default:
+			return rv.Kind().String()
+		}
+	}
+}
+
 // isValidGroupName validates the group name.
 func isValidGroupName(name string) bool {
 	if name == "" {
@@ -1840,19 +2035,33 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 	}
 	logrus.WithContext(ctx).WithField("body_preview", bodyPreview).Debug("Response body preview")
 
-	// Transform model list using channel-specific logic (includes redirect rules and formats)
-	result, err := channelProxy.TransformModelList(req, decompressed, group)
-	if err != nil {
+	// Parse upstream model list response directly without applying redirect rules.
+	// This is intentional: FetchGroupModels is used by the "Fetch Models" button in the
+	// model redirect configuration UI, which should only show upstream models.
+	// Redirect rules are applied separately when external clients access the model list API.
+	var result map[string]any
+	if err := json.Unmarshal(decompressed, &result); err != nil {
 		// Show first 100 chars of body for error diagnosis
 		bodyStart := bodyPreview
 		if len(bodyStart) > 100 {
 			bodyStart = bodyStart[:100]
 		}
-		logrus.WithContext(ctx).WithError(err).WithField("body_start", bodyStart).Error("Failed to transform model list response")
+		logrus.WithContext(ctx).WithError(err).WithField("body_start", bodyStart).Error("Failed to parse upstream model list response")
 		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to parse upstream response: invalid JSON format")
 	}
 
-	logrus.WithContext(ctx).WithField("result_keys", getMapKeys(result)).Debug("Successfully decoded and transformed model list response")
+	// Log model count for debugging
+	modelCount := 0
+	if data, ok := result["data"].([]any); ok {
+		modelCount = len(data)
+	} else if models, ok := result["models"].([]any); ok {
+		modelCount = len(models)
+	}
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"result_keys":  getMapKeys(result),
+		"model_count":  modelCount,
+		"upstream_only": true,
+	}).Debug("Successfully decoded upstream model list response (redirect rules not applied)")
 
 	return result, nil
 }

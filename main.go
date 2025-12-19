@@ -87,6 +87,7 @@ func runServer() {
 	}); err != nil {
 		logrus.Fatalf("Failed to setup logger: %v", err)
 	}
+	defer utils.CloseLogger()
 
 	// Create and run the application
 	if err := container.Invoke(func(application *app.App, configManager types.ConfigManager) {

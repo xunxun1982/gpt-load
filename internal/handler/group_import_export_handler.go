@@ -288,6 +288,9 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	})
 
 	if err != nil {
+		if HandleServiceError(c, err) {
+			return
+		}
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
 		return
 	}

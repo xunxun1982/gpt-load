@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // memoryStoreItem holds the value and expiration timestamp for a key.
@@ -15,11 +18,16 @@ type memoryStoreItem struct {
 
 // MemoryStore is an in-memory key-value store that is safe for concurrent use.
 type MemoryStore struct {
-	mu            sync.RWMutex
-	data          map[string]any
-	muSubscribers sync.RWMutex
-	subscribers   map[string]map[chan *Message]struct{}
+	mu              sync.RWMutex
+	data            map[string]any
+	muSubscribers   sync.RWMutex
+	subscribers     map[string]map[chan *Message]struct{}
+	droppedMessages atomic.Int64
 }
+
+// NOTE: This store uses the global logrus logger configured at application startup to stay aligned
+// with the rest of the project. If pluggable logging is required in the future, this can be
+// refactored to depend on an internal logging interface instead of the package-level logger.
 
 // NewMemoryStore creates and returns a new MemoryStore instance.
 func NewMemoryStore() *MemoryStore {
@@ -407,6 +415,9 @@ func (ms *memorySubscription) Close() error {
 }
 
 // Publish sends a message to all subscribers of a channel.
+// NOTE: This uses at-most-once delivery semantics. Messages may be dropped under backpressure
+// to avoid blocking publishers and to prevent unbounded memory or goroutine growth.
+// High-throughput benchmarks and acceptable drop thresholds should be validated by callers.
 func (s *MemoryStore) Publish(channel string, message []byte) error {
 	s.muSubscribers.RLock()
 	defer s.muSubscribers.RUnlock()
@@ -417,13 +428,30 @@ func (s *MemoryStore) Publish(channel string, message []byte) error {
 	}
 
 	if subs, ok := s.subscribers[channel]; ok {
+		subscriberCount := len(subs)
+		payloadSize := len(message)
+		droppedCount := 0
+
 		for subCh := range subs {
-			go func(c chan *Message) {
-				select {
-				case c <- msg:
-				case <-time.After(1 * time.Second):
-				}
-			}(subCh)
+			select {
+			case subCh <- msg:
+			default:
+				droppedCount++
+			}
+		}
+
+		if droppedCount > 0 {
+			s.droppedMessages.Add(int64(droppedCount))
+
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"channel":            channel,
+					"subscribers":        subscriberCount,
+					"dropped_this_call":  droppedCount,
+					"payload_size_bytes": payloadSize,
+					"dropped_total":      s.droppedMessages.Load(),
+				}).Debug("Dropped messages due to full subscriber buffers")
+			}
 		}
 	}
 	return nil
@@ -459,4 +487,12 @@ func (s *MemoryStore) Clear() error {
 	s.data = make(map[string]any)
 
 	return nil
+}
+
+// DroppedMessages returns the total number of messages dropped due to subscriber backpressure.
+// This is a lightweight global metric for observability and does not reset the internal counter.
+// Per-channel drop statistics are intentionally not tracked here to keep the implementation simple
+// and fast; callers can layer additional metrics if needed.
+func (s *MemoryStore) DroppedMessages() int64 {
+	return s.droppedMessages.Load()
 }

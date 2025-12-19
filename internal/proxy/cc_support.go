@@ -1,6 +1,9 @@
 // Package proxy provides CC (Claude Code) support functionality.
 // CC support enables Claude clients to connect via /claude endpoint and have
 // requests converted from Claude format to OpenAI format before forwarding.
+// NOTE: This file intentionally keeps the CC conversion + streaming logic in one place.
+// Splitting into multiple files would improve navigation, but we avoid it here to
+// minimize refactor risk and keep performance-sensitive paths localized.
 package proxy
 
 import (
@@ -9,10 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gpt-load/internal/models"
@@ -29,9 +35,26 @@ const (
 	ctxKeyOriginalFormat = "cc_original_format"
 )
 
+// ctxKeyTriggerSignal and ctxKeyFunctionCallEnabled are declared in server.go (same package proxy).
+// We keep them there to avoid introducing an extra constants file.
 const maxUpstreamResponseBodySize = 32 * 1024 * 1024
 
 var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum allowed size")
+
+
+
+// maxContentBufferBytes is declared in function_call.go (same package proxy).
+// We keep the single source of truth there to avoid drift without adding extra files.
+const (
+	// Thinking hints injected into user messages when extended thinking is enabled.
+	// Format follows b4u2cc reference implementation using ANTML-style tags with
+	// backslash-b escape sequence. The upstream parser looks for these generic
+	// </antml> closers rather than matching the opening tag name.
+	// NOTE: The \b in the tag name is intentional - it's a marker used by some
+	// models to identify internal control tags that should not be echoed to users.
+	ThinkingHintInterleaved = "<antml\\b:thinking_mode>interleaved</antml>"
+	ThinkingHintMaxLength   = "<antml\\b:max_thinking_length>%d</antml>"
+)
 
 // clearUpstreamEncodingHeaders removes upstream transfer-related headers before
 // writing a synthesized response body for CC support. This avoids mismatches
@@ -153,6 +176,37 @@ func isCCEnabled(c *gin.Context) bool {
 	return false
 }
 
+// isCCRequest returns true if the current request is a Claude Code request,
+// checking both the original path and context flags set during request processing.
+// This helper consolidates the three-way check pattern used across CC handlers.
+func isCCRequest(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if c.Request == nil || c.Request.URL == nil {
+		return c.GetBool("cc_was_claude_path") || c.GetString(ctxKeyOriginalFormat) == "claude"
+	}
+	// Check original path contains Claude segment
+	if strings.Contains(c.Request.URL.Path, "/claude/") {
+		return true
+	}
+	// Check if CC was detected during path rewriting
+	if c.GetBool("cc_was_claude_path") {
+		return true
+	}
+	// Check if CC conversion was applied
+	return c.GetString(ctxKeyOriginalFormat) == "claude"
+}
+
+func getTriggerSignal(c *gin.Context) string {
+	if v, ok := c.Get(ctxKeyTriggerSignal); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 // ClaudeMessage represents a message in Claude format.
 type ClaudeMessage struct {
 	Role    string          `json:"role"`
@@ -163,6 +217,7 @@ type ClaudeMessage struct {
 type ClaudeContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
@@ -176,6 +231,12 @@ type ClaudeTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
+}
+
+// ThinkingConfig represents Claude extended thinking configuration.
+type ThinkingConfig struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 // ClaudeRequest represents a Claude API request.
@@ -197,14 +258,15 @@ type ClaudeRequest struct {
 	McpServers        json.RawMessage `json:"mcp_servers,omitempty"`
 	Metadata          json.RawMessage `json:"metadata,omitempty"`
 	Container         json.RawMessage `json:"container,omitempty"`
+	Thinking          *ThinkingConfig `json:"thinking,omitempty"`
 }
 
 // OpenAIMessage represents a message in OpenAI format.
 type OpenAIMessage struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content,omitempty"`
+	Role       string           `json:"role"`
+	Content    json.RawMessage  `json:"content,omitempty"`
 	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 // OpenAIToolCall represents a tool call in OpenAI format.
@@ -246,6 +308,13 @@ type OpenAIRequest struct {
 	Stream      bool            `json:"stream"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
 	Stop        json.RawMessage `json:"stop,omitempty"`
+	// NOTE: We intentionally keep interface{} here (instead of json.RawMessage).
+	// This field is only used for outbound serialization to upstream OpenAI-style APIs,
+	// not for inbound JSON parsing. Using json.RawMessage would require manual JSON
+	// quoting for string values (e.g. "auto") and increases the chance of producing
+	// invalid JSON. With interface{}, json.Marshal guarantees correct JSON encoding
+	// for both string and object forms while keeping the code simple (KISS).
+	ToolChoice interface{} `json:"tool_choice,omitempty"`
 }
 
 // convertClaudeToOpenAI converts a Claude request to OpenAI format.
@@ -333,6 +402,22 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 
 	openaiReq.Messages = messages
 
+	// Inject thinking hints when extended thinking is enabled.
+	// NOTE: Only "enabled" type is currently supported. Other values like "disabled"
+	// are silently ignored to allow graceful degradation.
+	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
+		for i := len(openaiReq.Messages) - 1; i >= 0; i-- {
+			if openaiReq.Messages[i].Role == "user" {
+				hint := ThinkingHintInterleaved
+				if claudeReq.Thinking.BudgetTokens > 0 {
+					hint += fmt.Sprintf(ThinkingHintMaxLength, claudeReq.Thinking.BudgetTokens)
+				}
+				openaiReq.Messages[i].Content = appendToContent(openaiReq.Messages[i].Content, hint)
+				break
+			}
+		}
+	}
+
 	// Convert tools
 	if len(claudeReq.Tools) > 0 {
 		tools := make([]OpenAITool, 0, len(claudeReq.Tools))
@@ -358,6 +443,56 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 			logrus.WithError(err).Warn("CC: Failed to marshal stop sequences, skipping")
 		} else {
 			openaiReq.Stop = stopBytes
+		}
+	}
+
+	// Convert tool_choice from Claude format to OpenAI format
+	// COMPATIBILITY NOTE: Different OpenAI-compatible providers may have varying support for:
+	// - "required" (used for Claude "any" type) vs "any" semantics
+	// - Object format {"type":"function","function":{"name":...}} for specific tool forcing
+	// This mapping follows OpenAI's documented API but may need provider-specific adjustments.
+	// KNOWN LIMITATION: Azure OpenAI API versions 2024-06-01 and 2024-07-01-preview do not support
+	// "required" for tool_choice (see GitHub issue Azure/azure-rest-api-specs#29844).
+	// If using Azure OpenAI, the upstream may reject "required" with a 400 error.
+	// DESIGN DECISION (rejected AI suggestion): We intentionally do NOT implement provider-specific
+	// detection or fallback logic here to maintain simplicity (KISS principle). The b4u2cc reference
+	// implementation uses a prompt-based approach that bypasses tool_choice entirely. Users should
+	// configure their upstream provider appropriately or use group-level routing to avoid incompatible
+	// combinations. Adding provider detection would violate our commitment to minimal complexity and
+	// introduce maintenance burden for edge cases better handled at configuration level.
+	if len(claudeReq.ToolChoice) > 0 {
+		var toolChoice map[string]interface{}
+		if err := json.Unmarshal(claudeReq.ToolChoice, &toolChoice); err == nil {
+			// Claude format: {"type": "tool", "name": "tool_name"}
+			// or: {"type": "auto"} / {"type": "any"}
+
+			if tcType, ok := toolChoice["type"].(string); ok {
+				switch tcType {
+				case "tool":
+					// Force call specific tool
+					if toolName, ok := toolChoice["name"].(string); ok {
+						openaiReq.ToolChoice = map[string]interface{}{
+							"type": "function",
+							"function": map[string]string{
+								"name": toolName,
+							},
+						}
+						logrus.WithField("tool_name", toolName).Debug("CC: Converted tool_choice to force specific tool")
+					}
+				case "any":
+					// Force call any tool
+					openaiReq.ToolChoice = "required"
+					logrus.Debug("CC: Converted tool_choice to 'required' (force any tool)")
+				case "auto":
+					// Auto decide
+					openaiReq.ToolChoice = "auto"
+					logrus.Debug("CC: Converted tool_choice to 'auto'")
+				default:
+					logrus.WithField("type", tcType).Warn("CC: Unknown tool_choice type, skipping")
+				}
+			}
+		} else {
+			logrus.WithError(err).Warn("CC: Failed to parse tool_choice, skipping")
 		}
 	}
 
@@ -468,11 +603,31 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 	return result, nil
 }
 
+// getThinkingModel returns the thinking model configured for the group.
+// Returns empty string if not configured.
+func getThinkingModel(group *models.Group) string {
+	if group == nil || group.Config == nil {
+		return ""
+	}
 
+	raw, ok := group.Config["thinking_model"]
+	if !ok || raw == nil {
+		return ""
+	}
+
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
+}
 
 // applyCCRequestConversionDirect converts Claude request to OpenAI format directly.
 // This function does not check the path, assuming the caller has already verified
 // that this is a Claude messages endpoint. Used when path has been pre-rewritten.
+// When thinking mode is enabled, the model will be set to the source model from
+// redirect rules (if available) to allow Claude Code to find thinking-capable models.
 func (ps *ProxyServer) applyCCRequestConversionDirect(
 	c *gin.Context,
 	group *models.Group,
@@ -495,6 +650,28 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 		}
 	}
 
+	// Auto-select thinking model when thinking mode is enabled
+	// This allows Claude Code to automatically use thinking-capable models
+	// (like deepseek-reasoner) when the user enables extended thinking.
+	// Each group can configure its own thinking_model in the group config.
+	thinkingModelApplied := false
+	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
+		thinkingModel := getThinkingModel(group)
+		if thinkingModel != "" && thinkingModel != claudeReq.Model {
+			logrus.WithFields(logrus.Fields{
+				"group":          group.Name,
+				"original_model": claudeReq.Model,
+				"thinking_model": thinkingModel,
+				"budget_tokens":  claudeReq.Thinking.BudgetTokens,
+			}).Info("CC: Auto-selecting thinking model for extended thinking")
+			claudeReq.Model = thinkingModel
+			thinkingModelApplied = true
+			// Store thinking model info in context for logging
+			c.Set("thinking_model_applied", true)
+			c.Set("thinking_model", thinkingModel)
+		}
+	}
+
 	// Convert to OpenAI format
 	openaiReq, err := convertClaudeToOpenAI(&claudeReq)
 	if err != nil {
@@ -507,16 +684,30 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 		return bodyBytes, false, fmt.Errorf("failed to marshal OpenAI request: %w", err)
 	}
 
-	// Optionally log request conversion previews when body logging is enabled.
-	if group != nil && group.EffectiveConfig.EnableRequestBodyLogging {
+	// Log thinking model application
+	if thinkingModelApplied {
 		logrus.WithFields(logrus.Fields{
-			"group":               group.Name,
-			"original_model":      originalModel,
-			"claude_body_preview": utils.TruncateString(string(bodyBytes), 1024),
-			"openai_body_preview": utils.TruncateString(string(convertedBody), 1024),
-			"tools_count":         len(claudeReq.Tools),
-			"has_mcp_servers":     len(claudeReq.McpServers) > 0,
-		}).Debug("CC: Request conversion preview (truncated)")
+			"group":          group.Name,
+			"original_model": originalModel,
+			"final_model":    claudeReq.Model,
+		}).Debug("CC: Thinking model applied to request")
+	}
+
+	// Optionally log request conversion info when body logging is enabled.
+	// Reduced logging to avoid excessive output in production
+	if group != nil && group.EffectiveConfig.EnableRequestBodyLogging && logrus.IsLevelEnabled(logrus.DebugLevel) {
+		// Check if mcp_servers is actually present (not just empty json.RawMessage)
+		hasMcpServers := false
+		if len(claudeReq.McpServers) > 0 {
+			raw := strings.TrimSpace(string(claudeReq.McpServers))
+			hasMcpServers = raw != "" && raw != "null"
+		}
+		logrus.WithFields(logrus.Fields{
+			"group":           group.Name,
+			"original_model":  originalModel,
+			"tools_count":     len(claudeReq.Tools),
+			"has_mcp_servers": hasMcpServers,
+		}).Debug("CC: Request conversion completed")
 	}
 
 	// Mark CC conversion as enabled
@@ -537,8 +728,6 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 
 	return convertedBody, true, nil
 }
-
-
 
 // OpenAIResponse represents an OpenAI API response.
 type OpenAIResponse struct {
@@ -581,9 +770,10 @@ type OpenAIChoice struct {
 
 // OpenAIRespMessage represents a message in OpenAI response.
 type OpenAIRespMessage struct {
-	Role      string           `json:"role,omitempty"`
-	Content   *string          `json:"content,omitempty"`
-	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role,omitempty"`
+	Content          *string          `json:"content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ReasoningContent *string          `json:"reasoning_content,omitempty"` // DeepSeek reasoner thinking content
 }
 
 // OpenAIUsage represents usage info in OpenAI response.
@@ -612,12 +802,12 @@ type ClaudeUsage struct {
 }
 
 // convertOpenAIToClaudeResponse converts OpenAI response to Claude format.
-func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
+func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode functionCallCleanupMode) *ClaudeResponse {
 	claudeResp := &ClaudeResponse{
-		ID:    openaiResp.ID,
-		Type:  "message",
-		Role:  "assistant",
-		Model: openaiResp.Model,
+		ID:      openaiResp.ID,
+		Type:    "message",
+		Role:    "assistant",
+		Model:   openaiResp.Model,
 		Content: make([]ClaudeContentBlock, 0),
 	}
 
@@ -631,19 +821,38 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
 		if msg != nil {
 			var content []ClaudeContentBlock
 
-			// Add text content
+			// Handle reasoning_content from DeepSeek reasoner models (non-streaming).
+			// This is emitted as thinking content in Claude format.
+			// CRITICAL: Apply removeFunctionCallsBlocks to clean malformed XML/JSON
+			// that may leak into thinking content (same as streaming mode).
+			if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
+				thinking := removeFunctionCallsBlocks(strings.TrimSpace(*msg.ReasoningContent), cleanupMode)
+				if thinking != "" {
+					content = append(content, ClaudeContentBlock{
+						Type:     "thinking",
+						Thinking: thinking,
+					})
+				}
+			}
+
+			// Add text and thinking content
 			if msg.Content != nil && *msg.Content != "" {
-				content = append(content, ClaudeContentBlock{
-					Type: "text",
-					Text: *msg.Content,
-				})
+				content = append(content, splitThinkingContent(*msg.Content, cleanupMode)...)
 			}
 
 			// Add tool_use blocks
 			for _, tc := range msg.ToolCalls {
+				if tc.ID == "" || tc.Function.Name == "" {
+					continue
+				}
 				inputJSON := json.RawMessage("{}")
 				if tc.Function.Arguments != "" {
-					inputJSON = json.RawMessage(tc.Function.Arguments)
+					normalized, ok := normalizeOpenAIToolCallArguments(tc.Function.Name, tc.Function.Arguments)
+					if ok {
+						inputJSON = json.RawMessage(normalized)
+					} else {
+						inputJSON = json.RawMessage(tc.Function.Arguments)
+					}
 				}
 				content = append(content, ClaudeContentBlock{
 					Type:  "tool_use",
@@ -658,7 +867,25 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
 
 		// Convert finish reason
 		if choice.FinishReason != nil {
-			stopReason := convertFinishReasonToStopReason(*choice.FinishReason)
+			stopReason, isError := convertFinishReasonToStopReason(*choice.FinishReason)
+			if isError {
+				logrus.WithField("finish_reason", *choice.FinishReason).
+					Warn("CC: Upstream returned error finish_reason")
+			}
+			// If upstream says tool_calls but we didn't receive any valid tool calls,
+			// convert to end_turn to prevent Claude Code from hanging waiting for tool results
+			hasToolUseBlocks := false
+			for _, block := range claudeResp.Content {
+				if block.Type == "tool_use" && block.ID != "" {
+					hasToolUseBlocks = true
+					break
+				}
+			}
+			if *choice.FinishReason == "tool_calls" && !hasToolUseBlocks {
+				logrus.WithField("original_finish_reason", *choice.FinishReason).
+					Warn("CC: Received tool_calls finish_reason but no valid tool_use blocks, converting to end_turn")
+				stopReason = "end_turn"
+			}
 			claudeResp.StopReason = &stopReason
 		}
 	}
@@ -676,63 +903,470 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse) *ClaudeResponse {
 			OutputTokens: 0,
 		}
 	}
+	applyTokenMultiplier(claudeResp.Usage)
 
 	return claudeResp
 }
 
+func splitThinkingContent(content string, cleanupMode functionCallCleanupMode) []ClaudeContentBlock {
+	if content == "" {
+		return nil
+	}
+
+	parser := NewThinkingParser()
+	for _, r := range content {
+		parser.FeedRune(r)
+	}
+	parser.FlushText()
+	parser.Finish()
+
+	events := parser.ConsumeEvents()
+	blocks := make([]ClaudeContentBlock, 0, len(events))
+	for _, evt := range events {
+		switch evt.Type {
+		case "thinking":
+			thinking := removeFunctionCallsBlocks(strings.TrimSpace(evt.Content), cleanupMode)
+			if thinking == "" {
+				continue
+			}
+			blocks = append(blocks, ClaudeContentBlock{Type: "thinking", Thinking: thinking})
+		case "text":
+			orig := evt.Content
+			leading, core, trailing := trimWhitespacePreserving(orig)
+			cleanedCore := removeFunctionCallsBlocks(core, cleanupMode)
+			text := leading + cleanedCore + trailing
+			if text == "" {
+				continue
+			}
+			blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: text})
+		}
+	}
+	return blocks
+}
+
+// trimWhitespacePreserving returns the leading whitespace, trimmed core, and trailing whitespace.
+func trimWhitespacePreserving(s string) (string, string, string) {
+	start := 0
+	for start < len(s) && (s[start] == ' ' || s[start] == '\n' || s[start] == '\r' || s[start] == '\t') {
+		start++
+	}
+
+	end := len(s)
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\n' || s[end-1] == '\r' || s[end-1] == '\t') {
+		end--
+	}
+
+	return s[:start], s[start:end], s[end:]
+}
+
 // convertFinishReasonToStopReason converts OpenAI finish_reason to Claude stop_reason.
-// Also handles non-standard finish reasons from various upstream providers.
-func convertFinishReasonToStopReason(finishReason string) string {
+// Returns the stop_reason and a boolean indicating if the finish_reason represents an error.
+func convertFinishReasonToStopReason(finishReason string) (string, bool) {
 	switch finishReason {
 	case "stop":
-		return "end_turn"
+		return "end_turn", false
 	case "length":
-		return "max_tokens"
-	case "tool_calls":
-		return "tool_use"
-	case "content_filter":
-		return "refusal"
-	// Handle non-standard error-related finish reasons from upstream providers.
-	// Convert these to end_turn to prevent Claude Code from treating them as
-	// abnormal terminations. Log the original reason for debugging.
-	case "network_error", "error", "timeout", "rate_limit", "server_error":
-		logrus.WithField("original_finish_reason", finishReason).
-			Warn("CC: Received non-standard finish_reason from upstream, converting to end_turn")
-		return "end_turn"
+		return "max_tokens", false
+	case "tool_calls", "function_call":
+		return "tool_use", false
+	case "network_error", "error", "timeout", "content_filter":
+		// These are error conditions that should be reported to the client
+		return "end_turn", true
 	default:
-		// For any other unknown finish reason, log it but still return as-is
-		// to maintain compatibility with potential future OpenAI/Claude API changes
-		if finishReason != "" {
-			logrus.WithField("finish_reason", finishReason).
-				Debug("CC: Unknown finish_reason, passing through as-is")
-		}
-		return finishReason
+		return "end_turn", false
 	}
 }
 
-// parseFunctionCallsFromContentForCC parses function calls from content when force_function_call
-// is enabled in CC mode. It extracts XML-based function calls and converts them to Claude
-// tool_use format. Returns the cleaned content (with XML removed) and parsed tool_use blocks.
-//
-// This function bridges the gap between force_function_call (which injects XML-based prompts)
-// and CC support (which expects Claude-style tool_use blocks).
-func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string, []ClaudeContentBlock) {
-	// Only process if function call is enabled for this request
-	if !isFunctionCallEnabled(c) {
-		return content, nil
+func parseTokenMultiplier(raw string) float64 {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return 1
 	}
 
-	// Retrieve trigger signal stored during request rewrite
-	triggerVal, exists := c.Get(ctxKeyTriggerSignal)
-	if !exists {
-		return content, nil
+	s = strings.TrimPrefix(s, "x")
+	isPercent := strings.HasSuffix(s, "%")
+	s = strings.TrimSuffix(s, "%")
+	s = strings.TrimSuffix(s, "x")
+	if s == "" {
+		return 1
 	}
-	triggerSignal, ok := triggerVal.(string)
-	if !ok || triggerSignal == "" {
-		return content, nil
+
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 1
 	}
+	if isPercent {
+		v = v / 100
+		if v <= 0 {
+			return 1
+		}
+	}
+	return v
+}
+
+func getTokenMultiplier() float64 {
+	return parseTokenMultiplier(os.Getenv("TOKEN_MULTIPLIER"))
+}
+
+func applyTokenMultiplier(usage *ClaudeUsage) {
+	if usage == nil {
+		return
+	}
+	if usage.OutputTokens < 0 {
+		usage.OutputTokens = 0
+		return
+	}
+	if usage.OutputTokens == 0 {
+		// Preserve genuine zero-usage responses.
+		return
+	}
+
+	multiplier := getTokenMultiplier()
+	raw := float64(usage.OutputTokens) * multiplier
+	if math.IsNaN(raw) || math.IsInf(raw, 0) {
+		// Handle numeric edge cases from invalid multipliers by preserving the
+		// upstream count.
+		return
+	}
+	if raw <= 0 {
+		// This should not happen when OutputTokens > 0 and multiplier > 0.
+		return
+	}
+
+	// Ceil() guarantees >= 1 for any positive raw.
+	usage.OutputTokens = int(math.Ceil(raw))
+}
+
+func normalizeArgsGenericInPlace(args map[string]any) {
+	if args == nil {
+		return
+	}
+	for key, val := range args {
+		strVal, ok := val.(string)
+		if !ok {
+			continue
+		}
+		trimmedStr := strings.TrimSpace(strVal)
+		if trimmedStr == "" {
+			continue
+		}
+		if (strings.HasPrefix(trimmedStr, "{") && strings.HasSuffix(trimmedStr, "}")) ||
+			(strings.HasPrefix(trimmedStr, "[") && strings.HasSuffix(trimmedStr, "]")) {
+			var jsonVal any
+			if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
+				args[key] = jsonVal
+				continue
+			}
+		}
+
+		if key == "content" || key == "command" || key == "script" || key == "code" {
+			if strings.Contains(strVal, "\\n") {
+				args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
+			}
+		}
+	}
+}
+
+func normalizeArgsEnsureSlice(args map[string]any, key string) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return
+	}
+	if _, isSlice := v.([]any); isSlice {
+		return
+	}
+	strVal, ok := v.(string)
+	if !ok {
+		return
+	}
+	var list []any
+	if err := json.Unmarshal([]byte(strVal), &list); err == nil {
+		args[key] = list
+		return
+	}
+	args[key] = []any{strVal}
+}
+
+func normalizeArgsEnsureMap(args map[string]any, key string) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return
+	}
+	if _, isMap := v.(map[string]any); isMap {
+		return
+	}
+	strVal, ok := v.(string)
+	if !ok {
+		return
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(strVal), &out); err == nil {
+		args[key] = out
+	}
+}
+
+func normalizeAskUserQuestionArgs(args map[string]any) {
+	normalizeArgsEnsureSlice(args, "questions")
+	normalizeArgsEnsureMap(args, "answers")
+}
+
+func normalizeListDirArgs(args map[string]any) {
+	if _, ok := args["recursive"]; !ok {
+		args["recursive"] = false
+	}
+}
+
+func normalizeWebSearchArgs(args map[string]any) {
+	normalizeArgsEnsureSlice(args, "allowed_domains")
+	normalizeArgsEnsureSlice(args, "blocked_domains")
+}
+
+func normalizeEditArgs(args map[string]any) {
+	for _, key := range []string{"old_string", "new_string"} {
+		v, ok := args[key]
+		if !ok || v == nil {
+			continue
+		}
+		strVal, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(strVal, "\\n") {
+			args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
+		}
+	}
+}
+
+func normalizeTodoWriteTodos(args map[string]any) ([]map[string]any, bool) {
+	todos, ok := args["todos"]
+	if !ok {
+		if v, exists := args["value"]; exists {
+			// Some malformed outputs place the todos array under a generic
+			// "value" key. Treat this as the candidate todos source.
+			todos = v
+			ok = true
+		}
+	}
+
+	if !ok {
+		return nil, false
+	}
+
+	var todoList []any
+	hasValidTodos := false
+
+	switch v := todos.(type) {
+	case []any:
+		if len(v) > 0 {
+			todoList = v
+			hasValidTodos = true
+		}
+	case string:
+		trimmedStr := strings.TrimSpace(v)
+		if trimmedStr != "" {
+			var parsed []any
+			if err := json.Unmarshal([]byte(trimmedStr), &parsed); err == nil && len(parsed) > 0 {
+				todoList = parsed
+				hasValidTodos = true
+			}
+		}
+	case map[string]any:
+		mapVal := v
+		foundList := false
+		for _, k := range []string{"todos", "todo", "item", "task", "value"} {
+			if val, exists := mapVal[k]; exists {
+				if list, ok := val.([]any); ok && len(list) > 0 {
+					todoList = list
+					foundList = true
+					break
+				} else if val != nil {
+					todoList = []any{val}
+					foundList = true
+					break
+				}
+			}
+		}
+		if !foundList && len(mapVal) > 0 {
+			todoList = []any{mapVal}
+			foundList = true
+		}
+		hasValidTodos = foundList && len(todoList) > 0
+	}
+
+	if !hasValidTodos {
+		return nil, false
+	}
+
+	normalizedTodos := make([]map[string]any, 0, len(todoList))
+	for idx, item := range todoList {
+		defaultID := fmt.Sprintf("task-%d", idx+1)
+
+		if strItem, ok := item.(string); ok {
+			normalizedTodos = append(normalizedTodos, map[string]any{
+				"activeForm": strItem,
+				"content":    strItem,
+				"status":     "pending",
+				"priority":   "medium",
+				"id":         defaultID,
+			})
+			continue
+		}
+
+		mapItem, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		cleanItem := make(map[string]any)
+		if content, ok := mapItem["content"]; ok {
+			cleanItem["content"] = content
+		} else if task, ok := mapItem["task"]; ok {
+			cleanItem["content"] = task
+		} else if desc, ok := mapItem["description"]; ok {
+			cleanItem["content"] = desc
+		}
+		if existingAF, ok := mapItem["activeForm"]; ok {
+			cleanItem["activeForm"] = existingAF
+		} else {
+			switch v := cleanItem["content"].(type) {
+			case string:
+				cleanItem["activeForm"] = v
+			default:
+				cleanItem["activeForm"] = fmt.Sprint(v)
+			}
+		}
+
+		var rawStatus any
+		if status, ok := mapItem["status"]; ok {
+			rawStatus = status
+		} else if state, ok := mapItem["state"]; ok {
+			rawStatus = state
+		}
+
+		finalStatus := "pending"
+		if strStatus, ok := rawStatus.(string); ok {
+			lowerStatus := strings.ToLower(strings.TrimSpace(strStatus))
+			switch lowerStatus {
+			case "completed", "complete", "finished", "done", "success", "succeeded":
+				finalStatus = "completed"
+			case "in_progress", "in progress", "working", "doing", "running", "active":
+				finalStatus = "in_progress"
+			case "pending", "todo", "not_started", "not started", "planned":
+				finalStatus = "pending"
+			default:
+				finalStatus = "pending"
+			}
+		}
+		cleanItem["status"] = finalStatus
+
+		var rawPriority any
+		if p, ok := mapItem["priority"]; ok {
+			rawPriority = p
+		}
+		finalPriority := "medium"
+		if strP, ok := rawPriority.(string); ok {
+			lowerP := strings.ToLower(strings.TrimSpace(strP))
+			switch lowerP {
+			case "high":
+				finalPriority = "high"
+			case "low":
+				finalPriority = "low"
+			case "medium":
+				finalPriority = "medium"
+			}
+		}
+		cleanItem["priority"] = finalPriority
+
+		var idStr string
+		if rawID, ok := mapItem["id"]; ok {
+			switch v := rawID.(type) {
+			case string:
+				idStr = strings.TrimSpace(v)
+			case float64:
+				idStr = fmt.Sprintf("task-%d", int(v))
+			case int:
+				idStr = fmt.Sprintf("task-%d", v)
+			default:
+				idStr = ""
+			}
+		}
+		if len(idStr) < 3 {
+			idStr = defaultID
+		}
+		cleanItem["id"] = idStr
+
+		// Only keep todos that have meaningful content, matching the
+		// CC XML parsing path behavior.
+		if _, hasContent := cleanItem["content"]; hasContent {
+			normalizedTodos = append(normalizedTodos, cleanItem)
+		}
+	}
+
+	if len(normalizedTodos) == 0 {
+		return nil, false
+	}
+
+	return normalizedTodos, true
+}
+
+func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string, bool) {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return "{}", true
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+		var raw any
+		if err2 := json.Unmarshal([]byte(trimmed), &raw); err2 == nil {
+			args = map[string]any{"value": raw}
+		} else {
+			return arguments, false
+		}
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	normalizeArgsGenericInPlace(args)
+
+	switch toolName {
+	case "TodoWrite":
+		if normalizedTodos, ok := normalizeTodoWriteTodos(args); ok {
+			args = map[string]any{"todos": normalizedTodos}
+		} else {
+			return arguments, false
+		}
+
+	case "AskUserQuestion":
+		normalizeAskUserQuestionArgs(args)
+
+	case "list_dir":
+		normalizeListDirArgs(args)
+
+	case "WebSearch":
+		normalizeWebSearchArgs(args)
+
+	case "Edit":
+		normalizeEditArgs(args)
+
+	default:
+		return arguments, false
+	}
+
+	out, err := json.Marshal(args)
+	if err != nil {
+		return arguments, false
+	}
+	return string(out), true
+}
+
+// ...
+
+func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string, []ClaudeContentBlock) {
+	// ...
 
 	// Parse function calls from the content
+	triggerSignal := getTriggerSignal(c)
 	calls := parseFunctionCallsXML(content, triggerSignal)
 
 	// Fallback: try parsing without trigger signal if none found
@@ -755,198 +1389,39 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 			continue
 		}
 
-		// Fix tool-specific parameter issues to handle common model errors
-		// We apply generic fixes based on parameter types and names to cover more tools
-		for key, val := range call.Args {
-			if strVal, ok := val.(string); ok {
-				// 1. Try to unmarshal JSON strings (arrays/objects)
-				// This handles cases like TodoWrite's 'todos' passed as string
-				trimmed := strings.TrimSpace(strVal)
-				if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
-					(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
-					var jsonVal any
-					if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
-						call.Args[key] = jsonVal
-						continue // Skip other fixes if it was valid JSON
-					}
-				}
+		normalizeArgsGenericInPlace(call.Args)
 
-				// 2. Fix escaped newlines in content-heavy parameters
-				// This handles cases like Write/Edit 'content' or Bash 'command'
-				// where models might double-escape newlines (e.g. \\n instead of \n)
-				if key == "content" || key == "command" || key == "script" || key == "code" {
-					if strings.Contains(strVal, "\\n") {
-						call.Args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
-					}
-				}
-			}
-		}
-
-		// Specific normalization for tools to handle schema strictness
+		// Specific normalization for tools to handle schema strictness.
+		// NOTE: We intentionally do NOT route this through normalizeOpenAIToolCallArguments.
+		// Doing so would require json.Marshal + json.Unmarshal per call, which adds extra
+		// allocations in the CC hot path. We reuse the same in-place helpers as the
+		// OpenAI tool-call path to avoid drift without adding JSON overhead.
+		skipCall := false
 		switch call.Name {
 		case "TodoWrite":
-			if todos, ok := call.Args["todos"]; ok {
-				// Ensure todos is a slice
-				var todoList []any
-				if list, ok := todos.([]any); ok {
-					todoList = list
-				} else if strVal, ok := todos.(string); ok {
-					// Try parsing if it's still a string (failed generic JSON parse or malformed)
-					if err := json.Unmarshal([]byte(strVal), &todoList); err != nil {
-						// If not JSON array, treat as single item description
-						todoList = []any{strVal}
-					}
-				} else if mapVal, ok := todos.(map[string]any); ok {
-					// Handle case where XML parsing resulted in a map instead of list
-					// e.g. <todos><todo>...</todo></todos> -> {"todo": {...}}
-					// or <todos><item>...</item><item>...</item></todos> -> {"item": [...]}
-					foundList := false
-					for _, key := range []string{"todo", "item", "task"} {
-						if val, exists := mapVal[key]; exists {
-							if list, ok := val.([]any); ok {
-								todoList = list
-								foundList = true
-								break
-							} else {
-								// Single item in map
-								todoList = []any{val}
-								foundList = true
-								break
-							}
-						}
-					}
-					if !foundList {
-						// If no known inner key, treat the map itself as a single item
-						todoList = []any{mapVal}
-					}
-				}
-
-				// Normalize items to objects with strict field whitelisting and value mapping
-				var normalizedTodos []map[string]any
-				for _, item := range todoList {
-					if strItem, ok := item.(string); ok {
-						// Convert string item to object
-						normalizedTodos = append(normalizedTodos, map[string]any{
-							"content": strItem,
-							"status":  "todo", // Default to todo (pending)
-						})
-					} else if mapItem, ok := item.(map[string]any); ok {
-						// Create a new clean map to avoid extra fields like "activeForm"
-						cleanItem := make(map[string]any)
-
-						// 1. Extract Content
-						if content, ok := mapItem["content"]; ok {
-							cleanItem["content"] = content
-						} else if task, ok := mapItem["task"]; ok {
-							cleanItem["content"] = task
-						} else if desc, ok := mapItem["description"]; ok {
-							cleanItem["content"] = desc
-						}
-
-						// 2. Extract and Map Status
-						var rawStatus any
-						if status, ok := mapItem["status"]; ok {
-							rawStatus = status
-						} else if state, ok := mapItem["state"]; ok {
-							rawStatus = state
-						}
-
-						finalStatus := "todo" // Default
-						if strStatus, ok := rawStatus.(string); ok {
-							lowerStatus := strings.ToLower(strStatus)
-							switch lowerStatus {
-							case "completed", "finished", "done":
-								finalStatus = "done"
-							case "pending", "todo", "in_progress":
-								finalStatus = "todo"
-							default:
-								finalStatus = "todo"
-							}
-						}
-						cleanItem["status"] = finalStatus
-
-						// Only append if content exists
-						if _, hasContent := cleanItem["content"]; hasContent {
-							normalizedTodos = append(normalizedTodos, cleanItem)
-						}
-					}
-				}
+			// Use shared helper for TodoWrite normalization
+			if normalizedTodos, ok := normalizeTodoWriteTodos(call.Args); ok {
 				call.Args["todos"] = normalizedTodos
+			} else {
+				skipCall = true
+				logrus.Debug("CC+FC: Skipping TodoWrite call - validation failed or no todos found")
 			}
 
 		case "AskUserQuestion":
-			// Ensure 'questions' is an array
-			if questions, ok := call.Args["questions"]; ok {
-				if _, isSlice := questions.([]any); !isSlice {
-					if strVal, ok := questions.(string); ok {
-						var qList []any
-						if err := json.Unmarshal([]byte(strVal), &qList); err == nil {
-							call.Args["questions"] = qList
-						} else {
-							// Wrap single string as array
-							call.Args["questions"] = []any{strVal}
-						}
-					}
-				}
-			}
-			// Ensure 'answers' is an object
-			if answers, ok := call.Args["answers"]; ok {
-				if _, isMap := answers.(map[string]any); !isMap {
-					if strVal, ok := answers.(string); ok {
-						var aMap map[string]any
-						if err := json.Unmarshal([]byte(strVal), &aMap); err == nil {
-							call.Args["answers"] = aMap
-						}
-					}
-				}
-			}
+			normalizeAskUserQuestionArgs(call.Args)
 
 		case "list_dir":
-			// Ensure 'recursive' field exists, default to false
-			// MCP list_dir tool requires this field, but models often omit it
-			if _, ok := call.Args["recursive"]; !ok {
-				call.Args["recursive"] = false
-			}
+			normalizeListDirArgs(call.Args)
 
 		case "WebSearch":
-			// Ensure 'allowed_domains' is an array
-			if allowed, ok := call.Args["allowed_domains"]; ok {
-				if _, isSlice := allowed.([]any); !isSlice {
-					if strVal, ok := allowed.(string); ok {
-						var list []any
-						if err := json.Unmarshal([]byte(strVal), &list); err == nil {
-							call.Args["allowed_domains"] = list
-						} else {
-							call.Args["allowed_domains"] = []any{strVal}
-						}
-					}
-				}
-			}
-			// Ensure 'blocked_domains' is an array
-			if blocked, ok := call.Args["blocked_domains"]; ok {
-				if _, isSlice := blocked.([]any); !isSlice {
-					if strVal, ok := blocked.(string); ok {
-						var list []any
-						if err := json.Unmarshal([]byte(strVal), &list); err == nil {
-							call.Args["blocked_domains"] = list
-						} else {
-							call.Args["blocked_domains"] = []any{strVal}
-						}
-					}
-				}
-			}
+			normalizeWebSearchArgs(call.Args)
 
 		case "Edit":
-			// Fix newlines in old_string and new_string
-			for _, key := range []string{"old_string", "new_string"} {
-				if val, ok := call.Args[key]; ok {
-					if strVal, ok := val.(string); ok {
-						if strings.Contains(strVal, "\\n") {
-							call.Args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
-						}
-					}
-				}
-			}
+			normalizeEditArgs(call.Args)
+		}
+
+		if skipCall {
+			continue
 		}
 
 		// Marshal arguments to JSON
@@ -972,12 +1447,12 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 	}
 
 	// Remove function call XML blocks from content
-	cleanedContent := removeFunctionCallsBlocks(content)
+	cleanedContent := removeFunctionCallsBlocks(content, cleanupModeFull)
 
 	logrus.WithFields(logrus.Fields{
-		"trigger_signal":   triggerSignal,
-		"tool_use_count":   len(toolUseBlocks),
-		"content_cleaned":  len(cleanedContent) != len(content),
+		"trigger_signal":  triggerSignal,
+		"tool_use_count":  len(toolUseBlocks),
+		"content_cleaned": len(cleanedContent) != len(content),
 	}).Debug("CC+FC: Converted XML function calls to Claude tool_use blocks")
 
 	return cleanedContent, toolUseBlocks
@@ -1054,51 +1529,103 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		return
 	}
 
-	// Convert to Claude format
-	claudeResp := convertOpenAIToClaudeResponse(&openaiResp)
+	// When force_function_call is enabled in CC mode, extract original content
+	// BEFORE conversion for function call parsing. This is necessary because
+	// convertOpenAIToClaudeResponse calls splitThinkingContent which removes
+	// XML function call blocks via removeFunctionCallsBlocks.
+	var originalContent string
+	if isFunctionCallEnabled(c) && len(openaiResp.Choices) > 0 {
+		if msg := openaiResp.Choices[0].Message; msg != nil && msg.Content != nil {
+			originalContent = *msg.Content
+		}
+	}
 
-	// When force_function_call is enabled in CC mode, parse XML function calls
-	// from the response content and convert them to Claude tool_use blocks.
-	// This bridges the gap between the XML-based function call prompt injection
-	// and Claude Code's expected tool_use format.
-	if isFunctionCallEnabled(c) && len(claudeResp.Content) > 0 {
-		// Extract text content for function call parsing
-		var textContent string
+	cleanupMode := cleanupModeArtifactsOnly
+	if isFunctionCallEnabled(c) {
+		cleanupMode = cleanupModeFull
+	}
+
+	// Convert to Claude format
+	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode)
+
+	// Handle error finish_reason for non-streaming responses.
+	// When upstream returns error (network_error, timeout, etc.) with no content,
+	// return a Claude error response to notify the client.
+	if len(openaiResp.Choices) > 0 && openaiResp.Choices[0].FinishReason != nil {
+		finishReason := *openaiResp.Choices[0].FinishReason
+		_, isError := convertFinishReasonToStopReason(finishReason)
+
+		// Check if response has meaningful content
+		hasContent := false
 		for _, block := range claudeResp.Content {
-			if block.Type == "text" {
-				textContent += block.Text
+			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+				hasContent = true
+				break
+			}
+			if block.Type == "tool_use" && block.ID != "" {
+				hasContent = true
+				break
 			}
 		}
 
-		if textContent != "" {
-			cleanedContent, toolUseBlocks := parseFunctionCallsFromContentForCC(c, textContent)
+		if isError && !hasContent {
+			// Error with no content - return Claude error response
+			logrus.WithField("finish_reason", finishReason).
+				Warn("CC: Non-streaming upstream error with no content, returning error response")
 
-			if len(toolUseBlocks) > 0 {
-				// Rebuild content: clean text block(s) + tool_use blocks
-				var newContent []ClaudeContentBlock
-
-				// Add cleaned text content if not empty
-				if strings.TrimSpace(cleanedContent) != "" {
-					newContent = append(newContent, ClaudeContentBlock{
-						Type: "text",
-						Text: cleanedContent,
-					})
-				}
-
-				// Add tool_use blocks
-				newContent = append(newContent, toolUseBlocks...)
-
-				claudeResp.Content = newContent
-
-				// Update stop_reason to tool_use since we have tool calls
-				toolUseReason := "tool_use"
-				claudeResp.StopReason = &toolUseReason
-
-				logrus.WithFields(logrus.Fields{
-					"tool_use_count": len(toolUseBlocks),
-					"text_retained":  strings.TrimSpace(cleanedContent) != "",
-				}).Debug("CC+FC: Added tool_use blocks to Claude response")
+			claudeErr := ClaudeErrorResponse{
+				Type: "error",
+				Error: ClaudeError{
+					Type:    "api_error",
+					Message: fmt.Sprintf("Upstream returned %s with no content", finishReason),
+				},
 			}
+			clearUpstreamEncodingHeaders(c)
+			c.JSON(http.StatusBadGateway, claudeErr)
+			return
+		}
+	}
+
+	// When force_function_call is enabled in CC mode, parse XML function calls
+	// from the ORIGINAL response content and convert them to Claude tool_use blocks.
+	// This bridges the gap between the XML-based function call prompt injection
+	// and Claude Code's expected tool_use format.
+	if isFunctionCallEnabled(c) && originalContent != "" {
+		cleanedContent, toolUseBlocks := parseFunctionCallsFromContentForCC(c, originalContent)
+
+		if len(toolUseBlocks) > 0 {
+			// Rebuild content: preserve thinking blocks + clean text + tool_use blocks
+			var newContent []ClaudeContentBlock
+
+			// Preserve existing thinking blocks from reasoning_content
+			for _, block := range claudeResp.Content {
+				if block.Type == "thinking" {
+					newContent = append(newContent, block)
+				}
+			}
+
+			// Add cleaned text content if not empty
+			cleanedText := removeFunctionCallsBlocks(cleanedContent, cleanupModeFull)
+			if strings.TrimSpace(cleanedText) != "" {
+				newContent = append(newContent, ClaudeContentBlock{
+					Type: "text",
+					Text: cleanedText,
+				})
+			}
+
+			// Add tool_use blocks
+			newContent = append(newContent, toolUseBlocks...)
+
+			claudeResp.Content = newContent
+
+			// Update stop_reason to tool_use since we have tool calls
+			toolUseReason := "tool_use"
+			claudeResp.StopReason = &toolUseReason
+
+			logrus.WithFields(logrus.Fields{
+				"tool_use_count": len(toolUseBlocks),
+				"text_retained":  strings.TrimSpace(cleanedText) != "",
+			}).Debug("CC+FC: Added tool_use blocks to Claude response")
 		}
 	}
 
@@ -1131,24 +1658,517 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 
 // ClaudeStreamEvent represents a Claude streaming event.
 type ClaudeStreamEvent struct {
-	Type         string               `json:"type"`
-	Message      *ClaudeResponse      `json:"message,omitempty"`
-	Index        int                  `json:"index,omitempty"`
-	ContentBlock *ClaudeContentBlock  `json:"content_block,omitempty"`
-	Delta        *ClaudeStreamDelta   `json:"delta,omitempty"`
-	Usage        *ClaudeUsage         `json:"usage,omitempty"`
+	Type         string              `json:"type"`
+	Message      *ClaudeResponse     `json:"message,omitempty"`
+	Index        int                 `json:"index,omitempty"`
+	ContentBlock *ClaudeContentBlock `json:"content_block,omitempty"`
+	Delta        *ClaudeStreamDelta  `json:"delta,omitempty"`
+	Usage        *ClaudeUsage        `json:"usage,omitempty"`
+	Error        *ClaudeError        `json:"error,omitempty"` // For error events
 }
 
 // ClaudeStreamDelta represents delta content in Claude streaming.
 type ClaudeStreamDelta struct {
-	Type        string          `json:"type,omitempty"`
-	Text        string          `json:"text,omitempty"`
-	PartialJSON string          `json:"partial_json,omitempty"`
-	StopReason  string          `json:"stop_reason,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+	StopReason  string `json:"stop_reason,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`
+}
+
+const (
+	ThinkingStartTag    = "<thinking>"
+	ThinkingEndTag      = "</thinking>"
+	ThinkingAltStartTag = "<think>"
+	ThinkingAltEndTag   = "</think>"
+	// ANTML format thinking tags used by some models (e.g., claude-opus-4-5-thinking)
+	// The \b in the tag name is a marker used by models to identify internal control tags
+	// Format: <antml\b:thinking>...</antml\b:thinking> or </antml> as generic closer
+	ThinkingANTMLStartTag = "<antml\\b:thinking>"
+	ThinkingANTMLEndTag   = "</antml\\b:thinking>"
+	ThinkingANTMLAltEnd   = "</antml>" // Generic ANTML closer
+)
+
+// Pre-computed rune slices for tag matching to avoid repeated allocations in hot path
+var (
+	thinkingEndTagRunes      = []rune(ThinkingEndTag)
+	thinkingAltEndTagRunes   = []rune(ThinkingAltEndTag)
+	thinkingStartTagRunes    = []rune(ThinkingStartTag)
+	thinkingAltStartTagRunes = []rune(ThinkingAltStartTag)
+	// ANTML format rune slices
+	thinkingANTMLStartTagRunes = []rune(ThinkingANTMLStartTag)
+	thinkingANTMLEndTagRunes   = []rune(ThinkingANTMLEndTag)
+	thinkingANTMLAltEndRunes   = []rune(ThinkingANTMLAltEnd)
+)
+
+type ThinkingEvent struct {
+	Type    string
+	Content string
+}
+
+type ThinkingParser struct {
+	mu             sync.Mutex
+	buffer         strings.Builder
+	thinkingBuffer strings.Builder
+	thinkingMode   bool
+	events         []ThinkingEvent
+	// Ring buffer to track last N characters for efficient suffix matching in normal mode
+	// This avoids O(n²) cost of calling buffer.String() on every rune
+	suffixRing     []rune
+	suffixRingSize int
+	// Ring buffer for thinking mode end-tag detection to avoid O(n²) String() calls
+	thinkingRing     []rune
+	thinkingRingSize int
+}
+
+func NewThinkingParser() *ThinkingParser {
+	// Ring buffer size needs to hold the longest tag we need to match
+	// Max tag length is len("</antml\\b:thinking>") = 19 (ANTML format)
+	maxTagLen := 19
+	return &ThinkingParser{
+		suffixRing:       make([]rune, maxTagLen),
+		suffixRingSize:   0,
+		thinkingRing:     make([]rune, maxTagLen),
+		thinkingRingSize: 0,
+	}
+}
+
+func (p *ThinkingParser) FeedRune(char rune) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	charStr := string(char)
+
+	if p.thinkingMode {
+		// Write to buffer first, then check for end tag using ring buffer
+		p.thinkingBuffer.WriteString(charStr)
+		p.addToThinkingRing(char)
+		// Check for all supported end tag formats: </thinking>, </think>, </antml\b:thinking>, </antml>
+		if p.thinkingRingSuffixMatches(thinkingEndTagRunes) ||
+			p.thinkingRingSuffixMatches(thinkingAltEndTagRunes) ||
+			p.thinkingRingSuffixMatches(thinkingANTMLEndTagRunes) ||
+			p.thinkingRingSuffixMatches(thinkingANTMLAltEndRunes) {
+			// Extract content by trimming the matched end tag
+			fullContent := p.thinkingBuffer.String()
+			var tagLen int
+			if p.thinkingRingSuffixMatches(thinkingEndTagRunes) {
+				tagLen = len(ThinkingEndTag)
+			} else if p.thinkingRingSuffixMatches(thinkingAltEndTagRunes) {
+				tagLen = len(ThinkingAltEndTag)
+			} else if p.thinkingRingSuffixMatches(thinkingANTMLEndTagRunes) {
+				tagLen = len(ThinkingANTMLEndTag)
+			} else {
+				tagLen = len(ThinkingANTMLAltEnd)
+			}
+			content := fullContent[:len(fullContent)-tagLen]
+			// Remove leading ">" artifact from parsing logic per b4u2cc reference implementation
+			// See: b4u2cc/deno-proxy/src/parser.ts lines 122, 274, 338
+			// Pattern: /^\s*>\s*/ - only strip if it's specifically whitespace + ">" + whitespace
+			content = strings.TrimSpace(content)
+			if strings.HasPrefix(content, ">") {
+				// Only strip the ">" if followed by space/newline (known artifact pattern)
+				if len(content) > 1 && (content[1] == ' ' || content[1] == '\n' || content[1] == '\r' || content[1] == '\t') {
+					content = strings.TrimSpace(content[1:])
+				}
+			}
+			if trimmed := strings.TrimSpace(content); trimmed != "" {
+				p.events = append(p.events, ThinkingEvent{Type: "thinking", Content: trimmed})
+			}
+			p.thinkingBuffer.Reset()
+			p.resetThinkingRing()
+			p.thinkingMode = false
+		}
+		return
+	}
+
+	// Write to buffer first, then add to ring and check for start tags
+	// This ensures buffer.Len() includes the current character when calculating text portion
+	p.buffer.WriteString(charStr)
+	p.addToRing(char)
+
+	// Check if ring buffer ends with start tags using O(1) suffix check
+	// Support all formats: <thinking>, <think>, <antml\b:thinking>
+	if p.ringSuffixMatches(thinkingStartTagRunes) ||
+		p.ringSuffixMatches(thinkingAltStartTagRunes) ||
+		p.ringSuffixMatches(thinkingANTMLStartTagRunes) {
+		// Extract text portion by removing the matched tag
+		textLen := p.buffer.Len()
+		var tagLen int
+		if p.ringSuffixMatches(thinkingStartTagRunes) {
+			tagLen = len(ThinkingStartTag)
+		} else if p.ringSuffixMatches(thinkingAltStartTagRunes) {
+			tagLen = len(ThinkingAltStartTag)
+		} else {
+			tagLen = len(ThinkingANTMLStartTag)
+		}
+
+		if textLen > tagLen {
+			// Get text before the tag
+			fullText := p.buffer.String()
+			textPortion := fullText[:textLen-tagLen]
+			if textPortion != "" {
+				p.events = append(p.events, ThinkingEvent{Type: "text", Content: textPortion})
+			}
+		}
+		p.buffer.Reset()
+		p.thinkingMode = true
+		p.thinkingBuffer.Reset()
+		p.resetRing()
+		p.resetThinkingRing()
+		return
+	}
+}
+
+// addToRing adds a rune to the ring buffer for efficient suffix matching
+func (p *ThinkingParser) addToRing(r rune) {
+	maxSize := cap(p.suffixRing)
+	if p.suffixRingSize < maxSize {
+		p.suffixRing[p.suffixRingSize] = r
+		p.suffixRingSize++
+	} else {
+		// Ring is full, shift left and add new rune at end
+		copy(p.suffixRing, p.suffixRing[1:])
+		p.suffixRing[maxSize-1] = r
+	}
+}
+
+// resetRing clears the ring buffer
+func (p *ThinkingParser) resetRing() {
+	p.suffixRingSize = 0
+}
+
+// addToThinkingRing adds a rune to the thinking ring buffer for end-tag detection
+func (p *ThinkingParser) addToThinkingRing(r rune) {
+	maxSize := cap(p.thinkingRing)
+	if p.thinkingRingSize < maxSize {
+		p.thinkingRing[p.thinkingRingSize] = r
+		p.thinkingRingSize++
+	} else {
+		// Ring is full, shift left and add new rune at end
+		copy(p.thinkingRing, p.thinkingRing[1:])
+		p.thinkingRing[maxSize-1] = r
+	}
+}
+
+// resetThinkingRing clears the thinking ring buffer
+func (p *ThinkingParser) resetThinkingRing() {
+	p.thinkingRingSize = 0
+}
+
+// thinkingRingSuffixMatches checks if the thinking ring buffer ends with the given tag runes
+func (p *ThinkingParser) thinkingRingSuffixMatches(tagRunes []rune) bool {
+	tagLen := len(tagRunes)
+
+	if p.thinkingRingSize < tagLen {
+		return false
+	}
+
+	// Compare the last tagLen runes in the ring with the tag
+	start := p.thinkingRingSize - tagLen
+	for i := 0; i < tagLen; i++ {
+		if p.thinkingRing[start+i] != tagRunes[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ringSuffixMatches checks if the ring buffer ends with the given tag runes (O(1) operation)
+func (p *ThinkingParser) ringSuffixMatches(tagRunes []rune) bool {
+	tagLen := len(tagRunes)
+
+	if p.suffixRingSize < tagLen {
+		return false
+	}
+
+	// Compare the last tagLen runes in the ring with the tag
+	start := p.suffixRingSize - tagLen
+	for i := 0; i < tagLen; i++ {
+		if p.suffixRing[start+i] != tagRunes[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *ThinkingParser) FlushText() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.thinkingMode {
+		return
+	}
+	if p.buffer.Len() == 0 {
+		return
+	}
+
+	content := p.buffer.String()
+
+	// Check if buffer ends with a potential partial tag that we should hold back
+	// This handles streaming cases where tags are split across chunks
+	// e.g., "<antml\" in one chunk and "b:thinking>" in the next
+	holdBackLen := 0
+	for i := len(content) - 1; i >= 0 && i >= len(content)-19; i-- {
+		if content[i] == '<' {
+			// Found a '<' near the end - check if it could be start of a tag we recognize
+			suffix := content[i:]
+			// Check if this could be the start of any thinking tag
+			if isPotentialThinkingTagStart(suffix) {
+				holdBackLen = len(content) - i
+				break
+			}
+		}
+	}
+
+	if holdBackLen > 0 {
+		if holdBackLen < len(content) {
+			// Emit text before the potential tag start
+			textToEmit := content[:len(content)-holdBackLen]
+			if textToEmit != "" {
+				p.events = append(p.events, ThinkingEvent{Type: "text", Content: textToEmit})
+			}
+			// Keep the potential tag start in buffer
+			p.buffer.Reset()
+			p.buffer.WriteString(content[len(content)-holdBackLen:])
+			// Also update ring buffer to match
+			p.resetRing()
+			for _, r := range content[len(content)-holdBackLen:] {
+				p.addToRing(r)
+			}
+		}
+		// If holdBackLen == len(content), keep entire buffer (don't emit anything yet)
+		// This handles cases where the entire content is a potential tag start
+	} else {
+		// No potential tag start, emit all content
+		p.events = append(p.events, ThinkingEvent{Type: "text", Content: content})
+		p.buffer.Reset()
+	}
+}
+
+// isPotentialThinkingTagStart checks if a string could be the start of a thinking tag
+func isPotentialThinkingTagStart(s string) bool {
+	// Check against all supported thinking tag prefixes
+	prefixes := []string{
+		"<thinking>",
+		"<think>",
+		"<antml\\b:thinking>",
+		"</thinking>",
+		"</think>",
+		"</antml\\b:thinking>",
+		"</antml>",
+	}
+	for _, prefix := range prefixes {
+		if len(s) <= len(prefix) && prefix[:len(s)] == s {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *ThinkingParser) Finish() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.thinkingMode && p.buffer.Len() > 0 {
+		p.events = append(p.events, ThinkingEvent{Type: "text", Content: p.buffer.String()})
+	}
+	if p.thinkingMode && p.thinkingBuffer.Len() > 0 {
+		p.events = append(p.events, ThinkingEvent{Type: "thinking", Content: strings.TrimSpace(p.thinkingBuffer.String())})
+	}
+	p.events = append(p.events, ThinkingEvent{Type: "end"})
+}
+
+func (p *ThinkingParser) ConsumeEvents() []ThinkingEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	events := p.events
+	p.events = nil
+	return events
+}
+
+type TextAggregator struct {
+	mu        sync.Mutex
+	buffer    strings.Builder
+	interval  time.Duration
+	onFlush   func(string)
+	lastFlush time.Time
+	closed    bool
+}
+
+func NewTextAggregator(intervalMs int, onFlush func(string)) *TextAggregator {
+	return &TextAggregator{
+		interval:  time.Duration(intervalMs) * time.Millisecond,
+		onFlush:   onFlush,
+		lastFlush: time.Now(),
+	}
+}
+
+// Add appends text to the buffer. Call MaybeFlush() periodically to check if flush is needed.
+func (a *TextAggregator) Add(text string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.closed {
+		return
+	}
+
+	a.buffer.WriteString(text)
+}
+
+// MaybeFlush flushes the buffer if the interval has elapsed since last flush.
+// Returns true if flushed. This must be called from the same goroutine as Add/Flush/Close
+// to maintain single-producer semantics.
+func (a *TextAggregator) MaybeFlush() bool {
+	a.mu.Lock()
+	if a.closed || a.buffer.Len() == 0 {
+		a.mu.Unlock()
+		return false
+	}
+	if time.Since(a.lastFlush) < a.interval {
+		a.mu.Unlock()
+		return false
+	}
+	chunk := a.buffer.String()
+	a.buffer.Reset()
+	a.lastFlush = time.Now()
+	a.mu.Unlock()
+
+	a.onFlush(chunk)
+	return true
+}
+
+// Flush immediately flushes any buffered content regardless of interval.
+func (a *TextAggregator) Flush() {
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return
+	}
+	if a.buffer.Len() == 0 {
+		a.mu.Unlock()
+		return
+	}
+	chunk := a.buffer.String()
+	a.buffer.Reset()
+	a.lastFlush = time.Now()
+	a.mu.Unlock()
+
+	a.onFlush(chunk)
+}
+
+// Close flushes any remaining content and marks the aggregator as closed.
+func (a *TextAggregator) Close() {
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return
+	}
+	a.closed = true
+	chunk := a.buffer.String()
+	a.buffer.Reset()
+	a.mu.Unlock()
+
+	if chunk != "" {
+		a.onFlush(chunk)
+	}
+}
+
+// SSE writer tuning constants for lightweight backpressure.
+// These values are tuned for interactive latency rather than bulk throughput.
+const (
+	sseWriterMaxQueue          = 100
+	sseWriterDrainResetWindow  = 20 * time.Millisecond
+	sseWriterBackoffOnOverflow = 10 * time.Millisecond
+	sseWriterRetryBackoff      = 5 * time.Millisecond
+)
+
+// SSEWriter implements a lightweight backpressure-aware SSE writer.
+// It uses a small in-memory queue and short sleep-based backoff to avoid
+// overwhelming slow clients while keeping latency low for typical workloads.
+//
+// CONCURRENCY: This writer is designed for single-producer usage (one goroutine calling Send).
+// Multiple concurrent producers will serialize through the mutex and may experience
+// blocking during sleep/write operations. For multi-producer scenarios, consider using
+// a buffered channel with a dedicated writer goroutine instead.
+type SSEWriter struct {
+	writer   io.Writer
+	flusher  http.Flusher
+	mu       sync.Mutex
+	closed   bool
+	maxQueue int
+	pending  int
+	lastSend time.Time
+}
+
+func NewSSEWriter(w io.Writer, f http.Flusher) *SSEWriter {
+	return &SSEWriter{
+		writer:   w,
+		flusher:  f,
+		maxQueue: sseWriterMaxQueue,
+	}
+}
+
+func (s *SSEWriter) Send(event ClaudeStreamEvent, critical bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return fmt.Errorf("SSE writer closed")
+	}
+
+	maxRetries := 1
+	if critical {
+		maxRetries = 3
+	}
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	payload := fmt.Sprintf("event: %s\ndata: %s\n\n", event.Type, string(data))
+
+	for retry := 0; retry < maxRetries; retry++ {
+		if time.Since(s.lastSend) > sseWriterDrainResetWindow {
+			s.pending = 0
+		}
+		if s.pending >= s.maxQueue {
+			time.Sleep(sseWriterBackoffOnOverflow)
+			s.pending = 0
+		}
+
+		if _, err := s.writer.Write([]byte(payload)); err != nil {
+			if retry == maxRetries-1 {
+				s.closed = true
+				return err
+			}
+			time.Sleep(sseWriterRetryBackoff)
+			continue
+		}
+
+		s.pending++
+		s.lastSend = time.Now()
+		if s.flusher != nil {
+			s.flusher.Flush()
+		}
+		return nil
+	}
+
+	return fmt.Errorf("failed to send SSE event after retries")
+}
+
+func (s *SSEWriter) Close() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 }
 
 // handleCCStreamingResponse handles streaming response conversion for CC support.
 func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Response) {
+	// NOTE: This handler is intentionally implemented as a single function.
+	// Splitting into multiple files/types is desirable for maintainability, but it
+	// can introduce subtle streaming regressions and extra allocations. Refactor
+	// should be done only with dedicated benchmarks and test coverage.
 	// Clear upstream encoding/length headers before writing synthesized SSE stream.
 	// The proxy reconstructs the event stream from OpenAI format to Claude format,
 	// so upstream headers (Content-Encoding, Content-Length, Transfer-Encoding) no longer apply.
@@ -1166,17 +2186,24 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		return
 	}
 
-	// Send message_start event with required usage field
+	writer := NewSSEWriter(c.Writer, flusher)
+	defer writer.Close()
+
+	reqID := ""
+	if c.Request != nil {
+		reqID = c.Request.Header.Get("X-Request-ID")
+	}
+	triggerSignal := getTriggerSignal(c)
+
 	msgID := ""
 	msgUUID, err := uuid.NewRandom()
 	if err != nil {
-		// Fallback to time-based ID if crypto/rand fails; this is extremely rare
-		// but avoids panicking in the hot streaming path.
 		msgID = "msg_fallback_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 		logrus.WithError(err).Warn("CC: Failed to generate UUID for message_id, using fallback ID")
 	} else {
 		msgID = "msg_" + strings.ReplaceAll(msgUUID.String(), "-", "")
 	}
+
 	startEvent := ClaudeStreamEvent{
 		Type: "message_start",
 		Message: &ClaudeResponse{
@@ -1188,155 +2215,438 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				if m := c.GetString("original_model"); m != "" {
 					return m
 				}
-				// AI review note: Using "unknown" as fallback is intentional design
-				// for rare cases where original_model is not set. Not an error condition.
 				return "unknown"
 			}(),
-			// Usage is required by Claude clients, provide default values
-			Usage: &ClaudeUsage{
-				InputTokens:  0,
-				OutputTokens: 0,
-			},
+			Usage: &ClaudeUsage{InputTokens: 0, OutputTokens: 0},
 		},
 	}
-	writeClaudeEvent(c.Writer, startEvent)
-	flusher.Flush()
+	if err := writer.Send(startEvent, true); err != nil {
+		logrus.WithError(err).Warn("CC: Failed to write message_start event")
+		return
+	}
 
-	logrus.WithField("msg_id", msgID).Debug("CC: Started streaming response")
+	logrus.WithFields(logrus.Fields{
+		"msg_id":         msgID,
+		"request_id":     reqID,
+		"trigger_signal": triggerSignal,
+	}).Debug("CC: Started streaming response")
 
 	reader := NewSSEReader(resp.Body)
 	contentBlockIndex := 0
 	var currentToolCall *OpenAIToolCall
+	var currentToolCallName string
+	var currentToolCallArgs strings.Builder
 	var accumulatedContent strings.Builder
+	contentBufFullWarned := false
+	cleanupMode := cleanupModeArtifactsOnly
+	if isFunctionCallEnabled(c) {
+		cleanupMode = cleanupModeFull
+	}
+	parser := NewThinkingParser()
+	textBlockOpen := false
+	thinkingBlockOpen := false // Track if thinking block is open for content merging
+	var aggregator *TextAggregator
+	hasValidToolCalls := false // Track if any valid tool_calls were processed
+	isErrorRecovery := false   // Track if error recovery was triggered (don't downgrade stop_reason)
 
-	// ReadEvent blocks while waiting for SSE data. We intentionally do not add
-	// an additional read deadline here to avoid prematurely terminating long-
-	// lived Claude streams. Upstream timeouts and the client request context
-	// are responsible for canceling stalled connections.
+	// Buffer to hold potential partial malformed tags across aggregator flushes
+	var partialTagBuffer strings.Builder
+
+	sanitizeText := func(text string) string {
+		if triggerSignal != "" {
+			text = strings.ReplaceAll(text, triggerSignal, "")
+		}
+		// Use the comprehensive removeFunctionCallsBlocks function to clean all
+		// function call XML formats (function_calls, function_call, invoke,
+		// invocation, tool_call, and trigger signals)
+		text = removeFunctionCallsBlocks(text, cleanupMode)
+		return text
+	}
+
+	// sanitizeTextWithPartialDetection handles streaming text that may contain
+	// partial malformed tags split across chunks. It buffers potential partial
+	// tags and only emits text that is safe to display.
+	sanitizeTextWithPartialDetection := func(text string) string {
+		// Prepend any buffered partial content from previous flush
+		if partialTagBuffer.Len() > 0 {
+			text = partialTagBuffer.String() + text
+			partialTagBuffer.Reset()
+		}
+
+		// Check if text ends with a potential partial malformed tag
+		// Patterns to detect: <>, <><, <><invokename, <><parametername, etc.
+		holdBackLen := 0
+		for i := len(text) - 1; i >= 0 && i >= len(text)-100; i-- {
+			if text[i] == '<' {
+				suffix := text[i:]
+				// Check if this could be start of a malformed tag pattern.
+				// NOTE: isPotentialMalformedTagStart is implemented in function_call.go and shared
+				// between CC support and function call sanitizers.
+				if isPotentialMalformedTagStart(suffix) {
+					holdBackLen = len(text) - i
+					break
+				}
+			}
+		}
+
+		if holdBackLen > 0 && holdBackLen < len(text) {
+			// Hold back the potential partial tag
+			partialTagBuffer.WriteString(text[len(text)-holdBackLen:])
+			text = text[:len(text)-holdBackLen]
+		} else if holdBackLen == len(text) {
+			// Entire text is a potential partial tag, buffer it all
+			partialTagBuffer.WriteString(text)
+			return ""
+		}
+
+		return sanitizeText(text)
+	}
+
+	// flushPartialTagBuffer flushes any remaining partial tag buffer content
+	// This is called at finalize to ensure no content is lost
+	flushPartialTagBuffer := func() string {
+		if partialTagBuffer.Len() == 0 {
+			return ""
+		}
+		content := partialTagBuffer.String()
+		partialTagBuffer.Reset()
+		return sanitizeText(content)
+	}
+
+	ensureTextBlock := func() error {
+		if textBlockOpen {
+			return nil
+		}
+		startBlock := ClaudeStreamEvent{
+			Type:  "content_block_start",
+			Index: contentBlockIndex,
+			ContentBlock: &ClaudeContentBlock{
+				Type: "text",
+				Text: "",
+			},
+		}
+		if err := writer.Send(startBlock, true); err != nil {
+			return err
+		}
+		textBlockOpen = true
+		return nil
+	}
+
+	closeTextBlock := func() {
+		if !textBlockOpen {
+			return
+		}
+		stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
+		if err := writer.Send(stopEvent, true); err != nil {
+			logrus.WithError(err).Debug("CC: Failed to stop text block")
+			return
+		}
+		contentBlockIndex++
+		textBlockOpen = false
+	}
+
+	// closeThinkingBlock closes the current thinking block if open.
+	// This is called before switching to text or tool_use blocks.
+	closeThinkingBlock := func() {
+		if !thinkingBlockOpen {
+			return
+		}
+		stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
+		if err := writer.Send(stopEvent, true); err != nil {
+			logrus.WithError(err).Debug("CC: Failed to stop thinking block")
+			return
+		}
+		contentBlockIndex++
+		thinkingBlockOpen = false
+	}
+
+	closeToolBlock := func() {
+		if currentToolCall == nil {
+			return
+		}
+
+		argsLen := currentToolCallArgs.Len()
+		logrus.WithFields(logrus.Fields{
+			"tool_id":        currentToolCall.ID,
+			"tool_name":      currentToolCallName,
+			"args_len":       argsLen,
+			"content_index":  contentBlockIndex,
+		}).Debug("CC: closeToolBlock() called")
+
+		if currentToolCallName != "" && argsLen > 0 {
+			argsStr := currentToolCallArgs.String()
+			if normalized, ok := normalizeOpenAIToolCallArguments(currentToolCallName, argsStr); ok {
+				argsStr = normalized
+			}
+			deltaEvent := ClaudeStreamEvent{
+				Type:  "content_block_delta",
+				Index: contentBlockIndex,
+				Delta: &ClaudeStreamDelta{Type: "input_json_delta", PartialJSON: argsStr},
+			}
+			if err := writer.Send(deltaEvent, false); err != nil {
+				logrus.WithError(err).Debug("CC: Failed to write tool_use delta")
+			}
+			logrus.WithFields(logrus.Fields{
+				"tool_name": currentToolCallName,
+				"args_len":  len(argsStr),
+			}).Debug("CC: Emitted tool_use input_json_delta")
+		} else if currentToolCallName != "" && argsLen == 0 {
+			// Tool call with no arguments - emit empty JSON object
+			logrus.WithFields(logrus.Fields{
+				"tool_name": currentToolCallName,
+			}).Debug("CC: Tool call has no arguments, emitting empty JSON object")
+			deltaEvent := ClaudeStreamEvent{
+				Type:  "content_block_delta",
+				Index: contentBlockIndex,
+				Delta: &ClaudeStreamDelta{Type: "input_json_delta", PartialJSON: "{}"},
+			}
+			if err := writer.Send(deltaEvent, false); err != nil {
+				logrus.WithError(err).Debug("CC: Failed to write empty tool_use delta")
+			}
+		}
+
+		stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
+		if err := writer.Send(stopEvent, true); err != nil {
+			logrus.WithError(err).Debug("CC: Failed to stop tool block")
+			return
+		}
+		contentBlockIndex++
+		currentToolCall = nil
+		currentToolCallName = ""
+		currentToolCallArgs.Reset()
+	}
+
+	// ensureThinkingBlock ensures a thinking block is open for content merging.
+	// Following b4u2cc reference: thinking content should be merged into a single block
+	// instead of creating separate blocks for each fragment.
+	ensureThinkingBlock := func() error {
+		if thinkingBlockOpen {
+			return nil
+		}
+		startEvent := ClaudeStreamEvent{
+			Type:         "content_block_start",
+			Index:        contentBlockIndex,
+			ContentBlock: &ClaudeContentBlock{Type: "thinking", Thinking: ""},
+		}
+		if err := writer.Send(startEvent, true); err != nil {
+			return err
+		}
+		thinkingBlockOpen = true
+		return nil
+	}
+
+	// emitThinking emits thinking content, merging into the current thinking block.
+	// Per b4u2cc reference implementation: thinking content should be accumulated
+	// into a single thinking block rather than creating separate blocks for each fragment.
+	// This ensures Claude Code displays "∴ Thinking…" as a single merged block.
+	emitThinking := func(content string) {
+		aggregator.Flush()
+		closeTextBlock()
+		// CRITICAL: Sanitize thinking content to remove malformed XML/JSON that can cause
+		// CC auto-pause issues. This handles cases where model outputs malformed content
+		// like <>[": "task",Form":...] or </antml\b:format> inside thinking blocks.
+		thinking := sanitizeText(strings.TrimSpace(content))
+		if thinking == "" {
+			return
+		}
+		if err := ensureThinkingBlock(); err != nil {
+			logrus.WithError(err).Debug("CC: Failed to start thinking block")
+			return
+		}
+		deltaEvent := ClaudeStreamEvent{
+			Type:  "content_block_delta",
+			Index: contentBlockIndex,
+			Delta: &ClaudeStreamDelta{Type: "thinking_delta", Thinking: thinking},
+		}
+		if err := writer.Send(deltaEvent, false); err != nil {
+			logrus.WithError(err).Debug("CC: Failed to send thinking delta")
+		}
+	}
+
+	emitToolUseBlocks := func(blocks []ClaudeContentBlock) {
+		for i, toolUse := range blocks {
+			startEvent := ClaudeStreamEvent{
+				Type:         "content_block_start",
+				Index:        contentBlockIndex,
+				ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: toolUse.ID, Name: toolUse.Name},
+			}
+			if err := writer.Send(startEvent, true); err != nil {
+				logrus.WithError(err).Debug("CC+FC: Failed to start tool_use block")
+				continue
+			}
+
+			if len(toolUse.Input) > 0 {
+				deltaEvent := ClaudeStreamEvent{
+					Type:  "content_block_delta",
+					Index: contentBlockIndex,
+					Delta: &ClaudeStreamDelta{Type: "input_json_delta", PartialJSON: string(toolUse.Input)},
+				}
+				if err := writer.Send(deltaEvent, false); err != nil {
+					logrus.WithError(err).Debug("CC+FC: Failed to send tool_use delta")
+				}
+			}
+
+			stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
+			if err := writer.Send(stopEvent, true); err != nil {
+				logrus.WithError(err).Debug("CC+FC: Failed to stop tool_use block")
+			}
+			contentBlockIndex++
+
+			logrus.WithFields(logrus.Fields{"tool_index": i, "tool_name": toolUse.Name, "tool_id": toolUse.ID}).Debug("CC+FC: Emitted tool_use block in streaming response")
+		}
+	}
+
+	// NOTE: TextAggregator interval is set to 50ms to balance interactive latency with network efficiency.
+	// This value provides good responsiveness while reducing processing overhead for streaming responses.
+	// Increased from 35ms to allow more content aggregation per flush, improving parsing accuracy.
+	aggregator = NewTextAggregator(50, func(text string) {
+		// Use partial detection to handle malformed tags split across chunks
+		cleaned := sanitizeTextWithPartialDetection(text)
+		if cleaned == "" {
+			return
+		}
+		// Close thinking block before opening text block per b4u2cc reference
+		// This ensures proper block sequencing: thinking -> text -> tool_use
+		closeThinkingBlock()
+		if err := ensureTextBlock(); err != nil {
+			logrus.WithError(err).Debug("CC: Failed to start text block")
+			return
+		}
+		deltaEvent := ClaudeStreamEvent{
+			Type:  "content_block_delta",
+			Index: contentBlockIndex,
+			Delta: &ClaudeStreamDelta{Type: "text_delta", Text: cleaned},
+		}
+		if err := writer.Send(deltaEvent, false); err != nil {
+			logrus.WithError(err).Debug("CC: Failed to write text delta")
+		}
+	})
+	defer aggregator.Close()
+
+	finalize := func(stopReason string, usage *OpenAIUsage) {
+		initialStopReason := stopReason
+		logrus.WithFields(logrus.Fields{
+			"msg_id":                 msgID,
+			"request_id":             reqID,
+			"trigger_signal":         triggerSignal,
+			"initial_stop_reason":     initialStopReason,
+			"accumulated_content_len": accumulatedContent.Len(),
+			"function_call_enabled":   isFunctionCallEnabled(c),
+		}).Debug("CC: finalize() called")
+
+		parser.Finish()
+		for _, evt := range parser.ConsumeEvents() {
+			switch evt.Type {
+			case "text":
+				aggregator.Add(evt.Content)
+			case "thinking":
+				emitThinking(evt.Content)
+			}
+		}
+
+		aggregator.Flush()
+
+		// Flush any remaining partial tag buffer content
+		if remaining := flushPartialTagBuffer(); remaining != "" {
+			closeThinkingBlock()
+			if err := ensureTextBlock(); err == nil {
+				deltaEvent := ClaudeStreamEvent{
+					Type:  "content_block_delta",
+					Index: contentBlockIndex,
+					Delta: &ClaudeStreamDelta{Type: "text_delta", Text: remaining},
+				}
+				_ = writer.Send(deltaEvent, false)
+			}
+		}
+
+		closeThinkingBlock() // Close thinking block before text block per b4u2cc reference
+		closeTextBlock()
+		closeToolBlock()
+
+		if accumulatedContent.Len() > 0 && isFunctionCallEnabled(c) {
+			content := accumulatedContent.String()
+			logrus.WithFields(logrus.Fields{
+				"content_len": len(content),
+			}).Debug("CC+FC: Parsing accumulated content for tool calls")
+			_, toolUseBlocks := parseFunctionCallsFromContentForCC(c, content)
+			logrus.WithField("tool_use_blocks_count", len(toolUseBlocks)).Debug("CC+FC: parseFunctionCallsFromContentForCC returned")
+			if len(toolUseBlocks) > 0 {
+				for i, block := range toolUseBlocks {
+					logrus.WithFields(logrus.Fields{
+						"index":     i,
+						"tool_name": block.Name,
+						"tool_id":   block.ID,
+					}).Debug("CC+FC: Tool block to emit")
+				}
+				emitToolUseBlocks(toolUseBlocks)
+				stopReason = "tool_use"
+				logrus.WithFields(logrus.Fields{
+					"tool_use_count":      len(toolUseBlocks),
+					"stop_reason_changed": stopReason,
+				}).Debug("CC+FC: Changed stop_reason to tool_use")
+			}
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"accumulated_content_len": accumulatedContent.Len(),
+				"function_call_enabled":   isFunctionCallEnabled(c),
+			}).Debug("CC+FC: Skipped tool call parsing (no content or FC disabled)")
+			// When upstream finish_reason=tool_calls but there are no valid tool calls and FC is disabled,
+			// downgrade stop_reason to end_turn to avoid clients waiting for non-existent tool results.
+			// Exception: don't downgrade if this is an error recovery attempt (isErrorRecovery=true).
+			// isErrorRecovery is only set when an SSE error event has been sent to the client,
+			// which prioritizes surfacing the upstream error instead of masking it as end_turn.
+			if stopReason == "tool_use" && !hasValidToolCalls && !isFunctionCallEnabled(c) && !isErrorRecovery {
+				stopReason = "end_turn"
+			}
+		}
+
+		usagePayload := &ClaudeUsage{InputTokens: 0, OutputTokens: 0}
+		if usage != nil {
+			usagePayload.InputTokens = usage.PromptTokens
+			usagePayload.OutputTokens = usage.CompletionTokens
+		}
+		applyTokenMultiplier(usagePayload)
+
+		logrus.WithFields(logrus.Fields{
+			"final_stop_reason": stopReason,
+			"initial_was":       initialStopReason,
+			"changed":           stopReason != initialStopReason,
+		}).Debug("CC: FINAL stop_reason for message_delta")
+
+		deltaEvent := ClaudeStreamEvent{Type: "message_delta", Delta: &ClaudeStreamDelta{StopReason: stopReason}, Usage: usagePayload}
+		if err := writer.Send(deltaEvent, true); err != nil {
+			logrus.WithError(err).Error("CC: Failed to write message_delta")
+			return
+		}
+		if err := writer.Send(ClaudeStreamEvent{Type: "message_stop"}, true); err != nil {
+			logrus.WithError(err).Error("CC: Failed to write message_stop")
+		}
+		logrus.WithFields(logrus.Fields{
+			"msg_id":         msgID,
+			"request_id":     reqID,
+			"trigger_signal": triggerSignal,
+			"stop_reason":    stopReason,
+		}).Info("CC: Stream finalized successfully with stop_reason")
+	}
+
 	for {
 		event, err := reader.ReadEvent()
 		if err != nil {
 			if err == io.EOF {
 				logrus.Debug("CC: Upstream stream EOF")
-				break
 			}
-			logrus.WithError(err).Error("CC: Error reading SSE event for CC conversion")
-			// Note: We don't send an error event to the client because:
-			// 1. Claude streaming API spec does not define a standard error event type
-			// 2. Client will detect stream interruption via connection close
-			// 3. Sending non-standard events may cause client parse errors
 			break
 		}
 
 		if event.Data == "[DONE]" {
-			// Close any pending content block first
-			if accumulatedContent.Len() > 0 || currentToolCall != nil {
-				stopBlockEvent := ClaudeStreamEvent{
-					Type:  "content_block_stop",
-					Index: contentBlockIndex,
-				}
-				writeClaudeEvent(c.Writer, stopBlockEvent)
-				flusher.Flush()
-				contentBlockIndex++
-			}
-
-			stopReason := "end_turn"
-
-			// When force_function_call is enabled in CC mode, parse XML function calls
-			// from the accumulated content and emit tool_use blocks.
-			if isFunctionCallEnabled(c) && accumulatedContent.Len() > 0 {
-				content := accumulatedContent.String()
-				cleanedContent, toolUseBlocks := parseFunctionCallsFromContentForCC(c, content)
-
-				if len(toolUseBlocks) > 0 {
-					// Emit tool_use blocks for each parsed function call
-					for i, toolUse := range toolUseBlocks {
-						// Send content_block_start for tool_use
-						startToolEvent := ClaudeStreamEvent{
-							Type:  "content_block_start",
-							Index: contentBlockIndex,
-							ContentBlock: &ClaudeContentBlock{
-								Type: "tool_use",
-								ID:   toolUse.ID,
-								Name: toolUse.Name,
-							},
-						}
-						writeClaudeEvent(c.Writer, startToolEvent)
-						flusher.Flush()
-
-						// Send input_json_delta with full arguments
-						inputStr := string(toolUse.Input)
-						if inputStr != "" {
-							deltaToolEvent := ClaudeStreamEvent{
-								Type:  "content_block_delta",
-								Index: contentBlockIndex,
-								Delta: &ClaudeStreamDelta{
-									Type:        "input_json_delta",
-									PartialJSON: inputStr,
-								},
-							}
-							writeClaudeEvent(c.Writer, deltaToolEvent)
-							flusher.Flush()
-						}
-
-						// Send content_block_stop
-						stopToolEvent := ClaudeStreamEvent{
-							Type:  "content_block_stop",
-							Index: contentBlockIndex,
-						}
-						writeClaudeEvent(c.Writer, stopToolEvent)
-						flusher.Flush()
-
-						contentBlockIndex++
-
-						logrus.WithFields(logrus.Fields{
-							"tool_index": i,
-							"tool_name":  toolUse.Name,
-							"tool_id":    toolUse.ID,
-						}).Debug("CC+FC: Emitted tool_use block in [DONE] streaming response")
-					}
-
-					// Update stop reason to tool_use since we have tool calls
-					stopReason = "tool_use"
-
-					logrus.WithFields(logrus.Fields{
-						"tool_use_count":  len(toolUseBlocks),
-						"content_cleaned": len(cleanedContent) != len(content),
-					}).Debug("CC+FC: Converted XML function calls to tool_use blocks at [DONE]")
-				}
-			}
-
-			// Send message_delta with stop_reason and usage
-			deltaEvent := ClaudeStreamEvent{
-				Type: "message_delta",
-				Delta: &ClaudeStreamDelta{
-					StopReason: stopReason,
-				},
-				// Usage is required by Claude clients
-				Usage: &ClaudeUsage{
-					InputTokens:  0,
-					OutputTokens: 0,
-				},
-			}
-			writeClaudeEvent(c.Writer, deltaEvent)
-			flusher.Flush()
-
-			// Send message_stop
-			stopEvent := ClaudeStreamEvent{Type: "message_stop"}
-			writeClaudeEvent(c.Writer, stopEvent)
-			flusher.Flush()
-
-			logrus.WithField("stop_reason", stopReason).Debug("CC: Stream finished successfully")
+			finalize("end_turn", nil)
+			logrus.Debug("CC: Stream finished successfully")
 			break
 		}
 
 		var openaiChunk OpenAIResponse
 		if err := json.Unmarshal([]byte(event.Data), &openaiChunk); err != nil {
-			// SSE stream may contain non-JSON data (heartbeats, comments, etc.)
-			logrus.WithError(err).WithFields(logrus.Fields{
-				"event_type":   event.Event,
-				"data_preview": utils.TruncateString(event.Data, 512),
-			}).Debug("CC: Failed to parse OpenAI chunk as JSON, skipping")
+			logrus.WithError(err).WithFields(logrus.Fields{"event_type": event.Event, "data_preview": utils.TruncateString(event.Data, 512)}).Debug("CC: Failed to parse OpenAI chunk as JSON, skipping")
 			continue
 		}
 
@@ -1350,213 +2660,158 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			continue
 		}
 
-		// Handle text content
-		if delta.Content != nil && *delta.Content != "" {
-			if accumulatedContent.Len() == 0 {
-				// Send content_block_start
-				startBlockEvent := ClaudeStreamEvent{
-					Type:  "content_block_start",
-					Index: contentBlockIndex,
-					ContentBlock: &ClaudeContentBlock{
-						Type: "text",
-						Text: "",
-					},
-				}
-				writeClaudeEvent(c.Writer, startBlockEvent)
-				flusher.Flush()
+		// Handle reasoning_content from DeepSeek reasoner models.
+		// DeepSeek reasoner outputs: reasoning_content first, then content.
+		// Tool calls may appear in either field or both, so we accumulate both.
+		// This is emitted as thinking content in Claude format.
+		if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
+			reasoningStr := *delta.ReasoningContent
+			// Accumulate for tool call parsing in finalize()
+			if accumulatedContent.Len()+len(reasoningStr) <= maxContentBufferBytes {
+				accumulatedContent.WriteString(reasoningStr)
+			} else if !contentBufFullWarned {
+				logrus.WithFields(logrus.Fields{
+					"buffer_limit_kb": maxContentBufferBytes / 1024,
+					"accumulated_len": accumulatedContent.Len(),
+				}).Warn("CC: content buffer limit reached during reasoning streaming; tool call parsing may be incomplete")
+				contentBufFullWarned = true
 			}
-
-			accumulatedContent.WriteString(*delta.Content)
-
-			// Send content_block_delta
-			deltaBlockEvent := ClaudeStreamEvent{
-				Type:  "content_block_delta",
-				Index: contentBlockIndex,
-				Delta: &ClaudeStreamDelta{
-					Type: "text_delta",
-					Text: *delta.Content,
-				},
-			}
-			writeClaudeEvent(c.Writer, deltaBlockEvent)
-			flusher.Flush()
+			// Emit reasoning content as thinking block
+			emitThinking(reasoningStr)
 		}
 
-		// Handle tool calls
+		// Handle content field (may contain tool calls after reasoning_content)
+		if delta.Content != nil && *delta.Content != "" {
+			contentStr := *delta.Content
+			if accumulatedContent.Len()+len(contentStr) <= maxContentBufferBytes {
+				accumulatedContent.WriteString(contentStr)
+			} else if !contentBufFullWarned {
+				logrus.WithFields(logrus.Fields{
+					"buffer_limit_kb": maxContentBufferBytes / 1024,
+					"accumulated_len": accumulatedContent.Len(),
+				}).Warn("CC: content buffer limit reached during streaming; tool call parsing may be incomplete")
+				contentBufFullWarned = true
+			}
+
+			for _, r := range contentStr {
+				parser.FeedRune(r)
+			}
+			parser.FlushText()
+			for _, evt := range parser.ConsumeEvents() {
+				switch evt.Type {
+				case "text":
+					aggregator.Add(evt.Content)
+				case "thinking":
+					emitThinking(evt.Content)
+				}
+			}
+			// Check if aggregator needs flushing (single-producer: called from main loop)
+			aggregator.MaybeFlush()
+		}
+
 		if len(delta.ToolCalls) > 0 {
+			aggregator.Flush()
+			closeThinkingBlock() // Close thinking block before tool_use per b4u2cc reference
+			closeTextBlock()
 			for _, tc := range delta.ToolCalls {
-				if tc.ID != "" {
-					// Determine whether this is a new tool call ID or a continuation of the current one.
-					isNewToolCall := currentToolCall == nil || currentToolCall.ID != tc.ID
+				call := tc
+				logrus.WithFields(logrus.Fields{
+					"tool_id":   call.ID,
+					"tool_name": call.Function.Name,
+					"args_len":  len(call.Function.Arguments),
+				}).Debug("CC: Received delta.ToolCall")
 
-					// If we are switching from text content to a tool call, close the text block first.
-					if isNewToolCall && accumulatedContent.Len() > 0 {
-						stopBlockEvent := ClaudeStreamEvent{
-							Type:  "content_block_stop",
-							Index: contentBlockIndex,
-						}
-						writeClaudeEvent(c.Writer, stopBlockEvent)
-						flusher.Flush()
-						contentBlockIndex++
-						accumulatedContent.Reset()
+				if call.ID == "" {
+					logrus.Debug("CC: Skipping tool call with empty ID")
+					continue
+				}
+				isNew := currentToolCall == nil || currentToolCall.ID != call.ID
+				if isNew && currentToolCall != nil && currentToolCall.ID != call.ID {
+					closeToolBlock()
+				}
+				if isNew {
+					if call.Function.Name == "" {
+						logrus.WithField("tool_id", call.ID).Debug("CC: Skipping tool call with empty name")
+						continue
 					}
-
-					// If there is an existing tool_use block with a different ID, close it before starting a new one.
-					if currentToolCall != nil && currentToolCall.ID != "" && currentToolCall.ID != tc.ID {
-						stopToolEvent := ClaudeStreamEvent{
-							Type:  "content_block_stop",
-							Index: contentBlockIndex,
-						}
-						writeClaudeEvent(c.Writer, stopToolEvent)
-						flusher.Flush()
-						contentBlockIndex++
+					currentToolCall = &call
+					currentToolCallName = call.Function.Name
+					currentToolCallArgs.Reset()
+					hasValidToolCalls = true // Mark that we have valid tool calls
+					logrus.WithFields(logrus.Fields{
+						"tool_id":   call.ID,
+						"tool_name": call.Function.Name,
+					}).Debug("CC: Starting new tool_use block")
+					startEvent := ClaudeStreamEvent{
+						Type:         "content_block_start",
+						Index:        contentBlockIndex,
+						ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: call.ID, Name: call.Function.Name},
 					}
-
-					if isNewToolCall {
-						currentToolCall = &tc
-
-						// Send content_block_start for tool_use
-						startToolEvent := ClaudeStreamEvent{
-							Type:  "content_block_start",
-							Index: contentBlockIndex,
-							ContentBlock: &ClaudeContentBlock{
-								Type: "tool_use",
-								ID:   tc.ID,
-								Name: tc.Function.Name,
-							},
-						}
-						writeClaudeEvent(c.Writer, startToolEvent)
-						flusher.Flush()
+					if err := writer.Send(startEvent, true); err != nil {
+						logrus.WithError(err).Debug("CC: Failed to start tool_use block")
+						continue
 					}
 				}
 
-				if tc.Function.Arguments != "" && currentToolCall != nil {
-					// Send input_json_delta for the active tool_use block.
-					deltaToolEvent := ClaudeStreamEvent{
-						Type:  "content_block_delta",
-						Index: contentBlockIndex,
-						Delta: &ClaudeStreamDelta{
-							Type:        "input_json_delta",
-							PartialJSON: tc.Function.Arguments,
+				if call.Function.Arguments != "" && currentToolCall != nil {
+					currentToolCallArgs.WriteString(call.Function.Arguments)
+					logrus.WithFields(logrus.Fields{
+						"tool_id":         call.ID,
+						"chunk_args_len":  len(call.Function.Arguments),
+						"total_args_len":  currentToolCallArgs.Len(),
+					}).Debug("CC: Accumulated tool call arguments")
+				}
+			}
+		}
+
+		if choice.FinishReason != nil {
+			closeToolBlock()
+			stopReason, isError := convertFinishReasonToStopReason(*choice.FinishReason)
+
+			// Handle error finish_reason (network_error, timeout, etc.)
+			// If we have valid tool calls, the tools were executed successfully,
+			// so we should let the stream end normally with tool_use stop_reason.
+			// This allows Claude Code to continue processing tool results.
+			if isError {
+				if hasValidToolCalls {
+					// Tool calls succeeded, override to tool_use so client processes results
+					logrus.WithFields(logrus.Fields{
+						"finish_reason":        *choice.FinishReason,
+						"has_valid_tool_calls": hasValidToolCalls,
+					}).Debug("CC: Upstream error but tool calls succeeded, using tool_use stop_reason")
+					stopReason = "tool_use"
+				} else if accumulatedContent.Len() == 0 {
+					// No content and no tool calls - send SSE error event to notify client.
+					// This allows Claude Code to display the error and let user decide to retry.
+					logrus.WithField("finish_reason", *choice.FinishReason).
+						Warn("CC: Upstream error with no content, sending error event")
+
+					// Send SSE error event with upstream error info
+					errEvent := ClaudeStreamEvent{
+						Type: "error",
+						Error: &ClaudeError{
+							Type:    "api_error",
+							Message: fmt.Sprintf("Upstream returned %s with no content", *choice.FinishReason),
 						},
 					}
-					writeClaudeEvent(c.Writer, deltaToolEvent)
-					flusher.Flush()
-				}
-			}
-		}
-
-		// Handle finish reason
-		if choice.FinishReason != nil {
-			// Close current content block
-			if accumulatedContent.Len() > 0 || currentToolCall != nil {
-				stopBlockEvent := ClaudeStreamEvent{
-					Type:  "content_block_stop",
-					Index: contentBlockIndex,
-				}
-				writeClaudeEvent(c.Writer, stopBlockEvent)
-				flusher.Flush()
-				contentBlockIndex++
-			}
-
-			stopReason := convertFinishReasonToStopReason(*choice.FinishReason)
-
-			// When force_function_call is enabled in CC mode, parse XML function calls
-			// from the accumulated content and emit tool_use blocks.
-			// This bridges the gap between XML-based function call prompts and Claude's tool_use format.
-			if isFunctionCallEnabled(c) && accumulatedContent.Len() > 0 {
-				content := accumulatedContent.String()
-				cleanedContent, toolUseBlocks := parseFunctionCallsFromContentForCC(c, content)
-
-				if len(toolUseBlocks) > 0 {
-					// Emit tool_use blocks for each parsed function call
-					for i, toolUse := range toolUseBlocks {
-						// Send content_block_start for tool_use
-						startToolEvent := ClaudeStreamEvent{
-							Type:  "content_block_start",
-							Index: contentBlockIndex,
-							ContentBlock: &ClaudeContentBlock{
-								Type: "tool_use",
-								ID:   toolUse.ID,
-								Name: toolUse.Name,
-							},
-						}
-						writeClaudeEvent(c.Writer, startToolEvent)
-						flusher.Flush()
-
-						// Send input_json_delta with full arguments
-						inputStr := string(toolUse.Input)
-						if inputStr != "" {
-							deltaToolEvent := ClaudeStreamEvent{
-								Type:  "content_block_delta",
-								Index: contentBlockIndex,
-								Delta: &ClaudeStreamDelta{
-									Type:        "input_json_delta",
-									PartialJSON: inputStr,
-								},
-							}
-							writeClaudeEvent(c.Writer, deltaToolEvent)
-							flusher.Flush()
-						}
-
-						// Send content_block_stop
-						stopToolEvent := ClaudeStreamEvent{
-							Type:  "content_block_stop",
-							Index: contentBlockIndex,
-						}
-						writeClaudeEvent(c.Writer, stopToolEvent)
-						flusher.Flush()
-
-						contentBlockIndex++
-
-						logrus.WithFields(logrus.Fields{
-							"tool_index": i,
-							"tool_name":  toolUse.Name,
-							"tool_id":    toolUse.ID,
-						}).Debug("CC+FC: Emitted tool_use block in streaming response")
+					if err := writer.Send(errEvent, true); err != nil {
+						logrus.WithError(err).Debug("CC: Failed to send error event")
 					}
-
-					// Update stop reason to tool_use since we have tool calls
-					stopReason = "tool_use"
-
-					logrus.WithFields(logrus.Fields{
-						"tool_use_count":   len(toolUseBlocks),
-						"content_cleaned":  len(cleanedContent) != len(content),
-					}).Debug("CC+FC: Converted XML function calls to tool_use blocks in streaming response")
+					isErrorRecovery = true
 				}
 			}
 
-			// Build usage from OpenAI response if available
-			var usage *ClaudeUsage
-			if openaiChunk.Usage != nil {
-				usage = &ClaudeUsage{
-					InputTokens:  openaiChunk.Usage.PromptTokens,
-					OutputTokens: openaiChunk.Usage.CompletionTokens,
-				}
-			} else {
-				// Provide default usage to satisfy Claude client requirements
-				usage = &ClaudeUsage{
-					InputTokens:  0,
-					OutputTokens: 0,
-				}
+			// If upstream says tool_calls but we didn't receive any valid tool calls,
+			// convert to end_turn to prevent Claude Code from hanging waiting for tool results
+			// NOTE: Similar to non-streaming handler but NOT extracted - checks accumulated
+			// hasValidToolCalls flag vs. claudeResp.Content array. KISS principle applies.
+			if *choice.FinishReason == "tool_calls" && !hasValidToolCalls {
+				logrus.WithField("original_finish_reason", *choice.FinishReason).
+					Warn("CC: Received tool_calls finish_reason but no valid tool calls were processed, converting to end_turn")
+				stopReason = "end_turn"
 			}
-
-			deltaEvent := ClaudeStreamEvent{
-				Type: "message_delta",
-				Delta: &ClaudeStreamDelta{
-					StopReason: stopReason,
-				},
-				Usage: usage,
-			}
-			writeClaudeEvent(c.Writer, deltaEvent)
-			flusher.Flush()
-
-			// Send message_stop to properly close the stream
-			// Claude clients expect this event after message_delta with stop_reason
-			stopEvent := ClaudeStreamEvent{Type: "message_stop"}
-			writeClaudeEvent(c.Writer, stopEvent)
-			flusher.Flush()
-
-			logrus.WithField("stop_reason", stopReason).Debug("CC: Stream finished with finish_reason")
+			finalize(stopReason, openaiChunk.Usage)
+			logrus.WithField("upstream_finish_reason", *choice.FinishReason).Debug("CC: Stream finished with upstream finish_reason")
 			break
 		}
 	}
@@ -1576,17 +2831,40 @@ func marshalStringAsJSONRaw(label string, value string) json.RawMessage {
 	return json.RawMessage(bytes)
 }
 
-// writeClaudeEvent writes a Claude streaming event to the writer.
-func writeClaudeEvent(w io.Writer, event ClaudeStreamEvent) {
-	data, err := json.Marshal(event)
-	if err != nil {
-		logrus.WithError(err).Error("Failed to marshal Claude event")
-		return
+// appendToContent appends a suffix string to an existing json.RawMessage content, preserving
+// the existing structure when possible. If the content is not a plain string, it falls back
+// to returning the original content to avoid corrupting structured payloads.
+func appendToContent(content json.RawMessage, suffix string) json.RawMessage {
+	if len(content) == 0 {
+		return marshalStringAsJSONRaw("thinking_hint", suffix)
 	}
-	// Handle write errors (e.g., client disconnect)
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, string(data)); err != nil {
-		logrus.WithError(err).Debug("CC: Failed to write Claude event, client may have disconnected")
+
+	var existing string
+	if err := json.Unmarshal(content, &existing); err == nil {
+		updated := existing + suffix
+		if out, err := json.Marshal(updated); err == nil {
+			return json.RawMessage(out)
+		}
 	}
+
+	var parts []map[string]any
+	if err := json.Unmarshal(content, &parts); err == nil {
+		parts = append(parts, map[string]any{"type": "text", "text": suffix})
+		if out, err := json.Marshal(parts); err == nil {
+			return json.RawMessage(out)
+		}
+	}
+
+	// Fallback: return original content if unable to append
+	// This prevents corruption but hints may be lost for unexpected content shapes
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		// Only log metadata to avoid potential PII leakage
+		logrus.WithFields(logrus.Fields{
+			"content_len":  len(content),
+			"content_type": "json.RawMessage",
+		}).Debug("CC: Unable to append thinking hint, unexpected content format")
+	}
+	return content
 }
 
 // SSEReader reads Server-Sent Events from a reader.

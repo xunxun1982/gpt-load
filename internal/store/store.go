@@ -58,7 +58,8 @@ type Store interface {
 	// Close closes the store and releases any underlying resources.
 	Close() error
 
-	// Publish sends a message to a given channel.
+	// Publish sends a message to a given channel using at-most-once, best-effort delivery semantics.
+	// Implementations may drop messages under backpressure or transport failures rather than blocking callers.
 	Publish(channel string, message []byte) error
 
 	// Subscribe listens for messages on a given channel.

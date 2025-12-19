@@ -119,13 +119,38 @@ func (s *KeyService) processAndCreateKeys(
 	keys []string,
 	progressCallback func(processed int),
 ) (addedCount int, ignoredCount int, err error) {
-	// 1. Get existing key hashes in the group for deduplication
-	var existingHashes []string
-	if err := s.DB.Model(&models.APIKey{}).Where("group_id = ?", groupID).Pluck("key_hash", &existingHashes).Error; err != nil {
-		return 0, 0, err
+	// 1. Get existing key hashes in the group for deduplication (optimized)
+	// Calculate hashes for new keys first to avoid loading all existing keys
+	keyToHashMap := make(map[string]string, len(keys))
+	chunkHashes := make([]string, 0, len(keys))
+	for _, k := range keys {
+		trimmed := strings.TrimSpace(k)
+		if trimmed != "" {
+			h := s.EncryptionSvc.Hash(trimmed)
+			keyToHashMap[trimmed] = h
+			chunkHashes = append(chunkHashes, h)
+		}
 	}
-	existingHashMap := make(map[string]bool, len(existingHashes))
-	for _, h := range existingHashes {
+
+	var existingInBatch []string
+	if len(chunkHashes) > 0 {
+		if err := utils.ProcessInChunks(chunkHashes, s.insertChunkSize(), func(chunk []string) error {
+			var batch []string
+			if err := s.DB.Model(&models.APIKey{}).
+				Where("group_id = ?", groupID).
+				Where("key_hash IN ?", chunk).
+				Pluck("key_hash", &batch).Error; err != nil {
+				return err
+			}
+			existingInBatch = append(existingInBatch, batch...)
+			return nil
+		}); err != nil {
+			return 0, 0, err
+		}
+	}
+
+	existingHashMap := make(map[string]bool, len(existingInBatch))
+	for _, h := range existingInBatch {
 		existingHashMap[h] = true
 	}
 
@@ -140,14 +165,21 @@ func (s *KeyService) processAndCreateKeys(
 		}
 
 		// Generate hash for deduplication check
-		keyHash := s.EncryptionSvc.Hash(trimmedKey)
+		keyHash, ok := keyToHashMap[trimmedKey]
+		if !ok {
+			keyHash = s.EncryptionSvc.Hash(trimmedKey)
+		}
+
 		if existingHashMap[keyHash] {
 			continue
 		}
 
 		encryptedKey, err := s.EncryptionSvc.Encrypt(trimmedKey)
 		if err != nil {
-			logrus.WithError(err).WithField("key", trimmedKey).Error("Failed to encrypt key, skipping")
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"group_id": groupID,
+				"key_hash": keyHash,
+			}).Error("Failed to encrypt key, skipping")
 			continue
 		}
 

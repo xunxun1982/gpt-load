@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
@@ -31,7 +34,7 @@ const maxUpstreamErrorBodySize = 64 * 1024 // 64KB
 
 // Context keys used for function call middleware.
 const (
-	ctxKeyTriggerSignal          = "fc_trigger_signal"
+	ctxKeyTriggerSignal       = "fc_trigger_signal"
 	ctxKeyFunctionCallEnabled = "fc_enabled"
 )
 
@@ -54,6 +57,30 @@ type retryContext struct {
 	originalBodyBytes   []byte        // Original request body (before any sub-group mapping)
 	originalPath        string        // Original request path (for CC support restoration)
 	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
+}
+
+// safeProxyURL returns the proxy URL value with credentials redacted for safe logging.
+// Returns "none" when the pointer is nil or the underlying string is empty.
+// If the URL contains user credentials (user:pass@host), they are redacted to prevent
+// password leakage in logs.
+func safeProxyURL(proxyURL *string) string {
+	if proxyURL == nil || *proxyURL == "" {
+		return "none"
+	}
+
+	// Parse URL to redact credentials
+	parsedURL, err := url.Parse(*proxyURL)
+	if err != nil {
+		// If parsing fails, return a redacted version to be safe
+		return "[invalid-url]"
+	}
+
+	// If URL has user credentials, redact them
+	if parsedURL.User != nil {
+		parsedURL.User = url.User("***")
+	}
+
+	return parsedURL.String()
 }
 
 // restoreOriginalPath restores the original request path for retry attempts.
@@ -222,6 +249,147 @@ func isFunctionCallEnabled(c *gin.Context) bool {
 	return false
 }
 
+func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bodyBytes []byte) bool {
+	if c == nil || c.Request == nil || group == nil {
+		return false
+	}
+	if c.Request.Method != http.MethodPost {
+		return false
+	}
+	if !isCCSupportEnabled(group) {
+		return false
+	}
+
+	path := c.Request.URL.Path
+	if !strings.HasSuffix(path, "/v1/messages/count_tokens") {
+		return false
+	}
+
+	// Local heuristic estimation: count runes and assume ~4 runes per token.
+	estimatedTokens := estimateTokensForClaudeCountTokens(bodyBytes)
+
+	// Apply multiplier (billing adjustment).
+	multiplier := getTokenMultiplier()
+	rawAdjusted := float64(estimatedTokens) * multiplier
+	adjustedTokens := 0
+	if !math.IsNaN(rawAdjusted) && !math.IsInf(rawAdjusted, 0) && rawAdjusted > 0 {
+		adjustedTokens = int(math.Ceil(rawAdjusted))
+	}
+	if adjustedTokens <= 0 {
+		if estimatedTokens > 0 {
+			adjustedTokens = estimatedTokens
+		} else {
+			adjustedTokens = 1
+		}
+	}
+
+	// Claude /v1/messages/count_tokens returns only input_tokens.
+	c.JSON(http.StatusOK, gin.H{"input_tokens": adjustedTokens})
+	return true
+}
+
+func estimateTokensForClaudeCountTokens(bodyBytes []byte) int {
+	if len(bodyBytes) == 0 {
+		return 0
+	}
+
+	var req ClaudeRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		return estimateTokensFromBytes(bodyBytes)
+	}
+
+	var sb strings.Builder
+	if strings.TrimSpace(req.Prompt) != "" {
+		sb.WriteString(req.Prompt)
+		sb.WriteByte('\n')
+	}
+	if len(req.System) > 0 {
+		sb.WriteString(extractTextFromClaudeRaw(req.System))
+		sb.WriteByte('\n')
+	}
+	for _, msg := range req.Messages {
+		if len(msg.Content) == 0 {
+			continue
+		}
+		sb.WriteString(extractTextFromClaudeRaw(msg.Content))
+		sb.WriteByte('\n')
+	}
+	if len(req.Tools) > 0 {
+		if b, err := json.Marshal(req.Tools); err == nil {
+			sb.Write(b)
+		}
+	}
+
+	return estimateTokensFromString(sb.String())
+}
+
+func extractTextFromClaudeRaw(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+
+	var blocks []ClaudeContentBlock
+	if err := json.Unmarshal(raw, &blocks); err == nil && len(blocks) > 0 {
+		var sb strings.Builder
+		for _, block := range blocks {
+			switch block.Type {
+			case "text":
+				sb.WriteString(block.Text)
+			case "tool_use":
+				sb.WriteString("<invoke name=\"")
+				sb.WriteString(block.Name)
+				sb.WriteString("\">")
+				if len(block.Input) > 0 {
+					sb.Write(block.Input)
+				}
+				sb.WriteString("</invoke>")
+			case "tool_result":
+				sb.WriteString("<tool_result>")
+				if len(block.Content) > 0 {
+					sb.Write(block.Content)
+				}
+				sb.WriteString("</tool_result>")
+			}
+		}
+		return sb.String()
+	}
+
+	return string(raw)
+}
+
+func estimateTokensFromString(text string) int {
+	if text == "" {
+		return 0
+	}
+	count := utf8.RuneCountInString(text)
+	if count <= 0 {
+		return 0
+	}
+	// Heuristic: ~4 runes per token.
+	// NOTE: This is an approximation and may differ from actual tokenizers
+	// (language mix, code/JSON, and model-specific tokenization).
+	return (count + 3) / 4
+}
+
+func estimateTokensFromBytes(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
+	count := utf8.RuneCount(b)
+	if count <= 0 {
+		return 0
+	}
+	// Heuristic: ~4 runes per token.
+	// NOTE: This is an approximation and may differ from actual tokenizers
+	// (language mix, code/JSON, and model-specific tokenization).
+	return (count + 3) / 4
+}
+
 // NewProxyServer creates a new proxy server
 func NewProxyServer(
 	keyProvider *keypool.KeyProvider,
@@ -310,10 +478,13 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	}
 	c.Request.Body.Close()
 
-	// Create a copy of the body bytes as the buffer will be returned to the pool
-	// This avoids the dynamic resizing allocations of io.ReadAll
-	bodyBytes := make([]byte, buf.Len())
-	copy(bodyBytes, buf.Bytes())
+	// Use the buffer bytes directly to avoid allocation.
+	// SAFETY: This is safe because:
+	// 1. PutBuffer() calls buf.Reset() which clears the buffer contents
+	// 2. executeRequestWithRetry() is synchronous and doesn't spawn goroutines that retain bodyBytes
+	// 3. The buffer is returned to pool only after HandleProxy returns (via defer)
+	// 4. No downstream handlers store the bodyBytes slice beyond the request scope
+	bodyBytes := buf.Bytes()
 
 	// For GET requests (like /v1/models), skip body processing
 	var finalBodyBytes []byte
@@ -321,13 +492,15 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 	// Handle CC support path rewriting for all requests (including GET)
 	// This must happen before body processing to ensure correct path for upstream
-	if isCCSupportEnabled(group) && isClaudePath(c.Request.URL.Path, group.Name) {
+	wasClaudePath := isClaudePath(c.Request.URL.Path, group.Name)
+	if isCCSupportEnabled(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
 		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
 		sanitizeCCQueryParams(c.Request.URL)
+		c.Set("cc_was_claude_path", true)
 		logrus.WithFields(logrus.Fields{
 			"group":           group.Name,
 			"original_path":   originalPath,
@@ -362,6 +535,11 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				return
 			}
 
+			// Handle Claude count_tokens endpoint (CC only).
+			if ps.handleTokenCount(c, group, finalBodyBytes) {
+				return
+			}
+
 			// Apply CC support: convert Claude requests to OpenAI format
 			// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
 			// We check for /v1/messages (after rewrite) and CC support enabled
@@ -388,7 +566,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 			// Apply function call request rewrite for eligible OpenAI groups.
 			if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
-				rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(group, finalBodyBytes)
+				rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(c, group, finalBodyBytes)
 				if fcErr != nil {
 					logrus.WithError(fcErr).WithFields(logrus.Fields{
 						"group": group.Name,
@@ -531,15 +709,10 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 	// Log which client is being used for debugging proxy issues
 	logrus.WithFields(logrus.Fields{
-		"group":      group.Name,
-		"upstream":   upstreamSelection.URL,
-		"has_proxy":  upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
-		"proxy_url":  func() string {
-			if upstreamSelection.ProxyURL != nil {
-				return *upstreamSelection.ProxyURL
-			}
-			return "none"
-		}(),
+		"group":     group.Name,
+		"upstream":  upstreamSelection.URL,
+		"has_proxy": upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
+		"proxy_url": safeProxyURL(upstreamSelection.ProxyURL),
 		"is_stream": isStream,
 	}).Debug("Using HTTP client for request")
 
@@ -755,27 +928,34 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		finalBodyBytes = bodyBytes
 	}
 
+	// Handle Claude count_tokens endpoint for aggregate sub-group (CC only).
+	if ps.handleTokenCount(c, group, finalBodyBytes) {
+		return
+	}
+
 	// Apply CC support for eligible OpenAI sub-groups.
 	// Clear any stale CC state from previous sub-group attempts.
 	c.Set(ctxKeyCCEnabled, false)
+	wasClaudePath := isClaudePath(c.Request.URL.Path, group.Name)
 
 	// Handle CC support path rewriting for sub-groups
 	// This rewrites /claude/ paths to standard OpenAI paths. For groups named "claude",
 	// OpenAI-style paths like /proxy/claude/v1/messages are not treated as CC paths.
-	if isCCSupportEnabled(group) && isClaudePath(c.Request.URL.Path, group.Name) {
+	if isCCSupportEnabled(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
 		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
 		sanitizeCCQueryParams(c.Request.URL)
+		c.Set("cc_was_claude_path", true)
 		logrus.WithFields(logrus.Fields{
-			"aggregate_group":  originalGroup.Name,
-			"sub_group":        group.Name,
-			"original_path":    originalPath,
-			"new_path":         c.Request.URL.Path,
-			"original_query":   originalQuery,
-			"sanitized_query":  c.Request.URL.RawQuery,
+			"aggregate_group": originalGroup.Name,
+			"sub_group":       group.Name,
+			"original_path":   originalPath,
+			"new_path":        c.Request.URL.Path,
+			"original_query":  originalQuery,
+			"sanitized_query": c.Request.URL.RawQuery,
 		}).Debug("CC support: rewritten Claude path for sub-group and sanitized query params")
 	}
 
@@ -812,7 +992,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	c.Set(ctxKeyFunctionCallEnabled, false)
 	c.Set(ctxKeyTriggerSignal, "")
 	if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
-		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(group, finalBodyBytes)
+		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(c, group, finalBodyBytes)
 		if fcErr != nil {
 			logrus.WithError(fcErr).WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,
@@ -944,15 +1124,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Log which client is being used for debugging proxy issues
 	logrus.WithFields(logrus.Fields{
-		"group":      group.Name,
-		"upstream":   upstreamSelection.URL,
-		"has_proxy":  upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
-		"proxy_url":  func() string {
-			if upstreamSelection.ProxyURL != nil {
-				return *upstreamSelection.ProxyURL
-			}
-			return "none"
-		}(),
+		"group":     group.Name,
+		"upstream":  upstreamSelection.URL,
+		"has_proxy": upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
+		"proxy_url": safeProxyURL(upstreamSelection.ProxyURL),
 		"is_stream": isStream,
 	}).Debug("Using HTTP client for aggregate sub-group request")
 
@@ -1013,14 +1188,14 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 		// Log detailed retry status
 		logrus.WithFields(logrus.Fields{
-			"aggregate_group":        originalGroup.Name,
-			"sub_group":              group.Name,
-			"sub_group_key_retry":    subGroupKeyRetryCount,
-			"sub_group_max_retries":  subGroupMaxRetries,
-			"aggregate_attempt":      retryCtx.attemptCount,
-			"aggregate_max_retries":  maxRetries,
-			"status_code":            statusCode,
-			"key_retries_exhausted":  isSubGroupKeyRetryExhausted,
+			"aggregate_group":       originalGroup.Name,
+			"sub_group":             group.Name,
+			"sub_group_key_retry":   subGroupKeyRetryCount,
+			"sub_group_max_retries": subGroupMaxRetries,
+			"aggregate_attempt":     retryCtx.attemptCount,
+			"aggregate_max_retries": maxRetries,
+			"status_code":           statusCode,
+			"key_retries_exhausted": isSubGroupKeyRetryExhausted,
 		}).Debug("Sub-group request failed, checking retry strategy")
 
 		// If sub-group still has key retries left, retry with a different key in the same sub-group
@@ -1055,9 +1230,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 		// Sub-group key retries exhausted, handle aggregate-level retry (switch to next sub-group)
 		logrus.WithFields(logrus.Fields{
-			"sub_group":              group.Name,
-			"sub_group_key_retries":  subGroupKeyRetryCount,
-			"sub_group_max_retries":  subGroupMaxRetries,
+			"sub_group":             group.Name,
+			"sub_group_key_retries": subGroupKeyRetryCount,
+			"sub_group_max_retries": subGroupMaxRetries,
 		}).Debug("Sub-group key retries exhausted, switching to next sub-group")
 
 		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, statusCode, errors.New(parsedError), apiKey)
@@ -1260,14 +1435,20 @@ func (ps *ProxyServer) logRequest(
 	// Format upstream address with proxy info if available
 	upstreamAddrWithProxy := upstreamAddr
 	if proxyURL != nil && *proxyURL != "" {
-		// Use strings.Builder for better performance in hot path
-		var b strings.Builder
-		b.Grow(len(upstreamAddr) + len(*proxyURL) + 10) // Pre-allocate capacity
-		b.WriteString(upstreamAddr)
-		b.WriteString(" (proxy: ")
-		b.WriteString(*proxyURL)
-		b.WriteByte(')')
-		upstreamAddrWithProxy = b.String()
+		safe := safeProxyURL(proxyURL)
+		if safe == "none" {
+			// Defensive: safeProxyURL returns "none" only when proxyURL is nil/empty.
+			// Keep upstreamAddr unchanged.
+		} else {
+			// Use strings.Builder for better performance in hot path
+			var b strings.Builder
+			b.Grow(len(upstreamAddr) + len(safe) + 10) // Pre-allocate capacity
+			b.WriteString(upstreamAddr)
+			b.WriteString(" (proxy: ")
+			b.WriteString(safe)
+			b.WriteByte(')')
+			upstreamAddrWithProxy = b.String()
+		}
 	}
 
 	logEntry := &models.RequestLog{
