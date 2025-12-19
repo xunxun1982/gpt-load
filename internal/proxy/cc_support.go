@@ -180,7 +180,10 @@ func isCCEnabled(c *gin.Context) bool {
 // checking both the original path and context flags set during request processing.
 // This helper consolidates the three-way check pattern used across CC handlers.
 func isCCRequest(c *gin.Context) bool {
-	if c == nil || c.Request == nil || c.Request.URL == nil {
+	if c == nil {
+		return false
+	}
+	if c.Request == nil || c.Request.URL == nil {
 		return c.GetBool("cc_was_claude_path") || c.GetString(ctxKeyOriginalFormat) == "claude"
 	}
 	// Check original path contains Claude segment
@@ -929,29 +932,7 @@ func splitThinkingContent(content string, cleanupMode functionCallCleanupMode) [
 			blocks = append(blocks, ClaudeContentBlock{Type: "thinking", Thinking: thinking})
 		case "text":
 			orig := evt.Content
-			start := 0
-			for start < len(orig) {
-				switch orig[start] {
-				case ' ', '\n', '\r', '\t':
-					start++
-				default:
-					goto splitTextDoneStart
-				}
-			}
-		splitTextDoneStart:
-			end := len(orig)
-			for end > start {
-				switch orig[end-1] {
-				case ' ', '\n', '\r', '\t':
-					end--
-				default:
-					goto splitTextDoneEnd
-				}
-			}
-		splitTextDoneEnd:
-			leading := orig[:start]
-			trailing := orig[end:]
-			core := orig[start:end]
+			leading, core, trailing := trimWhitespacePreserving(orig)
 			cleanedCore := removeFunctionCallsBlocks(core, cleanupMode)
 			text := leading + cleanedCore + trailing
 			if text == "" {
@@ -961,6 +942,21 @@ func splitThinkingContent(content string, cleanupMode functionCallCleanupMode) [
 		}
 	}
 	return blocks
+}
+
+// trimWhitespacePreserving returns the leading whitespace, trimmed core, and trailing whitespace.
+func trimWhitespacePreserving(s string) (string, string, string) {
+	start := 0
+	for start < len(s) && (s[start] == ' ' || s[start] == '\n' || s[start] == '\r' || s[start] == '\t') {
+		start++
+	}
+
+	end := len(s)
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\n' || s[end-1] == '\r' || s[end-1] == '\t') {
+		end--
+	}
+
+	return s[:start], s[start:end], s[end:]
 }
 
 // convertFinishReasonToStopReason converts OpenAI finish_reason to Claude stop_reason.
