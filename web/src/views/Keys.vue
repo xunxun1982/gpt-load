@@ -9,6 +9,7 @@ import type { Group, SubGroupInfo } from "@/types/models";
 import { onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+const LAST_SELECTED_GROUP_ID_KEY = "keys:lastGroupId";
 const groups = ref<Group[]>([]);
 const loading = ref(false);
 const selectedGroup = ref<Group | null>(null);
@@ -16,6 +17,29 @@ const subGroups = ref<SubGroupInfo[]>([]);
 const loadingSubGroups = ref(false);
 const router = useRouter();
 const route = useRoute();
+
+function getLastSelectedGroupId(): string | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    return localStorage.getItem(LAST_SELECTED_GROUP_ID_KEY);
+  } catch (error) {
+    console.error("Failed to read last selected group id from storage:", error);
+    return null;
+  }
+}
+
+function setLastSelectedGroupId(groupId?: number | null) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    if (groupId) {
+      localStorage.setItem(LAST_SELECTED_GROUP_ID_KEY, String(groupId));
+    } else {
+      localStorage.removeItem(LAST_SELECTED_GROUP_ID_KEY);
+    }
+  } catch (error) {
+    console.error("Failed to write last selected group id to storage:", error);
+  }
+}
 
 onMounted(async () => {
   await loadGroups();
@@ -27,10 +51,13 @@ async function loadGroups() {
     groups.value = await keysApi.getGroups();
     // Select default group
     if (groups.value.length > 0 && !selectedGroup.value) {
-      const groupId = route.query.groupId;
+      const queryGroupId = Array.isArray(route.query.groupId)
+        ? route.query.groupId[0]
+        : route.query.groupId;
+      const groupId = queryGroupId ?? getLastSelectedGroupId();
       const found = groups.value.find(g => String(g.id) === String(groupId));
       if (found) {
-        selectedGroup.value = found;
+        handleGroupSelect(found);
       } else {
         handleGroupSelect(groups.value[0] ?? null);
       }
@@ -72,8 +99,9 @@ watch(selectedGroup, async newGroup => {
 
 function handleGroupSelect(group: Group | null) {
   selectedGroup.value = group || null;
+  setLastSelectedGroupId(group?.id ?? null);
   if (String(group?.id) !== String(route.query.groupId)) {
-    router.push({ name: "keys", query: { groupId: group?.id || "" } });
+    router.push({ name: "keys", query: group?.id ? { groupId: group.id } : {} });
   }
 }
 
