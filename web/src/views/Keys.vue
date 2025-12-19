@@ -101,7 +101,7 @@ function handleGroupSelect(group: Group | null) {
   selectedGroup.value = group || null;
   setLastSelectedGroupId(group?.id ?? null);
   if (String(group?.id) !== String(route.query.groupId)) {
-    router.push({ name: "keys", query: { groupId: group?.id || "" } });
+    router.push({ name: "keys", query: group?.id ? { groupId: group.id } : {} });
   }
 }
 
