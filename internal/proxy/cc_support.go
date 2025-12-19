@@ -2593,6 +2593,8 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			// When upstream finish_reason=tool_calls but there are no valid tool calls and FC is disabled,
 			// downgrade stop_reason to end_turn to avoid clients waiting for non-existent tool results.
 			// Exception: don't downgrade if this is an error recovery attempt (isErrorRecovery=true).
+			// isErrorRecovery is only set when an SSE error event has been sent to the client,
+			// which prioritizes surfacing the upstream error instead of masking it as end_turn.
 			if stopReason == "tool_use" && !hasValidToolCalls && !isFunctionCallEnabled(c) && !isErrorRecovery {
 				stopReason = "end_turn"
 			}
