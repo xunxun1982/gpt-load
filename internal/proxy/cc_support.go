@@ -41,6 +41,8 @@ const maxUpstreamResponseBodySize = 32 * 1024 * 1024
 
 var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum allowed size")
 
+
+
 // maxContentBufferBytes is declared in function_call.go (same package proxy).
 // We keep the single source of truth there to avoid drift without adding extra files.
 const (
@@ -862,7 +864,11 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode funct
 
 		// Convert finish reason
 		if choice.FinishReason != nil {
-			stopReason := convertFinishReasonToStopReason(*choice.FinishReason)
+			stopReason, isError := convertFinishReasonToStopReason(*choice.FinishReason)
+			if isError {
+				logrus.WithField("finish_reason", *choice.FinishReason).
+					Warn("CC: Upstream returned error finish_reason")
+			}
 			// If upstream says tool_calls but we didn't receive any valid tool calls,
 			// convert to end_turn to prevent Claude Code from hanging waiting for tool results
 			hasToolUseBlocks := false
@@ -957,16 +963,21 @@ func splitThinkingContent(content string, cleanupMode functionCallCleanupMode) [
 	return blocks
 }
 
-func convertFinishReasonToStopReason(finishReason string) string {
+// convertFinishReasonToStopReason converts OpenAI finish_reason to Claude stop_reason.
+// Returns the stop_reason and a boolean indicating if the finish_reason represents an error.
+func convertFinishReasonToStopReason(finishReason string) (string, bool) {
 	switch finishReason {
 	case "stop":
-		return "end_turn"
+		return "end_turn", false
 	case "length":
-		return "max_tokens"
+		return "max_tokens", false
 	case "tool_calls", "function_call":
-		return "tool_use"
+		return "tool_use", false
+	case "network_error", "error", "timeout", "content_filter":
+		// These are error conditions that should be reported to the client
+		return "end_turn", true
 	default:
-		return "end_turn"
+		return "end_turn", false
 	}
 }
 
@@ -1541,6 +1552,44 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// Convert to Claude format
 	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode)
 
+	// Handle error finish_reason for non-streaming responses.
+	// When upstream returns error (network_error, timeout, etc.) with no content,
+	// return a Claude error response to notify the client.
+	if len(openaiResp.Choices) > 0 && openaiResp.Choices[0].FinishReason != nil {
+		finishReason := *openaiResp.Choices[0].FinishReason
+		_, isError := convertFinishReasonToStopReason(finishReason)
+
+		// Check if response has meaningful content
+		hasContent := false
+		for _, block := range claudeResp.Content {
+			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+				hasContent = true
+				break
+			}
+			if block.Type == "tool_use" && block.ID != "" {
+				hasContent = true
+				break
+			}
+		}
+
+		if isError && !hasContent {
+			// Error with no content - return Claude error response
+			logrus.WithField("finish_reason", finishReason).
+				Warn("CC: Non-streaming upstream error with no content, returning error response")
+
+			claudeErr := ClaudeErrorResponse{
+				Type: "error",
+				Error: ClaudeError{
+					Type:    "api_error",
+					Message: fmt.Sprintf("Upstream returned %s with no content", finishReason),
+				},
+			}
+			clearUpstreamEncodingHeaders(c)
+			c.JSON(http.StatusBadGateway, claudeErr)
+			return
+		}
+	}
+
 	// When force_function_call is enabled in CC mode, parse XML function calls
 	// from the ORIGINAL response content and convert them to Claude tool_use blocks.
 	// This bridges the gap between the XML-based function call prompt injection
@@ -1619,6 +1668,7 @@ type ClaudeStreamEvent struct {
 	ContentBlock *ClaudeContentBlock `json:"content_block,omitempty"`
 	Delta        *ClaudeStreamDelta  `json:"delta,omitempty"`
 	Usage        *ClaudeUsage        `json:"usage,omitempty"`
+	Error        *ClaudeError        `json:"error,omitempty"` // For error events
 }
 
 // ClaudeStreamDelta represents delta content in Claude streaming.
@@ -2201,6 +2251,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	thinkingBlockOpen := false // Track if thinking block is open for content merging
 	var aggregator *TextAggregator
 	hasValidToolCalls := false // Track if any valid tool_calls were processed
+	isErrorRecovery := false   // Track if error recovery was triggered (don't downgrade stop_reason)
 
 	// Buffer to hold potential partial malformed tags across aggregator flushes
 	var partialTagBuffer strings.Builder
@@ -2317,7 +2368,16 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if currentToolCall == nil {
 			return
 		}
-		if currentToolCallName != "" && currentToolCallArgs.Len() > 0 {
+
+		argsLen := currentToolCallArgs.Len()
+		logrus.WithFields(logrus.Fields{
+			"tool_id":        currentToolCall.ID,
+			"tool_name":      currentToolCallName,
+			"args_len":       argsLen,
+			"content_index":  contentBlockIndex,
+		}).Debug("CC: closeToolBlock() called")
+
+		if currentToolCallName != "" && argsLen > 0 {
 			argsStr := currentToolCallArgs.String()
 			if normalized, ok := normalizeOpenAIToolCallArguments(currentToolCallName, argsStr); ok {
 				argsStr = normalized
@@ -2329,6 +2389,23 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			}
 			if err := writer.Send(deltaEvent, false); err != nil {
 				logrus.WithError(err).Debug("CC: Failed to write tool_use delta")
+			}
+			logrus.WithFields(logrus.Fields{
+				"tool_name": currentToolCallName,
+				"args_len":  len(argsStr),
+			}).Debug("CC: Emitted tool_use input_json_delta")
+		} else if currentToolCallName != "" && argsLen == 0 {
+			// Tool call with no arguments - emit empty JSON object
+			logrus.WithFields(logrus.Fields{
+				"tool_name": currentToolCallName,
+			}).Debug("CC: Tool call has no arguments, emitting empty JSON object")
+			deltaEvent := ClaudeStreamEvent{
+				Type:  "content_block_delta",
+				Index: contentBlockIndex,
+				Delta: &ClaudeStreamDelta{Type: "input_json_delta", PartialJSON: "{}"},
+			}
+			if err := writer.Send(deltaEvent, false); err != nil {
+				logrus.WithError(err).Debug("CC: Failed to write empty tool_use delta")
 			}
 		}
 
@@ -2517,6 +2594,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				"accumulated_content_len": accumulatedContent.Len(),
 				"function_call_enabled":   isFunctionCallEnabled(c),
 			}).Debug("CC+FC: Skipped tool call parsing (no content or FC disabled)")
+			// When upstream finish_reason=tool_calls but there are no valid tool calls and FC is disabled,
+			// downgrade stop_reason to end_turn to avoid clients waiting for non-existent tool results.
+			// Exception: don't downgrade if this is an error recovery attempt (isErrorRecovery=true).
+			if stopReason == "tool_use" && !hasValidToolCalls && !isFunctionCallEnabled(c) && !isErrorRecovery {
+				stopReason = "end_turn"
+			}
 		}
 
 		usagePayload := &ClaudeUsage{InputTokens: 0, OutputTokens: 0}
@@ -2634,7 +2717,15 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			closeTextBlock()
 			for _, tc := range delta.ToolCalls {
 				call := tc
+				logrus.WithFields(logrus.Fields{
+					"tool_id":   call.ID,
+					"tool_name": call.Function.Name,
+					"args_len":  len(call.Function.Arguments),
+					"args_preview": utils.TruncateString(call.Function.Arguments, 100),
+				}).Debug("CC: Received delta.ToolCall")
+
 				if call.ID == "" {
+					logrus.Debug("CC: Skipping tool call with empty ID")
 					continue
 				}
 				isNew := currentToolCall == nil || currentToolCall.ID != call.ID
@@ -2643,12 +2734,17 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				}
 				if isNew {
 					if call.Function.Name == "" {
+						logrus.WithField("tool_id", call.ID).Debug("CC: Skipping tool call with empty name")
 						continue
 					}
 					currentToolCall = &call
 					currentToolCallName = call.Function.Name
 					currentToolCallArgs.Reset()
 					hasValidToolCalls = true // Mark that we have valid tool calls
+					logrus.WithFields(logrus.Fields{
+						"tool_id":   call.ID,
+						"tool_name": call.Function.Name,
+					}).Debug("CC: Starting new tool_use block")
 					startEvent := ClaudeStreamEvent{
 						Type:         "content_block_start",
 						Index:        contentBlockIndex,
@@ -2662,13 +2758,52 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 				if call.Function.Arguments != "" && currentToolCall != nil {
 					currentToolCallArgs.WriteString(call.Function.Arguments)
+					logrus.WithFields(logrus.Fields{
+						"tool_id":         call.ID,
+						"chunk_args_len":  len(call.Function.Arguments),
+						"total_args_len":  currentToolCallArgs.Len(),
+					}).Debug("CC: Accumulated tool call arguments")
 				}
 			}
 		}
 
 		if choice.FinishReason != nil {
 			closeToolBlock()
-			stopReason := convertFinishReasonToStopReason(*choice.FinishReason)
+			stopReason, isError := convertFinishReasonToStopReason(*choice.FinishReason)
+
+			// Handle error finish_reason (network_error, timeout, etc.)
+			// If we have valid tool calls, the tools were executed successfully,
+			// so we should let the stream end normally with tool_use stop_reason.
+			// This allows Claude Code to continue processing tool results.
+			if isError {
+				if hasValidToolCalls {
+					// Tool calls succeeded, override to tool_use so client processes results
+					logrus.WithFields(logrus.Fields{
+						"finish_reason":        *choice.FinishReason,
+						"has_valid_tool_calls": hasValidToolCalls,
+					}).Debug("CC: Upstream error but tool calls succeeded, using tool_use stop_reason")
+					stopReason = "tool_use"
+				} else if accumulatedContent.Len() == 0 {
+					// No content and no tool calls - send SSE error event to notify client.
+					// This allows Claude Code to display the error and let user decide to retry.
+					logrus.WithField("finish_reason", *choice.FinishReason).
+						Warn("CC: Upstream error with no content, sending error event")
+
+					// Send SSE error event with upstream error info
+					errEvent := ClaudeStreamEvent{
+						Type: "error",
+						Error: &ClaudeError{
+							Type:    "api_error",
+							Message: fmt.Sprintf("Upstream returned %s with no content", *choice.FinishReason),
+						},
+					}
+					if err := writer.Send(errEvent, true); err != nil {
+						logrus.WithError(err).Debug("CC: Failed to send error event")
+					}
+					isErrorRecovery = true
+				}
+			}
+
 			// If upstream says tool_calls but we didn't receive any valid tool calls,
 			// convert to end_turn to prevent Claude Code from hanging waiting for tool results
 			// NOTE: Similar to non-streaming handler but NOT extracted - checks accumulated

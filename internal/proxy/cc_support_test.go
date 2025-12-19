@@ -1599,6 +1599,55 @@ func TestCCFunctionCall_NormalResponseInvokeXMLToToolUse(t *testing.T) {
 	}
 }
 
+// TestCCStreaming_StopReasonDowngradeWhenNoToolUse verifies that when upstream
+// finish_reason=tool_calls but no actual tool_call content is present and the
+// function-call bridge is disabled, the stop_reason is downgraded to end_turn
+// to avoid clients waiting for nonexistent tool results.
+func TestCCStreaming_StopReasonDowngradeWhenNoToolUse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	stopReason := "tool_calls"
+	content := "Hello without tools"
+
+	chunk := &OpenAIResponse{
+		Model: "test-model",
+		Choices: []OpenAIChoice{
+			{
+				Index: 0,
+				Delta: &OpenAIRespMessage{
+					Content: &content,
+				},
+				FinishReason: &stopReason,
+			},
+		},
+		Usage: &OpenAIUsage{PromptTokens: 1, CompletionTokens: 2},
+	}
+
+	body := buildTestSSEBody(chunk)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	output := w.Body.String()
+	if output == "" {
+		t.Fatalf("expected SSE output, got empty body")
+	}
+	if !strings.Contains(output, `"stop_reason":"end_turn"`) {
+		t.Fatalf("expected stop_reason downgraded to end_turn, got: %s", output)
+	}
+	if strings.Contains(output, `"tool_use"`) {
+		t.Fatalf("unexpected tool_use block when no tool calls present, output: %s", output)
+	}
+}
+
 // TestRepairMalformedJSON_RealWorldMalformedLog tests the JSON repair logic on the specific malformed JSON from production.
 func TestRepairMalformedJSON_RealWorldMalformedLog(t *testing.T) {
 	// This is the malformed JSON extracted from the log

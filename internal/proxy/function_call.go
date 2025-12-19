@@ -299,12 +299,12 @@ var (
 	// This handles cases where models output property tags instead of parameter tags
 	// Captures: group 1 = property name, group 2 = property value
 	// Performance: O(n) character class matching
-	reMalformedProperty = regexp.MustCompile(`<property\s*name="([^"]+)"\s*value="([^"]*)"[^>]*>`)
+	reMalformedProperty = regexp.MustCompile(`<(?:property\s*name|propertyname)="([^"]+)"\s*value="([^"]*)"[^>]*>`)
 
 	// Pattern to match malformed property tags for removal (entire tag)
 	// Examples: "<propertyname=\"activeForm\"value=\"正在分析\">"
 	// Strategy: Match the entire property tag for removal from output
-	reMalformedPropertyTag = regexp.MustCompile(`<property\s*name="[^"]*"\s*value="[^"]*"[^>]*>`)
+	reMalformedPropertyTag = regexp.MustCompile(`<(?:property\s*name|propertyname)="[^"]*"\s*value="[^"]*"[^>]*>`)
 
 	// Pattern to match incomplete/unclosed invoke or parameter tags at end of content
 	// Examples: "<invoke name=\"Read\">F:/path/file.py", "<parameter name=\"todos\">[{...}]"
