@@ -9,6 +9,7 @@ import type { Group, SubGroupInfo } from "@/types/models";
 import { onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+const LAST_SELECTED_GROUP_ID_KEY = "keys:lastGroupId";
 const groups = ref<Group[]>([]);
 const loading = ref(false);
 const selectedGroup = ref<Group | null>(null);
@@ -16,6 +17,20 @@ const subGroups = ref<SubGroupInfo[]>([]);
 const loadingSubGroups = ref(false);
 const router = useRouter();
 const route = useRoute();
+
+function getLastSelectedGroupId(): string | null {
+  if (typeof localStorage === "undefined") return null;
+  return localStorage.getItem(LAST_SELECTED_GROUP_ID_KEY);
+}
+
+function setLastSelectedGroupId(groupId?: number | null) {
+  if (typeof localStorage === "undefined") return;
+  if (groupId) {
+    localStorage.setItem(LAST_SELECTED_GROUP_ID_KEY, String(groupId));
+  } else {
+    localStorage.removeItem(LAST_SELECTED_GROUP_ID_KEY);
+  }
+}
 
 onMounted(async () => {
   await loadGroups();
@@ -27,10 +42,10 @@ async function loadGroups() {
     groups.value = await keysApi.getGroups();
     // Select default group
     if (groups.value.length > 0 && !selectedGroup.value) {
-      const groupId = route.query.groupId;
+      const groupId = route.query.groupId ?? getLastSelectedGroupId();
       const found = groups.value.find(g => String(g.id) === String(groupId));
       if (found) {
-        selectedGroup.value = found;
+        handleGroupSelect(found);
       } else {
         handleGroupSelect(groups.value[0] ?? null);
       }
@@ -72,6 +87,7 @@ watch(selectedGroup, async newGroup => {
 
 function handleGroupSelect(group: Group | null) {
   selectedGroup.value = group || null;
+  setLastSelectedGroupId(group?.id ?? null);
   if (String(group?.id) !== String(route.query.groupId)) {
     router.push({ name: "keys", query: { groupId: group?.id || "" } });
   }
