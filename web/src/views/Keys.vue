@@ -20,15 +20,24 @@ const route = useRoute();
 
 function getLastSelectedGroupId(): string | null {
   if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem(LAST_SELECTED_GROUP_ID_KEY);
+  try {
+    return localStorage.getItem(LAST_SELECTED_GROUP_ID_KEY);
+  } catch (error) {
+    console.error("Failed to read last selected group id from storage:", error);
+    return null;
+  }
 }
 
 function setLastSelectedGroupId(groupId?: number | null) {
   if (typeof localStorage === "undefined") return;
-  if (groupId) {
-    localStorage.setItem(LAST_SELECTED_GROUP_ID_KEY, String(groupId));
-  } else {
-    localStorage.removeItem(LAST_SELECTED_GROUP_ID_KEY);
+  try {
+    if (groupId) {
+      localStorage.setItem(LAST_SELECTED_GROUP_ID_KEY, String(groupId));
+    } else {
+      localStorage.removeItem(LAST_SELECTED_GROUP_ID_KEY);
+    }
+  } catch (error) {
+    console.error("Failed to write last selected group id to storage:", error);
   }
 }
 
@@ -42,7 +51,10 @@ async function loadGroups() {
     groups.value = await keysApi.getGroups();
     // Select default group
     if (groups.value.length > 0 && !selectedGroup.value) {
-      const groupId = route.query.groupId ?? getLastSelectedGroupId();
+      const queryGroupId = Array.isArray(route.query.groupId)
+        ? route.query.groupId[0]
+        : route.query.groupId;
+      const groupId = queryGroupId ?? getLastSelectedGroupId();
       const found = groups.value.find(g => String(g.id) === String(groupId));
       if (found) {
         handleGroupSelect(found);
