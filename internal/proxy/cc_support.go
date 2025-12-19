@@ -2717,7 +2717,6 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					"tool_id":   call.ID,
 					"tool_name": call.Function.Name,
 					"args_len":  len(call.Function.Arguments),
-					"args_preview": utils.TruncateString(call.Function.Arguments, 100),
 				}).Debug("CC: Received delta.ToolCall")
 
 				if call.ID == "" {
