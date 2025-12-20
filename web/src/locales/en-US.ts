@@ -458,6 +458,7 @@ export default {
       "When enabled, clients can use /proxy/[group]/claude/v1/messages endpoint, requests will be auto-converted to OpenAI format.",
     ccSupportCompatibilityTip:
       "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
+    // NOTE: Keep detailed guidance here intentionally to avoid external doc dependency for CC users.
     ccSupportRedirectTip:
       "For Claude Code compatibility, configure both alias and full-name redirects: 1) Add model redirect rules for opus, claude-opus-4-5-20251101, sonnet, claude-sonnet-4-5-20250929, haiku, claude-haiku-4-5-20251001 (targets can be your actual upstream model, e.g. opus → deepseek-chat); 2) Optional client-side fallback: set env in Claude Code settings.json, supported variables: ANTHROPIC_MODEL, ANTHROPIC_SMALL_FAST_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL, ANTHROPIC_DEFAULT_HAIKU_MODEL.",
     thinkingModel: "Thinking Model",

@@ -457,7 +457,7 @@ export default {
     ccSupportCompatibilityTip:
       "このスイッチは OpenAI チャンネルのグループにのみ有効で、他のチャンネルではこの設定は無視され、表示されません。",
     ccSupportRedirectTip:
-      "Claude Code 互換性のため、次の手順を推奨します。1）モデル別名とフルモデル名の両方を「モデルリダイレクトルール」に追加：opus、claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001（ターゲットは実際に使う上流モデル。例：opus → deepseek-chat）；2）任意：クライアント側フォールバックとして、Claude Code の settings.json で env を設定、サポートされる環境変数：ANTHROPIC_MODEL、ANTHROPIC_SMALL_FAST_MODEL、ANTHROPIC_DEFAULT_OPUS_MODEL、ANTHROPIC_DEFAULT_SONNET_MODEL、ANTHROPIC_DEFAULT_HAIKU_MODEL。",
+      "Claude Code 互換性向けに、別名とフルモデル名の両方をリダイレクトに追加（opus/claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001 → 上流モデル。例：opus → deepseek-chat）。任意でクライアント側フォールバックとして、Claude Code の settings.json に ANTHROPIC_* 環境変数を設定可能。",
     thinkingModel: "思考モデル",
     thinkingModelTooltip:
       "Claude Code が拡張思考モードを有効にすると、このモデルが自動的に使用されます。空のままにすると、リクエストの元のモデルが使用されます。例：deepseek-reasoner",
