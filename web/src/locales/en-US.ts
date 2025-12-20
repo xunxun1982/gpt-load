@@ -460,7 +460,7 @@ export default {
       "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
     // NOTE: Keep detailed guidance here intentionally to avoid external doc dependency for CC users.
     ccSupportRedirectTip:
-      "For Claude Code compatibility, configure both alias and full-name redirects: 1) Add model redirect rules for opus, claude-opus-4-5-20251101, sonnet, claude-sonnet-4-5-20250929, haiku, claude-haiku-4-5-20251001 (targets can be your actual upstream model, e.g. opus → deepseek-chat); 2) Optional client-side fallback: set env in Claude Code settings.json, supported variables: ANTHROPIC_MODEL, ANTHROPIC_SMALL_FAST_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL, ANTHROPIC_DEFAULT_HAIKU_MODEL.",
+      "For Claude Code compatibility, configure both alias and full-name redirects: 1) Add model redirect rules for opus, claude-opus-4-5-20251101, sonnet, claude-sonnet-4-5-20250929, haiku, claude-haiku-4-5-20251001 (targets can be your actual upstream model, e.g. opus → deepseek-chat); 2) Optional client-side fallback: set env in Claude Code settings.json, related environment variables include ANTHROPIC_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL, ANTHROPIC_DEFAULT_HAIKU_MODEL.",
     thinkingModel: "Thinking Model",
     thinkingModelTooltip:
       "When Claude Code enables extended thinking mode, this model will be used automatically. Leave empty to use the original model from request. e.g., deepseek-reasoner",
@@ -486,7 +486,7 @@ export default {
     incorrectGroupName: "Incorrect group name",
     clearAllKeysSuccess: "All keys cleared successfully",
     allStatus: "All Status",
-    keyExactMatch: "Key exact match",
+    keyExactMatch: "Exact key match",
     searchByName: "Search by name...",
     noMatchingKeys: "No matching keys found",
     showHide: "Show/Hide",
@@ -497,10 +497,10 @@ export default {
     restore: "Restore",
     requestsShort: "RQ",
     failuresShort: "FL",
-    testShort: "Go",
+    testShort: "TST",
     restoreShort: "↻",
     validShort: "OK",
-    invalidShort: "NG",
+    invalidShort: "INV",
     testKey: "Test Key",
     totalRecords: "Total {total} records",
     calculatingTotal: "Calculating total...",

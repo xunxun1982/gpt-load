@@ -438,7 +438,7 @@ export default {
       "此开关仅对 OpenAI 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
     // NOTE: 保持此处详细指引以避免依赖外部文档，符合既有使用需求。
     ccSupportRedirectTip:
-      "为了兼容 Claude Code 的模型别名与完整模型名，建议按以下方式配置：1）在「模型重定向规则」中同时为别名与全名添加重定向：opus、claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001（目标可指向你实际使用的上游模型，例如：opus → deepseek-chat）；2）可选：在 Claude Code 的 settings.json 中配置 env 作为客户端兜底，支持的环境变量包括：ANTHROPIC_MODEL、ANTHROPIC_SMALL_FAST_MODEL、ANTHROPIC_DEFAULT_OPUS_MODEL、ANTHROPIC_DEFAULT_SONNET_MODEL、ANTHROPIC_DEFAULT_HAIKU_MODEL。",
+      "为了兼容 Claude Code 的模型别名与完整模型名，建议按以下方式配置：1）在「模型重定向规则」中同时为别名与全名添加重定向：opus、claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001（目标可指向你实际使用的上游模型，例如：opus → deepseek-chat）；2）可选：在 Claude Code 的 settings.json 中配置 env 作为客户端兜底，相关环境变量包括：ANTHROPIC_MODEL、ANTHROPIC_DEFAULT_OPUS_MODEL、ANTHROPIC_DEFAULT_SONNET_MODEL、ANTHROPIC_DEFAULT_HAIKU_MODEL。",
     thinkingModel: "思考模型",
     thinkingModelTooltip:
       "当 Claude Code 启用扩展思考模式时，自动使用此模型。留空则使用请求中的原始模型。例如：deepseek-reasoner",
