@@ -6,7 +6,7 @@ import (
 )
 
 // V1_3_3_AddCompositeIndexes adds composite indexes to optimize slow SQL queries
-// - Adds composite index on groups(sort, id) for ORDER BY sort asc, id desc queries
+// - Adds composite index on groups(sort, name) for ORDER BY sort ASC, name ASC queries
 // - Adds composite index on api_keys(group_id, status) for filtering by group and status
 // - Adds composite index on group_hourly_stats(group_id, time) for time-range queries
 // - Adds composite index on api_keys(group_id, last_used_at, updated_at) for ORDER BY queries
@@ -16,8 +16,8 @@ func V1_3_3_AddCompositeIndexes(db *gorm.DB) error {
 
 	logrus.Info("Running migration v1.3.3: Adding composite indexes to optimize slow SQL queries")
 
-	// 1. Add composite index on groups(sort, id) for ORDER BY queries
-	// This optimizes: SELECT * FROM groups ORDER BY sort asc, id desc
+	// 1. Add composite index on groups(sort, name) for ORDER BY queries
+	// This optimizes: SELECT * FROM groups ORDER BY sort ASC, name ASC
 	indexNameGroupsSortID := "idx_groups_sort_id"
 	hasGroupsSortIDIndex := migrator.HasIndex("groups", indexNameGroupsSortID)
 

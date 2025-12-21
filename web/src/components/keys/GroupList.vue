@@ -88,14 +88,17 @@ const groupItemRefs = ref(new Map());
 const showAggregateGroupModal = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
-// Sort by sort field (ascending), if sort is the same, sort by id descending
+// Sort by sort field (ascending), if sort is the same, sort by name ascending
 function sortBySort(a: Group, b: Group) {
   const sortA = a.sort ?? 0;
   const sortB = b.sort ?? 0;
   if (sortA !== sortB) {
     return sortA - sortB;
   }
-  return (b.id ?? 0) - (a.id ?? 0);
+  // When sort values are equal, sort by name alphabetically
+  const nameA = a.name ?? "";
+  const nameB = b.name ?? "";
+  return nameA.localeCompare(nameB);
 }
 
 // Filtered and grouped group list
