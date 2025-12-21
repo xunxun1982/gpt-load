@@ -35,9 +35,10 @@ RUN go mod download
 COPY . .
 COPY --from=node-builder /build/dist ./web/dist
 
-# Optimized build command
+# Optimized build command with go_json tag for high-performance JSON (goccy/go-json)
 # Note: Go compiler already has built-in optimizations like LTO (inlining, escape analysis, etc.), no extra config needed
 RUN go build \
+    -tags go_json \
     -trimpath \
     -buildvcs=false \
     -ldflags="-s -w -X gpt-load/internal/version.Version=${VERSION}" \

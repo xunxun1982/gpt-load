@@ -35,6 +35,7 @@ jobs:
         run: |
           go mod download
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
+            -tags go_json \
             -trimpath \
             -buildvcs=false \
             -ldflags="-s -w -X gpt-load/internal/version.Version=${{ github.ref_name }}" \
@@ -43,6 +44,7 @@ jobs:
       - name: Build Backend amd64
         run: |
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build \
+            -tags go_json \
             -trimpath \
             -buildvcs=false \
             -ldflags="-s -w -X gpt-load/internal/version.Version=${{ github.ref_name }}" \

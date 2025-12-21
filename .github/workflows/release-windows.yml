@@ -38,6 +38,7 @@ jobs:
         run: |
           go mod download
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
+            -tags go_json \
             -trimpath \
             -buildvcs=false \
             -ldflags="-s -w -X gpt-load/internal/version.Version=${{ github.ref_name }}" \
