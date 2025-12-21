@@ -7,7 +7,9 @@
 VERSION ?= dev
 BINARY_NAME := gpt-load
 LDFLAGS := -s -w -X gpt-load/internal/version.Version=$(VERSION)
-BUILD_FLAGS := -trimpath -buildvcs=false -ldflags="$(LDFLAGS)"
+# Use go_json tag to enable goccy/go-json for gin framework (2-3x faster than encoding/json)
+GOTAGS := go_json
+BUILD_FLAGS := -tags $(GOTAGS) -trimpath -buildvcs=false -ldflags="$(LDFLAGS)"
 # Allow extra go flags to be passed via environment
 GOFLAGS ?=
 # CPU Architecture Level: v2 (SSE4.2, POPCNT) is safe for user's CPU. v3 requires AVX/AVX2 which is missing.
@@ -66,12 +68,14 @@ run: ## Build frontend and run server
 	cd web && npm install && npm run build
 	@echo "--- Preparing backend... ---"
 	@echo "--- Starting backend... ---"
-	go run ./main.go
+	# Equivalent to: go run -tags go_json ./main.go
+	go run -tags $(GOTAGS) ./main.go
 
 .PHONY: dev
 dev: ## Run in development mode (with race detection)
 	@echo "🔧 Starting development mode..."
-	go run -race ./main.go
+	# Equivalent to: go run -tags go_json -race ./main.go
+	go run -tags $(GOTAGS) -race ./main.go
 
 # ==============================================================================
 # Key Migration
@@ -88,7 +92,8 @@ migrate-keys: ## Execute key migration (usage: make migrate-keys ARGS="--from ol
 		echo "⚠️  Important: Always backup database before migration!"; \
 		exit 1; \
 	fi
-	go run ./main.go migrate-keys $(ARGS)
+	# Equivalent to: go run -tags go_json ./main.go migrate-keys $(ARGS)
+	go run -tags $(GOTAGS) ./main.go migrate-keys $(ARGS)
 
 .PHONY: help
 help: ## Display this help message
