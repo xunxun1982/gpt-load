@@ -463,3 +463,94 @@ func (s *ChildGroupService) GetParentGroup(ctx context.Context, childGroupID uin
 
 	return &parentGroup, nil
 }
+
+// SyncChildGroupUpstreams updates all child groups' upstream URLs to use the current PORT.
+// This should be called at application startup to ensure all child groups use the correct port.
+func (s *ChildGroupService) SyncChildGroupUpstreams(ctx context.Context) error {
+	currentPort := utils.ParseInteger(os.Getenv("PORT"), 3001)
+
+	// Get all child groups with their parent group names
+	var childGroups []struct {
+		ID              uint
+		Name            string
+		ParentGroupID   uint
+		ParentGroupName string
+		Upstreams       []byte
+	}
+
+	// Join with parent group to get parent name
+	err := s.db.WithContext(ctx).
+		Table("groups AS child").
+		Select("child.id, child.name, child.parent_group_id, parent.name AS parent_group_name, child.upstreams").
+		Joins("JOIN groups AS parent ON child.parent_group_id = parent.id").
+		Where("child.parent_group_id IS NOT NULL").
+		Find(&childGroups).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to query child groups: %w", err)
+	}
+
+	if len(childGroups) == 0 {
+		logrus.Debug("No child groups found, skipping upstream sync")
+		return nil
+	}
+
+	updatedCount := 0
+	for _, cg := range childGroups {
+		// Build expected upstream URL with current port
+		expectedURL := fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", currentPort, cg.ParentGroupName)
+
+		// Check if current upstream matches expected
+		var currentUpstreams []map[string]interface{}
+		if err := json.Unmarshal(cg.Upstreams, &currentUpstreams); err != nil {
+			logrus.WithError(err).Warnf("Failed to parse upstreams for child group %s", cg.Name)
+			continue
+		}
+
+		needsUpdate := false
+		if len(currentUpstreams) > 0 {
+			if currentURL, ok := currentUpstreams[0]["url"].(string); ok {
+				if currentURL != expectedURL {
+					needsUpdate = true
+				}
+			}
+		}
+
+		if needsUpdate {
+			// Build new upstream JSON
+			newUpstreamsJSON, err := buildChildGroupUpstream(cg.ParentGroupName)
+			if err != nil {
+				logrus.WithError(err).Warnf("Failed to build upstream for child group %s", cg.Name)
+				continue
+			}
+
+			// Update the child group's upstream
+			if err := s.db.WithContext(ctx).
+				Model(&models.Group{}).
+				Where("id = ?", cg.ID).
+				Update("upstreams", newUpstreamsJSON).Error; err != nil {
+				logrus.WithError(err).Warnf("Failed to update upstream for child group %s", cg.Name)
+				continue
+			}
+
+			updatedCount++
+			logrus.WithFields(logrus.Fields{
+				"childGroupID":   cg.ID,
+				"childGroupName": cg.Name,
+				"newPort":        currentPort,
+			}).Debug("Updated child group upstream URL")
+		}
+	}
+
+	if updatedCount > 0 {
+		logrus.Infof("Synced %d child group upstream URLs to port %d", updatedCount, currentPort)
+		// Invalidate group cache after updates
+		if err := s.groupManager.Invalidate(); err != nil {
+			logrus.WithError(err).Warn("Failed to invalidate group cache after upstream sync")
+		}
+	} else {
+		logrus.Debug("All child group upstream URLs are already up to date")
+	}
+
+	return nil
+}

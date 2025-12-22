@@ -31,6 +31,7 @@ type App struct {
 	configManager     types.ConfigManager
 	settingsManager   *config.SystemSettingsManager
 	groupManager      *services.GroupManager
+	childGroupService *services.ChildGroupService
 	logCleanupService *services.LogCleanupService
 	requestLogService *services.RequestLogService
 	cronChecker       *keypool.CronChecker
@@ -48,6 +49,7 @@ type AppParams struct {
 	ConfigManager     types.ConfigManager
 	SettingsManager   *config.SystemSettingsManager
 	GroupManager      *services.GroupManager
+	ChildGroupService *services.ChildGroupService
 	LogCleanupService *services.LogCleanupService
 	RequestLogService *services.RequestLogService
 	CronChecker       *keypool.CronChecker
@@ -64,6 +66,7 @@ func NewApp(params AppParams) *App {
 		configManager:     params.ConfigManager,
 		settingsManager:   params.SettingsManager,
 		groupManager:      params.GroupManager,
+		childGroupService: params.ChildGroupService,
 		logCleanupService: params.LogCleanupService,
 		requestLogService: params.RequestLogService,
 		cronChecker:       params.CronChecker,
@@ -107,6 +110,13 @@ func (a *App) Start() error {
 			return fmt.Errorf("database data migration failed: %w", err)
 		}
 		logrus.Info("Database auto-migration completed.")
+
+		// Sync child group upstream URLs to current PORT
+		// This ensures all child groups use the correct port after PORT changes
+		if err := a.childGroupService.SyncChildGroupUpstreams(context.Background()); err != nil {
+			logrus.WithError(err).Warn("Failed to sync child group upstream URLs")
+			// Non-fatal: continue startup even if sync fails
+		}
 
 		// Initialize system settings
 		if err := a.settingsManager.EnsureSettingsInitialized(a.configManager.GetAuthConfig()); err != nil {
