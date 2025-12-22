@@ -23,10 +23,13 @@ func checkIndexExists(db *gorm.DB, dialectorName, tableName, indexName string) b
 			AND INDEX_NAME = ?
 		`, tableName, indexName).Scan(&indexCount).Error
 	case "sqlite":
+		// Filter by tbl_name to ensure the index belongs to the specified table
+		// Although index names are typically globally unique in this project,
+		// adding table name filter is more robust
 		err = db.Raw(`
 			SELECT COUNT(*) FROM sqlite_master
-			WHERE type = 'index' AND name = ?
-		`, indexName).Scan(&indexCount).Error
+			WHERE type = 'index' AND tbl_name = ? AND name = ?
+		`, tableName, indexName).Scan(&indexCount).Error
 	case "postgres":
 		err = db.Raw(`
 			SELECT COUNT(*) FROM pg_indexes
@@ -45,8 +48,15 @@ func checkIndexExists(db *gorm.DB, dialectorName, tableName, indexName string) b
 }
 
 // createIndexIfNotExists creates an index if it doesn't exist.
-// It first tries CREATE INDEX IF NOT EXISTS, then falls back to dialect-specific checks.
+// It first checks via GORM HasIndex, then tries CREATE INDEX IF NOT EXISTS,
+// and falls back to dialect-specific checks for older databases.
 // Returns nil if index already exists or was created successfully.
+//
+// AI suggestion (not adopted): Simplify fallback logic by checking dialect support upfront.
+// Reason: Current flow is already reasonable - HasIndex check first, then CREATE INDEX IF NOT EXISTS,
+// finally fallback to dialect-specific check. This approach is compatible with MySQL 8.0+,
+// PostgreSQL, SQLite and other mainstream versions. Upfront dialect checking would add
+// complexity without practical benefit, and error handling remains clear.
 func createIndexIfNotExists(db *gorm.DB, tableName, indexName, columns string) error {
 	migrator := db.Migrator()
 	dialectorName := db.Dialector.Name()
@@ -72,8 +82,12 @@ func createIndexIfNotExists(db *gorm.DB, tableName, indexName, columns string) e
 			logrus.WithError(createErr).Errorf("Failed to create %s index", indexName)
 			return createErr
 		}
+		logrus.Infof("Index %s created successfully (via fallback)", indexName)
+		return nil
 	}
 
-	logrus.Infof("Successfully added %s index", indexName)
+	// CREATE INDEX IF NOT EXISTS succeeded
+	// Since HasIndex returned false above, the index was just created (not silently skipped)
+	logrus.Infof("Index %s created successfully", indexName)
 	return nil
 }
