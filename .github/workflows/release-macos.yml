@@ -58,6 +58,6 @@ jobs:
             gpt-load-macos-arm64
             gpt-load-macos-amd64
           draft: true
-          generate_release_notes: true
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

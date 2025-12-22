@@ -50,6 +50,6 @@ jobs:
           files: |
             gpt-load-windows-amd64.exe
           draft: true
-          generate_release_notes: true
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
