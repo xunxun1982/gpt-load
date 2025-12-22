@@ -714,11 +714,20 @@ func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, parent
 
 		if newParentFirstKey != "" && newParentFirstKey != oldParentFirstKey {
 			// For each child group, update the API key
+			// Add new key FIRST, then delete old key to avoid leaving child without any key
 			for _, childGroup := range childGroups {
-				// Remove old key if exists
+				// Add new key first to ensure child group always has a working key
+				if _, err := s.keyService.AddMultipleKeys(childGroup.ID, newParentFirstKey); err != nil {
+					logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+						"childGroupID":   childGroup.ID,
+						"childGroupName": childGroup.Name,
+					}).Error("Failed to add new API key for child group, keeping old key")
+					continue // Keep old key if new key addition fails
+				}
+
+				// Now safe to delete old key
 				if oldParentFirstKey != "" {
 					oldKeyHash := s.encryptionSvc.Hash(oldParentFirstKey)
-					// Delete old key - error is logged but not fatal as the new key will still be added
 					if err := s.db.WithContext(ctx).
 						Where("group_id = ? AND key_hash = ?", childGroup.ID, oldKeyHash).
 						Delete(&models.APIKey{}).Error; err != nil {
@@ -727,15 +736,6 @@ func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, parent
 							"operation":    "delete_old_key",
 						}).Warn("Failed to delete old API key for child group")
 					}
-				}
-
-				// Add new key using KeyService
-				_, err := s.keyService.AddMultipleKeys(childGroup.ID, newParentFirstKey)
-				if err != nil {
-					logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
-						"childGroupID":   childGroup.ID,
-						"childGroupName": childGroup.Name,
-					}).Error("Failed to update API key for child group")
 				}
 			}
 		}

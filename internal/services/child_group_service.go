@@ -170,6 +170,13 @@ func (s *ChildGroupService) CreateChildGroup(ctx context.Context, params CreateC
 	}).Info("Child group created successfully")
 
 	// Add parent's first proxy_key as the child group's API key
+	// NOTE: This is intentionally done AFTER the transaction commits. While this means the child
+	// group could exist without its API key if AddMultipleKeys fails, this is acceptable because:
+	// 1. AddMultipleKeys has its own transaction and memory store operations that can't easily
+	//    accept an external transaction
+	// 2. A child group without API key won't crash the system - it just can't proxy requests
+	// 3. Admin can manually add keys or re-sync if needed
+	// 4. Rolling back the child group creation on key failure would confuse users
 	if s.keyService != nil {
 		result, err := s.keyService.AddMultipleKeys(childGroup.ID, parentFirstProxyKey)
 		if err != nil {
@@ -338,17 +345,33 @@ func (s *ChildGroupService) SyncChildGroupsOnParentUpdate(ctx context.Context, t
 	}
 
 	// Update API keys if parent proxy_keys changed
+	// NOTE: AddMultipleKeys uses its own DB connection, not the passed transaction (tx).
+	// This is a known limitation - if the caller's transaction is rolled back after this
+	// method succeeds, the newly added keys will persist. This is acceptable because:
+	// 1. Modifying AddMultipleKeys to accept transactions would require significant refactoring
+	// 2. Orphan keys don't cause system issues and can be cleaned up manually
+	// 3. The key addition order (add new first, then delete old) ensures child groups
+	//    always have at least one working key during the transition
 	if proxyKeysChanged && s.keyService != nil {
 		newParentFirstKey := getFirstProxyKey(parentGroup.ProxyKeys)
 		oldParentFirstKey := getFirstProxyKey(oldProxyKeys)
 
 		if newParentFirstKey != "" && newParentFirstKey != oldParentFirstKey {
 			// For each child group, update the API key
+			// Add new key FIRST, then delete old key to avoid leaving child without any key
 			for _, childGroup := range childGroups {
-				// Remove old key if exists
+				// Add new key first to ensure child group always has a working key
+				if _, err := s.keyService.AddMultipleKeys(childGroup.ID, newParentFirstKey); err != nil {
+					logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+						"childGroupID":   childGroup.ID,
+						"childGroupName": childGroup.Name,
+					}).Error("Failed to add new API key for child group, keeping old key")
+					continue // Keep old key if new key addition fails
+				}
+
+				// Now safe to delete old key
 				if oldParentFirstKey != "" {
 					oldKeyHash := s.keyService.EncryptionSvc.Hash(oldParentFirstKey)
-					// Delete old key - error is logged but not fatal as the new key will still be added
 					if err := tx.WithContext(ctx).
 						Where("group_id = ? AND key_hash = ?", childGroup.ID, oldKeyHash).
 						Delete(&models.APIKey{}).Error; err != nil {
@@ -357,15 +380,6 @@ func (s *ChildGroupService) SyncChildGroupsOnParentUpdate(ctx context.Context, t
 							"operation":    "delete_old_key",
 						}).Warn("Failed to delete old API key for child group")
 					}
-				}
-
-				// Add new key
-				_, err := s.keyService.AddMultipleKeys(childGroup.ID, newParentFirstKey)
-				if err != nil {
-					logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
-						"childGroupID":   childGroup.ID,
-						"childGroupName": childGroup.Name,
-					}).Error("Failed to update API key for child group")
 				}
 			}
 		}
