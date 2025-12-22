@@ -175,7 +175,7 @@ function handleNavigateToGroup(groupId: number) {
             :groups="groups"
             :sub-groups="subGroups"
             @refresh="() => refreshGroupsAndSelect()"
-            @delete="() => refreshGroupsAndSelect(undefined, true)"
+            @delete="(_, parentGroupId) => refreshGroupsAndSelect(parentGroupId, !parentGroupId)"
             @copy-success="group => refreshGroupsAndSelect(group.id)"
             @navigate-to-group="handleNavigateToGroup"
           />
