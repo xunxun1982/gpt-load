@@ -70,6 +70,7 @@ func createIndexIfNotExists(db *gorm.DB, tableName, indexName, columns string) e
 	// Try CREATE INDEX IF NOT EXISTS first (supported by SQLite, PostgreSQL, MySQL 8.0+)
 	createSQL := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s(%s)", indexName, tableName, columns)
 	if err := db.Exec(createSQL).Error; err != nil {
+		logrus.WithError(err).Debugf("CREATE INDEX IF NOT EXISTS failed for %s, attempting fallback", indexName)
 		// Fallback: check if index exists using dialect-specific query
 		if checkIndexExists(db, dialectorName, tableName, indexName) {
 			logrus.Infof("Index %s already exists (detected via fallback), skipping", indexName)
