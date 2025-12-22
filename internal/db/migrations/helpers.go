@@ -88,7 +88,7 @@ func createIndexIfNotExists(db *gorm.DB, tableName, indexName, columns string) e
 	}
 
 	// CREATE INDEX IF NOT EXISTS succeeded
-	// Since HasIndex returned false above, the index was just created (not silently skipped)
-	logrus.Infof("Index %s created successfully", indexName)
+	// Most likely created (HasIndex returned false), but could also have been created concurrently
+	logrus.Infof("Index %s created successfully (or already existed)", indexName)
 	return nil
 }
