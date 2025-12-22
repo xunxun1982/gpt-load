@@ -52,7 +52,8 @@ type ChannelProxy interface {
 	ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error)
 
 	// ApplyModelRedirect applies model redirection based on the group's redirect rules.
-	ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, error)
+	// Returns the modified body bytes, the original model name (empty if no redirect), and error.
+	ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error)
 
 	// TransformModelList transforms the model list response based on redirect rules.
 	TransformModelList(req *http.Request, bodyBytes []byte, group *models.Group) (map[string]any, error)

@@ -1,0 +1,431 @@
+package services
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+
+	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
+
+	"github.com/sirupsen/logrus"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+)
+
+// ChildGroupService handles child group operations.
+type ChildGroupService struct {
+	db           *gorm.DB
+	groupManager *GroupManager
+	keyService   *KeyService
+}
+
+// NewChildGroupService creates a new ChildGroupService instance.
+func NewChildGroupService(db *gorm.DB, groupManager *GroupManager, keyService *KeyService) *ChildGroupService {
+	return &ChildGroupService{
+		db:           db,
+		groupManager: groupManager,
+		keyService:   keyService,
+	}
+}
+
+// CreateChildGroupParams defines parameters for creating a child group.
+type CreateChildGroupParams struct {
+	ParentGroupID uint
+	Name          string // Optional, auto-generated if empty
+	DisplayName   string // Optional, auto-generated if empty
+	Description   string
+}
+
+// buildChildGroupUpstream builds the upstream JSON for a child group.
+// Uses localhost (127.0.0.1) to route requests through parent group's endpoint.
+func buildChildGroupUpstream(parentGroupName string) (datatypes.JSON, error) {
+	port := utils.ParseInteger(os.Getenv("PORT"), 3001)
+	upstreamURL := fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", port, parentGroupName)
+	upstreams := []map[string]interface{}{
+		{
+			"url":    upstreamURL,
+			"weight": 1,
+		},
+	}
+	upstreamsJSON, err := json.Marshal(upstreams)
+	if err != nil {
+		return nil, err
+	}
+	return datatypes.JSON(upstreamsJSON), nil
+}
+
+// getFirstProxyKey extracts the first proxy key from a comma-separated list.
+func getFirstProxyKey(proxyKeys string) string {
+	if proxyKeys == "" {
+		return ""
+	}
+	keys := strings.Split(proxyKeys, ",")
+	if len(keys) > 0 {
+		return strings.TrimSpace(keys[0])
+	}
+	return ""
+}
+
+// CreateChildGroup creates a new child group derived from a parent standard group.
+// Child group uses parent's external endpoint as upstream.
+// Child group's API key is set to parent's first proxy_key.
+// Child group's proxy_keys is randomly generated.
+func (s *ChildGroupService) CreateChildGroup(ctx context.Context, params CreateChildGroupParams) (*models.Group, error) {
+	// Fetch parent group
+	var parentGroup models.Group
+	if err := s.db.WithContext(ctx).First(&parentGroup, params.ParentGroupID).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	// Validate parent group is a standard group (not aggregate, not a child group itself)
+	if parentGroup.GroupType == "aggregate" {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.child_group_parent_must_be_standard", nil)
+	}
+	if parentGroup.ParentGroupID != nil {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.child_group_cannot_nest", nil)
+	}
+
+	// Get first proxy key from parent - this will be used as the child group's API key
+	parentFirstProxyKey := getFirstProxyKey(parentGroup.ProxyKeys)
+	if parentFirstProxyKey == "" {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.parent_group_no_proxy_keys", nil)
+	}
+
+	// Generate child group name if not provided
+	name := strings.TrimSpace(params.Name)
+	if name == "" {
+		name = s.generateChildGroupName(ctx, parentGroup.Name)
+	}
+
+	// Validate name format
+	if !isValidGroupName(name) {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_group_name", nil)
+	}
+
+	// Generate display name if not provided
+	displayName := strings.TrimSpace(params.DisplayName)
+	if displayName == "" {
+		// Extract child number from generated name (e.g., "parent_child1" -> 1)
+		childNum := s.getNextChildNumber(ctx, params.ParentGroupID)
+		if parentGroup.DisplayName != "" {
+			displayName = fmt.Sprintf("%s (Child%d)", parentGroup.DisplayName, childNum)
+		} else {
+			displayName = fmt.Sprintf("%s (Child%d)", parentGroup.Name, childNum)
+		}
+	}
+
+	// Build upstream using localhost with parent's endpoint path
+	upstreamsJSON, err := buildChildGroupUpstream(parentGroup.Name)
+	if err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to build child group upstream")
+		return nil, app_errors.ErrInternalServer
+	}
+
+	// Generate random proxy_keys for child group (sk-child-xxxxxxxxxxxx format)
+	childProxyKeys := generateChildGroupProxyKey()
+
+	// Create child group with inherited properties
+	// Child group inherits parent's sort value so all children have same sort and are ordered by name
+	childGroup := models.Group{
+		Name:               name,
+		DisplayName:        displayName,
+		Description:        strings.TrimSpace(params.Description),
+		GroupType:          "standard",
+		Enabled:            true,
+		Upstreams:          upstreamsJSON,
+		ChannelType:        parentGroup.ChannelType,
+		TestModel:          parentGroup.TestModel,
+		ValidationEndpoint: parentGroup.ValidationEndpoint,
+		ParentGroupID:      &params.ParentGroupID,
+		ProxyKeys:          childProxyKeys, // Randomly generated proxy key
+		Config:             parentGroup.Config,
+		Sort:               parentGroup.Sort, // Inherit parent's sort value
+	}
+
+	tx := s.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		return nil, app_errors.ErrDatabase
+	}
+
+	if err := tx.Create(&childGroup).Error; err != nil {
+		tx.Rollback()
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"childGroupID":   childGroup.ID,
+		"childGroupName": childGroup.Name,
+		"parentGroupID":  parentGroup.ID,
+	}).Info("Child group created successfully")
+
+	// Add parent's first proxy_key as the child group's API key
+	if s.keyService != nil {
+		result, err := s.keyService.AddMultipleKeys(childGroup.ID, parentFirstProxyKey)
+		if err != nil {
+			logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+				"childGroupID":   childGroup.ID,
+				"childGroupName": childGroup.Name,
+			}).Error("Failed to add API key to child group")
+			// Don't fail the creation, just log the error
+		} else {
+			logrus.WithContext(ctx).WithFields(logrus.Fields{
+				"childGroupID": childGroup.ID,
+				"addedKeys":    result.AddedCount,
+			}).Info("Added API key to child group")
+		}
+	}
+
+	// Invalidate group cache
+	if err := s.groupManager.Invalidate(); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after creating child group")
+	}
+
+	return &childGroup, nil
+}
+
+// generateChildGroupProxyKey generates a random proxy key for child group.
+// Format: sk-child-xxxxxxxxxxxxxxxxxxxx (32 random chars)
+func generateChildGroupProxyKey() string {
+	// Generate 32 random characters
+	randomPart := ""
+	for i := 0; i < 8; i++ {
+		randomPart += utils.GenerateRandomSuffix()
+	}
+	return "sk-child-" + randomPart
+}
+
+// generateChildGroupName generates a unique child group name with suffix _child1, _child2, etc.
+func (s *ChildGroupService) generateChildGroupName(ctx context.Context, parentName string) string {
+	baseName := parentName + "_child"
+
+	for i := 1; i <= 100; i++ {
+		candidateName := fmt.Sprintf("%s%d", baseName, i)
+		var count int64
+		s.db.WithContext(ctx).Model(&models.Group{}).Where("name = ?", candidateName).Count(&count)
+		if count == 0 {
+			return candidateName
+		}
+	}
+
+	// Fallback: use timestamp suffix
+	return fmt.Sprintf("%s_%d", baseName, ctx.Value("request_id"))
+}
+
+// getNextChildNumber returns the next available child number for display name.
+func (s *ChildGroupService) getNextChildNumber(ctx context.Context, parentGroupID uint) int {
+	var count int64
+	s.db.WithContext(ctx).Model(&models.Group{}).Where("parent_group_id = ?", parentGroupID).Count(&count)
+	return int(count) + 1
+}
+
+// GetChildGroups returns all child groups for a parent group.
+func (s *ChildGroupService) GetChildGroups(ctx context.Context, parentGroupID uint) ([]models.ChildGroupInfo, error) {
+	var childGroups []models.Group
+	if err := s.db.WithContext(ctx).
+		Where("parent_group_id = ?", parentGroupID).
+		Order("sort ASC, name ASC").
+		Find(&childGroups).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	result := make([]models.ChildGroupInfo, 0, len(childGroups))
+	for _, cg := range childGroups {
+		result = append(result, models.ChildGroupInfo{
+			ID:          cg.ID,
+			Name:        cg.Name,
+			DisplayName: cg.DisplayName,
+			Enabled:     cg.Enabled,
+			CreatedAt:   cg.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+
+	return result, nil
+}
+
+// GetAllChildGroups returns all child groups grouped by parent group ID.
+// This is more efficient than calling GetChildGroups for each parent group.
+func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]models.ChildGroupInfo, error) {
+	var childGroups []models.Group
+	if err := s.db.WithContext(ctx).
+		Where("parent_group_id IS NOT NULL").
+		Order("parent_group_id ASC, sort ASC, name ASC").
+		Find(&childGroups).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	result := make(map[uint][]models.ChildGroupInfo)
+	for _, cg := range childGroups {
+		if cg.ParentGroupID == nil {
+			continue
+		}
+		parentID := *cg.ParentGroupID
+		if _, exists := result[parentID]; !exists {
+			result[parentID] = make([]models.ChildGroupInfo, 0)
+		}
+		result[parentID] = append(result[parentID], models.ChildGroupInfo{
+			ID:          cg.ID,
+			Name:        cg.Name,
+			DisplayName: cg.DisplayName,
+			Enabled:     cg.Enabled,
+			CreatedAt:   cg.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+
+	return result, nil
+}
+
+// CountChildGroups returns the count of child groups for a parent group.
+func (s *ChildGroupService) CountChildGroups(ctx context.Context, parentGroupID uint) (int64, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).
+		Model(&models.Group{}).
+		Where("parent_group_id = ?", parentGroupID).
+		Count(&count).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+	return count, nil
+}
+
+// SyncChildGroupsOnParentUpdate updates all child groups when parent group's name or proxy_keys change.
+// When parent name changes: update child groups' upstream URL.
+// When parent proxy_keys changes: update child groups' API keys (not proxy_keys).
+func (s *ChildGroupService) SyncChildGroupsOnParentUpdate(ctx context.Context, tx *gorm.DB, parentGroup *models.Group, oldName string, oldProxyKeys string) error {
+	// Check if there are any child groups
+	var childGroups []models.Group
+	if err := tx.WithContext(ctx).
+		Where("parent_group_id = ?", parentGroup.ID).
+		Find(&childGroups).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
+	if len(childGroups) == 0 {
+		return nil
+	}
+
+	nameChanged := oldName != parentGroup.Name
+	proxyKeysChanged := oldProxyKeys != parentGroup.ProxyKeys
+
+	// Update upstream URL if parent name changed
+	if nameChanged {
+		upstreamsJSON, err := buildChildGroupUpstream(parentGroup.Name)
+		if err != nil {
+			return app_errors.ErrInternalServer
+		}
+
+		if err := tx.WithContext(ctx).
+			Model(&models.Group{}).
+			Where("parent_group_id = ?", parentGroup.ID).
+			Update("upstreams", upstreamsJSON).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
+	}
+
+	// Update API keys if parent proxy_keys changed
+	if proxyKeysChanged && s.keyService != nil {
+		newParentFirstKey := getFirstProxyKey(parentGroup.ProxyKeys)
+		oldParentFirstKey := getFirstProxyKey(oldProxyKeys)
+
+		if newParentFirstKey != "" && newParentFirstKey != oldParentFirstKey {
+			// For each child group, update the API key
+			for _, childGroup := range childGroups {
+				// Remove old key if exists
+				if oldParentFirstKey != "" {
+					oldKeyHash := s.keyService.EncryptionSvc.Hash(oldParentFirstKey)
+					tx.WithContext(ctx).
+						Where("group_id = ? AND key_hash = ?", childGroup.ID, oldKeyHash).
+						Delete(&models.APIKey{})
+				}
+
+				// Add new key
+				_, err := s.keyService.AddMultipleKeys(childGroup.ID, newParentFirstKey)
+				if err != nil {
+					logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+						"childGroupID":   childGroup.ID,
+						"childGroupName": childGroup.Name,
+					}).Error("Failed to update API key for child group")
+				}
+			}
+		}
+	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"parentGroupID":    parentGroup.ID,
+		"parentGroupName":  parentGroup.Name,
+		"childGroupCount":  len(childGroups),
+		"nameChanged":      nameChanged,
+		"proxyKeysChanged": proxyKeysChanged,
+	}).Info("Synced child groups after parent update")
+
+	return nil
+}
+
+// DeleteChildGroupsForParent deletes all child groups when parent is deleted.
+// Returns the count of deleted child groups.
+func (s *ChildGroupService) DeleteChildGroupsForParent(ctx context.Context, tx *gorm.DB, parentGroupID uint) (int64, error) {
+	// Get child group IDs first for logging
+	var childGroupIDs []uint
+	if err := tx.WithContext(ctx).
+		Model(&models.Group{}).
+		Where("parent_group_id = ?", parentGroupID).
+		Pluck("id", &childGroupIDs).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+
+	if len(childGroupIDs) == 0 {
+		return 0, nil
+	}
+
+	// Delete API keys for all child groups
+	if err := tx.WithContext(ctx).
+		Where("group_id IN ?", childGroupIDs).
+		Delete(&models.APIKey{}).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+
+	// Delete child groups
+	result := tx.WithContext(ctx).
+		Where("parent_group_id = ?", parentGroupID).
+		Delete(&models.Group{})
+	if result.Error != nil {
+		return 0, app_errors.ParseDBError(result.Error)
+	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"parentGroupID":    parentGroupID,
+		"deletedChildCount": result.RowsAffected,
+	}).Info("Deleted child groups for parent")
+
+	return result.RowsAffected, nil
+}
+
+// ValidateParentGroupDeletion checks if parent group can be deleted and returns warning info.
+func (s *ChildGroupService) ValidateParentGroupDeletion(ctx context.Context, parentGroupID uint) (int64, error) {
+	return s.CountChildGroups(ctx, parentGroupID)
+}
+
+// GetParentGroup returns the parent group info for a child group.
+func (s *ChildGroupService) GetParentGroup(ctx context.Context, childGroupID uint) (*models.Group, error) {
+	var childGroup models.Group
+	if err := s.db.WithContext(ctx).First(&childGroup, childGroupID).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	if childGroup.ParentGroupID == nil {
+		return nil, nil // Not a child group
+	}
+
+	var parentGroup models.Group
+	if err := s.db.WithContext(ctx).First(&parentGroup, *childGroup.ParentGroupID).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	return &parentGroup, nil
+}

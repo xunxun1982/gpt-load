@@ -217,4 +217,13 @@ var MessagesEnUS = map[string]string{
 	"database.cannot_create_keys":      "Cannot create keys",
 	"database.cannot_get_settings":     "Cannot get system settings",
 	"database.import_failed":           "Import failed",
+
+	// Child groups related
+	"validation.child_group_parent_must_be_standard": "Parent group of child group must be a standard group",
+	"validation.child_group_cannot_nest":             "Child groups cannot create child groups (nesting not supported)",
+	"validation.parent_group_no_proxy_keys":          "Parent group has no proxy keys configured, cannot create child group",
+	"success.child_group_created":                    "Child group created successfully",
+	"success.child_group_deleted":                    "Child group deleted successfully",
+	"warning.parent_has_child_groups":                "This group has {{.count}} child group(s), they will also be deleted",
+	"group.child_groups_deleted":                     "{{.count}} child group(s) also deleted",
 }

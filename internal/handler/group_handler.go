@@ -195,6 +195,7 @@ type GroupResponse struct {
 	ModelRedirectStrict bool                      `json:"model_redirect_strict"`
 	PathRedirects       []models.PathRedirectRule `json:"path_redirects"`
 	ProxyKeys           string                    `json:"proxy_keys"`
+	ParentGroupID       *uint                     `json:"parent_group_id"`
 	LastValidatedAt     *time.Time                `json:"last_validated_at"`
 	CreatedAt           time.Time                 `json:"created_at"`
 	UpdatedAt           time.Time                 `json:"updated_at"`
@@ -250,6 +251,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		ModelRedirectStrict: group.ModelRedirectStrict,
 		PathRedirects:       pathRedirects,
 		ProxyKeys:           group.ProxyKeys,
+		ParentGroupID:       group.ParentGroupID,
 		LastValidatedAt:     group.LastValidatedAt,
 		CreatedAt:           group.CreatedAt,
 		UpdatedAt:           group.UpdatedAt,
@@ -562,4 +564,103 @@ func (s *Server) GetGroupModels(c *gin.Context) {
 	}
 
 	response.Success(c, groupModels)
+}
+
+// CreateChildGroupRequest defines the payload for creating a child group
+type CreateChildGroupRequest struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+}
+
+// CreateChildGroup handles creating a child group for a standard group
+func (s *Server) CreateChildGroup(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	var req CreateChildGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	params := services.CreateChildGroupParams{
+		ParentGroupID: uint(id),
+		Name:          req.Name,
+		DisplayName:   req.DisplayName,
+		Description:   req.Description,
+	}
+
+	childGroup, err := s.ChildGroupService.CreateChildGroup(c.Request.Context(), params)
+	if s.handleGroupError(c, err) {
+		return
+	}
+
+	response.Success(c, s.newGroupResponse(childGroup))
+}
+
+// GetChildGroups handles getting child groups of a standard group
+func (s *Server) GetChildGroups(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	childGroups, err := s.ChildGroupService.GetChildGroups(c.Request.Context(), uint(id))
+	if s.handleGroupError(c, err) {
+		return
+	}
+
+	response.Success(c, childGroups)
+}
+
+// GetParentGroup handles getting the parent group of a child group
+func (s *Server) GetParentGroup(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	parentGroup, err := s.ChildGroupService.GetParentGroup(c.Request.Context(), uint(id))
+	if s.handleGroupError(c, err) {
+		return
+	}
+
+	if parentGroup == nil {
+		response.Success(c, nil)
+		return
+	}
+
+	response.Success(c, s.newGroupResponse(parentGroup))
+}
+
+// GetChildGroupCount handles getting the count of child groups for deletion warning
+func (s *Server) GetChildGroupCount(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	count, err := s.GroupService.CountChildGroups(c.Request.Context(), uint(id))
+	if s.handleGroupError(c, err) {
+		return
+	}
+
+	response.Success(c, map[string]int64{"count": count})
+}
+
+// GetAllChildGroups handles getting all child groups grouped by parent group ID
+func (s *Server) GetAllChildGroups(c *gin.Context) {
+	childGroupsMap, err := s.ChildGroupService.GetAllChildGroups(c.Request.Context())
+	if s.handleGroupError(c, err) {
+		return
+	}
+
+	response.Success(c, childGroupsMap)
 }

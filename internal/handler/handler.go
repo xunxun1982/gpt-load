@@ -25,6 +25,7 @@ type Server struct {
 	GroupManager               *services.GroupManager
 	GroupService               *services.GroupService
 	AggregateGroupService      *services.AggregateGroupService
+	ChildGroupService          *services.ChildGroupService
 	KeyManualValidationService *services.KeyManualValidationService
 	TaskService                *services.TaskService
 	KeyService                 *services.KeyService
@@ -46,6 +47,7 @@ type NewServerParams struct {
 	GroupManager               *services.GroupManager
 	GroupService               *services.GroupService
 	AggregateGroupService      *services.AggregateGroupService
+	ChildGroupService          *services.ChildGroupService
 	KeyManualValidationService *services.KeyManualValidationService
 	TaskService                *services.TaskService
 	KeyService                 *services.KeyService
@@ -67,6 +69,7 @@ func NewServer(params NewServerParams) *Server {
 		GroupManager:               params.GroupManager,
 		GroupService:               params.GroupService,
 		AggregateGroupService:      params.AggregateGroupService,
+		ChildGroupService:          params.ChildGroupService,
 		KeyManualValidationService: params.KeyManualValidationService,
 		TaskService:                params.TaskService,
 		KeyService:                 params.KeyService,

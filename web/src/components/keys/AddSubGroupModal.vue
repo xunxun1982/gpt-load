@@ -37,6 +37,16 @@ interface SubGroupItem {
   weight: number;
 }
 
+// Extended option interface for sorting
+interface GroupOption extends SelectOption {
+  isAnthropic?: boolean;
+  isOpenAIWithCC?: boolean;
+  isChildGroup?: boolean;
+  parentGroupId?: number | null;
+  sort?: number;
+  name?: string;
+}
+
 const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 
@@ -61,16 +71,22 @@ const getAvailableOptions = computed(() => {
   // Get IDs of existing sub-groups
   const existingIds = props.existingSubGroups.map(sg => sg.group.id);
 
-  return props.groups
+  // Build a map of parent groups for sorting child groups together
+  const parentGroupMap = new Map<number, Group>();
+  props.groups.forEach(group => {
+    if (group.group_type !== "aggregate" && !group.parent_group_id && group.id) {
+      parentGroupMap.set(group.id, group);
+    }
+  });
+
+  const options: GroupOption[] = props.groups
     .filter(group => {
-      // Must be a standard group
+      // Must be a standard group (including child groups)
       if (group.group_type === "aggregate") {
         return false;
       }
 
       // Exclude auto-generated CC groups (created by old buggy code)
-      // These have names ending with -cc or display names containing (CC Support)
-      // combined with auto-generated description
       if (
         group.description?.includes("Auto-generated") &&
         (group.name?.endsWith("-cc") || group.display_name?.includes("(CC Support)"))
@@ -79,7 +95,6 @@ const getAvailableOptions = computed(() => {
       }
 
       // Channel type compatibility check
-      // For Anthropic (Claude) aggregate groups, allow both Anthropic channels and OpenAI channels with CC support
       if (props.aggregateGroup?.channel_type === "anthropic") {
         const isAnthropic = group.channel_type === "anthropic";
         const isOpenAIWithCC = group.channel_type === "openai" && group.config?.cc_support === true;
@@ -87,7 +102,6 @@ const getAvailableOptions = computed(() => {
           return false;
         }
       } else {
-        // For non-Anthropic aggregate groups, require exact channel type match
         if (group.channel_type !== props.aggregateGroup?.channel_type) {
           return false;
         }
@@ -106,22 +120,87 @@ const getAvailableOptions = computed(() => {
       return true;
     })
     .map(group => {
+      const isChildGroup = !!group.parent_group_id;
       let label = getGroupDisplayName(group);
+      // Add child group indicator
+      if (isChildGroup) {
+        label = "  └ " + label;
+      }
       return {
         label,
         value: group?.id,
-        // Store additional info for sorting
         isAnthropic: group.channel_type === "anthropic",
         isOpenAIWithCC: group.channel_type === "openai" && group.config?.cc_support === true,
+        isChildGroup,
+        parentGroupId: group.parent_group_id,
+        sort: group.sort ?? 0,
+        name: group.name ?? "",
       };
-    })
-    .sort((a, b) => {
-      // Sort order: Anthropic channels first, then OpenAI with CC support
-      if (a.isAnthropic && !b.isAnthropic) return -1;
-      if (!a.isAnthropic && b.isAnthropic) return 1;
-      // Within same type, sort by label
-      return a.label.localeCompare(b.label, "zh-CN");
     });
+
+  // Natural sort comparator for strings with numbers (e.g., child1, child2, child10)
+  const naturalCompare = (strA: string, strB: string): number => {
+    // Split strings into numeric and non-numeric parts
+    const regex = /(\d+)/g;
+    const splitA = strA.split(regex).filter(s => s !== "");
+    const splitB = strB.split(regex).filter(s => s !== "");
+
+    for (let i = 0; i < Math.max(splitA.length, splitB.length); i++) {
+      const partA = splitA[i] ?? "";
+      const partB = splitB[i] ?? "";
+
+      // Check if both parts are numeric
+      const numA = parseInt(partA, 10);
+      const numB = parseInt(partB, 10);
+      const isNumA = !isNaN(numA) && String(numA) === partA;
+      const isNumB = !isNaN(numB) && String(numB) === partB;
+
+      if (isNumA && isNumB) {
+        // Both are numbers, compare numerically
+        if (numA !== numB) return numA - numB;
+      } else {
+        // At least one is not a number, compare as strings
+        const cmp = partA.localeCompare(partB);
+        if (cmp !== 0) return cmp;
+      }
+    }
+    return 0;
+  };
+
+  // Sort: parent groups first by sort/name, then their child groups immediately after
+  const sorted = options.sort((a, b) => {
+    // Get effective parent ID (self if not a child, parent if child)
+    const aParentId = a.isChildGroup ? a.parentGroupId : a.value;
+    const bParentId = b.isChildGroup ? b.parentGroupId : b.value;
+
+    // If they belong to different parent groups, sort by parent
+    if (aParentId !== bParentId) {
+      const aParent = a.isChildGroup
+        ? parentGroupMap.get(aParentId as number)
+        : props.groups.find(g => g.id === a.value);
+      const bParent = b.isChildGroup
+        ? parentGroupMap.get(bParentId as number)
+        : props.groups.find(g => g.id === b.value);
+
+      const aSort = aParent?.sort ?? 0;
+      const bSort = bParent?.sort ?? 0;
+      if (aSort !== bSort) return aSort - bSort;
+
+      const aName = aParent?.name ?? "";
+      const bName = bParent?.name ?? "";
+      return naturalCompare(aName, bName);
+    }
+
+    // Same parent: parent comes before children
+    if (!a.isChildGroup && b.isChildGroup) return -1;
+    if (a.isChildGroup && !b.isChildGroup) return 1;
+
+    // Both are children of same parent, sort by sort/name with natural number sorting
+    if ((a.sort ?? 0) !== (b.sort ?? 0)) return (a.sort ?? 0) - (b.sort ?? 0);
+    return naturalCompare(a.name ?? "", b.name ?? "");
+  });
+
+  return sorted;
 });
 
 // Compute available options for each sub-group item
@@ -133,11 +212,9 @@ const getOptionsForItems = computed(() => {
       .filter((id): id is number => id !== null);
 
     return getAvailableOptions.value.filter(option => {
-      // If it's the current item's selected value, allow it to be displayed
       if (option.value === currentItem.group_id) {
         return true;
       }
-      // Otherwise, only show options not selected by other items
       return !otherSelectedIds.includes(option.value as number);
     });
   });
@@ -246,22 +323,61 @@ const canAddMore = computed(() => {
   return formData.sub_groups.length < getAvailableOptions.value.length;
 });
 
-// Render label with badge for CC support groups
-// Use shared CCBadge component for consistency
+// Render label with badge for CC support groups and child group indicator
 function renderLabel(option: SelectOption) {
-  const isOpenAIWithCC = option.isOpenAIWithCC as boolean;
+  const isOpenAIWithCC = (option as GroupOption).isOpenAIWithCC as boolean;
+  const isChildGroup = (option as GroupOption).isChildGroup as boolean;
   const displayName = option.label as string;
 
+  const elements: (string | ReturnType<typeof h>)[] = [];
+
+  // Add child group styling
+  if (isChildGroup) {
+    elements.push(
+      h("span", { style: { color: "var(--success-color)", marginRight: "4px" } }, "🌿")
+    );
+  }
+
+  elements.push(displayName.replace(/^\s*└\s*/, "") + " ");
+
   if (isOpenAIWithCC) {
-    return [
-      displayName + " ",
+    elements.push(
       h(CCBadge, {
         channelType: "openai",
         ccSupport: true,
-      }),
-    ];
+      })
+    );
   }
-  return displayName;
+
+  if (isChildGroup) {
+    elements.push(
+      h(
+        "span",
+        {
+          style: {
+            fontSize: "11px",
+            color: "var(--success-color)",
+            marginLeft: "4px",
+            background: "var(--success-bg)",
+            padding: "1px 4px",
+            borderRadius: "3px",
+          },
+        },
+        t("keys.isChildGroup")
+      )
+    );
+  }
+
+  return elements;
+}
+
+// Custom filter function for NSelect to search by label and name
+function filterOption(pattern: string, option: SelectOption): boolean {
+  const search = pattern.toLowerCase().trim();
+  if (!search) return true;
+  const label = ((option.label as string) ?? "").toLowerCase();
+  const name = ((option as GroupOption).name ?? "").toLowerCase();
+  return label.includes(search) || name.includes(search);
 }
 </script>
 
@@ -291,70 +407,90 @@ function renderLabel(option: SelectOption) {
         label-width="100px"
       >
         <div class="form-section">
-          <h4 class="section-title">
-            {{ t("keys.selectSubGroups") }}
-            <span class="section-subtitle">
-              ({{ t("keys.channelType") }}: {{ aggregateGroup?.channel_type?.toUpperCase() }})
+          <div class="section-header">
+            <h4 class="section-title">
+              {{ t("keys.selectSubGroups") }}
+            </h4>
+            <span class="channel-badge">
+              {{ aggregateGroup?.channel_type?.toUpperCase() }}
             </span>
-          </h4>
-
-          <div class="sub-groups-list">
-            <div v-for="(item, index) in formData.sub_groups" :key="index" class="sub-group-item">
-              <span class="item-label">{{ t("keys.subGroup") }} {{ index + 1 }}</span>
-
-              <n-form-item
-                class="item-select"
-                :path="`sub_groups[${index}].group_id`"
-                :show-feedback="false"
-              >
-                <n-select
-                  v-model:value="item.group_id"
-                  :options="getOptionsForItem(index)"
-                  :placeholder="t('keys.selectSubGroup')"
-                  :render-label="renderLabel"
-                  clearable
-                />
-              </n-form-item>
-
-              <n-form-item
-                class="item-weight"
-                :path="`sub_groups[${index}].weight`"
-                :show-feedback="false"
-              >
-                <n-input-number
-                  v-model:value="item.weight"
-                  :min="0"
-                  :max="1000"
-                  :placeholder="t('keys.enterWeight')"
-                  style="width: 100%"
-                />
-              </n-form-item>
-
-              <n-button
-                @click="removeSubGroupItem(index)"
-                type="error"
-                quaternary
-                circle
-                size="small"
-                class="item-delete"
-                :style="{ visibility: formData.sub_groups.length > 1 ? 'visible' : 'hidden' }"
-              >
-                <template #icon>
-                  <n-icon :component="Close" />
-                </template>
-              </n-button>
-            </div>
           </div>
 
-          <div class="add-item-section">
-            <n-button v-if="canAddMore" @click="addSubGroupItem" dashed style="width: 100%">
-              <template #icon>
-                <n-icon :component="Add" />
-              </template>
-              {{ t("keys.addMoreSubGroup") }}
-            </n-button>
-            <div v-else class="no-more-tip">
-              {{ t("keys.noMoreAvailableGroups") }}
+          <!-- Sub-groups list container with integrated search -->
+          <div class="sub-groups-container">
+            <div class="sub-groups-list">
+              <div v-for="(item, index) in formData.sub_groups" :key="index" class="sub-group-item">
+                <span class="item-index">{{ index + 1 }}</span>
+
+                <n-form-item
+                  class="item-select"
+                  :path="`sub_groups[${index}].group_id`"
+                  :show-feedback="false"
+                >
+                  <n-select
+                    v-model:value="item.group_id"
+                    :options="getOptionsForItem(index)"
+                    :placeholder="t('keys.searchAndSelectSubGroup')"
+                    :render-label="renderLabel"
+                    :filter="filterOption"
+                    filterable
+                    clearable
+                  />
+                </n-form-item>
+
+                <div class="weight-section">
+                  <span class="weight-label">{{ t("keys.weight") }}</span>
+                  <n-form-item
+                    class="item-weight"
+                    :path="`sub_groups[${index}].weight`"
+                    :show-feedback="false"
+                  >
+                    <n-input-number
+                      v-model:value="item.weight"
+                      :min="0"
+                      :max="1000"
+                      size="small"
+                      style="width: 80px"
+                    />
+                  </n-form-item>
+                </div>
+
+                <n-button
+                  @click="removeSubGroupItem(index)"
+                  type="error"
+                  quaternary
+                  circle
+                  size="small"
+                  class="item-delete"
+                  :style="{ visibility: formData.sub_groups.length > 1 ? 'visible' : 'hidden' }"
+                >
+                  <template #icon>
+                    <n-icon :component="Close" />
+                  </template>
+                </n-button>
+              </div>
+            </div>
+
+            <!-- Add more button and available count -->
+            <div class="list-footer">
+              <n-button
+                v-if="canAddMore"
+                @click="addSubGroupItem"
+                dashed
+                size="small"
+                class="add-btn"
+              >
+                <template #icon>
+                  <n-icon :component="Add" />
+                </template>
+                {{ t("keys.addMoreSubGroup") }}
+              </n-button>
+              <span v-else class="no-more-tip">
+                {{ t("keys.noMoreAvailableGroups") }}
+              </span>
+              <span class="available-count">
+                {{ t("keys.availableSubGroupsCount", { count: getAvailableOptions.length }) }}
+              </span>
             </div>
           </div>
         </div>
@@ -374,61 +510,103 @@ function renderLabel(option: SelectOption) {
 
 <style scoped>
 .add-sub-group-modal {
-  width: 700px;
+  width: 600px;
 }
 
 .form-section {
   margin-top: 0;
 }
 
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
 .section-title {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 16px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border-color);
+  margin: 0;
 }
 
-.section-subtitle {
-  font-size: 0.85rem;
-  font-weight: 400;
-  color: var(--text-secondary);
-  margin-left: 8px;
+.channel-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary-color);
+  background: var(--primary-bg);
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--primary-color);
+}
+
+.sub-groups-container {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  padding: 12px;
 }
 
 .sub-groups-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  margin-bottom: 20px;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 .sub-group-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
-  background: var(--bg-secondary);
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--card-bg-solid);
   border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-md);
+  border-radius: var(--border-radius-sm);
+  transition: all 0.2s ease;
 }
 
-.item-label {
+.sub-group-item:hover {
+  border-color: var(--primary-color);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.item-index {
   flex-shrink: 0;
-  min-width: 80px;
-  font-weight: 500;
-  color: var(--text-primary);
-  font-size: 0.9rem;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-radius: 50%;
 }
 
 .item-select {
   flex: 1;
-  min-width: 200px;
+  min-width: 0;
+}
+
+.weight-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.weight-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .item-weight {
-  width: 100px;
   flex-shrink: 0;
 }
 
@@ -436,54 +614,96 @@ function renderLabel(option: SelectOption) {
   flex-shrink: 0;
 }
 
-.add-item-section {
-  margin-top: 16px;
+.list-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.add-btn {
+  flex-shrink: 0;
+}
+
+.available-count {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
 .no-more-tip {
-  text-align: center;
+  font-size: 12px;
   color: var(--text-tertiary);
-  font-size: 0.9rem;
-  padding: 12px;
-  background: var(--bg-secondary);
-  border-radius: var(--border-radius-sm);
+}
+
+/* Scrollbar styles */
+.sub-groups-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sub-groups-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sub-groups-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-bg);
+  border-radius: 3px;
+}
+
+.sub-groups-list::-webkit-scrollbar-thumb:hover {
+  background: var(--border-color);
 }
 
 /* Responsive layout */
 @media (max-width: 768px) {
   .add-sub-group-modal {
-    width: 90vw;
+    width: 95vw;
   }
 
   .sub-group-item {
-    flex-direction: column;
-    align-items: stretch;
+    flex-wrap: wrap;
     gap: 8px;
   }
 
-  .item-label {
-    min-width: auto;
-    text-align: center;
+  .item-index {
+    order: 0;
   }
 
-  .item-select,
-  .item-weight {
-    width: 100%;
-    min-width: auto;
+  .item-select {
+    order: 1;
+    flex: 1 1 100%;
+    min-width: 100%;
+  }
+
+  .weight-section {
+    order: 2;
+    flex: 1;
   }
 
   .item-delete {
-    align-self: center;
+    order: 3;
   }
 }
 
 /* Dark mode adjustments */
-:root.dark .sub-group-item {
+:root.dark .sub-groups-container {
   background: var(--bg-tertiary);
-  border-color: var(--border-color);
 }
 
-:root.dark .no-more-tip {
-  background: var(--bg-tertiary);
+:root.dark .sub-group-item {
+  background: var(--bg-secondary);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .sub-group-item:hover {
+  border-color: var(--primary-color);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+:root.dark .channel-badge {
+  background: rgba(102, 126, 234, 0.15);
+  border-color: rgba(102, 126, 234, 0.4);
 }
 </style>

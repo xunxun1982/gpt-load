@@ -269,24 +269,25 @@ func (b *BaseChannel) applyPathRedirects(reqPath string) string {
 }
 
 // ApplyModelRedirect applies model redirection based on the group's redirect rules.
-func (b *BaseChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, error) {
+// Returns the modified body bytes and the original model name (empty if no redirect occurred).
+func (b *BaseChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error) {
 	if len(group.ModelRedirectMap) == 0 || len(bodyBytes) == 0 {
-		return bodyBytes, nil
+		return bodyBytes, "", nil
 	}
 
 	var requestData map[string]any
 	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
-		return bodyBytes, nil
+		return bodyBytes, "", nil
 	}
 
 	modelValue, exists := requestData["model"]
 	if !exists {
-		return bodyBytes, nil
+		return bodyBytes, "", nil
 	}
 
 	model, ok := modelValue.(string)
 	if !ok {
-		return bodyBytes, nil
+		return bodyBytes, "", nil
 	}
 
 	// Direct match without any prefix processing
@@ -301,14 +302,18 @@ func (b *BaseChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, gr
 			"channel":        "json_body",
 		}).Debug("Model redirected")
 
-		return json.Marshal(requestData)
+		modifiedBytes, err := json.Marshal(requestData)
+		if err != nil {
+			return bodyBytes, "", err
+		}
+		return modifiedBytes, model, nil
 	}
 
 	if group.ModelRedirectStrict {
-		return nil, fmt.Errorf("model '%s' is not configured in redirect rules", model)
+		return nil, "", fmt.Errorf("model '%s' is not configured in redirect rules", model)
 	}
 
-	return bodyBytes, nil
+	return bodyBytes, "", nil
 }
 
 // TransformModelList transforms the model list response based on redirect rules.
