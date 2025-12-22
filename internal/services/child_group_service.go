@@ -153,15 +153,20 @@ func (s *ChildGroupService) CreateChildGroup(ctx context.Context, params CreateC
 	if err := tx.Error; err != nil {
 		return nil, app_errors.ErrDatabase
 	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+		}
+	}()
 
 	if err := tx.Create(&childGroup).Error; err != nil {
-		tx.Rollback()
 		return nil, app_errors.ParseDBError(err)
 	}
 
 	if err := tx.Commit().Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
+	tx = nil // Prevent deferred rollback after successful commit
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
 		"childGroupID":   childGroup.ID,

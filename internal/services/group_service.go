@@ -818,18 +818,21 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 
 		// Schedule memory store cleanup for child group keys
 		// This runs in a goroutine to avoid blocking the response
-		go func() {
+		go func(keyService *KeyService, childIDs []uint) {
+			if keyService == nil || keyService.KeyProvider == nil {
+				return
+			}
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			for _, childID := range childGroupIDs {
-				if _, err := s.keyService.KeyProvider.RemoveAllKeys(cleanupCtx, childID); err != nil {
+			for _, childID := range childIDs {
+				if _, err := keyService.KeyProvider.RemoveAllKeys(cleanupCtx, childID); err != nil {
 					logrus.WithFields(logrus.Fields{
 						"childGroupID": childID,
 						"error":        err,
 					}).Error("failed to remove child group keys from memory store")
 				}
 			}
-		}()
+		}(s.keyService, childGroupIDs)
 	}
 
 	// Delete sub-group relationships
@@ -856,18 +859,21 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 	// Clear memory store for this group after database commit
 	// Use a goroutine to avoid blocking the response
 	if keyCount > 0 {
-		go func() {
+		go func(keyService *KeyService, groupID uint) {
+			if keyService == nil || keyService.KeyProvider == nil {
+				return
+			}
 			// Use a timeout context for background deletion
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			if _, err := s.keyService.KeyProvider.RemoveAllKeys(cleanupCtx, id); err != nil {
+			if _, err := keyService.KeyProvider.RemoveAllKeys(cleanupCtx, groupID); err != nil {
 				logrus.WithFields(logrus.Fields{
-					"groupID": id,
+					"groupID": groupID,
 					"error":   err,
 				}).Error("failed to remove keys from memory store")
 			}
-		}()
+		}(s.keyService, id)
 	}
 
 	// Invalidate caches
