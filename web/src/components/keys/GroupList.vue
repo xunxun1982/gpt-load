@@ -788,22 +788,7 @@ async function handleFileChange(event: Event) {
                             </div>
                           </div>
                           <div class="group-actions" @click.stop>
-                            <n-button
-                              text
-                              size="tiny"
-                              @click="
-                                handleExportGroup(
-                                  findGroupById(childInfo.id) ||
-                                    ({ id: childInfo.id, name: childInfo.name } as Group),
-                                  $event
-                                )
-                              "
-                              :title="t('keys.exportGroup')"
-                            >
-                              <template #icon>
-                                <n-icon :component="CloudDownloadOutline" :size="16" />
-                              </template>
-                            </n-button>
+                            <!-- Child groups cannot be exported individually, they are exported with parent -->
                           </div>
                         </div>
                       </div>
