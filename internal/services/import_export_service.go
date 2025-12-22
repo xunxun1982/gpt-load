@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -13,6 +14,14 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+)
+
+// Sentinel errors for import/export operations
+var (
+	// ErrChildGroupCannotExportIndividually is returned when attempting to export a child group individually
+	ErrChildGroupCannotExportIndividually = errors.New("child groups cannot be exported individually, please export the parent group instead")
+	// ErrChildGroupCannotImportIndividually is returned when attempting to import a child group individually
+	ErrChildGroupCannotImportIndividually = errors.New("child groups cannot be imported individually, they are automatically imported with their parent group")
 )
 
 // ImportExportService provides unified import/export functionality
@@ -352,7 +361,7 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 
 	// Child groups cannot be exported individually - they must be exported with their parent
 	if group.ParentGroupID != nil {
-		return nil, fmt.Errorf("child groups cannot be exported individually, please export the parent group instead")
+		return nil, ErrChildGroupCannotExportIndividually
 	}
 
 	// Export keys
@@ -446,7 +455,7 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (uint, error) {
 	// Child groups cannot be imported individually - they are imported with their parent
 	if data.Group.ParentGroupID != nil {
-		return 0, fmt.Errorf("child groups cannot be imported individually, they are automatically imported with their parent group")
+		return 0, ErrChildGroupCannotImportIndividually
 	}
 
 	// Use the centralized unique name generation function

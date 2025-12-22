@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	app_errors "gpt-load/internal/errors"
@@ -94,11 +93,8 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.group_not_found")
-		} else if strings.Contains(err.Error(), "child groups cannot be exported individually") {
+		} else if errors.Is(err, services.ErrChildGroupCannotExportIndividually) {
 			// Child groups must be exported with their parent group
-			// NOTE: Using string matching here is intentional to keep the code simple.
-			// The error message is stable and unlikely to change. If more error types
-			// need to be distinguished in the future, consider using sentinel errors.
 			response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.child_group_cannot_export_individually")
 		} else {
 			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.cannot_get_group")
@@ -107,7 +103,6 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	}
 	// Determine export mode: plain or encrypted (default encrypted)
 	exportMode := GetExportMode(c)
-
 	// Parse HeaderRules for export format using common utility function
 	// ParseHeaderRulesForExport handles errors internally and logs warnings
 	headerRules := ParseHeaderRulesForExport(groupData.Group.HeaderRules, groupData.Group.ID)
