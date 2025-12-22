@@ -219,11 +219,13 @@ var MessagesJaJP = map[string]string{
 	"database.import_failed":           "インポートに失敗しました",
 
 	// Child groups related
-	"validation.child_group_parent_must_be_standard": "子グループの親グループは標準グループである必要があります",
-	"validation.child_group_cannot_nest":             "子グループは子グループを作成できません（ネストはサポートされていません）",
-	"validation.parent_group_no_proxy_keys":          "親グループにプロキシキーが設定されていないため、子グループを作成できません",
-	"success.child_group_created":                    "子グループが正常に作成されました",
-	"success.child_group_deleted":                    "子グループが正常に削除されました",
-	"warning.parent_has_child_groups":                "このグループには {{.count}} 個の子グループがあり、削除されます",
-	"group.child_groups_deleted":                     "{{.count}} 個の子グループも削除されました",
+	"validation.child_group_parent_must_be_standard":    "子グループの親グループは標準グループである必要があります",
+	"validation.child_group_cannot_nest":                "子グループは子グループを作成できません（ネストはサポートされていません）",
+	"validation.parent_group_no_proxy_keys":             "親グループにプロキシキーが設定されていないため、子グループを作成できません",
+	"validation.child_group_cannot_export_individually": "子グループは個別にエクスポートできません。親グループをエクスポートしてください",
+	"validation.child_group_cannot_import_individually": "子グループは個別にインポートできません。親グループと一緒にインポートされます",
+	"success.child_group_created":                       "子グループが正常に作成されました",
+	"success.child_group_deleted":                       "子グループが正常に削除されました",
+	"warning.parent_has_child_groups":                   "このグループには {{.count}} 個の子グループがあり、削除されます",
+	"group.child_groups_deleted":                        "{{.count}} 個の子グループも削除されました",
 }

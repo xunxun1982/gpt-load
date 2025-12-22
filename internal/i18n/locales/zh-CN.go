@@ -219,11 +219,13 @@ var MessagesZhCN = map[string]string{
 	"database.import_failed":           "导入失败",
 
 	// Child groups related
-	"validation.child_group_parent_must_be_standard": "子分组的父分组必须是标准分组",
-	"validation.child_group_cannot_nest":             "子分组不能再创建子分组（不支持嵌套）",
-	"validation.parent_group_no_proxy_keys":          "父分组没有设置外部密钥（proxy_keys），无法创建子分组",
-	"success.child_group_created":                    "子分组创建成功",
-	"success.child_group_deleted":                    "子分组删除成功",
-	"warning.parent_has_child_groups":                "该分组有 {{.count}} 个子分组，删除后子分组也将被删除",
-	"group.child_groups_deleted":                     "已同时删除 {{.count}} 个子分组",
+	"validation.child_group_parent_must_be_standard":    "子分组的父分组必须是标准分组",
+	"validation.child_group_cannot_nest":                "子分组不能再创建子分组（不支持嵌套）",
+	"validation.parent_group_no_proxy_keys":             "父分组没有设置外部密钥（proxy_keys），无法创建子分组",
+	"validation.child_group_cannot_export_individually": "子分组不能单独导出，请导出父分组",
+	"validation.child_group_cannot_import_individually": "子分组不能单独导入，它们会随父分组一起导入",
+	"success.child_group_created":                       "子分组创建成功",
+	"success.child_group_deleted":                       "子分组删除成功",
+	"warning.parent_has_child_groups":                   "该分组有 {{.count}} 个子分组，删除后子分组也将被删除",
+	"group.child_groups_deleted":                        "已同时删除 {{.count}} 个子分组",
 }

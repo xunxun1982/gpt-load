@@ -2113,24 +2113,11 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Apply parameter overrides as query parameters for the models request
-	if len(group.ParamOverrides) > 0 {
-		clonedURL := *req.URL
-		query := clonedURL.Query()
-		for key, value := range group.ParamOverrides {
-			if strings.TrimSpace(key) == "" {
-				continue
-			}
-			if value == nil {
-				// Treat explicit null as no-op to avoid sending "<nil>" as query value
-				continue
-			}
-			// ParamOverrides intentionally overrides any existing query parameter with the same key
-			query.Set(key, fmt.Sprint(value))
-		}
-		clonedURL.RawQuery = query.Encode()
-		req.URL = &clonedURL
-	}
+	// NOTE: ParamOverrides are NOT applied to GET requests (like /v1/models).
+	// ParamOverrides are designed to modify request body parameters (e.g., enable_thinking, temperature),
+	// which only make sense for POST/PUT/PATCH requests with JSON bodies.
+	// Applying them as query parameters to GET requests would be incorrect and could cause issues
+	// with upstream APIs that don't expect these parameters in the URL.
 
 	// Use the upstream-specific HTTP client configured by the channel (includes proxy and timeouts)
 	httpClient := selection.HTTPClient

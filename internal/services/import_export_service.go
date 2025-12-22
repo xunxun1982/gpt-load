@@ -319,9 +319,21 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 
 // ExportGroupData exports a complete group with all its data
 type GroupExportData struct {
-	Group     models.Group       `json:"group"`
-	Keys      []KeyExportInfo    `json:"keys"`
-	SubGroups []SubGroupInfo     `json:"sub_groups,omitempty"`
+	Group       models.Group         `json:"group"`
+	Keys        []KeyExportInfo      `json:"keys"`
+	SubGroups   []SubGroupInfo       `json:"sub_groups,omitempty"`
+	ChildGroups []ChildGroupExport   `json:"child_groups,omitempty"` // Child groups for standard groups
+}
+
+// ChildGroupExport represents exported child group data
+type ChildGroupExport struct {
+	Name        string          `json:"name"`
+	DisplayName string          `json:"display_name"`
+	Description string          `json:"description"`
+	Enabled     bool            `json:"enabled"`
+	ProxyKeys   string          `json:"proxy_keys"`
+	Sort        int             `json:"sort"`
+	Keys        []KeyExportInfo `json:"keys"`
 }
 
 // SubGroupInfo represents sub-group relationship
@@ -335,6 +347,11 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 	var group models.Group
 	if err := s.db.First(&group, groupID).Error; err != nil {
 		return nil, fmt.Errorf("failed to find group: %w", err)
+	}
+
+	// Child groups cannot be exported individually - they must be exported with their parent
+	if group.ParentGroupID != nil {
+		return nil, fmt.Errorf("child groups cannot be exported individually, please export the parent group instead")
 	}
 
 	// Export keys
@@ -383,11 +400,54 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 		}
 	}
 
+	// If it's a standard group (not aggregate), export child groups
+	if group.GroupType == "standard" {
+		var childGroups []models.Group
+		if err := s.db.Where("parent_group_id = ?", groupID).
+			Order("sort ASC, name ASC").
+			Find(&childGroups).Error; err == nil && len(childGroups) > 0 {
+
+			// Get all child group IDs for batch key export
+			childGroupIDs := make([]uint, 0, len(childGroups))
+			for _, cg := range childGroups {
+				childGroupIDs = append(childGroupIDs, cg.ID)
+			}
+
+			// Export keys for all child groups in one batch
+			childKeysMap, err := s.ExportKeysForGroups(childGroupIDs)
+			if err != nil {
+				logrus.WithError(err).Warn("Failed to export child group keys")
+				childKeysMap = make(map[uint][]KeyExportInfo)
+			}
+
+			result.ChildGroups = make([]ChildGroupExport, 0, len(childGroups))
+			for _, cg := range childGroups {
+				childExport := ChildGroupExport{
+					Name:        cg.Name,
+					DisplayName: cg.DisplayName,
+					Description: cg.Description,
+					Enabled:     cg.Enabled,
+					ProxyKeys:   cg.ProxyKeys,
+					Sort:        cg.Sort,
+					Keys:        childKeysMap[cg.ID],
+				}
+				result.ChildGroups = append(result.ChildGroups, childExport)
+			}
+
+			logrus.Infof("Exported %d child groups for parent group %s", len(childGroups), group.Name)
+		}
+	}
+
 	return result, nil
 }
 
 // ImportGroup imports a complete group with keys and sub-groups
 func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (uint, error) {
+	// Child groups cannot be imported individually - they are imported with their parent
+	if data.Group.ParentGroupID != nil {
+		return 0, fmt.Errorf("child groups cannot be imported individually, they are automatically imported with their parent group")
+	}
+
 	// Use the centralized unique name generation function
 	groupName, err := s.GenerateUniqueGroupName(tx, data.Group.Name)
 	if err != nil {
@@ -398,13 +458,17 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 	newGroup := data.Group
 	newGroup.ID = 0 // Reset ID for new record
 	newGroup.Name = groupName
+	newGroup.ParentGroupID = nil // Ensure parent group ID is nil for imported groups
 
-	// Extract the suffix that was added to the name and apply it to display name too
-	// This ensures both name and display name have the same random suffix
-	if newGroup.DisplayName != "" && groupName != data.Group.Name && strings.HasPrefix(groupName, data.Group.Name) {
-		// Find the suffix that was added to the name
-		suffix := groupName[len(data.Group.Name):]
-		newGroup.DisplayName = newGroup.DisplayName + suffix
+	// Calculate the suffix that was added to the name (if any)
+	var nameSuffix string
+	if groupName != data.Group.Name && strings.HasPrefix(groupName, data.Group.Name) {
+		nameSuffix = groupName[len(data.Group.Name):]
+	}
+
+	// Apply suffix to display name too
+	if newGroup.DisplayName != "" && nameSuffix != "" {
+		newGroup.DisplayName = newGroup.DisplayName + nameSuffix
 	}
 
 	// Clean Config values to remove leading/trailing whitespace
@@ -475,7 +539,76 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 		}
 	}
 
+	// Import child groups for standard groups
+	if newGroup.GroupType == "standard" && len(data.ChildGroups) > 0 {
+		if err := s.importChildGroups(tx, newGroup.ID, newGroup.Name, newGroup.ChannelType, nameSuffix, data.ChildGroups); err != nil {
+			return 0, fmt.Errorf("failed to import child groups: %w", err)
+		}
+	}
+
 	return newGroup.ID, nil
+}
+
+// importChildGroups imports child groups for a parent group
+func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint, parentName string, parentChannelType string, nameSuffix string, childGroups []ChildGroupExport) error {
+	for _, childData := range childGroups {
+		// Each child group should independently check for name conflicts
+		// First try the original name, then try with parent's suffix if parent was renamed
+		// Only add random suffix if there's still a conflict
+
+		// Try original name first
+		childName, err := s.GenerateUniqueGroupName(tx, childData.Name)
+		if err != nil {
+			logrus.WithError(err).Warnf("Failed to generate unique name for child group %s", childData.Name)
+			continue
+		}
+
+		// Calculate the suffix that was added (if any)
+		var childNameSuffix string
+		if childName != childData.Name && strings.HasPrefix(childName, childData.Name) {
+			childNameSuffix = childName[len(childData.Name):]
+		}
+
+		// Build upstream URL pointing to parent group (use actual parent name, not original)
+		port := 3001 // Default port, will be overridden at runtime
+		upstreamURL := fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", port, parentName)
+		upstreamsJSON := fmt.Sprintf(`[{"url":"%s","weight":1}]`, upstreamURL)
+
+		// Create child group with inherited channel_type from parent
+		childGroup := models.Group{
+			Name:          childName,
+			DisplayName:   childData.DisplayName,
+			Description:   childData.Description,
+			GroupType:     "standard",
+			ChannelType:   parentChannelType, // Inherit from parent
+			Enabled:       childData.Enabled,
+			ParentGroupID: &parentGroupID,
+			ProxyKeys:     childData.ProxyKeys,
+			Sort:          childData.Sort,
+			Upstreams:     []byte(upstreamsJSON),
+		}
+
+		// Apply suffix to display name if a suffix was added to the name
+		if childGroup.DisplayName != "" && childNameSuffix != "" {
+			childGroup.DisplayName = childData.DisplayName + childNameSuffix
+		}
+
+		if err := tx.Create(&childGroup).Error; err != nil {
+			logrus.WithError(err).Warnf("Failed to create child group %s", childName)
+			continue
+		}
+
+		// Import keys for child group
+		if len(childData.Keys) > 0 {
+			if err := s.ImportKeys(tx, childGroup.ID, childData.Keys); err != nil {
+				logrus.WithError(err).Warnf("Failed to import keys for child group %s", childName)
+			}
+		}
+
+		logrus.Infof("Imported child group %s (ID: %d) for parent %s", childName, childGroup.ID, parentName)
+	}
+
+	return nil
 }
 
 // SystemExportData represents full system export

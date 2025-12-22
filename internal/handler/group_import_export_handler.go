@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	app_errors "gpt-load/internal/errors"
@@ -27,6 +28,8 @@ type GroupExportData struct {
 	Keys []KeyExportInfo `json:"keys"`
 	// Sub-group information (aggregate groups only)
 	SubGroups []SubGroupExportInfo `json:"sub_groups,omitempty"`
+	// Child group information (standard groups only)
+	ChildGroups []ChildGroupExportInfo `json:"child_groups,omitempty"`
 	// Export metadata
 	ExportedAt string `json:"exported_at"`
 	Version    string `json:"version"`
@@ -66,6 +69,17 @@ type SubGroupExportInfo struct {
 	Weight    int    `json:"weight"`
 }
 
+// ChildGroupExportInfo represents child group export information.
+type ChildGroupExportInfo struct {
+	Name        string          `json:"name"`
+	DisplayName string          `json:"display_name"`
+	Description string          `json:"description"`
+	Enabled     bool            `json:"enabled"`
+	ProxyKeys   string          `json:"proxy_keys"`
+	Sort        int             `json:"sort"`
+	Keys        []KeyExportInfo `json:"keys"`
+}
+
 // ExportGroup exports complete group data.
 func (s *Server) ExportGroup(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
@@ -80,6 +94,9 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.group_not_found")
+		} else if strings.Contains(err.Error(), "child groups cannot be exported individually") {
+			// Child groups must be exported with their parent group
+			response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.child_group_cannot_export_individually")
 		} else {
 			response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.cannot_get_group")
 		}
@@ -151,6 +168,40 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		})
 	}
 
+	// Convert child groups to export format (for standard groups)
+	if len(groupData.ChildGroups) > 0 {
+		exportData.ChildGroups = make([]ChildGroupExportInfo, 0, len(groupData.ChildGroups))
+		for _, cg := range groupData.ChildGroups {
+			childExport := ChildGroupExportInfo{
+				Name:        cg.Name,
+				DisplayName: cg.DisplayName,
+				Description: cg.Description,
+				Enabled:     cg.Enabled,
+				ProxyKeys:   cg.ProxyKeys,
+				Sort:        cg.Sort,
+				Keys:        make([]KeyExportInfo, 0, len(cg.Keys)),
+			}
+			// Convert child group keys, decrypt if plain mode
+			for _, key := range cg.Keys {
+				kv := key.KeyValue
+				if exportMode == "plain" {
+					if decrypted, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
+						kv = decrypted
+					} else {
+						logrus.WithError(derr).Debug("Failed to decrypt child group key during plain export, keeping original value")
+					}
+				}
+				childExport.Keys = append(childExport.Keys, KeyExportInfo{
+					KeyValue: kv,
+					Status:   key.Status,
+				})
+			}
+			exportData.ChildGroups = append(exportData.ChildGroups, childExport)
+		}
+		logrus.Debugf("Export via new service: Total %d child groups exported for group %s",
+			len(exportData.ChildGroups), groupData.Group.Name)
+	}
+
 	logrus.Debugf("Export via new service: Total %d keys exported for group %s",
 		len(exportData.Keys), groupData.Group.Name)
 
@@ -176,9 +227,10 @@ func (s *Server) ExportGroup(c *gin.Context) {
 
 // GroupImportData represents the structure for group import data.
 type GroupImportData struct {
-	Group     GroupExportInfo      `json:"group"`
-	Keys      []KeyExportInfo      `json:"keys"`
-	SubGroups []SubGroupExportInfo `json:"sub_groups,omitempty"`
+	Group       GroupExportInfo        `json:"group"`
+	Keys        []KeyExportInfo        `json:"keys"`
+	SubGroups   []SubGroupExportInfo   `json:"sub_groups,omitempty"`
+	ChildGroups []ChildGroupExportInfo `json:"child_groups,omitempty"` // Child groups for standard groups
 }
 
 // ImportGroup imports group data.
@@ -268,6 +320,40 @@ func (s *Server) ImportGroup(c *gin.Context) {
 			GroupName: sg.GroupName,
 			Weight:    sg.Weight,
 		})
+	}
+
+	// Convert child groups (for standard groups)
+	if len(importData.ChildGroups) > 0 {
+		serviceGroupData.ChildGroups = make([]services.ChildGroupExport, 0, len(importData.ChildGroups))
+		for _, cg := range importData.ChildGroups {
+			childExport := services.ChildGroupExport{
+				Name:        cg.Name,
+				DisplayName: cg.DisplayName,
+				Description: cg.Description,
+				Enabled:     cg.Enabled,
+				ProxyKeys:   cg.ProxyKeys,
+				Sort:        cg.Sort,
+				Keys:        make([]services.KeyExportInfo, 0, len(cg.Keys)),
+			}
+			// Convert child group keys; if input is plaintext, encrypt before passing to service
+			for _, k := range cg.Keys {
+				kv := k.KeyValue
+				if inputIsPlain {
+					if enc, e := s.EncryptionSvc.Encrypt(kv); e == nil {
+						kv = enc
+					} else {
+						logrus.WithError(e).WithField("childGroup", cg.Name).Warn("Failed to encrypt plaintext key during child group import, skipping")
+						continue
+					}
+				}
+				childExport.Keys = append(childExport.Keys, services.KeyExportInfo{
+					KeyValue: kv,
+					Status:   k.Status,
+				})
+			}
+			serviceGroupData.ChildGroups = append(serviceGroupData.ChildGroups, childExport)
+		}
+		logrus.Debugf("ChildGroups: %d", len(importData.ChildGroups))
 	}
 
 	// Use transaction to ensure data consistency, rollback on failure
