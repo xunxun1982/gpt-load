@@ -665,11 +665,16 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	}
 
 	// Apply model redirection
-	finalBodyBytes, err := channelHandler.ApplyModelRedirect(req, bodyBytes, group)
+	finalBodyBytes, originalModel, err := channelHandler.ApplyModelRedirect(req, bodyBytes, group)
 	if err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
 		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
+	}
+
+	// Store original model in context for logging if redirect occurred
+	if originalModel != "" {
+		c.Set("original_model", originalModel)
 	}
 
 	// Update request body if it was modified by redirection
@@ -1083,12 +1088,18 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 
 	// Apply model redirection for aggregate sub-group before modifying the request
-	redirectedBody, err := subGroupChannelHandler.ApplyModelRedirect(req, finalBodyBytes, group)
+	redirectedBody, originalModel, err := subGroupChannelHandler.ApplyModelRedirect(req, finalBodyBytes, group)
 	if err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
 		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 		return
 	}
+
+	// Store original model in context for logging if redirect occurred
+	if originalModel != "" {
+		c.Set("original_model", originalModel)
+	}
+
 	if !bytes.Equal(redirectedBody, finalBodyBytes) {
 		finalBodyBytes = redirectedBody
 		req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))

@@ -146,9 +146,10 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 }
 
 // ApplyModelRedirect overrides the default implementation for Gemini channel.
-func (ch *GeminiChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, error) {
+// Returns the modified body bytes, the original model name (empty if no redirect), and error.
+func (ch *GeminiChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error) {
 	if len(group.ModelRedirectMap) == 0 {
-		return bodyBytes, nil
+		return bodyBytes, "", nil
 	}
 
 	if strings.Contains(req.URL.Path, "v1beta/openai") {
@@ -159,7 +160,8 @@ func (ch *GeminiChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte,
 }
 
 // applyNativeFormatRedirect handles model redirection for Gemini native format.
-func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, error) {
+// Returns the modified body bytes, the original model name (empty if no redirect), and error.
+func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error) {
 	path := req.URL.Path
 	parts := strings.Split(path, "/")
 
@@ -185,17 +187,17 @@ func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes 
 					"new_path":       req.URL.Path,
 				}).Debug("Model redirected")
 
-				return bodyBytes, nil
+				return bodyBytes, originalModel, nil
 			}
 
 			if group.ModelRedirectStrict {
-				return nil, fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)
+				return nil, "", fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)
 			}
-			return bodyBytes, nil
+			return bodyBytes, "", nil
 		}
 	}
 
-	return bodyBytes, nil
+	return bodyBytes, "", nil
 }
 
 // TransformModelList transforms the model list response based on redirect rules.

@@ -128,6 +128,13 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		groups.GET("/:id/parent-aggregate-groups", serverHandler.GetParentAggregateGroups)
 		groups.GET("/:id/models", serverHandler.GetGroupModels)
 
+		// Child group routes
+		groups.POST("/:id/child-groups", serverHandler.CreateChildGroup)
+		groups.GET("/:id/child-groups", serverHandler.GetChildGroups)
+		groups.GET("/:id/parent-group", serverHandler.GetParentGroup)
+		groups.GET("/:id/child-group-count", serverHandler.GetChildGroupCount)
+		groups.GET("/all-child-groups", serverHandler.GetAllChildGroups)
+
 		// Debug-only endpoint: Delete all groups
 		// This dangerous operation is only available when DEBUG_MODE environment variable is enabled
 		// It should NEVER be enabled in production environments

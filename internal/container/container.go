@@ -91,6 +91,9 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(services.NewAggregateGroupService); err != nil {
 		return nil, err
 	}
+	if err := container.Provide(services.NewChildGroupService); err != nil {
+		return nil, err
+	}
 	if err := container.Provide(keypool.NewProvider); err != nil {
 		return nil, err
 	}

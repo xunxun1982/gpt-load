@@ -51,7 +51,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.4.2 migration - Add composite index on groups(sort, name) for ORDER BY queries
-	return V1_4_2_AddGroupSortNameIndex(db)
+	if err := V1_4_2_AddGroupSortNameIndex(db); err != nil {
+		return err
+	}
+	// Run v1.5.0 migration - Add child group support (parent_group_id column)
+	return V1_5_0_AddChildGroupSupport(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

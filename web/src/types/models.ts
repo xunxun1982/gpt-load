@@ -90,10 +90,20 @@ export interface Group {
   path_redirects?: PathRedirectRule[];
   proxy_keys: string;
   group_type?: GroupType;
+  parent_group_id?: number | null; // Parent group ID for child groups
   sub_groups?: SubGroupInfo[]; // List of sub-groups (aggregate groups only)
   sub_group_ids?: number[]; // List of sub-group IDs
   created_at?: string;
   updated_at?: string;
+}
+
+// Child group information (used for display)
+export interface ChildGroupInfo {
+  id: number;
+  name: string;
+  display_name: string;
+  enabled: boolean;
+  created_at: string;
 }
 
 export interface GroupConfigOption {

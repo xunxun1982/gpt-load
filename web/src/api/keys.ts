@@ -378,4 +378,38 @@ export const keysApi = {
     });
     return res.data;
   },
+
+  // Child group APIs
+  // Create a child group for a standard group
+  async createChildGroup(
+    parentGroupId: number,
+    data: { name?: string; display_name?: string; description?: string }
+  ): Promise<Group> {
+    const res = await http.post(`/groups/${parentGroupId}/child-groups`, data);
+    return res.data;
+  },
+
+  // Get child groups for a standard group
+  async getChildGroups(parentGroupId: number): Promise<import("@/types/models").ChildGroupInfo[]> {
+    const res = await http.get(`/groups/${parentGroupId}/child-groups`);
+    return res.data || [];
+  },
+
+  // Get parent group for a child group
+  async getParentGroup(childGroupId: number): Promise<Group | null> {
+    const res = await http.get(`/groups/${childGroupId}/parent-group`);
+    return res.data;
+  },
+
+  // Get child group count for deletion warning
+  async getChildGroupCount(groupId: number): Promise<number> {
+    const res = await http.get(`/groups/${groupId}/child-group-count`);
+    return res.data?.count || 0;
+  },
+
+  // Get all child groups for all parent groups in one request
+  async getAllChildGroups(): Promise<Record<number, import("@/types/models").ChildGroupInfo[]>> {
+    const res = await http.get("/groups/all-child-groups");
+    return res.data || {};
+  },
 };

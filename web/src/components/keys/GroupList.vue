@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Group } from "@/types/models";
+import type { Group, ChildGroupInfo } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
 import {
   Add,
@@ -9,6 +9,7 @@ import {
   ChevronForward,
   CloudDownloadOutline,
   CloudUploadOutline,
+  GitBranchOutline,
 } from "@vicons/ionicons5";
 import {
   NButton,
@@ -18,6 +19,7 @@ import {
   NSpin,
   NTag,
   NIcon,
+  NTooltip,
   useDialog,
   useMessage,
 } from "naive-ui";
@@ -25,6 +27,7 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
 import GroupFormModal from "./GroupFormModal.vue";
+import ChildGroupModal from "./ChildGroupModal.vue";
 import { keysApi } from "@/api/keys";
 
 const { t } = useI18n();
@@ -87,6 +90,12 @@ const showGroupModal = ref(false);
 const groupItemRefs = ref(new Map());
 const showAggregateGroupModal = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+// Child group related state
+const showChildGroupModal = ref(false);
+const selectedParentGroup = ref<Group | null>(null);
+const childGroupsMap = ref<Map<number, ChildGroupInfo[]>>(new Map());
+const collapsedChildGroups = ref<Set<number>>(new Set());
+const ICON_CHILD = "🌿";
 
 // Sort by sort field (ascending), if sort is the same, sort by name ascending
 function sortBySort(a: Group, b: Group) {
@@ -116,8 +125,11 @@ const filteredGroups = computed(() => {
   }
 
   // Separate aggregate groups and standard groups
+  // Filter out child groups from top-level display (they will be shown under their parent)
   const aggregateGroups = groups.filter(g => g.group_type === GROUP_TYPE_AGGREGATE);
-  const standardGroups = groups.filter(g => g.group_type !== GROUP_TYPE_AGGREGATE);
+  const standardGroups = groups.filter(
+    g => g.group_type !== GROUP_TYPE_AGGREGATE && !g.parent_group_id
+  );
 
   aggregateGroups.sort(sortBySort);
   standardGroups.sort(sortBySort);
@@ -327,6 +339,118 @@ function handleGroupCreated(group: Group) {
   }
 }
 
+// Child group methods
+function hasChildGroups(groupId: number | undefined): boolean {
+  if (!groupId) return false;
+  const children = childGroupsMap.value.get(groupId);
+  return children !== undefined && children.length > 0;
+}
+
+function getChildGroups(groupId: number | undefined): ChildGroupInfo[] {
+  if (!groupId) return [];
+  const children = childGroupsMap.value.get(groupId) || [];
+  // Natural sort comparator for strings with numbers (e.g., child1, child2, child10)
+  const naturalCompare = (strA: string, strB: string): number => {
+    // Split strings into numeric and non-numeric parts
+    const regex = /(\d+)/g;
+    const splitA = strA.split(regex).filter(s => s !== "");
+    const splitB = strB.split(regex).filter(s => s !== "");
+
+    for (let i = 0; i < Math.max(splitA.length, splitB.length); i++) {
+      const partA = splitA[i] ?? "";
+      const partB = splitB[i] ?? "";
+
+      // Check if both parts are numeric
+      const numA = parseInt(partA, 10);
+      const numB = parseInt(partB, 10);
+      const isNumA = !isNaN(numA) && String(numA) === partA;
+      const isNumB = !isNaN(numB) && String(numB) === partB;
+
+      if (isNumA && isNumB) {
+        // Both are numbers, compare numerically
+        if (numA !== numB) return numA - numB;
+      } else {
+        // At least one is not a number, compare as strings
+        const cmp = partA.localeCompare(partB);
+        if (cmp !== 0) return cmp;
+      }
+    }
+    return 0;
+  };
+  // Sort by name with natural number sorting for consistent display (child1, child2, child10)
+  return [...children].sort((a, b) => naturalCompare(a.name ?? "", b.name ?? ""));
+}
+
+function isChildGroupsCollapsed(groupId: number | undefined): boolean {
+  if (!groupId) return true;
+  return collapsedChildGroups.value.has(groupId);
+}
+
+function toggleChildGroups(groupId: number | undefined, event: Event) {
+  event.stopPropagation();
+  if (!groupId) return;
+  const next = new Set(collapsedChildGroups.value);
+  if (next.has(groupId)) {
+    next.delete(groupId);
+  } else {
+    next.add(groupId);
+  }
+  collapsedChildGroups.value = next;
+}
+
+function openCreateChildGroupModal(group: Group, event: Event) {
+  event.stopPropagation();
+  selectedParentGroup.value = group;
+  showChildGroupModal.value = true;
+}
+
+function handleChildGroupCreated(group: Group) {
+  showChildGroupModal.value = false;
+  selectedParentGroup.value = null;
+  // Refresh child groups for the parent
+  loadAllChildGroups();
+  const groupId = group.id;
+  if (groupId != null) {
+    emit("refresh-and-select", groupId);
+  }
+}
+
+async function loadAllChildGroups() {
+  // Use batch API to load all child groups in one request
+  try {
+    const allChildGroups = await keysApi.getAllChildGroups();
+    // Convert object keys from string to number and update the map
+    childGroupsMap.value.clear();
+    for (const [parentIdStr, children] of Object.entries(allChildGroups)) {
+      const parentId = parseInt(parentIdStr, 10);
+      if (!isNaN(parentId)) {
+        childGroupsMap.value.set(parentId, children);
+      }
+    }
+  } catch (error) {
+    console.error("Failed to load all child groups:", error);
+  }
+}
+
+// Check if a group can have child groups (standard group, not a child itself)
+function canHaveChildGroups(group: Group): boolean {
+  return group.group_type !== GROUP_TYPE_AGGREGATE && !group.parent_group_id;
+}
+
+// Load child groups when groups change
+watch(
+  () => props.groups,
+  () => {
+    loadAllChildGroups();
+  },
+  { immediate: true }
+);
+
+// Find group by ID from child group info
+function findGroupById(groupId: number): Group | undefined {
+  return props.groups.find(g => g.id === groupId);
+}
+
 // Export group
 async function handleExportGroup(group: Group, event: Event) {
   event.stopPropagation();
@@ -513,54 +637,175 @@ async function handleFileChange(event: Event) {
                     <div
                       v-for="group in channelGroup.groups"
                       :key="group.id"
-                      class="group-item"
-                      :class="{
-                        aggregate: section.isAggregate,
-                        active: selectedGroup?.id === group.id,
-                        disabled: !group.enabled,
-                      }"
-                      :aria-label="
-                        !group.enabled
-                          ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
-                          : undefined
-                      "
-                      @click="handleGroupClick(group)"
-                      :ref="
-                        el => {
-                          if (el) {
-                            groupItemRefs.set(group.id, el);
-                          } else {
-                            groupItemRefs.delete(group.id);
-                          }
-                        }
-                      "
+                      class="group-item-wrapper"
                     >
-                      <div class="group-icon">
-                        <span>{{ getGroupIcon(group, section.isAggregate) }}</span>
-                      </div>
-                      <div class="group-content">
-                        <div class="group-name">{{ getGroupDisplayName(group) }}</div>
-                        <div class="group-meta">
-                          <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
-                            {{ group.channel_type }}
-                          </n-tag>
-                          <n-tag v-if="!group.enabled" size="tiny" type="error" round>
-                            {{ t("keys.disabled") }}
-                          </n-tag>
-                          <span class="group-id">#{{ group.name }}</span>
+                      <div
+                        class="group-item"
+                        :class="{
+                          aggregate: section.isAggregate,
+                          active: selectedGroup?.id === group.id,
+                          disabled: !group.enabled,
+                          'has-children': hasChildGroups(group.id),
+                        }"
+                        :aria-label="
+                          !group.enabled
+                            ? `${getGroupDisplayName(group)} (${t('keys.disabled')})`
+                            : undefined
+                        "
+                        @click="handleGroupClick(group)"
+                        :ref="
+                          el => {
+                            if (el) {
+                              groupItemRefs.set(group.id, el);
+                            } else {
+                              groupItemRefs.delete(group.id);
+                            }
+                          }
+                        "
+                      >
+                        <div class="group-icon">
+                          <span>{{ getGroupIcon(group, section.isAggregate) }}</span>
+                        </div>
+                        <div class="group-content">
+                          <div class="group-name">{{ getGroupDisplayName(group) }}</div>
+                          <div class="group-meta">
+                            <n-tag size="tiny" :type="getChannelTagType(group.channel_type)">
+                              {{ group.channel_type }}
+                            </n-tag>
+                            <n-tag v-if="!group.enabled" size="tiny" type="error" round>
+                              {{ t("keys.disabled") }}
+                            </n-tag>
+                            <n-tag v-if="hasChildGroups(group.id)" size="tiny" type="info" round>
+                              {{
+                                t("keys.childGroupCount", {
+                                  count: getChildGroups(group.id).length,
+                                })
+                              }}
+                            </n-tag>
+                            <span class="group-id">#{{ group.name }}</span>
+                          </div>
+                        </div>
+                        <div class="group-actions" @click.stop>
+                          <!-- Child group toggle button -->
+                          <n-tooltip v-if="hasChildGroups(group.id)" trigger="hover">
+                            <template #trigger>
+                              <n-button
+                                text
+                                size="tiny"
+                                @click="toggleChildGroups(group.id, $event)"
+                              >
+                                <template #icon>
+                                  <n-icon
+                                    :component="
+                                      isChildGroupsCollapsed(group.id)
+                                        ? ChevronForward
+                                        : ChevronDown
+                                    "
+                                    :size="16"
+                                  />
+                                </template>
+                              </n-button>
+                            </template>
+                            {{ t("keys.childGroups") }}
+                          </n-tooltip>
+                          <!-- Create child group button -->
+                          <n-tooltip v-if="canHaveChildGroups(group)" trigger="hover">
+                            <template #trigger>
+                              <n-button
+                                text
+                                size="tiny"
+                                @click="openCreateChildGroupModal(group, $event)"
+                                :title="t('keys.createChildGroup')"
+                              >
+                                <template #icon>
+                                  <n-icon :component="GitBranchOutline" :size="16" />
+                                </template>
+                              </n-button>
+                            </template>
+                            {{ t("keys.createChildGroup") }}
+                          </n-tooltip>
+                          <n-button
+                            text
+                            size="tiny"
+                            @click="handleExportGroup(group, $event)"
+                            :title="t('keys.exportGroup')"
+                          >
+                            <template #icon>
+                              <n-icon :component="CloudDownloadOutline" :size="16" />
+                            </template>
+                          </n-button>
                         </div>
                       </div>
-                      <div class="group-actions" @click.stop>
-                        <n-button
-                          text
-                          size="tiny"
-                          @click="handleExportGroup(group, $event)"
-                          :title="t('keys.exportGroup')"
+                      <!-- Child groups display -->
+                      <div
+                        v-if="hasChildGroups(group.id) && !isChildGroupsCollapsed(group.id)"
+                        class="child-groups-container"
+                      >
+                        <div
+                          v-for="childInfo in getChildGroups(group.id)"
+                          :key="childInfo.id"
+                          class="group-item child-group"
+                          :class="{
+                            active: selectedGroup?.id === childInfo.id,
+                            disabled: !childInfo.enabled,
+                          }"
+                          @click="
+                            handleGroupClick(
+                              findGroupById(childInfo.id) ||
+                                ({
+                                  id: childInfo.id,
+                                  name: childInfo.name,
+                                  display_name: childInfo.display_name,
+                                  enabled: childInfo.enabled,
+                                } as Group)
+                            )
+                          "
+                          :ref="
+                            el => {
+                              if (el) {
+                                groupItemRefs.set(childInfo.id, el);
+                              } else {
+                                groupItemRefs.delete(childInfo.id);
+                              }
+                            }
+                          "
                         >
-                          <template #icon>
-                            <n-icon :component="CloudDownloadOutline" :size="16" />
-                          </template>
-                        </n-button>
+                          <div class="group-icon child-icon">
+                            <span>{{ ICON_CHILD }}</span>
+                          </div>
+                          <div class="group-content">
+                            <div class="group-name">
+                              {{ childInfo.display_name || childInfo.name }}
+                            </div>
+                            <div class="group-meta">
+                              <n-tag size="tiny" type="success" round>
+                                {{ t("keys.isChildGroup") }}
+                              </n-tag>
+                              <n-tag v-if="!childInfo.enabled" size="tiny" type="error" round>
+                                {{ t("keys.disabled") }}
+                              </n-tag>
+                              <span class="group-id">#{{ childInfo.name }}</span>
+                            </div>
+                          </div>
+                          <div class="group-actions" @click.stop>
+                            <n-button
+                              text
+                              size="tiny"
+                              @click="
+                                handleExportGroup(
+                                  findGroupById(childInfo.id) ||
+                                    ({ id: childInfo.id, name: childInfo.name } as Group),
+                                  $event
+                                )
+                              "
+                              :title="t('keys.exportGroup')"
+                            >
+                              <template #icon>
+                                <n-icon :component="CloudDownloadOutline" :size="16" />
+                              </template>
+                            </n-button>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -602,6 +847,11 @@ async function handleFileChange(event: Event) {
       v-model:show="showAggregateGroupModal"
       :groups="groups"
       @success="handleGroupCreated"
+    />
+    <child-group-modal
+      v-model:show="showChildGroupModal"
+      :parent-group="selectedParentGroup"
+      @success="handleChildGroupCreated"
     />
   </div>
 </template>
@@ -1218,5 +1468,99 @@ async function handleFileChange(event: Event) {
 :root.dark .group-item.active .group-meta :deep(.n-tag) {
   background: rgba(255, 255, 255, 0.2);
   border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Child groups styles */
+.group-item-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.child-groups-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 14px;
+  margin-top: 2px;
+  padding-left: 12px;
+  border-left: 2px solid rgba(76, 175, 80, 0.4);
+  position: relative;
+}
+
+.child-groups-container::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: linear-gradient(180deg, rgba(76, 175, 80, 0.6) 0%, rgba(76, 175, 80, 0.2) 100%);
+  border-radius: 1px;
+}
+
+.group-item.child-group {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.04) 0%, rgba(76, 175, 80, 0.08) 100%);
+  border-color: rgba(76, 175, 80, 0.25);
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.group-item.child-group .group-icon {
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+}
+
+.group-item.child-group .group-name {
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.group-item.child-group .group-meta {
+  font-size: 9px;
+  gap: 4px;
+}
+
+:root.dark .group-item.child-group {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.06) 0%, rgba(76, 175, 80, 0.12) 100%);
+  border-color: rgba(76, 175, 80, 0.35);
+}
+
+:root.dark .child-groups-container {
+  border-left-color: rgba(76, 175, 80, 0.5);
+}
+
+:root.dark .child-groups-container::before {
+  background: linear-gradient(180deg, rgba(76, 175, 80, 0.7) 0%, rgba(76, 175, 80, 0.3) 100%);
+}
+
+.group-item.child-group:hover {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.12) 0%, rgba(76, 175, 80, 0.18) 100%);
+  border-color: rgba(76, 175, 80, 0.5);
+}
+
+:root.dark .group-item.child-group:hover {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.18) 0%, rgba(76, 175, 80, 0.25) 100%);
+  border-color: rgba(76, 175, 80, 0.6);
+}
+
+.group-item.child-group.active {
+  background: var(--primary-gradient);
+  border-color: transparent;
+}
+
+.child-icon {
+  background: rgba(76, 175, 80, 0.12) !important;
+  border: 1px solid rgba(76, 175, 80, 0.2) !important;
+}
+
+:root.dark .child-icon {
+  background: rgba(76, 175, 80, 0.18) !important;
+  border-color: rgba(76, 175, 80, 0.3) !important;
+}
+
+.group-item.has-children {
+  border-left: 3px solid var(--primary-color);
 }
 </style>

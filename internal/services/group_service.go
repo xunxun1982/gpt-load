@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -120,6 +121,10 @@ func NewGroupService(
 	}
 	if svc.keyService != nil {
 		svc.keyService.CacheInvalidationCallback = svc.InvalidateKeyStatsCache
+	}
+	// Set callback to invalidate group list cache when GroupManager cache is invalidated
+	if svc.groupManager != nil {
+		svc.groupManager.CacheInvalidationCallback = svc.InvalidateGroupListCache
 	}
 	return svc
 }
@@ -404,12 +409,29 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 	return groups, nil
 }
 
+// CountChildGroups returns the count of child groups for a parent group.
+// Used for warning before deletion.
+func (s *GroupService) CountChildGroups(ctx context.Context, parentGroupID uint) (int64, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).
+		Model(&models.Group{}).
+		Where("parent_group_id = ?", parentGroupID).
+		Count(&count).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+	return count, nil
+}
+
 // UpdateGroup validates and updates an existing group.
 func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpdateParams) (*models.Group, error) {
 	var group models.Group
 	if err := s.db.WithContext(ctx).First(&group, id).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
+
+	// Track old values for child group sync
+	oldName := group.Name
+	oldProxyKeys := group.ProxyKeys
 
 	// Perform all validation before the final database write to minimize lock time.
 	// This is especially important for SQLite which uses database-level locking.
@@ -614,6 +636,21 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	// Sync child groups if parent's name or proxy_keys changed
+	// Only sync for standard groups that are not child groups themselves
+	if group.GroupType == "standard" && group.ParentGroupID == nil {
+		nameChanged := oldName != group.Name
+		proxyKeysChanged := oldProxyKeys != group.ProxyKeys
+
+		if nameChanged || proxyKeysChanged {
+			// Sync child groups inline to avoid circular dependency with ChildGroupService
+			if err := s.syncChildGroupsOnParentUpdate(ctx, &group, oldName, oldProxyKeys); err != nil {
+				logrus.WithContext(ctx).WithError(err).Error("failed to sync child groups after parent update")
+				// Don't fail the update, just log the error
+			}
+		}
+	}
+
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
@@ -622,6 +659,111 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	s.invalidateGroupListCache()
 
 	return &group, nil
+}
+
+// syncChildGroupsOnParentUpdate updates all child groups when parent group's name or proxy_keys change.
+// When name changes: update child groups' upstream URL.
+// When proxy_keys changes: update child groups' API keys (not proxy_keys).
+//
+// NOTE: Similar logic exists in ChildGroupService.SyncChildGroupsOnParentUpdate. The duplication is
+// intentional to avoid circular dependencies between services. This method is used inline during
+// group updates, while ChildGroupService's method is exposed for external callers with transaction support.
+func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, parentGroup *models.Group, oldName string, oldProxyKeys string) error {
+	// Check if there are any child groups
+	var childGroups []models.Group
+	if err := s.db.WithContext(ctx).
+		Where("parent_group_id = ?", parentGroup.ID).
+		Find(&childGroups).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
+	if len(childGroups) == 0 {
+		return nil
+	}
+
+	nameChanged := oldName != parentGroup.Name
+	proxyKeysChanged := oldProxyKeys != parentGroup.ProxyKeys
+
+	// Update upstream URL if parent name changed
+	if nameChanged {
+		port := utils.ParseInteger(os.Getenv("PORT"), 3001)
+		upstreamURL := fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", port, parentGroup.Name)
+		upstreams := []map[string]interface{}{
+			{
+				"url":    upstreamURL,
+				"weight": 1,
+			},
+		}
+		upstreamsJSON, err := json.Marshal(upstreams)
+		if err != nil {
+			return app_errors.ErrInternalServer
+		}
+
+		if err := s.db.WithContext(ctx).
+			Model(&models.Group{}).
+			Where("parent_group_id = ?", parentGroup.ID).
+			Update("upstreams", datatypes.JSON(upstreamsJSON)).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
+	}
+
+	// Update API keys if parent proxy_keys changed
+	if proxyKeysChanged && s.keyService != nil {
+		newParentFirstKey := getFirstProxyKeyFromString(parentGroup.ProxyKeys)
+		oldParentFirstKey := getFirstProxyKeyFromString(oldProxyKeys)
+
+		if newParentFirstKey != "" && newParentFirstKey != oldParentFirstKey {
+			// For each child group, update the API key
+			// Add new key FIRST, then delete old key to avoid leaving child without any key
+			for _, childGroup := range childGroups {
+				// Add new key first to ensure child group always has a working key
+				if _, err := s.keyService.AddMultipleKeys(childGroup.ID, newParentFirstKey); err != nil {
+					logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+						"childGroupID":   childGroup.ID,
+						"childGroupName": childGroup.Name,
+					}).Error("Failed to add new API key for child group, keeping old key")
+					continue // Keep old key if new key addition fails
+				}
+
+				// Now safe to delete old key
+				if oldParentFirstKey != "" {
+					oldKeyHash := s.encryptionSvc.Hash(oldParentFirstKey)
+					if err := s.db.WithContext(ctx).
+						Where("group_id = ? AND key_hash = ?", childGroup.ID, oldKeyHash).
+						Delete(&models.APIKey{}).Error; err != nil {
+						logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+							"childGroupID": childGroup.ID,
+							"operation":    "delete_old_key",
+						}).Warn("Failed to delete old API key for child group")
+					}
+				}
+			}
+		}
+	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"parentGroupID":    parentGroup.ID,
+		"parentGroupName":  parentGroup.Name,
+		"childGroupCount":  len(childGroups),
+		"nameChanged":      nameChanged,
+		"proxyKeysChanged": proxyKeysChanged,
+	}).Info("Synced child groups after parent update")
+
+	return nil
+}
+
+// getFirstProxyKeyFromString extracts the first proxy key from a comma-separated list.
+// NOTE: This is intentionally duplicated from child_group_service.go's getFirstProxyKey
+// to avoid cross-service dependencies. Both implementations are simple and unlikely to diverge.
+func getFirstProxyKeyFromString(proxyKeys string) string {
+	if proxyKeys == "" {
+		return ""
+	}
+	keys := strings.Split(proxyKeys, ",")
+	if len(keys) > 0 {
+		return strings.TrimSpace(keys[0])
+	}
+	return ""
 }
 
 // DeleteGroup removes a group and associated resources.
@@ -653,6 +795,46 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 	var keyCount int64
 	tx.Model(&models.APIKey{}).Where("group_id = ?", id).Count(&keyCount)
 
+	// Handle child groups - delete them along with parent
+	var childGroupIDs []uint
+	if err := tx.Model(&models.Group{}).Where("parent_group_id = ?", id).Pluck("id", &childGroupIDs).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
+	childGroupCount := int64(len(childGroupIDs))
+	if childGroupCount > 0 {
+		// Delete API keys for all child groups
+		if err := tx.Where("group_id IN ?", childGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
+		// Delete child groups
+		if err := tx.Where("parent_group_id = ?", id).Delete(&models.Group{}).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
+		logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"parentGroupID":   id,
+			"childGroupCount": childGroupCount,
+		}).Info("Deleted child groups along with parent")
+
+		// Schedule memory store cleanup for child group keys
+		// This runs in a goroutine to avoid blocking the response
+		go func(keyService *KeyService, childIDs []uint) {
+			if keyService == nil || keyService.KeyProvider == nil {
+				return
+			}
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			for _, childID := range childIDs {
+				if _, err := keyService.KeyProvider.RemoveAllKeys(cleanupCtx, childID); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"childGroupID": childID,
+						"error":        err,
+					}).Error("failed to remove child group keys from memory store")
+				}
+			}
+		}(s.keyService, childGroupIDs)
+	}
+
 	// Delete sub-group relationships
 	if err := tx.Where("group_id = ? OR sub_group_id = ?", id, id).Delete(&models.GroupSubGroup{}).Error; err != nil {
 		return app_errors.ParseDBError(err)
@@ -677,18 +859,21 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 	// Clear memory store for this group after database commit
 	// Use a goroutine to avoid blocking the response
 	if keyCount > 0 {
-		go func() {
+		go func(keyService *KeyService, groupID uint) {
+			if keyService == nil || keyService.KeyProvider == nil {
+				return
+			}
 			// Use a timeout context for background deletion
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			if _, err := s.keyService.KeyProvider.RemoveAllKeys(cleanupCtx, id); err != nil {
+			if _, err := keyService.KeyProvider.RemoveAllKeys(cleanupCtx, groupID); err != nil {
 				logrus.WithFields(logrus.Fields{
-					"groupID": id,
+					"groupID": groupID,
 					"error":   err,
 				}).Error("failed to remove keys from memory store")
 			}
-		}()
+		}(s.keyService, id)
 	}
 
 	// Invalidate caches
@@ -699,9 +884,10 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 	s.InvalidateKeyStatsCache(id)
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"groupID":   id,
-		"groupName": group.Name,
-		"keyCount":  keyCount,
+		"groupID":         id,
+		"groupName":       group.Name,
+		"keyCount":        keyCount,
+		"childGroupCount": childGroupCount,
 	}).Info("Successfully deleted group")
 
 	return nil

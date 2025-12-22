@@ -66,6 +66,7 @@ const expandedName = ref<string[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const showProxyKeys = ref(false);
 const parentAggregateGroups = ref<ParentAggregateGroup[]>([]);
+const parentGroup = ref<Group | null>(null);
 const groupEnabled = computed({
   get: () => props.group?.enabled ?? true,
   set: (_value: boolean) => {
@@ -135,6 +136,7 @@ onMounted(() => {
   loadStats();
   loadConfigOptions();
   loadParentAggregateGroups();
+  loadParentGroup();
 });
 
 watch(
@@ -143,6 +145,7 @@ watch(
     resetPage();
     loadStats();
     loadParentAggregateGroups();
+    loadParentGroup();
   },
   { immediate: true }
 );
@@ -214,6 +217,27 @@ async function loadParentAggregateGroups() {
   }
 }
 
+// Load parent group for child groups
+async function loadParentGroup() {
+  if (!props.group?.id || !props.group.parent_group_id) {
+    parentGroup.value = null;
+    return;
+  }
+
+  try {
+    const parent = await keysApi.getParentGroup(props.group.id);
+    parentGroup.value = parent;
+  } catch (error) {
+    console.error("Failed to load parent group:", error);
+    parentGroup.value = null;
+  }
+}
+
+// Check if current group is a child group
+const isChildGroup = computed(() => {
+  return !!props.group?.parent_group_id;
+});
+
 function getConfigDisplayName(key: string): string {
   const option = configOptions.value.find(opt => opt.key === key);
   return option?.name || key;
@@ -269,9 +293,25 @@ async function handleDelete() {
     return;
   }
 
+  // Check for child groups first
+  let childGroupCount = 0;
+  if (props.group.id && !props.group.parent_group_id && props.group.group_type !== "aggregate") {
+    try {
+      childGroupCount = await keysApi.getChildGroupCount(props.group.id);
+    } catch (error) {
+      console.error("Failed to get child group count:", error);
+    }
+  }
+
+  // Build warning content
+  let warningContent = t("keys.confirmDeleteGroup", { name: getGroupDisplayName(props.group) });
+  if (childGroupCount > 0) {
+    warningContent += "\n\n" + t("keys.deleteWarningWithChildGroups", { count: childGroupCount });
+  }
+
   dialog.warning({
     title: t("keys.deleteGroup"),
-    content: t("keys.confirmDeleteGroup", { name: getGroupDisplayName(props.group) }),
+    content: warningContent,
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: () => {
@@ -285,6 +325,13 @@ async function handleDelete() {
               h("strong", { style: { color: "#d03050" } }, props.group?.name),
               t("keys.toConfirmDeletion"),
             ]),
+            childGroupCount > 0
+              ? h(
+                  "p",
+                  { style: { color: "#f0a020", marginTop: "8px" } },
+                  t("keys.deleteWarningWithChildGroups", { count: childGroupCount })
+                )
+              : null,
             h(NInput, {
               value: confirmInput.value,
               "onUpdate:value": v => {
@@ -599,6 +646,38 @@ async function handleToggleEnabled(enabled: boolean) {
                     <n-grid-item>
                       <n-form-item :label="`${t('keys.displayName')}：`">
                         {{ group?.display_name }}
+                      </n-form-item>
+                    </n-grid-item>
+                    <!-- Show parent group info for child groups -->
+                    <n-grid-item v-if="isChildGroup" :span="2">
+                      <n-form-item :label="`${t('keys.parentGroupLabel')}：`">
+                        <div class="parent-group-info">
+                          <n-tag type="success" size="small">
+                            {{ t("keys.isChildGroup") }}
+                          </n-tag>
+                          <n-input
+                            v-if="parentGroup"
+                            class="parent-group-name"
+                            :value="parentGroup.display_name || parentGroup.name"
+                            readonly
+                            size="small"
+                            style="margin-left: 8px; margin-right: 8px; max-width: 200px"
+                          />
+                          <n-button
+                            v-if="parentGroup"
+                            round
+                            tertiary
+                            type="default"
+                            size="tiny"
+                            @click="parentGroup?.id && handleNavigateToGroup(parentGroup.id)"
+                            :title="t('keys.viewParentGroup')"
+                          >
+                            <template #icon>
+                              <n-icon :component="EyeOutline" />
+                            </template>
+                            {{ t("keys.viewParentGroup") }}
+                          </n-button>
+                        </div>
                       </n-form-item>
                     </n-grid-item>
                     <n-grid-item>
@@ -1185,5 +1264,17 @@ async function handleToggleEnabled(enabled: boolean) {
   display: flex !important;
   align-items: center;
   justify-content: center;
+}
+
+/* Parent group info styles */
+.parent-group-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.parent-group-name {
+  font-weight: 500;
 }
 </style>

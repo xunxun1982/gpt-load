@@ -97,6 +97,15 @@ type ParentAggregateGroupInfo struct {
 	Weight      int    `json:"weight"`
 }
 
+// ChildGroupInfo represents child group information for API responses.
+type ChildGroupInfo struct {
+	ID          uint   `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Enabled     bool   `json:"enabled"`
+	CreatedAt   string `json:"created_at"`
+}
+
 // Group corresponds to the groups table.
 type Group struct {
 	ID                   uint                 `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -120,8 +129,10 @@ type Group struct {
 	ModelRedirectRules   datatypes.JSONMap    `gorm:"type:json" json:"model_redirect_rules"`  // Model redirect rules from upstream
 	ModelRedirectStrict  bool                 `gorm:"default:false" json:"model_redirect_strict"` // Strict mode for model redirect
 	PathRedirects        datatypes.JSON       `gorm:"type:json" json:"path_redirects"`        // JSON array of {from,to} rules (OpenAI only)
+	ParentGroupID        *uint                `gorm:"index" json:"parent_group_id"`           // Parent group ID for child groups
 	APIKeys              []APIKey             `gorm:"foreignKey:GroupID" json:"api_keys"`
 	SubGroups            []GroupSubGroup      `gorm:"-" json:"sub_groups,omitempty"`
+	ChildGroups          []Group              `gorm:"-" json:"child_groups,omitempty"`        // Child groups derived from this group
 	LastValidatedAt      *time.Time           `json:"last_validated_at"`
 	CreatedAt            time.Time            `json:"created_at"`
 	UpdatedAt            time.Time            `json:"updated_at"`

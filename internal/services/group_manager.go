@@ -60,11 +60,12 @@ func isTransientDBError(err error) bool {
 
 // GroupManager manages the caching of group data.
 type GroupManager struct {
-	syncer          *syncer.CacheSyncer[map[string]*models.Group]
-	db              *gorm.DB
-	store           store.Store
-	settingsManager *config.SystemSettingsManager
-	subGroupManager *SubGroupManager
+	syncer                      *syncer.CacheSyncer[map[string]*models.Group]
+	db                          *gorm.DB
+	store                       store.Store
+	settingsManager             *config.SystemSettingsManager
+	subGroupManager             *SubGroupManager
+	CacheInvalidationCallback   func() // Callback to invalidate other caches (e.g., GroupService list cache)
 }
 
 // NewGroupManager creates a new, uninitialized GroupManager.
@@ -286,6 +287,10 @@ func (gm *GroupManager) GetGroupByID(id uint) (*models.Group, error) {
 func (gm *GroupManager) Invalidate() error {
 	if gm.syncer == nil {
 		return fmt.Errorf("GroupManager is not initialized")
+	}
+	// Call the callback to invalidate other caches (e.g., GroupService list cache)
+	if gm.CacheInvalidationCallback != nil {
+		gm.CacheInvalidationCallback()
 	}
 	return gm.syncer.Invalidate()
 }
