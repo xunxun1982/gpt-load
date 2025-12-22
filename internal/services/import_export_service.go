@@ -501,7 +501,7 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 
 	// Export all groups
 	var groups []models.Group
-	if err := s.db.Order("sort ASC, id DESC").Find(&groups).Error; err != nil {
+	if err := s.db.Order(GroupListOrderClause).Find(&groups).Error; err != nil {
 		return nil, fmt.Errorf("failed to export groups: %w", err)
 	}
 

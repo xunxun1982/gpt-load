@@ -9,6 +9,11 @@ import (
 	"gorm.io/gorm"
 )
 
+// GroupListOrderClause defines the standard ORDER BY clause for group list queries.
+// Groups are sorted by sort field ascending, then by name ascending for stable ordering
+// when sort values are equal (alphabetical order by group name).
+const GroupListOrderClause = "sort ASC, name ASC"
+
 // FindGroupByID finds a group by ID and returns it, or an error if not found.
 func FindGroupByID(ctx context.Context, db *gorm.DB, groupID uint) (*models.Group, error) {
 	var group models.Group
@@ -48,5 +53,3 @@ func FindGroupByIDWithType(ctx context.Context, db *gorm.DB, groupID uint, expec
 func FindAggregateGroupByID(ctx context.Context, db *gorm.DB, groupID uint) (*models.Group, error) {
 	return FindGroupByIDWithType(ctx, db, groupID, "aggregate")
 }
-
-

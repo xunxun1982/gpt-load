@@ -375,7 +375,7 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
 	defer cancel()
 
-	if err := s.db.WithContext(queryCtx).Order("sort asc, id desc").Find(&groups).Error; err != nil {
+	if err := s.db.WithContext(queryCtx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
 		// Only use stale cache for transient errors (timeout/canceled) to keep UI responsive
 		// For other errors (schema issues, query bugs), return the error immediately
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
