@@ -8,6 +8,11 @@ import (
 // V1_5_0_AddChildGroupSupport adds parent_group_id column to groups table
 // to support child group (derived group) functionality.
 // Child groups inherit proxy keys from parent and use parent's external endpoint as upstream.
+//
+// NOTE: We use raw SQL instead of GORM's migrator.AddColumn() because:
+// 1. Raw SQL is more explicit and predictable across different database backends
+// 2. "ALTER TABLE ... ADD COLUMN ... DEFAULT NULL" is standard SQL supported by SQLite/MySQL/PostgreSQL
+// 3. GORM's AddColumn may have subtle differences in behavior across database drivers
 func V1_5_0_AddChildGroupSupport(db *gorm.DB) error {
 	migrator := db.Migrator()
 

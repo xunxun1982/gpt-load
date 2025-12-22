@@ -664,6 +664,10 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 // syncChildGroupsOnParentUpdate updates all child groups when parent group's name or proxy_keys change.
 // When name changes: update child groups' upstream URL.
 // When proxy_keys changes: update child groups' API keys (not proxy_keys).
+//
+// NOTE: Similar logic exists in ChildGroupService.SyncChildGroupsOnParentUpdate. The duplication is
+// intentional to avoid circular dependencies between services. This method is used inline during
+// group updates, while ChildGroupService's method is exposed for external callers with transaction support.
 func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, parentGroup *models.Group, oldName string, oldProxyKeys string) error {
 	// Check if there are any child groups
 	var childGroups []models.Group
@@ -714,9 +718,15 @@ func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, parent
 				// Remove old key if exists
 				if oldParentFirstKey != "" {
 					oldKeyHash := s.encryptionSvc.Hash(oldParentFirstKey)
-					s.db.WithContext(ctx).
+					// Delete old key - error is logged but not fatal as the new key will still be added
+					if err := s.db.WithContext(ctx).
 						Where("group_id = ? AND key_hash = ?", childGroup.ID, oldKeyHash).
-						Delete(&models.APIKey{})
+						Delete(&models.APIKey{}).Error; err != nil {
+						logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+							"childGroupID": childGroup.ID,
+							"operation":    "delete_old_key",
+						}).Warn("Failed to delete old API key for child group")
+					}
 				}
 
 				// Add new key using KeyService
@@ -743,6 +753,8 @@ func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, parent
 }
 
 // getFirstProxyKeyFromString extracts the first proxy key from a comma-separated list.
+// NOTE: This is intentionally duplicated from child_group_service.go's getFirstProxyKey
+// to avoid cross-service dependencies. Both implementations are simple and unlikely to diverge.
 func getFirstProxyKeyFromString(proxyKeys string) string {
 	if proxyKeys == "" {
 		return ""
@@ -800,9 +812,24 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 			return app_errors.ParseDBError(err)
 		}
 		logrus.WithContext(ctx).WithFields(logrus.Fields{
-			"parentGroupID":    id,
-			"childGroupCount":  childGroupCount,
+			"parentGroupID":   id,
+			"childGroupCount": childGroupCount,
 		}).Info("Deleted child groups along with parent")
+
+		// Schedule memory store cleanup for child group keys
+		// This runs in a goroutine to avoid blocking the response
+		go func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			for _, childID := range childGroupIDs {
+				if _, err := s.keyService.KeyProvider.RemoveAllKeys(cleanupCtx, childID); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"childGroupID": childID,
+						"error":        err,
+					}).Error("failed to remove child group keys from memory store")
+				}
+			}
+		}()
 	}
 
 	// Delete sub-group relationships

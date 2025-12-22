@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
@@ -59,6 +60,8 @@ func buildChildGroupUpstream(parentGroupName string) (datatypes.JSON, error) {
 }
 
 // getFirstProxyKey extracts the first proxy key from a comma-separated list.
+// NOTE: This is intentionally duplicated from group_service.go's getFirstProxyKeyFromString
+// to avoid cross-service dependencies. Both implementations are simple and unlikely to diverge.
 func getFirstProxyKey(proxyKeys string) string {
 	if proxyKeys == "" {
 		return ""
@@ -215,8 +218,8 @@ func (s *ChildGroupService) generateChildGroupName(ctx context.Context, parentNa
 		}
 	}
 
-	// Fallback: use timestamp suffix
-	return fmt.Sprintf("%s_%d", baseName, ctx.Value("request_id"))
+	// Fallback: use timestamp suffix (ctx.Value may return nil, so use UnixNano for safety)
+	return fmt.Sprintf("%s_%d", baseName, time.Now().UnixNano())
 }
 
 // getNextChildNumber returns the next available child number for display name.
@@ -283,6 +286,8 @@ func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]m
 }
 
 // CountChildGroups returns the count of child groups for a parent group.
+// NOTE: This method is intentionally duplicated in GroupService to avoid circular dependencies.
+// Both services need this functionality independently.
 func (s *ChildGroupService) CountChildGroups(ctx context.Context, parentGroupID uint) (int64, error) {
 	var count int64
 	if err := s.db.WithContext(ctx).
@@ -297,6 +302,10 @@ func (s *ChildGroupService) CountChildGroups(ctx context.Context, parentGroupID 
 // SyncChildGroupsOnParentUpdate updates all child groups when parent group's name or proxy_keys change.
 // When parent name changes: update child groups' upstream URL.
 // When parent proxy_keys changes: update child groups' API keys (not proxy_keys).
+//
+// NOTE: Similar logic exists in GroupService.syncChildGroupsOnParentUpdate. The duplication is
+// intentional to avoid circular dependencies between services. GroupService uses its own method
+// for inline updates during group save, while this method is exposed for external callers.
 func (s *ChildGroupService) SyncChildGroupsOnParentUpdate(ctx context.Context, tx *gorm.DB, parentGroup *models.Group, oldName string, oldProxyKeys string) error {
 	// Check if there are any child groups
 	var childGroups []models.Group
@@ -339,9 +348,15 @@ func (s *ChildGroupService) SyncChildGroupsOnParentUpdate(ctx context.Context, t
 				// Remove old key if exists
 				if oldParentFirstKey != "" {
 					oldKeyHash := s.keyService.EncryptionSvc.Hash(oldParentFirstKey)
-					tx.WithContext(ctx).
+					// Delete old key - error is logged but not fatal as the new key will still be added
+					if err := tx.WithContext(ctx).
 						Where("group_id = ? AND key_hash = ?", childGroup.ID, oldKeyHash).
-						Delete(&models.APIKey{})
+						Delete(&models.APIKey{}).Error; err != nil {
+						logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+							"childGroupID": childGroup.ID,
+							"operation":    "delete_old_key",
+						}).Warn("Failed to delete old API key for child group")
+					}
 				}
 
 				// Add new key
