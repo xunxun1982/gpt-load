@@ -129,6 +129,10 @@ async function refreshGroupsAndSelect(targetGroupId?: number, selectFirst = true
 
   if (selectFirst && groups.value.length > 0) {
     handleGroupSelect(groups.value[0] ?? null);
+  } else if (!selectedGroup.value && groups.value.length > 0) {
+    // Defensive fallback: if nothing is selected (e.g., target parent was also deleted),
+    // select the first group to avoid empty state
+    handleGroupSelect(groups.value[0] ?? null);
   }
 }
 
@@ -175,7 +179,7 @@ function handleNavigateToGroup(groupId: number) {
             :groups="groups"
             :sub-groups="subGroups"
             @refresh="() => refreshGroupsAndSelect()"
-            @delete="() => refreshGroupsAndSelect(undefined, true)"
+            @delete="(_, parentGroupId) => refreshGroupsAndSelect(parentGroupId, !parentGroupId)"
             @copy-success="group => refreshGroupsAndSelect(group.id)"
             @navigate-to-group="handleNavigateToGroup"
           />

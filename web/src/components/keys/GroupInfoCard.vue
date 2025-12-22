@@ -45,7 +45,7 @@ interface Props {
 
 interface Emits {
   (e: "refresh", value: Group): void;
-  (e: "delete", value: Group): void;
+  (e: "delete", value: Group, parentGroupId?: number): void;
   (e: "copy-success", group: Group): void;
   (e: "navigate-to-group", groupId: number): void;
 }
@@ -352,7 +352,8 @@ async function handleDelete() {
           try {
             if (props.group?.id) {
               await keysApi.deleteGroup(props.group.id);
-              emit("delete", props.group);
+              // If deleting a child group, pass parent group ID so parent component can select it
+              emit("delete", props.group, props.group.parent_group_id ?? undefined);
             }
           } finally {
             delLoading.value = false;
