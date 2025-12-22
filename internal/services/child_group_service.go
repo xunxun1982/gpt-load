@@ -548,8 +548,8 @@ func (s *ChildGroupService) SyncChildGroupUpstreams(ctx context.Context) error {
 		if err := s.groupManager.Invalidate(); err != nil {
 			logrus.WithError(err).Warn("Failed to invalidate group cache after upstream sync")
 		}
-	} else {
-		logrus.Debug("All child group upstream URLs are already up to date")
+	} else if len(childGroups) > 0 {
+		logrus.Infof("All %d child group upstream URLs are already up to date (port %d)", len(childGroups), currentPort)
 	}
 
 	return nil
