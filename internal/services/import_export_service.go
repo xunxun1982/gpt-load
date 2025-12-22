@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"gpt-load/internal/encryption"
@@ -541,7 +542,7 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 
 	// Import child groups for standard groups
 	if newGroup.GroupType == "standard" && len(data.ChildGroups) > 0 {
-		if err := s.importChildGroups(tx, newGroup.ID, newGroup.Name, newGroup.ChannelType, nameSuffix, data.ChildGroups); err != nil {
+		if err := s.importChildGroups(tx, newGroup.ID, newGroup.Name, newGroup.ChannelType, data.ChildGroups); err != nil {
 			return 0, fmt.Errorf("failed to import child groups: %w", err)
 		}
 	}
@@ -550,13 +551,10 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 }
 
 // importChildGroups imports child groups for a parent group
-func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint, parentName string, parentChannelType string, nameSuffix string, childGroups []ChildGroupExport) error {
+func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint, parentName string, parentChannelType string, childGroups []ChildGroupExport) error {
 	for _, childData := range childGroups {
 		// Each child group should independently check for name conflicts
-		// First try the original name, then try with parent's suffix if parent was renamed
-		// Only add random suffix if there's still a conflict
-
-		// Try original name first
+		// Try the original name, and add a random suffix if there's a conflict
 		childName, err := s.GenerateUniqueGroupName(tx, childData.Name)
 		if err != nil {
 			logrus.WithError(err).Warnf("Failed to generate unique name for child group %s", childData.Name)
@@ -570,7 +568,7 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 		}
 
 		// Build upstream URL pointing to parent group (use actual parent name, not original)
-		port := 3001 // Default port, will be overridden at runtime
+		port := utils.ParseInteger(os.Getenv("PORT"), 3001)
 		upstreamURL := fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", port, parentName)
 		upstreamsJSON := fmt.Sprintf(`[{"url":"%s","weight":1}]`, upstreamURL)
 
@@ -632,22 +630,36 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 		settingsMap[setting.SettingKey] = setting.SettingValue
 	}
 
-	// Export all groups
+	// Export all groups (excluding child groups - they will be nested under their parents)
 	var groups []models.Group
-	if err := s.db.Order(GroupListOrderClause).Find(&groups).Error; err != nil {
+	if err := s.db.Where("parent_group_id IS NULL").Order(GroupListOrderClause).Find(&groups).Error; err != nil {
 		return nil, fmt.Errorf("failed to export groups: %w", err)
 	}
 
-	// Get group IDs
-	groupIDs := make([]uint, 0, len(groups))
-	for _, group := range groups {
-		groupIDs = append(groupIDs, group.ID)
+	// Get all group IDs (including child groups) for key export
+	var allGroups []models.Group
+	if err := s.db.Order(GroupListOrderClause).Find(&allGroups).Error; err != nil {
+		return nil, fmt.Errorf("failed to export all groups: %w", err)
+	}
+
+	allGroupIDs := make([]uint, 0, len(allGroups))
+	for _, group := range allGroups {
+		allGroupIDs = append(allGroupIDs, group.ID)
 	}
 
 	// Export all keys at once
-	keysMap, err := s.ExportKeysForGroups(groupIDs)
+	keysMap, err := s.ExportKeysForGroups(allGroupIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to export keys: %w", err)
+	}
+
+	// Build a map of child groups by parent ID
+	childGroupsByParent := make(map[uint][]models.Group)
+	for _, group := range allGroups {
+		if group.ParentGroupID != nil {
+			parentID := *group.ParentGroupID
+			childGroupsByParent[parentID] = append(childGroupsByParent[parentID], group)
+		}
 	}
 
 	// Build export data
@@ -689,6 +701,25 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 							Weight:    weight,
 						})
 					}
+				}
+			}
+		}
+
+		// Export child groups for standard groups (nested under parent)
+		if group.GroupType == "standard" {
+			if childGroups, exists := childGroupsByParent[group.ID]; exists && len(childGroups) > 0 {
+				groupData.ChildGroups = make([]ChildGroupExport, 0, len(childGroups))
+				for _, cg := range childGroups {
+					childExport := ChildGroupExport{
+						Name:        cg.Name,
+						DisplayName: cg.DisplayName,
+						Description: cg.Description,
+						Enabled:     cg.Enabled,
+						ProxyKeys:   cg.ProxyKeys,
+						Sort:        cg.Sort,
+						Keys:        keysMap[cg.ID],
+					}
+					groupData.ChildGroups = append(groupData.ChildGroups, childExport)
 				}
 			}
 		}
