@@ -125,6 +125,27 @@ func (s *RequestLogService) Record(log *models.RequestLog) error {
 	return s.store.SAdd(PendingLogKeysSet, cacheKey)
 }
 
+// RecordError is a convenience method to record error logs with minimal parameters.
+// It creates a RequestLog entry for failed requests (e.g., auth failures, early errors).
+func (s *RequestLogService) RecordError(groupID uint, groupName, sourceIP, requestPath, errorMsg string, statusCode int, duration int64) {
+	logEntry := &models.RequestLog{
+		GroupID:      groupID,
+		GroupName:    groupName,
+		IsSuccess:    false,
+		SourceIP:     sourceIP,
+		StatusCode:   statusCode,
+		RequestPath:  requestPath,
+		Duration:     duration,
+		RequestType:  models.RequestTypeFinal,
+		IsStream:     false,
+		ErrorMessage: errorMsg,
+	}
+
+	if err := s.Record(logEntry); err != nil {
+		logrus.Errorf("Failed to record error log: %v", err)
+	}
+}
+
 // flush data from cache to database
 func (s *RequestLogService) flush() {
 	if s.settingsManager.GetSettings().RequestLogWriteIntervalMinutes == 0 {
