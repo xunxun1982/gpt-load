@@ -173,6 +173,8 @@ func (s *RequestLogService) flush() {
 
 		logs := make([]*models.RequestLog, 0, len(keys))
 		processedKeys := make([]string, 0, len(keys))
+		retryKeys := make([]string, 0, len(keys)/10)
+		badKeys := make([]string, 0, len(keys)/50)
 		for _, key := range keys {
 			logBytes, err := s.store.Get(key)
 			if err != nil {
@@ -180,12 +182,14 @@ func (s *RequestLogService) flush() {
 					logrus.Warnf("Log key %s found in set but not in store, skipping.", key)
 				} else {
 					logrus.Warnf("Failed to get log for key %s: %v", key, err)
+					retryKeys = append(retryKeys, key)
 				}
 				continue
 			}
 			var log models.RequestLog
 			if err := json.Unmarshal(logBytes, &log); err != nil {
 				logrus.Warnf("Failed to unmarshal log for key %s: %v", key, err)
+				badKeys = append(badKeys, key)
 				continue
 			}
 			logs = append(logs, &log)
@@ -193,6 +197,20 @@ func (s *RequestLogService) flush() {
 		}
 
 		if len(logs) == 0 {
+			if len(badKeys) > 0 {
+				if err := s.store.Del(badKeys...); err != nil {
+					logrus.WithError(err).Error("Failed to delete corrupted log bodies from store")
+				}
+			}
+			if len(retryKeys) > 0 {
+				args := make([]any, len(retryKeys))
+				for i, k := range retryKeys {
+					args[i] = k
+				}
+				if saddErr := s.store.SAdd(PendingLogKeysSet, args...); saddErr != nil {
+					logrus.Errorf("CRITICAL: Failed to re-add unread log keys to set: %v", saddErr)
+				}
+			}
 			continue
 		}
 
@@ -200,13 +218,19 @@ func (s *RequestLogService) flush() {
 
 		if err != nil {
 			logrus.Errorf("Failed to flush request logs batch, will retry next time. Error: %v", err)
-			if len(keys) > 0 {
-				keysToRetry := make([]any, len(keys))
-				for i, k := range keys {
-					keysToRetry[i] = k
+			keysToRetry := append(processedKeys, retryKeys...)
+			if len(keysToRetry) > 0 {
+				args := make([]any, len(keysToRetry))
+				for i, k := range keysToRetry {
+					args[i] = k
 				}
-				if saddErr := s.store.SAdd(PendingLogKeysSet, keysToRetry...); saddErr != nil {
+				if saddErr := s.store.SAdd(PendingLogKeysSet, args...); saddErr != nil {
 					logrus.Errorf("CRITICAL: Failed to re-add failed log keys to set: %v", saddErr)
+				}
+			}
+			if len(badKeys) > 0 {
+				if delErr := s.store.Del(badKeys...); delErr != nil {
+					logrus.WithError(delErr).Error("Failed to delete corrupted log bodies from store")
 				}
 			}
 			return
@@ -215,6 +239,20 @@ func (s *RequestLogService) flush() {
 		if len(processedKeys) > 0 {
 			if err := s.store.Del(processedKeys...); err != nil {
 				logrus.Errorf("Failed to delete flushed log bodies from store: %v", err)
+			}
+		}
+		if len(badKeys) > 0 {
+			if err := s.store.Del(badKeys...); err != nil {
+				logrus.WithError(err).Error("Failed to delete corrupted log bodies from store")
+			}
+		}
+		if len(retryKeys) > 0 {
+			args := make([]any, len(retryKeys))
+			for i, k := range retryKeys {
+				args[i] = k
+			}
+			if saddErr := s.store.SAdd(PendingLogKeysSet, args...); saddErr != nil {
+				logrus.Errorf("CRITICAL: Failed to re-add unread log keys to set: %v", saddErr)
 			}
 		}
 		logrus.Infof("Successfully flushed %d request logs.", len(logs))

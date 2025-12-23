@@ -4,6 +4,7 @@ import (
 	"context"
 	"gpt-load/internal/config"
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 	"sync"
 	"time"
 
@@ -87,20 +88,52 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 	// Calculate cutoff time
 	cutoffTime := time.Now().AddDate(0, 0, -retentionDays).UTC()
 
-	// Use direct time-based batch deletion to leverage timestamp index
-	// This is much faster than querying IDs first and then deleting by IN clause
-	// Batch size optimized for MySQL performance (typically 1000-5000 rows per batch)
-	batchSize := 2000
+	// Batch size optimized for MySQL performance (typically 1000-5000 rows per batch).
+	const batchSize = 2000
 	totalDeleted := int64(0)
+	dialect := s.db.Dialector.Name()
 
 	for {
-		// Direct deletion using timestamp index - this is the fastest approach
-		// MySQL can use the timestamp index efficiently for range queries
-		result := s.db.Where("timestamp < ?", cutoffTime).
-			Limit(batchSize).
-			Delete(&models.RequestLog{})
+		batchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		var result *gorm.DB
+		switch dialect {
+		case "postgres":
+			// PostgreSQL does not support LIMIT in DELETE directly.
+			result = s.db.WithContext(batchCtx).Exec(`
+				WITH c AS (
+					SELECT id
+					FROM request_logs
+					WHERE timestamp < ?
+					ORDER BY timestamp
+					LIMIT ?
+				)
+				DELETE FROM request_logs
+				WHERE id IN (SELECT id FROM c)
+			`, cutoffTime, batchSize)
+		case "mysql":
+			// MySQL supports ORDER BY + LIMIT in DELETE.
+			result = s.db.WithContext(batchCtx).Exec(
+				"DELETE FROM request_logs WHERE timestamp < ? ORDER BY timestamp LIMIT ?",
+				cutoffTime,
+				batchSize,
+			)
+		case "sqlite":
+			// Use rowid to apply LIMIT efficiently.
+			result = s.db.WithContext(batchCtx).Exec(
+				"DELETE FROM request_logs WHERE rowid IN (SELECT rowid FROM request_logs WHERE timestamp < ? LIMIT ?)",
+				cutoffTime,
+				batchSize,
+			)
+		default:
+			result = s.db.WithContext(batchCtx).Where("timestamp < ?", cutoffTime).Limit(batchSize).Delete(&models.RequestLog{})
+		}
+		cancel()
 
 		if result.Error != nil {
+			if utils.IsTransientDBError(result.Error) {
+				logrus.WithError(result.Error).Warn("Cleanup of expired request logs failed due to transient DB error")
+				return
+			}
 			logrus.WithError(result.Error).Error("Failed to cleanup expired request logs")
 			return
 		}
@@ -108,7 +141,7 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 		deletedCount := result.RowsAffected
 		totalDeleted += deletedCount
 
-		// If deleted count is less than batch size, we're done
+		// If deleted count is less than batch size, we're done.
 		if deletedCount < int64(batchSize) {
 			break
 		}

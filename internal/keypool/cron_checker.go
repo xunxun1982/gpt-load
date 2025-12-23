@@ -7,8 +7,8 @@ import (
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
+	"gpt-load/internal/utils"
 	"math/rand"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,7 +36,7 @@ func NewCronChecker(
 	encryptionSvc encryption.Service,
 	store store.Store,
 ) *CronChecker {
-return &CronChecker{
+	return &CronChecker{
 		DB:              db,
 		SettingsManager: settingsManager,
 		Validator:       validator,
@@ -156,7 +156,7 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 	groupProcessStart := time.Now()
 
 	// First, check if there are any invalid keys (quick count query using index)
-var invalidKeyCount int64
+	var invalidKeyCount int64
 	cctx, ccancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer ccancel()
 	if err := s.DB.WithContext(cctx).Model(&models.APIKey{}).
@@ -249,9 +249,9 @@ var invalidKeyCount int64
 				query = query.Where("id > ?", lastID)
 			}
 
-qctx, qcancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	err := query.WithContext(qctx).Find(&batchKeys).Error
-	qcancel()
+			qctx, qcancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			err := query.WithContext(qctx).Find(&batchKeys).Error
+			qcancel()
 
 			if err != nil {
 				logrus.Errorf("CronChecker: Failed to get invalid keys for group %s: %v", group.Name, err)
@@ -366,14 +366,7 @@ func (s *CronChecker) batchUpdateLastValidatedAt(groupsToUpdate map[uint]struct{
 		// SQLite: "database is locked", "SQLITE_BUSY"
 		// MySQL: "Lock wait timeout exceeded", "Deadlock found"
 		// PostgreSQL: "deadlock detected", "could not obtain lock"
-		errMsg := strings.ToLower(err.Error())
-		isLockError := strings.Contains(errMsg, "database is locked") ||
-			strings.Contains(errMsg, "sqlite_busy") ||
-			strings.Contains(errMsg, "lock wait timeout") ||
-			strings.Contains(errMsg, "deadlock") ||
-			strings.Contains(errMsg, "could not obtain lock")
-
-		if isLockError {
+		if utils.IsDBLockError(err) {
 			// Use thread-safe global rand.Intn (concurrency-safe; Go 1.20+ also auto-seeds)
 			// This provides good randomness while avoiding data race issues
 			jitter := time.Duration(rand.Intn(int(maxJitter)))

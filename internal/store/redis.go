@@ -217,42 +217,46 @@ func (s *RedisStore) Subscribe(channel string) (Subscription, error) {
 func (s *RedisStore) Clear() error {
 	ctx := context.Background()
 
-	// Use SCAN to iterate through all keys with our prefix
-	var cursor uint64
-	var allKeys []string
+	// Delete keys in streaming batches to avoid holding the full key list in memory.
+	// SCAN may miss keys if the keyspace changes during iteration, so we do a small
+	// bounded number of passes to ensure best-effort cleanup.
+	const (
+		scanCount   = 10000
+		deleteBatch = 1000
+		maxPasses   = 3
+	)
 
-	for {
-		// Scan for keys with our prefix, 1000 at a time
-		keys, nextCursor, err := s.client.Scan(ctx, cursor, RedisKeyPrefix+"*", 10000).Result()
-		if err != nil {
-			return fmt.Errorf("failed to scan keys: %w", err)
+	for pass := 0; pass < maxPasses; pass++ {
+		var cursor uint64
+		deletedThisPass := 0
+
+		for {
+			keys, nextCursor, err := s.client.Scan(ctx, cursor, RedisKeyPrefix+"*", scanCount).Result()
+			if err != nil {
+				return fmt.Errorf("failed to scan keys: %w", err)
+			}
+
+			if len(keys) > 0 {
+				for i := 0; i < len(keys); i += deleteBatch {
+					end := i + deleteBatch
+					if end > len(keys) {
+						end = len(keys)
+					}
+					if err := s.client.Del(ctx, keys[i:end]...).Err(); err != nil {
+						return fmt.Errorf("failed to delete keys: %w", err)
+					}
+					deletedThisPass += end - i
+				}
+			}
+
+			cursor = nextCursor
+			if cursor == 0 {
+				break
+			}
 		}
 
-		allKeys = append(allKeys, keys...)
-		cursor = nextCursor
-
-		// When cursor is 0, we've completed the full iteration
-		if cursor == 0 {
-			break
-		}
-	}
-
-	// If no keys found, return early
-	if len(allKeys) == 0 {
-		return nil
-	}
-
-	// Delete keys in batches to avoid overwhelming Redis
-	const batchSize = 1000
-	for i := 0; i < len(allKeys); i += batchSize {
-		end := i + batchSize
-		if end > len(allKeys) {
-			end = len(allKeys)
-		}
-
-		batch := allKeys[i:end]
-		if err := s.client.Del(ctx, batch...).Err(); err != nil {
-			return fmt.Errorf("failed to delete keys: %w", err)
+		if deletedThisPass == 0 {
+			return nil
 		}
 	}
 
