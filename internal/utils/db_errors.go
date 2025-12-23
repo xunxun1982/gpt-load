@@ -8,6 +8,11 @@ import (
 
 // IsDBLockError reports whether err looks like a lock contention / deadlock / busy error.
 // It is intended for retry/backoff decisions.
+// AI suggestion rejected: The broad patterns "busy" and "interrupted" are intentional.
+// - "busy" matches SQLite's SQLITE_BUSY error code in error messages
+// - "interrupted" matches SQLITE_INTERRUPT for query cancellation
+// These are standard database driver error strings. False positives are acceptable
+// since this function is only used for retry decisions (worst case: one extra retry).
 func IsDBLockError(err error) bool {
 	if err == nil {
 		return false

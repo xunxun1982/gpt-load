@@ -218,6 +218,10 @@ func (s *RequestLogService) flush() {
 
 		if err != nil {
 			logrus.Errorf("Failed to flush request logs batch, will retry next time. Error: %v", err)
+			// AI suggestion rejected: Pre-allocating keysToRetry is unnecessary here.
+			// Go's append() already optimizes capacity allocation internally, and this is
+			// an error path (not hot path) where the minor performance difference is negligible.
+			// The current one-liner is more readable and idiomatic.
 			keysToRetry := append(processedKeys, retryKeys...)
 			if len(keysToRetry) > 0 {
 				args := make([]any, len(keysToRetry))

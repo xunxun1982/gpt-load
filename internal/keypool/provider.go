@@ -212,6 +212,14 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 	blacklistThreshold := group.EffectiveConfig.BlacklistThreshold
 
 	// First update the DB, then update the store. This keeps DB as the source of truth when store updates fail.
+	// Design note: If DB succeeds but store fails, there will be temporary divergence between DB and store.
+	// This is acceptable because:
+	// 1. DB is the authoritative source of truth
+	// 2. Store is a cache for fast key selection
+	// 3. On startup, LoadKeysFromDB() resyncs store from DB
+	// 4. The divergence only affects failure_count, not key availability
+	// Adding a compensating mechanism (periodic sync) was considered but rejected as over-engineering
+	// for this use case where eventual consistency is sufficient.
 	if err := p.executeWithRetry(func(db *gorm.DB) error {
 		return db.Model(&models.APIKey{}).
 			Where("id = ?", apiKey.ID).

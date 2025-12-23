@@ -214,6 +214,9 @@ func (s *RedisStore) Subscribe(channel string) (Subscription, error) {
 
 // Clear clears all keys with the GPT-Load prefix in the current Redis database.
 // This method only removes keys that belong to GPT-Load, preserving other applications' data.
+// AI suggestion rejected: Adding context parameter would break the Store interface.
+// The maxPasses=3 bound already prevents infinite blocking. This is a dangerous
+// debug-only operation that should not be called in production hot paths.
 func (s *RedisStore) Clear() error {
 	ctx := context.Background()
 
