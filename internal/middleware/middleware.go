@@ -261,7 +261,7 @@ func ProxyAuth(gm *services.GroupManager, requestLogService *services.RequestLog
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to retrieve proxy group"))
 			if requestLogService != nil {
 				// groupID=0 because group lookup failed, but we log the attempted groupName for diagnostics
-				requestLogService.RecordError(0, groupName, c.ClientIP(), c.Request.URL.String(), "group not found", http.StatusInternalServerError, time.Since(startTime).Milliseconds())
+				requestLogService.RecordError(0, groupName, c.ClientIP(), c.Request.URL.String(), fmt.Sprintf("group lookup failed: %v", err), http.StatusInternalServerError, time.Since(startTime).Milliseconds())
 			}
 			c.Abort()
 			return
