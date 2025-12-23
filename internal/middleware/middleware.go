@@ -4,6 +4,7 @@ package middleware
 import (
 	"crypto/subtle"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -235,20 +236,33 @@ func Auth(authConfig types.AuthConfig) gin.HandlerFunc {
 	}
 }
 
-// ProxyAuth
-func ProxyAuth(gm *services.GroupManager) gin.HandlerFunc {
+// ProxyAuth validates proxy authentication and logs failed attempts
+func ProxyAuth(gm *services.GroupManager, requestLogService *services.RequestLogService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		startTime := time.Now()
+		groupName := c.Param("group_name")
+
 		// Check key
 		key := extractAuthKey(c)
 		if key == "" {
+			logrus.Debugf("[ProxyAuth] No auth key provided for path: %s", c.Request.URL.Path)
 			response.Error(c, app_errors.ErrUnauthorized)
+			if requestLogService != nil {
+				// groupID=0 because group lookup hasn't occurred yet
+				requestLogService.RecordError(0, groupName, c.ClientIP(), c.Request.URL.String(), "no auth key provided", http.StatusUnauthorized, time.Since(startTime).Milliseconds())
+			}
 			c.Abort()
 			return
 		}
 
-		group, err := gm.GetGroupByName(c.Param("group_name"))
+		group, err := gm.GetGroupByName(groupName)
 		if err != nil {
+			logrus.Debugf("[ProxyAuth] Failed to get group %s: %v", groupName, err)
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to retrieve proxy group"))
+			if requestLogService != nil {
+				// groupID=0 because group lookup failed, but we log the attempted groupName for diagnostics
+				requestLogService.RecordError(0, groupName, c.ClientIP(), c.Request.URL.String(), fmt.Sprintf("group lookup failed: %v", err), http.StatusInternalServerError, time.Since(startTime).Milliseconds())
+			}
 			c.Abort()
 			return
 		}
@@ -262,7 +276,11 @@ func ProxyAuth(gm *services.GroupManager) gin.HandlerFunc {
 			return
 		}
 
+		logrus.Debugf("[ProxyAuth] Invalid proxy key for group %s, path: %s", group.Name, c.Request.URL.Path)
 		response.Error(c, app_errors.ErrUnauthorized)
+		if requestLogService != nil {
+			requestLogService.RecordError(group.ID, group.Name, c.ClientIP(), c.Request.URL.String(), "invalid proxy key", http.StatusUnauthorized, time.Since(startTime).Milliseconds())
+		}
 		c.Abort()
 	}
 }

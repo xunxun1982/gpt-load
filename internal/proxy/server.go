@@ -418,6 +418,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 	originalGroup, err := ps.groupManager.GetGroupByName(groupName)
 	if err != nil {
+		// Note: ProxyAuth middleware already logs this error, so we don't log again here
 		response.Error(c, app_errors.ParseDBError(err))
 		return
 	}
@@ -425,6 +426,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	// Check if group is enabled
 	if !originalGroup.Enabled {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Group '%s' is disabled", groupName)))
+		ps.logEarlyError(c, originalGroup, startTime, http.StatusBadRequest, fmt.Errorf("group disabled: %s", groupName))
 		return
 	}
 
@@ -448,6 +450,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			"error":           err,
 		}).Error("Failed to select sub-group from aggregate")
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, "No available sub-groups"))
+		ps.logEarlyError(c, originalGroup, startTime, http.StatusServiceUnavailable, fmt.Errorf("no available sub-groups: %v", err))
 		return
 	}
 
@@ -456,6 +459,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		group, err = ps.groupManager.GetGroupByName(subGroupName)
 		if err != nil {
 			response.Error(c, app_errors.ParseDBError(err))
+			ps.logEarlyError(c, originalGroup, startTime, http.StatusNotFound, fmt.Errorf("sub-group not found: %s", subGroupName))
 			return
 		}
 	}
@@ -463,6 +467,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	channelHandler, err := ps.channelFactory.GetChannel(group)
 	if err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to get channel for group '%s': %v", groupName, err)))
+		ps.logEarlyError(c, group, startTime, http.StatusInternalServerError, fmt.Errorf("failed to get channel: %v", err))
 		return
 	}
 
@@ -474,6 +479,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	if err != nil {
 		logrus.Errorf("Failed to read request body: %v", err)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "Failed to read request body"))
+		ps.logEarlyError(c, group, startTime, http.StatusBadRequest, fmt.Errorf("failed to read request body: %v", err))
 		return
 	}
 	c.Request.Body.Close()
@@ -624,10 +630,12 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	upstreamSelection, err := channelHandler.SelectUpstreamWithClients(c.Request.URL, originalGroup.Name)
 	if err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to select upstream: %v", err)))
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, fmt.Errorf("failed to select upstream: %v", err), isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 	if upstreamSelection == nil || upstreamSelection.URL == "" {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to select upstream: empty result"))
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, errors.New("failed to select upstream: empty result"), isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 
@@ -645,6 +653,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, fmt.Errorf("failed to create request: %v", err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 	req.ContentLength = int64(len(bodyBytes))
@@ -709,6 +718,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if client == nil {
 		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for group %s, upstream %s", group.Name, upstreamSelection.URL)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 
@@ -891,6 +901,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			"excluded_count":  len(retryCtx.excludedSubGroups),
 		}).Error("Failed to select sub-group from aggregate")
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, "No available sub-groups"))
+		ps.logEarlyError(c, originalGroup, startTime, http.StatusServiceUnavailable, fmt.Errorf("no available sub-groups: %v", err))
 		return
 	}
 
@@ -898,6 +909,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	group, err := ps.groupManager.GetGroupByName(subGroupName)
 	if err != nil {
 		response.Error(c, app_errors.ParseDBError(err))
+		ps.logEarlyError(c, originalGroup, startTime, http.StatusNotFound, fmt.Errorf("sub-group not found: %s", subGroupName))
 		return
 	}
 
@@ -911,6 +923,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			"error":           err,
 		}).Error("Failed to get channel for sub-group")
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to get channel for sub-group '%s': %v", group.Name, err)))
+		ps.logEarlyError(c, group, startTime, http.StatusInternalServerError, fmt.Errorf("failed to get channel: %v", err))
 		return
 	}
 
@@ -1048,10 +1061,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	upstreamSelection, err := subGroupChannelHandler.SelectUpstreamWithClients(&subGroupURL, group.Name)
 	if err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to select upstream: %v", err)))
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, fmt.Errorf("failed to select upstream: %v", err), isStream, "", nil, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 		return
 	}
 	if upstreamSelection == nil || upstreamSelection.URL == "" {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to select upstream: empty result"))
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, errors.New("failed to select upstream: empty result"), isStream, "", nil, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 		return
 	}
 
@@ -1069,6 +1084,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, fmt.Errorf("failed to create request: %v", err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 		return
 	}
 	req.ContentLength = int64(len(finalBodyBytes))
@@ -1130,6 +1146,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if client == nil {
 		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for sub-group %s, upstream %s", group.Name, upstreamSelection.URL)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 		return
 	}
 
@@ -1407,6 +1424,28 @@ func (ps *ProxyServer) shouldAbortOnIgnorableError(c *gin.Context, err error) bo
 	return false
 }
 
+// logEarlyError logs errors that occur before the main request processing begins.
+// This ensures that early failures (e.g., group not found, disabled, channel errors) are recorded.
+func (ps *ProxyServer) logEarlyError(c *gin.Context, group *models.Group, startTime time.Time, statusCode int, err error) {
+	if ps.requestLogService == nil {
+		return
+	}
+
+	var groupID uint
+	var groupName string
+	if group != nil {
+		groupID = group.ID
+		groupName = group.Name
+	}
+
+	var errMsg string
+	if err != nil {
+		errMsg = err.Error()
+	}
+
+	ps.requestLogService.RecordError(groupID, groupName, c.ClientIP(), utils.TruncateString(c.Request.URL.String(), 500), errMsg, statusCode, time.Since(startTime).Milliseconds())
+}
+
 // logRequest is a helper function to create and record a request log.
 func (ps *ProxyServer) logRequest(
 	c *gin.Context,
@@ -1515,6 +1554,27 @@ func (ps *ProxyServer) logRequest(
 
 	if finalError != nil {
 		logEntry.ErrorMessage = finalError.Error()
+	}
+
+	// Debug log for request recording
+	if !logEntry.IsSuccess {
+		logrus.WithFields(logrus.Fields{
+			"group_name":   logEntry.GroupName,
+			"status_code":  logEntry.StatusCode,
+			"is_success":   logEntry.IsSuccess,
+			"request_path": logEntry.RequestPath,
+			"duration_ms":  logEntry.Duration,
+			"request_type": logEntry.RequestType,
+			"error_msg":    logEntry.ErrorMessage,
+		}).Debug("Recording failed request log")
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"group_name":   logEntry.GroupName,
+			"status_code":  logEntry.StatusCode,
+			"request_path": logEntry.RequestPath,
+			"duration_ms":  logEntry.Duration,
+			"request_type": logEntry.RequestType,
+		}).Debug("Recording request log")
 	}
 
 	if err := ps.requestLogService.Record(logEntry); err != nil {

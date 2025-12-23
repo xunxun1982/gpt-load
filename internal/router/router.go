@@ -43,6 +43,7 @@ func NewRouter(
 	proxyServer *proxy.ProxyServer,
 	configManager types.ConfigManager,
 	groupManager *services.GroupManager,
+	requestLogService *services.RequestLogService,
 	buildFS embed.FS,
 	indexPage []byte,
 ) *gin.Engine {
@@ -66,7 +67,7 @@ func NewRouter(
 	// Register routes
 	registerSystemRoutes(router, serverHandler)
 	registerAPIRoutes(router, serverHandler, configManager)
-	registerProxyRoutes(router, proxyServer, groupManager, serverHandler)
+	registerProxyRoutes(router, proxyServer, groupManager, serverHandler, requestLogService)
 	registerFrontendRoutes(router, buildFS, indexPage)
 
 	return router
@@ -203,11 +204,12 @@ func registerProxyRoutes(
 	proxyServer *proxy.ProxyServer,
 	groupManager *services.GroupManager,
 	serverHandler *handler.Server,
+	requestLogService *services.RequestLogService,
 ) {
 	proxyGroup := router.Group("/proxy/:group_name")
 
 	proxyGroup.Use(middleware.ProxyRouteDispatcher(serverHandler))
-	proxyGroup.Use(middleware.ProxyAuth(groupManager))
+	proxyGroup.Use(middleware.ProxyAuth(groupManager, requestLogService))
 
 	proxyGroup.Any("/*path", proxyServer.HandleProxy)
 
