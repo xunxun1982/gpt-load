@@ -19,7 +19,9 @@ export function sortBySortThenName<
   if (sortA !== sortB) {
     return sortA - sortB;
   }
-  return (a.name ?? "").localeCompare(b.name ?? "");
+  // Use naturalCompare for consistency with sortChildGroupsByName,
+  // handles numeric suffixes intuitively (e.g., "group1" < "group2" < "group10")
+  return naturalCompare(a.name ?? "", b.name ?? "");
 }
 
 export interface ChannelGroup<T> {
