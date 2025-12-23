@@ -365,8 +365,20 @@ func (s *Server) CopyGroup(c *gin.Context) {
 
 // List godoc
 func (s *Server) List(c *gin.Context) {
-	var groups []models.Group
-	if err := s.DB.Select("id, name,display_name").Find(&groups).Error; err != nil {
+	type groupListItem struct {
+		ID            uint   `json:"id"`
+		Name          string `json:"name"`
+		DisplayName   string `json:"display_name"`
+		Sort          int    `json:"sort"`
+		GroupType     string `json:"group_type"`
+		ParentGroupID *uint  `json:"parent_group_id"`
+	}
+
+	var groups []groupListItem
+	if err := s.DB.Model(&models.Group{}).
+		Select("id, name, display_name, sort, group_type, parent_group_id").
+		Order("sort ASC, id ASC").
+		Find(&groups).Error; err != nil {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.cannot_get_groups")
 		return
 	}

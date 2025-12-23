@@ -8,6 +8,7 @@ import (
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,50 +118,80 @@ func (s *Server) Stats(c *gin.Context) {
 
 // Chart Get dashboard chart data
 func (s *Server) Chart(c *gin.Context) {
-	groupID := c.Query("groupId")
+	groupIDStr := c.Query("groupId")
+	rangeParam := c.Query("range")
 
-	now := time.Now()
-	endHour := now.Truncate(time.Hour)
-	startHour := endHour.Add(-23 * time.Hour)
-
-	var hourlyStats []models.GroupHourlyStat
-	query := s.DB.Table("group_hourly_stats").
-		Where("time >= ? AND time < ?", startHour, endHour.Add(time.Hour))
-	if groupID != "" {
-		query = query.Where("group_id = ?", groupID)
-	} else {
-		query = query.Where("group_id NOT IN (?)",
-			s.DB.Table("groups").Select("id").Where("group_type = ?", "aggregate"))
+	// Parse groupID parameter
+	// AI suggestion: Validate that groupID exists in database
+	// Not adopted: 1) Returning empty data for chart is reasonable behavior 2) Extra query adds performance overhead 3) Frontend selects from list, unlikely to pass invalid ID
+	var groupID uint
+	if groupIDStr != "" {
+		parsed, err := strconv.ParseUint(groupIDStr, 10, 0)
+		if err != nil {
+			response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "invalid_param")
+			return
+		}
+		groupID = uint(parsed)
 	}
-	if err := query.Order("time asc").Find(&hourlyStats).Error; err != nil {
+
+	startHour, endExclusive, err := dashboardChartTimeRange(time.Now(), rangeParam)
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "invalid_param")
+		return
+	}
+
+	hours := int(endExclusive.Sub(startHour) / time.Hour)
+	if hours <= 0 {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "invalid_param")
+		return
+	}
+
+	type hourlyStat struct {
+		Time         time.Time `gorm:"column:time"`
+		SuccessCount int64     `gorm:"column:success_count"`
+		FailureCount int64     `gorm:"column:failure_count"`
+	}
+
+	var hourlyStats []hourlyStat
+	query := s.DB.Table("group_hourly_stats").
+		Where("time >= ? AND time < ?", startHour, endExclusive)
+
+	// AI suggestion: Use groupID != 0 instead of groupIDStr != ""
+	// Not adopted: groupIDStr != "" more clearly expresses "whether user passed a parameter", checking raw input is more intuitive
+	if groupIDStr != "" {
+		query = query.
+			Select("time, success_count, failure_count").
+			Where("group_id = ?", groupID)
+	} else {
+		query = query.
+			Select("time, COALESCE(SUM(success_count), 0) AS success_count, COALESCE(SUM(failure_count), 0) AS failure_count").
+			Where("group_id NOT IN (?)", s.DB.Table("groups").Select("id").Where("group_type = ?", "aggregate")).
+			Group("time")
+	}
+
+	if err := query.Find(&hourlyStats).Error; err != nil {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.chart_data_failed")
 		return
 	}
 
-	statsByHour := make(map[time.Time]map[string]int64)
-	for _, stat := range hourlyStats {
-		hour := stat.Time.Local().Truncate(time.Hour)
-		if _, ok := statsByHour[hour]; !ok {
-			statsByHour[hour] = make(map[string]int64)
-		}
-		statsByHour[hour]["success"] += stat.SuccessCount
-		statsByHour[hour]["failure"] += stat.FailureCount
+	labels := make([]string, hours)
+	successData := make([]int64, hours)
+	failureData := make([]int64, hours)
+
+	for i := 0; i < hours; i++ {
+		labels[i] = startHour.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
 	}
 
-	var labels []string
-	var successData, failureData []int64
-
-	for i := range 24 {
-		hour := startHour.Add(time.Duration(i) * time.Hour)
-		labels = append(labels, hour.Format(time.RFC3339))
-
-		if data, ok := statsByHour[hour]; ok {
-			successData = append(successData, data["success"])
-			failureData = append(failureData, data["failure"])
-		} else {
-			successData = append(successData, 0)
-			failureData = append(failureData, 0)
+	for _, stat := range hourlyStats {
+		// Use same timezone as startHour to ensure timezone consistency
+		// AI suggestion: Original code using .Local() may be inconsistent with startHour's timezone
+		hour := stat.Time.In(startHour.Location()).Truncate(time.Hour)
+		idx := int(hour.Sub(startHour) / time.Hour)
+		if idx < 0 || idx >= hours {
+			continue
 		}
+		successData[idx] += stat.SuccessCount
+		failureData[idx] += stat.FailureCount
 	}
 
 	chartData := models.ChartData{
@@ -180,6 +211,35 @@ func (s *Server) Chart(c *gin.Context) {
 	}
 
 	response.Success(c, chartData)
+}
+
+// dashboardChartTimeRange returns the hourly-aligned start and end timestamps for the dashboard chart.
+// The end timestamp is exclusive.
+func dashboardChartTimeRange(now time.Time, rangeParam string) (time.Time, time.Time, error) {
+	endHour := now.Truncate(time.Hour)
+	endExclusive := endHour.Add(time.Hour)
+	loc := now.Location()
+
+	switch rangeParam {
+	case "":
+		return endExclusive.Add(-24 * time.Hour), endExclusive, nil
+	case "today":
+		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+		return start, endExclusive, nil
+	case "yesterday":
+		startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+		return startOfToday.Add(-24 * time.Hour), startOfToday, nil
+	case "this_week":
+		startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+		daysSinceMonday := (int(startOfToday.Weekday()) + 6) % 7
+		start := startOfToday.AddDate(0, 0, -daysSinceMonday)
+		return start, endExclusive, nil
+	case "this_month":
+		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+		return start, endExclusive, nil
+	default:
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid chart range: %s", rangeParam)
+	}
 }
 
 type hourlyStatResult struct {

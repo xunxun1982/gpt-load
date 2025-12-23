@@ -3,6 +3,7 @@ import type {
   APIKey,
   Group,
   GroupConfigOption,
+  GroupListItem,
   GroupStatsResponse,
   KeyStatus,
   ParentAggregateGroup,
@@ -72,7 +73,7 @@ export const keysApi = {
   },
 
   // Get list of groups (simplified)
-  async listGroups(): Promise<Pick<Group, "id" | "name" | "display_name">[]> {
+  async listGroups(): Promise<GroupListItem[]> {
     const res = await http.get("/groups/list");
     return res.data || [];
   },

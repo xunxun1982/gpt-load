@@ -14,8 +14,9 @@ import {
   NModal,
   NSelect,
   useMessage,
+  type FormInst,
+  type FormRules,
 } from "naive-ui";
-import type { FormInst, FormRules } from "naive-ui";
 
 // Type definitions for better type safety
 // Note: These are component-local interfaces. While shared types could be considered,

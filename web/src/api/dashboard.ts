@@ -1,5 +1,7 @@
-import type { ChartData, DashboardStatsResponse, Group } from "@/types/models";
+import type { ChartData, DashboardStatsResponse, GroupListItem } from "@/types/models";
 import http from "@/utils/http";
+
+export type DashboardChartRange = "today" | "yesterday" | "this_week" | "this_month";
 
 /**
  * Get basic dashboard statistics data
@@ -12,9 +14,12 @@ export const getDashboardStats = () => {
  * Get dashboard chart data
  * @param groupId Optional group ID
  */
-export const getDashboardChart = (groupId?: number) => {
+export const getDashboardChart = (groupId?: number, range?: DashboardChartRange) => {
   return http.get<ChartData>("/dashboard/chart", {
-    params: groupId != null ? { groupId } : {},
+    params: {
+      ...(groupId !== undefined ? { groupId } : {}),
+      ...(range ? { range } : {}),
+    },
   });
 };
 
@@ -22,5 +27,5 @@ export const getDashboardChart = (groupId?: number) => {
  * Get group list for filters
  */
 export const getGroupList = () => {
-  return http.get<Group[]>("/groups/list");
+  return http.get<GroupListItem[]>("/groups/list");
 };

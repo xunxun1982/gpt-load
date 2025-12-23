@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { getDashboardChart, getGroupList } from "@/api/dashboard";
+import { getDashboardChart, getGroupList, type DashboardChartRange } from "@/api/dashboard";
+import GroupSelectLabel from "@/components/common/GroupSelectLabel.vue";
 import type { ChartData } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
-import { NSelect, NSpin } from "naive-ui";
-import type { SelectOption } from "naive-ui";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { sortGroupsWithChildren } from "@/utils/sort";
+import { NSelect, NSpin, type SelectOption } from "naive-ui";
+import { computed, h, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -38,8 +39,34 @@ const chartWidth = 800;
 const chartHeight = 260;
 const padding = { top: 40, right: 40, bottom: 60, left: 80 };
 
+interface GroupSelectOption extends SelectOption {
+  isChildGroup?: boolean;
+}
+
 // Group selection options for dropdown
-const groupOptions = ref<SelectOption[]>([]);
+const groupOptions = ref<GroupSelectOption[]>([]);
+
+// Preset time ranges for quick selection
+const timeRanges: Array<{ value: DashboardChartRange; labelKey: string }> = [
+  { value: "today", labelKey: "charts.rangeToday" },
+  { value: "yesterday", labelKey: "charts.rangeYesterday" },
+  { value: "this_week", labelKey: "charts.rangeThisWeek" },
+  { value: "this_month", labelKey: "charts.rangeThisMonth" },
+];
+
+const selectedRange = ref<DashboardChartRange>("today");
+
+const selectedRangeLabel = computed(() => {
+  const range = timeRanges.find(r => r.value === selectedRange.value);
+  return range ? t(range.labelKey) : "";
+});
+
+const setTimeRange = (range: DashboardChartRange) => {
+  if (selectedRange.value === range) {
+    return;
+  }
+  selectedRange.value = range;
+};
 
 // Derived drawable area size
 const plotWidth = chartWidth - padding.left - padding.right;
@@ -84,14 +111,32 @@ const yTicks = computed(() => {
   return Array.from({ length: tickCount }, (_, i) => min + i * step);
 });
 
+const showDateInLabels = computed(() => (chartData.value?.labels.length ?? 0) > 24);
+const showDataPoints = computed(() => (chartData.value?.labels.length ?? 0) <= 200);
+
 // Format time label for X-axis
 const formatTimeLabel = (isoString: string) => {
   const date = new Date(isoString);
-  return date.toLocaleTimeString(undefined, {
+  if (Number.isNaN(date.getTime())) {
+    return isoString;
+  }
+
+  const timePart = date.toLocaleTimeString(undefined, {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
+
+  if (!showDateInLabels.value) {
+    return timePart;
+  }
+
+  const datePart = date.toLocaleDateString(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  return `${datePart} ${timePart}`;
 };
 
 // Compute visible X-axis labels (avoid overlapping text)
@@ -285,19 +330,22 @@ const handleMouseMove = (event: MouseEvent) => {
   const mouseX = (event.clientX - rect.left) * scaleX;
   const mouseY = (event.clientY - rect.top) * scaleY;
 
-  // First, find the nearest X-axis position (time point)
-  let closestXDistance = Infinity;
-  let closestTimeIndex = -1;
+  const totalPoints = chartData.value.labels.length;
+  if (totalPoints <= 0) {
+    hoveredPoint.value = null;
+    tooltipData.value = null;
+    return;
+  }
 
-  chartData.value.labels.forEach((_, pointIndex) => {
-    const x = getXPosition(pointIndex);
-    const xDistance = Math.abs(mouseX - x);
+  // Points are evenly spaced along X-axis, so we can compute the nearest index directly.
+  let closestTimeIndex = 0;
+  if (totalPoints > 1) {
+    const ratio = (mouseX - padding.left) / plotWidth;
+    closestTimeIndex = Math.round(ratio * (totalPoints - 1));
+    closestTimeIndex = Math.max(0, Math.min(totalPoints - 1, closestTimeIndex));
+  }
 
-    if (xDistance < closestXDistance) {
-      closestXDistance = xDistance;
-      closestTimeIndex = pointIndex;
-    }
-  });
+  const closestXDistance = Math.abs(mouseX - getXPosition(closestTimeIndex));
 
   // If the mouse is too far from the nearest time point, hide tooltip
   if (closestXDistance > 50) {
@@ -314,44 +362,37 @@ const handleMouseMove = (event: MouseEvent) => {
     color: dataset.color,
   }));
 
-  if (closestTimeIndex >= 0) {
-    hoveredPoint.value = {
-      pointIndex: closestTimeIndex,
-      x: mouseX,
-      y: mouseY,
-    };
+  hoveredPoint.value = {
+    pointIndex: closestTimeIndex,
+    x: mouseX,
+    y: mouseY,
+  };
 
-    // Show tooltip: convert from SVG viewBox coords to rendered pixel coords
-    const x = getXPosition(closestTimeIndex);
-    const totalY = datasetsAtTime.reduce((sum, item) => sum + getYPosition(item.value), 0);
-    const avgY =
-      datasetsAtTime.length > 0
-        ? totalY / datasetsAtTime.length
-        : getYPosition(dataRange.value.min);
+  // Show tooltip: convert from SVG viewBox coords to rendered pixel coords
+  const x = getXPosition(closestTimeIndex);
+  const totalY = datasetsAtTime.reduce((sum, item) => sum + getYPosition(item.value), 0);
+  const avgY =
+    datasetsAtTime.length > 0 ? totalY / datasetsAtTime.length : getYPosition(dataRange.value.min);
 
-    const tooltipX = (x / chartWidth) * rect.width;
-    const tooltipY = ((avgY - 20) / chartHeight) * rect.height;
+  const tooltipX = (x / chartWidth) * rect.width;
+  const tooltipY = ((avgY - 20) / chartHeight) * rect.height;
 
-    tooltipPosition.value = {
-      x: tooltipX,
-      y: tooltipY,
-    };
+  tooltipPosition.value = {
+    x: tooltipX,
+    y: tooltipY,
+  };
 
-    const label = chartData.value.labels[closestTimeIndex];
-    if (!label) {
-      hoveredPoint.value = null;
-      tooltipData.value = null;
-      return;
-    }
-
-    tooltipData.value = {
-      time: formatTimeLabel(label),
-      datasets: datasetsAtTime,
-    };
-  } else {
+  const label = chartData.value.labels[closestTimeIndex];
+  if (!label) {
     hoveredPoint.value = null;
     tooltipData.value = null;
+    return;
   }
+
+  tooltipData.value = {
+    time: formatTimeLabel(label),
+    datasets: datasetsAtTime,
+  };
 };
 
 const hideTooltip = () => {
@@ -359,21 +400,35 @@ const hideTooltip = () => {
   tooltipData.value = null;
 };
 
+const renderGroupLabel = (option: SelectOption) => {
+  const opt = option as GroupSelectOption;
+  return h(GroupSelectLabel, {
+    label: String(option.label ?? ""),
+    isChildGroup: opt.isChildGroup === true,
+    showChildTag: true,
+  });
+};
+
 // Fetch group list for the group filter
 const fetchGroups = async () => {
   try {
     const response = await getGroupList();
+    const groups = response.data
+      .filter(group => group.id !== undefined)
+      .filter(group => group.group_type !== "aggregate");
+
+    const sorted = sortGroupsWithChildren(groups);
+
     // Use a numeric sentinel for "All Groups" to keep SelectOption.value and v-model types aligned.
     // We normalize the selected value when calling the API so the sentinel is converted
     // back to an undefined groupId parameter for the backend.
-    const options: SelectOption[] = [
+    const options: GroupSelectOption[] = [
       { label: t("charts.allGroups"), value: ALL_GROUPS_VALUE },
-      ...response.data
-        .filter(group => group.id != null)
-        .map(group => ({
-          label: getGroupDisplayName(group),
-          value: group.id,
-        })),
+      ...sorted.map(group => ({
+        label: getGroupDisplayName(group),
+        value: group.id,
+        isChildGroup: group.parent_group_id !== null && group.parent_group_id !== undefined,
+      })),
     ];
     groupOptions.value = options;
   } catch (error) {
@@ -389,7 +444,7 @@ const fetchChartData = async () => {
     errorMessage.value = null;
     const groupId =
       selectedGroup.value === ALL_GROUPS_VALUE ? undefined : (selectedGroup.value ?? undefined);
-    const response = await getDashboardChart(groupId);
+    const response = await getDashboardChart(groupId, selectedRange.value);
     chartData.value = response.data;
 
     // Start animation after a short delay to ensure DOM is updated
@@ -405,8 +460,10 @@ const fetchChartData = async () => {
   }
 };
 
-// Refresh chart when selected group changes
-watch(selectedGroup, () => {
+// Refresh chart when selected group or time range changes
+// AI suggestion: Setting default value when selectedGroup is cleared triggers watch again, suggest optimization
+// Not adopted: 1) return exits early avoiding immediate fetchChartData call 2) Next trigger executes normally 3) Ensures state consistency
+watch([selectedGroup, selectedRange], () => {
   if (selectedGroup.value === null) {
     selectedGroup.value = ALL_GROUPS_VALUE;
     return;
@@ -431,14 +488,31 @@ onUnmounted(() => {
   <div class="chart-container">
     <div class="chart-header">
       <div class="chart-title-section">
-        <h3 class="chart-title">{{ t("charts.requestTrend24h") }}</h3>
+        <h3 class="chart-title">{{ t("charts.requestTrend") }}</h3>
+        <p class="chart-subtitle">{{ selectedRangeLabel }}</p>
+
+        <div class="time-range-selector" role="group" :aria-label="t('charts.timeRange')">
+          <button
+            v-for="range in timeRanges"
+            :key="range.value"
+            type="button"
+            class="time-range-button"
+            :class="{ active: selectedRange === range.value }"
+            :data-range="range.value"
+            :aria-pressed="selectedRange === range.value"
+            @click="setTimeRange(range.value)"
+          >
+            {{ t(range.labelKey) }}
+          </button>
+        </div>
       </div>
       <n-select
         v-model:value="selectedGroup"
         :options="groupOptions"
+        :render-label="renderGroupLabel"
         :placeholder="t('charts.allGroups')"
         size="small"
-        style="width: 150px"
+        class="group-select"
         clearable
       />
     </div>
@@ -566,7 +640,7 @@ onUnmounted(() => {
             <!-- Data points -->
             <g v-for="(value, pointIndex) in dataset.data" :key="pointIndex">
               <circle
-                v-if="value > 0"
+                v-if="showDataPoints && value > 0"
                 :cx="getXPosition(pointIndex)"
                 :cy="getYPosition(value)"
                 :r="isErrorDataset(dataset.label) ? 2 : 3"
@@ -656,6 +730,11 @@ onUnmounted(() => {
   flex: 1;
 }
 
+.group-select {
+  width: 320px;
+  max-width: 100%;
+}
+
 .chart-title {
   font-size: 24px;
   line-height: 28px;
@@ -693,6 +772,90 @@ onUnmounted(() => {
 /* Dark theme subtitle */
 :root.dark .chart-subtitle {
   color: var(--text-secondary);
+}
+
+.time-range-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  margin-top: 10px;
+  width: fit-content;
+  backdrop-filter: blur(8px);
+}
+
+/* Light theme time range selector */
+:root:not(.dark) .time-range-selector {
+  background: rgba(255, 255, 255, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+/* Dark theme time range selector */
+:root.dark .time-range-selector {
+  background: var(--overlay-bg);
+  border: 1px solid var(--border-color);
+}
+
+.time-range-button {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+:root:not(.dark) .time-range-button {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+:root.dark .time-range-button {
+  color: var(--text-primary);
+}
+
+.time-range-button:hover {
+  transform: translateY(-1px);
+}
+
+:root:not(.dark) .time-range-button:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+:root.dark .time-range-button:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+}
+
+.time-range-button.active {
+  transform: none;
+}
+
+:root:not(.dark) .time-range-button.active {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(255, 255, 255, 0.95);
+  color: #334155;
+}
+
+:root.dark .time-range-button.active {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
+  color: white;
+}
+
+.time-range-button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.8);
+  outline-offset: 2px;
+}
+
+:root.dark .time-range-button:focus-visible {
+  outline: 2px solid rgba(139, 157, 245, 0.9);
 }
 
 .chart-legend {
@@ -922,6 +1085,10 @@ onUnmounted(() => {
     flex-direction: column;
     gap: 12px;
     align-items: flex-start;
+  }
+
+  .group-select {
+    width: 100%;
   }
 
   .chart-wrapper {

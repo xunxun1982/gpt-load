@@ -756,7 +756,13 @@ export default {
     joinGroup: "Join Group",
   },
   charts: {
+    requestTrend: "Request Trend",
     requestTrend24h: "24h Request Trend",
+    timeRange: "Time range",
+    rangeToday: "Today",
+    rangeYesterday: "Yesterday",
+    rangeThisWeek: "This Week",
+    rangeThisMonth: "This Month",
     allGroups: "All Groups",
     loadError: "Failed to load chart data. Please try again.",
   },

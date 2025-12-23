@@ -1,114 +1,3 @@
-<template>
-  <n-modal
-    :show="show"
-    @update:show="value => emit('update:show', value)"
-    preset="card"
-    :title="t('keys.selectModels')"
-    :style="{ width: '800px', maxHeight: '80vh' }"
-    :bordered="false"
-    :segmented="{ content: 'soft', footer: 'soft' }"
-  >
-    <div class="model-selector-content">
-      <!-- Search, stats and redirect options in a single toolbar row -->
-      <div class="toolbar-row">
-        <n-input
-          v-model:value="searchKeyword"
-          :placeholder="t('keys.searchModels')"
-          clearable
-          size="small"
-          style="width: 220px"
-        >
-          <template #prefix>
-            <n-icon :component="Search" />
-          </template>
-        </n-input>
-        <n-tooltip placement="bottom" trigger="hover">
-          <template #trigger>
-            <div class="toolbar-stats">
-              <span>{{ sortedModels.length }}/{{ selectedModelIds.length }}</span>
-            </div>
-          </template>
-          {{ t("keys.modelStatsTooltip") }}
-        </n-tooltip>
-        <n-input
-          v-model:value="redirectPrefix"
-          :placeholder="t('keys.redirectPrefixPlaceholder')"
-          size="small"
-          style="width: 140px"
-        />
-        <n-input
-          v-model:value="redirectSuffix"
-          :placeholder="t('keys.redirectSuffixPlaceholder')"
-          size="small"
-          style="width: 140px"
-        />
-        <n-tooltip placement="bottom" trigger="hover">
-          <template #trigger>
-            <n-checkbox v-model:checked="lowercaseRedirect" size="small">
-              {{ t("keys.lowercaseRedirectShort") }}
-            </n-checkbox>
-          </template>
-          {{ t("keys.lowercaseRedirect") }}
-        </n-tooltip>
-      </div>
-
-      <!-- Model list with checkboxes and redirect target -->
-      <div class="model-list">
-        <div v-for="modelId in filteredModels" :key="modelId" class="model-item">
-          <n-checkbox
-            :checked="selectedModelIds.includes(modelId)"
-            @update:checked="checked => handleModelToggle(modelId, checked)"
-          >
-            <!-- Make model id text selectable and copyable without toggling checkbox -->
-            <span class="model-id" @click.stop>{{ modelId }}</span>
-          </n-checkbox>
-
-          <!-- Show redirect input only if selected -->
-          <div v-if="selectedModelIds.includes(modelId)" class="redirect-input-container">
-            <span class="redirect-arrow">→</span>
-            <n-input
-              :value="getDisplayRedirect(modelId)"
-              @update:value="val => handleRedirectInputChange(modelId, val)"
-              :placeholder="t('keys.redirectTarget')"
-              size="small"
-              style="flex: 1"
-            />
-          </div>
-        </div>
-
-        <n-empty
-          v-if="filteredModels.length === 0"
-          :description="t('keys.noModelsFound')"
-          style="margin: 40px 0"
-        />
-      </div>
-    </div>
-
-    <template #footer>
-      <div style="display: flex; justify-content: space-between; align-items: center">
-        <n-checkbox
-          v-model:checked="selectAll"
-          :indeterminate="
-            selectedModelIds.length > 0 && selectedModelIds.length < filteredModels.length
-          "
-          @update:checked="handleSelectAll"
-        >
-          {{ t("keys.selectAll") }}
-        </n-checkbox>
-
-        <div style="display: flex; gap: 12px">
-          <n-button @click="handleClose">
-            {{ t("common.cancel") }}
-          </n-button>
-          <n-button type="primary" :disabled="selectedModelIds.length === 0" @click="handleConfirm">
-            {{ t("keys.addToRedirectRules") }} ({{ selectedModelIds.length }})
-          </n-button>
-        </div>
-      </div>
-    </template>
-  </n-modal>
-</template>
-
 <script setup lang="ts">
 import { Search } from "@vicons/ionicons5";
 import { NButton, NCheckbox, NEmpty, NIcon, NInput, NModal, NTooltip } from "naive-ui";
@@ -279,6 +168,117 @@ function handleConfirm() {
   emit("update:show", false);
 }
 </script>
+
+<template>
+  <n-modal
+    :show="show"
+    @update:show="value => emit('update:show', value)"
+    preset="card"
+    :title="t('keys.selectModels')"
+    :style="{ width: '800px', maxHeight: '80vh' }"
+    :bordered="false"
+    :segmented="{ content: 'soft', footer: 'soft' }"
+  >
+    <div class="model-selector-content">
+      <!-- Search, stats and redirect options in a single toolbar row -->
+      <div class="toolbar-row">
+        <n-input
+          v-model:value="searchKeyword"
+          :placeholder="t('keys.searchModels')"
+          clearable
+          size="small"
+          style="width: 220px"
+        >
+          <template #prefix>
+            <n-icon :component="Search" />
+          </template>
+        </n-input>
+        <n-tooltip placement="bottom" trigger="hover">
+          <template #trigger>
+            <div class="toolbar-stats">
+              <span>{{ sortedModels.length }}/{{ selectedModelIds.length }}</span>
+            </div>
+          </template>
+          {{ t("keys.modelStatsTooltip") }}
+        </n-tooltip>
+        <n-input
+          v-model:value="redirectPrefix"
+          :placeholder="t('keys.redirectPrefixPlaceholder')"
+          size="small"
+          style="width: 140px"
+        />
+        <n-input
+          v-model:value="redirectSuffix"
+          :placeholder="t('keys.redirectSuffixPlaceholder')"
+          size="small"
+          style="width: 140px"
+        />
+        <n-tooltip placement="bottom" trigger="hover">
+          <template #trigger>
+            <n-checkbox v-model:checked="lowercaseRedirect" size="small">
+              {{ t("keys.lowercaseRedirectShort") }}
+            </n-checkbox>
+          </template>
+          {{ t("keys.lowercaseRedirect") }}
+        </n-tooltip>
+      </div>
+
+      <!-- Model list with checkboxes and redirect target -->
+      <div class="model-list">
+        <div v-for="modelId in filteredModels" :key="modelId" class="model-item">
+          <n-checkbox
+            :checked="selectedModelIds.includes(modelId)"
+            @update:checked="checked => handleModelToggle(modelId, checked)"
+          >
+            <!-- Make model id text selectable and copyable without toggling checkbox -->
+            <span class="model-id" @click.stop>{{ modelId }}</span>
+          </n-checkbox>
+
+          <!-- Show redirect input only if selected -->
+          <div v-if="selectedModelIds.includes(modelId)" class="redirect-input-container">
+            <span class="redirect-arrow">→</span>
+            <n-input
+              :value="getDisplayRedirect(modelId)"
+              @update:value="val => handleRedirectInputChange(modelId, val)"
+              :placeholder="t('keys.redirectTarget')"
+              size="small"
+              style="flex: 1"
+            />
+          </div>
+        </div>
+
+        <n-empty
+          v-if="filteredModels.length === 0"
+          :description="t('keys.noModelsFound')"
+          style="margin: 40px 0"
+        />
+      </div>
+    </div>
+
+    <template #footer>
+      <div style="display: flex; justify-content: space-between; align-items: center">
+        <n-checkbox
+          v-model:checked="selectAll"
+          :indeterminate="
+            selectedModelIds.length > 0 && selectedModelIds.length < filteredModels.length
+          "
+          @update:checked="handleSelectAll"
+        >
+          {{ t("keys.selectAll") }}
+        </n-checkbox>
+
+        <div style="display: flex; gap: 12px">
+          <n-button @click="handleClose">
+            {{ t("common.cancel") }}
+          </n-button>
+          <n-button type="primary" :disabled="selectedModelIds.length === 0" @click="handleConfirm">
+            {{ t("keys.addToRedirectRules") }} ({{ selectedModelIds.length }})
+          </n-button>
+        </div>
+      </div>
+    </template>
+  </n-modal>
+</template>
 
 <style scoped>
 .model-selector-content {

@@ -19,7 +19,9 @@ const router = useRouter();
 const route = useRoute();
 
 function getLastSelectedGroupId(): string | null {
-  if (typeof localStorage === "undefined") return null;
+  if (typeof localStorage === "undefined") {
+    return null;
+  }
   try {
     return localStorage.getItem(LAST_SELECTED_GROUP_ID_KEY);
   } catch (error) {
@@ -29,7 +31,9 @@ function getLastSelectedGroupId(): string | null {
 }
 
 function setLastSelectedGroupId(groupId?: number | null) {
-  if (typeof localStorage === "undefined") return;
+  if (typeof localStorage === "undefined") {
+    return;
+  }
   try {
     if (groupId) {
       localStorage.setItem(LAST_SELECTED_GROUP_ID_KEY, String(groupId));

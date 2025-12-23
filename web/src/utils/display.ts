@@ -1,4 +1,4 @@
-import type { Group, SubGroupInfo } from "@/types/models";
+import type { Group, GroupListItem, SubGroupInfo } from "@/types/models";
 
 /**
  * Formats a string from camelCase, snake_case, or kebab-case
@@ -34,15 +34,15 @@ export function formatDisplayName(name: string): string {
  * @param item The group or subgroup object.
  * @returns The display name for the group.
  */
-export function getGroupDisplayName(item: Group | SubGroupInfo): string {
+export function getGroupDisplayName(item: Group | GroupListItem | SubGroupInfo): string {
   // Check if it's a SubGroupInfo with a valid group property
   if ("group" in item && item.group && typeof item.group === "object") {
     const group = item.group as Group;
     return group.display_name || formatDisplayName(group.name);
   }
 
-  // Otherwise treat it as a Group
-  const group = item as Group;
+  // Otherwise treat it as a Group-like object
+  const group = item as GroupListItem;
   return group.display_name || formatDisplayName(group.name);
 }
 
