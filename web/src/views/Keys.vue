@@ -6,6 +6,7 @@ import GroupList from "@/components/keys/GroupList.vue";
 import KeyTable from "@/components/keys/KeyTable.vue";
 import SubGroupTable from "@/components/keys/SubGroupTable.vue";
 import type { Group, SubGroupInfo } from "@/types/models";
+import { getNearestGroupIdAfterDeletion, getSidebarOrderedGroupIds } from "@/utils/group-sidebar";
 import { onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -112,6 +113,11 @@ function handleGroupSelect(group: Group | null) {
 async function refreshGroupsAndSelect(targetGroupId?: number, selectFirst = true) {
   await loadGroups();
 
+  if (groups.value.length === 0) {
+    handleGroupSelect(null);
+    return;
+  }
+
   if (targetGroupId) {
     const targetGroup = groups.value.find(g => g.id === targetGroupId);
     if (targetGroup) {
@@ -138,6 +144,46 @@ async function refreshGroupsAndSelect(targetGroupId?: number, selectFirst = true
     // select the first group to avoid empty state
     handleGroupSelect(groups.value[0] ?? null);
   }
+}
+
+function getGroupRemovalSet(deletedGroup: Group): Set<number> {
+  const removed = new Set<number>();
+  if (typeof deletedGroup.id === "number") {
+    removed.add(deletedGroup.id);
+  }
+
+  // Deleting a parent standard group also deletes its child groups on the backend.
+  if (
+    typeof deletedGroup.id === "number" &&
+    deletedGroup.group_type !== "aggregate" &&
+    (deletedGroup.parent_group_id === null || deletedGroup.parent_group_id === undefined)
+  ) {
+    for (const group of groups.value) {
+      if (group.parent_group_id === deletedGroup.id && typeof group.id === "number") {
+        removed.add(group.id);
+      }
+    }
+  }
+
+  return removed;
+}
+
+async function handleGroupDeleted(deletedGroup: Group, parentGroupId?: number) {
+  const deletedId = deletedGroup.id;
+  let nextGroupId: number | undefined;
+
+  if (typeof deletedId === "number") {
+    const orderedIds = getSidebarOrderedGroupIds(groups.value);
+    const removedIds = getGroupRemovalSet(deletedGroup);
+    nextGroupId = getNearestGroupIdAfterDeletion(orderedIds, deletedId, removedIds);
+  }
+
+  // Fallback for cases where the deleted item is not present in the current ordered list.
+  if (nextGroupId === undefined && typeof parentGroupId === "number") {
+    nextGroupId = parentGroupId;
+  }
+
+  await refreshGroupsAndSelect(nextGroupId);
 }
 
 // Handle subgroup selection, navigate to corresponding group
@@ -183,7 +229,7 @@ function handleNavigateToGroup(groupId: number) {
             :groups="groups"
             :sub-groups="subGroups"
             @refresh="() => refreshGroupsAndSelect()"
-            @delete="(_, parentGroupId) => refreshGroupsAndSelect(parentGroupId, !parentGroupId)"
+            @delete="handleGroupDeleted"
             @copy-success="group => refreshGroupsAndSelect(group.id)"
             @navigate-to-group="handleNavigateToGroup"
           />
