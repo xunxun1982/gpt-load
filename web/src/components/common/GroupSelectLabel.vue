@@ -28,7 +28,7 @@ const showCCBadge = computed(() => props.channelType === "openai" && props.ccSup
   <div class="group-select-label" :title="trimmedLabel">
     <span v-if="isChildGroup" class="child-indicator" aria-hidden="true">🌿</span>
     <span class="label-text">{{ trimmedLabel }}</span>
-    <c-c-badge v-if="showCCBadge" channel-type="openai" :cc-support="true" />
+    <c-c-badge v-if="showCCBadge" :channel-type="channelType" :cc-support="ccSupport" />
     <span v-if="isChildGroup && showChildTag" class="child-tag">
       {{ t("keys.isChildGroup") }}
     </span>

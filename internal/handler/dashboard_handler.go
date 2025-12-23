@@ -121,6 +121,9 @@ func (s *Server) Chart(c *gin.Context) {
 	groupIDStr := c.Query("groupId")
 	rangeParam := c.Query("range")
 
+	// Parse groupID parameter
+	// AI suggestion: Validate that groupID exists in database
+	// Not adopted: 1) Returning empty data for chart is reasonable behavior 2) Extra query adds performance overhead 3) Frontend selects from list, unlikely to pass invalid ID
 	var groupID uint
 	if groupIDStr != "" {
 		parsed, err := strconv.ParseUint(groupIDStr, 10, 0)
@@ -153,6 +156,8 @@ func (s *Server) Chart(c *gin.Context) {
 	query := s.DB.Table("group_hourly_stats").
 		Where("time >= ? AND time < ?", startHour, endExclusive)
 
+	// AI suggestion: Use groupID != 0 instead of groupIDStr != ""
+	// Not adopted: groupIDStr != "" more clearly expresses "whether user passed a parameter", checking raw input is more intuitive
 	if groupIDStr != "" {
 		query = query.
 			Select("time, success_count, failure_count").
@@ -178,7 +183,9 @@ func (s *Server) Chart(c *gin.Context) {
 	}
 
 	for _, stat := range hourlyStats {
-		hour := stat.Time.Local().Truncate(time.Hour)
+		// Use same timezone as startHour to ensure timezone consistency
+		// AI suggestion: Original code using .Local() may be inconsistent with startHour's timezone
+		hour := stat.Time.In(startHour.Location()).Truncate(time.Hour)
 		idx := int(hour.Sub(startHour) / time.Hour)
 		if idx < 0 || idx >= hours {
 			continue

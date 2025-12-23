@@ -461,6 +461,8 @@ const fetchChartData = async () => {
 };
 
 // Refresh chart when selected group or time range changes
+// AI suggestion: Setting default value when selectedGroup is cleared triggers watch again, suggest optimization
+// Not adopted: 1) return exits early avoiding immediate fetchChartData call 2) Next trigger executes normally 3) Ensures state consistency
 watch([selectedGroup, selectedRange], () => {
   if (selectedGroup.value === null) {
     selectedGroup.value = ALL_GROUPS_VALUE;
