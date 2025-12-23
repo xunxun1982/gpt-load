@@ -756,7 +756,13 @@ export default {
     joinGroup: "グループに参加",
   },
   charts: {
+    requestTrend: "リクエストトレンド",
     requestTrend24h: "24時間リクエストトレンド",
+    timeRange: "期間",
+    rangeToday: "今日",
+    rangeYesterday: "昨日",
+    rangeThisWeek: "今週",
+    rangeThisMonth: "今月",
     allGroups: "すべてのグループ",
     loadError: "グラフデータの読み込みに失敗しました。しばらくしてから再試行してください",
   },

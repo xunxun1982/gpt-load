@@ -253,11 +253,10 @@ function formatNumber(num: number): string {
                 <div class="sub-group-names">
                   <span class="display-name">{{ getGroupDisplayName(subGroup) }}</span>
                   <!-- CC Support Badge (reuse same cc_support flag as dropdown) -->
-                  <CCBadge
+                  <c-c-badge
                     :channel-type="(subGroup.canonicalGroup || subGroup.group).channel_type"
                     :cc-support="
-                      (subGroup.canonicalGroup || subGroup.group).config &&
-                      (subGroup.canonicalGroup || subGroup.group).config.cc_support === true
+                      (subGroup.canonicalGroup || subGroup.group).config?.cc_support === true
                     "
                   />
                 </div>

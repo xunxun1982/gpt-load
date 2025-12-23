@@ -724,7 +724,13 @@ export default {
     joinGroup: "加入群组",
   },
   charts: {
+    requestTrend: "请求趋势",
     requestTrend24h: "24小时请求趋势",
+    timeRange: "时间范围",
+    rangeToday: "本日",
+    rangeYesterday: "昨日",
+    rangeThisWeek: "本周",
+    rangeThisMonth: "本月",
     allGroups: "全部分组",
     loadError: "图表数据加载失败，请稍后重试",
   },

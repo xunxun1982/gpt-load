@@ -16,9 +16,10 @@ import {
   type FormRules,
   type SelectOption,
 } from "naive-ui";
+import GroupSelectLabel from "@/components/common/GroupSelectLabel.vue";
+import { sortGroupsWithChildren } from "@/utils/sort";
 import { computed, h, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import CCBadge from "./CCBadge.vue";
 
 interface Props {
   show: boolean;
@@ -39,11 +40,10 @@ interface SubGroupItem {
 
 // Extended option interface for sorting
 interface GroupOption extends SelectOption {
-  isAnthropic?: boolean;
-  isOpenAIWithCC?: boolean;
   isChildGroup?: boolean;
+  channelType?: string;
+  ccSupport?: boolean;
   parentGroupId?: number | null;
-  sort?: number;
   name?: string;
 }
 
@@ -71,15 +71,7 @@ const getAvailableOptions = computed(() => {
   // Get IDs of existing sub-groups
   const existingIds = props.existingSubGroups.map(sg => sg.group.id);
 
-  // Build a map of parent groups for sorting child groups together
-  const parentGroupMap = new Map<number, Group>();
-  props.groups.forEach(group => {
-    if (group.group_type !== "aggregate" && !group.parent_group_id && group.id) {
-      parentGroupMap.set(group.id, group);
-    }
-  });
-
-  const options: GroupOption[] = props.groups
+  const filteredGroups = props.groups
     .filter(group => {
       // Must be a standard group (including child groups)
       if (group.group_type === "aggregate") {
@@ -119,88 +111,18 @@ const getAvailableOptions = computed(() => {
 
       return true;
     })
-    .map(group => {
-      const isChildGroup = !!group.parent_group_id;
-      let label = getGroupDisplayName(group);
-      // Add child group indicator
-      if (isChildGroup) {
-        label = "  └ " + label;
-      }
-      return {
-        label,
-        value: group?.id,
-        isAnthropic: group.channel_type === "anthropic",
-        isOpenAIWithCC: group.channel_type === "openai" && group.config?.cc_support === true,
-        isChildGroup,
-        parentGroupId: group.parent_group_id,
-        sort: group.sort ?? 0,
-        name: group.name ?? "",
-      };
-    });
+    .filter(group => group.id !== undefined);
+  const sortedGroups = sortGroupsWithChildren(filteredGroups);
 
-  // Natural sort comparator for strings with numbers (e.g., child1, child2, child10)
-  const naturalCompare = (strA: string, strB: string): number => {
-    // Split strings into numeric and non-numeric parts
-    const regex = /(\d+)/g;
-    const splitA = strA.split(regex).filter(s => s !== "");
-    const splitB = strB.split(regex).filter(s => s !== "");
-
-    for (let i = 0; i < Math.max(splitA.length, splitB.length); i++) {
-      const partA = splitA[i] ?? "";
-      const partB = splitB[i] ?? "";
-
-      // Check if both parts are numeric
-      const numA = parseInt(partA, 10);
-      const numB = parseInt(partB, 10);
-      const isNumA = !isNaN(numA) && String(numA) === partA;
-      const isNumB = !isNaN(numB) && String(numB) === partB;
-
-      if (isNumA && isNumB) {
-        // Both are numbers, compare numerically
-        if (numA !== numB) return numA - numB;
-      } else {
-        // At least one is not a number, compare as strings
-        const cmp = partA.localeCompare(partB);
-        if (cmp !== 0) return cmp;
-      }
-    }
-    return 0;
-  };
-
-  // Sort: parent groups first by sort/name, then their child groups immediately after
-  const sorted = options.sort((a, b) => {
-    // Get effective parent ID (self if not a child, parent if child)
-    const aParentId = a.isChildGroup ? a.parentGroupId : a.value;
-    const bParentId = b.isChildGroup ? b.parentGroupId : b.value;
-
-    // If they belong to different parent groups, sort by parent
-    if (aParentId !== bParentId) {
-      const aParent = a.isChildGroup
-        ? parentGroupMap.get(aParentId as number)
-        : props.groups.find(g => g.id === a.value);
-      const bParent = b.isChildGroup
-        ? parentGroupMap.get(bParentId as number)
-        : props.groups.find(g => g.id === b.value);
-
-      const aSort = aParent?.sort ?? 0;
-      const bSort = bParent?.sort ?? 0;
-      if (aSort !== bSort) return aSort - bSort;
-
-      const aName = aParent?.name ?? "";
-      const bName = bParent?.name ?? "";
-      return naturalCompare(aName, bName);
-    }
-
-    // Same parent: parent comes before children
-    if (!a.isChildGroup && b.isChildGroup) return -1;
-    if (a.isChildGroup && !b.isChildGroup) return 1;
-
-    // Both are children of same parent, sort by sort/name with natural number sorting
-    if ((a.sort ?? 0) !== (b.sort ?? 0)) return (a.sort ?? 0) - (b.sort ?? 0);
-    return naturalCompare(a.name ?? "", b.name ?? "");
-  });
-
-  return sorted;
+  return sortedGroups.map(group => ({
+    label: getGroupDisplayName(group),
+    value: group.id,
+    isChildGroup: !!group.parent_group_id,
+    parentGroupId: group.parent_group_id,
+    channelType: group.channel_type,
+    ccSupport: group.config?.cc_support === true,
+    name: group.name,
+  }));
 });
 
 // Compute available options for each sub-group item
@@ -325,58 +247,24 @@ const canAddMore = computed(() => {
 
 // Render label with badge for CC support groups and child group indicator
 function renderLabel(option: SelectOption) {
-  const isOpenAIWithCC = (option as GroupOption).isOpenAIWithCC as boolean;
-  const isChildGroup = (option as GroupOption).isChildGroup as boolean;
-  const displayName = option.label as string;
-
-  const elements: (string | ReturnType<typeof h>)[] = [];
-
-  // Add child group styling
-  if (isChildGroup) {
-    elements.push(
-      h("span", { style: { color: "var(--success-color)", marginRight: "4px" } }, "🌿")
-    );
-  }
-
-  elements.push(displayName.replace(/^\s*└\s*/, "") + " ");
-
-  if (isOpenAIWithCC) {
-    elements.push(
-      h(CCBadge, {
-        channelType: "openai",
-        ccSupport: true,
-      })
-    );
-  }
-
-  if (isChildGroup) {
-    elements.push(
-      h(
-        "span",
-        {
-          style: {
-            fontSize: "11px",
-            color: "var(--success-color)",
-            marginLeft: "4px",
-            background: "var(--success-bg)",
-            padding: "1px 4px",
-            borderRadius: "3px",
-          },
-        },
-        t("keys.isChildGroup")
-      )
-    );
-  }
-
-  return elements;
+  const opt = option as GroupOption;
+  return h(GroupSelectLabel, {
+    label: String(option.label ?? ""),
+    isChildGroup: opt.isChildGroup === true,
+    channelType: opt.channelType,
+    ccSupport: opt.ccSupport === true,
+    showChildTag: true,
+  });
 }
 
 // Custom filter function for NSelect to search by label and name
 function filterOption(pattern: string, option: SelectOption): boolean {
   const search = pattern.toLowerCase().trim();
-  if (!search) return true;
-  const label = ((option.label as string) ?? "").toLowerCase();
-  const name = ((option as GroupOption).name ?? "").toLowerCase();
+  if (!search) {
+    return true;
+  }
+  const label = String(option.label ?? "").toLowerCase();
+  const name = String((option as GroupOption).name ?? "").toLowerCase();
   return label.includes(search) || name.includes(search);
 }
 </script>

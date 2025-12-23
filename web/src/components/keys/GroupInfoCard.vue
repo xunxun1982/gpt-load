@@ -306,7 +306,7 @@ async function handleDelete() {
   // Build warning content
   let warningContent = t("keys.confirmDeleteGroup", { name: getGroupDisplayName(props.group) });
   if (childGroupCount > 0) {
-    warningContent += "\n\n" + t("keys.deleteWarningWithChildGroups", { count: childGroupCount });
+    warningContent += `\n\n${t("keys.deleteWarningWithChildGroups", { count: childGroupCount })}`;
   }
 
   dialog.warning({

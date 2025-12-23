@@ -746,7 +746,7 @@ function handleModelSelectorConfirm(redirectRules: Record<string, string>) {
 
       // Format JSON with proper indentation
       formData.model_redirect_rules = JSON.stringify(mergedRules, null, 2);
-    } catch (error) {
+    } catch (_error) {
       // If existing JSON is invalid, replace entirely
       formData.model_redirect_rules = JSON.stringify(redirectRules, null, 2);
     }

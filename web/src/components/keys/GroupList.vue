@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Group, ChildGroupInfo } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
+import { naturalCompare } from "@/utils/sort";
 import {
   Add,
   LinkOutline,
@@ -334,61 +335,41 @@ function handleGroupCreated(group: Group) {
   showGroupModal.value = false;
   showAggregateGroupModal.value = false;
   const groupId = group.id;
-  if (groupId != null) {
+  if (groupId !== null && groupId !== undefined) {
     emit("refresh-and-select", groupId);
   }
 }
 
 // Child group methods
 function hasChildGroups(groupId: number | undefined): boolean {
-  if (!groupId) return false;
+  if (!groupId) {
+    return false;
+  }
   const children = childGroupsMap.value.get(groupId);
   return children !== undefined && children.length > 0;
 }
 
 function getChildGroups(groupId: number | undefined): ChildGroupInfo[] {
-  if (!groupId) return [];
+  if (!groupId) {
+    return [];
+  }
   const children = childGroupsMap.value.get(groupId) || [];
-  // Natural sort comparator for strings with numbers (e.g., child1, child2, child10)
-  const naturalCompare = (strA: string, strB: string): number => {
-    // Split strings into numeric and non-numeric parts
-    const regex = /(\d+)/g;
-    const splitA = strA.split(regex).filter(s => s !== "");
-    const splitB = strB.split(regex).filter(s => s !== "");
-
-    for (let i = 0; i < Math.max(splitA.length, splitB.length); i++) {
-      const partA = splitA[i] ?? "";
-      const partB = splitB[i] ?? "";
-
-      // Check if both parts are numeric
-      const numA = parseInt(partA, 10);
-      const numB = parseInt(partB, 10);
-      const isNumA = !isNaN(numA) && String(numA) === partA;
-      const isNumB = !isNaN(numB) && String(numB) === partB;
-
-      if (isNumA && isNumB) {
-        // Both are numbers, compare numerically
-        if (numA !== numB) return numA - numB;
-      } else {
-        // At least one is not a number, compare as strings
-        const cmp = partA.localeCompare(partB);
-        if (cmp !== 0) return cmp;
-      }
-    }
-    return 0;
-  };
   // Sort by name with natural number sorting for consistent display (child1, child2, child10)
   return [...children].sort((a, b) => naturalCompare(a.name ?? "", b.name ?? ""));
 }
 
 function isChildGroupsCollapsed(groupId: number | undefined): boolean {
-  if (!groupId) return true;
+  if (!groupId) {
+    return true;
+  }
   return collapsedChildGroups.value.has(groupId);
 }
 
 function toggleChildGroups(groupId: number | undefined, event: Event) {
   event.stopPropagation();
-  if (!groupId) return;
+  if (!groupId) {
+    return;
+  }
   const next = new Set(collapsedChildGroups.value);
   if (next.has(groupId)) {
     next.delete(groupId);
@@ -410,7 +391,7 @@ function handleChildGroupCreated(group: Group) {
   // Refresh child groups for the parent
   loadAllChildGroups();
   const groupId = group.id;
-  if (groupId != null) {
+  if (groupId !== null && groupId !== undefined) {
     emit("refresh-and-select", groupId);
   }
 }

@@ -97,6 +97,12 @@ export interface Group {
   updated_at?: string;
 }
 
+// Lightweight group shape used by list endpoints for dropdowns/filters.
+export type GroupListItem = Pick<
+  Group,
+  "id" | "name" | "display_name" | "sort" | "group_type" | "parent_group_id"
+>;
+
 // Child group information (used for display)
 export interface ChildGroupInfo {
   id: number;
