@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import type { Group, ChildGroupInfo } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
+import {
+  groupByChannelType,
+  normalizeChannelType,
+  sortBySortThenName,
+} from "@/utils/group-sidebar";
 import { naturalCompare } from "@/utils/sort";
 import {
   Add,
@@ -76,9 +81,6 @@ interface ChannelGroup {
   icon: string;
 }
 
-// Known channel type sort order
-const KNOWN_CHANNEL_ORDER: string[] = ["openai", "gemini", "anthropic", "default"];
-
 const props = withDefaults(defineProps<Props>(), {
   loading: false,
 });
@@ -97,19 +99,6 @@ const selectedParentGroup = ref<Group | null>(null);
 const childGroupsMap = ref<Map<number, ChildGroupInfo[]>>(new Map());
 const collapsedChildGroups = ref<Set<number>>(new Set());
 const ICON_CHILD = "🌿";
-
-// Sort by sort field (ascending), if sort is the same, sort by name ascending
-function sortBySort(a: Group, b: Group) {
-  const sortA = a.sort ?? 0;
-  const sortB = b.sort ?? 0;
-  if (sortA !== sortB) {
-    return sortA - sortB;
-  }
-  // When sort values are equal, sort by name alphabetically
-  const nameA = a.name ?? "";
-  const nameB = b.name ?? "";
-  return nameA.localeCompare(nameB);
-}
 
 // Filtered and grouped group list
 const filteredGroups = computed(() => {
@@ -132,8 +121,8 @@ const filteredGroups = computed(() => {
     g => g.group_type !== GROUP_TYPE_AGGREGATE && !g.parent_group_id
   );
 
-  aggregateGroups.sort(sortBySort);
-  standardGroups.sort(sortBySort);
+  aggregateGroups.sort(sortBySortThenName);
+  standardGroups.sort(sortBySortThenName);
 
   return { aggregateGroups, standardGroups };
 });
@@ -169,7 +158,13 @@ const groupSections = computed<GroupSection[]>(() => {
 const sectionChannelGroups = computed(() => {
   const result = new Map<string, ChannelGroup[]>();
   for (const section of groupSections.value) {
-    result.set(section.sectionKey, groupByChannelType(section.groups));
+    result.set(
+      section.sectionKey,
+      groupByChannelType(section.groups).map(channelGroup => ({
+        ...channelGroup,
+        icon: getChannelTypeIcon(channelGroup.channelType),
+      }))
+    );
   }
   return result;
 });
@@ -187,56 +182,6 @@ function getChannelTypeIcon(channelType: string): string {
     default:
       return ICON_DEFAULT;
   }
-}
-
-// Group by channel type (preserve all original channel types, no forced conversion)
-function groupByChannelType(groups: Group[]): ChannelGroup[] {
-  const channelMap = new Map<ChannelType, Group[]>();
-
-  for (const group of groups) {
-    // Preserve original channel type, only use default when empty
-    const channelType = group.channel_type?.trim() || "default";
-    if (!channelMap.has(channelType)) {
-      channelMap.set(channelType, []);
-    }
-    channelMap.get(channelType)?.push(group);
-  }
-
-  const result: ChannelGroup[] = [];
-  for (const [channelType, channelGroups] of channelMap) {
-    // Sort groups within each channel type by sort
-    channelGroups.sort(sortBySort);
-    result.push({
-      channelType,
-      groups: channelGroups,
-      icon: getChannelTypeIcon(channelType),
-    });
-  }
-
-  // Sort by channel type: known types first, unknown types alphabetically
-  result.sort((a, b) => {
-    const aLower = a.channelType.toLowerCase();
-    const bLower = b.channelType.toLowerCase();
-    const aIndex = KNOWN_CHANNEL_ORDER.indexOf(aLower);
-    const bIndex = KNOWN_CHANNEL_ORDER.indexOf(bLower);
-
-    // Both are known types, sort by predefined order
-    if (aIndex !== -1 && bIndex !== -1) {
-      return aIndex - bIndex;
-    }
-    // a is known type, b is not, a comes first
-    if (aIndex !== -1) {
-      return -1;
-    }
-    // b is known type, a is not, b comes first
-    if (bIndex !== -1) {
-      return 1;
-    }
-    // Both are unknown types, sort alphabetically
-    return aLower.localeCompare(bLower);
-  });
-
-  return result;
 }
 
 // Toggle group section collapse state
@@ -277,7 +222,7 @@ function getGroupIcon(group: Group, isAggregate: boolean): string {
   if (isAggregate) {
     return ICON_AGGREGATE;
   }
-  const channelType = group.channel_type?.trim() || "default";
+  const channelType = normalizeChannelType(group.channel_type);
   return getChannelTypeIcon(channelType);
 }
 

@@ -9,9 +9,9 @@ import (
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
+	"gpt-load/internal/utils"
 	"math/rand"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -19,10 +19,10 @@ import (
 )
 
 type KeyProvider struct {
-	db                        *gorm.DB
-	store                     store.Store
-	settingsManager           *config.SystemSettingsManager
-	encryptionSvc             encryption.Service
+	db              *gorm.DB
+	store           store.Store
+	settingsManager *config.SystemSettingsManager
+	encryptionSvc   encryption.Service
 	// CacheInvalidationCallback is an optional callback for cache invalidation.
 	// Note: This callback will be invoked from a goroutine (spawned in UpdateStatus),
 	// so implementers must handle concurrent access if the callback accesses shared state.
@@ -120,25 +120,23 @@ func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, i
 	}()
 }
 
-// executeTransactionWithRetry wraps a database transaction with a retry mechanism.
-func (p *KeyProvider) executeTransactionWithRetry(operation func(tx *gorm.DB) error) error {
+// executeWithRetry runs a database operation with a small retry/backoff policy for lock contention.
+func (p *KeyProvider) executeWithRetry(operation func(db *gorm.DB) error) error {
 	const maxRetries = 3
 	const baseDelay = 50 * time.Millisecond
 	const maxJitter = 150 * time.Millisecond
 	var err error
-
-	for i := 0; i < maxRetries; i++ {
-		err = p.db.Transaction(operation)
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err = operation(p.db)
 		if err == nil {
 			return nil
 		}
 
-		if strings.Contains(err.Error(), "database is locked") {
-			// Use thread-safe global rand.Intn (concurrency-safe; Go 1.20+ also auto-seeds)
-			// This avoids data race issues when multiple goroutines call executeTransactionWithRetry concurrently
+		if utils.IsDBLockError(err) {
 			jitter := time.Duration(rand.Intn(int(maxJitter)))
-			totalDelay := baseDelay + jitter
-			logrus.Debugf("Database is locked, retrying in %v... (attempt %d/%d)", totalDelay, i+1, maxRetries)
+			exponentialDelay := baseDelay * (1 << attempt)
+			totalDelay := exponentialDelay + jitter
+			logrus.Debugf("Database lock detected, retrying in %v... (attempt %d/%d)", totalDelay, attempt+1, maxRetries)
 			time.Sleep(totalDelay)
 			continue
 		}
@@ -162,42 +160,36 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 		return nil
 	}
 
-	return p.executeTransactionWithRetry(func(tx *gorm.DB) error {
-		var key models.APIKey
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").First(&key, keyID).Error; err != nil {
-			return fmt.Errorf("failed to lock key %d for update: %w", keyID, err)
+	dbUpdates := map[string]any{"failure_count": int64(0)}
+	if !isActive {
+		dbUpdates["status"] = models.KeyStatusActive
+	}
+	if err := p.executeWithRetry(func(db *gorm.DB) error {
+		// Use UpdateColumns to avoid updated_at churn for hot-path stats updates.
+		return db.Model(&models.APIKey{}).Where("id = ?", keyID).UpdateColumns(dbUpdates).Error
+	}); err != nil {
+		return fmt.Errorf("failed to update key in DB: %w", err)
+	}
+
+	if err := p.store.HSet(keyHashKey, dbUpdates); err != nil {
+		return fmt.Errorf("failed to update key details in store: %w", err)
+	}
+
+	if !isActive {
+		logrus.WithField("keyID", keyID).Debug("Key has recovered and is being restored to active pool")
+		if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
+			return fmt.Errorf("failed to LRem key before LPush on recovery: %w", err)
+		}
+		if err := p.store.LPush(activeKeysListKey, keyID); err != nil {
+			return fmt.Errorf("failed to LPush key back to active list: %w", err)
 		}
 
-		updates := map[string]any{"failure_count": 0}
-		if !isActive {
-			updates["status"] = models.KeyStatusActive
+		if p.CacheInvalidationCallback != nil {
+			p.CacheInvalidationCallback(groupID)
 		}
+	}
 
-		if err := tx.Model(&models.APIKey{}).Where("id = ?", keyID).Updates(updates).Error; err != nil {
-			return fmt.Errorf("failed to update key in DB: %w", err)
-		}
-
-		if err := p.store.HSet(keyHashKey, updates); err != nil {
-			return fmt.Errorf("failed to update key details in store: %w", err)
-		}
-
-		if !isActive {
-			logrus.WithField("keyID", keyID).Debug("Key has recovered and is being restored to active pool.")
-			if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
-				return fmt.Errorf("failed to LRem key before LPush on recovery: %w", err)
-			}
-			if err := p.store.LPush(activeKeysListKey, keyID); err != nil {
-				return fmt.Errorf("failed to LPush key back to active list: %w", err)
-			}
-
-			// Invalidate cache after key status change
-			if p.CacheInvalidationCallback != nil {
-				p.CacheInvalidationCallback(groupID)
-			}
-		}
-
-		return nil
-	})
+	return nil
 }
 
 func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, keyHashKey, activeKeysListKey string) error {
@@ -210,8 +202,6 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 		return nil
 	}
 
-	failureCount, _ := strconv.ParseInt(keyDetails["failure_count"], 10, 64)
-
 	// Ensure EffectiveConfig is set for this group (use group-level config which may override system settings)
 	// This ensures validation uses the correct group-specific blacklist_threshold, not just system settings
 	// Always call GetEffectiveConfig as it is idempotent and cached, avoiding fragile sentinel checks
@@ -221,45 +211,56 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 	// This will use group-specific blacklist_threshold if set, otherwise fall back to system settings
 	blacklistThreshold := group.EffectiveConfig.BlacklistThreshold
 
-	return p.executeTransactionWithRetry(func(tx *gorm.DB) error {
-		var key models.APIKey
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").First(&key, apiKey.ID).Error; err != nil {
-			return fmt.Errorf("failed to lock key %d for update: %w", apiKey.ID, err)
-		}
+	// First update the DB, then update the store. This keeps DB as the source of truth when store updates fail.
+	// Design note: If DB succeeds but store fails, there will be temporary divergence between DB and store.
+	// This is acceptable because:
+	// 1. DB is the authoritative source of truth
+	// 2. Store is a cache for fast key selection
+	// 3. On startup, LoadKeysFromDB() resyncs store from DB
+	// 4. The divergence only affects failure_count, not key availability
+	// Adding a compensating mechanism (periodic sync) was considered but rejected as over-engineering
+	// for this use case where eventual consistency is sufficient.
+	if err := p.executeWithRetry(func(db *gorm.DB) error {
+		return db.Model(&models.APIKey{}).
+			Where("id = ?", apiKey.ID).
+			UpdateColumn("failure_count", gorm.Expr("failure_count + ?", 1)).Error
+	}); err != nil {
+		return fmt.Errorf("failed to increment failure_count in DB: %w", err)
+	}
 
-		newFailureCount := failureCount + 1
+	newFailureCount, err := p.store.HIncrBy(keyHashKey, "failure_count", 1)
+	if err != nil {
+		return fmt.Errorf("failed to increment failure_count in store: %w", err)
+	}
 
-		updates := map[string]any{"failure_count": newFailureCount}
-		shouldBlacklist := blacklistThreshold > 0 && newFailureCount >= int64(blacklistThreshold)
-		if shouldBlacklist {
-			updates["status"] = models.KeyStatusInvalid
-		}
-
-		if err := tx.Model(&models.APIKey{}).Where("id = ?", apiKey.ID).Updates(updates).Error; err != nil {
-			return fmt.Errorf("failed to update key stats in DB: %w", err)
-		}
-
-		if _, err := p.store.HIncrBy(keyHashKey, "failure_count", 1); err != nil {
-			return fmt.Errorf("failed to increment failure count in store: %w", err)
-		}
-
-		if shouldBlacklist {
-			logrus.WithFields(logrus.Fields{"keyID": apiKey.ID, "threshold": blacklistThreshold}).Warn("Key has reached blacklist threshold, disabling.")
-			if err := p.store.LRem(activeKeysListKey, 0, apiKey.ID); err != nil {
-				return fmt.Errorf("failed to LRem key from active list: %w", err)
-			}
-			if err := p.store.HSet(keyHashKey, map[string]any{"status": models.KeyStatusInvalid}); err != nil {
-				return fmt.Errorf("failed to update key status to invalid in store: %w", err)
-			}
-
-			// Invalidate cache after key status change
-			if p.CacheInvalidationCallback != nil {
-				p.CacheInvalidationCallback(group.ID)
-			}
-		}
-
+	shouldBlacklist := blacklistThreshold > 0 && newFailureCount >= int64(blacklistThreshold)
+	if !shouldBlacklist {
 		return nil
-	})
+	}
+
+	logrus.WithFields(logrus.Fields{"keyID": apiKey.ID, "threshold": blacklistThreshold}).Warn("Key has reached blacklist threshold, disabling")
+
+	// Best-effort DB status update. Even if it fails, the key is disabled in store (selection source of truth).
+	if err := p.executeWithRetry(func(db *gorm.DB) error {
+		return db.Model(&models.APIKey{}).
+			Where("id = ?", apiKey.ID).
+			UpdateColumn("status", models.KeyStatusInvalid).Error
+	}); err != nil {
+		logrus.WithFields(logrus.Fields{"keyID": apiKey.ID, "error": err}).Error("Failed to mark key invalid in DB")
+	}
+
+	if err := p.store.LRem(activeKeysListKey, 0, apiKey.ID); err != nil {
+		return fmt.Errorf("failed to LRem key from active list: %w", err)
+	}
+	if err := p.store.HSet(keyHashKey, map[string]any{"status": models.KeyStatusInvalid}); err != nil {
+		return fmt.Errorf("failed to update key status to invalid in store: %w", err)
+	}
+
+	if p.CacheInvalidationCallback != nil {
+		p.CacheInvalidationCallback(group.ID)
+	}
+
+	return nil
 }
 
 // LoadKeysFromDB loads all groups and keys from the database and populates the Store.
@@ -375,10 +376,10 @@ func (p *KeyProvider) AddKeys(groupID uint, keys []models.APIKey) error {
 	}
 
 	// Dialect-aware batch size (smaller for SQLite)
-	smallBatchSize := 25  // Reduced from 50 to prevent blocking
+	smallBatchSize := 25 // Reduced from 50 to prevent blocking
 	switch p.db.Dialector.Name() {
 	case "mysql", "postgres":
-		smallBatchSize = 100  // Reduced from 200 for smoother operation
+		smallBatchSize = 100 // Reduced from 200 for smoother operation
 	}
 
 	for i := 0; i < len(keys); i += smallBatchSize {
@@ -405,7 +406,7 @@ func (p *KeyProvider) AddKeys(groupID uint, keys []models.APIKey) error {
 		// Short delay between batches to avoid monopolizing the DB
 		// Increased delay for better concurrency with other operations
 		if i+smallBatchSize < len(keys) {
-			time.Sleep(20 * time.Millisecond)  // Increased from 10ms
+			time.Sleep(20 * time.Millisecond) // Increased from 10ms
 		}
 	}
 
@@ -737,7 +738,7 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint) (int64, e
 
 		if res.Error != nil {
 			// Retry with exponential backoff on transient/timeout errors
-			if isTransientDBError(res.Error) || errors.Is(res.Error, context.DeadlineExceeded) {
+			if utils.IsTransientDBError(res.Error) {
 				if retries >= maxRetries {
 					return totalDeleted, res.Error
 				}
@@ -886,19 +887,6 @@ func (p *KeyProvider) RemoveOrphanedKeysFromStore(groupID uint) error {
 	return nil
 }
 
-// isTransientDBError determines if an error is likely transient/lock-related and worth retrying.
-func isTransientDBError(err error) bool {
-	if err == nil {
-		return false
-	}
-	es := err.Error()
-	return strings.Contains(es, "database is locked") ||
-		strings.Contains(es, "deadlock") ||
-		strings.Contains(es, "interrupted") ||
-		strings.Contains(es, "lock timeout") ||
-		strings.Contains(es, "could not obtain lock")
-}
-
 // ClearAllKeys removes all keys from the in-memory store.
 // This is a dangerous operation intended for debugging and testing purposes only.
 // It clears all key-related data from the cache without touching the database.
@@ -954,7 +942,7 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 	startTime := time.Now()
 
 	// Increase batch size for better performance with large key sets
-	batchSize := 5000  // Increased from 1000
+	batchSize := 5000 // Increased from 1000
 	var batchKeys []models.APIKey
 	activeKeyIDs := make([]any, 0)
 	totalProcessed := 0
@@ -1033,7 +1021,7 @@ func (p *KeyProvider) removeKeyFromStore(keyID, groupID uint) error {
 // apiKeyToMap converts an APIKey model to a map for HSET.
 func (p *KeyProvider) apiKeyToMap(key *models.APIKey) map[string]any {
 	return map[string]any{
-		"id":            strconv.FormatUint(uint64(key.ID), 10),  // Use strconv for better performance
+		"id":            strconv.FormatUint(uint64(key.ID), 10), // Use strconv for better performance
 		"key_string":    key.KeyValue,
 		"status":        key.Status,
 		"failure_count": key.FailureCount,

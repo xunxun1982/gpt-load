@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"gpt-load/internal/config"
 	"gpt-load/internal/models"
@@ -12,7 +11,6 @@ import (
 	"gpt-load/internal/utils"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -42,30 +40,19 @@ func getDBLookupTimeout() time.Duration {
 	return time.Duration(defaultDBLookupTimeoutMs) * time.Millisecond
 }
 
-// isTransientDBError reports whether the error is likely to be transient, such as
-// context deadline exceeded or common SQLite "busy/locked" conditions.
-func isTransientDBError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return true
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "database is locked") ||
-		strings.Contains(msg, "database schema has changed") ||
-		strings.Contains(msg, "busy") ||
-		strings.Contains(msg, "interrupted")
+type groupCache struct {
+	ByName map[string]*models.Group
+	ByID   map[uint]*models.Group
 }
 
 // GroupManager manages the caching of group data.
 type GroupManager struct {
-	syncer                      *syncer.CacheSyncer[map[string]*models.Group]
-	db                          *gorm.DB
-	store                       store.Store
-	settingsManager             *config.SystemSettingsManager
-	subGroupManager             *SubGroupManager
-	CacheInvalidationCallback   func() // Callback to invalidate other caches (e.g., GroupService list cache)
+	syncer                    *syncer.CacheSyncer[groupCache]
+	db                        *gorm.DB
+	store                     store.Store
+	settingsManager           *config.SystemSettingsManager
+	subGroupManager           *SubGroupManager
+	CacheInvalidationCallback func() // Callback to invalidate other caches (e.g., GroupService list cache)
 }
 
 // NewGroupManager creates a new, uninitialized GroupManager.
@@ -85,7 +72,7 @@ func NewGroupManager(
 
 // Initialize sets up the CacheSyncer. This is called separately to handle potential
 func (gm *GroupManager) Initialize() error {
-	loader := func() (map[string]*models.Group, error) {
+	loader := func() (groupCache, error) {
 		groups := make([]*models.Group, 0, 100)
 
 		// Use a short timeout per query to keep startup fast while avoiding long blocking.
@@ -98,18 +85,18 @@ func (gm *GroupManager) Initialize() error {
 
 		// Use Select to only fetch necessary fields, reducing data transfer and improving performance.
 		if err := gm.db.WithContext(groupsCtx).Select(
-			"id, name, display_name, description, group_type, enabled, upstreams, "+
-				"validation_endpoint, channel_type, sort, test_model, param_overrides, "+
-				"config, header_rules, model_mapping, model_redirect_rules, "+
-				"model_redirect_strict, path_redirects, proxy_keys, last_validated_at, "+
+			"id, name, display_name, description, group_type, enabled, upstreams, " +
+				"validation_endpoint, channel_type, sort, test_model, param_overrides, " +
+				"config, header_rules, model_mapping, model_redirect_rules, " +
+				"model_redirect_strict, path_redirects, proxy_keys, last_validated_at, " +
 				"created_at, updated_at",
 		).Find(&groups).Error; err != nil {
 			// If DB is locked or timed out, serve stale cache if available.
-			if gm.syncer != nil && isTransientDBError(err) {
+			if gm.syncer != nil && utils.IsTransientDBError(err) {
 				logrus.WithError(err).Warn("Group loader timed out/locked - returning stale cache")
 				return gm.syncer.Get(), nil
 			}
-			return nil, fmt.Errorf("failed to load groups from db: %w", err)
+			return groupCache{}, fmt.Errorf("failed to load groups from db: %w", err)
 		}
 
 		// Load all sub-group relationships for aggregate groups (only valid ones with weight > 0).
@@ -120,7 +107,7 @@ func (gm *GroupManager) Initialize() error {
 			Select("group_id, sub_group_id, weight").
 			Where("weight > ?", 0).
 			Find(&allSubGroups).Error; err != nil {
-			if isTransientDBError(err) {
+			if utils.IsTransientDBError(err) {
 				// Serve stale cache if available
 				if gm.syncer != nil {
 					logrus.WithError(err).Warn("Sub-groups loader timed out/locked - returning stale cache")
@@ -131,7 +118,7 @@ func (gm *GroupManager) Initialize() error {
 				logrus.WithError(err).Warn("Sub-groups loader timed out/locked on initial load - continuing without sub-groups")
 				allSubGroups = nil
 			} else {
-				return nil, fmt.Errorf("failed to load valid sub groups: %w", err)
+				return groupCache{}, fmt.Errorf("failed to load valid sub groups: %w", err)
 			}
 		}
 
@@ -147,7 +134,10 @@ func (gm *GroupManager) Initialize() error {
 			groupByID[group.ID] = group
 		}
 
-		groupMap := make(map[string]*models.Group, len(groups))
+		cache := groupCache{
+			ByName: make(map[string]*models.Group, len(groups)),
+			ByID:   make(map[uint]*models.Group, len(groups)),
+		}
 		for _, group := range groups {
 			g := *group
 			g.EffectiveConfig = gm.settingsManager.GetEffectiveConfig(g.Config)
@@ -163,49 +153,48 @@ func (gm *GroupManager) Initialize() error {
 				g.HeaderRuleList = []models.HeaderRule{}
 			}
 
-
-		// Parse model mapping cache for performance (deprecated, for backward compatibility)
-		if g.ModelMapping != "" {
-			modelMap, err := utils.ParseModelMapping(g.ModelMapping)
-			if err != nil {
-				logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse model mapping for group")
-				g.ModelMappingCache = nil
-			} else {
-				g.ModelMappingCache = modelMap
-			}
-		}
-
-		// Parse model redirect rules with error handling
-		g.ModelRedirectMap = make(map[string]string)
-		if len(group.ModelRedirectRules) > 0 {
-			hasInvalidRules := false
-			for key, value := range group.ModelRedirectRules {
-				if valueStr, ok := value.(string); ok {
-					g.ModelRedirectMap[key] = valueStr
+			// Parse model mapping cache for performance (deprecated, for backward compatibility)
+			if g.ModelMapping != "" {
+				modelMap, err := utils.ParseModelMapping(g.ModelMapping)
+				if err != nil {
+					logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse model mapping for group")
+					g.ModelMappingCache = nil
 				} else {
-					logrus.WithFields(logrus.Fields{
-						"group_name": g.Name,
-						"rule_key":   key,
-						"value_type": fmt.Sprintf("%T", value),
-						"value":      value,
-					}).Error("Invalid model redirect rule value type, skipping this rule")
-					hasInvalidRules = true
+					g.ModelMappingCache = modelMap
 				}
 			}
-			if hasInvalidRules {
-				logrus.WithField("group_name", g.Name).Warn("Group has invalid model redirect rules, some rules were skipped. Please check the configuration.")
-			}
-		}
 
-		// Parse path redirect rules (OpenAI only)
-		if len(group.PathRedirects) > 0 {
-			if err := json.Unmarshal(group.PathRedirects, &g.PathRedirectRuleList); err != nil {
-				logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse path redirects for group")
+			// Parse model redirect rules with error handling
+			g.ModelRedirectMap = make(map[string]string)
+			if len(group.ModelRedirectRules) > 0 {
+				hasInvalidRules := false
+				for key, value := range group.ModelRedirectRules {
+					if valueStr, ok := value.(string); ok {
+						g.ModelRedirectMap[key] = valueStr
+					} else {
+						logrus.WithFields(logrus.Fields{
+							"group_name": g.Name,
+							"rule_key":   key,
+							"value_type": fmt.Sprintf("%T", value),
+							"value":      value,
+						}).Error("Invalid model redirect rule value type, skipping this rule")
+						hasInvalidRules = true
+					}
+				}
+				if hasInvalidRules {
+					logrus.WithField("group_name", g.Name).Warn("Group has invalid model redirect rules, some rules were skipped. Please check the configuration.")
+				}
+			}
+
+			// Parse path redirect rules (OpenAI only)
+			if len(group.PathRedirects) > 0 {
+				if err := json.Unmarshal(group.PathRedirects, &g.PathRedirectRuleList); err != nil {
+					logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse path redirects for group")
+					g.PathRedirectRuleList = []models.PathRedirectRule{}
+				}
+			} else {
 				g.PathRedirectRuleList = []models.PathRedirectRule{}
 			}
-		} else {
-			g.PathRedirectRuleList = []models.PathRedirectRule{}
-		}
 
 			// Load sub-groups for aggregate groups
 			if g.GroupType == "aggregate" {
@@ -221,24 +210,25 @@ func (gm *GroupManager) Initialize() error {
 				}
 			}
 
-			groupMap[g.Name] = &g
+			cache.ByName[g.Name] = &g
+			cache.ByID[g.ID] = &g
 			logrus.WithFields(logrus.Fields{
-			"group_name":                   g.Name,
-			"effective_config":             g.EffectiveConfig,
-			"header_rules_count":           len(g.HeaderRuleList),
-			"model_mapping":                g.ModelMapping != "",           // deprecated
-			"model_redirect_rules_count":   len(g.ModelRedirectMap),
-			"model_redirect_strict":        g.ModelRedirectStrict,
-			"path_redirects":               len(g.PathRedirectRuleList),
-			"sub_group_count":              len(g.SubGroups),
+				"group_name":                 g.Name,
+				"effective_config":           g.EffectiveConfig,
+				"header_rules_count":         len(g.HeaderRuleList),
+				"model_mapping":              g.ModelMapping != "", // deprecated
+				"model_redirect_rules_count": len(g.ModelRedirectMap),
+				"model_redirect_strict":      g.ModelRedirectStrict,
+				"path_redirects":             len(g.PathRedirectRuleList),
+				"sub_group_count":            len(g.SubGroups),
 			}).Debug("Loaded group with effective config")
 		}
 
-		return groupMap, nil
+		return cache, nil
 	}
 
-	afterReload := func(newCache map[string]*models.Group) {
-		gm.subGroupManager.RebuildSelectors(newCache)
+	afterReload := func(newCache groupCache) {
+		gm.subGroupManager.RebuildSelectors(newCache.ByName)
 	}
 
 	syncer, err := syncer.NewCacheSyncer(
@@ -261,24 +251,22 @@ func (gm *GroupManager) GetGroupByName(name string) (*models.Group, error) {
 		return nil, fmt.Errorf("GroupManager is not initialized")
 	}
 
-	groups := gm.syncer.Get()
-	group, ok := groups[name]
+	cache := gm.syncer.Get()
+	group, ok := cache.ByName[name]
 	if !ok {
 		return nil, gorm.ErrRecordNotFound
 	}
 	return group, nil
 }
 
-// GetGroupByID retrieves a single group by its ID from the cache (linear scan over cached map)
+// GetGroupByID retrieves a single group by its ID from the cache.
 func (gm *GroupManager) GetGroupByID(id uint) (*models.Group, error) {
 	if gm.syncer == nil {
 		return nil, fmt.Errorf("GroupManager is not initialized")
 	}
-	groups := gm.syncer.Get()
-	for _, g := range groups {
-		if g.ID == id {
-			return g, nil
-		}
+	cache := gm.syncer.Get()
+	if g, ok := cache.ByID[id]; ok {
+		return g, nil
 	}
 	return nil, gorm.ErrRecordNotFound
 }
