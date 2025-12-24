@@ -5,6 +5,7 @@
   "tabWidth": 2,
   "useTabs": false,
   "printWidth": 100,
+  "_comment_endOfLine": "Keep 'auto' instead of 'lf': .editorconfig already enforces lf for new files, 'auto' avoids formatting conflicts on Windows while maintaining cross-platform compatibility",
   "endOfLine": "auto",
   "trailingComma": "es5",
   "bracketSpacing": true,

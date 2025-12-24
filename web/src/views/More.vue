@@ -53,6 +53,12 @@ function handleTabChange(tab: MoreTab) {
 }
 </script>
 
+<!--
+  Note: Inline style objects ({ padding: '...' }) are intentionally kept inline rather than
+  extracted to constants. Vue 3 compiler automatically hoists static objects, so there's no
+  performance benefit from extraction. Keeping styles inline improves readability by keeping
+  style definitions close to their usage points.
+-->
 <template>
   <div class="more-page">
     <n-card size="small" hoverable bordered :content-style="{ padding: '4px 12px 8px' }">
