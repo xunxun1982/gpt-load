@@ -450,6 +450,11 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	taskStarted := false
 	var taskErr error
 	if s.TaskService != nil {
+		// NOTE: Pre-check before StartTask is intentionally kept for fast-fail behavior.
+		// Although StartTask performs the same check atomically, this pre-check:
+		// 1. Avoids unnecessary serialization/storage operations when task is already running
+		// 2. Provides clearer code intent and better readability
+		// 3. The minor TOCTOU window is harmless since StartTask rechecks atomically
 		if status, err := s.TaskService.GetTaskStatus(); err == nil && status.IsRunning {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, "a task is already running, please wait"))
 			return
@@ -527,6 +532,10 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	}
 
 	// Use transaction to ensure data consistency
+	// NOTE: Transaction returns nil even when individual group imports fail (logged and skipped).
+	// This is intentional - partial import failures are expected behavior, not task-level errors.
+	// The response payload includes imported/total/failed counts for visibility into partial success.
+	// taskErr is only set for GORM-level transaction failures, not business-level partial failures.
 	var importedGroups []models.Group
 	processedKeys := 0
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
