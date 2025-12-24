@@ -87,7 +87,6 @@ type GroupService struct {
 	groupListCacheTTL     time.Duration
 }
 
-
 // NewGroupService constructs a GroupService.
 func NewGroupService(
 	db *gorm.DB,
@@ -841,7 +840,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 
 	// Delete all API keys for this group and its child groups in a single operation.
 	if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
-		return app_errors.ErrDatabase
+		return app_errors.ParseDBError(err)
 	}
 
 	childGroupCount := int64(len(childGroupIDs))
@@ -1156,12 +1155,12 @@ func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupS
 // This is optimized to use CASE WHEN statements to reduce the number of database queries
 func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID uint) (stats24h, stats7d, stats30d RequestStats, err error) {
 	var result struct {
-		Success24h  int64
-		Failure24h  int64
-		Success7d   int64
-		Failure7d   int64
-		Success30d  int64
-		Failure30d  int64
+		Success24h int64
+		Failure24h int64
+		Success7d  int64
+		Failure7d  int64
+		Success30d int64
+		Failure30d int64
 	}
 
 	now := time.Now()
@@ -1294,10 +1293,11 @@ func (s *GroupService) getStandardGroupStats(ctx context.Context, groupID uint) 
 	var errsMu sync.Mutex
 
 	// Run key stats and request stats concurrently to avoid additive timeouts
-	done := make(chan struct{}, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
 	// key stats
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer wg.Done()
 		keyStats, err := s.fetchKeyStats(ctx, groupID)
 		if err != nil {
 			errsMu.Lock()
@@ -1310,16 +1310,15 @@ func (s *GroupService) getStandardGroupStats(ctx context.Context, groupID uint) 
 	}()
 	// request stats (24h/7d/30d)
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer wg.Done()
 		if errs := s.fetchRequestStats(ctx, groupID, stats); len(errs) > 0 {
 			errsMu.Lock()
 			allErrors = append(allErrors, errs...)
 			errsMu.Unlock()
 		}
 	}()
-	// Wait for both
-	<-done
-	<-done
+
+	wg.Wait()
 
 	if len(allErrors) > 0 {
 		logrus.WithContext(ctx).WithError(allErrors[0]).Error("errors occurred while fetching group stats")
@@ -2163,9 +2162,9 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		}
 
 		logrus.WithContext(ctx).WithFields(logrus.Fields{
-			"status_code":   resp.StatusCode,
-			"error_body":    errorPreview,
-			"content_type":  resp.Header.Get("Content-Type"),
+			"status_code":  resp.StatusCode,
+			"error_body":   errorPreview,
+			"content_type": resp.Header.Get("Content-Type"),
 		}).Error("Upstream returned non-OK status")
 
 		// Provide specific error messages based on status code.
@@ -2236,8 +2235,8 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		modelCount = len(models)
 	}
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"result_keys":  getMapKeys(result),
-		"model_count":  modelCount,
+		"result_keys":   getMapKeys(result),
+		"model_count":   modelCount,
 		"upstream_only": true,
 	}).Debug("Successfully decoded upstream model list response (redirect rules not applied)")
 

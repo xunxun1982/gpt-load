@@ -317,7 +317,19 @@ func (s *Server) GetGroupStats(c *gin.Context) {
 		return
 	}
 
-	stats, err := s.GroupService.GetGroupStats(c.Request.Context(), uint(id))
+	groupID := uint(id)
+	groupName := ""
+	if s.GroupManager != nil {
+		if g, err := s.GroupManager.GetGroupByID(groupID); err == nil && g != nil {
+			groupName = g.Name
+		}
+	}
+	if s.shouldDegradeReadDuringTask(groupName) {
+		response.Success(c, &services.GroupStats{})
+		return
+	}
+
+	stats, err := s.GroupService.GetGroupStats(c.Request.Context(), groupID)
 	if s.handleGroupError(c, err) {
 		return
 	}
@@ -403,7 +415,19 @@ func (s *Server) GetSubGroups(c *gin.Context) {
 		return
 	}
 
-	subGroups, err := s.AggregateGroupService.GetSubGroups(c.Request.Context(), uint(id))
+	groupID := uint(id)
+	groupName := ""
+	if s.GroupManager != nil {
+		if g, err := s.GroupManager.GetGroupByID(groupID); err == nil && g != nil {
+			groupName = g.Name
+		}
+	}
+	if s.shouldDegradeReadDuringTask(groupName) {
+		response.Success(c, []models.SubGroupInfo{})
+		return
+	}
+
+	subGroups, err := s.AggregateGroupService.GetSubGroups(c.Request.Context(), groupID)
 	if s.handleGroupError(c, err) {
 		return
 	}
@@ -488,7 +512,19 @@ func (s *Server) GetParentAggregateGroups(c *gin.Context) {
 		return
 	}
 
-	parentGroups, err := s.AggregateGroupService.GetParentAggregateGroups(c.Request.Context(), uint(id))
+	groupID := uint(id)
+	groupName := ""
+	if s.GroupManager != nil {
+		if g, err := s.GroupManager.GetGroupByID(groupID); err == nil && g != nil {
+			groupName = g.Name
+		}
+	}
+	if s.shouldDegradeReadDuringTask(groupName) {
+		response.Success(c, []models.ParentAggregateGroupInfo{})
+		return
+	}
+
+	parentGroups, err := s.AggregateGroupService.GetParentAggregateGroups(c.Request.Context(), groupID)
 	if s.handleGroupError(c, err) {
 		return
 	}

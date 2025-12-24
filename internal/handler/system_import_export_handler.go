@@ -22,10 +22,10 @@ import (
 
 // SystemExportData represents the data structure for system-wide export.
 type SystemExportData struct {
-	Version        string                    `json:"version"`
-	ExportedAt     string                    `json:"exported_at"`
-	SystemSettings map[string]string         `json:"system_settings"`
-	Groups         []GroupExportData         `json:"groups"`
+	Version        string            `json:"version"`
+	ExportedAt     string            `json:"exported_at"`
+	SystemSettings map[string]string `json:"system_settings"`
+	Groups         []GroupExportData `json:"groups"`
 }
 
 // ExportAll exports all system data (system settings and all groups).
@@ -135,9 +135,9 @@ func (s *Server) ExportAll(c *gin.Context) {
 
 // SystemImportData represents the data structure for system-wide import.
 type SystemImportData struct {
-	Version        string                    `json:"version"`
-	SystemSettings map[string]string         `json:"system_settings"`
-	Groups         []GroupExportData         `json:"groups"`
+	Version        string            `json:"version"`
+	SystemSettings map[string]string `json:"system_settings"`
+	Groups         []GroupExportData `json:"groups"`
 }
 
 // ImportAll imports all system data (system settings and all groups).
@@ -150,7 +150,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 
 	// Determine import mode from query, filename or content
 	sample := make([]string, 0, 5)
-	outer:
+outer:
 	for _, g := range importData.Groups {
 		for _, k := range g.Keys {
 			if len(sample) < 5 {
@@ -444,6 +444,34 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	}
 	logrus.Infof("Batch importing %d groups with %d total keys", len(importData.Groups), totalKeys)
 
+	// Avoid concurrent long-running tasks to reduce DB contention.
+	// Best-effort: If task signaling fails, continue without task status updates.
+	taskStarted := false
+	var taskErr error
+	if s.TaskService != nil {
+		if status, err := s.TaskService.GetTaskStatus(); err == nil && status.IsRunning {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, "a task is already running, please wait"))
+			return
+		}
+		if _, err := s.TaskService.StartTask(services.TaskTypeKeyImport, "system", totalKeys); err != nil {
+			if err.Error() == "a task is already running, please wait" {
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
+				return
+			}
+			logrus.WithError(err).Debug("Failed to start global task for batch group import, continuing without task signaling")
+		} else {
+			taskStarted = true
+			defer func() {
+				if !taskStarted {
+					return
+				}
+				if endErr := s.TaskService.EndTask(nil, taskErr); endErr != nil {
+					logrus.WithError(endErr).Debug("Failed to end global task for batch group import")
+				}
+			}()
+		}
+	}
+
 	// Convert handler format to service format for unified import
 	serviceGroups := make([]services.GroupExportData, 0, len(importData.Groups))
 	for _, groupExport := range importData.Groups {
@@ -502,6 +530,7 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 
 	// Use transaction to ensure data consistency
 	var importedGroups []models.Group
+	processedKeys := 0
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		// Import all groups using the unified ImportExportService
 		importedCount := 0
@@ -522,6 +551,12 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 
 			importedGroups = append(importedGroups, createdGroup)
 			importedCount++
+			processedKeys += len(groupData.Keys)
+			if taskStarted {
+				if updateErr := s.TaskService.UpdateProgress(processedKeys); updateErr != nil {
+					logrus.WithError(updateErr).Debug("Failed to update task progress for batch group import")
+				}
+			}
 			logrus.Debugf("Imported group %s with ID %d", groupData.Group.Name, groupID)
 		}
 
@@ -530,6 +565,7 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	})
 
 	if err != nil {
+		taskErr = err
 		logrus.WithError(err).Error("Failed to import groups batch")
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
 		return
@@ -576,10 +612,10 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 
 	logrus.Infof("Batch import completed: %d groups imported", len(importedGroups))
 	response.SuccessI18n(c, "success.groups_batch_imported", map[string]interface{}{
-		"groups":      groupResponses,
-		"imported":    len(importedGroups),
-		"total":       len(importData.Groups),
-		"failed":      len(importData.Groups) - len(importedGroups),
+		"groups":   groupResponses,
+		"imported": len(importedGroups),
+		"total":    len(importData.Groups),
+		"failed":   len(importData.Groups) - len(importedGroups),
 	})
 }
 
