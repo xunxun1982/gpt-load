@@ -13,6 +13,9 @@ const (
 	ResultTTL     = 60 * time.Minute
 )
 
+// ErrTaskAlreadyRunning indicates a task is in progress and a new one cannot start.
+var ErrTaskAlreadyRunning = errors.New("a task is already running, please wait")
+
 const (
 	TaskTypeKeyValidation = "KEY_VALIDATION"
 	TaskTypeKeyImport     = "KEY_IMPORT"
@@ -53,7 +56,7 @@ func (s *TaskService) StartTask(taskType, groupName string, total int) (*TaskSta
 	}
 
 	if currentStatus.IsRunning {
-		return nil, errors.New("a task is already running, please wait")
+		return nil, ErrTaskAlreadyRunning
 	}
 
 	status := &TaskStatus{

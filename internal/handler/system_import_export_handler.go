@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -454,7 +455,7 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 			return
 		}
 		if _, err := s.TaskService.StartTask(services.TaskTypeKeyImport, "system", totalKeys); err != nil {
-			if err.Error() == "a task is already running, please wait" {
+			if errors.Is(err, services.ErrTaskAlreadyRunning) {
 				response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
 				return
 			}
