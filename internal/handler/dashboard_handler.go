@@ -219,24 +219,31 @@ func dashboardChartTimeRange(now time.Time, rangeParam string) (time.Time, time.
 	endHour := now.Truncate(time.Hour)
 	endExclusive := endHour.Add(time.Hour)
 	loc := now.Location()
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	startOfThisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
 
 	switch rangeParam {
 	case "":
 		return endExclusive.Add(-24 * time.Hour), endExclusive, nil
 	case "today":
-		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-		return start, endExclusive, nil
+		return startOfToday, endExclusive, nil
 	case "yesterday":
-		startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 		return startOfToday.Add(-24 * time.Hour), startOfToday, nil
 	case "this_week":
-		startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 		daysSinceMonday := (int(startOfToday.Weekday()) + 6) % 7
 		start := startOfToday.AddDate(0, 0, -daysSinceMonday)
 		return start, endExclusive, nil
+	case "last_week":
+		daysSinceMonday := (int(startOfToday.Weekday()) + 6) % 7
+		startOfThisWeek := startOfToday.AddDate(0, 0, -daysSinceMonday)
+		startOfLastWeek := startOfThisWeek.AddDate(0, 0, -7)
+		return startOfLastWeek, startOfThisWeek, nil
 	case "this_month":
-		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
-		return start, endExclusive, nil
+		return startOfThisMonth, endExclusive, nil
+	case "last_month":
+		return startOfThisMonth.AddDate(0, -1, 0), startOfThisMonth, nil
+	case "last_30_days":
+		return endExclusive.Add(-30 * 24 * time.Hour), endExclusive, nil
 	default:
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid chart range: %s", rangeParam)
 	}

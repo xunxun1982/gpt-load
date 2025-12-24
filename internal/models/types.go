@@ -234,7 +234,7 @@ type ChartData struct {
 // GroupHourlyStat corresponds to the group_hourly_stats table, used to store hourly request statistics for each group.
 type GroupHourlyStat struct {
 	ID           uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Time         time.Time `gorm:"not null;uniqueIndex:idx_group_time" json:"time"` // Hourly timestamp
+	Time         time.Time `gorm:"not null;index:idx_group_hourly_stats_time;uniqueIndex:idx_group_time" json:"time"` // Hourly timestamp
 	GroupID      uint      `gorm:"not null;uniqueIndex:idx_group_time" json:"group_id"`
 	SuccessCount int64     `gorm:"not null;default:0" json:"success_count"`
 	FailureCount int64     `gorm:"not null;default:0" json:"failure_count"`
