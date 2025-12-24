@@ -462,9 +462,6 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		} else {
 			taskStarted = true
 			defer func() {
-				if !taskStarted {
-					return
-				}
 				if endErr := s.TaskService.EndTask(nil, taskErr); endErr != nil {
 					logrus.WithError(endErr).Debug("Failed to end global task for batch group import")
 				}

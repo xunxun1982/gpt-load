@@ -771,6 +771,8 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	// Best-effort: mark a global delete task as running so background cron jobs can
 	// skip heavy DB work and avoid contention during large deletes.
 	var taskService *TaskService
+	// Defensive nil checks: TaskService can exist without a configured store (e.g., store disabled or in tests).
+	// StartTask would dereference s.store, so we avoid calling it when store is nil.
 	if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil && s.keyDeleteSvc.TaskService.store != nil {
 		taskService = s.keyDeleteSvc.TaskService
 		groupName := ""

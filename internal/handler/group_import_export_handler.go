@@ -364,7 +364,6 @@ func (s *Server) ImportGroup(c *gin.Context) {
 
 	// Best-effort: mark a global import task as running so read requests can degrade quickly
 	// under SQLite lock contention during large imports.
-	taskStarted := false
 	var taskErr error
 	if s.TaskService != nil {
 		totalKeys := len(serviceGroupData.Keys)
@@ -379,11 +378,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 			}
 			logrus.WithError(err).Debug("Failed to start global task for group import, continuing without task signaling")
 		} else {
-			taskStarted = true
 			defer func() {
-				if !taskStarted {
-					return
-				}
 				if endErr := s.TaskService.EndTask(nil, taskErr); endErr != nil {
 					logrus.WithError(endErr).Debug("Failed to end global task for group import")
 				}
