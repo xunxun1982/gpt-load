@@ -19,6 +19,9 @@ const panes: Array<{ key: MoreTab; labelKey: string }> = [
   { key: "agent", labelKey: "more.agent" },
 ];
 
+// Note: Intentionally using explicit string checks instead of deriving from panes Set.
+// For only 3 tabs, direct comparison is faster and more readable. TypeScript's MoreTab
+// type provides compile-time safety. Over-abstraction is not worth it for this simple case.
 function normalizeTab(value: unknown): MoreTab {
   const raw = Array.isArray(value) ? value[0] : value;
   if (raw === "site" || raw === "central" || raw === "agent") {
@@ -70,6 +73,8 @@ function handleTabChange(tab: MoreTab) {
         :pane-style="{ padding: '6px 0 0' }"
         @update:value="handleTabChange"
       >
+        <!-- Note: NTabs emits string|number, but pane names are restricted to MoreTab values,
+             so runtime behavior is correct. Type assertion not needed unless strict TS issues arise. -->
         <template #prefix>
           <span class="more-title">{{ t("nav.more") }}</span>
         </template>
