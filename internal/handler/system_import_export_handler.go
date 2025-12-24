@@ -314,6 +314,38 @@ outer:
 		s.GroupService.InvalidateGroupListCache()
 	}
 
+	// Load keys to Redis store asynchronously for all imported groups
+	// Query all groups and load their keys to Redis store
+	go func(ctx context.Context) {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+		defer cancel()
+
+		var groups []models.Group
+		if err := s.DB.Select("id, name").Find(&groups).Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to query groups for Redis cache loading after system import")
+			return
+		}
+
+		for _, group := range groups {
+			// Load keys to Redis store
+			if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
+				logrus.WithContext(ctx).WithError(err).Warnf("Failed to load keys to store for group %d (%s)",
+					group.ID, group.Name)
+			}
+
+			// Reset failure_count for all active keys
+			resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(group.ID)
+			if resetErr != nil {
+				logrus.WithContext(ctx).WithError(resetErr).Warnf("Failed to reset failure_count for group %d (%s)",
+					group.ID, group.Name)
+			} else if resetCount > 0 {
+				logrus.WithContext(ctx).Debugf("Reset failure_count for %d active keys in group %d (%s)",
+					resetCount, group.ID, group.Name)
+			}
+		}
+		logrus.WithContext(ctx).Infof("Completed loading keys to Redis store for %d groups after system import", len(groups))
+	}(context.Background())
+
 	logrus.Info("System import completed successfully")
 	response.SuccessI18n(c, "success.system_imported", nil)
 }
@@ -536,6 +568,10 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	// This is intentional - partial import failures are expected behavior, not task-level errors.
 	// The response payload includes imported/total/failed counts for visibility into partial success.
 	// taskErr is only set for GORM-level transaction failures, not business-level partial failures.
+	// NOTE: Context cancellation is intentionally NOT added to this transaction because:
+	// 1. Import operations should be atomic - once started, they should complete for data integrity
+	// 2. Consistent with project-wide pattern where no DB.Transaction uses WithContext
+	// 3. Partial cancellation mid-import could leave data in inconsistent state
 	var importedGroups []models.Group
 	processedKeys := 0
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
@@ -591,7 +627,7 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		s.GroupService.InvalidateGroupListCache()
 	}
 
-	// Reset failure_count for all active keys in each successfully imported group asynchronously
+	// Load keys to Redis store and reset failure_count for all active keys asynchronously
 	// This treats each import as a fresh start, clearing any historical failure counts
 	// Run asynchronously to avoid blocking the HTTP response (can take minutes for large groups)
 	go func(ctx context.Context, groups []models.Group) {
@@ -600,6 +636,13 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		defer cancel()
 
 		for _, group := range groups {
+			// First, load all keys to Redis store
+			if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
+				logrus.WithContext(ctx).WithError(err).Warnf("Failed to load keys to store for imported group %d (%s)",
+					group.ID, group.Name)
+			}
+
+			// Then reset failure_count for all active keys
 			resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(group.ID)
 			if resetErr != nil {
 				logrus.WithContext(ctx).WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d (%s)",
