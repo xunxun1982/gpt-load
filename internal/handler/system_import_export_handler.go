@@ -316,34 +316,37 @@ outer:
 
 	// Load keys to Redis store asynchronously for all imported groups
 	// Query all groups and load their keys to Redis store
+	// NOTE: WithContext is kept for consistency with project-wide logging pattern
+	// and potential future tracing integration, even though ctx is detached
 	go func(ctx context.Context) {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 		defer cancel()
+		entry := logrus.WithContext(ctx)
 
 		var groups []models.Group
 		if err := s.DB.Select("id, name").Find(&groups).Error; err != nil {
-			logrus.WithContext(ctx).WithError(err).Warn("Failed to query groups for Redis cache loading after system import")
+			entry.WithError(err).Warn("Failed to query groups for Redis cache loading after system import")
 			return
 		}
 
 		for _, group := range groups {
 			// Load keys to Redis store
 			if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
-				logrus.WithContext(ctx).WithError(err).Warnf("Failed to load keys to store for group %d (%s)",
+				entry.WithError(err).Warnf("Failed to load keys to store for group %d (%s)",
 					group.ID, group.Name)
 			}
 
 			// Reset failure_count for all active keys
 			resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(group.ID)
 			if resetErr != nil {
-				logrus.WithContext(ctx).WithError(resetErr).Warnf("Failed to reset failure_count for group %d (%s)",
+				entry.WithError(resetErr).Warnf("Failed to reset failure_count for group %d (%s)",
 					group.ID, group.Name)
 			} else if resetCount > 0 {
-				logrus.WithContext(ctx).Debugf("Reset failure_count for %d active keys in group %d (%s)",
+				entry.Debugf("Reset failure_count for %d active keys in group %d (%s)",
 					resetCount, group.ID, group.Name)
 			}
 		}
-		logrus.WithContext(ctx).Infof("Completed loading keys to Redis store for %d groups after system import", len(groups))
+		entry.Infof("Completed loading keys to Redis store for %d groups after system import", len(groups))
 	}(context.Background())
 
 	logrus.Info("System import completed successfully")
@@ -630,25 +633,28 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	// Load keys to Redis store and reset failure_count for all active keys asynchronously
 	// This treats each import as a fresh start, clearing any historical failure counts
 	// Run asynchronously to avoid blocking the HTTP response (can take minutes for large groups)
+	// NOTE: WithContext is kept for consistency with project-wide logging pattern
+	// and potential future tracing integration, even though ctx is detached
 	go func(ctx context.Context, groups []models.Group) {
 		// Use background context with timeout to avoid goroutine leaks
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer cancel()
+		entry := logrus.WithContext(ctx)
 
 		for _, group := range groups {
 			// First, load all keys to Redis store
 			if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
-				logrus.WithContext(ctx).WithError(err).Warnf("Failed to load keys to store for imported group %d (%s)",
+				entry.WithError(err).Warnf("Failed to load keys to store for imported group %d (%s)",
 					group.ID, group.Name)
 			}
 
 			// Then reset failure_count for all active keys
 			resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(group.ID)
 			if resetErr != nil {
-				logrus.WithContext(ctx).WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d (%s)",
+				entry.WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d (%s)",
 					group.ID, group.Name)
 			} else if resetCount > 0 {
-				logrus.WithContext(ctx).Infof("Reset failure_count for %d active keys in imported group %d (%s)",
+				entry.Infof("Reset failure_count for %d active keys in imported group %d (%s)",
 					resetCount, group.ID, group.Name)
 			}
 		}
