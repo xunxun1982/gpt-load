@@ -761,6 +761,9 @@ export default {
     deleteCompleted: "密钥删除完成，成功删除 {deleted} 个密钥，忽略了 {ignored} 个。",
   },
   more: {
+    siteManagement: "站点管理",
+    centralService: "集中服务",
+    agent: "AGENT",
     emptyDescription: "更多功能即将推出",
   },
   theme: {

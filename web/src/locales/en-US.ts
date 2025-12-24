@@ -794,6 +794,9 @@ export default {
     deleteCompleted: "Key deletion completed, deleted {deleted} keys, ignored {ignored}.",
   },
   more: {
+    siteManagement: "Site Management",
+    centralService: "Central Service",
+    agent: "AGENT",
     emptyDescription: "More features coming soon",
   },
   theme: {

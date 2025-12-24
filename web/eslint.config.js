@@ -50,20 +50,16 @@ export default [
       "vue/max-attributes-per-line": "off",
       "vue/singleline-html-element-content-newline": "off",
       "vue/multiline-html-element-content-newline": "off",
-      "vue/html-indent": ["error", 2],
-      "vue/script-indent": [
-        "error",
-        2,
-        {
-          baseIndent: 0,
-          switchCase: 1,
-          ignores: [],
-        },
-      ],
-      "vue/component-tags-order": ["error", { order: ["script", "template", "style"] }],
+      // Indentation is enforced by Prettier. Keeping these rules on will cause conflicts
+      // (e.g., multi-line expressions inside template attributes).
+      "vue/html-indent": "off",
+      "vue/script-indent": "off",
+      // vue/component-tags-order was removed in eslint-plugin-vue v10; use vue/block-order instead.
+      "vue/block-order": ["error", { order: ["script", "template", "style"] }],
 
       // Vue 3 Composition API 规则
-      "vue/no-setup-props-destructure": "error",
+      // vue/no-setup-props-destructure was removed in eslint-plugin-vue v10; use vue/no-setup-props-reactivity-loss instead.
+      "vue/no-setup-props-reactivity-loss": "error",
       "vue/prefer-import-from-vue": "error",
       "vue/no-deprecated-slot-attribute": "error",
       "vue/no-deprecated-slot-scope-attribute": "error",
