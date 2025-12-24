@@ -51,7 +51,10 @@ const timeRanges: Array<{ value: DashboardChartRange; labelKey: string }> = [
   { value: "today", labelKey: "charts.rangeToday" },
   { value: "yesterday", labelKey: "charts.rangeYesterday" },
   { value: "this_week", labelKey: "charts.rangeThisWeek" },
+  { value: "last_week", labelKey: "charts.rangeLastWeek" },
   { value: "this_month", labelKey: "charts.rangeThisMonth" },
+  { value: "last_month", labelKey: "charts.rangeLastMonth" },
+  { value: "last_30_days", labelKey: "dashboard.last30Days" },
 ];
 
 const selectedRange = ref<DashboardChartRange>("today");
@@ -61,12 +64,12 @@ const selectedRangeLabel = computed(() => {
   return range ? t(range.labelKey) : "";
 });
 
-const setTimeRange = (range: DashboardChartRange) => {
-  if (selectedRange.value === range) {
-    return;
-  }
-  selectedRange.value = range;
-};
+const rangeOptions = computed<SelectOption[]>(() =>
+  timeRanges.map(range => ({
+    value: range.value,
+    label: t(range.labelKey),
+  }))
+);
 
 // Derived drawable area size
 const plotWidth = chartWidth - padding.left - padding.right;
@@ -99,6 +102,16 @@ const dataRange = computed(() => {
     min: Math.max(0, min - paddingValue), // Clamp min to 0 as request counts cannot be negative
     max: max + paddingValue,
   };
+});
+
+const datasetTotals = computed(() => {
+  if (!chartData.value) {
+    return [] as number[];
+  }
+
+  return chartData.value.datasets.map(dataset =>
+    dataset.data.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0)
+  );
 });
 
 // Generate Y-axis ticks
@@ -490,39 +503,39 @@ onUnmounted(() => {
       <div class="chart-title-section">
         <h3 class="chart-title">{{ t("charts.requestTrend") }}</h3>
         <p class="chart-subtitle">{{ selectedRangeLabel }}</p>
-
-        <div class="time-range-selector" role="group" :aria-label="t('charts.timeRange')">
-          <button
-            v-for="range in timeRanges"
-            :key="range.value"
-            type="button"
-            class="time-range-button"
-            :class="{ active: selectedRange === range.value }"
-            :data-range="range.value"
-            :aria-pressed="selectedRange === range.value"
-            @click="setTimeRange(range.value)"
-          >
-            {{ t(range.labelKey) }}
-          </button>
-        </div>
       </div>
-      <n-select
-        v-model:value="selectedGroup"
-        :options="groupOptions"
-        :render-label="renderGroupLabel"
-        :placeholder="t('charts.allGroups')"
-        size="small"
-        class="group-select"
-        clearable
-      />
+
+      <div class="chart-controls">
+        <n-select
+          v-model:value="selectedRange"
+          :options="rangeOptions"
+          :placeholder="t('charts.timeRange')"
+          size="small"
+          class="range-select"
+        />
+        <n-select
+          v-model:value="selectedGroup"
+          :options="groupOptions"
+          :render-label="renderGroupLabel"
+          :placeholder="t('charts.allGroups')"
+          size="small"
+          class="group-select"
+          clearable
+        />
+      </div>
     </div>
 
     <div v-if="chartData" class="chart-content">
       <div class="chart-wrapper">
         <div class="chart-legend">
-          <div v-for="dataset in chartData.datasets" :key="dataset.label" class="legend-item">
+          <div
+            v-for="(dataset, datasetIndex) in chartData.datasets"
+            :key="dataset.label"
+            class="legend-item"
+          >
             <div class="legend-indicator" :style="{ backgroundColor: dataset.color }" />
             <span class="legend-label">{{ dataset.label }}</span>
+            <span class="legend-total">{{ formatNumber(datasetTotals[datasetIndex] ?? 0) }}</span>
           </div>
         </div>
         <svg
@@ -728,6 +741,19 @@ onUnmounted(() => {
 
 .chart-title-section {
   flex: 1;
+}
+
+.chart-controls {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.range-select {
+  width: 200px;
+  max-width: 100%;
 }
 
 .group-select {
@@ -949,6 +975,13 @@ onUnmounted(() => {
   color: inherit;
 }
 
+.legend-total {
+  font-size: 13px;
+  font-weight: 700;
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
 .chart-wrapper {
   position: relative;
   display: flex;
@@ -1085,6 +1118,14 @@ onUnmounted(() => {
     flex-direction: column;
     gap: 12px;
     align-items: flex-start;
+  }
+
+  .chart-controls {
+    width: 100%;
+  }
+
+  .range-select {
+    width: 100%;
   }
 
   .group-select {
