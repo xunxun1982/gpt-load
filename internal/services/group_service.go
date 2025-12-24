@@ -87,7 +87,6 @@ type GroupService struct {
 	groupListCacheTTL     time.Duration
 }
 
-
 // NewGroupService constructs a GroupService.
 func NewGroupService(
 	db *gorm.DB,
@@ -768,7 +767,29 @@ func getFirstProxyKeyFromString(proxyKeys string) string {
 
 // DeleteGroup removes a group and associated resources.
 // This operation is idempotent - deleting a non-existent group returns success.
-func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
+func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) {
+	// Best-effort: mark a global delete task as running so background cron jobs can
+	// skip heavy DB work and avoid contention during large deletes.
+	var taskService *TaskService
+	// Defensive nil checks: TaskService can exist without a configured store (e.g., store disabled or in tests).
+	// StartTask would dereference s.store, so we avoid calling it when store is nil.
+	if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil && s.keyDeleteSvc.TaskService.store != nil {
+		taskService = s.keyDeleteSvc.TaskService
+		groupName := ""
+		if s.groupManager != nil {
+			if g, err := s.groupManager.GetGroupByID(id); err == nil && g != nil {
+				groupName = g.Name
+			}
+		}
+		if _, err := taskService.StartTask(TaskTypeKeyDelete, groupName, 0); err == nil {
+			defer func() {
+				if endErr := taskService.EndTask(nil, retErr); endErr != nil {
+					logrus.WithContext(ctx).WithError(endErr).Debug("failed to end global task for group delete")
+				}
+			}()
+		}
+	}
+
 	// Start transaction
 	tx := s.db.WithContext(ctx).Begin()
 	if err := tx.Error; err != nil {
@@ -786,14 +807,19 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Group doesn't exist - idempotent delete returns success
 			tx.Rollback()
+			tx = nil
 			return nil
 		}
 		return app_errors.ParseDBError(err)
 	}
 
 	// Count keys for logging (fast query with index)
+	// If the count fails, still proceed and perform best-effort cache cleanup.
 	var keyCount int64
-	tx.Model(&models.APIKey{}).Where("group_id = ?", id).Count(&keyCount)
+	if err := tx.Model(&models.APIKey{}).Where("group_id = ?", id).Count(&keyCount).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to count API keys for group delete")
+		keyCount = 0
+	}
 
 	// Handle child groups - delete them along with parent
 	var childGroupIDs []uint
@@ -801,12 +827,26 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 		return app_errors.ParseDBError(err)
 	}
 
+	relatedGroupIDs := make([]uint, 0, len(childGroupIDs)+1)
+	relatedGroupIDs = append(relatedGroupIDs, id)
+	if len(childGroupIDs) > 0 {
+		relatedGroupIDs = append(relatedGroupIDs, childGroupIDs...)
+	}
+
+	// Delete sub-group relationships for this group and its child groups.
+	// This avoids orphaned rows and prevents potential foreign key constraint violations.
+	if err := tx.Where("group_id IN ? OR sub_group_id IN ?", relatedGroupIDs, relatedGroupIDs).
+		Delete(&models.GroupSubGroup{}).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
+	// Delete all API keys for this group and its child groups in a single operation.
+	if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
 	childGroupCount := int64(len(childGroupIDs))
 	if childGroupCount > 0 {
-		// Delete API keys for all child groups
-		if err := tx.Where("group_id IN ?", childGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
-			return app_errors.ParseDBError(err)
-		}
 		// Delete child groups
 		if err := tx.Where("parent_group_id = ?", id).Delete(&models.Group{}).Error; err != nil {
 			return app_errors.ParseDBError(err)
@@ -816,33 +856,6 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 			"childGroupCount": childGroupCount,
 		}).Info("Deleted child groups along with parent")
 
-		// Schedule memory store cleanup for child group keys
-		// This runs in a goroutine to avoid blocking the response
-		go func(keyService *KeyService, childIDs []uint) {
-			if keyService == nil || keyService.KeyProvider == nil {
-				return
-			}
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			for _, childID := range childIDs {
-				if _, err := keyService.KeyProvider.RemoveAllKeys(cleanupCtx, childID); err != nil {
-					logrus.WithFields(logrus.Fields{
-						"childGroupID": childID,
-						"error":        err,
-					}).Error("failed to remove child group keys from memory store")
-				}
-			}
-		}(s.keyService, childGroupIDs)
-	}
-
-	// Delete sub-group relationships
-	if err := tx.Where("group_id = ? OR sub_group_id = ?", id, id).Delete(&models.GroupSubGroup{}).Error; err != nil {
-		return app_errors.ParseDBError(err)
-	}
-
-	// Delete all API keys for this group in a single operation
-	if err := tx.Where("group_id = ?", id).Delete(&models.APIKey{}).Error; err != nil {
-		return app_errors.ErrDatabase
 	}
 
 	// Delete the group
@@ -856,32 +869,25 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) error {
 	}
 	tx = nil
 
-	// Clear memory store for this group after database commit
-	// Use a goroutine to avoid blocking the response
-	if keyCount > 0 {
-		go func(keyService *KeyService, groupID uint) {
-			if keyService == nil || keyService.KeyProvider == nil {
-				return
-			}
-			// Use a timeout context for background deletion
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			if _, err := keyService.KeyProvider.RemoveAllKeys(cleanupCtx, groupID); err != nil {
-				logrus.WithFields(logrus.Fields{
-					"groupID": groupID,
-					"error":   err,
-				}).Error("failed to remove keys from memory store")
-			}
-		}(s.keyService, id)
-	}
+	// Clear store cache for this group (and its child groups) after database commit.
+	// Use a goroutine to avoid blocking the response.
+	go func(keyService *KeyService, groupIDs []uint) {
+		if keyService == nil || keyService.KeyProvider == nil {
+			return
+		}
+		for _, groupID := range groupIDs {
+			_ = keyService.KeyProvider.RemoveOrphanedKeysFromStore(groupID)
+		}
+	}(s.keyService, relatedGroupIDs)
 
 	// Invalidate caches
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
 	s.invalidateGroupListCache()
-	s.InvalidateKeyStatsCache(id)
+	for _, groupID := range relatedGroupIDs {
+		s.InvalidateKeyStatsCache(groupID)
+	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
 		"groupID":         id,
@@ -1151,12 +1157,12 @@ func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupS
 // This is optimized to use CASE WHEN statements to reduce the number of database queries
 func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID uint) (stats24h, stats7d, stats30d RequestStats, err error) {
 	var result struct {
-		Success24h  int64
-		Failure24h  int64
-		Success7d   int64
-		Failure7d   int64
-		Success30d  int64
-		Failure30d  int64
+		Success24h int64
+		Failure24h int64
+		Success7d  int64
+		Failure7d  int64
+		Success30d int64
+		Failure30d int64
 	}
 
 	now := time.Now()
@@ -1289,10 +1295,11 @@ func (s *GroupService) getStandardGroupStats(ctx context.Context, groupID uint) 
 	var errsMu sync.Mutex
 
 	// Run key stats and request stats concurrently to avoid additive timeouts
-	done := make(chan struct{}, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
 	// key stats
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer wg.Done()
 		keyStats, err := s.fetchKeyStats(ctx, groupID)
 		if err != nil {
 			errsMu.Lock()
@@ -1305,16 +1312,15 @@ func (s *GroupService) getStandardGroupStats(ctx context.Context, groupID uint) 
 	}()
 	// request stats (24h/7d/30d)
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer wg.Done()
 		if errs := s.fetchRequestStats(ctx, groupID, stats); len(errs) > 0 {
 			errsMu.Lock()
 			allErrors = append(allErrors, errs...)
 			errsMu.Unlock()
 		}
 	}()
-	// Wait for both
-	<-done
-	<-done
+
+	wg.Wait()
 
 	if len(allErrors) > 0 {
 		logrus.WithContext(ctx).WithError(allErrors[0]).Error("errors occurred while fetching group stats")
@@ -2158,9 +2164,9 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		}
 
 		logrus.WithContext(ctx).WithFields(logrus.Fields{
-			"status_code":   resp.StatusCode,
-			"error_body":    errorPreview,
-			"content_type":  resp.Header.Get("Content-Type"),
+			"status_code":  resp.StatusCode,
+			"error_body":   errorPreview,
+			"content_type": resp.Header.Get("Content-Type"),
 		}).Error("Upstream returned non-OK status")
 
 		// Provide specific error messages based on status code.
@@ -2231,8 +2237,8 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		modelCount = len(models)
 	}
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"result_keys":  getMapKeys(result),
-		"model_count":  modelCount,
+		"result_keys":   getMapKeys(result),
+		"model_count":   modelCount,
 		"upstream_only": true,
 	}).Debug("Successfully decoded upstream model list response (redirect rules not applied)")
 

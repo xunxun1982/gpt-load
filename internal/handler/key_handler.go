@@ -6,7 +6,6 @@ import (
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
-	"gpt-load/internal/services"
 	"log"
 	"strconv"
 	"strings"
@@ -58,7 +57,7 @@ func (s *Server) findGroupByID(c *gin.Context, groupID uint) (*models.Group, boo
 	// 2) Short DB lookup with small timeout, then fallback to cache again if needed
 	var group models.Group
 	// Make timeout configurable with sane lower bound, default to 300ms
-	timeoutMs := utils.ParseInteger(utils.GetEnvOrDefault("DB_LOOKUP_TIMEOUT_MS", "300"), 300)
+	timeoutMs := utils.ParseInteger(utils.GetEnvOrDefault("DB_LOOKUP_TIMEOUT_MS", "1200"), 1200)
 	if timeoutMs < 50 {
 		timeoutMs = 50
 	} else if timeoutMs > 5000 {
@@ -162,7 +161,7 @@ func (s *Server) ListKeysInGroup(c *gin.Context) {
 		return
 	}
 
-group, ok := s.findGroupByID(c, groupID)
+	group, ok := s.findGroupByID(c, groupID)
 	if !ok {
 		return
 	}
@@ -174,7 +173,7 @@ group, ok := s.findGroupByID(c, groupID)
 	}
 
 	searchKeyword := c.Query("key_value")
-searchHash := ""
+	searchHash := ""
 	if searchKeyword != "" {
 		searchHash = s.EncryptionSvc.Hash(searchKeyword)
 	}
@@ -184,46 +183,41 @@ searchHash := ""
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", strconv.Itoa(response.DefaultPageSize)))
 	cacheKey := s.KeyService.BuildPageCacheKey(groupID, statusFilter, searchHash, page, pageSize)
 
-// If a key import task is in progress for this group, degrade immediately to avoid DB contention
-if status, err := s.TaskService.GetTaskStatus(); err == nil && status.IsRunning && status.TaskType == services.TaskTypeKeyImport {
-	// For SQLite, any ongoing import can cause read locks. Degrade globally to avoid spinners.
-	if s.DB.Dialector.Name() == "sqlite" || status.GroupName == group.Name {
-		// Try last cached items; otherwise return fast empty page (unknown totals)
+	// During heavy write tasks (import/delete), skip DB reads and return cached/empty to avoid lock contention.
+	if s.shouldDegradeReadDuringTask(group.Name) {
 		if cached, ok := s.KeyService.GetCachedPage(cacheKey); ok {
 			response.Success(c, &response.PaginatedResponse{
-				Items: cached,
+				Items:      cached,
 				Pagination: response.Pagination{Page: page, PageSize: pageSize, TotalItems: -1, TotalPages: -1},
 			})
 			return
 		}
-		empty := &response.PaginatedResponse{
-			Items: []models.APIKey{},
+		response.Success(c, &response.PaginatedResponse{
+			Items:      []models.APIKey{},
 			Pagination: response.Pagination{Page: page, PageSize: pageSize, TotalItems: -1, TotalPages: -1},
+		})
+		return
+	}
+
+	query := s.KeyService.ListKeysInGroupQuery(groupID, statusFilter, searchHash)
+
+	var keys []models.APIKey
+	paginatedResult, err := response.Paginate(c, query, &keys)
+	if err != nil {
+		response.Error(c, app_errors.ParseDBError(err))
+		return
+	}
+
+	// If data degraded (unknown totals + empty), try cache
+	if len(keys) == 0 && paginatedResult.Pagination.TotalItems == -1 {
+		if cached, ok := s.KeyService.GetCachedPage(cacheKey); ok {
+			paginatedResult.Items = cached
+			response.Success(c, paginatedResult)
+			return
 		}
-		response.Success(c, empty)
-		return
 	}
-}
 
-query := s.KeyService.ListKeysInGroupQuery(groupID, statusFilter, searchHash)
-
-var keys []models.APIKey
-paginatedResult, err := response.Paginate(c, query, &keys)
-if err != nil {
-	response.Error(c, app_errors.ParseDBError(err))
-	return
-}
-
-// If data degraded (unknown totals + empty), try cache
-if len(keys) == 0 && paginatedResult.Pagination.TotalItems == -1 {
-	if cached, ok := s.KeyService.GetCachedPage(cacheKey); ok {
-		paginatedResult.Items = cached
-		response.Success(c, paginatedResult)
-		return
-	}
-}
-
-// Decrypt all keys for display
+	// Decrypt all keys for display
 	for i := range keys {
 		decryptedValue, err := s.EncryptionSvc.Decrypt(keys[i].KeyValue)
 		if err != nil {
@@ -233,14 +227,14 @@ if len(keys) == 0 && paginatedResult.Pagination.TotalItems == -1 {
 			keys[i].KeyValue = decryptedValue
 		}
 	}
-paginatedResult.Items = keys
+	paginatedResult.Items = keys
 
-// Cache the page for quick fallback under load (only small pages)
-if page == 1 && pageSize <= 50 {
-	s.KeyService.SetCachedPage(cacheKey, keys)
-}
+	// Cache the page for quick fallback under load (only small pages)
+	if page == 1 && pageSize <= 50 {
+		s.KeyService.SetCachedPage(cacheKey, keys)
+	}
 
-response.Success(c, paginatedResult)
+	response.Success(c, paginatedResult)
 }
 
 // DeleteMultipleKeys handles deleting keys from a text block within a specific group.

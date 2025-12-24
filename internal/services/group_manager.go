@@ -20,7 +20,7 @@ import (
 const GroupUpdateChannel = "groups:updated"
 
 const (
-	defaultDBLookupTimeoutMs = 300
+	defaultDBLookupTimeoutMs = 1200
 	minDBLookupTimeoutMs     = 50
 )
 
@@ -80,23 +80,50 @@ func (gm *GroupManager) Initialize() error {
 		// does not consume the entire timeout window. The timeout is configurable
 		// via the DB_LOOKUP_TIMEOUT_MS environment variable.
 		timeout := getDBLookupTimeout()
-		groupsCtx, groupsCancel := context.WithTimeout(context.Background(), timeout)
-		defer groupsCancel()
 
-		// Use Select to only fetch necessary fields, reducing data transfer and improving performance.
-		if err := gm.db.WithContext(groupsCtx).Select(
-			"id, name, display_name, description, group_type, enabled, upstreams, " +
-				"validation_endpoint, channel_type, sort, test_model, param_overrides, " +
-				"config, header_rules, model_mapping, model_redirect_rules, " +
-				"model_redirect_strict, path_redirects, proxy_keys, last_validated_at, " +
-				"created_at, updated_at",
-		).Find(&groups).Error; err != nil {
+		maxAttempts := 1
+		if gm.syncer == nil {
+			maxAttempts = 3
+		}
+
+		var loadErr error
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			groups = groups[:0]
+			groupsCtx, groupsCancel := context.WithTimeout(context.Background(), timeout)
+			err := gm.db.WithContext(groupsCtx).Select(
+				"id, name, display_name, description, group_type, enabled, upstreams, " +
+					"validation_endpoint, channel_type, sort, test_model, param_overrides, " +
+					"config, header_rules, model_mapping, model_redirect_rules, " +
+					"model_redirect_strict, path_redirects, proxy_keys, last_validated_at, " +
+					"created_at, updated_at",
+			).Find(&groups).Error
+			groupsCancel()
+			if err == nil {
+				loadErr = nil
+				break
+			}
+			loadErr = err
+
 			// If DB is locked or timed out, serve stale cache if available.
 			if gm.syncer != nil && utils.IsTransientDBError(err) {
 				logrus.WithError(err).Warn("Group loader timed out/locked - returning stale cache")
 				return gm.syncer.Get(), nil
 			}
-			return groupCache{}, fmt.Errorf("failed to load groups from db: %w", err)
+
+			// On initial load, retry transient failures with exponential backoff.
+			if gm.syncer == nil && utils.IsTransientDBError(err) && attempt < maxAttempts-1 {
+				backoff := 200 * time.Millisecond * time.Duration(1<<attempt)
+				time.Sleep(backoff)
+				timeout *= 2
+				if timeout > 5*time.Second {
+					timeout = 5 * time.Second
+				}
+				continue
+			}
+			break
+		}
+		if loadErr != nil {
+			return groupCache{}, fmt.Errorf("failed to load groups from db: %w", loadErr)
 		}
 
 		// Load all sub-group relationships for aggregate groups (only valid ones with weight > 0).

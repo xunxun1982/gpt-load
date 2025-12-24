@@ -259,6 +259,15 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		return
 	}
 
+	// Avoid concurrent long-running tasks to reduce DB contention.
+	// Best-effort: If task status cannot be read, proceed without blocking.
+	if s.TaskService != nil {
+		if status, err := s.TaskService.GetTaskStatus(); err == nil && status.IsRunning {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, "a task is already running, please wait"))
+			return
+		}
+	}
+
 	// Convert handler format to service format
 	// Convert HeaderRules back to JSON for storage using common utility function
 	headerRulesJSON := ConvertHeaderRulesToJSON(importData.Group.HeaderRules)
@@ -353,6 +362,30 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		logrus.Debugf("ChildGroups: %d", len(importData.ChildGroups))
 	}
 
+	// Best-effort: mark a global import task as running so read requests can degrade quickly
+	// under SQLite lock contention during large imports.
+	var taskErr error
+	if s.TaskService != nil {
+		totalKeys := len(serviceGroupData.Keys)
+		for _, cg := range serviceGroupData.ChildGroups {
+			totalKeys += len(cg.Keys)
+		}
+		if _, err := s.TaskService.StartTask(services.TaskTypeKeyImport, importData.Group.Name, totalKeys); err != nil {
+			// If another task started between the status check above and now, surface as TASK_IN_PROGRESS.
+			if err.Error() == "a task is already running, please wait" {
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
+				return
+			}
+			logrus.WithError(err).Debug("Failed to start global task for group import, continuing without task signaling")
+		} else {
+			defer func() {
+				if endErr := s.TaskService.EndTask(nil, taskErr); endErr != nil {
+					logrus.WithError(endErr).Debug("Failed to end global task for group import")
+				}
+			}()
+		}
+	}
+
 	// Use transaction to ensure data consistency, rollback on failure
 	var createdGroup models.Group
 	var createdGroupID uint
@@ -371,6 +404,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	})
 
 	if err != nil {
+		taskErr = err
 		if HandleServiceError(c, err) {
 			return
 		}

@@ -561,8 +561,9 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 
 // ResetGroupActiveKeysFailureCount resets failure_count to 0 for all active keys in a specific group.
 // This is useful when importing a group, treating it as a fresh import.
+// Note: For newly imported keys, failure_count is already 0, so this is a no-op in that case.
 func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, error) {
-	// Update failure_count to 0 in database for all active keys in this group
+	// Update failure_count to 0 in database for all active keys with failure_count > 0
 	result := p.db.Model(&models.APIKey{}).
 		Where("group_id = ? AND status = ? AND failure_count > 0", groupID, models.KeyStatusActive).
 		Update("failure_count", 0)
@@ -574,35 +575,48 @@ func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, err
 		return 0, nil
 	}
 
-	// Get all active keys to update Redis store
-	var keys []models.APIKey
-	if err := p.db.Select("id").
-		Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).
-		Find(&keys).Error; err != nil {
-		logrus.WithError(err).Warn("Failed to query keys for store update, but database update succeeded")
-		return result.RowsAffected, nil // Return success even if store update fails
-	}
+	// Database was updated, now sync Redis store
+	// Query all active keys and set failure_count to 0 in Redis
+	// This is a best-effort operation - if it fails, the database is still correct
+	batchSize := 5000
+	var lastID uint = 0
 
-	// Update failure_count in Redis store for each key
-	for _, key := range keys {
-		keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
-		if err := p.store.HSet(keyHashKey, map[string]any{"failure_count": 0}); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"keyID": key.ID,
-				"error": err,
-			}).Warn("Failed to reset failure_count in store, continuing with other keys")
-			// Continue processing other keys even if one fails
+	for {
+		var batchKeys []struct{ ID uint }
+		if err := p.db.Model(&models.APIKey{}).
+			Select("id").
+			Where("group_id = ? AND status = ? AND id > ?", groupID, models.KeyStatusActive, lastID).
+			Order("id ASC").
+			Limit(batchSize).
+			Find(&batchKeys).Error; err != nil {
+			logrus.WithError(err).Warn("Failed to query keys for store update, but database update succeeded")
+			break
+		}
+
+		if len(batchKeys) == 0 {
+			break
+		}
+
+		for _, key := range batchKeys {
+			keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
+			if err := p.store.HSet(keyHashKey, map[string]any{"failure_count": 0}); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"keyID": key.ID,
+					"error": err,
+				}).Warn("Failed to reset failure_count in store, continuing with other keys")
+			}
+			lastID = key.ID
+		}
+
+		if len(batchKeys) < batchSize {
+			break
 		}
 	}
 
-	if result.RowsAffected > 0 {
-		logrus.Infof("Reset failure_count for %d active keys in group %d", result.RowsAffected, groupID)
+	logrus.Infof("Reset failure_count for %d active keys in group %d", result.RowsAffected, groupID)
 
-		// Invalidate cache after resetting failure counts to ensure consistency
-		// This matches the behavior in ResetAllActiveKeysFailureCount
-		if p.CacheInvalidationCallback != nil {
-			p.CacheInvalidationCallback(groupID)
-		}
+	if p.CacheInvalidationCallback != nil {
+		p.CacheInvalidationCallback(groupID)
 	}
 
 	return result.RowsAffected, nil
@@ -941,11 +955,18 @@ func (p *KeyProvider) addKeyToStore(key *models.APIKey) error {
 func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 	startTime := time.Now()
 
-	// Increase batch size for better performance with large key sets
-	batchSize := 5000 // Increased from 1000
+	// Batch size for database queries
+	batchSize := 5000
+	// Batch size for Redis LPush operations to avoid memory issues with large key sets
+	redisBatchSize := 10000
 	var batchKeys []models.APIKey
-	activeKeyIDs := make([]any, 0)
+	activeKeyIDs := make([]any, 0, redisBatchSize)
 	totalProcessed := 0
+	totalActiveKeys := 0
+
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+	// Delete existing active keys list before loading
+	p.store.Delete(activeKeysListKey)
 
 	err := p.db.Model(&models.APIKey{}).
 		Select("id, key_value, status, failure_count, group_id, created_at"). // Only select needed fields
@@ -973,6 +994,14 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 
 				if key.Status == models.KeyStatusActive {
 					activeKeyIDs = append(activeKeyIDs, key.ID)
+					// Flush active key IDs to Redis in batches to avoid memory buildup
+					if len(activeKeyIDs) >= redisBatchSize {
+						if err := p.store.LPush(activeKeysListKey, activeKeyIDs...); err != nil {
+							logrus.WithError(err).Warnf("Failed to LPush batch of active keys for group %d", groupID)
+						}
+						totalActiveKeys += len(activeKeyIDs)
+						activeKeyIDs = activeKeyIDs[:0] // Reset slice, reuse underlying array
+					}
 				}
 			}
 
@@ -988,17 +1017,16 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 		return fmt.Errorf("failed to load keys for group %d: %w", groupID, err)
 	}
 
-	// Update active keys list
+	// Flush remaining active key IDs
 	if len(activeKeyIDs) > 0 {
-		activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
-		p.store.Delete(activeKeysListKey)
 		if err := p.store.LPush(activeKeysListKey, activeKeyIDs...); err != nil {
 			return fmt.Errorf("failed to update active keys list for group %d: %w", groupID, err)
 		}
+		totalActiveKeys += len(activeKeyIDs)
 	}
 
 	duration := time.Since(startTime)
-	logrus.Infof("Loaded %d keys (%d active) to store for group %d in %v", totalProcessed, len(activeKeyIDs), groupID, duration)
+	logrus.Infof("Loaded %d keys (%d active) to store for group %d in %v", totalProcessed, totalActiveKeys, groupID, duration)
 	return nil
 }
 

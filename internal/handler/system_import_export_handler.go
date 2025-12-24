@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -22,10 +23,10 @@ import (
 
 // SystemExportData represents the data structure for system-wide export.
 type SystemExportData struct {
-	Version        string                    `json:"version"`
-	ExportedAt     string                    `json:"exported_at"`
-	SystemSettings map[string]string         `json:"system_settings"`
-	Groups         []GroupExportData         `json:"groups"`
+	Version        string            `json:"version"`
+	ExportedAt     string            `json:"exported_at"`
+	SystemSettings map[string]string `json:"system_settings"`
+	Groups         []GroupExportData `json:"groups"`
 }
 
 // ExportAll exports all system data (system settings and all groups).
@@ -135,9 +136,9 @@ func (s *Server) ExportAll(c *gin.Context) {
 
 // SystemImportData represents the data structure for system-wide import.
 type SystemImportData struct {
-	Version        string                    `json:"version"`
-	SystemSettings map[string]string         `json:"system_settings"`
-	Groups         []GroupExportData         `json:"groups"`
+	Version        string            `json:"version"`
+	SystemSettings map[string]string `json:"system_settings"`
+	Groups         []GroupExportData `json:"groups"`
 }
 
 // ImportAll imports all system data (system settings and all groups).
@@ -150,7 +151,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 
 	// Determine import mode from query, filename or content
 	sample := make([]string, 0, 5)
-	outer:
+outer:
 	for _, g := range importData.Groups {
 		for _, k := range g.Keys {
 			if len(sample) < 5 {
@@ -313,6 +314,41 @@ func (s *Server) ImportAll(c *gin.Context) {
 		s.GroupService.InvalidateGroupListCache()
 	}
 
+	// Load keys to Redis store asynchronously for all imported groups
+	// Query all groups and load their keys to Redis store
+	// NOTE: WithContext is kept for consistency with project-wide logging pattern
+	// and potential future tracing integration, even though ctx is detached
+	go func(ctx context.Context) {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+		defer cancel()
+		entry := logrus.WithContext(ctx)
+
+		var groups []models.Group
+		if err := s.DB.Select("id, name").Find(&groups).Error; err != nil {
+			entry.WithError(err).Warn("Failed to query groups for Redis cache loading after system import")
+			return
+		}
+
+		for _, group := range groups {
+			// Load keys to Redis store
+			if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
+				entry.WithError(err).Warnf("Failed to load keys to store for group %d (%s)",
+					group.ID, group.Name)
+			}
+
+			// Reset failure_count for all active keys
+			resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(group.ID)
+			if resetErr != nil {
+				entry.WithError(resetErr).Warnf("Failed to reset failure_count for group %d (%s)",
+					group.ID, group.Name)
+			} else if resetCount > 0 {
+				entry.Debugf("Reset failure_count for %d active keys in group %d (%s)",
+					resetCount, group.ID, group.Name)
+			}
+		}
+		entry.Infof("Completed loading keys to Redis store for %d groups after system import", len(groups))
+	}(context.Background())
+
 	logrus.Info("System import completed successfully")
 	response.SuccessI18n(c, "success.system_imported", nil)
 }
@@ -444,6 +480,36 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	}
 	logrus.Infof("Batch importing %d groups with %d total keys", len(importData.Groups), totalKeys)
 
+	// Avoid concurrent long-running tasks to reduce DB contention.
+	// Best-effort: If task signaling fails, continue without task status updates.
+	taskStarted := false
+	var taskErr error
+	if s.TaskService != nil {
+		// NOTE: Pre-check before StartTask is intentionally kept for fast-fail behavior.
+		// Although StartTask performs the same check atomically, this pre-check:
+		// 1. Avoids unnecessary serialization/storage operations when task is already running
+		// 2. Provides clearer code intent and better readability
+		// 3. The minor TOCTOU window is harmless since StartTask rechecks atomically
+		if status, err := s.TaskService.GetTaskStatus(); err == nil && status.IsRunning {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, "a task is already running, please wait"))
+			return
+		}
+		if _, err := s.TaskService.StartTask(services.TaskTypeKeyImport, "system", totalKeys); err != nil {
+			if errors.Is(err, services.ErrTaskAlreadyRunning) {
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
+				return
+			}
+			logrus.WithError(err).Debug("Failed to start global task for batch group import, continuing without task signaling")
+		} else {
+			taskStarted = true
+			defer func() {
+				if endErr := s.TaskService.EndTask(nil, taskErr); endErr != nil {
+					logrus.WithError(endErr).Debug("Failed to end global task for batch group import")
+				}
+			}()
+		}
+	}
+
 	// Convert handler format to service format for unified import
 	serviceGroups := make([]services.GroupExportData, 0, len(importData.Groups))
 	for _, groupExport := range importData.Groups {
@@ -501,7 +567,16 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	}
 
 	// Use transaction to ensure data consistency
+	// NOTE: Transaction returns nil even when individual group imports fail (logged and skipped).
+	// This is intentional - partial import failures are expected behavior, not task-level errors.
+	// The response payload includes imported/total/failed counts for visibility into partial success.
+	// taskErr is only set for GORM-level transaction failures, not business-level partial failures.
+	// NOTE: Context cancellation is intentionally NOT added to this transaction because:
+	// 1. Import operations should be atomic - once started, they should complete for data integrity
+	// 2. Consistent with project-wide pattern where no DB.Transaction uses WithContext
+	// 3. Partial cancellation mid-import could leave data in inconsistent state
 	var importedGroups []models.Group
+	processedKeys := 0
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		// Import all groups using the unified ImportExportService
 		importedCount := 0
@@ -522,6 +597,12 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 
 			importedGroups = append(importedGroups, createdGroup)
 			importedCount++
+			processedKeys += len(groupData.Keys)
+			if taskStarted {
+				if updateErr := s.TaskService.UpdateProgress(processedKeys); updateErr != nil {
+					logrus.WithError(updateErr).Debug("Failed to update task progress for batch group import")
+				}
+			}
 			logrus.Debugf("Imported group %s with ID %d", groupData.Group.Name, groupID)
 		}
 
@@ -530,6 +611,7 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	})
 
 	if err != nil {
+		taskErr = err
 		logrus.WithError(err).Error("Failed to import groups batch")
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
 		return
@@ -548,21 +630,31 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		s.GroupService.InvalidateGroupListCache()
 	}
 
-	// Reset failure_count for all active keys in each successfully imported group asynchronously
+	// Load keys to Redis store and reset failure_count for all active keys asynchronously
 	// This treats each import as a fresh start, clearing any historical failure counts
 	// Run asynchronously to avoid blocking the HTTP response (can take minutes for large groups)
+	// NOTE: WithContext is kept for consistency with project-wide logging pattern
+	// and potential future tracing integration, even though ctx is detached
 	go func(ctx context.Context, groups []models.Group) {
 		// Use background context with timeout to avoid goroutine leaks
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer cancel()
+		entry := logrus.WithContext(ctx)
 
 		for _, group := range groups {
+			// First, load all keys to Redis store
+			if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
+				entry.WithError(err).Warnf("Failed to load keys to store for imported group %d (%s)",
+					group.ID, group.Name)
+			}
+
+			// Then reset failure_count for all active keys
 			resetCount, resetErr := s.KeyService.ResetGroupActiveKeysFailureCount(group.ID)
 			if resetErr != nil {
-				logrus.WithContext(ctx).WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d (%s)",
+				entry.WithError(resetErr).Warnf("Failed to reset failure_count for imported group %d (%s)",
 					group.ID, group.Name)
 			} else if resetCount > 0 {
-				logrus.WithContext(ctx).Infof("Reset failure_count for %d active keys in imported group %d (%s)",
+				entry.Infof("Reset failure_count for %d active keys in imported group %d (%s)",
 					resetCount, group.ID, group.Name)
 			}
 		}
@@ -576,10 +668,10 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 
 	logrus.Infof("Batch import completed: %d groups imported", len(importedGroups))
 	response.SuccessI18n(c, "success.groups_batch_imported", map[string]interface{}{
-		"groups":      groupResponses,
-		"imported":    len(importedGroups),
-		"total":       len(importData.Groups),
-		"failed":      len(importData.Groups) - len(importedGroups),
+		"groups":   groupResponses,
+		"imported": len(importedGroups),
+		"total":    len(importData.Groups),
+		"failed":   len(importData.Groups) - len(importedGroups),
 	})
 }
 

@@ -75,6 +75,7 @@ export default {
     keys: "キー管理",
     logs: "ログ",
     settings: "システム設定",
+    more: "その他",
     logout: "ログアウト",
   },
   export: {
@@ -791,6 +792,9 @@ export default {
       "キー検証完了、{total}個のキーを処理、{valid}個成功、{invalid}個失敗。注意：検証失敗でもすぐにブラックリストに追加されるわけではありません。失敗回数が閾値に達する必要があります。",
     importCompleted: "キーインポート完了、{added}個追加、{ignored}個無視。",
     deleteCompleted: "キー削除完了、{deleted}個削除、{ignored}個無視。",
+  },
+  more: {
+    emptyDescription: "その他の機能は近日公開予定",
   },
   theme: {
     auto: "自動モード",

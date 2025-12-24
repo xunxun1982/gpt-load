@@ -126,6 +126,13 @@ func (a *App) Start() error {
 
 		a.settingsManager.Initialize(a.storage, a.groupManager, a.configManager.IsMaster())
 
+		// Initialize group cache BEFORE starting any background services that may hold write locks.
+		// This prevents startup failures on SQLite where a long-running writer (e.g., log cleanup)
+		// can block the initial groups load.
+		if err := a.groupManager.Initialize(); err != nil {
+			return fmt.Errorf("failed to initialize group manager: %w", err)
+		}
+
 		// Load keys from database to Redis
 		if err := a.keyPoolProvider.LoadKeysFromDB(); err != nil {
 			return fmt.Errorf("failed to load keys into key pool: %w", err)
@@ -139,14 +146,15 @@ func (a *App) Start() error {
 	} else {
 		logrus.Info("Starting as Slave Node.")
 		a.settingsManager.Initialize(a.storage, a.groupManager, a.configManager.IsMaster())
+
+		// Initialize group cache early for slave nodes as well.
+		if err := a.groupManager.Initialize(); err != nil {
+			return fmt.Errorf("failed to initialize group manager: %w", err)
+		}
 	}
 
 	// Display configuration and start all background services
 	a.configManager.DisplayServerConfig()
-
-	if err := a.groupManager.Initialize(); err != nil {
-		return fmt.Errorf("failed to initialize group manager: %w", err)
-	}
 
 	// Create HTTP server
 	serverConfig := a.configManager.GetEffectiveServerConfig()

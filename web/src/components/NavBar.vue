@@ -21,6 +21,7 @@ const menuOptions = computed<MenuOption[]>(() => {
     renderMenuItem("keys", t("nav.keys"), "🔑"),
     renderMenuItem("logs", t("nav.logs"), "📋"),
     renderMenuItem("settings", t("nav.settings"), "⚙️"),
+    renderMenuItem("more", t("nav.more"), "📦"),
   ];
 
   return options;
