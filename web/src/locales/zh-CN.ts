@@ -75,6 +75,7 @@ export default {
     keys: "密钥管理",
     logs: "日志",
     settings: "系统设置",
+    more: "更多",
     logout: "退出登录",
   },
   dashboard: {
@@ -758,6 +759,9 @@ export default {
       "密钥验证完成，处理了 {total} 个密钥，其中 {valid} 个成功，{invalid} 个失败。请注意：验证失败并不一定拉黑该密钥，需要失败次数达到阈值才会拉黑。",
     importCompleted: "密钥导入完成，成功添加 {added} 个密钥，忽略了 {ignored} 个。",
     deleteCompleted: "密钥删除完成，成功删除 {deleted} 个密钥，忽略了 {ignored} 个。",
+  },
+  more: {
+    emptyDescription: "更多功能即将推出",
   },
   theme: {
     auto: "自动模式",

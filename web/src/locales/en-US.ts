@@ -75,6 +75,7 @@ export default {
     keys: "Keys",
     logs: "Logs",
     settings: "Settings",
+    more: "More",
     logout: "Logout",
   },
   dashboard: {
@@ -791,6 +792,9 @@ export default {
       "Key validation completed, processed {total} keys, {valid} successful, {invalid} failed. Note: Failed validations do not immediately blacklist keys - failure count must reach threshold to blacklist.",
     importCompleted: "Key import completed, added {added} keys, ignored {ignored}.",
     deleteCompleted: "Key deletion completed, deleted {deleted} keys, ignored {ignored}.",
+  },
+  more: {
+    emptyDescription: "More features coming soon",
   },
   theme: {
     auto: "Auto Mode",
