@@ -194,8 +194,10 @@ async function submitSite() {
   }
   const payload = {
     ...siteForm,
-    checkin_enabled: siteForm.auto_checkin_enabled ? true : siteForm.checkin_enabled,
-    auto_checkin_enabled: siteForm.checkin_enabled ? siteForm.auto_checkin_enabled : false,
+    // Enforce: auto_checkin requires checkin to be enabled
+    checkin_enabled: siteForm.checkin_enabled || siteForm.auto_checkin_enabled,
+    auto_checkin_enabled:
+      (siteForm.checkin_enabled || siteForm.auto_checkin_enabled) && siteForm.auto_checkin_enabled,
   };
   try {
     if (editingSite.value) {
@@ -290,12 +292,18 @@ async function checkinSite(site: ManagedSiteDTO) {
 }
 
 function openSiteUrl(site: ManagedSiteDTO) {
-  window.open(site.base_url, "_blank");
+  const win = window.open(site.base_url, "_blank", "noopener,noreferrer");
+  if (win) {
+    win.opener = null;
+  }
 }
 
 function openCheckinPage(site: ManagedSiteDTO) {
   if (site.checkin_page_url) {
-    window.open(site.checkin_page_url, "_blank");
+    const win = window.open(site.checkin_page_url, "_blank", "noopener,noreferrer");
+    if (win) {
+      win.opener = null;
+    }
   }
 }
 
