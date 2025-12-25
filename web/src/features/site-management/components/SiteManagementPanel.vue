@@ -192,12 +192,13 @@ async function submitSite() {
     message.warning(t("siteManagement.baseUrlRequired"));
     return;
   }
+  // Enforce: auto_checkin requires checkin to be enabled
+  const checkinEnabled = siteForm.checkin_enabled || siteForm.auto_checkin_enabled;
+  const autoCheckinEnabled = checkinEnabled && siteForm.auto_checkin_enabled;
   const payload = {
     ...siteForm,
-    // Enforce: auto_checkin requires checkin to be enabled
-    checkin_enabled: siteForm.checkin_enabled || siteForm.auto_checkin_enabled,
-    auto_checkin_enabled:
-      (siteForm.checkin_enabled || siteForm.auto_checkin_enabled) && siteForm.auto_checkin_enabled,
+    checkin_enabled: checkinEnabled,
+    auto_checkin_enabled: autoCheckinEnabled,
   };
   try {
     if (editingSite.value) {
@@ -300,6 +301,9 @@ async function checkinSite(site: ManagedSiteDTO) {
 }
 
 function openSiteUrl(site: ManagedSiteDTO) {
+  // Note: win.opener = null is kept as defense-in-depth for older browsers
+  // that may not fully support noopener. AI suggested removing it as redundant,
+  // but we prefer the extra safety with negligible overhead.
   const win = window.open(site.base_url, "_blank", "noopener,noreferrer");
   if (win) {
     win.opener = null;
@@ -633,6 +637,10 @@ onMounted(() => {
         .then(s => {
           autoCheckinStatus.value = s;
         })
+        // Empty catch: follows project convention - centralized error handling in HTTP utility.
+        // AI suggested adding console.warn here, but rejected because:
+        // 1. Background polling failures are expected (network fluctuations)
+        // 2. Adding logs would create noise in production
         .catch(() => {});
     }
   }, 30000);

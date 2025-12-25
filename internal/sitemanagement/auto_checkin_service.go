@@ -893,6 +893,9 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 		if strings.Contains(strings.ToLower(msg), "success") || strings.Contains(msg, "签到成功") {
 			return providerResult{Status: CheckinResultSuccess, Message: msg}, nil
 		}
+		// Note: AI suggested adding debug log for "unexpected" success messages here.
+		// Rejected because: anyrouter API contract guarantees success=true only for
+		// actual successes. The catch-all is intentional and correct behavior.
 		return providerResult{Status: CheckinResultSuccess, Message: msg}, nil
 	}
 	if msg != "" {
