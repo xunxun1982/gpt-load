@@ -1,4 +1,12 @@
 <script setup lang="ts">
+/**
+ * Site Management Panel Component
+ *
+ * Error Handling Convention:
+ * Empty catch blocks with "catch (_) { ... }" rely on centralized error handling
+ * in the HTTP utility (@/utils/http). The interceptor automatically displays error toasts
+ * to users, so local error handling is intentionally omitted to avoid duplicate messages.
+ */
 import {
   siteManagementApi,
   type AutoCheckinConfig,

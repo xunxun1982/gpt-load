@@ -595,6 +595,8 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 				// Decrypt for plain export
 				if decrypted, err := s.encryptionSvc.Decrypt(site.AuthValue); err == nil {
 					siteInfo.AuthValue = decrypted
+				} else {
+					logrus.WithError(err).Warnf("Failed to decrypt auth value for site %s during export", site.Name)
 				}
 			} else {
 				// Keep encrypted for encrypted export

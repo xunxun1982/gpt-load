@@ -622,17 +622,17 @@ func (s *AutoCheckinService) persistSiteResult(ctx context.Context, siteID uint,
 		"last_checkin_message": message,
 	}
 	uCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	if err := s.db.WithContext(uCtx).Model(&ManagedSite{}).Where("id = ?", siteID).Updates(update).Error; err != nil {
 		logrus.WithError(err).Debugf("Failed to update site %d check-in status", siteID)
 	}
-	cancel()
 
 	logRow := ManagedSiteCheckinLog{SiteID: siteID, Status: status, Message: message, CreatedAt: now}
 	lCtx, lcancel := context.WithTimeout(ctx, 2*time.Second)
+	defer lcancel()
 	if err := s.db.WithContext(lCtx).Create(&logRow).Error; err != nil {
 		logrus.WithError(err).Debugf("Failed to create check-in log for site %d", siteID)
 	}
-	lcancel()
 }
 
 func (s *AutoCheckinService) persistRunStatus(config *AutoCheckinConfig, summary runSummary) {
