@@ -23,10 +23,52 @@ import (
 
 // SystemExportData represents the data structure for system-wide export.
 type SystemExportData struct {
-	Version        string            `json:"version"`
-	ExportedAt     string            `json:"exported_at"`
-	SystemSettings map[string]string `json:"system_settings"`
-	Groups         []GroupExportData `json:"groups"`
+	Version        string                        `json:"version"`
+	ExportedAt     string                        `json:"exported_at"`
+	SystemSettings map[string]string             `json:"system_settings"`
+	Groups         []GroupExportData             `json:"groups"`
+	ManagedSites   *ManagedSitesExportData       `json:"managed_sites,omitempty"`
+}
+
+// ManagedSitesExportData represents exported managed sites data for handler
+type ManagedSitesExportData struct {
+	AutoCheckin *ManagedSiteAutoCheckinConfig `json:"auto_checkin,omitempty"`
+	Sites       []ManagedSiteExportInfo       `json:"sites"`
+}
+
+// ManagedSiteAutoCheckinConfig represents auto-checkin configuration
+type ManagedSiteAutoCheckinConfig struct {
+	GlobalEnabled     bool                              `json:"global_enabled"`
+	WindowStart       string                            `json:"window_start"`
+	WindowEnd         string                            `json:"window_end"`
+	ScheduleMode      string                            `json:"schedule_mode"`
+	DeterministicTime string                            `json:"deterministic_time,omitempty"`
+	RetryStrategy     ManagedSiteAutoCheckinRetryConfig `json:"retry_strategy"`
+}
+
+// ManagedSiteAutoCheckinRetryConfig represents retry strategy
+type ManagedSiteAutoCheckinRetryConfig struct {
+	Enabled           bool `json:"enabled"`
+	IntervalMinutes   int  `json:"interval_minutes"`
+	MaxAttemptsPerDay int  `json:"max_attempts_per_day"`
+}
+
+// ManagedSiteExportInfo represents exported site information
+type ManagedSiteExportInfo struct {
+	Name               string `json:"name"`
+	Notes              string `json:"notes"`
+	Description        string `json:"description"`
+	Sort               int    `json:"sort"`
+	Enabled            bool   `json:"enabled"`
+	BaseURL            string `json:"base_url"`
+	SiteType           string `json:"site_type"`
+	UserID             string `json:"user_id"`
+	CheckInPageURL     string `json:"checkin_page_url"`
+	CheckInEnabled     bool   `json:"checkin_enabled"`
+	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
+	CustomCheckInURL   string `json:"custom_checkin_url"`
+	AuthType           string `json:"auth_type"`
+	AuthValue          string `json:"auth_value,omitempty"`
 }
 
 // ExportAll exports all system data (system settings and all groups).
@@ -121,6 +163,65 @@ func (s *Server) ExportAll(c *gin.Context) {
 		Groups:         groupExports,
 	}
 
+	// Convert managed sites if present
+	if systemData.ManagedSites != nil && len(systemData.ManagedSites.Sites) > 0 {
+		managedSites := &ManagedSitesExportData{
+			Sites: make([]ManagedSiteExportInfo, 0, len(systemData.ManagedSites.Sites)),
+		}
+
+		// Copy auto-checkin config
+		if systemData.ManagedSites.AutoCheckin != nil {
+			managedSites.AutoCheckin = &ManagedSiteAutoCheckinConfig{
+				GlobalEnabled:     systemData.ManagedSites.AutoCheckin.GlobalEnabled,
+				WindowStart:       systemData.ManagedSites.AutoCheckin.WindowStart,
+				WindowEnd:         systemData.ManagedSites.AutoCheckin.WindowEnd,
+				ScheduleMode:      systemData.ManagedSites.AutoCheckin.ScheduleMode,
+				DeterministicTime: systemData.ManagedSites.AutoCheckin.DeterministicTime,
+				RetryStrategy: ManagedSiteAutoCheckinRetryConfig{
+					Enabled:           systemData.ManagedSites.AutoCheckin.RetryStrategy.Enabled,
+					IntervalMinutes:   systemData.ManagedSites.AutoCheckin.RetryStrategy.IntervalMinutes,
+					MaxAttemptsPerDay: systemData.ManagedSites.AutoCheckin.RetryStrategy.MaxAttemptsPerDay,
+				},
+			}
+		}
+
+		// Convert sites; when plain mode, decrypt auth values
+		for _, site := range systemData.ManagedSites.Sites {
+			siteInfo := ManagedSiteExportInfo{
+				Name:               site.Name,
+				Notes:              site.Notes,
+				Description:        site.Description,
+				Sort:               site.Sort,
+				Enabled:            site.Enabled,
+				BaseURL:            site.BaseURL,
+				SiteType:           site.SiteType,
+				UserID:             site.UserID,
+				CheckInPageURL:     site.CheckInPageURL,
+				CheckInEnabled:     site.CheckInEnabled,
+				AutoCheckInEnabled: site.AutoCheckInEnabled,
+				CustomCheckInURL:   site.CustomCheckInURL,
+				AuthType:           site.AuthType,
+			}
+
+			// Handle auth value based on export mode
+			if site.AuthValue != "" {
+				if exportMode == "plain" {
+					if dec, derr := s.EncryptionSvc.Decrypt(site.AuthValue); derr == nil {
+						siteInfo.AuthValue = dec
+					} else {
+						logrus.WithError(derr).Debug("Failed to decrypt site auth value during plain export")
+					}
+				} else {
+					siteInfo.AuthValue = site.AuthValue
+				}
+			}
+
+			managedSites.Sites = append(managedSites.Sites, siteInfo)
+		}
+
+		exportData.ManagedSites = managedSites
+	}
+
 	// Set download headers with mode suffix for filename
 	suffix := "enc"
 	if exportMode == "plain" {
@@ -136,9 +237,10 @@ func (s *Server) ExportAll(c *gin.Context) {
 
 // SystemImportData represents the data structure for system-wide import.
 type SystemImportData struct {
-	Version        string            `json:"version"`
-	SystemSettings map[string]string `json:"system_settings"`
-	Groups         []GroupExportData `json:"groups"`
+	Version        string                  `json:"version"`
+	SystemSettings map[string]string       `json:"system_settings"`
+	Groups         []GroupExportData       `json:"groups"`
+	ManagedSites   *ManagedSitesExportData `json:"managed_sites,omitempty"`
 }
 
 // ImportAll imports all system data (system settings and all groups).
@@ -271,6 +373,65 @@ outer:
 		}
 
 		serviceImportData.Groups = append(serviceImportData.Groups, groupData)
+	}
+
+	// Convert managed sites if present
+	if importData.ManagedSites != nil && len(importData.ManagedSites.Sites) > 0 {
+		managedSites := &services.ManagedSitesExportData{
+			Sites: make([]services.ManagedSiteExportInfo, 0, len(importData.ManagedSites.Sites)),
+		}
+
+		// Copy auto-checkin config
+		if importData.ManagedSites.AutoCheckin != nil {
+			managedSites.AutoCheckin = &services.ManagedSiteAutoCheckinConfig{
+				GlobalEnabled:     importData.ManagedSites.AutoCheckin.GlobalEnabled,
+				WindowStart:       importData.ManagedSites.AutoCheckin.WindowStart,
+				WindowEnd:         importData.ManagedSites.AutoCheckin.WindowEnd,
+				ScheduleMode:      importData.ManagedSites.AutoCheckin.ScheduleMode,
+				DeterministicTime: importData.ManagedSites.AutoCheckin.DeterministicTime,
+				RetryStrategy: services.ManagedSiteAutoCheckinRetryConfig{
+					Enabled:           importData.ManagedSites.AutoCheckin.RetryStrategy.Enabled,
+					IntervalMinutes:   importData.ManagedSites.AutoCheckin.RetryStrategy.IntervalMinutes,
+					MaxAttemptsPerDay: importData.ManagedSites.AutoCheckin.RetryStrategy.MaxAttemptsPerDay,
+				},
+			}
+		}
+
+		// Convert sites; if input is plaintext, encrypt auth values
+		for _, site := range importData.ManagedSites.Sites {
+			siteInfo := services.ManagedSiteExportInfo{
+				Name:               site.Name,
+				Notes:              site.Notes,
+				Description:        site.Description,
+				Sort:               site.Sort,
+				Enabled:            site.Enabled,
+				BaseURL:            site.BaseURL,
+				SiteType:           site.SiteType,
+				UserID:             site.UserID,
+				CheckInPageURL:     site.CheckInPageURL,
+				CheckInEnabled:     site.CheckInEnabled,
+				AutoCheckInEnabled: site.AutoCheckInEnabled,
+				CustomCheckInURL:   site.CustomCheckInURL,
+				AuthType:           site.AuthType,
+			}
+
+			// Handle auth value encryption
+			if site.AuthValue != "" && site.AuthType != "none" {
+				if inputIsPlain {
+					if enc, e := s.EncryptionSvc.Encrypt(site.AuthValue); e == nil {
+						siteInfo.AuthValue = enc
+					} else {
+						logrus.WithError(e).Warnf("Failed to encrypt site auth value for %s, skipping auth", site.Name)
+					}
+				} else {
+					siteInfo.AuthValue = site.AuthValue
+				}
+			}
+
+			managedSites.Sites = append(managedSites.Sites, siteInfo)
+		}
+
+		serviceImportData.ManagedSites = managedSites
 	}
 
 	// Use transaction to ensure data consistency

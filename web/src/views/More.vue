@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SiteManagementPanel from "@/features/site-management/components/SiteManagementPanel.vue";
 import { NCard, NEmpty, NTabPane, NTabs } from "naive-ui";
 import { ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -79,7 +80,8 @@ function handleTabChange(tab: MoreTab) {
           <span class="more-title">{{ t("nav.more") }}</span>
         </template>
         <n-tab-pane v-for="pane in panes" :key="pane.key" :name="pane.key" :tab="t(pane.labelKey)">
-          <n-empty size="tiny" :show-icon="false" :description="t('more.emptyDescription')" />
+          <site-management-panel v-if="pane.key === 'site'" />
+          <n-empty v-else size="tiny" :show-icon="false" :description="t('more.emptyDescription')" />
         </n-tab-pane>
       </n-tabs>
     </n-card>

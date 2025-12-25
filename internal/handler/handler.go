@@ -10,6 +10,7 @@ import (
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/services"
+	"gpt-load/internal/sitemanagement"
 	"gpt-load/internal/types"
 
 	"github.com/gin-gonic/gin"
@@ -34,8 +35,10 @@ type Server struct {
 	LogService                 *services.LogService
 	CommonHandler              *CommonHandler
 	EncryptionSvc              encryption.Service
-	BulkImportService          *services.BulkImportService // Added for optimized bulk imports
+	BulkImportService          *services.BulkImportService   // Added for optimized bulk imports
 	ImportExportService        *services.ImportExportService // Added for unified import/export
+	SiteService                *sitemanagement.SiteService
+	AutoCheckinService         *sitemanagement.AutoCheckinService
 }
 
 // NewServerParams defines the dependencies for the NewServer constructor.
@@ -56,8 +59,10 @@ type NewServerParams struct {
 	LogService                 *services.LogService
 	CommonHandler              *CommonHandler
 	EncryptionSvc              encryption.Service
-	BulkImportService          *services.BulkImportService // Added for optimized bulk imports
+	BulkImportService          *services.BulkImportService   // Added for optimized bulk imports
 	ImportExportService        *services.ImportExportService // Added for unified import/export
+	SiteService                *sitemanagement.SiteService
+	AutoCheckinService         *sitemanagement.AutoCheckinService
 }
 
 // NewServer creates a new handler instance with dependencies injected by dig.
@@ -80,6 +85,8 @@ func NewServer(params NewServerParams) *Server {
 		EncryptionSvc:              params.EncryptionSvc,
 		BulkImportService:          params.BulkImportService,
 		ImportExportService:        params.ImportExportService,
+		SiteService:                params.SiteService,
+		AutoCheckinService:         params.AutoCheckinService,
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/proxy"
 	"gpt-load/internal/services"
+	"gpt-load/internal/sitemanagement"
 	"gpt-load/internal/store"
 	"gpt-load/internal/types"
 	"gpt-load/internal/version"
@@ -27,53 +28,56 @@ import (
 
 // App holds all services and manages the application lifecycle.
 type App struct {
-	engine            *gin.Engine
-	configManager     types.ConfigManager
-	settingsManager   *config.SystemSettingsManager
-	groupManager      *services.GroupManager
-	childGroupService *services.ChildGroupService
-	logCleanupService *services.LogCleanupService
-	requestLogService *services.RequestLogService
-	cronChecker       *keypool.CronChecker
-	keyPoolProvider   *keypool.KeyProvider
-	proxyServer       *proxy.ProxyServer
-	storage           store.Store
-	db                *gorm.DB
-	httpServer        *http.Server
+	engine             *gin.Engine
+	configManager      types.ConfigManager
+	settingsManager    *config.SystemSettingsManager
+	groupManager       *services.GroupManager
+	childGroupService  *services.ChildGroupService
+	logCleanupService  *services.LogCleanupService
+	requestLogService  *services.RequestLogService
+	autoCheckinService *sitemanagement.AutoCheckinService
+	cronChecker        *keypool.CronChecker
+	keyPoolProvider    *keypool.KeyProvider
+	proxyServer        *proxy.ProxyServer
+	storage            store.Store
+	db                 *gorm.DB
+	httpServer         *http.Server
 }
 
 // AppParams defines the dependencies for the App.
 type AppParams struct {
 	dig.In
-	Engine            *gin.Engine
-	ConfigManager     types.ConfigManager
-	SettingsManager   *config.SystemSettingsManager
-	GroupManager      *services.GroupManager
-	ChildGroupService *services.ChildGroupService
-	LogCleanupService *services.LogCleanupService
-	RequestLogService *services.RequestLogService
-	CronChecker       *keypool.CronChecker
-	KeyPoolProvider   *keypool.KeyProvider
-	ProxyServer       *proxy.ProxyServer
-	Storage           store.Store
-	DB                *gorm.DB
+	Engine             *gin.Engine
+	ConfigManager      types.ConfigManager
+	SettingsManager    *config.SystemSettingsManager
+	GroupManager       *services.GroupManager
+	ChildGroupService  *services.ChildGroupService
+	LogCleanupService  *services.LogCleanupService
+	RequestLogService  *services.RequestLogService
+	AutoCheckinService *sitemanagement.AutoCheckinService
+	CronChecker        *keypool.CronChecker
+	KeyPoolProvider    *keypool.KeyProvider
+	ProxyServer        *proxy.ProxyServer
+	Storage            store.Store
+	DB                 *gorm.DB
 }
 
 // NewApp is the constructor for App, with dependencies injected by dig.
 func NewApp(params AppParams) *App {
 	return &App{
-		engine:            params.Engine,
-		configManager:     params.ConfigManager,
-		settingsManager:   params.SettingsManager,
-		groupManager:      params.GroupManager,
-		childGroupService: params.ChildGroupService,
-		logCleanupService: params.LogCleanupService,
-		requestLogService: params.RequestLogService,
-		cronChecker:       params.CronChecker,
-		keyPoolProvider:   params.KeyPoolProvider,
-		proxyServer:       params.ProxyServer,
-		storage:           params.Storage,
-		db:                params.DB,
+		engine:             params.Engine,
+		configManager:      params.ConfigManager,
+		settingsManager:    params.SettingsManager,
+		groupManager:       params.GroupManager,
+		childGroupService:  params.ChildGroupService,
+		logCleanupService:  params.LogCleanupService,
+		requestLogService:  params.RequestLogService,
+		autoCheckinService: params.AutoCheckinService,
+		cronChecker:        params.CronChecker,
+		keyPoolProvider:    params.KeyPoolProvider,
+		proxyServer:        params.ProxyServer,
+		storage:            params.Storage,
+		db:                 params.DB,
 	}
 }
 
@@ -102,6 +106,9 @@ func (a *App) Start() error {
 			&models.APIKey{},
 			&models.RequestLog{},
 			&models.GroupHourlyStat{},
+			&sitemanagement.ManagedSite{},
+			&sitemanagement.ManagedSiteCheckinLog{},
+			&sitemanagement.ManagedSiteSetting{},
 		); err != nil {
 			return fmt.Errorf("database auto-migration failed: %w", err)
 		}
@@ -141,6 +148,7 @@ func (a *App) Start() error {
 
 		// Services that only start on Master node
 		a.requestLogService.Start()
+		a.autoCheckinService.Start()
 		a.logCleanupService.Start()
 		a.cronChecker.Start()
 	} else {
@@ -210,6 +218,7 @@ func (a *App) Stop(ctx context.Context) {
 	if serverConfig.IsMaster {
 		stoppableServices = append(stoppableServices,
 			a.cronChecker.Stop,
+			a.autoCheckinService.Stop,
 			a.logCleanupService.Stop,
 			a.requestLogService.Stop,
 		)

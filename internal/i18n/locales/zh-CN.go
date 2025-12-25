@@ -1,5 +1,7 @@
 package locales
 
+import sitei18n "gpt-load/internal/sitemanagement/i18n"
+
 // Messages Chinese (Simplified) translations
 var MessagesZhCN = map[string]string{
 	// Common messages
@@ -45,38 +47,38 @@ var MessagesZhCN = map[string]string{
 	"logs.exported": "日志导出成功",
 
 	// Validation related
-	"validation.invalid_group_name":      "无效的分组名称。只能包含小写字母、数字、中划线或下划线，长度1-100位",
-	"validation.invalid_test_path":       "无效的测试路径。如果提供，必须是以 / 开头的有效路径，且不能是完整的URL。",
-	"validation.duplicate_header":        "重复的请求头: {{.key}}",
-	"validation.group_not_found":         "分组不存在",
-	"validation.group_disabled":          "分组已禁用，无法执行此操作",
-	"validation.invalid_status_filter":   "无效的状态过滤器",
-	"validation.invalid_group_id":        "无效的分组ID格式",
-	"validation.test_model_required":     "测试模型是必需的",
-	"validation.invalid_copy_keys_value": "无效的copy_keys值。必须是'none'、'valid_only'或'all'",
-	"validation.invalid_channel_type":    "无效的通道类型。支持的类型有: {{.types}}",
-	"validation.test_model_empty":        "测试模型不能为空或只有空格",
-	"validation.invalid_status_value":    "无效的状态值",
-	"validation.invalid_upstreams":       "upstreams配置错误: {{.error}}",
-	"validation.group_id_required":       "需要提供group_id参数",
-	"validation.invalid_group_id_format": "无效的group_id格式",
-	"validation.keys_text_empty":         "密钥文本不能为空",
-	"validation.invalid_group_type":      "无效的分组类型，必须为'standard'或'aggregate'",
-	"validation.sub_groups_required":     "聚合分组必须包含至少一个子分组",
-	"validation.invalid_sub_group_id":    "无效的子分组ID",
-	"validation.sub_group_not_found":     "一个或多个子分组不存在",
-	"validation.sub_group_cannot_be_aggregate": "子分组不能是聚合分组",
-	"validation.sub_group_channel_mismatch": "所有子分组必须使用相同的渠道类型",
-	"validation.sub_group_validation_endpoint_mismatch": "子分组请求端点不一致，聚合分组需要统一的上游请求路径以确保透传成功",
-	"validation.sub_group_weight_negative":     "子分组权重不能为负数",
-	"validation.sub_group_weight_max_exceeded": "子分组权重不能超过1000",
-	"validation.sub_group_referenced_cannot_modify": "该分组正被 {{.count}} 个聚合分组引用为子分组，无法修改渠道类型或验证端点。请先从相关聚合分组中移除此分组后再进行修改",
+	"validation.invalid_group_name":                          "无效的分组名称。只能包含小写字母、数字、中划线或下划线，长度1-100位",
+	"validation.invalid_test_path":                           "无效的测试路径。如果提供，必须是以 / 开头的有效路径，且不能是完整的URL。",
+	"validation.duplicate_header":                            "重复的请求头: {{.key}}",
+	"validation.group_not_found":                             "分组不存在",
+	"validation.group_disabled":                              "分组已禁用，无法执行此操作",
+	"validation.invalid_status_filter":                       "无效的状态过滤器",
+	"validation.invalid_group_id":                            "无效的分组ID格式",
+	"validation.test_model_required":                         "测试模型是必需的",
+	"validation.invalid_copy_keys_value":                     "无效的copy_keys值。必须是'none'、'valid_only'或'all'",
+	"validation.invalid_channel_type":                        "无效的通道类型。支持的类型有: {{.types}}",
+	"validation.test_model_empty":                            "测试模型不能为空或只有空格",
+	"validation.invalid_status_value":                        "无效的状态值",
+	"validation.invalid_upstreams":                           "upstreams配置错误: {{.error}}",
+	"validation.group_id_required":                           "需要提供group_id参数",
+	"validation.invalid_group_id_format":                     "无效的group_id格式",
+	"validation.keys_text_empty":                             "密钥文本不能为空",
+	"validation.invalid_group_type":                          "无效的分组类型，必须为'standard'或'aggregate'",
+	"validation.sub_groups_required":                         "聚合分组必须包含至少一个子分组",
+	"validation.invalid_sub_group_id":                        "无效的子分组ID",
+	"validation.sub_group_not_found":                         "一个或多个子分组不存在",
+	"validation.sub_group_cannot_be_aggregate":               "子分组不能是聚合分组",
+	"validation.sub_group_channel_mismatch":                  "所有子分组必须使用相同的渠道类型",
+	"validation.sub_group_validation_endpoint_mismatch":      "子分组请求端点不一致，聚合分组需要统一的上游请求路径以确保透传成功",
+	"validation.sub_group_weight_negative":                   "子分组权重不能为负数",
+	"validation.sub_group_weight_max_exceeded":               "子分组权重不能超过1000",
+	"validation.sub_group_referenced_cannot_modify":          "该分组正被 {{.count}} 个聚合分组引用为子分组，无法修改渠道类型或验证端点。请先从相关聚合分组中移除此分组后再进行修改",
 	"validation.cc_support_cannot_disable_used_by_anthropic": "无法关闭 CC 支持，该 OpenAI 分组正被以下 Anthropic 聚合分组使用：{{.groups}}。请先从这些聚合分组中移除此分组，然后再关闭 CC 支持",
 	"validation.standard_group_requires_upstreams_testmodel": "转换为标准分组需要提供上游服务器和测试模型",
 	"validation.invalid_model_mapping":                       "模型映射格式无效：{{.error}}",
-	"validation.aggregate_no_model_redirect": "聚合分组不支持模型重定向规则",
-	"validation.invalid_model_redirect":      "无效的模型重定向规则：{{.error}}",
-	"validation.invalid_param_overrides":     "参数覆盖字段 {{.field}} 类型无效：期望 {{.expected}}，实际 {{.got}}",
+	"validation.aggregate_no_model_redirect":                 "聚合分组不支持模型重定向规则",
+	"validation.invalid_model_redirect":                      "无效的模型重定向规则：{{.error}}",
+	"validation.invalid_param_overrides":                     "参数覆盖字段 {{.field}} 类型无效：期望 {{.expected}}，实际 {{.got}}",
 
 	// Task related
 	"task.validation_started": "密钥验证任务已开始",
@@ -228,4 +230,10 @@ var MessagesZhCN = map[string]string{
 	"success.child_group_deleted":                       "子分组删除成功",
 	"warning.parent_has_child_groups":                   "该分组有 {{.count}} 个子分组，删除后子分组也将被删除",
 	"group.child_groups_deleted":                        "已同时删除 {{.count}} 个子分组",
+}
+
+func init() {
+	for k, v := range sitei18n.MessagesZhCN {
+		MessagesZhCN[k] = v
+	}
 }

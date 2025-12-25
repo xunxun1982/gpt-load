@@ -187,6 +187,26 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		settings.PUT("", serverHandler.UpdateSettings)
 	}
 
+	// Site management
+	siteMgmt := api.Group("/site-management")
+	{
+		siteMgmt.GET("/sites", serverHandler.ListManagedSites)
+		siteMgmt.POST("/sites", serverHandler.CreateManagedSite)
+		siteMgmt.PUT("/sites/:id", serverHandler.UpdateManagedSite)
+		siteMgmt.DELETE("/sites/:id", serverHandler.DeleteManagedSite)
+		siteMgmt.POST("/sites/:id/checkin", serverHandler.CheckInManagedSite)
+		siteMgmt.GET("/sites/:id/checkin-logs", serverHandler.ListManagedSiteCheckinLogs)
+
+		siteMgmt.GET("/auto-checkin/config", serverHandler.GetAutoCheckinConfig)
+		siteMgmt.PUT("/auto-checkin/config", serverHandler.UpdateAutoCheckinConfig)
+		siteMgmt.GET("/auto-checkin/status", serverHandler.GetAutoCheckinStatus)
+		siteMgmt.POST("/auto-checkin/run-now", serverHandler.RunAutoCheckinNow)
+
+		// Import/Export
+		siteMgmt.GET("/export", serverHandler.ExportManagedSites)
+		siteMgmt.POST("/import", serverHandler.ImportManagedSites)
+	}
+
 	// System-wide import/export
 	system := api.Group("/system")
 	{

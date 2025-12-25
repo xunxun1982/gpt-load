@@ -1,5 +1,7 @@
 package locales
 
+import sitei18n "gpt-load/internal/sitemanagement/i18n"
+
 // Messages Japanese translations
 var MessagesJaJP = map[string]string{
 	// Common messages
@@ -45,38 +47,38 @@ var MessagesJaJP = map[string]string{
 	"logs.exported": "ログがエクスポートされました",
 
 	// Validation related
-	"validation.invalid_group_name":      "無効なグループ名。小文字、数字、ハイフン、アンダースコアのみ使用可能、1-100文字",
-	"validation.invalid_test_path":       "無効なテストパス。指定する場合は / で始まる有効なパスであり、完全なURLではない必要があります。",
-	"validation.duplicate_header":        "重複ヘッダー: {{.key}}",
-	"validation.group_not_found":         "グループが見つかりません",
-	"validation.group_disabled":          "グループが無効化されているため、この操作を実行できません",
-	"validation.invalid_status_filter":   "無効なステータスフィルター",
-	"validation.invalid_group_id":        "無効なグループID形式",
-	"validation.test_model_required":     "テストモデルが必要です",
-	"validation.invalid_copy_keys_value": "無効なcopy_keys値。'none'、'valid_only'、'all'のいずれかである必要があります",
-	"validation.invalid_channel_type":    "無効なチャンネルタイプ。サポートされるタイプ: {{.types}}",
-	"validation.test_model_empty":        "テストモデルは空またはスペースのみにできません",
-	"validation.invalid_status_value":    "無効なステータス値",
-	"validation.invalid_upstreams":       "無効なupstreams設定: {{.error}}",
-	"validation.group_id_required":       "group_idクエリパラメータが必要です",
-	"validation.invalid_group_id_format": "無効なgroup_id形式",
-	"validation.keys_text_empty":         "キーテキストは空にできません",
-	"validation.invalid_group_type":      "無効なグループタイプ、'standard'または'aggregate'である必要があります",
-	"validation.sub_groups_required":     "集約グループには少なくとも1つのサブグループが必要です",
-	"validation.invalid_sub_group_id":    "無効なサブグループID",
-	"validation.sub_group_not_found":     "1つ以上のサブグループが見つかりません",
-	"validation.sub_group_cannot_be_aggregate": "サブグループは集約グループにできません",
-	"validation.sub_group_channel_mismatch": "すべてのサブグループは同じチャンネルタイプを使用する必要があります",
-	"validation.sub_group_validation_endpoint_mismatch": "サブグループのエンドポイントが一致していません。集約グループには、リクエストの転送を成功させるため統一されたアップストリームパスが必要です",
-	"validation.sub_group_weight_negative":     "サブグループの重みは負の値にできません",
-	"validation.sub_group_weight_max_exceeded": "サブグループの重みは1000を超えることはできません",
-	"validation.sub_group_referenced_cannot_modify": "このグループは {{.count}} 個の集約グループでサブグループとして参照されています。チャンネルタイプまたは検証エンドポイントは変更できません。変更前に関連する集約グループからこのグループを削除してください",
+	"validation.invalid_group_name":                          "無効なグループ名。小文字、数字、ハイフン、アンダースコアのみ使用可能、1-100文字",
+	"validation.invalid_test_path":                           "無効なテストパス。指定する場合は / で始まる有効なパスであり、完全なURLではない必要があります。",
+	"validation.duplicate_header":                            "重複ヘッダー: {{.key}}",
+	"validation.group_not_found":                             "グループが見つかりません",
+	"validation.group_disabled":                              "グループが無効化されているため、この操作を実行できません",
+	"validation.invalid_status_filter":                       "無効なステータスフィルター",
+	"validation.invalid_group_id":                            "無効なグループID形式",
+	"validation.test_model_required":                         "テストモデルが必要です",
+	"validation.invalid_copy_keys_value":                     "無効なcopy_keys値。'none'、'valid_only'、'all'のいずれかである必要があります",
+	"validation.invalid_channel_type":                        "無効なチャンネルタイプ。サポートされるタイプ: {{.types}}",
+	"validation.test_model_empty":                            "テストモデルは空またはスペースのみにできません",
+	"validation.invalid_status_value":                        "無効なステータス値",
+	"validation.invalid_upstreams":                           "無効なupstreams設定: {{.error}}",
+	"validation.group_id_required":                           "group_idクエリパラメータが必要です",
+	"validation.invalid_group_id_format":                     "無効なgroup_id形式",
+	"validation.keys_text_empty":                             "キーテキストは空にできません",
+	"validation.invalid_group_type":                          "無効なグループタイプ、'standard'または'aggregate'である必要があります",
+	"validation.sub_groups_required":                         "集約グループには少なくとも1つのサブグループが必要です",
+	"validation.invalid_sub_group_id":                        "無効なサブグループID",
+	"validation.sub_group_not_found":                         "1つ以上のサブグループが見つかりません",
+	"validation.sub_group_cannot_be_aggregate":               "サブグループは集約グループにできません",
+	"validation.sub_group_channel_mismatch":                  "すべてのサブグループは同じチャンネルタイプを使用する必要があります",
+	"validation.sub_group_validation_endpoint_mismatch":      "サブグループのエンドポイントが一致していません。集約グループには、リクエストの転送を成功させるため統一されたアップストリームパスが必要です",
+	"validation.sub_group_weight_negative":                   "サブグループの重みは負の値にできません",
+	"validation.sub_group_weight_max_exceeded":               "サブグループの重みは1000を超えることはできません",
+	"validation.sub_group_referenced_cannot_modify":          "このグループは {{.count}} 個の集約グループでサブグループとして参照されています。チャンネルタイプまたは検証エンドポイントは変更できません。変更前に関連する集約グループからこのグループを削除してください",
 	"validation.cc_support_cannot_disable_used_by_anthropic": "CCサポートを無効化できません。このOpenAIグループは現在次のAnthropic集約グループで使用されています：{{.groups}}。まずこれらの集約グループからこのグループを削除してから、CCサポートを無効化してください",
 	"validation.standard_group_requires_upstreams_testmodel": "標準グループへの変換にはアップストリームサーバーとテストモデルの提供が必要です",
 	"validation.invalid_model_mapping":                       "モデルマッピング形式が無効です：{{.error}}",
-	"validation.aggregate_no_model_redirect": "集約グループはモデル��ダイレクトルールをサポートしていません",
-	"validation.invalid_model_redirect":      "無効なモデルリダイレクトルール：{{.error}}",
-	"validation.invalid_param_overrides":     "パラメータ上書きフィールド {{.field}} の型が無効です：期待 {{.expected}}、実際 {{.got}}",
+	"validation.aggregate_no_model_redirect":                 "集約グループはモデル��ダイレクトルールをサポートしていません",
+	"validation.invalid_model_redirect":                      "無効なモデルリダイレクトルール：{{.error}}",
+	"validation.invalid_param_overrides":                     "パラメータ上書きフィールド {{.field}} の型が無効です：期待 {{.expected}}、実際 {{.got}}",
 
 	// Task related
 	"task.validation_started": "キー検証タスクが開始されました",
@@ -228,4 +230,10 @@ var MessagesJaJP = map[string]string{
 	"success.child_group_deleted":                       "子グループが正常に削除されました",
 	"warning.parent_has_child_groups":                   "このグループには {{.count}} 個の子グループがあり、削除されます",
 	"group.child_groups_deleted":                        "{{.count}} 個の子グループも削除されました",
+}
+
+func init() {
+	for k, v := range sitei18n.MessagesJaJP {
+		MessagesJaJP[k] = v
+	}
 }
