@@ -318,6 +318,10 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Keep defaults aligned with SiteService.ensureSettingsRow.
+			// Note: AI suggested handling duplicate key race condition by retrying First query
+			// after Create fails. Rejected because: this is a singleton row (ID=1) created at
+			// startup, race condition probability is extremely low, and returning error allows
+			// next call to succeed. Adding retry logic adds complexity for minimal benefit.
 			row = ManagedSiteSetting{ID: 1, WindowStart: "09:00", WindowEnd: "18:00", ScheduleMode: AutoCheckinScheduleModeRandom, RetryIntervalMinutes: 60, RetryMaxAttemptsPerDay: 2}
 			if createErr := s.db.WithContext(ctx).Create(&row).Error; createErr != nil {
 				return nil, app_errors.ParseDBError(createErr)
@@ -456,12 +460,12 @@ func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {
 
 	var sites []ManagedSite
 	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	err = s.db.WithContext(qctx).
 		Select("id, name, base_url, site_type, user_id, custom_checkin_url, check_in_enabled, auto_checkin_enabled, auth_type, auth_value").
 		Where("enabled = ? AND check_in_enabled = ? AND auto_checkin_enabled = ?", true, true, true).
 		Order("id ASC").
 		Find(&sites).Error
-	cancel()
 	if err != nil {
 		logrus.WithError(err).Warn("ManagedSite AutoCheckinService: query sites failed")
 		return

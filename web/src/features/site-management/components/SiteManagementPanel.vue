@@ -621,6 +621,11 @@ async function handleFileChange(event: Event) {
 
 onMounted(() => {
   loadSites();
+  // Note: Timer runs continuously but only fetches when modal is open.
+  // AI suggested tying timer lifecycle to modal visibility, but rejected because:
+  // 1. Current check is minimal overhead (just a boolean check every 30s)
+  // 2. Adding watcher increases complexity and potential race conditions
+  // 3. KISS principle - simpler code is more reliable
   statusRefreshTimer.value = window.setInterval(() => {
     if (showAutoCheckinModal.value) {
       siteManagementApi
