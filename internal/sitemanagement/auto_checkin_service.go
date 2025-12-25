@@ -457,7 +457,7 @@ func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {
 	var sites []ManagedSite
 	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	err = s.db.WithContext(qctx).
-		Select("id, name, base_url, site_type, user_id, check_in_enabled, auto_checkin_enabled, auth_type, auth_value, last_checkin_date, last_checkin_status").
+		Select("id, name, base_url, site_type, user_id, custom_checkin_url, check_in_enabled, auto_checkin_enabled, auth_type, auth_value").
 		Where("enabled = ? AND check_in_enabled = ? AND auto_checkin_enabled = ?", true, true, true).
 		Order("id ASC").
 		Find(&sites).Error
@@ -467,22 +467,18 @@ func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {
 		return
 	}
 
-	today := todayString(time.Now())
+	// Note: We intentionally do NOT skip sites that show "already checked in" status.
+	// Reasons:
+	// 1. Each site may have different check-in time windows (not necessarily starting at 00:00)
+	// 2. The site's "today" definition may differ from our system's timezone
+	// 3. The "already_checked" status from a previous attempt may be stale
+	// The site's API will return "already_checked" if truly checked in, which is harmless.
 
-	eligible := make([]ManagedSite, 0, len(sites))
-	for i := range sites {
-		site := sites[i]
-		if site.LastCheckInDate == today && (site.LastCheckInStatus == CheckinResultSuccess || site.LastCheckInStatus == CheckinResultAlreadyChecked) {
-			continue
-		}
-		eligible = append(eligible, site)
-	}
-
-	result := s.runSitesCheckin(ctx, eligible)
+	result := s.runSitesCheckin(ctx, sites)
 	s.persistRunStatus(config, result)
 
 	logrus.WithFields(logrus.Fields{
-		"eligible":    len(eligible),
+		"total":       len(sites),
 		"success":     result.SuccessCount,
 		"failed":      result.FailedCount,
 		"skipped":     result.SkippedCount,
@@ -554,11 +550,15 @@ func (s *AutoCheckinService) runSitesCheckin(ctx context.Context, sites []Manage
 }
 
 type CheckinResult struct {
-	SiteID  uint
-	Status  string
-	Message string
+	SiteID  uint   `json:"site_id"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
+// CheckInSite performs a manual check-in for a specific site.
+// Note: This does NOT check if the site was already checked in today.
+// Each site may have different check-in time windows, so we always attempt
+// the check-in and let the site's API determine if it's valid.
 func (s *AutoCheckinService) CheckInSite(ctx context.Context, siteID uint) (*CheckinResult, error) {
 	var site ManagedSite
 	if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {

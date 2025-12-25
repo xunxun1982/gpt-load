@@ -232,7 +232,11 @@ function confirmDeleteSite(site: ManagedSiteDTO) {
           h("div", null, [
             h("p", null, [
               t("siteManagement.dangerousDeleteWarning"),
-              h("strong", { style: { color: "#d03050" } }, site.name),
+              h(
+                "strong",
+                { style: { color: "#d03050", userSelect: "all", cursor: "pointer" } },
+                site.name
+              ),
               t("siteManagement.toConfirmDeletion"),
             ]),
             h(NInput, {
@@ -272,7 +276,8 @@ function statusTag(status: ManagedSiteDTO["last_checkin_status"]) {
   if (status === "skipped") {
     return { type: "warning" as const, text: t("siteManagement.statusSkipped") };
   }
-  return { type: "default" as const, text: "-" };
+  // Empty or unknown status
+  return { type: "default" as const, text: t("siteManagement.statusNone") };
 }
 
 function getSiteTypeLabel(type: string) {
@@ -282,9 +287,12 @@ function getSiteTypeLabel(type: string) {
 async function checkinSite(site: ManagedSiteDTO) {
   try {
     const res = await siteManagementApi.checkinSite(site.id);
-    message.info(
-      `${site.name}: ${statusTag(res.status).text}${res.message ? ` - ${res.message}` : ""}`
-    );
+    const statusText = statusTag(res.status).text;
+    // Build message: "SiteName: Status" or "SiteName: Status - Message" if message exists
+    const displayMsg = res.message?.trim()
+      ? `${site.name}: ${statusText} - ${res.message}`
+      : `${site.name}: ${statusText}`;
+    message.info(displayMsg);
     await loadSites();
   } catch (_) {
     /* handled */
@@ -375,6 +383,13 @@ function formatDateTime(dateStr?: string) {
 }
 
 const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
+  {
+    title: "#",
+    key: "sort",
+    width: 50,
+    align: "center",
+    render: row => h(NText, { depth: 3 }, () => row.sort),
+  },
   {
     title: t("siteManagement.name"),
     key: "name",
@@ -723,7 +738,7 @@ onUnmounted(() => {
             </n-form-item>
             <div class="form-row">
               <n-form-item :label="t('siteManagement.sort')" class="form-item-sort">
-                <n-input-number v-model:value="siteForm.sort" :min="0" style="width: 80px" />
+                <n-input-number v-model:value="siteForm.sort" :min="0" style="width: 100px" />
               </n-form-item>
               <n-form-item :label="t('siteManagement.enabled')" class="form-item-switch">
                 <n-switch v-model:value="siteForm.enabled" />
