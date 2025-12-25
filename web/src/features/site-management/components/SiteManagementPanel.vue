@@ -95,6 +95,7 @@ const logsSite = ref<ManagedSiteDTO | null>(null);
 
 const siteTypeOptions = computed(() => [
   { label: t("siteManagement.siteTypeOther"), value: "unknown" },
+  { label: t("siteManagement.siteTypeNewApi"), value: "new-api" },
   { label: t("siteManagement.siteTypeVeloera"), value: "Veloera" },
   { label: t("siteManagement.siteTypeWong"), value: "wong-gongyi" },
   { label: t("siteManagement.siteTypeAnyrouter"), value: "anyrouter" },

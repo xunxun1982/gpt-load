@@ -137,7 +137,7 @@ export default {
   statsDisabled: "無効",
   statsAutoCheckin: "自動チェックイン",
 
-  // Actions
+  // Auto Check-in Actions
   runNow: "今すぐ実行",
   autoCheckinTriggered: "自動チェックインタスクを開始しました",
 

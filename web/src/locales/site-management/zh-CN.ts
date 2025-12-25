@@ -136,7 +136,7 @@ export default {
   statsDisabled: "禁用",
   statsAutoCheckin: "自动签到",
 
-  // Actions
+  // Auto Check-in Actions
   runNow: "立即执行",
   autoCheckinTriggered: "已触发自动签到任务",
 

@@ -46,11 +46,21 @@ type AutoCheckinService struct {
 }
 
 func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encryption.Service) *AutoCheckinService {
-	rand.Seed(time.Now().UnixNano())
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = 100
-	transport.MaxIdleConnsPerHost = 20
-	transport.IdleConnTimeout = 90 * time.Second
+	// Note: rand.Seed is deprecated in Go 1.20+, global RNG is auto-seeded at startup
+	var transport *http.Transport
+	if t, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = t.Clone()
+		transport.MaxIdleConns = 100
+		transport.MaxIdleConnsPerHost = 20
+		transport.IdleConnTimeout = 90 * time.Second
+	} else {
+		// Fallback if DefaultTransport was replaced with a different type
+		transport = &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 20,
+			IdleConnTimeout:     90 * time.Second,
+		}
+	}
 
 	return &AutoCheckinService{
 		db:            db,
@@ -612,12 +622,16 @@ func (s *AutoCheckinService) persistSiteResult(ctx context.Context, siteID uint,
 		"last_checkin_message": message,
 	}
 	uCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	_ = s.db.WithContext(uCtx).Model(&ManagedSite{}).Where("id = ?", siteID).Updates(update).Error
+	if err := s.db.WithContext(uCtx).Model(&ManagedSite{}).Where("id = ?", siteID).Updates(update).Error; err != nil {
+		logrus.WithError(err).Debugf("Failed to update site %d check-in status", siteID)
+	}
 	cancel()
 
 	logRow := ManagedSiteCheckinLog{SiteID: siteID, Status: status, Message: message, CreatedAt: now}
 	lCtx, lcancel := context.WithTimeout(ctx, 2*time.Second)
-	_ = s.db.WithContext(lCtx).Create(&logRow).Error
+	if err := s.db.WithContext(lCtx).Create(&logRow).Error; err != nil {
+		logrus.WithError(err).Debugf("Failed to create check-in log for site %d", siteID)
+	}
 	lcancel()
 }
 

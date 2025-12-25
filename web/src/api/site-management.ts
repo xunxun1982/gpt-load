@@ -1,6 +1,8 @@
 import http from "@/utils/http";
 
-export type ManagedSiteType = "unknown" | "veloera" | "wong-gongyi" | "anyrouter";
+// Site types must match backend constants in internal/sitemanagement/models.go
+// Note: "Veloera" is capitalized to match backend SiteTypeVeloera constant
+export type ManagedSiteType = "unknown" | "new-api" | "Veloera" | "wong-gongyi" | "anyrouter";
 export type ManagedSiteAuthType = "none" | "access_token" | "cookie";
 
 export type ManagedSiteCheckinStatus = "success" | "failed" | "skipped" | "already_checked" | "";

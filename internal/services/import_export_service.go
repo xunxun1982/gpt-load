@@ -730,6 +730,7 @@ func (s *ImportExportService) exportManagedSites() *ManagedSitesExportData {
 	}
 
 	// Export auto-checkin config
+	// Note: Settings row always has ID=1 (single-row config pattern used throughout the app)
 	var setting managedSiteSettingModel
 	if err := s.db.First(&setting, 1).Error; err == nil {
 		result.AutoCheckin = &ManagedSiteAutoCheckinConfig{
@@ -1097,7 +1098,9 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 	return imported, skipped
 }
 
-// generateUniqueSiteName generates a unique site name by appending a random suffix if needed
+// generateUniqueSiteName generates a unique site name by appending a random suffix if needed.
+// Note: This logic is similar to GenerateUniqueGroupName but operates on managedSiteModel.
+// Kept separate to maintain clear module boundaries between group and site management.
 func (s *ImportExportService) generateUniqueSiteName(tx *gorm.DB, baseName string) (string, error) {
 	siteName := baseName
 	maxAttempts := 10

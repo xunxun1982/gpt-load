@@ -137,7 +137,7 @@ export default {
   statsDisabled: "Disabled",
   statsAutoCheckin: "Auto Check-in",
 
-  // Actions
+  // Auto Check-in Actions
   runNow: "Run Now",
   autoCheckinTriggered: "Auto check-in task triggered",
 

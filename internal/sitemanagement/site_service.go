@@ -245,6 +245,7 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		if authType == "" {
 			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_auth_type", nil)
 		}
+		// Update AuthType first - subsequent AuthValue check depends on this value
 		site.AuthType = authType
 		if authType == AuthTypeNone {
 			site.AuthValue = ""
@@ -255,6 +256,7 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		if value == "" {
 			site.AuthValue = ""
 		} else {
+			// Check uses already-updated AuthType from above (intentional order dependency)
 			if site.AuthType == AuthTypeNone {
 				return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.auth_value_requires_auth_type", nil)
 			}
@@ -484,8 +486,9 @@ func clampInt(v, min, max int) int {
 	return v
 }
 
-// generateUniqueSiteName generates a unique site name by appending a random suffix if needed
-// Similar to GenerateUniqueGroupName in import_export_service.go
+// generateUniqueSiteName generates a unique site name by appending a random suffix if needed.
+// Note: This logic is similar to GenerateUniqueGroupName in import_export_service.go,
+// but kept separate to avoid coupling between site and group management modules.
 func (s *SiteService) generateUniqueSiteName(ctx context.Context, baseName string) (string, error) {
 	siteName := baseName
 	maxAttempts := 10
@@ -560,7 +563,10 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 	// Export auto-checkin config if requested
 	if includeConfig {
 		cfg, err := s.GetAutoCheckinConfig(ctx)
-		if err == nil {
+		if err != nil {
+			// Log error but continue export without config
+			logrus.WithError(err).Debug("Failed to get auto-checkin config for export")
+		} else {
 			exportData.AutoCheckin = cfg
 		}
 	}
@@ -602,7 +608,9 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 	return exportData, nil
 }
 
-// ImportSites imports sites from export data
+// ImportSites imports sites from export data.
+// Note: Intentionally not using transaction wrapping - partial success is desired behavior
+// to import as many sites as possible even if some fail validation.
 func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, plainMode bool) (int, int, error) {
 	if data == nil || len(data.Sites) == 0 {
 		return 0, 0, nil
