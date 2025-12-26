@@ -789,7 +789,19 @@ func isAlreadyCheckedMessage(msg string) bool {
 	if m == "" {
 		return false
 	}
-	return strings.Contains(m, "已签到") || strings.Contains(m, "已经签到") || strings.Contains(m, "already")
+	// Chinese patterns
+	if strings.Contains(m, "已签到") || strings.Contains(m, "已经签到") || strings.Contains(m, "今天已") {
+		return true
+	}
+	// English patterns (use specific phrases to avoid false positives like "Token already expired")
+	if strings.Contains(m, "already checked") || strings.Contains(m, "already signed") {
+		return true
+	}
+	// Japanese patterns
+	if strings.Contains(m, "チェックイン済") || strings.Contains(m, "サインイン済") {
+		return true
+	}
+	return false
 }
 
 type veloeraProvider struct{}

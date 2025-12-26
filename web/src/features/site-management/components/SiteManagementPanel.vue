@@ -295,9 +295,14 @@ function confirmDeleteSite(site: ManagedSiteDTO) {
             message.error(t("siteManagement.incorrectSiteName"));
             return false;
           }
-          await siteManagementApi.deleteSite(site.id);
-          message.success(t("siteManagement.siteDeleted"));
-          await loadSites();
+          try {
+            await siteManagementApi.deleteSite(site.id);
+            message.success(t("siteManagement.siteDeleted"));
+            await loadSites();
+          } catch (_) {
+            /* handled by centralized error handler */
+            return false;
+          }
         },
       });
     },
@@ -462,7 +467,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
         {
           href: row.base_url,
           target: "_blank",
-          rel: "noreferrer",
+          rel: "noopener noreferrer",
           style: "color: var(--primary-color); text-decoration: none;",
         },
         row.base_url
