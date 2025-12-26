@@ -155,10 +155,23 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 				)
 			}
 		default:
-			// Fallback for unsupported dialects with batching.
-			// Use GORM's Limit to ensure batch deletion even for unknown databases.
+			// Fallback for unsupported dialects with explicit ID-based batching.
+			// GORM's Limit() with Delete() may be silently ignored by some databases,
+			// so we first select IDs then delete by ID to ensure predictable batch sizes.
 			logrus.Warnf("Log cleanup using fallback deletion for unsupported dialect: %s", dialect)
-			result = s.db.WithContext(batchCtx).Where("timestamp < ?", cutoffTime).Limit(batchSize).Delete(&models.RequestLog{})
+			var ids []string
+			err := s.db.WithContext(batchCtx).Model(&models.RequestLog{}).
+				Where("timestamp < ?", cutoffTime).
+				Limit(batchSize).
+				Pluck("id", &ids).Error
+			if err != nil {
+				result = &gorm.DB{Error: err}
+			} else if len(ids) == 0 {
+				// No records to delete, create empty result
+				result = &gorm.DB{RowsAffected: 0}
+			} else {
+				result = s.db.WithContext(batchCtx).Where("id IN ?", ids).Delete(&models.RequestLog{})
+			}
 		}
 		cancel()
 
