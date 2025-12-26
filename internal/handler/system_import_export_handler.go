@@ -211,7 +211,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 					if dec, derr := s.EncryptionSvc.Decrypt(site.AuthValue); derr == nil {
 						siteInfo.AuthValue = dec
 					} else {
-						logrus.WithError(derr).Debug("Failed to decrypt site auth value during plain export")
+						logrus.WithError(derr).Warnf("Failed to decrypt site auth value for %s during plain export, omitting auth", site.Name)
 					}
 				} else {
 					siteInfo.AuthValue = site.AuthValue

@@ -1044,6 +1044,7 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 			SiteType:           siteType,
 			UserID:             strings.TrimSpace(siteInfo.UserID),
 			CheckInPageURL:     strings.TrimSpace(siteInfo.CheckInPageURL),
+			CheckInAvailable:   siteInfo.CheckInAvailable,
 			CheckInEnabled:     checkInEnabled,
 			AutoCheckInEnabled: autoCheckInEnabled,
 			CustomCheckInURL:   strings.TrimSpace(siteInfo.CustomCheckInURL),

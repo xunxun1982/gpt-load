@@ -175,6 +175,9 @@ export const siteManagementApi = {
   },
 
   // Export sites
+  // Note: The double cast (as unknown as Blob) is necessary because the http interceptor
+  // returns response.data directly, but TypeScript infers the return type as AxiosResponse.
+  // Fixing this properly would require modifying the http utility's type definitions.
   async exportSites(
     mode: "plain" | "encrypted" = "encrypted",
     includeConfig = true
