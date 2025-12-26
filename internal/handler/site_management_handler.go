@@ -24,6 +24,7 @@ type CreateManagedSiteRequest struct {
 	UserID         string `json:"user_id"`
 	CheckInPageURL string `json:"checkin_page_url"`
 
+	CheckInAvailable   bool   `json:"checkin_available"`
 	CheckInEnabled     bool   `json:"checkin_enabled"`
 	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
 	CustomCheckInURL   string `json:"custom_checkin_url"`
@@ -44,6 +45,7 @@ type UpdateManagedSiteRequest struct {
 	UserID         *string `json:"user_id"`
 	CheckInPageURL *string `json:"checkin_page_url"`
 
+	CheckInAvailable   *bool   `json:"checkin_available"`
 	CheckInEnabled     *bool   `json:"checkin_enabled"`
 	AutoCheckInEnabled *bool   `json:"auto_checkin_enabled"`
 	CustomCheckInURL   *string `json:"custom_checkin_url"`
@@ -77,6 +79,7 @@ func (s *Server) CreateManagedSite(c *gin.Context) {
 		SiteType:           req.SiteType,
 		UserID:             req.UserID,
 		CheckInPageURL:     req.CheckInPageURL,
+		CheckInAvailable:   req.CheckInAvailable,
 		CheckInEnabled:     req.CheckInEnabled,
 		AutoCheckInEnabled: req.AutoCheckInEnabled,
 		CustomCheckInURL:   req.CustomCheckInURL,
@@ -112,6 +115,7 @@ func (s *Server) UpdateManagedSite(c *gin.Context) {
 		SiteType:           req.SiteType,
 		UserID:             req.UserID,
 		CheckInPageURL:     req.CheckInPageURL,
+		CheckInAvailable:   req.CheckInAvailable,
 		CheckInEnabled:     req.CheckInEnabled,
 		AutoCheckInEnabled: req.AutoCheckInEnabled,
 		CustomCheckInURL:   req.CustomCheckInURL,

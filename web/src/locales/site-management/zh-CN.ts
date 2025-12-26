@@ -34,19 +34,21 @@ export default {
   customCheckinUrl: "签到接口",
   customCheckinUrlPlaceholder: "/api/user/checkin",
   customCheckinUrlTooltip: "自定义签到API路径，留空使用默认路径",
+  checkinAvailable: "可签到",
+  checkinAvailableTooltip: "标记此站点是否支持签到功能（系统内置或第三方）",
   checkinEnabled: "启用签到",
   checkinEnabledTooltip: "是否允许对此站点执行签到操作",
+  autoCheckin: "自动签到",
   autoCheckinEnabled: "自动签到",
   autoCheckinEnabledTooltip: "启用后将在设定的时间窗口内自动签到",
 
   // Auth related
   authType: "认证方式",
   authValue: "认证信息",
-  authValuePlaceholder: "输入 Token 或 Cookie",
+  authValuePlaceholder: "输入 Access Token",
   authValueEditHint: "留空表示不修改现有认证信息",
   authTypeNone: "无",
   authTypeAccessToken: "Access Token",
-  authTypeCookie: "Cookie",
   hasAuth: "已配置认证",
   noAuth: "未配置认证",
 
@@ -54,8 +56,9 @@ export default {
   siteTypeOther: "其他",
   siteTypeNewApi: "New API",
   siteTypeVeloera: "Veloera",
+  siteTypeOneHub: "One Hub",
+  siteTypeDoneHub: "Done Hub",
   siteTypeWong: "Wong公益站",
-  siteTypeAnyrouter: "AnyRouter",
 
   // Status
   lastStatus: "最近状态",
@@ -91,7 +94,6 @@ export default {
   noLogs: "暂无签到日志",
 
   // Auto check-in config
-  autoCheckin: "自动签到",
   autoCheckinConfig: "自动签到配置",
   config: "配置",
   globalEnabled: "全局启用",
@@ -135,6 +137,9 @@ export default {
   statsEnabled: "启用",
   statsDisabled: "禁用",
   statsAutoCheckin: "自动签到",
+
+  // Filter
+  filterCheckinAvailable: "只显示可签到",
 
   // Auto Check-in Actions
   runNow: "立即执行",

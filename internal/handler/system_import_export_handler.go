@@ -64,6 +64,7 @@ type ManagedSiteExportInfo struct {
 	SiteType           string `json:"site_type"`
 	UserID             string `json:"user_id"`
 	CheckInPageURL     string `json:"checkin_page_url"`
+	CheckInAvailable   bool   `json:"checkin_available"`
 	CheckInEnabled     bool   `json:"checkin_enabled"`
 	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
 	CustomCheckInURL   string `json:"custom_checkin_url"`
@@ -197,6 +198,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 				SiteType:           site.SiteType,
 				UserID:             site.UserID,
 				CheckInPageURL:     site.CheckInPageURL,
+				CheckInAvailable:   site.CheckInAvailable,
 				CheckInEnabled:     site.CheckInEnabled,
 				AutoCheckInEnabled: site.AutoCheckInEnabled,
 				CustomCheckInURL:   site.CustomCheckInURL,
@@ -409,6 +411,7 @@ outer:
 				SiteType:           site.SiteType,
 				UserID:             site.UserID,
 				CheckInPageURL:     site.CheckInPageURL,
+				CheckInAvailable:   site.CheckInAvailable,
 				CheckInEnabled:     site.CheckInEnabled,
 				AutoCheckInEnabled: site.AutoCheckInEnabled,
 				CustomCheckInURL:   site.CustomCheckInURL,

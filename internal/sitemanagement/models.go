@@ -5,14 +5,15 @@ import "time"
 const (
 	SiteTypeNewAPI     = "new-api"
 	SiteTypeVeloera    = "Veloera"
-	SiteTypeAnyrouter  = "anyrouter"
 	SiteTypeWongGongyi = "wong-gongyi"
+	SiteTypeOneHub     = "one-hub"
+	SiteTypeDoneHub    = "done-hub"
 	SiteTypeUnknown    = "unknown"
+	// Note: SiteTypeAnyrouter removed - it only supported cookie-based auth
 )
 
 const (
 	AuthTypeAccessToken = "access_token"
-	AuthTypeCookie      = "cookie"
 	AuthTypeNone        = "none"
 )
 
@@ -43,6 +44,7 @@ type ManagedSite struct {
 	UserID         string `gorm:"type:varchar(64);not null;default:''" json:"user_id"`
 	CheckInPageURL string `gorm:"column:checkin_page_url;type:varchar(512);not null;default:''" json:"checkin_page_url"`
 
+	CheckInAvailable   bool   `gorm:"column:checkin_available;not null;default:false" json:"checkin_available"`
 	CheckInEnabled     bool   `gorm:"column:checkin_enabled;not null;default:false;index:idx_managed_sites_auto,priority:3" json:"checkin_enabled"`
 	AutoCheckInEnabled bool   `gorm:"column:auto_checkin_enabled;not null;default:false;index:idx_managed_sites_auto,priority:1" json:"auto_checkin_enabled"`
 	CustomCheckInURL   string `gorm:"column:custom_checkin_url;type:varchar(512);not null;default:''" json:"custom_checkin_url"`

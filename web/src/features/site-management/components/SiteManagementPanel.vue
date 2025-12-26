@@ -20,6 +20,7 @@ import {
 import {
   NButton,
   NCard,
+  NCheckbox,
   NDataTable,
   NDescriptions,
   NDescriptionsItem,
@@ -60,6 +61,7 @@ const dialog = useDialog();
 
 const loading = ref(false);
 const sites = ref<ManagedSiteDTO[]>([]);
+const showOnlyCheckinAvailable = ref(false);
 const showSiteModal = ref(false);
 const editingSite = ref<ManagedSiteDTO | null>(null);
 const authValueInput = ref("");
@@ -78,6 +80,7 @@ const siteForm = reactive({
   site_type: "unknown" as ManagedSiteType,
   user_id: "",
   checkin_page_url: "",
+  checkin_available: false,
   checkin_enabled: false,
   auto_checkin_enabled: false,
   custom_checkin_url: "",
@@ -102,16 +105,16 @@ const logs = ref<CheckinLogDTO[]>([]);
 const logsSite = ref<ManagedSiteDTO | null>(null);
 
 const siteTypeOptions = computed(() => [
-  { label: t("siteManagement.siteTypeOther"), value: "unknown" },
   { label: t("siteManagement.siteTypeNewApi"), value: "new-api" },
   { label: t("siteManagement.siteTypeVeloera"), value: "Veloera" },
+  { label: t("siteManagement.siteTypeOneHub"), value: "one-hub" },
+  { label: t("siteManagement.siteTypeDoneHub"), value: "done-hub" },
   { label: t("siteManagement.siteTypeWong"), value: "wong-gongyi" },
-  { label: t("siteManagement.siteTypeAnyrouter"), value: "anyrouter" },
+  { label: t("siteManagement.siteTypeOther"), value: "unknown" },
 ]);
 const authTypeOptions = computed(() => [
   { label: t("siteManagement.authTypeNone"), value: "none" },
   { label: t("siteManagement.authTypeAccessToken"), value: "access_token" },
-  { label: t("siteManagement.authTypeCookie"), value: "cookie" },
 ]);
 const scheduleModeOptions = computed(() => [
   { label: t("siteManagement.scheduleModeRandom"), value: "random" },
@@ -126,6 +129,14 @@ const siteStats = computed(() => {
   const autoCheckinEnabled = sites.value.filter(s => s.auto_checkin_enabled).length;
   const checkinEnabled = sites.value.filter(s => s.checkin_enabled).length;
   return { total, enabled, disabled, autoCheckinEnabled, checkinEnabled };
+});
+
+// Filtered sites based on filter options
+const filteredSites = computed(() => {
+  if (!showOnlyCheckinAvailable.value) {
+    return sites.value;
+  }
+  return sites.value.filter(s => s.checkin_available);
 });
 
 async function loadSites() {
@@ -148,6 +159,7 @@ function resetSiteForm() {
     site_type: "unknown",
     user_id: "",
     checkin_page_url: "",
+    checkin_available: false,
     checkin_enabled: false,
     auto_checkin_enabled: false,
     custom_checkin_url: "",
@@ -174,6 +186,7 @@ function openEditSite(site: ManagedSiteDTO) {
     site_type: site.site_type,
     user_id: site.user_id,
     checkin_page_url: site.checkin_page_url,
+    checkin_available: site.checkin_available,
     checkin_enabled: site.checkin_enabled,
     auto_checkin_enabled: site.auto_checkin_enabled,
     custom_checkin_url: site.custom_checkin_url,
@@ -209,10 +222,14 @@ async function submitSite() {
       await siteManagementApi.updateSite(editingSite.value.id, updatePayload);
       message.success(t("siteManagement.siteUpdated"));
     } else {
-      await siteManagementApi.createSite({ ...payload, auth_value: authValueInput.value });
+      await siteManagementApi.createSite({
+        ...payload,
+        auth_value: authValueInput.value,
+      });
       message.success(t("siteManagement.siteCreated"));
     }
     showSiteModal.value = false;
+
     await loadSites();
   } catch (_) {
     /* handled */
@@ -294,6 +311,7 @@ async function checkinSite(site: ManagedSiteDTO) {
       ? `${site.name}: ${statusText} - ${res.message}`
       : `${site.name}: ${statusText}`;
     message.info(displayMsg);
+
     await loadSites();
   } catch (_) {
     /* handled */
@@ -390,14 +408,16 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: "#",
     key: "sort",
-    width: 50,
+    width: 45,
     align: "center",
+    titleAlign: "center",
     render: row => h(NText, { depth: 3 }, () => row.sort),
   },
   {
     title: t("siteManagement.name"),
     key: "name",
-    minWidth: 120,
+    width: 140,
+    titleAlign: "center",
     ellipsis: { tooltip: true },
     render: row =>
       h("div", { class: "site-name-cell" }, [
@@ -410,7 +430,8 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("siteManagement.baseUrl"),
     key: "base_url",
-    minWidth: 200,
+    minWidth: 100,
+    titleAlign: "center",
     ellipsis: { tooltip: true },
     render: row =>
       h(
@@ -427,23 +448,40 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("siteManagement.siteType"),
     key: "site_type",
-    width: 100,
+    width: 80,
+    align: "center",
+    titleAlign: "center",
     render: row =>
       h(NTag, { size: "small", bordered: false }, () => getSiteTypeLabel(row.site_type)),
   },
   {
     title: t("siteManagement.enabled"),
     key: "enabled",
-    width: 70,
+    width: 50,
+    align: "center",
+    titleAlign: "center",
     render: row =>
       h(NTag, { size: "small", type: row.enabled ? "success" : "default" }, () =>
         row.enabled ? t("common.yes") : t("common.no")
       ),
   },
   {
+    title: t("siteManagement.checkinAvailable"),
+    key: "checkin_available",
+    width: 70,
+    align: "center",
+    titleAlign: "center",
+    render: row =>
+      h(NTag, { size: "small", type: row.checkin_available ? "success" : "default" }, () =>
+        row.checkin_available ? t("common.yes") : t("common.no")
+      ),
+  },
+  {
     title: t("siteManagement.autoCheckin"),
     key: "auto_checkin_enabled",
-    width: 90,
+    width: 75,
+    align: "center",
+    titleAlign: "center",
     render: row =>
       h(NTag, { size: "small", type: row.auto_checkin_enabled ? "success" : "default" }, () =>
         row.auto_checkin_enabled ? t("common.yes") : t("common.no")
@@ -452,7 +490,9 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("siteManagement.lastStatus"),
     key: "last_checkin_status",
-    width: 100,
+    width: 80,
+    align: "center",
+    titleAlign: "center",
     render: row => {
       const tag = statusTag(row.last_checkin_status);
       return h(
@@ -468,11 +508,36 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("common.actions"),
     key: "actions",
-    width: 260,
+    width: 255,
     fixed: "right",
+    titleAlign: "center",
     render: row =>
-      h(NSpace, { size: 4, wrap: false, align: "center" }, () => [
-        // Icon buttons group (navigation)
+      h("div", { style: "display: flex; align-items: center; gap: 4px;" }, [
+        // Text action buttons first
+        h(NButton, { size: "tiny", secondary: true, onClick: () => openEditSite(row) }, () =>
+          t("common.edit")
+        ),
+        h(
+          NButton,
+          {
+            size: "tiny",
+            secondary: true,
+            onClick: () => checkinSite(row),
+            disabled: !row.checkin_enabled,
+          },
+          () => t("siteManagement.checkin")
+        ),
+        h(NButton, { size: "tiny", secondary: true, onClick: () => openLogs(row) }, () =>
+          t("siteManagement.logs")
+        ),
+        h(
+          NButton,
+          { size: "tiny", secondary: true, type: "error", onClick: () => confirmDeleteSite(row) },
+          () => t("common.delete")
+        ),
+        // Separator
+        h("span", { style: "color: var(--n-border-color); margin: 0 2px;" }, "|"),
+        // Icon buttons group (navigation) at the end
         h(
           NTooltip,
           { trigger: "hover" },
@@ -507,30 +572,6 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
               }
             )
           : null,
-        // Separator
-        h("span", { style: "color: var(--n-border-color); margin: 0 2px;" }, "|"),
-        // Text buttons group (actions)
-        h(NButton, { size: "tiny", secondary: true, onClick: () => openEditSite(row) }, () =>
-          t("common.edit")
-        ),
-        h(
-          NButton,
-          {
-            size: "tiny",
-            secondary: true,
-            onClick: () => checkinSite(row),
-            disabled: !row.checkin_enabled,
-          },
-          () => t("siteManagement.checkin")
-        ),
-        h(NButton, { size: "tiny", secondary: true, onClick: () => openLogs(row) }, () =>
-          t("siteManagement.logs")
-        ),
-        h(
-          NButton,
-          { size: "tiny", secondary: true, type: "error", onClick: () => confirmDeleteSite(row) },
-          () => t("common.delete")
-        ),
       ]),
   },
 ]);
@@ -662,7 +703,12 @@ onUnmounted(() => {
       @change="handleFileChange"
     />
     <n-space justify="space-between" align="center" :wrap="false" size="small">
-      <n-text strong style="font-size: 15px">{{ t("siteManagement.title") }}</n-text>
+      <n-space align="center" size="small">
+        <n-text strong style="font-size: 15px">{{ t("siteManagement.title") }}</n-text>
+        <n-checkbox v-model:checked="showOnlyCheckinAvailable" size="small">
+          {{ t("siteManagement.filterCheckinAvailable") }}
+        </n-checkbox>
+      </n-space>
       <n-space size="small">
         <n-button size="small" secondary @click="handleExport">
           <template #icon><n-icon :component="CloudDownloadOutline" /></template>
@@ -690,7 +736,7 @@ onUnmounted(() => {
       size="small"
       :loading="loading"
       :columns="columns"
-      :data="sites"
+      :data="filteredSites"
       :bordered="false"
       :single-line="false"
       :max-height="520"
@@ -794,6 +840,9 @@ onUnmounted(() => {
               />
             </n-form-item>
             <div class="form-row form-row-switches">
+              <n-form-item :label="t('siteManagement.checkinAvailable')" class="form-item-switch">
+                <n-switch v-model:value="siteForm.checkin_available" />
+              </n-form-item>
               <n-form-item :label="t('siteManagement.checkinEnabled')" class="form-item-switch">
                 <n-switch v-model:value="siteForm.checkin_enabled" />
               </n-form-item>

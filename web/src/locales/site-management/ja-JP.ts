@@ -42,11 +42,10 @@ export default {
   // Auth related
   authType: "認証方式",
   authValue: "認証情報",
-  authValuePlaceholder: "トークンまたはCookieを入力",
+  authValuePlaceholder: "アクセストークンを入力",
   authValueEditHint: "空欄で既存の認証情報を維持",
   authTypeNone: "なし",
   authTypeAccessToken: "アクセストークン",
-  authTypeCookie: "Cookie",
   hasAuth: "認証設定済み",
   noAuth: "認証なし",
 
@@ -54,8 +53,9 @@ export default {
   siteTypeOther: "その他",
   siteTypeNewApi: "New API",
   siteTypeVeloera: "Veloera",
+  siteTypeOneHub: "One Hub",
+  siteTypeDoneHub: "Done Hub",
   siteTypeWong: "Wong公益站",
-  siteTypeAnyrouter: "AnyRouter",
 
   // Status
   lastStatus: "最新ステータス",
@@ -136,6 +136,9 @@ export default {
   statsEnabled: "有効",
   statsDisabled: "無効",
   statsAutoCheckin: "自動チェックイン",
+
+  // Filter
+  filterCheckinAvailable: "チェックイン可能のみ表示",
 
   // Auto Check-in Actions
   runNow: "今すぐ実行",

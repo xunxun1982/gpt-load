@@ -34,19 +34,21 @@ export default {
   customCheckinUrl: "Check-in API",
   customCheckinUrlPlaceholder: "/api/user/checkin",
   customCheckinUrlTooltip: "Custom check-in API path, leave empty for default",
+  checkinAvailable: "Can Check-in",
+  checkinAvailableTooltip: "Whether this site supports check-in (system or third-party)",
   checkinEnabled: "Check-in",
   checkinEnabledTooltip: "Allow check-in operations for this site",
+  autoCheckin: "Auto Check-in",
   autoCheckinEnabled: "Auto Check-in",
   autoCheckinEnabledTooltip: "Automatically check in within the configured time window",
 
   // Auth related
   authType: "Auth Type",
   authValue: "Auth Value",
-  authValuePlaceholder: "Enter Token or Cookie",
+  authValuePlaceholder: "Enter Access Token",
   authValueEditHint: "Leave empty to keep existing auth",
   authTypeNone: "None",
   authTypeAccessToken: "Access Token",
-  authTypeCookie: "Cookie",
   hasAuth: "Auth Configured",
   noAuth: "No Auth",
 
@@ -54,8 +56,9 @@ export default {
   siteTypeOther: "Other",
   siteTypeNewApi: "New API",
   siteTypeVeloera: "Veloera",
+  siteTypeOneHub: "One Hub",
+  siteTypeDoneHub: "Done Hub",
   siteTypeWong: "Wong Gongyi",
-  siteTypeAnyrouter: "AnyRouter",
 
   // Status
   lastStatus: "Last Status",
@@ -92,7 +95,6 @@ export default {
   noLogs: "No check-in logs",
 
   // Auto check-in config
-  autoCheckin: "Auto Check-in",
   autoCheckinConfig: "Auto Check-in Configuration",
   config: "Configuration",
   globalEnabled: "Global Enabled",
@@ -136,6 +138,9 @@ export default {
   statsEnabled: "Enabled",
   statsDisabled: "Disabled",
   statsAutoCheckin: "Auto Check-in",
+
+  // Filter
+  filterCheckinAvailable: "Show only check-in available",
 
   // Auto Check-in Actions
   runNow: "Run Now",

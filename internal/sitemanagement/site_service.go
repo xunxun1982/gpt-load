@@ -42,6 +42,7 @@ type CreateSiteParams struct {
 	UserID         string
 	CheckInPageURL string
 
+	CheckInAvailable   bool
 	CheckInEnabled     bool
 	AutoCheckInEnabled bool
 	CustomCheckInURL   string
@@ -62,6 +63,7 @@ type UpdateSiteParams struct {
 	UserID         *string
 	CheckInPageURL *string
 
+	CheckInAvailable   *bool
 	CheckInEnabled     *bool
 	AutoCheckInEnabled *bool
 	CustomCheckInURL   *string
@@ -81,6 +83,13 @@ func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
 	resp := make([]ManagedSiteDTO, 0, len(sites))
 	for i := range sites {
 		site := &sites[i]
+		// Decrypt user_id for display
+		userID := site.UserID
+		if userID != "" {
+			if decrypted, err := s.encryptionSvc.Decrypt(userID); err == nil {
+				userID = decrypted
+			}
+		}
 		resp = append(resp, ManagedSiteDTO{
 			ID:                 site.ID,
 			Name:               site.Name,
@@ -90,8 +99,9 @@ func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
 			Enabled:            site.Enabled,
 			BaseURL:            site.BaseURL,
 			SiteType:           site.SiteType,
-			UserID:             site.UserID,
+			UserID:             userID,
 			CheckInPageURL:     site.CheckInPageURL,
+			CheckInAvailable:   site.CheckInAvailable,
 			CheckInEnabled:     site.CheckInEnabled,
 			AutoCheckInEnabled: site.AutoCheckInEnabled,
 			CustomCheckInURL:   site.CustomCheckInURL,
@@ -158,6 +168,15 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 		}
 	}
 
+	// Encrypt user_id
+	encryptedUserID := ""
+	if uid := strings.TrimSpace(params.UserID); uid != "" {
+		encryptedUserID, err = s.encryptionSvc.Encrypt(uid)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt user_id: %w", err)
+		}
+	}
+
 	site := &ManagedSite{
 		Name:               name,
 		Notes:              strings.TrimSpace(params.Notes),
@@ -166,8 +185,9 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 		Enabled:            params.Enabled,
 		BaseURL:            baseURL,
 		SiteType:           siteType,
-		UserID:             strings.TrimSpace(params.UserID),
+		UserID:             encryptedUserID,
 		CheckInPageURL:     strings.TrimSpace(params.CheckInPageURL),
+		CheckInAvailable:   params.CheckInAvailable,
 		CheckInEnabled:     checkInEnabled,
 		AutoCheckInEnabled: autoCheckInEnabled,
 		CustomCheckInURL:   strings.TrimSpace(params.CustomCheckInURL),
@@ -232,7 +252,16 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		site.SiteType = st
 	}
 	if params.UserID != nil {
-		site.UserID = strings.TrimSpace(*params.UserID)
+		uid := strings.TrimSpace(*params.UserID)
+		if uid == "" {
+			site.UserID = ""
+		} else {
+			enc, err := s.encryptionSvc.Encrypt(uid)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt user_id: %w", err)
+			}
+			site.UserID = enc
+		}
 	}
 	if params.CheckInPageURL != nil {
 		site.CheckInPageURL = strings.TrimSpace(*params.CheckInPageURL)
@@ -268,6 +297,9 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		}
 	}
 
+	if params.CheckInAvailable != nil {
+		site.CheckInAvailable = *params.CheckInAvailable
+	}
 	if params.CheckInEnabled != nil {
 		site.CheckInEnabled = *params.CheckInEnabled
 		if !site.CheckInEnabled {
@@ -415,6 +447,13 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 	if site == nil {
 		return nil
 	}
+	// Decrypt user_id for display
+	userID := site.UserID
+	if userID != "" {
+		if decrypted, err := s.encryptionSvc.Decrypt(userID); err == nil {
+			userID = decrypted
+		}
+	}
 	return &ManagedSiteDTO{
 		ID:                 site.ID,
 		Name:               site.Name,
@@ -424,8 +463,9 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 		Enabled:            site.Enabled,
 		BaseURL:            site.BaseURL,
 		SiteType:           site.SiteType,
-		UserID:             site.UserID,
+		UserID:             userID,
 		CheckInPageURL:     site.CheckInPageURL,
+		CheckInAvailable:   site.CheckInAvailable,
 		CheckInEnabled:     site.CheckInEnabled,
 		AutoCheckInEnabled: site.AutoCheckInEnabled,
 		CustomCheckInURL:   site.CustomCheckInURL,
@@ -448,8 +488,6 @@ func normalizeAuthType(raw string) string {
 	switch s {
 	case strings.ToLower(AuthTypeAccessToken):
 		return AuthTypeAccessToken
-	case strings.ToLower(AuthTypeCookie):
-		return AuthTypeCookie
 	case strings.ToLower(AuthTypeNone), "":
 		return AuthTypeNone
 	default:
@@ -532,6 +570,7 @@ type SiteExportInfo struct {
 	SiteType           string `json:"site_type"`
 	UserID             string `json:"user_id"`
 	CheckInPageURL     string `json:"checkin_page_url"`
+	CheckInAvailable   bool   `json:"checkin_available"`
 	CheckInEnabled     bool   `json:"checkin_enabled"`
 	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
 	CustomCheckInURL   string `json:"custom_checkin_url"`
@@ -581,12 +620,27 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 			Enabled:            site.Enabled,
 			BaseURL:            site.BaseURL,
 			SiteType:           site.SiteType,
-			UserID:             site.UserID,
 			CheckInPageURL:     site.CheckInPageURL,
+			CheckInAvailable:   site.CheckInAvailable,
 			CheckInEnabled:     site.CheckInEnabled,
 			AutoCheckInEnabled: site.AutoCheckInEnabled,
 			CustomCheckInURL:   site.CustomCheckInURL,
 			AuthType:           site.AuthType,
+		}
+
+		// Handle user_id based on export mode (stored encrypted in DB)
+		if site.UserID != "" {
+			if plainMode {
+				// Decrypt for plain export
+				if decrypted, err := s.encryptionSvc.Decrypt(site.UserID); err == nil {
+					siteInfo.UserID = decrypted
+				} else {
+					logrus.WithError(err).Warnf("Failed to decrypt user_id for site %s during export", site.Name)
+				}
+			} else {
+				// Keep encrypted for encrypted export
+				siteInfo.UserID = site.UserID
+			}
 		}
 
 		// Handle auth value based on export mode
@@ -669,6 +723,29 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			}
 		}
 
+		// Handle user_id encryption (same as auth_value)
+		encryptedUserID := ""
+		if siteInfo.UserID != "" {
+			if plainMode {
+				// Input is plain, need to encrypt
+				enc, err := s.encryptionSvc.Encrypt(siteInfo.UserID)
+				if err != nil {
+					logrus.WithError(err).Warnf("Failed to encrypt user_id for site %s", name)
+					skipped++
+					continue
+				}
+				encryptedUserID = enc
+			} else {
+				// Input is already encrypted, verify it can be decrypted
+				if _, err := s.encryptionSvc.Decrypt(siteInfo.UserID); err != nil {
+					logrus.WithError(err).Warnf("Failed to decrypt user_id for site %s, skipping", name)
+					skipped++
+					continue
+				}
+				encryptedUserID = siteInfo.UserID
+			}
+		}
+
 		// Ensure checkin flags are consistent
 		checkInEnabled := siteInfo.CheckInEnabled
 		autoCheckInEnabled := siteInfo.AutoCheckInEnabled
@@ -695,8 +772,9 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			Enabled:            siteInfo.Enabled,
 			BaseURL:            baseURL,
 			SiteType:           siteType,
-			UserID:             strings.TrimSpace(siteInfo.UserID),
+			UserID:             encryptedUserID,
 			CheckInPageURL:     strings.TrimSpace(siteInfo.CheckInPageURL),
+			CheckInAvailable:   siteInfo.CheckInAvailable,
 			CheckInEnabled:     checkInEnabled,
 			AutoCheckInEnabled: autoCheckInEnabled,
 			CustomCheckInURL:   strings.TrimSpace(siteInfo.CustomCheckInURL),

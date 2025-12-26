@@ -605,6 +605,7 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	result.Status = res.Status
 	result.Message = res.Message
 	s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
+
 	return result
 }
 
@@ -712,10 +713,9 @@ func resolveProvider(siteType string) checkinProvider {
 	switch siteType {
 	case SiteTypeVeloera:
 		return veloeraProvider{}
-	case SiteTypeAnyrouter:
-		return anyrouterProvider{}
 	case SiteTypeWongGongyi:
 		return wongProvider{}
+	// Note: SiteTypeAnyrouter removed - it only supported cookie-based auth
 	default:
 		return nil
 	}
@@ -818,20 +818,13 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 type wongProvider struct{}
 
 func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
-	headers := buildUserHeaders(site.UserID)
-	if site.AuthType == AuthTypeAccessToken {
-		if authValue == "" {
-			return providerResult{Status: CheckinResultSkipped, Message: "missing token"}, nil
-		}
-		headers["Authorization"] = "Bearer " + authValue
-	} else if site.AuthType == AuthTypeCookie {
-		if authValue == "" {
-			return providerResult{Status: CheckinResultSkipped, Message: "missing cookie"}, nil
-		}
-		headers["Cookie"] = authValue
-	} else {
-		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth"}, nil
+	// Only access_token auth is supported
+	if site.AuthType != AuthTypeAccessToken || authValue == "" {
+		return providerResult{Status: CheckinResultSkipped, Message: "missing token"}, nil
 	}
+
+	headers := buildUserHeaders(site.UserID)
+	headers["Authorization"] = "Bearer " + authValue
 
 	url := strings.TrimRight(site.BaseURL, "/") + "/api/user/checkin"
 	data, _, err := doJSONRequest(ctx, client, http.MethodPost, url, headers, map[string]any{})
@@ -863,43 +856,5 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, nil
 }
 
-type anyrouterProvider struct{}
-
-func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
-	if site.AuthType != AuthTypeCookie || authValue == "" || strings.TrimSpace(site.UserID) == "" {
-		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
-	}
-	headers := map[string]string{
-		"Cookie":           authValue,
-		"X-Requested-With": "XMLHttpRequest",
-		"Content-Type":     "application/json",
-	}
-	url := strings.TrimRight(site.BaseURL, "/") + "/api/user/sign_in"
-	data, _, err := doJSONRequest(ctx, client, http.MethodPost, url, headers, json.RawMessage("{}"))
-	if err != nil {
-		return providerResult{}, err
-	}
-
-	var resp struct {
-		Success bool   `json:"success"`
-		Message string `json:"message"`
-	}
-	_ = json.Unmarshal(data, &resp)
-	msg := strings.TrimSpace(resp.Message)
-	if resp.Success {
-		if msg == "" || isAlreadyCheckedMessage(msg) {
-			return providerResult{Status: CheckinResultAlreadyChecked, Message: msg}, nil
-		}
-		if strings.Contains(strings.ToLower(msg), "success") || strings.Contains(msg, "签到成功") {
-			return providerResult{Status: CheckinResultSuccess, Message: msg}, nil
-		}
-		// Note: AI suggested adding debug log for "unexpected" success messages here.
-		// Rejected because: anyrouter API contract guarantees success=true only for
-		// actual successes. The catch-all is intentional and correct behavior.
-		return providerResult{Status: CheckinResultSuccess, Message: msg}, nil
-	}
-	if msg != "" {
-		return providerResult{Status: CheckinResultFailed, Message: msg}, nil
-	}
-	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, nil
-}
+// Note: anyrouterProvider removed - it only supported cookie-based auth which
+// cannot be implemented in a backend service (requires browser environment).

@@ -1,9 +1,14 @@
 import http from "@/utils/http";
 
-// Site types must match backend constants in internal/sitemanagement/models.go
 // Note: "Veloera" is capitalized to match backend SiteTypeVeloera constant
-export type ManagedSiteType = "unknown" | "new-api" | "Veloera" | "wong-gongyi" | "anyrouter";
-export type ManagedSiteAuthType = "none" | "access_token" | "cookie";
+export type ManagedSiteType =
+  | "unknown"
+  | "new-api"
+  | "Veloera"
+  | "wong-gongyi"
+  | "one-hub"
+  | "done-hub";
+export type ManagedSiteAuthType = "none" | "access_token";
 
 export type ManagedSiteCheckinStatus = "success" | "failed" | "skipped" | "already_checked" | "";
 
@@ -20,6 +25,7 @@ export interface ManagedSiteDTO {
   user_id: string;
   checkin_page_url: string;
 
+  checkin_available: boolean;
   checkin_enabled: boolean;
   auto_checkin_enabled: boolean;
   custom_checkin_url: string;
@@ -105,6 +111,7 @@ export interface CreateManagedSiteRequest {
   user_id: string;
   checkin_page_url: string;
 
+  checkin_available: boolean;
   checkin_enabled: boolean;
   auto_checkin_enabled: boolean;
   custom_checkin_url: string;
@@ -204,6 +211,7 @@ export interface SiteExportInfo {
   site_type: ManagedSiteType;
   user_id: string;
   checkin_page_url: string;
+  checkin_available: boolean;
   checkin_enabled: boolean;
   auto_checkin_enabled: boolean;
   custom_checkin_url: string;

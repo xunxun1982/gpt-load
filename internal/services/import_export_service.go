@@ -661,6 +661,7 @@ type ManagedSiteExportInfo struct {
 	SiteType           string `json:"site_type"`
 	UserID             string `json:"user_id"`
 	CheckInPageURL     string `json:"checkin_page_url"`
+	CheckInAvailable   bool   `json:"checkin_available"`
 	CheckInEnabled     bool   `json:"checkin_enabled"`
 	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
 	CustomCheckInURL   string `json:"custom_checkin_url"`
@@ -680,6 +681,7 @@ type managedSiteModel struct {
 	SiteType           string `gorm:"column:site_type"`
 	UserID             string `gorm:"column:user_id"`
 	CheckInPageURL     string `gorm:"column:checkin_page_url"`
+	CheckInAvailable   bool   `gorm:"column:checkin_available"`
 	CheckInEnabled     bool   `gorm:"column:checkin_enabled"`
 	AutoCheckInEnabled bool   `gorm:"column:auto_checkin_enabled"`
 	CustomCheckInURL   string `gorm:"column:custom_checkin_url"`
@@ -759,6 +761,7 @@ func (s *ImportExportService) exportManagedSites() *ManagedSitesExportData {
 			SiteType:           site.SiteType,
 			UserID:             site.UserID,
 			CheckInPageURL:     site.CheckInPageURL,
+			CheckInAvailable:   site.CheckInAvailable,
 			CheckInEnabled:     site.CheckInEnabled,
 			AutoCheckInEnabled: site.AutoCheckInEnabled,
 			CustomCheckInURL:   site.CustomCheckInURL,
