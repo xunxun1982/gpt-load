@@ -120,6 +120,7 @@ var MessagesEnUS = map[string]string{
 	"success.group_bound_to_site":     "Group bound to site successfully",
 	"success.group_unbound_from_site": "Group unbound from site successfully",
 	"success.site_unbound_from_group": "Site unbound from group successfully",
+	"success.unbound_sites_deleted":   "{{.count}} unbound site(s) deleted",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}} is too short ({{.length}} characters), recommend at least 16 characters",

@@ -79,13 +79,10 @@ export default {
   siteCopied: "站点复制成功",
   deleteSite: "删除站点",
   confirmDeleteSite: "确定要删除站点「{name}」吗？删除后相关签到日志也将被清除。",
-  enterSiteNameToConfirm: "请输入站点ID和名称以确认",
   dangerousDeleteWarning: "这是一个危险的操作，将删除站点 ",
-  toConfirmDeletion: " 及其所有签到日志。",
-  enterSiteId: "请输入站点ID",
+  toConfirmDeletion: " 及其所有签到日志。请输入站点名称以确认：",
   enterSiteName: "请输入站点名称",
   confirmDelete: "确认删除",
-  incorrectSiteId: "站点ID输入不正确",
   incorrectSiteName: "站点名称输入不正确",
   siteHasBinding: "站点「{name}」已绑定分组「{groupName}」，请先解绑后再删除。",
   mustUnbindFirst: "请先解绑",
@@ -125,4 +122,15 @@ export default {
   nameDuplicate: "站点名称「{name}」已存在",
   baseUrlRequired: "请输入站点链接",
   invalidBaseUrl: "站点链接格式不正确",
+
+  // Bulk delete
+  deleteAllUnbound: "删除所有",
+  deleteAllUnboundTooltip: "删除所有未绑定分组的站点",
+  confirmDeleteAllUnbound: "确定要删除所有未绑定分组的站点吗？",
+  deleteAllUnboundWarning:
+    "这是一个危险的操作，将删除所有未绑定分组的站点（共 {count} 个）及其签到日志。请输入 ",
+  deleteAllUnboundConfirmText: "DELETE",
+  deleteAllUnboundPlaceholder: "请输入 DELETE 以确认",
+  incorrectConfirmText: "确认文本输入不正确",
+  noUnboundSites: "没有未绑定分组的站点",
 };

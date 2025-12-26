@@ -395,6 +395,52 @@ func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
 	return nil
 }
 
+// DeleteAllUnboundSites deletes all sites that are not bound to any group.
+// Returns the count of deleted sites.
+func (s *SiteService) DeleteAllUnboundSites(ctx context.Context) (int64, error) {
+	// Find all unbound site IDs first (sites where bound_group_id IS NULL)
+	var unboundSiteIDs []uint
+	if err := s.db.WithContext(ctx).
+		Model(&ManagedSite{}).
+		Where("bound_group_id IS NULL").
+		Pluck("id", &unboundSiteIDs).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+
+	if len(unboundSiteIDs) == 0 {
+		return 0, nil
+	}
+
+	// Delete logs for all unbound sites in one query (uses idx_site_time index)
+	if err := s.db.WithContext(ctx).
+		Where("site_id IN ?", unboundSiteIDs).
+		Delete(&ManagedSiteCheckinLog{}).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+
+	// Delete all unbound sites in one query
+	result := s.db.WithContext(ctx).
+		Where("bound_group_id IS NULL").
+		Delete(&ManagedSite{})
+	if result.Error != nil {
+		return 0, app_errors.ParseDBError(result.Error)
+	}
+
+	return result.RowsAffected, nil
+}
+
+// CountUnboundSites returns the count of sites not bound to any group.
+func (s *SiteService) CountUnboundSites(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).
+		Model(&ManagedSite{}).
+		Where("bound_group_id IS NULL").
+		Count(&count).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+	return count, nil
+}
+
 // CopySite creates a copy of an existing site with a unique name.
 // The copied site will have the same configuration but without binding relationships.
 func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDTO, error) {
@@ -840,7 +886,9 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			}
 		}
 
-		// Handle user_id encryption (same as auth_value)
+		// Handle user_id encryption
+		// Note: user_id may be plain or encrypted independently of auth_value,
+		// so we try to decrypt first, and if that fails, treat it as plain text
 		encryptedUserID := ""
 		if siteInfo.UserID != "" {
 			if plainMode {
@@ -853,13 +901,20 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 				}
 				encryptedUserID = enc
 			} else {
-				// Input is already encrypted, verify it can be decrypted
+				// Try to decrypt first; if it fails, treat as plain text and encrypt
 				if _, err := s.encryptionSvc.Decrypt(siteInfo.UserID); err != nil {
-					logrus.WithError(err).Warnf("Failed to decrypt user_id for site %s, skipping", name)
-					skipped++
-					continue
+					// Likely plain text, encrypt it
+					enc, encErr := s.encryptionSvc.Encrypt(siteInfo.UserID)
+					if encErr != nil {
+						logrus.WithError(encErr).Warnf("Failed to encrypt user_id for site %s", name)
+						skipped++
+						continue
+					}
+					encryptedUserID = enc
+					logrus.Debugf("user_id for site %s was plain text, encrypted it", name)
+				} else {
+					encryptedUserID = siteInfo.UserID
 				}
-				encryptedUserID = siteInfo.UserID
 			}
 		}
 

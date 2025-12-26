@@ -80,13 +80,10 @@ export default {
   deleteSite: "Delete Site",
   confirmDeleteSite:
     'Are you sure you want to delete site "{name}"? Related check-in logs will also be deleted.',
-  enterSiteNameToConfirm: "Enter site ID and name to confirm",
   dangerousDeleteWarning: "This is a dangerous operation. It will delete site ",
-  toConfirmDeletion: " and all its check-in logs.",
-  enterSiteId: "Enter site ID",
+  toConfirmDeletion: " and all its check-in logs. Please enter the site name to confirm:",
   enterSiteName: "Enter site name",
   confirmDelete: "Confirm Delete",
-  incorrectSiteId: "Incorrect site ID",
   incorrectSiteName: "Incorrect site name",
   siteHasBinding:
     'Site "{name}" is bound to group "{groupName}". Please unbind first before deleting.',
@@ -127,4 +124,15 @@ export default {
   nameDuplicate: 'Site name "{name}" already exists',
   baseUrlRequired: "Please enter site URL",
   invalidBaseUrl: "Invalid site URL format",
+
+  // Bulk delete
+  deleteAllUnbound: "Delete All",
+  deleteAllUnboundTooltip: "Delete all sites not bound to any group",
+  confirmDeleteAllUnbound: "Are you sure you want to delete all unbound sites?",
+  deleteAllUnboundWarning:
+    "This is a dangerous operation. It will delete all sites not bound to any group ({count} sites) and their check-in logs. Please enter ",
+  deleteAllUnboundConfirmText: "DELETE",
+  deleteAllUnboundPlaceholder: "Enter DELETE to confirm",
+  incorrectConfirmText: "Incorrect confirmation text",
+  noUnboundSites: "No unbound sites to delete",
 };

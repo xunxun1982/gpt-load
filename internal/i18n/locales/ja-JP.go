@@ -120,6 +120,7 @@ var MessagesJaJP = map[string]string{
 	"success.group_bound_to_site":     "グループがサイトにバインドされました",
 	"success.group_unbound_from_site": "グループとサイトのバインドが解除されました",
 	"success.site_unbound_from_group": "サイトとグループのバインドが解除されました",
+	"success.unbound_sites_deleted":   "{{.count}}個のバインドされていないサイトが削除されました",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}}が短すぎます（{{.length}}文字）。少なくとも16文字を推奨します",

@@ -79,13 +79,11 @@ export default {
   siteCopied: "サイトをコピーしました",
   deleteSite: "サイトを削除",
   confirmDeleteSite: "サイト「{name}」を削除しますか？関連するチェックインログも削除されます。",
-  enterSiteNameToConfirm: "サイトIDと名前を入力して確認",
   dangerousDeleteWarning: "これは危険な操作です。サイト ",
-  toConfirmDeletion: " とすべてのチェックインログが削除されます。",
-  enterSiteId: "サイトIDを入力",
+  toConfirmDeletion:
+    " とすべてのチェックインログが削除されます。確認のためサイト名を入力してください：",
   enterSiteName: "サイト名を入力",
   confirmDelete: "削除を確認",
-  incorrectSiteId: "サイトIDが正しくありません",
   incorrectSiteName: "サイト名が正しくありません",
   siteHasBinding:
     "サイト「{name}」はグループ「{groupName}」にバインドされています。削除する前にバインドを解除してください。",
@@ -126,4 +124,15 @@ export default {
   nameDuplicate: "サイト名「{name}」は既に存在します",
   baseUrlRequired: "サイトURLを入力してください",
   invalidBaseUrl: "サイトURLの形式が正しくありません",
+
+  // Bulk delete
+  deleteAllUnbound: "すべて削除",
+  deleteAllUnboundTooltip: "グループにバインドされていないすべてのサイトを削除",
+  confirmDeleteAllUnbound: "バインドされていないすべてのサイトを削除しますか？",
+  deleteAllUnboundWarning:
+    "これは危険な操作です。グループにバインドされていないすべてのサイト（{count}件）とそのチェックインログが削除されます。確認のため ",
+  deleteAllUnboundConfirmText: "DELETE",
+  deleteAllUnboundPlaceholder: "DELETEと入力して確認",
+  incorrectConfirmText: "確認テキストが正しくありません",
+  noUnboundSites: "削除するバインドされていないサイトがありません",
 };
