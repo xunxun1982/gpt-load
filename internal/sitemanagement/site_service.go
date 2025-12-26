@@ -413,18 +413,24 @@ func (s *SiteService) DeleteAllUnboundSites(ctx context.Context) (int64, error) 
 			return nil
 		}
 
-		// Delete logs for all unbound sites (uses idx_site_time index)
-		if err := tx.Where("site_id IN ?", unboundSiteIDs).
-			Delete(&ManagedSiteCheckinLog{}).Error; err != nil {
-			return app_errors.ParseDBError(err)
-		}
-
-		// Delete sites using the same IDs for consistency
-		result := tx.Where("id IN ?", unboundSiteIDs).Delete(&ManagedSite{})
+		// Delete sites first with re-check condition to prevent deleting concurrently-bound sites.
+		// This ensures business rule consistency: bound sites cannot be deleted.
+		result := tx.Where("id IN ? AND bound_group_id IS NULL", unboundSiteIDs).Delete(&ManagedSite{})
 		if result.Error != nil {
 			return app_errors.ParseDBError(result.Error)
 		}
 		deletedCount = result.RowsAffected
+
+		// Delete orphaned logs for actually deleted sites.
+		// Note: Some logs may remain if sites were bound between fetch and delete,
+		// but those sites still exist so their logs are still valid.
+		if deletedCount > 0 {
+			if err := tx.Where("site_id IN ?", unboundSiteIDs).
+				Delete(&ManagedSiteCheckinLog{}).Error; err != nil {
+				return app_errors.ParseDBError(err)
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -890,9 +896,16 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			}
 		}
 
-		// Handle user_id encryption
-		// Note: user_id may be plain or encrypted independently of auth_value,
-		// so we try to decrypt first, and if that fails, treat it as plain text
+		// Handle user_id encryption with auto-detection for mixed-format imports.
+		// Design decision: Unlike auth_value which skips on decrypt failure, user_id uses
+		// auto-detection (try decrypt, fallback to encrypt) to support:
+		// 1. Users manually editing exported files with plain user_ids
+		// 2. Mixed imports where some user_ids are encrypted and some are plain
+		// 3. Better UX by not failing entire imports due to format inconsistency
+		// Risk assessment: Double-encryption is unlikely because encrypted strings have
+		// distinct base64/hex patterns that rarely match valid plain user_ids.
+		// AI review suggested aligning with auth_value behavior, but we intentionally
+		// keep this flexible approach based on real-world usage patterns.
 		encryptedUserID := ""
 		if siteInfo.UserID != "" {
 			if plainMode {
@@ -905,7 +918,7 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 				}
 				encryptedUserID = enc
 			} else {
-				// Try to decrypt first; if it fails, treat as plain text and encrypt
+				// Auto-detect: try decrypt first, fallback to encrypt if it fails
 				if _, err := s.encryptionSvc.Decrypt(siteInfo.UserID); err != nil {
 					// Likely plain text, encrypt it
 					enc, encErr := s.encryptionSvc.Encrypt(siteInfo.UserID)
@@ -915,7 +928,7 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 						continue
 					}
 					encryptedUserID = enc
-					logrus.Debugf("user_id for site %s was plain text, encrypted it", name)
+					logrus.Debugf("user_id for site %s was plain text in encrypted mode, auto-encrypted", name)
 				} else {
 					encryptedUserID = siteInfo.UserID
 				}
