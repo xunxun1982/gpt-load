@@ -320,11 +320,7 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 	err := s.db.WithContext(ctx).First(&row, 1).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Keep defaults aligned with SiteService.ensureSettingsRow.
-			// Note: AI suggested handling duplicate key race condition by retrying First query
-			// after Create fails. Rejected because: this is a singleton row (ID=1) created at
-			// startup, race condition probability is extremely low, and returning error allows
-			// next call to succeed. Adding retry logic adds complexity for minimal benefit.
+			// Singleton row (ID=1) created at startup; race condition extremely unlikely
 			row = ManagedSiteSetting{ID: 1, WindowStart: "09:00", WindowEnd: "18:00", ScheduleMode: AutoCheckinScheduleModeRandom, RetryIntervalMinutes: 60, RetryMaxAttemptsPerDay: 2}
 			if createErr := s.db.WithContext(ctx).Create(&row).Error; createErr != nil {
 				return nil, app_errors.ParseDBError(createErr)
