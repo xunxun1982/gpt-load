@@ -155,9 +155,10 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 				)
 			}
 		default:
-			// Fallback for unsupported dialects
+			// Fallback for unsupported dialects with batching.
+			// Use GORM's Limit to ensure batch deletion even for unknown databases.
 			logrus.Warnf("Log cleanup using fallback deletion for unsupported dialect: %s", dialect)
-			result = s.db.WithContext(batchCtx).Where("timestamp < ?", cutoffTime).Delete(&models.RequestLog{})
+			result = s.db.WithContext(batchCtx).Where("timestamp < ?", cutoffTime).Limit(batchSize).Delete(&models.RequestLog{})
 		}
 		cancel()
 
