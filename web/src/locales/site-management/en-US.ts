@@ -139,8 +139,9 @@ export default {
   statsDisabled: "Disabled",
   statsAutoCheckin: "Auto Check-in",
 
-  // Filter
+  // Filter & Search
   filterCheckinAvailable: "Show only check-in available",
+  searchPlaceholder: "Search name, URL, notes...",
 
   // Auto Check-in Actions
   runNow: "Run Now",

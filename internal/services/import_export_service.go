@@ -1069,6 +1069,11 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 	}
 
 	// Import auto-checkin config if present
+	// Note: Using First/Create/Save pattern instead of FirstOrCreate+Assign because:
+	// 1. This is a singleton config (ID=1) with no concurrent import scenarios
+	// 2. Already protected by transaction isolation
+	// 3. FirstOrCreate behavior varies across databases (not atomic on SQLite)
+	// 4. Current pattern is clearer and has equivalent performance
 	if data.AutoCheckin != nil {
 		var setting managedSiteSettingModel
 		if err := tx.First(&setting, 1).Error; err != nil {
@@ -1126,6 +1131,9 @@ func (s *ImportExportService) generateUniqueSiteName(tx *gorm.DB, baseName strin
 
 		// If name is unique, we're done
 		if count == 0 {
+			if siteName != baseName {
+				logrus.Debugf("Generated unique site name: %s (original: %s)", siteName, baseName)
+			}
 			return siteName, nil
 		}
 

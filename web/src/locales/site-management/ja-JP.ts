@@ -137,8 +137,9 @@ export default {
   statsDisabled: "無効",
   statsAutoCheckin: "自動チェックイン",
 
-  // Filter
+  // Filter & Search
   filterCheckinAvailable: "チェックイン可能のみ表示",
+  searchPlaceholder: "名前、URL、メモを検索...",
 
   // Auto Check-in Actions
   runNow: "今すぐ実行",

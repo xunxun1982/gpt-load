@@ -138,8 +138,9 @@ export default {
   statsDisabled: "禁用",
   statsAutoCheckin: "自动签到",
 
-  // Filter
+  // Filter & Search
   filterCheckinAvailable: "只显示可签到",
+  searchPlaceholder: "搜索名称、链接、备注...",
 
   // Auto Check-in Actions
   runNow: "立即执行",

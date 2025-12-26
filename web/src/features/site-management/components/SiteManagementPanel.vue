@@ -52,6 +52,7 @@ import {
   CloudDownloadOutline,
   CloudUploadOutline,
   LogInOutline,
+  Search,
 } from "@vicons/ionicons5";
 import { askExportMode, askImportMode } from "@/utils/export-import";
 
@@ -62,6 +63,7 @@ const dialog = useDialog();
 const loading = ref(false);
 const sites = ref<ManagedSiteDTO[]>([]);
 const showOnlyCheckinAvailable = ref(false);
+const searchText = ref("");
 const showSiteModal = ref(false);
 const editingSite = ref<ManagedSiteDTO | null>(null);
 const authValueInput = ref("");
@@ -131,12 +133,33 @@ const siteStats = computed(() => {
   return { total, enabled, disabled, autoCheckinEnabled, checkinEnabled };
 });
 
-// Filtered sites based on filter options
+// Filtered sites based on filter options and search text
 const filteredSites = computed(() => {
-  if (!showOnlyCheckinAvailable.value) {
-    return sites.value;
+  let result = sites.value;
+
+  // Filter by checkin available
+  if (showOnlyCheckinAvailable.value) {
+    result = result.filter(s => s.checkin_available);
   }
-  return sites.value.filter(s => s.checkin_available);
+
+  // Filter by search text (fuzzy search on name, base_url, notes, description)
+  const query = searchText.value.trim().toLowerCase();
+  if (query) {
+    result = result.filter(s => {
+      const name = (s.name || "").toLowerCase();
+      const baseUrl = (s.base_url || "").toLowerCase();
+      const notes = (s.notes || "").toLowerCase();
+      const description = (s.description || "").toLowerCase();
+      return (
+        name.includes(query) ||
+        baseUrl.includes(query) ||
+        notes.includes(query) ||
+        description.includes(query)
+      );
+    });
+  }
+
+  return result;
 });
 
 async function loadSites() {
@@ -732,20 +755,9 @@ onUnmounted(() => {
       </n-space>
     </n-space>
     <n-divider style="margin: 8px 0" />
-    <n-data-table
-      size="small"
-      :loading="loading"
-      :columns="columns"
-      :data="filteredSites"
-      :bordered="false"
-      :single-line="false"
-      :max-height="520"
-      :scroll-x="900"
-    />
-
-    <!-- Site Statistics -->
-    <div class="site-stats" v-if="sites.length > 0">
-      <n-space :size="24" align="center">
+    <!-- Site Statistics and Search - placed above table for visibility when scrolling -->
+    <div class="site-stats-row" v-if="sites.length > 0">
+      <n-space :size="24" align="center" class="stats-left">
         <span class="stat-item">
           <span class="stat-label">{{ t("siteManagement.statsTotal") }}:</span>
           <span class="stat-value">{{ siteStats.total }}</span>
@@ -763,6 +775,30 @@ onUnmounted(() => {
           <span class="stat-value stat-info">{{ siteStats.autoCheckinEnabled }}</span>
         </span>
       </n-space>
+      <n-input
+        v-model:value="searchText"
+        :placeholder="t('siteManagement.searchPlaceholder')"
+        size="small"
+        clearable
+        class="search-input"
+      >
+        <template #prefix>
+          <n-icon :component="Search" />
+        </template>
+      </n-input>
+    </div>
+    <!-- Table wrapper with tabindex for keyboard navigation (arrow keys scroll) -->
+    <div class="site-table-wrapper" tabindex="0">
+      <n-data-table
+        size="small"
+        :loading="loading"
+        :columns="columns"
+        :data="filteredSites"
+        :bordered="false"
+        :single-line="false"
+        :max-height="'calc(100vh - 295px)'"
+        :scroll-x="900"
+      />
     </div>
 
     <!-- Site Modal -->
@@ -1190,12 +1226,68 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 6px;
 }
-.site-stats {
-  margin-top: 12px;
+/* Table wrapper for keyboard navigation support */
+.site-table-wrapper {
+  outline: none;
+}
+/* Focus style for accessibility - subtle indicator when focused via keyboard */
+.site-table-wrapper:focus-visible {
+  outline: 2px solid var(--n-primary-color);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/*
+ * Force scrollbar always visible in naive-ui DataTable
+ * naive-ui uses custom scrollbar component with fade effect
+ * We override the scrollbar rail and bar opacity to always show
+ */
+/* Target the scrollbar container - always show vertical scrollbar rail */
+.site-table-wrapper :deep(.n-scrollbar-rail--vertical) {
+  opacity: 1 !important;
+  right: 2px;
+}
+/* Always show the scrollbar thumb/bar */
+.site-table-wrapper :deep(.n-scrollbar-rail--vertical .n-scrollbar-rail__scrollbar) {
+  opacity: 1 !important;
+  background-color: rgba(128, 128, 128, 0.35) !important;
+  border-radius: 4px;
+  width: 6px !important;
+}
+.site-table-wrapper :deep(.n-scrollbar-rail--vertical .n-scrollbar-rail__scrollbar:hover) {
+  background-color: rgba(128, 128, 128, 0.5) !important;
+}
+/* Ensure scrollbar rail background is visible */
+.site-table-wrapper :deep(.n-scrollbar-rail--vertical::before) {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  background-color: rgba(128, 128, 128, 0.1);
+  border-radius: 4px;
+}
+
+/* Stats row with search input */
+.site-stats-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
   padding: 8px 12px;
   background: var(--n-color-embedded);
   border-radius: 6px;
   font-size: 13px;
+  gap: 16px;
+}
+.stats-left {
+  flex: 1;
+  min-width: 0;
+}
+.search-input {
+  width: 200px;
+  flex-shrink: 0;
 }
 .stat-item {
   display: inline-flex;
