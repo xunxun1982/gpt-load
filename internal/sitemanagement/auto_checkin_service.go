@@ -24,6 +24,7 @@ import (
 const (
 	autoCheckinStatusKey     = "managed_site:auto_checkin_status"
 	autoCheckinRunNowChannel = "managed_site:auto_checkin_run_now"
+	// Note: autoCheckinConfigUpdatedChannel is defined in site_service.go (same package)
 )
 
 type AutoCheckinService struct {
