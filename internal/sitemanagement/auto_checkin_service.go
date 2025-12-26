@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -730,6 +731,16 @@ func resolveProvider(siteType string) checkinProvider {
 	}
 }
 
+// extractBaseURL extracts the base URL (scheme + host) from a full URL.
+// e.g., "https://ai.huan666.de/app/me" -> "https://ai.huan666.de"
+func extractBaseURL(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(rawURL, "/")
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 func buildUserHeaders(userID string) map[string]string {
 	// Multiple header names for compatibility with different third-party API implementations
 	// (New-API, Veloera, VoAPI, One-Hub, Rix-API, Neo-API, etc.)
@@ -815,8 +826,9 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 	headers := buildUserHeaders(site.UserID)
 	headers["Authorization"] = "Bearer " + authValue
 
-	url := strings.TrimRight(site.BaseURL, "/") + "/api/user/check_in"
-	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, url, headers, map[string]any{})
+	baseURL := extractBaseURL(site.BaseURL)
+	apiURL := baseURL + "/api/user/check_in"
+	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
 
 	var resp struct {
 		Success bool        `json:"success"`
@@ -851,6 +863,18 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 		return providerResult{}, fmt.Errorf("http %d", statusCode)
 	}
 
+	// Log response for debugging when check-in fails
+	if !resp.Success {
+		logrus.WithFields(logrus.Fields{
+			"site_id":     site.ID,
+			"site_name":   site.Name,
+			"status_code": statusCode,
+			"response":    string(data),
+			"resp_msg":    resp.Message,
+			"success":     resp.Success,
+		}).Debug("Veloera check-in failed")
+	}
+
 	if isAlreadyCheckedMessage(resp.Message) {
 		return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
 	}
@@ -874,8 +898,9 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 	headers := buildUserHeaders(site.UserID)
 	headers["Authorization"] = "Bearer " + authValue
 
-	url := strings.TrimRight(site.BaseURL, "/") + "/api/user/checkin"
-	data, _, err := doJSONRequest(ctx, client, http.MethodPost, url, headers, map[string]any{})
+	baseURL := extractBaseURL(site.BaseURL)
+	apiURL := baseURL + "/api/user/checkin"
+	data, _, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
 	if err != nil {
 		return providerResult{}, err
 	}
