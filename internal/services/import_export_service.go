@@ -1107,8 +1107,12 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 }
 
 // generateUniqueSiteName generates a unique site name by appending a random suffix if needed.
-// Note: This logic is similar to GenerateUniqueGroupName but operates on managedSiteModel.
-// Kept separate to maintain clear module boundaries between group and site management.
+//
+// Note: This logic is similar to GenerateUniqueGroupName but intentionally kept separate:
+// 1. Maintains clear module boundaries between group and site management
+// 2. Avoids introducing generic table/field parameters which would add complexity
+// 3. Each function operates on its own model type with type safety
+// 4. Code duplication is minimal (~30 lines) and maintenance cost is acceptable
 func (s *ImportExportService) generateUniqueSiteName(tx *gorm.DB, baseName string) (string, error) {
 	siteName := baseName
 	maxAttempts := 10
