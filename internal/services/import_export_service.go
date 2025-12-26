@@ -669,7 +669,11 @@ type ManagedSiteExportInfo struct {
 	AuthValue          string `json:"auth_value,omitempty"`
 }
 
-// ManagedSite represents the database model for managed sites (minimal for export)
+// managedSiteModel represents the database model for managed sites (minimal for export/import).
+// Note: This is intentionally separate from sitemanagement.ManagedSite to:
+// 1. Avoid circular dependency between services and sitemanagement packages
+// 2. Keep export/import logic self-contained with only the fields needed
+// 3. Maintain clear module boundaries for easier maintenance
 type managedSiteModel struct {
 	ID                 uint   `gorm:"primaryKey"`
 	Name               string `gorm:"column:name"`
