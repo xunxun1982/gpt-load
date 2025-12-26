@@ -25,6 +25,8 @@ const (
 	autoCheckinStatusKey     = "managed_site:auto_checkin_status"
 	autoCheckinRunNowChannel = "managed_site:auto_checkin_run_now"
 	// Note: autoCheckinConfigUpdatedChannel is defined in site_service.go (same package)
+
+	maxResponseBodySize = 2 << 20 // 2 MB limit for HTTP response body
 )
 
 type AutoCheckinService struct {
@@ -776,7 +778,7 @@ func doJSONRequest(ctx context.Context, client *http.Client, method, fullURL str
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
