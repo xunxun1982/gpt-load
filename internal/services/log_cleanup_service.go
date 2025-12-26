@@ -141,6 +141,12 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 			).Scan(&maxTS).Error
 			subCancel()
 
+			// Note: AI suggested separating error handling from "no records" case to avoid
+			// unintentionally deleting all remaining records on query failure. However:
+			// 1. All records being deleted are already expired and should be removed
+			// 2. If SELECT fails, falling back to delete-all is a safe degradation
+			// 3. If DELETE also fails, it will be caught by the error handling below
+			// 4. This approach is more resilient than aborting the entire cleanup task
 			if err != nil || maxTS.IsZero() {
 				// No more records or less than batchSize records, delete all remaining
 				result = s.db.WithContext(batchCtx).Exec(
