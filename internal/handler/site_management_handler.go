@@ -149,7 +149,7 @@ func (s *Server) DeleteAllUnboundSites(c *gin.Context) {
 	}
 	response.SuccessI18n(c, "success.unbound_sites_deleted", map[string]interface{}{
 		"count": deleted,
-	})
+	}, map[string]any{"count": deleted})
 }
 
 // CountUnboundSites returns the count of sites not bound to any group

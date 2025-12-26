@@ -397,36 +397,40 @@ func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
 
 // DeleteAllUnboundSites deletes all sites that are not bound to any group.
 // Returns the count of deleted sites.
+// Uses transaction to prevent race condition between fetching IDs and deletion.
 func (s *SiteService) DeleteAllUnboundSites(ctx context.Context) (int64, error) {
-	// Find all unbound site IDs first (sites where bound_group_id IS NULL)
-	var unboundSiteIDs []uint
-	if err := s.db.WithContext(ctx).
-		Model(&ManagedSite{}).
-		Where("bound_group_id IS NULL").
-		Pluck("id", &unboundSiteIDs).Error; err != nil {
-		return 0, app_errors.ParseDBError(err)
-	}
+	var deletedCount int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Find all unbound site IDs (sites where bound_group_id IS NULL)
+		var unboundSiteIDs []uint
+		if err := tx.Model(&ManagedSite{}).
+			Where("bound_group_id IS NULL").
+			Pluck("id", &unboundSiteIDs).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
 
-	if len(unboundSiteIDs) == 0 {
-		return 0, nil
-	}
+		if len(unboundSiteIDs) == 0 {
+			return nil
+		}
 
-	// Delete logs for all unbound sites in one query (uses idx_site_time index)
-	if err := s.db.WithContext(ctx).
-		Where("site_id IN ?", unboundSiteIDs).
-		Delete(&ManagedSiteCheckinLog{}).Error; err != nil {
-		return 0, app_errors.ParseDBError(err)
-	}
+		// Delete logs for all unbound sites (uses idx_site_time index)
+		if err := tx.Where("site_id IN ?", unboundSiteIDs).
+			Delete(&ManagedSiteCheckinLog{}).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
 
-	// Delete all unbound sites in one query
-	result := s.db.WithContext(ctx).
-		Where("bound_group_id IS NULL").
-		Delete(&ManagedSite{})
-	if result.Error != nil {
-		return 0, app_errors.ParseDBError(result.Error)
+		// Delete sites using the same IDs for consistency
+		result := tx.Where("id IN ?", unboundSiteIDs).Delete(&ManagedSite{})
+		if result.Error != nil {
+			return app_errors.ParseDBError(result.Error)
+		}
+		deletedCount = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
-
-	return result.RowsAffected, nil
+	return deletedCount, nil
 }
 
 // CountUnboundSites returns the count of sites not bound to any group.
