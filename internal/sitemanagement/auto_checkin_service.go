@@ -631,7 +631,7 @@ func (s *AutoCheckinService) decryptAuthValue(encrypted string) (string, error) 
 
 func (s *AutoCheckinService) persistSiteResult(ctx context.Context, siteID uint, status, message string) {
 	now := time.Now().UTC()
-	date := todayString(time.Now().UTC())
+	date := todayString(now)
 
 	update := map[string]any{
 		"last_checkin_at":      now,
