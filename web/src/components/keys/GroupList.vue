@@ -601,6 +601,18 @@ async function handleFileChange(event: Event) {
                             <n-tag v-if="!group.enabled" size="tiny" type="error" round>
                               {{ t("keys.disabled") }}
                             </n-tag>
+                            <n-tag
+                              v-if="group.bound_site_id && !section.isAggregate"
+                              size="tiny"
+                              type="warning"
+                              round
+                              class="bound-site-tag"
+                              :title="t('binding.hasBoundSite')"
+                            >
+                              <template #icon>
+                                <n-icon :component="LinkOutline" :size="10" />
+                              </template>
+                            </n-tag>
                             <n-tag v-if="hasChildGroups(group.id)" size="tiny" type="info" round>
                               {{
                                 t("keys.childGroupCount", {
@@ -1080,18 +1092,33 @@ async function handleFileChange(event: Event) {
 }
 
 .group-item.aggregate.active {
-  background: var(--primary-gradient);
+  background: linear-gradient(135deg, #5a6fd8 0%, #4c63d2 100%);
   border-style: solid;
 }
 
 .group-item.active,
 :root.dark .group-item.active,
 :root.dark .group-item.aggregate.active {
-  background: var(--primary-gradient);
+  background: linear-gradient(135deg, #3b5998 0%, #2d4373 100%);
   color: white;
   border-color: transparent;
   box-shadow: var(--shadow-md);
   border-style: solid;
+}
+
+/* Ensure tags are visible in selected state */
+.group-item.active .group-meta :deep(.n-tag) {
+  background: rgba(255, 255, 255, 0.25) !important;
+  border-color: rgba(255, 255, 255, 0.4) !important;
+  color: white !important;
+}
+
+.group-item.active .group-meta :deep(.n-tag .n-tag__content) {
+  color: white !important;
+}
+
+.group-item.active .group-meta :deep(.n-tag .n-icon) {
+  color: white !important;
 }
 
 .group-icon {
@@ -1129,6 +1156,28 @@ async function handleFileChange(event: Event) {
 
 .group-item:hover .group-actions {
   opacity: 1;
+}
+
+/* Ensure action icons are visible on colored background when selected */
+.group-item.active .group-actions {
+  opacity: 1;
+}
+
+.group-item.active .group-actions :deep(.n-button) {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.group-item.active .group-actions :deep(.n-button:hover) {
+  color: white !important;
+  background: rgba(255, 255, 255, 0.15) !important;
+}
+
+.group-item.active .group-actions :deep(.n-icon) {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.group-item.active .group-actions :deep(.n-button:hover .n-icon) {
+  color: white !important;
 }
 
 .group-name {
@@ -1377,8 +1426,35 @@ async function handleFileChange(event: Event) {
 }
 
 :root.dark .group-item.active .group-meta :deep(.n-tag) {
-  background: rgba(255, 255, 255, 0.2);
-  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.25) !important;
+  border-color: rgba(255, 255, 255, 0.4) !important;
+  color: white !important;
+}
+
+:root.dark .group-item.active .group-meta :deep(.n-tag .n-tag__content) {
+  color: white !important;
+}
+
+:root.dark .group-item.active .group-meta :deep(.n-tag .n-icon) {
+  color: white !important;
+}
+
+/* Ensure action icons are visible on colored background when selected (dark mode) */
+:root.dark .group-item.active .group-actions :deep(.n-button) {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+:root.dark .group-item.active .group-actions :deep(.n-button:hover) {
+  color: white !important;
+  background: rgba(255, 255, 255, 0.15) !important;
+}
+
+:root.dark .group-item.active .group-actions :deep(.n-icon) {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+:root.dark .group-item.active .group-actions :deep(.n-button:hover .n-icon) {
+  color: white !important;
 }
 
 /* Child groups styles */

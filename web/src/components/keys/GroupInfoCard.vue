@@ -34,6 +34,7 @@ import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
 import GroupCopyModal from "./GroupCopyModal.vue";
 import GroupFormModal from "./GroupFormModal.vue";
+import SiteBindingSelector from "./SiteBindingSelector.vue";
 
 const { t } = useI18n();
 
@@ -48,6 +49,7 @@ interface Emits {
   (e: "delete", value: Group, parentGroupId?: number): void;
   (e: "copy-success", group: Group): void;
   (e: "navigate-to-group", groupId: number): void;
+  (e: "navigate-to-site", siteId: number): void;
 }
 
 const props = defineProps<Props>();
@@ -293,6 +295,12 @@ async function handleDelete() {
     return;
   }
 
+  // Check if group is bound to a site (must unbind first)
+  if (props.group.bound_site_id) {
+    window.$message.warning(t("binding.mustUnbindBeforeDelete"));
+    return;
+  }
+
   // Check for child groups first
   let childGroupCount = 0;
   if (props.group.id && !props.group.parent_group_id && props.group.group_type !== "aggregate") {
@@ -355,6 +363,9 @@ async function handleDelete() {
               // If deleting a child group, pass parent group ID so parent component can select it
               emit("delete", props.group, props.group.parent_group_id ?? undefined);
             }
+          } catch (_) {
+            // Error is handled by http interceptor, prevent dialog from closing
+            return false;
           } finally {
             delLoading.value = false;
           }
@@ -420,6 +431,25 @@ async function handleToggleEnabled(enabled: boolean) {
   } catch (_error) {
     window.$message.error(t("keys.toggleGroupEnabledFailed"));
   }
+}
+
+// Site binding handlers
+function handleSiteBound(siteId: number, _siteName: string) {
+  if (props.group) {
+    // Emit refresh to reload group data from server
+    emit("refresh", { ...props.group, bound_site_id: siteId });
+  }
+}
+
+function handleSiteUnbound() {
+  if (props.group) {
+    // Emit refresh to reload group data from server
+    emit("refresh", { ...props.group, bound_site_id: null });
+  }
+}
+
+function handleNavigateToSite(siteId: number) {
+  emit("navigate-to-site", siteId);
 }
 </script>
 
@@ -632,286 +662,314 @@ async function handleToggleEnabled(enabled: boolean) {
 
       <!-- Detailed information section (collapsible) -->
       <div class="details-section">
-        <n-collapse accordion v-model:expanded-names="expandedName">
-          <n-collapse-item :title="t('keys.detailInfo')" name="details">
-            <div class="details-content">
-              <div class="detail-section">
-                <h4 class="section-title">{{ t("keys.basicInfo") }}</h4>
-                <n-form label-placement="left" label-width="140px" label-align="right">
-                  <n-grid cols="1 m:2">
-                    <n-grid-item>
-                      <n-form-item :label="`${t('keys.groupName')}：`">
-                        {{ group?.name }}
-                      </n-form-item>
-                    </n-grid-item>
-                    <n-grid-item>
-                      <n-form-item :label="`${t('keys.displayName')}：`">
-                        {{ group?.display_name }}
-                      </n-form-item>
-                    </n-grid-item>
-                    <!-- Show parent group info for child groups -->
-                    <n-grid-item v-if="isChildGroup" :span="2">
-                      <n-form-item :label="`${t('keys.parentGroupLabel')}：`">
-                        <div class="parent-group-info">
-                          <n-tag type="success" size="small">
-                            {{ t("keys.isChildGroup") }}
-                          </n-tag>
+        <div class="details-header">
+          <n-collapse accordion v-model:expanded-names="expandedName" class="details-collapse">
+            <n-collapse-item :title="t('keys.detailInfo')" name="details">
+              <div class="details-content">
+                <div class="detail-section">
+                  <h4 class="section-title">{{ t("keys.basicInfo") }}</h4>
+                  <n-form label-placement="left" label-width="140px" label-align="right">
+                    <n-grid cols="1 m:2">
+                      <n-grid-item>
+                        <n-form-item :label="`${t('keys.groupName')}：`">
+                          {{ group?.name }}
+                        </n-form-item>
+                      </n-grid-item>
+                      <n-grid-item>
+                        <n-form-item :label="`${t('keys.displayName')}：`">
+                          {{ group?.display_name }}
+                        </n-form-item>
+                      </n-grid-item>
+                      <!-- Show parent group info for child groups -->
+                      <n-grid-item v-if="isChildGroup" :span="2">
+                        <n-form-item :label="`${t('keys.parentGroupLabel')}：`">
+                          <div class="parent-group-info">
+                            <n-tag type="success" size="small">
+                              {{ t("keys.isChildGroup") }}
+                            </n-tag>
+                            <n-input
+                              v-if="parentGroup"
+                              class="parent-group-name"
+                              :value="parentGroup.display_name || parentGroup.name"
+                              readonly
+                              size="small"
+                              style="margin-left: 8px; margin-right: 8px; max-width: 200px"
+                            />
+                            <n-button
+                              v-if="parentGroup"
+                              round
+                              tertiary
+                              type="default"
+                              size="tiny"
+                              @click="parentGroup?.id && handleNavigateToGroup(parentGroup.id)"
+                              :title="t('keys.viewParentGroup')"
+                            >
+                              <template #icon>
+                                <n-icon :component="EyeOutline" />
+                              </template>
+                              {{ t("keys.viewParentGroup") }}
+                            </n-button>
+                          </div>
+                        </n-form-item>
+                      </n-grid-item>
+                      <n-grid-item>
+                        <n-form-item :label="`${t('keys.channelType')}：`">
+                          {{ group?.channel_type }}
+                        </n-form-item>
+                      </n-grid-item>
+                      <n-grid-item>
+                        <n-form-item :label="`${t('keys.sortOrder')}：`">
+                          {{ group?.sort }}
+                        </n-form-item>
+                      </n-grid-item>
+                      <!-- Only standard groups show test model and test path -->
+                      <n-grid-item v-if="!isAggregateGroup">
+                        <n-form-item :label="`${t('keys.testModel')}：`">
+                          {{ group?.test_model }}
+                        </n-form-item>
+                      </n-grid-item>
+                      <n-grid-item v-if="!isAggregateGroup && group?.channel_type !== 'gemini'">
+                        <n-form-item :label="`${t('keys.testPath')}：`">
+                          {{ group?.validation_endpoint }}
+                        </n-form-item>
+                      </n-grid-item>
+                      <n-grid-item :span="2">
+                        <n-form-item :label="`${t('keys.proxyKeys')}：`">
+                          <div class="proxy-keys-content">
+                            <span class="key-text">{{ proxyKeysDisplay }}</span>
+                            <n-button-group
+                              size="small"
+                              class="key-actions"
+                              v-if="group?.proxy_keys"
+                            >
+                              <n-tooltip trigger="hover">
+                                <template #trigger>
+                                  <n-button
+                                    quaternary
+                                    circle
+                                    @click="showProxyKeys = !showProxyKeys"
+                                  >
+                                    <template #icon>
+                                      <n-icon
+                                        :component="showProxyKeys ? EyeOffOutline : EyeOutline"
+                                      />
+                                    </template>
+                                  </n-button>
+                                </template>
+                                {{ showProxyKeys ? t("keys.hideKeys") : t("keys.showKeys") }}
+                              </n-tooltip>
+                              <n-tooltip trigger="hover">
+                                <template #trigger>
+                                  <n-button quaternary circle @click="copyProxyKeys">
+                                    <template #icon>
+                                      <n-icon :component="CopyOutline" />
+                                    </template>
+                                  </n-button>
+                                </template>
+                                {{ t("keys.copyKeys") }}
+                              </n-tooltip>
+                            </n-button-group>
+                          </div>
+                        </n-form-item>
+                      </n-grid-item>
+                      <n-grid-item :span="2">
+                        <n-form-item :label="`${t('common.description')}：`">
+                          <div class="description-content">
+                            {{ group?.description || "-" }}
+                          </div>
+                        </n-form-item>
+                      </n-grid-item>
+                    </n-grid>
+                  </n-form>
+                </div>
+
+                <!-- Aggregate references section (shown only for standard groups referenced by aggregates) -->
+                <div
+                  class="detail-section"
+                  v-if="!isAggregateGroup && parentAggregateGroups.length > 0"
+                >
+                  <h4 class="section-title">{{ t("keys.aggregateReferences") }}</h4>
+                  <n-form label-placement="left" label-width="140px">
+                    <n-form-item
+                      v-for="(parent, index) in parentAggregateGroups"
+                      :key="parent.group_id"
+                      class="aggregate-ref-item"
+                      :label="`${t('keys.aggregateGroup')} ${index + 1}:`"
+                    >
+                      <span class="aggregate-weight">
+                        <n-tag size="small" type="info">
+                          {{ t("keys.weight") }}: {{ parent.weight }}
+                        </n-tag>
+                      </span>
+                      <n-input
+                        class="aggregate-name"
+                        :value="parent.display_name || parent.name"
+                        readonly
+                        size="small"
+                        style="margin-left: 5px; margin-right: 8px"
+                      />
+                      <n-button
+                        round
+                        tertiary
+                        type="default"
+                        size="tiny"
+                        @click="handleNavigateToGroup(parent.group_id)"
+                        :title="t('keys.viewGroupInfo')"
+                      >
+                        <template #icon>
+                          <n-icon :component="EyeOutline" />
+                        </template>
+                        {{ t("common.view") }}
+                      </n-button>
+                    </n-form-item>
+                  </n-form>
+                </div>
+
+                <!-- Only standard groups show upstream addresses -->
+                <div class="detail-section" v-if="!isAggregateGroup">
+                  <h4 class="section-title">{{ t("keys.upstreamAddresses") }}</h4>
+                  <n-form label-placement="left" label-width="140px">
+                    <n-form-item
+                      v-for="(upstream, index) in group?.upstreams ?? []"
+                      :key="index"
+                      class="upstream-item"
+                      :label="`${t('keys.upstream')} ${index + 1}:`"
+                    >
+                      <div class="upstream-info-container">
+                        <div class="upstream-main-info">
+                          <span class="upstream-weight">
+                            <n-tag size="small" type="info">
+                              {{ t("keys.weight") }}: {{ upstream.weight }}
+                            </n-tag>
+                          </span>
                           <n-input
-                            v-if="parentGroup"
-                            class="parent-group-name"
-                            :value="parentGroup.display_name || parentGroup.name"
+                            class="upstream-url"
+                            :value="upstream.url"
                             readonly
                             size="small"
-                            style="margin-left: 8px; margin-right: 8px; max-width: 200px"
                           />
-                          <n-button
-                            v-if="parentGroup"
-                            round
-                            tertiary
-                            type="default"
-                            size="tiny"
-                            @click="parentGroup?.id && handleNavigateToGroup(parentGroup.id)"
-                            :title="t('keys.viewParentGroup')"
-                          >
-                            <template #icon>
-                              <n-icon :component="EyeOutline" />
-                            </template>
-                            {{ t("keys.viewParentGroup") }}
-                          </n-button>
                         </div>
-                      </n-form-item>
-                    </n-grid-item>
-                    <n-grid-item>
-                      <n-form-item :label="`${t('keys.channelType')}：`">
-                        {{ group?.channel_type }}
-                      </n-form-item>
-                    </n-grid-item>
-                    <n-grid-item>
-                      <n-form-item :label="`${t('keys.sortOrder')}：`">
-                        {{ group?.sort }}
-                      </n-form-item>
-                    </n-grid-item>
-                    <!-- Only standard groups show test model and test path -->
-                    <n-grid-item v-if="!isAggregateGroup">
-                      <n-form-item :label="`${t('keys.testModel')}：`">
-                        {{ group?.test_model }}
-                      </n-form-item>
-                    </n-grid-item>
-                    <n-grid-item v-if="!isAggregateGroup && group?.channel_type !== 'gemini'">
-                      <n-form-item :label="`${t('keys.testPath')}：`">
-                        {{ group?.validation_endpoint }}
-                      </n-form-item>
-                    </n-grid-item>
-                    <n-grid-item :span="2">
-                      <n-form-item :label="`${t('keys.proxyKeys')}：`">
-                        <div class="proxy-keys-content">
-                          <span class="key-text">{{ proxyKeysDisplay }}</span>
-                          <n-button-group size="small" class="key-actions" v-if="group?.proxy_keys">
-                            <n-tooltip trigger="hover">
-                              <template #trigger>
-                                <n-button quaternary circle @click="showProxyKeys = !showProxyKeys">
-                                  <template #icon>
-                                    <n-icon
-                                      :component="showProxyKeys ? EyeOffOutline : EyeOutline"
-                                    />
-                                  </template>
-                                </n-button>
-                              </template>
-                              {{ showProxyKeys ? t("keys.hideKeys") : t("keys.showKeys") }}
-                            </n-tooltip>
-                            <n-tooltip trigger="hover">
-                              <template #trigger>
-                                <n-button quaternary circle @click="copyProxyKeys">
-                                  <template #icon>
-                                    <n-icon :component="CopyOutline" />
-                                  </template>
-                                </n-button>
-                              </template>
-                              {{ t("keys.copyKeys") }}
-                            </n-tooltip>
-                          </n-button-group>
-                        </div>
-                      </n-form-item>
-                    </n-grid-item>
-                    <n-grid-item :span="2">
-                      <n-form-item :label="`${t('common.description')}：`">
-                        <div class="description-content">
-                          {{ group?.description || "-" }}
-                        </div>
-                      </n-form-item>
-                    </n-grid-item>
-                  </n-grid>
-                </n-form>
-              </div>
-
-              <!-- Aggregate references section (shown only for standard groups referenced by aggregates) -->
-              <div
-                class="detail-section"
-                v-if="!isAggregateGroup && parentAggregateGroups.length > 0"
-              >
-                <h4 class="section-title">{{ t("keys.aggregateReferences") }}</h4>
-                <n-form label-placement="left" label-width="140px">
-                  <n-form-item
-                    v-for="(parent, index) in parentAggregateGroups"
-                    :key="parent.group_id"
-                    class="aggregate-ref-item"
-                    :label="`${t('keys.aggregateGroup')} ${index + 1}:`"
-                  >
-                    <span class="aggregate-weight">
-                      <n-tag size="small" type="info">
-                        {{ t("keys.weight") }}: {{ parent.weight }}
-                      </n-tag>
-                    </span>
-                    <n-input
-                      class="aggregate-name"
-                      :value="parent.display_name || parent.name"
-                      readonly
-                      size="small"
-                      style="margin-left: 5px; margin-right: 8px"
-                    />
-                    <n-button
-                      round
-                      tertiary
-                      type="default"
-                      size="tiny"
-                      @click="handleNavigateToGroup(parent.group_id)"
-                      :title="t('keys.viewGroupInfo')"
-                    >
-                      <template #icon>
-                        <n-icon :component="EyeOutline" />
-                      </template>
-                      {{ t("common.view") }}
-                    </n-button>
-                  </n-form-item>
-                </n-form>
-              </div>
-
-              <!-- Only standard groups show upstream addresses -->
-              <div class="detail-section" v-if="!isAggregateGroup">
-                <h4 class="section-title">{{ t("keys.upstreamAddresses") }}</h4>
-                <n-form label-placement="left" label-width="140px">
-                  <n-form-item
-                    v-for="(upstream, index) in group?.upstreams ?? []"
-                    :key="index"
-                    class="upstream-item"
-                    :label="`${t('keys.upstream')} ${index + 1}:`"
-                  >
-                    <div class="upstream-info-container">
-                      <div class="upstream-main-info">
-                        <span class="upstream-weight">
-                          <n-tag size="small" type="info">
-                            {{ t("keys.weight") }}: {{ upstream.weight }}
+                        <div class="upstream-proxy-info" v-if="upstream.proxy_url">
+                          <n-tag size="small" type="success">
+                            {{ t("keys.upstreamProxyUrl") }}: {{ upstream.proxy_url }}
                           </n-tag>
-                        </span>
-                        <n-input class="upstream-url" :value="upstream.url" readonly size="small" />
-                      </div>
-                      <div class="upstream-proxy-info" v-if="upstream.proxy_url">
-                        <n-tag size="small" type="success">
-                          {{ t("keys.upstreamProxyUrl") }}: {{ upstream.proxy_url }}
-                        </n-tag>
-                      </div>
-                    </div>
-                  </n-form-item>
-                </n-form>
-              </div>
-
-              <!-- Only standard groups show advanced configuration -->
-              <div class="detail-section" v-if="!isAggregateGroup && hasAdvancedConfig">
-                <h4 class="section-title">{{ t("keys.advancedConfig") }}</h4>
-                <n-form label-placement="left">
-                  <n-form-item v-for="(value, key) in group?.config || {}" :key="key">
-                    <template #label>
-                      <n-tooltip trigger="hover" :delay="300" placement="top">
-                        <template #trigger>
-                          <span class="config-label">
-                            {{ getConfigDisplayName(key) }}:
-                            <n-icon size="14" class="config-help-icon">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  fill="currentColor"
-                                  d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,17A1.5,1.5 0 0,1 10.5,15.5A1.5,1.5 0 0,1 12,14A1.5,1.5 0 0,1 13.5,15.5A1.5,1.5 0 0,1 12,17M12,10.5C10.07,10.5 8.5,8.93 8.5,7A3.5,3.5 0 0,1 12,3.5A3.5,3.5 0 0,1 15.5,7C15.5,8.93 13.93,10.5 12,10.5Z"
-                                />
-                              </svg>
-                            </n-icon>
-                          </span>
-                        </template>
-                        <div class="config-tooltip">
-                          <div class="tooltip-title">{{ getConfigDisplayName(key) }}</div>
-                          <div class="tooltip-description">{{ getConfigDescription(key) }}</div>
-                          <div class="tooltip-key">{{ t("keys.configKey") }}: {{ key }}</div>
                         </div>
-                      </n-tooltip>
-                    </template>
-                    {{ value || "-" }}
-                  </n-form-item>
-                  <n-form-item
-                    v-if="group?.header_rules && group.header_rules.length > 0"
-                    :label="`${t('keys.customHeaders')}：`"
-                    :span="2"
-                  >
-                    <div class="header-rules-display">
-                      <div
-                        v-for="(rule, index) in group.header_rules"
-                        :key="index"
-                        class="header-rule-item"
-                      >
-                        <n-tag :type="rule.action === 'remove' ? 'error' : 'default'" size="small">
-                          {{ rule.key }}
-                        </n-tag>
-                        <span class="header-separator">:</span>
-                        <span class="header-value" v-if="rule.action === 'set'">
-                          {{ rule.value || t("keys.emptyValue") }}
-                        </span>
-                        <span class="header-removed" v-else>{{ t("common.delete") }}</span>
                       </div>
-                    </div>
-                  </n-form-item>
-                  <n-form-item
-                    v-if="group?.model_redirect_rules"
-                    :label="`${t('keys.modelRedirectPolicy')}：`"
-                    :span="2"
-                  >
-                    <n-tag
-                      :type="group?.model_redirect_strict ? 'warning' : 'success'"
-                      size="small"
+                    </n-form-item>
+                  </n-form>
+                </div>
+
+                <!-- Only standard groups show advanced configuration -->
+                <div class="detail-section" v-if="!isAggregateGroup && hasAdvancedConfig">
+                  <h4 class="section-title">{{ t("keys.advancedConfig") }}</h4>
+                  <n-form label-placement="left">
+                    <n-form-item v-for="(value, key) in group?.config || {}" :key="key">
+                      <template #label>
+                        <n-tooltip trigger="hover" :delay="300" placement="top">
+                          <template #trigger>
+                            <span class="config-label">
+                              {{ getConfigDisplayName(key) }}:
+                              <n-icon size="14" class="config-help-icon">
+                                <svg viewBox="0 0 24 24">
+                                  <path
+                                    fill="currentColor"
+                                    d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,17A1.5,1.5 0 0,1 10.5,15.5A1.5,1.5 0 0,1 12,14A1.5,1.5 0 0,1 13.5,15.5A1.5,1.5 0 0,1 12,17M12,10.5C10.07,10.5 8.5,8.93 8.5,7A3.5,3.5 0 0,1 12,3.5A3.5,3.5 0 0,1 15.5,7C15.5,8.93 13.93,10.5 12,10.5Z"
+                                  />
+                                </svg>
+                              </n-icon>
+                            </span>
+                          </template>
+                          <div class="config-tooltip">
+                            <div class="tooltip-title">{{ getConfigDisplayName(key) }}</div>
+                            <div class="tooltip-description">{{ getConfigDescription(key) }}</div>
+                            <div class="tooltip-key">{{ t("keys.configKey") }}: {{ key }}</div>
+                          </div>
+                        </n-tooltip>
+                      </template>
+                      {{ value || "-" }}
+                    </n-form-item>
+                    <n-form-item
+                      v-if="group?.header_rules && group.header_rules.length > 0"
+                      :label="`${t('keys.customHeaders')}：`"
+                      :span="2"
                     >
-                      {{
-                        group?.model_redirect_strict
-                          ? t("keys.modelRedirectStrictMode")
-                          : t("keys.modelRedirectLooseMode")
-                      }}
-                    </n-tag>
-                  </n-form-item>
-                  <n-form-item
-                    v-if="group?.model_redirect_rules"
-                    :label="`${t('keys.modelRedirectRules')}：`"
-                    :span="2"
-                  >
-                    <pre class="config-json">{{
-                      JSON.stringify(group?.model_redirect_rules || {}, null, 2)
-                    }}</pre>
-                  </n-form-item>
-                  <n-form-item
-                    v-if="group?.param_overrides"
-                    :label="`${t('keys.paramOverrides')}：`"
-                    :span="2"
-                  >
-                    <pre class="config-json">{{
-                      JSON.stringify(group?.param_overrides || "", null, 2)
-                    }}</pre>
-                  </n-form-item>
-                  <n-form-item
-                    v-if="group?.model_mapping"
-                    :label="`${t('keys.modelMapping')}：`"
-                    :span="2"
-                  >
-                    <pre class="config-json">{{ group?.model_mapping || "" }}</pre>
-                  </n-form-item>
-                </n-form>
+                      <div class="header-rules-display">
+                        <div
+                          v-for="(rule, index) in group.header_rules"
+                          :key="index"
+                          class="header-rule-item"
+                        >
+                          <n-tag
+                            :type="rule.action === 'remove' ? 'error' : 'default'"
+                            size="small"
+                          >
+                            {{ rule.key }}
+                          </n-tag>
+                          <span class="header-separator">:</span>
+                          <span class="header-value" v-if="rule.action === 'set'">
+                            {{ rule.value || t("keys.emptyValue") }}
+                          </span>
+                          <span class="header-removed" v-else>{{ t("common.delete") }}</span>
+                        </div>
+                      </div>
+                    </n-form-item>
+                    <n-form-item
+                      v-if="group?.model_redirect_rules"
+                      :label="`${t('keys.modelRedirectPolicy')}：`"
+                      :span="2"
+                    >
+                      <n-tag
+                        :type="group?.model_redirect_strict ? 'warning' : 'success'"
+                        size="small"
+                      >
+                        {{
+                          group?.model_redirect_strict
+                            ? t("keys.modelRedirectStrictMode")
+                            : t("keys.modelRedirectLooseMode")
+                        }}
+                      </n-tag>
+                    </n-form-item>
+                    <n-form-item
+                      v-if="group?.model_redirect_rules"
+                      :label="`${t('keys.modelRedirectRules')}：`"
+                      :span="2"
+                    >
+                      <pre class="config-json">{{
+                        JSON.stringify(group?.model_redirect_rules || {}, null, 2)
+                      }}</pre>
+                    </n-form-item>
+                    <n-form-item
+                      v-if="group?.param_overrides"
+                      :label="`${t('keys.paramOverrides')}：`"
+                      :span="2"
+                    >
+                      <pre class="config-json">{{
+                        JSON.stringify(group?.param_overrides || "", null, 2)
+                      }}</pre>
+                    </n-form-item>
+                    <n-form-item
+                      v-if="group?.model_mapping"
+                      :label="`${t('keys.modelMapping')}：`"
+                      :span="2"
+                    >
+                      <pre class="config-json">{{ group?.model_mapping || "" }}</pre>
+                    </n-form-item>
+                  </n-form>
+                </div>
               </div>
-            </div>
-          </n-collapse-item>
-        </n-collapse>
+            </n-collapse-item>
+          </n-collapse>
+          <!-- Site binding selector (only for standard groups, not child groups) -->
+          <site-binding-selector
+            v-if="group && !isAggregateGroup && !isChildGroup"
+            class="site-binding-in-header"
+            :group-id="group?.id"
+            :bound-site-id="group?.bound_site_id"
+            @bound="handleSiteBound"
+            @unbound="handleSiteUnbound"
+            @navigate-to-site="handleNavigateToSite"
+          />
+        </div>
       </div>
     </n-card>
 
@@ -1013,6 +1071,23 @@ async function handleToggleEnabled(enabled: boolean) {
 
 .details-section {
   margin-top: 12px;
+}
+
+.details-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.details-collapse {
+  flex: 1;
+  min-width: 0;
+}
+
+.site-binding-in-header {
+  flex-shrink: 0;
+  margin-top: 4px;
 }
 
 .details-content {

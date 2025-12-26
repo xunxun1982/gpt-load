@@ -13,6 +13,7 @@ import (
 	"gpt-load/internal/proxy"
 	"gpt-load/internal/router"
 	"gpt-load/internal/services"
+	"gpt-load/internal/sitemanagement"
 	"gpt-load/internal/store"
 	"gpt-load/internal/types"
 
@@ -101,6 +102,15 @@ func BuildContainer() (*dig.Container, error) {
 		return nil, err
 	}
 	if err := container.Provide(keypool.NewCronChecker); err != nil {
+		return nil, err
+	}
+	if err := container.Provide(sitemanagement.NewSiteService); err != nil {
+		return nil, err
+	}
+	if err := container.Provide(sitemanagement.NewAutoCheckinService); err != nil {
+		return nil, err
+	}
+	if err := container.Provide(sitemanagement.NewBindingService); err != nil {
 		return nil, err
 	}
 

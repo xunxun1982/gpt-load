@@ -12,6 +12,26 @@ declare module "axios" {
   }
 }
 
+/**
+ * HTTP client wrapper based on axios.
+ *
+ * Type Definition Note:
+ * The response interceptor returns `response.data` directly instead of the full AxiosResponse.
+ * This causes TypeScript to infer incorrect return types (AxiosResponse instead of the actual data).
+ * For blob responses (e.g., file downloads), callers need to use `as unknown as Blob` cast.
+ *
+ * Why not fix the type definitions:
+ * 1. Changing return types would require updating all existing API calls across the project
+ * 2. Axios's type system doesn't easily support conditional return types based on responseType
+ * 3. The current approach works correctly at runtime; only the type inference is affected
+ * 4. Risk of introducing regressions outweighs the benefit of cleaner types
+ *
+ * Workaround for blob responses:
+ * ```typescript
+ * const res = await http.get("/api/export", { responseType: "blob" });
+ * return res as unknown as Blob;
+ * ```
+ */
 const http = axios.create({
   baseURL: "/api",
   timeout: 60000,

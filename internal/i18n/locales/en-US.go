@@ -1,5 +1,7 @@
 package locales
 
+import sitei18n "gpt-load/internal/sitemanagement/i18n"
+
 // Messages English (US) translations
 var MessagesEnUS = map[string]string{
 	// Common messages
@@ -45,32 +47,32 @@ var MessagesEnUS = map[string]string{
 	"logs.exported": "Logs exported successfully",
 
 	// Validation related
-	"validation.invalid_group_name":      "Invalid group name. Can only contain lowercase letters, numbers, hyphens or underscores, 1-100 characters",
-	"validation.invalid_test_path":       "Invalid test path. If provided, must be a valid path starting with / and not a full URL.",
-	"validation.duplicate_header":        "Duplicate header: {{.key}}",
-	"validation.group_not_found":         "Group not found",
-	"validation.group_disabled":          "Group is disabled, cannot perform this operation",
-	"validation.invalid_status_filter":   "Invalid status filter",
-	"validation.invalid_group_id":        "Invalid group ID format",
-	"validation.test_model_required":     "Test model is required",
-	"validation.invalid_copy_keys_value": "Invalid copy_keys value. Must be 'none', 'valid_only', or 'all'",
-	"validation.invalid_channel_type":    "Invalid channel type. Supported types: {{.types}}",
-	"validation.test_model_empty":        "Test model cannot be empty or contain only spaces",
-	"validation.invalid_status_value":    "Invalid status value",
-	"validation.invalid_upstreams":       "Invalid upstreams configuration: {{.error}}",
-	"validation.group_id_required":       "group_id query parameter is required",
-	"validation.invalid_group_id_format": "Invalid group_id format",
-	"validation.keys_text_empty":         "Keys text cannot be empty",
-	"validation.invalid_group_type":      "Invalid group type, must be 'standard' or 'aggregate'",
-	"validation.sub_groups_required":     "Aggregate group must contain at least one sub-group",
-	"validation.invalid_sub_group_id":    "Invalid sub-group ID",
-	"validation.sub_group_not_found":     "One or more sub-groups not found",
-	"validation.sub_group_cannot_be_aggregate": "Sub-groups cannot be aggregate groups",
-	"validation.sub_group_channel_mismatch": "All sub-groups must use the same channel type",
-	"validation.sub_group_validation_endpoint_mismatch": "Sub-group endpoints are inconsistent. Aggregate groups require unified upstream request paths for successful proxying",
-	"validation.sub_group_weight_negative":     "Sub-group weight cannot be negative",
-	"validation.sub_group_weight_max_exceeded": "Sub-group weight cannot exceed 1000",
-	"validation.sub_group_referenced_cannot_modify": "This group is referenced by {{.count}} aggregate group(s) as a sub-group. Cannot modify channel type or validation endpoint. Please remove this group from related aggregate groups before making changes",
+	"validation.invalid_group_name":                          "Invalid group name. Can only contain lowercase letters, numbers, hyphens or underscores, 1-100 characters",
+	"validation.invalid_test_path":                           "Invalid test path. If provided, must be a valid path starting with / and not a full URL.",
+	"validation.duplicate_header":                            "Duplicate header: {{.key}}",
+	"validation.group_not_found":                             "Group not found",
+	"validation.group_disabled":                              "Group is disabled, cannot perform this operation",
+	"validation.invalid_status_filter":                       "Invalid status filter",
+	"validation.invalid_group_id":                            "Invalid group ID format",
+	"validation.test_model_required":                         "Test model is required",
+	"validation.invalid_copy_keys_value":                     "Invalid copy_keys value. Must be 'none', 'valid_only', or 'all'",
+	"validation.invalid_channel_type":                        "Invalid channel type. Supported types: {{.types}}",
+	"validation.test_model_empty":                            "Test model cannot be empty or contain only spaces",
+	"validation.invalid_status_value":                        "Invalid status value",
+	"validation.invalid_upstreams":                           "Invalid upstreams configuration: {{.error}}",
+	"validation.group_id_required":                           "group_id query parameter is required",
+	"validation.invalid_group_id_format":                     "Invalid group_id format",
+	"validation.keys_text_empty":                             "Keys text cannot be empty",
+	"validation.invalid_group_type":                          "Invalid group type, must be 'standard' or 'aggregate'",
+	"validation.sub_groups_required":                         "Aggregate group must contain at least one sub-group",
+	"validation.invalid_sub_group_id":                        "Invalid sub-group ID",
+	"validation.sub_group_not_found":                         "One or more sub-groups not found",
+	"validation.sub_group_cannot_be_aggregate":               "Sub-groups cannot be aggregate groups",
+	"validation.sub_group_channel_mismatch":                  "All sub-groups must use the same channel type",
+	"validation.sub_group_validation_endpoint_mismatch":      "Sub-group endpoints are inconsistent. Aggregate groups require unified upstream request paths for successful proxying",
+	"validation.sub_group_weight_negative":                   "Sub-group weight cannot be negative",
+	"validation.sub_group_weight_max_exceeded":               "Sub-group weight cannot exceed 1000",
+	"validation.sub_group_referenced_cannot_modify":          "This group is referenced by {{.count}} aggregate group(s) as a sub-group. Cannot modify channel type or validation endpoint. Please remove this group from related aggregate groups before making changes",
 	"validation.cc_support_cannot_disable_used_by_anthropic": "Cannot disable CC support. This OpenAI group is currently used by the following Anthropic aggregate group(s): {{.groups}}. Please remove this group from these aggregate groups first, then disable CC support",
 	"validation.standard_group_requires_upstreams_testmodel": "Converting to standard group requires providing upstreams and test model",
 	"validation.invalid_model_mapping":                       "Invalid model mapping format: {{.error}}",
@@ -111,10 +113,13 @@ var MessagesEnUS = map[string]string{
 	"database.group_stats_failed":    "Failed to get partial statistics",
 
 	// Success messages
-	"success.group_deleted":        "Group and related keys deleted successfully",
-	"success.keys_restored":        "{{.count}} keys restored",
-	"success.invalid_keys_cleared": "{{.count}} invalid keys cleared",
-	"success.all_keys_cleared":     "{{.count}} keys cleared",
+	"success.group_deleted":           "Group and related keys deleted successfully",
+	"success.keys_restored":           "{{.count}} keys restored",
+	"success.invalid_keys_cleared":    "{{.count}} invalid keys cleared",
+	"success.all_keys_cleared":        "{{.count}} keys cleared",
+	"success.group_bound_to_site":     "Group bound to site successfully",
+	"success.group_unbound_from_site": "Group unbound from site successfully",
+	"success.site_unbound_from_group": "Site unbound from group successfully",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}} is too short ({{.length}} characters), recommend at least 16 characters",
@@ -228,4 +233,20 @@ var MessagesEnUS = map[string]string{
 	"success.child_group_deleted":                       "Child group deleted successfully",
 	"warning.parent_has_child_groups":                   "This group has {{.count}} child group(s), they will also be deleted",
 	"group.child_groups_deleted":                        "{{.count}} child group(s) also deleted",
+
+	// Binding related
+	"binding.group_not_found":                "Group not found",
+	"binding.site_not_found":                 "Site not found",
+	"binding.aggregate_cannot_bind":          "Aggregate groups cannot be bound to sites",
+	"binding.child_group_cannot_bind":        "Child groups cannot be bound to sites",
+	"binding.group_already_bound":            "This group is already bound to another site",
+	"binding.site_already_bound":             "This site is already bound to another group",
+	"binding.must_unbind_before_delete_group": "Please unbind from the site before deleting the group",
+	"binding.must_unbind_before_delete_site": "Please unbind from the group before deleting the site",
+}
+
+func init() {
+	for k, v := range sitei18n.MessagesEnUS {
+		MessagesEnUS[k] = v
+	}
 }

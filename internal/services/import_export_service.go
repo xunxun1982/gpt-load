@@ -469,6 +469,7 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 	newGroup.ID = 0 // Reset ID for new record
 	newGroup.Name = groupName
 	newGroup.ParentGroupID = nil // Ensure parent group ID is nil for imported groups
+	newGroup.BoundSiteID = nil   // Clear site binding - must be re-established after import
 
 	// Calculate the suffix that was added to the name (if any)
 	var nameSuffix string
@@ -624,6 +625,157 @@ type SystemExportData struct {
 	ExportedAt     string                    `json:"exported_at"`
 	SystemSettings map[string]string         `json:"system_settings"`
 	Groups         []GroupExportData         `json:"groups"`
+	ManagedSites   *ManagedSitesExportData   `json:"managed_sites,omitempty"`
+}
+
+// ManagedSitesExportData represents exported managed sites data
+type ManagedSitesExportData struct {
+	AutoCheckin *ManagedSiteAutoCheckinConfig `json:"auto_checkin,omitempty"`
+	Sites       []ManagedSiteExportInfo       `json:"sites"`
+}
+
+// ManagedSiteAutoCheckinConfig represents auto-checkin configuration for export
+type ManagedSiteAutoCheckinConfig struct {
+	GlobalEnabled     bool                              `json:"global_enabled"`
+	WindowStart       string                            `json:"window_start"`
+	WindowEnd         string                            `json:"window_end"`
+	ScheduleMode      string                            `json:"schedule_mode"`
+	DeterministicTime string                            `json:"deterministic_time,omitempty"`
+	RetryStrategy     ManagedSiteAutoCheckinRetryConfig `json:"retry_strategy"`
+}
+
+// ManagedSiteAutoCheckinRetryConfig represents retry strategy for export
+type ManagedSiteAutoCheckinRetryConfig struct {
+	Enabled           bool `json:"enabled"`
+	IntervalMinutes   int  `json:"interval_minutes"`
+	MaxAttemptsPerDay int  `json:"max_attempts_per_day"`
+}
+
+// ManagedSiteExportInfo represents exported site information
+type ManagedSiteExportInfo struct {
+	Name               string `json:"name"`
+	Notes              string `json:"notes"`
+	Description        string `json:"description"`
+	Sort               int    `json:"sort"`
+	Enabled            bool   `json:"enabled"`
+	BaseURL            string `json:"base_url"`
+	SiteType           string `json:"site_type"`
+	UserID             string `json:"user_id"`
+	CheckInPageURL     string `json:"checkin_page_url"`
+	CheckInAvailable   bool   `json:"checkin_available"`
+	CheckInEnabled     bool   `json:"checkin_enabled"`
+	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
+	CustomCheckInURL   string `json:"custom_checkin_url"`
+	AuthType           string `json:"auth_type"`
+	AuthValue          string `json:"auth_value,omitempty"`
+}
+
+// managedSiteModel represents the database model for managed sites (minimal for export/import).
+// Note: This is intentionally separate from sitemanagement.ManagedSite to:
+// 1. Avoid circular dependency between services and sitemanagement packages
+// 2. Keep export/import logic self-contained with only the fields needed
+// 3. Maintain clear module boundaries for easier maintenance
+type managedSiteModel struct {
+	ID                 uint   `gorm:"primaryKey"`
+	Name               string `gorm:"column:name"`
+	Notes              string `gorm:"column:notes"`
+	Description        string `gorm:"column:description"`
+	Sort               int    `gorm:"column:sort"`
+	Enabled            bool   `gorm:"column:enabled"`
+	BaseURL            string `gorm:"column:base_url"`
+	SiteType           string `gorm:"column:site_type"`
+	UserID             string `gorm:"column:user_id"`
+	CheckInPageURL     string `gorm:"column:checkin_page_url"`
+	CheckInAvailable   bool   `gorm:"column:checkin_available"`
+	CheckInEnabled     bool   `gorm:"column:checkin_enabled"`
+	AutoCheckInEnabled bool   `gorm:"column:auto_checkin_enabled"`
+	CustomCheckInURL   string `gorm:"column:custom_checkin_url"`
+	AuthType           string `gorm:"column:auth_type"`
+	AuthValue          string `gorm:"column:auth_value"`
+}
+
+func (managedSiteModel) TableName() string {
+	return "managed_sites"
+}
+
+// ManagedSiteSetting represents the database model for managed site settings
+type managedSiteSettingModel struct {
+	ID                     uint   `gorm:"primaryKey"`
+	AutoCheckinEnabled     bool   `gorm:"column:auto_checkin_enabled"`
+	WindowStart            string `gorm:"column:window_start"`
+	WindowEnd              string `gorm:"column:window_end"`
+	ScheduleMode           string `gorm:"column:schedule_mode"`
+	DeterministicTime      string `gorm:"column:deterministic_time"`
+	RetryEnabled           bool   `gorm:"column:retry_enabled"`
+	RetryIntervalMinutes   int    `gorm:"column:retry_interval_minutes"`
+	RetryMaxAttemptsPerDay int    `gorm:"column:retry_max_attempts_per_day"`
+}
+
+func (managedSiteSettingModel) TableName() string {
+	return "managed_site_settings"
+}
+
+// exportManagedSites exports all managed sites and their configuration
+func (s *ImportExportService) exportManagedSites() *ManagedSitesExportData {
+	// Check if managed_sites table exists
+	if !s.db.Migrator().HasTable(&managedSiteModel{}) {
+		return nil
+	}
+
+	var sites []managedSiteModel
+	if err := s.db.Order("sort ASC, id ASC").Find(&sites).Error; err != nil {
+		logrus.WithError(err).Warn("Failed to export managed sites")
+		return nil
+	}
+
+	if len(sites) == 0 {
+		return nil
+	}
+
+	result := &ManagedSitesExportData{
+		Sites: make([]ManagedSiteExportInfo, 0, len(sites)),
+	}
+
+	// Export auto-checkin config
+	// Note: Settings row always has ID=1 (single-row config pattern used throughout the app)
+	var setting managedSiteSettingModel
+	if err := s.db.First(&setting, 1).Error; err == nil {
+		result.AutoCheckin = &ManagedSiteAutoCheckinConfig{
+			GlobalEnabled:     setting.AutoCheckinEnabled,
+			WindowStart:       setting.WindowStart,
+			WindowEnd:         setting.WindowEnd,
+			ScheduleMode:      setting.ScheduleMode,
+			DeterministicTime: setting.DeterministicTime,
+			RetryStrategy: ManagedSiteAutoCheckinRetryConfig{
+				Enabled:           setting.RetryEnabled,
+				IntervalMinutes:   setting.RetryIntervalMinutes,
+				MaxAttemptsPerDay: setting.RetryMaxAttemptsPerDay,
+			},
+		}
+	}
+
+	// Export sites (keep auth_value encrypted)
+	for _, site := range sites {
+		result.Sites = append(result.Sites, ManagedSiteExportInfo{
+			Name:               site.Name,
+			Notes:              site.Notes,
+			Description:        site.Description,
+			Sort:               site.Sort,
+			Enabled:            site.Enabled,
+			BaseURL:            site.BaseURL,
+			SiteType:           site.SiteType,
+			UserID:             site.UserID,
+			CheckInPageURL:     site.CheckInPageURL,
+			CheckInAvailable:   site.CheckInAvailable,
+			CheckInEnabled:     site.CheckInEnabled,
+			AutoCheckInEnabled: site.AutoCheckInEnabled,
+			CustomCheckInURL:   site.CustomCheckInURL,
+			AuthType:           site.AuthType,
+			AuthValue:          site.AuthValue, // Keep encrypted
+		})
+	}
+
+	return result
 }
 
 // ExportSystem exports the entire system configuration
@@ -736,11 +888,15 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 		groupExports = append(groupExports, groupData)
 	}
 
+	// Export managed sites
+	managedSitesData := s.exportManagedSites()
+
 	return &SystemExportData{
 		Version:        "2.0",
 		ExportedAt:     time.Now().Format(time.RFC3339),
 		SystemSettings: settingsMap,
 		Groups:         groupExports,
+		ManagedSites:   managedSitesData,
 	}, nil
 }
 
@@ -804,8 +960,196 @@ func (s *ImportExportService) ImportSystem(tx *gorm.DB, data *SystemExportData) 
 
 	logrus.Infof("Groups imported: %d/%d successful", importedGroups, groupsCount)
 
+	// Import managed sites if present
+	if data.ManagedSites != nil && len(data.ManagedSites.Sites) > 0 {
+		imported, skipped := s.importManagedSites(tx, data.ManagedSites)
+		logrus.Infof("Managed sites imported: %d imported, %d skipped", imported, skipped)
+	}
+
 	// Note: Cache refresh should be handled by the handler after transaction commits
 	// This ensures the database changes are visible when the cache is refreshed
 
 	return nil
+}
+
+// importManagedSites imports managed sites from export data
+func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSitesExportData) (int, int) {
+	if data == nil || len(data.Sites) == 0 {
+		return 0, 0
+	}
+
+	// Check if managed_sites table exists
+	if !tx.Migrator().HasTable(&managedSiteModel{}) {
+		logrus.Warn("managed_sites table does not exist, skipping import")
+		return 0, len(data.Sites)
+	}
+
+	imported := 0
+	skipped := 0
+
+	for _, siteInfo := range data.Sites {
+		name := strings.TrimSpace(siteInfo.Name)
+		if name == "" {
+			skipped++
+			continue
+		}
+
+		baseURL := strings.TrimSpace(siteInfo.BaseURL)
+		if baseURL == "" {
+			skipped++
+			continue
+		}
+
+		siteType := strings.TrimSpace(siteInfo.SiteType)
+		if siteType == "" {
+			siteType = "unknown"
+		}
+
+		authType := strings.TrimSpace(siteInfo.AuthType)
+		if authType == "" {
+			authType = "none"
+		}
+
+		// Validate encrypted auth value if present
+		authValue := siteInfo.AuthValue
+		if authValue != "" && authType != "none" {
+			// Verify it can be decrypted
+			if _, err := s.encryptionService.Decrypt(authValue); err != nil {
+				logrus.WithError(err).Warnf("Failed to decrypt auth value for site %s, skipping", name)
+				skipped++
+				continue
+			}
+		}
+
+		// Ensure checkin flags are consistent
+		checkInEnabled := siteInfo.CheckInEnabled
+		autoCheckInEnabled := siteInfo.AutoCheckInEnabled
+		if autoCheckInEnabled {
+			checkInEnabled = true
+		}
+		if !checkInEnabled {
+			autoCheckInEnabled = false
+		}
+
+		// Generate unique site name if conflict exists
+		uniqueName, err := s.generateUniqueSiteName(tx, name)
+		if err != nil {
+			logrus.WithError(err).Warnf("Failed to generate unique name for site %s", name)
+			skipped++
+			continue
+		}
+
+		site := &managedSiteModel{
+			Name:               uniqueName,
+			Notes:              strings.TrimSpace(siteInfo.Notes),
+			Description:        strings.TrimSpace(siteInfo.Description),
+			Sort:               siteInfo.Sort,
+			Enabled:            siteInfo.Enabled,
+			BaseURL:            baseURL,
+			SiteType:           siteType,
+			UserID:             strings.TrimSpace(siteInfo.UserID),
+			CheckInPageURL:     strings.TrimSpace(siteInfo.CheckInPageURL),
+			CheckInAvailable:   siteInfo.CheckInAvailable,
+			CheckInEnabled:     checkInEnabled,
+			AutoCheckInEnabled: autoCheckInEnabled,
+			CustomCheckInURL:   strings.TrimSpace(siteInfo.CustomCheckInURL),
+			AuthType:           authType,
+			AuthValue:          authValue,
+		}
+
+		if err := tx.Create(site).Error; err != nil {
+			logrus.WithError(err).Warnf("Failed to create site %s", uniqueName)
+			skipped++
+			continue
+		}
+
+		if uniqueName != name {
+			logrus.Infof("Imported site %s (renamed from %s)", uniqueName, name)
+		}
+		imported++
+	}
+
+	// Import auto-checkin config if present
+	// Note: Using First/Create/Save pattern instead of FirstOrCreate+Assign because:
+	// 1. This is a singleton config (ID=1) with no concurrent import scenarios
+	// 2. Already protected by transaction isolation
+	// 3. FirstOrCreate behavior varies across databases (not atomic on SQLite)
+	// 4. Current pattern is clearer and has equivalent performance
+	if data.AutoCheckin != nil {
+		var setting managedSiteSettingModel
+		if err := tx.First(&setting, 1).Error; err != nil {
+			// Create new setting
+			setting = managedSiteSettingModel{
+				ID:                     1,
+				AutoCheckinEnabled:     data.AutoCheckin.GlobalEnabled,
+				WindowStart:            data.AutoCheckin.WindowStart,
+				WindowEnd:              data.AutoCheckin.WindowEnd,
+				ScheduleMode:           data.AutoCheckin.ScheduleMode,
+				DeterministicTime:      data.AutoCheckin.DeterministicTime,
+				RetryEnabled:           data.AutoCheckin.RetryStrategy.Enabled,
+				RetryIntervalMinutes:   data.AutoCheckin.RetryStrategy.IntervalMinutes,
+				RetryMaxAttemptsPerDay: data.AutoCheckin.RetryStrategy.MaxAttemptsPerDay,
+			}
+			if err := tx.Create(&setting).Error; err != nil {
+				logrus.WithError(err).Warn("Failed to create auto-checkin config")
+			}
+		} else {
+			// Update existing setting
+			setting.AutoCheckinEnabled = data.AutoCheckin.GlobalEnabled
+			setting.WindowStart = data.AutoCheckin.WindowStart
+			setting.WindowEnd = data.AutoCheckin.WindowEnd
+			setting.ScheduleMode = data.AutoCheckin.ScheduleMode
+			setting.DeterministicTime = data.AutoCheckin.DeterministicTime
+			setting.RetryEnabled = data.AutoCheckin.RetryStrategy.Enabled
+			setting.RetryIntervalMinutes = data.AutoCheckin.RetryStrategy.IntervalMinutes
+			setting.RetryMaxAttemptsPerDay = data.AutoCheckin.RetryStrategy.MaxAttemptsPerDay
+			if err := tx.Save(&setting).Error; err != nil {
+				logrus.WithError(err).Warn("Failed to update auto-checkin config")
+			}
+		}
+	}
+
+	return imported, skipped
+}
+
+// generateUniqueSiteName generates a unique site name by appending a random suffix if needed.
+//
+// Note: This logic is similar to GenerateUniqueGroupName but intentionally kept separate:
+// 1. Maintains clear module boundaries between group and site management
+// 2. Avoids introducing generic table/field parameters which would add complexity
+// 3. Each function operates on its own model type with type safety
+// 4. Code duplication is minimal (~30 lines) and maintenance cost is acceptable
+func (s *ImportExportService) generateUniqueSiteName(tx *gorm.DB, baseName string) (string, error) {
+	siteName := baseName
+	maxAttempts := 10
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Check if this name already exists
+		var count int64
+		if err := tx.Model(&managedSiteModel{}).Where("name = ?", siteName).Count(&count).Error; err != nil {
+			return "", fmt.Errorf("failed to check site name: %w", err)
+		}
+
+		// If name is unique, we're done
+		if count == 0 {
+			if siteName != baseName {
+				logrus.Debugf("Generated unique site name: %s (original: %s)", siteName, baseName)
+			}
+			return siteName, nil
+		}
+
+		// Generate a new name with random suffix for next attempt
+		if attempt < maxAttempts-1 {
+			// Ensure the name doesn't exceed database limits
+			if len(baseName)+4 > 100 {
+				baseName = baseName[:96]
+			}
+			// Append random suffix using shared utility (4 chars)
+			siteName = baseName + utils.GenerateRandomSuffix()
+		} else {
+			return "", fmt.Errorf("failed to generate unique site name for %s after %d attempts", baseName, maxAttempts)
+		}
+	}
+
+	return siteName, nil
 }

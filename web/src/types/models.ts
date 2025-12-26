@@ -91,6 +91,7 @@ export interface Group {
   proxy_keys: string;
   group_type?: GroupType;
   parent_group_id?: number | null; // Parent group ID for child groups
+  bound_site_id?: number | null; // Bound site ID for standard groups
   sub_groups?: SubGroupInfo[]; // List of sub-groups (aggregate groups only)
   sub_group_ids?: number[]; // List of sub-group IDs
   created_at?: string;

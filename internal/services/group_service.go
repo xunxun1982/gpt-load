@@ -85,6 +85,10 @@ type GroupService struct {
 	groupListCache        *groupListCacheEntry
 	groupListCacheMu      sync.RWMutex
 	groupListCacheTTL     time.Duration
+
+	// Callbacks for binding operations (set by handler layer to avoid circular dependency)
+	CheckGroupCanDeleteCallback   func(ctx context.Context, groupID uint) error
+	SyncGroupEnabledToSiteCallback func(ctx context.Context, groupID uint, enabled bool) error
 }
 
 // NewGroupService constructs a GroupService.
@@ -768,6 +772,13 @@ func getFirstProxyKeyFromString(proxyKeys string) string {
 // DeleteGroup removes a group and associated resources.
 // This operation is idempotent - deleting a non-existent group returns success.
 func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) {
+	// Check if group is bound to a site (must unbind first)
+	if s.CheckGroupCanDeleteCallback != nil {
+		if err := s.CheckGroupCanDeleteCallback(ctx, id); err != nil {
+			return err
+		}
+	}
+
 	// Best-effort: mark a global delete task as running so background cron jobs can
 	// skip heavy DB work and avoid contention during large deletes.
 	var taskService *TaskService
@@ -1948,6 +1959,14 @@ func (s *GroupService) ToggleGroupEnabled(ctx context.Context, id uint, enabled 
 	}
 	if result.RowsAffected == 0 {
 		return app_errors.ErrResourceNotFound
+	}
+
+	// Sync enabled status to bound site
+	if s.SyncGroupEnabledToSiteCallback != nil {
+		if err := s.SyncGroupEnabledToSiteCallback(ctx, id, enabled); err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to sync group enabled status to bound site")
+			// Don't fail the operation, just log the warning
+		}
 	}
 
 	if err := s.groupManager.Invalidate(); err != nil {

@@ -794,6 +794,9 @@ export default {
     deleteCompleted: "キー削除完了、{deleted}個削除、{ignored}個無視。",
   },
   more: {
+    siteManagement: "サイト管理",
+    centralService: "集中サービス",
+    agent: "AGENT",
     emptyDescription: "その他の機能は近日公開予定",
   },
   theme: {
@@ -833,5 +836,20 @@ export default {
         solution2Step3: "サービスを再起動",
       },
     },
+  },
+  binding: {
+    boundSite: "バインドサイト",
+    selectSite: "サイトを選択",
+    bind: "バインド",
+    unbind: "バインド解除",
+    bindTooltip: "このグループを選択したサイトにバインド",
+    unbindTooltip: "このグループとサイトのバインドを解除",
+    bindSuccess: "バインド成功",
+    unbindSuccess: "バインド解除成功",
+    navigateToSite: "バインドサイトに移動",
+    navigateToGroup: "バインドグループに移動",
+    hasBoundSite: "バインドサイトあり",
+    hasBoundGroup: "バインドグループあり",
+    mustUnbindBeforeDelete: "グループを削除する前にサイトとのバインドを解除してください",
   },
 };

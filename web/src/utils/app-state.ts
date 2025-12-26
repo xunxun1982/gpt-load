@@ -5,6 +5,7 @@ interface AppState {
   taskPollingTrigger: number;
   groupDataRefreshTrigger: number;
   syncOperationTrigger: number;
+  siteBindingTrigger: number;
   lastCompletedTask?: {
     groupName: string;
     taskType: string;
@@ -22,6 +23,7 @@ export const appState = reactive<AppState>({
   taskPollingTrigger: 0,
   groupDataRefreshTrigger: 0,
   syncOperationTrigger: 0,
+  siteBindingTrigger: 0,
 });
 
 // Trigger data refresh after a sync operation completes
@@ -32,4 +34,9 @@ export function triggerSyncOperationRefresh(groupName: string, operationType: st
     finishedAt: new Date().toISOString(),
   };
   appState.syncOperationTrigger++;
+}
+
+// Trigger site list refresh after binding/unbinding
+export function triggerSiteBindingRefresh() {
+  appState.siteBindingTrigger++;
 }
