@@ -71,7 +71,8 @@ const authValueInput = ref("");
 const importLoading = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const deleteConfirmInput = ref("");
-const deleteConfirmIdInput = ref("");
+const deleteAllConfirmInput = ref("");
+const deleteAllLoading = ref(false);
 
 const siteForm = reactive({
   name: "",
@@ -254,74 +255,49 @@ function confirmDeleteSite(site: ManagedSiteDTO) {
     return;
   }
 
-  // Step 2: First confirmation dialog
-  dialog.warning({
+  // Step 2: Require name input for confirmation
+  deleteConfirmInput.value = "";
+  dialog.create({
     title: t("siteManagement.deleteSite"),
-    content: t("siteManagement.confirmDeleteSite", { name: site.name }),
-    positiveText: t("common.confirm"),
+    content: () =>
+      h("div", null, [
+        h("p", null, [
+          t("siteManagement.dangerousDeleteWarning"),
+          h(
+            "strong",
+            { style: { color: "#d03050", userSelect: "all", cursor: "pointer" } },
+            site.name
+          ),
+          t("siteManagement.toConfirmDeletion"),
+        ]),
+        h(
+          "div",
+          { style: "margin-top: 12px;" },
+          h(NInput, {
+            value: deleteConfirmInput.value,
+            "onUpdate:value": (v: string) => {
+              deleteConfirmInput.value = v;
+            },
+            placeholder: t("siteManagement.enterSiteName"),
+          })
+        ),
+      ]),
+    positiveText: t("siteManagement.confirmDelete"),
     negativeText: t("common.cancel"),
-    onPositiveClick: () => {
-      // Step 3: Require ID and name input for final confirmation
-      deleteConfirmIdInput.value = "";
-      deleteConfirmInput.value = "";
-      dialog.create({
-        title: t("siteManagement.enterSiteNameToConfirm"),
-        content: () =>
-          h("div", null, [
-            h("p", null, [
-              t("siteManagement.dangerousDeleteWarning"),
-              h(
-                "strong",
-                { style: { color: "#d03050", userSelect: "all", cursor: "pointer" } },
-                site.name
-              ),
-              h("span", null, ` (ID: ${site.id})`),
-              t("siteManagement.toConfirmDeletion"),
-            ]),
-            h(
-              "div",
-              { style: "display: flex; flex-direction: column; gap: 8px; margin-top: 12px;" },
-              [
-                h(NInput, {
-                  value: deleteConfirmIdInput.value,
-                  "onUpdate:value": (v: string) => {
-                    deleteConfirmIdInput.value = v;
-                  },
-                  placeholder: t("siteManagement.enterSiteId"),
-                }),
-                h(NInput, {
-                  value: deleteConfirmInput.value,
-                  "onUpdate:value": (v: string) => {
-                    deleteConfirmInput.value = v;
-                  },
-                  placeholder: t("siteManagement.enterSiteName"),
-                }),
-              ]
-            ),
-          ]),
-        positiveText: t("siteManagement.confirmDelete"),
-        negativeText: t("common.cancel"),
-        onPositiveClick: async () => {
-          // Validate ID
-          if (deleteConfirmIdInput.value !== String(site.id)) {
-            message.error(t("siteManagement.incorrectSiteId"));
-            return false;
-          }
-          // Validate name
-          if (deleteConfirmInput.value !== site.name) {
-            message.error(t("siteManagement.incorrectSiteName"));
-            return false;
-          }
-          try {
-            await siteManagementApi.deleteSite(site.id);
-            message.success(t("siteManagement.siteDeleted"));
-            await loadSites();
-          } catch (_) {
-            /* handled by centralized error handler */
-            return false;
-          }
-        },
-      });
+    onPositiveClick: async () => {
+      // Validate name
+      if (deleteConfirmInput.value !== site.name) {
+        message.error(t("siteManagement.incorrectSiteName"));
+        return false;
+      }
+      try {
+        await siteManagementApi.deleteSite(site.id);
+        message.success(t("siteManagement.siteDeleted"));
+        await loadSites();
+      } catch (_) {
+        /* handled by centralized error handler */
+        return false;
+      }
     },
   });
 }
@@ -477,7 +453,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("siteManagement.baseUrl"),
     key: "base_url",
-    minWidth: 80,
+    minWidth: 60,
     titleAlign: "center",
     ellipsis: { tooltip: true },
     render: row =>
@@ -548,7 +524,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("common.actions"),
     key: "actions",
-    width: 280,
+    width: 295,
     fixed: "right",
     titleAlign: "center",
     render: row =>
@@ -579,8 +555,8 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
           () => t("common.delete")
         ),
         // Separator
-        h("span", { style: "color: var(--n-border-color); margin: 0 2px;" }, "|"),
-        // Icon buttons group (navigation) at the end
+        h("span", { style: "color: var(--n-border-color); margin: 0 4px;" }, "|"),
+        // Icon buttons group (navigation) - closer together
         h(
           NTooltip,
           { trigger: "hover" },
@@ -588,8 +564,13 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
             trigger: () =>
               h(
                 NButton,
-                { size: "tiny", quaternary: true, onClick: () => openSiteUrl(row) },
-                { icon: () => h(NIcon, null, () => h(OpenOutline)) }
+                {
+                  size: "tiny",
+                  quaternary: true,
+                  style: "padding: 0 6px;",
+                  onClick: () => openSiteUrl(row),
+                },
+                { icon: () => h(NIcon, { size: 16 }, () => h(OpenOutline)) }
               ),
             default: () => t("siteManagement.openSite"),
           }
@@ -607,9 +588,10 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
                       size: "tiny",
                       quaternary: true,
                       type: "info",
+                      style: "padding: 0 6px;",
                       onClick: () => openCheckinPage(row),
                     },
-                    { icon: () => h(NIcon, null, () => h(LogInOutline)) }
+                    { icon: () => h(NIcon, { size: 16 }, () => h(LogInOutline)) }
                   ),
                 default: () => t("siteManagement.openCheckinPage"),
               }
@@ -712,6 +694,70 @@ function handleNavigateToGroup(groupId: number) {
   emit("navigate-to-group", groupId);
 }
 
+// Delete all unbound sites with confirmation
+async function confirmDeleteAllUnbound() {
+  // First get the count of unbound sites
+  let unboundCount = 0;
+  try {
+    unboundCount = await siteManagementApi.getUnboundCount();
+  } catch (_) {
+    return;
+  }
+
+  if (unboundCount === 0) {
+    message.info(t("siteManagement.noUnboundSites"));
+    return;
+  }
+
+  // Show confirmation dialog with input
+  deleteAllConfirmInput.value = "";
+  dialog.create({
+    title: t("siteManagement.confirmDeleteAllUnbound"),
+    content: () =>
+      h("div", null, [
+        h("p", null, [
+          t("siteManagement.deleteAllUnboundWarning", { count: unboundCount }),
+          h(
+            "strong",
+            { style: { color: "#d03050", userSelect: "all", cursor: "pointer" } },
+            t("siteManagement.deleteAllUnboundConfirmText")
+          ),
+          h("span", null, " "),
+          t("siteManagement.toConfirmDeletion"),
+        ]),
+        h(
+          "div",
+          { style: "margin-top: 12px;" },
+          h(NInput, {
+            value: deleteAllConfirmInput.value,
+            "onUpdate:value": (v: string) => {
+              deleteAllConfirmInput.value = v;
+            },
+            placeholder: t("siteManagement.deleteAllUnboundPlaceholder"),
+          })
+        ),
+      ]),
+    positiveText: t("siteManagement.confirmDelete"),
+    negativeText: t("common.cancel"),
+    onPositiveClick: async () => {
+      if (deleteAllConfirmInput.value !== t("siteManagement.deleteAllUnboundConfirmText")) {
+        message.error(t("siteManagement.incorrectConfirmText"));
+        return false;
+      }
+      deleteAllLoading.value = true;
+      try {
+        await siteManagementApi.deleteAllUnboundSites();
+        await loadSites();
+      } catch (_) {
+        /* handled by centralized error handler */
+        return false;
+      } finally {
+        deleteAllLoading.value = false;
+      }
+    },
+  });
+}
+
 // Watch for site binding changes from other components (e.g., Keys page)
 watch(
   () => appState.siteBindingTrigger,
@@ -742,6 +788,20 @@ onMounted(() => {
         </n-checkbox>
       </n-space>
       <n-space size="small">
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button
+              size="small"
+              secondary
+              type="error"
+              :loading="deleteAllLoading"
+              @click="confirmDeleteAllUnbound"
+            >
+              {{ t("siteManagement.deleteAllUnbound") }}
+            </n-button>
+          </template>
+          {{ t("siteManagement.deleteAllUnboundTooltip") }}
+        </n-tooltip>
         <n-button size="small" secondary @click="handleExport">
           <template #icon><n-icon :component="CloudDownloadOutline" /></template>
           {{ t("common.export") }}

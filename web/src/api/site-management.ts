@@ -167,6 +167,18 @@ export const siteManagementApi = {
     const res = await http.get(`/site-management/sites/${siteId}/bound-group`);
     return res.data;
   },
+
+  // Get count of unbound sites
+  async getUnboundCount(): Promise<number> {
+    const res = await http.get("/site-management/unbound-count");
+    return res.data?.count || 0;
+  },
+
+  // Delete all unbound sites
+  async deleteAllUnboundSites(): Promise<{ count: number }> {
+    const res = await http.delete("/site-management/unbound-sites");
+    return res.data;
+  },
 };
 
 // Export/Import types

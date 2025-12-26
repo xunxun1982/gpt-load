@@ -141,6 +141,26 @@ func (s *Server) DeleteManagedSite(c *gin.Context) {
 	response.Success(c, nil)
 }
 
+// DeleteAllUnboundSites deletes all sites that are not bound to any group
+func (s *Server) DeleteAllUnboundSites(c *gin.Context) {
+	deleted, err := s.SiteService.DeleteAllUnboundSites(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "success.unbound_sites_deleted", map[string]interface{}{
+		"count": deleted,
+	}, map[string]any{"count": deleted})
+}
+
+// CountUnboundSites returns the count of sites not bound to any group
+func (s *Server) CountUnboundSites(c *gin.Context) {
+	count, err := s.SiteService.CountUnboundSites(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, map[string]int64{"count": count})
+}
+
 // CopyManagedSite creates a copy of an existing site
 func (s *Server) CopyManagedSite(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)

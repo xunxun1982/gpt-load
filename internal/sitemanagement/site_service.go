@@ -395,6 +395,62 @@ func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
 	return nil
 }
 
+// DeleteAllUnboundSites deletes all sites that are not bound to any group.
+// Returns the count of deleted sites.
+// Uses transaction to prevent race condition between fetching IDs and deletion.
+func (s *SiteService) DeleteAllUnboundSites(ctx context.Context) (int64, error) {
+	var deletedCount int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Find all unbound site IDs (sites where bound_group_id IS NULL)
+		var unboundSiteIDs []uint
+		if err := tx.Model(&ManagedSite{}).
+			Where("bound_group_id IS NULL").
+			Pluck("id", &unboundSiteIDs).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
+
+		if len(unboundSiteIDs) == 0 {
+			return nil
+		}
+
+		// Delete sites first with re-check condition to prevent deleting concurrently-bound sites.
+		// This ensures business rule consistency: bound sites cannot be deleted.
+		result := tx.Where("id IN ? AND bound_group_id IS NULL", unboundSiteIDs).Delete(&ManagedSite{})
+		if result.Error != nil {
+			return app_errors.ParseDBError(result.Error)
+		}
+		deletedCount = result.RowsAffected
+
+		// Delete orphaned logs for actually deleted sites.
+		// Note: Some logs may remain if sites were bound between fetch and delete,
+		// but those sites still exist so their logs are still valid.
+		if deletedCount > 0 {
+			if err := tx.Where("site_id IN ?", unboundSiteIDs).
+				Delete(&ManagedSiteCheckinLog{}).Error; err != nil {
+				return app_errors.ParseDBError(err)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deletedCount, nil
+}
+
+// CountUnboundSites returns the count of sites not bound to any group.
+func (s *SiteService) CountUnboundSites(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).
+		Model(&ManagedSite{}).
+		Where("bound_group_id IS NULL").
+		Count(&count).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+	return count, nil
+}
+
 // CopySite creates a copy of an existing site with a unique name.
 // The copied site will have the same configuration but without binding relationships.
 func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDTO, error) {
@@ -840,7 +896,16 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			}
 		}
 
-		// Handle user_id encryption (same as auth_value)
+		// Handle user_id encryption with auto-detection for mixed-format imports.
+		// Design decision: Unlike auth_value which skips on decrypt failure, user_id uses
+		// auto-detection (try decrypt, fallback to encrypt) to support:
+		// 1. Users manually editing exported files with plain user_ids
+		// 2. Mixed imports where some user_ids are encrypted and some are plain
+		// 3. Better UX by not failing entire imports due to format inconsistency
+		// Risk assessment: Double-encryption is unlikely because encrypted strings have
+		// distinct base64/hex patterns that rarely match valid plain user_ids.
+		// AI review suggested aligning with auth_value behavior, but we intentionally
+		// keep this flexible approach based on real-world usage patterns.
 		encryptedUserID := ""
 		if siteInfo.UserID != "" {
 			if plainMode {
@@ -853,13 +918,20 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 				}
 				encryptedUserID = enc
 			} else {
-				// Input is already encrypted, verify it can be decrypted
+				// Auto-detect: try decrypt first, fallback to encrypt if it fails
 				if _, err := s.encryptionSvc.Decrypt(siteInfo.UserID); err != nil {
-					logrus.WithError(err).Warnf("Failed to decrypt user_id for site %s, skipping", name)
-					skipped++
-					continue
+					// Likely plain text, encrypt it
+					enc, encErr := s.encryptionSvc.Encrypt(siteInfo.UserID)
+					if encErr != nil {
+						logrus.WithError(encErr).Warnf("Failed to encrypt user_id for site %s", name)
+						skipped++
+						continue
+					}
+					encryptedUserID = enc
+					logrus.Debugf("user_id for site %s was plain text in encrypted mode, auto-encrypted", name)
+				} else {
+					encryptedUserID = siteInfo.UserID
 				}
-				encryptedUserID = siteInfo.UserID
 			}
 		}
 

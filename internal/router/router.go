@@ -205,6 +205,10 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		siteMgmt.DELETE("/sites/:id/binding", serverHandler.UnbindSiteFromGroup)
 		siteMgmt.GET("/sites/:id/bound-group", serverHandler.GetBoundGroupInfo)
 
+		// Bulk operations
+		siteMgmt.GET("/unbound-count", serverHandler.CountUnboundSites)
+		siteMgmt.DELETE("/unbound-sites", serverHandler.DeleteAllUnboundSites)
+
 		siteMgmt.GET("/auto-checkin/config", serverHandler.GetAutoCheckinConfig)
 		siteMgmt.PUT("/auto-checkin/config", serverHandler.UpdateAutoCheckinConfig)
 		siteMgmt.GET("/auto-checkin/status", serverHandler.GetAutoCheckinStatus)
