@@ -113,10 +113,13 @@ var MessagesEnUS = map[string]string{
 	"database.group_stats_failed":    "Failed to get partial statistics",
 
 	// Success messages
-	"success.group_deleted":        "Group and related keys deleted successfully",
-	"success.keys_restored":        "{{.count}} keys restored",
-	"success.invalid_keys_cleared": "{{.count}} invalid keys cleared",
-	"success.all_keys_cleared":     "{{.count}} keys cleared",
+	"success.group_deleted":           "Group and related keys deleted successfully",
+	"success.keys_restored":           "{{.count}} keys restored",
+	"success.invalid_keys_cleared":    "{{.count}} invalid keys cleared",
+	"success.all_keys_cleared":        "{{.count}} keys cleared",
+	"success.group_bound_to_site":     "Group bound to site successfully",
+	"success.group_unbound_from_site": "Group unbound from site successfully",
+	"success.site_unbound_from_group": "Site unbound from group successfully",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}} is too short ({{.length}} characters), recommend at least 16 characters",
@@ -230,6 +233,16 @@ var MessagesEnUS = map[string]string{
 	"success.child_group_deleted":                       "Child group deleted successfully",
 	"warning.parent_has_child_groups":                   "This group has {{.count}} child group(s), they will also be deleted",
 	"group.child_groups_deleted":                        "{{.count}} child group(s) also deleted",
+
+	// Binding related
+	"binding.group_not_found":                "Group not found",
+	"binding.site_not_found":                 "Site not found",
+	"binding.aggregate_cannot_bind":          "Aggregate groups cannot be bound to sites",
+	"binding.child_group_cannot_bind":        "Child groups cannot be bound to sites",
+	"binding.group_already_bound":            "This group is already bound to another site",
+	"binding.site_already_bound":             "This site is already bound to another group",
+	"binding.must_unbind_before_delete_group": "Please unbind from the site before deleting the group",
+	"binding.must_unbind_before_delete_site": "Please unbind from the group before deleting the site",
 }
 
 func init() {

@@ -53,6 +53,11 @@ function handleTabChange(tab: MoreTab) {
     },
   });
 }
+
+// Navigate to keys page with specific group selected
+function handleNavigateToGroup(groupId: number) {
+  router.push({ name: "keys", query: { groupId } });
+}
 </script>
 
 <!--
@@ -78,7 +83,10 @@ function handleTabChange(tab: MoreTab) {
           <span class="more-title">{{ t("nav.more") }}</span>
         </template>
         <n-tab-pane v-for="pane in panes" :key="pane.key" :name="pane.key" :tab="t(pane.labelKey)">
-          <site-management-panel v-if="pane.key === 'site'" />
+          <site-management-panel
+            v-if="pane.key === 'site'"
+            @navigate-to-group="handleNavigateToGroup"
+          />
           <n-empty
             v-else
             size="tiny"

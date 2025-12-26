@@ -130,6 +130,7 @@ type Group struct {
 	ModelRedirectStrict  bool                 `gorm:"default:false" json:"model_redirect_strict"` // Strict mode for model redirect
 	PathRedirects        datatypes.JSON       `gorm:"type:json" json:"path_redirects"`        // JSON array of {from,to} rules (OpenAI only)
 	ParentGroupID        *uint                `gorm:"index" json:"parent_group_id"`           // Parent group ID for child groups
+	BoundSiteID          *uint                `gorm:"index" json:"bound_site_id"`             // Bound managed site ID for standard groups
 	APIKeys              []APIKey             `gorm:"foreignKey:GroupID" json:"api_keys"`
 	SubGroups            []GroupSubGroup      `gorm:"-" json:"sub_groups,omitempty"`
 	ChildGroups          []Group              `gorm:"-" json:"child_groups,omitempty"`        // Child groups derived from this group

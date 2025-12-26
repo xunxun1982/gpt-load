@@ -55,7 +55,15 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.5.0 migration - Add child group support (parent_group_id column)
-	return V1_5_0_AddChildGroupSupport(db)
+	if err := V1_5_0_AddChildGroupSupport(db); err != nil {
+		return err
+	}
+	// Run v1.6.0 migration - Add group-site binding support
+	if err := V1_6_0_AddGroupSiteBinding(db); err != nil {
+		return err
+	}
+	// Run v1.6.1 migration - Add timestamp index to request_logs for faster cleanup
+	return V1_6_1_AddRequestLogsTimestampIndex(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

@@ -75,15 +75,22 @@ export default {
   viewLogs: "View Logs",
   openSite: "Open Site",
   openCheckinPage: "Open Check-in Page",
+  copySite: "Copy Site",
+  siteCopied: "Site copied successfully",
   deleteSite: "Delete Site",
   confirmDeleteSite:
     'Are you sure you want to delete site "{name}"? Related check-in logs will also be deleted.',
-  enterSiteNameToConfirm: "Enter site name to confirm",
+  enterSiteNameToConfirm: "Enter site ID and name to confirm",
   dangerousDeleteWarning: "This is a dangerous operation. It will delete site ",
-  toConfirmDeletion: " and all its check-in logs. Please enter the site name to confirm:",
+  toConfirmDeletion: " and all its check-in logs.",
+  enterSiteId: "Enter site ID",
   enterSiteName: "Enter site name",
   confirmDelete: "Confirm Delete",
+  incorrectSiteId: "Incorrect site ID",
   incorrectSiteName: "Incorrect site name",
+  siteHasBinding:
+    'Site "{name}" is bound to group "{groupName}". Please unbind first before deleting.',
+  mustUnbindFirst: "Unbind First",
 
   // Logs
   logTime: "Time",

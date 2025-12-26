@@ -136,6 +136,11 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		groups.GET("/:id/child-group-count", serverHandler.GetChildGroupCount)
 		groups.GET("/all-child-groups", serverHandler.GetAllChildGroups)
 
+		// Binding routes
+		groups.POST("/:id/bind-site", serverHandler.BindGroupToSite)
+		groups.DELETE("/:id/bind-site", serverHandler.UnbindGroupFromSite)
+		groups.GET("/:id/bound-site", serverHandler.GetBoundSiteInfo)
+
 		// Debug-only endpoint: Delete all groups
 		// This dangerous operation is only available when DEBUG_MODE environment variable is enabled
 		// It should NEVER be enabled in production environments
@@ -194,8 +199,11 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		siteMgmt.POST("/sites", serverHandler.CreateManagedSite)
 		siteMgmt.PUT("/sites/:id", serverHandler.UpdateManagedSite)
 		siteMgmt.DELETE("/sites/:id", serverHandler.DeleteManagedSite)
+		siteMgmt.POST("/sites/:id/copy", serverHandler.CopyManagedSite)
 		siteMgmt.POST("/sites/:id/checkin", serverHandler.CheckInManagedSite)
 		siteMgmt.GET("/sites/:id/checkin-logs", serverHandler.ListManagedSiteCheckinLogs)
+		siteMgmt.DELETE("/sites/:id/binding", serverHandler.UnbindSiteFromGroup)
+		siteMgmt.GET("/sites/:id/bound-group", serverHandler.GetBoundGroupInfo)
 
 		siteMgmt.GET("/auto-checkin/config", serverHandler.GetAutoCheckinConfig)
 		siteMgmt.PUT("/auto-checkin/config", serverHandler.UpdateAutoCheckinConfig)
@@ -205,6 +213,9 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		// Import/Export
 		siteMgmt.GET("/export", serverHandler.ExportManagedSites)
 		siteMgmt.POST("/import", serverHandler.ImportManagedSites)
+
+		// Binding
+		siteMgmt.GET("/sites-for-binding", serverHandler.ListSitesForBinding)
 	}
 
 	// System-wide import/export

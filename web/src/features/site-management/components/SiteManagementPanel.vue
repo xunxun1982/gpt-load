@@ -15,6 +15,7 @@ import {
   type ManagedSiteAuthType,
   type SiteImportData,
 } from "@/api/site-management";
+import { appState } from "@/utils/app-state";
 import {
   NButton,
   NCard,
@@ -37,7 +38,7 @@ import {
   useMessage,
   type DataTableColumns,
 } from "naive-ui";
-import { computed, h, onMounted, reactive, ref } from "vue";
+import { computed, h, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   OpenOutline,
@@ -46,12 +47,19 @@ import {
   CloudUploadOutline,
   LogInOutline,
   Search,
+  LinkOutline,
 } from "@vicons/ionicons5";
 import { askExportMode, askImportMode } from "@/utils/export-import";
 
 const { t } = useI18n();
 const message = useMessage();
 const dialog = useDialog();
+
+// Emit for navigation to group
+interface Emits {
+  (e: "navigate-to-group", groupId: number): void;
+}
+const emit = defineEmits<Emits>();
 
 const loading = ref(false);
 const sites = ref<ManagedSiteDTO[]>([]);
@@ -63,6 +71,7 @@ const authValueInput = ref("");
 const importLoading = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const deleteConfirmInput = ref("");
+const deleteConfirmIdInput = ref("");
 
 const siteForm = reactive({
   name: "",
@@ -225,12 +234,35 @@ async function submitSite() {
 }
 
 function confirmDeleteSite(site: ManagedSiteDTO) {
+  // Step 1: Check if site has binding
+  if (site.bound_group_id) {
+    dialog.warning({
+      title: t("siteManagement.deleteSite"),
+      content: t("siteManagement.siteHasBinding", {
+        name: site.name,
+        groupName: site.bound_group_name || `#${site.bound_group_id}`,
+      }),
+      positiveText: t("siteManagement.mustUnbindFirst"),
+      negativeText: t("common.cancel"),
+      onPositiveClick: () => {
+        // Navigate to the bound group for unbinding
+        if (site.bound_group_id) {
+          handleNavigateToGroup(site.bound_group_id);
+        }
+      },
+    });
+    return;
+  }
+
+  // Step 2: First confirmation dialog
   dialog.warning({
     title: t("siteManagement.deleteSite"),
     content: t("siteManagement.confirmDeleteSite", { name: site.name }),
     positiveText: t("common.confirm"),
     negativeText: t("common.cancel"),
     onPositiveClick: () => {
+      // Step 3: Require ID and name input for final confirmation
+      deleteConfirmIdInput.value = "";
       deleteConfirmInput.value = "";
       dialog.create({
         title: t("siteManagement.enterSiteNameToConfirm"),
@@ -243,19 +275,39 @@ function confirmDeleteSite(site: ManagedSiteDTO) {
                 { style: { color: "#d03050", userSelect: "all", cursor: "pointer" } },
                 site.name
               ),
+              h("span", null, ` (ID: ${site.id})`),
               t("siteManagement.toConfirmDeletion"),
             ]),
-            h(NInput, {
-              value: deleteConfirmInput.value,
-              "onUpdate:value": (v: string) => {
-                deleteConfirmInput.value = v;
-              },
-              placeholder: t("siteManagement.enterSiteName"),
-            }),
+            h(
+              "div",
+              { style: "display: flex; flex-direction: column; gap: 8px; margin-top: 12px;" },
+              [
+                h(NInput, {
+                  value: deleteConfirmIdInput.value,
+                  "onUpdate:value": (v: string) => {
+                    deleteConfirmIdInput.value = v;
+                  },
+                  placeholder: t("siteManagement.enterSiteId"),
+                }),
+                h(NInput, {
+                  value: deleteConfirmInput.value,
+                  "onUpdate:value": (v: string) => {
+                    deleteConfirmInput.value = v;
+                  },
+                  placeholder: t("siteManagement.enterSiteName"),
+                }),
+              ]
+            ),
           ]),
         positiveText: t("siteManagement.confirmDelete"),
         negativeText: t("common.cancel"),
         onPositiveClick: async () => {
+          // Validate ID
+          if (deleteConfirmIdInput.value !== String(site.id)) {
+            message.error(t("siteManagement.incorrectSiteId"));
+            return false;
+          }
+          // Validate name
           if (deleteConfirmInput.value !== site.name) {
             message.error(t("siteManagement.incorrectSiteName"));
             return false;
@@ -272,6 +324,17 @@ function confirmDeleteSite(site: ManagedSiteDTO) {
       });
     },
   });
+}
+
+// Copy a site with unique name
+async function copySite(site: ManagedSiteDTO) {
+  try {
+    await siteManagementApi.copySite(site.id);
+    message.success(t("siteManagement.siteCopied"));
+    await loadSites();
+  } catch (_) {
+    /* handled by centralized error handler */
+  }
 }
 
 function statusTag(status: ManagedSiteDTO["last_checkin_status"]) {
@@ -376,7 +439,36 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     ellipsis: { tooltip: true },
     render: row =>
       h("div", { class: "site-name-cell" }, [
-        h("span", { class: "site-name" }, row.name),
+        h("div", { style: "display: flex; align-items: center; gap: 4px;" }, [
+          // Show bound group icon before site name if bound to a group
+          row.bound_group_id
+            ? h(
+                NTooltip,
+                { trigger: "hover" },
+                {
+                  trigger: () =>
+                    h(
+                      NIcon,
+                      {
+                        size: 14,
+                        color: "var(--success-color)",
+                        style: "cursor: pointer; flex-shrink: 0;",
+                        onClick: (e: Event) => {
+                          e.stopPropagation();
+                          if (row.bound_group_id) {
+                            handleNavigateToGroup(row.bound_group_id);
+                          }
+                        },
+                      },
+                      () => h(LinkOutline)
+                    ),
+                  default: () =>
+                    `${t("binding.navigateToGroup")}: ${row.bound_group_name || `#${row.bound_group_id}`}`,
+                }
+              )
+            : null,
+          h("span", { class: "site-name" }, row.name),
+        ]),
         row.notes
           ? h(NText, { depth: 3, style: "font-size: 12px; display: block;" }, () => row.notes)
           : null,
@@ -385,7 +477,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("siteManagement.baseUrl"),
     key: "base_url",
-    minWidth: 100,
+    minWidth: 80,
     titleAlign: "center",
     ellipsis: { tooltip: true },
     render: row =>
@@ -456,7 +548,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("common.actions"),
     key: "actions",
-    width: 255,
+    width: 280,
     fixed: "right",
     titleAlign: "center",
     render: row =>
@@ -477,6 +569,9 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
         ),
         h(NButton, { size: "tiny", secondary: true, onClick: () => openLogs(row) }, () =>
           t("siteManagement.logs")
+        ),
+        h(NButton, { size: "tiny", secondary: true, onClick: () => copySite(row) }, () =>
+          t("common.copy")
         ),
         h(
           NButton,
@@ -611,6 +706,19 @@ async function handleFileChange(event: Event) {
     input.value = "";
   }
 }
+
+// Navigate to bound group
+function handleNavigateToGroup(groupId: number) {
+  emit("navigate-to-group", groupId);
+}
+
+// Watch for site binding changes from other components (e.g., Keys page)
+watch(
+  () => appState.siteBindingTrigger,
+  () => {
+    loadSites();
+  }
+);
 
 onMounted(() => {
   loadSites();

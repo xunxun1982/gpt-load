@@ -141,6 +141,21 @@ func (s *Server) DeleteManagedSite(c *gin.Context) {
 	response.Success(c, nil)
 }
 
+// CopyManagedSite creates a copy of an existing site
+func (s *Server) CopyManagedSite(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	site, err := s.SiteService.CopySite(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, site)
+}
+
 func (s *Server) GetAutoCheckinConfig(c *gin.Context) {
 	cfg, err := s.SiteService.GetAutoCheckinConfig(c.Request.Context())
 	if HandleServiceError(c, err) {

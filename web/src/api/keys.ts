@@ -413,4 +413,22 @@ export const keysApi = {
     const res = await http.get("/groups/all-child-groups");
     return res.data || {};
   },
+
+  // ============ Site Binding ============
+
+  // Bind a group to a site
+  async bindGroupToSite(groupId: number, siteId: number): Promise<void> {
+    await http.post(`/groups/${groupId}/bind-site`, { site_id: siteId });
+  },
+
+  // Unbind a group from its bound site
+  async unbindGroupFromSite(groupId: number): Promise<void> {
+    await http.delete(`/groups/${groupId}/bind-site`);
+  },
+
+  // Get bound site info for a group
+  async getBoundSiteInfo(groupId: number): Promise<{ id: number; name: string } | null> {
+    const res = await http.get(`/groups/${groupId}/bound-site`);
+    return res.data;
+  },
 };

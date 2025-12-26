@@ -29,6 +29,9 @@ type ManagedSiteDTO struct {
 	LastCheckInStatus  string     `json:"last_checkin_status"`
 	LastCheckInMessage string     `json:"last_checkin_message"`
 
+	BoundGroupID   *uint  `json:"bound_group_id,omitempty"`
+	BoundGroupName string `json:"bound_group_name,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

@@ -110,6 +110,9 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(sitemanagement.NewAutoCheckinService); err != nil {
 		return nil, err
 	}
+	if err := container.Provide(sitemanagement.NewBindingService); err != nil {
+		return nil, err
+	}
 
 	// Handlers
 	if err := container.Provide(handler.NewServer); err != nil {

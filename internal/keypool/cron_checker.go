@@ -75,6 +75,16 @@ func (s *CronChecker) Stop(ctx context.Context) {
 func (s *CronChecker) runLoop() {
 	defer s.wg.Done()
 
+	// Initial delay to allow database initialization to complete
+	// This prevents timeout errors during startup when DB is busy with
+	// WAL checkpoint, PRAGMA settings, migrations, and other initialization tasks
+	// 10 seconds is sufficient for most systems to complete DB initialization
+	select {
+	case <-time.After(10 * time.Second):
+	case <-s.stopChan:
+		return
+	}
+
 	s.submitValidationJobs()
 
 	ticker := time.NewTicker(5 * time.Minute)
@@ -100,16 +110,15 @@ func (s *CronChecker) submitValidationJobs() {
 	}
 
 	var groups []models.Group
-	// Short timeout and minimal column selection to avoid long blocking.
-	// 500ms allows for occasional I/O latency while still protecting against
-	// pathological cases. If this timeout is frequently hit, investigate DB load.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// Use 2 second timeout for group list query
+	// This is a lightweight query that should complete quickly under normal conditions
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := s.DB.WithContext(ctx).
 		Select("id, name, config, enabled, group_type, channel_type, last_validated_at").
 		Where("group_type IS NULL OR group_type != ?", "aggregate").
 		Find(&groups).Error; err != nil {
-		logrus.Errorf("CronChecker: Failed to get groups (timeout/error): %v", err)
+		logrus.Warnf("CronChecker: Failed to get groups: %v", err)
 		return
 	}
 

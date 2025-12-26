@@ -10,6 +10,7 @@ import (
 
 	"gpt-load/internal/encryption"
 	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/models"
 	"gpt-load/internal/services"
 	"gpt-load/internal/store"
 	"gpt-load/internal/utils"
@@ -24,6 +25,9 @@ type SiteService struct {
 	db            *gorm.DB
 	store         store.Store
 	encryptionSvc encryption.Service
+
+	// Callback for syncing enabled status to bound group (set by handler layer)
+	SyncSiteEnabledToGroupCallback func(ctx context.Context, siteID uint, enabled bool) error
 }
 
 func NewSiteService(db *gorm.DB, store store.Store, encryptionSvc encryption.Service) *SiteService {
@@ -80,6 +84,25 @@ func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	// Collect bound group IDs for batch query
+	boundGroupIDs := make([]uint, 0)
+	for _, site := range sites {
+		if site.BoundGroupID != nil {
+			boundGroupIDs = append(boundGroupIDs, *site.BoundGroupID)
+		}
+	}
+
+	// Batch fetch group names
+	groupNameMap := make(map[uint]string)
+	if len(boundGroupIDs) > 0 {
+		var groups []models.Group
+		if err := s.db.WithContext(ctx).Select("id", "name").Where("id IN ?", boundGroupIDs).Find(&groups).Error; err == nil {
+			for _, g := range groups {
+				groupNameMap[g.ID] = g.Name
+			}
+		}
+	}
+
 	resp := make([]ManagedSiteDTO, 0, len(sites))
 	for i := range sites {
 		site := &sites[i]
@@ -90,6 +113,12 @@ func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
 				userID = decrypted
 			}
 		}
+
+		var boundGroupName string
+		if site.BoundGroupID != nil {
+			boundGroupName = groupNameMap[*site.BoundGroupID]
+		}
+
 		resp = append(resp, ManagedSiteDTO{
 			ID:                 site.ID,
 			Name:               site.Name,
@@ -111,6 +140,8 @@ func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
 			LastCheckInDate:    site.LastCheckInDate,
 			LastCheckInStatus:  site.LastCheckInStatus,
 			LastCheckInMessage: site.LastCheckInMessage,
+			BoundGroupID:       site.BoundGroupID,
+			BoundGroupName:     boundGroupName,
 			CreatedAt:          site.CreatedAt,
 			UpdatedAt:          site.UpdatedAt,
 		})
@@ -208,6 +239,10 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	// Track original enabled status for sync callback
+	originalEnabled := site.Enabled
+	enabledChanged := false
+
 	if params.Name != nil {
 		name := strings.TrimSpace(*params.Name)
 		if name == "" {
@@ -236,6 +271,9 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 	}
 	if params.Enabled != nil {
 		site.Enabled = *params.Enabled
+		if site.Enabled != originalEnabled {
+			enabledChanged = true
+		}
 	}
 	if params.BaseURL != nil {
 		baseURL, err := normalizeBaseURL(*params.BaseURL)
@@ -317,10 +355,31 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	// Sync enabled status to bound group if changed
+	if enabledChanged && s.SyncSiteEnabledToGroupCallback != nil {
+		if err := s.SyncSiteEnabledToGroupCallback(ctx, siteID, site.Enabled); err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to sync site enabled status to bound group")
+			// Don't fail the operation, just log the warning
+		}
+	}
+
 	return s.toDTO(&site), nil
 }
 
 func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
+	// Check if site is bound to a group
+	var site ManagedSite
+	if err := s.db.WithContext(ctx).Select("id", "bound_group_id").First(&site, siteID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil // Site doesn't exist, idempotent delete
+		}
+		return app_errors.ParseDBError(err)
+	}
+
+	if site.BoundGroupID != nil {
+		return services.NewI18nError(app_errors.ErrValidation, "binding.must_unbind_before_delete_site", nil)
+	}
+
 	// Best-effort cascade delete logs (fast because of idx_site_time).
 	// Avoid hard FK constraints to keep migrations portable across databases.
 	if err := s.db.WithContext(ctx).Where("site_id = ?", siteID).Delete(&ManagedSiteCheckinLog{}).Error; err != nil {
@@ -334,6 +393,52 @@ func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
 		return app_errors.ParseDBError(err)
 	}
 	return nil
+}
+
+// CopySite creates a copy of an existing site with a unique name.
+// The copied site will have the same configuration but without binding relationships.
+func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDTO, error) {
+	// Fetch the source site
+	var source ManagedSite
+	if err := s.db.WithContext(ctx).First(&source, siteID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, services.NewI18nError(app_errors.ErrResourceNotFound, "site_management.site_not_found", nil)
+		}
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	// Generate unique name for the copy
+	uniqueName, err := s.generateUniqueSiteName(ctx, source.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate unique name: %w", err)
+	}
+
+	// Create the copy (without binding, checkin status, and timestamps)
+	newSite := &ManagedSite{
+		Name:               uniqueName,
+		Notes:              source.Notes,
+		Description:        source.Description,
+		Sort:               source.Sort,
+		Enabled:            source.Enabled,
+		BaseURL:            source.BaseURL,
+		SiteType:           source.SiteType,
+		UserID:             source.UserID,
+		CheckInPageURL:     source.CheckInPageURL,
+		CheckInAvailable:   source.CheckInAvailable,
+		CheckInEnabled:     source.CheckInEnabled,
+		AutoCheckInEnabled: source.AutoCheckInEnabled,
+		CustomCheckInURL:   source.CustomCheckInURL,
+		AuthType:           source.AuthType,
+		AuthValue:          source.AuthValue,
+		// BoundGroupID is intentionally not copied
+		// LastCheckIn* fields are intentionally not copied
+	}
+
+	if err := s.db.WithContext(ctx).Create(newSite).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	return s.toDTO(newSite), nil
 }
 
 func (s *SiteService) GetAutoCheckinConfig(ctx context.Context) (*AutoCheckinConfig, error) {
@@ -454,6 +559,16 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 			userID = decrypted
 		}
 	}
+
+	// Get bound group name if bound
+	var boundGroupName string
+	if site.BoundGroupID != nil {
+		var group models.Group
+		if err := s.db.Select("name").First(&group, *site.BoundGroupID).Error; err == nil {
+			boundGroupName = group.Name
+		}
+	}
+
 	return &ManagedSiteDTO{
 		ID:                 site.ID,
 		Name:               site.Name,
@@ -475,6 +590,8 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 		LastCheckInDate:    site.LastCheckInDate,
 		LastCheckInStatus:  site.LastCheckInStatus,
 		LastCheckInMessage: site.LastCheckInMessage,
+		BoundGroupID:       site.BoundGroupID,
+		BoundGroupName:     boundGroupName,
 		CreatedAt:          site.CreatedAt,
 		UpdatedAt:          site.UpdatedAt,
 	}

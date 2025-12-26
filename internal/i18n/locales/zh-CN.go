@@ -113,10 +113,13 @@ var MessagesZhCN = map[string]string{
 	"database.group_stats_failed":    "获取部分统计信息失败",
 
 	// Success messages
-	"success.group_deleted":        "分组及相关密钥删除成功",
-	"success.keys_restored":        "{{.count}}个密钥已恢复",
-	"success.invalid_keys_cleared": "{{.count}}个无效密钥已清除",
-	"success.all_keys_cleared":     "{{.count}}个密钥已清除",
+	"success.group_deleted":           "分组及相关密钥删除成功",
+	"success.keys_restored":           "{{.count}}个密钥已恢复",
+	"success.invalid_keys_cleared":    "{{.count}}个无效密钥已清除",
+	"success.all_keys_cleared":        "{{.count}}个密钥已清除",
+	"success.group_bound_to_site":     "分组已绑定到站点",
+	"success.group_unbound_from_site": "分组已解除与站点的绑定",
+	"success.site_unbound_from_group": "站点已解除与分组的绑定",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}}长度不足（{{.length}}字符），建议至少16字符",
@@ -230,6 +233,16 @@ var MessagesZhCN = map[string]string{
 	"success.child_group_deleted":                       "子分组删除成功",
 	"warning.parent_has_child_groups":                   "该分组有 {{.count}} 个子分组，删除后子分组也将被删除",
 	"group.child_groups_deleted":                        "已同时删除 {{.count}} 个子分组",
+
+	// Binding related
+	"binding.group_not_found":                "分组不存在",
+	"binding.site_not_found":                 "站点不存在",
+	"binding.aggregate_cannot_bind":          "聚合分组不能绑定站点",
+	"binding.child_group_cannot_bind":        "子分组不能绑定站点",
+	"binding.group_already_bound":            "该分组已绑定其他站点",
+	"binding.site_already_bound":             "该站点已绑定其他分组",
+	"binding.must_unbind_before_delete_group": "请先解除与站点的绑定后再删除分组",
+	"binding.must_unbind_before_delete_site": "请先解除与分组的绑定后再删除站点",
 }
 
 func init() {

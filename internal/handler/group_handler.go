@@ -196,6 +196,7 @@ type GroupResponse struct {
 	PathRedirects       []models.PathRedirectRule `json:"path_redirects"`
 	ProxyKeys           string                    `json:"proxy_keys"`
 	ParentGroupID       *uint                     `json:"parent_group_id"`
+	BoundSiteID         *uint                     `json:"bound_site_id"`
 	LastValidatedAt     *time.Time                `json:"last_validated_at"`
 	CreatedAt           time.Time                 `json:"created_at"`
 	UpdatedAt           time.Time                 `json:"updated_at"`
@@ -252,6 +253,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		PathRedirects:       pathRedirects,
 		ProxyKeys:           group.ProxyKeys,
 		ParentGroupID:       group.ParentGroupID,
+		BoundSiteID:         group.BoundSiteID,
 		LastValidatedAt:     group.LastValidatedAt,
 		CreatedAt:           group.CreatedAt,
 		UpdatedAt:           group.UpdatedAt,

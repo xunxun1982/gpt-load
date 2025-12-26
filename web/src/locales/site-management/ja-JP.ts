@@ -75,15 +75,21 @@ export default {
   viewLogs: "ログを表示",
   openSite: "サイトを開く",
   openCheckinPage: "チェックインページを開く",
+  copySite: "サイトをコピー",
+  siteCopied: "サイトをコピーしました",
   deleteSite: "サイトを削除",
   confirmDeleteSite: "サイト「{name}」を削除しますか？関連するチェックインログも削除されます。",
-  enterSiteNameToConfirm: "サイト名を入力して確認",
+  enterSiteNameToConfirm: "サイトIDと名前を入力して確認",
   dangerousDeleteWarning: "これは危険な操作です。サイト ",
-  toConfirmDeletion:
-    " とすべてのチェックインログが削除されます。サイト名を入力して確認してください：",
+  toConfirmDeletion: " とすべてのチェックインログが削除されます。",
+  enterSiteId: "サイトIDを入力",
   enterSiteName: "サイト名を入力",
   confirmDelete: "削除を確認",
+  incorrectSiteId: "サイトIDが正しくありません",
   incorrectSiteName: "サイト名が正しくありません",
+  siteHasBinding:
+    "サイト「{name}」はグループ「{groupName}」にバインドされています。削除する前にバインドを解除してください。",
+  mustUnbindFirst: "先にバインド解除",
 
   // Logs
   logTime: "時刻",

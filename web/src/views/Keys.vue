@@ -201,6 +201,26 @@ function handleNavigateToGroup(groupId: number) {
     handleGroupSelect(targetGroup);
   }
 }
+
+// Handle site navigation, navigate to site management page
+function handleNavigateToSite(_siteId: number) {
+  router.push({ name: "more", query: { tab: "site" } });
+}
+
+// Handle group refresh from GroupInfoCard (e.g., after binding/unbinding)
+function handleGroupRefresh(updatedGroup?: Group) {
+  if (updatedGroup && selectedGroup.value?.id === updatedGroup.id) {
+    // Update selected group with new data from child component
+    selectedGroup.value = updatedGroup;
+    // Also update the group in the list to keep sidebar in sync
+    const index = groups.value.findIndex(g => g.id === updatedGroup.id);
+    if (index !== -1) {
+      groups.value[index] = updatedGroup;
+    }
+  } else {
+    refreshGroupsAndSelect();
+  }
+}
 </script>
 
 <template>
@@ -228,10 +248,11 @@ function handleNavigateToGroup(groupId: number) {
             :group="selectedGroup"
             :groups="groups"
             :sub-groups="subGroups"
-            @refresh="() => refreshGroupsAndSelect()"
+            @refresh="handleGroupRefresh"
             @delete="handleGroupDeleted"
             @copy-success="group => refreshGroupsAndSelect(group.id)"
             @navigate-to-group="handleNavigateToGroup"
+            @navigate-to-site="handleNavigateToSite"
           />
         </div>
 

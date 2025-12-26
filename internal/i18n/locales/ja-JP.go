@@ -114,9 +114,12 @@ var MessagesJaJP = map[string]string{
 
 	// Success messages
 	"success.group_deleted":        "グループと関連キーが正常に削除されました",
-	"success.keys_restored":        "{{.count}}個のキーが復元されました",
-	"success.invalid_keys_cleared": "{{.count}}個の無効なキーがクリアされました",
-	"success.all_keys_cleared":     "{{.count}}個のキーがクリアされました",
+	"success.keys_restored":           "{{.count}}個のキーが復元されました",
+	"success.invalid_keys_cleared":    "{{.count}}個の無効なキーがクリアされました",
+	"success.all_keys_cleared":        "{{.count}}個のキーがクリアされました",
+	"success.group_bound_to_site":     "グループがサイトにバインドされました",
+	"success.group_unbound_from_site": "グループとサイトのバインドが解除されました",
+	"success.site_unbound_from_group": "サイトとグループのバインドが解除されました",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}}が短すぎます（{{.length}}文字）。少なくとも16文字を推奨します",
@@ -230,6 +233,16 @@ var MessagesJaJP = map[string]string{
 	"success.child_group_deleted":                       "子グループが正常に削除されました",
 	"warning.parent_has_child_groups":                   "このグループには {{.count}} 個の子グループがあり、削除されます",
 	"group.child_groups_deleted":                        "{{.count}} 個の子グループも削除されました",
+
+	// Binding related
+	"binding.group_not_found":                "グループが見つかりません",
+	"binding.site_not_found":                 "サイトが見つかりません",
+	"binding.aggregate_cannot_bind":          "集約グループはサイトにバインドできません",
+	"binding.child_group_cannot_bind":        "子グループはサイトにバインドできません",
+	"binding.group_already_bound":            "このグループは既に別のサイトにバインドされています",
+	"binding.site_already_bound":             "このサイトは既に別のグループにバインドされています",
+	"binding.must_unbind_before_delete_group": "グループを削除する前にサイトとのバインドを解除してください",
+	"binding.must_unbind_before_delete_site": "サイトを削除する前にグループとのバインドを解除してください",
 }
 
 func init() {

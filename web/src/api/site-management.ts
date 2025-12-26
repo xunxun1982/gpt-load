@@ -37,6 +37,9 @@ export interface ManagedSiteDTO {
   last_checkin_status: ManagedSiteCheckinStatus;
   last_checkin_message: string;
 
+  bound_group_id?: number;
+  bound_group_name?: string;
+
   created_at: string;
   updated_at: string;
 }
@@ -97,6 +100,12 @@ export const siteManagementApi = {
     return http.delete(`/site-management/sites/${id}`);
   },
 
+  // Copy a site with unique name
+  async copySite(id: number): Promise<ManagedSiteDTO> {
+    const res = await http.post(`/site-management/sites/${id}/copy`);
+    return res.data;
+  },
+
   async checkinSite(id: number): Promise<CheckinResult> {
     const res = await http.post(`/site-management/sites/${id}/checkin`, {}, { hideMessage: true });
     return res.data;
@@ -135,6 +144,27 @@ export const siteManagementApi = {
       params.mode = mode;
     }
     const res = await http.post("/site-management/import", data, { params });
+    return res.data;
+  },
+
+  // Get sites available for binding (sorted by sort order)
+  async listSitesForBinding(): Promise<
+    { id: number; name: string; sort: number; enabled: boolean; bound_group_id?: number }[]
+  > {
+    const res = await http.get("/site-management/sites-for-binding");
+    return res.data || [];
+  },
+
+  // Unbind site from its bound group
+  async unbindSiteFromGroup(siteId: number): Promise<void> {
+    await http.delete(`/site-management/sites/${siteId}/binding`);
+  },
+
+  // Get bound group info for a site
+  async getBoundGroupInfo(
+    siteId: number
+  ): Promise<{ id: number; name: string; display_name: string } | null> {
+    const res = await http.get(`/site-management/sites/${siteId}/bound-group`);
     return res.data;
   },
 };

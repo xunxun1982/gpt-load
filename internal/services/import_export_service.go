@@ -469,6 +469,7 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 	newGroup.ID = 0 // Reset ID for new record
 	newGroup.Name = groupName
 	newGroup.ParentGroupID = nil // Ensure parent group ID is nil for imported groups
+	newGroup.BoundSiteID = nil   // Clear site binding - must be re-established after import
 
 	// Calculate the suffix that was added to the name (if any)
 	var nameSuffix string

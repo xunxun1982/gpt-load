@@ -59,6 +59,8 @@ type ManagedSite struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	BoundGroupID *uint `gorm:"index" json:"bound_group_id"` // Bound group ID for site-group binding
 }
 
 // ManagedSiteCheckinLog is an append-only check-in audit log.

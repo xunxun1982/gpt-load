@@ -39,6 +39,7 @@ type Server struct {
 	ImportExportService        *services.ImportExportService // Added for unified import/export
 	SiteService                *sitemanagement.SiteService
 	AutoCheckinService         *sitemanagement.AutoCheckinService
+	BindingService             *sitemanagement.BindingService
 }
 
 // NewServerParams defines the dependencies for the NewServer constructor.
@@ -63,11 +64,12 @@ type NewServerParams struct {
 	ImportExportService        *services.ImportExportService // Added for unified import/export
 	SiteService                *sitemanagement.SiteService
 	AutoCheckinService         *sitemanagement.AutoCheckinService
+	BindingService             *sitemanagement.BindingService
 }
 
 // NewServer creates a new handler instance with dependencies injected by dig.
 func NewServer(params NewServerParams) *Server {
-	return &Server{
+	s := &Server{
 		DB:                         params.DB,
 		config:                     params.Config,
 		SettingsManager:            params.SettingsManager,
@@ -87,7 +89,23 @@ func NewServer(params NewServerParams) *Server {
 		ImportExportService:        params.ImportExportService,
 		SiteService:                params.SiteService,
 		AutoCheckinService:         params.AutoCheckinService,
+		BindingService:             params.BindingService,
 	}
+
+	// Set binding callbacks to avoid circular dependency between services and sitemanagement packages
+	if params.GroupService != nil && params.BindingService != nil {
+		params.GroupService.CheckGroupCanDeleteCallback = params.BindingService.CheckGroupCanDelete
+		params.GroupService.SyncGroupEnabledToSiteCallback = params.BindingService.SyncGroupEnabledToSite
+		// Set cache invalidation callback so binding changes invalidate group list cache
+		params.BindingService.CacheInvalidationCallback = params.GroupService.InvalidateGroupListCache
+	}
+
+	// Set site service callback for syncing enabled status to bound group
+	if params.SiteService != nil && params.BindingService != nil {
+		params.SiteService.SyncSiteEnabledToGroupCallback = params.BindingService.SyncSiteEnabledToGroup
+	}
+
+	return s
 }
 
 // LoginRequest represents the login request payload
