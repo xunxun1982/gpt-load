@@ -594,6 +594,16 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 		return result
 	}
 
+	// Decrypt user_id (stored encrypted like auth_value)
+	userID, err := s.decryptAuthValue(site.UserID)
+	if err != nil {
+		result.Status = CheckinResultFailed
+		result.Message = "decrypt user_id failed"
+		s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
+		return result
+	}
+	site.UserID = userID
+
 	res, err := provider.CheckIn(ctx, s.client, site, authValue)
 	if err != nil {
 		result.Status = CheckinResultFailed
@@ -768,6 +778,7 @@ func doJSONRequest(ctx context.Context, client *http.Client, method, fullURL str
 		return nil, resp.StatusCode, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Return data along with error so caller can parse error response body
 		return data, resp.StatusCode, fmt.Errorf("http %d", resp.StatusCode)
 	}
 	return data, resp.StatusCode, nil
@@ -792,17 +803,41 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 	headers["Authorization"] = "Bearer " + authValue
 
 	url := strings.TrimRight(site.BaseURL, "/") + "/api/user/check_in"
-	data, _, err := doJSONRequest(ctx, client, http.MethodPost, url, headers, map[string]any{})
-	if err != nil {
-		return providerResult{}, err
-	}
+	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, url, headers, map[string]any{})
 
 	var resp struct {
 		Success bool        `json:"success"`
 		Message string      `json:"message"`
 		Data    interface{} `json:"data"`
 	}
-	_ = json.Unmarshal(data, &resp)
+
+	// Try to parse response body even on error (may contain useful error message)
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &resp)
+	}
+
+	// Handle HTTP errors with parsed response message
+	if err != nil {
+		// Log detailed error info for debugging
+		logrus.WithFields(logrus.Fields{
+			"site_id":     site.ID,
+			"site_name":   site.Name,
+			"status_code": statusCode,
+			"response":    string(data),
+			"resp_msg":    resp.Message,
+		}).Debug("Veloera check-in HTTP error")
+
+		// Check if response body contains "already checked" message
+		if isAlreadyCheckedMessage(resp.Message) {
+			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
+		}
+		// Return error with response message if available, otherwise HTTP status
+		if resp.Message != "" {
+			return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+		}
+		return providerResult{}, fmt.Errorf("http %d", statusCode)
+	}
+
 	if isAlreadyCheckedMessage(resp.Message) {
 		return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
 	}

@@ -517,6 +517,10 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     align: "center",
     titleAlign: "center",
     render: row => {
+      // Show "-" if check-in is not enabled for this site
+      if (!row.checkin_enabled) {
+        return h("span", { style: "color: #999" }, "-");
+      }
       const tag = statusTag(row.last_checkin_status);
       return h(
         NTooltip,
