@@ -3,7 +3,7 @@
  */
 export default {
   title: "サイト一覧",
-  subtitle: "サイトの名前、メモ、説明、URL、自動チェックインを管理",
+  subtitle: "サイトの名前、メモ、説明、URL、チェックインを管理",
 
   // Section titles
   basicInfo: "基本情報",
@@ -34,10 +34,10 @@ export default {
   customCheckinUrl: "サインインAPI",
   customCheckinUrlPlaceholder: "/api/user/checkin",
   customCheckinUrlTooltip: "カスタムチェックインAPIパス、空欄でデフォルト使用",
+  checkinAvailable: "チェックイン可能",
+  checkinAvailableTooltip: "このサイトがチェックインをサポートしているかどうか",
   checkinEnabled: "サインイン",
   checkinEnabledTooltip: "このサイトのチェックイン操作を許可",
-  autoCheckinEnabled: "自動サインイン",
-  autoCheckinEnabledTooltip: "設定した時間帯に自動でチェックイン",
 
   // Auth related
   authType: "認証方式",
@@ -91,59 +91,14 @@ export default {
   logMessage: "メッセージ",
   noLogs: "チェックインログなし",
 
-  // Auto check-in config
-  autoCheckin: "自動チェックイン",
-  autoCheckinConfig: "自動チェックイン設定",
-  config: "設定",
-  globalEnabled: "グローバル有効",
-  globalEnabledTooltip: "無効にすると全ての自動チェックインが停止",
-  windowStart: "開始時刻",
-  windowEnd: "終了時刻",
-  windowTooltip: "この時間帯内でランダムに実行",
-  scheduleMode: "スケジュールモード",
-  scheduleModeRandom: "ランダム",
-  scheduleModeDeterministic: "固定時刻",
-  scheduleModeTooltip: "ランダムモードは時間帯内でランダムに実行",
-  deterministicTime: "固定実行時刻",
-  deterministicTimeTooltip: "毎日この時刻にチェックインを実行",
-
-  // Retry strategy
-  retryStrategy: "リトライ戦略",
-  retryEnabled: "リトライ有効",
-  retryEnabledTooltip: "チェックイン失敗時に自動リトライ",
-  retryInterval: "リトライ間隔（分）",
-  retryIntervalTooltip: "リトライ間の待機時間",
-  retryMaxAttempts: "1日の最大試行回数",
-  retryMaxAttemptsTooltip: "1日あたりの最大リトライ回数",
-
-  // Status display
-  statusRunning: "実行中",
-  statusNext: "次回実行",
-  statusLastRun: "前回実行",
-  statusLastResult: "前回結果",
-  statusPendingRetry: "リトライ待ち",
-  statusAttempts: "本日の試行回数",
-
-  // Summary
-  summaryTotal: "合計サイト",
-  summaryExecuted: "実行済み",
-  summarySuccess: "成功",
-  summaryFailed: "失敗",
-  summarySkipped: "スキップ",
-
   // Statistics
   statsTotal: "合計",
   statsEnabled: "有効",
   statsDisabled: "無効",
-  statsAutoCheckin: "自動チェックイン",
 
   // Filter & Search
   filterCheckinAvailable: "チェックイン可能のみ表示",
   searchPlaceholder: "名前、URL、メモを検索...",
-
-  // Auto Check-in Actions
-  runNow: "今すぐ実行",
-  autoCheckinTriggered: "自動チェックインタスクを開始しました",
 
   // Messages
   checkinSuccess: "チェックイン成功",
@@ -151,7 +106,6 @@ export default {
   siteCreated: "サイトを作成しました",
   siteUpdated: "サイトを更新しました",
   siteDeleted: "サイトを削除しました",
-  configSaved: "設定を保存しました",
 
   // Import/Export
   exportEncrypted: "暗号化エクスポート",
@@ -166,5 +120,4 @@ export default {
   nameDuplicate: "サイト名「{name}」は既に存在します",
   baseUrlRequired: "サイトURLを入力してください",
   invalidBaseUrl: "サイトURLの形式が正しくありません",
-  invalidTimeFormat: "時刻の形式が正しくありません。HH:mm形式で入力してください",
 };

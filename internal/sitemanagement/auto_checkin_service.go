@@ -732,6 +732,8 @@ func resolveProvider(siteType string) checkinProvider {
 }
 
 func buildUserHeaders(userID string) map[string]string {
+	// Multiple header names for compatibility with different third-party API implementations
+	// (New-API, Veloera, VoAPI, One-Hub, Rix-API, Neo-API, etc.)
 	uid := strings.TrimSpace(userID)
 	if uid == "" {
 		return nil

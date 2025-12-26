@@ -27,7 +27,6 @@ export interface ManagedSiteDTO {
 
   checkin_available: boolean;
   checkin_enabled: boolean;
-  auto_checkin_enabled: boolean;
   custom_checkin_url: string;
 
   auth_type: ManagedSiteAuthType;
@@ -40,49 +39,6 @@ export interface ManagedSiteDTO {
 
   created_at: string;
   updated_at: string;
-}
-
-export interface AutoCheckinRetryStrategy {
-  enabled: boolean;
-  interval_minutes: number;
-  max_attempts_per_day: number;
-}
-
-export type AutoCheckinScheduleMode = "random" | "deterministic";
-
-export interface AutoCheckinConfig {
-  global_enabled: boolean;
-  window_start: string;
-  window_end: string;
-  schedule_mode: AutoCheckinScheduleMode;
-  deterministic_time?: string;
-  retry_strategy: AutoCheckinRetryStrategy;
-}
-
-export interface AutoCheckinAttemptsTracker {
-  date: string;
-  attempts: number;
-}
-
-export interface AutoCheckinRunSummary {
-  total_eligible: number;
-  executed: number;
-  success_count: number;
-  failed_count: number;
-  skipped_count: number;
-  needs_retry: boolean;
-}
-
-export type AutoCheckinRunResult = "success" | "partial" | "failed" | "";
-
-export interface AutoCheckinStatus {
-  is_running: boolean;
-  last_run_at?: string;
-  last_run_result?: AutoCheckinRunResult;
-  next_scheduled_at?: string;
-  summary?: AutoCheckinRunSummary;
-  attempts?: AutoCheckinAttemptsTracker;
-  pending_retry: boolean;
 }
 
 export interface CheckinResult {
@@ -113,7 +69,6 @@ export interface CreateManagedSiteRequest {
 
   checkin_available: boolean;
   checkin_enabled: boolean;
-  auto_checkin_enabled: boolean;
   custom_checkin_url: string;
 
   auth_type: ManagedSiteAuthType;
@@ -140,25 +95,6 @@ export const siteManagementApi = {
 
   deleteSite(id: number): Promise<void> {
     return http.delete(`/site-management/sites/${id}`);
-  },
-
-  async getAutoCheckinConfig(): Promise<AutoCheckinConfig> {
-    const res = await http.get("/site-management/auto-checkin/config", { hideMessage: true });
-    return res.data;
-  },
-
-  async updateAutoCheckinConfig(payload: AutoCheckinConfig): Promise<AutoCheckinConfig> {
-    const res = await http.put("/site-management/auto-checkin/config", payload);
-    return res.data;
-  },
-
-  async getAutoCheckinStatus(): Promise<AutoCheckinStatus> {
-    const res = await http.get("/site-management/auto-checkin/status", { hideMessage: true });
-    return res.data;
-  },
-
-  runAutoCheckinNow(): Promise<void> {
-    return http.post("/site-management/auto-checkin/run-now", {}, { hideMessage: true });
   },
 
   async checkinSite(id: number): Promise<CheckinResult> {
@@ -216,7 +152,6 @@ export interface SiteExportInfo {
   checkin_page_url: string;
   checkin_available: boolean;
   checkin_enabled: boolean;
-  auto_checkin_enabled: boolean;
   custom_checkin_url: string;
   auth_type: ManagedSiteAuthType;
   auth_value?: string;
@@ -224,6 +159,5 @@ export interface SiteExportInfo {
 
 export interface SiteImportData {
   version?: string;
-  auto_checkin?: AutoCheckinConfig;
   sites: SiteExportInfo[];
 }

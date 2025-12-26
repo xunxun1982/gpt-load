@@ -3,7 +3,7 @@
  */
 export default {
   title: "Site List",
-  subtitle: "Manage site names, notes, descriptions, URLs and auto check-in",
+  subtitle: "Manage site names, notes, descriptions, URLs and check-in",
 
   // Section titles
   basicInfo: "Basic Info",
@@ -38,9 +38,6 @@ export default {
   checkinAvailableTooltip: "Whether this site supports check-in (system or third-party)",
   checkinEnabled: "Check-in",
   checkinEnabledTooltip: "Allow check-in operations for this site",
-  autoCheckin: "Auto Check-in",
-  autoCheckinEnabled: "Auto Check-in",
-  autoCheckinEnabledTooltip: "Automatically check in within the configured time window",
 
   // Auth related
   authType: "Auth Type",
@@ -94,58 +91,14 @@ export default {
   logMessage: "Message",
   noLogs: "No check-in logs",
 
-  // Auto check-in config
-  autoCheckinConfig: "Auto Check-in Configuration",
-  config: "Configuration",
-  globalEnabled: "Global Enabled",
-  globalEnabledTooltip: "When disabled, all auto check-ins will be paused",
-  windowStart: "Window Start",
-  windowEnd: "Window End",
-  windowTooltip: "Auto check-in will execute randomly within this time range",
-  scheduleMode: "Schedule Mode",
-  scheduleModeRandom: "Random Time",
-  scheduleModeDeterministic: "Fixed Time",
-  scheduleModeTooltip: "Random mode picks a random time within the window",
-  deterministicTime: "Fixed Execution Time",
-  deterministicTimeTooltip: "Execute check-in at this time every day",
-
-  // Retry strategy
-  retryStrategy: "Retry Strategy",
-  retryEnabled: "Enable Retry",
-  retryEnabledTooltip: "Automatically retry on check-in failure",
-  retryInterval: "Retry Interval (min)",
-  retryIntervalTooltip: "Wait time between retries",
-  retryMaxAttempts: "Max Daily Attempts",
-  retryMaxAttemptsTooltip: "Maximum retry attempts per day",
-
-  // Status display
-  statusRunning: "Running",
-  statusNext: "Next Execution",
-  statusLastRun: "Last Run",
-  statusLastResult: "Last Result",
-  statusPendingRetry: "Pending Retry",
-  statusAttempts: "Today's Attempts",
-
-  // Summary
-  summaryTotal: "Total Sites",
-  summaryExecuted: "Executed",
-  summarySuccess: "Success",
-  summaryFailed: "Failed",
-  summarySkipped: "Skipped",
-
   // Statistics
   statsTotal: "Total",
   statsEnabled: "Enabled",
   statsDisabled: "Disabled",
-  statsAutoCheckin: "Auto Check-in",
 
   // Filter & Search
   filterCheckinAvailable: "Show only check-in available",
   searchPlaceholder: "Search name, URL, notes...",
-
-  // Auto Check-in Actions
-  runNow: "Run Now",
-  autoCheckinTriggered: "Auto check-in task triggered",
 
   // Messages
   checkinSuccess: "Check-in successful",
@@ -153,7 +106,6 @@ export default {
   siteCreated: "Site created successfully",
   siteUpdated: "Site updated successfully",
   siteDeleted: "Site deleted successfully",
-  configSaved: "Configuration saved successfully",
 
   // Import/Export
   exportEncrypted: "Export Encrypted",
@@ -168,5 +120,4 @@ export default {
   nameDuplicate: 'Site name "{name}" already exists',
   baseUrlRequired: "Please enter site URL",
   invalidBaseUrl: "Invalid site URL format",
-  invalidTimeFormat: "Invalid time format, please use HH:mm",
 };

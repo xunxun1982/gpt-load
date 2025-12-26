@@ -3,7 +3,7 @@
  */
 export default {
   title: "站点列表",
-  subtitle: "管理公益站点的名称、备注、介绍、链接和自动签到",
+  subtitle: "管理公益站点的名称、备注、介绍、链接和签到",
 
   // Section titles
   basicInfo: "基本信息",
@@ -38,9 +38,6 @@ export default {
   checkinAvailableTooltip: "标记此站点是否支持签到功能（系统内置或第三方）",
   checkinEnabled: "启用签到",
   checkinEnabledTooltip: "是否允许对此站点执行签到操作",
-  autoCheckin: "自动签到",
-  autoCheckinEnabled: "自动签到",
-  autoCheckinEnabledTooltip: "启用后将在设定的时间窗口内自动签到",
 
   // Auth related
   authType: "认证方式",
@@ -93,58 +90,14 @@ export default {
   logMessage: "消息",
   noLogs: "暂无签到日志",
 
-  // Auto check-in config
-  autoCheckinConfig: "自动签到配置",
-  config: "配置",
-  globalEnabled: "全局启用",
-  globalEnabledTooltip: "关闭后所有站点的自动签到都将暂停",
-  windowStart: "时间窗口开始",
-  windowEnd: "时间窗口结束",
-  windowTooltip: "自动签到将在此时间范围内随机执行",
-  scheduleMode: "调度模式",
-  scheduleModeRandom: "随机时间",
-  scheduleModeDeterministic: "固定时间",
-  scheduleModeTooltip: "随机模式会在时间窗口内随机选择执行时间",
-  deterministicTime: "固定执行时间",
-  deterministicTimeTooltip: "每天在此时间执行签到",
-
-  // Retry strategy
-  retryStrategy: "重试策略",
-  retryEnabled: "启用失败重试",
-  retryEnabledTooltip: "签到失败后自动重试",
-  retryInterval: "重试间隔（分钟）",
-  retryIntervalTooltip: "两次重试之间的等待时间",
-  retryMaxAttempts: "每日最大尝试次数",
-  retryMaxAttemptsTooltip: "每天最多重试的次数",
-
-  // Status display
-  statusRunning: "运行中",
-  statusNext: "下次执行",
-  statusLastRun: "上次执行",
-  statusLastResult: "上次结果",
-  statusPendingRetry: "等待重试",
-  statusAttempts: "今日尝试次数",
-
-  // Summary
-  summaryTotal: "总计站点",
-  summaryExecuted: "已执行",
-  summarySuccess: "成功",
-  summaryFailed: "失败",
-  summarySkipped: "跳过",
-
   // Statistics
   statsTotal: "总计",
   statsEnabled: "启用",
   statsDisabled: "禁用",
-  statsAutoCheckin: "自动签到",
 
   // Filter & Search
   filterCheckinAvailable: "只显示可签到",
   searchPlaceholder: "搜索名称、链接、备注...",
-
-  // Auto Check-in Actions
-  runNow: "立即执行",
-  autoCheckinTriggered: "已触发自动签到任务",
 
   // Messages
   checkinSuccess: "签到成功",
@@ -152,7 +105,6 @@ export default {
   siteCreated: "站点创建成功",
   siteUpdated: "站点更新成功",
   siteDeleted: "站点删除成功",
-  configSaved: "配置保存成功",
 
   // Import/Export
   exportEncrypted: "加密导出",
@@ -167,5 +119,4 @@ export default {
   nameDuplicate: "站点名称「{name}」已存在",
   baseUrlRequired: "请输入站点链接",
   invalidBaseUrl: "站点链接格式不正确",
-  invalidTimeFormat: "时间格式不正确，请使用 HH:mm 格式",
 };

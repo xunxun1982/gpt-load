@@ -9,8 +9,6 @@
  */
 import {
   siteManagementApi,
-  type AutoCheckinConfig,
-  type AutoCheckinStatus,
   type CheckinLogDTO,
   type ManagedSiteDTO,
   type ManagedSiteType,
@@ -22,8 +20,6 @@ import {
   NCard,
   NCheckbox,
   NDataTable,
-  NDescriptions,
-  NDescriptionsItem,
   NDivider,
   NForm,
   NFormItem,
@@ -41,14 +37,11 @@ import {
   useMessage,
   type DataTableColumns,
 } from "naive-ui";
-import { computed, h, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, h, onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   OpenOutline,
-  RefreshOutline,
-  SettingsOutline,
   Close,
-  HelpCircleOutline,
   CloudDownloadOutline,
   CloudUploadOutline,
   LogInOutline,
@@ -67,7 +60,6 @@ const searchText = ref("");
 const showSiteModal = ref(false);
 const editingSite = ref<ManagedSiteDTO | null>(null);
 const authValueInput = ref("");
-const statusRefreshTimer = ref<number | null>(null);
 const importLoading = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const deleteConfirmInput = ref("");
@@ -84,22 +76,9 @@ const siteForm = reactive({
   checkin_page_url: "",
   checkin_available: false,
   checkin_enabled: false,
-  auto_checkin_enabled: false,
   custom_checkin_url: "",
   auth_type: "none" as ManagedSiteAuthType,
 });
-
-const showAutoCheckinModal = ref(false);
-const autoCheckinLoading = ref(false);
-const autoCheckinConfig = reactive<AutoCheckinConfig>({
-  global_enabled: false,
-  window_start: "09:00",
-  window_end: "18:00",
-  schedule_mode: "random",
-  deterministic_time: "",
-  retry_strategy: { enabled: false, interval_minutes: 60, max_attempts_per_day: 2 },
-});
-const autoCheckinStatus = ref<AutoCheckinStatus | null>(null);
 
 const showLogsModal = ref(false);
 const logsLoading = ref(false);
@@ -118,19 +97,14 @@ const authTypeOptions = computed(() => [
   { label: t("siteManagement.authTypeNone"), value: "none" },
   { label: t("siteManagement.authTypeAccessToken"), value: "access_token" },
 ]);
-const scheduleModeOptions = computed(() => [
-  { label: t("siteManagement.scheduleModeRandom"), value: "random" },
-  { label: t("siteManagement.scheduleModeDeterministic"), value: "deterministic" },
-]);
 
 // Site statistics computed from local data (no extra API call needed)
 const siteStats = computed(() => {
   const total = sites.value.length;
   const enabled = sites.value.filter(s => s.enabled).length;
   const disabled = total - enabled;
-  const autoCheckinEnabled = sites.value.filter(s => s.auto_checkin_enabled).length;
   const checkinEnabled = sites.value.filter(s => s.checkin_enabled).length;
-  return { total, enabled, disabled, autoCheckinEnabled, checkinEnabled };
+  return { total, enabled, disabled, checkinEnabled };
 });
 
 // Filtered sites based on filter options and search text
@@ -184,7 +158,6 @@ function resetSiteForm() {
     checkin_page_url: "",
     checkin_available: false,
     checkin_enabled: false,
-    auto_checkin_enabled: false,
     custom_checkin_url: "",
     auth_type: "none",
   });
@@ -211,7 +184,6 @@ function openEditSite(site: ManagedSiteDTO) {
     checkin_page_url: site.checkin_page_url,
     checkin_available: site.checkin_available,
     checkin_enabled: site.checkin_enabled,
-    auto_checkin_enabled: site.auto_checkin_enabled,
     custom_checkin_url: site.custom_checkin_url,
     auth_type: site.auth_type,
   });
@@ -228,14 +200,7 @@ async function submitSite() {
     message.warning(t("siteManagement.baseUrlRequired"));
     return;
   }
-  // Enforce: auto_checkin requires checkin to be enabled
-  const checkinEnabled = siteForm.checkin_enabled || siteForm.auto_checkin_enabled;
-  const autoCheckinEnabled = checkinEnabled && siteForm.auto_checkin_enabled;
-  const payload = {
-    ...siteForm,
-    checkin_enabled: checkinEnabled,
-    auto_checkin_enabled: autoCheckinEnabled,
-  };
+  const payload = { ...siteForm };
   try {
     if (editingSite.value) {
       const updatePayload: Record<string, unknown> = { ...payload };
@@ -383,44 +348,6 @@ async function loadLogs() {
   }
 }
 
-async function openAutoCheckin() {
-  showAutoCheckinModal.value = true;
-  await loadAutoCheckin();
-}
-
-async function loadAutoCheckin() {
-  autoCheckinLoading.value = true;
-  try {
-    const [cfg, status] = await Promise.all([
-      siteManagementApi.getAutoCheckinConfig(),
-      siteManagementApi.getAutoCheckinStatus(),
-    ]);
-    Object.assign(autoCheckinConfig, cfg);
-    autoCheckinStatus.value = status;
-  } finally {
-    autoCheckinLoading.value = false;
-  }
-}
-
-async function saveAutoCheckinConfig() {
-  try {
-    await siteManagementApi.updateAutoCheckinConfig({
-      ...autoCheckinConfig,
-      deterministic_time: autoCheckinConfig.deterministic_time || "",
-    });
-    message.success(t("siteManagement.configSaved"));
-    await loadAutoCheckin();
-  } catch (_) {
-    /* handled */
-  }
-}
-
-async function runAutoCheckinNow() {
-  await siteManagementApi.runAutoCheckinNow();
-  message.info(t("siteManagement.autoCheckinTriggered"));
-  await loadAutoCheckin();
-}
-
 function formatDateTime(dateStr?: string) {
   if (!dateStr) {
     return "-";
@@ -502,17 +429,6 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     render: row =>
       h(NTag, { size: "small", type: row.checkin_available ? "success" : "default" }, () =>
         row.checkin_available ? t("common.yes") : t("common.no")
-      ),
-  },
-  {
-    title: t("siteManagement.autoCheckin"),
-    key: "auto_checkin_enabled",
-    width: 75,
-    align: "center",
-    titleAlign: "center",
-    render: row =>
-      h(NTag, { size: "small", type: row.auto_checkin_enabled ? "success" : "default" }, () =>
-        row.auto_checkin_enabled ? t("common.yes") : t("common.no")
       ),
   },
   {
@@ -698,30 +614,6 @@ async function handleFileChange(event: Event) {
 
 onMounted(() => {
   loadSites();
-  // Note: Timer runs continuously but only fetches when modal is open.
-  // AI suggested tying timer lifecycle to modal visibility, but rejected because:
-  // 1. Current check is minimal overhead (just a boolean check every 30s)
-  // 2. Adding watcher increases complexity and potential race conditions
-  // 3. KISS principle - simpler code is more reliable
-  statusRefreshTimer.value = window.setInterval(() => {
-    if (showAutoCheckinModal.value) {
-      siteManagementApi
-        .getAutoCheckinStatus()
-        .then(s => {
-          autoCheckinStatus.value = s;
-        })
-        // Empty catch: follows project convention - centralized error handling in HTTP utility.
-        // AI suggested adding console.warn here, but rejected because:
-        // 1. Background polling failures are expected (network fluctuations)
-        // 2. Adding logs would create noise in production
-        .catch(() => {});
-    }
-  }, 30000);
-});
-onUnmounted(() => {
-  if (statusRefreshTimer.value) {
-    clearInterval(statusRefreshTimer.value);
-  }
 });
 </script>
 
@@ -750,14 +642,6 @@ onUnmounted(() => {
           <template #icon><n-icon :component="CloudUploadOutline" /></template>
           {{ t("common.import") }}
         </n-button>
-        <n-button size="small" secondary @click="openAutoCheckin">
-          <template #icon><n-icon :component="SettingsOutline" /></template>
-          {{ t("siteManagement.autoCheckin") }}
-        </n-button>
-        <n-button size="small" secondary @click="loadSites">
-          <template #icon><n-icon :component="RefreshOutline" /></template>
-          {{ t("common.refresh") }}
-        </n-button>
         <n-button size="small" type="primary" @click="openCreateSite">
           {{ t("common.add") }}
         </n-button>
@@ -778,10 +662,6 @@ onUnmounted(() => {
         <span class="stat-item">
           <span class="stat-label">{{ t("siteManagement.statsDisabled") }}:</span>
           <span class="stat-value stat-warning">{{ siteStats.disabled }}</span>
-        </span>
-        <span class="stat-item">
-          <span class="stat-label">{{ t("siteManagement.statsAutoCheckin") }}:</span>
-          <span class="stat-value stat-info">{{ siteStats.autoCheckinEnabled }}</span>
         </span>
       </n-space>
       <n-input
@@ -891,12 +771,6 @@ onUnmounted(() => {
               <n-form-item :label="t('siteManagement.checkinEnabled')" class="form-item-switch">
                 <n-switch v-model:value="siteForm.checkin_enabled" />
               </n-form-item>
-              <n-form-item :label="t('siteManagement.autoCheckinEnabled')" class="form-item-switch">
-                <n-switch
-                  v-model:value="siteForm.auto_checkin_enabled"
-                  :disabled="!siteForm.checkin_enabled"
-                />
-              </n-form-item>
             </div>
           </div>
           <div class="form-section">
@@ -933,269 +807,6 @@ onUnmounted(() => {
             </n-button>
           </n-space>
         </n-form>
-      </n-card>
-    </n-modal>
-
-    <!-- Auto Check-in Modal -->
-    <n-modal v-model:show="showAutoCheckinModal" class="auto-checkin-modal">
-      <n-card
-        class="auto-checkin-card"
-        :title="t('siteManagement.autoCheckinConfig')"
-        :bordered="false"
-        size="medium"
-      >
-        <template #header-extra>
-          <n-button quaternary circle size="small" @click="showAutoCheckinModal = false">
-            <template #icon><n-icon :component="Close" /></template>
-          </n-button>
-        </template>
-        <div class="auto-checkin-content">
-          <div class="form-section">
-            <div class="section-header">
-              <h4 class="section-title">{{ t("siteManagement.status") }}</h4>
-              <n-space size="small">
-                <n-button
-                  size="small"
-                  secondary
-                  :loading="autoCheckinLoading"
-                  @click="loadAutoCheckin"
-                >
-                  {{ t("common.refresh") }}
-                </n-button>
-                <n-button
-                  size="small"
-                  type="primary"
-                  :loading="autoCheckinLoading"
-                  @click="runAutoCheckinNow"
-                >
-                  {{ t("siteManagement.runNow") }}
-                </n-button>
-              </n-space>
-            </div>
-            <n-descriptions
-              v-if="autoCheckinStatus"
-              size="small"
-              :columns="2"
-              bordered
-              label-placement="left"
-            >
-              <n-descriptions-item :label="t('siteManagement.statusRunning')">
-                <n-tag :type="autoCheckinStatus.is_running ? 'success' : 'default'" size="small">
-                  {{ autoCheckinStatus.is_running ? t("common.yes") : t("common.no") }}
-                </n-tag>
-              </n-descriptions-item>
-              <n-descriptions-item :label="t('siteManagement.statusNext')">
-                {{ formatDateTime(autoCheckinStatus.next_scheduled_at) }}
-              </n-descriptions-item>
-              <n-descriptions-item :label="t('siteManagement.statusLastRun')">
-                {{ formatDateTime(autoCheckinStatus.last_run_at) }}
-              </n-descriptions-item>
-              <n-descriptions-item :label="t('siteManagement.statusLastResult')">
-                <n-tag
-                  v-if="autoCheckinStatus.last_run_result"
-                  :type="
-                    autoCheckinStatus.last_run_result === 'success'
-                      ? 'success'
-                      : autoCheckinStatus.last_run_result === 'partial'
-                        ? 'warning'
-                        : 'error'
-                  "
-                  size="small"
-                >
-                  {{ autoCheckinStatus.last_run_result }}
-                </n-tag>
-                <span v-else>-</span>
-              </n-descriptions-item>
-            </n-descriptions>
-            <n-descriptions
-              v-if="autoCheckinStatus?.summary"
-              size="small"
-              :columns="3"
-              bordered
-              label-placement="left"
-              style="margin-top: 8px"
-            >
-              <n-descriptions-item :label="t('siteManagement.summaryTotal')">
-                {{ autoCheckinStatus.summary.total_eligible }}
-              </n-descriptions-item>
-              <n-descriptions-item :label="t('siteManagement.summarySuccess')">
-                {{ autoCheckinStatus.summary.success_count }}
-              </n-descriptions-item>
-              <n-descriptions-item :label="t('siteManagement.summaryFailed')">
-                {{ autoCheckinStatus.summary.failed_count }}
-              </n-descriptions-item>
-            </n-descriptions>
-          </div>
-          <div class="form-section">
-            <h4 class="section-title">{{ t("siteManagement.config") }}</h4>
-            <n-form
-              label-placement="left"
-              label-width="auto"
-              size="small"
-              class="auto-checkin-form"
-            >
-              <div class="form-row">
-                <n-form-item class="form-item-half">
-                  <template #label>
-                    <span class="form-label-with-tooltip">
-                      {{ t("siteManagement.globalEnabled") }}
-                      <n-tooltip trigger="hover">
-                        <template #trigger>
-                          <n-icon :component="HelpCircleOutline" class="help-icon" />
-                        </template>
-                        {{ t("siteManagement.globalEnabledTooltip") }}
-                      </n-tooltip>
-                    </span>
-                  </template>
-                  <n-switch v-model:value="autoCheckinConfig.global_enabled" />
-                </n-form-item>
-                <n-form-item class="form-item-half">
-                  <template #label>
-                    <span class="form-label-with-tooltip">
-                      {{ t("siteManagement.scheduleMode") }}
-                      <n-tooltip trigger="hover">
-                        <template #trigger>
-                          <n-icon :component="HelpCircleOutline" class="help-icon" />
-                        </template>
-                        {{ t("siteManagement.scheduleModeTooltip") }}
-                      </n-tooltip>
-                    </span>
-                  </template>
-                  <n-select
-                    v-model:value="autoCheckinConfig.schedule_mode"
-                    :options="scheduleModeOptions"
-                    style="width: 140px"
-                  />
-                </n-form-item>
-              </div>
-              <div class="form-row">
-                <n-form-item class="form-item-third">
-                  <template #label>
-                    <span class="form-label-with-tooltip">
-                      {{ t("siteManagement.windowStart") }}
-                      <n-tooltip trigger="hover">
-                        <template #trigger>
-                          <n-icon :component="HelpCircleOutline" class="help-icon" />
-                        </template>
-                        {{ t("siteManagement.windowTooltip") }}
-                      </n-tooltip>
-                    </span>
-                  </template>
-                  <n-input
-                    v-model:value="autoCheckinConfig.window_start"
-                    placeholder="09:00"
-                    style="width: 100px"
-                  />
-                </n-form-item>
-                <n-form-item :label="t('siteManagement.windowEnd')" class="form-item-third">
-                  <n-input
-                    v-model:value="autoCheckinConfig.window_end"
-                    placeholder="18:00"
-                    style="width: 100px"
-                  />
-                </n-form-item>
-                <n-form-item
-                  v-if="autoCheckinConfig.schedule_mode === 'deterministic'"
-                  class="form-item-third"
-                >
-                  <template #label>
-                    <span class="form-label-with-tooltip">
-                      {{ t("siteManagement.deterministicTime") }}
-                      <n-tooltip trigger="hover">
-                        <template #trigger>
-                          <n-icon :component="HelpCircleOutline" class="help-icon" />
-                        </template>
-                        {{ t("siteManagement.deterministicTimeTooltip") }}
-                      </n-tooltip>
-                    </span>
-                  </template>
-                  <n-input
-                    v-model:value="autoCheckinConfig.deterministic_time"
-                    placeholder="10:30"
-                    style="width: 100px"
-                  />
-                </n-form-item>
-              </div>
-            </n-form>
-          </div>
-          <div class="form-section">
-            <h4 class="section-title">{{ t("siteManagement.retryStrategy") }}</h4>
-            <n-form
-              label-placement="left"
-              label-width="auto"
-              size="small"
-              class="auto-checkin-form"
-            >
-              <div class="form-row">
-                <n-form-item class="form-item-third">
-                  <template #label>
-                    <span class="form-label-with-tooltip">
-                      {{ t("siteManagement.retryEnabled") }}
-                      <n-tooltip trigger="hover">
-                        <template #trigger>
-                          <n-icon :component="HelpCircleOutline" class="help-icon" />
-                        </template>
-                        {{ t("siteManagement.retryEnabledTooltip") }}
-                      </n-tooltip>
-                    </span>
-                  </template>
-                  <n-switch v-model:value="autoCheckinConfig.retry_strategy.enabled" />
-                </n-form-item>
-                <n-form-item class="form-item-third">
-                  <template #label>
-                    <span class="form-label-with-tooltip">
-                      {{ t("siteManagement.retryInterval") }}
-                      <n-tooltip trigger="hover">
-                        <template #trigger>
-                          <n-icon :component="HelpCircleOutline" class="help-icon" />
-                        </template>
-                        {{ t("siteManagement.retryIntervalTooltip") }}
-                      </n-tooltip>
-                    </span>
-                  </template>
-                  <n-input-number
-                    v-model:value="autoCheckinConfig.retry_strategy.interval_minutes"
-                    :min="1"
-                    :max="1440"
-                    style="width: 100px"
-                  />
-                </n-form-item>
-                <n-form-item class="form-item-third">
-                  <template #label>
-                    <span class="form-label-with-tooltip">
-                      {{ t("siteManagement.retryMaxAttempts") }}
-                      <n-tooltip trigger="hover">
-                        <template #trigger>
-                          <n-icon :component="HelpCircleOutline" class="help-icon" />
-                        </template>
-                        {{ t("siteManagement.retryMaxAttemptsTooltip") }}
-                      </n-tooltip>
-                    </span>
-                  </template>
-                  <n-input-number
-                    v-model:value="autoCheckinConfig.retry_strategy.max_attempts_per_day"
-                    :min="1"
-                    :max="10"
-                    style="width: 100px"
-                  />
-                </n-form-item>
-              </div>
-            </n-form>
-          </div>
-          <n-space justify="end" size="small" style="margin-top: 16px">
-            <n-button size="small" secondary @click="showAutoCheckinModal = false">
-              {{ t("common.close") }}
-            </n-button>
-            <n-button
-              size="small"
-              type="primary"
-              :loading="autoCheckinLoading"
-              @click="saveAutoCheckinConfig"
-            >
-              {{ t("common.save") }}
-            </n-button>
-          </n-space>
-        </div>
       </n-card>
     </n-modal>
 
@@ -1328,12 +939,10 @@ onUnmounted(() => {
   font-weight: 500;
 }
 .site-form-modal,
-.auto-checkin-modal,
 .logs-modal {
   width: 720px;
 }
 .site-form-card,
-.auto-checkin-card,
 .logs-card {
   max-height: 85vh;
   overflow: hidden;
@@ -1341,19 +950,16 @@ onUnmounted(() => {
   flex-direction: column;
 }
 .site-form-card :deep(.n-card__content),
-.auto-checkin-card :deep(.n-card__content),
 .logs-card :deep(.n-card__content) {
   overflow-y: auto;
   overflow-x: hidden;
   max-height: calc(85vh - 60px);
   padding-right: 16px;
 }
-.site-form-card :deep(.n-card__content)::-webkit-scrollbar,
-.auto-checkin-card :deep(.n-card__content)::-webkit-scrollbar {
+.site-form-card :deep(.n-card__content)::-webkit-scrollbar {
   width: 5px;
 }
-.site-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb,
-.auto-checkin-card :deep(.n-card__content)::-webkit-scrollbar-thumb {
+.site-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.15);
   border-radius: 3px;
 }
@@ -1429,13 +1035,11 @@ onUnmounted(() => {
   width: 70px !important;
   flex-shrink: 0;
 }
-.site-form :deep(.n-form-item),
-.auto-checkin-form :deep(.n-form-item) {
+.site-form :deep(.n-form-item) {
   margin-bottom: 6px !important;
   --n-feedback-height: 0 !important;
 }
-.site-form :deep(.n-form-item-label),
-.auto-checkin-form :deep(.n-form-item-label) {
+.site-form :deep(.n-form-item-label) {
   font-weight: 500;
   font-size: 13px;
   color: var(--text-primary);
@@ -1444,17 +1048,14 @@ onUnmounted(() => {
   height: 28px;
   line-height: 28px;
 }
-.site-form :deep(.n-input),
-.auto-checkin-form :deep(.n-input) {
+.site-form :deep(.n-input) {
   --n-border-radius: 6px;
   --n-height: 28px;
 }
-.site-form :deep(.n-select),
-.auto-checkin-form :deep(.n-select) {
+.site-form :deep(.n-select) {
   --n-border-radius: 6px;
 }
-.site-form :deep(.n-input-number),
-.auto-checkin-form :deep(.n-input-number) {
+.site-form :deep(.n-input-number) {
   --n-border-radius: 6px;
   --n-height: 28px;
 }
@@ -1475,18 +1076,8 @@ onUnmounted(() => {
 .help-icon:hover {
   color: var(--primary-color);
 }
-.auto-checkin-content {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.auto-checkin-content :deep(.n-descriptions) {
-  --n-th-padding: 8px 12px;
-  --n-td-padding: 8px 12px;
-}
 @media (max-width: 720px) {
   .site-form-modal,
-  .auto-checkin-modal,
   .logs-modal {
     width: 95vw !important;
   }
