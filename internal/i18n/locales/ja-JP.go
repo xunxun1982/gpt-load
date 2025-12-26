@@ -76,7 +76,7 @@ var MessagesJaJP = map[string]string{
 	"validation.cc_support_cannot_disable_used_by_anthropic": "CCサポートを無効化できません。このOpenAIグループは現在次のAnthropic集約グループで使用されています：{{.groups}}。まずこれらの集約グループからこのグループを削除してから、CCサポートを無効化してください",
 	"validation.standard_group_requires_upstreams_testmodel": "標準グループへの変換にはアップストリームサーバーとテストモデルの提供が必要です",
 	"validation.invalid_model_mapping":                       "モデルマッピング形式が無効です：{{.error}}",
-	"validation.aggregate_no_model_redirect":                 "集約グループはモデル��ダイレクトルールをサポートしていません",
+	"validation.aggregate_no_model_redirect":                 "集約グループはモデルリダイレクトルールをサポートしていません",
 	"validation.invalid_model_redirect":                      "無効なモデルリダイレクトルール：{{.error}}",
 	"validation.invalid_param_overrides":                     "パラメータ上書きフィールド {{.field}} の型が無効です：期待 {{.expected}}、実際 {{.got}}",
 

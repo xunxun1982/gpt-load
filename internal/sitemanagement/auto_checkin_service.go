@@ -896,6 +896,10 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 	}
 
 	headers := buildUserHeaders(site.UserID)
+	if headers == nil {
+		// Defensive: allocate map if buildUserHeaders returns nil (empty userID)
+		headers = make(map[string]string)
+	}
 	headers["Authorization"] = "Bearer " + authValue
 
 	baseURL := extractBaseURL(site.BaseURL)

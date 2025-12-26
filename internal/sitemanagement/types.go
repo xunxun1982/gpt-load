@@ -47,16 +47,22 @@ const (
 	AutoCheckinScheduleModeDeterministic = "deterministic"
 )
 
+// AutoCheckinConfig holds the auto check-in scheduling configuration.
 type AutoCheckinConfig struct {
-	GlobalEnabled     bool                     `json:"global_enabled"`
-	WindowStart       string                   `json:"window_start"`
-	WindowEnd         string                   `json:"window_end"`
-	ScheduleMode      string                   `json:"schedule_mode"`
+	GlobalEnabled bool `json:"global_enabled"`
+	// WindowStart is the start time in "HH:MM" format (24-hour, local time).
+	WindowStart string `json:"window_start"`
+	// WindowEnd is the end time in "HH:MM" format (24-hour, local time).
+	WindowEnd    string `json:"window_end"`
+	ScheduleMode string `json:"schedule_mode"`
+	// DeterministicTime is the fixed check-in time in "HH:MM" format when ScheduleMode is "deterministic".
 	DeterministicTime string                   `json:"deterministic_time,omitempty"`
 	RetryStrategy     AutoCheckinRetryStrategy `json:"retry_strategy"`
 }
 
+// AutoCheckinAttemptsTracker tracks daily check-in attempts.
 type AutoCheckinAttemptsTracker struct {
+	// Date is in "YYYY-MM-DD" format (local time).
 	Date     string `json:"date"`
 	Attempts int    `json:"attempts"`
 }

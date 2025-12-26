@@ -961,7 +961,7 @@ function handleNavigateToSite(siteId: number) {
           </n-collapse>
           <!-- Site binding selector (only for standard groups, not child groups) -->
           <site-binding-selector
-            v-if="!isAggregateGroup && !isChildGroup"
+            v-if="group && !isAggregateGroup && !isChildGroup"
             class="site-binding-in-header"
             :group-id="group?.id"
             :bound-site-id="group?.bound_site_id"

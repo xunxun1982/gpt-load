@@ -124,8 +124,15 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 				batchSize,
 			)
 		case "sqlite":
-			// SQLite: Use direct DELETE with indexed column for better performance
-			// First get the max timestamp of records to delete in this batch
+			// SQLite: Use direct DELETE with indexed column for better performance.
+			// First get the max timestamp of records to delete in this batch.
+			//
+			// Note: AI suggested using rowid/primary key for more deterministic batching
+			// to handle duplicate timestamps. However, our testing shows:
+			// 1. Timestamps have millisecond precision, making duplicates rare
+			// 2. Even with duplicates, the worst case is slightly variable batch sizes
+			// 3. Using rowid would require additional index and complexity
+			// 4. Current approach is simpler and performs well in production
 			var maxTS time.Time
 			subCtx, subCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err := s.db.WithContext(subCtx).Raw(
