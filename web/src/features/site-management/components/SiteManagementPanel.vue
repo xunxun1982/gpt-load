@@ -101,6 +101,7 @@ const siteTypeOptions = computed(() => [
   { label: t("siteManagement.siteTypeOneHub"), value: "one-hub" },
   { label: t("siteManagement.siteTypeDoneHub"), value: "done-hub" },
   { label: t("siteManagement.siteTypeWong"), value: "wong-gongyi" },
+  { label: t("siteManagement.siteTypeBrand"), value: "brand" },
   { label: t("siteManagement.siteTypeOther"), value: "unknown" },
 ]);
 const authTypeOptions = computed(() => [

@@ -51,6 +51,7 @@ export default {
 
   // Site types
   siteTypeOther: "その他",
+  siteTypeBrand: "ブランド",
   siteTypeNewApi: "New API",
   siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",

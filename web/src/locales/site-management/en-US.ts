@@ -51,6 +51,7 @@ export default {
 
   // Site types
   siteTypeOther: "Other",
+  siteTypeBrand: "Brand",
   siteTypeNewApi: "New API",
   siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
