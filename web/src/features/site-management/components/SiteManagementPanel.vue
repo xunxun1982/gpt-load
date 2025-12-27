@@ -530,6 +530,8 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("siteManagement.baseUrl"),
     key: "base_url",
+    // minWidth reduced to make room for notes column; column auto-expands as needed
+    // and ellipsis tooltip ensures full URL is accessible on hover
     minWidth: 40,
     titleAlign: "center",
     ellipsis: { tooltip: true },
