@@ -7,7 +7,8 @@ export type ManagedSiteType =
   | "Veloera"
   | "wong-gongyi"
   | "one-hub"
-  | "done-hub";
+  | "done-hub"
+  | "brand";
 export type ManagedSiteAuthType = "none" | "access_token";
 
 export type ManagedSiteCheckinStatus = "success" | "failed" | "skipped" | "already_checked" | "";

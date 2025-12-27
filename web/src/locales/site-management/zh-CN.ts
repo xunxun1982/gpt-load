@@ -51,6 +51,7 @@ export default {
 
   // Site types
   siteTypeOther: "其他",
+  siteTypeBrand: "品牌",
   siteTypeNewApi: "New API",
   siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
@@ -97,6 +98,7 @@ export default {
   statsTotal: "总计",
   statsEnabled: "启用",
   statsDisabled: "禁用",
+  statsCheckinAvailable: "可签到",
 
   // Filter & Search
   filterCheckinAvailable: "只显示可签到",

@@ -101,6 +101,7 @@ const siteTypeOptions = computed(() => [
   { label: t("siteManagement.siteTypeOneHub"), value: "one-hub" },
   { label: t("siteManagement.siteTypeDoneHub"), value: "done-hub" },
   { label: t("siteManagement.siteTypeWong"), value: "wong-gongyi" },
+  { label: t("siteManagement.siteTypeBrand"), value: "brand" },
   { label: t("siteManagement.siteTypeOther"), value: "unknown" },
 ]);
 const authTypeOptions = computed(() => [
@@ -113,8 +114,9 @@ const siteStats = computed(() => {
   const total = sites.value.length;
   const enabled = sites.value.filter(s => s.enabled).length;
   const disabled = total - enabled;
+  const checkinAvailable = sites.value.filter(s => s.checkin_available).length;
   const checkinEnabled = sites.value.filter(s => s.checkin_enabled).length;
-  return { total, enabled, disabled, checkinEnabled };
+  return { total, enabled, disabled, checkinAvailable, checkinEnabled };
 });
 
 // Filtered sites based on filter options and search text
@@ -334,6 +336,46 @@ function getSiteTypeLabel(type: string) {
   return siteTypeOptions.value.find(o => o.value === type)?.label || type;
 }
 
+/**
+ * Truncate notes to specified number of display characters.
+ * Counts CJK characters as 1, ASCII characters as 0.5 for display width calculation.
+ * Note: This implementation handles common CJK text well. For emoji support,
+ * a library like string-width could be used, but it's overkill for typical site notes.
+ * The tooltip always shows full content, so minor width miscalculation is acceptable.
+ * @param text - The text to truncate
+ * @param maxChars - Maximum number of CJK-equivalent characters to display
+ * @returns Truncated text with ellipsis if needed
+ */
+function truncateNotes(text: string, maxChars: number): string {
+  if (!text || maxChars <= 0) {
+    return "";
+  }
+  let displayWidth = 0;
+  let endIndex = 0;
+  for (let i = 0; i < text.length; i++) {
+    const charCode = text.charCodeAt(i);
+    // CJK characters (Chinese, Japanese, Korean) and full-width characters
+    const isCJK =
+      (charCode >= 0x4e00 && charCode <= 0x9fff) || // CJK Unified Ideographs
+      (charCode >= 0x3000 && charCode <= 0x303f) || // CJK Punctuation
+      (charCode >= 0xff00 && charCode <= 0xffef) || // Full-width forms
+      (charCode >= 0x3040 && charCode <= 0x309f) || // Hiragana
+      (charCode >= 0x30a0 && charCode <= 0x30ff) || // Katakana
+      (charCode >= 0xac00 && charCode <= 0xd7af); // Hangul Syllables (Korean)
+    displayWidth += isCJK ? 1 : 0.5;
+    if (displayWidth > maxChars) {
+      return `${text.slice(0, endIndex)}...`;
+    }
+    endIndex = i + 1;
+  }
+  return text;
+}
+
+// Row class name for disabled sites (grayed out style)
+function rowClassName(row: ManagedSiteDTO) {
+  return row.enabled ? "" : "site-row-disabled";
+}
+
 async function checkinSite(site: ManagedSiteDTO) {
   try {
     const res = await siteManagementApi.checkinSite(site.id);
@@ -412,10 +454,9 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     key: "name",
     width: 140,
     titleAlign: "center",
-    ellipsis: { tooltip: true },
     render: row =>
       h("div", { class: "site-name-cell" }, [
-        h("div", { style: "display: flex; align-items: center; gap: 4px;" }, [
+        h("div", { class: "site-name-row" }, [
           // Show bound group icon before site name if bound to a group
           row.bound_group_id
             ? h(
@@ -443,17 +484,55 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
                 }
               )
             : null,
-          h("span", { class: "site-name" }, row.name),
+          // Site name with tooltip on overflow
+          h(
+            NTooltip,
+            {
+              trigger: "hover",
+              placement: "top-end",
+              style: { maxWidth: "300px" },
+            },
+            {
+              trigger: () => h("span", { class: "site-name-text" }, row.name),
+              default: () => row.name,
+            }
+          ),
         ]),
-        row.notes
-          ? h(NText, { depth: 3, style: "font-size: 12px; display: block;" }, () => row.notes)
-          : null,
       ]),
+  },
+  {
+    title: t("siteManagement.notes"),
+    key: "notes",
+    width: 90,
+    align: "center",
+    titleAlign: "center",
+    render: row => {
+      if (!row.notes) {
+        return h("span", { style: "color: var(--n-text-color-disabled)" }, "-");
+      }
+      // Truncate to 4 Chinese characters (approximately 8 chars for mixed content)
+      const truncated = truncateNotes(row.notes, 4);
+      // Always show tooltip with full notes content
+      return h(
+        NTooltip,
+        {
+          trigger: "hover",
+          placement: "top-end",
+          style: { maxWidth: "300px" },
+        },
+        {
+          trigger: () => h("span", { class: "site-notes-cell" }, truncated),
+          default: () => row.notes,
+        }
+      );
+    },
   },
   {
     title: t("siteManagement.baseUrl"),
     key: "base_url",
-    minWidth: 60,
+    // minWidth reduced to make room for notes column; column auto-expands as needed
+    // and ellipsis tooltip ensures full URL is accessible on hover
+    minWidth: 40,
     titleAlign: "center",
     ellipsis: { tooltip: true },
     render: row =>
@@ -480,7 +559,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("siteManagement.enabled"),
     key: "enabled",
-    width: 50,
+    width: 60,
     align: "center",
     titleAlign: "center",
     render: row =>
@@ -831,6 +910,10 @@ onMounted(() => {
           <span class="stat-label">{{ t("siteManagement.statsDisabled") }}:</span>
           <span class="stat-value stat-warning">{{ siteStats.disabled }}</span>
         </span>
+        <span class="stat-item">
+          <span class="stat-label">{{ t("siteManagement.statsCheckinAvailable") }}:</span>
+          <span class="stat-value stat-info">{{ siteStats.checkinAvailable }}</span>
+        </span>
       </n-space>
       <n-input
         v-model:value="searchText"
@@ -855,6 +938,7 @@ onMounted(() => {
         :single-line="false"
         :max-height="'calc(100vh - 295px)'"
         :scroll-x="900"
+        :row-class-name="rowClassName"
       />
     </div>
 
@@ -1014,6 +1098,15 @@ onMounted(() => {
   flex-direction: column;
   gap: 6px;
 }
+
+/* Disabled site row style - grayed out appearance */
+.site-management :deep(.site-row-disabled) {
+  opacity: 0.5;
+  background-color: var(--n-color-hover) !important;
+}
+.site-management :deep(.site-row-disabled:hover) {
+  opacity: 0.65;
+}
 /* Table wrapper for keyboard navigation support */
 .site-table-wrapper {
   outline: none;
@@ -1102,9 +1195,30 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
-.site-name {
+.site-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.site-name-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
+}
+.site-notes-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--n-text-color-2);
 }
 .site-form-modal,
 .logs-modal {

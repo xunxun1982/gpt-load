@@ -51,6 +51,7 @@ export default {
 
   // Site types
   siteTypeOther: "その他",
+  siteTypeBrand: "ブランド",
   siteTypeNewApi: "New API",
   siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
@@ -99,6 +100,7 @@ export default {
   statsTotal: "合計",
   statsEnabled: "有効",
   statsDisabled: "無効",
+  statsCheckinAvailable: "チェックイン可",
 
   // Filter & Search
   filterCheckinAvailable: "チェックイン可能のみ表示",

@@ -726,6 +726,8 @@ func resolveProvider(siteType string) checkinProvider {
 	case SiteTypeWongGongyi:
 		return wongProvider{}
 	// Note: SiteTypeAnyrouter removed - it only supported cookie-based auth
+	// Note: SiteTypeBrand, SiteTypeNewAPI, SiteTypeOneHub, SiteTypeDoneHub, SiteTypeUnknown
+	// do not have dedicated checkin providers - they use generic/manual checkin or none
 	default:
 		return nil
 	}

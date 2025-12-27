@@ -51,6 +51,7 @@ export default {
 
   // Site types
   siteTypeOther: "Other",
+  siteTypeBrand: "Brand",
   siteTypeNewApi: "New API",
   siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
@@ -99,6 +100,7 @@ export default {
   statsTotal: "Total",
   statsEnabled: "Enabled",
   statsDisabled: "Disabled",
+  statsCheckinAvailable: "Check-in",
 
   // Filter & Search
   filterCheckinAvailable: "Show only check-in available",
