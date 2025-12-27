@@ -98,6 +98,7 @@ export default {
   statsTotal: "总计",
   statsEnabled: "启用",
   statsDisabled: "禁用",
+  statsCheckinAvailable: "可签到",
 
   // Filter & Search
   filterCheckinAvailable: "只显示可签到",

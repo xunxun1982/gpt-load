@@ -100,6 +100,7 @@ export default {
   statsTotal: "合計",
   statsEnabled: "有効",
   statsDisabled: "無効",
+  statsCheckinAvailable: "チェックイン可",
 
   // Filter & Search
   filterCheckinAvailable: "チェックイン可能のみ表示",

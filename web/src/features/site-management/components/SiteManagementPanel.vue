@@ -114,8 +114,9 @@ const siteStats = computed(() => {
   const total = sites.value.length;
   const enabled = sites.value.filter(s => s.enabled).length;
   const disabled = total - enabled;
+  const checkinAvailable = sites.value.filter(s => s.checkin_available).length;
   const checkinEnabled = sites.value.filter(s => s.checkin_enabled).length;
-  return { total, enabled, disabled, checkinEnabled };
+  return { total, enabled, disabled, checkinAvailable, checkinEnabled };
 });
 
 // Filtered sites based on filter options and search text
@@ -338,6 +339,9 @@ function getSiteTypeLabel(type: string) {
 /**
  * Truncate notes to specified number of display characters.
  * Counts CJK characters as 1, ASCII characters as 0.5 for display width calculation.
+ * Note: This implementation handles common CJK text well. For emoji support,
+ * a library like string-width could be used, but it's overkill for typical site notes.
+ * The tooltip always shows full content, so minor width miscalculation is acceptable.
  * @param text - The text to truncate
  * @param maxChars - Maximum number of CJK-equivalent characters to display
  * @returns Truncated text with ellipsis if needed
@@ -903,6 +907,10 @@ onMounted(() => {
         <span class="stat-item">
           <span class="stat-label">{{ t("siteManagement.statsDisabled") }}:</span>
           <span class="stat-value stat-warning">{{ siteStats.disabled }}</span>
+        </span>
+        <span class="stat-item">
+          <span class="stat-label">{{ t("siteManagement.statsCheckinAvailable") }}:</span>
+          <span class="stat-value stat-info">{{ siteStats.checkinAvailable }}</span>
         </span>
       </n-space>
       <n-input

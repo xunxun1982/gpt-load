@@ -100,6 +100,7 @@ export default {
   statsTotal: "Total",
   statsEnabled: "Enabled",
   statsDisabled: "Disabled",
+  statsCheckinAvailable: "Check-in",
 
   // Filter & Search
   filterCheckinAvailable: "Show only check-in available",
