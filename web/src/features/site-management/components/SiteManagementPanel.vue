@@ -343,7 +343,7 @@ function getSiteTypeLabel(type: string) {
  * @returns Truncated text with ellipsis if needed
  */
 function truncateNotes(text: string, maxChars: number): string {
-  if (!text) {
+  if (!text || maxChars <= 0) {
     return "";
   }
   let displayWidth = 0;
@@ -356,7 +356,8 @@ function truncateNotes(text: string, maxChars: number): string {
       (charCode >= 0x3000 && charCode <= 0x303f) || // CJK Punctuation
       (charCode >= 0xff00 && charCode <= 0xffef) || // Full-width forms
       (charCode >= 0x3040 && charCode <= 0x309f) || // Hiragana
-      (charCode >= 0x30a0 && charCode <= 0x30ff); // Katakana
+      (charCode >= 0x30a0 && charCode <= 0x30ff) || // Katakana
+      (charCode >= 0xac00 && charCode <= 0xd7af); // Hangul Syllables (Korean)
     displayWidth += isCJK ? 1 : 0.5;
     if (displayWidth > maxChars) {
       return `${text.slice(0, endIndex)}...`;
