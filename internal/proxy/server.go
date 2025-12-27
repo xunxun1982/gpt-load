@@ -288,6 +288,47 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 	return true
 }
 
+// handleEventLoggingBatch handles Claude Code event logging batch endpoint.
+// This endpoint is only effective when CC support is enabled.
+// Path format: /proxy/{group}/claude/api/event_logging/batch
+// Returns: {"accepted_count": X, "rejected_count": 0} where X is the number of events.
+func (ps *ProxyServer) handleEventLoggingBatch(c *gin.Context, group *models.Group, bodyBytes []byte) bool {
+	if c == nil || c.Request == nil || group == nil {
+		return false
+	}
+	if c.Request.Method != http.MethodPost {
+		return false
+	}
+	if !isCCSupportEnabled(group) {
+		return false
+	}
+
+	path := c.Request.URL.Path
+	// Match path pattern: /proxy/{group}/claude/api/event_logging/batch
+	if !strings.HasSuffix(path, "/claude/api/event_logging/batch") {
+		return false
+	}
+
+	// Parse request body to count events
+	var reqBody struct {
+		Events []json.RawMessage `json:"events"`
+	}
+
+	eventsCount := 0
+	if len(bodyBytes) > 0 {
+		if err := json.Unmarshal(bodyBytes, &reqBody); err == nil {
+			eventsCount = len(reqBody.Events)
+		}
+	}
+
+	// Return response in Claude Code expected format
+	c.JSON(http.StatusOK, gin.H{
+		"accepted_count": eventsCount,
+		"rejected_count": 0,
+	})
+	return true
+}
+
 func estimateTokensForClaudeCountTokens(bodyBytes []byte) int {
 	if len(bodyBytes) == 0 {
 		return 0
@@ -491,6 +532,12 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	// 3. The buffer is returned to pool only after HandleProxy returns (via defer)
 	// 4. No downstream handlers store the bodyBytes slice beyond the request scope
 	bodyBytes := buf.Bytes()
+
+	// Handle Claude Code event logging batch endpoint (CC only).
+	// This must be checked before path rewriting since it uses /claude/api/ path.
+	if ps.handleEventLoggingBatch(c, group, bodyBytes) {
+		return
+	}
 
 	// For GET requests (like /v1/models), skip body processing
 	var finalBodyBytes []byte
@@ -948,6 +995,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Handle Claude count_tokens endpoint for aggregate sub-group (CC only).
 	if ps.handleTokenCount(c, group, finalBodyBytes) {
+		return
+	}
+
+	// Handle Claude Code event logging batch endpoint for aggregate sub-group (CC only).
+	if ps.handleEventLoggingBatch(c, group, finalBodyBytes) {
 		return
 	}
 
