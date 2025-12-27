@@ -418,10 +418,9 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     key: "name",
     width: 140,
     titleAlign: "center",
-    ellipsis: { tooltip: true },
     render: row =>
       h("div", { class: "site-name-cell" }, [
-        h("div", { style: "display: flex; align-items: center; gap: 4px;" }, [
+        h("div", { style: "display: flex; align-items: center; gap: 4px; min-width: 0;" }, [
           // Show bound group icon before site name if bound to a group
           row.bound_group_id
             ? h(
@@ -449,10 +448,51 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
                 }
               )
             : null,
-          h("span", { class: "site-name" }, row.name),
+          // Site name with tooltip on overflow
+          h(
+            NTooltip,
+            {
+              trigger: "hover",
+              placement: "top-end",
+              style: { maxWidth: "300px" },
+            },
+            {
+              trigger: () =>
+                h(
+                  "span",
+                  {
+                    class: "site-name-text",
+                    style:
+                      "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                  },
+                  row.name
+                ),
+              default: () => row.name,
+            }
+          ),
         ]),
         row.notes
-          ? h(NText, { depth: 3, style: "font-size: 12px; display: block;" }, () => row.notes)
+          ? h(
+              NTooltip,
+              {
+                trigger: "hover",
+                placement: "top-end",
+                style: { maxWidth: "300px" },
+              },
+              {
+                trigger: () =>
+                  h(
+                    NText,
+                    {
+                      depth: 3,
+                      style:
+                        "font-size: 12px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                    },
+                    () => row.notes
+                  ),
+                default: () => row.notes,
+              }
+            )
           : null,
       ]),
   },
@@ -1118,8 +1158,9 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
-.site-name {
+.site-name-text {
   font-weight: 500;
 }
 .site-form-modal,
