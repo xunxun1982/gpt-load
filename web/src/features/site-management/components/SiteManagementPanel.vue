@@ -420,7 +420,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     titleAlign: "center",
     render: row =>
       h("div", { class: "site-name-cell" }, [
-        h("div", { style: "display: flex; align-items: center; gap: 4px; min-width: 0;" }, [
+        h("div", { class: "site-name-row" }, [
           // Show bound group icon before site name if bound to a group
           row.bound_group_id
             ? h(
@@ -457,16 +457,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
               style: { maxWidth: "300px" },
             },
             {
-              trigger: () =>
-                h(
-                  "span",
-                  {
-                    class: "site-name-text",
-                    style:
-                      "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
-                  },
-                  row.name
-                ),
+              trigger: () => h("span", { class: "site-name-text" }, row.name),
               default: () => row.name,
             }
           ),
@@ -480,16 +471,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
                 style: { maxWidth: "300px" },
               },
               {
-                trigger: () =>
-                  h(
-                    NText,
-                    {
-                      depth: 3,
-                      style:
-                        "font-size: 12px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
-                    },
-                    () => row.notes
-                  ),
+                trigger: () => h(NText, { depth: 3, class: "site-notes-text" }, () => row.notes),
                 default: () => row.notes,
               }
             )
@@ -1160,8 +1142,26 @@ onMounted(() => {
   gap: 2px;
   min-width: 0;
 }
+.site-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
 .site-name-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
+}
+.site-notes-text {
+  font-size: 12px;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .site-form-modal,
 .logs-modal {
