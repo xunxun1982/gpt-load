@@ -518,8 +518,9 @@ const selectAllColumns = () => {
 };
 
 const deselectAllColumns = () => {
-  // Keep required columns selected
-  visibleColumns.value = allColumnConfigs.filter(col => col.required).map(col => col.key);
+  // Keep required columns and always-default columns selected for consistent behavior
+  const required = allColumnConfigs.filter(col => col.required).map(col => col.key);
+  visibleColumns.value = [...new Set([...required, ...ALWAYS_DEFAULT_COLUMNS])];
 };
 </script>
 
