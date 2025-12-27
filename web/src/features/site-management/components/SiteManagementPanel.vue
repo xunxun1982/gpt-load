@@ -335,6 +335,11 @@ function getSiteTypeLabel(type: string) {
   return siteTypeOptions.value.find(o => o.value === type)?.label || type;
 }
 
+// Row class name for disabled sites (grayed out style)
+function rowClassName(row: ManagedSiteDTO) {
+  return row.enabled ? "" : "site-row-disabled";
+}
+
 async function checkinSite(site: ManagedSiteDTO) {
   try {
     const res = await siteManagementApi.checkinSite(site.id);
@@ -454,7 +459,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("siteManagement.baseUrl"),
     key: "base_url",
-    minWidth: 60,
+    minWidth: 50,
     titleAlign: "center",
     ellipsis: { tooltip: true },
     render: row =>
@@ -481,7 +486,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: t("siteManagement.enabled"),
     key: "enabled",
-    width: 50,
+    width: 60,
     align: "center",
     titleAlign: "center",
     render: row =>
@@ -856,6 +861,7 @@ onMounted(() => {
         :single-line="false"
         :max-height="'calc(100vh - 295px)'"
         :scroll-x="900"
+        :row-class-name="rowClassName"
       />
     </div>
 
@@ -1014,6 +1020,15 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* Disabled site row style - grayed out appearance */
+.site-management :deep(.site-row-disabled) {
+  opacity: 0.5;
+  background-color: var(--n-color-hover) !important;
+}
+.site-management :deep(.site-row-disabled:hover) {
+  opacity: 0.65;
 }
 /* Table wrapper for keyboard navigation support */
 .site-table-wrapper {

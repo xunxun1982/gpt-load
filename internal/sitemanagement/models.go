@@ -8,6 +8,7 @@ const (
 	SiteTypeWongGongyi = "wong-gongyi"
 	SiteTypeOneHub     = "one-hub"
 	SiteTypeDoneHub    = "done-hub"
+	SiteTypeBrand      = "brand"  // Label-only type, no special checkin logic
 	SiteTypeUnknown    = "unknown"
 	// Note: SiteTypeAnyrouter removed - it only supported cookie-based auth
 )
