@@ -220,12 +220,18 @@ const copyContent = async (content: string, type: string) => {
 const visibleColumns = ref<string[]>([]);
 const STORAGE_KEY = "log-table-visible-columns";
 
+// Columns that should always be included by default (even if not in saved preferences)
+const ALWAYS_DEFAULT_COLUMNS = ["parent_group_name"];
+
 // Load column preferences from localStorage
 const loadColumnPreferences = () => {
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved) {
     try {
-      visibleColumns.value = JSON.parse(saved);
+      const parsed = JSON.parse(saved) as string[];
+      // Ensure always-default columns are included
+      const merged = [...new Set([...parsed, ...ALWAYS_DEFAULT_COLUMNS])];
+      visibleColumns.value = merged;
     } catch {
       // If parse fails, use defaults
       setDefaultColumns();
@@ -512,8 +518,9 @@ const selectAllColumns = () => {
 };
 
 const deselectAllColumns = () => {
-  // Keep required columns selected
-  visibleColumns.value = allColumnConfigs.filter(col => col.required).map(col => col.key);
+  // Keep required columns and always-default columns selected for consistent behavior
+  const required = allColumnConfigs.filter(col => col.required).map(col => col.key);
+  visibleColumns.value = [...new Set([...required, ...ALWAYS_DEFAULT_COLUMNS])];
 };
 </script>
 
