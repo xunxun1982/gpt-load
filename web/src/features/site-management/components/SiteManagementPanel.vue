@@ -589,6 +589,22 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
       if (!row.checkin_enabled) {
         return h("span", { style: "color: #999" }, "-");
       }
+      // Only show status if it's from the current check-in day, otherwise show "-"
+      // Check-in day resets at 05:00 Beijing time (UTC+8), not midnight
+      // This prevents stale "success" status from showing after the reset time
+      const now = new Date();
+      // Convert to Beijing time (UTC+8)
+      const beijingOffset = 8 * 60; // UTC+8 in minutes
+      const localOffset = now.getTimezoneOffset(); // Local timezone offset in minutes (negative for east)
+      const beijingTime = new Date(now.getTime() + (beijingOffset + localOffset) * 60 * 1000);
+      // If before 05:00 Beijing time, consider it as previous day
+      if (beijingTime.getHours() < 5) {
+        beijingTime.setDate(beijingTime.getDate() - 1);
+      }
+      const checkinDay = beijingTime.toISOString().slice(0, 10); // YYYY-MM-DD format
+      if (!row.last_checkin_date || row.last_checkin_date !== checkinDay) {
+        return h("span", { style: "color: #999" }, "-");
+      }
       const tag = statusTag(row.last_checkin_status);
       return h(
         NTooltip,
