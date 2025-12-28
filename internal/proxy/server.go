@@ -309,7 +309,11 @@ func (ps *ProxyServer) handleEventLoggingBatch(c *gin.Context, group *models.Gro
 		return false
 	}
 
-	// Parse request body to count events
+	// Parse request body to count events.
+	// Note: JSON unmarshal errors are intentionally not logged here for consistency
+	// with handleTokenCount and other similar handlers. This is a high-frequency
+	// endpoint where debug logging would add overhead without significant value.
+	// On parse failure, eventsCount defaults to 0 which is acceptable behavior.
 	var reqBody struct {
 		Events []json.RawMessage `json:"events"`
 	}
