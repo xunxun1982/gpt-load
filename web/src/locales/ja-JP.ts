@@ -468,6 +468,11 @@ export default {
     thinkingModelTooltip:
       "Claude Code が拡張思考モードを有効にすると、このモデルが自動的に使用されます。空のままにすると、リクエストの元のモデルが使用されます。例：deepseek-reasoner",
     thinkingModelPlaceholder: "例：deepseek-reasoner",
+    interceptEventLog: "イベントログ傍受",
+    interceptEventLogTooltip:
+      "有効にすると、/api/event_logging/batch エンドポイントが傍受され、上流に転送されません。Anthropic プロキシに接続する Claude Code クライアントに便利です。",
+    interceptEventLogTip:
+      "有効にすると、Claude Code からのイベントログリクエストは上流に転送されず、ローカルで処理されます。",
     modelRedirectInvalidJson: "モデルリダイレクトルールのJSON形式が無効です",
     modelRedirectInvalidFormat:
       "モデルリダイレクトルールのキーと値はすべて文字列である必要があります",

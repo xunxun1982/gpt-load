@@ -447,6 +447,10 @@ export default {
     thinkingModelTooltip:
       "当 Claude Code 启用扩展思考模式时，自动使用此模型。留空则使用请求中的原始模型。例如：deepseek-reasoner",
     thinkingModelPlaceholder: "例如：deepseek-reasoner",
+    interceptEventLog: "拦截事件日志",
+    interceptEventLogTooltip:
+      "开启后，/api/event_logging/batch 端点将被拦截，不会转发到上游。适用于 Claude Code 客户端连接 Anthropic 代理的场景。",
+    interceptEventLogTip: "开启后，来自 Claude Code 的事件日志请求将在本地处理，不会转发到上游。",
 
     modelRedirectInvalidJson: "模型重定向规则 JSON 格式错误",
     modelRedirectInvalidFormat: "模型重定向规则的键值必须都是字符串",

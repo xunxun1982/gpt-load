@@ -91,6 +91,7 @@ interface GroupFormData {
   model_redirect_strict: boolean;
   force_function_call: boolean;
   cc_support: boolean;
+  intercept_event_log: boolean;
   thinking_model: string;
 
   config: Record<string, number | string | boolean>;
@@ -122,6 +123,7 @@ const formData = reactive<GroupFormData>({
   model_redirect_strict: false,
   force_function_call: false,
   cc_support: false,
+  intercept_event_log: false,
   thinking_model: "",
 
   config: {},
@@ -328,6 +330,10 @@ watch(
       formData.force_function_call = false;
       formData.cc_support = false;
     }
+    // Force disable intercept_event_log when channel is not Anthropic.
+    if (newChannelType !== "anthropic") {
+      formData.intercept_event_log = false;
+    }
   }
 );
 
@@ -372,6 +378,7 @@ function resetForm() {
     model_redirect_strict: false,
     force_function_call: false,
     cc_support: false,
+    intercept_event_log: false,
     thinking_model: "",
 
     config: {},
@@ -404,6 +411,11 @@ function loadGroupData() {
   const ccRaw = (rawConfig as any)["cc_support"];
   const ccSupport =
     props.group.channel_type === "openai" && typeof ccRaw === "boolean" ? ccRaw : false;
+  const interceptEventLogRaw = (rawConfig as any)["intercept_event_log"];
+  const interceptEventLog =
+    props.group.channel_type === "anthropic" && typeof interceptEventLogRaw === "boolean"
+      ? interceptEventLogRaw
+      : false;
   const thinkingModelRaw = (rawConfig as any)["thinking_model"];
   const thinkingModel = typeof thinkingModelRaw === "string" ? thinkingModelRaw : "";
 
@@ -412,6 +424,7 @@ function loadGroupData() {
       const ignoredKeys = [
         "force_function_call",
         "cc_support",
+        "intercept_event_log",
         "thinking_model",
         "cc_opus_model",
         "cc_sonnet_model",
@@ -451,6 +464,7 @@ function loadGroupData() {
     model_redirect_strict: props.group.model_redirect_strict || false,
     force_function_call: forceFunctionCall,
     cc_support: ccSupport,
+    intercept_event_log: interceptEventLog,
     thinking_model: thinkingModel,
 
     config: {},
@@ -862,6 +876,13 @@ async function handleSubmit() {
       config["cc_support"] = true;
     } else {
       delete config["cc_support"];
+    }
+
+    // Persist intercept_event_log toggle as a dedicated config key (Anthropic only).
+    if (formData.intercept_event_log) {
+      config["intercept_event_log"] = true;
+    } else {
+      delete config["intercept_event_log"];
     }
 
     // Persist thinking_model as a dedicated config key (only when cc_support is enabled).
@@ -1804,6 +1825,36 @@ async function handleSubmit() {
                         size="small"
                         style="width: 100%"
                       />
+                    </div>
+                  </div>
+                </n-form-item>
+              </div>
+
+              <!-- Intercept Event Log toggle (Anthropic channel only) -->
+              <div
+                class="config-section"
+                v-if="formData.group_type !== 'aggregate' && formData.channel_type === 'anthropic'"
+              >
+                <n-form-item path="intercept_event_log">
+                  <template #label>
+                    <div class="form-label-with-tooltip">
+                      {{ t("keys.interceptEventLog") }}
+                      <n-tooltip trigger="hover" placement="right-start">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        <div>
+                          {{ t("keys.interceptEventLogTooltip") }}
+                        </div>
+                      </n-tooltip>
+                    </div>
+                  </template>
+                  <div style="width: 100%">
+                    <div style="display: flex; align-items: center; height: 32px">
+                      <n-switch v-model:value="formData.intercept_event_log" size="small" />
+                    </div>
+                    <div style="font-size: 12px; color: #999; margin-top: 4px; line-height: 1.5">
+                      {{ t("keys.interceptEventLogTip") }}
                     </div>
                   </div>
                 </n-form-item>

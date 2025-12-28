@@ -87,19 +87,15 @@ func readAllWithLimit(r io.Reader, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-// isCCSupportEnabled checks whether the cc_support flag is enabled for the given group.
-// This flag is stored in the group-level JSON config.
-func isCCSupportEnabled(group *models.Group) bool {
+// getGroupConfigBool extracts a boolean value from group config with flexible type handling.
+// Supports bool, float64, int, and string ("true", "1", "yes", "on") types.
+// Returns false if the key doesn't exist or the value cannot be interpreted as true.
+func getGroupConfigBool(group *models.Group, key string) bool {
 	if group == nil || group.Config == nil {
 		return false
 	}
 
-	// Only enable CC support for OpenAI channel groups.
-	if group.ChannelType != "openai" {
-		return false
-	}
-
-	raw, ok := group.Config["cc_support"]
+	raw, ok := group.Config[key]
 	if !ok || raw == nil {
 		return false
 	}
@@ -117,6 +113,27 @@ func isCCSupportEnabled(group *models.Group) bool {
 	default:
 		return false
 	}
+}
+
+// isCCSupportEnabled checks whether the cc_support flag is enabled for the given group.
+// This flag is stored in the group-level JSON config.
+func isCCSupportEnabled(group *models.Group) bool {
+	// Only enable CC support for OpenAI channel groups.
+	if group == nil || group.ChannelType != "openai" {
+		return false
+	}
+	return getGroupConfigBool(group, "cc_support")
+}
+
+// isInterceptEventLogEnabled checks whether the intercept_event_log flag is enabled for the given group.
+// This flag is stored in the group-level JSON config and only applies to Anthropic channel groups.
+// When enabled, the /api/event_logging/batch endpoint is intercepted and not forwarded to upstream.
+func isInterceptEventLogEnabled(group *models.Group) bool {
+	// Only enable for Anthropic channel groups.
+	if group == nil || group.ChannelType != "anthropic" {
+		return false
+	}
+	return getGroupConfigBool(group, "intercept_event_log")
 }
 
 // sanitizeCCQueryParams removes Claude-specific query parameters from the URL.

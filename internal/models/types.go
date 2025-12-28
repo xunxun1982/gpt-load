@@ -50,6 +50,10 @@ type GroupConfig struct {
 	// When a request has thinking.type="enabled", the model will be automatically
 	// switched to this model. Leave empty to use the original model from request.
 	ThinkingModel *string `json:"thinking_model,omitempty"`
+	// InterceptEventLog enables interception of Claude Code event logging endpoint.
+	// Only applies to Anthropic channel groups. When enabled, /api/event_logging/batch
+	// requests are intercepted and not forwarded to upstream.
+	InterceptEventLog *bool `json:"intercept_event_log,omitempty"`
 }
 
 // HeaderRule defines a single rule for header manipulation.
