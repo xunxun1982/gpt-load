@@ -148,6 +148,20 @@ const filteredSites = computed(() => {
   return result;
 });
 
+// Current check-in day based on Beijing time (UTC+8) with 05:00 reset
+// Computed once and shared across all table rows for performance
+const currentCheckinDay = computed(() => {
+  const now = new Date();
+  const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000; // UTC+8 in milliseconds
+  const CHECKIN_RESET_HOUR = 5; // Check-in day resets at 05:00 Beijing time
+  const beijingTime = new Date(now.getTime() + BEIJING_OFFSET_MS);
+  // If before 05:00 Beijing time, consider it as previous day
+  if (beijingTime.getUTCHours() < CHECKIN_RESET_HOUR) {
+    beijingTime.setUTCDate(beijingTime.getUTCDate() - 1);
+  }
+  return beijingTime.toISOString().slice(0, 10); // YYYY-MM-DD format
+});
+
 async function loadSites() {
   loading.value = true;
   try {
@@ -587,6 +601,12 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     render: row => {
       // Show "-" if check-in is not enabled for this site
       if (!row.checkin_enabled) {
+        return h("span", { style: "color: #999" }, "-");
+      }
+      // Only show status if it's from the current check-in day, otherwise show "-"
+      // Check-in day resets at 05:00 Beijing time (UTC+8), not midnight
+      // This prevents stale "success" status from showing after the reset time
+      if (!row.last_checkin_date || row.last_checkin_date !== currentCheckinDay.value) {
         return h("span", { style: "color: #999" }, "-");
       }
       const tag = statusTag(row.last_checkin_status);
