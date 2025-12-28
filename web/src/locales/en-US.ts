@@ -469,6 +469,11 @@ export default {
     thinkingModelTooltip:
       "When Claude Code enables extended thinking mode, this model will be used automatically. Leave empty to use the original model from request. e.g., deepseek-reasoner",
     thinkingModelPlaceholder: "e.g., deepseek-reasoner",
+    interceptEventLog: "Intercept Event Log",
+    interceptEventLogTooltip:
+      "When enabled, the /api/event_logging/batch endpoint will be intercepted and not forwarded to upstream. This is useful for Claude Code clients connecting to Anthropic proxies.",
+    interceptEventLogTip:
+      "When enabled, event logging requests from Claude Code will be handled locally instead of being forwarded to upstream.",
 
     modelRedirectInvalidJson: "Invalid JSON format for model redirect rules",
     modelRedirectInvalidFormat: "Model redirect rule keys and values must all be strings",
