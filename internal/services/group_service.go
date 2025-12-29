@@ -885,6 +885,8 @@ func getFirstProxyKeyFromString(proxyKeys string) string {
 
 // DeleteGroup removes a group and associated resources.
 // This operation is idempotent - deleting a non-existent group returns success.
+// All associated API keys are deleted synchronously within the same transaction
+// to ensure foreign key constraints are satisfied.
 func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) {
 	// Check if group is bound to a site (must unbind first)
 	if s.CheckGroupCanDeleteCallback != nil {
@@ -938,15 +940,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		return app_errors.ParseDBError(err)
 	}
 
-	// Count keys for logging (fast query with index)
-	// If the count fails, still proceed and perform best-effort cache cleanup.
-	var keyCount int64
-	if err := tx.Model(&models.APIKey{}).Where("group_id = ?", id).Count(&keyCount).Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Warn("failed to count API keys for group delete")
-		keyCount = 0
-	}
-
-	// Handle child groups - delete them along with parent
+	// Handle child groups - get their IDs first
 	var childGroupIDs []uint
 	if err := tx.Model(&models.Group{}).Where("parent_group_id = ?", id).Pluck("id", &childGroupIDs).Error; err != nil {
 		return app_errors.ParseDBError(err)
@@ -958,6 +952,37 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		relatedGroupIDs = append(relatedGroupIDs, childGroupIDs...)
 	}
 
+	// Count keys for all related groups to decide sync vs async deletion
+	var totalKeyCount int64
+	if err := tx.Model(&models.APIKey{}).Where("group_id IN ?", relatedGroupIDs).Count(&totalKeyCount).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to count API keys for group delete")
+		totalKeyCount = 0
+	}
+
+	// ============================================================================
+	// IMPORTANT: Check if any managed sites are bound to this group or its children.
+	// Groups with bound sites MUST NOT be deleted - user must manually unbind first.
+	// This prevents accidental deletion of groups that are actively used by site management.
+	// DO NOT change this to auto-unbind without careful consideration of the implications.
+	// ============================================================================
+	var boundSiteCount int64
+	if err := tx.Table("managed_sites").Where("bound_group_id IN ?", relatedGroupIDs).Count(&boundSiteCount).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to check bound managed sites")
+		// If we can't verify, be safe and block deletion
+		return &app_errors.APIError{
+			HTTPStatus: http.StatusInternalServerError,
+			Code:       "CHECK_BOUND_SITES_FAILED",
+			Message:    "Failed to check if group has bound sites. Please try again.",
+		}
+	}
+	if boundSiteCount > 0 {
+		return &app_errors.APIError{
+			HTTPStatus: http.StatusConflict,
+			Code:       "GROUP_HAS_BOUND_SITES",
+			Message:    fmt.Sprintf("Cannot delete group: %d managed site(s) are bound to this group. Please unbind them first.", boundSiteCount),
+		}
+	}
+
 	// Delete sub-group relationships for this group and its child groups.
 	// This avoids orphaned rows and prevents potential foreign key constraint violations.
 	if err := tx.Where("group_id IN ? OR sub_group_id IN ?", relatedGroupIDs, relatedGroupIDs).
@@ -965,9 +990,32 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		return app_errors.ParseDBError(err)
 	}
 
-	// Delete all API keys for this group and its child groups in a single operation.
-	if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
-		return app_errors.ParseDBError(err)
+	// Delete hourly stats for this group and its child groups.
+	// GroupHourlyStat.GroupID may have implicit foreign key constraint via GORM naming convention.
+	if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.GroupHourlyStat{}).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to delete group hourly stats")
+		// Continue anyway - stats cleanup is best-effort
+	}
+
+	// Delete API keys synchronously within the transaction to avoid foreign key constraint violations.
+	// For large key counts, use chunked deletion to avoid long-running transactions and lock contention.
+	const deleteChunkSize = 5000
+	if totalKeyCount > int64(deleteChunkSize) {
+		// Chunked deletion for large key counts
+		for {
+			result := tx.Where("group_id IN ?", relatedGroupIDs).Limit(deleteChunkSize).Delete(&models.APIKey{})
+			if result.Error != nil {
+				return app_errors.ParseDBError(result.Error)
+			}
+			if result.RowsAffected == 0 {
+				break
+			}
+		}
+	} else {
+		// Direct deletion for small key counts
+		if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
 	}
 
 	childGroupCount := int64(len(childGroupIDs))
@@ -980,7 +1028,6 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 			"parentGroupID":   id,
 			"childGroupCount": childGroupCount,
 		}).Info("Deleted child groups along with parent")
-
 	}
 
 	// Delete the group
@@ -994,8 +1041,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	}
 	tx = nil
 
-	// Clear store cache for this group (and its child groups) after database commit.
-	// Use a goroutine to avoid blocking the response.
+	// Post-commit cleanup: clear store cache asynchronously
 	go func(keyService *KeyService, groupIDs []uint) {
 		if keyService == nil || keyService.KeyProvider == nil {
 			return
@@ -1017,7 +1063,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
 		"groupID":         id,
 		"groupName":       group.Name,
-		"keyCount":        keyCount,
+		"keyCount":        totalKeyCount,
 		"childGroupCount": childGroupCount,
 	}).Info("Successfully deleted group")
 

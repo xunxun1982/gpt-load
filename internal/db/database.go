@@ -189,17 +189,19 @@ func createSQLiteReadDB(dsn string, newLogger logger.Interface) (*gorm.DB, error
 	cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")
 	tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")
 	// Separate connection pool for reads, without cache=shared to avoid lock contention
-	// Don't use mode=ro as it may not be supported by all SQLite drivers
-	params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
+	// Use shorter busy_timeout for read connections to fail fast on contention
+	params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=1000&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
 	delimiter := "?"
 	if strings.Contains(dsn, "?") {
 		delimiter = "&"
 	}
 	dialector := sqlite.Open(dsn + delimiter + params)
 
+	// Disable PrepareStmt for read DB to speed up shutdown
+	// PrepareStmt caches prepared statements which can delay Close()
 	readDB, err := gorm.Open(dialector, &gorm.Config{
 		Logger:      newLogger,
-		PrepareStmt: true,
+		PrepareStmt: false,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open SQLite read connection: %w", err)
@@ -211,9 +213,11 @@ func createSQLiteReadDB(dsn string, newLogger logger.Interface) (*gorm.DB, error
 	}
 
 	// Allow multiple read connections for concurrent reads
+	// Use shorter lifetime to allow faster connection turnover during shutdown
 	sqlDB.SetMaxIdleConns(5)
 	sqlDB.SetMaxOpenConns(10)
-	sqlDB.SetConnMaxLifetime(time.Hour)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(1 * time.Minute)
 
 	logrus.Info("SQLite read-only connection pool created for concurrent reads")
 	return readDB, nil

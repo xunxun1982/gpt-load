@@ -254,8 +254,17 @@ func (a *App) Stop(ctx context.Context) {
 
 	// Close database connections to prevent resource leaks
 	// Best practice: explicitly close connection pools during graceful shutdown
+
+	// Close main database connection
 	if a.db != nil {
+		// Close GORM prepared statement cache first to release connections
+		if stmtManger, ok := a.db.ConnPool.(*gorm.PreparedStmtDB); ok {
+			stmtManger.Close()
+		}
 		if sqlDB, err := a.db.DB(); err == nil {
+			// Force close all idle connections immediately by setting pool size to 0
+			sqlDB.SetMaxIdleConns(0)
+			sqlDB.SetMaxOpenConns(0)
 			if err := sqlDB.Close(); err != nil {
 				logrus.Errorf("Error closing main database connection: %v", err)
 			} else {
@@ -266,7 +275,14 @@ func (a *App) Stop(ctx context.Context) {
 
 	// Close read-only database connection if it's separate from main DB (SQLite WAL mode)
 	if db.ReadDB != nil && db.ReadDB != a.db {
+		// Close GORM prepared statement cache first
+		if stmtManger, ok := db.ReadDB.ConnPool.(*gorm.PreparedStmtDB); ok {
+			stmtManger.Close()
+		}
 		if sqlDB, err := db.ReadDB.DB(); err == nil {
+			// Force close all idle connections immediately by setting pool size to 0
+			sqlDB.SetMaxIdleConns(0)
+			sqlDB.SetMaxOpenConns(0)
 			if err := sqlDB.Close(); err != nil {
 				logrus.Errorf("Error closing read database connection: %v", err)
 			} else {
