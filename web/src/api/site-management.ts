@@ -13,6 +13,24 @@ export type ManagedSiteAuthType = "none" | "access_token";
 
 export type ManagedSiteCheckinStatus = "success" | "failed" | "skipped" | "already_checked" | "";
 
+// Pagination parameters for site listing
+export interface SiteListParams {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  enabled?: boolean | null;
+  checkin_available?: boolean | null;
+}
+
+// Paginated site list result
+export interface SiteListResult {
+  sites: ManagedSiteDTO[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
 export interface ManagedSiteDTO {
   id: number;
   name: string;
@@ -82,6 +100,30 @@ export interface CreateManagedSiteRequest {
 export type UpdateManagedSiteRequest = Partial<CreateManagedSiteRequest>;
 
 export const siteManagementApi = {
+  // Paginated site list with filters (recommended for large datasets)
+  async listSitesPaginated(params: SiteListParams = {}): Promise<SiteListResult> {
+    const query = new URLSearchParams();
+    if (params.page) {
+      query.set("page", params.page.toString());
+    }
+    if (params.page_size) {
+      query.set("page_size", params.page_size.toString());
+    }
+    if (params.search) {
+      query.set("search", params.search);
+    }
+    if (params.enabled !== undefined && params.enabled !== null) {
+      query.set("enabled", params.enabled.toString());
+    }
+    if (params.checkin_available !== undefined && params.checkin_available !== null) {
+      query.set("checkin_available", params.checkin_available.toString());
+    }
+
+    const res = await http.get(`/site-management/sites?${query.toString()}`);
+    return res.data;
+  },
+
+  // Non-paginated site list (for backward compatibility and export)
   async listSites(): Promise<ManagedSiteDTO[]> {
     const res = await http.get("/site-management/sites");
     return res.data || [];
@@ -117,7 +159,8 @@ export const siteManagementApi = {
       params: { limit },
       hideMessage: true,
     });
-    return res.data || [];
+    // Backend returns paginated response { logs: [...], total, page, ... }
+    return res.data?.logs || [];
   },
 
   // Export sites

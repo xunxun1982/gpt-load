@@ -404,19 +404,19 @@ function loadGroupData() {
     return;
   }
 
-  const rawConfig = props.group.config || {};
-  const fcRaw = (rawConfig as any)["force_function_call"];
+  const rawConfig: Record<string, unknown> = props.group.config || {};
+  const fcRaw = rawConfig["force_function_call"];
   const forceFunctionCall =
     props.group.channel_type === "openai" && typeof fcRaw === "boolean" ? fcRaw : false;
-  const ccRaw = (rawConfig as any)["cc_support"];
+  const ccRaw = rawConfig["cc_support"];
   const ccSupport =
     props.group.channel_type === "openai" && typeof ccRaw === "boolean" ? ccRaw : false;
-  const interceptEventLogRaw = (rawConfig as any)["intercept_event_log"];
+  const interceptEventLogRaw = rawConfig["intercept_event_log"];
   const interceptEventLog =
     props.group.channel_type === "anthropic" && typeof interceptEventLogRaw === "boolean"
       ? interceptEventLogRaw
       : false;
-  const thinkingModelRaw = (rawConfig as any)["thinking_model"];
+  const thinkingModelRaw = rawConfig["thinking_model"];
   const thinkingModel = typeof thinkingModelRaw === "string" ? thinkingModelRaw : "";
 
   const configItems = Object.entries(rawConfig)
@@ -703,10 +703,12 @@ async function fetchUpstreamModels() {
 
     if (data.data && Array.isArray(data.data)) {
       // OpenAI format: {"data": [{"id": "model-name"}]}
-      models = data.data.map((item: any) => item.id).filter((id: string) => id);
+      models = data.data.map((item: { id: string }) => item.id).filter((id: string) => id);
     } else if (data.models && Array.isArray(data.models)) {
       // Gemini format: {"models": [{"name": "model-name"}]}
-      models = data.models.map((item: any) => item.name).filter((name: string) => name);
+      models = data.models
+        .map((item: { name: string }) => item.name)
+        .filter((name: string) => name);
     }
 
     if (models.length === 0) {
@@ -719,9 +721,10 @@ async function fetchUpstreamModels() {
     // Store models and open selector modal
     availableModels.value = models;
     showModelSelector.value = true;
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Failed to fetch models:", error);
-    message.error(error?.message || t("keys.fetchModelsFailed"));
+    const errorMessage = error instanceof Error ? error.message : t("keys.fetchModelsFailed");
+    message.error(errorMessage);
   } finally {
     fetchingModels.value = false;
   }
@@ -739,9 +742,10 @@ function handleModelSelectorConfirm(redirectRules: Record<string, string>) {
     Object.entries(redirectRules).forEach(([from, to]) => {
       // Check if already exists
       const existingIndex = formData.model_redirect_items.findIndex(item => item.from === from);
-      if (existingIndex >= 0 && formData.model_redirect_items[existingIndex]) {
+      const existingItem = formData.model_redirect_items[existingIndex];
+      if (existingIndex >= 0 && existingItem) {
         // Update existing
-        formData.model_redirect_items[existingIndex]!.to = to;
+        existingItem.to = to;
       } else {
         // Add new
         formData.model_redirect_items.push({ from, to });

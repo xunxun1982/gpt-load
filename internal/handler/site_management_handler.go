@@ -55,11 +55,66 @@ type UpdateManagedSiteRequest struct {
 }
 
 func (s *Server) ListManagedSites(c *gin.Context) {
+	// Route to paginated or non-paginated endpoint based on query params.
+	// Design decision: Keep both endpoints for backward compatibility and different use cases:
+	// - Non-paginated: Uses cache (30s TTL), fast for small datasets and internal use
+	// - Paginated: For frontend table with filters, search, and large datasets
+	// AI suggested always using pagination, but this dual approach provides flexibility
+	// and better performance for cached full-list scenarios.
+	pageStr := c.Query("page")
+	if pageStr != "" {
+		// Use paginated endpoint
+		s.ListManagedSitesPaginated(c)
+		return
+	}
+
+	// Non-paginated (legacy) endpoint
 	sites, err := s.SiteService.ListSites(c.Request.Context())
 	if HandleServiceError(c, err) {
 		return
 	}
 	response.Success(c, sites)
+}
+
+// ListManagedSitesPaginated handles paginated site listing with filters
+func (s *Server) ListManagedSitesPaginated(c *gin.Context) {
+	var params sitemanagement.SiteListParams
+
+	// Parse pagination params with fallback to defaults on parse error.
+	// Service layer performs additional bounds validation (page >= 1, pageSize <= 200).
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil {
+		page = 1
+	}
+	params.Page = page
+
+	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	if err != nil {
+		pageSize = 50
+	}
+	params.PageSize = pageSize
+	params.Search = c.Query("search")
+
+	// Parse boolean filter params using direct string comparison.
+	// AI suggested using strconv.ParseBool for flexibility (accepts "1", "t", "TRUE", etc.),
+	// but we intentionally use strict "true" comparison because:
+	// 1. API behavior should be predictable - only "true" means true
+	// 2. Consistent with other handlers in this project (e.g., base_channel.go)
+	// 3. Avoids ambiguity in API documentation and client implementations
+	if enabledStr := c.Query("enabled"); enabledStr != "" {
+		enabled := enabledStr == "true"
+		params.Enabled = &enabled
+	}
+	if checkinStr := c.Query("checkin_available"); checkinStr != "" {
+		checkin := checkinStr == "true"
+		params.CheckinAvailable = &checkin
+	}
+
+	result, err := s.SiteService.ListSitesPaginated(c.Request.Context(), params)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, result)
 }
 
 func (s *Server) CreateManagedSite(c *gin.Context) {
@@ -222,10 +277,21 @@ func (s *Server) CheckInManagedSite(c *gin.Context) {
 }
 
 func (s *Server) ListManagedSiteCheckinLogs(c *gin.Context) {
+	// Note: This handler directly accesses s.DB for checkin log queries.
+	// Future refactor consideration: Move log queries to SiteService for consistency
+	// with site list pagination (which delegates to SiteService.ListSitesPaginated).
+	// Current implementation is correct and performant with idx_checkin_logs_site_created index.
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		response.Error(c, app_errors.ErrBadRequest)
 		return
+	}
+
+	// Parse pagination params with fallback to defaults on parse error.
+	// Consistent with ListManagedSitesPaginated error handling pattern.
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 {
+		page = 1
 	}
 
 	limit := 50
@@ -241,10 +307,24 @@ func (s *Server) ListManagedSiteCheckinLogs(c *gin.Context) {
 		}
 	}
 
+	// Calculate offset for pagination
+	offset := (page - 1) * limit
+
+	// Get total count for pagination metadata
+	var total int64
+	if err := s.DB.WithContext(c.Request.Context()).
+		Model(&sitemanagement.ManagedSiteCheckinLog{}).
+		Where("site_id = ?", uint(id)).
+		Count(&total).Error; HandleServiceError(c, err) {
+		return
+	}
+
+	// Get paginated logs
 	var logs []sitemanagement.ManagedSiteCheckinLog
 	if err := s.DB.WithContext(c.Request.Context()).
 		Where("site_id = ?", uint(id)).
 		Order("created_at DESC, id DESC").
+		Offset(offset).
 		Limit(limit).
 		Find(&logs).Error; HandleServiceError(c, err) {
 		return
@@ -269,7 +349,15 @@ func (s *Server) ListManagedSiteCheckinLogs(c *gin.Context) {
 		})
 	}
 
-	response.Success(c, resp)
+	// Return paginated response
+	totalPages := int((total + int64(limit) - 1) / int64(limit))
+	response.Success(c, map[string]interface{}{
+		"logs":        resp,
+		"total":       total,
+		"page":        page,
+		"page_size":   limit,
+		"total_pages": totalPages,
+	})
 }
 
 // ExportManagedSites exports all managed sites

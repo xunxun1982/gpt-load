@@ -11,6 +11,24 @@ import type {
 } from "@/types/models";
 import http from "@/utils/http";
 
+// Type for model item in OpenAI format
+interface OpenAIModelItem {
+  id: string;
+  [key: string]: unknown;
+}
+
+// Type for model item in Gemini format
+interface GeminiModelItem {
+  name: string;
+  [key: string]: unknown;
+}
+
+// Response type for fetchGroupModels
+interface FetchModelsResponse {
+  data?: OpenAIModelItem[];
+  models?: GeminiModelItem[];
+}
+
 export const keysApi = {
   // Get all groups
   async getGroups(): Promise<Group[]> {
@@ -373,7 +391,7 @@ export const keysApi = {
   },
 
   // Fetch available models from upstream service
-  async fetchGroupModels(groupId: number): Promise<any> {
+  async fetchGroupModels(groupId: number): Promise<FetchModelsResponse> {
     const res = await http.get(`/groups/${groupId}/models`, {
       hideMessage: true,
     });

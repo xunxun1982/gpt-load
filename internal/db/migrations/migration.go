@@ -63,7 +63,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.6.1 migration - Add timestamp index to request_logs for faster cleanup
-	return V1_6_1_AddRequestLogsTimestampIndex(db)
+	if err := V1_6_1_AddRequestLogsTimestampIndex(db); err != nil {
+		return err
+	}
+	// Run v1.7.0 migration - Add site management performance indexes
+	return V1_7_0_AddSiteManagementIndexes(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

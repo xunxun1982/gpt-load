@@ -61,7 +61,9 @@ function generateRandomString(length: number): string {
     const randomValues = new Uint32Array(length);
     crypto.getRandomValues(randomValues);
     for (let i = 0; i < length; i++) {
-      const value = randomValues[i]!;
+      // Array access is safe here since we created Uint32Array with exact length
+      // Using nullish coalescing to satisfy lint rules while maintaining type safety
+      const value = randomValues[i] ?? 0;
       result += chars.charAt(value % charsLength);
     }
     return result;
@@ -246,6 +248,7 @@ function handleInput(value: string) {
       <p style="margin: 0 0 12px 0; color: #999; font-size: 12px; line-height: 1.5">
         {{ t("keys.manualCopyHint") }}
       </p>
+      <!-- Note: <textarea> requires explicit closing tag per HTML5 spec, cannot use self-closing syntax -->
       <textarea
         ref="manualCopyTextareaRef"
         :value="manualCopyText"
@@ -259,7 +262,7 @@ function handleInput(value: string) {
           resize: vertical;
           box-sizing: border-box;
         "
-      ></textarea>
+      />
     </n-modal>
   </div>
 </template>

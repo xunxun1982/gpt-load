@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"gpt-load/internal/encryption"
@@ -26,12 +27,28 @@ type SiteService struct {
 	store         store.Store
 	encryptionSvc encryption.Service
 
+	// Site list cache for non-paginated requests
+	siteListCache    *siteListCacheEntry
+	siteListCacheMu  sync.RWMutex
+	siteListCacheTTL time.Duration
+
 	// Callback for syncing enabled status to bound group (set by handler layer)
 	SyncSiteEnabledToGroupCallback func(ctx context.Context, siteID uint, enabled bool) error
 }
 
+// siteListCacheEntry holds cached site list data
+type siteListCacheEntry struct {
+	Sites     []ManagedSiteDTO
+	ExpiresAt time.Time
+}
+
 func NewSiteService(db *gorm.DB, store store.Store, encryptionSvc encryption.Service) *SiteService {
-	return &SiteService{db: db, store: store, encryptionSvc: encryptionSvc}
+	return &SiteService{
+		db:               db,
+		store:            store,
+		encryptionSvc:    encryptionSvc,
+		siteListCacheTTL: 30 * time.Second, // Short TTL for freshness
+	}
 }
 
 type CreateSiteParams struct {
@@ -77,6 +94,16 @@ type UpdateSiteParams struct {
 }
 
 func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
+	// Check cache first (fast path with read lock)
+	s.siteListCacheMu.RLock()
+	if s.siteListCache != nil && time.Now().Before(s.siteListCache.ExpiresAt) {
+		sites := s.siteListCache.Sites
+		s.siteListCacheMu.RUnlock()
+		return sites, nil
+	}
+	s.siteListCacheMu.RUnlock()
+
+	// Cache miss - fetch from database
 	var sites []ManagedSite
 	if err := s.db.WithContext(ctx).
 		Order("sort ASC, id ASC").
@@ -84,69 +111,196 @@ func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	dtos, err := s.convertSitesToDTOs(ctx, sites)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update cache with double-checked locking to prevent cache stampede.
+	// Between releasing RLock and acquiring Lock, another goroutine may have
+	// already populated the cache, so we check again before overwriting.
+	s.siteListCacheMu.Lock()
+	if s.siteListCache != nil && time.Now().Before(s.siteListCache.ExpiresAt) {
+		// Another goroutine populated cache while we were querying
+		cachedSites := s.siteListCache.Sites
+		s.siteListCacheMu.Unlock()
+		return cachedSites, nil
+	}
+	s.siteListCache = &siteListCacheEntry{
+		Sites:     dtos,
+		ExpiresAt: time.Now().Add(s.siteListCacheTTL),
+	}
+	s.siteListCacheMu.Unlock()
+
+	return dtos, nil
+}
+
+// ListSitesPaginated returns paginated site list with optional filters
+func (s *SiteService) ListSitesPaginated(ctx context.Context, params SiteListParams) (*SiteListResult, error) {
+	// Validate and normalize pagination params
+	if params.Page < 1 {
+		params.Page = 1
+	}
+	if params.PageSize < 1 {
+		params.PageSize = 50
+	}
+	if params.PageSize > 200 {
+		params.PageSize = 200
+	}
+
+	// Build base query
+	query := s.db.WithContext(ctx).Model(&ManagedSite{})
+
+	// Apply filters
+	// Note on LIKE search performance:
+	// 1. LIKE '%pattern%' (leading wildcard) cannot use B-tree indexes regardless of
+	//    case sensitivity - this is a fundamental limitation of B-tree index structure
+	// 2. SQLite handles LIKE case-insensitively for ASCII by default
+	// 3. For high-performance full-text search, consider SQLite FTS5 or similar
+	// 4. Current implementation is acceptable for typical site list sizes (<1000 rows)
+	// AI suggested adding indexes on name/notes/description, but indexes would not
+	// improve LIKE '%pattern%' queries - only LIKE 'pattern%' can use indexes.
+	if params.Search != "" {
+		searchPattern := "%" + params.Search + "%"
+		query = query.Where(
+			"name LIKE ? OR notes LIKE ? OR description LIKE ? OR base_url LIKE ?",
+			searchPattern, searchPattern, searchPattern, searchPattern,
+		)
+	}
+	if params.Enabled != nil {
+		query = query.Where("enabled = ?", *params.Enabled)
+	}
+	if params.CheckinAvailable != nil {
+		query = query.Where("checkin_available = ?", *params.CheckinAvailable)
+	}
+
+	// Get total count
+	var total int64
+	countQuery := query.Session(&gorm.Session{})
+	if err := countQuery.Count(&total).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	// Calculate pagination
+	offset := (params.Page - 1) * params.PageSize
+	totalPages := int((total + int64(params.PageSize) - 1) / int64(params.PageSize))
+
+	// Fetch paginated data
+	var sites []ManagedSite
+	if err := query.
+		Order("sort ASC, id ASC").
+		Offset(offset).
+		Limit(params.PageSize).
+		Find(&sites).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	// Batch convert to DTOs
+	dtos, err := s.convertSitesToDTOs(ctx, sites)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SiteListResult{
+		Sites:      dtos,
+		Total:      total,
+		Page:       params.Page,
+		PageSize:   params.PageSize,
+		TotalPages: totalPages,
+	}, nil
+}
+
+// convertSitesToDTOs converts sites to DTOs with batch operations for group names
+func (s *SiteService) convertSitesToDTOs(ctx context.Context, sites []ManagedSite) ([]ManagedSiteDTO, error) {
+	if len(sites) == 0 {
+		return []ManagedSiteDTO{}, nil
+	}
+
 	// Collect bound group IDs for batch query
-	boundGroupIDs := make([]uint, 0)
+	boundGroupIDs := make([]uint, 0, len(sites))
 	for _, site := range sites {
 		if site.BoundGroupID != nil {
 			boundGroupIDs = append(boundGroupIDs, *site.BoundGroupID)
 		}
 	}
 
-	// Batch fetch group names
+	// Batch fetch group names for display purposes.
+	// Errors are logged but not propagated since group names are non-critical display data.
 	groupNameMap := make(map[uint]string)
 	if len(boundGroupIDs) > 0 {
 		var groups []models.Group
-		if err := s.db.WithContext(ctx).Select("id", "name").Where("id IN ?", boundGroupIDs).Find(&groups).Error; err == nil {
+		if err := s.db.WithContext(ctx).Select("id", "name").Where("id IN ?", boundGroupIDs).Find(&groups).Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to fetch group names for site list")
+		} else {
 			for _, g := range groups {
 				groupNameMap[g.ID] = g.Name
 			}
 		}
 	}
 
-	resp := make([]ManagedSiteDTO, 0, len(sites))
+	// Convert to DTOs
+	dtos := make([]ManagedSiteDTO, 0, len(sites))
 	for i := range sites {
-		site := &sites[i]
-		// Decrypt user_id for display
-		userID := site.UserID
-		if userID != "" {
-			if decrypted, err := s.encryptionSvc.Decrypt(userID); err == nil {
-				userID = decrypted
-			}
-		}
-
-		var boundGroupName string
-		if site.BoundGroupID != nil {
-			boundGroupName = groupNameMap[*site.BoundGroupID]
-		}
-
-		resp = append(resp, ManagedSiteDTO{
-			ID:                 site.ID,
-			Name:               site.Name,
-			Notes:              site.Notes,
-			Description:        site.Description,
-			Sort:               site.Sort,
-			Enabled:            site.Enabled,
-			BaseURL:            site.BaseURL,
-			SiteType:           site.SiteType,
-			UserID:             userID,
-			CheckInPageURL:     site.CheckInPageURL,
-			CheckInAvailable:   site.CheckInAvailable,
-			CheckInEnabled:     site.CheckInEnabled,
-			AutoCheckInEnabled: site.AutoCheckInEnabled,
-			CustomCheckInURL:   site.CustomCheckInURL,
-			AuthType:           site.AuthType,
-			HasAuth:            strings.TrimSpace(site.AuthValue) != "",
-			LastCheckInAt:      site.LastCheckInAt,
-			LastCheckInDate:    site.LastCheckInDate,
-			LastCheckInStatus:  site.LastCheckInStatus,
-			LastCheckInMessage: site.LastCheckInMessage,
-			BoundGroupID:       site.BoundGroupID,
-			BoundGroupName:     boundGroupName,
-			CreatedAt:          site.CreatedAt,
-			UpdatedAt:          site.UpdatedAt,
-		})
+		dtos = append(dtos, s.siteToDTO(&sites[i], groupNameMap))
 	}
-	return resp, nil
+
+	return dtos, nil
+}
+
+// siteToDTO converts a single site to DTO using pre-fetched group name map.
+// Note: This method is optimized for batch operations where group names are pre-fetched.
+// For single-site operations (create/update), use toDTO() which performs individual lookup.
+// AI suggested consolidating these methods, but keeping them separate provides:
+// 1. Clear separation between batch (efficient) and single (simple) use cases
+// 2. Avoids nil map checks and optional parameter complexity
+// 3. Better code readability for each specific use case
+func (s *SiteService) siteToDTO(site *ManagedSite, groupNameMap map[uint]string) ManagedSiteDTO {
+	// Decrypt user_id for display
+	userID := site.UserID
+	if userID != "" {
+		if decrypted, err := s.encryptionSvc.Decrypt(userID); err == nil {
+			userID = decrypted
+		}
+	}
+
+	var boundGroupName string
+	if site.BoundGroupID != nil {
+		boundGroupName = groupNameMap[*site.BoundGroupID]
+	}
+
+	return ManagedSiteDTO{
+		ID:                 site.ID,
+		Name:               site.Name,
+		Notes:              site.Notes,
+		Description:        site.Description,
+		Sort:               site.Sort,
+		Enabled:            site.Enabled,
+		BaseURL:            site.BaseURL,
+		SiteType:           site.SiteType,
+		UserID:             userID,
+		CheckInPageURL:     site.CheckInPageURL,
+		CheckInAvailable:   site.CheckInAvailable,
+		CheckInEnabled:     site.CheckInEnabled,
+		AutoCheckInEnabled: site.AutoCheckInEnabled,
+		CustomCheckInURL:   site.CustomCheckInURL,
+		AuthType:           site.AuthType,
+		HasAuth:            strings.TrimSpace(site.AuthValue) != "",
+		LastCheckInAt:      site.LastCheckInAt,
+		LastCheckInDate:    site.LastCheckInDate,
+		LastCheckInStatus:  site.LastCheckInStatus,
+		LastCheckInMessage: site.LastCheckInMessage,
+		BoundGroupID:       site.BoundGroupID,
+		BoundGroupName:     boundGroupName,
+		CreatedAt:          site.CreatedAt,
+		UpdatedAt:          site.UpdatedAt,
+	}
+}
+
+// InvalidateSiteListCache clears the site list cache
+func (s *SiteService) InvalidateSiteListCache() {
+	s.siteListCacheMu.Lock()
+	s.siteListCache = nil
+	s.siteListCacheMu.Unlock()
 }
 
 func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (*ManagedSiteDTO, error) {
@@ -229,6 +383,9 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 	if err := s.db.WithContext(ctx).Create(site).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
+
+	// Invalidate cache after creation
+	s.InvalidateSiteListCache()
 
 	return s.toDTO(site), nil
 }
@@ -355,6 +512,9 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	// Invalidate cache after update
+	s.InvalidateSiteListCache()
+
 	// Sync enabled status to bound group if changed
 	if enabledChanged && s.SyncSiteEnabledToGroupCallback != nil {
 		if err := s.SyncSiteEnabledToGroupCallback(ctx, siteID, site.Enabled); err != nil {
@@ -392,6 +552,10 @@ func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
 	if err := s.db.WithContext(ctx).Delete(&ManagedSite{}, siteID).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
+
+	// Invalidate cache after deletion
+	s.InvalidateSiteListCache()
+
 	return nil
 }
 
@@ -436,6 +600,12 @@ func (s *SiteService) DeleteAllUnboundSites(ctx context.Context) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
+
+	// Invalidate cache after bulk deletion
+	if deletedCount > 0 {
+		s.InvalidateSiteListCache()
+	}
+
 	return deletedCount, nil
 }
 
@@ -493,6 +663,9 @@ func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDT
 	if err := s.db.WithContext(ctx).Create(newSite).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
+
+	// Invalidate cache after copy
+	s.InvalidateSiteListCache()
 
 	return s.toDTO(newSite), nil
 }
@@ -988,6 +1161,11 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 		if _, err := s.UpdateAutoCheckinConfig(ctx, *data.AutoCheckin); err != nil {
 			logrus.WithError(err).Warn("Failed to import auto-checkin config")
 		}
+	}
+
+	// Invalidate cache after import
+	if imported > 0 {
+		s.InvalidateSiteListCache()
 	}
 
 	return imported, skipped, nil
