@@ -280,7 +280,10 @@ func (a *App) Stop(ctx context.Context) {
 			stmtManger.Close()
 		}
 		if sqlDB, err := db.ReadDB.DB(); err == nil {
-			// Force close all idle connections immediately by setting pool size to 0
+			// Force close all connections immediately by setting pool size and timeouts to 0
+			// This prevents waiting for ConnMaxIdleTime to expire
+			sqlDB.SetConnMaxIdleTime(0)
+			sqlDB.SetConnMaxLifetime(0)
 			sqlDB.SetMaxIdleConns(0)
 			sqlDB.SetMaxOpenConns(0)
 			if err := sqlDB.Close(); err != nil {
