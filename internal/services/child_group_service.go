@@ -53,6 +53,15 @@ func NewChildGroupService(db *gorm.DB, readDB ReadOnlyDB, groupManager *GroupMan
 	}
 }
 
+// InvalidateCache clears the child groups cache.
+// This should be called after creating, updating, or deleting child groups.
+func (s *ChildGroupService) InvalidateCache() {
+	s.cacheMu.Lock()
+	s.cache = nil
+	s.cacheMu.Unlock()
+	logrus.Debug("Child groups cache invalidated")
+}
+
 // CreateChildGroupParams defines parameters for creating a child group.
 type CreateChildGroupParams struct {
 	ParentGroupID uint
@@ -222,6 +231,9 @@ func (s *ChildGroupService) CreateChildGroup(ctx context.Context, params CreateC
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after creating child group")
 	}
+
+	// Invalidate child groups cache so GetAllChildGroups returns fresh data
+	s.InvalidateCache()
 
 	return &childGroup, nil
 }

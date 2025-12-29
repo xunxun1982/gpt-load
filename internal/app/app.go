@@ -202,13 +202,14 @@ func (a *App) Stop(ctx context.Context) {
 	defer cancelHttpShutdown()
 
 	logrus.Debugf("Attempting to gracefully shut down HTTP server (max %v)...", httpShutdownTimeout)
+	httpShutdownStart := time.Now()
 	if err := a.httpServer.Shutdown(httpShutdownCtx); err != nil {
 		logrus.Debugf("HTTP server graceful shutdown timed out as expected, forcing remaining connections to close.")
 		if closeErr := a.httpServer.Close(); closeErr != nil {
 			logrus.Errorf("Error forcing HTTP server to close: %v", closeErr)
 		}
 	}
-	logrus.Info("HTTP server has been shut down.")
+	logrus.Infof("HTTP server has been shut down. (took %v)", time.Since(httpShutdownStart))
 
 	// Use the original total timeout context to continue shutting down other background services
 	stoppableServices := []func(context.Context){
@@ -224,6 +225,12 @@ func (a *App) Stop(ctx context.Context) {
 			a.requestLogService.Stop,
 		)
 	}
+
+	// Stop KeyProvider worker pool (runs on both master and slave)
+	logrus.Debug("Stopping KeyProvider worker pool...")
+	keyProviderStart := time.Now()
+	a.keyPoolProvider.Stop()
+	logrus.Debugf("KeyProvider worker pool stopped. (took %v)", time.Since(keyProviderStart))
 
 	var wg sync.WaitGroup
 	wg.Add(len(stoppableServices))
@@ -241,58 +248,113 @@ func (a *App) Stop(ctx context.Context) {
 		close(done)
 	}()
 
+	bgServicesStart := time.Now()
 	select {
 	case <-done:
-		logrus.Info("All background services stopped.")
+		logrus.Infof("All background services stopped. (took %v)", time.Since(bgServicesStart))
 	case <-ctx.Done():
-		logrus.Warn("Shutdown timed out, some services may not have stopped gracefully.")
+		logrus.Warnf("Shutdown timed out after %v, some services may not have stopped gracefully.", time.Since(bgServicesStart))
 	}
 
 	if a.storage != nil {
+		logrus.Debug("Closing storage...")
+		storageStart := time.Now()
 		a.storage.Close()
+		logrus.Debugf("Storage closed. (took %v)", time.Since(storageStart))
 	}
 
 	// Close database connections to prevent resource leaks
 	// Best practice: explicitly close connection pools during graceful shutdown
-
-	// Close main database connection
-	if a.db != nil {
-		// Close GORM prepared statement cache first to release connections
-		if stmtManger, ok := a.db.ConnPool.(*gorm.PreparedStmtDB); ok {
-			stmtManger.Close()
-		}
-		if sqlDB, err := a.db.DB(); err == nil {
-			// Force close all idle connections immediately by setting pool size to 0
-			sqlDB.SetMaxIdleConns(0)
-			sqlDB.SetMaxOpenConns(0)
-			if err := sqlDB.Close(); err != nil {
-				logrus.Errorf("Error closing main database connection: %v", err)
-			} else {
-				logrus.Debug("Main database connection closed.")
-			}
-		}
-	}
+	// Close ReadDB first since it may have more active connections (SQLite WAL mode)
 
 	// Close read-only database connection if it's separate from main DB (SQLite WAL mode)
 	if db.ReadDB != nil && db.ReadDB != a.db {
-		// Close GORM prepared statement cache first
-		if stmtManger, ok := db.ReadDB.ConnPool.(*gorm.PreparedStmtDB); ok {
-			stmtManger.Close()
-		}
-		if sqlDB, err := db.ReadDB.DB(); err == nil {
-			// Force close all connections immediately by setting pool size and timeouts to 0
-			// This prevents waiting for ConnMaxIdleTime to expire
-			sqlDB.SetConnMaxIdleTime(0)
-			sqlDB.SetConnMaxLifetime(0)
-			sqlDB.SetMaxIdleConns(0)
-			sqlDB.SetMaxOpenConns(0)
-			if err := sqlDB.Close(); err != nil {
-				logrus.Errorf("Error closing read database connection: %v", err)
-			} else {
-				logrus.Debug("Read database connection closed.")
-			}
-		}
+		closeDBConnection(db.ReadDB, "Read database")
+	}
+
+	// Close main database connection
+	if a.db != nil {
+		closeDBConnection(a.db, "Main database")
 	}
 
 	logrus.Info("Server exited gracefully")
+}
+
+// closeDBConnection gracefully closes a GORM database connection with timeout.
+// It first closes prepared statement cache, then forces idle connections to close,
+// and finally closes the connection pool with a timeout to avoid hanging.
+func closeDBConnection(gormDB *gorm.DB, name string) {
+	if gormDB == nil {
+		return
+	}
+
+	totalStart := time.Now()
+	logrus.Debugf("[%s] Starting database connection close...", name)
+
+	// Close GORM prepared statement cache first to release connections
+	stmtStart := time.Now()
+	if stmtManager, ok := gormDB.ConnPool.(*gorm.PreparedStmtDB); ok {
+		stmtManager.Close()
+		logrus.Debugf("[%s] Prepared statement cache closed. (took %v)", name, time.Since(stmtStart))
+	}
+
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		logrus.Errorf("Error getting sql.DB for %s: %v", name, err)
+		return
+	}
+
+	// Log connection pool stats before closing
+	stats := sqlDB.Stats()
+	logrus.Debugf("[%s] Connection pool stats: Open=%d, InUse=%d, Idle=%d, WaitCount=%d",
+		name, stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
+
+	// For SQLite: Execute WAL checkpoint before closing to speed up shutdown.
+	// TRUNCATE mode checkpoints all frames and truncates the WAL file to zero bytes.
+	// This prevents the implicit checkpoint during Close() which can be slow.
+	// Use a short timeout context to avoid blocking shutdown if checkpoint hangs.
+	checkpointStart := time.Now()
+	checkpointCtx, cancelCheckpoint := context.WithTimeout(context.Background(), 2*time.Second)
+	if _, err := sqlDB.ExecContext(checkpointCtx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		logrus.Debugf("[%s] WAL checkpoint skipped or failed: %v (took %v)", name, err, time.Since(checkpointStart))
+	} else {
+		logrus.Debugf("[%s] WAL checkpoint completed. (took %v)", name, time.Since(checkpointStart))
+	}
+	cancelCheckpoint()
+
+	// Force close all idle connections immediately by setting pool size to 0
+	// This triggers immediate cleanup of idle connections in the pool
+	logrus.Debugf("[%s] Setting MaxIdleConns to 0...", name)
+	sqlDB.SetMaxIdleConns(0)
+
+	// Set timeouts to 0 to prevent new connections from being kept alive
+	sqlDB.SetConnMaxIdleTime(0)
+	sqlDB.SetConnMaxLifetime(0)
+
+	// Log connection pool stats after forcing idle close
+	stats = sqlDB.Stats()
+	logrus.Debugf("[%s] After idle cleanup: Open=%d, InUse=%d, Idle=%d",
+		name, stats.OpenConnections, stats.InUse, stats.Idle)
+
+	// Close with timeout to avoid hanging on stuck connections
+	// Use a goroutine with channel to implement timeout for Close()
+	closeStart := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		done <- sqlDB.Close()
+	}()
+
+	// Wait up to 3 seconds for graceful close, then force proceed
+	select {
+	case err := <-done:
+		if err != nil {
+			logrus.Errorf("[%s] Error closing connection: %v (took %v)", name, err, time.Since(closeStart))
+		} else {
+			logrus.Debugf("[%s] Connection closed successfully. (took %v)", name, time.Since(closeStart))
+		}
+	case <-time.After(3 * time.Second):
+		logrus.Warnf("[%s] Connection close timed out after 3s, proceeding anyway", name)
+	}
+
+	logrus.Debugf("[%s] Total close time: %v", name, time.Since(totalStart))
 }

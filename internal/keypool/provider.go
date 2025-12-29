@@ -11,12 +11,22 @@ import (
 	"gpt-load/internal/store"
 	"gpt-load/internal/utils"
 	"math/rand"
+	"runtime"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
+
+// statusUpdateTask represents a key status update task for the worker pool.
+type statusUpdateTask struct {
+	apiKey       *models.APIKey
+	group        *models.Group
+	isSuccess    bool
+	errorMessage string
+}
 
 type KeyProvider struct {
 	db              *gorm.DB
@@ -27,16 +37,114 @@ type KeyProvider struct {
 	// Note: This callback will be invoked from a goroutine (spawned in UpdateStatus),
 	// so implementers must handle concurrent access if the callback accesses shared state.
 	CacheInvalidationCallback func(groupID uint)
+
+	// Worker pool for status updates to control concurrency
+	statusUpdateChan chan statusUpdateTask
+	workerWg         sync.WaitGroup
+	stopOnce         sync.Once
+	stopChan         chan struct{}
 }
 
-// NewProvider creates a new KeyProvider instance.
+// NewProvider creates a new KeyProvider instance with worker pool.
 func NewProvider(db *gorm.DB, store store.Store, settingsManager *config.SystemSettingsManager, encryptionSvc encryption.Service) *KeyProvider {
-	return &KeyProvider{
-		db:              db,
-		store:           store,
-		settingsManager: settingsManager,
-		encryptionSvc:   encryptionSvc,
+	// Calculate worker count based on CPU cores
+	workerCount := runtime.NumCPU() * 2
+	if workerCount < 4 {
+		workerCount = 4
 	}
+	if workerCount > 16 {
+		workerCount = 16
+	}
+
+	p := &KeyProvider{
+		db:               db,
+		store:            store,
+		settingsManager:  settingsManager,
+		encryptionSvc:    encryptionSvc,
+		statusUpdateChan: make(chan statusUpdateTask, 1000), // Buffered channel for backpressure
+		stopChan:         make(chan struct{}),
+	}
+
+	// Start worker pool
+	for i := 0; i < workerCount; i++ {
+		p.workerWg.Add(1)
+		go p.statusUpdateWorker()
+	}
+
+	logrus.Debugf("KeyProvider initialized with %d status update workers", workerCount)
+	return p
+}
+
+// statusUpdateWorker processes status update tasks from the channel.
+func (p *KeyProvider) statusUpdateWorker() {
+	defer p.workerWg.Done()
+
+	for {
+		select {
+		case task, ok := <-p.statusUpdateChan:
+			if !ok {
+				return
+			}
+			p.processStatusUpdate(task)
+		case <-p.stopChan:
+			// Drain remaining tasks before exiting
+			for {
+				select {
+				case task, ok := <-p.statusUpdateChan:
+					if !ok {
+						return
+					}
+					p.processStatusUpdate(task)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// processStatusUpdate handles a single status update task.
+func (p *KeyProvider) processStatusUpdate(task statusUpdateTask) {
+	// Use strconv instead of fmt.Sprintf for better performance
+	keyHashKey := "key:" + strconv.FormatUint(uint64(task.apiKey.ID), 10)
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(task.group.ID), 10) + ":active_keys"
+
+	if task.isSuccess {
+		if err := p.handleSuccess(task.apiKey.ID, keyHashKey, activeKeysListKey, task.group.ID); err != nil {
+			logrus.WithFields(logrus.Fields{"keyID": task.apiKey.ID, "error": err}).Error("Failed to handle key success")
+		}
+	} else {
+		if app_errors.IsUnCounted(task.errorMessage) {
+			logrus.WithFields(logrus.Fields{
+				"keyID": task.apiKey.ID,
+				"error": task.errorMessage,
+			}).Debug("Uncounted error, skipping failure handling")
+		} else {
+			if err := p.handleFailure(task.apiKey, task.group, keyHashKey, activeKeysListKey); err != nil {
+				logrus.WithFields(logrus.Fields{"keyID": task.apiKey.ID, "error": err}).Error("Failed to handle key failure")
+			}
+		}
+	}
+}
+
+// Stop gracefully shuts down the worker pool.
+func (p *KeyProvider) Stop() {
+	p.stopOnce.Do(func() {
+		close(p.stopChan)
+		// Wait for workers to finish with timeout
+		done := make(chan struct{})
+		go func() {
+			p.workerWg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			logrus.Debug("KeyProvider worker pool stopped gracefully")
+		case <-time.After(5 * time.Second):
+			logrus.Warn("KeyProvider worker pool stop timed out")
+		}
+	})
 }
 
 // SelectKey atomically selects and rotates an available APIKey for the specified group.
@@ -94,30 +202,24 @@ func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 	return apiKey, nil
 }
 
-// UpdateStatus asynchronously submits a key status update task.
+// UpdateStatus submits a key status update task to the worker pool.
+// Uses bounded concurrency to prevent resource exhaustion.
 func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, isSuccess bool, errorMessage string) {
-	go func() {
-		// Use strconv instead of fmt.Sprintf for better performance
-		keyHashKey := "key:" + strconv.FormatUint(uint64(apiKey.ID), 10)
-		activeKeysListKey := "group:" + strconv.FormatUint(uint64(group.ID), 10) + ":active_keys"
+	task := statusUpdateTask{
+		apiKey:       apiKey,
+		group:        group,
+		isSuccess:    isSuccess,
+		errorMessage: errorMessage,
+	}
 
-		if isSuccess {
-			if err := p.handleSuccess(apiKey.ID, keyHashKey, activeKeysListKey, group.ID); err != nil {
-				logrus.WithFields(logrus.Fields{"keyID": apiKey.ID, "error": err}).Error("Failed to handle key success")
-			}
-		} else {
-			if app_errors.IsUnCounted(errorMessage) {
-				logrus.WithFields(logrus.Fields{
-					"keyID": apiKey.ID,
-					"error": errorMessage,
-				}).Debug("Uncounted error, skipping failure handling")
-			} else {
-				if err := p.handleFailure(apiKey, group, keyHashKey, activeKeysListKey); err != nil {
-					logrus.WithFields(logrus.Fields{"keyID": apiKey.ID, "error": err}).Error("Failed to handle key failure")
-				}
-			}
-		}
-	}()
+	select {
+	case p.statusUpdateChan <- task:
+		// Task submitted successfully
+	default:
+		// Channel full, process synchronously to avoid data loss
+		logrus.Warn("Status update channel full, processing synchronously")
+		go p.processStatusUpdate(task)
+	}
 }
 
 // executeWithRetry runs a database operation with a small retry/backoff policy for lock contention.

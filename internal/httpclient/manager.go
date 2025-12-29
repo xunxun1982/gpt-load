@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gpt-load/internal/utils"
+
 	"github.com/sirupsen/logrus"
 )
 
@@ -100,15 +101,23 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 		return client
 	}
 
-	// Create a new transport and client with the specified configuration.
+	// Calculate MaxConnsPerHost for burst capacity (2x idle connections)
+	maxConnsPerHost := config.MaxIdleConnsPerHost * 2
+	if maxConnsPerHost < 10 {
+		maxConnsPerHost = 10
+	}
+
+	// Create a new transport and client with optimized configuration.
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   config.ConnectTimeout,
 			KeepAlive: 30 * time.Second,
+			DualStack: true, // Enable IPv4/IPv6 dual stack
 		}).DialContext,
 		ForceAttemptHTTP2:     config.ForceAttemptHTTP2,
 		MaxIdleConns:          config.MaxIdleConns,
 		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
+		MaxConnsPerHost:       maxConnsPerHost, // Allow burst capacity
 		IdleConnTimeout:       config.IdleConnTimeout,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 		ExpectContinueTimeout: config.ExpectContinueTimeout,
@@ -116,6 +125,7 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 		DisableCompression:    config.DisableCompression,
 		WriteBufferSize:       config.WriteBufferSize,
 		ReadBufferSize:        config.ReadBufferSize,
+		DisableKeepAlives:     false, // Ensure keep-alives are enabled for connection reuse
 	}
 
 	// Set HTTP proxy with validation and detailed logging
@@ -149,19 +159,41 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	newClient := &http.Client{
 		Transport: transport,
 		Timeout:   config.RequestTimeout,
+		// Limit redirect following to prevent infinite loops
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return nil
+		},
 	}
 
 	m.clients[fingerprint] = newClient
 
 	// Log client creation with full configuration details for debugging
 	logrus.WithFields(logrus.Fields{
-		"fingerprint":  fingerprint,
-		"proxy_url":    utils.SanitizeProxyString(trimmedProxyURL),
-		"timeout":      config.RequestTimeout,
-		"has_proxy":    trimmedProxyURL != "",
-	}).Debug("Created new HTTP client")
+		"fingerprint":       fingerprint,
+		"proxy_url":         utils.SanitizeProxyString(trimmedProxyURL),
+		"timeout":           config.RequestTimeout,
+		"max_conns_per_host": maxConnsPerHost,
+		"has_proxy":         trimmedProxyURL != "",
+	}).Debug("Created new HTTP client with optimized connection pool")
 
 	return newClient
+}
+
+// CloseIdleConnections closes idle connections for all managed clients.
+// This can be useful for releasing resources during graceful shutdown.
+func (m *HTTPClientManager) CloseIdleConnections() {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	for _, client := range m.clients {
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}
+	logrus.Debug("Closed idle connections for all HTTP clients")
 }
 
 // getFingerprint generates a unique string representation of the client configuration.
