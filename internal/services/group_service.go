@@ -380,45 +380,56 @@ func (s *GroupService) InvalidateGroupListCache() {
 // addGroupToListCache adds a new group to the cache without invalidating it.
 // This is used after creating a new group to keep the cache valid during async operations.
 // If cache is empty, it tries to load all groups from DB first using readDB.
+//
+// Lock contention optimization: The mutex is released before DB queries to avoid blocking
+// other goroutines during potentially slow operations (up to 2 seconds timeout).
 func (s *GroupService) addGroupToListCache(group *models.Group) {
 	s.groupListCacheMu.Lock()
-	defer s.groupListCacheMu.Unlock()
+	needsDBLoad := s.groupListCache == nil || len(s.groupListCache.Groups) == 0
+	if !needsDBLoad {
+		// Fast path: cache exists, just append and return
+		s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
+		s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCacheTTL)
+		s.groupListCacheMu.Unlock()
+		return
+	}
+	s.groupListCacheMu.Unlock()
 
-	if s.groupListCache == nil || len(s.groupListCache.Groups) == 0 {
-		// No cache exists, try to load from DB first using readDB
-		var groups []models.Group
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := s.readDB.WithContext(ctx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
-			// DB query failed, create cache with just this group
-			logrus.WithError(err).Debug("Failed to load groups for cache, using single group")
-			s.groupListCache = &groupListCacheEntry{
-				Groups:    []models.Group{*group},
-				ExpiresAt: time.Now().Add(s.groupListCacheTTL),
-			}
-			return
-		}
-		// Check if the new group is already in the list (shouldn't happen but be safe)
-		found := false
-		for _, g := range groups {
-			if g.ID == group.ID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			groups = append(groups, *group)
-		}
+	// Slow path: need to load from DB
+	// Release lock before DB query to reduce lock contention
+	var groups []models.Group
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.readDB.WithContext(ctx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
+		// DB query failed, create cache with just this group
+		logrus.WithError(err).Debug("Failed to load groups for cache, using single group")
+		s.groupListCacheMu.Lock()
 		s.groupListCache = &groupListCacheEntry{
-			Groups:    groups,
+			Groups:    []models.Group{*group},
 			ExpiresAt: time.Now().Add(s.groupListCacheTTL),
 		}
+		s.groupListCacheMu.Unlock()
 		return
 	}
 
-	// Append the new group to existing cache and extend TTL
-	s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
-	s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCacheTTL)
+	// Check if the new group is already in the list (shouldn't happen but be safe)
+	found := false
+	for _, g := range groups {
+		if g.ID == group.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		groups = append(groups, *group)
+	}
+
+	s.groupListCacheMu.Lock()
+	s.groupListCache = &groupListCacheEntry{
+		Groups:    groups,
+		ExpiresAt: time.Now().Add(s.groupListCacheTTL),
+	}
+	s.groupListCacheMu.Unlock()
 }
 
 // isTaskRunning checks if an import or delete task is currently running.

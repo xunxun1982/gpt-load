@@ -2,11 +2,10 @@ package services
 
 import (
 	"context"
-	"errors"
-	"strings"
 
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 
 	"gorm.io/gorm"
 )
@@ -16,24 +15,15 @@ import (
 // when sort values are equal (alphabetical order by group name).
 const GroupListOrderClause = "sort ASC, name ASC"
 
-// isTransientDBError checks if the error is a transient database error that can be retried
+// isTransientDBError is an alias for utils.IsTransientDBError for backward compatibility.
+// It checks if the error is a transient database error that can be retried
 // or handled gracefully by returning cached data.
+// Uses the comprehensive implementation in utils package which covers:
+// - Context timeout/cancellation
+// - SQLite lock errors (database is locked, sqlite_busy, etc.)
+// - MySQL/PostgreSQL lock errors (lock wait timeout, deadlock, etc.)
 func isTransientDBError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// Context timeout or cancellation
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return true
-	}
-	// SQLite database locked error
-	errStr := strings.ToLower(err.Error())
-	if strings.Contains(errStr, "database is locked") ||
-		strings.Contains(errStr, "database table is locked") ||
-		strings.Contains(errStr, "busy") {
-		return true
-	}
-	return false
+	return utils.IsTransientDBError(err)
 }
 
 // FindGroupByID finds a group by ID and returns it, or an error if not found.

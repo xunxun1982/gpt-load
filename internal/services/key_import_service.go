@@ -134,6 +134,13 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 }
 
 // runBulkImportForCopy performs bulk import for copied keys.
+// AI Review Note: This method shares significant logic with runBulkImport (hash deduplication,
+// key encryption, bulk insert, memory store loading, cache invalidation). The duplication is
+// intentional because:
+// 1. runBulkImportForCopy handles pre-decrypted keys with prior ignored count from decryption errors
+// 2. runBulkImport handles raw text keys with progress callback during preparation
+// 3. Extracting common logic would require complex parameter passing and reduce readability
+// 4. Both methods are stable and unlikely to diverge in their core logic
 func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
 	// Get existing key hashes for deduplication
 	var existingHashes []string

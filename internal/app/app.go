@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"gpt-load/internal/config"
-	db "gpt-load/internal/db/migrations"
+	"gpt-load/internal/db"
+	dbmigrations "gpt-load/internal/db/migrations"
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
@@ -98,7 +99,7 @@ func (a *App) Start() error {
 		}
 
 		// Database migration
-		db.HandleLegacyIndexes(a.db)
+		dbmigrations.HandleLegacyIndexes(a.db)
 		if err := a.db.AutoMigrate(
 			&models.SystemSetting{},
 			&models.Group{},
@@ -113,7 +114,7 @@ func (a *App) Start() error {
 			return fmt.Errorf("database auto-migration failed: %w", err)
 		}
 		// Data migration
-		if err := db.MigrateDatabase(a.db); err != nil {
+		if err := dbmigrations.MigrateDatabase(a.db); err != nil {
 			return fmt.Errorf("database data migration failed: %w", err)
 		}
 		logrus.Info("Database auto-migration completed.")
@@ -249,6 +250,29 @@ func (a *App) Stop(ctx context.Context) {
 
 	if a.storage != nil {
 		a.storage.Close()
+	}
+
+	// Close database connections to prevent resource leaks
+	// Best practice: explicitly close connection pools during graceful shutdown
+	if a.db != nil {
+		if sqlDB, err := a.db.DB(); err == nil {
+			if err := sqlDB.Close(); err != nil {
+				logrus.Errorf("Error closing main database connection: %v", err)
+			} else {
+				logrus.Debug("Main database connection closed.")
+			}
+		}
+	}
+
+	// Close read-only database connection if it's separate from main DB (SQLite WAL mode)
+	if db.ReadDB != nil && db.ReadDB != a.db {
+		if sqlDB, err := db.ReadDB.DB(); err == nil {
+			if err := sqlDB.Close(); err != nil {
+				logrus.Errorf("Error closing read database connection: %v", err)
+			} else {
+				logrus.Debug("Read database connection closed.")
+			}
+		}
 	}
 
 	logrus.Info("Server exited gracefully")

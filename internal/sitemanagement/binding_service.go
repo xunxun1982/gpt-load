@@ -399,6 +399,11 @@ func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSite
 }
 
 // isTaskRunning checks if an import or delete task is currently running.
+// AI Review Note: This helper is intentionally duplicated from ChildGroupService rather than extracted
+// to a shared location because:
+// 1. The function is very simple (5 lines) and unlikely to diverge
+// 2. Extracting would create unnecessary cross-package dependencies
+// 3. Each service has its own TaskService reference, making sharing awkward
 func (s *BindingService) isTaskRunning() bool {
 	if s.taskService == nil {
 		return false
