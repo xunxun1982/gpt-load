@@ -7,15 +7,18 @@ import (
 
 // sensitiveQueryParams lists query parameter names that should be redacted from logs.
 // These parameters may contain authentication tokens or other sensitive data.
+// Based on security best practices for credential leakage prevention.
 var sensitiveQueryParams = []string{
 	"key",
 	"api_key",
 	"apikey",
 	"token",
 	"access_token",
+	"refresh_token",
 	"auth",
 	"authorization",
 	"secret",
+	"client_secret",
 	"password",
 }
 

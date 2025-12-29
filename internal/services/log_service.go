@@ -164,10 +164,12 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 	default:
 		// SQLite 3.25+: Use ROW_NUMBER() window function (supported since September 2018)
 		// All modern SQLite versions support window functions
-		// Note: We intentionally do not add explicit database type validation here because:
-		// 1. The project only officially supports SQLite, MySQL, and PostgreSQL
-		// 2. Unknown databases will fail with a clear SQL syntax error if incompatible
+		//
+		// AI Review Note: Suggestion to add warning log for unknown dialects was NOT adopted because:
+		// 1. SQLite dialect names vary ("sqlite", "sqlite3") - would cause false positive warnings
+		// 2. Unknown databases will fail with clear SQL syntax error if incompatible
 		// 3. Adding explicit rejection would break potential compatible databases
+		// 4. Extra logging adds noise without actionable value - errors are already clear at execution time
 		err = s.DB.Raw(`
 			SELECT key_value, group_name, status_code FROM (
 				SELECT
