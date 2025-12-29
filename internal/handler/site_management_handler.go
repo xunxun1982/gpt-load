@@ -55,7 +55,12 @@ type UpdateManagedSiteRequest struct {
 }
 
 func (s *Server) ListManagedSites(c *gin.Context) {
-	// Check if pagination params are provided
+	// Route to paginated or non-paginated endpoint based on query params.
+	// Design decision: Keep both endpoints for backward compatibility and different use cases:
+	// - Non-paginated: Uses cache (30s TTL), fast for small datasets and internal use
+	// - Paginated: For frontend table with filters, search, and large datasets
+	// AI suggested always using pagination, but this dual approach provides flexibility
+	// and better performance for cached full-list scenarios.
 	pageStr := c.Query("page")
 	if pageStr != "" {
 		// Use paginated endpoint
@@ -75,9 +80,19 @@ func (s *Server) ListManagedSites(c *gin.Context) {
 func (s *Server) ListManagedSitesPaginated(c *gin.Context) {
 	var params sitemanagement.SiteListParams
 
-	// Parse pagination params
-	params.Page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
-	params.PageSize, _ = strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	// Parse pagination params with fallback to defaults on parse error.
+	// Service layer performs additional bounds validation (page >= 1, pageSize <= 200).
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil {
+		page = 1
+	}
+	params.Page = page
+
+	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	if err != nil {
+		pageSize = 50
+	}
+	params.PageSize = pageSize
 	params.Search = c.Query("search")
 
 	// Parse boolean filter params

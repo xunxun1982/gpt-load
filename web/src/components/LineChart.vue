@@ -265,8 +265,12 @@ const generateAreaPath = (data: (number | undefined)[]) => {
       if (points.length === 0) {
         return;
       }
-      const firstPoint = points[0]!;
-      const lastPoint = points[points.length - 1]!;
+      const firstPoint = points[0];
+      const lastPoint = points[points.length - 1];
+
+      if (!firstPoint || !lastPoint) {
+        return;
+      }
 
       const lineCommands = points.map(p => `L ${p.x},${p.y}`).join(" ");
 

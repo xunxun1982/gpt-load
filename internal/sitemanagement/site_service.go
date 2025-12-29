@@ -234,7 +234,13 @@ func (s *SiteService) convertSitesToDTOs(ctx context.Context, sites []ManagedSit
 	return dtos, nil
 }
 
-// siteToDTO converts a single site to DTO using pre-fetched group name map
+// siteToDTO converts a single site to DTO using pre-fetched group name map.
+// Note: This method is optimized for batch operations where group names are pre-fetched.
+// For single-site operations (create/update), use toDTO() which performs individual lookup.
+// AI suggested consolidating these methods, but keeping them separate provides:
+// 1. Clear separation between batch (efficient) and single (simple) use cases
+// 2. Avoids nil map checks and optional parameter complexity
+// 3. Better code readability for each specific use case
 func (s *SiteService) siteToDTO(site *ManagedSite, groupNameMap map[uint]string) ManagedSiteDTO {
 	// Decrypt user_id for display
 	userID := site.UserID
