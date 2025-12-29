@@ -94,7 +94,7 @@ type UpdateSiteParams struct {
 }
 
 func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
-	// Check cache first
+	// Check cache first (fast path with read lock)
 	s.siteListCacheMu.RLock()
 	if s.siteListCache != nil && time.Now().Before(s.siteListCache.ExpiresAt) {
 		sites := s.siteListCache.Sites
@@ -116,8 +116,16 @@ func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
 		return nil, err
 	}
 
-	// Update cache
+	// Update cache with double-checked locking to prevent cache stampede.
+	// Between releasing RLock and acquiring Lock, another goroutine may have
+	// already populated the cache, so we check again before overwriting.
 	s.siteListCacheMu.Lock()
+	if s.siteListCache != nil && time.Now().Before(s.siteListCache.ExpiresAt) {
+		// Another goroutine populated cache while we were querying
+		cachedSites := s.siteListCache.Sites
+		s.siteListCacheMu.Unlock()
+		return cachedSites, nil
+	}
 	s.siteListCache = &siteListCacheEntry{
 		Sites:     dtos,
 		ExpiresAt: time.Now().Add(s.siteListCacheTTL),
@@ -144,12 +152,14 @@ func (s *SiteService) ListSitesPaginated(ctx context.Context, params SiteListPar
 	query := s.db.WithContext(ctx).Model(&ManagedSite{})
 
 	// Apply filters
-	// Note: LIKE search is case-sensitive in most SQL databases except SQLite.
-	// AI suggested using LOWER() for case-insensitive search, but we intentionally
-	// keep case-sensitive matching because:
-	// 1. Using LOWER() would prevent index usage, degrading performance
-	// 2. SQLite (our primary DB) already handles LIKE case-insensitively for ASCII
-	// 3. For complex search needs, full-text search would be more appropriate
+	// Note on LIKE search performance:
+	// 1. LIKE '%pattern%' (leading wildcard) cannot use B-tree indexes regardless of
+	//    case sensitivity - this is a fundamental limitation of B-tree index structure
+	// 2. SQLite handles LIKE case-insensitively for ASCII by default
+	// 3. For high-performance full-text search, consider SQLite FTS5 or similar
+	// 4. Current implementation is acceptable for typical site list sizes (<1000 rows)
+	// AI suggested adding indexes on name/notes/description, but indexes would not
+	// improve LIKE '%pattern%' queries - only LIKE 'pattern%' can use indexes.
 	if params.Search != "" {
 		searchPattern := "%" + params.Search + "%"
 		query = query.Where(

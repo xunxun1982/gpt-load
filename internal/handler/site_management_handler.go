@@ -95,7 +95,12 @@ func (s *Server) ListManagedSitesPaginated(c *gin.Context) {
 	params.PageSize = pageSize
 	params.Search = c.Query("search")
 
-	// Parse boolean filter params
+	// Parse boolean filter params using direct string comparison.
+	// AI suggested using strconv.ParseBool for flexibility (accepts "1", "t", "TRUE", etc.),
+	// but we intentionally use strict "true" comparison because:
+	// 1. API behavior should be predictable - only "true" means true
+	// 2. Consistent with other handlers in this project (e.g., base_channel.go)
+	// 3. Avoids ambiguity in API documentation and client implementations
 	if enabledStr := c.Query("enabled"); enabledStr != "" {
 		enabled := enabledStr == "true"
 		params.Enabled = &enabled

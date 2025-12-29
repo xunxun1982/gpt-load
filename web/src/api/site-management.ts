@@ -159,7 +159,8 @@ export const siteManagementApi = {
       params: { limit },
       hideMessage: true,
     });
-    return res.data || [];
+    // Backend returns paginated response { logs: [...], total, page, ... }
+    return res.data?.logs || [];
   },
 
   // Export sites
