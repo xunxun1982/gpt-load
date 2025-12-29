@@ -14,20 +14,20 @@ import {
   type ManagedSiteType,
   type ManagedSiteAuthType,
   type SiteImportData,
+  type SiteListParams,
 } from "@/api/site-management";
 import { appState } from "@/utils/app-state";
 import {
   NButton,
   NCard,
-  NCheckbox,
   NDataTable,
-  NDivider,
   NForm,
   NFormItem,
   NIcon,
   NInput,
   NInputNumber,
   NModal,
+  NPagination,
   NSelect,
   NSpace,
   NSwitch,
@@ -37,6 +37,7 @@ import {
   useDialog,
   useMessage,
   type DataTableColumns,
+  type SelectOption,
 } from "naive-ui";
 import { computed, h, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -48,8 +49,10 @@ import {
   LogInOutline,
   Search,
   LinkOutline,
+  RefreshOutline,
 } from "@vicons/ionicons5";
 import { askExportMode, askImportMode } from "@/utils/export-import";
+import { debounce } from "lodash-es";
 
 const { t } = useI18n();
 const message = useMessage();
@@ -63,8 +66,6 @@ const emit = defineEmits<Emits>();
 
 const loading = ref(false);
 const sites = ref<ManagedSiteDTO[]>([]);
-const showOnlyCheckinAvailable = ref(false);
-const searchText = ref("");
 const showSiteModal = ref(false);
 const editingSite = ref<ManagedSiteDTO | null>(null);
 const authValueInput = ref("");
@@ -73,6 +74,21 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const deleteConfirmInput = ref("");
 const deleteAllConfirmInput = ref("");
 const deleteAllLoading = ref(false);
+
+// Pagination state
+const pagination = reactive({
+  page: 1,
+  pageSize: 20,
+  total: 0,
+  totalPages: 0,
+});
+
+// Filter state (use string values for naive-ui select compatibility)
+const filters = reactive({
+  search: "",
+  enabled: "all" as string,
+  checkinAvailable: "all" as string,
+});
 
 const siteForm = reactive({
   name: "",
@@ -109,44 +125,19 @@ const authTypeOptions = computed(() => [
   { label: t("siteManagement.authTypeAccessToken"), value: "access_token" },
 ]);
 
-// Site statistics computed from local data (no extra API call needed)
-const siteStats = computed(() => {
-  const total = sites.value.length;
-  const enabled = sites.value.filter(s => s.enabled).length;
-  const disabled = total - enabled;
-  const checkinAvailable = sites.value.filter(s => s.checkin_available).length;
-  const checkinEnabled = sites.value.filter(s => s.checkin_enabled).length;
-  return { total, enabled, disabled, checkinAvailable, checkinEnabled };
-});
+// Filter options for enabled status (use string values for naive-ui select compatibility)
+const enabledFilterOptions = computed<SelectOption[]>(() => [
+  { label: t("siteManagement.filterEnabledAll"), value: "all" },
+  { label: t("siteManagement.filterEnabledYes"), value: "true" },
+  { label: t("siteManagement.filterEnabledNo"), value: "false" },
+]);
 
-// Filtered sites based on filter options and search text
-const filteredSites = computed(() => {
-  let result = sites.value;
-
-  // Filter by checkin available
-  if (showOnlyCheckinAvailable.value) {
-    result = result.filter(s => s.checkin_available);
-  }
-
-  // Filter by search text (fuzzy search on name, base_url, notes, description)
-  const query = searchText.value.trim().toLowerCase();
-  if (query) {
-    result = result.filter(s => {
-      const name = (s.name || "").toLowerCase();
-      const baseUrl = (s.base_url || "").toLowerCase();
-      const notes = (s.notes || "").toLowerCase();
-      const description = (s.description || "").toLowerCase();
-      return (
-        name.includes(query) ||
-        baseUrl.includes(query) ||
-        notes.includes(query) ||
-        description.includes(query)
-      );
-    });
-  }
-
-  return result;
-});
+// Filter options for checkin available
+const checkinFilterOptions = computed<SelectOption[]>(() => [
+  { label: t("siteManagement.filterCheckinAll"), value: "all" },
+  { label: t("siteManagement.filterCheckinYes"), value: "true" },
+  { label: t("siteManagement.filterCheckinNo"), value: "false" },
+]);
 
 // Current check-in day based on Beijing time (UTC+8) with 05:00 reset
 // Computed once and shared across all table rows for performance
@@ -162,13 +153,65 @@ const currentCheckinDay = computed(() => {
   return beijingTime.toISOString().slice(0, 10); // YYYY-MM-DD format
 });
 
+// Load sites with pagination
 async function loadSites() {
   loading.value = true;
   try {
-    sites.value = await siteManagementApi.listSites();
+    const params: SiteListParams = {
+      page: pagination.page,
+      page_size: pagination.pageSize,
+      search: filters.search || undefined,
+      enabled: filters.enabled === "all" ? null : filters.enabled === "true",
+      checkin_available:
+        filters.checkinAvailable === "all" ? null : filters.checkinAvailable === "true",
+    };
+
+    const result = await siteManagementApi.listSitesPaginated(params);
+    sites.value = result.sites;
+    pagination.total = result.total;
+    pagination.totalPages = result.total_pages;
   } finally {
     loading.value = false;
   }
+}
+
+// Debounced search handler
+const debouncedSearch = debounce(() => {
+  pagination.page = 1; // Reset to first page on search
+  loadSites();
+}, 300);
+
+// Watch search input changes
+watch(() => filters.search, debouncedSearch);
+
+// Watch filter changes (immediate, no debounce)
+watch(
+  () => [filters.enabled, filters.checkinAvailable],
+  () => {
+    pagination.page = 1;
+    loadSites();
+  }
+);
+
+// Pagination handlers
+function handlePageChange(page: number) {
+  pagination.page = page;
+  loadSites();
+}
+
+function handlePageSizeChange(pageSize: number) {
+  pagination.pageSize = pageSize;
+  pagination.page = 1;
+  loadSites();
+}
+
+// Reset filters
+function resetFilters() {
+  filters.search = "";
+  filters.enabled = "all";
+  filters.checkinAvailable = "all";
+  pagination.page = 1;
+  loadSites();
 }
 
 function resetSiteForm() {
@@ -469,49 +512,47 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     width: 140,
     titleAlign: "center",
     render: row =>
-      h("div", { class: "site-name-cell" }, [
-        h("div", { class: "site-name-row" }, [
-          // Show bound group icon before site name if bound to a group
-          row.bound_group_id
-            ? h(
-                NTooltip,
-                { trigger: "hover" },
-                {
-                  trigger: () =>
-                    h(
-                      NIcon,
-                      {
-                        size: 14,
-                        color: "var(--success-color)",
-                        style: "cursor: pointer; flex-shrink: 0;",
-                        onClick: (e: Event) => {
-                          e.stopPropagation();
-                          if (row.bound_group_id) {
-                            handleNavigateToGroup(row.bound_group_id);
-                          }
-                        },
+      h("div", { class: "site-name-row" }, [
+        // Show bound group icon before site name if bound to a group
+        row.bound_group_id
+          ? h(
+              NTooltip,
+              { trigger: "hover" },
+              {
+                trigger: () =>
+                  h(
+                    NIcon,
+                    {
+                      size: 14,
+                      color: "var(--success-color)",
+                      style: "cursor: pointer; flex-shrink: 0;",
+                      onClick: (e: Event) => {
+                        e.stopPropagation();
+                        if (row.bound_group_id) {
+                          handleNavigateToGroup(row.bound_group_id);
+                        }
                       },
-                      () => h(LinkOutline)
-                    ),
-                  default: () =>
-                    `${t("binding.navigateToGroup")}: ${row.bound_group_name || `#${row.bound_group_id}`}`,
-                }
-              )
-            : null,
-          // Site name with tooltip on overflow
-          h(
-            NTooltip,
-            {
-              trigger: "hover",
-              placement: "top-end",
-              style: { maxWidth: "300px" },
-            },
-            {
-              trigger: () => h("span", { class: "site-name-text" }, row.name),
-              default: () => row.name,
-            }
-          ),
-        ]),
+                    },
+                    () => h(LinkOutline)
+                  ),
+                default: () =>
+                  `${t("binding.navigateToGroup")}: ${row.bound_group_name || `#${row.bound_group_id}`}`,
+              }
+            )
+          : null,
+        // Site name with tooltip on hover
+        h(
+          NTooltip,
+          {
+            trigger: "hover",
+            placement: "top-end",
+            style: { maxWidth: "300px" },
+          },
+          {
+            trigger: () => h("span", { class: "site-name-text" }, row.name),
+            default: () => row.name,
+          }
+        ),
       ]),
   },
   {
@@ -545,20 +586,31 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     title: t("siteManagement.baseUrl"),
     key: "base_url",
     // minWidth reduced to make room for notes column; column auto-expands as needed
-    // and ellipsis tooltip ensures full URL is accessible on hover
+    // Single line with ellipsis and tooltip on hover for full URL
     minWidth: 40,
     titleAlign: "center",
-    ellipsis: { tooltip: true },
     render: row =>
       h(
-        "a",
+        NTooltip,
         {
-          href: row.base_url,
-          target: "_blank",
-          rel: "noopener noreferrer",
-          style: "color: var(--primary-color); text-decoration: none;",
+          trigger: "hover",
+          placement: "top-end",
+          style: { maxWidth: "400px" },
         },
-        row.base_url
+        {
+          trigger: () =>
+            h(
+              "a",
+              {
+                href: row.base_url,
+                target: "_blank",
+                rel: "noopener noreferrer",
+                class: "site-url-cell",
+              },
+              row.base_url
+            ),
+          default: () => row.base_url,
+        }
       ),
   },
   {
@@ -733,7 +785,7 @@ async function handleExport() {
     const a = document.createElement("a");
     a.href = url;
     // Generate filename like standard-group: managed-sites_count_timestamp-mode.json
-    const siteCount = sites.value.length;
+    const siteCount = pagination.total;
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const suffix = mode === "plain" ? "plain" : "enc";
     a.download = `managed-sites_${siteCount}_${timestamp}-${suffix}.json`;
@@ -882,9 +934,6 @@ onMounted(() => {
     <n-space justify="space-between" align="center" :wrap="false" size="small">
       <n-space align="center" size="small">
         <n-text strong style="font-size: 15px">{{ t("siteManagement.title") }}</n-text>
-        <n-checkbox v-model:checked="showOnlyCheckinAvailable" size="small">
-          {{ t("siteManagement.filterCheckinAvailable") }}
-        </n-checkbox>
       </n-space>
       <n-space size="small">
         <n-tooltip trigger="hover">
@@ -914,38 +963,60 @@ onMounted(() => {
         </n-button>
       </n-space>
     </n-space>
-    <n-divider style="margin: 8px 0" />
-    <!-- Site Statistics and Search - placed above table for visibility when scrolling -->
-    <div class="site-stats-row" v-if="sites.length > 0">
-      <n-space :size="24" align="center" class="stats-left">
-        <span class="stat-item">
-          <span class="stat-label">{{ t("siteManagement.statsTotal") }}:</span>
-          <span class="stat-value">{{ siteStats.total }}</span>
+    <!-- Filter row with search, filters and stats -->
+    <div class="filter-row">
+      <n-space align="center" :size="6" class="filter-left">
+        <!-- Search input -->
+        <n-input
+          v-model:value="filters.search"
+          :placeholder="t('siteManagement.searchPlaceholder')"
+          size="tiny"
+          clearable
+          style="width: 150px"
+        >
+          <template #prefix>
+            <n-icon :component="Search" size="14" />
+          </template>
+        </n-input>
+
+        <!-- Enabled filter with label -->
+        <span class="filter-item">
+          <n-text depth="3" class="filter-label">
+            {{ t("siteManagement.filterEnabledLabel") }}
+          </n-text>
+          <n-select
+            v-model:value="filters.enabled"
+            size="tiny"
+            style="width: 72px"
+            :options="enabledFilterOptions"
+            :consistent-menu-width="false"
+          />
         </span>
-        <span class="stat-item">
-          <span class="stat-label">{{ t("siteManagement.statsEnabled") }}:</span>
-          <span class="stat-value stat-success">{{ siteStats.enabled }}</span>
+
+        <!-- Checkin available filter with label -->
+        <span class="filter-item">
+          <n-text depth="3" class="filter-label">
+            {{ t("siteManagement.filterCheckinLabel") }}
+          </n-text>
+          <n-select
+            v-model:value="filters.checkinAvailable"
+            size="tiny"
+            style="width: 72px"
+            :options="checkinFilterOptions"
+            :consistent-menu-width="false"
+          />
         </span>
-        <span class="stat-item">
-          <span class="stat-label">{{ t("siteManagement.statsDisabled") }}:</span>
-          <span class="stat-value stat-warning">{{ siteStats.disabled }}</span>
-        </span>
-        <span class="stat-item">
-          <span class="stat-label">{{ t("siteManagement.statsCheckinAvailable") }}:</span>
-          <span class="stat-value stat-info">{{ siteStats.checkinAvailable }}</span>
-        </span>
+
+        <!-- Reset button -->
+        <n-button size="tiny" quaternary @click="resetFilters">
+          <template #icon><n-icon :component="RefreshOutline" size="14" /></template>
+        </n-button>
       </n-space>
-      <n-input
-        v-model:value="searchText"
-        :placeholder="t('siteManagement.searchPlaceholder')"
-        size="small"
-        clearable
-        class="search-input"
-      >
-        <template #prefix>
-          <n-icon :component="Search" />
-        </template>
-      </n-input>
+
+      <!-- Stats -->
+      <n-text depth="3" style="font-size: 12px">
+        {{ t("siteManagement.totalCount", { count: pagination.total }) }}
+      </n-text>
     </div>
     <!-- Table wrapper with tabindex for keyboard navigation (arrow keys scroll) -->
     <div class="site-table-wrapper" tabindex="0">
@@ -953,12 +1024,28 @@ onMounted(() => {
         size="small"
         :loading="loading"
         :columns="columns"
-        :data="filteredSites"
+        :data="sites"
         :bordered="false"
         :single-line="false"
-        :max-height="'calc(100vh - 295px)'"
+        :max-height="'calc(100vh - 280px)'"
         :scroll-x="900"
         :row-class-name="rowClassName"
+      />
+    </div>
+
+    <!-- Pagination -->
+    <div class="pagination-wrapper">
+      <n-pagination
+        v-model:page="pagination.page"
+        v-model:page-size="pagination.pageSize"
+        :item-count="pagination.total"
+        :page-sizes="[20, 50, 100]"
+        size="small"
+        show-size-picker
+        show-quick-jumper
+        :prefix="({ itemCount }) => t('siteManagement.paginationPrefix', { total: itemCount })"
+        @update:page="handlePageChange"
+        @update:page-size="handlePageSizeChange"
       />
     </div>
 
@@ -1116,7 +1203,15 @@ onMounted(() => {
 .site-management {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
+}
+
+/* Compact table row height */
+.site-management :deep(.n-data-table-td) {
+  padding: 4px 8px !important;
+}
+.site-management :deep(.n-data-table-th) {
+  padding: 6px 8px !important;
 }
 
 /* Disabled site row style - grayed out appearance */
@@ -1171,57 +1266,42 @@ onMounted(() => {
 }
 
 /* Stats row with search input */
-.site-stats-row {
+.filter-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
-  padding: 8px 12px;
+  margin: 2px 0;
+  padding: 3px 6px;
   background: var(--n-color-embedded);
-  border-radius: 6px;
-  font-size: 13px;
-  gap: 16px;
+  border-radius: 4px;
+  font-size: 12px;
+  gap: 8px;
 }
-.stats-left {
+.filter-left {
   flex: 1;
   min-width: 0;
 }
-.search-input {
-  width: 200px;
-  flex-shrink: 0;
-}
-.stat-item {
+.filter-item {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-}
-.stat-label {
-  color: var(--n-text-color-3);
-}
-.stat-value {
-  font-weight: 600;
-  color: var(--n-text-color-1);
-}
-.stat-success {
-  color: var(--n-success-color);
-}
-.stat-warning {
-  color: var(--n-warning-color);
-}
-.stat-info {
-  color: var(--n-info-color);
-}
-.site-name-cell {
-  display: flex;
-  flex-direction: column;
   gap: 2px;
-  min-width: 0;
+}
+.filter-label {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.pagination-wrapper {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+  padding: 2px 0;
 }
 .site-name-row {
   display: flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
+  overflow: hidden;
 }
 .site-name-text {
   flex: 1;
@@ -1239,6 +1319,41 @@ onMounted(() => {
   white-space: nowrap;
   font-size: 13px;
   color: var(--n-text-color-2);
+}
+.site-url-cell {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--primary-color);
+  text-decoration: none;
+}
+
+/* Force single line display for table cells rendered via h() function */
+.site-management :deep(.site-name-row) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+.site-management :deep(.site-name-text) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.site-management :deep(.site-url-cell) {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--primary-color);
+  text-decoration: none;
 }
 .site-form-modal,
 .logs-modal {

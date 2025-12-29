@@ -2,6 +2,24 @@ package sitemanagement
 
 import "time"
 
+// SiteListParams defines pagination and filter parameters for site listing
+type SiteListParams struct {
+	Page             int    // Page number (1-based)
+	PageSize         int    // Items per page (default 50, max 200)
+	Search           string // Optional search term for name/notes/description/base_url
+	Enabled          *bool  // Optional filter by enabled status
+	CheckinAvailable *bool  // Optional filter by checkin_available status
+}
+
+// SiteListResult contains paginated site list with metadata
+type SiteListResult struct {
+	Sites      []ManagedSiteDTO `json:"sites"`
+	Total      int64            `json:"total"`
+	Page       int              `json:"page"`
+	PageSize   int              `json:"page_size"`
+	TotalPages int              `json:"total_pages"`
+}
+
 type ManagedSiteDTO struct {
 	ID uint `json:"id"`
 

@@ -103,8 +103,19 @@ export default {
   statsCheckinAvailable: "Check-in",
 
   // Filter & Search
-  filterCheckinAvailable: "Show only check-in available",
+  filterCheckinAvailable: "Check-in",
+  filterEnabled: "Status",
+  filterEnabledLabel: "Status:",
+  filterCheckinLabel: "Check-in:",
+  filterEnabledAll: "All",
+  filterEnabledYes: "On",
+  filterEnabledNo: "Off",
+  filterCheckinAll: "All",
+  filterCheckinYes: "Yes",
+  filterCheckinNo: "No",
   searchPlaceholder: "Search name, URL, notes...",
+  totalCount: "{count} sites total",
+  paginationPrefix: "{total} items",
 
   // Messages
   checkinSuccess: "Check-in successful",

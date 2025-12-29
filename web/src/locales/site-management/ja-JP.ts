@@ -103,8 +103,19 @@ export default {
   statsCheckinAvailable: "チェックイン可",
 
   // Filter & Search
-  filterCheckinAvailable: "チェックイン可能のみ表示",
+  filterCheckinAvailable: "チェックイン",
+  filterEnabled: "ステータス",
+  filterEnabledLabel: "状態:",
+  filterCheckinLabel: "サインイン:",
+  filterEnabledAll: "全て",
+  filterEnabledYes: "有効",
+  filterEnabledNo: "無効",
+  filterCheckinAll: "全て",
+  filterCheckinYes: "可能",
+  filterCheckinNo: "不可",
   searchPlaceholder: "名前、URL、メモを検索...",
+  totalCount: "{count} サイト",
+  paginationPrefix: "{total} 件",
 
   // Messages
   checkinSuccess: "チェックイン成功",

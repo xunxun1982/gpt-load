@@ -101,8 +101,19 @@ export default {
   statsCheckinAvailable: "可签到",
 
   // Filter & Search
-  filterCheckinAvailable: "只显示可签到",
+  filterCheckinAvailable: "可签到",
+  filterEnabled: "状态",
+  filterEnabledLabel: "状态:",
+  filterCheckinLabel: "可签到:",
+  filterEnabledAll: "全部",
+  filterEnabledYes: "启用",
+  filterEnabledNo: "禁用",
+  filterCheckinAll: "全部",
+  filterCheckinYes: "是",
+  filterCheckinNo: "否",
   searchPlaceholder: "搜索名称、链接、备注...",
+  totalCount: "共 {count} 个站点",
+  paginationPrefix: "共 {total} 条",
 
   // Messages
   checkinSuccess: "签到成功",

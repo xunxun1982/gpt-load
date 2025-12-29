@@ -341,3 +341,12 @@ body {
 .n-layout-scroll-container {
   overflow: hidden;
 }
+
+/* Tiny size select dropdown menu - match filter row font size */
+.n-base-select-menu .n-base-select-option .n-base-select-option__content {
+  font-size: 12px !important;
+}
+.n-base-select-menu .n-base-select-option {
+  padding: 4px 8px !important;
+  min-height: 24px !important;
+}

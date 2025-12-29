@@ -259,7 +259,7 @@ function handleInput(value: string) {
           resize: vertical;
           box-sizing: border-box;
         "
-      ></textarea>
+      />
     </n-modal>
   </div>
 </template>

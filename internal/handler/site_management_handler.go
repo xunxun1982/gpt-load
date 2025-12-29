@@ -55,11 +55,46 @@ type UpdateManagedSiteRequest struct {
 }
 
 func (s *Server) ListManagedSites(c *gin.Context) {
+	// Check if pagination params are provided
+	pageStr := c.Query("page")
+	if pageStr != "" {
+		// Use paginated endpoint
+		s.ListManagedSitesPaginated(c)
+		return
+	}
+
+	// Non-paginated (legacy) endpoint
 	sites, err := s.SiteService.ListSites(c.Request.Context())
 	if HandleServiceError(c, err) {
 		return
 	}
 	response.Success(c, sites)
+}
+
+// ListManagedSitesPaginated handles paginated site listing with filters
+func (s *Server) ListManagedSitesPaginated(c *gin.Context) {
+	var params sitemanagement.SiteListParams
+
+	// Parse pagination params
+	params.Page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
+	params.PageSize, _ = strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	params.Search = c.Query("search")
+
+	// Parse boolean filter params
+	if enabledStr := c.Query("enabled"); enabledStr != "" {
+		enabled := enabledStr == "true"
+		params.Enabled = &enabled
+	}
+	if checkinStr := c.Query("checkin_available"); checkinStr != "" {
+		checkin := checkinStr == "true"
+		params.CheckinAvailable = &checkin
+	}
+
+	result, err := s.SiteService.ListSitesPaginated(c.Request.Context(), params)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, result)
 }
 
 func (s *Server) CreateManagedSite(c *gin.Context) {
@@ -228,6 +263,12 @@ func (s *Server) ListManagedSiteCheckinLogs(c *gin.Context) {
 		return
 	}
 
+	// Parse pagination params
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+
 	limit := 50
 	if raw := c.Query("limit"); raw != "" {
 		if n, parseErr := strconv.Atoi(raw); parseErr == nil {
@@ -241,10 +282,24 @@ func (s *Server) ListManagedSiteCheckinLogs(c *gin.Context) {
 		}
 	}
 
+	// Calculate offset for pagination
+	offset := (page - 1) * limit
+
+	// Get total count for pagination metadata
+	var total int64
+	if err := s.DB.WithContext(c.Request.Context()).
+		Model(&sitemanagement.ManagedSiteCheckinLog{}).
+		Where("site_id = ?", uint(id)).
+		Count(&total).Error; HandleServiceError(c, err) {
+		return
+	}
+
+	// Get paginated logs
 	var logs []sitemanagement.ManagedSiteCheckinLog
 	if err := s.DB.WithContext(c.Request.Context()).
 		Where("site_id = ?", uint(id)).
 		Order("created_at DESC, id DESC").
+		Offset(offset).
 		Limit(limit).
 		Find(&logs).Error; HandleServiceError(c, err) {
 		return
@@ -269,7 +324,15 @@ func (s *Server) ListManagedSiteCheckinLogs(c *gin.Context) {
 		})
 	}
 
-	response.Success(c, resp)
+	// Return paginated response
+	totalPages := int((total + int64(limit) - 1) / int64(limit))
+	response.Success(c, map[string]interface{}{
+		"logs":        resp,
+		"total":       total,
+		"page":        page,
+		"page_size":   limit,
+		"total_pages": totalPages,
+	})
 }
 
 // ExportManagedSites exports all managed sites
