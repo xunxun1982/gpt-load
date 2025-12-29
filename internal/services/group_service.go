@@ -1177,9 +1177,10 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 	}
 
 	// Get key count for async task (fast query, no decryption)
+	// Use Model() instead of Table() for type safety and consistency with project style
 	var keyCount int64
 	if option != "none" {
-		query := tx.Table("api_keys").Where("group_id = ?", sourceGroupID)
+		query := tx.Model(&models.APIKey{}).Where("group_id = ?", sourceGroupID)
 		if option == "valid_only" {
 			query = query.Where("status = ?", models.KeyStatusActive)
 		}

@@ -67,10 +67,11 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 	startTime := time.Now()
 
 	// Fetch source keys from database
+	// Use Model() instead of Table() for type safety and consistency with project style
 	var sourceKeyData []struct {
 		KeyValue string
 	}
-	query := s.KeyService.DB.Table("api_keys").Select("key_value").Where("group_id = ?", sourceGroupID)
+	query := s.KeyService.DB.Model(&models.APIKey{}).Select("key_value").Where("group_id = ?", sourceGroupID)
 	if copyOption == "valid_only" {
 		query = query.Where("status = ?", models.KeyStatusActive)
 	}
