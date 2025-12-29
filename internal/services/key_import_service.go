@@ -185,9 +185,12 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 // 4. Both methods are relatively short and easy to maintain independently
 // 5. The duplication is intentional for readability and clear separation of concerns
 //
-// Note: Progress tracking in this method is independent of the decryption phase.
-// The decryption phase already updated progress to totalSourceKeys, so we don't
-// need to add priorIgnored to the progress here. We simply track encryption progress.
+// AI Review Note: Suggested cumulative progress tracking to avoid progress bar jumping backwards.
+// Decision: Remove progress updates in encryption phase entirely because:
+// 1. Encryption is a fast in-memory operation (no I/O), typically completing in milliseconds
+// 2. The decryption phase already provides meaningful progress (the slow part with DB I/O)
+// 3. Removing encryption progress avoids the backwards jump issue without adding complexity
+// 4. Users see progress reach 100% after decryption, then task completes shortly after
 func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
 	// Get existing key hashes for deduplication
 	var existingHashes []string
@@ -208,21 +211,16 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 	uniqueNewKeys := make(map[string]bool, len(keys))
 	ignoredCount := priorIgnored
 
-	// Track processed count for progress updates
-	processedCount := 0
-
 	for _, keyVal := range keys {
 		trimmedKey := strings.TrimSpace(keyVal)
 		if trimmedKey == "" || uniqueNewKeys[trimmedKey] {
 			ignoredCount++
-			processedCount++
 			continue
 		}
 
 		keyHash := s.KeyService.EncryptionSvc.Hash(trimmedKey)
 		if existingHashMap[keyHash] {
 			ignoredCount++
-			processedCount++
 			continue
 		}
 
@@ -230,7 +228,6 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 		if err != nil {
 			logrus.WithError(err).Debug("Failed to encrypt key, skipping")
 			ignoredCount++
-			processedCount++
 			continue
 		}
 
@@ -241,16 +238,8 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 			KeyHash:  keyHash,
 			Status:   models.KeyStatusActive,
 		})
-		processedCount++
-
-		// Update progress periodically (every 500 keys) for user feedback
-		// Note: Progress is not cumulative with decryption phase since decryption
-		// already updated progress to totalSourceKeys. This tracks encryption only.
-		if processedCount%500 == 0 {
-			if err := s.TaskService.UpdateProgress(processedCount); err != nil {
-				logrus.Warnf("Failed to update task progress: %v", err)
-			}
-		}
+		// Note: Progress updates removed in encryption phase to avoid progress bar jumping backwards.
+		// Encryption is fast (in-memory), and decryption phase already provides meaningful progress.
 	}
 
 	if len(newKeysToCreate) == 0 {

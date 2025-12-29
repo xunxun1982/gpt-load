@@ -373,7 +373,9 @@ func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]m
 	}
 	s.cacheMu.Unlock()
 
-	return result, nil
+	// Return a copy to prevent data races - the first caller should also receive
+	// an independent copy, consistent with cache hit behavior (lines 311, 321, 340)
+	return s.copyChildGroupsMap(result), nil
 }
 
 // isTaskRunning checks if an import or delete task is currently running.

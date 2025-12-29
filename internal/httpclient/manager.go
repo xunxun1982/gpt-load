@@ -179,12 +179,12 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	m.clients[fingerprint] = newClient
 
 	// Log client creation with full configuration details for debugging
+	// Note: has_proxy field removed as it's redundant (can be inferred from proxy_url being non-empty)
 	logrus.WithFields(logrus.Fields{
-		"fingerprint":       fingerprint,
-		"proxy_url":         utils.SanitizeProxyString(trimmedProxyURL),
-		"timeout":           config.RequestTimeout,
+		"fingerprint":        fingerprint,
+		"proxy_url":          utils.SanitizeProxyString(trimmedProxyURL),
+		"timeout":            config.RequestTimeout,
 		"max_conns_per_host": maxConnsPerHost,
-		"has_proxy":         trimmedProxyURL != "",
 	}).Debug("Created new HTTP client with optimized connection pool")
 
 	return newClient

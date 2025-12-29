@@ -383,9 +383,11 @@ func (s *RequestLogService) batchUpsertHourlyStats(tx *gorm.DB, hourlyStats map[
 	}
 
 	// Detect database type and use appropriate batch upsert strategy
+	// Note: GORM's postgres driver (gorm.io/driver/postgres) returns "postgres" from Dialector.Name(),
+	// not "pgx", even though it uses pgx internally. Verified in GORM source code.
 	dialect := tx.Dialector.Name()
 	switch dialect {
-	case "postgres", "pgx":
+	case "postgres":
 		return s.batchUpsertHourlyStatsPostgres(tx, stats)
 	case "mysql":
 		return s.batchUpsertHourlyStatsMySQL(tx, stats)

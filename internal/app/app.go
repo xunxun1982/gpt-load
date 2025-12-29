@@ -296,6 +296,8 @@ func closeDBConnection(gormDB *gorm.DB, name string) {
 	if stmtManager, ok := gormDB.ConnPool.(*gorm.PreparedStmtDB); ok {
 		stmtManager.Close()
 		logrus.Debugf("[%s] Prepared statement cache closed. (took %v)", name, time.Since(stmtStart))
+	} else {
+		logrus.Debugf("[%s] No prepared statement cache to close", name)
 	}
 
 	sqlDB, err := gormDB.DB()
