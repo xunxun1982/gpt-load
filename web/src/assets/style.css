@@ -342,7 +342,14 @@ body {
   overflow: hidden;
 }
 
-/* Tiny size select dropdown menu - match filter row font size */
+/*
+ * Tiny size select dropdown menu - match filter row font size
+ * Note: These global styles with !important are intentional and necessary because:
+ * 1. naive-ui renders dropdown menus via teleport to <body>, outside any scoped component
+ * 2. Scoped styles or parent class selectors (e.g., .filter-row .n-base-select-menu) won't work
+ * 3. !important is required to override naive-ui's internal component styles
+ * AI suggested scoping these styles, but that approach doesn't work for teleported elements.
+ */
 .n-base-select-menu .n-base-select-option .n-base-select-option__content {
   font-size: 12px !important;
 }

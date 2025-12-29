@@ -144,6 +144,12 @@ func (s *SiteService) ListSitesPaginated(ctx context.Context, params SiteListPar
 	query := s.db.WithContext(ctx).Model(&ManagedSite{})
 
 	// Apply filters
+	// Note: LIKE search is case-sensitive in most SQL databases except SQLite.
+	// AI suggested using LOWER() for case-insensitive search, but we intentionally
+	// keep case-sensitive matching because:
+	// 1. Using LOWER() would prevent index usage, degrading performance
+	// 2. SQLite (our primary DB) already handles LIKE case-insensitively for ASCII
+	// 3. For complex search needs, full-text search would be more appropriate
 	if params.Search != "" {
 		searchPattern := "%" + params.Search + "%"
 		query = query.Where(

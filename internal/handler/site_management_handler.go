@@ -257,6 +257,10 @@ func (s *Server) CheckInManagedSite(c *gin.Context) {
 }
 
 func (s *Server) ListManagedSiteCheckinLogs(c *gin.Context) {
+	// Note: This handler directly accesses s.DB for checkin log queries.
+	// Future refactor consideration: Move log queries to SiteService for consistency
+	// with site list pagination (which delegates to SiteService.ListSitesPaginated).
+	// Current implementation is correct and performant with idx_checkin_logs_site_created index.
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		response.Error(c, app_errors.ErrBadRequest)

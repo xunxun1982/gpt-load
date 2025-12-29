@@ -39,7 +39,7 @@ import {
   type DataTableColumns,
   type SelectOption,
 } from "naive-ui";
-import { computed, h, onMounted, reactive, ref, watch } from "vue";
+import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   OpenOutline,
@@ -180,6 +180,11 @@ const debouncedSearch = debounce(() => {
   pagination.page = 1; // Reset to first page on search
   loadSites();
 }, 300);
+
+// Cleanup debounced search on component unmount to prevent memory leaks
+onUnmounted(() => {
+  debouncedSearch.cancel();
+});
 
 // Watch search input changes
 watch(() => filters.search, debouncedSearch);
