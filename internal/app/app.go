@@ -347,7 +347,7 @@ func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, doCheckpoint boo
 		checkpointStart := time.Now()
 		checkpointCtx, cancelCheckpoint := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		if _, err := sqlDB.ExecContext(checkpointCtx, "PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
-			logrus.Debugf("[%s] WAL checkpoint skipped: %v (took %v)", name, err, time.Since(checkpointStart))
+			logrus.Debugf("[%s] WAL checkpoint failed or timed out: %v (took %v)", name, err, time.Since(checkpointStart))
 		} else {
 			logrus.Debugf("[%s] WAL checkpoint completed. (took %v)", name, time.Since(checkpointStart))
 		}
