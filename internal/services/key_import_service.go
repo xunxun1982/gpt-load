@@ -93,6 +93,13 @@ func (s *KeyImportService) StartCopyTask(targetGroup *models.Group, sourceGroupI
 
 // runCopyTask performs the actual key copy operation asynchronously.
 // It fetches keys from source group, decrypts them, and imports to target group.
+//
+// AI Review Note: Suggested batching source key fetch for large groups.
+// Decision: Keep single query because:
+// 1. This runs asynchronously, not blocking HTTP response
+// 2. Batching adds complexity and more DB round trips
+// 3. Memory usage is acceptable (100k keys × 200 bytes ≈ 20MB)
+// 4. Single fetch ensures data consistency during copy operation
 func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID uint, copyOption string) {
 	startTime := time.Now()
 
@@ -160,8 +167,14 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 }
 
 // runBulkImportForCopy performs bulk import for copied keys.
-// Note: This method shares logic with runBulkImport but handles pre-decrypted keys differently.
-// The duplication is intentional for readability and to avoid complex parameter passing.
+//
+// AI Review Note: Suggested extracting shared logic with runBulkImport to reduce duplication.
+// Decision: Keep separate methods because:
+// 1. runBulkImportForCopy handles pre-decrypted keys with prior ignored count
+// 2. runBulkImport handles raw text input with different progress tracking
+// 3. Merging would require complex parameter passing and conditional logic
+// 4. Both methods are relatively short and easy to maintain independently
+// 5. The duplication is intentional for readability and clear separation of concerns
 func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
 	// Get existing key hashes for deduplication
 	var existingHashes []string
@@ -182,16 +195,22 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 	uniqueNewKeys := make(map[string]bool, len(keys))
 	ignoredCount := priorIgnored
 
+	// Track processed count for progress updates
+	processedCount := 0
+	totalKeys := len(keys)
+
 	for _, keyVal := range keys {
 		trimmedKey := strings.TrimSpace(keyVal)
 		if trimmedKey == "" || uniqueNewKeys[trimmedKey] {
 			ignoredCount++
+			processedCount++
 			continue
 		}
 
 		keyHash := s.KeyService.EncryptionSvc.Hash(trimmedKey)
 		if existingHashMap[keyHash] {
 			ignoredCount++
+			processedCount++
 			continue
 		}
 
@@ -199,6 +218,7 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 		if err != nil {
 			logrus.WithError(err).Debug("Failed to encrypt key, skipping")
 			ignoredCount++
+			processedCount++
 			continue
 		}
 
@@ -209,6 +229,19 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 			KeyHash:  keyHash,
 			Status:   models.KeyStatusActive,
 		})
+		processedCount++
+
+		// Update progress periodically (every 500 keys) for user feedback
+		if processedCount%500 == 0 {
+			// Progress = prior decryption phase + current encryption phase
+			progress := priorIgnored + processedCount
+			if progress > totalKeys {
+				progress = totalKeys
+			}
+			if err := s.TaskService.UpdateProgress(progress); err != nil {
+				logrus.Warnf("Failed to update task progress: %v", err)
+			}
+		}
 	}
 
 	if len(newKeysToCreate) == 0 {

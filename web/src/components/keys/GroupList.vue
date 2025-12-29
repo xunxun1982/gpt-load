@@ -330,7 +330,8 @@ function openCreateChildGroupModal(group: Group, event: Event) {
   showChildGroupModal.value = true;
 }
 
-async function handleChildGroupCreated(group: Group) {
+// Note: async keyword removed as suggested by AI review - no await expressions in this function
+function handleChildGroupCreated(group: Group) {
   showChildGroupModal.value = false;
   selectedParentGroup.value = null;
   const groupId = group.id;

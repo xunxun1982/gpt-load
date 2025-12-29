@@ -134,11 +134,14 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 	dialect := s.DB.Dialector.Name()
 
 	// Execute optimized query using ROW_NUMBER() window function.
-	// AI Review Note: Suggested merging the identical SQL branches into a single query.
-	// Decision: Keep separate branches for future database-specific optimizations.
-	// Currently all branches use the same SQL, but this structure allows easy customization
-	// if a specific database requires different syntax or optimization in the future.
-	// The performance cost of the switch statement is negligible compared to DB query time.
+	// AI Review Note: Suggested merging the identical SQL branches into a single query (DRY principle).
+	// Decision: Keep separate branches for the following reasons:
+	// 1. Future-proofing: Different databases may need dialect-specific optimizations
+	//    (e.g., PostgreSQL LATERAL joins, MySQL optimizer hints, SQLite specific syntax)
+	// 2. Maintainability: Easier to add database-specific changes without affecting others
+	// 3. Performance: Switch statement overhead is negligible compared to DB query time
+	// 4. Clarity: Each branch documents the specific database version requirements
+	// Reference: https://www.bennadel.com/blog/3636-sql-queries-that-look-the-same-are-not-violating-the-dry-principle.htm
 	var err error
 	switch dialect {
 	case "postgres", "pgx":

@@ -309,18 +309,21 @@ func closeDBConnection(gormDB *gorm.DB, name string) {
 	logrus.Debugf("[%s] Connection pool stats: Open=%d, InUse=%d, Idle=%d, WaitCount=%d",
 		name, stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
 
-	// For SQLite: Execute WAL checkpoint before closing to speed up shutdown.
+	// For SQLite only: Execute WAL checkpoint before closing to speed up shutdown.
 	// TRUNCATE mode checkpoints all frames and truncates the WAL file to zero bytes.
 	// This prevents the implicit checkpoint during Close() which can be slow.
-	// Use a short timeout context to avoid blocking shutdown if checkpoint hangs.
-	checkpointStart := time.Now()
-	checkpointCtx, cancelCheckpoint := context.WithTimeout(context.Background(), 2*time.Second)
-	if _, err := sqlDB.ExecContext(checkpointCtx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		logrus.Debugf("[%s] WAL checkpoint skipped or failed: %v (took %v)", name, err, time.Since(checkpointStart))
-	} else {
-		logrus.Debugf("[%s] WAL checkpoint completed. (took %v)", name, time.Since(checkpointStart))
+	// Skip for MySQL/PostgreSQL as PRAGMA is SQLite-specific syntax.
+	dialect := gormDB.Dialector.Name()
+	if dialect == "sqlite" || dialect == "sqlite3" {
+		checkpointStart := time.Now()
+		checkpointCtx, cancelCheckpoint := context.WithTimeout(context.Background(), 2*time.Second)
+		if _, err := sqlDB.ExecContext(checkpointCtx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			logrus.Debugf("[%s] WAL checkpoint failed: %v (took %v)", name, err, time.Since(checkpointStart))
+		} else {
+			logrus.Debugf("[%s] WAL checkpoint completed. (took %v)", name, time.Since(checkpointStart))
+		}
+		cancelCheckpoint()
 	}
-	cancelCheckpoint()
 
 	// Force close all idle connections immediately by setting pool size to 0
 	// This triggers immediate cleanup of idle connections in the pool

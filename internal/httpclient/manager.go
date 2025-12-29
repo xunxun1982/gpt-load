@@ -108,11 +108,12 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	}
 
 	// Create a new transport and client with optimized configuration.
+	// Note: DualStack field is deprecated since Go 1.12 - Happy Eyeballs (RFC 6555)
+	// is now enabled by default, so we don't need to set it explicitly.
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   config.ConnectTimeout,
 			KeepAlive: 30 * time.Second,
-			DualStack: true, // Enable IPv4/IPv6 dual stack
 		}).DialContext,
 		ForceAttemptHTTP2:     config.ForceAttemptHTTP2,
 		MaxIdleConns:          config.MaxIdleConns,

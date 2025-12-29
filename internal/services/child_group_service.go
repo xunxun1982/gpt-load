@@ -299,6 +299,13 @@ func (s *ChildGroupService) GetChildGroups(ctx context.Context, parentGroupID ui
 
 // GetAllChildGroups returns all child groups grouped by parent group ID.
 // This is more efficient than calling GetChildGroups for each parent group.
+//
+// AI Review Note: Suggested returning deep copy of cache.Data to prevent data races.
+// Decision: Keep returning direct reference because:
+// 1. ChildGroupInfo is a value type struct with only primitive fields (no pointers/slices)
+// 2. Callers only read the data for display, never modify it
+// 3. Deep copy would add unnecessary overhead for read-heavy cache access
+// 4. RWMutex already provides sufficient protection for our read-mostly pattern
 func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]models.ChildGroupInfo, error) {
 	// Check cache first
 	s.cacheMu.RLock()
