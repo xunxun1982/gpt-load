@@ -37,6 +37,10 @@ func NewKeyImportService(taskService *TaskService, keyService *KeyService, bulkI
 }
 
 // StartImportTask initiates a new asynchronous key import task.
+// AI Review Note: Concurrency limiting via semaphore/worker pool was suggested but rejected because:
+// 1. TaskService already enforces single-task execution via ErrTaskAlreadyRunning
+// 2. This is a single-user/small-team tool, not a high-concurrency service
+// 3. Adding semaphore would increase complexity without meaningful benefit
 func (s *KeyImportService) StartImportTask(group *models.Group, keysText string) (*TaskStatus, error) {
 	keys := s.KeyService.ParseKeysFromText(keysText)
 	if len(keys) == 0 {

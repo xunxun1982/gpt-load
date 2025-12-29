@@ -111,9 +111,11 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		// cache_size: Larger cache for better performance (configurable via env var)
 		// temp_store=MEMORY: Use memory for temp tables (configurable via env var)
 		// mmap_size: Memory mapping for faster reads (set via direct SQL to avoid slow query log)
-		cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")      // ~40MB cache with 4KB pages
-		tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")     // Use memory for temporary tables
-		params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&cache=shared&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
+		// Note: cache=shared is NOT used here because main DB uses single connection (MaxOpenConns=1),
+		// and shared cache only benefits multiple connections sharing the same page cache.
+		cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")  // ~40MB cache with 4KB pages
+		tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY") // Use memory for temporary tables
+		params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
 		delimiter := "?"
 		if strings.Contains(dsn, "?") {
 			delimiter = "&"
@@ -220,8 +222,10 @@ func createSQLiteReadDB(dsn string, newLogger logger.Interface) (*gorm.DB, error
 	maxIdleConns := utils.ParseInteger(utils.GetEnvOrDefault("SQLITE_READ_MAX_IDLE_CONNS", ""), defaultMaxIdle)
 	maxOpenConns := utils.ParseInteger(utils.GetEnvOrDefault("SQLITE_READ_MAX_OPEN_CONNS", ""), defaultMaxOpen)
 
-	// Separate connection pool for reads, without cache=shared to avoid lock contention
-	// Use shorter busy_timeout for read connections to fail fast on contention
+	// Separate connection pool for reads, without cache=shared to avoid lock contention.
+	// Use shorter busy_timeout (1s vs 10s for main DB) for read connections to fail fast on contention.
+	// This is intentional: service layer handles transient errors by returning stale cache (see isTransientDBError),
+	// so fast failure allows UI to remain responsive while writes complete.
 	params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=1000&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
 	delimiter := "?"
 	if strings.Contains(dsn, "?") {
@@ -229,8 +233,10 @@ func createSQLiteReadDB(dsn string, newLogger logger.Interface) (*gorm.DB, error
 	}
 	dialector := sqlite.Open(dsn + delimiter + params)
 
-	// Disable PrepareStmt for read DB to speed up shutdown
-	// PrepareStmt caches prepared statements which can delay Close()
+	// Disable PrepareStmt for read DB to speed up shutdown.
+	// PrepareStmt caches prepared statements which can delay Close().
+	// Trade-off: slightly slower repeated queries vs faster connection cleanup.
+	// For read-heavy workloads with many unique queries, this is acceptable.
 	readDB, err := gorm.Open(dialector, &gorm.Config{
 		Logger:      newLogger,
 		PrepareStmt: false,
