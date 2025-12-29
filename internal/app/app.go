@@ -256,31 +256,48 @@ func (a *App) Stop(ctx context.Context) {
 		logrus.Warnf("Shutdown timed out after %v, some services may not have stopped gracefully.", time.Since(bgServicesStart))
 	}
 
+	// Close storage and database connections in parallel for faster shutdown
+	var dbWg sync.WaitGroup
+	dbCloseStart := time.Now()
+
+	// Close storage
 	if a.storage != nil {
-		logrus.Debug("Closing storage...")
-		storageStart := time.Now()
-		a.storage.Close()
-		logrus.Debugf("Storage closed. (took %v)", time.Since(storageStart))
+		dbWg.Add(1)
+		go func() {
+			defer dbWg.Done()
+			logrus.Debug("Closing storage...")
+			storageStart := time.Now()
+			a.storage.Close()
+			logrus.Debugf("Storage closed. (took %v)", time.Since(storageStart))
+		}()
 	}
 
 	// Close database connections to prevent resource leaks
 	// Best practice: explicitly close connection pools during graceful shutdown
-	// Note: The closure order (ReadDB first, then main DB) is for orderly resource cleanup,
-	// not for lock avoidance. In SQLite WAL mode, readers don't block writers regardless
-	// of closure order. The actual shutdown robustness comes from:
-	// 1. Explicit WAL checkpoint (PRAGMA wal_checkpoint(TRUNCATE)) before closure
-	// 2. Graceful timeout-based closure with prepared statement cache cleanup
+	// Note: ReadDB and main DB are closed in parallel since they are independent connections.
+	// In SQLite WAL mode, readers don't block writers regardless of closure order.
 
 	// Close read-only database connection if it's separate from main DB (SQLite WAL mode)
 	if db.ReadDB != nil && db.ReadDB != a.db {
-		closeDBConnection(db.ReadDB, "Read database")
+		dbWg.Add(1)
+		go func() {
+			defer dbWg.Done()
+			// Skip WAL checkpoint for read-only connection - it doesn't write to WAL
+			closeDBConnectionWithOptions(db.ReadDB, "Read database", false)
+		}()
 	}
 
 	// Close main database connection
 	if a.db != nil {
-		closeDBConnection(a.db, "Main database")
+		dbWg.Add(1)
+		go func() {
+			defer dbWg.Done()
+			closeDBConnection(a.db, "Main database")
+		}()
 	}
 
+	dbWg.Wait()
+	logrus.Debugf("All database connections closed. (took %v)", time.Since(dbCloseStart))
 	logrus.Info("Server exited gracefully")
 }
 
@@ -288,6 +305,12 @@ func (a *App) Stop(ctx context.Context) {
 // It first closes prepared statement cache, then forces idle connections to close,
 // and finally closes the connection pool with a timeout to avoid hanging.
 func closeDBConnection(gormDB *gorm.DB, name string) {
+	closeDBConnectionWithOptions(gormDB, name, true)
+}
+
+// closeDBConnectionWithOptions closes a database connection with configurable WAL checkpoint.
+// skipCheckpoint should be true for read-only connections that don't need WAL checkpoint.
+func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, doCheckpoint bool) {
 	if gormDB == nil {
 		return
 	}
@@ -315,17 +338,16 @@ func closeDBConnection(gormDB *gorm.DB, name string) {
 	logrus.Debugf("[%s] Connection pool stats: Open=%d, InUse=%d, Idle=%d, WaitCount=%d",
 		name, stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
 
-	// For SQLite only: Execute WAL checkpoint before closing to speed up shutdown.
+	// For SQLite main DB only: Execute WAL checkpoint before closing.
 	// TRUNCATE mode checkpoints all frames and truncates the WAL file to zero bytes.
-	// This prevents the implicit checkpoint during Close() which can be slow.
-	// Skip for MySQL/PostgreSQL as PRAGMA is SQLite-specific syntax.
-	// Note: GORM v2 SQLite Dialector.Name() returns "sqlite" only.
+	// Skip for read-only connections (they don't write to WAL) and MySQL/PostgreSQL.
+	// Use short timeout (500ms) - if checkpoint is slow, let Close() handle it.
 	dialect := gormDB.Dialector.Name()
-	if dialect == "sqlite" {
+	if dialect == "sqlite" && doCheckpoint {
 		checkpointStart := time.Now()
-		checkpointCtx, cancelCheckpoint := context.WithTimeout(context.Background(), 2*time.Second)
-		if _, err := sqlDB.ExecContext(checkpointCtx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-			logrus.Debugf("[%s] WAL checkpoint failed: %v (took %v)", name, err, time.Since(checkpointStart))
+		checkpointCtx, cancelCheckpoint := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		if _, err := sqlDB.ExecContext(checkpointCtx, "PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+			logrus.Debugf("[%s] WAL checkpoint skipped: %v (took %v)", name, err, time.Since(checkpointStart))
 		} else {
 			logrus.Debugf("[%s] WAL checkpoint completed. (took %v)", name, time.Since(checkpointStart))
 		}
@@ -354,7 +376,7 @@ func closeDBConnection(gormDB *gorm.DB, name string) {
 		done <- sqlDB.Close()
 	}()
 
-	// Wait up to 3 seconds for graceful close, then force proceed
+	// Wait up to 1 second for graceful close, then force proceed
 	select {
 	case err := <-done:
 		if err != nil {
@@ -362,8 +384,8 @@ func closeDBConnection(gormDB *gorm.DB, name string) {
 		} else {
 			logrus.Debugf("[%s] Connection closed successfully. (took %v)", name, time.Since(closeStart))
 		}
-	case <-time.After(3 * time.Second):
-		logrus.Warnf("[%s] Connection close timed out after 3s, proceeding anyway", name)
+	case <-time.After(1 * time.Second):
+		logrus.Warnf("[%s] Connection close timed out after 1s, proceeding anyway", name)
 	}
 
 	logrus.Debugf("[%s] Total close time: %v", name, time.Since(totalStart))

@@ -1007,7 +1007,7 @@ async function handleSubmit() {
         :model="formData"
         :rules="rules"
         label-placement="left"
-        label-width="auto"
+        label-width="100px"
         require-mark-placement="right-hanging"
         class="group-form"
         :style="{ '--n-label-height': '32px' }"
@@ -1372,7 +1372,7 @@ async function handleSubmit() {
                   </n-form-item>
                 </div>
 
-                <div style="margin-top: 12px; padding-left: 120px">
+                <div style="margin-top: 12px; padding-left: 100px">
                   <n-button
                     @click="addConfigItem"
                     dashed
@@ -1497,7 +1497,7 @@ async function handleSubmit() {
                   </n-form-item>
                 </div>
 
-                <div style="margin-top: 12px; padding-left: 120px">
+                <div style="margin-top: 12px; padding-left: 100px">
                   <n-button @click="addHeaderRule" dashed style="width: 100%">
                     <template #icon>
                       <n-icon :component="Add" />
@@ -1905,6 +1905,8 @@ async function handleSubmit() {
   overflow-x: hidden;
   max-height: calc(85vh - 80px);
   padding-right: 24px;
+  /* Reserve space for scrollbar to prevent layout shift */
+  scrollbar-gutter: stable;
 }
 
 /* Custom scrollbar styling */
@@ -1953,8 +1955,10 @@ async function handleSubmit() {
 /* Tooltip related styles */
 .form-label-with-tooltip {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 4px;
+  /* Allow text to wrap with compact line height */
+  line-height: 1.3;
 }
 
 .help-icon {
@@ -2002,7 +2006,7 @@ async function handleSubmit() {
 
 /* Unified label style for config sections (function call, CC support, param overrides, model redirect) */
 .config-section .form-label-with-tooltip {
-  font-size: 0.9rem;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -2055,15 +2059,17 @@ async function handleSubmit() {
   color: var(--text-primary);
   display: flex;
   align-items: center;
-  height: 32px;
-  line-height: 32px;
+  /* Reduce font size and line height for compact multi-line labels (e.g., Chinese text) */
+  font-size: 13px;
+  line-height: 1.3;
+  min-height: 32px;
 }
 
 /* Fix required mark vertical alignment */
 :deep(.n-form-item-label__asterisk) {
   display: flex;
   align-items: center;
-  height: 32px;
+  min-height: 32px;
 }
 
 :deep(.n-input) {
