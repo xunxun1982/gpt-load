@@ -9,6 +9,12 @@ import (
 
 // beijingLocation is the timezone for Beijing (UTC+8).
 // Used for calculating check-in day with 05:00 reset.
+//
+// Design Decision: Using time.FixedZone instead of time.LoadLocation because:
+// 1. China does not observe Daylight Saving Time (DST), so UTC+8 is always correct
+// 2. time.LoadLocation requires tzdata which may not be available in minimal Docker images
+// 3. time.FixedZone is faster and more reliable for fixed-offset timezones
+// 4. AI review suggested LoadLocation, but FixedZone is the better choice for non-DST regions
 var beijingLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 // GetBeijingCheckinDay returns the current "check-in day" in Beijing time (UTC+8).

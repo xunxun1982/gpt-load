@@ -420,13 +420,8 @@ func (s *RequestLogService) batchUpsertHourlyStatsPostgres(tx *gorm.DB, stats []
 // batchUpsertHourlyStatsMySQL performs batch upsert for MySQL.
 // Uses GORM's OnConflict clause which generates ON DUPLICATE KEY UPDATE.
 //
-// AI Review Note: MySQL 8.0.20+ deprecated the VALUES() function in ON DUPLICATE KEY UPDATE.
-// The new syntax uses row aliases (e.g., INSERT ... VALUES (...) AS new ON DUPLICATE KEY UPDATE col = new.col).
-// However, GORM's clause.OnConflict does not natively support this new alias syntax.
-// Migrating would require raw SQL or custom clause builders, adding significant complexity.
-// The VALUES() function, while deprecated, still works in MySQL 8.x and is unlikely to be removed soon.
-// We intentionally keep the current implementation for simplicity and GORM compatibility.
-// If MySQL removes VALUES() in a future version, this will need to be updated to use raw SQL.
+// Note: MySQL 8.0.20+ deprecated VALUES() in ON DUPLICATE KEY UPDATE, but it still works
+// and GORM doesn't support the new row alias syntax. We keep this for simplicity.
 func (s *RequestLogService) batchUpsertHourlyStatsMySQL(tx *gorm.DB, stats []models.GroupHourlyStat) error {
 	// MySQL supports batch upsert with ON DUPLICATE KEY UPDATE
 	// Process in batches to stay within max_allowed_packet

@@ -530,6 +530,12 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 
 // RecordSiteOpened records when user clicked "Open Site" button.
 // Updates last_site_opened_date to current Beijing check-in day (resets at 05:00 Beijing time).
+//
+// Design Decision: This is a fire-and-forget tracking feature. We intentionally do NOT:
+// 1. Check if site exists before update (would add extra DB query)
+// 2. Return 404 for non-existent sites (RowsAffected=0 is acceptable)
+// The frontend only calls this for sites in the list, so invalid IDs are unlikely.
+// AI review suggested checking existence, but the overhead is not justified for this use case.
 func (s *SiteService) RecordSiteOpened(ctx context.Context, siteID uint) error {
 	date := GetBeijingCheckinDay()
 	if err := s.db.WithContext(ctx).
@@ -545,6 +551,8 @@ func (s *SiteService) RecordSiteOpened(ctx context.Context, siteID uint) error {
 
 // RecordCheckinPageOpened records when user clicked "Open Check-in Page" button.
 // Updates last_checkin_page_opened_date to current Beijing check-in day (resets at 05:00 Beijing time).
+//
+// Design Decision: Same as RecordSiteOpened - fire-and-forget without existence check.
 func (s *SiteService) RecordCheckinPageOpened(ctx context.Context, siteID uint) error {
 	date := GetBeijingCheckinDay()
 	if err := s.db.WithContext(ctx).

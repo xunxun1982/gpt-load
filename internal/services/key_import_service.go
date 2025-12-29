@@ -37,10 +37,7 @@ func NewKeyImportService(taskService *TaskService, keyService *KeyService, bulkI
 }
 
 // StartImportTask initiates a new asynchronous key import task.
-// AI Review Note: Concurrency limiting via semaphore/worker pool was suggested but rejected because:
-// 1. TaskService already enforces single-task execution via ErrTaskAlreadyRunning
-// 2. This is a single-user/small-team tool, not a high-concurrency service
-// 3. Adding semaphore would increase complexity without meaningful benefit
+// Note: TaskService already enforces single-task execution, so no additional concurrency limiting is needed.
 func (s *KeyImportService) StartImportTask(group *models.Group, keysText string) (*TaskStatus, error) {
 	keys := s.KeyService.ParseKeysFromText(keysText)
 	if len(keys) == 0 {
@@ -163,18 +160,9 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 }
 
 // runBulkImportForCopy performs bulk import for copied keys.
-// AI Review Note: This method shares significant logic with runBulkImport (hash deduplication,
-// key encryption, bulk insert, memory store loading, cache invalidation). The duplication is
-// intentional because:
-// 1. runBulkImportForCopy handles pre-decrypted keys with prior ignored count from decryption errors
-// 2. runBulkImport handles raw text keys with progress callback during preparation
-// 3. Extracting common logic would require complex parameter passing and reduce readability
-// 4. Both methods are stable and unlikely to diverge in their core logic
-//
-// AI Review Note: Using main DB instead of ReadOnlyDB for hash lookup is intentional because:
-// 1. This is an async background task that doesn't block user requests
-// 2. Injecting ReadOnlyDB would add dependency injection complexity
-// 3. The performance benefit is minimal for this use case
+// runBulkImportForCopy performs bulk import for copied keys.
+// Note: This method shares logic with runBulkImport but handles pre-decrypted keys differently.
+// The duplication is intentional for readability and to avoid complex parameter passing.
 func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
 	// Get existing key hashes for deduplication
 	var existingHashes []string
