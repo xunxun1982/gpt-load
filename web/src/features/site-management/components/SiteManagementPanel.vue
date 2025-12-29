@@ -454,7 +454,17 @@ async function checkinSite(site: ManagedSiteDTO) {
   }
 }
 
-function openSiteUrl(site: ManagedSiteDTO) {
+// Check if site was opened today (based on Beijing time with 05:00 reset)
+function isSiteOpenedToday(site: ManagedSiteDTO): boolean {
+  return site.last_site_opened_date === currentCheckinDay.value;
+}
+
+// Check if check-in page was opened today (based on Beijing time with 05:00 reset)
+function isCheckinPageOpenedToday(site: ManagedSiteDTO): boolean {
+  return site.last_checkin_page_opened_date === currentCheckinDay.value;
+}
+
+async function openSiteUrl(site: ManagedSiteDTO) {
   // Note: win.opener = null is kept as defense-in-depth for older browsers
   // that may not fully support noopener. AI suggested removing it as redundant,
   // but we prefer the extra safety with negligible overhead.
@@ -462,13 +472,29 @@ function openSiteUrl(site: ManagedSiteDTO) {
   if (win) {
     win.opener = null;
   }
+  // Record the click event (fire-and-forget, don't block UI)
+  try {
+    await siteManagementApi.recordSiteOpened(site.id);
+    // Update local state to show clicked status immediately
+    site.last_site_opened_date = currentCheckinDay.value;
+  } catch (_) {
+    /* handled by centralized error handler */
+  }
 }
 
-function openCheckinPage(site: ManagedSiteDTO) {
+async function openCheckinPage(site: ManagedSiteDTO) {
   if (site.checkin_page_url) {
     const win = window.open(site.checkin_page_url, "_blank", "noopener,noreferrer");
     if (win) {
       win.opener = null;
+    }
+    // Record the click event (fire-and-forget, don't block UI)
+    try {
+      await siteManagementApi.recordCheckinPageOpened(site.id);
+      // Update local state to show clicked status immediately
+      site.last_checkin_page_opened_date = currentCheckinDay.value;
+    } catch (_) {
+      /* handled by centralized error handler */
     }
   }
 }
@@ -713,6 +739,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
         // Separator
         h("span", { style: "color: var(--n-border-color); margin: 0 4px;" }, "|"),
         // Icon buttons group (navigation) - closer together
+        // "Open Site" button - shows success type if clicked today
         h(
           NTooltip,
           { trigger: "hover" },
@@ -723,15 +750,20 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
                 {
                   size: "tiny",
                   quaternary: true,
+                  type: isSiteOpenedToday(row) ? "success" : "default",
                   style: "padding: 0 6px;",
                   onClick: () => openSiteUrl(row),
                 },
                 { icon: () => h(NIcon, { size: 16 }, () => h(OpenOutline)) }
               ),
-            default: () => t("siteManagement.openSite"),
+            default: () =>
+              isSiteOpenedToday(row)
+                ? t("siteManagement.openSiteVisited")
+                : t("siteManagement.openSite"),
           }
         ),
         // Show checkin page button only when checkin_page_url is set
+        // Shows success type if clicked today
         row.checkin_page_url
           ? h(
               NTooltip,
@@ -743,13 +775,16 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
                     {
                       size: "tiny",
                       quaternary: true,
-                      type: "info",
+                      type: isCheckinPageOpenedToday(row) ? "success" : "info",
                       style: "padding: 0 6px;",
                       onClick: () => openCheckinPage(row),
                     },
                     { icon: () => h(NIcon, { size: 16 }, () => h(LogInOutline)) }
                   ),
-                default: () => t("siteManagement.openCheckinPage"),
+                default: () =>
+                  isCheckinPageOpenedToday(row)
+                    ? t("siteManagement.openCheckinPageVisited")
+                    : t("siteManagement.openCheckinPage"),
               }
             )
           : null,

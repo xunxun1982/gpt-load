@@ -276,6 +276,36 @@ func (s *Server) CheckInManagedSite(c *gin.Context) {
 	response.Success(c, res)
 }
 
+// RecordSiteOpened records when user clicked "Open Site" button.
+// This helps track which sites have been visited today (resets at 05:00 Beijing time).
+func (s *Server) RecordSiteOpened(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	if err := s.SiteService.RecordSiteOpened(c.Request.Context(), uint(id)); HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, nil)
+}
+
+// RecordCheckinPageOpened records when user clicked "Open Check-in Page" button.
+// This helps track which check-in pages have been visited today (resets at 05:00 Beijing time).
+func (s *Server) RecordCheckinPageOpened(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	if err := s.SiteService.RecordCheckinPageOpened(c.Request.Context(), uint(id)); HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, nil)
+}
+
 func (s *Server) ListManagedSiteCheckinLogs(c *gin.Context) {
 	// Note: This handler directly accesses s.DB for checkin log queries.
 	// Future refactor consideration: Move log queries to SiteService for consistency

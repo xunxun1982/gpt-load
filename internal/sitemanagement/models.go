@@ -58,6 +58,11 @@ type ManagedSite struct {
 	LastCheckInStatus  string     `gorm:"column:last_checkin_status;type:varchar(32);not null;default:''" json:"last_checkin_status"`
 	LastCheckInMessage string     `gorm:"column:last_checkin_message;type:text;not null;default:''" json:"last_checkin_message"`
 
+	// Track when user clicked "Open Site" or "Open Check-in Page" buttons.
+	// Date format: YYYY-MM-DD in Beijing time (UTC+8), resets at 05:00 Beijing time.
+	LastSiteOpenedDate        string `gorm:"column:last_site_opened_date;type:char(10);not null;default:''" json:"last_site_opened_date"`
+	LastCheckinPageOpenedDate string `gorm:"column:last_checkin_page_opened_date;type:char(10);not null;default:''" json:"last_checkin_page_opened_date"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 

@@ -56,6 +56,11 @@ export interface ManagedSiteDTO {
   last_checkin_status: ManagedSiteCheckinStatus;
   last_checkin_message: string;
 
+  // Track when user clicked "Open Site" or "Open Check-in Page" buttons.
+  // Date format: YYYY-MM-DD in Beijing time (UTC+8), resets at 05:00 Beijing time.
+  last_site_opened_date: string;
+  last_checkin_page_opened_date: string;
+
   bound_group_id?: number;
   bound_group_name?: string;
 
@@ -152,6 +157,20 @@ export const siteManagementApi = {
   async checkinSite(id: number): Promise<CheckinResult> {
     const res = await http.post(`/site-management/sites/${id}/checkin`, {}, { hideMessage: true });
     return res.data;
+  },
+
+  // Record when user clicked "Open Site" button (for tracking visited sites today)
+  async recordSiteOpened(id: number): Promise<void> {
+    await http.post(`/site-management/sites/${id}/record-site-opened`, {}, { hideMessage: true });
+  },
+
+  // Record when user clicked "Open Check-in Page" button (for tracking visited pages today)
+  async recordCheckinPageOpened(id: number): Promise<void> {
+    await http.post(
+      `/site-management/sites/${id}/record-checkin-page-opened`,
+      {},
+      { hideMessage: true }
+    );
   },
 
   async listCheckinLogs(id: number, limit = 50): Promise<CheckinLogDTO[]> {
