@@ -29,10 +29,6 @@ func Logger(config types.LogConfig) gin.HandlerFunc {
 		// Process request first, so auth middleware can sanitize sensitive params
 		c.Next()
 
-		// Get query string AFTER request processing to exclude sanitized params (e.g., key)
-		// This prevents sensitive authentication tokens from appearing in logs
-		raw := c.Request.URL.RawQuery
-
 		// Calculate response time
 		latency := time.Since(start)
 
@@ -40,11 +36,10 @@ func Logger(config types.LogConfig) gin.HandlerFunc {
 		method := c.Request.Method
 		statusCode := c.Writer.Status()
 
-		// Build full path (avoid string concatenation)
-		fullPath := path
-		if raw != "" {
-			fullPath = path + "?" + raw
-		}
+		// Sanitize URL to prevent sensitive data (auth tokens, keys) from appearing in logs
+		// This handles both proxy routes (where extractAuthKey removes key param) and
+		// non-proxy routes (like /api/logs/export) where key param may still be present
+		fullPath := utils.SanitizeURLForLog(c.Request.URL)
 
 		// Get key information (if exists)
 		keyInfo := ""
