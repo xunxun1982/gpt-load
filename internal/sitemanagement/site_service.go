@@ -224,11 +224,14 @@ func (s *SiteService) convertSitesToDTOs(ctx context.Context, sites []ManagedSit
 		}
 	}
 
-	// Batch fetch group names
+	// Batch fetch group names for display purposes.
+	// Errors are logged but not propagated since group names are non-critical display data.
 	groupNameMap := make(map[uint]string)
 	if len(boundGroupIDs) > 0 {
 		var groups []models.Group
-		if err := s.db.WithContext(ctx).Select("id", "name").Where("id IN ?", boundGroupIDs).Find(&groups).Error; err == nil {
+		if err := s.db.WithContext(ctx).Select("id", "name").Where("id IN ?", boundGroupIDs).Find(&groups).Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to fetch group names for site list")
+		} else {
 			for _, g := range groups {
 				groupNameMap[g.ID] = g.Name
 			}

@@ -287,9 +287,10 @@ func (s *Server) ListManagedSiteCheckinLogs(c *gin.Context) {
 		return
 	}
 
-	// Parse pagination params
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	if page < 1 {
+	// Parse pagination params with fallback to defaults on parse error.
+	// Consistent with ListManagedSitesPaginated error handling pattern.
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 {
 		page = 1
 	}
 
