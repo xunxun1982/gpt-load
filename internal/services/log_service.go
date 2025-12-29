@@ -102,8 +102,15 @@ func (s *LogService) GetLogsQuery(c *gin.Context) *gorm.DB {
 }
 
 // StreamLogKeysToCSV fetches unique keys from logs based on filters and streams them as a CSV.
-// Optimized: Uses ROW_NUMBER() window function for PostgreSQL/MySQL 8.0+ to reduce table scans.
-// Falls back to correlated subquery for SQLite which performs better than CTE on that database.
+// Optimized: Uses ROW_NUMBER() window function to reduce table scans from 3 to 1.
+// Database version requirements:
+// - PostgreSQL 8.4+ (window functions supported since 2009)
+// - MySQL 8.0+ (window functions added in 2018)
+// - SQLite 3.25+ (window functions added in September 2018)
+// Note: Runtime version validation is not performed because:
+// 1. These versions are 5+ years old and widely deployed
+// 2. GORM driver initialization would fail earlier with incompatible versions
+// 3. Adding version checks would introduce unnecessary complexity and dependencies
 func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error {
 	// Create a CSV writer
 	csvWriter := csv.NewWriter(writer)
@@ -134,10 +141,10 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 		err = s.DB.Raw(`
 			SELECT key_value, group_name, status_code FROM (
 				SELECT
-					key_value, group_name, status_code,
+					key_hash, key_value, group_name, status_code,
 					ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
 				FROM (?) AS base
-			) ranked WHERE rn = 1
+			) AS ranked WHERE rn = 1
 			ORDER BY key_hash
 		`, baseQuery).Scan(&results).Error
 
@@ -147,7 +154,7 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 		err = s.DB.Raw(`
 			SELECT key_value, group_name, status_code FROM (
 				SELECT
-					key_value, group_name, status_code,
+					key_hash, key_value, group_name, status_code,
 					ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
 				FROM (?) AS base
 			) AS ranked WHERE rn = 1
@@ -155,15 +162,19 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 		`, baseQuery).Scan(&results).Error
 
 	default:
-		// SQLite 3.25+: Use ROW_NUMBER() window function (supported since 2018)
-		// SQLite handles window functions efficiently for moderate datasets
+		// SQLite 3.25+: Use ROW_NUMBER() window function (supported since September 2018)
+		// All modern SQLite versions support window functions
+		// Note: We intentionally do not add explicit database type validation here because:
+		// 1. The project only officially supports SQLite, MySQL, and PostgreSQL
+		// 2. Unknown databases will fail with a clear SQL syntax error if incompatible
+		// 3. Adding explicit rejection would break potential compatible databases
 		err = s.DB.Raw(`
 			SELECT key_value, group_name, status_code FROM (
 				SELECT
-					key_value, group_name, status_code,
+					key_hash, key_value, group_name, status_code,
 					ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
 				FROM (?) AS base
-			) WHERE rn = 1
+			) AS ranked WHERE rn = 1
 			ORDER BY key_hash
 		`, baseQuery).Scan(&results).Error
 	}
