@@ -10,6 +10,11 @@ import (
 )
 
 // KeyImportResult holds the result of an import task.
+// Note: IgnoredCount includes both duplicate keys and decryption failures during copy operations.
+// We intentionally don't expose a separate DecryptErrorCount field because:
+// 1. Decryption errors are logged for debugging purposes
+// 2. Users primarily care about the final outcome (added vs ignored)
+// 3. Adding more fields increases API complexity without significant user value
 type KeyImportResult struct {
 	AddedCount   int `json:"added_count"`
 	IgnoredCount int `json:"ignored_count"`
@@ -32,6 +37,7 @@ func NewKeyImportService(taskService *TaskService, keyService *KeyService, bulkI
 }
 
 // StartImportTask initiates a new asynchronous key import task.
+// Note: TaskService already enforces single-task execution, so no additional concurrency limiting is needed.
 func (s *KeyImportService) StartImportTask(group *models.Group, keysText string) (*TaskStatus, error) {
 	keys := s.KeyService.ParseKeysFromText(keysText)
 	if len(keys) == 0 {
@@ -43,9 +49,251 @@ func (s *KeyImportService) StartImportTask(group *models.Group, keysText string)
 		return nil, err
 	}
 
-	go s.runImport(group, keys)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.WithFields(logrus.Fields{
+					"groupId":   group.ID,
+					"groupName": group.Name,
+					"panic":     r,
+				}).Error("Panic recovered in runImport")
+				_ = s.TaskService.EndTask(nil, fmt.Errorf("internal error: import task panicked"))
+			}
+		}()
+		s.runImport(group, keys)
+	}()
 
 	return initialStatus, nil
+}
+
+// StartCopyTask initiates an asynchronous key copy task from source group.
+// This method fetches and decrypts keys asynchronously for faster HTTP response.
+func (s *KeyImportService) StartCopyTask(targetGroup *models.Group, sourceGroupID uint, copyOption string, estimatedKeyCount int) (*TaskStatus, error) {
+	initialStatus, err := s.TaskService.StartTask(TaskTypeKeyImport, targetGroup.Name, estimatedKeyCount)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.WithFields(logrus.Fields{
+					"targetGroupId": targetGroup.ID,
+					"sourceGroupId": sourceGroupID,
+					"panic":         r,
+				}).Error("Panic recovered in runCopyTask")
+				_ = s.TaskService.EndTask(nil, fmt.Errorf("internal error: copy task panicked"))
+			}
+		}()
+		s.runCopyTask(targetGroup, sourceGroupID, copyOption)
+	}()
+
+	return initialStatus, nil
+}
+
+// runCopyTask performs the actual key copy operation asynchronously.
+// It fetches keys from source group, decrypts them, and imports to target group.
+//
+// AI Review Note: Suggested batching source key fetch for large groups.
+// Decision: Keep single query because:
+// 1. This runs asynchronously, not blocking HTTP response
+// 2. Batching adds complexity and more DB round trips
+// 3. Memory usage is acceptable (100k keys × 200 bytes ≈ 20MB)
+// 4. Single fetch ensures data consistency during copy operation
+func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID uint, copyOption string) {
+	startTime := time.Now()
+
+	// Fetch source keys from database
+	// Use Model() instead of Table() for type safety and consistency with project style
+	var sourceKeyData []struct {
+		KeyValue string
+	}
+	query := s.KeyService.DB.Model(&models.APIKey{}).Select("key_value").Where("group_id = ?", sourceGroupID)
+	if copyOption == "valid_only" {
+		query = query.Where("status = ?", models.KeyStatusActive)
+	}
+	if err := query.Scan(&sourceKeyData).Error; err != nil {
+		if endErr := s.TaskService.EndTask(nil, fmt.Errorf("failed to fetch source keys: %w", err)); endErr != nil {
+			logrus.Errorf("Failed to end task with error for group %d: %v", targetGroup.ID, endErr)
+		}
+		return
+	}
+
+	if len(sourceKeyData) == 0 {
+		result := KeyImportResult{AddedCount: 0, IgnoredCount: 0}
+		if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
+			logrus.Errorf("Failed to end task for group %d: %v", targetGroup.ID, endErr)
+		}
+		return
+	}
+
+	// Decrypt keys and prepare for import
+	decryptedKeys := make([]string, 0, len(sourceKeyData))
+	decryptErrors := 0
+	totalSourceKeys := len(sourceKeyData)
+	for i, keyData := range sourceKeyData {
+		decryptedKey, err := s.KeyService.EncryptionSvc.Decrypt(keyData.KeyValue)
+		if err != nil {
+			decryptErrors++
+			continue
+		}
+		decryptedKeys = append(decryptedKeys, decryptedKey)
+
+		// Update progress during decryption (every 500 keys)
+		// Progress is based on source keys processed, not decrypted keys count
+		if (i+1)%500 == 0 {
+			if err := s.TaskService.UpdateProgress(i + 1); err != nil {
+				logrus.Warnf("Failed to update task progress: %v", err)
+			}
+		}
+	}
+
+	// Final progress update for decryption phase
+	if totalSourceKeys > 0 {
+		if err := s.TaskService.UpdateProgress(totalSourceKeys); err != nil {
+			logrus.Warnf("Failed to update task progress: %v", err)
+		}
+	}
+
+	if decryptErrors > 0 {
+		logrus.WithFields(logrus.Fields{
+			"sourceGroupId": sourceGroupID,
+			"targetGroupId": targetGroup.ID,
+			"decryptErrors": decryptErrors,
+		}).Warn("Some keys failed to decrypt during copy")
+	}
+
+	if len(decryptedKeys) == 0 {
+		result := KeyImportResult{AddedCount: 0, IgnoredCount: len(sourceKeyData)}
+		if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
+			logrus.Errorf("Failed to end task for group %d: %v", targetGroup.ID, endErr)
+		}
+		return
+	}
+
+	// Use bulk import for the decrypted keys
+	s.runBulkImportForCopy(targetGroup, decryptedKeys, decryptErrors, startTime)
+}
+
+// runBulkImportForCopy performs bulk import for copied keys.
+//
+// AI Review Note: Suggested extracting shared logic with runBulkImport to reduce duplication.
+// Decision: Keep separate methods because:
+// 1. runBulkImportForCopy handles pre-decrypted keys with prior ignored count
+// 2. runBulkImport handles raw text input with different progress tracking
+// 3. Merging would require complex parameter passing and conditional logic
+// 4. Both methods are relatively short and easy to maintain independently
+// 5. The duplication is intentional for readability and clear separation of concerns
+//
+// AI Review Note: Suggested cumulative progress tracking to avoid progress bar jumping backwards.
+// Decision: Remove progress updates in encryption phase entirely because:
+// 1. Encryption is a fast in-memory operation (no I/O), typically completing in milliseconds
+// 2. The decryption phase already provides meaningful progress (the slow part with DB I/O)
+// 3. Removing encryption progress avoids the backwards jump issue without adding complexity
+// 4. Users see progress reach 100% after decryption, then task completes shortly after
+func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
+	// Get existing key hashes for deduplication
+	var existingHashes []string
+	if err := s.KeyService.DB.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Pluck("key_hash", &existingHashes).Error; err != nil {
+		if endErr := s.TaskService.EndTask(nil, fmt.Errorf("failed to check existing keys: %w", err)); endErr != nil {
+			logrus.Errorf("Failed to end task with error for group %d: %v", group.ID, endErr)
+		}
+		return
+	}
+
+	existingHashMap := make(map[string]bool, len(existingHashes))
+	for _, h := range existingHashes {
+		existingHashMap[h] = true
+	}
+
+	// Prepare keys for bulk import
+	newKeysToCreate := make([]models.APIKey, 0, len(keys))
+	uniqueNewKeys := make(map[string]bool, len(keys))
+	ignoredCount := priorIgnored
+
+	for _, keyVal := range keys {
+		trimmedKey := strings.TrimSpace(keyVal)
+		if trimmedKey == "" || uniqueNewKeys[trimmedKey] {
+			ignoredCount++
+			continue
+		}
+
+		keyHash := s.KeyService.EncryptionSvc.Hash(trimmedKey)
+		if existingHashMap[keyHash] {
+			ignoredCount++
+			continue
+		}
+
+		encryptedKey, err := s.KeyService.EncryptionSvc.Encrypt(trimmedKey)
+		if err != nil {
+			logrus.WithError(err).Debug("Failed to encrypt key, skipping")
+			ignoredCount++
+			continue
+		}
+
+		uniqueNewKeys[trimmedKey] = true
+		newKeysToCreate = append(newKeysToCreate, models.APIKey{
+			GroupID:  group.ID,
+			KeyValue: encryptedKey,
+			KeyHash:  keyHash,
+			Status:   models.KeyStatusActive,
+		})
+		// Note: Progress updates removed in encryption phase to avoid progress bar jumping backwards.
+		// Encryption is fast (in-memory), and decryption phase already provides meaningful progress.
+	}
+
+	if len(newKeysToCreate) == 0 {
+		result := KeyImportResult{AddedCount: 0, IgnoredCount: ignoredCount}
+		if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
+			logrus.Errorf("Failed to end task for group %d: %v", group.ID, endErr)
+		}
+		return
+	}
+
+	// Use bulk import service for fast insertion
+	logrus.WithFields(logrus.Fields{
+		"groupId":  group.ID,
+		"keyCount": len(newKeysToCreate),
+	}).Info("Starting bulk import for copied keys")
+
+	if err := s.BulkImportSvc.BulkInsertAPIKeys(newKeysToCreate); err != nil {
+		if endErr := s.TaskService.EndTask(nil, fmt.Errorf("bulk import failed: %w", err)); endErr != nil {
+			logrus.Errorf("Failed to end task with error for group %d: %v", group.ID, endErr)
+		}
+		return
+	}
+
+	// Load keys to memory store after successful import
+	if s.KeyService.KeyProvider != nil {
+		if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"groupId": group.ID,
+				"error":   err,
+			}).Error("Failed to load keys to store after bulk import")
+		}
+	}
+
+	// Invalidate cache after adding keys
+	if s.KeyService.CacheInvalidationCallback != nil && len(newKeysToCreate) > 0 {
+		s.KeyService.CacheInvalidationCallback(group.ID)
+	}
+
+	duration := time.Since(startTime)
+	logrus.WithFields(logrus.Fields{
+		"groupId":      group.ID,
+		"addedCount":   len(newKeysToCreate),
+		"ignoredCount": ignoredCount,
+		"duration":     duration,
+	}).Info("Completed bulk import for copy")
+
+	result := KeyImportResult{
+		AddedCount:   len(newKeysToCreate),
+		IgnoredCount: ignoredCount,
+	}
+
+	if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
+		logrus.Errorf("Failed to end task with success result for group %d: %v", group.ID, endErr)
+	}
 }
 
 func (s *KeyImportService) runImport(group *models.Group, keys []string) {

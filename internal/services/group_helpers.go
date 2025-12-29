@@ -5,6 +5,7 @@ import (
 
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 
 	"gorm.io/gorm"
 )
@@ -13,6 +14,17 @@ import (
 // Groups are sorted by sort field ascending, then by name ascending for stable ordering
 // when sort values are equal (alphabetical order by group name).
 const GroupListOrderClause = "sort ASC, name ASC"
+
+// isTransientDBError is an alias for utils.IsTransientDBError for backward compatibility.
+// It checks if the error is a transient database error that can be retried
+// or handled gracefully by returning cached data.
+// Uses the comprehensive implementation in utils package which covers:
+// - Context timeout/cancellation
+// - SQLite lock errors (database is locked, sqlite_busy, etc.)
+// - MySQL/PostgreSQL lock errors (lock wait timeout, deadlock, etc.)
+func isTransientDBError(err error) bool {
+	return utils.IsTransientDBError(err)
+}
 
 // FindGroupByID finds a group by ID and returns it, or an error if not found.
 func FindGroupByID(ctx context.Context, db *gorm.DB, groupID uint) (*models.Group, error) {

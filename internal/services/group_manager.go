@@ -239,16 +239,6 @@ func (gm *GroupManager) Initialize() error {
 
 			cache.ByName[g.Name] = &g
 			cache.ByID[g.ID] = &g
-			logrus.WithFields(logrus.Fields{
-				"group_name":                 g.Name,
-				"effective_config":           g.EffectiveConfig,
-				"header_rules_count":         len(g.HeaderRuleList),
-				"model_mapping":              g.ModelMapping != "", // deprecated
-				"model_redirect_rules_count": len(g.ModelRedirectMap),
-				"model_redirect_strict":      g.ModelRedirectStrict,
-				"path_redirects":             len(g.PathRedirectRuleList),
-				"sub_group_count":            len(g.SubGroups),
-			}).Debug("Loaded group with effective config")
 		}
 
 		return cache, nil

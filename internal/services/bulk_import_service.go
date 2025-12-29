@@ -312,6 +312,20 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 
 		totalProcessed += len(batch)
 
+		// For SQLite, yield to other queries periodically to prevent long lock times.
+		// Release and recreate savepoint every few batches to allow other reads.
+		// Savepoint errors are logged but not fatal - the import continues with degraded performance.
+		if s.dbType == "sqlite" && totalProcessed%500 == 0 && totalProcessed < totalKeys {
+			if err := tx.Exec("RELEASE SAVEPOINT bulk_insert").Error; err != nil {
+				logrus.WithError(err).Warn("Failed to release savepoint during bulk import, continuing without yield")
+			}
+			// Brief yield to allow pending reads
+			time.Sleep(5 * time.Millisecond)
+			if err := tx.Exec("SAVEPOINT bulk_insert").Error; err != nil {
+				logrus.WithError(err).Warn("Failed to recreate savepoint during bulk import, continuing without savepoint protection")
+			}
+		}
+
 		// Log progress at 25%, 50%, 75% intervals for large imports (>5000 keys)
 		if totalKeys > 5000 {
 			currentPercent := (totalProcessed * 100) / totalKeys

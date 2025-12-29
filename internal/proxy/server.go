@@ -1513,7 +1513,8 @@ func (ps *ProxyServer) logEarlyError(c *gin.Context, group *models.Group, startT
 		errMsg = err.Error()
 	}
 
-	ps.requestLogService.RecordError(groupID, groupName, c.ClientIP(), utils.TruncateString(c.Request.URL.String(), 500), errMsg, statusCode, time.Since(startTime).Milliseconds())
+	// Use sanitized URL to prevent auth token leakage in logs
+	ps.requestLogService.RecordError(groupID, groupName, c.ClientIP(), utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), errMsg, statusCode, time.Since(startTime).Milliseconds())
 }
 
 // logRequest is a helper function to create and record a request log.
@@ -1577,7 +1578,7 @@ func (ps *ProxyServer) logRequest(
 		IsSuccess:    finalError == nil && statusCode < 400,
 		SourceIP:     c.ClientIP(),
 		StatusCode:   statusCode,
-		RequestPath:  utils.TruncateString(c.Request.URL.String(), 500),
+		RequestPath:  utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), // Sanitize to prevent auth token leakage
 		Duration:     duration,
 		UserAgent:    userAgent,
 		RequestType:  requestType,

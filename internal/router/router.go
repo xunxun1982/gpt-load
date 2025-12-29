@@ -202,6 +202,8 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		siteMgmt.POST("/sites/:id/copy", serverHandler.CopyManagedSite)
 		siteMgmt.POST("/sites/:id/checkin", serverHandler.CheckInManagedSite)
 		siteMgmt.GET("/sites/:id/checkin-logs", serverHandler.ListManagedSiteCheckinLogs)
+		siteMgmt.POST("/sites/:id/record-site-opened", serverHandler.RecordSiteOpened)
+		siteMgmt.POST("/sites/:id/record-checkin-page-opened", serverHandler.RecordCheckinPageOpened)
 		siteMgmt.DELETE("/sites/:id/binding", serverHandler.UnbindSiteFromGroup)
 		siteMgmt.GET("/sites/:id/bound-group", serverHandler.GetBoundGroupInfo)
 

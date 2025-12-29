@@ -330,13 +330,14 @@ function openCreateChildGroupModal(group: Group, event: Event) {
   showChildGroupModal.value = true;
 }
 
+// Note: async keyword removed as suggested by AI review - no await expressions in this function
 function handleChildGroupCreated(group: Group) {
   showChildGroupModal.value = false;
   selectedParentGroup.value = null;
-  // Refresh child groups for the parent
-  loadAllChildGroups();
   const groupId = group.id;
   if (groupId !== null && groupId !== undefined) {
+    // Emit refresh first to update the groups list from backend
+    // The watch on props.groups will trigger loadAllChildGroups automatically
     emit("refresh-and-select", groupId);
   }
 }

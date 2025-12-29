@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	app_errors "gpt-load/internal/errors"
@@ -17,20 +18,48 @@ import (
 	"gorm.io/gorm"
 )
 
+// childGroupsCacheEntry represents cached child groups data
+type childGroupsCacheEntry struct {
+	Data      map[uint][]models.ChildGroupInfo
+	ExpiresAt time.Time
+}
+
 // ChildGroupService handles child group operations.
 type ChildGroupService struct {
 	db           *gorm.DB
+	readDB       *gorm.DB // Separate read connection for SQLite WAL mode
 	groupManager *GroupManager
 	keyService   *KeyService
+	taskService  *TaskService
+	// Cache for GetAllChildGroups
+	cache   *childGroupsCacheEntry
+	cacheMu sync.RWMutex
+	cacheTTL time.Duration
 }
 
 // NewChildGroupService creates a new ChildGroupService instance.
-func NewChildGroupService(db *gorm.DB, groupManager *GroupManager, keyService *KeyService) *ChildGroupService {
+func NewChildGroupService(db *gorm.DB, readDB ReadOnlyDB, groupManager *GroupManager, keyService *KeyService, taskService *TaskService) *ChildGroupService {
+	rdb := readDB.DB
+	if rdb == nil {
+		rdb = db
+	}
 	return &ChildGroupService{
 		db:           db,
+		readDB:       rdb,
 		groupManager: groupManager,
 		keyService:   keyService,
+		taskService:  taskService,
+		cacheTTL:     30 * time.Second,
 	}
+}
+
+// InvalidateCache clears the child groups cache.
+// This should be called after creating, updating, or deleting child groups.
+func (s *ChildGroupService) InvalidateCache() {
+	s.cacheMu.Lock()
+	s.cache = nil
+	s.cacheMu.Unlock()
+	logrus.Debug("Child groups cache invalidated")
 }
 
 // CreateChildGroupParams defines parameters for creating a child group.
@@ -203,6 +232,9 @@ func (s *ChildGroupService) CreateChildGroup(ctx context.Context, params CreateC
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after creating child group")
 	}
 
+	// Invalidate child groups cache so GetAllChildGroups returns fresh data
+	s.InvalidateCache()
+
 	return &childGroup, nil
 }
 
@@ -267,12 +299,61 @@ func (s *ChildGroupService) GetChildGroups(ctx context.Context, parentGroupID ui
 
 // GetAllChildGroups returns all child groups grouped by parent group ID.
 // This is more efficient than calling GetChildGroups for each parent group.
+//
+// Returns a deep copy of cached data to prevent data races. Although ChildGroupInfo
+// contains only primitive fields, the map values are slices which are reference types.
+// Returning direct references could allow callers to accidentally modify the shared
+// underlying array through append operations.
 func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]models.ChildGroupInfo, error) {
+	// Check cache first
+	s.cacheMu.RLock()
+	if s.cache != nil && time.Now().Before(s.cache.ExpiresAt) {
+		result := s.copyChildGroupsMap(s.cache.Data)
+		s.cacheMu.RUnlock()
+		return result, nil
+	}
+	// Check if task is running and we have stale cache
+	hasStaleCache := s.cache != nil && len(s.cache.Data) > 0
+	s.cacheMu.RUnlock()
+
+	// Return stale cache during task execution to avoid blocking on DB
+	// Note: There's a minor TOCTOU window between the stale cache check above and re-acquiring
+	// the lock here. If another goroutine calls InvalidateCache() in between, cache could be nil.
+	// This is acceptable because: 1) the window is very small, 2) nil cache is handled safely
+	// by copyChildGroupsMap returning nil, and 3) the next call will simply refetch from DB.
+	if hasStaleCache && s.isTaskRunning() {
+		s.cacheMu.RLock()
+		if s.cache == nil {
+			s.cacheMu.RUnlock()
+			// Cache was invalidated between checks, proceed to refetch from database
+		} else {
+			result := s.copyChildGroupsMap(s.cache.Data)
+			s.cacheMu.RUnlock()
+			logrus.Debug("GetAllChildGroups returning stale cache during task execution")
+			return result, nil
+		}
+	}
+
 	var childGroups []models.Group
-	if err := s.db.WithContext(ctx).
+	// Use readDB with timeout for read operations
+	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	if err := s.readDB.WithContext(queryCtx).
 		Where("parent_group_id IS NOT NULL").
 		Order("parent_group_id ASC, sort ASC, name ASC").
 		Find(&childGroups).Error; err != nil {
+		// Return stale cache on transient errors
+		if isTransientDBError(err) {
+			s.cacheMu.RLock()
+			if s.cache != nil && len(s.cache.Data) > 0 {
+				result := s.copyChildGroupsMap(s.cache.Data)
+				s.cacheMu.RUnlock()
+				logrus.WithError(err).Warn("GetAllChildGroups transient error - returning stale cache")
+				return result, nil
+			}
+			s.cacheMu.RUnlock()
+		}
 		return nil, app_errors.ParseDBError(err)
 	}
 
@@ -294,7 +375,45 @@ func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]m
 		})
 	}
 
-	return result, nil
+	// Update cache
+	s.cacheMu.Lock()
+	s.cache = &childGroupsCacheEntry{
+		Data:      result,
+		ExpiresAt: time.Now().Add(s.cacheTTL),
+	}
+	s.cacheMu.Unlock()
+
+	// Return a copy to prevent data races - the first caller should also receive
+	// an independent copy, consistent with cache hit behavior (lines 311, 321, 340)
+	return s.copyChildGroupsMap(result), nil
+}
+
+// isTaskRunning checks if an import or delete task is currently running.
+func (s *ChildGroupService) isTaskRunning() bool {
+	if s.taskService == nil {
+		return false
+	}
+	status, err := s.taskService.GetTaskStatus()
+	if err != nil {
+		return false
+	}
+	return status.IsRunning
+}
+
+// copyChildGroupsMap creates a deep copy of the child groups map to prevent data races.
+// Although ChildGroupInfo contains only primitive fields, the map values are slices
+// which are reference types. This ensures callers cannot modify the cached data.
+func (s *ChildGroupService) copyChildGroupsMap(src map[uint][]models.ChildGroupInfo) map[uint][]models.ChildGroupInfo {
+	if src == nil {
+		return nil
+	}
+	result := make(map[uint][]models.ChildGroupInfo, len(src))
+	for parentID, children := range src {
+		copied := make([]models.ChildGroupInfo, len(children))
+		copy(copied, children)
+		result[parentID] = copied
+	}
+	return result
 }
 
 // CountChildGroups returns the count of child groups for a parent group.
@@ -398,6 +517,9 @@ func (s *ChildGroupService) SyncChildGroupsOnParentUpdate(ctx context.Context, t
 		"proxyKeysChanged": proxyKeysChanged,
 	}).Info("Synced child groups after parent update")
 
+	// Invalidate cache after updating child groups
+	s.InvalidateCache()
+
 	return nil
 }
 
@@ -433,9 +555,12 @@ func (s *ChildGroupService) DeleteChildGroupsForParent(ctx context.Context, tx *
 	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"parentGroupID":    parentGroupID,
+		"parentGroupID":     parentGroupID,
 		"deletedChildCount": result.RowsAffected,
 	}).Info("Deleted child groups for parent")
+
+	// Invalidate cache after deleting child groups
+	s.InvalidateCache()
 
 	return result.RowsAffected, nil
 }

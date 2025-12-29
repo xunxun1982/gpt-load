@@ -13,6 +13,7 @@ import (
 	"gpt-load/internal/response"
 	"gpt-load/internal/services"
 	"gpt-load/internal/types"
+	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -24,9 +25,8 @@ func Logger(config types.LogConfig) gin.HandlerFunc {
 
 		start := time.Now()
 		path := c.Request.URL.Path
-		raw := c.Request.URL.RawQuery
 
-		// Process request
+		// Process request first, so auth middleware can sanitize sensitive params
 		c.Next()
 
 		// Calculate response time
@@ -36,11 +36,10 @@ func Logger(config types.LogConfig) gin.HandlerFunc {
 		method := c.Request.Method
 		statusCode := c.Writer.Status()
 
-		// Build full path (avoid string concatenation)
-		fullPath := path
-		if raw != "" {
-			fullPath = path + "?" + raw
-		}
+		// Sanitize URL to prevent sensitive data (auth tokens, keys) from appearing in logs
+		// This handles both proxy routes (where extractAuthKey removes key param) and
+		// non-proxy routes (like /api/logs/export) where key param may still be present
+		fullPath := utils.SanitizeURLForLog(c.Request.URL)
 
 		// Get key information (if exists)
 		keyInfo := ""
@@ -249,7 +248,8 @@ func ProxyAuth(gm *services.GroupManager, requestLogService *services.RequestLog
 			response.Error(c, app_errors.ErrUnauthorized)
 			if requestLogService != nil {
 				// groupID=0 because group lookup hasn't occurred yet
-				requestLogService.RecordError(0, groupName, c.ClientIP(), c.Request.URL.String(), "no auth key provided", http.StatusUnauthorized, time.Since(startTime).Milliseconds())
+				// Use sanitized URL to prevent auth token leakage in logs
+				requestLogService.RecordError(0, groupName, c.ClientIP(), utils.SanitizeURLForLog(c.Request.URL), "no auth key provided", http.StatusUnauthorized, time.Since(startTime).Milliseconds())
 			}
 			c.Abort()
 			return
@@ -261,7 +261,8 @@ func ProxyAuth(gm *services.GroupManager, requestLogService *services.RequestLog
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to retrieve proxy group"))
 			if requestLogService != nil {
 				// groupID=0 because group lookup failed, but we log the attempted groupName for diagnostics
-				requestLogService.RecordError(0, groupName, c.ClientIP(), c.Request.URL.String(), fmt.Sprintf("group lookup failed: %v", err), http.StatusInternalServerError, time.Since(startTime).Milliseconds())
+				// Use sanitized URL to prevent auth token leakage in logs
+				requestLogService.RecordError(0, groupName, c.ClientIP(), utils.SanitizeURLForLog(c.Request.URL), fmt.Sprintf("group lookup failed: %v", err), http.StatusInternalServerError, time.Since(startTime).Milliseconds())
 			}
 			c.Abort()
 			return
@@ -279,7 +280,8 @@ func ProxyAuth(gm *services.GroupManager, requestLogService *services.RequestLog
 		logrus.Debugf("[ProxyAuth] Invalid proxy key for group %s, path: %s", group.Name, c.Request.URL.Path)
 		response.Error(c, app_errors.ErrUnauthorized)
 		if requestLogService != nil {
-			requestLogService.RecordError(group.ID, group.Name, c.ClientIP(), c.Request.URL.String(), "invalid proxy key", http.StatusUnauthorized, time.Since(startTime).Milliseconds())
+			// Use sanitized URL to prevent auth token leakage in logs
+			requestLogService.RecordError(group.ID, group.Name, c.ClientIP(), utils.SanitizeURLForLog(c.Request.URL), "invalid proxy key", http.StatusUnauthorized, time.Since(startTime).Milliseconds())
 		}
 		c.Abort()
 	}

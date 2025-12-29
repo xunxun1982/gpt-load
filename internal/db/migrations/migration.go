@@ -67,7 +67,15 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.7.0 migration - Add site management performance indexes
-	return V1_7_0_AddSiteManagementIndexes(db)
+	if err := V1_7_0_AddSiteManagementIndexes(db); err != nil {
+		return err
+	}
+	// Run v1.8.0 migration - Add site opened date columns for tracking button clicks
+	if err := V1_8_0_AddSiteOpenedDateColumns(db); err != nil {
+		return err
+	}
+	// Run v1.9.0 migration - Add performance optimization indexes
+	return V1_9_0_AddPerformanceIndexes(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

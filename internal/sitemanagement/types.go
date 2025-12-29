@@ -47,6 +47,11 @@ type ManagedSiteDTO struct {
 	LastCheckInStatus  string     `json:"last_checkin_status"`
 	LastCheckInMessage string     `json:"last_checkin_message"`
 
+	// Track when user clicked "Open Site" or "Open Check-in Page" buttons.
+	// Date format: YYYY-MM-DD in Beijing time (UTC+8), resets at 05:00 Beijing time.
+	LastSiteOpenedDate        string `json:"last_site_opened_date"`
+	LastCheckinPageOpenedDate string `json:"last_checkin_page_opened_date"`
+
 	BoundGroupID   *uint  `json:"bound_group_id,omitempty"`
 	BoundGroupName string `json:"bound_group_name,omitempty"`
 

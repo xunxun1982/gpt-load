@@ -18,6 +18,7 @@ import (
 	"gpt-load/internal/types"
 
 	"go.uber.org/dig"
+	"gorm.io/gorm"
 )
 
 // BuildContainer creates a new dependency injection container and provides all the application's services.
@@ -34,6 +35,13 @@ func BuildContainer() (*dig.Container, error) {
 		return nil, err
 	}
 	if err := container.Provide(db.NewDB); err != nil {
+		return nil, err
+	}
+	// Provide ReadOnlyDB wrapper for SQLite read connection pool
+	// Depends on *gorm.DB to ensure db.NewDB runs first and sets db.ReadDB
+	if err := container.Provide(func(_ *gorm.DB) services.ReadOnlyDB {
+		return services.ReadOnlyDB{DB: db.ReadDB}
+	}); err != nil {
 		return nil, err
 	}
 	if err := container.Provide(config.NewSystemSettingsManager); err != nil {

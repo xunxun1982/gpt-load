@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gpt-load/internal/utils"
+
 	"github.com/sirupsen/logrus"
 )
 
@@ -100,7 +101,19 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 		return client
 	}
 
-	// Create a new transport and client with the specified configuration.
+	// Calculate MaxConnsPerHost for burst capacity.
+	// The 2× multiplier allows temporary bursts beyond the idle pool size,
+	// accommodating sudden traffic spikes without connection queuing.
+	// The floor of 10 ensures a minimum concurrent connection capacity
+	// even when MaxIdleConnsPerHost is configured very low.
+	maxConnsPerHost := config.MaxIdleConnsPerHost * 2
+	if maxConnsPerHost < 10 {
+		maxConnsPerHost = 10
+	}
+
+	// Create a new transport and client with optimized configuration.
+	// Note: DualStack field is deprecated since Go 1.12 - Happy Eyeballs (RFC 6555)
+	// is now enabled by default, so we don't need to set it explicitly.
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   config.ConnectTimeout,
@@ -109,6 +122,7 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 		ForceAttemptHTTP2:     config.ForceAttemptHTTP2,
 		MaxIdleConns:          config.MaxIdleConns,
 		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
+		MaxConnsPerHost:       maxConnsPerHost, // Allow burst capacity
 		IdleConnTimeout:       config.IdleConnTimeout,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 		ExpectContinueTimeout: config.ExpectContinueTimeout,
@@ -116,6 +130,7 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 		DisableCompression:    config.DisableCompression,
 		WriteBufferSize:       config.WriteBufferSize,
 		ReadBufferSize:        config.ReadBufferSize,
+		DisableKeepAlives:     false, // Ensure keep-alives are enabled for connection reuse
 	}
 
 	// Set HTTP proxy with validation and detailed logging
@@ -124,12 +139,14 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	if trimmedProxyURL != "" {
 		proxyURL, err := url.Parse(trimmedProxyURL)
 		if err != nil {
-			logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", trimmedProxyURL, err)
+			// Sanitize proxy URL to prevent credential leakage in logs
+			logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", utils.SanitizeProxyString(trimmedProxyURL), err)
 			transport.Proxy = http.ProxyFromEnvironment
 		} else {
 			// Validate proxy URL scheme
 			if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" && proxyURL.Scheme != "socks5" {
-				logrus.Warnf("Unsupported proxy scheme '%s' in URL '%s', falling back to environment settings", proxyURL.Scheme, trimmedProxyURL)
+				// Sanitize proxy URL to prevent credential leakage in logs
+				logrus.Warnf("Unsupported proxy scheme '%s' in URL '%s', falling back to environment settings", proxyURL.Scheme, utils.SanitizeProxyString(trimmedProxyURL))
 				transport.Proxy = http.ProxyFromEnvironment
 			} else {
 				// Set proxy with detailed logging
@@ -149,19 +166,45 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	newClient := &http.Client{
 		Transport: transport,
 		Timeout:   config.RequestTimeout,
+		// Explicitly limit redirect following to prevent infinite loops.
+		// Note: This matches Go's default behavior (stop after 10 redirects),
+		// but we keep it explicit for documentation and to ensure consistent
+		// behavior across Go versions.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return nil
+		},
 	}
 
 	m.clients[fingerprint] = newClient
 
 	// Log client creation with full configuration details for debugging
+	// Note: has_proxy field removed as it's redundant (can be inferred from proxy_url being non-empty)
 	logrus.WithFields(logrus.Fields{
-		"fingerprint":  fingerprint,
-		"proxy_url":    utils.SanitizeProxyString(trimmedProxyURL),
-		"timeout":      config.RequestTimeout,
-		"has_proxy":    trimmedProxyURL != "",
-	}).Debug("Created new HTTP client")
+		"fingerprint":        fingerprint,
+		"proxy_url":          utils.SanitizeProxyString(trimmedProxyURL),
+		"timeout":            config.RequestTimeout,
+		"max_conns_per_host": maxConnsPerHost,
+	}).Debug("Created new HTTP client with optimized connection pool")
 
 	return newClient
+}
+
+// CloseIdleConnections closes idle connections for all managed clients.
+// This can be useful for releasing resources during graceful shutdown.
+// Note: Clients with non-standard transports are skipped silently.
+func (m *HTTPClientManager) CloseIdleConnections() {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	for _, client := range m.clients {
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}
+	logrus.Debug("Closed idle connections for managed HTTP clients")
 }
 
 // getFingerprint generates a unique string representation of the client configuration.

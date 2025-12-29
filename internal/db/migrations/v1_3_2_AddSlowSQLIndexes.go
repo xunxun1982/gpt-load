@@ -22,9 +22,9 @@ func V1_3_2_AddSlowSQLIndexes(db *gorm.DB) error {
 	hasSubGroupIDIndex := migrator.HasIndex("group_sub_groups", indexNameSubGroupID)
 
 	if !hasSubGroupIDIndex {
-		// Try CREATE INDEX IF NOT EXISTS first (works for SQLite, MySQL 5.7+, PostgreSQL)
+		// Try CREATE INDEX IF NOT EXISTS first (works for SQLite, MySQL 8.0+, PostgreSQL)
 		if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_group_sub_groups_sub_group_id ON group_sub_groups(sub_group_id)").Error; err != nil {
-			// Fallback for databases that don't support IF NOT EXISTS (e.g., MySQL < 5.7)
+			// Fallback for databases that don't support IF NOT EXISTS
 			// Check if index exists using database-specific queries
 			var indexExists bool
 			var checkErr error
@@ -87,7 +87,7 @@ func V1_3_2_AddSlowSQLIndexes(db *gorm.DB) error {
 	hasGroupTypeIndex := migrator.HasIndex("groups", indexNameGroupType)
 
 	if !hasGroupTypeIndex {
-		// Try CREATE INDEX IF NOT EXISTS first (works for SQLite, MySQL 5.7+, PostgreSQL)
+		// Try CREATE INDEX IF NOT EXISTS first (works for SQLite, MySQL 8.0+, PostgreSQL)
 		if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_groups_group_type ON groups(group_type)").Error; err != nil {
 			// Fallback for databases that don't support IF NOT EXISTS
 			var indexExists bool

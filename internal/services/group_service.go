@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gpt-load/internal/channel"
@@ -28,6 +29,13 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+// ReadOnlyDB is a wrapper type for the read-only database connection.
+// This allows dig to distinguish between the main DB and the read-only DB.
+// For SQLite in WAL mode, this enables concurrent reads during writes.
+type ReadOnlyDB struct {
+	DB *gorm.DB
+}
 
 // I18nError represents an error that carries translation metadata.
 type I18nError struct {
@@ -53,21 +61,27 @@ func NewI18nError(apiErr *app_errors.APIError, msgID string, template map[string
 	}
 }
 
-// groupKeyStatsCacheEntry represents a cached key statistics entry with expiration
+// groupKeyStatsCacheEntry represents a cached key statistics entry with adaptive TTL support.
+// HitCount and CurrentTTL enable adaptive TTL extension for frequently accessed entries.
 type groupKeyStatsCacheEntry struct {
-	Stats     KeyStats
-	ExpiresAt time.Time
+	Stats      KeyStats
+	ExpiresAt  time.Time
+	HitCount   int64         // Number of cache hits since last TTL extension
+	CurrentTTL time.Duration // Current TTL (may be extended based on access patterns)
 }
 
-// groupListCacheEntry represents a cached groups list with expiration
+// groupListCacheEntry represents a cached groups list with adaptive TTL support.
 type groupListCacheEntry struct {
-	Groups    []models.Group
-	ExpiresAt time.Time
+	Groups     []models.Group
+	ExpiresAt  time.Time
+	HitCount   int64         // Number of cache hits since last TTL extension
+	CurrentTTL time.Duration // Current TTL (may be extended based on access patterns)
 }
 
 // GroupService handles business logic for group operations.
 type GroupService struct {
 	db                    *gorm.DB
+	readDB                *gorm.DB // Separate read connection for SQLite WAL mode
 	settingsManager       *config.SystemSettingsManager
 	groupManager          *GroupManager
 	channelFactory        *channel.Factory
@@ -82,18 +96,21 @@ type GroupService struct {
 	keyStatsCache         map[uint]groupKeyStatsCacheEntry
 	keyStatsCacheMu       sync.RWMutex
 	keyStatsCacheTTL      time.Duration
+	keyStatsCacheMaxTTL   time.Duration // Maximum TTL for adaptive extension
 	groupListCache        *groupListCacheEntry
 	groupListCacheMu      sync.RWMutex
 	groupListCacheTTL     time.Duration
+	groupListCacheMaxTTL  time.Duration // Maximum TTL for adaptive extension
 
 	// Callbacks for binding operations (set by handler layer to avoid circular dependency)
-	CheckGroupCanDeleteCallback   func(ctx context.Context, groupID uint) error
+	CheckGroupCanDeleteCallback    func(ctx context.Context, groupID uint) error
 	SyncGroupEnabledToSiteCallback func(ctx context.Context, groupID uint, enabled bool) error
 }
 
 // NewGroupService constructs a GroupService.
 func NewGroupService(
 	db *gorm.DB,
+	readDB ReadOnlyDB,
 	settingsManager *config.SystemSettingsManager,
 	groupManager *GroupManager,
 	channelFactory *channel.Factory,
@@ -105,8 +122,14 @@ func NewGroupService(
 	encryptionSvc encryption.Service,
 	aggregateGroupService *AggregateGroupService,
 ) *GroupService {
+	// Use main DB as readDB if not provided (for MySQL/PostgreSQL)
+	rdb := readDB.DB
+	if rdb == nil {
+		rdb = db
+	}
 	svc := &GroupService{
 		db:                    db,
+		readDB:                rdb,
 		settingsManager:       settingsManager,
 		groupManager:          groupManager,
 		channelFactory:        channelFactory,
@@ -118,8 +141,10 @@ func NewGroupService(
 		encryptionSvc:         encryptionSvc,
 		aggregateGroupService: aggregateGroupService,
 		keyStatsCache:         make(map[uint]groupKeyStatsCacheEntry),
-		keyStatsCacheTTL:      30 * time.Second, // Reduced from 3 minutes to 30 seconds for fresher data
-		groupListCacheTTL:     30 * time.Second, // Increased from 2 seconds to balance freshness and performance
+		keyStatsCacheTTL:      30 * time.Second,  // Base TTL for key stats cache
+		keyStatsCacheMaxTTL:   2 * time.Minute,   // Max TTL after adaptive extension
+		groupListCacheTTL:     30 * time.Second,  // Base TTL for group list cache
+		groupListCacheMaxTTL:  2 * time.Minute,   // Max TTL after adaptive extension
 		channelRegistry:       channel.GetChannels(),
 	}
 	if svc.keyService != nil {
@@ -362,37 +387,144 @@ func (s *GroupService) InvalidateGroupListCache() {
 	s.invalidateGroupListCache()
 }
 
+// addGroupToListCache adds a new group to the cache without invalidating it.
+// This is used after creating a new group to keep the cache valid during async operations.
+// If cache is empty, it tries to load all groups from DB first using readDB.
+//
+// Lock contention optimization: The mutex is released before DB queries to avoid blocking
+// other goroutines during potentially slow operations (up to 2 seconds timeout).
+func (s *GroupService) addGroupToListCache(group *models.Group) {
+	s.groupListCacheMu.Lock()
+	needsDBLoad := s.groupListCache == nil || len(s.groupListCache.Groups) == 0
+	if !needsDBLoad {
+		// Fast path: cache exists, just append and return
+		s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
+		s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCache.CurrentTTL)
+		s.groupListCacheMu.Unlock()
+		return
+	}
+	s.groupListCacheMu.Unlock()
+
+	// Slow path: need to load from DB
+	// Release lock before DB query to reduce lock contention
+	var groups []models.Group
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.readDB.WithContext(ctx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
+		// DB query failed, create cache with just this group
+		logrus.WithError(err).Debug("Failed to load groups for cache, using single group")
+		s.groupListCacheMu.Lock()
+		s.groupListCache = &groupListCacheEntry{
+			Groups:     []models.Group{*group},
+			ExpiresAt:  time.Now().Add(s.groupListCacheTTL),
+			HitCount:   0,
+			CurrentTTL: s.groupListCacheTTL,
+		}
+		s.groupListCacheMu.Unlock()
+		return
+	}
+
+	// Check if the new group is already in the list (shouldn't happen but be safe)
+	found := false
+	for _, g := range groups {
+		if g.ID == group.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		groups = append(groups, *group)
+	}
+
+	s.groupListCacheMu.Lock()
+	// Re-check: another goroutine may have populated the cache while we queried DB
+	// This prevents race condition where concurrent calls could lose cached groups
+	if s.groupListCache != nil && len(s.groupListCache.Groups) > 0 {
+		// Merge: check if our group is already there, if not append
+		alreadyCached := false
+		for _, g := range s.groupListCache.Groups {
+			if g.ID == group.ID {
+				alreadyCached = true
+				break
+			}
+		}
+		if !alreadyCached {
+			s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
+			s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCache.CurrentTTL)
+		}
+		s.groupListCacheMu.Unlock()
+		return
+	}
+	s.groupListCache = &groupListCacheEntry{
+		Groups:     groups,
+		ExpiresAt:  time.Now().Add(s.groupListCacheTTL),
+		HitCount:   0,
+		CurrentTTL: s.groupListCacheTTL,
+	}
+	s.groupListCacheMu.Unlock()
+}
+
+// isTaskRunning checks if an import or delete task is currently running.
+func (s *GroupService) isTaskRunning() bool {
+	if s.keyImportSvc == nil || s.keyImportSvc.TaskService == nil {
+		return false
+	}
+	status, err := s.keyImportSvc.TaskService.GetTaskStatus()
+	if err != nil {
+		return false
+	}
+	return status.IsRunning
+}
+
 // ListGroups returns all groups without sub-group relations.
 func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
-	// Check cache first
+	// Check cache first with adaptive TTL support
 	s.groupListCacheMu.RLock()
 	if s.groupListCache != nil && time.Now().Before(s.groupListCache.ExpiresAt) {
 		// Cache hit, return cached groups
 		groups := make([]models.Group, len(s.groupListCache.Groups))
 		copy(groups, s.groupListCache.Groups)
 		s.groupListCacheMu.RUnlock()
+
+		// Update hit count asynchronously to avoid blocking the read path
+		go s.updateGroupListCacheHit()
+
 		logrus.WithContext(ctx).Debug("Group list cache hit")
 		return groups, nil
 	}
+	// Check if we have stale cache and a task is running
+	// If so, return stale cache to avoid blocking on DB during import/delete
+	hasStaleCache := s.groupListCache != nil && len(s.groupListCache.Groups) > 0
 	s.groupListCacheMu.RUnlock()
+
+	if hasStaleCache && s.isTaskRunning() {
+		s.groupListCacheMu.RLock()
+		stale := make([]models.Group, len(s.groupListCache.Groups))
+		copy(stale, s.groupListCache.Groups)
+		s.groupListCacheMu.RUnlock()
+		logrus.WithContext(ctx).Debug("ListGroups returning stale cache during task execution")
+		return stale, nil
+	}
 
 	// Cache miss, fetch from database with timeout for reliability
 	// Group list queries should be fast with proper indexes
+	// Use readDB for read operations to avoid blocking during writes (SQLite WAL mode)
 	groups := make([]models.Group, 0, 100)
 
 	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
 	defer cancel()
 
-	if err := s.db.WithContext(queryCtx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
-		// Only use stale cache for transient errors (timeout/canceled) to keep UI responsive
+	if err := s.readDB.WithContext(queryCtx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
+		// Use stale cache for transient errors (timeout/canceled/locked) to keep UI responsive
 		// For other errors (schema issues, query bugs), return the error immediately
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if isTransientDBError(err) {
 			s.groupListCacheMu.RLock()
-			if s.groupListCache != nil {
+			// Return stale cache even if expired - better than returning error
+			if s.groupListCache != nil && len(s.groupListCache.Groups) > 0 {
 				stale := make([]models.Group, len(s.groupListCache.Groups))
 				copy(stale, s.groupListCache.Groups)
 				s.groupListCacheMu.RUnlock()
-				logrus.WithContext(ctx).WithError(err).Warn("ListGroups timeout/canceled - returning stale cache")
+				logrus.WithContext(ctx).WithError(err).Warn("ListGroups transient error - returning stale cache")
 				return stale, nil
 			}
 			s.groupListCacheMu.RUnlock()
@@ -400,16 +532,46 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	// Update cache
+	// Update cache with base TTL
 	s.groupListCacheMu.Lock()
 	s.groupListCache = &groupListCacheEntry{
-		Groups:    groups,
-		ExpiresAt: time.Now().Add(s.groupListCacheTTL),
+		Groups:     groups,
+		ExpiresAt:  time.Now().Add(s.groupListCacheTTL),
+		HitCount:   0,
+		CurrentTTL: s.groupListCacheTTL,
 	}
 	s.groupListCacheMu.Unlock()
 
 	logrus.WithContext(ctx).Debug("Group list cache updated")
 	return groups, nil
+}
+
+// updateGroupListCacheHit updates hit statistics and extends TTL for frequently accessed group list.
+// This implements adaptive TTL: entries with high hit counts get extended TTL up to maxTTL.
+func (s *GroupService) updateGroupListCacheHit() {
+	s.groupListCacheMu.Lock()
+	defer s.groupListCacheMu.Unlock()
+
+	if s.groupListCache == nil || time.Now().After(s.groupListCache.ExpiresAt) {
+		return
+	}
+
+	s.groupListCache.HitCount++
+
+	// Extend TTL if hit threshold is reached (10 hits) and not at max TTL
+	// This rewards frequently accessed entries with longer cache lifetime
+	const hitThreshold = 10
+	const ttlMultiplier = 1.2
+
+	if s.groupListCache.HitCount >= hitThreshold && s.groupListCache.CurrentTTL < s.groupListCacheMaxTTL {
+		newTTL := time.Duration(float64(s.groupListCache.CurrentTTL) * ttlMultiplier)
+		if newTTL > s.groupListCacheMaxTTL {
+			newTTL = s.groupListCacheMaxTTL
+		}
+		s.groupListCache.CurrentTTL = newTTL
+		s.groupListCache.ExpiresAt = time.Now().Add(newTTL)
+		s.groupListCache.HitCount = 0 // Reset hit count after extension
+	}
 }
 
 // CountChildGroups returns the count of child groups for a parent group.
@@ -771,6 +933,8 @@ func getFirstProxyKeyFromString(proxyKeys string) string {
 
 // DeleteGroup removes a group and associated resources.
 // This operation is idempotent - deleting a non-existent group returns success.
+// All associated API keys are deleted synchronously within the same transaction
+// to ensure foreign key constraints are satisfied.
 func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) {
 	// Check if group is bound to a site (must unbind first)
 	if s.CheckGroupCanDeleteCallback != nil {
@@ -824,15 +988,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		return app_errors.ParseDBError(err)
 	}
 
-	// Count keys for logging (fast query with index)
-	// If the count fails, still proceed and perform best-effort cache cleanup.
-	var keyCount int64
-	if err := tx.Model(&models.APIKey{}).Where("group_id = ?", id).Count(&keyCount).Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Warn("failed to count API keys for group delete")
-		keyCount = 0
-	}
-
-	// Handle child groups - delete them along with parent
+	// Handle child groups - get their IDs first
 	var childGroupIDs []uint
 	if err := tx.Model(&models.Group{}).Where("parent_group_id = ?", id).Pluck("id", &childGroupIDs).Error; err != nil {
 		return app_errors.ParseDBError(err)
@@ -844,6 +1000,37 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		relatedGroupIDs = append(relatedGroupIDs, childGroupIDs...)
 	}
 
+	// Count keys for all related groups to decide sync vs async deletion
+	var totalKeyCount int64
+	if err := tx.Model(&models.APIKey{}).Where("group_id IN ?", relatedGroupIDs).Count(&totalKeyCount).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to count API keys for group delete")
+		totalKeyCount = 0
+	}
+
+	// ============================================================================
+	// IMPORTANT: Check if any managed sites are bound to this group or its children.
+	// Groups with bound sites MUST NOT be deleted - user must manually unbind first.
+	// This prevents accidental deletion of groups that are actively used by site management.
+	// DO NOT change this to auto-unbind without careful consideration of the implications.
+	// ============================================================================
+	var boundSiteCount int64
+	if err := tx.Table("managed_sites").Where("bound_group_id IN ?", relatedGroupIDs).Count(&boundSiteCount).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to check bound managed sites")
+		// If we can't verify, be safe and block deletion
+		return &app_errors.APIError{
+			HTTPStatus: http.StatusInternalServerError,
+			Code:       "CHECK_BOUND_SITES_FAILED",
+			Message:    "Failed to check if group has bound sites. Please try again.",
+		}
+	}
+	if boundSiteCount > 0 {
+		return &app_errors.APIError{
+			HTTPStatus: http.StatusConflict,
+			Code:       "GROUP_HAS_BOUND_SITES",
+			Message:    fmt.Sprintf("Cannot delete group: %d managed site(s) are bound to this group. Please unbind them first.", boundSiteCount),
+		}
+	}
+
 	// Delete sub-group relationships for this group and its child groups.
 	// This avoids orphaned rows and prevents potential foreign key constraint violations.
 	if err := tx.Where("group_id IN ? OR sub_group_id IN ?", relatedGroupIDs, relatedGroupIDs).
@@ -851,9 +1038,32 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		return app_errors.ParseDBError(err)
 	}
 
-	// Delete all API keys for this group and its child groups in a single operation.
-	if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
-		return app_errors.ParseDBError(err)
+	// Delete hourly stats for this group and its child groups.
+	// GroupHourlyStat.GroupID may have implicit foreign key constraint via GORM naming convention.
+	if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.GroupHourlyStat{}).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("failed to delete group hourly stats")
+		// Continue anyway - stats cleanup is best-effort
+	}
+
+	// Delete API keys synchronously within the transaction to avoid foreign key constraint violations.
+	// For large key counts, use chunked deletion to avoid long-running transactions and lock contention.
+	const deleteChunkSize = 5000
+	if totalKeyCount > int64(deleteChunkSize) {
+		// Chunked deletion for large key counts
+		for {
+			result := tx.Where("group_id IN ?", relatedGroupIDs).Limit(deleteChunkSize).Delete(&models.APIKey{})
+			if result.Error != nil {
+				return app_errors.ParseDBError(result.Error)
+			}
+			if result.RowsAffected == 0 {
+				break
+			}
+		}
+	} else {
+		// Direct deletion for small key counts
+		if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
 	}
 
 	childGroupCount := int64(len(childGroupIDs))
@@ -866,7 +1076,6 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 			"parentGroupID":   id,
 			"childGroupCount": childGroupCount,
 		}).Info("Deleted child groups along with parent")
-
 	}
 
 	// Delete the group
@@ -880,8 +1089,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	}
 	tx = nil
 
-	// Clear store cache for this group (and its child groups) after database commit.
-	// Use a goroutine to avoid blocking the response.
+	// Post-commit cleanup: clear store cache asynchronously
 	go func(keyService *KeyService, groupIDs []uint) {
 		if keyService == nil || keyService.KeyProvider == nil {
 			return
@@ -903,7 +1111,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
 		"groupID":         id,
 		"groupName":       group.Name,
-		"keyCount":        keyCount,
+		"keyCount":        totalKeyCount,
 		"childGroupCount": childGroupCount,
 	}).Info("Successfully deleted group")
 
@@ -1021,6 +1229,7 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 }
 
 // CopyGroup duplicates a group and optionally copies active keys.
+// Optimized: Key decryption is now done asynchronously to speed up HTTP response.
 func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKeysOption string) (*models.Group, error) {
 	option := strings.TrimSpace(copyKeysOption)
 	if option == "" {
@@ -1079,29 +1288,16 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	// Fetch source keys to copy if needed (quick query)
-	var sourceKeyValues []string
+	// Get key count for async task (fast query, no decryption)
+	// Use Model() instead of Table() for type safety and consistency with project style
+	var keyCount int64
 	if option != "none" {
-		// Only fetch key_value field to reduce memory and query time
-		var sourceKeyData []struct {
-			KeyValue string
-		}
-		query := tx.Table("api_keys").Select("key_value").Where("group_id = ?", sourceGroupID)
+		query := tx.Model(&models.APIKey{}).Where("group_id = ?", sourceGroupID)
 		if option == "valid_only" {
 			query = query.Where("status = ?", models.KeyStatusActive)
 		}
-		if err := query.Scan(&sourceKeyData).Error; err != nil {
+		if err := query.Count(&keyCount).Error; err != nil {
 			return nil, app_errors.ParseDBError(err)
-		}
-
-		// Decrypt keys (fast operation)
-		for _, keyData := range sourceKeyData {
-			decryptedKey, err := s.encryptionSvc.Decrypt(keyData.KeyValue)
-			if err != nil {
-				logrus.WithContext(ctx).Debug("failed to decrypt key during group copy, skipping")
-				continue
-			}
-			sourceKeyValues = append(sourceKeyValues, decryptedKey)
 		}
 	}
 
@@ -1111,29 +1307,37 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 	}
 	tx = nil
 
-	// Invalidate caches
+	// Update group list cache with the new group before invalidating GroupManager cache
+	// This ensures ListGroups can return cached data even if DB is busy with async import
+	s.addGroupToListCache(&newGroup)
+
+	// Invalidate GroupManager cache (for GetGroupByID/GetGroupByName lookups)
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
-	s.invalidateGroupListCache()
 
 	// Start async copy task if we have keys to copy
-	// This returns immediately and shows progress in UI
-	if len(sourceKeyValues) > 0 {
-		// Use import service for async copy with progress tracking
-		keysText := strings.Join(sourceKeyValues, "\n")
-		if _, err := s.keyImportSvc.StartImportTask(&newGroup, keysText); err != nil {
+	// Key fetching and decryption are now done asynchronously for faster response
+	if keyCount > 0 {
+		if _, err := s.keyImportSvc.StartCopyTask(&newGroup, sourceGroupID, option, int(keyCount)); err != nil {
 			logrus.WithContext(ctx).WithFields(logrus.Fields{
 				"groupId":  newGroup.ID,
-				"keyCount": len(sourceKeyValues),
-			}).WithError(err).Error("failed to start async import task for group copy")
+				"keyCount": keyCount,
+			}).WithError(err).Error("failed to start async copy task for group copy")
 			// Don't fail the copy - group is already created
 		} else {
 			logrus.WithContext(ctx).WithFields(logrus.Fields{
 				"groupId":  newGroup.ID,
-				"keyCount": len(sourceKeyValues),
-			}).Info("Started async import task for group copy")
+				"keyCount": keyCount,
+			}).Info("Started async copy task for group copy")
 		}
+	} else {
+		// Log when no keys to copy - helps debug empty source groups or valid_only filter results
+		logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"groupId":       newGroup.ID,
+			"sourceGroupId": sourceGroupID,
+			"copyOption":    option,
+		}).Debug("Skipped async copy task - no keys to copy")
 	}
 
 	return &newGroup, nil
@@ -1220,44 +1424,73 @@ func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID 
 	return stats24h, stats7d, stats30d, nil
 }
 
-// fetchKeyStats retrieves API key statistics for a group with caching
+// fetchKeyStats retrieves API key statistics for a group with adaptive caching.
+// It uses parallel queries for better performance and extends TTL for frequently accessed entries.
 func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStats, error) {
-	// Check cache first
+	// Check cache first with adaptive TTL support
 	s.keyStatsCacheMu.RLock()
 	if entry, ok := s.keyStatsCache[groupID]; ok {
 		if time.Now().Before(entry.ExpiresAt) {
+			stats := entry.Stats
 			s.keyStatsCacheMu.RUnlock()
-			return entry.Stats, nil
+
+			// Update hit count asynchronously to avoid blocking the read path
+			go s.updateKeyStatsCacheHit(groupID)
+
+			return stats, nil
 		}
 	}
 	s.keyStatsCacheMu.RUnlock()
 
 	// Cache miss - query database with timeout to avoid blocking during bulk inserts
-	// Create a context with timeout for the query
 	// Key stats queries may need more time during bulk imports
 	queryCtx, cancel := context.WithTimeout(ctx, 2*getDBLookupTimeout())
 	defer cancel()
 
-	// Use index-friendly COUNT queries to leverage composite indexes and avoid full table scans
+	// Use parallel queries for better performance - both COUNT queries can run concurrently
+	var totalKeys, activeKeys int64
+	var totalErr, activeErr error
+	var wg sync.WaitGroup
 
-	// Use two index-friendly COUNT queries instead of a single aggregation to leverage composite indexes
-	var totalKeys int64
-	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalKeys).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	wg.Add(2)
+
+	// Query total keys count
+	go func() {
+		defer wg.Done()
+		if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).
+			Where("group_id = ?", groupID).Count(&totalKeys).Error; err != nil {
+			totalErr = err
+		}
+	}()
+
+	// Query active keys count
+	go func() {
+		defer wg.Done()
+		if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).
+			Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).
+			Count(&activeKeys).Error; err != nil {
+			activeErr = err
+		}
+	}()
+
+	wg.Wait()
+
+	// Handle errors with graceful degradation
+	if totalErr != nil {
+		if errors.Is(totalErr, context.DeadlineExceeded) || errors.Is(totalErr, context.Canceled) {
 			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats total count timed out or canceled, returning empty stats")
 			return KeyStats{TotalKeys: 0, ActiveKeys: 0, InvalidKeys: 0}, nil
 		}
-		return KeyStats{}, fmt.Errorf("failed to count total keys: %w", err)
+		return KeyStats{}, fmt.Errorf("failed to count total keys: %w", totalErr)
 	}
 
-	var activeKeys int64
-	if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).Count(&activeKeys).Error; err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if activeErr != nil {
+		if errors.Is(activeErr, context.DeadlineExceeded) || errors.Is(activeErr, context.Canceled) {
 			logrus.WithContext(ctx).WithField("groupID", groupID).Warn("Key stats active count timed out or canceled, returning partial stats with unknown active/invalid breakdown")
 			// Return partial stats with known total but unknown active/invalid breakdown
 			return KeyStats{TotalKeys: totalKeys, ActiveKeys: 0, InvalidKeys: 0}, nil
 		}
-		return KeyStats{}, fmt.Errorf("failed to count active keys: %w", err)
+		return KeyStats{}, fmt.Errorf("failed to count active keys: %w", activeErr)
 	}
 
 	stats := KeyStats{
@@ -1266,15 +1499,48 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 		InvalidKeys: totalKeys - activeKeys,
 	}
 
-	// Update cache
+	// Update cache with base TTL
 	s.keyStatsCacheMu.Lock()
 	s.keyStatsCache[groupID] = groupKeyStatsCacheEntry{
-		Stats:     stats,
-		ExpiresAt: time.Now().Add(s.keyStatsCacheTTL),
+		Stats:      stats,
+		ExpiresAt:  time.Now().Add(s.keyStatsCacheTTL),
+		HitCount:   0,
+		CurrentTTL: s.keyStatsCacheTTL,
 	}
 	s.keyStatsCacheMu.Unlock()
 
 	return stats, nil
+}
+
+// updateKeyStatsCacheHit updates hit statistics and extends TTL for frequently accessed entries.
+// This implements adaptive TTL: entries with high hit counts get extended TTL up to maxTTL.
+func (s *GroupService) updateKeyStatsCacheHit(groupID uint) {
+	s.keyStatsCacheMu.Lock()
+	defer s.keyStatsCacheMu.Unlock()
+
+	entry, exists := s.keyStatsCache[groupID]
+	if !exists || time.Now().After(entry.ExpiresAt) {
+		return
+	}
+
+	entry.HitCount++
+
+	// Extend TTL if hit threshold is reached (10 hits) and not at max TTL
+	// This rewards frequently accessed entries with longer cache lifetime
+	const hitThreshold = 10
+	const ttlMultiplier = 1.2
+
+	if entry.HitCount >= hitThreshold && entry.CurrentTTL < s.keyStatsCacheMaxTTL {
+		newTTL := time.Duration(float64(entry.CurrentTTL) * ttlMultiplier)
+		if newTTL > s.keyStatsCacheMaxTTL {
+			newTTL = s.keyStatsCacheMaxTTL
+		}
+		entry.CurrentTTL = newTTL
+		entry.ExpiresAt = time.Now().Add(newTTL)
+		entry.HitCount = 0 // Reset hit count after extension
+	}
+
+	s.keyStatsCache[groupID] = entry
 }
 
 // InvalidateKeyStatsCache invalidates the key statistics cache for a specific group
@@ -1282,6 +1548,92 @@ func (s *GroupService) InvalidateKeyStatsCache(groupID uint) {
 	s.keyStatsCacheMu.Lock()
 	delete(s.keyStatsCache, groupID)
 	s.keyStatsCacheMu.Unlock()
+}
+
+// WarmupCache preloads frequently accessed data into cache.
+// This should be called during application startup to reduce cold-start latency.
+// It loads group list and key stats for all standard groups in parallel.
+func (s *GroupService) WarmupCache(ctx context.Context) error {
+	logrus.WithContext(ctx).Info("Starting cache warmup...")
+
+	// First, warm up the group list cache
+	groups, err := s.ListGroups(ctx)
+	if err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("Failed to warm up group list cache")
+		return fmt.Errorf("failed to list groups for cache warmup: %w", err)
+	}
+
+	// Warm up key stats for all standard groups in parallel
+	// Use a semaphore to limit concurrent DB queries and avoid overwhelming the database
+	const maxConcurrent = 10
+	semaphore := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	var warmupErrors int64
+
+	for _, group := range groups {
+		// Skip aggregate groups as they don't have direct key stats
+		if group.GroupType == "aggregate" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(groupID uint) {
+			defer wg.Done()
+
+			// Acquire semaphore slot
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			// Use a timeout context for each warmup query
+			warmupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			if _, err := s.fetchKeyStats(warmupCtx, groupID); err != nil {
+				logrus.WithContext(ctx).WithError(err).WithField("group_id", groupID).
+					Debug("Failed to warm up key stats cache for group")
+				// Use atomic increment for thread-safe error counting
+				atomic.AddInt64(&warmupErrors, 1)
+			}
+		}(group.ID)
+	}
+
+	wg.Wait()
+
+	if warmupErrors > 0 {
+		logrus.WithContext(ctx).WithField("failed_groups", warmupErrors).
+			Warn("Cache warmup completed with some failures")
+	} else {
+		logrus.WithContext(ctx).WithField("groups_warmed", len(groups)).
+			Info("Cache warmup completed successfully")
+	}
+
+	return nil
+}
+
+// GetCacheStats returns current cache statistics for monitoring.
+// This is useful for observability and debugging cache performance.
+func (s *GroupService) GetCacheStats() map[string]interface{} {
+	s.keyStatsCacheMu.RLock()
+	keyStatsCacheSize := len(s.keyStatsCache)
+	s.keyStatsCacheMu.RUnlock()
+
+	s.groupListCacheMu.RLock()
+	var groupListCacheSize int
+	var groupListCacheHits int64
+	var groupListCacheTTL time.Duration
+	if s.groupListCache != nil {
+		groupListCacheSize = len(s.groupListCache.Groups)
+		groupListCacheHits = s.groupListCache.HitCount
+		groupListCacheTTL = s.groupListCache.CurrentTTL
+	}
+	s.groupListCacheMu.RUnlock()
+
+	return map[string]interface{}{
+		"key_stats_cache_entries": keyStatsCacheSize,
+		"group_list_cache_size":   groupListCacheSize,
+		"group_list_cache_hits":   groupListCacheHits,
+		"group_list_cache_ttl_ms": groupListCacheTTL.Milliseconds(),
+	}
 }
 
 // fetchRequestStats retrieves request statistics for multiple time periods

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -20,6 +21,35 @@ import (
 )
 
 var DB *gorm.DB
+
+// ReadDB is a separate read-only connection pool for SQLite to avoid read/write lock contention.
+// For MySQL and PostgreSQL, this is the same as DB since they handle concurrency natively.
+var ReadDB *gorm.DB
+
+// calculateAdaptivePoolSize returns pool sizes based on CPU cores.
+// This follows industry best practices for SQLite connection pooling:
+// - MaxOpen: 2-4x CPU cores (capped at reasonable limits)
+// - MaxIdle: ~50% of MaxOpen to balance memory usage and connection reuse
+func calculateAdaptivePoolSize() (maxIdle, maxOpen int) {
+	numCPU := runtime.NumCPU()
+
+	// Scale with CPU cores: 2x for maxOpen, capped between 4 and 32
+	maxOpen = numCPU * 2
+	if maxOpen < 4 {
+		maxOpen = 4
+	}
+	if maxOpen > 32 {
+		maxOpen = 32
+	}
+
+	// MaxIdle is ~50% of MaxOpen, minimum 2
+	maxIdle = maxOpen / 2
+	if maxIdle < 2 {
+		maxIdle = 2
+	}
+
+	return maxIdle, maxOpen
+}
 
 func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 	dbConfig := configManager.GetDatabaseConfig()
@@ -81,9 +111,11 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 		// cache_size: Larger cache for better performance (configurable via env var)
 		// temp_store=MEMORY: Use memory for temp tables (configurable via env var)
 		// mmap_size: Memory mapping for faster reads (set via direct SQL to avoid slow query log)
-		cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")      // ~40MB cache with 4KB pages
-		tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")     // Use memory for temporary tables
-		params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&cache=shared&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
+		// Note: cache=shared is NOT used here because main DB uses single connection (MaxOpenConns=1),
+		// and shared cache only benefits multiple connections sharing the same page cache.
+		cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")  // ~40MB cache with 4KB pages
+		tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY") // Use memory for temporary tables
+		params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
 		delimiter := "?"
 		if strings.Contains(dsn, "?") {
 			delimiter = "&"
@@ -124,6 +156,8 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 				return nil, fmt.Errorf("failed to set innodb_lock_wait_timeout: %w", err)
 			}
 		}
+		// For MySQL and PostgreSQL, ReadDB is the same as DB
+		ReadDB = DB
 	} else {
 		// SQLite needs limited connections to avoid locking issues
 		sqlDB.SetMaxIdleConns(1)
@@ -164,7 +198,69 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 			rawDB.Close()
 		}
 		// cache_size and temp_store are already set in the DSN above; avoid reapplying via PRAGMA to prevent duplicate work and noisy logs
+
+		// Create a separate read-only connection pool for SQLite
+		// This allows concurrent reads while writes are happening (WAL mode benefit)
+		ReadDB, err = createSQLiteReadDB(dsn, newLogger)
+		if err != nil {
+			logrus.WithError(err).Warn("Failed to create SQLite read connection pool, using main DB for reads")
+			ReadDB = DB
+		}
 	}
 
 	return DB, nil
+}
+
+// createSQLiteReadDB creates a separate read-only connection pool for SQLite.
+// In WAL mode, readers don't block writers and vice versa, but only if they use separate connections.
+func createSQLiteReadDB(dsn string, newLogger logger.Interface) (*gorm.DB, error) {
+	cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")
+	tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")
+
+	// Auto-detect optimal pool size based on CPU cores, with env override support
+	defaultMaxIdle, defaultMaxOpen := calculateAdaptivePoolSize()
+	maxIdleConns := utils.ParseInteger(utils.GetEnvOrDefault("SQLITE_READ_MAX_IDLE_CONNS", ""), defaultMaxIdle)
+	maxOpenConns := utils.ParseInteger(utils.GetEnvOrDefault("SQLITE_READ_MAX_OPEN_CONNS", ""), defaultMaxOpen)
+
+	// Separate connection pool for reads, without cache=shared to avoid lock contention.
+	// Use shorter busy_timeout (1s vs 10s for main DB) for read connections to fail fast on contention.
+	// This is intentional: service layer handles transient errors by returning stale cache (see isTransientDBError),
+	// so fast failure allows UI to remain responsive while writes complete.
+	params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=1000&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
+	delimiter := "?"
+	if strings.Contains(dsn, "?") {
+		delimiter = "&"
+	}
+	dialector := sqlite.Open(dsn + delimiter + params)
+
+	// Disable PrepareStmt for read DB to speed up shutdown.
+	// PrepareStmt caches prepared statements which can delay Close().
+	// Trade-off: slightly slower repeated queries vs faster connection cleanup.
+	// For read-heavy workloads with many unique queries, this is acceptable.
+	readDB, err := gorm.Open(dialector, &gorm.Config{
+		Logger:      newLogger,
+		PrepareStmt: false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to open SQLite read connection: %w", err)
+	}
+
+	sqlDB, err := readDB.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sql.DB for read connection: %w", err)
+	}
+
+	// Allow multiple read connections for concurrent reads
+	// Use shorter lifetime to allow faster connection turnover during shutdown
+	sqlDB.SetMaxIdleConns(maxIdleConns)
+	sqlDB.SetMaxOpenConns(maxOpenConns)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(1 * time.Minute)
+
+	logrus.WithFields(logrus.Fields{
+		"maxIdleConns": maxIdleConns,
+		"maxOpenConns": maxOpenConns,
+		"numCPU":       runtime.NumCPU(),
+	}).Info("SQLite read-only connection pool created with adaptive sizing")
+	return readDB, nil
 }

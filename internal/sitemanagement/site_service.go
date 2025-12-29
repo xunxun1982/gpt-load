@@ -269,30 +269,32 @@ func (s *SiteService) siteToDTO(site *ManagedSite, groupNameMap map[uint]string)
 	}
 
 	return ManagedSiteDTO{
-		ID:                 site.ID,
-		Name:               site.Name,
-		Notes:              site.Notes,
-		Description:        site.Description,
-		Sort:               site.Sort,
-		Enabled:            site.Enabled,
-		BaseURL:            site.BaseURL,
-		SiteType:           site.SiteType,
-		UserID:             userID,
-		CheckInPageURL:     site.CheckInPageURL,
-		CheckInAvailable:   site.CheckInAvailable,
-		CheckInEnabled:     site.CheckInEnabled,
-		AutoCheckInEnabled: site.AutoCheckInEnabled,
-		CustomCheckInURL:   site.CustomCheckInURL,
-		AuthType:           site.AuthType,
-		HasAuth:            strings.TrimSpace(site.AuthValue) != "",
-		LastCheckInAt:      site.LastCheckInAt,
-		LastCheckInDate:    site.LastCheckInDate,
-		LastCheckInStatus:  site.LastCheckInStatus,
-		LastCheckInMessage: site.LastCheckInMessage,
-		BoundGroupID:       site.BoundGroupID,
-		BoundGroupName:     boundGroupName,
-		CreatedAt:          site.CreatedAt,
-		UpdatedAt:          site.UpdatedAt,
+		ID:                        site.ID,
+		Name:                      site.Name,
+		Notes:                     site.Notes,
+		Description:               site.Description,
+		Sort:                      site.Sort,
+		Enabled:                   site.Enabled,
+		BaseURL:                   site.BaseURL,
+		SiteType:                  site.SiteType,
+		UserID:                    userID,
+		CheckInPageURL:            site.CheckInPageURL,
+		CheckInAvailable:          site.CheckInAvailable,
+		CheckInEnabled:            site.CheckInEnabled,
+		AutoCheckInEnabled:        site.AutoCheckInEnabled,
+		CustomCheckInURL:          site.CustomCheckInURL,
+		AuthType:                  site.AuthType,
+		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
+		LastCheckInAt:             site.LastCheckInAt,
+		LastCheckInDate:           site.LastCheckInDate,
+		LastCheckInStatus:         site.LastCheckInStatus,
+		LastCheckInMessage:        site.LastCheckInMessage,
+		LastSiteOpenedDate:        site.LastSiteOpenedDate,
+		LastCheckinPageOpenedDate: site.LastCheckinPageOpenedDate,
+		BoundGroupID:              site.BoundGroupID,
+		BoundGroupName:            boundGroupName,
+		CreatedAt:                 site.CreatedAt,
+		UpdatedAt:                 site.UpdatedAt,
 	}
 }
 
@@ -524,6 +526,44 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 	}
 
 	return s.toDTO(&site), nil
+}
+
+// RecordSiteOpened records when user clicked "Open Site" button.
+// Updates last_site_opened_date to current Beijing check-in day (resets at 05:00 Beijing time).
+//
+// Design Decision: This is a fire-and-forget tracking feature. We intentionally do NOT:
+// 1. Check if site exists before update (would add extra DB query)
+// 2. Return 404 for non-existent sites (RowsAffected=0 is acceptable)
+// The frontend only calls this for sites in the list, so invalid IDs are unlikely.
+// AI review suggested checking existence, but the overhead is not justified for this use case.
+func (s *SiteService) RecordSiteOpened(ctx context.Context, siteID uint) error {
+	date := GetBeijingCheckinDay()
+	if err := s.db.WithContext(ctx).
+		Model(&ManagedSite{}).
+		Where("id = ?", siteID).
+		Update("last_site_opened_date", date).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	// Invalidate cache to reflect the change
+	s.InvalidateSiteListCache()
+	return nil
+}
+
+// RecordCheckinPageOpened records when user clicked "Open Check-in Page" button.
+// Updates last_checkin_page_opened_date to current Beijing check-in day (resets at 05:00 Beijing time).
+//
+// Design Decision: Same as RecordSiteOpened - fire-and-forget without existence check.
+func (s *SiteService) RecordCheckinPageOpened(ctx context.Context, siteID uint) error {
+	date := GetBeijingCheckinDay()
+	if err := s.db.WithContext(ctx).
+		Model(&ManagedSite{}).
+		Where("id = ?", siteID).
+		Update("last_checkin_page_opened_date", date).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	// Invalidate cache to reflect the change
+	s.InvalidateSiteListCache()
+	return nil
 }
 
 func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
@@ -799,30 +839,32 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 	}
 
 	return &ManagedSiteDTO{
-		ID:                 site.ID,
-		Name:               site.Name,
-		Notes:              site.Notes,
-		Description:        site.Description,
-		Sort:               site.Sort,
-		Enabled:            site.Enabled,
-		BaseURL:            site.BaseURL,
-		SiteType:           site.SiteType,
-		UserID:             userID,
-		CheckInPageURL:     site.CheckInPageURL,
-		CheckInAvailable:   site.CheckInAvailable,
-		CheckInEnabled:     site.CheckInEnabled,
-		AutoCheckInEnabled: site.AutoCheckInEnabled,
-		CustomCheckInURL:   site.CustomCheckInURL,
-		AuthType:           site.AuthType,
-		HasAuth:            strings.TrimSpace(site.AuthValue) != "",
-		LastCheckInAt:      site.LastCheckInAt,
-		LastCheckInDate:    site.LastCheckInDate,
-		LastCheckInStatus:  site.LastCheckInStatus,
-		LastCheckInMessage: site.LastCheckInMessage,
-		BoundGroupID:       site.BoundGroupID,
-		BoundGroupName:     boundGroupName,
-		CreatedAt:          site.CreatedAt,
-		UpdatedAt:          site.UpdatedAt,
+		ID:                        site.ID,
+		Name:                      site.Name,
+		Notes:                     site.Notes,
+		Description:               site.Description,
+		Sort:                      site.Sort,
+		Enabled:                   site.Enabled,
+		BaseURL:                   site.BaseURL,
+		SiteType:                  site.SiteType,
+		UserID:                    userID,
+		CheckInPageURL:            site.CheckInPageURL,
+		CheckInAvailable:          site.CheckInAvailable,
+		CheckInEnabled:            site.CheckInEnabled,
+		AutoCheckInEnabled:        site.AutoCheckInEnabled,
+		CustomCheckInURL:          site.CustomCheckInURL,
+		AuthType:                  site.AuthType,
+		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
+		LastCheckInAt:             site.LastCheckInAt,
+		LastCheckInDate:           site.LastCheckInDate,
+		LastCheckInStatus:         site.LastCheckInStatus,
+		LastCheckInMessage:        site.LastCheckInMessage,
+		LastSiteOpenedDate:        site.LastSiteOpenedDate,
+		LastCheckinPageOpenedDate: site.LastCheckinPageOpenedDate,
+		BoundGroupID:              site.BoundGroupID,
+		BoundGroupName:            boundGroupName,
+		CreatedAt:                 site.CreatedAt,
+		UpdatedAt:                 site.UpdatedAt,
 	}
 }
 
