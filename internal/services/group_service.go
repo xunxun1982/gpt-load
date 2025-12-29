@@ -29,6 +29,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// ReadOnlyDB is a wrapper type for the read-only database connection.
+// This allows dig to distinguish between the main DB and the read-only DB.
+// For SQLite in WAL mode, this enables concurrent reads during writes.
+type ReadOnlyDB struct {
+	DB *gorm.DB
+}
+
 // I18nError represents an error that carries translation metadata.
 type I18nError struct {
 	APIError  *app_errors.APIError
@@ -68,6 +75,7 @@ type groupListCacheEntry struct {
 // GroupService handles business logic for group operations.
 type GroupService struct {
 	db                    *gorm.DB
+	readDB                *gorm.DB // Separate read connection for SQLite WAL mode
 	settingsManager       *config.SystemSettingsManager
 	groupManager          *GroupManager
 	channelFactory        *channel.Factory
@@ -94,6 +102,7 @@ type GroupService struct {
 // NewGroupService constructs a GroupService.
 func NewGroupService(
 	db *gorm.DB,
+	readDB ReadOnlyDB,
 	settingsManager *config.SystemSettingsManager,
 	groupManager *GroupManager,
 	channelFactory *channel.Factory,
@@ -105,8 +114,14 @@ func NewGroupService(
 	encryptionSvc encryption.Service,
 	aggregateGroupService *AggregateGroupService,
 ) *GroupService {
+	// Use main DB as readDB if not provided (for MySQL/PostgreSQL)
+	rdb := readDB.DB
+	if rdb == nil {
+		rdb = db
+	}
 	svc := &GroupService{
 		db:                    db,
+		readDB:                rdb,
 		settingsManager:       settingsManager,
 		groupManager:          groupManager,
 		channelFactory:        channelFactory,
@@ -362,6 +377,62 @@ func (s *GroupService) InvalidateGroupListCache() {
 	s.invalidateGroupListCache()
 }
 
+// addGroupToListCache adds a new group to the cache without invalidating it.
+// This is used after creating a new group to keep the cache valid during async operations.
+// If cache is empty, it tries to load all groups from DB first using readDB.
+func (s *GroupService) addGroupToListCache(group *models.Group) {
+	s.groupListCacheMu.Lock()
+	defer s.groupListCacheMu.Unlock()
+
+	if s.groupListCache == nil || len(s.groupListCache.Groups) == 0 {
+		// No cache exists, try to load from DB first using readDB
+		var groups []models.Group
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := s.readDB.WithContext(ctx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
+			// DB query failed, create cache with just this group
+			logrus.WithError(err).Debug("Failed to load groups for cache, using single group")
+			s.groupListCache = &groupListCacheEntry{
+				Groups:    []models.Group{*group},
+				ExpiresAt: time.Now().Add(s.groupListCacheTTL),
+			}
+			return
+		}
+		// Check if the new group is already in the list (shouldn't happen but be safe)
+		found := false
+		for _, g := range groups {
+			if g.ID == group.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			groups = append(groups, *group)
+		}
+		s.groupListCache = &groupListCacheEntry{
+			Groups:    groups,
+			ExpiresAt: time.Now().Add(s.groupListCacheTTL),
+		}
+		return
+	}
+
+	// Append the new group to existing cache and extend TTL
+	s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
+	s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCacheTTL)
+}
+
+// isTaskRunning checks if an import or delete task is currently running.
+func (s *GroupService) isTaskRunning() bool {
+	if s.keyImportSvc == nil || s.keyImportSvc.TaskService == nil {
+		return false
+	}
+	status, err := s.keyImportSvc.TaskService.GetTaskStatus()
+	if err != nil {
+		return false
+	}
+	return status.IsRunning
+}
+
 // ListGroups returns all groups without sub-group relations.
 func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 	// Check cache first
@@ -374,25 +445,39 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 		logrus.WithContext(ctx).Debug("Group list cache hit")
 		return groups, nil
 	}
+	// Check if we have stale cache and a task is running
+	// If so, return stale cache to avoid blocking on DB during import/delete
+	hasStaleCache := s.groupListCache != nil && len(s.groupListCache.Groups) > 0
 	s.groupListCacheMu.RUnlock()
+
+	if hasStaleCache && s.isTaskRunning() {
+		s.groupListCacheMu.RLock()
+		stale := make([]models.Group, len(s.groupListCache.Groups))
+		copy(stale, s.groupListCache.Groups)
+		s.groupListCacheMu.RUnlock()
+		logrus.WithContext(ctx).Debug("ListGroups returning stale cache during task execution")
+		return stale, nil
+	}
 
 	// Cache miss, fetch from database with timeout for reliability
 	// Group list queries should be fast with proper indexes
+	// Use readDB for read operations to avoid blocking during writes (SQLite WAL mode)
 	groups := make([]models.Group, 0, 100)
 
 	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
 	defer cancel()
 
-	if err := s.db.WithContext(queryCtx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
-		// Only use stale cache for transient errors (timeout/canceled) to keep UI responsive
+	if err := s.readDB.WithContext(queryCtx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
+		// Use stale cache for transient errors (timeout/canceled/locked) to keep UI responsive
 		// For other errors (schema issues, query bugs), return the error immediately
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if isTransientDBError(err) {
 			s.groupListCacheMu.RLock()
-			if s.groupListCache != nil {
+			// Return stale cache even if expired - better than returning error
+			if s.groupListCache != nil && len(s.groupListCache.Groups) > 0 {
 				stale := make([]models.Group, len(s.groupListCache.Groups))
 				copy(stale, s.groupListCache.Groups)
 				s.groupListCacheMu.RUnlock()
-				logrus.WithContext(ctx).WithError(err).Warn("ListGroups timeout/canceled - returning stale cache")
+				logrus.WithContext(ctx).WithError(err).Warn("ListGroups transient error - returning stale cache")
 				return stale, nil
 			}
 			s.groupListCacheMu.RUnlock()
@@ -1021,6 +1106,7 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 }
 
 // CopyGroup duplicates a group and optionally copies active keys.
+// Optimized: Key decryption is now done asynchronously to speed up HTTP response.
 func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKeysOption string) (*models.Group, error) {
 	option := strings.TrimSpace(copyKeysOption)
 	if option == "" {
@@ -1079,29 +1165,15 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	// Fetch source keys to copy if needed (quick query)
-	var sourceKeyValues []string
+	// Get key count for async task (fast query, no decryption)
+	var keyCount int64
 	if option != "none" {
-		// Only fetch key_value field to reduce memory and query time
-		var sourceKeyData []struct {
-			KeyValue string
-		}
-		query := tx.Table("api_keys").Select("key_value").Where("group_id = ?", sourceGroupID)
+		query := tx.Table("api_keys").Where("group_id = ?", sourceGroupID)
 		if option == "valid_only" {
 			query = query.Where("status = ?", models.KeyStatusActive)
 		}
-		if err := query.Scan(&sourceKeyData).Error; err != nil {
+		if err := query.Count(&keyCount).Error; err != nil {
 			return nil, app_errors.ParseDBError(err)
-		}
-
-		// Decrypt keys (fast operation)
-		for _, keyData := range sourceKeyData {
-			decryptedKey, err := s.encryptionSvc.Decrypt(keyData.KeyValue)
-			if err != nil {
-				logrus.WithContext(ctx).Debug("failed to decrypt key during group copy, skipping")
-				continue
-			}
-			sourceKeyValues = append(sourceKeyValues, decryptedKey)
 		}
 	}
 
@@ -1111,28 +1183,29 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 	}
 	tx = nil
 
-	// Invalidate caches
+	// Update group list cache with the new group before invalidating GroupManager cache
+	// This ensures ListGroups can return cached data even if DB is busy with async import
+	s.addGroupToListCache(&newGroup)
+
+	// Invalidate GroupManager cache (for GetGroupByID/GetGroupByName lookups)
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
-	s.invalidateGroupListCache()
 
 	// Start async copy task if we have keys to copy
-	// This returns immediately and shows progress in UI
-	if len(sourceKeyValues) > 0 {
-		// Use import service for async copy with progress tracking
-		keysText := strings.Join(sourceKeyValues, "\n")
-		if _, err := s.keyImportSvc.StartImportTask(&newGroup, keysText); err != nil {
+	// Key fetching and decryption are now done asynchronously for faster response
+	if keyCount > 0 {
+		if _, err := s.keyImportSvc.StartCopyTask(&newGroup, sourceGroupID, option, int(keyCount)); err != nil {
 			logrus.WithContext(ctx).WithFields(logrus.Fields{
 				"groupId":  newGroup.ID,
-				"keyCount": len(sourceKeyValues),
-			}).WithError(err).Error("failed to start async import task for group copy")
+				"keyCount": keyCount,
+			}).WithError(err).Error("failed to start async copy task for group copy")
 			// Don't fail the copy - group is already created
 		} else {
 			logrus.WithContext(ctx).WithFields(logrus.Fields{
 				"groupId":  newGroup.ID,
-				"keyCount": len(sourceKeyValues),
-			}).Info("Started async import task for group copy")
+				"keyCount": keyCount,
+			}).Info("Started async copy task for group copy")
 		}
 	}
 

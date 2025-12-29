@@ -18,6 +18,18 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// hourlyStatKey is the composite key for hourly statistics aggregation.
+type hourlyStatKey struct {
+	Time    time.Time
+	GroupID uint
+}
+
+// hourlyStatCounts holds success and failure counts for aggregation.
+type hourlyStatCounts struct {
+	Success int64
+	Failure int64
+}
+
 const (
 	RequestLogCachePrefix    = "request_log:"
 	PendingLogKeysSet        = "pending_log_keys"
@@ -304,20 +316,14 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 			}
 		}
 
-		// Update statistics table
-		hourlyStats := make(map[struct {
-			Time    time.Time
-			GroupID uint
-		}]struct{ Success, Failure int64 }, len(logs)/10)
+		// Update statistics table using batch upsert
+		hourlyStats := make(map[hourlyStatKey]hourlyStatCounts, len(logs)/10)
 		for _, log := range logs {
 			if log.RequestType == models.RequestTypeRetry {
 				continue
 			}
 			hourlyTime := log.Timestamp.Truncate(time.Hour)
-			key := struct {
-				Time    time.Time
-				GroupID uint
-			}{Time: hourlyTime, GroupID: log.GroupID}
+			key := hourlyStatKey{Time: hourlyTime, GroupID: log.GroupID}
 
 			counts := hourlyStats[key]
 			if log.IsSuccess {
@@ -328,10 +334,7 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 			hourlyStats[key] = counts
 
 			if log.ParentGroupID > 0 {
-				parentKey := struct {
-					Time    time.Time
-					GroupID uint
-				}{Time: hourlyTime, GroupID: log.ParentGroupID}
+				parentKey := hourlyStatKey{Time: hourlyTime, GroupID: log.ParentGroupID}
 
 				parentCounts := hourlyStats[parentKey]
 				if log.IsSuccess {
@@ -344,27 +347,128 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 		}
 
 		if len(hourlyStats) > 0 {
-			for key, counts := range hourlyStats {
-				err := tx.Clauses(clause.OnConflict{
-					Columns: []clause.Column{{Name: "time"}, {Name: "group_id"}},
-					DoUpdates: clause.Assignments(map[string]any{
-						"success_count": gorm.Expr("group_hourly_stats.success_count + ?", counts.Success),
-						"failure_count": gorm.Expr("group_hourly_stats.failure_count + ?", counts.Failure),
-						"updated_at":    time.Now(),
-					}),
-				}).Create(&models.GroupHourlyStat{
-					Time:         key.Time,
-					GroupID:      key.GroupID,
-					SuccessCount: counts.Success,
-					FailureCount: counts.Failure,
-				}).Error
-
-				if err != nil {
-					return fmt.Errorf("failed to upsert group hourly stat: %w", err)
-				}
+			if err := s.batchUpsertHourlyStats(tx, hourlyStats); err != nil {
+				return err
 			}
 		}
 
 		return nil
 	})
+}
+
+// batchUpsertHourlyStats performs batch upsert for hourly statistics.
+// Uses database-specific optimizations for best performance.
+func (s *RequestLogService) batchUpsertHourlyStats(tx *gorm.DB, hourlyStats map[hourlyStatKey]hourlyStatCounts) error {
+	if len(hourlyStats) == 0 {
+		return nil
+	}
+
+	// Prepare batch data
+	now := time.Now()
+	stats := make([]models.GroupHourlyStat, 0, len(hourlyStats))
+	for key, counts := range hourlyStats {
+		stats = append(stats, models.GroupHourlyStat{
+			Time:         key.Time,
+			GroupID:      key.GroupID,
+			SuccessCount: counts.Success,
+			FailureCount: counts.Failure,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		})
+	}
+
+	// Detect database type and use appropriate batch upsert strategy
+	dialect := tx.Dialector.Name()
+	switch dialect {
+	case "postgres", "pgx":
+		return s.batchUpsertHourlyStatsPostgres(tx, stats)
+	case "mysql":
+		return s.batchUpsertHourlyStatsMySQL(tx, stats)
+	default: // sqlite, sqlite3
+		return s.batchUpsertHourlyStatsSQLite(tx, stats)
+	}
+}
+
+// batchUpsertHourlyStatsPostgres performs batch upsert for PostgreSQL.
+// Uses GORM's OnConflict clause which generates efficient ON CONFLICT DO UPDATE.
+func (s *RequestLogService) batchUpsertHourlyStatsPostgres(tx *gorm.DB, stats []models.GroupHourlyStat) error {
+	// PostgreSQL supports batch upsert with ON CONFLICT
+	// Process in batches to avoid parameter limit (65535)
+	const batchSize = 500
+
+	for i := 0; i < len(stats); i += batchSize {
+		end := i + batchSize
+		if end > len(stats) {
+			end = len(stats)
+		}
+		batch := stats[i:end]
+
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "time"}, {Name: "group_id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"success_count": gorm.Expr("group_hourly_stats.success_count + EXCLUDED.success_count"),
+				"failure_count": gorm.Expr("group_hourly_stats.failure_count + EXCLUDED.failure_count"),
+				"updated_at":    gorm.Expr("EXCLUDED.updated_at"),
+			}),
+		}).CreateInBatches(batch, len(batch)).Error; err != nil {
+			return fmt.Errorf("failed to batch upsert hourly stats (postgres): %w", err)
+		}
+	}
+	return nil
+}
+
+// batchUpsertHourlyStatsMySQL performs batch upsert for MySQL.
+// Uses GORM's OnConflict clause which generates ON DUPLICATE KEY UPDATE.
+func (s *RequestLogService) batchUpsertHourlyStatsMySQL(tx *gorm.DB, stats []models.GroupHourlyStat) error {
+	// MySQL supports batch upsert with ON DUPLICATE KEY UPDATE
+	// Process in batches to stay within max_allowed_packet
+	const batchSize = 500
+
+	for i := 0; i < len(stats); i += batchSize {
+		end := i + batchSize
+		if end > len(stats) {
+			end = len(stats)
+		}
+		batch := stats[i:end]
+
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "time"}, {Name: "group_id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"success_count": gorm.Expr("success_count + VALUES(success_count)"),
+				"failure_count": gorm.Expr("failure_count + VALUES(failure_count)"),
+				"updated_at":    gorm.Expr("VALUES(updated_at)"),
+			}),
+		}).CreateInBatches(batch, len(batch)).Error; err != nil {
+			return fmt.Errorf("failed to batch upsert hourly stats (mysql): %w", err)
+		}
+	}
+	return nil
+}
+
+// batchUpsertHourlyStatsSQLite performs batch upsert for SQLite.
+// SQLite has limited batch capabilities, so we use smaller batches with GORM's OnConflict.
+func (s *RequestLogService) batchUpsertHourlyStatsSQLite(tx *gorm.DB, stats []models.GroupHourlyStat) error {
+	// SQLite performs better with smaller batches due to its single-writer model
+	const batchSize = 50
+
+	for i := 0; i < len(stats); i += batchSize {
+		end := i + batchSize
+		if end > len(stats) {
+			end = len(stats)
+		}
+		batch := stats[i:end]
+
+		// SQLite supports ON CONFLICT since version 3.24.0 (2018)
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "time"}, {Name: "group_id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"success_count": gorm.Expr("group_hourly_stats.success_count + excluded.success_count"),
+				"failure_count": gorm.Expr("group_hourly_stats.failure_count + excluded.failure_count"),
+				"updated_at":    gorm.Expr("excluded.updated_at"),
+			}),
+		}).Create(&batch).Error; err != nil {
+			return fmt.Errorf("failed to batch upsert hourly stats (sqlite): %w", err)
+		}
+	}
+	return nil
 }

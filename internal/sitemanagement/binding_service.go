@@ -3,25 +3,49 @@ package sitemanagement
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/services"
+	"gpt-load/internal/utils"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
+// sitesForBindingCacheEntry represents cached sites data
+type sitesForBindingCacheEntry struct {
+	Data      []ManagedSiteDTO
+	ExpiresAt time.Time
+}
+
 // BindingService handles bidirectional binding between groups and sites
 type BindingService struct {
-	db *gorm.DB
+	db          *gorm.DB
+	readDB      *gorm.DB // Separate read connection for SQLite WAL mode
+	taskService *services.TaskService
 	// CacheInvalidationCallback is called after binding/unbinding to invalidate group list cache
 	CacheInvalidationCallback func()
+	// Cache for ListSitesForBinding
+	cache    *sitesForBindingCacheEntry
+	cacheMu  sync.RWMutex
+	cacheTTL time.Duration
 }
 
 // NewBindingService creates a new binding service
-func NewBindingService(db *gorm.DB) *BindingService {
-	return &BindingService{db: db}
+func NewBindingService(db *gorm.DB, readDB services.ReadOnlyDB, taskService *services.TaskService) *BindingService {
+	rdb := readDB.DB
+	if rdb == nil {
+		rdb = db
+	}
+	return &BindingService{
+		db:          db,
+		readDB:      rdb,
+		taskService: taskService,
+		cacheTTL:    30 * time.Second,
+	}
 }
 
 // BindGroupToSite binds a standard group to a managed site (bidirectional)
@@ -311,10 +335,44 @@ func (s *BindingService) GetBoundGroupInfo(ctx context.Context, siteID uint) (*m
 
 // ListSitesForBinding returns sites available for binding (sorted by sort order)
 func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSiteDTO, error) {
+	// Check cache first
+	s.cacheMu.RLock()
+	if s.cache != nil && time.Now().Before(s.cache.ExpiresAt) {
+		result := s.cache.Data
+		s.cacheMu.RUnlock()
+		return result, nil
+	}
+	// Check if task is running and we have stale cache
+	hasStaleCache := s.cache != nil && len(s.cache.Data) > 0
+	s.cacheMu.RUnlock()
+
+	if hasStaleCache && s.isTaskRunning() {
+		s.cacheMu.RLock()
+		result := s.cache.Data
+		s.cacheMu.RUnlock()
+		logrus.Debug("ListSitesForBinding returning stale cache during task execution")
+		return result, nil
+	}
+
 	var sites []ManagedSite
-	if err := s.db.WithContext(ctx).
+	// Use readDB with timeout for read operations
+	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	if err := s.readDB.WithContext(queryCtx).
 		Order("sort ASC, id ASC").
 		Find(&sites).Error; err != nil {
+		// Return stale cache on transient errors
+		if utils.IsTransientDBError(err) {
+			s.cacheMu.RLock()
+			if s.cache != nil && len(s.cache.Data) > 0 {
+				result := s.cache.Data
+				s.cacheMu.RUnlock()
+				logrus.WithError(err).Warn("ListSitesForBinding transient error - returning stale cache")
+				return result, nil
+			}
+			s.cacheMu.RUnlock()
+		}
 		return nil, app_errors.ParseDBError(err)
 	}
 
@@ -329,5 +387,25 @@ func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSite
 		})
 	}
 
+	// Update cache
+	s.cacheMu.Lock()
+	s.cache = &sitesForBindingCacheEntry{
+		Data:      result,
+		ExpiresAt: time.Now().Add(s.cacheTTL),
+	}
+	s.cacheMu.Unlock()
+
 	return result, nil
+}
+
+// isTaskRunning checks if an import or delete task is currently running.
+func (s *BindingService) isTaskRunning() bool {
+	if s.taskService == nil {
+		return false
+	}
+	status, err := s.taskService.GetTaskStatus()
+	if err != nil {
+		return false
+	}
+	return status.IsRunning
 }

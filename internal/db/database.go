@@ -21,6 +21,10 @@ import (
 
 var DB *gorm.DB
 
+// ReadDB is a separate read-only connection pool for SQLite to avoid read/write lock contention.
+// For MySQL and PostgreSQL, this is the same as DB since they handle concurrency natively.
+var ReadDB *gorm.DB
+
 func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 	dbConfig := configManager.GetDatabaseConfig()
 	dsn := dbConfig.DSN
@@ -124,6 +128,8 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 				return nil, fmt.Errorf("failed to set innodb_lock_wait_timeout: %w", err)
 			}
 		}
+		// For MySQL and PostgreSQL, ReadDB is the same as DB
+		ReadDB = DB
 	} else {
 		// SQLite needs limited connections to avoid locking issues
 		sqlDB.SetMaxIdleConns(1)
@@ -164,7 +170,51 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 			rawDB.Close()
 		}
 		// cache_size and temp_store are already set in the DSN above; avoid reapplying via PRAGMA to prevent duplicate work and noisy logs
+
+		// Create a separate read-only connection pool for SQLite
+		// This allows concurrent reads while writes are happening (WAL mode benefit)
+		ReadDB, err = createSQLiteReadDB(dsn, newLogger)
+		if err != nil {
+			logrus.WithError(err).Warn("Failed to create SQLite read connection pool, using main DB for reads")
+			ReadDB = DB
+		}
 	}
 
 	return DB, nil
+}
+
+// createSQLiteReadDB creates a separate read-only connection pool for SQLite.
+// In WAL mode, readers don't block writers and vice versa, but only if they use separate connections.
+func createSQLiteReadDB(dsn string, newLogger logger.Interface) (*gorm.DB, error) {
+	cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")
+	tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")
+	// Separate connection pool for reads, without cache=shared to avoid lock contention
+	// Don't use mode=ro as it may not be supported by all SQLite drivers
+	params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
+	delimiter := "?"
+	if strings.Contains(dsn, "?") {
+		delimiter = "&"
+	}
+	dialector := sqlite.Open(dsn + delimiter + params)
+
+	readDB, err := gorm.Open(dialector, &gorm.Config{
+		Logger:      newLogger,
+		PrepareStmt: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to open SQLite read connection: %w", err)
+	}
+
+	sqlDB, err := readDB.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sql.DB for read connection: %w", err)
+	}
+
+	// Allow multiple read connections for concurrent reads
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+
+	logrus.Info("SQLite read-only connection pool created for concurrent reads")
+	return readDB, nil
 }

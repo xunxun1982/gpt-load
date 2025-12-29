@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	app_errors "gpt-load/internal/errors"
@@ -17,19 +18,38 @@ import (
 	"gorm.io/gorm"
 )
 
+// childGroupsCacheEntry represents cached child groups data
+type childGroupsCacheEntry struct {
+	Data      map[uint][]models.ChildGroupInfo
+	ExpiresAt time.Time
+}
+
 // ChildGroupService handles child group operations.
 type ChildGroupService struct {
 	db           *gorm.DB
+	readDB       *gorm.DB // Separate read connection for SQLite WAL mode
 	groupManager *GroupManager
 	keyService   *KeyService
+	taskService  *TaskService
+	// Cache for GetAllChildGroups
+	cache   *childGroupsCacheEntry
+	cacheMu sync.RWMutex
+	cacheTTL time.Duration
 }
 
 // NewChildGroupService creates a new ChildGroupService instance.
-func NewChildGroupService(db *gorm.DB, groupManager *GroupManager, keyService *KeyService) *ChildGroupService {
+func NewChildGroupService(db *gorm.DB, readDB ReadOnlyDB, groupManager *GroupManager, keyService *KeyService, taskService *TaskService) *ChildGroupService {
+	rdb := readDB.DB
+	if rdb == nil {
+		rdb = db
+	}
 	return &ChildGroupService{
 		db:           db,
+		readDB:       rdb,
 		groupManager: groupManager,
 		keyService:   keyService,
+		taskService:  taskService,
+		cacheTTL:     30 * time.Second,
 	}
 }
 
@@ -268,11 +288,45 @@ func (s *ChildGroupService) GetChildGroups(ctx context.Context, parentGroupID ui
 // GetAllChildGroups returns all child groups grouped by parent group ID.
 // This is more efficient than calling GetChildGroups for each parent group.
 func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]models.ChildGroupInfo, error) {
+	// Check cache first
+	s.cacheMu.RLock()
+	if s.cache != nil && time.Now().Before(s.cache.ExpiresAt) {
+		result := s.cache.Data
+		s.cacheMu.RUnlock()
+		return result, nil
+	}
+	// Check if task is running and we have stale cache
+	hasStaleCache := s.cache != nil && len(s.cache.Data) > 0
+	s.cacheMu.RUnlock()
+
+	if hasStaleCache && s.isTaskRunning() {
+		s.cacheMu.RLock()
+		result := s.cache.Data
+		s.cacheMu.RUnlock()
+		logrus.Debug("GetAllChildGroups returning stale cache during task execution")
+		return result, nil
+	}
+
 	var childGroups []models.Group
-	if err := s.db.WithContext(ctx).
+	// Use readDB with timeout for read operations
+	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	if err := s.readDB.WithContext(queryCtx).
 		Where("parent_group_id IS NOT NULL").
 		Order("parent_group_id ASC, sort ASC, name ASC").
 		Find(&childGroups).Error; err != nil {
+		// Return stale cache on transient errors
+		if isTransientDBError(err) {
+			s.cacheMu.RLock()
+			if s.cache != nil && len(s.cache.Data) > 0 {
+				result := s.cache.Data
+				s.cacheMu.RUnlock()
+				logrus.WithError(err).Warn("GetAllChildGroups transient error - returning stale cache")
+				return result, nil
+			}
+			s.cacheMu.RUnlock()
+		}
 		return nil, app_errors.ParseDBError(err)
 	}
 
@@ -294,7 +348,27 @@ func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]m
 		})
 	}
 
+	// Update cache
+	s.cacheMu.Lock()
+	s.cache = &childGroupsCacheEntry{
+		Data:      result,
+		ExpiresAt: time.Now().Add(s.cacheTTL),
+	}
+	s.cacheMu.Unlock()
+
 	return result, nil
+}
+
+// isTaskRunning checks if an import or delete task is currently running.
+func (s *ChildGroupService) isTaskRunning() bool {
+	if s.taskService == nil {
+		return false
+	}
+	status, err := s.taskService.GetTaskStatus()
+	if err != nil {
+		return false
+	}
+	return status.IsRunning
 }
 
 // CountChildGroups returns the count of child groups for a parent group.

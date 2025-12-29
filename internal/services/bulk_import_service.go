@@ -312,6 +312,15 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 
 		totalProcessed += len(batch)
 
+		// For SQLite, yield to other queries periodically to prevent long lock times
+		// Release and recreate savepoint every few batches to allow other reads
+		if s.dbType == "sqlite" && totalProcessed%500 == 0 && totalProcessed < totalKeys {
+			tx.Exec("RELEASE SAVEPOINT bulk_insert")
+			// Brief yield to allow pending reads
+			time.Sleep(5 * time.Millisecond)
+			tx.Exec("SAVEPOINT bulk_insert")
+		}
+
 		// Log progress at 25%, 50%, 75% intervals for large imports (>5000 keys)
 		if totalKeys > 5000 {
 			currentPercent := (totalProcessed * 100) / totalKeys
