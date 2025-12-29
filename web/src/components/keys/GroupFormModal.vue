@@ -2059,7 +2059,9 @@ async function handleSubmit() {
   color: var(--text-primary);
   display: flex;
   align-items: center;
-  /* Reduce font size and line height for compact multi-line labels (e.g., Chinese text) */
+  /* Reduce font size and line height for compact multi-line labels (e.g., Chinese text).
+   * 13px is above WCAG minimum (12px) and maintains readability while allowing
+   * longer labels to wrap gracefully within the fixed label-width. */
   font-size: 13px;
   line-height: 1.3;
   min-height: 32px;

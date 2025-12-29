@@ -339,7 +339,7 @@ func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, doCheckpoint boo
 		name, stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
 
 	// For SQLite main DB only: Execute WAL checkpoint before closing.
-	// TRUNCATE mode checkpoints all frames and truncates the WAL file to zero bytes.
+	// PASSIVE mode attempts to checkpoint frames without blocking readers or writers.
 	// Skip for read-only connections (they don't write to WAL) and MySQL/PostgreSQL.
 	// Use short timeout (500ms) - if checkpoint is slow, let Close() handle it.
 	dialect := gormDB.Dialector.Name()
