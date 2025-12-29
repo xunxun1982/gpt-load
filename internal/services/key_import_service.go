@@ -114,11 +114,6 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 		return
 	}
 
-	// Update task total with actual key count
-	if err := s.TaskService.UpdateProgress(0); err != nil {
-		logrus.Warnf("Failed to update task progress: %v", err)
-	}
-
 	// Decrypt keys and prepare for import
 	decryptedKeys := make([]string, 0, len(sourceKeyData))
 	decryptErrors := 0
