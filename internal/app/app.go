@@ -313,8 +313,9 @@ func closeDBConnection(gormDB *gorm.DB, name string) {
 	// TRUNCATE mode checkpoints all frames and truncates the WAL file to zero bytes.
 	// This prevents the implicit checkpoint during Close() which can be slow.
 	// Skip for MySQL/PostgreSQL as PRAGMA is SQLite-specific syntax.
+	// Note: GORM v2 SQLite Dialector.Name() returns "sqlite" only.
 	dialect := gormDB.Dialector.Name()
-	if dialect == "sqlite" || dialect == "sqlite3" {
+	if dialect == "sqlite" {
 		checkpointStart := time.Now()
 		checkpointCtx, cancelCheckpoint := context.WithTimeout(context.Background(), 2*time.Second)
 		if _, err := sqlDB.ExecContext(checkpointCtx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {

@@ -300,17 +300,15 @@ func (s *ChildGroupService) GetChildGroups(ctx context.Context, parentGroupID ui
 // GetAllChildGroups returns all child groups grouped by parent group ID.
 // This is more efficient than calling GetChildGroups for each parent group.
 //
-// AI Review Note: Suggested returning deep copy of cache.Data to prevent data races.
-// Decision: Keep returning direct reference because:
-// 1. ChildGroupInfo is a value type struct with only primitive fields (no pointers/slices)
-// 2. Callers only read the data for display, never modify it
-// 3. Deep copy would add unnecessary overhead for read-heavy cache access
-// 4. RWMutex already provides sufficient protection for our read-mostly pattern
+// Returns a deep copy of cached data to prevent data races. Although ChildGroupInfo
+// contains only primitive fields, the map values are slices which are reference types.
+// Returning direct references could allow callers to accidentally modify the shared
+// underlying array through append operations.
 func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]models.ChildGroupInfo, error) {
 	// Check cache first
 	s.cacheMu.RLock()
 	if s.cache != nil && time.Now().Before(s.cache.ExpiresAt) {
-		result := s.cache.Data
+		result := s.copyChildGroupsMap(s.cache.Data)
 		s.cacheMu.RUnlock()
 		return result, nil
 	}
@@ -320,7 +318,7 @@ func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]m
 
 	if hasStaleCache && s.isTaskRunning() {
 		s.cacheMu.RLock()
-		result := s.cache.Data
+		result := s.copyChildGroupsMap(s.cache.Data)
 		s.cacheMu.RUnlock()
 		logrus.Debug("GetAllChildGroups returning stale cache during task execution")
 		return result, nil
@@ -339,7 +337,7 @@ func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]m
 		if isTransientDBError(err) {
 			s.cacheMu.RLock()
 			if s.cache != nil && len(s.cache.Data) > 0 {
-				result := s.cache.Data
+				result := s.copyChildGroupsMap(s.cache.Data)
 				s.cacheMu.RUnlock()
 				logrus.WithError(err).Warn("GetAllChildGroups transient error - returning stale cache")
 				return result, nil
@@ -388,6 +386,22 @@ func (s *ChildGroupService) isTaskRunning() bool {
 		return false
 	}
 	return status.IsRunning
+}
+
+// copyChildGroupsMap creates a deep copy of the child groups map to prevent data races.
+// Although ChildGroupInfo contains only primitive fields, the map values are slices
+// which are reference types. This ensures callers cannot modify the cached data.
+func (s *ChildGroupService) copyChildGroupsMap(src map[uint][]models.ChildGroupInfo) map[uint][]models.ChildGroupInfo {
+	if src == nil {
+		return nil
+	}
+	result := make(map[uint][]models.ChildGroupInfo, len(src))
+	for parentID, children := range src {
+		copied := make([]models.ChildGroupInfo, len(children))
+		copy(copied, children)
+		result[parentID] = copied
+	}
+	return result
 }
 
 // CountChildGroups returns the count of child groups for a parent group.
@@ -491,6 +505,9 @@ func (s *ChildGroupService) SyncChildGroupsOnParentUpdate(ctx context.Context, t
 		"proxyKeysChanged": proxyKeysChanged,
 	}).Info("Synced child groups after parent update")
 
+	// Invalidate cache after updating child groups
+	s.InvalidateCache()
+
 	return nil
 }
 
@@ -526,9 +543,12 @@ func (s *ChildGroupService) DeleteChildGroupsForParent(ctx context.Context, tx *
 	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"parentGroupID":    parentGroupID,
+		"parentGroupID":     parentGroupID,
 		"deletedChildCount": result.RowsAffected,
 	}).Info("Deleted child groups for parent")
+
+	// Invalidate cache after deleting child groups
+	s.InvalidateCache()
 
 	return result.RowsAffected, nil
 }

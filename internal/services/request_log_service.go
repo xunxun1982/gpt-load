@@ -389,7 +389,11 @@ func (s *RequestLogService) batchUpsertHourlyStats(tx *gorm.DB, hourlyStats map[
 		return s.batchUpsertHourlyStatsPostgres(tx, stats)
 	case "mysql":
 		return s.batchUpsertHourlyStatsMySQL(tx, stats)
-	default: // sqlite, sqlite3
+	case "sqlite":
+		return s.batchUpsertHourlyStatsSQLite(tx, stats)
+	default:
+		// Unknown dialect, fall back to SQLite implementation with warning
+		logrus.Warnf("Unknown database dialect '%s', falling back to SQLite upsert strategy", dialect)
 		return s.batchUpsertHourlyStatsSQLite(tx, stats)
 	}
 }
@@ -472,6 +476,7 @@ func (s *RequestLogService) batchUpsertHourlyStatsSQLite(tx *gorm.DB, stats []mo
 		batch := stats[i:end]
 
 		// SQLite supports ON CONFLICT since version 3.24.0 (2018)
+		// Use CreateInBatches for consistency with other database implementations
 		if err := tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "time"}, {Name: "group_id"}},
 			DoUpdates: clause.Assignments(map[string]any{
@@ -479,7 +484,7 @@ func (s *RequestLogService) batchUpsertHourlyStatsSQLite(tx *gorm.DB, stats []mo
 				"failure_count": gorm.Expr("group_hourly_stats.failure_count + excluded.failure_count"),
 				"updated_at":    gorm.Expr("excluded.updated_at"),
 			}),
-		}).Create(&batch).Error; err != nil {
+		}).CreateInBatches(batch, len(batch)).Error; err != nil {
 			return fmt.Errorf("failed to batch upsert hourly stats (sqlite): %w", err)
 		}
 	}

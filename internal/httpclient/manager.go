@@ -101,7 +101,11 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 		return client
 	}
 
-	// Calculate MaxConnsPerHost for burst capacity (2x idle connections)
+	// Calculate MaxConnsPerHost for burst capacity.
+	// The 2× multiplier allows temporary bursts beyond the idle pool size,
+	// accommodating sudden traffic spikes without connection queuing.
+	// The floor of 10 ensures a minimum concurrent connection capacity
+	// even when MaxIdleConnsPerHost is configured very low.
 	maxConnsPerHost := config.MaxIdleConnsPerHost * 2
 	if maxConnsPerHost < 10 {
 		maxConnsPerHost = 10
@@ -160,7 +164,10 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	newClient := &http.Client{
 		Transport: transport,
 		Timeout:   config.RequestTimeout,
-		// Limit redirect following to prevent infinite loops
+		// Explicitly limit redirect following to prevent infinite loops.
+		// Note: This matches Go's default behavior (stop after 10 redirects),
+		// but we keep it explicit for documentation and to ensure consistent
+		// behavior across Go versions.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("stopped after 10 redirects")
