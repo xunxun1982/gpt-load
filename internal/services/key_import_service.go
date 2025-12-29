@@ -10,6 +10,11 @@ import (
 )
 
 // KeyImportResult holds the result of an import task.
+// Note: IgnoredCount includes both duplicate keys and decryption failures during copy operations.
+// We intentionally don't expose a separate DecryptErrorCount field because:
+// 1. Decryption errors are logged for debugging purposes
+// 2. Users primarily care about the final outcome (added vs ignored)
+// 3. Adding more fields increases API complexity without significant user value
 type KeyImportResult struct {
 	AddedCount   int `json:"added_count"`
 	IgnoredCount int `json:"ignored_count"`

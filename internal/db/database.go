@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -24,6 +25,31 @@ var DB *gorm.DB
 // ReadDB is a separate read-only connection pool for SQLite to avoid read/write lock contention.
 // For MySQL and PostgreSQL, this is the same as DB since they handle concurrency natively.
 var ReadDB *gorm.DB
+
+// calculateAdaptivePoolSize returns pool sizes based on CPU cores.
+// This follows industry best practices for SQLite connection pooling:
+// - MaxOpen: 2-4x CPU cores (capped at reasonable limits)
+// - MaxIdle: ~50% of MaxOpen to balance memory usage and connection reuse
+func calculateAdaptivePoolSize() (maxIdle, maxOpen int) {
+	numCPU := runtime.NumCPU()
+
+	// Scale with CPU cores: 2x for maxOpen, capped between 4 and 32
+	maxOpen = numCPU * 2
+	if maxOpen < 4 {
+		maxOpen = 4
+	}
+	if maxOpen > 32 {
+		maxOpen = 32
+	}
+
+	// MaxIdle is ~50% of MaxOpen, minimum 2
+	maxIdle = maxOpen / 2
+	if maxIdle < 2 {
+		maxIdle = 2
+	}
+
+	return maxIdle, maxOpen
+}
 
 func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 	dbConfig := configManager.GetDatabaseConfig()
@@ -188,6 +214,12 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 func createSQLiteReadDB(dsn string, newLogger logger.Interface) (*gorm.DB, error) {
 	cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "10000")
 	tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")
+
+	// Auto-detect optimal pool size based on CPU cores, with env override support
+	defaultMaxIdle, defaultMaxOpen := calculateAdaptivePoolSize()
+	maxIdleConns := utils.ParseInteger(utils.GetEnvOrDefault("SQLITE_READ_MAX_IDLE_CONNS", ""), defaultMaxIdle)
+	maxOpenConns := utils.ParseInteger(utils.GetEnvOrDefault("SQLITE_READ_MAX_OPEN_CONNS", ""), defaultMaxOpen)
+
 	// Separate connection pool for reads, without cache=shared to avoid lock contention
 	// Use shorter busy_timeout for read connections to fail fast on contention
 	params := fmt.Sprintf("_pragma=foreign_keys(1)&_busy_timeout=1000&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=%s&_temp_store=%s", cacheSize, tempStore)
@@ -214,11 +246,15 @@ func createSQLiteReadDB(dsn string, newLogger logger.Interface) (*gorm.DB, error
 
 	// Allow multiple read connections for concurrent reads
 	// Use shorter lifetime to allow faster connection turnover during shutdown
-	sqlDB.SetMaxIdleConns(5)
-	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(maxIdleConns)
+	sqlDB.SetMaxOpenConns(maxOpenConns)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 	sqlDB.SetConnMaxIdleTime(1 * time.Minute)
 
-	logrus.Info("SQLite read-only connection pool created for concurrent reads")
+	logrus.WithFields(logrus.Fields{
+		"maxIdleConns": maxIdleConns,
+		"maxOpenConns": maxOpenConns,
+		"numCPU":       runtime.NumCPU(),
+	}).Info("SQLite read-only connection pool created with adaptive sizing")
 	return readDB, nil
 }
