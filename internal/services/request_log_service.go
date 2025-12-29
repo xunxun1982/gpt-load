@@ -7,8 +7,8 @@ import (
 	"gpt-load/internal/config"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
+	"gpt-load/internal/utils"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -113,7 +113,8 @@ func (s *RequestLogService) Stop(ctx context.Context) {
 	}
 }
 
-// Record logs a request to the database and cache
+// Record logs a request to the database and cache.
+// Uses pooled JSON encoder for efficient memory allocation in high-frequency scenarios.
 func (s *RequestLogService) Record(log *models.RequestLog) error {
 	log.ID = uuid.NewString()
 	log.Timestamp = time.Now()
@@ -124,7 +125,8 @@ func (s *RequestLogService) Record(log *models.RequestLog) error {
 
 	cacheKey := RequestLogCachePrefix + log.ID
 
-	logBytes, err := json.Marshal(log)
+	// Use pooled JSON encoder to reduce memory allocations
+	logBytes, err := utils.MarshalJSON(log)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request log: %w", err)
 	}
@@ -292,7 +294,10 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 		}
 
 		if len(keyStats) > 0 {
-			var caseStmt strings.Builder
+			// Use pooled string builder to reduce allocations
+			caseStmt := utils.GetStringBuilder()
+			defer utils.PutStringBuilder(caseStmt)
+
 			keyHashes := make([]string, 0, len(keyStats))
 			// Pre-allocate capacity: ~50 bytes per CASE clause
 			caseStmt.Grow(len(keyStats) * 50)
