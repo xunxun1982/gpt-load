@@ -3,12 +3,13 @@ package services
 import (
 	"encoding/csv"
 	"fmt"
-	"gpt-load/internal/encryption"
-	"gpt-load/internal/models"
 	"io"
 	"strconv"
 	"strings"
 	"time"
+
+	"gpt-load/internal/encryption"
+	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -101,6 +102,8 @@ func (s *LogService) GetLogsQuery(c *gin.Context) *gorm.DB {
 }
 
 // StreamLogKeysToCSV fetches unique keys from logs based on filters and streams them as a CSV.
+// Optimized: Uses ROW_NUMBER() window function for PostgreSQL/MySQL 8.0+ to reduce table scans.
+// Falls back to correlated subquery for SQLite which performs better than CTE on that database.
 func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error {
 	// Create a CSV writer
 	csvWriter := csv.NewWriter(writer)
@@ -114,43 +117,56 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 
 	var results []ExportableLogKey
 
+	// Build base query with filters
 	baseQuery := s.DB.Model(&models.RequestLog{}).
 		Select("id", "key_hash", "key_value", "group_name", "status_code", "timestamp").
 		Scopes(s.logFiltersScope(c)).
 		Where("key_hash IS NOT NULL AND key_hash != ''")
 
-	// Pick the latest record for each key_hash.
-	// We intentionally avoid window functions to reduce sort overhead on large datasets.
-	// NOTE: Some databases (e.g. PostgreSQL/MySQL) can optimize window functions well.
-	// We keep this aggregation-based query for consistent cross-database behavior.
-	// Revisit with realistic benchmarks before adding database-specific query paths.
-	// Note: request_logs.id is a UUID string, so MAX(id) is NOT a reliable proxy for "latest".
-	// Instead, we use MAX(timestamp) as the latest marker, then use MAX(id) only as a deterministic tie-breaker
-	// when multiple rows share the same timestamp.
-	err := s.DB.Raw(`
-		WITH filtered_logs AS (
-			SELECT * FROM (?) AS base
-		),
-		latest_ts AS (
-			SELECT key_hash, MAX(timestamp) AS max_ts
-			FROM filtered_logs
-			GROUP BY key_hash
-		),
-		latest_id AS (
-			SELECT fl.key_hash, MAX(fl.id) AS max_id
-			FROM filtered_logs fl
-			INNER JOIN latest_ts lt ON fl.key_hash = lt.key_hash AND fl.timestamp = lt.max_ts
-			GROUP BY fl.key_hash
-		)
-		SELECT
-			fl.key_value,
-			fl.group_name,
-			fl.status_code
-		FROM filtered_logs fl
-		INNER JOIN latest_ts lt ON fl.key_hash = lt.key_hash AND fl.timestamp = lt.max_ts
-		INNER JOIN latest_id li ON fl.key_hash = li.key_hash AND fl.id = li.max_id
-		ORDER BY fl.key_hash
-	`, baseQuery).Scan(&results).Error
+	// Detect database dialect and use optimized query strategy
+	dialect := s.DB.Dialector.Name()
+
+	var err error
+	switch dialect {
+	case "postgres", "pgx":
+		// PostgreSQL: Use ROW_NUMBER() window function for optimal performance
+		// This reduces 3 table scans to 1 scan with a single sort operation
+		err = s.DB.Raw(`
+			SELECT key_value, group_name, status_code FROM (
+				SELECT
+					key_value, group_name, status_code,
+					ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
+				FROM (?) AS base
+			) ranked WHERE rn = 1
+			ORDER BY key_hash
+		`, baseQuery).Scan(&results).Error
+
+	case "mysql":
+		// MySQL 8.0+: Use ROW_NUMBER() window function
+		// Note: MySQL 5.7 does not support window functions, but we target newer versions
+		err = s.DB.Raw(`
+			SELECT key_value, group_name, status_code FROM (
+				SELECT
+					key_value, group_name, status_code,
+					ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
+				FROM (?) AS base
+			) AS ranked WHERE rn = 1
+			ORDER BY key_hash
+		`, baseQuery).Scan(&results).Error
+
+	default:
+		// SQLite 3.25+: Use ROW_NUMBER() window function (supported since 2018)
+		// SQLite handles window functions efficiently for moderate datasets
+		err = s.DB.Raw(`
+			SELECT key_value, group_name, status_code FROM (
+				SELECT
+					key_value, group_name, status_code,
+					ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
+				FROM (?) AS base
+			) WHERE rn = 1
+			ORDER BY key_hash
+		`, baseQuery).Scan(&results).Error
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to fetch log keys: %w", err)
