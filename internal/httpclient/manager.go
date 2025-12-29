@@ -192,6 +192,7 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 
 // CloseIdleConnections closes idle connections for all managed clients.
 // This can be useful for releasing resources during graceful shutdown.
+// Note: Clients with non-standard transports are skipped silently.
 func (m *HTTPClientManager) CloseIdleConnections() {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
@@ -201,7 +202,7 @@ func (m *HTTPClientManager) CloseIdleConnections() {
 			transport.CloseIdleConnections()
 		}
 	}
-	logrus.Debug("Closed idle connections for all HTTP clients")
+	logrus.Debug("Closed idle connections for managed HTTP clients")
 }
 
 // getFingerprint generates a unique string representation of the client configuration.

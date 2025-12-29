@@ -316,12 +316,22 @@ func (s *ChildGroupService) GetAllChildGroups(ctx context.Context) (map[uint][]m
 	hasStaleCache := s.cache != nil && len(s.cache.Data) > 0
 	s.cacheMu.RUnlock()
 
+	// Return stale cache during task execution to avoid blocking on DB
+	// Note: There's a minor TOCTOU window between the stale cache check above and re-acquiring
+	// the lock here. If another goroutine calls InvalidateCache() in between, cache could be nil.
+	// This is acceptable because: 1) the window is very small, 2) nil cache is handled safely
+	// by copyChildGroupsMap returning nil, and 3) the next call will simply refetch from DB.
 	if hasStaleCache && s.isTaskRunning() {
 		s.cacheMu.RLock()
-		result := s.copyChildGroupsMap(s.cache.Data)
-		s.cacheMu.RUnlock()
-		logrus.Debug("GetAllChildGroups returning stale cache during task execution")
-		return result, nil
+		if s.cache == nil {
+			s.cacheMu.RUnlock()
+			// Cache was invalidated between checks, proceed to refetch from database
+		} else {
+			result := s.copyChildGroupsMap(s.cache.Data)
+			s.cacheMu.RUnlock()
+			logrus.Debug("GetAllChildGroups returning stale cache during task execution")
+			return result, nil
+		}
 	}
 
 	var childGroups []models.Group

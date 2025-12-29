@@ -265,7 +265,11 @@ func (a *App) Stop(ctx context.Context) {
 
 	// Close database connections to prevent resource leaks
 	// Best practice: explicitly close connection pools during graceful shutdown
-	// Close ReadDB first since it may have more active connections (SQLite WAL mode)
+	// Note: The closure order (ReadDB first, then main DB) is for orderly resource cleanup,
+	// not for lock avoidance. In SQLite WAL mode, readers don't block writers regardless
+	// of closure order. The actual shutdown robustness comes from:
+	// 1. Explicit WAL checkpoint (PRAGMA wal_checkpoint(TRUNCATE)) before closure
+	// 2. Graceful timeout-based closure with prepared statement cache cleanup
 
 	// Close read-only database connection if it's separate from main DB (SQLite WAL mode)
 	if db.ReadDB != nil && db.ReadDB != a.db {
