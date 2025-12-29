@@ -160,7 +160,6 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 }
 
 // runBulkImportForCopy performs bulk import for copied keys.
-// runBulkImportForCopy performs bulk import for copied keys.
 // Note: This method shares logic with runBulkImport but handles pre-decrypted keys differently.
 // The duplication is intentional for readability and to avoid complex parameter passing.
 func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
