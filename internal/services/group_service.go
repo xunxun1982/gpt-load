@@ -1218,6 +1218,13 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 				"keyCount": keyCount,
 			}).Info("Started async copy task for group copy")
 		}
+	} else {
+		// Log when no keys to copy - helps debug empty source groups or valid_only filter results
+		logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"groupId":       newGroup.ID,
+			"sourceGroupId": sourceGroupID,
+			"copyOption":    option,
+		}).Debug("Skipped async copy task - no keys to copy")
 	}
 
 	return &newGroup, nil
