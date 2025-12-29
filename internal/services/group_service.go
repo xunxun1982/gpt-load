@@ -425,6 +425,24 @@ func (s *GroupService) addGroupToListCache(group *models.Group) {
 	}
 
 	s.groupListCacheMu.Lock()
+	// Re-check: another goroutine may have populated the cache while we queried DB
+	// This prevents race condition where concurrent calls could lose cached groups
+	if s.groupListCache != nil && len(s.groupListCache.Groups) > 0 {
+		// Merge: check if our group is already there, if not append
+		alreadyCached := false
+		for _, g := range s.groupListCache.Groups {
+			if g.ID == group.ID {
+				alreadyCached = true
+				break
+			}
+		}
+		if !alreadyCached {
+			s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
+			s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCacheTTL)
+		}
+		s.groupListCacheMu.Unlock()
+		return
+	}
 	s.groupListCache = &groupListCacheEntry{
 		Groups:    groups,
 		ExpiresAt: time.Now().Add(s.groupListCacheTTL),

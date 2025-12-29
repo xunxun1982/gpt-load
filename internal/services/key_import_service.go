@@ -43,7 +43,19 @@ func (s *KeyImportService) StartImportTask(group *models.Group, keysText string)
 		return nil, err
 	}
 
-	go s.runImport(group, keys)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.WithFields(logrus.Fields{
+					"groupId":   group.ID,
+					"groupName": group.Name,
+					"panic":     r,
+				}).Error("Panic recovered in runImport")
+				_ = s.TaskService.EndTask(nil, fmt.Errorf("internal error: import task panicked"))
+			}
+		}()
+		s.runImport(group, keys)
+	}()
 
 	return initialStatus, nil
 }
@@ -56,7 +68,19 @@ func (s *KeyImportService) StartCopyTask(targetGroup *models.Group, sourceGroupI
 		return nil, err
 	}
 
-	go s.runCopyTask(targetGroup, sourceGroupID, copyOption)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.WithFields(logrus.Fields{
+					"targetGroupId": targetGroup.ID,
+					"sourceGroupId": sourceGroupID,
+					"panic":         r,
+				}).Error("Panic recovered in runCopyTask")
+				_ = s.TaskService.EndTask(nil, fmt.Errorf("internal error: copy task panicked"))
+			}
+		}()
+		s.runCopyTask(targetGroup, sourceGroupID, copyOption)
+	}()
 
 	return initialStatus, nil
 }
@@ -142,6 +166,11 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 // 2. runBulkImport handles raw text keys with progress callback during preparation
 // 3. Extracting common logic would require complex parameter passing and reduce readability
 // 4. Both methods are stable and unlikely to diverge in their core logic
+//
+// AI Review Note: Using main DB instead of ReadOnlyDB for hash lookup is intentional because:
+// 1. This is an async background task that doesn't block user requests
+// 2. Injecting ReadOnlyDB would add dependency injection complexity
+// 3. The performance benefit is minimal for this use case
 func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
 	// Get existing key hashes for deduplication
 	var existingHashes []string
