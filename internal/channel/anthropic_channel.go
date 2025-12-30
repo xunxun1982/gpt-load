@@ -35,12 +35,22 @@ func newAnthropicChannel(f *Factory, group *models.Group) (ChannelProxy, error) 
 }
 
 // ModifyRequest sets the required headers for the Anthropic API.
+// This method preserves client-sent anthropic-version and anthropic-beta headers
+// to support newer API features like extended thinking.
 func (ch *AnthropicChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey, group *models.Group) {
 	// Dual authentication: set both Authorization and x-api-key headers
 	// Anthropic API supports both; some proxies may only recognize one
 	req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
 	req.Header.Set("x-api-key", apiKey.KeyValue)
-	req.Header.Set("anthropic-version", "2023-06-01")
+
+	// Only set anthropic-version if not already present from client
+	// This allows clients to use newer API versions for features like extended thinking
+	if req.Header.Get("anthropic-version") == "" {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+
+	// Note: anthropic-beta header is preserved from client request (via Header.Clone())
+	// to support beta features like extended thinking, computer use, etc.
 }
 
 

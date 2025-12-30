@@ -41,7 +41,28 @@ const maxUpstreamResponseBodySize = 32 * 1024 * 1024
 
 var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum allowed size")
 
-
+// isValidToolCallArguments checks if tool call arguments are valid (not empty or just "{}").
+// Some upstream models (especially in thinking mode like deepseek-reasoner) may return
+// tool_calls with empty arguments as placeholders during reasoning. These should be
+// skipped to avoid Claude Code errors like "The required parameter 'pattern' is missing".
+// Returns true if arguments are valid and should be converted to tool_use block.
+//
+// NOTE: We intentionally do NOT handle whitespace-padded empty objects like "{ }" or "{\n}".
+// Upstream APIs (OpenAI, DeepSeek, etc.) use standard JSON serializers that produce "{}"
+// without internal whitespace. This matches the project's existing pattern in model_mapping.go.
+// Adding strings.ReplaceAll would add unnecessary overhead for a case that doesn't occur in practice.
+func isValidToolCallArguments(toolName, arguments string) bool {
+	trimmed := strings.TrimSpace(arguments)
+	// Empty string or empty JSON object are invalid (standard JSON serializers produce "{}" without whitespace)
+	if trimmed == "" || trimmed == "{}" {
+		logrus.WithFields(logrus.Fields{
+			"tool_name": toolName,
+			"arguments": trimmed,
+		}).Debug("CC: Skipping tool_call with empty arguments (likely thinking mode placeholder)")
+		return false
+	}
+	return true
+}
 
 // maxContentBufferBytes is declared in function_call.go (same package proxy).
 // We keep the single source of truth there to avoid drift without adding extra files.
@@ -280,10 +301,11 @@ type ClaudeRequest struct {
 
 // OpenAIMessage represents a message in OpenAI format.
 type OpenAIMessage struct {
-	Role       string           `json:"role"`
-	Content    json.RawMessage  `json:"content,omitempty"`
-	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Role             string           `json:"role"`
+	Content          json.RawMessage  `json:"content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
+	ReasoningContent *string          `json:"reasoning_content,omitempty"` // DeepSeek reasoner thinking content for multi-turn
 }
 
 // OpenAIToolCall represents a tool call in OpenAI format.
@@ -537,15 +559,35 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		return nil, fmt.Errorf("failed to parse content blocks: %w", err)
 	}
 
+	// Log block types for debugging
+	var blockTypes []string
+	for _, block := range blocks {
+		blockTypes = append(blockTypes, block.Type)
+	}
+	logrus.WithFields(logrus.Fields{
+		"role":        msg.Role,
+		"block_count": len(blocks),
+		"block_types": blockTypes,
+	}).Debug("CC: Converting Claude message to OpenAI format")
+
 	// Separate tool_use, tool_result, and text blocks
 	var textParts []string
 	var toolCalls []OpenAIToolCall
 	var toolResults []OpenAIMessage
 
+	// Collect thinking content for DeepSeek reasoner models.
+	// Per DeepSeek API docs, reasoning_content must be passed back in continuation turns.
+	var thinkingParts []string
+
 	for _, block := range blocks {
 		switch block.Type {
 		case "text":
 			textParts = append(textParts, block.Text)
+		case "thinking":
+			// Collect thinking content to convert back to reasoning_content for DeepSeek
+			if block.Thinking != "" {
+				thinkingParts = append(thinkingParts, block.Thinking)
+			}
 		case "tool_use":
 			toolCalls = append(toolCalls, OpenAIToolCall{
 				ID:   block.ID,
@@ -598,7 +640,15 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 		if len(toolCalls) > 0 {
 			assistantMsg.ToolCalls = toolCalls
 		}
-		if assistantMsg.Content != nil || len(assistantMsg.ToolCalls) > 0 {
+		// Convert thinking blocks back to reasoning_content for DeepSeek reasoner models.
+		// Per DeepSeek API docs: "reasoning_content must be passed back to the API in subsequent turns"
+		// See: https://api-docs.deepseek.com/guides/thinking_mode
+		if len(thinkingParts) > 0 {
+			combined := strings.Join(thinkingParts, "\n")
+			assistantMsg.ReasoningContent = &combined
+			logrus.WithField("reasoning_len", len(combined)).Debug("CC: Converted thinking blocks to reasoning_content")
+		}
+		if assistantMsg.Content != nil || len(assistantMsg.ToolCalls) > 0 || assistantMsg.ReasoningContent != nil {
 			result = append(result, assistantMsg)
 		}
 	case "user":
@@ -858,8 +908,15 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode funct
 			}
 
 			// Add tool_use blocks
+			// NOTE: Skip tool_calls with empty arguments to avoid Claude Code errors.
+			// Some upstream models (e.g., deepseek-reasoner in thinking mode) may return
+			// tool_calls with empty arguments as placeholders during reasoning phase.
 			for _, tc := range msg.ToolCalls {
 				if tc.ID == "" || tc.Function.Name == "" {
+					continue
+				}
+				// Validate arguments before conversion - skip empty/placeholder tool_calls
+				if !isValidToolCallArguments(tc.Function.Name, tc.Function.Arguments) {
 					continue
 				}
 				inputJSON := json.RawMessage("{}")
@@ -2383,6 +2440,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}
 
 		argsLen := currentToolCallArgs.Len()
+		argsStr := currentToolCallArgs.String()
 		logrus.WithFields(logrus.Fields{
 			"tool_id":        currentToolCall.ID,
 			"tool_name":      currentToolCallName,
@@ -2390,8 +2448,24 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			"content_index":  contentBlockIndex,
 		}).Debug("CC: closeToolBlock() called")
 
+		// Validate arguments before emitting - skip empty/placeholder tool_calls
+		// Some upstream models (e.g., deepseek-reasoner in thinking mode) may return
+		// tool_calls with empty arguments as placeholders during reasoning phase.
+		// NOTE: Since we now defer content_block_start until arguments are received,
+		// if argsLen == 0, no content_block_start was sent, so we just reset state.
+		if !isValidToolCallArguments(currentToolCallName, argsStr) {
+			logrus.WithFields(logrus.Fields{
+				"tool_name": currentToolCallName,
+				"tool_id":   currentToolCall.ID,
+			}).Warn("CC: Skipping tool_call with empty arguments in streaming mode")
+			// No content_block_start was sent (deferred until args received), just reset state
+			currentToolCall = nil
+			currentToolCallName = ""
+			currentToolCallArgs.Reset()
+			return
+		}
+
 		if currentToolCallName != "" && argsLen > 0 {
-			argsStr := currentToolCallArgs.String()
 			if normalized, ok := normalizeOpenAIToolCallArguments(currentToolCallName, argsStr); ok {
 				argsStr = normalized
 			}
@@ -2407,19 +2481,6 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				"tool_name": currentToolCallName,
 				"args_len":  len(argsStr),
 			}).Debug("CC: Emitted tool_use input_json_delta")
-		} else if currentToolCallName != "" && argsLen == 0 {
-			// Tool call with no arguments - emit empty JSON object
-			logrus.WithFields(logrus.Fields{
-				"tool_name": currentToolCallName,
-			}).Debug("CC: Tool call has no arguments, emitting empty JSON object")
-			deltaEvent := ClaudeStreamEvent{
-				Type:  "content_block_delta",
-				Index: contentBlockIndex,
-				Delta: &ClaudeStreamDelta{Type: "input_json_delta", PartialJSON: "{}"},
-			}
-			if err := writer.Send(deltaEvent, false); err != nil {
-				logrus.WithError(err).Debug("CC: Failed to write empty tool_use delta")
-			}
 		}
 
 		stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
@@ -2738,8 +2799,48 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					"args_len":  len(call.Function.Arguments),
 				}).Debug("CC: Received delta.ToolCall")
 
+				// OpenAI streaming tool_call format:
+				// - First chunk: {id: "call_xxx", function: {name: "Glob", arguments: ""}}
+				// - Subsequent chunks: {id: "", function: {name: "", arguments: "{\"pat"}}
+				// We need to accumulate arguments from subsequent chunks to the current tool_call.
 				if call.ID == "" {
-					logrus.Debug("CC: Skipping tool call with empty ID")
+					// This is a continuation chunk with only arguments
+					if currentToolCall != nil && call.Function.Arguments != "" {
+						// First time receiving arguments for this tool_call - send content_block_start
+						if currentToolCallArgs.Len() == 0 {
+							// Validate arguments before starting the block to prevent stream state corruption.
+							// If first chunk is "{}" (empty object), skip entirely to avoid sending
+							// content_block_start without a matching content_block_stop.
+							if !isValidToolCallArguments(currentToolCallName, call.Function.Arguments) {
+								logrus.WithFields(logrus.Fields{
+									"tool_id":   currentToolCall.ID,
+									"tool_name": currentToolCallName,
+									"arguments": call.Function.Arguments,
+								}).Debug("CC: Skipping tool_call with invalid initial arguments (continuation)")
+								continue
+							}
+							hasValidToolCalls = true // Now we know this is a valid tool call
+							logrus.WithFields(logrus.Fields{
+								"tool_id":   currentToolCall.ID,
+								"tool_name": currentToolCallName,
+							}).Debug("CC: Starting tool_use block (received first arguments)")
+							startEvent := ClaudeStreamEvent{
+								Type:         "content_block_start",
+								Index:        contentBlockIndex,
+								ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: currentToolCall.ID, Name: currentToolCallName},
+							}
+							if err := writer.Send(startEvent, true); err != nil {
+								logrus.WithError(err).Debug("CC: Failed to start tool_use block")
+								continue
+							}
+						}
+						currentToolCallArgs.WriteString(call.Function.Arguments)
+						logrus.WithFields(logrus.Fields{
+							"tool_id":         currentToolCall.ID,
+							"chunk_args_len":  len(call.Function.Arguments),
+							"total_args_len":  currentToolCallArgs.Len(),
+						}).Debug("CC: Accumulated tool call arguments (continuation chunk)")
+					}
 					continue
 				}
 				isNew := currentToolCall == nil || currentToolCall.ID != call.ID
@@ -2754,23 +2855,45 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					currentToolCall = &call
 					currentToolCallName = call.Function.Name
 					currentToolCallArgs.Reset()
-					hasValidToolCalls = true // Mark that we have valid tool calls
+					// NOTE: Don't set hasValidToolCalls here - wait until we have valid arguments
+					// This prevents empty tool_calls from being counted as valid
 					logrus.WithFields(logrus.Fields{
 						"tool_id":   call.ID,
 						"tool_name": call.Function.Name,
-					}).Debug("CC: Starting new tool_use block")
-					startEvent := ClaudeStreamEvent{
-						Type:         "content_block_start",
-						Index:        contentBlockIndex,
-						ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: call.ID, Name: call.Function.Name},
-					}
-					if err := writer.Send(startEvent, true); err != nil {
-						logrus.WithError(err).Debug("CC: Failed to start tool_use block")
-						continue
-					}
+					}).Debug("CC: Buffering new tool_use block (waiting for arguments)")
+					// NOTE: Don't send content_block_start here - defer until we have arguments
+					// This prevents sending tool_use blocks with empty arguments to Claude Code
 				}
 
 				if call.Function.Arguments != "" && currentToolCall != nil {
+					// First time receiving arguments for this tool_call - send content_block_start
+					if currentToolCallArgs.Len() == 0 {
+						// Validate arguments before starting the block to prevent stream state corruption.
+						// If first chunk is "{}" (empty object), skip entirely to avoid sending
+						// content_block_start without a matching content_block_stop.
+						if !isValidToolCallArguments(currentToolCallName, call.Function.Arguments) {
+							logrus.WithFields(logrus.Fields{
+								"tool_id":   currentToolCall.ID,
+								"tool_name": currentToolCallName,
+								"arguments": call.Function.Arguments,
+							}).Debug("CC: Skipping tool_call with invalid initial arguments")
+							continue
+						}
+						hasValidToolCalls = true // Now we know this is a valid tool call
+						logrus.WithFields(logrus.Fields{
+							"tool_id":   currentToolCall.ID,
+							"tool_name": currentToolCallName,
+						}).Debug("CC: Starting tool_use block (received first arguments)")
+						startEvent := ClaudeStreamEvent{
+							Type:         "content_block_start",
+							Index:        contentBlockIndex,
+							ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: currentToolCall.ID, Name: currentToolCallName},
+						}
+						if err := writer.Send(startEvent, true); err != nil {
+							logrus.WithError(err).Debug("CC: Failed to start tool_use block")
+							continue
+						}
+					}
 					currentToolCallArgs.WriteString(call.Function.Arguments)
 					logrus.WithFields(logrus.Fields{
 						"tool_id":         call.ID,
