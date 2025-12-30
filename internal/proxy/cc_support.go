@@ -46,9 +46,14 @@ var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum al
 // tool_calls with empty arguments as placeholders during reasoning. These should be
 // skipped to avoid Claude Code errors like "The required parameter 'pattern' is missing".
 // Returns true if arguments are valid and should be converted to tool_use block.
+//
+// NOTE: We intentionally do NOT handle whitespace-padded empty objects like "{ }" or "{\n}".
+// Upstream APIs (OpenAI, DeepSeek, etc.) use standard JSON serializers that produce "{}"
+// without internal whitespace. This matches the project's existing pattern in model_mapping.go.
+// Adding strings.ReplaceAll would add unnecessary overhead for a case that doesn't occur in practice.
 func isValidToolCallArguments(toolName, arguments string) bool {
 	trimmed := strings.TrimSpace(arguments)
-	// Empty string or empty JSON object are invalid
+	// Empty string or empty JSON object are invalid (standard JSON serializers produce "{}" without whitespace)
 	if trimmed == "" || trimmed == "{}" {
 		logrus.WithFields(logrus.Fields{
 			"tool_name": toolName,
