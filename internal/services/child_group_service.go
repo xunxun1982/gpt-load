@@ -589,6 +589,41 @@ func (s *ChildGroupService) GetParentGroup(ctx context.Context, childGroupID uin
 	return &parentGroup, nil
 }
 
+// SyncChildGroupsEnabled syncs enabled status from parent group to all its child groups.
+// When a parent group is disabled, all its child groups should also be disabled.
+// When a parent group is enabled, child groups are also enabled (they can be individually disabled later).
+func (s *ChildGroupService) SyncChildGroupsEnabled(ctx context.Context, parentGroupID uint, enabled bool) error {
+	// Update all child groups' enabled status
+	result := s.db.WithContext(ctx).
+		Model(&models.Group{}).
+		Where("parent_group_id = ?", parentGroupID).
+		Update("enabled", enabled)
+
+	if result.Error != nil {
+		return app_errors.ParseDBError(result.Error)
+	}
+
+	if result.RowsAffected > 0 {
+		logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"parentGroupID":      parentGroupID,
+			"enabled":            enabled,
+			"affectedChildCount": result.RowsAffected,
+		}).Info("Synced enabled status to child groups")
+
+		// Invalidate child groups cache
+		s.InvalidateCache()
+
+		// Invalidate group manager cache to refresh group list in UI
+		if s.groupManager != nil {
+			if err := s.groupManager.Invalidate(); err != nil {
+				logrus.WithContext(ctx).WithError(err).Warn("Failed to invalidate group manager cache after syncing child groups enabled status")
+			}
+		}
+	}
+
+	return nil
+}
+
 // SyncChildGroupUpstreams updates all child groups' upstream URLs to use the current PORT.
 // This should be called at application startup to ensure all child groups use the correct port.
 func (s *ChildGroupService) SyncChildGroupUpstreams(ctx context.Context) error {

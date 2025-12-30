@@ -210,12 +210,20 @@ function handleNavigateToSite(_siteId: number) {
 // Handle group refresh from GroupInfoCard (e.g., after binding/unbinding)
 function handleGroupRefresh(updatedGroup?: Group) {
   if (updatedGroup && selectedGroup.value?.id === updatedGroup.id) {
+    // Check if enabled status changed - need full refresh to update child groups
+    const enabledChanged = selectedGroup.value?.enabled !== updatedGroup.enabled;
+
     // Update selected group with new data from child component
     selectedGroup.value = updatedGroup;
     // Also update the group in the list to keep sidebar in sync
     const index = groups.value.findIndex(g => g.id === updatedGroup.id);
     if (index !== -1) {
       groups.value[index] = updatedGroup;
+    }
+
+    // If enabled status changed, reload all groups to sync child groups status
+    if (enabledChanged) {
+      refreshGroupsAndSelect(updatedGroup.id);
     }
   } else {
     refreshGroupsAndSelect();

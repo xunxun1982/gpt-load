@@ -45,18 +45,32 @@ const formData = reactive<{
 });
 
 // Preview new weight percentage (assuming other sub-group weights stay unchanged)
+// Only considers enabled sub-groups with weight > 0 for percentage calculation
 const previewPercentage = computed(() => {
   if (!props.subGroups || !props.subGroup) {
     return 0;
   }
 
-  // Calculate total weight (using the new weight for the current sub-group)
+  // Check if current sub-group is enabled
+  const currentEnabled = props.subGroup.group.enabled;
+
+  // Calculate effective total weight (only enabled sub-groups with weight > 0)
   const totalWeight = props.subGroups.reduce((sum, sg) => {
     if (sg.group.id === props.subGroup?.group.id) {
-      return sum + formData.weight;
+      // For current sub-group, use new weight only if enabled
+      return sum + (currentEnabled ? formData.weight : 0);
     }
-    return sum + sg.weight;
+    // For other sub-groups, only count if enabled and has positive weight
+    if (sg.group.enabled && sg.weight > 0) {
+      return sum + sg.weight;
+    }
+    return sum;
   }, 0);
+
+  // If current sub-group is disabled, percentage is always 0
+  if (!currentEnabled) {
+    return 0;
+  }
 
   return totalWeight > 0 ? Math.round((formData.weight / totalWeight) * 100) : 0;
 });
