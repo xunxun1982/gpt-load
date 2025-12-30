@@ -355,16 +355,21 @@ func (s *selector) selectNextWithExclusion(excludeIDs map[uint]bool) (string, ui
 	return "", 0
 }
 
-// selectByWeight implements weighted random selection algorithm
+// selectByWeight implements weighted random selection algorithm.
+// Disabled sub-groups are treated as having zero weight to exclude them from selection.
 func (s *selector) selectByWeight() *subGroupItem {
 	if len(s.subGroups) == 0 {
 		return nil
 	}
 
-	// Build weights array
+	// Build weights array, treating disabled sub-groups as weight 0
 	weights := make([]int, len(s.subGroups))
 	for i := range s.subGroups {
-		weights[i] = s.subGroups[i].weight
+		if s.subGroups[i].enabled {
+			weights[i] = s.subGroups[i].weight
+		} else {
+			weights[i] = 0
+		}
 	}
 
 	// Use shared weighted random selection
@@ -376,17 +381,18 @@ func (s *selector) selectByWeight() *subGroupItem {
 	return &s.subGroups[idx]
 }
 
-// selectByWeightWithExclusion implements weighted random selection algorithm with exclusion list
-// Only considers sub-groups not in the exclusion list
+// selectByWeightWithExclusion implements weighted random selection algorithm with exclusion list.
+// Only considers sub-groups not in the exclusion list.
+// Disabled sub-groups are treated as having zero weight to exclude them from selection.
 func (s *selector) selectByWeightWithExclusion(excludeIDs map[uint]bool) *subGroupItem {
 	if len(s.subGroups) == 0 {
 		return nil
 	}
 
-	// Build weights array (0 for excluded sub-groups)
+	// Build weights array (0 for excluded or disabled sub-groups)
 	weights := make([]int, len(s.subGroups))
 	for i := range s.subGroups {
-		if excludeIDs[s.subGroups[i].subGroupID] {
+		if excludeIDs[s.subGroups[i].subGroupID] || !s.subGroups[i].enabled {
 			weights[i] = 0 // Exclude by setting weight to 0
 		} else {
 			weights[i] = s.subGroups[i].weight

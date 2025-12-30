@@ -103,19 +103,42 @@ const statusOptions = [
 ];
 
 // Compute sub-group data with percentage and sort by weight (descending)
+// Percentage calculation only considers enabled sub-groups with weight > 0
 const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
   if (!props.subGroups) {
     return [];
   }
-  const total = props.subGroups.reduce((sum, sg) => sum + sg.weight, 0);
-  const withPercentage = props.subGroups.map(sg => ({
-    ...sg,
-    percentage: total > 0 ? Math.round((sg.weight / total) * 100) : 0,
-    canonicalGroup: typeof sg.group.id === "number" ? groupById.value.get(sg.group.id) : undefined,
-  }));
+  // Calculate effective total weight (only enabled sub-groups with weight > 0)
+  const effectiveTotal = props.subGroups.reduce((sum, sg) => {
+    // Only count weight if sub-group is enabled and has positive weight
+    if (sg.group.enabled && sg.weight > 0) {
+      return sum + sg.weight;
+    }
+    return sum;
+  }, 0);
 
-  // Sort by weight in descending order (non-mutating)
-  return [...withPercentage].sort((a, b) => b.weight - a.weight);
+  const withPercentage = props.subGroups.map(sg => {
+    // Effective weight is 0 if sub-group is disabled, otherwise use actual weight
+    const effectiveWeight = sg.group.enabled ? sg.weight : 0;
+    return {
+      ...sg,
+      percentage: effectiveTotal > 0 ? Math.round((effectiveWeight / effectiveTotal) * 100) : 0,
+      canonicalGroup:
+        typeof sg.group.id === "number" ? groupById.value.get(sg.group.id) : undefined,
+    };
+  });
+
+  // Sort by effective weight (enabled first, then by weight descending)
+  return [...withPercentage].sort((a, b) => {
+    // Disabled sub-groups go to the end
+    const aEnabled = a.group.enabled;
+    const bEnabled = b.group.enabled;
+    if (aEnabled !== bEnabled) {
+      return aEnabled ? -1 : 1;
+    }
+    // Within same enabled status, sort by weight descending
+    return b.weight - a.weight;
+  });
 });
 
 // Filtered sub-groups (apply search and status filters)

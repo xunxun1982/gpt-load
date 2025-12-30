@@ -28,6 +28,8 @@ type BindingService struct {
 	taskService *services.TaskService
 	// CacheInvalidationCallback is called after binding/unbinding to invalidate group list cache
 	CacheInvalidationCallback func()
+	// SyncChildGroupsEnabledCallback syncs enabled status to child groups when parent group is enabled/disabled
+	SyncChildGroupsEnabledCallback func(ctx context.Context, parentGroupID uint, enabled bool) error
 	// Cache for ListSitesForBinding
 	cache    *sitesForBindingCacheEntry
 	cacheMu  sync.RWMutex
@@ -260,7 +262,7 @@ func (s *BindingService) SyncGroupEnabledToSite(ctx context.Context, groupID uin
 	return nil
 }
 
-// SyncSiteEnabledToGroup syncs site enabled status to bound group
+// SyncSiteEnabledToGroup syncs site enabled status to bound group and its child groups
 func (s *BindingService) SyncSiteEnabledToGroup(ctx context.Context, siteID uint, enabled bool) error {
 	var site ManagedSite
 	if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {
@@ -271,17 +273,27 @@ func (s *BindingService) SyncSiteEnabledToGroup(ctx context.Context, siteID uint
 		return nil // No bound group, nothing to sync
 	}
 
+	groupID := *site.BoundGroupID
+
 	if err := s.db.WithContext(ctx).Model(&models.Group{}).
-		Where("id = ?", *site.BoundGroupID).
+		Where("id = ?", groupID).
 		Update("enabled", enabled).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
 		"siteID":  siteID,
-		"groupID": *site.BoundGroupID,
+		"groupID": groupID,
 		"enabled": enabled,
 	}).Info("Synced site enabled status to bound group")
+
+	// Sync enabled status to child groups of the bound group
+	if s.SyncChildGroupsEnabledCallback != nil {
+		if err := s.SyncChildGroupsEnabledCallback(ctx, groupID, enabled); err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to sync enabled status to child groups after site enabled change")
+			// Don't fail the operation, just log the warning
+		}
+	}
 
 	return nil
 }

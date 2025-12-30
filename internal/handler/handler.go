@@ -100,6 +100,16 @@ func NewServer(params NewServerParams) *Server {
 		params.BindingService.CacheInvalidationCallback = params.GroupService.InvalidateGroupListCache
 	}
 
+	// Set child group sync callback to sync enabled status from parent to child groups
+	if params.GroupService != nil && params.ChildGroupService != nil {
+		params.GroupService.SyncChildGroupsEnabledCallback = params.ChildGroupService.SyncChildGroupsEnabled
+	}
+
+	// Set binding service callback for syncing child groups when site enabled status changes
+	if params.BindingService != nil && params.ChildGroupService != nil {
+		params.BindingService.SyncChildGroupsEnabledCallback = params.ChildGroupService.SyncChildGroupsEnabled
+	}
+
 	// Set site service callback for syncing enabled status to bound group
 	if params.SiteService != nil && params.BindingService != nil {
 		params.SiteService.SyncSiteEnabledToGroupCallback = params.BindingService.SyncSiteEnabledToGroup
