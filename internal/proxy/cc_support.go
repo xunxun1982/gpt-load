@@ -2808,6 +2808,17 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					if currentToolCall != nil && call.Function.Arguments != "" {
 						// First time receiving arguments for this tool_call - send content_block_start
 						if currentToolCallArgs.Len() == 0 {
+							// Validate arguments before starting the block to prevent stream state corruption.
+							// If first chunk is "{}" (empty object), skip entirely to avoid sending
+							// content_block_start without a matching content_block_stop.
+							if !isValidToolCallArguments(currentToolCallName, call.Function.Arguments) {
+								logrus.WithFields(logrus.Fields{
+									"tool_id":   currentToolCall.ID,
+									"tool_name": currentToolCallName,
+									"arguments": call.Function.Arguments,
+								}).Debug("CC: Skipping tool_call with invalid initial arguments (continuation)")
+								continue
+							}
 							hasValidToolCalls = true // Now we know this is a valid tool call
 							logrus.WithFields(logrus.Fields{
 								"tool_id":   currentToolCall.ID,
@@ -2857,6 +2868,17 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				if call.Function.Arguments != "" && currentToolCall != nil {
 					// First time receiving arguments for this tool_call - send content_block_start
 					if currentToolCallArgs.Len() == 0 {
+						// Validate arguments before starting the block to prevent stream state corruption.
+						// If first chunk is "{}" (empty object), skip entirely to avoid sending
+						// content_block_start without a matching content_block_stop.
+						if !isValidToolCallArguments(currentToolCallName, call.Function.Arguments) {
+							logrus.WithFields(logrus.Fields{
+								"tool_id":   currentToolCall.ID,
+								"tool_name": currentToolCallName,
+								"arguments": call.Function.Arguments,
+							}).Debug("CC: Skipping tool_call with invalid initial arguments")
+							continue
+						}
 						hasValidToolCalls = true // Now we know this is a valid tool call
 						logrus.WithFields(logrus.Fields{
 							"tool_id":   currentToolCall.ID,
