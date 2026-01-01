@@ -306,6 +306,20 @@ var (
 	// Strategy: Match the entire property tag for removal from output
 	reMalformedPropertyTag = regexp.MustCompile(`<(?:property\s*name|propertyname)="[^"]*"\s*value="[^"]*"[^>]*>`)
 
+	// Pattern to parse invoke with arg_key/arg_value format (thinking model output)
+	// Examples: "<invoke name=\"Bash<arg_key>command</arg_key><arg_value>ls</arg_value><arg_key>description</arg_key><arg_value>list files</arg_value>"
+	// This handles cases where thinking models output tool calls with <arg_key>/<arg_value> pairs
+	// Captures: group 1 = tool name, group 2 = remaining content with arg_key/arg_value pairs (including first <arg_key>)
+	// Performance: O(n) character class matching
+	reInvokeArgKeyValue = regexp.MustCompile(`<invoke\s+name="([^"<]+)(<arg_key>.*)`)
+
+	// Pattern to extract arg_key/arg_value pairs from invoke content
+	// Examples: "<arg_key>command</arg_key><arg_value>ls -la</arg_value>"
+	// Captures: group 1 = key name, group 2 = value (may contain special chars)
+	// Uses non-greedy match to stop at </arg_value>
+	// Performance: O(n) character class matching
+	reArgKeyValuePair = regexp.MustCompile(`(?s)<arg_key>([^<]+)</arg_key><arg_value>(.*?)</arg_value>`)
+
 	// Pattern to match incomplete/unclosed invoke or parameter tags at end of content
 	// Examples: "<invoke name=\"Read\">F:/path/file.py", "<parameter name=\"todos\">[{...}]"
 	// These occur when models output partial XML without closing tags
@@ -1664,15 +1678,59 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
 
 
-// removeThinkBlocks removes all <think>...</think> and <thinking>...</thinking>
-// blocks from input text, but FIRST extracts any <function_calls> blocks inside
-// them. This is critical for reasoning models (DeepSeek-R1, etc.) that may
+// removeThinkBlocks removes all thinking blocks from input text, but FIRST extracts
+// any <function_calls>, <invoke>, or trigger signal blocks inside them.
+// This is critical for reasoning models (DeepSeek-R1, GLM-thinking, etc.) that may
 // embed tool calls within their thinking process.
-// Returns the cleaned text with function_calls preserved at the end.
+//
+// Supported thinking block formats:
+//   - <think>...</think>
+//   - <thinking>...</thinking>
+//   - <antml\b:thinking>...</antml\b:thinking> (ANTML format)
+//   - <antml\\b:thinking>...</antml\\b:thinking> (escaped ANTML format)
+//
+// Returns the cleaned text with function_calls/invoke blocks preserved at the end.
 func removeThinkBlocks(text string) string {
 	var extractedCalls strings.Builder
 
-	// Process both <think> and <thinking> tags
+	// Helper to extract tool calls from thinking content
+	extractToolCalls := func(thinkContent string) {
+		// Look for function_calls blocks
+		fcStart := strings.Index(thinkContent, "<function_calls>")
+		if fcStart >= 0 {
+			fcEnd := strings.LastIndex(thinkContent, "</function_calls>")
+			if fcEnd > fcStart {
+				fcBlock := thinkContent[fcStart : fcEnd+len("</function_calls>")]
+				extractedCalls.WriteString("\n")
+				extractedCalls.WriteString(fcBlock)
+				return
+			}
+		}
+
+		// Look for flat invoke format: <invoke name="...">...</invoke>
+		// This handles cases where thinking models output tool calls in invoke format
+		if strings.Contains(thinkContent, "<invoke ") && strings.Contains(thinkContent, "</invoke>") {
+			// Find trigger signal if present
+			triggerIdx := strings.Index(thinkContent, "<<CALL_")
+			startIdx := 0
+			if triggerIdx >= 0 {
+				startIdx = triggerIdx
+			} else {
+				startIdx = strings.Index(thinkContent, "<invoke ")
+			}
+			if startIdx >= 0 {
+				// Find the last </invoke> to capture all tool calls
+				endIdx := strings.LastIndex(thinkContent, "</invoke>")
+				if endIdx > startIdx {
+					invokeBlock := thinkContent[startIdx : endIdx+len("</invoke>")]
+					extractedCalls.WriteString("\n")
+					extractedCalls.WriteString(invokeBlock)
+				}
+			}
+		}
+	}
+
+	// Process standard <think> and <thinking> tags
 	for _, tag := range []string{"<think>", "<thinking>"} {
 		closeTag := strings.Replace(tag, "<", "</", 1)
 		for {
@@ -1686,18 +1744,7 @@ func removeThinkBlocks(text string) string {
 			}
 			// Extract the content inside the think block
 			thinkContent := text[start+len(tag) : start+end]
-
-			// Look for function_calls blocks inside thinking content
-			fcStart := strings.Index(thinkContent, "<function_calls>")
-			if fcStart >= 0 {
-				fcEnd := strings.LastIndex(thinkContent, "</function_calls>")
-				if fcEnd > fcStart {
-					// Extract the entire function_calls block
-					fcBlock := thinkContent[fcStart : fcEnd+len("</function_calls>")]
-					extractedCalls.WriteString("\n")
-					extractedCalls.WriteString(fcBlock)
-				}
-			}
+			extractToolCalls(thinkContent)
 
 			// Remove the think block (including its content)
 			end += start + len(closeTag)
@@ -1705,11 +1752,311 @@ func removeThinkBlocks(text string) string {
 		}
 	}
 
-	// Append extracted function_calls to the end of text
+	// Process ANTML format thinking tags: <antml\b:thinking>...</antml\b:thinking>
+	// Also handles escaped format: <antml\\b:thinking>...</antml\\b:thinking>
+	// and generic closer: </antml>
+	// Also handles GLM model's <glm_block>...</glm_block> tags which contain tool call results
+	antmlPatterns := []struct {
+		open  string
+		close []string // Multiple possible closing tags
+	}{
+		{
+			open:  "<antml\\b:thinking>",
+			close: []string{"</antml\\b:thinking>", "</antml>"},
+		},
+		{
+			open:  "<antml\\\\b:thinking>",
+			close: []string{"</antml\\\\b:thinking>", "</antml>"},
+		},
+		{
+			open:  `<antml\b:thinking>`,
+			close: []string{`</antml\b:thinking>`, "</antml>"},
+		},
+		// GLM model outputs tool call results in <glm_block> tags
+		// These should be removed as they contain tool call results, not new requests
+		{
+			open:  "<glm_block>",
+			close: []string{"</glm_block>"},
+		},
+	}
+
+	for _, pattern := range antmlPatterns {
+		for {
+			start := strings.Index(text, pattern.open)
+			if start == -1 {
+				break
+			}
+
+			// Find the closest closing tag
+			minEnd := -1
+			closerLen := 0
+			for _, closer := range pattern.close {
+				end := strings.Index(text[start+len(pattern.open):], closer)
+				if end >= 0 && (minEnd == -1 || end < minEnd) {
+					minEnd = end
+					closerLen = len(closer)
+				}
+			}
+
+			if minEnd == -1 {
+				break
+			}
+
+			// Extract the content inside the ANTML thinking block
+			thinkContent := text[start+len(pattern.open) : start+len(pattern.open)+minEnd]
+			extractToolCalls(thinkContent)
+
+			// Remove the ANTML thinking block
+			endPos := start + len(pattern.open) + minEnd + closerLen
+			text = text[:start] + text[endPos:]
+		}
+	}
+
+	// Handle orphaned closing tags (e.g., </glm_block> without opening tag)
+	// This can happen when the opening tag was truncated in streaming or the model
+	// outputs malformed content. We need to remove content before orphaned closing tags
+	// that looks like JSON tool call results.
+	orphanedClosers := []string{"</glm_block>", "</antml>", "</antml\\b:thinking>", "</antml\\\\b:thinking>"}
+	for _, closer := range orphanedClosers {
+		for {
+			closeIdx := strings.Index(text, closer)
+			if closeIdx == -1 {
+				break
+			}
+
+			// Check if there's a corresponding opening tag before this closer
+			// For glm_block, check for <glm_block>
+			// For antml closers, check for various antml opening patterns
+			hasOpener := false
+			searchText := text[:closeIdx]
+			switch closer {
+			case "</glm_block>":
+				hasOpener = strings.Contains(searchText, "<glm_block>")
+			case "</antml>", "</antml\\b:thinking>", "</antml\\\\b:thinking>":
+				hasOpener = strings.Contains(searchText, "<antml") ||
+					strings.Contains(searchText, `<antml\b:`) ||
+					strings.Contains(searchText, `<antml\\b:`)
+			}
+
+			if hasOpener {
+				// There's a matching opener, skip this closer (it will be handled by the main loop)
+				break
+			}
+
+			// No matching opener - this is an orphaned closer
+			// Try to find JSON-like content before the closer that should be removed
+			// Look for patterns like: ..."name":"Read"..."is_error":true...}</glm_block>
+			// We need to find where the JSON object starts (look for { before the closer)
+			startIdx := closeIdx
+			braceDepth := 0
+			foundBrace := false
+			for i := closeIdx - 1; i >= 0; i-- {
+				c := text[i]
+				if c == '}' {
+					braceDepth++
+					foundBrace = true
+				} else if c == '{' {
+					if braceDepth > 0 {
+						braceDepth--
+					}
+					if braceDepth == 0 && foundBrace {
+						// Found the start of the JSON object
+						startIdx = i
+						break
+					}
+				}
+			}
+
+			// If we found a JSON-like structure, check if it contains tool call result indicators
+			if startIdx < closeIdx {
+				jsonContent := text[startIdx:closeIdx]
+				// Check for tool call result indicators using stricter validation
+				// Tool call results have specific patterns that distinguish them from requests:
+				// - "is_error":true/false (boolean value, not just field name)
+				// - "status":"completed"/"error" (specific status values)
+				// - "result":"..." with non-empty value
+				// - "duration":"..." (execution time)
+				// - "display_result":"..." (display output)
+				isToolResult := isToolCallResultJSON(jsonContent)
+
+				if isToolResult {
+					// Remove the JSON content and the orphaned closer
+					text = text[:startIdx] + text[closeIdx+len(closer):]
+					logrus.WithFields(logrus.Fields{
+						"closer":         closer,
+						"removed_length": closeIdx + len(closer) - startIdx,
+					}).Debug("removeThinkBlocks: Removed orphaned closer with tool call result JSON")
+					continue
+				}
+			}
+
+			// Fallback: brace matching failed (truncated JSON), try to find tool result content
+			// by searching backward for tool call result indicators in the content before closer.
+			// This handles cases where the opening { is truncated but the content still contains
+			// tool call result fields like "status":"completed", "is_error":false, etc.
+			if startIdx == closeIdx && foundBrace {
+				// Search backward from the closer to find where the tool result content starts
+				// Look for patterns that indicate the start of tool result content
+				contentBefore := text[:closeIdx]
+				// Find the last occurrence of tool result indicators
+				toolResultStart := -1
+				// Check for common patterns that precede tool call results in truncated content
+				// Pattern: ...text\nJSON_CONTENT</glm_block> or ...text.JSON_CONTENT</glm_block>
+				for i := closeIdx - 1; i >= 0; i-- {
+					// Stop at newline or sentence boundary that's before any JSON-like content
+					if text[i] == '\n' {
+						// Check if content after newline contains tool result indicators
+						afterNewline := text[i+1 : closeIdx]
+						// Use stricter validation for tool result detection
+						if isToolCallResultJSON(afterNewline) {
+							toolResultStart = i + 1
+							break
+						}
+					}
+				}
+
+				// If we found a reasonable start point, check if content contains tool result indicators
+				if toolResultStart >= 0 && toolResultStart < closeIdx {
+					truncatedContent := text[toolResultStart:closeIdx]
+					isToolResult := isToolCallResultJSON(truncatedContent)
+
+					if isToolResult {
+						text = text[:toolResultStart] + text[closeIdx+len(closer):]
+						logrus.WithFields(logrus.Fields{
+							"closer":         closer,
+							"removed_length": closeIdx + len(closer) - toolResultStart,
+						}).Debug("removeThinkBlocks: Removed orphaned closer with truncated tool result content")
+						continue
+					}
+				}
+
+				// Last resort: check if the entire content before closer contains tool result indicators
+				// and remove from the first } we found (even if braces don't match)
+				if isToolCallResultJSON(contentBefore) {
+					// Find the position of the first } going backward from closer
+					// This is where the truncated JSON likely ends
+					removed := false
+					for i := closeIdx - 1; i >= 0; i-- {
+						if text[i] == '}' {
+							// Check if content from here to closer looks like tool result
+							segment := text[i:closeIdx]
+							if isToolCallResultJSON(segment) {
+								// Find a reasonable start point (newline or start of text)
+								segmentStart := 0
+								for j := i - 1; j >= 0; j-- {
+									if text[j] == '\n' {
+										segmentStart = j + 1
+										break
+									}
+								}
+								text = text[:segmentStart] + text[closeIdx+len(closer):]
+								logrus.WithFields(logrus.Fields{
+									"closer":         closer,
+									"removed_length": closeIdx + len(closer) - segmentStart,
+								}).Debug("removeThinkBlocks: Removed orphaned closer with partial tool result content")
+								removed = true
+								break
+							}
+						}
+					}
+					if removed {
+						continue
+					}
+				}
+			}
+
+			// If no JSON structure found, just remove the orphaned closer tag
+			text = text[:closeIdx] + text[closeIdx+len(closer):]
+			logrus.WithField("closer", closer).Debug("removeThinkBlocks: Removed orphaned closer tag")
+		}
+	}
+
+	// Append extracted function_calls/invoke blocks to the end of text
 	if extractedCalls.Len() > 0 {
 		text = strings.TrimSpace(text) + extractedCalls.String()
 	}
 	return text
+}
+
+// isToolCallResultJSON checks if the given content contains tool call result indicators.
+// This function uses stricter validation to distinguish tool call results from tool call requests.
+//
+// Tool call results have specific patterns:
+//   - "is_error":true or "is_error":false (boolean value with colon)
+//   - "status":"completed" or "status":"error" (specific status values)
+//   - "result":"..." with non-empty value (actual execution result)
+//   - "duration":"..." (execution time indicator)
+//   - "display_result":"..." (display output)
+//   - "mcp_server":{...} (MCP server metadata)
+//
+// Tool call requests typically only have:
+//   - "name":"ToolName"
+//   - Tool-specific parameters (query, file_path, command, etc.)
+//
+// This distinction is important because thinking models may output tool call parameters
+// that happen to contain field names like "is_error" as part of their reasoning,
+// but these should not be treated as tool call results.
+//
+// IMPORTANT: To avoid false positives, we use a scoring system:
+//   - Primary indicators (is_error, status:completed/error, non-empty result) are definitive
+//   - Secondary indicators (duration, display_result, mcp_server) alone are not sufficient
+func isToolCallResultJSON(content string) bool {
+	// Primary indicators - any single one is definitive
+	// Pattern 1: "is_error":true or "is_error":false (boolean value)
+	if strings.Contains(content, `"is_error":true`) || strings.Contains(content, `"is_error":false`) ||
+		strings.Contains(content, `"is_error": true`) || strings.Contains(content, `"is_error": false`) {
+		return true
+	}
+
+	// Pattern 2: "status":"completed" or "status":"error" (specific status values)
+	if strings.Contains(content, `"status":"completed"`) || strings.Contains(content, `"status":"error"`) ||
+		strings.Contains(content, `"status": "completed"`) || strings.Contains(content, `"status": "error"`) {
+		return true
+	}
+
+	// Pattern 3: "result":"..." with non-empty value (check for result field with content)
+	// Look for "result":" followed by non-empty content before the next quote
+	resultIdx := strings.Index(content, `"result":`)
+	if resultIdx >= 0 {
+		afterResultStr := content[resultIdx+len(`"result":`):]
+		// Skip whitespace
+		afterResultStr = strings.TrimLeft(afterResultStr, " \t")
+		if len(afterResultStr) > 0 && afterResultStr[0] == '"' {
+			// Find the closing quote
+			closeQuote := strings.Index(afterResultStr[1:], `"`)
+			if closeQuote > 0 {
+				// Non-empty result value - definitive indicator
+				return true
+			}
+		}
+	}
+
+	// Secondary indicators - require multiple to confirm
+	// These alone might appear in thinking model output as references to previous tool results
+	secondaryCount := 0
+
+	// Pattern 4: "duration":"..." (execution time indicator)
+	if strings.Contains(content, `"duration":`) {
+		secondaryCount++
+	}
+
+	// Pattern 5: "display_result":"..." (display output)
+	if strings.Contains(content, `"display_result":`) {
+		secondaryCount++
+	}
+
+	// Pattern 6: "mcp_server":{...} (MCP server metadata)
+	if strings.Contains(content, `"mcp_server":`) {
+		secondaryCount++
+	}
+
+	// Require at least 3 secondary indicators to confirm it's a tool result
+	// This prevents false positives when thinking models reference previous tool results
+	// Examples:
+	//   - "duration":"0s" alone = NOT a result (might be reference)
+	//   - "duration":"0s" + "display_result":"" = NOT a result (might be reference)
+	//   - "duration":"0s" + "display_result":"" + "mcp_server":{} = is a result
+	return secondaryCount >= 3
 }
 
 // removeFunctionCallsBlocks removes all function call XML blocks and trigger signals
@@ -3461,6 +3808,15 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		return malformedCalls
 	}
 
+	// Try parsing <invoke name="Tool<arg_key>param</arg_key><arg_value>value</arg_value> format
+	// This handles cases where thinking models output tool calls with arg_key/arg_value pairs
+	if argKeyValueCalls := parseInvokeArgKeyValue(segment); len(argKeyValueCalls) > 0 {
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithField("parsed_count", len(argKeyValueCalls)).Debug("Function call parsing: parsed invoke arg_key/arg_value format")
+		}
+		return argKeyValueCalls
+	}
+
 	// Handle nested or double <function_calls> blocks.
 	// Reasoning models sometimes start with one format (e.g., <invocation><name>...)
 	// then mid-stream switch to another (nested <function_calls><function_call><tool>...).
@@ -3792,6 +4148,94 @@ func parseMalformedInvokes(text string) []functionCall {
 		return []functionCall{{Name: name, Args: args}}
 	}
 	return nil
+}
+
+// parseInvokeArgKeyValue parses <invoke name="Tool<arg_key>param</arg_key><arg_value>value</arg_value> format.
+// This handles cases where thinking models output tool calls with arg_key/arg_value pairs instead of
+// standard <parameter name="...">...</parameter> format.
+// Example: <invoke name="Bash<arg_key>command</arg_key><arg_value>ls -la</arg_value><arg_key>description</arg_key><arg_value>list files</arg_value>
+// Following b4u2cc reference implementation, only the FIRST valid tool call is returned.
+// Performance: Uses strings.Contains for fast pre-check before regex matching.
+func parseInvokeArgKeyValue(text string) []functionCall {
+	// Fast path: check if arg_key pattern exists
+	if !strings.Contains(text, "<arg_key>") {
+		return nil
+	}
+
+	matches := reInvokeArgKeyValue.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	// Only return the first valid tool call (b4u2cc single-call policy)
+	for i, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		name := strings.TrimSpace(m[1])
+		if name == "" {
+			continue
+		}
+
+		// Parse arg_key/arg_value pairs from the remaining content
+		args := extractArgKeyValuePairs(m[2])
+
+		// Log if there are additional tool calls being filtered
+		if i < len(matches)-1 {
+			filteredCount := len(matches) - i - 1
+			if filteredCount > 0 {
+				logrus.WithFields(logrus.Fields{
+					"first_tool":     name,
+					"filtered_count": filteredCount,
+				}).Debug("Function call parsing: filtered subsequent arg_key/arg_value tool calls (b4u2cc single-call policy)")
+			}
+		}
+
+		if len(args) > 0 {
+			return []functionCall{{Name: name, Args: args}}
+		}
+	}
+	return nil
+}
+
+// extractArgKeyValuePairs parses <arg_key>name</arg_key><arg_value>value</arg_value> pairs.
+// This handles the thinking model output format where parameters are specified as key-value pairs.
+// Example: "<arg_key>command</arg_key><arg_value>ls -la</arg_value><arg_key>description</arg_key><arg_value>list files</arg_value>"
+// Returns a map of parameter names to values.
+func extractArgKeyValuePairs(content string) map[string]any {
+	args := make(map[string]any)
+	if content == "" {
+		return args
+	}
+
+	// Find all arg_key/arg_value pairs
+	pairMatches := reArgKeyValuePair.FindAllStringSubmatch(content, -1)
+	for _, pm := range pairMatches {
+		if len(pm) < 3 {
+			continue
+		}
+		key := strings.TrimSpace(pm[1])
+		value := strings.TrimSpace(pm[2])
+		if key == "" {
+			continue
+		}
+
+		// Try to parse the value as JSON (for arrays/objects)
+		if len(value) > 0 {
+			firstChar := value[0]
+			if firstChar == '[' || firstChar == '{' {
+				if jsonVal, ok := tryParseJSON(value); ok {
+					args[key] = jsonVal
+					continue
+				}
+			}
+		}
+
+		// Store as string if not valid JSON
+		args[key] = value
+	}
+
+	return args
 }
 
 // extractMalformedParameters parses malformed <parametername="..."> format parameters.
@@ -4710,4 +5154,266 @@ func sanitizeJsonValue(v any) any {
 	default:
 		return v
 	}
+}
+
+// extractToolCallsFromEmbeddedJSON extracts tool calls from embedded JSON structures in content.
+// This handles cases where thinking models output tool call info in JSON format instead of XML.
+// The function looks for JSON objects containing tool call patterns like:
+//   - {"name":"Read","file_path":"..."}
+//   - {"name":"WebSearch","query":"..."}
+//   - {"id":"call_xxx","name":"Bash","command":"..."}
+//   - Double-escaped JSON: {\"name\":\"Read\",\"file_path\":\"...\"}
+//
+// This is a fallback strategy for when XML parsing fails but the content contains
+// recognizable tool call structures in JSON format.
+//
+// Performance: Uses structural detection to identify JSON tool call patterns.
+// Only processes content that contains JSON-like structures.
+func extractToolCallsFromEmbeddedJSON(content string) []functionCall {
+	if content == "" {
+		return nil
+	}
+
+	// Fast path: check if content contains JSON-like structures with tool indicators
+	// Look for patterns like "name":"ToolName" or escaped variants
+	hasNameField := strings.Contains(content, `"name"`) ||
+		strings.Contains(content, `\"name\"`) ||
+		strings.Contains(content, `\\"name\\"`)
+	if !hasNameField {
+		return nil
+	}
+
+	// Known tool names that we should extract (structural detection)
+	knownTools := map[string]bool{
+		"Read": true, "Write": true, "Edit": true, "Bash": true,
+		"Glob": true, "Grep": true, "WebSearch": true, "WebFetch": true,
+		"TodoWrite": true, "AskUserQuestion": true, "Task": true,
+		"TaskOutput": true, "NotebookEdit": true, "Skill": true,
+		"EnterPlanMode": true, "ExitPlanMode": true, "KillShell": true,
+	}
+
+	var calls []functionCall
+
+	// Try multiple extraction strategies for different escape levels
+	// Strategy 1: Direct JSON (no escaping)
+	calls = extractToolCallsFromJSONContent(content, knownTools)
+	if len(calls) > 0 {
+		return limitToFirstCall(calls)
+	}
+
+	// Strategy 2: Single-escaped JSON (\" -> ")
+	unescaped := strings.ReplaceAll(content, `\"`, `"`)
+	unescaped = strings.ReplaceAll(unescaped, `\\`, `\`)
+	calls = extractToolCallsFromJSONContent(unescaped, knownTools)
+	if len(calls) > 0 {
+		return limitToFirstCall(calls)
+	}
+
+	// Strategy 3: Double-escaped JSON (\\\" -> ")
+	doubleUnescaped := unescapeJSONString(content)
+	if doubleUnescaped != content {
+		calls = extractToolCallsFromJSONContent(doubleUnescaped, knownTools)
+		if len(calls) > 0 {
+			return limitToFirstCall(calls)
+		}
+	}
+
+	return nil
+}
+
+// extractToolCallsFromJSONContent extracts tool calls from content that may contain JSON objects.
+// This is a helper function that handles the actual JSON extraction logic.
+func extractToolCallsFromJSONContent(content string, knownTools map[string]bool) []functionCall {
+	// Pattern to find JSON objects with "name" field containing tool names
+	// This regex matches: "name":"ToolName" or "name": "ToolName"
+	reToolNameInJSON := regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
+
+	matches := reToolNameInJSON.FindAllStringSubmatchIndex(content, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	var calls []functionCall
+	processedRanges := make([][2]int, 0) // Track processed JSON ranges to avoid duplicates
+
+	for _, matchIdx := range matches {
+		if len(matchIdx) < 4 {
+			continue
+		}
+
+		// Extract tool name from capture group
+		toolName := strings.TrimSpace(content[matchIdx[2]:matchIdx[3]])
+		if toolName == "" {
+			continue
+		}
+
+		// Only process known tool names to avoid false positives
+		if !knownTools[toolName] {
+			continue
+		}
+
+		nameFieldStart := matchIdx[0]
+
+		// Find the start of the JSON object by counting braces backward
+		// When going backward: } increases depth, { decreases depth
+		startIdx := -1
+		depth := 0
+		for i := nameFieldStart - 1; i >= 0; i-- {
+			c := content[i]
+			if c == '}' {
+				depth++
+			} else if c == '{' {
+				if depth == 0 {
+					startIdx = i
+					break
+				}
+				depth--
+			}
+		}
+
+		if startIdx == -1 {
+			continue
+		}
+
+		// Find the end of the JSON object by counting braces forward
+		endIdx := -1
+		depth = 0
+		for i := startIdx; i < len(content); i++ {
+			c := content[i]
+			if c == '{' {
+				depth++
+			} else if c == '}' {
+				depth--
+				if depth == 0 {
+					endIdx = i + 1
+					break
+				}
+			}
+		}
+
+		if endIdx == -1 || endIdx <= startIdx {
+			continue
+		}
+
+		// Check if this range overlaps with already processed ranges
+		overlaps := false
+		for _, r := range processedRanges {
+			if (startIdx >= r[0] && startIdx < r[1]) || (endIdx > r[0] && endIdx <= r[1]) {
+				overlaps = true
+				break
+			}
+		}
+		if overlaps {
+			continue
+		}
+
+		jsonStr := content[startIdx:endIdx]
+
+		// Try to parse the JSON object
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
+			// Try to repair common JSON issues
+			repairedJSON := repairMalformedJSON(jsonStr)
+			if err := json.Unmarshal([]byte(repairedJSON), &obj); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"tool_name":    toolName,
+					"json_preview": utils.TruncateString(jsonStr, 200),
+					"error":        err.Error(),
+				}).Debug("CC+FC: Failed to parse embedded JSON tool call")
+				continue
+			}
+		}
+
+		// Verify the parsed object actually contains the expected tool name
+		if parsedName, ok := obj["name"].(string); !ok || parsedName != toolName {
+			continue
+		}
+
+		// Skip tool call results - these contain execution results, not new tool call requests
+		// Tool call results have fields like: is_error, status, result, duration, display_result
+		// Structural detection: if object has "is_error" field (true or false), it's a result not a request
+		// The presence of is_error field indicates this is a tool execution result, regardless of value
+		if _, hasIsError := obj["is_error"]; hasIsError {
+			logrus.WithFields(logrus.Fields{
+				"tool_name": toolName,
+			}).Debug("CC+FC: Skipping tool call result (has 'is_error' field)")
+			continue
+		}
+		if result, hasResult := obj["result"]; hasResult {
+			// Only skip if result is non-empty (empty result might be a pending request)
+			if resultStr, ok := result.(string); ok && resultStr != "" {
+				logrus.WithFields(logrus.Fields{
+					"tool_name": toolName,
+				}).Debug("CC+FC: Skipping tool call result (has non-empty 'result' field)")
+				continue
+			}
+		}
+		// Check status field - "error" or "completed" indicates a result, not a new request
+		// Tool call results have status field set by the execution system
+		if status, ok := obj["status"].(string); ok {
+			if status == "error" || status == "completed" {
+				logrus.WithFields(logrus.Fields{
+					"tool_name": toolName,
+					"status":    status,
+				}).Debug("CC+FC: Skipping tool call result (has status field)")
+				continue
+			}
+		}
+
+		// Extract tool arguments from the JSON object
+		args := make(map[string]any)
+		for k, v := range obj {
+			// Skip metadata fields that are not tool arguments
+			if k == "name" || k == "id" || k == "status" || k == "is_error" ||
+				k == "duration" || k == "display_result" || k == "result" ||
+				k == "mcp_server" || k == "type" {
+				continue
+			}
+			args[k] = v
+		}
+
+		// Only add if we have arguments
+		if len(args) > 0 {
+			calls = append(calls, functionCall{Name: toolName, Args: args})
+			processedRanges = append(processedRanges, [2]int{startIdx, endIdx})
+			logrus.WithFields(logrus.Fields{
+				"tool_name":  toolName,
+				"args_count": len(args),
+			}).Debug("CC+FC: Extracted tool call from embedded JSON")
+		}
+	}
+
+	return calls
+}
+
+// limitToFirstCall returns only the first tool call (b4u2cc single-call policy)
+func limitToFirstCall(calls []functionCall) []functionCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	if len(calls) > 1 {
+		logrus.WithFields(logrus.Fields{
+			"first_tool":     calls[0].Name,
+			"filtered_count": len(calls) - 1,
+		}).Debug("CC+FC: Filtered subsequent embedded JSON tool calls (b4u2cc single-call policy)")
+	}
+	return []functionCall{calls[0]}
+}
+
+// unescapeJSONString unescapes a JSON string that may be double-escaped.
+// This handles cases where JSON is embedded in another JSON string and has
+// escaped backslashes and quotes.
+// Examples:
+//   - `\\\"` -> `"`
+//   - `\\\\` -> `\`
+//   - `\\/` -> `/`
+func unescapeJSONString(s string) string {
+	// First pass: unescape double backslashes
+	s = strings.ReplaceAll(s, `\\\\`, `\`)
+	// Second pass: unescape escaped quotes
+	s = strings.ReplaceAll(s, `\\\"`, `"`)
+	s = strings.ReplaceAll(s, `\\"`, `"`)
+	// Third pass: unescape escaped forward slashes
+	s = strings.ReplaceAll(s, `\\/`, `/`)
+	return s
 }

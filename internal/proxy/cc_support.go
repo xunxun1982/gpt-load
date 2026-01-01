@@ -1444,12 +1444,42 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 	calls := parseFunctionCallsXML(content, triggerSignal)
 
 	// Fallback: try parsing without trigger signal if none found
-	if len(calls) == 0 && strings.Contains(content, "<function_calls>") {
+	// This handles cases where thinking models output tool calls without trigger signal
+	if len(calls) == 0 && (strings.Contains(content, "<function_calls>") || strings.Contains(content, "<invoke ")) {
 		calls = parseFunctionCallsXML(content, "")
 		if len(calls) > 0 {
 			logrus.WithField("parsed_count", len(calls)).
 				Debug("CC+FC: Parsed function calls using fallback (no trigger signal)")
 		}
+	}
+
+	// Fallback: try extracting tool calls from embedded JSON structures
+	// This handles cases where thinking models output tool call info in JSON format
+	// instead of XML format (e.g., {"name":"Read","file_path":"..."})
+	if len(calls) == 0 {
+		calls = extractToolCallsFromEmbeddedJSON(content)
+		if len(calls) > 0 {
+			logrus.WithField("parsed_count", len(calls)).
+				Debug("CC+FC: Parsed function calls from embedded JSON")
+		}
+	}
+
+	// Debug logging for troubleshooting when no tool calls found
+	if len(calls) == 0 && logrus.IsLevelEnabled(logrus.DebugLevel) {
+		hasInvoke := strings.Contains(content, "<invoke")
+		hasFunctionCalls := strings.Contains(content, "<function_calls>")
+		hasTrigger := triggerSignal != "" && strings.Contains(content, triggerSignal)
+		hasThinking := strings.Contains(content, "<thinking>") || strings.Contains(content, "<think>") ||
+			strings.Contains(content, "antml") && strings.Contains(content, "thinking")
+		logrus.WithFields(logrus.Fields{
+			"content_len":        len(content),
+			"has_invoke":         hasInvoke,
+			"has_function_calls": hasFunctionCalls,
+			"has_trigger":        hasTrigger,
+			"has_thinking":       hasThinking,
+			"trigger_signal":     triggerSignal,
+			"content_preview":    utils.TruncateString(content, 500),
+		}).Debug("CC+FC: No tool calls found in content")
 	}
 
 	if len(calls) == 0 {

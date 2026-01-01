@@ -1466,6 +1466,70 @@ func TestRemoveThinkBlocksExtractsFunctionCalls(t *testing.T) {
 	}
 }
 
+// TestRemoveThinkBlocksExtractsANTMLThinkingInvoke tests that invoke blocks inside
+// ANTML thinking tags are correctly extracted and preserved.
+func TestRemoveThinkBlocksExtractsANTMLThinkingInvoke(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		expectInvoke   bool
+		expectThinking bool
+	}{
+		{
+			name:           "antml_thinking_with_invoke",
+			input:          `<antml\b:thinking>Let me plan this task.<<CALL_test>><invoke name="TodoWrite"><parameter name="todos">[{"id":"1"}]</parameter></invoke></antml\b:thinking>`,
+			expectInvoke:   true,
+			expectThinking: false,
+		},
+		{
+			name:           "antml_thinking_with_generic_closer",
+			input:          `<antml\b:thinking>Planning...<<CALL_abc>><invoke name="Bash"><parameter name="command">ls</parameter></invoke></antml>`,
+			expectInvoke:   true,
+			expectThinking: false,
+		},
+		{
+			name:           "escaped_antml_thinking_with_invoke",
+			input:          `<antml\\b:thinking>Thinking...<<CALL_xyz>><invoke name="Read"><parameter name="file_path">/test.py</parameter></invoke></antml\\b:thinking>`,
+			expectInvoke:   true,
+			expectThinking: false,
+		},
+		{
+			name:           "antml_thinking_no_invoke",
+			input:          `<antml\b:thinking>Just thinking, no tool call.</antml\b:thinking>Normal text`,
+			expectInvoke:   false,
+			expectThinking: false,
+		},
+		{
+			name:           "mixed_thinking_formats",
+			input:          `<thinking>Standard thinking</thinking><antml\b:thinking><<CALL_mix>><invoke name="Glob"><parameter name="pattern">*.go</parameter></invoke></antml\b:thinking>`,
+			expectInvoke:   true,
+			expectThinking: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := removeThinkBlocks(tt.input)
+
+			hasInvoke := strings.Contains(result, "<invoke ")
+			hasThinking := strings.Contains(result, "thinking>")
+
+			if tt.expectInvoke && !hasInvoke {
+				t.Errorf("expected invoke block to be preserved, got %q", result)
+			}
+			if !tt.expectInvoke && hasInvoke {
+				t.Errorf("did not expect invoke block, got %q", result)
+			}
+			if tt.expectThinking && !hasThinking {
+				t.Errorf("expected thinking tag to remain, got %q", result)
+			}
+			if !tt.expectThinking && hasThinking {
+				t.Errorf("did not expect thinking tag, got %q", result)
+			}
+		})
+	}
+}
+
 func TestExtractParametersJSONObject(t *testing.T) {
 	args := extractParameters(`{"content":"hello"}`, reMcpParam, reGenericParam)
 	if len(args) != 1 {

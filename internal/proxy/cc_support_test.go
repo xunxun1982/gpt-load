@@ -2525,3 +2525,821 @@ func TestThinkingParser_StreamingTagSplit(t *testing.T) {
 		})
 	}
 }
+
+// TestParseFunctionCallsFromContentForCC_ANTMLThinkingWithToolCall tests that
+// parseFunctionCallsFromContentForCC correctly extracts tool calls from ANTML
+// thinking blocks. This is critical for thinking models (GLM-4.7-thinking, etc.)
+// that embed tool calls within their thinking process.
+func TestParseFunctionCallsFromContentForCC_ANTMLThinkingWithToolCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name              string
+		input             string
+		trigger           string
+		expectedToolCount int
+		expectedToolName  string
+		description       string
+	}{
+		{
+			name: "antml_thinking_with_invoke_inside",
+			input: `<antml\b:thinking>Let me plan this task.
+<<CALL_test123>>
+<invoke name="TodoWrite"><parameter name="todos">[{"id":"1","content":"task","status":"pending"}]</parameter></invoke>
+</antml\b:thinking>`,
+			trigger:           "<<CALL_test123>>",
+			expectedToolCount: 1,
+			expectedToolName:  "TodoWrite",
+			description:       "ANTML thinking block with invoke inside should extract tool call",
+		},
+		{
+			name: "antml_thinking_with_generic_closer",
+			input: `<antml\b:thinking>Planning the approach...
+<<CALL_abc123>>
+<invoke name="Bash"><parameter name="command">ls -la</parameter></invoke>
+</antml>`,
+			trigger:           "<<CALL_abc123>>",
+			expectedToolCount: 1,
+			expectedToolName:  "Bash",
+			description:       "ANTML thinking with generic </antml> closer should extract tool call",
+		},
+		{
+			name: "escaped_antml_thinking_with_invoke",
+			input: `<antml\\b:thinking>Thinking about the task...
+<<CALL_xyz789>>
+<invoke name="Read"><parameter name="file_path">/test.py</parameter></invoke>
+</antml\\b:thinking>`,
+			trigger:           "<<CALL_xyz789>>",
+			expectedToolCount: 1,
+			expectedToolName:  "Read",
+			description:       "Escaped ANTML thinking should extract tool call",
+		},
+		{
+			name: "antml_thinking_no_tool_call",
+			input: `<antml\b:thinking>Just thinking about this problem, no tool call needed.</antml\b:thinking>
+I need more information from the user.`,
+			trigger:           "<<CALL_none>>",
+			expectedToolCount: 0,
+			expectedToolName:  "",
+			description:       "ANTML thinking without tool call should return no tools",
+		},
+		{
+			name: "mixed_thinking_formats_with_tool_call",
+			input: `<thinking>Standard thinking first</thinking>
+<antml\b:thinking>Now using ANTML thinking
+<<CALL_mix123>>
+<invoke name="Glob"><parameter name="pattern">*.go</parameter></invoke>
+</antml\b:thinking>`,
+			trigger:           "<<CALL_mix123>>",
+			expectedToolCount: 1,
+			expectedToolName:  "Glob",
+			description:       "Mixed thinking formats should extract tool call from ANTML block",
+		},
+		{
+			name: "tool_call_outside_thinking",
+			input: `<antml\b:thinking>Just planning...</antml\b:thinking>
+<<CALL_out123>>
+<invoke name="WebSearch"><parameter name="query">best practices</parameter></invoke>`,
+			trigger:           "<<CALL_out123>>",
+			expectedToolCount: 1,
+			expectedToolName:  "WebSearch",
+			description:       "Tool call outside thinking block should be extracted",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Set(ctxKeyTriggerSignal, tt.trigger)
+			c.Set(ctxKeyFunctionCallEnabled, true)
+
+			_, toolUseBlocks := parseFunctionCallsFromContentForCC(c, tt.input)
+
+			if len(toolUseBlocks) != tt.expectedToolCount {
+				t.Errorf("[%s] expected %d tool_use blocks, got %d", tt.description, tt.expectedToolCount, len(toolUseBlocks))
+			}
+
+			if tt.expectedToolCount > 0 && len(toolUseBlocks) > 0 {
+				if toolUseBlocks[0].Name != tt.expectedToolName {
+					t.Errorf("[%s] expected tool name %q, got %q", tt.description, tt.expectedToolName, toolUseBlocks[0].Name)
+				}
+			}
+		})
+	}
+}
+
+// TestParseFunctionCallsFromContentForCC_EmbeddedJSONToolCall tests extraction of tool calls
+// from embedded JSON structures in thinking model output. This covers the production log
+// scenario where GLM-4.7-thinking outputs tool call info in JSON format instead of XML.
+// The JSON may be double-escaped when embedded in another JSON string.
+func TestParseFunctionCallsFromContentForCC_EmbeddedJSONToolCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name              string
+		input             string
+		trigger           string
+		expectedToolCount int
+		expectedToolName  string
+		expectedArg       string
+		description       string
+	}{
+		{
+			name: "embedded_json_read_tool_double_escaped",
+			// This pattern is from production log: thinking model outputs tool call RESULT as JSON
+			// The JSON object has "status":"completed" which indicates it's a result, not a request
+			// Should NOT be extracted as a tool call
+			input: `用户想要搜索GUI程序的最佳实践。
+让我先读取hello.py文件。
+{"file_path":"F:\\MyProjects\\test\\hello.py","display_result":"","duration":"0s","id":"call_f95d44eb48c64cbeb4aaee40","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"","status":"completed"}
+工具执行完成。`,
+			trigger:           "<<CALL_test123>>",
+			expectedToolCount: 0,
+			expectedToolName:  "",
+			expectedArg:       "",
+			description:       "JSON tool call result with status:completed should NOT be extracted",
+		},
+		{
+			name: "embedded_json_websearch_tool",
+			// Direct JSON format without escaping - this is a NEW tool call request (no status field)
+			input: `I need to search for information.
+{"name":"WebSearch","query":"Python GUI best practices","allowed_domains":["stackoverflow.com"]}
+Let me analyze the results.`,
+			trigger:           "<<CALL_abc123>>",
+			expectedToolCount: 1,
+			expectedToolName:  "WebSearch",
+			expectedArg:       "query",
+			description:       "Direct JSON tool call should be extracted",
+		},
+		{
+			name: "embedded_json_bash_tool_with_id",
+			// JSON with id field (common in thinking model output)
+			input: `Running a command now.
+{"id":"call_xyz789","name":"Bash","command":"ls -la","description":"List files"}
+Command executed.`,
+			trigger:           "<<CALL_xyz789>>",
+			expectedToolCount: 1,
+			expectedToolName:  "Bash",
+			expectedArg:       "command",
+			description:       "JSON tool call with id field should be extracted",
+		},
+		{
+			name: "embedded_json_single_escaped",
+			// Single-escaped JSON (\" -> ")
+			input: `Processing request.
+{\"name\":\"Glob\",\"pattern\":\"**/*.go\",\"path\":\"/src\"}
+Done.`,
+			trigger:           "<<CALL_glob123>>",
+			expectedToolCount: 1,
+			expectedToolName:  "Glob",
+			expectedArg:       "pattern",
+			description:       "Single-escaped JSON tool call should be extracted",
+		},
+		{
+			name: "no_tool_call_in_json",
+			// JSON without known tool name
+			input: `Some data: {"name":"UnknownTool","param":"value"}`,
+			trigger:           "<<CALL_none>>",
+			expectedToolCount: 0,
+			expectedToolName:  "",
+			expectedArg:       "",
+			description:       "Unknown tool name should not be extracted",
+		},
+		{
+			name: "multiple_json_tools_first_only",
+			// Multiple tool calls - should only return first (b4u2cc policy)
+			input: `First tool: {"name":"Read","file_path":"/a.txt"}
+Second tool: {"name":"Write","file_path":"/b.txt","content":"hello"}`,
+			trigger:           "<<CALL_multi>>",
+			expectedToolCount: 1,
+			expectedToolName:  "Read",
+			expectedArg:       "file_path",
+			description:       "Multiple JSON tool calls should return only first (b4u2cc policy)",
+		},
+		{
+			name: "production_log_pattern_full",
+			// Full pattern from production log with all metadata fields
+			// This is a tool call RESULT (has status:"completed"), not a new request
+			// Should NOT be extracted as a tool call
+			input: `用户想要：
+1. 联网搜索GUI程序的最佳实践
+让我先读取hello.py文件。
+{"file_path":"F:\\MyProjects\\test\\hello.py","display_result":"","duration":"0s","id":"call_f95d44eb48c64cbeb4aaee40","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"","status":"completed"}
+工具出现了问题。`,
+			trigger:           "<<CALL_vsk7e8>>",
+			expectedToolCount: 0,
+			expectedToolName:  "",
+			expectedArg:       "",
+			description:       "Production log pattern with status:completed should NOT be extracted (it's a result)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Set(ctxKeyTriggerSignal, tt.trigger)
+			c.Set(ctxKeyFunctionCallEnabled, true)
+
+			_, toolUseBlocks := parseFunctionCallsFromContentForCC(c, tt.input)
+
+			if len(toolUseBlocks) != tt.expectedToolCount {
+				t.Errorf("[%s] expected %d tool_use blocks, got %d", tt.description, tt.expectedToolCount, len(toolUseBlocks))
+				return
+			}
+
+			if tt.expectedToolCount > 0 && len(toolUseBlocks) > 0 {
+				if toolUseBlocks[0].Name != tt.expectedToolName {
+					t.Errorf("[%s] expected tool name %q, got %q", tt.description, tt.expectedToolName, toolUseBlocks[0].Name)
+				}
+
+				// Verify the expected argument exists in the input
+				if tt.expectedArg != "" {
+					var input map[string]any
+					if err := json.Unmarshal(toolUseBlocks[0].Input, &input); err != nil {
+						t.Errorf("[%s] failed to unmarshal tool input: %v", tt.description, err)
+					} else if _, ok := input[tt.expectedArg]; !ok {
+						t.Errorf("[%s] expected argument %q not found in input: %v", tt.description, tt.expectedArg, input)
+					}
+				}
+			}
+		})
+	}
+}
+
+
+// TestParseFunctionCallsFromContentForCC_GLMBlockRemoval tests that <glm_block> tags
+// containing tool call results are properly removed and not extracted as new tool calls.
+// This addresses the production issue where GLM-4.7-thinking model outputs tool call
+// results in <glm_block> tags, which should be filtered out.
+func TestParseFunctionCallsFromContentForCC_GLMBlockRemoval(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name              string
+		input             string
+		trigger           string
+		expectedToolCount int
+		description       string
+	}{
+		{
+			name: "glm_block_with_tool_result_error",
+			// Production log pattern: GLM model outputs tool call result with error
+			input: `用户想要搜索最佳实践。
+<glm_block>{"file_path":"F:\\test\\hello.py","id":"call_3b38f4af81fa478d823d1a10","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"tool call failed: Read","status":"error"}}</glm_block>
+工具调用失败了。`,
+			trigger:           "<<CALL_test123>>",
+			expectedToolCount: 0,
+			description:       "GLM block with error result should not be extracted as tool call",
+		},
+		{
+			name: "glm_block_with_completed_result",
+			// Tool call result with status=completed and non-empty result should be skipped
+			input: `让我读取文件。
+<glm_block>{"name":"Read","file_path":"/test.py","status":"completed","result":"file content here","is_error":false}</glm_block>
+文件读取完成。`,
+			trigger:           "<<CALL_read123>>",
+			expectedToolCount: 0,
+			description:       "GLM block with completed result and non-empty result should not be extracted",
+		},
+		{
+			name: "glm_block_with_mcp_type",
+			// Full production pattern with type:mcp
+			input: `首先搜索最佳实践。
+<glm_block>{"tool_use":{"file_path":"F:\\hello.py","id":"call_abc123","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"tool call failed: Read","status":"error"}},"type":"mcp"}</glm_block>
+让我尝试其他方式。`,
+			trigger:           "<<CALL_mcp123>>",
+			expectedToolCount: 0,
+			description:       "GLM block with MCP type wrapper should not be extracted",
+		},
+		{
+			name: "mixed_glm_block_and_valid_invoke",
+			// GLM block result followed by valid invoke should only extract the invoke
+			input: `<glm_block>{"name":"Read","result":"failed","status":"error","is_error":true}</glm_block>
+让我重试。
+<<CALL_retry123>>
+<invoke name="Glob"><parameter name="pattern">*.py</parameter></invoke>`,
+			trigger:           "<<CALL_retry123>>",
+			expectedToolCount: 1,
+			description:       "Valid invoke after GLM block should be extracted",
+		},
+		{
+			name: "nested_glm_block_content",
+			// Multiple GLM blocks should all be removed
+			input: `第一次尝试：
+<glm_block>{"name":"WebSearch","result":"search failed","status":"error"}</glm_block>
+第二次尝试：
+<glm_block>{"name":"Read","result":"read failed","status":"error"}</glm_block>
+所有工具都失败了。`,
+			trigger:           "<<CALL_multi>>",
+			expectedToolCount: 0,
+			description:       "Multiple GLM blocks should all be filtered out",
+		},
+		{
+			name: "orphaned_glm_block_closer_production_log",
+			// Production log pattern: orphaned </glm_block> without opening tag
+			// This happens when the opening tag is truncated in streaming
+			input: `用户要求我读取文件。让我先读取hello.py文件。{"id":"call_aa03fe9628b24c59af840c45","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"tool call failed: Read","status":"error"}</glm_block>两个工具都失败了。`,
+			trigger:           "<<CALL_sq89xv>>",
+			expectedToolCount: 0,
+			description:       "Orphaned </glm_block> closer with tool result JSON should be removed",
+		},
+		{
+			name: "production_log_2026_01_01_tool_call_in_thinking",
+			// Production log pattern from 2026-01-01: thinking model outputs tool call info
+			// but without proper XML format. The content contains tool call parameters
+			// mixed with tool call result fields from previous calls.
+			// This should NOT extract any tool calls because there's no valid invoke format.
+			input: `用户要求：
+1. 联网搜索Python GUI程序的最佳实践
+2. 修改hello.py将其改为漂亮的GUI程序
+
+首先，我需要：
+1. 搜索Python GUI库的最佳实践
+2. 查看当前目录下的hello.py文件
+
+让我先使用exa联网搜索Python GUI最佳实践，同时读取hello.py文件。
+query":"Python GUI tkinter hello world best practice minimal code 2025","numResults":"5"},"display_result":"","duration":"0s","id":"call_38b95eee7871433bbe955350","is_error":false,"mcp_server":{"name":"mcp-server"}}</glm_block>
+工具调用完成。`,
+			trigger:           "<<CALL_25mp6o>>",
+			expectedToolCount: 0,
+			description:       "Thinking content with tool call result JSON should not extract tool calls",
+		},
+		{
+			name: "production_log_2026_01_01_weak_indicators_only",
+			// Production log pattern from 2026-01-01: thinking model outputs content with only
+			// weak indicators (display_result, duration) but no strong indicators (is_error, status).
+			// This should NOT remove the content because weak indicators alone don't confirm it's a tool result.
+			// The content should be preserved and no tool calls should be extracted.
+			input: `用户要求我：
+1. 联网搜索最佳实践来修改 hello.py
+2. 将其改为漂亮的GUI程序
+
+让我先读取文件并联网搜索：
+file_path":"F:\\MyProjects\\test\\language\\python\\xx\\hello.py"},"display_result":"","duration":"0s","id":"call_8f5d86635de34da</glm_block>
+工具调用失败了。`,
+			trigger:           "<<CALL_wnyuew>>",
+			expectedToolCount: 0,
+			description:       "Content with only weak indicators should not extract tool calls but should preserve content",
+		},
+		{
+			name: "valid_invoke_after_orphaned_glm_block",
+			// Valid invoke after orphaned glm_block should be extracted
+			input: `让我先读取文件。
+{"name":"Read","is_error":true,"result":"failed","status":"error"}</glm_block>
+工具失败了，让我重试。
+<<CALL_retry>>
+<invoke name="Read"><parameter name="file_path">/test.py</parameter></invoke>`,
+			trigger:           "<<CALL_retry>>",
+			expectedToolCount: 1,
+			description:       "Valid invoke after orphaned glm_block should be extracted",
+		},
+		{
+			name: "production_log_2026_01_01_embedded_tool_result_no_closer",
+			// Production log pattern from 2026-01-01: thinking model outputs tool call result
+			// JSON embedded in content WITHOUT </glm_block> closer tag.
+			// This happens when the model references previous tool results in its thinking.
+			// The JSON contains strong indicators (is_error:false) and should be cleaned.
+			// No tool calls should be extracted because there's no valid invoke format.
+			input: `用户想要：
+1. 联网搜索最佳实践
+2. 修改 hello.py
+3. 将其改为漂亮的GUI程序，输出 Hello World
+4. 需要代码短小精悍，越短越好
+5. 自动运行它
+
+首先我需要查看当前的 hello.py 文件，然后联网搜索 Python GUI 最佳实践，最后实现一个简洁的 GUI 程序。
+
+让我先读取 hello.py 文件，然后联网搜索 Python GUI 最佳实践，最后实现一个简洁的 GUI 程序。
+
+让我先读取 hello.py 文件，然后联网搜索相关信息。我需要先查看当前文件内容，然后搜索 Python GUI 最佳实践，再实现一个简洁的 GUI 程序。
+{"file_path":"F:\\test\\language\\python\\xx\\hello.py","display_result":"","duration":"0s","id":"call_48f8993eac684726b0782cd8","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"Read","result":""}
+工具调用完成。`,
+			trigger:           "<<CALL_js00my>>",
+			expectedToolCount: 0,
+			description:       "Embedded tool result JSON without </glm_block> closer should not extract tool calls",
+		},
+		{
+			name: "production_log_2026_01_01_valid_invoke_after_embedded_result",
+			// Production log pattern: valid invoke after embedded tool result JSON (no closer)
+			// The embedded JSON should be cleaned, and the valid invoke should be extracted.
+			input: `让我先读取文件。
+{"name":"Read","is_error":false,"result":"","display_result":"","duration":"0s","mcp_server":{"name":"mcp-server"}}
+工具调用完成，让我继续。
+<<CALL_next>>
+<invoke name="WebSearch"><parameter name="query">Python GUI best practices</parameter></invoke>`,
+			trigger:           "<<CALL_next>>",
+			expectedToolCount: 1,
+			description:       "Valid invoke after embedded tool result JSON (no closer) should be extracted",
+		},
+		{
+			name: "production_log_2026_01_01_multiple_orphaned_glm_blocks_no_invoke",
+			// Production log pattern from 2026-01-01: thinking model outputs multiple tool call results
+			// in orphaned </glm_block> tags, but does NOT output new tool call requests.
+			// This is the exact scenario from the log where Claude Code shows "tool call failed".
+			// The model references previous tool results but doesn't output new invoke tags.
+			// Expected: 0 tool calls (no valid invoke format in content)
+			input: `用户希望我：
+1. 联网搜索最佳实践
+2. 修改 hello.py 将其改为漂亮的GUI程序
+3. 输出 Hello World 即可
+4. 需要代码短小精悍，越短越好
+5. 自动运行它
+
+首先，我需要：
+1. 读取当前的 hello.py 文件
+2. 联网搜索 Python GUI 最佳实践
+3. 修改文件
+4. 运行它
+
+让我先读取文件，然后联网搜索。让我先读取现有的 hello.py 文件，并联网搜索 Python GUI 最佳实践。1s","id":"call_32c91bbaaec3439297a345bc","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"tool call failed: Read","status":"error"}},"type":"mcp"}</glm_block>两个工具都失败了。让我使用其他工具来获取信息。先尝试使用 Glob 查找 hello.py 文件，然后使用 WebSearch 联1s","id":"call_e1629dc39e7a41","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"WebSearch","result":"tool call failed: WebSearch","status":"error"}},"type":"mcp"}</glm_block>
+工具调用都失败了。`,
+			trigger:           "<<CALL_r4o62t>>",
+			expectedToolCount: 0,
+			description:       "Multiple orphaned glm_blocks with tool results but no invoke should return 0 tool calls",
+		},
+		{
+			name: "production_log_2026_01_01_orphaned_glm_blocks_with_valid_invoke_after",
+			// Production log pattern: orphaned glm_blocks with tool results, followed by valid invoke
+			// The tool results should be cleaned, and the valid invoke should be extracted.
+			input: `让我先读取文件。
+{"id":"call_abc123","is_error":true,"name":"Read","result":"failed","status":"error"}</glm_block>
+工具失败了，让我重试。
+<<CALL_retry>>
+<invoke name="Glob"><parameter name="pattern">*.py</parameter></invoke>`,
+			trigger:           "<<CALL_retry>>",
+			expectedToolCount: 1,
+			description:       "Valid invoke after orphaned glm_block with tool result should be extracted",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Set(ctxKeyTriggerSignal, tt.trigger)
+			c.Set(ctxKeyFunctionCallEnabled, true)
+
+			_, toolUseBlocks := parseFunctionCallsFromContentForCC(c, tt.input)
+
+			if len(toolUseBlocks) != tt.expectedToolCount {
+				t.Errorf("[%s] expected %d tool_use blocks, got %d", tt.description, tt.expectedToolCount, len(toolUseBlocks))
+				for i, block := range toolUseBlocks {
+					t.Logf("Block %d: name=%s, input=%s", i, block.Name, string(block.Input))
+				}
+			}
+		})
+	}
+}
+
+// TestExtractToolCallsFromJSONContent_SkipsToolResults tests that the JSON extraction
+// function correctly skips tool call results (objects with is_error, status, or result fields).
+func TestExtractToolCallsFromJSONContent_SkipsToolResults(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	knownTools := map[string]bool{
+		"Read": true, "Write": true, "Bash": true, "Glob": true, "WebSearch": true,
+	}
+
+	tests := []struct {
+		name          string
+		content       string
+		expectedCount int
+		description   string
+	}{
+		{
+			name:          "tool_result_with_is_error_true",
+			content:       `{"name":"Read","file_path":"/test.py","is_error":true,"result":"failed"}`,
+			expectedCount: 0,
+			description:   "Tool result with is_error=true should be skipped",
+		},
+		{
+			name:          "tool_result_with_status_error",
+			content:       `{"name":"Read","file_path":"/test.py","status":"error","result":"failed"}`,
+			expectedCount: 0,
+			description:   "Tool result with status=error should be skipped",
+		},
+		{
+			name:          "tool_result_with_status_completed",
+			content:       `{"name":"Read","file_path":"/test.py","status":"completed","result":"content"}`,
+			expectedCount: 0,
+			description:   "Tool result with status=completed and non-empty result should be skipped",
+		},
+		{
+			name:          "tool_result_with_result_field",
+			content:       `{"name":"Bash","command":"ls","result":"file1.txt\nfile2.txt"}`,
+			expectedCount: 0,
+			description:   "Tool result with non-empty result field should be skipped",
+		},
+		{
+			name:          "valid_tool_request_no_result_fields",
+			content:       `{"name":"Read","file_path":"/test.py"}`,
+			expectedCount: 1,
+			description:   "Valid tool request without result fields should be extracted",
+		},
+		{
+			name:          "valid_tool_request_with_status_pending",
+			content:       `{"name":"Glob","pattern":"*.go","status":"pending"}`,
+			expectedCount: 1,
+			description:   "Tool request with status=pending should be extracted",
+		},
+		{
+			name:          "tool_result_with_is_error_false_but_has_result",
+			content:       `{"name":"WebSearch","query":"test","is_error":false,"result":"search results"}`,
+			expectedCount: 0,
+			description:   "Tool with is_error=false but has non-empty result field should be skipped",
+		},
+		{
+			name:          "tool_request_with_empty_result",
+			// Tool with status:"completed" is a result, not a request - should be skipped
+			content:       `{"name":"Read","file_path":"/test.py","result":"","status":"completed"}`,
+			expectedCount: 0,
+			description:   "Tool with status:completed should be skipped (it's a result)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := extractToolCallsFromJSONContent(tt.content, knownTools)
+
+			if len(calls) != tt.expectedCount {
+				t.Errorf("[%s] expected %d calls, got %d", tt.description, tt.expectedCount, len(calls))
+				for i, call := range calls {
+					t.Logf("Call %d: name=%s, args=%v", i, call.Name, call.Args)
+				}
+			}
+		})
+	}
+}
+
+// TestRemoveThinkBlocks_GLMBlock tests that removeThinkBlocks correctly handles
+// <glm_block> tags, removing them from content while preserving other text.
+// Note: removeThinkBlocks extracts invoke tags from thinking blocks, but for glm_block
+// the extracted content will be filtered out later by extractToolCallsFromJSONContent
+// because it contains tool call results (is_error, status, result fields).
+func TestRemoveThinkBlocks_GLMBlock(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple_glm_block_removal",
+			input:    `Before<glm_block>{"name":"Read","result":"failed"}</glm_block>After`,
+			expected: `BeforeAfter`,
+		},
+		{
+			name:     "glm_block_with_newlines",
+			input:    "Line1\n<glm_block>tool result here</glm_block>\nLine2",
+			expected: "Line1\n\nLine2",
+		},
+		{
+			name:     "multiple_glm_blocks",
+			input:    `A<glm_block>1</glm_block>B<glm_block>2</glm_block>C`,
+			expected: `ABC`,
+		},
+		{
+			name:     "no_glm_block",
+			input:    `Normal text without any blocks`,
+			expected: `Normal text without any blocks`,
+		},
+		{
+			// Production log pattern: orphaned </glm_block> without opening tag
+			// This happens when the opening tag is truncated in streaming
+			// The JSON content before </glm_block> should be removed because it contains tool result indicators
+			name:     "orphaned_glm_block_closer_with_tool_result",
+			input:    `用户要求我读取文件。让我先读取hello.py文件。{"id":"call_aa03fe9628b24c59af840c45","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"tool call failed: Read","status":"error"}</glm_block>两个工具都失败了。`,
+			expected: `用户要求我读取文件。让我先读取hello.py文件。两个工具都失败了。`,
+		},
+		{
+			// Orphaned closer with JSON tool result containing is_error field
+			name:     "orphaned_closer_with_is_error_json",
+			input:    `让我读取文件。{"name":"Read","is_error":true,"result":"failed"}</glm_block>继续尝试。`,
+			expected: `让我读取文件。继续尝试。`,
+		},
+		{
+			// Orphaned closer with JSON tool result containing status field
+			name:     "orphaned_closer_with_status_json",
+			input:    `尝试搜索。{"name":"WebSearch","status":"error","result":"search failed"}</glm_block>换个方法。`,
+			expected: `尝试搜索。换个方法。`,
+		},
+		{
+			// Orphaned closer without JSON - just remove the tag
+			name:     "orphaned_closer_without_json",
+			input:    `一些文本</glm_block>更多文本`,
+			expected: `一些文本更多文本`,
+		},
+		{
+			// Production log pattern: truncated JSON before orphaned closer
+			// The JSON is incomplete (missing opening brace) but has tool result indicators
+			name:     "orphaned_closer_with_truncated_json",
+			input:    `让我读取文件。"name":"Read","is_error":true}</glm_block>继续。`,
+			expected: `让我读取文件。"name":"Read","is_error":true}继续。`,
+		},
+		{
+			// Multiple orphaned closers in sequence
+			name:     "multiple_orphaned_closers",
+			input:    `第一次{"name":"Read","is_error":true}</glm_block>第二次{"name":"Glob","status":"error"}</glm_block>结束`,
+			expected: `第一次第二次结束`,
+		},
+		{
+			// Production log pattern from 2026-01-01: truncated JSON with missing opening brace
+			// The content has tool result indicators but the JSON is incomplete
+			// This tests the fallback logic when brace matching fails
+			name: "production_log_truncated_json_no_opening_brace",
+			input: `用户要求：
+1. 联网搜索最佳实践
+让我先读取hello.py文件。
+file_path":"F:\\MyProjects\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_55b52f67bb4a4edfafd1bec7","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"","status":"completed"}}</glm_block>
+工具出现了问题。`,
+			expected: `用户要求：
+1. 联网搜索最佳实践
+让我先读取hello.py文件。
+
+工具出现了问题。`,
+		},
+		{
+			// Production log pattern: multiple orphaned </glm_block> closers with truncated JSON
+			// This simulates the exact scenario from the 2026-01-01 log where 4 orphaned closers were found
+			name: "production_log_multiple_orphaned_closers",
+			input: `用户要求：
+1. 联网搜索最佳实践
+让我先读取hello.py文件。
+file_path":"F:\\MyProjects\\test\\hello.py"},"is_error":false,"name":"Read","status":"completed"}}</glm_block>
+然后联网搜索。
+query":"Python GUI best practices"},"is_error":true,"name":"WebSearch","status":"error"}}</glm_block>
+工具都失败了。`,
+			expected: `用户要求：
+1. 联网搜索最佳实践
+让我先读取hello.py文件。
+
+然后联网搜索。
+
+工具都失败了。`,
+		},
+		{
+			// Production log pattern from 2026-01-01: orphaned </glm_block> with only weak indicators
+			// The content has "duration" and "display_result" but NOT "is_error" or "status":"completed"
+			// With the new logic, this should NOT be removed (only 2 secondary indicators)
+			name: "orphaned_closer_with_weak_indicators_and_is_error",
+			input: `让我读取文件。
+file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_8f5d86635de34da","is_error":false}</glm_block>
+继续处理。`,
+			expected: `让我读取文件。
+
+继续处理。`,
+		},
+		{
+			// Production log pattern: orphaned </glm_block> with ONLY weak indicators (no is_error/status)
+			// This should NOT be removed because weak indicators alone don't confirm it's a tool result
+			name: "orphaned_closer_with_only_weak_indicators",
+			input: `让我读取文件。
+file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_8f5d86635de34da"}</glm_block>
+继续处理。`,
+			expected: `让我读取文件。
+file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_8f5d86635de34da"}
+继续处理。`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := removeThinkBlocks(tt.input)
+			// Normalize whitespace for comparison
+			result = strings.TrimSpace(result)
+			expected := strings.TrimSpace(tt.expected)
+			if result != expected {
+				t.Errorf("expected %q, got %q", expected, result)
+			}
+		})
+	}
+}
+
+
+// TestParseFunctionCallsFromContentForCC_ArgKeyValueFormat tests parsing of tool calls
+// with <arg_key>/<arg_value> format from thinking model output.
+// This addresses the production log scenario where GLM-4.7-thinking outputs:
+// <invoke name="Bash<arg_key>command</arg_key><arg_value>python -c "..."</arg_value>
+func TestParseFunctionCallsFromContentForCC_ArgKeyValueFormat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name              string
+		input             string
+		trigger           string
+		expectedToolCount int
+		expectedToolName  string
+		expectedArgs      map[string]string
+		description       string
+	}{
+		{
+			name: "bash_with_arg_key_value_format",
+			input: `我需要先读取hello.py文件（即使它可能不存在），文件不存在，我需要先尝试用Glob检查是否存在hello.py文件，然后直接写入新文件。文件不存在，现在创建：
+<<CALL_cws6oo>>
+<invoke name="Bash<arg_key>command</arg_key><arg_value>python -c "import tkinter as tk; root=tk.Tk(); root.title('Hello World'); root.mainloop()"</arg_value><arg_key>description</arg_key><arg_value>运行Hello World GUI程序</arg_value>`,
+			trigger:           "<<CALL_cws6oo>>",
+			expectedToolCount: 1,
+			expectedToolName:  "Bash",
+			expectedArgs: map[string]string{
+				"command":     `python -c "import tkinter as tk; root=tk.Tk(); root.title('Hello World'); root.mainloop()"`,
+				"description": "运行Hello World GUI程序",
+			},
+			description: "Bash tool call with arg_key/arg_value format from production log",
+		},
+		{
+			name: "read_with_arg_key_value_format",
+			input: `让我读取文件。
+<<CALL_test123>>
+<invoke name="Read<arg_key>file_path</arg_key><arg_value>/path/to/file.py</arg_value>`,
+			trigger:           "<<CALL_test123>>",
+			expectedToolCount: 1,
+			expectedToolName:  "Read",
+			expectedArgs: map[string]string{
+				"file_path": "/path/to/file.py",
+			},
+			description: "Read tool call with single arg_key/arg_value pair",
+		},
+		{
+			name: "glob_with_arg_key_value_format",
+			input: `搜索文件。
+<<CALL_glob456>>
+<invoke name="Glob<arg_key>pattern</arg_key><arg_value>**/*.go</arg_value><arg_key>path</arg_key><arg_value>/src</arg_value>`,
+			trigger:           "<<CALL_glob456>>",
+			expectedToolCount: 1,
+			expectedToolName:  "Glob",
+			expectedArgs: map[string]string{
+				"pattern": "**/*.go",
+				"path":    "/src",
+			},
+			description: "Glob tool call with multiple arg_key/arg_value pairs",
+		},
+		{
+			name: "websearch_with_arg_key_value_format",
+			input: `需要搜索信息。
+<<CALL_web789>>
+<invoke name="WebSearch<arg_key>query</arg_key><arg_value>Python GUI best practices 2025</arg_value>`,
+			trigger:           "<<CALL_web789>>",
+			expectedToolCount: 1,
+			expectedToolName:  "WebSearch",
+			expectedArgs: map[string]string{
+				"query": "Python GUI best practices 2025",
+			},
+			description: "WebSearch tool call with arg_key/arg_value format",
+		},
+		{
+			name:              "no_arg_key_value_format",
+			input:             `普通文本，没有工具调用。`,
+			trigger:           "<<CALL_none>>",
+			expectedToolCount: 0,
+			expectedToolName:  "",
+			expectedArgs:      nil,
+			description:       "No tool call should be extracted from plain text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Set(ctxKeyTriggerSignal, tt.trigger)
+			c.Set(ctxKeyFunctionCallEnabled, true)
+
+			_, toolUseBlocks := parseFunctionCallsFromContentForCC(c, tt.input)
+
+			if len(toolUseBlocks) != tt.expectedToolCount {
+				t.Errorf("[%s] expected %d tool_use blocks, got %d", tt.description, tt.expectedToolCount, len(toolUseBlocks))
+				return
+			}
+
+			if tt.expectedToolCount > 0 && len(toolUseBlocks) > 0 {
+				block := toolUseBlocks[0]
+				if block.Name != tt.expectedToolName {
+					t.Errorf("[%s] expected tool name %q, got %q", tt.description, tt.expectedToolName, block.Name)
+				}
+
+				// Verify arguments
+				if tt.expectedArgs != nil {
+					var input map[string]any
+					if err := json.Unmarshal(block.Input, &input); err != nil {
+						t.Errorf("[%s] failed to unmarshal tool input: %v", tt.description, err)
+						return
+					}
+
+					for key, expectedValue := range tt.expectedArgs {
+						actualValue, ok := input[key]
+						if !ok {
+							t.Errorf("[%s] expected arg %q not found in input: %v", tt.description, key, input)
+							continue
+						}
+						if actualStr, ok := actualValue.(string); ok {
+							if actualStr != expectedValue {
+								t.Errorf("[%s] arg %q: expected %q, got %q", tt.description, key, expectedValue, actualStr)
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+}
