@@ -1471,14 +1471,18 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 		hasTrigger := triggerSignal != "" && strings.Contains(content, triggerSignal)
 		hasThinking := strings.Contains(content, "<thinking>") || strings.Contains(content, "<think>") ||
 			strings.Contains(content, "antml") && strings.Contains(content, "thinking")
+		// Detect execution intent phrases (model describes action but doesn't call tool)
+		// This helps diagnose cases where thinking models output intent without actual tool calls
+		hasExecutionIntent := reExecutionIntent.MatchString(content)
 		logrus.WithFields(logrus.Fields{
-			"content_len":        len(content),
-			"has_invoke":         hasInvoke,
-			"has_function_calls": hasFunctionCalls,
-			"has_trigger":        hasTrigger,
-			"has_thinking":       hasThinking,
-			"trigger_signal":     triggerSignal,
-			"content_preview":    utils.TruncateString(content, 500),
+			"content_len":          len(content),
+			"has_invoke":           hasInvoke,
+			"has_function_calls":   hasFunctionCalls,
+			"has_trigger":          hasTrigger,
+			"has_thinking":         hasThinking,
+			"has_execution_intent": hasExecutionIntent,
+			"trigger_signal":       triggerSignal,
+			"content_preview":      utils.TruncateString(content, 500),
 		}).Debug("CC+FC: No tool calls found in content")
 	}
 

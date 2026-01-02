@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
@@ -21,6 +22,37 @@ import (
 // reconstructing the XML block for function call. This avoids unbounded
 // memory growth for very long streaming responses.
 const maxContentBufferBytes = 256 * 1024
+
+// Regular expressions for tool call result JSON cleaning
+var (
+	// Pattern to match truncated JSON with escaped quotes (e.g., "1s\"}","is_error":true)
+	// Example from production log (2026-01-02):
+	//   ...best practice。\n1s\",\"id\":\"call_ecb5ac0c654240d88eb882e9\",\"is_error\":true,\"mcp_server\":{\"name\":\"mcp-server\"},\"name\":\"Read\",\"result\":\"tool call failed: Read\",\"status\":\"error\"}},\"type\":\"mcp\"}两个工具调用都失败了
+	// Pattern: matches from sentence boundary to end of truncated JSON (only matches JSON structural characters)
+	// STRUCTURAL: Detects tool result by presence of escaped is_error, status, result, mcp_server fields
+	// NOTE: This pattern matches JSON fragments that end with "type":"xxx"}
+	// FIX: Use [^\n] instead of [^<\n] to match any character except newline
+	// FIX: Use \\\" to match \" in Go strings (\\\" in pattern = \" in string)
+	// ENHANCED: Add pattern to match JSON fragments without "type" field
+	reTruncatedEscapedQuoteJSON = regexp.MustCompile(`(?:\n|[。！？.!?]|,)[^\n]*\\\"(?:is_error|status|result|mcp_server)\\\"[^\n]*\\\"type\\\":\\\"[^"]*\\\"}`)
+	// ENHANCED: Match truncated JSON with escaped quotes but without "type" field, ending with }
+	reTruncatedEscapedQuoteJSONNoType = regexp.MustCompile(`(?:\n|[。！？.!?]|,)[^\n]*\\\"(?:is_error|status|result|mcp_server)\\\"[^\n]*\\\"status\\\":\\\"[^"]*\\\"}`)
+	// ENHANCED: Match truncated JSON with escaped quotes but without "type" field and without }
+	// Example: `尝试读取。,\"is_error\":true,\"result\":\"failed\",\"status\":\"error\"继续。`
+	reTruncatedEscapedQuoteJSONNoTypeNoBrace = regexp.MustCompile(`(?:\n|[。！？.!?]|,)[^\n]*\\\"(?:is_error|status|result|mcp_server)\\\"[^\n]*\\\"status\\\":\\\"[^"]*\\\"`)
+
+	// Pattern to match truncated JSON without escaped quotes (e.g., ,"is_error":true,"result":"failed","status":"error")
+	// Example: `尝试读取。,"is_error":true,"result":"failed","status":"error"继续。`
+	// Pattern: matches from sentence boundary or comma to end of truncated JSON
+	// STRUCTURAL: Detects tool result by presence of is_error, status, result, mcp_server fields
+	// FIX: Match both with and without closing brace
+	reTruncatedJSONNoEscape = regexp.MustCompile(`(?:[。！？.!?]|,)"(?:is_error|status|result|mcp_server)"[^<\n]*}`)
+	// ENHANCED: Match truncated JSON without closing brace, ending with field value
+	// This handles cases where the JSON is truncated and does not contain closing brace.
+	// Example: `尝试读取。,"is_error":true,"result":"failed","status":"error"继续。`
+	// Pattern: matches from sentence boundary or comma to end of field value
+	reTruncatedJSONNoEscapeNoBrace = regexp.MustCompile(`(?:[。！？.!?]|,)"(?:is_error|status|result|mcp_server)"[^<\n]*"(?:true|false|"[^"]*"|\d+)`)
+)
 
 // functionCall represents a parsed tool call from the XML block.
 type functionCall struct {
@@ -517,6 +549,102 @@ var (
 	// Matches: }, "id": -> }, {"id":
 	reJSONMalformedMissingObjectStart = regexp.MustCompile(`\},\s*"id":`)
 
+	// Pattern to detect truncated JSON fragments directly after text (no <> prefix)
+	// This handles cases where TodoWrite tool output leaks into visible content.
+	// Examples from production log:
+	//   - '正在读取hello.py文件", "status": "pending"}' -> '正在读取hello.py文件'
+	//   - '任务进行中", "activeForm": "正在执行"' -> '任务进行中'
+	//   - '查看当前目录结构和hello.py文件内容": "in_progress"' -> '查看当前目录结构和hello.py文件内容'
+	// Pattern explanation:
+	//   - "?\s*:\s*" : optional quote, colon with optional whitespace, quote (JSON field separator)
+	//   - "(?:in_progress|pending|completed)" : status values that indicate JSON leak
+	//   - OR ", " followed by field name pattern
+	// NOTE: This is a structural pattern - it detects the JSON field separator pattern
+	// CRITICAL: Only match when preceded by CJK/text content (not pure JSON)
+	// ENHANCED: Also match ": "status_value" pattern (field value without field name)
+	reTruncatedJSONAfterText = regexp.MustCompile(`(?:"?\s*:\s*"(?:in_progress|pending|completed)"|",\s*"(?:status|activeForm|content|id|priority|state|Form)"?\s*:)`)
+
+	// Pattern to detect TodoWrite JSON array content leak (consecutive field values)
+	// This handles cases where multiple JSON field values appear consecutively without field names.
+	// Examples from user report:
+	//   - '设计简洁的GUI方案",设计简洁的GUI方案",3"' -> '' (entire segment is JSON fragment)
+	//   - '正在修改hello.py为GUI版本",": "4"' -> '' (entire segment is JSON fragment)
+	// Pattern: quoted value followed by comma and another quoted value or number
+	// STRUCTURAL: Detects consecutive JSON values pattern (value",value" or value",number")
+	// NOTE: This pattern is used to detect if a line contains JSON fragments, not to find position
+	reTruncatedJSONConsecutiveValues = regexp.MustCompile(`"[^"]*",\s*(?:"[^"]*"|[0-9]+)"?(?:,|$)`)
+
+	// Pattern to detect JSON field value followed by comma and number (id field leak)
+	// Examples: '正在测试GUI程序运行",3"' or '设计方案",4"'
+	// Pattern: quoted value followed by comma and number with optional quote
+	// NOTE: This pattern is used to detect if a line contains JSON fragments, not to find position
+	reTruncatedJSONValueThenNumber = regexp.MustCompile(`",\s*[0-9]+"?(?:,|$|")`)
+
+	// Pattern to detect orphaned JSON field separator (": " without field name)
+	// Examples: '": "4"' or '": "in_progress"'
+	// Pattern: comma or line start followed by colon and quoted value (no field name between)
+	// NOTE: This pattern is used to detect if a line contains JSON fragments, not to find position
+	// CRITICAL: Must NOT match normal JSON like {"key": "value"} - only match when field name is missing
+	// The pattern requires comma before the colon to ensure it's an orphaned separator
+	reTruncatedJSONOrphanedFieldSep = regexp.MustCompile(`(?:^|,)\s*"?\s*:\s*"[^"]*"(?:,|$|}|])`)
+
+	// Pattern to detect if entire line is a JSON fragment (starts with JSON-like content)
+	// This handles cases where the entire line is leaked JSON content from TodoWrite
+	// Examples:
+	//   - '设计简洁的GUI方案",设计简洁的GUI方案",3"' -> entire line is JSON fragment
+	//   - '正在测试GUI程序运行",3"' -> entire line is JSON fragment
+	// Pattern: text ending with quote-comma followed by another text or number (consecutive values)
+	// STRUCTURAL: Detects lines that are consecutive JSON values (not field:value pairs)
+	// NOTE: This pattern specifically matches consecutive values pattern, NOT field separators
+	// The key difference:
+	//   - '设计简洁的GUI方案",设计简洁的GUI方案"' -> consecutive values, entire line is JSON
+	//   - '查看当前目录结构": "in_progress"' -> field separator, preserve text before
+	reTruncatedJSONEntireLine = regexp.MustCompile(`^[^"]*",\s*[^":]+(?:",|"$)`)
+
+	// Pattern to detect text ending with quote-comma followed by orphaned field separator
+	// This handles cases like: '正在修改hello.py为GUI版本",": "4"'
+	// The entire line is a JSON fragment (activeForm value + orphaned field separator)
+	// Pattern: text ending with quote-comma followed by ": "value"
+	reTruncatedJSONValueWithOrphanedSep = regexp.MustCompile(`^[^"]*",\s*"?\s*:\s*"[^"]*"$`)
+
+	// Pattern to detect truncated JSON field names at line start (no leading quote)
+	// This handles cases where field names appear at the start of text without proper JSON structure.
+	// Examples from user report:
+	//   - 'activeForm": "正在读取hello.py文件' -> '' (entire line is JSON fragment)
+	//   - 'Form":设计简短漂亮的GUI程序方案' -> '' (entire line is JSON fragment)
+	//   - 'content": "联网搜索PythonGUI最佳实践' -> '' (entire line is JSON fragment)
+	// Pattern explanation:
+	//   - ^(?:status|activeForm|content|id|priority|state|Form)"\s*: : field name at start followed by quote-colon
+	//   - This catches truncated field names that lost their opening quote and appear at line start
+	// NOTE: This is a structural pattern - detects JSON field pattern at line start
+	// ENHANCED: Also match field names followed by ": (quote-colon) without space
+	reTruncatedJSONFieldAtStart = regexp.MustCompile(`^(?:status|activeForm|content|id|priority|state|Form)"?\s*:\s*`)
+
+	// Pattern to detect truncated JSON field names without leading quote (in middle of text)
+	// This handles cases where field names appear directly after text without proper JSON structure.
+	// Examples from user report:
+	//   - '查找hello.py文件", "state":_progress' -> '查找hello.py文件'
+	// Pattern explanation:
+	//   - (?:status|activeForm|content|id|priority|state|Form)": : field name followed by quote-colon
+	//   - This catches truncated field names that lost their opening quote
+	// NOTE: This is a structural pattern - detects JSON field pattern without opening quote
+	reTruncatedJSONFieldNoQuote = regexp.MustCompile(`(?:status|activeForm|content|id|priority|state|Form)"?\s*:\s*`)
+
+	// Pattern to detect truncated JSON array/object fragments after text
+	// Examples:
+	//   - '任务列表}, {"id": "2"' -> '任务列表'
+	//   - '第一个任务"}, {"id": "2"' -> '第一个任务'
+	// Pattern: closing brace/bracket followed by comma and opening brace/bracket
+	// ENHANCED: Also match closing brace followed by comma and quote (JSON field)
+	reTruncatedJSONObjectAfterText = regexp.MustCompile(`[}\]]\s*,\s*[\[{"]`)
+
+	// Pattern to detect JSON fragments starting with closing brace/bracket followed by text
+	// Examples from user report:
+	//   - 'pending"},设计简短漂亮的GUI程序方案' -> '' (entire line is JSON fragment)
+	// Pattern: closing brace/bracket followed by comma or text
+	reTruncatedJSONClosingFragment = regexp.MustCompile(`^(?:pending|completed|in_progress)"?\s*[}\]],?`)
+
+
 	// Pattern to fix status field ending with bracket
 	// Matches: "status":] -> "status": "pending"]
 	reJSONMalformedStatusBracket = regexp.MustCompile(`"status":\s*\]`)
@@ -640,11 +768,13 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	toolsVal, ok := req["tools"]
 	if !ok {
 		// No tools configured – nothing to do.
+		logrus.WithField("group", safeGroupName(group)).Debug("applyFunctionCallRequestRewrite: No 'tools' field in request")
 		return bodyBytes, "", nil
 	}
 
 	toolsSlice, ok := toolsVal.([]any)
 	if !ok || len(toolsSlice) == 0 {
+		logrus.WithField("group", safeGroupName(group)).Debug("applyFunctionCallRequestRewrite: 'tools' field is empty or not an array")
 		return bodyBytes, "", nil
 	}
 
@@ -652,6 +782,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	// as this indicates a non-chat request that shouldn't be rewritten.
 	msgsVal, hasMessages := req["messages"]
 	if !hasMessages {
+		logrus.WithField("group", safeGroupName(group)).Debug("applyFunctionCallRequestRewrite: No 'messages' field in request")
 		return bodyBytes, "", nil
 	}
 	messages, ok := msgsVal.([]any)
@@ -687,6 +818,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 
 	toolDefs := collectFunctionToolDefs(toolsSlice)
 	if len(toolDefs) == 0 {
+		logrus.WithField("group", safeGroupName(group)).Debug("applyFunctionCallRequestRewrite: No valid function definitions found in tools")
 		return bodyBytes, "", nil
 	}
 
@@ -1676,6 +1808,85 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	flusher.Flush()
 }
 
+// processGLMBlockContent processes the content inside a <glm_block> tag.
+// It removes tool call RESULTS while preserving tool call REQUESTS.
+// Tool call results have indicators like is_error:true, status:completed/error, non-empty result.
+// Tool call requests only have name and parameters (or is_error:false with empty result).
+// GLM blocks typically contain tool call results or thinking content that should be removed.
+// Only preserve content that looks like a valid tool call request (JSON with name field but no result indicators).
+func processGLMBlockContent(content string) string {
+	// If content doesn't contain JSON object, it's likely thinking content - remove it
+	if !strings.Contains(content, "{") {
+		return ""
+	}
+
+	// Find all JSON objects in the content
+	// We need to identify each JSON object and check if it's a result or request
+	result := content
+	var preserved strings.Builder
+
+	// Find JSON objects by looking for { and matching }
+	for {
+		// Find the start of a JSON object
+		jsonStart := strings.Index(result, "{")
+		if jsonStart == -1 {
+			break
+		}
+
+		// Find the matching closing brace
+		braceDepth := 0
+		jsonEnd := -1
+		inString := false
+		escaped := false
+		for i := jsonStart; i < len(result); i++ {
+			c := result[i]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = !inString
+				continue
+			}
+			if inString {
+				continue
+			}
+			if c == '{' {
+				braceDepth++
+			} else if c == '}' {
+				braceDepth--
+				if braceDepth == 0 {
+					jsonEnd = i + 1
+					break
+				}
+			}
+		}
+
+		if jsonEnd == -1 {
+			// No matching closing brace found - malformed JSON, remove remaining content
+			break
+		}
+
+		// Extract the JSON object
+		jsonObj := result[jsonStart:jsonEnd]
+
+		// Check if this JSON object is a tool call result
+		if isToolCallResultJSON(jsonObj) {
+			// Remove this JSON object - it's a result
+			result = result[jsonEnd:]
+		} else {
+			// This might be a tool call request - preserve it
+			preserved.WriteString(jsonObj)
+			result = result[jsonEnd:]
+		}
+	}
+
+	return preserved.String()
+}
 
 
 // removeThinkBlocks removes all thinking blocks from input text, but FIRST extracts
@@ -1755,7 +1966,6 @@ func removeThinkBlocks(text string) string {
 	// Process ANTML format thinking tags: <antml\b:thinking>...</antml\b:thinking>
 	// Also handles escaped format: <antml\\b:thinking>...</antml\\b:thinking>
 	// and generic closer: </antml>
-	// Also handles GLM model's <glm_block>...</glm_block> tags which contain tool call results
 	antmlPatterns := []struct {
 		open  string
 		close []string // Multiple possible closing tags
@@ -1771,12 +1981,6 @@ func removeThinkBlocks(text string) string {
 		{
 			open:  `<antml\b:thinking>`,
 			close: []string{`</antml\b:thinking>`, "</antml>"},
-		},
-		// GLM model outputs tool call results in <glm_block> tags
-		// These should be removed as they contain tool call results, not new requests
-		{
-			open:  "<glm_block>",
-			close: []string{"</glm_block>"},
 		},
 	}
 
@@ -1809,6 +2013,41 @@ func removeThinkBlocks(text string) string {
 			// Remove the ANTML thinking block
 			endPos := start + len(pattern.open) + minEnd + closerLen
 			text = text[:start] + text[endPos:]
+		}
+	}
+
+	// Process GLM model's <glm_block>...</glm_block> tags
+	// GLM blocks may contain either:
+	// 1. Tool call RESULTS (with is_error:true, status:completed/error, non-empty result) - should be removed
+	// 2. Tool call REQUESTS (just name and parameters, or is_error:false with empty result) - should be preserved
+	for {
+		start := strings.Index(text, "<glm_block>")
+		if start == -1 {
+			break
+		}
+
+		end := strings.Index(text[start+len("<glm_block>"):], "</glm_block>")
+		if end == -1 {
+			break
+		}
+
+		// Extract the content inside the glm_block
+		glmContent := text[start+len("<glm_block>") : start+len("<glm_block>")+end]
+		endPos := start + len("<glm_block>") + end + len("</glm_block>")
+
+		// Process the content to remove tool call results while preserving requests
+		// Find all JSON objects in the content and check each one
+		processedContent := processGLMBlockContent(glmContent)
+
+		// Also try to extract tool calls from the processed content
+		extractToolCalls(processedContent)
+
+		if strings.TrimSpace(processedContent) == "" {
+			// All content was tool call results - remove the entire block
+			text = text[:start] + text[endPos:]
+		} else {
+			// Some content remains - preserve it but remove the tags
+			text = text[:start] + processedContent + text[endPos:]
 		}
 	}
 
@@ -1894,72 +2133,62 @@ func removeThinkBlocks(text string) string {
 			// by searching backward for tool call result indicators in the content before closer.
 			// This handles cases where the opening { is truncated but the content still contains
 			// tool call result fields like "status":"completed", "is_error":false, etc.
-			if startIdx == closeIdx && foundBrace {
+			if startIdx == closeIdx {
 				// Search backward from the closer to find where the tool result content starts
 				// Look for patterns that indicate the start of tool result content
 				contentBefore := text[:closeIdx]
-				// Find the last occurrence of tool result indicators
-				toolResultStart := -1
-				// Check for common patterns that precede tool call results in truncated content
-				// Pattern: ...text\nJSON_CONTENT</glm_block> or ...text.JSON_CONTENT</glm_block>
-				for i := closeIdx - 1; i >= 0; i-- {
-					// Stop at newline or sentence boundary that's before any JSON-like content
-					if text[i] == '\n' {
-						// Check if content after newline contains tool result indicators
-						afterNewline := text[i+1 : closeIdx]
-						// Use stricter validation for tool result detection
-						if isToolCallResultJSON(afterNewline) {
-							toolResultStart = i + 1
-							break
+
+				// First, check if content before closer contains tool result indicators
+				if isToolCallResultJSON(contentBefore) {
+					// Find a reasonable start point by looking for sentence boundary or newline
+					toolResultStart := -1
+
+					// Look for newline first
+					for i := closeIdx - 1; i >= 0; i-- {
+						if text[i] == '\n' {
+							// Check if content after newline contains tool result indicators
+							afterNewline := text[i+1 : closeIdx]
+							if isToolCallResultJSON(afterNewline) {
+								toolResultStart = i + 1
+								break
+							}
 						}
 					}
-				}
 
-				// If we found a reasonable start point, check if content contains tool result indicators
-				if toolResultStart >= 0 && toolResultStart < closeIdx {
-					truncatedContent := text[toolResultStart:closeIdx]
-					isToolResult := isToolCallResultJSON(truncatedContent)
+					// If no newline found, look for sentence boundary (Chinese punctuation)
+					if toolResultStart == -1 {
+						for i := closeIdx - 1; i >= 2; i-- {
+							// Check for Chinese punctuation (3-byte UTF-8)
+							if text[i-2:i+1] == "。" || text[i-2:i+1] == "！" || text[i-2:i+1] == "？" {
+								afterPunct := text[i+1 : closeIdx]
+								if isToolCallResultJSON(afterPunct) {
+									toolResultStart = i + 1
+									break
+								}
+							}
+						}
+					}
 
-					if isToolResult {
+					// If still no start point found, look for the first " that starts JSON-like content
+					if toolResultStart == -1 {
+						for i := 0; i < closeIdx; i++ {
+							if text[i] == '"' {
+								// Check if content from here contains tool result indicators
+								segment := text[i:closeIdx]
+								if isToolCallResultJSON(segment) {
+									toolResultStart = i
+									break
+								}
+							}
+						}
+					}
+
+					if toolResultStart >= 0 && toolResultStart < closeIdx {
 						text = text[:toolResultStart] + text[closeIdx+len(closer):]
 						logrus.WithFields(logrus.Fields{
 							"closer":         closer,
 							"removed_length": closeIdx + len(closer) - toolResultStart,
 						}).Debug("removeThinkBlocks: Removed orphaned closer with truncated tool result content")
-						continue
-					}
-				}
-
-				// Last resort: check if the entire content before closer contains tool result indicators
-				// and remove from the first } we found (even if braces don't match)
-				if isToolCallResultJSON(contentBefore) {
-					// Find the position of the first } going backward from closer
-					// This is where the truncated JSON likely ends
-					removed := false
-					for i := closeIdx - 1; i >= 0; i-- {
-						if text[i] == '}' {
-							// Check if content from here to closer looks like tool result
-							segment := text[i:closeIdx]
-							if isToolCallResultJSON(segment) {
-								// Find a reasonable start point (newline or start of text)
-								segmentStart := 0
-								for j := i - 1; j >= 0; j-- {
-									if text[j] == '\n' {
-										segmentStart = j + 1
-										break
-									}
-								}
-								text = text[:segmentStart] + text[closeIdx+len(closer):]
-								logrus.WithFields(logrus.Fields{
-									"closer":         closer,
-									"removed_length": closeIdx + len(closer) - segmentStart,
-								}).Debug("removeThinkBlocks: Removed orphaned closer with partial tool result content")
-								removed = true
-								break
-							}
-						}
-					}
-					if removed {
 						continue
 					}
 				}
@@ -1970,6 +2199,10 @@ func removeThinkBlocks(text string) string {
 			logrus.WithField("closer", closer).Debug("removeThinkBlocks: Removed orphaned closer tag")
 		}
 	}
+
+	// Clean up any remaining inline tool result JSON fragments
+	// This handles cases where tool result JSON appears inline without any closing tag
+	text = cleanTruncatedToolResultJSON(text)
 
 	// Append extracted function_calls/invoke blocks to the end of text
 	if extractedCalls.Len() > 0 {
@@ -1998,13 +2231,14 @@ func removeThinkBlocks(text string) string {
 // but these should not be treated as tool call results.
 //
 // IMPORTANT: To avoid false positives, we use a scoring system:
-//   - Primary indicators (is_error, status:completed/error, non-empty result) are definitive
-//   - Secondary indicators (duration, display_result, mcp_server) alone are not sufficient
+//   - Primary indicators (is_error:true, status:completed/error, non-empty result) are definitive
+//   - is_error:false alone is NOT sufficient (could be a tool request with default value)
+//   - Secondary indicators (duration, display_result, mcp_server) require multiple to confirm
 func isToolCallResultJSON(content string) bool {
 	// Primary indicators - any single one is definitive
-	// Pattern 1: "is_error":true or "is_error":false (boolean value)
-	if strings.Contains(content, `"is_error":true`) || strings.Contains(content, `"is_error":false`) ||
-		strings.Contains(content, `"is_error": true`) || strings.Contains(content, `"is_error": false`) {
+
+	// Pattern 1: "is_error":true (definitive - indicates tool call failure)
+	if strings.Contains(content, `"is_error":true`) || strings.Contains(content, `"is_error": true`) {
 		return true
 	}
 
@@ -2050,13 +2284,22 @@ func isToolCallResultJSON(content string) bool {
 		secondaryCount++
 	}
 
-	// Require at least 3 secondary indicators to confirm it's a tool result
+	// Pattern 7: "is_error":false counts as secondary indicator (not primary)
+	// This is because tool requests may have is_error:false as a default value
+	// but combined with other indicators it confirms a tool result
+	if strings.Contains(content, `"is_error":false`) || strings.Contains(content, `"is_error": false`) {
+		secondaryCount++
+	}
+
+	// Require at least 2 secondary indicators to confirm it's a tool result
 	// This prevents false positives when thinking models reference previous tool results
 	// Examples:
+	//   - "is_error":false alone = NOT a result (might be tool request)
 	//   - "duration":"0s" alone = NOT a result (might be reference)
-	//   - "duration":"0s" + "display_result":"" = NOT a result (might be reference)
+	//   - "is_error":false + "duration":"0s" = is a result
+	//   - "duration":"0s" + "display_result":"" = is a result
 	//   - "duration":"0s" + "display_result":"" + "mcp_server":{} = is a result
-	return secondaryCount >= 3
+	return secondaryCount >= 2
 }
 
 // removeFunctionCallsBlocks removes all function call XML blocks and trigger signals
@@ -2108,6 +2351,346 @@ func removeUnclosedTagLines(text string) string {
 	return strings.Join(result, "\n")
 }
 
+// cleanTruncatedToolResultJSON removes truncated tool call result JSON fragments from text.
+// This handles cases where the JSON is truncated (missing opening {) but still contains
+// tool result indicators like "is_error", "status", "result", "mcp_server".
+//
+// Production log example (2026-01-02):
+// Input: "...搜索Python GUI最佳实践。\n GUI Hello World minimal code tkinter\",\"tokensNum\":\"3000\"}","display_result":"","duration":"0s"..."
+// Expected: "...搜索Python GUI最佳实践。"
+//
+// This function handles multiple patterns of truncated tool result JSON:
+// 1. \"}",  pattern - end of nested JSON string, followed by tool result fields
+// 2. }","   pattern - end of JSON object, followed by tool result fields
+// 3. ,"     pattern after sentence boundary - JSON field separator
+// 4. Newline followed by JSON-like content
+// 5. Sentence boundary followed by JSON-like content
+//
+// IMPORTANT: This function should NOT remove content inside <invoke> or <parameter> tags,
+// as those are tool call requests, not tool call results.
+func cleanTruncatedToolResultJSON(text string) string {
+	// Fast path: if text contains <invoke> or <parameter> tags, skip cleanup
+	// These are tool call requests, not tool call results
+	if strings.Contains(text, "<invoke") || strings.Contains(text, "<parameter") {
+		return text
+	}
+
+	// Fast path: no tool result indicators (both regular and escaped quote patterns)
+	if !strings.Contains(text, `"is_error"`) && !strings.Contains(text, `"status":"completed"`) &&
+		!strings.Contains(text, `"status":"error"`) && !strings.Contains(text, `"mcp_server"`) &&
+		!strings.Contains(text, `"display_result"`) && !strings.Contains(text, `"duration"`) &&
+		!strings.Contains(text, `"result":`) &&
+		!strings.Contains(text, `\"is_error\"`) && !strings.Contains(text, `\"status\":\"completed\"`) &&
+		!strings.Contains(text, `\"status\":\"error\"`) && !strings.Contains(text, `\"mcp_server\"`) &&
+		!strings.Contains(text, `\"display_result\"`) && !strings.Contains(text, `\"duration\"`) &&
+		!strings.Contains(text, `\"result\":`) {
+		return text
+	}
+
+	logrus.WithField("text_length", len(text)).Debug("cleanTruncatedToolResultJSON: Starting cleanup")
+
+	result := text
+
+	// Tool result indicator patterns to search for (both regular and escaped quote patterns)
+	indicatorPatterns := []string{
+		// Regular quote patterns
+		`"display_result"`,
+		`"is_error":true`,
+		`"is_error":false`,
+		`"is_error": true`,
+		`"is_error": false`,
+		`"status":"completed"`,
+		`"status":"error"`,
+		`"status": "completed"`,
+		`"status": "error"`,
+		`"mcp_server"`,
+		`"duration"`,
+		// Escaped quote patterns (for JSON inside strings)
+		`\"is_error\":true`,
+		`\"is_error\":false`,
+		`\"status\":\"completed\"`,
+		`\"status\":\"error\"`,
+		`\"mcp_server\"`,
+		`\"display_result\"`,
+		`\"duration\"`,
+	}
+
+	// Find the first tool result indicator
+	firstIndicatorIdx := -1
+	isEscapedPattern := false
+	for _, pattern := range indicatorPatterns {
+		idx := strings.Index(result, pattern)
+		if idx >= 0 && (firstIndicatorIdx == -1 || idx < firstIndicatorIdx) {
+			firstIndicatorIdx = idx
+			isEscapedPattern = strings.HasPrefix(pattern, `\"`)
+		}
+	}
+
+	if firstIndicatorIdx == -1 {
+		return result
+	}
+
+	startIdx := firstIndicatorIdx
+	endIdx := len(result)
+
+	// Search in a slightly larger range to include patterns that might overlap with indicator
+	searchEnd := firstIndicatorIdx + 1
+	if searchEnd > len(result) {
+		searchEnd = len(result)
+	}
+	searchText := result[:searchEnd]
+
+	// Try different patterns in order of priority
+	foundStart := false
+
+	// Pattern 1: \"}",  (end of nested JSON string) - highest priority
+	// This handles: ...content\"}","display_result"...
+	// Production log example (2026-01-03):
+	//   query\":\"Python GUI tkinter...\",\"tokensNum\":\"3000\"}","display_result":"","duration":"0s"...
+	// The \"}",  pattern indicates the end of a nested JSON string value, followed by outer JSON fields
+	// NOTE: We start deletion from the \"}",  pattern itself, NOT from the sentence boundary before it.
+	// This preserves the nested JSON string value (which may contain user-visible content like search queries)
+	// while removing the tool result metadata fields.
+	if !foundStart {
+		patternIdx := strings.LastIndex(searchText, `\"}",`)
+		if patternIdx >= 0 {
+			startIdx = patternIdx
+			foundStart = true
+			// Check if there's a newline before the pattern - if so, start from the newline
+			// This handles cases where the JSON fragment is on a separate line
+			for i := patternIdx - 1; i >= 0; i-- {
+				if result[i] == '\n' {
+					startIdx = i
+					break
+				}
+			}
+		}
+	}
+
+	// Pattern 1a: \"}"," (end of nested JSON string followed by comma) - specific for Scenario A
+	// This handles: ...3000\"}","display_result...
+	// Production log example: query\":\"Python...\",\"tokensNum\":\"3000\"}","display_result...
+	if !foundStart {
+		patternIdx := strings.LastIndex(searchText, `\"}","`)
+		if patternIdx >= 0 {
+			startIdx = patternIdx
+			foundStart = true
+			// Check if there's a newline before the pattern
+			for i := patternIdx - 1; i >= 0; i-- {
+				if result[i] == '\n' {
+					startIdx = i
+					break
+				}
+			}
+		}
+	}
+
+	// Pattern 1b: \"}" (end of nested JSON string object) - general case
+	if !foundStart {
+		patternIdx := strings.LastIndex(searchText, `\"}"`)
+		if patternIdx >= 0 {
+			startIdx = patternIdx
+			foundStart = true
+			// Check if there's a newline before the pattern
+			for i := patternIdx - 1; i >= 0; i-- {
+				if result[i] == '\n' {
+					startIdx = i
+					break
+				}
+			}
+		}
+	}
+
+	// Pattern 2: }","  (end of JSON object followed by field)
+	if !foundStart {
+		patternIdx := strings.LastIndex(searchText, `}","`)
+		if patternIdx >= 0 {
+			startIdx = patternIdx
+			foundStart = true
+			// Check if there's a newline before the pattern
+			for i := patternIdx - 1; i >= 0; i-- {
+				if result[i] == '\n' {
+					startIdx = i
+					break
+				}
+			}
+		}
+	}
+
+	// Pattern 3: Newline - if there's a newline before the indicator, start from there
+	if !foundStart {
+		for i := firstIndicatorIdx - 1; i >= 0; i-- {
+			if result[i] == '\n' {
+				startIdx = i
+				foundStart = true
+				break
+			}
+			// Check for sentence boundary (Chinese punctuation - 3 bytes)
+			if i >= 2 {
+				prevStr := result[i-2 : i+1]
+				if prevStr == "。" || prevStr == "！" || prevStr == "？" {
+					startIdx = i + 1
+					foundStart = true
+					break
+				}
+			}
+			// Check for sentence boundary (ASCII punctuation)
+			if result[i] == '.' || result[i] == '!' || result[i] == '?' {
+				startIdx = i + 1
+				foundStart = true
+				break
+			}
+		}
+	}
+
+	// Pattern 4: Sentence boundary followed by ," or ","
+	// This handles: "...最佳实践。","display_result"..." or "...文件。,"display_result"..."
+	if !foundStart {
+		// Look for sentence boundary followed by JSON separator
+		for i := firstIndicatorIdx - 1; i >= 0; i-- {
+			// Check for ," or "," pattern
+			if i >= 1 && result[i] == '"' && result[i-1] == ',' {
+				// Found ," - check if there's a sentence boundary before it
+				if i >= 2 {
+					prevChar := result[i-2]
+					if prevChar == '.' || prevChar == '!' || prevChar == '?' {
+						startIdx = i - 1 // Start from comma, keep sentence boundary
+						foundStart = true
+						break
+					}
+				}
+				// Check for Chinese punctuation before ,"
+				if i >= 4 {
+					prevStr := result[i-4 : i-1]
+					if prevStr == "。" || prevStr == "！" || prevStr == "？" {
+						startIdx = i - 1 // Start from comma, keep Chinese punctuation
+						foundStart = true
+						break
+					}
+				}
+			}
+			// Check for ,  pattern (comma followed by quote)
+			if result[i] == ',' && i+1 < firstIndicatorIdx && result[i+1] == '"' {
+				// Found ," - check if there's a sentence boundary before it
+				if i >= 1 {
+					prevChar := result[i-1]
+					if prevChar == '.' || prevChar == '!' || prevChar == '?' {
+						startIdx = i // Start from comma, keep sentence boundary
+						foundStart = true
+						break
+					}
+				}
+				// Check for Chinese punctuation before ,"
+				if i >= 3 {
+					prevStr := result[i-3 : i]
+					if prevStr == "。" || prevStr == "！" || prevStr == "？" {
+						startIdx = i // Start from comma, keep Chinese punctuation
+						foundStart = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Pattern 5: Just sentence boundary (fallback)
+	if !foundStart {
+		for i := firstIndicatorIdx - 1; i >= 0; i-- {
+			c := result[i]
+			if c == '.' || c == '!' || c == '?' {
+				startIdx = i + 1
+				foundStart = true
+				break
+			}
+			if i >= 2 && (result[i-2:i+1] == "。" || result[i-2:i+1] == "！" || result[i-2:i+1] == "？") {
+				startIdx = i + 1
+				foundStart = true
+				break
+			}
+		}
+	}
+
+	// Find the end of the tool result JSON
+	foundEnd := false
+
+	if isEscapedPattern {
+		// For escaped JSON patterns, find the end by looking for CJK characters
+		for i := firstIndicatorIdx; i < len(result); i++ {
+			r, size := utf8.DecodeRuneInString(result[i:])
+			if size == 3 && r >= 0x4E00 && r <= 0x9FFF {
+				endIdx = i
+				foundEnd = true
+				break
+			}
+		}
+	} else {
+		// For regular JSON, find the end by looking for closing braces or CJK characters
+		braceDepth := 0
+		inString := false
+		escaped := false
+		for i := startIdx; i < len(result); i++ {
+			c := result[i]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = !inString
+				continue
+			}
+			if inString {
+				continue
+			}
+			if c == '{' {
+				braceDepth++
+			} else if c == '}' {
+				braceDepth--
+				if i+1 < len(result) {
+					r, size := utf8.DecodeRuneInString(result[i+1:])
+					if size == 3 && r >= 0x4E00 && r <= 0x9FFF {
+						endIdx = i + 1
+						foundEnd = true
+						break
+					}
+				}
+			}
+			r, size := utf8.DecodeRuneInString(result[i:])
+			if size == 3 && r >= 0x4E00 && r <= 0x9FFF && !inString {
+				endIdx = i
+				foundEnd = true
+				break
+			}
+		}
+	}
+
+	// If no CJK end found, check for truncated JSON ending patterns
+	if !foundEnd {
+		truncatedPatterns := []string{`},"type`, `}},"type`, `}}`}
+		for _, tp := range truncatedPatterns {
+			idx := strings.Index(result[startIdx:], tp)
+			if idx >= 0 {
+				endIdx = startIdx + idx + len(tp)
+				break
+			}
+		}
+	}
+
+	// Remove the JSON fragment
+	if startIdx < endIdx && endIdx <= len(result) {
+		result = result[:startIdx] + result[endIdx:]
+		logrus.WithFields(logrus.Fields{
+			"start":   startIdx,
+			"end":     endIdx,
+		}).Debug("cleanTruncatedToolResultJSON: Removed fragment")
+	}
+
+	return result
+}
+
 type functionCallCleanupMode uint8
 
 const (
@@ -2126,7 +2709,22 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 	// is only used here to catch bare JSON lines that may appear in separate
 	// chunks after "<>" prefix was removed earlier in the stream.
 	hasOrphanJson := reOrphanedJSON.MatchString(text)
-	if !strings.Contains(text, "<") && !hasOrphanJson {
+	// ENHANCED: Also check for truncated JSON fragments after text (no <> prefix)
+	// This handles cases like: '正在读取hello.py文件", "status": "pending"}'
+	// Also check for truncated field names without leading quote (e.g., 'activeForm": "...')
+	// Also check for JSON fragments at line start (e.g., 'Form":设计...')
+	// Also check for consecutive JSON values (e.g., '设计简洁的GUI方案",设计简洁的GUI方案",3"')
+	hasTruncatedJSON := reTruncatedJSONAfterText.MatchString(text) ||
+		reTruncatedJSONObjectAfterText.MatchString(text) ||
+		reTruncatedJSONFieldNoQuote.MatchString(text) ||
+		reTruncatedJSONFieldAtStart.MatchString(text) ||
+		reTruncatedJSONClosingFragment.MatchString(text) ||
+		reTruncatedJSONConsecutiveValues.MatchString(text) ||
+		reTruncatedJSONValueThenNumber.MatchString(text) ||
+		reTruncatedJSONOrphanedFieldSep.MatchString(text) ||
+		reTruncatedJSONEntireLine.MatchString(text) ||
+		reTruncatedJSONValueWithOrphanedSep.MatchString(text)
+	if !strings.Contains(text, "<") && !hasOrphanJson && !hasTruncatedJSON {
 		if strings.ContainsAny(text, "\n\r") {
 			lines := strings.Split(text, "\n")
 			for _, line := range lines {
@@ -2138,10 +2736,15 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 					hasOrphanJson = true
 					break
 				}
+				// ENHANCED: Check for truncated JSON in each line
+				if findJSONLeakStartIndex(trimmedLine) >= 0 {
+					hasTruncatedJSON = true
+					break
+				}
 			}
 		}
 	}
-	if !strings.Contains(text, "<") && !hasOrphanJson {
+	if !strings.Contains(text, "<") && !hasOrphanJson && !hasTruncatedJSON {
 		trimmed := strings.TrimSpace(text)
 		if (trimmed == "●" || trimmed == "•" || trimmed == "‣") &&
 			!strings.ContainsAny(text, "\n\r") &&
@@ -2149,6 +2752,67 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 			return trimmed
 		}
 		// Even without XML tags, check for Claude Code preambles and remove them
+		if cleanupMode == cleanupModeFull {
+			text = removeClaudeCodePreamble(text)
+		}
+		return strings.TrimSpace(text)
+	}
+
+	// ENHANCED: Handle truncated JSON fragments even without XML markers
+	// This handles cases where JSON fragments appear directly after text
+	if hasTruncatedJSON && !strings.Contains(text, "<") {
+		lines := strings.Split(text, "\n")
+		cleanedLines := make([]string, 0, len(lines))
+		inCodeBlock := false
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+
+			// Track code block state - content inside code blocks should be preserved
+			if strings.HasPrefix(trimmed, "```") {
+				inCodeBlock = !inCodeBlock
+				cleanedLines = append(cleanedLines, line)
+				continue
+			}
+			if inCodeBlock {
+				cleanedLines = append(cleanedLines, line)
+				continue
+			}
+
+			if trimmed == "" {
+				cleanedLines = append(cleanedLines, line)
+				continue
+			}
+			// CRITICAL: Check for truncated JSON FIRST, before shouldSkipMalformedLine
+			// This ensures we preserve text before the JSON leak
+			// When cut == 0, the entire line is JSON fragment and should be skipped
+			if cut := findJSONLeakStartIndex(trimmed); cut >= 0 {
+				if cut == 0 {
+					// Entire line is JSON fragment, skip it
+					continue
+				}
+				kept := strings.TrimSpace(trimmed[:cut])
+				// Skip if kept is empty or only contains bullet points
+				if kept == "" || kept == "●" || kept == "•" || kept == "‣" {
+					continue
+				}
+				// Preserve leading whitespace from original line
+				leadingWS := ""
+				for i, c := range line {
+					if c != ' ' && c != '\t' {
+						leadingWS = line[:i]
+						break
+					}
+				}
+				cleanedLines = append(cleanedLines, leadingWS+kept)
+				continue
+			}
+			// Only skip if the entire line is malformed (no text to preserve)
+			if shouldSkipMalformedLine(trimmed) {
+				continue
+			}
+			cleanedLines = append(cleanedLines, line)
+		}
+		text = strings.Join(cleanedLines, "\n")
 		if cleanupMode == cleanupModeFull {
 			text = removeClaudeCodePreamble(text)
 		}
@@ -2273,6 +2937,30 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 			trimmed := strings.TrimSpace(line)
 			// Use helper function to check if line should be skipped
 			if shouldSkipMalformedLine(trimmed) {
+				continue
+			}
+			// ENHANCED: Check for truncated JSON fragments after text (no <> prefix)
+			// This handles cases like: '正在读取hello.py文件", "status": "pending"}'
+			// When cut == 0, the entire line is JSON fragment and should be skipped
+			if cut := findJSONLeakStartIndex(trimmed); cut >= 0 {
+				if cut == 0 {
+					// Entire line is JSON fragment, skip it
+					continue
+				}
+				kept := strings.TrimSpace(trimmed[:cut])
+				// Skip if kept is empty or only contains bullet points
+				if kept == "" || kept == "●" || kept == "•" || kept == "‣" {
+					continue
+				}
+				// Preserve leading whitespace from original line
+				leadingWS := ""
+				for i, c := range line {
+					if c != ' ' && c != '\t' {
+						leadingWS = line[:i]
+						break
+					}
+				}
+				cleanedLines = append(cleanedLines, leadingWS+kept)
 				continue
 			}
 			cleanedLines = append(cleanedLines, line)
@@ -2422,15 +3110,25 @@ func shouldSkipMalformedLine(trimmed string) bool {
 
 	// STRUCTURAL CHECK 2: Pure JSON structures (lines starting with { or [)
 	// Only skip if it's a pure JSON line with field patterns
-	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+	// ENHANCED: Also check for bullet + JSON pattern (e.g., "● [{"id":1,...}]")
+	trimmedForJSON := trimmed
+	// Check for bullet characters (multi-byte UTF-8, must use rune comparison)
+	if len(trimmed) >= 3 { // Bullet chars are 3 bytes in UTF-8
+		firstRune, runeSize := utf8.DecodeRuneInString(trimmed)
+		if firstRune == '●' || firstRune == '•' || firstRune == '‣' {
+			// Skip bullet and following whitespace
+			trimmedForJSON = strings.TrimLeft(trimmed[runeSize:], " \t")
+		}
+	}
+	if strings.HasPrefix(trimmedForJSON, "{") || strings.HasPrefix(trimmedForJSON, "[") {
 		// Count JSON structural elements to determine if it's pure JSON
 		// A line with 2+ field patterns ("field":) is likely leaked JSON
-		fieldPatternCount := strings.Count(trimmed, `":`)
+		fieldPatternCount := strings.Count(trimmedForJSON, `":`)
 		if fieldPatternCount >= 2 {
 			return true
 		}
 		// Single field pattern with JSON brackets is also likely leaked
-		if fieldPatternCount >= 1 && (strings.Contains(trimmed, `},`) || strings.Contains(trimmed, `}]`)) {
+		if fieldPatternCount >= 1 && (strings.Contains(trimmedForJSON, `},`) || strings.Contains(trimmedForJSON, `}]`)) {
 			return true
 		}
 	}
@@ -2804,6 +3502,124 @@ func findJSONLeakStartIndex(text string) int {
 		return 0
 	}
 
+	// ENHANCED: Check for bullet + JSON pattern (e.g., "● [{"id":1,...}]")
+	// If line starts with bullet followed by whitespace and JSON, return position after bullet
+	if len(text) >= 3 {
+		firstRune, runeSize := utf8.DecodeRuneInString(text)
+		if firstRune == '●' || firstRune == '•' || firstRune == '‣' {
+			// Skip bullet and following whitespace
+			afterBullet := strings.TrimLeft(text[runeSize:], " \t")
+			if len(afterBullet) > 0 && (afterBullet[0] == '{' || afterBullet[0] == '[') && isPureJSONLine(afterBullet) {
+				// Return position of the JSON start (after bullet and whitespace)
+				jsonStartPos := len(text) - len(afterBullet)
+				return jsonStartPos
+			}
+		}
+	}
+
+	// ENHANCED: Check for truncated JSON fragment patterns
+	// Return the earliest match position among all patterns
+	minPos := -1
+
+	// Pattern 0: Check if line starts with JSON field pattern (entire line is JSON fragment)
+	// This handles cases like: 'Form":设计简短漂亮的GUI程序方案'
+	if loc := reTruncatedJSONFieldAtStart.FindStringIndex(text); loc != nil && loc[0] == 0 {
+		return 0
+	}
+
+	// Pattern 0b: Check if line starts with JSON closing fragment
+	// This handles cases like: 'pending"},设计简短漂亮的GUI程序方案'
+	if loc := reTruncatedJSONClosingFragment.FindStringIndex(text); loc != nil && loc[0] == 0 {
+		return 0
+	}
+
+	// Pattern 0c: Check if entire line is a JSON fragment (leaked TodoWrite content)
+	// This handles cases like:
+	//   - '设计简洁的GUI方案",设计简洁的GUI方案",3"' -> entire line is JSON fragment
+	//   - '正在测试GUI程序运行",3"' -> entire line is JSON fragment
+	//   - '正在修改hello.py为GUI版本",": "4"' -> entire line is JSON fragment
+	// These are JSON array content leaks where the text looks like normal content but ends with JSON patterns
+	if reTruncatedJSONEntireLine.MatchString(text) {
+		return 0
+	}
+
+	// Pattern 0d: Check for text ending with quote-comma followed by orphaned field separator
+	// This handles cases like: '正在修改hello.py为GUI版本",": "4"'
+	// The entire line is a JSON fragment (activeForm value + orphaned field separator)
+	if reTruncatedJSONValueWithOrphanedSep.MatchString(text) {
+		return 0
+	}
+
+	// Pattern 1: text followed by ", "field": (JSON field separator after string value)
+	// This handles cases like: '正在读取hello.py文件", "status": "pending"}'
+	if loc := reTruncatedJSONAfterText.FindStringIndex(text); loc != nil {
+		// ENHANCED: Check if there's a sentence boundary before the JSON leak
+		// If the text before the JSON leak ends with a sentence-ending punctuation,
+		// and there's more text between the punctuation and the JSON leak,
+		// truncate at the punctuation instead
+		beforeJSON := text[:loc[0]]
+		if sentenceEnd := findLastSentenceEnd(beforeJSON); sentenceEnd >= 0 {
+			// Check if there's non-whitespace content between sentence end and JSON leak
+			afterSentence := strings.TrimSpace(beforeJSON[sentenceEnd+1:])
+			if len(afterSentence) > 0 {
+				// There's content between sentence end and JSON leak
+				// This content is likely part of the JSON fragment (e.g., task content)
+				// Truncate at the sentence end
+				return sentenceEnd + 1
+			}
+		}
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// Pattern 2: text followed by }, { or ], [ (JSON object/array separator)
+	// This handles cases like: '任务列表}, {"id": "2"}'
+	if loc := reTruncatedJSONObjectAfterText.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// Pattern 3: truncated field name without leading quote (e.g., 'activeForm": "...')
+	// This handles cases from user report where field names appear without proper JSON structure
+	// Only use this pattern if it's not at the start (start case handled by Pattern 0)
+	if loc := reTruncatedJSONFieldNoQuote.FindStringIndex(text); loc != nil && loc[0] > 0 {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// Pattern 4: consecutive JSON values (e.g., '设计简洁的GUI方案",设计简洁的GUI方案",3"')
+	// This handles TodoWrite JSON array content leak
+	if loc := reTruncatedJSONConsecutiveValues.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// Pattern 5: JSON value followed by comma and number (e.g., '正在测试GUI程序运行",3"')
+	// This handles id field leak in TodoWrite
+	if loc := reTruncatedJSONValueThenNumber.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// Pattern 6: orphaned JSON field separator (e.g., '": "4"' or '": "in_progress"')
+	// This handles cases where field name is missing but separator and value remain
+	if loc := reTruncatedJSONOrphanedFieldSep.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// If we found a match from the regex patterns, return it
+	if minPos >= 0 {
+		return minPos
+	}
+
+	// Fallback: scan for JSON field patterns manually
 	fieldCount := 0
 	fieldStart := -1
 	for i := 0; i < len(text); i++ {
@@ -3121,6 +3937,39 @@ func hasTrailingMalformedStructure(trimmed string) bool {
 func isOrphanedHeaderText(trimmed string) bool {
 	_ = trimmed
 	return false
+}
+
+// findLastSentenceEnd finds the position of the last sentence-ending punctuation in text.
+// Returns -1 if no sentence end is found.
+// Sentence-ending punctuation includes: 。！？.!?
+// NOTE: For ASCII punctuation (.!?), only consider it a sentence end if followed by
+// whitespace or CJK character (to avoid matching file extensions like "hello.py")
+func findLastSentenceEnd(text string) int {
+	lastPos := -1
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		// Chinese punctuation is always a sentence end
+		if r == '。' || r == '！' || r == '？' {
+			lastPos = i + size - 1 // Position of the last byte of the punctuation
+		} else if r == '.' || r == '!' || r == '?' {
+			// ASCII punctuation: check what follows
+			nextPos := i + size
+			if nextPos >= len(text) {
+				// End of string, not a sentence end (could be truncated)
+				i += size
+				continue
+			}
+			nextRune, _ := utf8.DecodeRuneInString(text[nextPos:])
+			// Only consider it a sentence end if followed by whitespace or CJK
+			if nextRune == ' ' || nextRune == '\t' || nextRune == '\n' ||
+				(nextRune >= 0x4E00 && nextRune <= 0x9FFF) || // CJK Unified Ideographs
+				(nextRune >= 0x3400 && nextRune <= 0x4DBF) { // CJK Extension A
+				lastPos = i + size - 1
+			}
+		}
+		i += size
+	}
+	return lastPos
 }
 
 // isPureJSONLine checks if a line is pure JSON that should be filtered.
@@ -3745,36 +4594,54 @@ func escapeXml(s string) string {
 //	</function_call>
 //
 // </function_calls>
+// parseFunctionCallsXML attempts to parse standard XML-formatted function calls.
+// It supports both <function_calls> blocks and flat <invoke> tags.
+//
+// Parsing Strategy:
+// 1. We process the RAW text, including <thinking> blocks. This is CRITICAL for
+//    reasoning models (like DeepSeek-R1, GLM-Thinking) which may embed tool calls
+//    within or interleaved with thinking content. Previous versions removed thinking
+//    blocks first, which caused tool calls inside them (especially unclosed ones) to be lost.
+// 2. We look for a trigger signal if provided, as it anchors the parsing.
+// 3. We fallback to scanning for <function_calls> or <invoke>.
 func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	if text == "" {
 		return nil
 	}
 
-	cleaned := removeThinkBlocks(text)
-
-	// Fast path: check if any XML-like content exists
-	if !strings.Contains(cleaned, "<") {
+	// Optimization: Fast path check if any XML-like content exists
+	if !strings.Contains(text, "<") {
 		return nil
 	}
 
 	// Prefer to anchor parsing near the trigger signal when the model
 	// correctly follows the prompt convention. Fall back to the first
 	// <function_calls> block if no trigger is found.
-	// NOTE: Use Index (first) instead of LastIndex because AI sometimes outputs
-	// multiple function_calls blocks, and the first one is typically correct
-	// while subsequent ones may have corrupted parameters.
 	start := 0
-	hasTrigger := triggerSignal != "" && strings.Contains(cleaned, triggerSignal)
-	hasFunctionCalls := strings.Contains(cleaned, "<function_calls>")
+	hasTrigger := triggerSignal != "" && strings.Contains(text, triggerSignal)
+	hasFunctionCalls := strings.Contains(text, "<function_calls>")
 
+	// If a trigger signal is present, we start parsing AFTER the trigger.
+	// This helps avoid parsing hallucinated examples that might appear before the actual call.
 	if hasTrigger {
-		start = strings.Index(cleaned, triggerSignal)
+		if idx := strings.Index(text, triggerSignal); idx >= 0 {
+			start = idx + len(triggerSignal)
+		}
 	} else if hasFunctionCalls {
-		start = strings.Index(cleaned, "<function_calls>")
+		// If no trigger but has <function_calls>, start at the first block
+		if idx := strings.Index(text, "<function_calls>"); idx >= 0 {
+			start = idx
+		}
 	}
 
-	segment := cleaned[start:]
+	// Extract the segment to parse based on start position
+	segment := text
+	if start > 0 && start < len(text) {
+		segment = text[start:]
+	}
+
 	// Remove any orphaned trigger signals from the segment only if they exist
+	// This is applied to segment, not the original 'text'
 	if hasTrigger || strings.Contains(segment, "<Function_") || strings.Contains(segment, "<<CALL_") {
 		segment = reTriggerSignal.ReplaceAllString(segment, "")
 	}
@@ -3815,6 +4682,16 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 			logrus.WithField("parsed_count", len(argKeyValueCalls)).Debug("Function call parsing: parsed invoke arg_key/arg_value format")
 		}
 		return argKeyValueCalls
+	}
+
+	// Try parsing unclosed <invoke name="..."> format (handles truncated output)
+	// This helps when models stop abruptly before outputting </invoke>
+	// NOTE: This must come AFTER specialized formats like parseInvokeArgKeyValue to avoid misinterpretation
+	if unclosedCalls := parseUnclosedInvokes(segment); len(unclosedCalls) > 0 {
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithField("parsed_count", len(unclosedCalls)).Debug("Function call parsing: parsed unclosed invoke format")
+		}
+		return unclosedCalls
 	}
 
 	// Handle nested or double <function_calls> blocks.
@@ -3990,6 +4867,14 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		}
 	}
 
+	// Final fuzzy fallback: if still nothing, try parsing any unclosed <invoke> in the callsContent
+	if len(results) == 0 && strings.Contains(callsContent, "<invoke") {
+		if unclosed := parseUnclosedInvokes(callsContent); len(unclosed) > 0 {
+			results = append(results, unclosed...)
+			logrus.WithField("parsed_count", len(unclosed)).Debug("Function call parsing: extracted via unclosed invoke fallback in callsContent")
+		}
+	}
+
 	if len(results) == 0 {
 		return nil
 	}
@@ -4103,6 +4988,49 @@ func parseFlatInvokesWithContentCheck(segment string, matches [][]string) []func
 		return []functionCall{{Name: name, Args: args}}
 	}
 	return nil
+}
+
+// parseUnclosedInvokes parses unclosed <invoke name="..."> formats (truncated output).
+// It captures the name and all remaining content as the parameter source.
+func parseUnclosedInvokes(text string) []functionCall {
+	reUnclosedInvoke := regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"[^>]*>`)
+	matches := reUnclosedInvoke.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	results := make([]functionCall, 0, len(matches))
+	for i, mIdx := range matches {
+		name := strings.TrimSpace(text[mIdx[2]:mIdx[3]])
+		if name == "" {
+			continue
+		}
+
+		// Content starts from end of this tag
+		start := mIdx[1]
+		// and ends at start of next tag or end of text
+		end := len(text)
+		if i+1 < len(matches) {
+			end = matches[i+1][0]
+		}
+
+		content := text[start:end]
+		// If it contains </invoke>, then it actually matched a closed one (or partial)
+		// we strip the closer if it exists to clean up.
+		if idx := strings.Index(content, "</invoke>"); idx != -1 {
+			content = content[:idx]
+		}
+
+		args := extractParameters(content, reMcpParam, reGenericParam)
+		results = append(results, functionCall{Name: name, Args: args})
+	}
+
+	// Follow b4u2cc policy: only return the first one if multiple found in this mode
+	if len(results) > 1 {
+		logrus.WithField("filtered_count", len(results)-1).Debug("parseUnclosedInvokes: filtered subsequent unclosed tool calls")
+		return results[:1]
+	}
+	return results
 }
 
 // parseMalformedInvokes parses malformed <invokename="..."> format tool calls.
@@ -5053,18 +5981,64 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 
 	// Fallback for unclosed tags: <tag>value (without </tag>).
 	// This handles malformed AI output like <todos>["a","b","c"]</parameters>
-	// Uses precompiled reUnclosedTag for performance (avoid hot path compilation).
-	if len(args) == 0 && trimmed != "" {
-		if m := reUnclosedTag.FindStringSubmatch(content); len(m) >= 3 {
-			tagName := strings.TrimSpace(m[1])
-			if !reservedTags[strings.ToLower(tagName)] {
-				// Extract content up to the next </ or end of string
-				valueContent := m[2]
-				if idx := strings.Index(valueContent, "</"); idx != -1 {
-					valueContent = valueContent[:idx]
+	// or <parameter name="p1">v1 <parameter name="p2">v2
+	// Uses positional splitting to find multiple unclosed parameters.
+	if trimmed != "" {
+		// 1. Try matching multiple <parameter name="..."> patterns
+		// SUPPORT: both single and double quotes for name attribute
+		mcpOpenRe := regexp.MustCompile(`<(?:parameter|param)\s+name=['"]([^'"]+)['"][^>]*>`)
+		openMatches := mcpOpenRe.FindAllStringSubmatchIndex(content, -1)
+		if len(openMatches) > 0 {
+			for i, mIdx := range openMatches {
+				name := strings.TrimSpace(content[mIdx[2]:mIdx[3]])
+				if name == "" || reservedTags[strings.ToLower(name)] {
+					continue
 				}
-				args[tagName] = parseValueOrString(strings.TrimSpace(valueContent))
+				if _, exists := args[name]; exists {
+					continue
+				}
+
+				start := mIdx[1]
+				end := len(content)
+				if i+1 < len(openMatches) {
+					end = openMatches[i+1][0]
+				}
+
+				valStr := content[start:end]
+				// Strip closing tag or partial closing fragments
+				if closeIdx := strings.Index(valStr, "</"); closeIdx != -1 {
+					valStr = valStr[:closeIdx]
+				}
+				// Also strip trailing > or /> or quotes that might be leftover from malformed input
+				valStr = strings.TrimRight(valStr, ">/ \"")
+				args[name] = parseValueOrString(strings.TrimSpace(valStr))
 			}
+		}
+
+		// 2. Try generic <tag> patterns for those not yet found
+		genericOpenRe := regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9_-]*)>`)
+		genericMatches := genericOpenRe.FindAllStringSubmatchIndex(content, -1)
+		for i, mIdx := range genericMatches {
+			name := strings.TrimSpace(content[mIdx[2]:mIdx[3]])
+			if name == "" || reservedTags[strings.ToLower(name)] {
+				continue
+			}
+			if _, exists := args[name]; exists {
+				continue
+			}
+
+			start := mIdx[1]
+			end := len(content)
+			if i+1 < len(genericMatches) {
+				end = genericMatches[i+1][0]
+			}
+
+			valStr := content[start:end]
+			if closeIdx := strings.Index(valStr, "</"); closeIdx != -1 {
+				valStr = valStr[:closeIdx]
+			}
+			valStr = strings.TrimRight(valStr, ">/ \"")
+			args[name] = parseValueOrString(strings.TrimSpace(valStr))
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -488,6 +489,53 @@ func TestRemoveFunctionCallsBlocks_TodoWriteJSONLeak(t *testing.T) {
 			name:     "CC output preamble with truncated JSON",
 			input:    "我来为你规划这个任务。首先创建任务清单。<>id\":\"1\",\"content\":\"联网搜索Python GUI最佳实践\",\"status\":\"pending\"}",
 			expected: "我来为你规划这个任务。首先创建任务清单。",
+		},
+		// Test cases from user report - consecutive JSON values leak (2026-01-03)
+		// Pattern: '设计简洁的GUI方案",设计简洁的GUI方案",3"' (consecutive values without field names)
+		{
+			name:     "consecutive JSON values without field names",
+			input:    `设计简洁的GUI方案",设计简洁的GUI方案",3"`,
+			expected: "",
+		},
+		{
+			name:     "status value leak after text",
+			input:    `查看当前目录结构和hello.py文件内容": "in_progress"`,
+			expected: "查看当前目录结构和hello.py文件内容",
+		},
+		{
+			name:     "orphaned field separator with value",
+			input:    `": "4"`,
+			expected: "",
+		},
+		{
+			name:     "complex CC output with multiple JSON leaks",
+			input:    `我将帮助您将hello.py修改为漂亮的GUI程序。首先让我创建一个待办事项列表来跟踪这个任务。查看当前目录结构和hello.py文件内容": "in_progress"设计简洁的GUI方案",设计简洁的GUI方案",3",hello.py为GUI版本",正在修改hello.py为GUI版本",": "4",运行",正在测试GUI程序运行",`,
+			expected: "我将帮助您将hello.py修改为漂亮的GUI程序。首先让我创建一个待办事项列表来跟踪这个任务。",
+		},
+		{
+			name:     "JSON value followed by comma and number",
+			input:    `正在测试GUI程序运行",3"`,
+			expected: "",
+		},
+		{
+			name:     "text with trailing status value",
+			input:    `正在修改hello.py为GUI版本",": "4"`,
+			expected: "",
+		},
+		{
+			name:     "field name at line start",
+			input:    `Form":设计简洁的GUI方案`,
+			expected: "",
+		},
+		{
+			name:     "activeForm field at line start",
+			input:    `activeForm": "正在读取hello.py文件"`,
+			expected: "",
+		},
+		{
+			name:     "closing fragment at line start",
+			input:    `pending"},设计简短漂亮的GUI程序方案`,
+			expected: "",
 		},
 	}
 
@@ -1575,6 +1623,151 @@ func TestSanitizeModelTokens(t *testing.T) {
 	}
 	if strings.Contains(result, "<｜User｜>") || strings.Contains(result, "<|assistant|>") {
 		t.Fatalf("expected special tokens to be removed, got %q", result)
+	}
+}
+
+// TestRemoveFunctionCallsBlocks_TruncatedJSONAfterText tests removal of truncated JSON
+// fragments that appear directly after normal text (without <> prefix).
+// This is a common pattern when TodoWrite tool output leaks into visible content.
+// Issue: User reported malformed output like:
+//   "正在读取hello.py文件", "status": "pending"},2", "content": "联网搜索..."
+// Expected: "正在读取hello.py文件"
+func TestRemoveFunctionCallsBlocks_TruncatedJSONAfterText(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		// NOTE: These test cases expect truncation at the last sentence boundary before JSON leak
+		// This is because text between sentence end and JSON leak is likely part of the JSON fragment
+		// (e.g., task content from TodoWrite)
+		{
+			name:     "truncated JSON after normal text - user example 1",
+			input:    `● 我将创建一个任务列表来跟踪这个任务。首先读取hello.py文件，然后搜索最佳实践，最后修改并运行程序。正在读取hello.py文件", "status": "pending"},2", "content": "联网搜索Python GUI最佳实践（短小精悍的Hello WorldGUI程序）", "activeForm": "正在搜索最佳实践", "status": "pendingid": "3", "content":并修改hello.py为GUI程序",修改文件", "status": "pending"}`,
+			expected: `● 我将创建一个任务列表来跟踪这个任务。首先读取hello.py文件，然后搜索最佳实践，最后修改并运行程序。`,
+		},
+		{
+			name:     "truncated JSON after normal text - user example 2",
+			input:    `● 我将按照任务列表逐步执行。首先开始第一个任务：读取hello.py文件了解当前内容。内容", "id": "task-1", "priority": "medium",in_progress"},Form":实践", "content": "联网搜索Python GUI最佳实践（短小精悍的Hello World GUI程序）",task-2",medium", "status": "pending"},Form": "正在设计并修改文件", "content":并修改hello.py为GUI程序", "id": "task-3", "prioritymedium", "statuspending"}, {"activeForm": "正在运行程序", "content": "自动运行修改后的GUI程序", "id": "task-4", "priority": "medium",pending"}]`,
+			expected: `● 我将按照任务列表逐步执行。首先开始第一个任务：读取hello.py文件了解当前内容。`,
+		},
+		{
+			name:     "truncated JSON after normal text - user example 3",
+			input:    `首先更新任务状态，然后进行联网搜索。当前内容", "id": "task-1", "priority": "mediumstatus":正在搜索最佳实践", "content":GUI最佳实践（短小精悍的HelloWorld GUI程序）", "id":priority": "mediumstatus": "in_progress"}, {"activeForm": "等待设计并修改文件",设计修改方案并修改hello.py为GUI程序", "id":", "priority":", "status":"}, {"activeForm": "等待运行程序", "content": "自动运行修改后的GUI程序", "id":", "priority":status": "pending"}]`,
+			expected: `首先更新任务状态，然后进行联网搜索。`,
+		},
+		{
+			name:     "simple truncated JSON field after text",
+			input:    `正在读取文件", "status": "pending"}`,
+			expected: `正在读取文件`,
+		},
+		{
+			name:     "truncated JSON with activeForm field",
+			input:    `任务进行中", "activeForm": "正在执行", "status": "in_progress"}`,
+			expected: `任务进行中`,
+		},
+		{
+			name:     "truncated JSON with content field",
+			input:    `开始执行", "content": "搜索最佳实践", "status": "pending"}`,
+			expected: `开始执行`,
+		},
+		{
+			name:     "truncated JSON with id field",
+			input:    `任务1", "id": "task-1", "status": "pending"}`,
+			expected: `任务1`,
+		},
+		{
+			name:     "truncated JSON with priority field",
+			input:    `高优先级任务", "priority": "high", "status": "pending"}`,
+			expected: `高优先级任务`,
+		},
+		{
+			name:     "preserve normal text without JSON",
+			input:    `这是正常的文本，没有JSON片段。`,
+			expected: `这是正常的文本，没有JSON片段。`,
+		},
+		{
+			name:     "preserve text with quoted content",
+			input:    `用户说"你好"，然后离开了。`,
+			expected: `用户说"你好"，然后离开了。`,
+		},
+		{
+			name:     "truncated JSON array element",
+			input:    `任务列表}, {"id": "2", "content": "下一个任务"}]`,
+			expected: `任务列表`,
+		},
+		{
+			name:     "multiple truncated JSON fragments",
+			input:    `第一个任务", "status": "done"}, {"id": "2", "content": "第二个任务", "status": "pending"}`,
+			expected: `第一个任务`,
+		},
+		// New test cases from user report (January 2026)
+		// Pattern: field names without leading quote appear directly in text
+		{
+			name:     "user report - state field without leading quote",
+			input:    `探索项目结构，查找hello.py文件", "state":_progresscontent":文件内容`,
+			expected: `探索项目结构，查找hello.py文件`,
+		},
+		{
+			name:     "user report - activeForm field without leading quote",
+			input:    `activeForm": "正在读取hello.py文件state": "pending"`,
+			expected: ``,
+		},
+		{
+			name:     "user report - Form field without leading quote",
+			input:    `Form":设计简短漂亮的GUI程序方案`,
+			expected: ``,
+		},
+		{
+			name:     "user report - mixed truncated fields",
+			input:    `● 我将帮您将hello.py修改为漂亮的GUI程序。首先让我探索项目结构并创建任务规划。探索项目结构，查找hello.py文件", "state":_progresscontent":文件内容`,
+			expected: `● 我将帮您将hello.py修改为漂亮的GUI程序。首先让我探索项目结构并创建任务规划。`,
+		},
+		{
+			name:     "user report - state field with underscore value",
+			input:    `查找hello.py文件", "state":_progress`,
+			expected: `查找hello.py文件`,
+		},
+		{
+			name:     "user report - content field truncated",
+			input:    `content": "联网搜索PythonGUI最佳实践", "activeForm正在联网搜索PythonGUI最佳实践`,
+			expected: ``,
+		},
+		{
+			name:     "user report - Form field with colon",
+			input:    `Form":设计简短漂亮的GUI程序方案", "state":/创建hello.py为GUI程序`,
+			expected: ``,
+		},
+		{
+			name:     "user report - complex mixed pattern",
+			input:    `pending"},设计简短漂亮的GUI程序方案Form":设计简短漂亮的GUI程序方案", "state":/创建hello.py为GUI程序", "activeForm":修改/创建hello.py为GUI程序`,
+			expected: ``,
+		},
+		{
+			name:     "user report - state field at end",
+			input:    `content":程序",Form":自动运行GUI程序state":`,
+			expected: ``,
+		},
+		// Preserve normal text that happens to contain field-like patterns
+		{
+			name:     "preserve normal text with colon",
+			input:    `任务状态：正在执行`,
+			expected: `任务状态：正在执行`,
+		},
+		{
+			name:     "preserve normal text with quotes",
+			input:    `用户说："请帮我修改文件"`,
+			expected: `用户说："请帮我修改文件"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := removeFunctionCallsBlocks(tt.input)
+			if result != tt.expected {
+				t.Errorf("removeFunctionCallsBlocks() = %q, want %q", result, tt.expected)
+			}
+		})
 	}
 }
 
@@ -7377,5 +7570,558 @@ func TestRemoveFunctionCallsBlocks_RealWorldMalformedLog(t *testing.T) {
 	// So we expect "搜索Python" (which is inside the JSON) to be REMOVED from the cleaned text.
 	if strings.Contains(cleaned, "搜索Python") {
 		t.Errorf("Expected content '搜索Python' to be removed (as it is part of a tool call), but it remained.")
+	}
+}
+
+// TestIsToolCallResultJSON_ThinkingModelWithResultFields tests that thinking model tool call requests
+// with result-like fields (is_error, status, result) are correctly identified based on their context.
+// This is a critical fix for the issue where thinking models output tool calls that happen to have
+// these fields in their parameters or reasoning.
+//
+// Key distinction:
+// - Tool call REQUESTS with "name" as first field and NO strong result indicators = NOT a result
+// - Tool call REQUESTS with "name" as first field AND strong result indicators (is_error, status) = IS a result
+// - Tool call RESULTS without "name" field = IS a result
+func TestIsToolCallResultJSON_ThinkingModelWithResultFields(t *testing.T) {
+	tests := []struct {
+		name              string
+		input             string
+		expectedIsResult  bool
+		description       string
+	}{
+		{
+			name:              "tool_request_with_is_error_true",
+			input:             `{"name":"Read","file_path":"test.py","is_error":true,"result":"tool call failed: Read","status":"error"}`,
+			expectedIsResult:  true,
+			description:       "Tool call with is_error:true IS a result (strong indicator)",
+		},
+		{
+			name:              "tool_request_with_is_error_false",
+			input:             `{"name":"Read","file_path":"test.py","is_error":false,"result":"","status":""}`,
+			expectedIsResult:  false,
+			description:       "Tool call REQUEST with is_error:false and empty result is NOT a result",
+		},
+		{
+			name:              "tool_request_with_status_error",
+			input:             `{"name":"Bash","command":"ls -la","status":"error","result":"command failed"}`,
+			expectedIsResult:  true,
+			description:       "Tool call with status:error IS a result (strong indicator)",
+		},
+		{
+			name:              "tool_request_with_all_result_fields",
+			input:             `{"name":"TodoWrite","todos":[],"is_error":false,"result":"","status":"","duration":"0s","display_result":"","mcp_server":{"name":"mcp-server"}}`,
+			expectedIsResult:  true,
+			description:       "Tool call with multiple result fields (is_error, result, duration, display_result, mcp_server) IS a result",
+		},
+		{
+			name:              "tool_result_without_name",
+			input:             `{"is_error":true,"result":"tool call failed","status":"error","duration":"1s"}`,
+			expectedIsResult:  true,
+			description:       "Tool call RESULT without name field IS a result",
+		},
+		{
+			name:              "tool_result_with_name_not_first",
+			input:             `{"result":"file content","is_error":false,"status":"completed","name":"Read"}`,
+			expectedIsResult:  true,
+			description:       "Tool call RESULT with name not as first field IS a result",
+		},
+		{
+			name:              "tool_result_with_non_empty_result",
+			input:             `{"result":"actual output","status":"completed","duration":"0s"}`,
+			expectedIsResult:  true,
+			description:       "Tool call RESULT with non-empty result IS a result",
+		},
+		// MCP tool test cases from production log (2026-01-02)
+		{
+			name:              "mcp_tool_result_completed",
+			input:             `{"name":"mcp__exa__get_code_context_exa","result":"","status":"completed","is_error":false,"mcp_server":{"name":"mcp-server"}}`,
+			expectedIsResult:  true,
+			description:       "MCP tool call RESULT with status:completed IS a result",
+		},
+		{
+			name:              "mcp_tool_result_with_display_result",
+			input:             `{"display_result":"","duration":"0s","id":"call_3da10d39ea7d4d35910530bd","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed"}`,
+			expectedIsResult:  true,
+			description:       "MCP tool call RESULT with all result fields IS a result",
+		},
+		{
+			name:              "mcp_tool_request_no_result_fields",
+			input:             `{"name":"mcp__exa__web_search_exa","query":"Python GUI best practices"}`,
+			expectedIsResult:  false,
+			description:       "MCP tool call REQUEST without result fields is NOT a result",
+		},
+		{
+			name:              "mcp_tool_single_underscore_result",
+			input:             `{"name":"mcp_context7_query_docs","result":"documentation content","status":"completed","is_error":false}`,
+			expectedIsResult:  true,
+			description:       "MCP tool (single underscore) call RESULT IS a result",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isResult := isToolCallResultJSON(tt.input)
+			if isResult != tt.expectedIsResult {
+				t.Errorf("[%s] expected isResult=%v, got %v", tt.description, tt.expectedIsResult, isResult)
+			}
+		})
+	}
+}
+
+// TestRemoveThinkBlocks_PreservesThinkingModelToolCalls tests that removeThinkBlocks correctly
+// preserves tool calls from thinking model output, even when they are wrapped in <glm_block> tags
+// and contain result-like fields.
+func TestRemoveThinkBlocks_PreservesThinkingModelToolCalls(t *testing.T) {
+	tests := []struct {
+		name              string
+		input             string
+		shouldContainTool bool
+		expectedToolName  string
+		description       string
+	}{
+		{
+			name:              "glm_block_with_tool_request_no_result_fields",
+			input:             `Some text <glm_block>{"name":"Read","file_path":"test.py"}</glm_block> more text`,
+			shouldContainTool: true,
+			expectedToolName:  "Read",
+			description:       "Tool call in glm_block without result fields should be preserved",
+		},
+		{
+			name:              "glm_block_with_tool_request_is_error_false",
+			input:             `<glm_block>{"name":"Bash","command":"ls","is_error":false,"result":"","status":""}</glm_block>`,
+			shouldContainTool: true,
+			expectedToolName:  "Bash",
+			description:       "Tool call in glm_block with is_error:false should be preserved",
+		},
+		{
+			name:              "glm_block_with_tool_result_is_error_true",
+			input:             `Text <glm_block>{"is_error":true,"result":"failed","status":"error"}</glm_block> end`,
+			shouldContainTool: false,
+			expectedToolName:  "",
+			description:       "Tool result in glm_block with is_error:true should be removed",
+		},
+		{
+			name:              "glm_block_with_multiple_tool_requests",
+			input:             `<glm_block>First: {"name":"Read","file_path":"a.py","is_error":false} Second: {"name":"Read","file_path":"b.py","is_error":true}</glm_block>`,
+			shouldContainTool: true,
+			expectedToolName:  "Read",
+			description:       "Multiple tool calls in glm_block should preserve at least one",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := removeThinkBlocks(tt.input)
+
+			// Check if tool call is preserved
+			hasToolCall := strings.Contains(result, `"`+tt.expectedToolName+`"`) ||
+				strings.Contains(result, `<invoke name="`+tt.expectedToolName+`"`) ||
+				strings.Contains(result, `<function_calls>`)
+
+			if tt.shouldContainTool && !hasToolCall {
+				t.Errorf("[%s] expected tool call '%s' to be preserved, but it was removed. Result: %s",
+					tt.description, tt.expectedToolName, utils.TruncateString(result, 200))
+			}
+
+			if !tt.shouldContainTool && hasToolCall {
+				t.Errorf("[%s] expected tool call to be removed, but it was preserved. Result: %s",
+					tt.description, utils.TruncateString(result, 200))
+			}
+
+			// Check that glm_block tags are removed
+			if strings.Contains(result, "<glm_block>") || strings.Contains(result, "</glm_block>") {
+				t.Errorf("[%s] glm_block tags should be removed, but found in result: %s",
+					tt.description, utils.TruncateString(result, 200))
+			}
+		})
+	}
+}
+
+
+// TestCleanTruncatedToolResultJSON_ProductionLog tests the cleanTruncatedToolResultJSON function
+// with the exact pattern from production log (2026-01-02).
+// These tests were consolidated from test_truncated_json_test.go
+func TestCleanTruncatedToolResultJSON_ProductionLog(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			// Production log 2026-01-03 00:40:23 - MCP tool call result with nested escaped JSON
+			// The content contains tool call result JSON with nested escaped JSON (query parameter)
+			// Pattern: normal text + newline + nested JSON string value + \"}",  + tool result fields
+			// This is the exact pattern from app.log that caused "No tool calls found in content"
+			name: "production_log_2026_01_03_mcp_exa_tool_result",
+			input: `用户想要：
+1. 联网搜索最佳实践 - 制作漂亮的GUI程序
+2. 修改hello.py，将其改为漂亮的GUI程序
+3. 输出Hello World即可
+4. 代码需要短小精悍，越短越好
+5. 自动运行它
+
+首先，我需要：
+1. 搜索Python GUI最佳实践（短小精悍的方式）
+2. 读取 当前的hello.py文件
+3. 修改它为GUI版本
+4. 自动运行
+
+让我先搜索Python GUI最佳实践，同时读取hello.py文件。我来帮你搜索Python GUI最佳实践，并修改hello.py为漂亮的GUI程序。
+query\":\"Python GUI tkinter short simple hello world best practice minimalist\",\"tokensNum\":\"3000\"}","display_result":"","duration":"0s","id":"call_6c022c43b8374f248158101a","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"m`,
+			expected: `用户想要：
+1. 联网搜索最佳实践 - 制作漂亮的GUI程序
+2. 修改hello.py，将其改为漂亮的GUI程序
+3. 输出Hello World即可
+4. 代码需要短小精悍，越短越好
+5. 自动运行它
+
+首先，我需要：
+1. 搜索Python GUI最佳实践（短小精悍的方式）
+2. 读取 当前的hello.py文件
+3. 修改它为GUI版本
+4. 自动运行
+
+让我先搜索Python GUI最佳实践，同时读取hello.py文件。我来帮你搜索Python GUI最佳实践，并修改hello.py为漂亮的GUI程序。`,
+		},
+		{
+			// Production log 2026-01-02 16:31:16 - MCP tool call result with nested JSON
+			// The content contains tool call result JSON with nested escaped JSON (query parameter)
+			// Pattern: normal text + nested JSON string + tool result fields
+			name: "production_log_2026_01_02_mcp_tool_result_nested_json",
+			input: `用户想要我：
+1. 联网搜索Python GUI最佳实践
+2. 修改hello.py文件，将其改为漂亮的GUI程序
+3. 输出Hello World即可
+4. 需要代码短小精悍
+5. 自动运行程序
+
+首先，我需要：
+1. 读取当前的hello.py文件
+2. 搜索Python GUI的最佳实践
+3. 编写简洁的GUI代码
+4. 运行程序
+
+让我先读取文件，然后进行联网搜索。我来帮你完成这个任务。首先让我读取当前的hello.py文件，然后搜索Python GUI最佳实践。
+ GUI Hello World minimal code tkinter\",\"tokensNum\":\"3000\"}","display_result":"","duration":"0s","id":"call_060bfde37e08422cbfc2d4ce","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed`,
+			expected: `用户想要我：
+1. 联网搜索Python GUI最佳实践
+2. 修改hello.py文件，将其改为漂亮的GUI程序
+3. 输出Hello World即可
+4. 需要代码短小精悍
+5. 自动运行程序
+
+首先，我需要：
+1. 读取当前的hello.py文件
+2. 搜索Python GUI的最佳实践
+3. 编写简洁的GUI代码
+4. 运行程序
+
+让我先读取文件，然后进行联网搜索。我来帮你完成这个任务。首先让我读取当前的hello.py文件，然后搜索Python GUI最佳实践。`,
+		},
+		{
+			name: "production_log_2026_01_02_truncated_json_no_glm_block",
+			// This is the exact pattern from production log - truncated JSON without </glm_block>
+			// The JSON fragment starts with file_path (missing opening {) and ends with truncated status
+			// NOTE: The fragment contains "display_result", "duration", "is_error", "mcp_server" which are
+			// strong indicators of tool call result
+			input: `用户希望我：
+1. 联网搜索Python GUI开发的最佳实践
+2. 修改hello.py，将其改为漂亮的GUI程序
+3. 输出Hello World即可
+4. 代码要短小精悍，越短越好
+5. 自动运行它
+
+首先，我需要查看当前目录下是否有hello.py文件，然后搜索Python GUI开发的最佳实践，最后创建一个简洁的GUI程序并运行。
+
+让我先读取hello.py文件（如果存在），然后进行搜索。我来帮您完成这个任务。
+首先让我查看当前目录的hello.py文件，然后搜索Python GUI开发的最佳实践。","display_result":"","duration":"0s","id":"call_468584a25d32451ea51c4a3d","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"","status":`,
+			expected: `用户希望我：
+1. 联网搜索Python GUI开发的最佳实践
+2. 修改hello.py，将其改为漂亮的GUI程序
+3. 输出Hello World即可
+4. 代码要短小精悍，越短越好
+5. 自动运行它
+
+首先，我需要查看当前目录下是否有hello.py文件，然后搜索Python GUI开发的最佳实践，最后创建一个简洁的GUI程序并运行。
+
+让我先读取hello.py文件（如果存在），然后进行搜索。我来帮您完成这个任务。
+首先让我查看当前目录的hello.py文件，然后搜索Python GUI开发的最佳实践。`,
+		},
+		{
+			name: "truncated_json_with_is_error_false_and_multiple_indicators",
+			// Truncated JSON with is_error:false and multiple strong secondary indicators
+			// The fragment starts with ,"display_result" which indicates JSON field separator
+			// NOTE: The fragment must contain enough indicators to be detected as tool result
+			input:    `让我读取文件。,"display_result":"","duration":"0s","is_error":false,"mcp_server":{"name":"mcp-server"}继续处理。`,
+			expected: `让我读取文件。继续处理。`,
+		},
+		{
+			name: "truncated_json_with_is_error_true",
+			// Truncated JSON with is_error:true (strong indicator)
+			input:    `尝试读取。,"is_error":true,"result":"failed","status":"error"继续。`,
+			expected: `尝试读取。继续。`,
+		},
+		{
+			name: "truncated_json_with_status_completed",
+			// Truncated JSON with status:completed (strong indicator with name)
+			input:    `读取完成。,"name":"Read","status":"completed","result":"file content"下一步。`,
+			expected: `读取完成。下一步。`,
+		},
+		{
+			name: "production_log_2026_01_02_truncated_json_starting_with_1s",
+			// Production log pattern: truncated JSON starting with "1s\"" (fragment from previously removed JSON)
+			// This is the exact pattern from app.log that caused tool call parsing to fail
+			// The fragment contains is_error:true, mcp_server, name, result, status - all strong indicators
+			// NOTE: In Go strings, we need to use \\\" to represent a single backslash followed by a quote
+			input:    "让我先读取hello.py文件。我来帮你完成这个任务。首先让我读取当前的hello.py文件，然后搜索Python GUI的最佳实践。\n1s\\\",\\\"id\\\":\\\"call_ecb5ac0c654240d88eb882e9\\\",\\\"is_error\\\":true,\\\"mcp_server\\\":{\\\"name\\\":\\\"mcp-server\\\"},\\\"name\\\":\\\"Read\\\",\\\"result\\\":\\\"tool call failed: Read\\\",\\\"status\\\":\\\"error\\\"}},\\\"type\\\":\\\"mcp\\\"}两个工具调用都失败了。让我先用Bash工具来读取hello.py的内容，并检查文件是否存在。",
+			expected: `让我先读取hello.py文件。我来帮你完成这个任务。首先让我读取当前的hello.py文件，然后搜索Python GUI的最佳实践。两个工具调用都失败了。让我先用Bash工具来读取hello.py的内容，并检查文件是否存在。`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := cleanTruncatedToolResultJSON(tt.input)
+			if result != tt.expected {
+				t.Errorf("expected:\n%q\ngot:\n%q", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestIsToolCallResultJSON_TruncatedJSON tests that isToolCallResultJSON correctly identifies
+// truncated tool call result JSON fragments.
+// These tests were consolidated from test_truncated_json_test.go
+func TestIsToolCallResultJSON_TruncatedJSON(t *testing.T) {
+	tests := []struct {
+		name             string
+		input            string
+		expectedIsResult bool
+		description      string
+	}{
+		{
+			name:             "truncated_json_with_multiple_strong_secondary_indicators",
+			input:            `,"display_result":"","duration":"0s","is_error":false,"mcp_server":{"name":"mcp-server"}`,
+			expectedIsResult: true,
+			description:      "Truncated JSON with display_result, duration, mcp_server should be detected as result",
+		},
+		{
+			name:             "truncated_json_with_is_error_false_only",
+			input:            `"is_error":false`,
+			expectedIsResult: false,
+			description:      "is_error:false alone is NOT a result indicator",
+		},
+		{
+			name:             "truncated_json_with_is_error_false_and_one_indicator",
+			input:            `"is_error":false,"duration":"0s"`,
+			expectedIsResult: true,
+			description:      "is_error:false + duration should be detected as result",
+		},
+		{
+			name:             "truncated_json_with_status_completed_and_name",
+			input:            `"name":"Read","status":"completed"`,
+			expectedIsResult: true,
+			description:      "status:completed + name should be detected as result",
+		},
+		{
+			name:             "truncated_json_starting_with_comma",
+			input:            `,"display_result":"","duration":"0s"`,
+			expectedIsResult: true,
+			description:      "Truncated JSON starting with comma should be detected as result",
+		},
+	}
+
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isResult := isToolCallResultJSON(tt.input)
+			if isResult != tt.expectedIsResult {
+				t.Errorf("[%s] expected isResult=%v, got %v", tt.description, tt.expectedIsResult, isResult)
+			}
+		})
+	}
+}
+
+// TestCleanTruncatedToolResultJSON_ScenarioA tests specific patterns from Scenario A
+// where thinking models output tool call results (not requests) with nested, escaped JSON strings.
+func TestCleanTruncatedToolResultJSON_ScenarioA(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		// Pattern 1a: \"}"," pattern (end of nested JSON string followed by comma)
+		{
+			name:     "Scenario A: escaped JSON string end with comma",
+			input:    "搜索Python GUI最佳实践。\nquery\\\":\\\"Python GUI tkinter\\\",\\\"tokensNum\\\":\\\"3000\\\"}\",\"display_result\":\"\"",
+			expected: "搜索Python GUI最佳实践。",
+		},
+		{
+			name:     "Scenario A: production log example exact match",
+			input:    "搜索Python GUI最佳实践。\nquery\\\":\\\"Python GUI tkinter\\\",\\\"tokensNum\\\":\\\"3000\\\"}\",\"display_result\":\"\",\"duration\":\"0s\"",
+			expected: "搜索Python GUI最佳实践。",
+		},
+		// Pattern 1b: \"}" pattern (end of nested JSON string object)
+		{
+			name:     "Scenario A: escaped JSON string end without comma",
+			input:    "搜索Python GUI最佳实践。\nquery\\\":\\\"Python GUI tkinter\\\",\\\"tokensNum\\\":\\\"3000\\\"}\",\\\"is_error\\\":true",
+			expected: "搜索Python GUI最佳实践。",
+		},
+		// Existing behavior checks
+		{
+			name:     "Standard tool result",
+			input:    "Some text.\n\"is_error\":true, \"result\":\"error\"",
+			expected: "Some text.",
+		},
+		{
+			name:     "Preserve invoke tags",
+			input:    "Some text <invoke name=\"test\">args</invoke>",
+			expected: "Some text <invoke name=\"test\">args</invoke>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := cleanTruncatedToolResultJSON(tt.input)
+			if result != tt.expected {
+				t.Errorf("cleanTruncatedToolResultJSON() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestParseFunctionCallsXML_InsideThinking tests that function calls inside thinking blocks
+// are correctly parsed now that we stopped removing thinking blocks before parsing.
+func TestParseFunctionCallsXML_InsideThinking(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		triggerSignal string
+		wantName      string
+		wantArgKey    string
+	}{
+		{
+			name: "invoke inside think",
+			input: `<think>
+I need to read the file.
+<invoke name="Read">
+<parameter name="file_path">hello.py</parameter>
+</invoke>
+</think>`,
+			triggerSignal: "",
+			wantName:      "Read",
+			wantArgKey:    "file_path",
+		},
+		{
+			name: "invoke inside thinking with mixed content",
+			input: `<thinking>
+I will run ls.
+<invoke name="Bash">
+<parameter name="command">ls</parameter>
+</invoke>
+Then I will check the output.
+</thinking>`,
+			triggerSignal: "",
+			wantName:      "Bash",
+			wantArgKey:    "command",
+		},
+		{
+			name: "flat invoke inside think",
+			input: `<think>
+Call tool now
+<invoke name="Search"><parameter name="query">test</parameter></invoke>
+</think>`,
+			triggerSignal: "",
+			wantName:      "Search",
+			wantArgKey:    "query",
+		},
+		{
+			name: "function_calls block inside think",
+			input: `<think>
+<function_calls>
+<invoke name="GetWeather">
+<parameter name="city">London</parameter>
+</invoke>
+</function_calls>
+</think>`,
+			triggerSignal: "",
+			wantName:      "GetWeather",
+			wantArgKey:    "city",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := parseFunctionCallsXML(tt.input, tt.triggerSignal)
+			if len(calls) == 0 {
+				t.Fatalf("Expected calls, got 0")
+			}
+			if calls[0].Name != tt.wantName {
+				t.Errorf("Expected name %q, got %q", tt.wantName, calls[0].Name)
+			}
+			if tt.wantArgKey != "" {
+				if _, ok := calls[0].Args[tt.wantArgKey]; !ok {
+					t.Errorf("Expected arg %q, got args %v", tt.wantArgKey, calls[0].Args)
+				}
+			}
+		})
+	}
+}
+
+// TestParseFunctionCallsXML_Unclosed tests parsing of tool calls that are truncated/unclosed at the end of content.
+func TestParseFunctionCallsXML_Unclosed(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		triggerSignal string
+		wantName      string
+		wantArgs      map[string]any
+	}{
+		{
+			name:  "unclosed invoke at end",
+			input: `<invoke name="Read"><parameter name="path">hello.py</parameter>`,
+			wantName: "Read",
+			wantArgs: map[string]any{"path": "hello.py"},
+		},
+		{
+			name:  "unclosed invoke and unclosed parameter",
+			input: `<invoke name="Write"><parameter name="file">test.txt"><parameter name="content">hello world`,
+			wantName: "Write",
+			wantArgs: map[string]any{"file": "test.txt", "content": "hello world"},
+		},
+		{
+			name:  "unclosed thinking and unclosed invoke",
+			input: `<think>I will read the file. <invoke name="Read"><parameter name="path">test.py`,
+			wantName: "Read",
+			wantArgs: map[string]any{"path": "test.py"},
+		},
+		{
+			name:  "multiple unclosed parameters with mix of quotes",
+			input: `<invoke name="Complex"><parameter name="p1">val1 <parameter name='p2'>val2 <parameter name="p3">val3`,
+			wantName: "Complex",
+			wantArgs: map[string]any{"p1": "val1", "p2": "val2", "p3": "val3"},
+		},
+		{
+			name: "unclosed generic tag parameters",
+			input: `<invoke name="Generic"><param1>value1 <param2>value2`,
+			wantName: "Generic",
+			wantArgs: map[string]any{"param1": "value1", "param2": "value2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := parseFunctionCallsXML(tt.input, tt.triggerSignal)
+			if len(calls) == 0 {
+				t.Fatalf("Expected calls, got 0")
+			}
+			if calls[0].Name != tt.wantName {
+				t.Errorf("Expected name %q, got %q", tt.wantName, calls[0].Name)
+			}
+			for k, v := range tt.wantArgs {
+				if got, ok := calls[0].Args[k]; !ok || got != v {
+					t.Errorf("Expected arg %q = %v, got %v", k, v, got)
+				}
+			}
+		})
 	}
 }

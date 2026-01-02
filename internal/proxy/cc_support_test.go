@@ -2972,6 +2972,43 @@ file_path":"F:\\MyProjects\\test\\language\\python\\xx\\hello.py"},"display_resu
 			expectedToolCount: 1,
 			description:       "Valid invoke after orphaned glm_block with tool result should be extracted",
 		},
+		{
+			name: "production_log_2026_01_02_execution_intent_without_tool_call",
+			// Production log pattern from 2026-01-02: thinking model outputs execution intent
+			// in natural language but does NOT output actual XML tool call format.
+			// This is the exact scenario from the log where Claude Code shows "tool call failed".
+			// The model describes what it wants to do but doesn't output <invoke> or <function_calls>.
+			// Expected: 0 tool calls (no valid tool call format in content)
+			// This test verifies that we correctly handle this case without false positives.
+			input: ` 我需要先读取文件，然后再写入。让我先读取hello.py文件。让我先读取文件：
+看起来文件不存在或者有问题。让我用Bash检查一下当前目录的内容：让我检查当前目录：
+
+
+Windows上应该用正确的命令。让我再次尝试用dir，
+
+Bash工具似乎有问题。让我直接尝试写入新文件，因为可能文件根本不存在`,
+			trigger:           "<<CALL_cjfe4k>>",
+			expectedToolCount: 0,
+			description:       "Execution intent in natural language without actual tool call XML should return 0 tool calls",
+		},
+		{
+			name: "production_log_2026_01_02_glm_block_removed_no_new_invoke",
+			// Production log pattern: GLM model outputs tool call results in <glm_block>,
+			// which are correctly removed, but then only outputs natural language description
+			// without new tool call requests. This is the root cause of "tool call failed".
+			// Expected: 0 tool calls (glm_block results removed, no new invoke)
+			input: `用户想要我：
+1. 联网搜索最佳实践
+2. 修改 hello.py
+
+<glm_block>{"name":"Read","file_path":"hello.py","is_error":true,"result":"failed","status":"error"}</glm_block>
+
+工具调用失败了。让我尝试其他方式。我需要先读取文件，然后再写入。
+让我先读取hello.py文件。看起来文件不存在或者有问题。`,
+			trigger:           "<<CALL_test>>",
+			expectedToolCount: 0,
+			description:       "GLM block removed but no new invoke should return 0 tool calls",
+		},
 	}
 
 	for _, tt := range tests {
@@ -3133,9 +3170,12 @@ func TestRemoveThinkBlocks_GLMBlock(t *testing.T) {
 		{
 			// Production log pattern: truncated JSON before orphaned closer
 			// The JSON is incomplete (missing opening brace) but has tool result indicators
+			// UPDATED: With the new cleanTruncatedToolResultJSON logic, truncated JSON with
+			// tool result indicators should be removed. Since there's no newline in the input,
+			// the output should not have a newline either.
 			name:     "orphaned_closer_with_truncated_json",
 			input:    `让我读取文件。"name":"Read","is_error":true}</glm_block>继续。`,
-			expected: `让我读取文件。"name":"Read","is_error":true}继续。`,
+			expected: `让我读取文件。继续。`,
 		},
 		{
 			// Multiple orphaned closers in sequence
@@ -3147,6 +3187,8 @@ func TestRemoveThinkBlocks_GLMBlock(t *testing.T) {
 			// Production log pattern from 2026-01-01: truncated JSON with missing opening brace
 			// The content has tool result indicators but the JSON is incomplete
 			// This tests the fallback logic when brace matching fails
+			// UPDATED: With the new cleanTruncatedToolResultJSON logic, truncated JSON with
+			// tool result indicators should be removed
 			name: "production_log_truncated_json_no_opening_brace",
 			input: `用户要求：
 1. 联网搜索最佳实践
@@ -3179,9 +3221,10 @@ query":"Python GUI best practices"},"is_error":true,"name":"WebSearch","status":
 工具都失败了。`,
 		},
 		{
-			// Production log pattern from 2026-01-01: orphaned </glm_block> with only weak indicators
-			// The content has "duration" and "display_result" but NOT "is_error" or "status":"completed"
-			// With the new logic, this should NOT be removed (only 2 secondary indicators)
+			// Production log pattern from 2026-01-01: orphaned </glm_block> with weak indicators and is_error
+			// The content has "duration", "display_result", and "is_error":false
+			// UPDATED: With the new cleanTruncatedToolResultJSON logic, this should be removed
+			// because is_error:false combined with other indicators is sufficient
 			name: "orphaned_closer_with_weak_indicators_and_is_error",
 			input: `让我读取文件。
 file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_8f5d86635de34da","is_error":false}</glm_block>
@@ -3192,14 +3235,85 @@ file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_
 		},
 		{
 			// Production log pattern: orphaned </glm_block> with ONLY weak indicators (no is_error/status)
-			// This should NOT be removed because weak indicators alone don't confirm it's a tool result
+			// UPDATED: With the new cleanTruncatedToolResultJSON logic, this should also be removed
+			// because display_result and duration are strong indicators of tool results
 			name: "orphaned_closer_with_only_weak_indicators",
 			input: `让我读取文件。
 file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_8f5d86635de34da"}</glm_block>
 继续处理。`,
 			expected: `让我读取文件。
-file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_8f5d86635de34da"}
+
 继续处理。`,
+		},
+		{
+			// Production log pattern from 2026-01-02: inline tool call result JSON without newline
+			// The JSON fragment appears inline after normal text, without a newline separator
+			// This tests the new reInlineToolResultJSON cleanup logic
+			// UPDATED: The cleanTruncatedToolResultJSON should remove the entire JSON fragment
+			// including the mcp_server field
+			name: "inline_tool_result_json_mcp_tool",
+			input: `让我先读取文件，然后进行搜索。我先读取当前的 hello.py 文件，然后搜索 Python GUI 最佳实践。 GUI hello world tkinter minimal beautiful short code best practice\"}","display_result":"","duration":"0s","id":"call_3da10d39ea7d4d35910530bd","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed"}},"type`,
+			expected: `让我先读取文件，然后进行搜索。我先读取当前的 hello.py 文件，然后搜索 Python GUI 最佳实践。 GUI hello world tkinter minimal beautiful short code best practice`,
+		},
+		{
+			// Production log pattern: inline tool result with is_error:true
+			name: "inline_tool_result_json_error",
+			input: `尝试读取文件。\"}","is_error":true,"result":"file not found","status":"error"}}继续尝试其他方法。`,
+			expected: `尝试读取文件。继续尝试其他方法。`,
+		},
+		{
+			// Production log pattern from 2026-01-02: truncated JSON with tool result before </glm_block>
+			// The JSON is truncated (starts with \n1s") but contains tool result indicators
+			// This tests the new cleanTruncatedToolResultJSON logic
+			name: "production_log_2026_01_02_truncated_json_before_glm_block",
+			input: `用户要求我：
+1. 联网搜索最佳实践
+2. 修改 hello.py 将其改为漂亮的GUI程序
+3. 输出 Hello World 即可
+4. 需要代码短小精悍，越短越好
+5. 自动运行它
+
+首先我需要：
+1. 搜索 Python GUI 最佳实践
+2. 读取现有的 hello.py 文件
+3. 修改它为GUI程序
+4. 运行它
+
+让我先搜索Python GUI最佳实践，然后读取文件。我来帮你完成这个任务。首先让我搜索 Python GUI 的最佳实践，然后读取并修改 hello.py 文件。
+1s","id":"call_0893a8a9d5094fd5ba71c889","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__web_search_exa","result":"tool call failed: mcp__exa__web_search_exa","status":"error"}},"type":"mcp"}</glm_block>两个工具都失败了。让我尝试使用 WebSearch 工具。`,
+			expected: `用户要求我：
+1. 联网搜索最佳实践
+2. 修改 hello.py 将其改为漂亮的GUI程序
+3. 输出 Hello World 即可
+4. 需要代码短小精悍，越短越好
+5. 自动运行它
+
+首先我需要：
+1. 搜索 Python GUI 最佳实践
+2. 读取现有的 hello.py 文件
+3. 修改它为GUI程序
+4. 运行它
+
+让我先搜索Python GUI最佳实践，然后读取文件。我来帮你完成这个任务。首先让我搜索 Python GUI 的最佳实践，然后读取并修改 hello.py 文件。
+两个工具都失败了。让我尝试使用 WebSearch 工具。`,
+		},
+		{
+			// Production log pattern: MCP tool result with status:error
+			name: "mcp_tool_result_status_error",
+			input: `让我搜索信息。{"id":"call_abc123","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__web_search_exa","result":"tool call failed: mcp__exa__web_search_exa","status":"error"}</glm_block>搜索失败了。`,
+			expected: `让我搜索信息。搜索失败了。`,
+		},
+		{
+			// Production log pattern: MCP tool result with status:completed
+			name: "mcp_tool_result_status_completed",
+			input: `让我获取代码上下文。{"display_result":"","duration":"0s","id":"call_xyz789","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed"}</glm_block>获取成功。`,
+			expected: `让我获取代码上下文。获取成功。`,
+		},
+		{
+			// Normal text without tool result JSON should be preserved
+			name: "normal_text_with_quotes",
+			input: `这是一个包含"引号"的正常文本，不应该被移除。`,
+			expected: `这是一个包含"引号"的正常文本，不应该被移除。`,
 		},
 	}
 
@@ -3338,6 +3452,103 @@ func TestParseFunctionCallsFromContentForCC_ArgKeyValueFormat(t *testing.T) {
 							}
 						}
 					}
+				}
+			}
+		})
+	}
+}
+
+
+// TestParseFunctionCallsFromContentForCC_ProductionLogGLMThinkingToolResult tests the scenario
+// from production log where GLM-4.7-thinking model outputs tool call results in orphaned
+// </glm_block> closers. The tool call results should be removed, but any valid tool calls
+// mixed in should be extracted.
+// Issue: Model outputs tool call results like {"is_error":false,"status":"c...","result":"","duration":"0s"}
+// instead of new tool call requests.
+func TestParseFunctionCallsFromContentForCC_ProductionLogGLMThinkingToolResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name              string
+		content           string
+		trigger           string
+		expectToolUse     bool
+		expectToolName    string
+		description       string
+	}{
+		{
+			name: "orphaned_closer_with_tool_result_only",
+			// This is the exact pattern from production log - tool call result, not request
+			content: `用户想要：
+1. 联网搜索最佳实践
+让我先读取hello.py文件。
+file_path":"F:\\MyProjects\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_c7e63823fbc0460bb9cafaab","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"","status":"completed"}</glm_block>
+工具出现了问题。`,
+			trigger:       "<<CALL_TEST>>",
+			expectToolUse: false,
+			expectToolName: "",
+			description:   "Tool call result in orphaned closer should be removed, no tool_use extracted",
+		},
+		{
+			name: "orphaned_closer_with_truncated_status",
+			// Production log pattern: truncated status field "status":"c" instead of "status":"completed"
+			content: `让我读取文件。
+file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_abc123","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"","status":"c</glm_block>
+继续处理。`,
+			trigger:       "<<CALL_TEST>>",
+			expectToolUse: false,
+			expectToolName: "",
+			description:   "Tool call result with truncated status should be removed",
+		},
+		{
+			name: "orphaned_closer_with_tool_request_mixed",
+			// Tool call request mixed with result - request should be extracted
+			content: `让我读取文件。
+<<CALL_TEST>><invoke name="Read"><parameter name="file_path">test.py</parameter></invoke>
+然后结果是：{"is_error":false,"status":"completed","result":"file content"}</glm_block>
+完成。`,
+			trigger:       "<<CALL_TEST>>",
+			expectToolUse: true,
+			expectToolName: "Read",
+			description:   "Tool call request before result should be extracted",
+		},
+		{
+			name: "multiple_orphaned_closers_with_results",
+			// Multiple tool call results in orphaned closers
+			content: `用户要求：
+1. 联网搜索最佳实践
+让我先读取hello.py文件。
+file_path":"F:\\test\\hello.py"},"is_error":false,"name":"Read","status":"completed"}</glm_block>
+然后联网搜索。
+query":"Python GUI best practices"},"is_error":true,"name":"WebSearch","status":"error"}</glm_block>
+工具都失败了。`,
+			trigger:       "<<CALL_TEST>>",
+			expectToolUse: false,
+			expectToolName: "",
+			description:   "Multiple tool call results should all be removed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Set(ctxKeyTriggerSignal, tt.trigger)
+			c.Set(ctxKeyFunctionCallEnabled, true)
+
+			_, toolUseBlocks := parseFunctionCallsFromContentForCC(c, tt.content)
+
+			if tt.expectToolUse {
+				if len(toolUseBlocks) == 0 {
+					t.Errorf("[%s] expected tool_use blocks, got none", tt.description)
+					return
+				}
+				if toolUseBlocks[0].Name != tt.expectToolName {
+					t.Errorf("[%s] expected tool name %q, got %q", tt.description, tt.expectToolName, toolUseBlocks[0].Name)
+				}
+			} else {
+				if len(toolUseBlocks) > 0 {
+					t.Errorf("[%s] expected no tool_use blocks, got %d (first: %s)", tt.description, len(toolUseBlocks), toolUseBlocks[0].Name)
 				}
 			}
 		})
