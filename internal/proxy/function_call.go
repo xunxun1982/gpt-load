@@ -345,6 +345,18 @@ var (
 	// AI Review (2026-01-03): Moved from extractToolCallsFromJSONContent function to package level.
 	reToolNameInJSON = regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
 
+	// Pattern for matching <parameter name="..."> or <param name="..."> tags with unclosed content
+	// Supports both single and double quotes for name attribute
+	// Precompiled at package level per Go regex best practice to avoid per-call compilation overhead.
+	// AI Review (2026-01-03): Moved from extractParameters function to package level.
+	reMcpOpenParam = regexp.MustCompile(`<(?:parameter|param)\s+name=['"]([^'"]+)['"][^>]*>`)
+
+	// Pattern for matching generic <tag> patterns (simple tag names without attributes)
+	// Used as fallback when MCP-style parameter tags are not found
+	// Precompiled at package level per Go regex best practice to avoid per-call compilation overhead.
+	// AI Review (2026-01-03): Moved from extractParameters function to package level.
+	reGenericOpenTag = regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9_-]*)>`)
+
 	// ANTML (Anthropic Markup Language) patterns used by Claude Code and Kiro
 	// Format: <function_calls><invoke name="..."><parameter name="...">...
 	// DeepSeek uses fullwidth pipes: <｜User｜>, <｜Assistant｜>, <｜System｜>
@@ -5985,8 +5997,8 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 	if trimmed != "" {
 		// 1. Try matching multiple <parameter name="..."> patterns
 		// SUPPORT: both single and double quotes for name attribute
-		mcpOpenRe := regexp.MustCompile(`<(?:parameter|param)\s+name=['"]([^'"]+)['"][^>]*>`)
-		openMatches := mcpOpenRe.FindAllStringSubmatchIndex(content, -1)
+		// Uses precompiled reMcpOpenParam at package level for performance.
+		openMatches := reMcpOpenParam.FindAllStringSubmatchIndex(content, -1)
 		if len(openMatches) > 0 {
 			for i, mIdx := range openMatches {
 				name := strings.TrimSpace(content[mIdx[2]:mIdx[3]])
@@ -6015,8 +6027,8 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 		}
 
 		// 2. Try generic <tag> patterns for those not yet found
-		genericOpenRe := regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9_-]*)>`)
-		genericMatches := genericOpenRe.FindAllStringSubmatchIndex(content, -1)
+		// Uses precompiled reGenericOpenTag at package level for performance.
+		genericMatches := reGenericOpenTag.FindAllStringSubmatchIndex(content, -1)
 		for i, mIdx := range genericMatches {
 			name := strings.TrimSpace(content[mIdx[2]:mIdx[3]])
 			if name == "" || reservedTags[strings.ToLower(name)] {
@@ -6162,6 +6174,10 @@ func extractToolCallsFromEmbeddedJSON(content string) []functionCall {
 	}
 
 	// Known tool names that we should extract (structural detection)
+	// TODO: Consider deriving this list from configured tool definitions when available,
+	// or centralizing it so new tools don't require updates in multiple places.
+	// AI Review (2026-01-03): This hardcoded list works for current CC tools but may need
+	// updates when new tools are added. For now, keeping it explicit for clarity and safety.
 	knownTools := map[string]bool{
 		"Read": true, "Write": true, "Edit": true, "Bash": true,
 		"Glob": true, "Grep": true, "WebSearch": true, "WebFetch": true,
