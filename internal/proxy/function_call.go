@@ -319,6 +319,11 @@ var (
 	// Performance: O(n) character class matching
 	// AI Review Fix (2026-01-03): Added (?s) dotall flag to match multiline arg_key/arg_value content.
 	// Thinking models may output tool calls with arguments spanning multiple lines.
+	// AI Review Note (2026-01-03): This pattern only matches <invoke name="Tool<arg_key>... format where
+	// <arg_key> is immediately appended inside the name attribute. The alternative format
+	// <invoke name="Tool"><arg_key>... (with closing quote before arg_key) is NOT matched by this pattern.
+	// Based on production logs, only the in-attribute format has been observed. If the alternative format
+	// appears in future logs, consider relaxing the pattern to support both formats.
 	reInvokeArgKeyValue = regexp.MustCompile(`(?s)<invoke\s+name="([^"<]+)(<arg_key>.*)`)
 
 	// Pattern to extract arg_key/arg_value pairs from invoke content
@@ -4889,6 +4894,11 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	}
 
 	if len(results) == 0 {
+		// AI Review Note (2026-01-03): Log when all parsing strategies fail but XML-like content exists.
+		// This helps diagnose new malformed formats that may need dedicated parsing paths.
+		if logrus.IsLevelEnabled(logrus.DebugLevel) && (strings.Contains(text, "<invoke") || strings.Contains(text, "<function")) {
+			logrus.WithField("content_preview", utils.TruncateString(text, 300)).Debug("Function call parsing: all strategies failed, no tool calls extracted")
+		}
 		return nil
 	}
 	return results
@@ -6176,10 +6186,14 @@ func extractToolCallsFromEmbeddedJSON(content string) []functionCall {
 	}
 
 	// Known tool names that we should extract (structural detection)
-	// TODO: Consider deriving this list from configured tool definitions when available,
-	// or centralizing it so new tools don't require updates in multiple places.
-	// AI Review (2026-01-03): This hardcoded list works for current CC tools but may need
-	// updates when new tools are added. For now, keeping it explicit for clarity and safety.
+	// AI Review Note (2026-01-03): This hardcoded list is intentionally kept explicit rather than
+	// derived from configured tool definitions for the following reasons:
+	// 1. Safety: Prevents accidental extraction of arbitrary JSON objects that happen to have a "name" field
+	// 2. Performance: Avoids runtime lookup overhead in hot path
+	// 3. Clarity: Makes it obvious which tools are supported by this fallback path
+	// 4. Stability: Tool definitions may vary per request, but this fallback should be consistent
+	// If new CC tools are added, update this list. For MCP tools, use the standard XML parsing path.
+	// TODO: Consider centralizing this list with collectFunctionToolDefs if maintenance becomes an issue.
 	knownTools := map[string]bool{
 		"Read": true, "Write": true, "Edit": true, "Bash": true,
 		"Glob": true, "Grep": true, "WebSearch": true, "WebFetch": true,
