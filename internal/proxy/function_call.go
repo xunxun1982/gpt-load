@@ -23,36 +23,10 @@ import (
 // memory growth for very long streaming responses.
 const maxContentBufferBytes = 256 * 1024
 
-// Regular expressions for tool call result JSON cleaning
-var (
-	// Pattern to match truncated JSON with escaped quotes (e.g., "1s\"}","is_error":true)
-	// Example from production log (2026-01-02):
-	//   ...best practice。\n1s\",\"id\":\"call_ecb5ac0c654240d88eb882e9\",\"is_error\":true,\"mcp_server\":{\"name\":\"mcp-server\"},\"name\":\"Read\",\"result\":\"tool call failed: Read\",\"status\":\"error\"}},\"type\":\"mcp\"}两个工具调用都失败了
-	// Pattern: matches from sentence boundary to end of truncated JSON (only matches JSON structural characters)
-	// STRUCTURAL: Detects tool result by presence of escaped is_error, status, result, mcp_server fields
-	// NOTE: This pattern matches JSON fragments that end with "type":"xxx"}
-	// FIX: Use [^\n] instead of [^<\n] to match any character except newline
-	// FIX: Use \\\" to match \" in Go strings (\\\" in pattern = \" in string)
-	// ENHANCED: Add pattern to match JSON fragments without "type" field
-	reTruncatedEscapedQuoteJSON = regexp.MustCompile(`(?:\n|[。！？.!?]|,)[^\n]*\\\"(?:is_error|status|result|mcp_server)\\\"[^\n]*\\\"type\\\":\\\"[^"]*\\\"}`)
-	// ENHANCED: Match truncated JSON with escaped quotes but without "type" field, ending with }
-	reTruncatedEscapedQuoteJSONNoType = regexp.MustCompile(`(?:\n|[。！？.!?]|,)[^\n]*\\\"(?:is_error|status|result|mcp_server)\\\"[^\n]*\\\"status\\\":\\\"[^"]*\\\"}`)
-	// ENHANCED: Match truncated JSON with escaped quotes but without "type" field and without }
-	// Example: `尝试读取。,\"is_error\":true,\"result\":\"failed\",\"status\":\"error\"继续。`
-	reTruncatedEscapedQuoteJSONNoTypeNoBrace = regexp.MustCompile(`(?:\n|[。！？.!?]|,)[^\n]*\\\"(?:is_error|status|result|mcp_server)\\\"[^\n]*\\\"status\\\":\\\"[^"]*\\\"`)
-
-	// Pattern to match truncated JSON without escaped quotes (e.g., ,"is_error":true,"result":"failed","status":"error")
-	// Example: `尝试读取。,"is_error":true,"result":"failed","status":"error"继续。`
-	// Pattern: matches from sentence boundary or comma to end of truncated JSON
-	// STRUCTURAL: Detects tool result by presence of is_error, status, result, mcp_server fields
-	// FIX: Match both with and without closing brace
-	reTruncatedJSONNoEscape = regexp.MustCompile(`(?:[。！？.!?]|,)"(?:is_error|status|result|mcp_server)"[^<\n]*}`)
-	// ENHANCED: Match truncated JSON without closing brace, ending with field value
-	// This handles cases where the JSON is truncated and does not contain closing brace.
-	// Example: `尝试读取。,"is_error":true,"result":"failed","status":"error"继续。`
-	// Pattern: matches from sentence boundary or comma to end of field value
-	reTruncatedJSONNoEscapeNoBrace = regexp.MustCompile(`(?:[。！？.!?]|,)"(?:is_error|status|result|mcp_server)"[^<\n]*"(?:true|false|"[^"]*"|\d+)`)
-)
+// NOTE: AI Review (2026-01-03) suggested removing unused regex patterns reTruncatedEscapedQuoteJSON*
+// and reTruncatedJSONNoEscape*. These patterns were originally designed for truncated JSON cleanup
+// but were superseded by the more comprehensive cleanTruncatedToolResultJSON function which uses
+// string-based detection instead of regex. The patterns are removed to reduce dead code.
 
 // functionCall represents a parsed tool call from the XML block.
 type functionCall struct {
@@ -359,6 +333,17 @@ var (
 	// Matches content until newline or end of string
 	reUnclosedInvokeParam = regexp.MustCompile(`<(?:invoke|parameter)\s+name="[^"]*">[^\n]*(?:\n|$)`)
 	reUnclosedMalformedNameTag = regexp.MustCompile(`(?m)<(?:invoke|parameter|property)name[^>\r\n]*$`)
+
+	// Pattern for parsing unclosed <invoke name="..."> tags (truncated output)
+	// Precompiled at package level per Go regex best practice to avoid per-call compilation overhead.
+	// AI Review (2026-01-03): Moved from parseUnclosedInvokes function to package level.
+	reUnclosedInvoke = regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"[^>]*>`)
+
+	// Pattern for extracting tool calls from embedded JSON content
+	// Matches: "name":"ToolName" or "name": "ToolName"
+	// Precompiled at package level per Go regex best practice to avoid per-call compilation overhead.
+	// AI Review (2026-01-03): Moved from extractToolCallsFromJSONContent function to package level.
+	reToolNameInJSON = regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
 
 	// ANTML (Anthropic Markup Language) patterns used by Claude Code and Kiro
 	// Format: <function_calls><invoke name="..."><parameter name="...">...
@@ -1814,6 +1799,10 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 // Tool call requests only have name and parameters (or is_error:false with empty result).
 // GLM blocks typically contain tool call results or thinking content that should be removed.
 // Only preserve content that looks like a valid tool call request (JSON with name field but no result indicators).
+//
+// AI Review Note (2026-01-03): This function intentionally discards non-JSON text inside GLM blocks.
+// Based on production log analysis, GLM blocks only contain tool call JSON or thinking content,
+// never user-visible prose. If GLM format changes to include mixed content, this logic should be revisited.
 func processGLMBlockContent(content string) string {
 	// If content doesn't contain JSON object, it's likely thinking content - remove it
 	if !strings.Contains(content, "{") {
@@ -2234,6 +2223,11 @@ func removeThinkBlocks(text string) string {
 //   - Primary indicators (is_error:true, status:completed/error, non-empty result) are definitive
 //   - is_error:false alone is NOT sufficient (could be a tool request with default value)
 //   - Secondary indicators (duration, display_result, mcp_server) require multiple to confirm
+//
+// AI Review Note (2026-01-03): This function uses raw substring matching which could
+// theoretically match any JSON/text containing these patterns. However, it is ONLY called
+// from GLM block processing and truncated JSON cleanup paths where the context is already
+// known to be tool-related. Do NOT use this as a general-purpose JSON classifier.
 func isToolCallResultJSON(content string) bool {
 	// Primary indicators - any single one is definitive
 
@@ -2368,6 +2362,11 @@ func removeUnclosedTagLines(text string) string {
 //
 // IMPORTANT: This function should NOT remove content inside <invoke> or <parameter> tags,
 // as those are tool call requests, not tool call results.
+//
+// AI Review Note (2026-01-03): This function only removes the FIRST detected fragment.
+// Based on production log analysis, multiple truncated result fragments in a single response
+// are extremely rare. If this becomes an issue, the function can be wrapped in a loop.
+// Current design prioritizes simplicity and performance over handling edge cases.
 func cleanTruncatedToolResultJSON(text string) string {
 	// Fast path: if text contains <invoke> or <parameter> tags, skip cleanup
 	// These are tool call requests, not tool call results
@@ -4992,8 +4991,8 @@ func parseFlatInvokesWithContentCheck(segment string, matches [][]string) []func
 
 // parseUnclosedInvokes parses unclosed <invoke name="..."> formats (truncated output).
 // It captures the name and all remaining content as the parameter source.
+// Uses precompiled reUnclosedInvoke regex at package level for performance.
 func parseUnclosedInvokes(text string) []functionCall {
-	reUnclosedInvoke := regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"[^>]*>`)
 	matches := reUnclosedInvoke.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
 		return nil
@@ -6143,6 +6142,11 @@ func sanitizeJsonValue(v any) any {
 //
 // Performance: Uses structural detection to identify JSON tool call patterns.
 // Only processes content that contains JSON-like structures.
+//
+// AI Review Note (2026-01-03): This function is called from cc_support.go as a fallback
+// when parseFunctionCallsXML returns no results. It is NOT called directly from
+// parseFunctionCallsXML to maintain separation of concerns. If JSON-only tool calls
+// become more common, consider integrating this as a fallback within parseFunctionCallsXML.
 func extractToolCallsFromEmbeddedJSON(content string) []functionCall {
 	if content == "" {
 		return nil
@@ -6197,11 +6201,8 @@ func extractToolCallsFromEmbeddedJSON(content string) []functionCall {
 
 // extractToolCallsFromJSONContent extracts tool calls from content that may contain JSON objects.
 // This is a helper function that handles the actual JSON extraction logic.
+// Uses precompiled reToolNameInJSON regex at package level for performance.
 func extractToolCallsFromJSONContent(content string, knownTools map[string]bool) []functionCall {
-	// Pattern to find JSON objects with "name" field containing tool names
-	// This regex matches: "name":"ToolName" or "name": "ToolName"
-	reToolNameInJSON := regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
-
 	matches := reToolNameInJSON.FindAllStringSubmatchIndex(content, -1)
 	if len(matches) == 0 {
 		return nil
