@@ -317,7 +317,9 @@ var (
 	// This handles cases where thinking models output tool calls with <arg_key>/<arg_value> pairs
 	// Captures: group 1 = tool name, group 2 = remaining content with arg_key/arg_value pairs (including first <arg_key>)
 	// Performance: O(n) character class matching
-	reInvokeArgKeyValue = regexp.MustCompile(`<invoke\s+name="([^"<]+)(<arg_key>.*)`)
+	// AI Review Fix (2026-01-03): Added (?s) dotall flag to match multiline arg_key/arg_value content.
+	// Thinking models may output tool calls with arguments spanning multiple lines.
+	reInvokeArgKeyValue = regexp.MustCompile(`(?s)<invoke\s+name="([^"<]+)(<arg_key>.*)`)
 
 	// Pattern to extract arg_key/arg_value pairs from invoke content
 	// Examples: "<arg_key>command</arg_key><arg_value>ls -la</arg_value>"
