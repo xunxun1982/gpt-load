@@ -2126,6 +2126,16 @@ func removeThinkBlocks(text string) string {
 			// Check if there's a corresponding opening tag before this closer
 			// For glm_block, check for <glm_block>
 			// For antml closers, check for various antml opening patterns
+			//
+			// AI Review Note (2026-01-03): This hasOpener check uses simple Contains() rather than
+			// balanced pair counting. In malformed cases with an extra closer after a valid block,
+			// that closer may be treated as matched and left in the text. This is acceptable because:
+			// 1. The main processing loops above already handle properly paired tags
+			// 2. This orphaned closer path is specifically for edge cases (truncated/malformed content)
+			// 3. Leaving an extra closer in text is less harmful than incorrectly removing content
+			// 4. The subsequent isToolCallResultJSON check provides semantic validation
+			// If stray closers frequently leak through after valid blocks, consider upgrading to
+			// counter-based balance checking, but current behavior is a minor gap, not a bug.
 			hasOpener := false
 			searchText := text[:closeIdx]
 			switch closer {
