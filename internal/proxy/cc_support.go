@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -869,7 +870,9 @@ type ClaudeUsage struct {
 }
 
 // convertOpenAIToClaudeResponse converts OpenAI response to Claude format.
-func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode functionCallCleanupMode) *ClaudeResponse {
+// When normalizeToolArgs is true, tool call arguments are normalized (JSON parsed and re-serialized).
+// When false, arguments are passed through unchanged to preserve upstream formatting.
+func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode functionCallCleanupMode, normalizeToolArgs bool) *ClaudeResponse {
 	claudeResp := &ClaudeResponse{
 		ID:      openaiResp.ID,
 		Type:    "message",
@@ -921,12 +924,22 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode funct
 				}
 				inputJSON := json.RawMessage("{}")
 				if tc.Function.Arguments != "" {
-					normalized, ok := normalizeOpenAIToolCallArguments(tc.Function.Name, tc.Function.Arguments)
-					if ok {
-						inputJSON = json.RawMessage(normalized)
-					} else {
-						inputJSON = json.RawMessage(tc.Function.Arguments)
+					argsStr := tc.Function.Arguments
+					// When normalizeToolArgs is true (force FC enabled), normalize arguments
+					// to fix potential issues like Windows path escapes and tool-specific formatting.
+					// When false (only CC support), pass through arguments unchanged.
+					if normalizeToolArgs {
+						if normalized, ok := normalizeOpenAIToolCallArguments(tc.Function.Name, argsStr); ok {
+							argsStr = normalized
+						}
 					}
+					// CRITICAL: Fix for Claude Code Windows path escape issue in Bash commands.
+					// Claude Code client performs additional escape processing on Bash command strings,
+					// which corrupts Windows paths. We double-escape backslashes ONLY in the "command"
+					// field to compensate for this.
+					// See: https://github.com/anthropics/claude-code/issues/15290
+					argsStr = doubleEscapeWindowsPathsForBash(argsStr)
+					inputJSON = json.RawMessage(argsStr)
 				}
 				content = append(content, ClaudeContentBlock{
 					Type:  "tool_use",
@@ -1127,12 +1140,27 @@ func normalizeArgsGenericInPlace(args map[string]any) {
 
 		// Fix Windows file paths where JSON escape sequences were incorrectly interpreted.
 		// When upstream models return paths like "F:\MyProjects\test\file.py", the JSON parser
-		// interprets \t as tab, \n as newline, etc. We detect and fix this for path-like keys.
-		// Detection: path contains control characters AND looks like a Windows path (has : or \)
-		if isPathLikeKey(key) && containsControlChars(strVal) && looksLikeWindowsPath(strVal) {
-			strVal = fixWindowsPathEscapes(strVal)
-			args[key] = strVal
-			trimmedStr = strings.TrimSpace(strVal)
+		// interprets \t as tab, \n as newline, etc.
+		//
+		// We apply fixes in two scenarios:
+		// 1. Path-like keys (path, file, dir, etc.): fix the entire value
+		// 2. Any string containing embedded Windows paths: fix paths within the string
+		//
+		// This auto-extends to any tool/parameter that may contain Windows paths,
+		// including git commands, custom tools, etc.
+		if containsControlChars(strVal) {
+			if isPathLikeKey(key) && looksLikeWindowsPath(strVal) {
+				// Scenario 1: The entire value is a path
+				strVal = fixWindowsPathEscapes(strVal)
+				args[key] = strVal
+				trimmedStr = strings.TrimSpace(strVal)
+			} else if containsWindowsDrivePath(strVal) {
+				// Scenario 2: The value contains embedded Windows paths
+				// This handles commands like "python F:\path\file.py" or "git clone C:\repo"
+				strVal = fixEmbeddedWindowsPathsInCommand(strVal)
+				args[key] = strVal
+				trimmedStr = strings.TrimSpace(strVal)
+			}
 		}
 
 		if (strings.HasPrefix(trimmedStr, "{") && strings.HasSuffix(trimmedStr, "}")) ||
@@ -1144,11 +1172,11 @@ func normalizeArgsGenericInPlace(args map[string]any) {
 			}
 		}
 
-		if key == "content" || key == "command" || key == "script" || key == "code" {
-			if strings.Contains(strVal, "\\n") {
-				args[key] = strings.ReplaceAll(strVal, "\\n", "\n")
-			}
-		}
+		// NOTE: The following code was removed because it incorrectly replaced literal
+		// backslash-n sequences in Windows paths. For example, "F:\new\file.py" would
+		// have "\n" replaced with a newline character, corrupting the path.
+		// The Windows path fix above handles the case where JSON escape sequences
+		// were incorrectly interpreted (actual control characters in the string).
 	}
 }
 
@@ -1227,6 +1255,147 @@ func fixWindowsPathEscapes(s string) string {
 		}
 	}
 	return result.String()
+}
+
+// reWindowsDrivePath matches Windows drive letter paths (e.g., "C:", "F:")
+// This pattern finds the start of a Windows path within a command string.
+// The path may contain control characters where backslashes were incorrectly interpreted.
+var reWindowsDrivePath = regexp.MustCompile(`[A-Za-z]:`)
+
+// containsWindowsDrivePath returns true if the string contains a Windows drive letter pattern.
+// This is used to detect embedded Windows paths in any string value, regardless of key name.
+// This allows auto-extension to any tool that may contain Windows paths (git, custom tools, etc.)
+func containsWindowsDrivePath(s string) bool {
+	return reWindowsDrivePath.MatchString(s)
+}
+
+// fixEmbeddedWindowsPathsInCommand fixes Windows paths embedded within command strings.
+// Example: "python F:\MyProjects\test\file.py" where \t in the path became a tab character.
+// This function finds Windows drive letter patterns and fixes control characters after them.
+func fixEmbeddedWindowsPathsInCommand(s string) string {
+	if !containsControlChars(s) {
+		return s
+	}
+
+	// Find all potential Windows path starts (drive letters like "C:", "F:")
+	matches := reWindowsDrivePath.FindAllStringIndex(s, -1)
+	if len(matches) == 0 {
+		return s
+	}
+
+	var result strings.Builder
+	result.Grow(len(s) + 20)
+
+	lastEnd := 0
+	for _, match := range matches {
+		pathStart := match[0]
+
+		// Write everything before this path unchanged
+		result.WriteString(s[lastEnd:pathStart])
+
+		// Find the end of this path (space, quote, or end of string)
+		pathEnd := len(s)
+		for i := match[1]; i < len(s); i++ {
+			r := rune(s[i])
+			// Path ends at whitespace (but not control chars that were originally backslashes),
+			// quotes, or other command separators
+			if r == ' ' || r == '"' || r == '\'' || r == '|' || r == '&' || r == ';' || r == '>' || r == '<' {
+				pathEnd = i
+				break
+			}
+		}
+
+		// Extract and fix the path portion
+		pathPortion := s[pathStart:pathEnd]
+		if containsControlChars(pathPortion) {
+			pathPortion = fixWindowsPathEscapes(pathPortion)
+		}
+		result.WriteString(pathPortion)
+
+		lastEnd = pathEnd
+	}
+
+	// Write any remaining content after the last path
+	if lastEnd < len(s) {
+		result.WriteString(s[lastEnd:])
+	}
+
+	return result.String()
+}
+
+// reJSONWindowsPath matches Windows paths in JSON strings.
+// Looks for patterns like: "F:\\" or "C:\\" (drive letter followed by colon and escaped backslash)
+// This regex finds the JSON-escaped form of Windows paths.
+var reJSONWindowsPath = regexp.MustCompile(`([A-Za-z]):\\\\`)
+
+// reAlreadyDoubleEscaped matches Windows paths that are already double-escaped.
+// Pattern: drive letter followed by double backslash (e.g., "F:\\" in the parsed string)
+var reAlreadyDoubleEscaped = regexp.MustCompile(`[A-Za-z]:\\\\`)
+
+// doubleEscapeWindowsPathsForBash doubles the backslash escaping in Windows paths
+// ONLY within the "command" field of Bash tool arguments.
+//
+// This is needed because Claude Code client performs additional escape processing
+// on Bash command strings, which corrupts Windows paths. For example:
+//   - Input JSON:  {"command": "python F:\\MyProjects\\test\\file.py"}
+//   - After CC processing: "python F:\MyProjects	est\file.py" (corrupted - \t became tab)
+//
+// By double-escaping only the command field:
+//   - We send:     {"command": "python F:\\\\MyProjects\\\\test\\\\file.py"}
+//   - After CC processing: "python F:\MyProjects\test\file.py" (correct)
+//
+// IMPORTANT: We only process the "command" field because:
+// 1. Only Bash tool performs additional escape processing on its command string
+// 2. Other tools (Read, Write, Edit) use file_path for path matching
+// 3. Double-escaping file_path would break Claude Code's file tracking
+//    (e.g., Read("hello.py") vs Write("F:\\\\path\\\\hello.py") won't match)
+func doubleEscapeWindowsPathsForBash(jsonStr string) string {
+	// Quick check: if no "command" field with Windows path, return unchanged
+	if !strings.Contains(jsonStr, `"command"`) {
+		return jsonStr
+	}
+	if !reJSONWindowsPath.MatchString(jsonStr) {
+		return jsonStr
+	}
+
+	// Parse JSON to selectively process only the "command" field
+	var args map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &args); err != nil {
+		return jsonStr
+	}
+
+	command, ok := args["command"].(string)
+	if !ok || command == "" {
+		return jsonStr
+	}
+
+	// Check if command contains Windows path with single backslash
+	// If the path already has double backslashes (\\), it's already escaped
+	// and we should not double-escape again.
+	// Pattern: drive letter followed by single backslash (not double)
+	// e.g., "F:\MyProjects" should be escaped, but "F:\\MyProjects" should not
+	if !strings.ContainsAny(command, "\\") {
+		return jsonStr
+	}
+
+	// Check if already double-escaped by looking for patterns like "F:\\" or "C:\\"
+	// If the command contains "X:\\" (double backslash after drive letter), it's already escaped
+	if reAlreadyDoubleEscaped.MatchString(command) {
+		// Already double-escaped, don't escape again
+		return jsonStr
+	}
+
+	// Double-escape backslashes in the command string
+	// This will be re-escaped when we marshal back to JSON
+	args["command"] = strings.ReplaceAll(command, "\\", "\\\\")
+
+	// Re-serialize to JSON
+	result, err := json.Marshal(args)
+	if err != nil {
+		return jsonStr
+	}
+
+	return string(result)
 }
 
 func normalizeArgsEnsureSlice(args map[string]any, key string) {
@@ -1751,7 +1920,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	}
 
 	// Convert to Claude format
-	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode)
+	// When force FC is enabled, normalize tool arguments to fix potential issues.
+	// When only CC support is enabled, pass through arguments unchanged.
+	normalizeToolArgs := isFunctionCallEnabled(c)
+	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode, normalizeToolArgs)
 
 	// Handle error finish_reason for non-streaming responses.
 	// When upstream returns error (network_error, timeout, etc.) with no content,
@@ -2597,9 +2769,23 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}
 
 		if currentToolCallName != "" && argsLen > 0 {
-			if normalized, ok := normalizeOpenAIToolCallArguments(currentToolCallName, argsStr); ok {
-				argsStr = normalized
+			// When force function call is enabled, normalize arguments to fix potential
+			// issues like Windows path escapes and tool-specific formatting.
+			// When only CC support is enabled (no force FC), pass through arguments
+			// unchanged to preserve upstream formatting.
+			if isFunctionCallEnabled(c) {
+				if normalized, ok := normalizeOpenAIToolCallArguments(currentToolCallName, argsStr); ok {
+					argsStr = normalized
+				}
 			}
+
+			// CRITICAL: Fix for Claude Code Windows path escape issue in Bash commands.
+			// Claude Code client performs additional escape processing on Bash command strings,
+			// which corrupts Windows paths. We double-escape backslashes ONLY in the "command"
+			// field to compensate for this.
+			// See: https://github.com/anthropics/claude-code/issues/15290
+			argsStr = doubleEscapeWindowsPathsForBash(argsStr)
+
 			deltaEvent := ClaudeStreamEvent{
 				Type:  "content_block_delta",
 				Index: contentBlockIndex,
@@ -2608,9 +2794,11 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			if err := writer.Send(deltaEvent, false); err != nil {
 				logrus.WithError(err).Debug("CC: Failed to write tool_use delta")
 			}
+			// Log the actual arguments being sent for debugging path issues
 			logrus.WithFields(logrus.Fields{
-				"tool_name": currentToolCallName,
-				"args_len":  len(argsStr),
+				"tool_name":    currentToolCallName,
+				"args_len":     len(argsStr),
+				"args_preview": utils.TruncateString(argsStr, 200),
 			}).Debug("CC: Emitted tool_use input_json_delta")
 		}
 
@@ -3027,9 +3215,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					}
 					currentToolCallArgs.WriteString(call.Function.Arguments)
 					logrus.WithFields(logrus.Fields{
-						"tool_id":         call.ID,
-						"chunk_args_len":  len(call.Function.Arguments),
-						"total_args_len":  currentToolCallArgs.Len(),
+						"tool_id":        call.ID,
+						"chunk_args_len": len(call.Function.Arguments),
+						"total_args_len": currentToolCallArgs.Len(),
+						"chunk_preview":  utils.TruncateString(call.Function.Arguments, 200),
 					}).Debug("CC: Accumulated tool call arguments")
 				}
 			}

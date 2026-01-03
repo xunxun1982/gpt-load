@@ -3873,3 +3873,323 @@ func TestNormalizeOpenAIToolCallArguments_WindowsPathFix(t *testing.T) {
 		})
 	}
 }
+
+// TestContainsWindowsDrivePath tests the containsWindowsDrivePath helper function.
+func TestContainsWindowsDrivePath(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{`C:\Users\Admin`, true},
+		{`python F:\MyProjects\test.py`, true},
+		{`git clone D:\repo`, true},
+		{"echo hello", false},
+		{"/home/user/file", false},
+		{"./relative/path", false},
+		{"", false},
+		{"just some text", false},
+		{`copy A: B:`, true}, // multiple drive letters
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := containsWindowsDrivePath(tt.input)
+			if result != tt.expected {
+				t.Errorf("containsWindowsDrivePath(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestFixEmbeddedWindowsPathsInCommand tests the fixEmbeddedWindowsPathsInCommand function
+// that fixes Windows paths embedded within command strings.
+func TestFixEmbeddedWindowsPathsInCommand(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "python command with tab in path",
+			input:    "python F:\\MyProjects\test\\language\\python\\xx\\hello.py", // \t is actual tab
+			expected: `python F:\MyProjects\test\language\python\xx\hello.py`,
+		},
+		{
+			name:     "python command with tab in middle of path",
+			input:    "python C:\\Users\test\\script.py", // \t is actual tab
+			expected: `python C:\Users\test\script.py`,
+		},
+		{
+			name:     "command with multiple paths containing tabs",
+			input:    "copy F:\\src\test\\a.txt D:\\dest\temp\\b.txt", // \t is actual tab
+			expected: `copy F:\src\test\a.txt D:\dest\temp\b.txt`,
+		},
+		{
+			name:     "command with path and arguments",
+			input:    "python F:\\MyProjects\test\\script.py --output C:\\Users\temp\\out.txt", // \t is actual tab
+			expected: `python F:\MyProjects\test\script.py --output C:\Users\temp\out.txt`,
+		},
+		{
+			name:     "command without windows path",
+			input:    "echo hello world",
+			expected: "echo hello world",
+		},
+		{
+			name:     "unix command unchanged",
+			input:    "python /home/user/test/script.py",
+			expected: "python /home/user/test/script.py",
+		},
+		{
+			name:     "command with quoted path",
+			input:    `python "F:\MyProjects\test\script.py"`, // no control chars, just backslashes
+			expected: `python "F:\MyProjects\test\script.py"`,
+		},
+		{
+			name:     "empty command",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "command with backspace in path",
+			input:    "python D:\backup\\script.py", // \b is actual backspace
+			expected: `python D:\backup\script.py`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := fixEmbeddedWindowsPathsInCommand(tt.input)
+			if result != tt.expected {
+				t.Errorf("fixEmbeddedWindowsPathsInCommand(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestNormalizeArgsGenericInPlace_EmbeddedWindowsPath tests that normalizeArgsGenericInPlace
+// correctly fixes Windows paths embedded in any string parameter, regardless of key name.
+// This ensures auto-extension to any tool that may contain Windows paths.
+func TestNormalizeArgsGenericInPlace_EmbeddedWindowsPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		key         string
+		value       string
+		expectedVal string
+	}{
+		{
+			name:        "command with tab in path",
+			key:         "command",
+			value:       "python F:\\MyProjects\test\\language\\python\\xx\\hello.py", // \t is actual tab
+			expectedVal: `python F:\MyProjects\test\language\python\xx\hello.py`,
+		},
+		{
+			name:        "script with tab in path",
+			key:         "script",
+			value:       "node C:\\Users\test\\app.js", // \t is actual tab
+			expectedVal: `node C:\Users\test\app.js`,
+		},
+		{
+			name:        "code with backspace in path",
+			key:         "code",
+			value:       "go run D:\backup\\main.go", // \b is actual backspace
+			expectedVal: `go run D:\backup\main.go`,
+		},
+		{
+			// Auto-extension: git command with arbitrary key name
+			name:        "git_command with tab in path",
+			key:         "git_command",
+			value:       "git clone C:\\repos\test\\myrepo", // \t is actual tab
+			expectedVal: `git clone C:\repos\test\myrepo`,
+		},
+		{
+			// Auto-extension: any arbitrary key with embedded Windows path
+			name:        "arbitrary key with embedded path",
+			key:         "my_custom_arg",
+			value:       "process E:\\data\temp\\file.csv", // \t is actual tab
+			expectedVal: `process E:\data\temp\file.csv`,
+		},
+		{
+			name:        "command without control chars unchanged",
+			key:         "command",
+			value:       `python C:\Users\Admin\script.py`,
+			expectedVal: `python C:\Users\Admin\script.py`,
+		},
+		{
+			name:        "unix command unchanged",
+			key:         "command",
+			value:       "python /home/user/script.py",
+			expectedVal: "python /home/user/script.py",
+		},
+		{
+			name:        "non-command key with control chars unchanged",
+			key:         "query",
+			value:       "search\tterm",
+			expectedVal: "search\tterm",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{tt.key: tt.value}
+			normalizeArgsGenericInPlace(args)
+			result, ok := args[tt.key].(string)
+			if !ok {
+				t.Fatalf("expected string value, got %T", args[tt.key])
+			}
+			if result != tt.expectedVal {
+				t.Errorf("normalizeArgsGenericInPlace[%q] = %q, want %q", tt.key, result, tt.expectedVal)
+			}
+		})
+	}
+}
+
+// TestNormalizeOpenAIToolCallArguments_BashCommandWithPath tests that Bash tool
+// command parameter with embedded Windows paths is correctly fixed.
+func TestNormalizeOpenAIToolCallArguments_BashCommandWithPath(t *testing.T) {
+	// Build test arguments with actual control characters embedded in the JSON string values.
+	makeArgsWithTab := func(key, prefix, suffix string) string {
+		args := map[string]any{key: prefix + "\t" + suffix}
+		b, _ := json.Marshal(args)
+		return string(b)
+	}
+
+	tests := []struct {
+		name            string
+		toolName        string
+		arguments       string
+		expectedCommand string
+	}{
+		{
+			name:            "Bash with python command and tab in path",
+			toolName:        "Bash",
+			arguments:       makeArgsWithTab("command", `python F:\MyProjects`, `est\language\python\xx\hello.py`),
+			expectedCommand: `python F:\MyProjects\test\language\python\xx\hello.py`,
+		},
+		{
+			name:            "Bash with node command and tab in path",
+			toolName:        "Bash",
+			arguments:       makeArgsWithTab("command", `node C:\Users`, `est\app.js`),
+			expectedCommand: `node C:\Users\test\app.js`,
+		},
+		{
+			name:            "Bash with multiple paths",
+			toolName:        "Bash",
+			arguments:       makeArgsWithTab("command", `copy F:\src`, `est\a.txt D:\dest\b.txt`),
+			expectedCommand: `copy F:\src\test\a.txt D:\dest\b.txt`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := normalizeOpenAIToolCallArguments(tt.toolName, tt.arguments)
+			if !ok {
+				t.Fatalf("normalizeOpenAIToolCallArguments returned false for %s", tt.toolName)
+			}
+
+			var args map[string]any
+			if err := json.Unmarshal([]byte(result), &args); err != nil {
+				t.Fatalf("failed to parse result: %v", err)
+			}
+
+			command, ok := args["command"].(string)
+			if !ok {
+				t.Fatalf("expected command to be string, got %T", args["command"])
+			}
+
+			if command != tt.expectedCommand {
+				t.Errorf("expected command %q, got %q", tt.expectedCommand, command)
+			}
+		})
+	}
+}
+
+// TestDoubleEscapeWindowsPathsForBash tests the doubleEscapeWindowsPathsForBash function
+// that doubles backslash escaping ONLY in the "command" field of Bash tool arguments.
+func TestDoubleEscapeWindowsPathsForBash(t *testing.T) {
+	tests := []struct {
+		name            string
+		input           string
+		expectModified  bool
+		expectedCommand string // only checked if expectModified is true
+	}{
+		{
+			name:            "Bash command with Windows path",
+			input:           `{"command": "python F:\\MyProjects\\test\\file.py"}`,
+			expectModified:  true,
+			expectedCommand: `python F:\\MyProjects\\test\\file.py`,
+		},
+		{
+			name:            "Bash command with multiple backslashes",
+			input:           `{"command": "python C:\\Users\\Admin\\Documents\\test.py"}`,
+			expectModified:  true,
+			expectedCommand: `python C:\\Users\\Admin\\Documents\\test.py`,
+		},
+		{
+			name:           "No command field - unchanged",
+			input:          `{"file_path": "F:\\MyProjects\\test\\file.py"}`,
+			expectModified: false,
+		},
+		{
+			name:           "Unix command - unchanged",
+			input:          `{"command": "ls -la /home/user"}`,
+			expectModified: false,
+		},
+		{
+			name:           "Empty command - unchanged",
+			input:          `{"command": ""}`,
+			expectModified: false,
+		},
+		{
+			name:           "file_path should NOT be double-escaped",
+			input:          `{"file_path": "F:\\test\\file.py", "content": "hello"}`,
+			expectModified: false,
+		},
+		{
+			name:           "Read tool path should NOT be double-escaped",
+			input:          `{"file_path": "C:\\Users\\test\\hello.py"}`,
+			expectModified: false,
+		},
+		{
+			name:            "Bash with description",
+			input:           `{"command": "python F:\\test\\script.py", "description": "run script"}`,
+			expectModified:  true,
+			expectedCommand: `python F:\\test\\script.py`,
+		},
+		{
+			name:           "Already double-escaped path - should NOT be escaped again",
+			input:          `{"command": "python F:\\\\MyProjects\\\\test\\\\file.py"}`,
+			expectModified: false,
+		},
+		{
+			name:           "Already double-escaped with multiple paths - should NOT be escaped again",
+			input:          `{"command": "copy C:\\\\source\\\\file.txt D:\\\\dest\\\\file.txt"}`,
+			expectModified: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := doubleEscapeWindowsPathsForBash(tt.input)
+
+			if tt.expectModified {
+				// Parse result and check command field has doubled backslashes
+				var args map[string]any
+				if err := json.Unmarshal([]byte(result), &args); err != nil {
+					t.Fatalf("failed to parse result: %v", err)
+				}
+				command, ok := args["command"].(string)
+				if !ok {
+					t.Fatalf("expected command to be string")
+				}
+				if command != tt.expectedCommand {
+					t.Errorf("command = %q, want %q", command, tt.expectedCommand)
+				}
+			} else {
+				// Should be unchanged
+				if result != tt.input {
+					t.Errorf("expected unchanged, got %q", result)
+				}
+			}
+		})
+	}
+}
