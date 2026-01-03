@@ -157,7 +157,7 @@ func (s *ChildGroupService) CreateChildGroup(ctx context.Context, params CreateC
 		return nil, app_errors.ErrInternalServer
 	}
 
-	// Generate random proxy_keys for child group (sk-child-xxxxxxxxxxxx format)
+	// Generate cryptographically secure proxy_keys for child group (sk-child-xxxx... format, 57 chars total)
 	childProxyKeys := generateChildGroupProxyKey()
 
 	// Create child group with inherited properties
@@ -238,14 +238,12 @@ func (s *ChildGroupService) CreateChildGroup(ctx context.Context, params CreateC
 	return &childGroup, nil
 }
 
-// generateChildGroupProxyKey generates a random proxy key for child group.
-// Format: sk-child-xxxxxxxxxxxxxxxxxxxx (32 random chars)
+// generateChildGroupProxyKey generates a cryptographically secure proxy key for child group.
+// Format: sk-child-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (48 random chars)
+// Uses crypto/rand for security, matching the length of standard group proxy keys.
 func generateChildGroupProxyKey() string {
-	// Generate 32 random characters
-	randomPart := ""
-	for i := 0; i < 8; i++ {
-		randomPart += utils.GenerateRandomSuffix()
-	}
+	// Generate 48 random characters using cryptographically secure random
+	randomPart := utils.GenerateSecureRandomString(48)
 	return "sk-child-" + randomPart
 }
 

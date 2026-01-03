@@ -1,6 +1,8 @@
 package utils
 
 import (
+	cryptoRand "crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -90,4 +92,36 @@ func GenerateRandomSuffix() string {
 func GenerateTriggerSignal() string {
 	suffix := generateRandomSuffixWithLength(6)
 	return fmt.Sprintf("<<CALL_%s>>", suffix)
+}
+
+// GenerateSecureRandomString generates a cryptographically secure random string
+// using crypto/rand. The output uses URL-safe base64 encoding (A-Z, a-z, 0-9, -, _).
+// The length parameter specifies the desired output string length.
+// This function is suitable for generating API keys, tokens, and other security-sensitive identifiers.
+func GenerateSecureRandomString(length int) string {
+	if length <= 0 {
+		length = 48 // Default to 48 characters for API key compatibility
+	}
+
+	// Calculate bytes needed: base64 encoding produces 4 chars per 3 bytes
+	// We need slightly more bytes to ensure we have enough characters after encoding
+	bytesNeeded := (length*3 + 3) / 4
+
+	randomBytes := make([]byte, bytesNeeded)
+	if _, err := cryptoRand.Read(randomBytes); err != nil {
+		// Fallback to math/rand if crypto/rand fails (should never happen in practice)
+		ensureRandSeeded()
+		for i := range randomBytes {
+			randomBytes[i] = byte(rand.Intn(256))
+		}
+	}
+
+	// Use URL-safe base64 encoding without padding
+	encoded := base64.RawURLEncoding.EncodeToString(randomBytes)
+
+	// Truncate to exact length
+	if len(encoded) > length {
+		return encoded[:length]
+	}
+	return encoded
 }
