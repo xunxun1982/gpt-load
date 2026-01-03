@@ -556,6 +556,35 @@ var (
 	// Matches: }, "id": -> }, {"id":
 	reJSONMalformedMissingObjectStart = regexp.MustCompile(`\},\s*"id":`)
 
+	// =============================================================================
+	// TRUNCATED JSON LEAK DETECTION PATTERNS
+	// =============================================================================
+	// AI Review Note (2026-01-03): These patterns are designed to detect TodoWrite-style
+	// JSON output leaks. They are tightly coupled to current log shapes. When adding new
+	// tools or models, ensure new leak patterns either match these structures or add
+	// corresponding test cases and patterns.
+	//
+	// MAINTAINABILITY: Each pattern below maps to specific test fixtures in
+	// TestRemoveFunctionCallsBlocks_TodoWriteJSONLeak. Periodically re-baseline against
+	// fresh logs, pruning unused patterns and verifying test coverage.
+	//
+	// Pattern-to-Fixture Mapping Table:
+	// +---------------------------------+--------------------------------------------------+
+	// | Pattern                         | Example Fixture (from test)                      |
+	// +---------------------------------+--------------------------------------------------+
+	// | reTruncatedJSONAfterText        | '查看当前目录结构...": "in_progress"'            |
+	// | reTruncatedJSONConsecutiveValues| '设计简洁的GUI方案",设计简洁的GUI方案",3"'       |
+	// | reTruncatedJSONValueThenNumber  | '正在测试GUI程序运行",3"'                        |
+	// | reTruncatedJSONOrphanedFieldSep | '": "4"'                                         |
+	// | reTruncatedJSONEntireLine       | '设计简洁的GUI方案",设计简洁的GUI方案"'          |
+	// | reTruncatedJSONValueWithOrphanedSep | '正在修改hello.py为GUI版本",": "4"'          |
+	// | reTruncatedJSONFieldAtStart     | 'activeForm": "正在读取hello.py文件'             |
+	// | reTruncatedJSONFieldNoQuote     | '查找hello.py文件", "state":_progress'           |
+	// | reTruncatedJSONObjectAfterText  | '任务列表}, {"id": "2"'                          |
+	// | reTruncatedJSONClosingFragment  | 'pending"},设计简短漂亮的GUI程序方案'            |
+	// +---------------------------------+--------------------------------------------------+
+	// =============================================================================
+
 	// Pattern to detect truncated JSON fragments directly after text (no <> prefix)
 	// This handles cases where TodoWrite tool output leaks into visible content.
 	// Examples from production log:
