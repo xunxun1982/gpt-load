@@ -1735,12 +1735,13 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 		hasTrigger := triggerSignal != "" && strings.Contains(content, triggerSignal)
 		// NOTE: Use "<antml" instead of "antml" to avoid false positives from words like "semantml"
 		// This is only for debug logging, so precision is preferred over recall
+		// Parentheses added for clarity: && has higher precedence than ||, but explicit grouping improves readability
 		hasThinking := strings.Contains(content, "<thinking>") || strings.Contains(content, "<think>") ||
-			strings.Contains(content, "<antml") && strings.Contains(content, "thinking")
+			(strings.Contains(content, "<antml") && strings.Contains(content, "thinking"))
 		// Detect execution intent phrases (model describes action but doesn't call tool)
 		// This helps diagnose cases where thinking models output intent without actual tool calls
 		hasExecutionIntent := reExecutionIntent.MatchString(content)
-		logrus.WithFields(logrus.Fields{
+		fields := logrus.Fields{
 			"content_len":          len(content),
 			"has_invoke":           hasInvoke,
 			"has_function_calls":   hasFunctionCalls,
@@ -1748,8 +1749,15 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 			"has_thinking":         hasThinking,
 			"has_execution_intent": hasExecutionIntent,
 			"trigger_signal":       triggerSignal,
-			"content_preview":      utils.TruncateString(content, 500),
-		}).Debug("CC+FC: No tool calls found in content")
+		}
+		// Only include content preview when body logging is enabled for the group
+		// to avoid potential privacy concerns (content may contain user prompts or paths)
+		if gv, ok := c.Get("group"); ok {
+			if g, ok := gv.(*models.Group); ok && g.EffectiveConfig.EnableRequestBodyLogging {
+				fields["content_preview"] = utils.TruncateString(content, 200)
+			}
+		}
+		logrus.WithFields(fields).Debug("CC+FC: No tool calls found in content")
 	}
 
 	if len(calls) == 0 {
@@ -1920,8 +1928,15 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	}
 
 	// Convert to Claude format
-	// When force FC is enabled, normalize tool arguments to fix potential issues.
-	// When only CC support is enabled, pass through arguments unchanged.
+	// DESIGN DECISION: JSON/path repair of tool arguments is intentionally limited to the
+	// force-function-call (FC) bridge mode. When only CC support is enabled (no FC), arguments
+	// are passed through unchanged to preserve upstream formatting.
+	//
+	// Rationale:
+	// - FC bridge mode synthesizes tool calls from XML, requiring normalization for compatibility
+	// - Plain CC mode forwards native OpenAI tool_calls which are already well-formed
+	// - Bash command double-escaping (doubleEscapeWindowsPathsForBash) is always applied for CC
+	//   to fix Claude Code's Windows path escape bug, regardless of FC mode
 	normalizeToolArgs := isFunctionCallEnabled(c)
 	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode, normalizeToolArgs)
 
