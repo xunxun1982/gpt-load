@@ -3572,6 +3572,16 @@ func removeClaudeCodePreamble(text string) string {
 	return strings.Join(cleanedLines, "\n")
 }
 
+// findJSONLeakStartIndex finds the position where JSON leak starts in text.
+// Returns -1 if no JSON leak is detected, 0 if entire line is JSON, or position of leak start.
+//
+// AI Review Note (2026-01-03): This function is designed for CC tool output cleanup paths only.
+// It may produce false positives on general text containing JSON-like patterns (e.g., prose with
+// "status", "id" words or JSON examples). This is acceptable because:
+// 1. It is ONLY called from CC leak-cleaning flows (removeFunctionCallsBlocks, removeClaudeCodePreamble)
+// 2. The context is already known to be tool-related output
+// 3. False positives in this context are preferable to leaked JSON in user-visible output
+// Do NOT use this as a general-purpose JSON detector for arbitrary text.
 func findJSONLeakStartIndex(text string) int {
 	if text == "" {
 		return -1
@@ -4114,21 +4124,20 @@ func isLeakedJSONFieldLine(trimmed string) bool {
 }
 
 // isStandaloneToolMarker checks if a line is a standalone tool marker.
-// STRUCTURAL APPROACH: Detects tool markers by function call pattern.
-// Performance: O(1) prefix checks
+// STRUCTURAL APPROACH: Detects tool markers by function call pattern (e.g., "ToolName(args)").
+// Performance: O(n) character scanning where n is the tool name length (max 40 chars).
+//
+// AI Review Note (2026-01-03): This function is used in removeClaudeCodePreamble to filter
+// leaked tool markers. It intentionally returns false for bullet-prefixed lines to preserve
+// user-facing content. Lines like "● Read(file.py)" are preserved as they may be legitimate
+// bullet points in user content. Only standalone markers without bullets are filtered.
 func isStandaloneToolMarker(trimmed string) bool {
+	// Preserve lines with bullet points - these are user-facing content
 	if strings.HasPrefix(trimmed, "●") || strings.HasPrefix(trimmed, "•") || strings.HasPrefix(trimmed, "‣") {
 		return false
 	}
 
 	candidate := trimmed
-	if strings.HasPrefix(candidate, "●") {
-		candidate = strings.TrimSpace(candidate[len("●"):])
-	} else if strings.HasPrefix(candidate, "•") {
-		candidate = strings.TrimSpace(candidate[len("•"):])
-	} else if strings.HasPrefix(candidate, "‣") {
-		candidate = strings.TrimSpace(candidate[len("‣"):])
-	}
 
 	op := strings.IndexByte(candidate, '(')
 	if op <= 0 || op > 40 {
@@ -6437,6 +6446,10 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 		}
 
 		// Extract tool arguments from the JSON object
+		// AI Review Note (2026-01-03): Unlike XML parsing path, we do NOT apply sanitizeJsonValue here.
+		// Reason: json.Unmarshal already handles JSON escaping correctly. The sanitizeJsonValue function
+		// is designed for XML-extracted values that may contain unescaped special characters.
+		// Applying it here would double-process already-valid JSON values.
 		args := make(map[string]any)
 		for k, v := range obj {
 			// Skip metadata fields that are not tool arguments
