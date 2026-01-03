@@ -1124,6 +1124,17 @@ func normalizeArgsGenericInPlace(args map[string]any) {
 		if trimmedStr == "" {
 			continue
 		}
+
+		// Fix Windows file paths where JSON escape sequences were incorrectly interpreted.
+		// When upstream models return paths like "F:\MyProjects\test\file.py", the JSON parser
+		// interprets \t as tab, \n as newline, etc. We detect and fix this for path-like keys.
+		// Detection: path contains control characters AND looks like a Windows path (has : or \)
+		if isPathLikeKey(key) && containsControlChars(strVal) && looksLikeWindowsPath(strVal) {
+			strVal = fixWindowsPathEscapes(strVal)
+			args[key] = strVal
+			trimmedStr = strings.TrimSpace(strVal)
+		}
+
 		if (strings.HasPrefix(trimmedStr, "{") && strings.HasSuffix(trimmedStr, "}")) ||
 			(strings.HasPrefix(trimmedStr, "[") && strings.HasSuffix(trimmedStr, "]")) {
 			var jsonVal any
@@ -1139,6 +1150,83 @@ func normalizeArgsGenericInPlace(args map[string]any) {
 			}
 		}
 	}
+}
+
+// isPathLikeKey returns true if the key name suggests it contains a file path.
+func isPathLikeKey(key string) bool {
+	lowerKey := strings.ToLower(key)
+	return strings.Contains(lowerKey, "path") ||
+		strings.Contains(lowerKey, "file") ||
+		strings.Contains(lowerKey, "dir") ||
+		lowerKey == "cwd" ||
+		lowerKey == "root" ||
+		lowerKey == "location"
+}
+
+// containsControlChars returns true if the string contains control characters
+// that might have been incorrectly interpreted from JSON escape sequences.
+func containsControlChars(s string) bool {
+	for _, r := range s {
+		// Check for common control characters that result from JSON escape interpretation:
+		// \t (tab), \n (newline), \r (carriage return), \b (backspace), \f (form feed)
+		if r == '\t' || r == '\n' || r == '\r' || r == '\b' || r == '\f' {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeWindowsPath returns true if the string looks like a Windows file path.
+// Checks for drive letter pattern (e.g., "C:", "F:") or backslash presence.
+func looksLikeWindowsPath(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	// Check for drive letter pattern: letter followed by colon
+	firstChar := s[0]
+	if (firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z') {
+		if s[1] == ':' {
+			return true
+		}
+	}
+	// Also check if it contains backslashes (even after some were converted to control chars)
+	return strings.Contains(s, "\\")
+}
+
+// fixWindowsPathEscapes converts control characters back to their backslash-letter form.
+// This fixes paths where JSON escape sequences like \t, \n were incorrectly interpreted.
+// Example: "F:\MyProjects	est\file.py" -> "F:\MyProjects\test\file.py"
+func fixWindowsPathEscapes(s string) string {
+	// Map of control characters to their original escape sequences
+	// These are the JSON escape sequences that get interpreted during JSON parsing
+	replacements := []struct {
+		char   rune
+		escape string
+	}{
+		{'\t', `\t`}, // tab -> \t
+		{'\n', `\n`}, // newline -> \n
+		{'\r', `\r`}, // carriage return -> \r
+		{'\b', `\b`}, // backspace -> \b
+		{'\f', `\f`}, // form feed -> \f
+	}
+
+	var result strings.Builder
+	result.Grow(len(s) + 10) // Pre-allocate with some extra space
+
+	for _, r := range s {
+		replaced := false
+		for _, rep := range replacements {
+			if r == rep.char {
+				result.WriteString(rep.escape)
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
 }
 
 func normalizeArgsEnsureSlice(args map[string]any, key string) {
@@ -1401,8 +1489,13 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 	if args == nil {
 		args = map[string]any{}
 	}
+
+	// Apply generic normalization for all tools (including Windows path fix).
+	// This must be done before tool-specific normalization.
 	normalizeArgsGenericInPlace(args)
 
+	// Tool-specific normalization
+	needsSpecificNormalization := true
 	switch toolName {
 	case "TodoWrite":
 		if normalizedTodos, ok := normalizeTodoWriteTodos(args); ok {
@@ -1424,9 +1517,14 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 		normalizeEditArgs(args)
 
 	default:
-		return arguments, false
+		// For tools without specific normalization, still return the generically
+		// normalized args (e.g., with Windows path fixes applied).
+		needsSpecificNormalization = false
 	}
 
+	// Always marshal and return the normalized args, even for tools without
+	// specific normalization. This ensures Windows path fixes are applied.
+	_ = needsSpecificNormalization // Used for documentation clarity
 	out, err := json.Marshal(args)
 	if err != nil {
 		return arguments, false

@@ -963,16 +963,18 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	}
 
 	req["messages"] = newMessages
-	if isCCRequest(c) {
-		if _, ok := req["tool_choice"]; !ok {
-			req["tool_choice"] = "required"
-		}
-	}
 
-	if !isCCRequest(c) {
-		delete(req, "tools")
-		delete(req, "tool_choice")
-	}
+	// IMPORTANT: When force_function_call is enabled, we MUST remove native tools
+	// from the request. The function call middleware injects tools via system prompt,
+	// so native tool definitions should NOT be sent to upstream.
+	// This applies to ALL requests including CC requests.
+	// Previously, CC requests kept tools which caused issues:
+	// 1. CC tools use Claude format (input_schema) but after conversion they become
+	//    OpenAI format (parameters)
+	// 2. If upstream expects Claude format, it fails with "input_schema: Field required"
+	// 3. Even if formats match, sending both prompt-based and native tools is redundant
+	delete(req, "tools")
+	delete(req, "tool_choice")
 
 	// Remove max_tokens only when it's too low to prevent truncation of the XML block.
 	// The XML format requires more tokens than standard text, and low limits (e.g. 100)
@@ -2699,6 +2701,13 @@ func cleanTruncatedToolResultJSON(text string) string {
 	// 3. ASCII-only edge cases (e.g., "tkinter.py" cut at ".py") are rare
 	// 4. If miscuts occur, they will be visible in logs for future improvement
 	// If ASCII tool outputs become more common, consider aligning with findLastSentenceEnd logic.
+	//
+	// AI REVIEW NOTE (2026-01-03): Suggested reusing findLastSentenceEnd here for consistency.
+	// DECISION: Keep current simpler logic because:
+	// - This is a fallback path only reached when structural patterns fail
+	// - Tool result context is different from general text (more tolerant of aggressive cuts)
+	// - findLastSentenceEnd's stricter ASCII rules may miss valid cut points in tool output
+	// - Current behavior is well-tested in production with Chinese-dominant outputs
 	if !foundStart {
 		for i := firstIndicatorIdx - 1; i >= 0; i-- {
 			c := result[i]

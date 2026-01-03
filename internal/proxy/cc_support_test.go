@@ -3554,3 +3554,330 @@ query":"Python GUI best practices"},"is_error":true,"name":"WebSearch","status":
 		})
 	}
 }
+
+// TestFixWindowsPathEscapes tests the fixWindowsPathEscapes function that converts
+// control characters back to their backslash-letter form in Windows file paths.
+// This addresses the issue where JSON escape sequences like \t, \n are incorrectly
+// interpreted during JSON parsing of tool call arguments.
+func TestFixWindowsPathEscapes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "path with tab character",
+			input:    "F:\\MyProjects\test\\language\\python\\xx\\hello.py", // \t is actual tab
+			expected: `F:\MyProjects\test\language\python\xx\hello.py`,
+		},
+		{
+			name:     "path with newline character",
+			input:    "F:\\MyProjects\new\\file.py", // \n is actual newline
+			expected: `F:\MyProjects\new\file.py`,
+		},
+		{
+			name:     "path with carriage return",
+			input:    "F:\\MyProjects\readme\\file.py", // \r is actual carriage return
+			expected: `F:\MyProjects\readme\file.py`,
+		},
+		{
+			name:     "path with backspace",
+			input:    "F:\\MyProjects\backup\\file.py", // \b is actual backspace
+			expected: `F:\MyProjects\backup\file.py`,
+		},
+		{
+			name:     "path with form feed",
+			input:    "F:\\MyProjects\folder\\file.py", // \f is actual form feed
+			expected: `F:\MyProjects\folder\file.py`,
+		},
+		{
+			name:     "path with multiple control chars",
+			input:    "F:\test\new\readme.txt", // \t and \n and \r are actual control chars
+			expected: `F:\test\new\readme.txt`,
+		},
+		{
+			name:     "normal path without control chars",
+			input:    `F:\MyProjects\src\main.go`,
+			expected: `F:\MyProjects\src\main.go`,
+		},
+		{
+			name:     "unix path unchanged",
+			input:    "/home/user/test/file.py",
+			expected: "/home/user/test/file.py",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := fixWindowsPathEscapes(tt.input)
+			if result != tt.expected {
+				t.Errorf("fixWindowsPathEscapes(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestNormalizeArgsGenericInPlace_WindowsPathFix tests that normalizeArgsGenericInPlace
+// correctly fixes Windows file paths where JSON escape sequences were incorrectly interpreted.
+func TestNormalizeArgsGenericInPlace_WindowsPathFix(t *testing.T) {
+	tests := []struct {
+		name         string
+		key          string
+		value        string
+		expectedVal  string
+		shouldChange bool
+	}{
+		{
+			name:         "file_path with tab",
+			key:          "file_path",
+			value:        "F:\\MyProjects\test\\language\\python\\xx\\hello.py", // \t is actual tab
+			expectedVal:  `F:\MyProjects\test\language\python\xx\hello.py`,
+			shouldChange: true,
+		},
+		{
+			name:         "path with newline",
+			key:          "path",
+			value:        "F:\\MyProjects\new\\file.py", // \n is actual newline
+			expectedVal:  `F:\MyProjects\new\file.py`,
+			shouldChange: true,
+		},
+		{
+			name:         "directory with tab",
+			key:          "directory",
+			value:        "C:\\Users\test\\Documents", // \t is actual tab
+			expectedVal:  `C:\Users\test\Documents`,
+			shouldChange: true,
+		},
+		{
+			name:         "file with backspace",
+			key:          "file",
+			value:        "D:\backup\\data.txt", // \b is actual backspace
+			expectedVal:  `D:\backup\data.txt`,
+			shouldChange: true,
+		},
+		{
+			name:         "non-path key unchanged",
+			key:          "content",
+			value:        "Hello\tWorld",
+			expectedVal:  "Hello\tWorld",
+			shouldChange: false,
+		},
+		{
+			name:         "unix path unchanged",
+			key:          "file_path",
+			value:        "/home/user/test/file.py",
+			expectedVal:  "/home/user/test/file.py",
+			shouldChange: false,
+		},
+		{
+			name:         "normal windows path unchanged",
+			key:          "file_path",
+			value:        `C:\Users\Admin\file.txt`,
+			expectedVal:  `C:\Users\Admin\file.txt`,
+			shouldChange: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{tt.key: tt.value}
+			normalizeArgsGenericInPlace(args)
+			result, ok := args[tt.key].(string)
+			if !ok {
+				t.Fatalf("expected string value, got %T", args[tt.key])
+			}
+			if result != tt.expectedVal {
+				t.Errorf("normalizeArgsGenericInPlace[%q] = %q, want %q", tt.key, result, tt.expectedVal)
+			}
+		})
+	}
+}
+
+// TestIsPathLikeKey tests the isPathLikeKey helper function.
+func TestIsPathLikeKey(t *testing.T) {
+	tests := []struct {
+		key      string
+		expected bool
+	}{
+		{"file_path", true},
+		{"filePath", true},
+		{"path", true},
+		{"file", true},
+		{"directory", true},
+		{"dir", true},
+		{"cwd", true},
+		{"root", true},
+		{"location", true},
+		{"FILE_PATH", true},
+		{"content", false},
+		{"command", false},
+		{"query", false},
+		{"name", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			result := isPathLikeKey(tt.key)
+			if result != tt.expected {
+				t.Errorf("isPathLikeKey(%q) = %v, want %v", tt.key, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestLooksLikeWindowsPath tests the looksLikeWindowsPath helper function.
+func TestLooksLikeWindowsPath(t *testing.T) {
+	tests := []struct {
+		path     string
+		expected bool
+	}{
+		{"C:\\Users\\Admin", true},
+		{"F:\\MyProjects\\test", true},
+		{"D:", true},
+		{"/home/user/file", false},
+		{"./relative/path", false},
+		{"file.txt", false},
+		{"", false},
+		{"C", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			result := looksLikeWindowsPath(tt.path)
+			if result != tt.expected {
+				t.Errorf("looksLikeWindowsPath(%q) = %v, want %v", tt.path, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestContainsControlChars tests the containsControlChars helper function.
+func TestContainsControlChars(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"hello\tworld", true},
+		{"hello\nworld", true},
+		{"hello\rworld", true},
+		{"hello\bworld", true},
+		{"hello\fworld", true},
+		{"hello world", false},
+		{`hello\tworld`, false}, // literal backslash-t, not tab
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := containsControlChars(tt.input)
+			if result != tt.expected {
+				t.Errorf("containsControlChars(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestNormalizeOpenAIToolCallArguments_WindowsPathFix tests that normalizeOpenAIToolCallArguments
+// correctly fixes Windows file paths for all tools, not just specific ones.
+func TestNormalizeOpenAIToolCallArguments_WindowsPathFix(t *testing.T) {
+	// Build test arguments with actual control characters embedded in the JSON string values.
+	// This simulates what happens when upstream models return paths like "F:\\MyProjects\\test"
+	// where \\t gets interpreted as tab during JSON parsing.
+	makeArgsWithTab := func(key, prefix, suffix string) string {
+		// Create a map, set the value with embedded tab, then marshal to JSON
+		args := map[string]any{key: prefix + "\t" + suffix}
+		b, _ := json.Marshal(args)
+		return string(b)
+	}
+	makeArgsWithNewline := func(key, prefix, suffix string) string {
+		args := map[string]any{key: prefix + "\n" + suffix}
+		b, _ := json.Marshal(args)
+		return string(b)
+	}
+	makeArgsWithBackspace := func(key, prefix, suffix string) string {
+		args := map[string]any{key: prefix + "\b" + suffix}
+		b, _ := json.Marshal(args)
+		return string(b)
+	}
+
+	tests := []struct {
+		name         string
+		toolName     string
+		arguments    string
+		expectedPath string
+		shouldFix    bool
+	}{
+		{
+			name:         "Read tool with tab in path",
+			toolName:     "Read",
+			arguments:    makeArgsWithTab("file_path", `F:\MyProjects`, `est\language\python\xx\hello.py`),
+			expectedPath: `F:\MyProjects\test\language\python\xx\hello.py`,
+			shouldFix:    true,
+		},
+		{
+			name:         "Write tool with newline in path",
+			toolName:     "Write",
+			arguments:    makeArgsWithNewline("file_path", `F:\MyProjects`, `ew\file.py`),
+			expectedPath: `F:\MyProjects\new\file.py`,
+			shouldFix:    true,
+		},
+		{
+			name:         "Glob tool with tab in path",
+			toolName:     "Glob",
+			arguments:    makeArgsWithTab("path", `C:\Users`, `est`),
+			expectedPath: `C:\Users\test`,
+			shouldFix:    true,
+		},
+		{
+			name:         "Grep tool with backspace in path",
+			toolName:     "Grep",
+			arguments:    makeArgsWithBackspace("path", `D:`, `ackup\src`),
+			expectedPath: `D:\backup\src`,
+			shouldFix:    true,
+		},
+		{
+			name:         "Bash tool with tab in cwd",
+			toolName:     "Bash",
+			arguments:    makeArgsWithTab("cwd", `E:\Projects`, `est`),
+			expectedPath: `E:\Projects\test`,
+			shouldFix:    true,
+		},
+		{
+			name:         "Unknown tool with tab in file",
+			toolName:     "CustomTool",
+			arguments:    makeArgsWithTab("file", `F:\Data`, `emp\file.txt`),
+			expectedPath: `F:\Data\temp\file.txt`,
+			shouldFix:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := normalizeOpenAIToolCallArguments(tt.toolName, tt.arguments)
+			if !ok {
+				t.Fatalf("normalizeOpenAIToolCallArguments returned false for %s, args: %s", tt.toolName, tt.arguments)
+			}
+
+			// Parse the result to check the path value
+			var args map[string]any
+			if err := json.Unmarshal([]byte(result), &args); err != nil {
+				t.Fatalf("failed to parse result: %v", err)
+			}
+
+			// Find the path-like key and check its value
+			var foundPath string
+			for key, val := range args {
+				if isPathLikeKey(key) {
+					if strVal, ok := val.(string); ok {
+						foundPath = strVal
+						break
+					}
+				}
+			}
+
+			if tt.shouldFix && foundPath != tt.expectedPath {
+				t.Errorf("expected path %q, got %q", tt.expectedPath, foundPath)
+			}
+		})
+	}
+}

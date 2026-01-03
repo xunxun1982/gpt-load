@@ -201,7 +201,14 @@ func TestRemoveFunctionCallsBlocks_AutoPauseSnippetsFromProductionLog(t *testing
 	}
 }
 
-func TestApplyFunctionCallRequestRewrite_CCRequestKeepsToolsAndForcesRequired(t *testing.T) {
+// TestApplyFunctionCallRequestRewrite_CCRequestRemovesTools verifies that when
+// force_function_call is enabled, native tools are removed from the request
+// even for CC requests. This is the correct behavior because:
+// 1. Force function call injects tools via system prompt
+// 2. Native tools should NOT be sent to upstream to avoid format conflicts
+// 3. CC tools use Claude format (input_schema) but after conversion they become
+//    OpenAI format (parameters), which can cause "input_schema: Field required" errors
+func TestApplyFunctionCallRequestRewrite_CCRequestRemovesTools(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -248,11 +255,73 @@ func TestApplyFunctionCallRequestRewrite_CCRequestKeepsToolsAndForcesRequired(t 
 		t.Fatalf("failed to unmarshal rewritten body: %v", err)
 	}
 
-	if _, ok := rewrittenReq["tools"]; !ok {
-		t.Fatalf("expected tools to be preserved for CC requests")
+	// When force_function_call is enabled, tools should be removed
+	// because they are injected via system prompt instead
+	if _, ok := rewrittenReq["tools"]; ok {
+		t.Fatalf("expected tools to be removed when force_function_call is enabled")
 	}
-	if tc, ok := rewrittenReq["tool_choice"]; !ok || tc != "required" {
-		t.Fatalf("expected tool_choice=required for CC requests, got: %v", rewrittenReq["tool_choice"])
+	if _, ok := rewrittenReq["tool_choice"]; ok {
+		t.Fatalf("expected tool_choice to be removed when force_function_call is enabled")
+	}
+}
+
+// TestApplyFunctionCallRequestRewrite_NonCCRequestRemovesTools verifies that
+// for non-CC requests (regular OpenAI requests), tools are also removed when
+// force_function_call is enabled.
+func TestApplyFunctionCallRequestRewrite_NonCCRequestRemovesTools(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/proxy/test-group/v1/chat/completions", nil)
+	// Note: NOT setting ctxKeyOriginalFormat, so this is a non-CC request
+
+	group := &models.Group{
+		Name:        "test-group",
+		ChannelType: "openai",
+		Config: map[string]any{
+			"force_function_call": true,
+		},
+	}
+
+	reqBody := map[string]any{
+		"model": "test-model",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+		},
+		"tools": []any{
+			map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "web_search",
+					"description": "",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{},
+					},
+				},
+			},
+		},
+		"tool_choice": "auto",
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	ps := &ProxyServer{}
+	rewrittenBody, _, err := ps.applyFunctionCallRequestRewrite(c, group, bodyBytes)
+	if err != nil {
+		t.Fatalf("applyFunctionCallRequestRewrite() error = %v", err)
+	}
+
+	var rewrittenReq map[string]any
+	if err := json.Unmarshal(rewrittenBody, &rewrittenReq); err != nil {
+		t.Fatalf("failed to unmarshal rewritten body: %v", err)
+	}
+
+	// For non-CC requests with force_function_call enabled, tools should be removed
+	if _, ok := rewrittenReq["tools"]; ok {
+		t.Fatalf("expected tools to be removed for non-CC requests when force_function_call is enabled")
+	}
+	if _, ok := rewrittenReq["tool_choice"]; ok {
+		t.Fatalf("expected tool_choice to be removed for non-CC requests when force_function_call is enabled")
 	}
 }
 
