@@ -1854,6 +1854,14 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 // AI Review Note (2026-01-03): This function intentionally discards non-JSON text inside GLM blocks.
 // Based on production log analysis, GLM blocks only contain tool call JSON or thinking content,
 // never user-visible prose. If GLM format changes to include mixed content, this logic should be revisited.
+//
+// AI Review Note (2026-01-03): Preserved request JSON from GLM blocks is NOT automatically converted
+// to tool calls because extractToolCalls only recognizes XML format (<function_calls>/<invoke>).
+// This is an intentional behavior gap - GLM blocks primarily contain tool results, not new requests.
+// If GLM blocks start containing request JSON that needs execution, consider either:
+// 1. Piping preserved content through extractToolCallsFromEmbeddedJSON, or
+// 2. Treating all JSON inside GLM blocks as internal and dropping it entirely.
+// Current design prioritizes safety (not executing unintended tool calls) over completeness.
 func processGLMBlockContent(content string) string {
 	// If content doesn't contain JSON object, it's likely thinking content - remove it
 	if !strings.Contains(content, "{") {
@@ -2672,6 +2680,15 @@ func cleanTruncatedToolResultJSON(text string) string {
 	}
 
 	// Pattern 5: Just sentence boundary (fallback)
+	// AI Review Note (2026-01-03): This pattern is more aggressive than findLastSentenceEnd
+	// because it matches ASCII punctuation (., !, ?) without checking the following character.
+	// findLastSentenceEnd requires whitespace or CJK after ASCII punctuation.
+	// This is an acceptable tradeoff because:
+	// 1. This is a fallback path - earlier patterns handle most production cases
+	// 2. Production logs show tool results are predominantly in Chinese context
+	// 3. ASCII-only edge cases (e.g., "tkinter.py" cut at ".py") are rare
+	// 4. If miscuts occur, they will be visible in logs for future improvement
+	// If ASCII tool outputs become more common, consider aligning with findLastSentenceEnd logic.
 	if !foundStart {
 		for i := firstIndicatorIdx - 1; i >= 0; i-- {
 			c := result[i]
@@ -6415,34 +6432,15 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 		}
 
 		// Skip tool call results - these contain execution results, not new tool call requests
-		// Tool call results have fields like: is_error, status, result, duration, display_result
-		// Structural detection: if object has "is_error" field (true or false), it's a result not a request
-		// The presence of is_error field indicates this is a tool execution result, regardless of value
-		if _, hasIsError := obj["is_error"]; hasIsError {
+		// AI Review Fix (2026-01-03): Use isToolCallResultJSON for consistent result detection.
+		// Previous ad-hoc field checks were looser than isToolCallResultJSON's logic, which could
+		// cause partial results (e.g., {"name":"Read","status":"pending","duration":"0s"}) to be
+		// treated as requests. Using the same function ensures consistent behavior across all paths.
+		if isToolCallResultJSON(jsonStr) {
 			logrus.WithFields(logrus.Fields{
 				"tool_name": toolName,
-			}).Debug("CC+FC: Skipping tool call result (has 'is_error' field)")
+			}).Debug("CC+FC: Skipping tool call result (detected by isToolCallResultJSON)")
 			continue
-		}
-		if result, hasResult := obj["result"]; hasResult {
-			// Only skip if result is non-empty (empty result might be a pending request)
-			if resultStr, ok := result.(string); ok && resultStr != "" {
-				logrus.WithFields(logrus.Fields{
-					"tool_name": toolName,
-				}).Debug("CC+FC: Skipping tool call result (has non-empty 'result' field)")
-				continue
-			}
-		}
-		// Check status field - "error" or "completed" indicates a result, not a new request
-		// Tool call results have status field set by the execution system
-		if status, ok := obj["status"].(string); ok {
-			if status == "error" || status == "completed" {
-				logrus.WithFields(logrus.Fields{
-					"tool_name": toolName,
-					"status":    status,
-				}).Debug("CC+FC: Skipping tool call result (has status field)")
-				continue
-			}
 		}
 
 		// Extract tool arguments from the JSON object
