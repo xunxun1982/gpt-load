@@ -9,6 +9,7 @@ interface Props {
   modelValue: string;
   placeholder?: string;
   size?: "small" | "medium" | "large";
+  isChildGroup?: boolean; // Whether this is a child group (uses sk-child- prefix)
 }
 
 // Open manual copy fallback modal
@@ -34,6 +35,7 @@ const { t } = useI18n();
 
 const props = withDefaults(defineProps<Props>(), {
   size: "small",
+  isChildGroup: false,
 });
 
 const emit = defineEmits<Emits>();
@@ -81,8 +83,10 @@ function generateKeys(): string[] {
   const keys: string[] = [];
   // Defensive bounds check (UI already enforces 1-100 via NInputNumber)
   const count = Math.min(Math.max(keyCount.value, 1), 100);
+  // Use sk-child- prefix for child groups, sk- for standard groups
+  const prefix = props.isChildGroup ? "sk-child-" : "sk-";
   for (let i = 0; i < count; i++) {
-    keys.push(`sk-${generateRandomString(48)}`);
+    keys.push(`${prefix}${generateRandomString(48)}`);
   }
   return keys;
 }
