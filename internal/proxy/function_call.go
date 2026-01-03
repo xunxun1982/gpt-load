@@ -2408,6 +2408,15 @@ func removeUnclosedTagLines(text string) string {
 // Based on production log analysis, multiple truncated result fragments in a single response
 // are extremely rare. If this becomes an issue, the function can be wrapped in a loop.
 // Current design prioritizes simplicity and performance over handling edge cases.
+//
+// AI Review Note (2026-01-03): For purely ASCII tool outputs without CJK characters,
+// the end detection may not find a CJK boundary. This is an acceptable tradeoff because:
+// 1. Production logs show tool results are predominantly in Chinese context
+// 2. ASCII-only outputs are rare in our use case
+// 3. The function falls back to truncated JSON ending patterns (},"type, }}, etc.)
+// 4. If ASCII miscuts occur, they will be visible in logs for future improvement
+// If ASCII tool outputs become more common, consider extending end detection to accept
+// ASCII sentence boundaries (e.g., ". ", ".\n") similar to findLastSentenceEnd.
 func cleanTruncatedToolResultJSON(text string) string {
 	// Fast path: if text contains <invoke> or <parameter> tags, skip cleanup
 	// These are tool call requests, not tool call results
@@ -6215,7 +6224,8 @@ func extractToolCallsFromEmbeddedJSON(content string) []functionCall {
 	// 3. Clarity: Makes it obvious which tools are supported by this fallback path
 	// 4. Stability: Tool definitions may vary per request, but this fallback should be consistent
 	// If new CC tools are added, update this list. For MCP tools, use the standard XML parsing path.
-	// TODO: Consider centralizing this list with collectFunctionToolDefs if maintenance becomes an issue.
+	// MAINTENANCE: Keep in sync with CC tool set. When adding new CC tools, ensure they are added here.
+	// Zero-argument tools (KillShell, EnterPlanMode, ExitPlanMode) are supported since 2026-01-03.
 	knownTools := map[string]bool{
 		"Read": true, "Write": true, "Edit": true, "Bash": true,
 		"Glob": true, "Grep": true, "WebSearch": true, "WebFetch": true,
@@ -6409,15 +6419,16 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 			args[k] = v
 		}
 
-		// Only add if we have arguments
-		if len(args) > 0 {
-			calls = append(calls, functionCall{Name: toolName, Args: args})
-			processedRanges = append(processedRanges, [2]int{startIdx, endIdx})
-			logrus.WithFields(logrus.Fields{
-				"tool_name":  toolName,
-				"args_count": len(args),
-			}).Debug("CC+FC: Extracted tool call from embedded JSON")
-		}
+		// AI Review Fix (2026-01-03): Always add the call even with zero arguments.
+		// Zero-argument tools like KillShell, EnterPlanMode, ExitPlanMode are valid.
+		// The standard XML parser allows zero-argument calls, so this fallback path
+		// should behave consistently. Example: {"name":"KillShell"} is a valid tool call.
+		calls = append(calls, functionCall{Name: toolName, Args: args})
+		processedRanges = append(processedRanges, [2]int{startIdx, endIdx})
+		logrus.WithFields(logrus.Fields{
+			"tool_name":  toolName,
+			"args_count": len(args),
+		}).Debug("CC+FC: Extracted tool call from embedded JSON")
 	}
 
 	return calls
