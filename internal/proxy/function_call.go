@@ -331,7 +331,10 @@ var (
 	// Captures: group 1 = key name, group 2 = value (may contain special chars)
 	// Uses non-greedy match to stop at </arg_value>
 	// Performance: O(n) character class matching
-	reArgKeyValuePair = regexp.MustCompile(`(?s)<arg_key>([^<]+)</arg_key><arg_value>(.*?)</arg_value>`)
+	// AI Review Fix (2026-01-03): Added \s* between </arg_key> and <arg_value> to allow
+	// optional whitespace/newlines between tags. Models may insert line breaks or spaces
+	// between closing and opening tags in multiline output.
+	reArgKeyValuePair = regexp.MustCompile(`(?s)<arg_key>([^<]+)</arg_key>\s*<arg_value>(.*?)</arg_value>`)
 
 	// Pattern to match incomplete/unclosed invoke or parameter tags at end of content
 	// Examples: "<invoke name=\"Read\">F:/path/file.py", "<parameter name=\"todos\">[{...}]"
@@ -1825,6 +1828,12 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 func processGLMBlockContent(content string) string {
 	// If content doesn't contain JSON object, it's likely thinking content - remove it
 	if !strings.Contains(content, "{") {
+		// AI Review Fix (2026-01-03): Added debug log for observability when GLM block
+		// is removed due to no JSON content. Helps detect GLM format drift in production.
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithField("content_preview", utils.TruncateString(content, 100)).
+				Debug("processGLMBlockContent: Removed GLM block with no JSON content")
+		}
 		return ""
 	}
 
@@ -2052,6 +2061,12 @@ func removeThinkBlocks(text string) string {
 
 		if strings.TrimSpace(processedContent) == "" {
 			// All content was tool call results - remove the entire block
+			// AI Review Fix (2026-01-03): Added debug log for observability when entire
+			// GLM block is removed. Helps detect GLM format drift in production.
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithField("original_length", len(glmContent)).
+					Debug("removeThinkBlocks: Removed entire GLM block (all content was tool results)")
+			}
 			text = text[:start] + text[endPos:]
 		} else {
 			// Some content remains - preserve it but remove the tags
@@ -2094,6 +2109,13 @@ func removeThinkBlocks(text string) string {
 			// Try to find JSON-like content before the closer that should be removed
 			// Look for patterns like: ..."name":"Read"..."is_error":true...}</glm_block>
 			// We need to find where the JSON object starts (look for { before the closer)
+			// AI Review Note (2026-01-03): This brace scan uses simple depth counting without
+			// tracking string/escape state. While processGLMBlockContent has a more robust scanner,
+			// this simpler approach is acceptable here because:
+			// 1. The subsequent isToolCallResultJSON check validates the content semantically
+			// 2. False positives (wrong JSON boundary) will fail the result check and be skipped
+			// 3. This path handles edge cases (orphaned closers) that are already malformed
+			// If tool results frequently contain unbalanced braces in strings, consider upgrading.
 			startIdx := closeIdx
 			braceDepth := 0
 			foundBrace := false
@@ -6263,6 +6285,14 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 
 		// Find the start of the JSON object by counting braces backward
 		// When going backward: } increases depth, { decreases depth
+		// AI Review Note (2026-01-03): This brace scan uses simple depth counting without
+		// tracking string/escape state (unlike processGLMBlockContent's robust scanner).
+		// This is acceptable here because:
+		// 1. json.Unmarshal is called after extraction to validate the JSON
+		// 2. Invalid JSON boundaries will fail parsing and be skipped
+		// 3. This is a fallback path for embedded JSON, not the primary parsing strategy
+		// 4. Known tools (CC tools) rarely have deeply nested JSON with unbalanced braces in strings
+		// If parsing failures increase, consider using extractBalancedJSON or the robust scanner.
 		startIdx := -1
 		depth := 0
 		for i := nameFieldStart - 1; i >= 0; i-- {
