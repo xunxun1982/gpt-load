@@ -104,7 +104,7 @@ func GenerateSecureRandomString(length int) string {
 	}
 
 	// Calculate bytes needed: base64 encoding produces 4 chars per 3 bytes
-	// We need slightly more bytes to ensure we have enough characters after encoding
+	// Formula computes ceil(length * 3 / 4) to ensure we have enough bytes
 	bytesNeeded := (length*3 + 3) / 4
 
 	randomBytes := make([]byte, bytesNeeded)
