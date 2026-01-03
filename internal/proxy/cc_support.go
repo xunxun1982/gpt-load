@@ -1495,7 +1495,6 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 	normalizeArgsGenericInPlace(args)
 
 	// Tool-specific normalization
-	needsSpecificNormalization := true
 	switch toolName {
 	case "TodoWrite":
 		if normalizedTodos, ok := normalizeTodoWriteTodos(args); ok {
@@ -1519,12 +1518,10 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 	default:
 		// For tools without specific normalization, still return the generically
 		// normalized args (e.g., with Windows path fixes applied).
-		needsSpecificNormalization = false
 	}
 
 	// Always marshal and return the normalized args, even for tools without
 	// specific normalization. This ensures Windows path fixes are applied.
-	_ = needsSpecificNormalization // Used for documentation clarity
 	out, err := json.Marshal(args)
 	if err != nil {
 		return arguments, false
@@ -1567,8 +1564,10 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 		hasInvoke := strings.Contains(content, "<invoke")
 		hasFunctionCalls := strings.Contains(content, "<function_calls>")
 		hasTrigger := triggerSignal != "" && strings.Contains(content, triggerSignal)
+		// NOTE: Use "<antml" instead of "antml" to avoid false positives from words like "semantml"
+		// This is only for debug logging, so precision is preferred over recall
 		hasThinking := strings.Contains(content, "<thinking>") || strings.Contains(content, "<think>") ||
-			strings.Contains(content, "antml") && strings.Contains(content, "thinking")
+			strings.Contains(content, "<antml") && strings.Contains(content, "thinking")
 		// Detect execution intent phrases (model describes action but doesn't call tool)
 		// This helps diagnose cases where thinking models output intent without actual tool calls
 		hasExecutionIntent := reExecutionIntent.MatchString(content)

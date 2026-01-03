@@ -3621,60 +3621,52 @@ func TestFixWindowsPathEscapes(t *testing.T) {
 // correctly fixes Windows file paths where JSON escape sequences were incorrectly interpreted.
 func TestNormalizeArgsGenericInPlace_WindowsPathFix(t *testing.T) {
 	tests := []struct {
-		name         string
-		key          string
-		value        string
-		expectedVal  string
-		shouldChange bool
+		name        string
+		key         string
+		value       string
+		expectedVal string
 	}{
 		{
-			name:         "file_path with tab",
-			key:          "file_path",
-			value:        "F:\\MyProjects\test\\language\\python\\xx\\hello.py", // \t is actual tab
-			expectedVal:  `F:\MyProjects\test\language\python\xx\hello.py`,
-			shouldChange: true,
+			name:        "file_path with tab",
+			key:         "file_path",
+			value:       "F:\\MyProjects\test\\language\\python\\xx\\hello.py", // \t is actual tab
+			expectedVal: `F:\MyProjects\test\language\python\xx\hello.py`,
 		},
 		{
-			name:         "path with newline",
-			key:          "path",
-			value:        "F:\\MyProjects\new\\file.py", // \n is actual newline
-			expectedVal:  `F:\MyProjects\new\file.py`,
-			shouldChange: true,
+			name:        "path with newline",
+			key:         "path",
+			value:       "F:\\MyProjects\new\\file.py", // \n is actual newline
+			expectedVal: `F:\MyProjects\new\file.py`,
 		},
 		{
-			name:         "directory with tab",
-			key:          "directory",
-			value:        "C:\\Users\test\\Documents", // \t is actual tab
-			expectedVal:  `C:\Users\test\Documents`,
-			shouldChange: true,
+			name:        "directory with tab",
+			key:         "directory",
+			value:       "C:\\Users\test\\Documents", // \t is actual tab
+			expectedVal: `C:\Users\test\Documents`,
 		},
 		{
-			name:         "file with backspace",
-			key:          "file",
-			value:        "D:\backup\\data.txt", // \b is actual backspace
-			expectedVal:  `D:\backup\data.txt`,
-			shouldChange: true,
+			name:        "file with backspace",
+			key:         "file",
+			value:       "D:\backup\\data.txt", // \b is actual backspace
+			expectedVal: `D:\backup\data.txt`,
 		},
 		{
-			name:         "non-path key unchanged",
-			key:          "content",
-			value:        "Hello\tWorld",
-			expectedVal:  "Hello\tWorld",
-			shouldChange: false,
+			name:        "non-path key unchanged",
+			key:         "content",
+			value:       "Hello\tWorld",
+			expectedVal: "Hello\tWorld",
 		},
 		{
-			name:         "unix path unchanged",
-			key:          "file_path",
-			value:        "/home/user/test/file.py",
-			expectedVal:  "/home/user/test/file.py",
-			shouldChange: false,
+			name:        "unix path unchanged",
+			key:         "file_path",
+			value:       "/home/user/test/file.py",
+			expectedVal: "/home/user/test/file.py",
 		},
 		{
-			name:         "normal windows path unchanged",
-			key:          "file_path",
-			value:        `C:\Users\Admin\file.txt`,
-			expectedVal:  `C:\Users\Admin\file.txt`,
-			shouldChange: false,
+			name:        "normal windows path unchanged",
+			key:         "file_path",
+			value:       `C:\Users\Admin\file.txt`,
+			expectedVal: `C:\Users\Admin\file.txt`,
 		},
 	}
 
