@@ -1310,7 +1310,7 @@ onMounted(() => {
                 :min="1"
                 :max="10"
                 size="tiny"
-                style="width: 50px"
+                style="width: 70px"
               />
             </span>
           </template>
