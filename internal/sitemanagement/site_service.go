@@ -716,8 +716,24 @@ func (s *SiteService) GetAutoCheckinConfig(ctx context.Context) (*AutoCheckinCon
 		return nil, err
 	}
 
+	// Parse schedule times from comma-separated string
+	var scheduleTimes []string
+	if st.ScheduleTimes != "" {
+		for _, t := range strings.Split(st.ScheduleTimes, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				scheduleTimes = append(scheduleTimes, t)
+			}
+		}
+	}
+	// Default to single time if empty
+	if len(scheduleTimes) == 0 {
+		scheduleTimes = []string{"09:00"}
+	}
+
 	return &AutoCheckinConfig{
 		GlobalEnabled:     st.AutoCheckinEnabled,
+		ScheduleTimes:     scheduleTimes,
 		WindowStart:       st.WindowStart,
 		WindowEnd:         st.WindowEnd,
 		ScheduleMode:      st.ScheduleMode,
@@ -731,30 +747,41 @@ func (s *SiteService) GetAutoCheckinConfig(ctx context.Context) (*AutoCheckinCon
 }
 
 func (s *SiteService) UpdateAutoCheckinConfig(ctx context.Context, cfg AutoCheckinConfig) (*AutoCheckinConfig, error) {
-	if cfg.WindowStart == "" || cfg.WindowEnd == "" {
-		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.time_window_required", nil)
-	}
-	if _, err := parseTimeToMinutes(cfg.WindowStart); err != nil {
-		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_start"})
-	}
-	if _, err := parseTimeToMinutes(cfg.WindowEnd); err != nil {
-		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_end"})
-	}
-
 	mode := strings.TrimSpace(cfg.ScheduleMode)
 	if mode == "" {
-		mode = AutoCheckinScheduleModeRandom
+		mode = AutoCheckinScheduleModeMultiple
 	}
-	if mode != AutoCheckinScheduleModeRandom && mode != AutoCheckinScheduleModeDeterministic {
-		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_schedule_mode", nil)
-	}
-	if mode == AutoCheckinScheduleModeDeterministic {
+
+	// Validate based on schedule mode
+	switch mode {
+	case AutoCheckinScheduleModeMultiple:
+		if len(cfg.ScheduleTimes) == 0 {
+			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.schedule_times_required", nil)
+		}
+		for i, t := range cfg.ScheduleTimes {
+			if _, err := parseTimeToMinutes(t); err != nil {
+				return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "schedule_times", "index": i})
+			}
+		}
+	case AutoCheckinScheduleModeRandom:
+		if cfg.WindowStart == "" || cfg.WindowEnd == "" {
+			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.time_window_required", nil)
+		}
+		if _, err := parseTimeToMinutes(cfg.WindowStart); err != nil {
+			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_start"})
+		}
+		if _, err := parseTimeToMinutes(cfg.WindowEnd); err != nil {
+			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_end"})
+		}
+	case AutoCheckinScheduleModeDeterministic:
 		if cfg.DeterministicTime == "" {
 			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.deterministic_time_required", nil)
 		}
 		if _, err := parseTimeToMinutes(cfg.DeterministicTime); err != nil {
 			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "deterministic_time"})
 		}
+	default:
+		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_schedule_mode", nil)
 	}
 
 	st, err := s.ensureSettingsRow(ctx)
@@ -763,6 +790,7 @@ func (s *SiteService) UpdateAutoCheckinConfig(ctx context.Context, cfg AutoCheck
 	}
 
 	st.AutoCheckinEnabled = cfg.GlobalEnabled
+	st.ScheduleTimes = strings.Join(cfg.ScheduleTimes, ",")
 	st.WindowStart = cfg.WindowStart
 	st.WindowEnd = cfg.WindowEnd
 	st.ScheduleMode = mode
@@ -876,6 +904,8 @@ func normalizeAuthType(raw string) string {
 	switch s {
 	case strings.ToLower(AuthTypeAccessToken):
 		return AuthTypeAccessToken
+	case strings.ToLower(AuthTypeCookie):
+		return AuthTypeCookie
 	case strings.ToLower(AuthTypeNone), "":
 		return AuthTypeNone
 	default:

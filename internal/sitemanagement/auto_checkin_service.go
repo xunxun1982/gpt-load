@@ -307,11 +307,18 @@ func (s *AutoCheckinService) computeNextTriggerTime(ctx context.Context) (time.T
 		return retryTime, true, nil
 	}
 
-	if config.ScheduleMode == AutoCheckinScheduleModeDeterministic {
+	// Handle different schedule modes
+	switch config.ScheduleMode {
+	case AutoCheckinScheduleModeMultiple:
+		if t := computeMultipleTrigger(config.ScheduleTimes, now); !t.IsZero() {
+			return t, true, nil
+		}
+	case AutoCheckinScheduleModeDeterministic:
 		if t := computeDeterministicTrigger(config, now); !t.IsZero() {
 			return t, true, nil
 		}
 	}
+	// Default to random mode
 	next, err := computeRandomTrigger(config.WindowStart, config.WindowEnd, now)
 	return next, true, err
 }
@@ -322,7 +329,7 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Singleton row (ID=1) created at startup; race condition extremely unlikely
-			row = ManagedSiteSetting{ID: 1, WindowStart: "09:00", WindowEnd: "18:00", ScheduleMode: AutoCheckinScheduleModeRandom, RetryIntervalMinutes: 60, RetryMaxAttemptsPerDay: 2}
+			row = ManagedSiteSetting{ID: 1, ScheduleTimes: "09:00", WindowStart: "09:00", WindowEnd: "18:00", ScheduleMode: AutoCheckinScheduleModeMultiple, RetryIntervalMinutes: 60, RetryMaxAttemptsPerDay: 2}
 			if createErr := s.db.WithContext(ctx).Create(&row).Error; createErr != nil {
 				return nil, app_errors.ParseDBError(createErr)
 			}
@@ -331,8 +338,23 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 		}
 	}
 
+	// Parse schedule times from comma-separated string
+	var scheduleTimes []string
+	if row.ScheduleTimes != "" {
+		for _, t := range strings.Split(row.ScheduleTimes, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				scheduleTimes = append(scheduleTimes, t)
+			}
+		}
+	}
+	if len(scheduleTimes) == 0 {
+		scheduleTimes = []string{"09:00"}
+	}
+
 	return &AutoCheckinConfig{
 		GlobalEnabled:     row.AutoCheckinEnabled,
+		ScheduleTimes:     scheduleTimes,
 		WindowStart:       row.WindowStart,
 		WindowEnd:         row.WindowEnd,
 		ScheduleMode:      row.ScheduleMode,
@@ -343,6 +365,40 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 			MaxAttemptsPerDay: row.RetryMaxAttemptsPerDay,
 		},
 	}, nil
+}
+
+// computeMultipleTrigger calculates the next trigger time from multiple scheduled times.
+// All times are in Beijing time (UTC+8).
+func computeMultipleTrigger(scheduleTimes []string, now time.Time) time.Time {
+	if len(scheduleTimes) == 0 {
+		return time.Time{}
+	}
+
+	beijingNow := now.In(beijingLocation)
+	var nextTrigger time.Time
+
+	for _, timeStr := range scheduleTimes {
+		minutes, err := parseTimeToMinutes(timeStr)
+		if err != nil {
+			continue
+		}
+
+		// Create target time for today in Beijing timezone
+		target := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(),
+			minutes/60, minutes%60, 0, 0, beijingLocation)
+
+		// If target is in the past, schedule for tomorrow
+		if !target.After(beijingNow) {
+			target = target.Add(24 * time.Hour)
+		}
+
+		// Find the earliest next trigger
+		if nextTrigger.IsZero() || target.Before(nextTrigger) {
+			nextTrigger = target
+		}
+	}
+
+	return nextTrigger
 }
 
 func computeRetryTime(cfg *AutoCheckinConfig, st AutoCheckinStatus, now time.Time) time.Time {
@@ -389,8 +445,10 @@ func computeDeterministicTrigger(cfg *AutoCheckinConfig, now time.Time) time.Tim
 		return time.Time{}
 	}
 
-	target := time.Date(now.Year(), now.Month(), now.Day(), deterministicMin/60, deterministicMin%60, 0, 0, now.Location())
-	if !target.After(now) {
+	// Use Beijing time (UTC+8) for scheduling
+	beijingNow := now.In(beijingLocation)
+	target := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), deterministicMin/60, deterministicMin%60, 0, 0, beijingLocation)
+	if !target.After(beijingNow) {
 		target = target.Add(24 * time.Hour)
 	}
 	return target
@@ -406,37 +464,40 @@ func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Ti
 		return time.Time{}, err
 	}
 
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// Use Beijing time (UTC+8) for scheduling
+	beijingNow := now.In(beijingLocation)
+	today := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), 0, 0, 0, 0, beijingLocation)
 	start := today.Add(time.Duration(startMin) * time.Minute)
 	end := today.Add(time.Duration(endMin) * time.Minute)
 
-	nowMin := now.Hour()*60 + now.Minute()
+	nowMin := beijingNow.Hour()*60 + beijingNow.Minute()
 	if end.Before(start) || end.Equal(start) {
 		end = end.Add(24 * time.Hour)
 		// Window crosses midnight and we're after midnight but before the end.
-		if now.Before(start) && nowMin <= endMin {
+		if beijingNow.Before(start) && nowMin <= endMin {
 			start = start.Add(-24 * time.Hour)
 			end = end.Add(-24 * time.Hour)
 		}
 	}
 
-	if now.After(end) {
+	if beijingNow.After(end) {
 		start = start.Add(24 * time.Hour)
 		end = end.Add(24 * time.Hour)
-	} else if now.After(start) {
-		start = now
+	} else if beijingNow.After(start) {
+		start = beijingNow
 	}
 
 	duration := end.Sub(start)
 	if duration <= 0 {
-		return now.Add(24 * time.Hour), nil
+		return beijingNow.Add(24 * time.Hour), nil
 	}
 	offset := time.Duration(rand.Int63n(int64(duration)))
 	return start.Add(offset), nil
 }
 
 func todayString(now time.Time) string {
-	return now.Format("2006-01-02")
+	// Use Beijing time (UTC+8) for date string
+	return now.In(beijingLocation).Format("2006-01-02")
 }
 
 func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {
@@ -721,13 +782,15 @@ type checkinProvider interface {
 
 func resolveProvider(siteType string) checkinProvider {
 	switch siteType {
+	case SiteTypeNewAPI, SiteTypeOneHub, SiteTypeDoneHub:
+		// NewAPI-compatible sites share the same checkin endpoint: POST /api/user/checkin
+		return newAPIProvider{}
 	case SiteTypeVeloera:
 		return veloeraProvider{}
 	case SiteTypeWongGongyi:
 		return wongProvider{}
 	// Note: SiteTypeAnyrouter removed - it only supported cookie-based auth
-	// Note: SiteTypeBrand, SiteTypeNewAPI, SiteTypeOneHub, SiteTypeDoneHub, SiteTypeUnknown
-	// do not have dedicated checkin providers - they use generic/manual checkin or none
+	// Note: SiteTypeBrand, SiteTypeUnknown do not have dedicated checkin providers
 	default:
 		return nil
 	}
@@ -774,6 +837,9 @@ func doJSONRequest(ctx context.Context, client *http.Client, method, fullURL str
 	if err != nil {
 		return nil, 0, err
 	}
+	// Set default User-Agent to help bypass basic bot detection
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -821,12 +887,28 @@ func isAlreadyCheckedMessage(msg string) bool {
 type veloeraProvider struct{}
 
 func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
-	if site.AuthType != AuthTypeAccessToken || authValue == "" || strings.TrimSpace(site.UserID) == "" {
+	// Support both access_token and cookie auth
+	if authValue == "" {
 		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
 	}
 
 	headers := buildUserHeaders(site.UserID)
-	headers["Authorization"] = "Bearer " + authValue
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+
+	// Set auth header based on auth type
+	switch site.AuthType {
+	case AuthTypeAccessToken:
+		if strings.TrimSpace(site.UserID) == "" {
+			return providerResult{Status: CheckinResultSkipped, Message: "missing user_id"}, nil
+		}
+		headers["Authorization"] = "Bearer " + authValue
+	case AuthTypeCookie:
+		headers["Cookie"] = authValue
+	default:
+		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
+	}
 
 	baseURL := extractBaseURL(site.BaseURL)
 	apiURL := baseURL + "/api/user/check_in"
@@ -892,17 +974,25 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 type wongProvider struct{}
 
 func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
-	// Only access_token auth is supported
-	if site.AuthType != AuthTypeAccessToken || authValue == "" {
-		return providerResult{Status: CheckinResultSkipped, Message: "missing token"}, nil
+	// Support both access_token and cookie auth
+	if authValue == "" {
+		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
 	}
 
 	headers := buildUserHeaders(site.UserID)
 	if headers == nil {
-		// Defensive: allocate map if buildUserHeaders returns nil (empty userID)
 		headers = make(map[string]string)
 	}
-	headers["Authorization"] = "Bearer " + authValue
+
+	// Set auth header based on auth type
+	switch site.AuthType {
+	case AuthTypeAccessToken:
+		headers["Authorization"] = "Bearer " + authValue
+	case AuthTypeCookie:
+		headers["Cookie"] = authValue
+	default:
+		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
+	}
 
 	baseURL := extractBaseURL(site.BaseURL)
 	apiURL := baseURL + "/api/user/checkin"
@@ -937,3 +1027,91 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 
 // Note: anyrouterProvider removed - it only supported cookie-based auth which
 // cannot be implemented in a backend service (requires browser environment).
+
+// newAPIProvider handles check-in for NewAPI-compatible sites (new-api, one-hub, done-hub).
+// These sites share the same check-in endpoint: POST /api/user/checkin
+type newAPIProvider struct{}
+
+func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
+	// Support both access_token and cookie auth
+	if authValue == "" {
+		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
+	}
+
+	headers := buildUserHeaders(site.UserID)
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+
+	// Set auth header based on auth type
+	switch site.AuthType {
+	case AuthTypeAccessToken:
+		headers["Authorization"] = "Bearer " + authValue
+	case AuthTypeCookie:
+		headers["Cookie"] = authValue
+	default:
+		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
+	}
+
+	baseURL := extractBaseURL(site.BaseURL)
+	apiURL := baseURL + "/api/user/checkin"
+	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    any    `json:"data"`
+	}
+
+	// Try to parse response body even on error (may contain useful error message)
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &resp)
+	}
+
+	// Handle HTTP errors with parsed response message
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"site_id":     site.ID,
+			"site_name":   site.Name,
+			"status_code": statusCode,
+			"response":    string(data),
+			"resp_msg":    resp.Message,
+		}).Debug("NewAPI check-in HTTP error")
+
+		// Check if response body contains "already checked" message
+		if isAlreadyCheckedMessage(resp.Message) {
+			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
+		}
+		// Return error with response message if available, otherwise HTTP status
+		if resp.Message != "" {
+			return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+		}
+		return providerResult{}, fmt.Errorf("http %d", statusCode)
+	}
+
+	// Log response for debugging when check-in fails
+	if !resp.Success {
+		logrus.WithFields(logrus.Fields{
+			"site_id":     site.ID,
+			"site_name":   site.Name,
+			"status_code": statusCode,
+			"response":    string(data),
+			"resp_msg":    resp.Message,
+			"success":     resp.Success,
+		}).Debug("NewAPI check-in failed")
+	}
+
+	// Check for "already checked in" message
+	if isAlreadyCheckedMessage(resp.Message) {
+		return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
+	}
+	// Success case
+	if resp.Success {
+		return providerResult{Status: CheckinResultSuccess, Message: resp.Message}, nil
+	}
+	// Failure with message
+	if resp.Message != "" {
+		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+	}
+	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, nil
+}

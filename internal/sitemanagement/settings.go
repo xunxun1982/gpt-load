@@ -11,6 +11,12 @@ type ManagedSiteSetting struct {
 
 	AutoCheckinEnabled bool `gorm:"not null;default:false" json:"auto_checkin_enabled"`
 
+	// ScheduleTimes stores multiple check-in times in "HH:MM" format, comma-separated.
+	// Example: "09:00,12:00,18:00" for three daily check-ins.
+	// All times are in Beijing time (UTC+8).
+	ScheduleTimes string `gorm:"type:varchar(255);not null;default:'09:00'" json:"schedule_times"`
+
+	// Legacy fields kept for backward compatibility during migration
 	WindowStart       string `gorm:"type:char(5);not null;default:'09:00'" json:"window_start"`
 	WindowEnd         string `gorm:"type:char(5);not null;default:'18:00'" json:"window_end"`
 	ScheduleMode      string `gorm:"type:varchar(32);not null;default:'random'" json:"schedule_mode"`
