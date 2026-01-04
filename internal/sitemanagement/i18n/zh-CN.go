@@ -11,4 +11,6 @@ var MessagesZhCN = map[string]string{
 	"site_management.validation.invalid_time":                  "无效的时间字段：{{.field}}",
 	"site_management.validation.invalid_schedule_mode":         "无效的调度模式",
 	"site_management.validation.deterministic_time_required":   "确定性模式下需要设置固定时间",
+	"site_management.validation.duplicate_time":                "签到时间「{{.time}}」重复",
+	"site_management.validation.schedule_times_required":       "至少需要设置一个签到时间",
 }

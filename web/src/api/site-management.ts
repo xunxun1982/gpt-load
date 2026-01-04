@@ -9,7 +9,7 @@ export type ManagedSiteType =
   | "one-hub"
   | "done-hub"
   | "brand";
-export type ManagedSiteAuthType = "none" | "access_token";
+export type ManagedSiteAuthType = "none" | "access_token" | "cookie";
 
 export type ManagedSiteCheckinStatus = "success" | "failed" | "skipped" | "already_checked" | "";
 
@@ -266,3 +266,66 @@ export interface SiteImportData {
   version?: string;
   sites: SiteExportInfo[];
 }
+
+// Auto check-in configuration types
+export type AutoCheckinScheduleMode = "random" | "deterministic" | "multiple";
+
+export interface AutoCheckinRetryStrategy {
+  enabled: boolean;
+  interval_minutes: number;
+  max_attempts_per_day: number;
+}
+
+export interface AutoCheckinConfig {
+  global_enabled: boolean;
+  schedule_times: string[]; // Multiple times in HH:MM format (Beijing time)
+  window_start: string; // HH:MM format (Beijing time)
+  window_end: string; // HH:MM format (Beijing time)
+  schedule_mode: AutoCheckinScheduleMode;
+  deterministic_time?: string; // HH:MM format (Beijing time)
+  retry_strategy: AutoCheckinRetryStrategy;
+}
+
+export interface AutoCheckinRunSummary {
+  total_eligible: number;
+  executed: number;
+  success_count: number;
+  failed_count: number;
+  skipped_count: number;
+  needs_retry: boolean;
+}
+
+export interface AutoCheckinStatus {
+  is_running: boolean;
+  last_run_at?: string;
+  last_run_result?: string;
+  next_scheduled_at?: string;
+  summary?: AutoCheckinRunSummary;
+  pending_retry: boolean;
+}
+
+// Auto check-in API methods
+export const autoCheckinApi = {
+  // Get auto check-in configuration
+  async getConfig(): Promise<AutoCheckinConfig> {
+    const res = await http.get("/site-management/auto-checkin/config");
+    return res.data;
+  },
+
+  // Update auto check-in configuration
+  async updateConfig(config: AutoCheckinConfig): Promise<AutoCheckinConfig> {
+    const res = await http.put("/site-management/auto-checkin/config", config);
+    return res.data;
+  },
+
+  // Get auto check-in status
+  async getStatus(): Promise<AutoCheckinStatus> {
+    const res = await http.get("/site-management/auto-checkin/status");
+    return res.data;
+  },
+
+  // Trigger auto check-in immediately
+  async runNow(): Promise<void> {
+    await http.post("/site-management/auto-checkin/run-now");
+  },
+};

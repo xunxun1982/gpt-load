@@ -11,4 +11,6 @@ var MessagesJaJP = map[string]string{
 	"site_management.validation.invalid_time":                  "無効な時間: {{.field}}",
 	"site_management.validation.invalid_schedule_mode":         "無効なスケジュールモード",
 	"site_management.validation.deterministic_time_required":   "確定モードでは固定時間が必要です",
+	"site_management.validation.duplicate_time":                "スケジュール時間「{{.time}}」が重複しています",
+	"site_management.validation.schedule_times_required":       "少なくとも1つのスケジュール時間が必要です",
 }

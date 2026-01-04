@@ -15,6 +15,7 @@ const (
 
 const (
 	AuthTypeAccessToken = "access_token"
+	AuthTypeCookie      = "cookie"
 	AuthTypeNone        = "none"
 )
 

@@ -9,17 +9,21 @@
  */
 import {
   siteManagementApi,
+  autoCheckinApi,
   type CheckinLogDTO,
   type ManagedSiteDTO,
   type ManagedSiteType,
   type ManagedSiteAuthType,
   type SiteImportData,
   type SiteListParams,
+  type AutoCheckinConfig,
+  type AutoCheckinStatus,
 } from "@/api/site-management";
 import { appState } from "@/utils/app-state";
 import {
   NButton,
   NCard,
+  NCollapseTransition,
   NDataTable,
   NForm,
   NFormItem,
@@ -50,6 +54,8 @@ import {
   Search,
   LinkOutline,
   RefreshOutline,
+  PlayOutline,
+  SettingsOutline,
 } from "@vicons/ionicons5";
 import { askExportMode, askImportMode } from "@/utils/export-import";
 import { debounce } from "lodash-es";
@@ -75,6 +81,13 @@ const deleteConfirmInput = ref("");
 const deleteAllConfirmInput = ref("");
 const deleteAllLoading = ref(false);
 
+// Auto check-in configuration state
+const autoCheckinConfig = ref<AutoCheckinConfig | null>(null);
+const autoCheckinStatus = ref<AutoCheckinStatus | null>(null);
+const autoCheckinLoading = ref(false);
+const autoCheckinRunning = ref(false);
+const showAutoCheckinConfig = ref(false);
+
 // Pagination state
 const pagination = reactive({
   page: 1,
@@ -97,7 +110,7 @@ const siteForm = reactive({
   sort: 0,
   enabled: true,
   base_url: "",
-  site_type: "unknown" as ManagedSiteType,
+  site_type: "new-api" as ManagedSiteType,
   user_id: "",
   checkin_page_url: "",
   checkin_available: false,
@@ -123,6 +136,7 @@ const siteTypeOptions = computed(() => [
 const authTypeOptions = computed(() => [
   { label: t("siteManagement.authTypeNone"), value: "none" },
   { label: t("siteManagement.authTypeAccessToken"), value: "access_token" },
+  { label: t("siteManagement.authTypeCookie"), value: "cookie" },
 ]);
 
 // Filter options for enabled status (use string values for naive-ui select compatibility)
@@ -227,7 +241,7 @@ function resetSiteForm() {
     sort: 0,
     enabled: true,
     base_url: "",
-    site_type: "unknown",
+    site_type: "new-api",
     user_id: "",
     checkin_page_url: "",
     checkin_available: false,
@@ -957,8 +971,130 @@ watch(
   }
 );
 
+// Auto check-in configuration functions
+async function loadAutoCheckinConfig() {
+  autoCheckinLoading.value = true;
+  try {
+    const [config, status] = await Promise.all([
+      autoCheckinApi.getConfig(),
+      autoCheckinApi.getStatus(),
+    ]);
+    autoCheckinConfig.value = config;
+    autoCheckinStatus.value = status;
+  } catch (_) {
+    /* handled by centralized error handler */
+  } finally {
+    autoCheckinLoading.value = false;
+  }
+}
+
+async function saveAutoCheckinConfig() {
+  if (!autoCheckinConfig.value) {
+    return;
+  }
+  autoCheckinLoading.value = true;
+  try {
+    const updated = await autoCheckinApi.updateConfig(autoCheckinConfig.value);
+    autoCheckinConfig.value = updated;
+    message.success(t("common.saveSuccess"));
+  } catch (_) {
+    /* handled by centralized error handler */
+  } finally {
+    autoCheckinLoading.value = false;
+  }
+}
+
+async function runAutoCheckinNow() {
+  autoCheckinRunning.value = true;
+  try {
+    await autoCheckinApi.runNow();
+    message.success(t("siteManagement.autoCheckinTriggered"));
+    // Refresh status and site list after a short delay to allow backend processing
+    setTimeout(async () => {
+      await Promise.all([loadAutoCheckinConfig(), loadSites()]);
+    }, 2000);
+  } catch (_) {
+    /* handled by centralized error handler */
+  } finally {
+    autoCheckinRunning.value = false;
+  }
+}
+
+// Schedule mode options
+const scheduleModeOptions = computed<SelectOption[]>(() => [
+  { label: t("siteManagement.scheduleModeMultiple"), value: "multiple" },
+  { label: t("siteManagement.scheduleModeRandom"), value: "random" },
+  { label: t("siteManagement.scheduleModeDeterministic"), value: "deterministic" },
+]);
+
+// New schedule time input
+const newScheduleTime = ref("");
+
+// Add a new schedule time
+function addScheduleTime() {
+  if (!autoCheckinConfig.value || !newScheduleTime.value) {
+    return;
+  }
+  const time = newScheduleTime.value.trim();
+  // Validate HH:MM format
+  if (!/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
+    message.warning(t("siteManagement.invalidTimeFormat"));
+    return;
+  }
+  // Normalize to HH:MM format
+  const parts = time.split(":");
+  const hours = parts[0] ?? "00";
+  const mins = parts[1] ?? "00";
+  const normalized = `${hours.padStart(2, "0")}:${mins}`;
+  // Check for duplicates
+  if (autoCheckinConfig.value.schedule_times.includes(normalized)) {
+    message.warning(t("siteManagement.duplicateTime"));
+    return;
+  }
+  autoCheckinConfig.value.schedule_times.push(normalized);
+  // Sort times
+  autoCheckinConfig.value.schedule_times.sort();
+  newScheduleTime.value = "";
+}
+
+// Remove a schedule time
+function removeScheduleTime(index: number) {
+  if (!autoCheckinConfig.value) {
+    return;
+  }
+  autoCheckinConfig.value.schedule_times.splice(index, 1);
+}
+
+// Format next scheduled time for display (convert UTC to Beijing time)
+const nextScheduledDisplay = computed(() => {
+  if (!autoCheckinStatus.value?.next_scheduled_at) {
+    return "";
+  }
+  try {
+    const utcDate = new Date(autoCheckinStatus.value.next_scheduled_at);
+    // Convert to Beijing time (UTC+8)
+    return utcDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  } catch {
+    return autoCheckinStatus.value.next_scheduled_at;
+  }
+});
+
+// Format last run time for display
+const lastRunDisplay = computed(() => {
+  if (!autoCheckinStatus.value?.last_run_at) {
+    return "";
+  }
+  try {
+    const utcDate = new Date(autoCheckinStatus.value.last_run_at);
+    return utcDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  } catch {
+    return autoCheckinStatus.value.last_run_at;
+  }
+});
+
 onMounted(() => {
   loadSites();
+  loadAutoCheckinConfig();
 });
 </script>
 
@@ -976,6 +1112,20 @@ onMounted(() => {
         <n-text strong style="font-size: 15px">{{ t("siteManagement.title") }}</n-text>
       </n-space>
       <n-space size="small">
+        <!-- Auto check-in config button -->
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button
+              size="small"
+              secondary
+              @click="showAutoCheckinConfig = !showAutoCheckinConfig"
+            >
+              <template #icon><n-icon :component="SettingsOutline" /></template>
+              {{ t("siteManagement.autoCheckin") }}
+            </n-button>
+          </template>
+          {{ t("siteManagement.autoCheckinConfigTooltip") }}
+        </n-tooltip>
         <n-tooltip trigger="hover">
           <template #trigger>
             <n-button
@@ -1003,6 +1153,204 @@ onMounted(() => {
         </n-button>
       </n-space>
     </n-space>
+
+    <!-- Auto Check-in Configuration Panel -->
+    <n-collapse-transition :show="showAutoCheckinConfig">
+      <div class="auto-checkin-panel">
+        <!-- Header row with title and action buttons -->
+        <div class="auto-checkin-header">
+          <n-space align="center" size="small">
+            <n-text strong style="font-size: 13px">
+              {{ t("siteManagement.autoCheckinConfig") }}
+            </n-text>
+            <n-tag :type="autoCheckinStatus?.is_running ? 'warning' : 'default'" size="tiny">
+              {{
+                autoCheckinStatus?.is_running
+                  ? t("siteManagement.statusRunning")
+                  : t("siteManagement.statusIdle")
+              }}
+            </n-tag>
+            <n-text v-if="nextScheduledDisplay" depth="3" style="font-size: 11px">
+              {{ t("siteManagement.nextScheduled") }}: {{ nextScheduledDisplay }}
+            </n-text>
+          </n-space>
+          <n-space size="small">
+            <n-button
+              size="tiny"
+              type="primary"
+              :loading="autoCheckinRunning"
+              @click="runAutoCheckinNow"
+            >
+              <template #icon><n-icon :component="PlayOutline" size="12" /></template>
+              {{ t("siteManagement.runNow") }}
+            </n-button>
+            <n-button
+              size="tiny"
+              quaternary
+              :loading="autoCheckinLoading"
+              @click="loadAutoCheckinConfig"
+            >
+              <template #icon><n-icon :component="RefreshOutline" size="12" /></template>
+            </n-button>
+          </n-space>
+        </div>
+
+        <!-- Config form - single row layout -->
+        <div v-if="autoCheckinConfig" class="auto-checkin-config-row">
+          <!-- Global enabled -->
+          <span class="config-inline-item">
+            <n-text depth="3" class="config-label">{{ t("siteManagement.globalEnabled") }}</n-text>
+            <n-switch v-model:value="autoCheckinConfig.global_enabled" size="small" />
+          </span>
+
+          <!-- Schedule mode -->
+          <span class="config-inline-item">
+            <n-text depth="3" class="config-label">{{ t("siteManagement.scheduleMode") }}</n-text>
+            <n-select
+              v-model:value="autoCheckinConfig.schedule_mode"
+              :options="scheduleModeOptions"
+              size="tiny"
+              style="width: 100px"
+              :consistent-menu-width="false"
+            />
+          </span>
+
+          <!-- Multiple times mode -->
+          <span v-if="autoCheckinConfig.schedule_mode === 'multiple'" class="config-inline-item">
+            <n-text depth="3" class="config-label">{{ t("siteManagement.scheduleTimes") }}</n-text>
+            <n-space size="small" align="center" :wrap="false">
+              <n-tag
+                v-for="(time, index) in autoCheckinConfig.schedule_times"
+                :key="index"
+                closable
+                size="tiny"
+                @close="removeScheduleTime(index)"
+              >
+                {{ time }}
+              </n-tag>
+              <n-input
+                v-model:value="newScheduleTime"
+                placeholder="HH:MM"
+                size="tiny"
+                style="width: 60px"
+                @keyup.enter="addScheduleTime"
+              />
+              <n-button size="tiny" quaternary @click="addScheduleTime">
+                {{ t("common.add") }}
+              </n-button>
+            </n-space>
+          </span>
+
+          <!-- Random mode -->
+          <template v-if="autoCheckinConfig.schedule_mode === 'random'">
+            <span class="config-inline-item">
+              <n-text depth="3" class="config-label">{{ t("siteManagement.windowStart") }}</n-text>
+              <n-input
+                v-model:value="autoCheckinConfig.window_start"
+                placeholder="09:00"
+                size="tiny"
+                style="width: 60px"
+              />
+            </span>
+            <span class="config-inline-item">
+              <n-text depth="3" class="config-label">{{ t("siteManagement.windowEnd") }}</n-text>
+              <n-input
+                v-model:value="autoCheckinConfig.window_end"
+                placeholder="18:00"
+                size="tiny"
+                style="width: 60px"
+              />
+            </span>
+          </template>
+
+          <!-- Deterministic mode -->
+          <span
+            v-if="autoCheckinConfig.schedule_mode === 'deterministic'"
+            class="config-inline-item"
+          >
+            <n-text depth="3" class="config-label">
+              {{ t("siteManagement.deterministicTime") }}
+            </n-text>
+            <n-input
+              v-model:value="autoCheckinConfig.deterministic_time"
+              placeholder="10:00"
+              size="tiny"
+              style="width: 60px"
+            />
+          </span>
+
+          <!-- Retry settings -->
+          <span class="config-inline-item">
+            <n-text depth="3" class="config-label">{{ t("siteManagement.retryEnabled") }}</n-text>
+            <n-switch v-model:value="autoCheckinConfig.retry_strategy.enabled" size="small" />
+          </span>
+
+          <template v-if="autoCheckinConfig.retry_strategy.enabled">
+            <span class="config-inline-item">
+              <n-text depth="3" class="config-label">
+                {{ t("siteManagement.retryInterval") }}
+              </n-text>
+              <n-input-number
+                v-model:value="autoCheckinConfig.retry_strategy.interval_minutes"
+                :min="1"
+                :max="1440"
+                size="tiny"
+                style="width: 70px"
+              />
+              <n-text depth="3" style="font-size: 11px; margin-left: 2px">
+                {{ t("siteManagement.minutes") }}
+              </n-text>
+            </span>
+            <span class="config-inline-item">
+              <n-text depth="3" class="config-label">
+                {{ t("siteManagement.retryMaxAttempts") }}
+              </n-text>
+              <n-input-number
+                v-model:value="autoCheckinConfig.retry_strategy.max_attempts_per_day"
+                :min="1"
+                :max="10"
+                size="tiny"
+                style="width: 50px"
+              />
+            </span>
+          </template>
+
+          <!-- Save button and note -->
+          <span class="config-inline-item config-save">
+            <n-text depth="3" style="font-size: 10px">
+              {{ t("siteManagement.beijingTimeNote") }}
+            </n-text>
+            <n-button
+              size="tiny"
+              type="primary"
+              :loading="autoCheckinLoading"
+              @click="saveAutoCheckinConfig"
+            >
+              {{ t("common.save") }}
+            </n-button>
+          </span>
+        </div>
+
+        <!-- Last run summary -->
+        <div v-if="autoCheckinStatus?.summary" class="auto-checkin-summary">
+          <n-text depth="3" style="font-size: 11px">
+            {{ t("siteManagement.lastRun") }}: {{ lastRunDisplay }}
+          </n-text>
+          <n-tag
+            size="tiny"
+            :type="autoCheckinStatus.summary.failed_count > 0 ? 'error' : 'success'"
+          >
+            {{
+              t("siteManagement.checkinSummary", {
+                success: autoCheckinStatus.summary.success_count,
+                failed: autoCheckinStatus.summary.failed_count,
+                skipped: autoCheckinStatus.summary.skipped_count,
+              })
+            }}
+          </n-tag>
+        </div>
+      </div>
+    </n-collapse-transition>
     <!-- Filter row with search, filters and stats -->
     <div class="filter-row">
       <n-space align="center" :size="6" class="filter-left">
@@ -1189,13 +1537,23 @@ onMounted(() => {
                   type="password"
                   show-password-on="click"
                   :placeholder="
-                    editingSite
-                      ? t('siteManagement.authValueEditHint')
-                      : t('siteManagement.authValuePlaceholder')
+                    siteForm.auth_type === 'cookie'
+                      ? t('siteManagement.authTypeCookiePlaceholder')
+                      : editingSite
+                        ? t('siteManagement.authValueEditHint')
+                        : t('siteManagement.authValuePlaceholder')
                   "
                 />
               </n-form-item>
             </div>
+            <!-- Cookie auth hint -->
+            <n-text
+              v-if="siteForm.auth_type === 'cookie'"
+              depth="3"
+              style="font-size: 12px; display: block; margin-top: -4px; margin-bottom: 8px"
+            >
+              {{ t("siteManagement.authTypeCookieHint") }}
+            </n-text>
           </div>
           <n-space justify="end" size="small" style="margin-top: 12px">
             <n-button size="small" secondary @click="showSiteModal = false">
@@ -1303,6 +1661,47 @@ onMounted(() => {
   width: 6px;
   background-color: rgba(128, 128, 128, 0.1);
   border-radius: 4px;
+}
+
+/* Auto check-in panel styles - matching filter-row style */
+.auto-checkin-panel {
+  margin: 2px 0;
+  padding: 4px 6px;
+  background: var(--n-color-embedded);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.auto-checkin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.auto-checkin-config-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.config-inline-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.config-label {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.config-save {
+  margin-left: auto;
+}
+.auto-checkin-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--n-border-color);
 }
 
 /* Stats row with search input */

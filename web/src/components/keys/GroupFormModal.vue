@@ -188,6 +188,11 @@ const validationEndpointPlaceholder = computed(() => {
   return defaults?.validationEndpoint || t("keys.enterValidationPath");
 });
 
+// Check if current group is a child group (has parent_group_id)
+const isChildGroup = computed(() => {
+  return !!props.group?.parent_group_id;
+});
+
 // Form validation rules
 const rules: FormRules = {
   name: [
@@ -1165,6 +1170,7 @@ async function handleSubmit() {
             <proxy-keys-input
               v-model="formData.proxy_keys"
               :placeholder="t('keys.multiKeysPlaceholder')"
+              :is-child-group="isChildGroup"
               size="medium"
             />
           </n-form-item>

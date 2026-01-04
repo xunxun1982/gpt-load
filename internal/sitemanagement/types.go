@@ -68,17 +68,26 @@ type AutoCheckinRetryStrategy struct {
 const (
 	AutoCheckinScheduleModeRandom        = "random"
 	AutoCheckinScheduleModeDeterministic = "deterministic"
+	AutoCheckinScheduleModeMultiple      = "multiple" // Multiple fixed times per day
 )
 
 // AutoCheckinConfig holds the auto check-in scheduling configuration.
+// All times are in Beijing time (UTC+8).
 type AutoCheckinConfig struct {
 	GlobalEnabled bool `json:"global_enabled"`
-	// WindowStart is the start time in "HH:MM" format (24-hour, local time).
+	// ScheduleTimes contains multiple check-in times in "HH:MM" format, comma-separated.
+	// Example: "09:00,12:00,18:00" for three daily check-ins.
+	// Used when ScheduleMode is "multiple".
+	ScheduleTimes []string `json:"schedule_times"`
+	// WindowStart is the start time in "HH:MM" format (24-hour, Beijing time).
+	// Used when ScheduleMode is "random".
 	WindowStart string `json:"window_start"`
-	// WindowEnd is the end time in "HH:MM" format (24-hour, local time).
+	// WindowEnd is the end time in "HH:MM" format (24-hour, Beijing time).
+	// Used when ScheduleMode is "random".
 	WindowEnd    string `json:"window_end"`
 	ScheduleMode string `json:"schedule_mode"`
-	// DeterministicTime is the fixed check-in time in "HH:MM" format when ScheduleMode is "deterministic".
+	// DeterministicTime is the fixed check-in time in "HH:MM" format.
+	// Used when ScheduleMode is "deterministic".
 	DeterministicTime string                   `json:"deterministic_time,omitempty"`
 	RetryStrategy     AutoCheckinRetryStrategy `json:"retry_strategy"`
 }
