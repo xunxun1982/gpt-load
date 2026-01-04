@@ -758,12 +758,17 @@ func (s *SiteService) UpdateAutoCheckinConfig(ctx context.Context, cfg AutoCheck
 		if len(cfg.ScheduleTimes) == 0 {
 			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.schedule_times_required", nil)
 		}
-		// Note: Duplicate time check is handled by frontend (SiteManagementPanel.vue).
-		// Backend skips duplicate validation to avoid redundancy and keep validation simple.
+		// Validate format and check for duplicates.
+		// Backend validation is essential since frontend validation can be bypassed via direct API calls.
+		seen := make(map[string]bool)
 		for i, t := range cfg.ScheduleTimes {
 			if _, err := parseTimeToMinutes(t); err != nil {
 				return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "schedule_times", "index": i})
 			}
+			if seen[t] {
+				return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.duplicate_time", map[string]any{"time": t})
+			}
+			seen[t] = true
 		}
 	case AutoCheckinScheduleModeRandom:
 		if cfg.WindowStart == "" || cfg.WindowEnd == "" {
