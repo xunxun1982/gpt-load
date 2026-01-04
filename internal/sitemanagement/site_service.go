@@ -828,12 +828,15 @@ func (s *SiteService) ensureSettingsRow(ctx context.Context) (*ManagedSiteSettin
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	// Default to "multiple" mode for consistency with UpdateAutoCheckinConfig and loadConfig.
+	// This ensures new installations use the same default as empty mode updates.
 	st = ManagedSiteSetting{
 		ID:                     1,
 		AutoCheckinEnabled:     false,
+		ScheduleTimes:          "09:00",
 		WindowStart:            "09:00",
 		WindowEnd:              "18:00",
-		ScheduleMode:           AutoCheckinScheduleModeRandom,
+		ScheduleMode:           AutoCheckinScheduleModeMultiple,
 		DeterministicTime:      "",
 		RetryEnabled:           false,
 		RetryIntervalMinutes:   60,
