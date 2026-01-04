@@ -109,11 +109,10 @@ func GenerateSecureRandomString(length int) string {
 
 	randomBytes := make([]byte, bytesNeeded)
 	if _, err := cryptoRand.Read(randomBytes); err != nil {
-		// Fallback to math/rand if crypto/rand fails (should never happen in practice)
-		ensureRandSeeded()
-		for i := range randomBytes {
-			randomBytes[i] = byte(rand.Intn(256))
-		}
+		// crypto/rand failure indicates a serious system problem (e.g., /dev/urandom unavailable).
+		// Silently falling back to math/rand would undermine the security guarantee of this function.
+		// Panic is appropriate here since this should never happen on any supported OS.
+		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
 	}
 
 	// Use URL-safe base64 encoding without padding
