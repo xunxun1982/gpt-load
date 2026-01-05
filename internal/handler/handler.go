@@ -9,6 +9,7 @@ import (
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/i18n"
+	"gpt-load/internal/mcpskills"
 	"gpt-load/internal/services"
 	"gpt-load/internal/sitemanagement"
 	"gpt-load/internal/types"
@@ -20,26 +21,31 @@ import (
 
 // Server contains dependencies for HTTP handlers
 type Server struct {
-	DB                         *gorm.DB
-	config                     types.ConfigManager
-	SettingsManager            *config.SystemSettingsManager
-	GroupManager               *services.GroupManager
-	GroupService               *services.GroupService
-	AggregateGroupService      *services.AggregateGroupService
-	ChildGroupService          *services.ChildGroupService
-	KeyManualValidationService *services.KeyManualValidationService
-	TaskService                *services.TaskService
-	KeyService                 *services.KeyService
-	KeyImportService           *services.KeyImportService
-	KeyDeleteService           *services.KeyDeleteService
-	LogService                 *services.LogService
-	CommonHandler              *CommonHandler
-	EncryptionSvc              encryption.Service
-	BulkImportService          *services.BulkImportService   // Added for optimized bulk imports
-	ImportExportService        *services.ImportExportService // Added for unified import/export
-	SiteService                *sitemanagement.SiteService
-	AutoCheckinService         *sitemanagement.AutoCheckinService
-	BindingService             *sitemanagement.BindingService
+	DB                            *gorm.DB
+	config                        types.ConfigManager
+	SettingsManager               *config.SystemSettingsManager
+	GroupManager                  *services.GroupManager
+	GroupService                  *services.GroupService
+	AggregateGroupService         *services.AggregateGroupService
+	ChildGroupService             *services.ChildGroupService
+	KeyManualValidationService    *services.KeyManualValidationService
+	TaskService                   *services.TaskService
+	KeyService                    *services.KeyService
+	KeyImportService              *services.KeyImportService
+	KeyDeleteService              *services.KeyDeleteService
+	LogService                    *services.LogService
+	CommonHandler                 *CommonHandler
+	EncryptionSvc                 encryption.Service
+	BulkImportService             *services.BulkImportService   // Added for optimized bulk imports
+	ImportExportService           *services.ImportExportService // Added for unified import/export
+	SiteService                   *sitemanagement.SiteService
+	AutoCheckinService            *sitemanagement.AutoCheckinService
+	BindingService                *sitemanagement.BindingService
+	MCPSkillsService              *mcpskills.Service
+	MCPSkillsGroupService         *mcpskills.GroupService
+	MCPSkillsExportService        *mcpskills.SkillExportService
+	MCPSkillsAggregationHandler   *mcpskills.AggregationMCPHandler
+	MCPSkillsServiceHandler       *mcpskills.ServiceMCPHandler
 }
 
 // NewServerParams defines the dependencies for the NewServer constructor.
@@ -65,31 +71,41 @@ type NewServerParams struct {
 	SiteService                *sitemanagement.SiteService
 	AutoCheckinService         *sitemanagement.AutoCheckinService
 	BindingService             *sitemanagement.BindingService
+	MCPSkillsService              *mcpskills.Service
+	MCPSkillsGroupService         *mcpskills.GroupService
+	MCPSkillsExportService        *mcpskills.SkillExportService
+	MCPSkillsAggregationHandler   *mcpskills.AggregationMCPHandler
+	MCPSkillsServiceHandler       *mcpskills.ServiceMCPHandler
 }
 
 // NewServer creates a new handler instance with dependencies injected by dig.
 func NewServer(params NewServerParams) *Server {
 	s := &Server{
-		DB:                         params.DB,
-		config:                     params.Config,
-		SettingsManager:            params.SettingsManager,
-		GroupManager:               params.GroupManager,
-		GroupService:               params.GroupService,
-		AggregateGroupService:      params.AggregateGroupService,
-		ChildGroupService:          params.ChildGroupService,
-		KeyManualValidationService: params.KeyManualValidationService,
-		TaskService:                params.TaskService,
-		KeyService:                 params.KeyService,
-		KeyImportService:           params.KeyImportService,
-		KeyDeleteService:           params.KeyDeleteService,
-		LogService:                 params.LogService,
-		CommonHandler:              params.CommonHandler,
-		EncryptionSvc:              params.EncryptionSvc,
-		BulkImportService:          params.BulkImportService,
-		ImportExportService:        params.ImportExportService,
-		SiteService:                params.SiteService,
-		AutoCheckinService:         params.AutoCheckinService,
-		BindingService:             params.BindingService,
+		DB:                            params.DB,
+		config:                        params.Config,
+		SettingsManager:               params.SettingsManager,
+		GroupManager:                  params.GroupManager,
+		GroupService:                  params.GroupService,
+		AggregateGroupService:         params.AggregateGroupService,
+		ChildGroupService:             params.ChildGroupService,
+		KeyManualValidationService:    params.KeyManualValidationService,
+		TaskService:                   params.TaskService,
+		KeyService:                    params.KeyService,
+		KeyImportService:              params.KeyImportService,
+		KeyDeleteService:              params.KeyDeleteService,
+		LogService:                    params.LogService,
+		CommonHandler:                 params.CommonHandler,
+		EncryptionSvc:                 params.EncryptionSvc,
+		BulkImportService:             params.BulkImportService,
+		ImportExportService:           params.ImportExportService,
+		SiteService:                   params.SiteService,
+		AutoCheckinService:            params.AutoCheckinService,
+		BindingService:                params.BindingService,
+		MCPSkillsService:              params.MCPSkillsService,
+		MCPSkillsGroupService:         params.MCPSkillsGroupService,
+		MCPSkillsExportService:        params.MCPSkillsExportService,
+		MCPSkillsAggregationHandler:   params.MCPSkillsAggregationHandler,
+		MCPSkillsServiceHandler:       params.MCPSkillsServiceHandler,
 	}
 
 	// Set binding callbacks to avoid circular dependency between services and sitemanagement packages

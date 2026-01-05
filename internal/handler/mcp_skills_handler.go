@@ -1,0 +1,911 @@
+package handler
+
+import (
+	"strconv"
+	"strings"
+	"time"
+
+	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/mcpskills"
+	"gpt-load/internal/response"
+
+	"github.com/gin-gonic/gin"
+)
+
+// getServerAddress returns the server address from system settings or derives it from the request
+func (s *Server) getServerAddress(c *gin.Context) string {
+	// Try to get from system settings (AppUrl)
+	settings := s.SettingsManager.GetSettings()
+	if settings.AppUrl != "" {
+		return strings.TrimSuffix(settings.AppUrl, "/")
+	}
+
+	// Fallback: derive from request
+	scheme := "https"
+	if c.Request.TLS == nil {
+		// Check X-Forwarded-Proto header for reverse proxy scenarios
+		if proto := c.GetHeader("X-Forwarded-Proto"); proto != "" {
+			scheme = proto
+		} else {
+			scheme = "http"
+		}
+	}
+	return scheme + "://" + c.Request.Host
+}
+
+// MCP Service Handlers
+
+// ListMCPServices handles GET /api/mcp-skills/services
+func (s *Server) ListMCPServices(c *gin.Context) {
+	pageStr := c.Query("page")
+	if pageStr != "" {
+		s.ListMCPServicesPaginated(c)
+		return
+	}
+
+	services, err := s.MCPSkillsService.ListServices(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, services)
+}
+
+// ListMCPServicesPaginated handles paginated service listing
+func (s *Server) ListMCPServicesPaginated(c *gin.Context) {
+	var params mcpskills.ServiceListParams
+
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil {
+		page = 1
+	}
+	params.Page = page
+
+	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	if err != nil {
+		pageSize = 50
+	}
+	params.PageSize = pageSize
+	params.Search = c.Query("search")
+	params.Category = c.Query("category")
+	params.Type = c.Query("type")
+
+	if enabledStr := c.Query("enabled"); enabledStr != "" {
+		enabled := enabledStr == "true"
+		params.Enabled = &enabled
+	}
+
+	result, err := s.MCPSkillsService.ListServicesPaginated(c.Request.Context(), params)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, result)
+}
+
+// GetMCPService handles GET /api/mcp-skills/services/:id
+func (s *Server) GetMCPService(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	service, err := s.MCPSkillsService.GetServiceByID(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, service)
+}
+
+// CreateMCPServiceRequest represents the create service request
+type CreateMCPServiceRequest struct {
+	Name            string                       `json:"name"`
+	DisplayName     string                       `json:"display_name"`
+	Description     string                       `json:"description"`
+	Category        string                       `json:"category"`
+	Icon            string                       `json:"icon"`
+	Sort            int                          `json:"sort"`
+	Enabled         bool                         `json:"enabled"`
+	Type            string                       `json:"type"`
+	Command         string                       `json:"command,omitempty"`
+	Args            []string                     `json:"args,omitempty"`
+	APIEndpoint     string                       `json:"api_endpoint,omitempty"`
+	APIKeyName      string                       `json:"api_key_name,omitempty"`
+	APIKeyValue     string                       `json:"api_key_value,omitempty"`
+	APIKeyHeader    string                       `json:"api_key_header,omitempty"`
+	APIKeyPrefix    string                       `json:"api_key_prefix,omitempty"`
+	RequiredEnvVars []mcpskills.EnvVarDefinition `json:"required_env_vars,omitempty"`
+	DefaultEnvs     map[string]string            `json:"default_envs,omitempty"`
+	Headers         map[string]string            `json:"headers,omitempty"`
+	Tools           []mcpskills.ToolDefinition   `json:"tools,omitempty"`
+	RPDLimit        int                          `json:"rpd_limit"`
+	MCPEnabled      bool                         `json:"mcp_enabled"`
+	AccessToken     string                       `json:"access_token,omitempty"`
+}
+
+// CreateMCPService handles POST /api/mcp-skills/services
+func (s *Server) CreateMCPService(c *gin.Context) {
+	var req CreateMCPServiceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	service, err := s.MCPSkillsService.CreateService(c.Request.Context(), mcpskills.CreateServiceParams{
+		Name:            req.Name,
+		DisplayName:     req.DisplayName,
+		Description:     req.Description,
+		Category:        req.Category,
+		Icon:            req.Icon,
+		Sort:            req.Sort,
+		Enabled:         req.Enabled,
+		Type:            req.Type,
+		Command:         req.Command,
+		Args:            req.Args,
+		APIEndpoint:     req.APIEndpoint,
+		APIKeyName:      req.APIKeyName,
+		APIKeyValue:     req.APIKeyValue,
+		APIKeyHeader:    req.APIKeyHeader,
+		APIKeyPrefix:    req.APIKeyPrefix,
+		RequiredEnvVars: req.RequiredEnvVars,
+		DefaultEnvs:     req.DefaultEnvs,
+		Headers:         req.Headers,
+		Tools:           req.Tools,
+		RPDLimit:        req.RPDLimit,
+		MCPEnabled:      req.MCPEnabled,
+		AccessToken:     req.AccessToken,
+	})
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.service_created", service)
+}
+
+// UpdateMCPServiceRequest represents the update service request
+type UpdateMCPServiceRequest struct {
+	Name            *string                        `json:"name,omitempty"`
+	DisplayName     *string                        `json:"display_name,omitempty"`
+	Description     *string                        `json:"description,omitempty"`
+	Category        *string                        `json:"category,omitempty"`
+	Icon            *string                        `json:"icon,omitempty"`
+	Sort            *int                           `json:"sort,omitempty"`
+	Enabled         *bool                          `json:"enabled,omitempty"`
+	Type            *string                        `json:"type,omitempty"`
+	Command         *string                        `json:"command,omitempty"`
+	Args            *[]string                      `json:"args,omitempty"`
+	APIEndpoint     *string                        `json:"api_endpoint,omitempty"`
+	APIKeyName      *string                        `json:"api_key_name,omitempty"`
+	APIKeyValue     *string                        `json:"api_key_value,omitempty"`
+	APIKeyHeader    *string                        `json:"api_key_header,omitempty"`
+	APIKeyPrefix    *string                        `json:"api_key_prefix,omitempty"`
+	RequiredEnvVars *[]mcpskills.EnvVarDefinition  `json:"required_env_vars,omitempty"`
+	DefaultEnvs     *map[string]string             `json:"default_envs,omitempty"`
+	Headers         *map[string]string             `json:"headers,omitempty"`
+	Tools           *[]mcpskills.ToolDefinition    `json:"tools,omitempty"`
+	RPDLimit        *int                           `json:"rpd_limit,omitempty"`
+	MCPEnabled      *bool                          `json:"mcp_enabled,omitempty"`
+	AccessToken     *string                        `json:"access_token,omitempty"`
+}
+
+// UpdateMCPService handles PUT /api/mcp-skills/services/:id
+func (s *Server) UpdateMCPService(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	var req UpdateMCPServiceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	service, err := s.MCPSkillsService.UpdateService(c.Request.Context(), uint(id), mcpskills.UpdateServiceParams{
+		Name:            req.Name,
+		DisplayName:     req.DisplayName,
+		Description:     req.Description,
+		Category:        req.Category,
+		Icon:            req.Icon,
+		Sort:            req.Sort,
+		Enabled:         req.Enabled,
+		Type:            req.Type,
+		Command:         req.Command,
+		Args:            req.Args,
+		APIEndpoint:     req.APIEndpoint,
+		APIKeyName:      req.APIKeyName,
+		APIKeyValue:     req.APIKeyValue,
+		APIKeyHeader:    req.APIKeyHeader,
+		APIKeyPrefix:    req.APIKeyPrefix,
+		RequiredEnvVars: req.RequiredEnvVars,
+		DefaultEnvs:     req.DefaultEnvs,
+		Headers:         req.Headers,
+		Tools:           req.Tools,
+		RPDLimit:        req.RPDLimit,
+		MCPEnabled:      req.MCPEnabled,
+		AccessToken:     req.AccessToken,
+	})
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.service_updated", service)
+}
+
+// DeleteMCPService handles DELETE /api/mcp-skills/services/:id
+func (s *Server) DeleteMCPService(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	if err := s.MCPSkillsService.DeleteService(c.Request.Context(), uint(id)); HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.service_deleted", nil)
+}
+
+// DeleteAllMCPServices handles DELETE /api/mcp-skills/services/all
+// Deletes ALL MCP services and clears service references from groups
+func (s *Server) DeleteAllMCPServices(c *gin.Context) {
+	deleted, err := s.MCPSkillsService.DeleteAllServices(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.services_deleted_all", map[string]int64{"deleted": deleted})
+}
+
+// CountAllMCPServices handles GET /api/mcp-skills/services/count
+func (s *Server) CountAllMCPServices(c *gin.Context) {
+	count, err := s.MCPSkillsService.CountAllServices(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, map[string]int64{"count": count})
+}
+
+// ToggleMCPServiceEnabled handles POST /api/mcp-skills/services/:id/toggle
+func (s *Server) ToggleMCPServiceEnabled(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	service, err := s.MCPSkillsService.ToggleServiceEnabled(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	status := "mcp_skills.status.disabled"
+	if service.Enabled {
+		status = "mcp_skills.status.enabled"
+	}
+	response.SuccessI18n(c, "mcp_skills.service_toggled", service, map[string]any{"status": status})
+}
+
+// GetAPIBridgeTemplates handles GET /api/mcp-skills/templates
+func (s *Server) GetAPIBridgeTemplates(c *gin.Context) {
+	templates := s.MCPSkillsService.GetAPIBridgeTemplates()
+	response.Success(c, templates)
+}
+
+// CreateServiceFromTemplateRequest represents the request to create service from template
+type CreateServiceFromTemplateRequest struct {
+	TemplateID    string `json:"template_id"`
+	APIKeyValue   string `json:"api_key_value"`
+	CustomEndpoint string `json:"custom_endpoint,omitempty"` // Optional custom API endpoint
+}
+
+// CreateMCPServiceFromTemplate handles POST /api/mcp-skills/services/from-template
+func (s *Server) CreateMCPServiceFromTemplate(c *gin.Context) {
+	var req CreateServiceFromTemplateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	service, err := s.MCPSkillsService.CreateServiceFromTemplate(c.Request.Context(), req.TemplateID, req.APIKeyValue, req.CustomEndpoint)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.service_created", service)
+}
+
+// TestMCPServiceRequest represents the request to test a service
+type TestMCPServiceRequest struct {
+	ToolName   string                 `json:"tool_name,omitempty"`
+	Arguments  map[string]interface{} `json:"arguments,omitempty"`
+}
+
+// TestMCPService handles POST /api/mcp-skills/services/:id/test
+// Tests if an MCP service is working correctly by executing a simple API call
+func (s *Server) TestMCPService(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	var req TestMCPServiceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Allow empty body for simple test
+		req = TestMCPServiceRequest{}
+	}
+
+	result, err := s.MCPSkillsService.TestService(c.Request.Context(), uint(id), req.ToolName, req.Arguments)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, result)
+}
+
+// MCP Service Group Handlers
+
+// ListMCPServiceGroups handles GET /api/mcp-skills/groups
+func (s *Server) ListMCPServiceGroups(c *gin.Context) {
+	pageStr := c.Query("page")
+	if pageStr != "" {
+		s.ListMCPServiceGroupsPaginated(c)
+		return
+	}
+
+	groups, err := s.MCPSkillsGroupService.ListGroups(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, groups)
+}
+
+// ListMCPServiceGroupsPaginated handles paginated group listing
+func (s *Server) ListMCPServiceGroupsPaginated(c *gin.Context) {
+	var params mcpskills.GroupListParams
+
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil {
+		page = 1
+	}
+	params.Page = page
+
+	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	if err != nil {
+		pageSize = 50
+	}
+	params.PageSize = pageSize
+	params.Search = c.Query("search")
+
+	if enabledStr := c.Query("enabled"); enabledStr != "" {
+		enabled := enabledStr == "true"
+		params.Enabled = &enabled
+	}
+
+	result, err := s.MCPSkillsGroupService.ListGroupsPaginated(c.Request.Context(), params)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, result)
+}
+
+// GetMCPServiceGroup handles GET /api/mcp-skills/groups/:id
+func (s *Server) GetMCPServiceGroup(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	group, err := s.MCPSkillsGroupService.GetGroupByID(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, group)
+}
+
+// CreateMCPServiceGroupRequest represents the create group request
+type CreateMCPServiceGroupRequest struct {
+	Name               string `json:"name"`
+	DisplayName        string `json:"display_name"`
+	Description        string `json:"description"`
+	ServiceIDs         []uint `json:"service_ids"`
+	Enabled            bool   `json:"enabled"`
+	AggregationEnabled bool   `json:"aggregation_enabled"`
+	AccessToken        string `json:"access_token,omitempty"`
+}
+
+// CreateMCPServiceGroup handles POST /api/mcp-skills/groups
+func (s *Server) CreateMCPServiceGroup(c *gin.Context) {
+	var req CreateMCPServiceGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	group, err := s.MCPSkillsGroupService.CreateGroup(c.Request.Context(), mcpskills.CreateGroupParams{
+		Name:               req.Name,
+		DisplayName:        req.DisplayName,
+		Description:        req.Description,
+		ServiceIDs:         req.ServiceIDs,
+		Enabled:            req.Enabled,
+		AggregationEnabled: req.AggregationEnabled,
+		AccessToken:        req.AccessToken,
+	})
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.group_created", group)
+}
+
+// UpdateMCPServiceGroupRequest represents the update group request
+type UpdateMCPServiceGroupRequest struct {
+	Name               *string `json:"name,omitempty"`
+	DisplayName        *string `json:"display_name,omitempty"`
+	Description        *string `json:"description,omitempty"`
+	ServiceIDs         *[]uint `json:"service_ids,omitempty"`
+	Enabled            *bool   `json:"enabled,omitempty"`
+	AggregationEnabled *bool   `json:"aggregation_enabled,omitempty"`
+	AccessToken        *string `json:"access_token,omitempty"`
+}
+
+// UpdateMCPServiceGroup handles PUT /api/mcp-skills/groups/:id
+func (s *Server) UpdateMCPServiceGroup(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	var req UpdateMCPServiceGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	group, err := s.MCPSkillsGroupService.UpdateGroup(c.Request.Context(), uint(id), mcpskills.UpdateGroupParams{
+		Name:               req.Name,
+		DisplayName:        req.DisplayName,
+		Description:        req.Description,
+		ServiceIDs:         req.ServiceIDs,
+		Enabled:            req.Enabled,
+		AggregationEnabled: req.AggregationEnabled,
+		AccessToken:        req.AccessToken,
+	})
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.group_updated", group)
+}
+
+// DeleteMCPServiceGroup handles DELETE /api/mcp-skills/groups/:id
+func (s *Server) DeleteMCPServiceGroup(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	if err := s.MCPSkillsGroupService.DeleteGroup(c.Request.Context(), uint(id)); HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.group_deleted", nil)
+}
+
+// ToggleMCPServiceGroupEnabled handles POST /api/mcp-skills/groups/:id/toggle
+func (s *Server) ToggleMCPServiceGroupEnabled(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	group, err := s.MCPSkillsGroupService.ToggleGroupEnabled(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	status := "mcp_skills.status.disabled"
+	if group.Enabled {
+		status = "mcp_skills.status.enabled"
+	}
+	response.SuccessI18n(c, "mcp_skills.service_toggled", group, map[string]any{"status": status})
+}
+
+// AddServicesToGroupRequest represents the request to add services to a group
+type AddServicesToGroupRequest struct {
+	ServiceIDs []uint `json:"service_ids"`
+}
+
+// AddServicesToMCPGroup handles POST /api/mcp-skills/groups/:id/services
+func (s *Server) AddServicesToMCPGroup(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	var req AddServicesToGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	group, err := s.MCPSkillsGroupService.AddServicesToGroup(c.Request.Context(), uint(id), req.ServiceIDs)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.group_updated", group)
+}
+
+// RemoveServicesFromMCPGroup handles DELETE /api/mcp-skills/groups/:id/services
+func (s *Server) RemoveServicesFromMCPGroup(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	var req AddServicesToGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	group, err := s.MCPSkillsGroupService.RemoveServicesFromGroup(c.Request.Context(), uint(id), req.ServiceIDs)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.group_updated", group)
+}
+
+// ExportMCPGroupAsSkill handles GET /api/mcp-skills/groups/:id/export
+func (s *Server) ExportMCPGroupAsSkill(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	// Get server address from system settings or request
+	serverAddress := s.getServerAddress(c)
+
+	// Get auth token from header (for MCP config generation)
+	authToken := c.GetHeader("Authorization")
+	if authToken == "" {
+		authToken = c.Query("key")
+	}
+
+	zipBuffer, filename, err := s.MCPSkillsExportService.ExportGroupAsSkill(c.Request.Context(), uint(id), serverAddress, authToken)
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Header("Content-Type", "application/zip")
+	c.Header("Content-Length", strconv.Itoa(zipBuffer.Len()))
+	c.Data(200, "application/zip", zipBuffer.Bytes())
+}
+
+
+// GetMCPGroupEndpointInfo handles GET /api/mcp-skills/groups/:id/endpoint-info
+func (s *Server) GetMCPGroupEndpointInfo(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	// Get server address from system settings or request
+	serverAddress := s.getServerAddress(c)
+
+	info, err := s.MCPSkillsGroupService.GetGroupEndpointInfo(c.Request.Context(), uint(id), serverAddress)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, info)
+}
+
+// RegenerateMCPGroupAccessToken handles POST /api/mcp-skills/groups/:id/regenerate-token
+func (s *Server) RegenerateMCPGroupAccessToken(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	token, err := s.MCPSkillsGroupService.RegenerateAccessToken(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.token_regenerated", map[string]string{"access_token": token})
+}
+
+// GetMCPGroupAccessToken handles GET /api/mcp-skills/groups/:id/access-token
+func (s *Server) GetMCPGroupAccessToken(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	token, err := s.MCPSkillsGroupService.GetGroupAccessToken(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, map[string]string{"access_token": token})
+}
+
+// HandleAggregationMCP handles POST /mcp/aggregation/:name - MCP Aggregation JSON-RPC endpoint
+// This endpoint exposes only search_tools and execute_tool for reduced context usage
+func (s *Server) HandleAggregationMCP(c *gin.Context) {
+	groupName := c.Param("name")
+
+	// Get access token from query or header
+	accessToken := c.Query("key")
+	if accessToken == "" {
+		accessToken = c.GetHeader("X-Access-Token")
+	}
+	if accessToken == "" {
+		// Try Bearer token from Authorization header
+		auth := c.GetHeader("Authorization")
+		if len(auth) > 7 && auth[:7] == "Bearer " {
+			accessToken = auth[7:]
+		}
+	}
+
+	// Get group with token validation
+	group, err := s.MCPSkillsGroupService.GetGroupByNameWithToken(c.Request.Context(), groupName, accessToken)
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	if !group.Enabled {
+		c.JSON(503, mcpskills.MCPResponse{
+			JSONRPC: "2.0",
+			Error:   &mcpskills.MCPError{Code: -32000, Message: "Group is disabled"},
+		})
+		return
+	}
+
+	if !group.AggregationEnabled {
+		c.JSON(400, mcpskills.MCPResponse{
+			JSONRPC: "2.0",
+			Error:   &mcpskills.MCPError{Code: -32000, Message: "MCP Aggregation is not enabled for this group"},
+		})
+		return
+	}
+
+	// Parse MCP request
+	var req mcpskills.MCPRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, mcpskills.MCPResponse{
+			JSONRPC: "2.0",
+			Error:   &mcpskills.MCPError{Code: -32700, Message: "Parse error: " + err.Error()},
+		})
+		return
+	}
+
+	// Handle the MCP request
+	resp := s.MCPSkillsAggregationHandler.HandleMCPRequest(c.Request.Context(), group, &req)
+	c.JSON(200, resp)
+}
+
+
+// ExportMCPSkills handles GET /api/mcp-skills/export
+// Exports all MCP services and groups
+func (s *Server) ExportMCPSkills(c *gin.Context) {
+	// Determine export mode: plain or encrypted (default encrypted)
+	plainMode := c.Query("mode") == "plain"
+
+	services, err := s.MCPSkillsService.ExportServices(c.Request.Context(), plainMode)
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	groups, err := s.MCPSkillsGroupService.ExportGroups(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	exportData := mcpskills.MCPSkillsExportData{
+		Version:    "1.0",
+		ExportedAt: time.Now().Format(time.RFC3339),
+		Services:   services,
+		Groups:     groups,
+	}
+
+	response.Success(c, exportData)
+}
+
+// ImportMCPSkillsRequest represents the import request
+type ImportMCPSkillsRequest struct {
+	Version    string                            `json:"version"`
+	ExportedAt string                            `json:"exported_at"`
+	Services   []mcpskills.MCPServiceExportInfo  `json:"services"`
+	Groups     []mcpskills.MCPServiceGroupExportInfo `json:"groups"`
+}
+
+// ImportMCPSkills handles POST /api/mcp-skills/import
+// Imports MCP services and groups from export data
+func (s *Server) ImportMCPSkills(c *gin.Context) {
+	// Determine import mode: plain or encrypted (default encrypted)
+	plainMode := c.Query("mode") == "plain"
+
+	var req ImportMCPSkillsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	// Import services first (groups depend on services)
+	servicesImported, servicesSkipped, err := s.MCPSkillsService.ImportServices(c.Request.Context(), req.Services, plainMode)
+	if err != nil {
+		HandleServiceError(c, err)
+		return
+	}
+
+	// Import groups
+	groupsImported, groupsSkipped, err := s.MCPSkillsGroupService.ImportGroups(c.Request.Context(), req.Groups)
+	if err != nil {
+		HandleServiceError(c, err)
+		return
+	}
+
+	result := mcpskills.MCPSkillsImportResult{
+		ServicesImported: servicesImported,
+		ServicesSkipped:  servicesSkipped,
+		GroupsImported:   groupsImported,
+		GroupsSkipped:    groupsSkipped,
+	}
+
+	response.SuccessI18n(c, "mcp_skills.import_completed", result)
+}
+
+// ImportMCPServersRequest represents the request to import MCP servers from standard JSON format
+type ImportMCPServersRequest struct {
+	MCPServers map[string]mcpskills.MCPServerConfig `json:"mcpServers"`
+}
+
+// ImportMCPServers handles POST /api/mcp-skills/import-mcp-json
+// Imports MCP services from standard MCP JSON configuration format (Claude Desktop, Kiro, etc.)
+func (s *Server) ImportMCPServers(c *gin.Context) {
+	var req ImportMCPServersRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	if len(req.MCPServers) == 0 {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "No MCP servers found in configuration"))
+		return
+	}
+
+	config := mcpskills.MCPServersConfig{
+		MCPServers: req.MCPServers,
+	}
+
+	result, err := s.MCPSkillsService.ImportMCPServersFromJSON(c.Request.Context(), config)
+	if err != nil {
+		HandleServiceError(c, err)
+		return
+	}
+
+	response.SuccessI18n(c, "mcp_skills.mcp_json_import_completed", result)
+}
+
+// GetMCPServiceEndpointInfo handles GET /api/mcp-skills/services/:id/endpoint-info
+func (s *Server) GetMCPServiceEndpointInfo(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	serverAddress := s.getServerAddress(c)
+	info, err := s.MCPSkillsService.GetServiceEndpointInfo(c.Request.Context(), uint(id), serverAddress)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, info)
+}
+
+// ToggleMCPServiceMCPEnabled handles POST /api/mcp-skills/services/:id/toggle-mcp
+func (s *Server) ToggleMCPServiceMCPEnabled(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	service, err := s.MCPSkillsService.ToggleMCPEnabled(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, service)
+}
+
+// RegenerateMCPServiceAccessToken handles POST /api/mcp-skills/services/:id/regenerate-token
+func (s *Server) RegenerateMCPServiceAccessToken(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	token, err := s.MCPSkillsService.RegenerateServiceAccessToken(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.token_regenerated", map[string]string{"access_token": token})
+}
+
+// GetMCPServiceTools handles GET /api/mcp-skills/services/:id/tools
+// Returns the tools for a service with caching support
+func (s *Server) GetMCPServiceTools(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	// Check if force refresh is requested
+	forceRefresh := c.Query("refresh") == "true"
+
+	result, err := s.MCPSkillsService.GetServiceTools(c.Request.Context(), uint(id), forceRefresh)
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, result)
+}
+
+// RefreshMCPServiceTools handles POST /api/mcp-skills/services/:id/tools/refresh
+// Forces a refresh of the tool cache for a service
+func (s *Server) RefreshMCPServiceTools(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	result, err := s.MCPSkillsService.RefreshServiceToolCache(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "mcp_skills.tools_refreshed", result)
+}
+
+// HandleServiceMCP handles POST /mcp/service/:name - Single service MCP JSON-RPC endpoint
+// This endpoint exposes the service's tools via standard MCP protocol
+func (s *Server) HandleServiceMCP(c *gin.Context) {
+	serviceName := c.Param("name")
+
+	// Get access token from query or header
+	accessToken := c.Query("key")
+	if accessToken == "" {
+		accessToken = c.GetHeader("X-Access-Token")
+	}
+	if accessToken == "" {
+		// Try Bearer token from Authorization header
+		auth := c.GetHeader("Authorization")
+		if len(auth) > 7 && auth[:7] == "Bearer " {
+			accessToken = auth[7:]
+		}
+	}
+
+	// Get service with token validation
+	service, err := s.MCPSkillsService.GetServiceByNameWithToken(c.Request.Context(), serviceName, accessToken)
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	// Parse MCP request
+	var req mcpskills.MCPRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, mcpskills.MCPResponse{
+			JSONRPC: "2.0",
+			Error:   &mcpskills.MCPError{Code: -32700, Message: "Parse error: " + err.Error()},
+		})
+		return
+	}
+
+	// Handle the MCP request
+	resp := s.MCPSkillsServiceHandler.HandleMCPRequest(c.Request.Context(), service, &req)
+	c.JSON(200, resp)
+}

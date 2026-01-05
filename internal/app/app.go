@@ -13,6 +13,7 @@ import (
 	dbmigrations "gpt-load/internal/db/migrations"
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/keypool"
+	"gpt-load/internal/mcpskills"
 	"gpt-load/internal/models"
 	"gpt-load/internal/proxy"
 	"gpt-load/internal/services"
@@ -110,6 +111,10 @@ func (a *App) Start() error {
 			&sitemanagement.ManagedSite{},
 			&sitemanagement.ManagedSiteCheckinLog{},
 			&sitemanagement.ManagedSiteSetting{},
+			&mcpskills.MCPService{},
+			&mcpskills.MCPServiceGroup{},
+			&mcpskills.MCPLog{},
+			&mcpskills.MCPToolCache{},
 		); err != nil {
 			return fmt.Errorf("database auto-migration failed: %w", err)
 		}
