@@ -27,6 +27,8 @@ type CreateManagedSiteRequest struct {
 	CheckInAvailable bool   `json:"checkin_available"`
 	CheckInEnabled   bool   `json:"checkin_enabled"`
 	CustomCheckInURL string `json:"custom_checkin_url"`
+	UseProxy         bool   `json:"use_proxy"`
+	ProxyURL         string `json:"proxy_url"`
 
 	AuthType  string `json:"auth_type"`
 	AuthValue string `json:"auth_value"`
@@ -47,6 +49,8 @@ type UpdateManagedSiteRequest struct {
 	CheckInAvailable *bool   `json:"checkin_available"`
 	CheckInEnabled   *bool   `json:"checkin_enabled"`
 	CustomCheckInURL *string `json:"custom_checkin_url"`
+	UseProxy         *bool   `json:"use_proxy"`
+	ProxyURL         *string `json:"proxy_url"`
 
 	AuthType  *string `json:"auth_type"`
 	AuthValue *string `json:"auth_value"`
@@ -135,6 +139,8 @@ func (s *Server) CreateManagedSite(c *gin.Context) {
 		CheckInAvailable: req.CheckInAvailable,
 		CheckInEnabled:   req.CheckInEnabled,
 		CustomCheckInURL: req.CustomCheckInURL,
+		UseProxy:         req.UseProxy,
+		ProxyURL:         req.ProxyURL,
 		AuthType:         req.AuthType,
 		AuthValue:        req.AuthValue,
 	})
@@ -170,6 +176,8 @@ func (s *Server) UpdateManagedSite(c *gin.Context) {
 		CheckInAvailable: req.CheckInAvailable,
 		CheckInEnabled:   req.CheckInEnabled,
 		CustomCheckInURL: req.CustomCheckInURL,
+		UseProxy:         req.UseProxy,
+		ProxyURL:         req.ProxyURL,
 		AuthType:         req.AuthType,
 		AuthValue:        req.AuthValue,
 	})

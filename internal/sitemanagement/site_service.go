@@ -66,6 +66,8 @@ type CreateSiteParams struct {
 	CheckInAvailable bool
 	CheckInEnabled   bool
 	CustomCheckInURL string
+	UseProxy         bool
+	ProxyURL         string
 
 	AuthType  string
 	AuthValue string
@@ -86,6 +88,8 @@ type UpdateSiteParams struct {
 	CheckInAvailable *bool
 	CheckInEnabled   *bool
 	CustomCheckInURL *string
+	UseProxy         *bool
+	ProxyURL         *string
 
 	AuthType  *string
 	AuthValue *string
@@ -280,6 +284,8 @@ func (s *SiteService) siteToDTO(site *ManagedSite, groupNameMap map[uint]string)
 		CheckInAvailable:          site.CheckInAvailable,
 		CheckInEnabled:            site.CheckInEnabled || site.AutoCheckInEnabled, // Merge legacy field for UI consistency
 		CustomCheckInURL:          site.CustomCheckInURL,
+		UseProxy:                  site.UseProxy,
+		ProxyURL:                  site.ProxyURL,
 		AuthType:                  site.AuthType,
 		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
 		LastCheckInAt:             site.LastCheckInAt,
@@ -365,6 +371,8 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 		CheckInAvailable: params.CheckInAvailable,
 		CheckInEnabled:   params.CheckInEnabled,
 		CustomCheckInURL: strings.TrimSpace(params.CustomCheckInURL),
+		UseProxy:         params.UseProxy,
+		ProxyURL:         strings.TrimSpace(params.ProxyURL),
 		AuthType:         authType,
 		AuthValue:        encryptedAuth,
 	}
@@ -490,6 +498,13 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		// Without this, legacy sites with AutoCheckInEnabled=true would continue auto-checkin
 		// even after user turns off the toggle (because query uses OR condition)
 		site.AutoCheckInEnabled = false
+	}
+	// Note: CustomCheckInURL is already handled above (around line 461), removed duplicate per AI review
+	if params.UseProxy != nil {
+		site.UseProxy = *params.UseProxy
+	}
+	if params.ProxyURL != nil {
+		site.ProxyURL = strings.TrimSpace(*params.ProxyURL)
 	}
 
 	if err := s.db.WithContext(ctx).Save(&site).Error; err != nil {
@@ -676,6 +691,8 @@ func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDT
 		CheckInAvailable: source.CheckInAvailable,
 		CheckInEnabled:   source.CheckInEnabled || source.AutoCheckInEnabled,
 		CustomCheckInURL: source.CustomCheckInURL,
+		UseProxy:         source.UseProxy,
+		ProxyURL:         source.ProxyURL,
 		AuthType:         source.AuthType,
 		AuthValue:        source.AuthValue,
 		// BoundGroupID is intentionally not copied
@@ -872,6 +889,8 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 		CheckInAvailable:          site.CheckInAvailable,
 		CheckInEnabled:            site.CheckInEnabled || site.AutoCheckInEnabled, // Merge legacy field for UI consistency
 		CustomCheckInURL:          site.CustomCheckInURL,
+		UseProxy:                  site.UseProxy,
+		ProxyURL:                  site.ProxyURL,
 		AuthType:                  site.AuthType,
 		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
 		LastCheckInAt:             site.LastCheckInAt,
@@ -983,6 +1002,8 @@ type SiteExportInfo struct {
 	CheckInEnabled     bool   `json:"checkin_enabled"`
 	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
 	CustomCheckInURL   string `json:"custom_checkin_url"`
+	UseProxy           bool   `json:"use_proxy"`
+	ProxyURL           string `json:"proxy_url"`
 	AuthType           string `json:"auth_type"`
 	AuthValue          string `json:"auth_value,omitempty"` // Encrypted or plain based on export mode
 }
@@ -1034,6 +1055,8 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 			CheckInEnabled:     site.CheckInEnabled,
 			AutoCheckInEnabled: site.AutoCheckInEnabled,
 			CustomCheckInURL:   site.CustomCheckInURL,
+			UseProxy:           site.UseProxy,
+			ProxyURL:           site.ProxyURL,
 			AuthType:           site.AuthType,
 		}
 
@@ -1195,8 +1218,10 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			CheckInAvailable: siteInfo.CheckInAvailable,
 			CheckInEnabled:   checkInEnabled,
 			CustomCheckInURL: strings.TrimSpace(siteInfo.CustomCheckInURL),
-			AuthType:           authType,
-			AuthValue:          encryptedAuth,
+			UseProxy:         siteInfo.UseProxy,
+			ProxyURL:         strings.TrimSpace(siteInfo.ProxyURL),
+			AuthType:         authType,
+			AuthValue:        encryptedAuth,
 		}
 
 		if err := s.db.WithContext(ctx).Create(site).Error; err != nil {

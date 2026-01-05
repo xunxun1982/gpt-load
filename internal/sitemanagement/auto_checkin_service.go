@@ -36,6 +36,11 @@ type AutoCheckinService struct {
 	encryptionSvc encryption.Service
 	client        *http.Client
 
+	// Proxy client cache to reuse HTTP clients with same proxy URL for connection pooling.
+	// Key: normalized proxy URL, Value: *http.Client with proxy transport.
+	// Using sync.Map for concurrent access without explicit locking.
+	proxyClients sync.Map
+
 	stopCh       chan struct{}
 	rescheduleCh chan struct{}
 	runNowCh     chan struct{}
@@ -525,7 +530,7 @@ func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {
 	// Query sites where auto check-in should run: enabled=true AND (checkin_enabled=true OR auto_checkin_enabled=true)
 	// This supports both new logic (checkin_enabled) and legacy data (auto_checkin_enabled)
 	err = s.db.WithContext(qctx).
-		Select("id, name, base_url, site_type, user_id, custom_checkin_url, checkin_enabled, auth_type, auth_value").
+		Select("id, name, base_url, site_type, user_id, custom_checkin_url, use_proxy, proxy_url, checkin_enabled, auth_type, auth_value").
 		Where("enabled = ? AND (checkin_enabled = ? OR auto_checkin_enabled = ?)", true, true, true).
 		Order("id ASC").
 		Find(&sites).Error
@@ -668,7 +673,10 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	}
 	site.UserID = userID
 
-	res, err := provider.CheckIn(ctx, s.client, site, authValue)
+	// Get HTTP client (with or without proxy based on site.UseProxy and site.ProxyURL)
+	client := s.getHTTPClient(site.UseProxy, site.ProxyURL)
+
+	res, err := provider.CheckIn(ctx, client, site, authValue)
 	if err != nil {
 		result.Status = CheckinResultFailed
 		result.Message = err.Error()
@@ -681,6 +689,52 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
 
 	return result
+}
+
+// getHTTPClient returns an HTTP client, optionally configured with proxy from site settings.
+// When useProxy is true and proxyURL is provided, returns a proxy-enabled client from cache.
+// Otherwise returns the default client without proxy.
+// Proxy clients are cached by URL to enable connection pooling across requests.
+func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http.Client {
+	if !useProxy {
+		return s.client
+	}
+
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		// No proxy URL configured, use default client
+		return s.client
+	}
+
+	// Check cache first (fast path)
+	if cached, ok := s.proxyClients.Load(proxyURL); ok {
+		return cached.(*http.Client)
+	}
+
+	// Parse and validate proxy URL
+	parsedProxyURL, err := url.Parse(proxyURL)
+	if err != nil {
+		logrus.WithError(err).Warn("Invalid proxy URL in site settings, using direct connection")
+		return s.client
+	}
+
+	// Create a new transport with proxy
+	transport := &http.Transport{
+		Proxy:               http.ProxyURL(parsedProxyURL),
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   20 * time.Second,
+	}
+
+	// Store in cache (LoadOrStore handles race condition - if another goroutine
+	// stored a client for the same URL, we use that one instead)
+	actual, _ := s.proxyClients.LoadOrStore(proxyURL, client)
+	return actual.(*http.Client)
 }
 
 func (s *AutoCheckinService) decryptAuthValue(encrypted string) (string, error) {
@@ -792,7 +846,8 @@ func resolveProvider(siteType string) checkinProvider {
 		return veloeraProvider{}
 	case SiteTypeWongGongyi:
 		return wongProvider{}
-	// Note: SiteTypeAnyrouter removed - it only supported cookie-based auth
+	case SiteTypeAnyrouter:
+		return anyrouterProvider{}
 	// Note: SiteTypeBrand, SiteTypeUnknown do not have dedicated checkin providers
 	default:
 		return nil
@@ -807,6 +862,27 @@ func extractBaseURL(rawURL string) string {
 		return strings.TrimRight(rawURL, "/")
 	}
 	return u.Scheme + "://" + u.Host
+}
+
+// buildCheckinURL constructs the check-in API URL.
+// If customURL is provided, it's appended to the base URL (extracted from siteBaseURL).
+// Otherwise, the defaultPath is used.
+// Examples:
+//   - siteBaseURL="https://example.com/console", customURL="", defaultPath="/api/user/checkin"
+//     -> "https://example.com/api/user/checkin"
+//   - siteBaseURL="https://example.com", customURL="/custom/checkin", defaultPath="/api/user/checkin"
+//     -> "https://example.com/custom/checkin"
+func buildCheckinURL(siteBaseURL, customURL, defaultPath string) string {
+	baseURL := extractBaseURL(siteBaseURL)
+	path := strings.TrimSpace(customURL)
+	if path == "" {
+		path = defaultPath
+	}
+	// Ensure path starts with /
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return baseURL + path
 }
 
 func buildUserHeaders(userID string) map[string]string {
@@ -913,8 +989,7 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
-	baseURL := extractBaseURL(site.BaseURL)
-	apiURL := baseURL + "/api/user/check_in"
+	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/check_in")
 	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
 
 	var resp struct {
@@ -997,8 +1072,7 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
-	baseURL := extractBaseURL(site.BaseURL)
-	apiURL := baseURL + "/api/user/checkin"
+	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/checkin")
 	data, _, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
 	if err != nil {
 		return providerResult{}, err
@@ -1028,8 +1102,68 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, nil
 }
 
-// Note: anyrouterProvider removed - it only supported cookie-based auth which
-// cannot be implemented in a backend service (requires browser environment).
+// anyrouterProvider handles check-in for Anyrouter sites.
+// Anyrouter uses POST /api/user/sign_in endpoint with cookie auth.
+type anyrouterProvider struct{}
+
+func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
+	// Anyrouter only supports cookie auth
+	if authValue == "" {
+		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
+	}
+	if site.AuthType != AuthTypeCookie {
+		return providerResult{Status: CheckinResultSkipped, Message: "anyrouter requires cookie auth"}, nil
+	}
+
+	headers := map[string]string{
+		"Cookie":           authValue,
+		"X-Requested-With": "XMLHttpRequest",
+	}
+
+	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/sign_in")
+	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &resp)
+	}
+
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"site_id":     site.ID,
+			"site_name":   site.Name,
+			"status_code": statusCode,
+			"response":    string(data),
+		}).Debug("Anyrouter check-in HTTP error")
+
+		if isAlreadyCheckedMessage(resp.Message) {
+			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
+		}
+		if resp.Message != "" {
+			return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+		}
+		return providerResult{}, fmt.Errorf("http %d", statusCode)
+	}
+
+	// Anyrouter returns empty message when already checked in
+	if resp.Message == "" && resp.Success {
+		return providerResult{Status: CheckinResultAlreadyChecked, Message: "already checked in"}, nil
+	}
+	if isAlreadyCheckedMessage(resp.Message) {
+		return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
+	}
+	if resp.Success {
+		return providerResult{Status: CheckinResultSuccess, Message: resp.Message}, nil
+	}
+	if resp.Message != "" {
+		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+	}
+	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, nil
+}
 
 // newAPIProvider handles check-in for NewAPI-compatible sites (new-api, one-hub, done-hub).
 // These sites share the same check-in endpoint: POST /api/user/checkin
@@ -1056,8 +1190,7 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
-	baseURL := extractBaseURL(site.BaseURL)
-	apiURL := baseURL + "/api/user/checkin"
+	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/checkin")
 	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
 
 	var resp struct {

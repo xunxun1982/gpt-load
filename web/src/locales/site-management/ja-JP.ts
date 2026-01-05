@@ -40,6 +40,12 @@ export default {
   checkinEnabledTooltip: "このサイトのチェックイン操作を許可",
   autoCheckinEnabled: "自動サインイン",
 
+  // Proxy settings
+  useProxy: "プロキシ使用",
+  proxyUrl: "プロキシURL",
+  proxyUrlPlaceholder: "http://127.0.0.1:7890",
+  proxyUrlTooltip: "チェックインリクエスト用のプロキシURL、HTTP/SOCKS5対応",
+
   // Auth related
   authType: "認証方式",
   authValue: "認証情報",
@@ -58,6 +64,7 @@ export default {
   siteTypeOneHub: "One Hub",
   siteTypeDoneHub: "Done Hub",
   siteTypeWong: "Wong公益站",
+  siteTypeAnyrouter: "Anyrouter",
 
   // Status
   lastStatus: "最新ステータス",

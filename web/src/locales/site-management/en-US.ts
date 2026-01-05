@@ -40,6 +40,12 @@ export default {
   checkinEnabledTooltip: "Allow check-in operations for this site",
   autoCheckinEnabled: "Auto Check-in",
 
+  // Proxy settings
+  useProxy: "Use Proxy",
+  proxyUrl: "Proxy URL",
+  proxyUrlPlaceholder: "http://127.0.0.1:7890",
+  proxyUrlTooltip: "Proxy URL for check-in requests, supports HTTP/SOCKS5",
+
   // Auth related
   authType: "Auth Type",
   authValue: "Auth Value",
@@ -58,6 +64,7 @@ export default {
   siteTypeOneHub: "One Hub",
   siteTypeDoneHub: "Done Hub",
   siteTypeWong: "Wong Gongyi",
+  siteTypeAnyrouter: "Anyrouter",
 
   // Status
   lastStatus: "Last Status",
