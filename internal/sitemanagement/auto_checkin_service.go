@@ -36,6 +36,11 @@ type AutoCheckinService struct {
 	encryptionSvc encryption.Service
 	client        *http.Client
 
+	// Proxy client cache to reuse HTTP clients with same proxy URL for connection pooling.
+	// Key: normalized proxy URL, Value: *http.Client with proxy transport.
+	// Using sync.Map for concurrent access without explicit locking.
+	proxyClients sync.Map
+
 	stopCh       chan struct{}
 	rescheduleCh chan struct{}
 	runNowCh     chan struct{}
@@ -687,8 +692,9 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 }
 
 // getHTTPClient returns an HTTP client, optionally configured with proxy from site settings.
-// When useProxy is true and proxyURL is provided, returns a proxy-enabled client.
+// When useProxy is true and proxyURL is provided, returns a proxy-enabled client from cache.
 // Otherwise returns the default client without proxy.
+// Proxy clients are cached by URL to enable connection pooling across requests.
 func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http.Client {
 	if !useProxy {
 		return s.client
@@ -698,6 +704,11 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 	if proxyURL == "" {
 		// No proxy URL configured, use default client
 		return s.client
+	}
+
+	// Check cache first (fast path)
+	if cached, ok := s.proxyClients.Load(proxyURL); ok {
+		return cached.(*http.Client)
 	}
 
 	// Parse and validate proxy URL
@@ -715,10 +726,15 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 		IdleConnTimeout:     90 * time.Second,
 	}
 
-	return &http.Client{
+	client := &http.Client{
 		Transport: transport,
 		Timeout:   20 * time.Second,
 	}
+
+	// Store in cache (LoadOrStore handles race condition - if another goroutine
+	// stored a client for the same URL, we use that one instead)
+	actual, _ := s.proxyClients.LoadOrStore(proxyURL, client)
+	return actual.(*http.Client)
 }
 
 func (s *AutoCheckinService) decryptAuthValue(encrypted string) (string, error) {

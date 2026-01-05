@@ -499,9 +499,7 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		// even after user turns off the toggle (because query uses OR condition)
 		site.AutoCheckInEnabled = false
 	}
-	if params.CustomCheckInURL != nil {
-		site.CustomCheckInURL = strings.TrimSpace(*params.CustomCheckInURL)
-	}
+	// Note: CustomCheckInURL is already handled above (around line 461), removed duplicate per AI review
 	if params.UseProxy != nil {
 		site.UseProxy = *params.UseProxy
 	}
