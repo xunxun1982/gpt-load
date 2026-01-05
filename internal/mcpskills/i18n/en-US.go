@@ -5,9 +5,9 @@ var MessagesEnUS = map[string]string{
 	// Validation errors
 	"mcp_skills.validation.name_required":        "Service name is required",
 	"mcp_skills.validation.invalid_name_format":  "Service name must start with a letter and contain only letters, numbers, hyphens, and underscores",
-	"mcp_skills.validation.name_duplicate":       "Service name '{{name}}' already exists",
+	"mcp_skills.validation.name_duplicate":       "Service name '{{.name}}' already exists",
 	"mcp_skills.validation.group_name_required":  "Group name is required",
-	"mcp_skills.validation.group_name_duplicate": "Group name '{{name}}' already exists",
+	"mcp_skills.validation.group_name_duplicate": "Group name '{{.name}}' already exists",
 	"mcp_skills.validation.invalid_service_ids":  "One or more service IDs are invalid",
 	"mcp_skills.validation.service_in_use":       "Cannot delete service that is used in a group",
 
@@ -15,8 +15,8 @@ var MessagesEnUS = map[string]string{
 	"mcp_skills.service_created":           "MCP service created successfully",
 	"mcp_skills.service_updated":           "MCP service updated successfully",
 	"mcp_skills.service_deleted":           "MCP service deleted successfully",
-	"mcp_skills.services_deleted_all":      "Deleted {{deleted}} unused services",
-	"mcp_skills.service_toggled":           "Service status changed to {{status}}",
+	"mcp_skills.services_deleted_all":      "Deleted {{.deleted}} unused services",
+	"mcp_skills.service_toggled":           "Service status changed to {{.status}}",
 	"mcp_skills.group_created":             "Service group created successfully",
 	"mcp_skills.group_updated":             "Service group updated successfully",
 	"mcp_skills.group_deleted":             "Service group deleted successfully",

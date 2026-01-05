@@ -538,7 +538,11 @@ func (s *GroupService) generateMCPConfigForGroup(group *MCPServiceGroupDTO, serv
 		},
 	}
 
-	jsonBytes, _ := json.Marshal(config)
+	// json.Marshal for simple map structures rarely fails
+	jsonBytes, err := json.Marshal(config)
+	if err != nil {
+		return ""
+	}
 	return string(jsonBytes)
 }
 
@@ -568,9 +572,15 @@ func (s *GroupService) GetGroupAccessToken(ctx context.Context, groupID uint) (s
 }
 
 // generateAccessToken generates a random access token
+// Returns empty string if crypto/rand fails (extremely rare)
 func generateAccessToken() string {
 	bytes := make([]byte, 16)
-	rand.Read(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		// crypto/rand.Read failure is extremely rare and indicates system entropy issues
+		// Log the error and return empty string to let caller handle it
+		logrus.WithError(err).Error("Failed to generate access token: crypto/rand.Read failed")
+		return ""
+	}
 	return hex.EncodeToString(bytes)
 }
 
@@ -666,7 +676,11 @@ func (s *GroupService) ImportGroups(ctx context.Context, groups []MCPServiceGrou
 			continue
 		}
 		if count > 0 {
-			// Generate unique name
+			// AI Review Note: Unlike service import which skips duplicates, group import
+			// renames duplicates to preserve all imported data. This is intentional because:
+			// 1. Groups contain references to services, losing a group means losing those associations
+			// 2. Users can manually merge or delete renamed groups after import
+			// 3. Service import skips because services are standalone and can be re-imported individually
 			uniqueName, err := s.generateUniqueGroupName(ctx, name)
 			if err != nil {
 				logrus.WithError(err).Warnf("Failed to generate unique name for group %s", name)

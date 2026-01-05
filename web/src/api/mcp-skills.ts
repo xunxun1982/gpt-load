@@ -8,7 +8,8 @@ export type MCPServiceCategory = "search" | "code" | "data" | "utility" | "custo
 export interface EnvVarDefinition {
   name: string;
   description: string;
-  required: boolean;
+  is_secret: boolean;
+  optional: boolean;
   default_value?: string;
 }
 

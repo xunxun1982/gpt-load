@@ -698,19 +698,30 @@ func (s *Service) UpdateService(ctx context.Context, id uint, params UpdateServi
 // DeleteService deletes an MCP service
 func (s *Service) DeleteService(ctx context.Context, id uint) error {
 	// Check if service is used in any group
-	var count int64
-	if err := s.db.WithContext(ctx).Model(&MCPServiceGroup{}).
-		Where("service_ids_json LIKE ?", fmt.Sprintf("%%\"%d\"%%", id)).
-		Count(&count).Error; err != nil {
+	// Note: We check all groups and parse their service IDs to avoid false positives
+	// from LIKE pattern matching (e.g., ID 1 matching "10", "21", etc.)
+	var groups []MCPServiceGroup
+	if err := s.db.WithContext(ctx).Select("id", "service_ids_json").Find(&groups).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
-	if count > 0 {
-		return services.NewI18nError(app_errors.ErrValidation, "mcp_skills.validation.service_in_use", nil)
+
+	for _, group := range groups {
+		serviceIDs := group.GetServiceIDs()
+		for _, svcID := range serviceIDs {
+			if svcID == id {
+				return services.NewI18nError(app_errors.ErrValidation, "mcp_skills.validation.service_in_use", nil)
+			}
+		}
 	}
 
 	// Delete associated logs
 	if err := s.db.WithContext(ctx).Where("service_id = ?", id).Delete(&MCPLog{}).Error; err != nil {
 		logrus.WithError(err).Warn("Failed to delete MCP logs for service")
+	}
+
+	// Delete associated tool cache
+	if err := s.db.WithContext(ctx).Where("service_id = ?", id).Delete(&MCPToolCache{}).Error; err != nil {
+		logrus.WithError(err).Warn("Failed to delete MCP tool cache for service")
 	}
 
 	if err := s.db.WithContext(ctx).Delete(&MCPService{}, id).Error; err != nil {

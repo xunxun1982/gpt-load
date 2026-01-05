@@ -658,7 +658,7 @@ async function copyToClipboard(text: string, msgKey: string) {
     await navigator.clipboard.writeText(text);
     message.success(t(msgKey));
   } catch (_) {
-    message.error("Copy failed");
+    message.error(t("keys.copyFailed"));
   }
 }
 

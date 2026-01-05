@@ -258,12 +258,16 @@ func (g *MCPServiceGroup) TableName() string {
 }
 
 // GetServiceIDs returns the parsed service IDs
+// Returns empty slice if JSON is empty or invalid
 func (g *MCPServiceGroup) GetServiceIDs() []uint {
 	if g.ServiceIDsJSON == "" {
 		return []uint{}
 	}
 	var ids []uint
-	_ = json.Unmarshal([]byte(g.ServiceIDsJSON), &ids)
+	if err := json.Unmarshal([]byte(g.ServiceIDsJSON), &ids); err != nil {
+		// Invalid JSON - return empty slice
+		return []uint{}
+	}
 	return ids
 }
 
@@ -273,7 +277,12 @@ func (g *MCPServiceGroup) SetServiceIDs(ids []uint) {
 		g.ServiceIDsJSON = ""
 		return
 	}
-	data, _ := json.Marshal(ids)
+	// json.Marshal for []uint never fails in practice
+	data, err := json.Marshal(ids)
+	if err != nil {
+		g.ServiceIDsJSON = "[]"
+		return
+	}
 	g.ServiceIDsJSON = string(data)
 }
 

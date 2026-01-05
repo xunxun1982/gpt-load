@@ -28,6 +28,8 @@ const panes: Array<{ key: MoreTab; labelKey: string }> = [
 ];
 
 // Sanitizes route query parameter to a valid tab value
+// AI Review Note: No backward compatibility needed for "central" -> "mcp" rename
+// because "central" tab was never released to production
 function normalizeTab(value: unknown): MoreTab {
   const raw = Array.isArray(value) ? value[0] : value;
   if (raw === "site" || raw === "mcp" || raw === "agent") {

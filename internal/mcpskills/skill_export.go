@@ -53,7 +53,6 @@ func (s *SkillExportService) ExportGroupAsSkill(ctx context.Context, groupID uin
 func (s *SkillExportService) buildSkillZip(ctx context.Context, group *MCPServiceGroupDTO, serverAddress string, authToken string) (*bytes.Buffer, error) {
 	buf := new(bytes.Buffer)
 	zipWriter := zip.NewWriter(buf)
-	defer zipWriter.Close()
 
 	// 1. Generate SKILL.md
 	skillMD := s.generateSkillMD(group)
@@ -85,6 +84,11 @@ func (s *SkillExportService) buildSkillZip(ctx context.Context, group *MCPServic
 	// 5. Generate requirements.txt
 	if err := addFileToZip(zipWriter, "requirements.txt", "# Optional dependencies\n# pyyaml>=6.0\n"); err != nil {
 		return nil, err
+	}
+
+	// Close the writer to finalize the ZIP central directory before returning
+	if err := zipWriter.Close(); err != nil {
+		return nil, fmt.Errorf("failed to finalize zip archive: %w", err)
 	}
 
 	return buf, nil
@@ -122,7 +126,12 @@ func (s *SkillExportService) generateSkillMD(group *MCPServiceGroupDTO) string {
 		"tool_count":   totalTools,
 		"services":     serviceNames,
 	}
-	frontmatterBytes, _ := yaml.Marshal(frontmatter)
+	// yaml.Marshal for simple map[string]interface{} with basic types rarely fails
+	// If it does fail, use a minimal fallback frontmatter
+	frontmatterBytes, err := yaml.Marshal(frontmatter)
+	if err != nil {
+		frontmatterBytes = []byte(fmt.Sprintf("name: %s\ndisplay_name: %s\n", skillName, group.DisplayName))
+	}
 	sb.WriteString("---\n")
 	sb.WriteString(string(frontmatterBytes))
 	sb.WriteString("---\n\n")
@@ -226,7 +235,12 @@ func (s *SkillExportService) generateMCPConfig(services []MCPServiceDTO, serverA
 		}
 	}
 
-	jsonBytes, _ := json.MarshalIndent(config, "", "  ")
+	// json.MarshalIndent for simple map structures rarely fails
+	// If it does fail, return a minimal valid JSON
+	jsonBytes, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return `{"mcpServers": {}}`
+	}
 	return string(jsonBytes)
 }
 
@@ -381,6 +395,11 @@ func convertInputSchemaToYAML(schema map[string]interface{}) string {
 		params[name] = param
 	}
 
-	yamlBytes, _ := yaml.Marshal(params)
+	// yaml.Marshal for map structures rarely fails
+	// If it does fail, return empty string
+	yamlBytes, err := yaml.Marshal(params)
+	if err != nil {
+		return ""
+	}
 	return string(yamlBytes)
 }

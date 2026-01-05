@@ -143,7 +143,13 @@ func (e *APIExecutor) executeAPIRequest(ctx context.Context, svc *MCPService, to
 	}
 
 	// Add any custom headers defined in service configuration
-	headers, _ := svc.GetHeaders()
+	headers, err := svc.GetHeaders()
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"service": svc.Name,
+			"error":   err.Error(),
+		}).Warn("Failed to parse custom headers, skipping")
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

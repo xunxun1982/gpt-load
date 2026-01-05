@@ -5,9 +5,9 @@ var MessagesJaJP = map[string]string{
 	// Validation errors
 	"mcp_skills.validation.name_required":        "サービス名は必須です",
 	"mcp_skills.validation.invalid_name_format":  "サービス名は英字で始まり、英数字、ハイフン、アンダースコアのみ使用できます",
-	"mcp_skills.validation.name_duplicate":       "サービス名「{{name}}」は既に存在します",
+	"mcp_skills.validation.name_duplicate":       "サービス名「{{.name}}」は既に存在します",
 	"mcp_skills.validation.group_name_required":  "グループ名は必須です",
-	"mcp_skills.validation.group_name_duplicate": "グループ名「{{name}}」は既に存在します",
+	"mcp_skills.validation.group_name_duplicate": "グループ名「{{.name}}」は既に存在します",
 	"mcp_skills.validation.invalid_service_ids":  "1つ以上のサービスIDが無効です",
 	"mcp_skills.validation.service_in_use":       "グループで使用中のサービスは削除できません",
 
@@ -15,8 +15,8 @@ var MessagesJaJP = map[string]string{
 	"mcp_skills.service_created":           "MCPサービスが作成されました",
 	"mcp_skills.service_updated":           "MCPサービスが更新されました",
 	"mcp_skills.service_deleted":           "MCPサービスが削除されました",
-	"mcp_skills.services_deleted_all":      "{{deleted}}件の未使用サービスを削除しました",
-	"mcp_skills.service_toggled":           "サービスのステータスが{{status}}に変更されました",
+	"mcp_skills.services_deleted_all":      "{{.deleted}}件の未使用サービスを削除しました",
+	"mcp_skills.service_toggled":           "サービスのステータスが{{.status}}に変更されました",
 	"mcp_skills.group_created":             "サービスグループが作成されました",
 	"mcp_skills.group_updated":             "サービスグループが更新されました",
 	"mcp_skills.group_deleted":             "サービスグループが削除されました",

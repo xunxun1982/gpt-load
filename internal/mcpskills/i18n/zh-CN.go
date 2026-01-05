@@ -5,9 +5,9 @@ var MessagesZhCN = map[string]string{
 	// Validation errors
 	"mcp_skills.validation.name_required":        "服务名称不能为空",
 	"mcp_skills.validation.invalid_name_format":  "服务名称必须以字母开头，只能包含字母、数字、连字符和下划线",
-	"mcp_skills.validation.name_duplicate":       "服务名称「{{name}}」已存在",
+	"mcp_skills.validation.name_duplicate":       "服务名称「{{.name}}」已存在",
 	"mcp_skills.validation.group_name_required":  "分组名称不能为空",
-	"mcp_skills.validation.group_name_duplicate": "分组名称「{{name}}」已存在",
+	"mcp_skills.validation.group_name_duplicate": "分组名称「{{.name}}」已存在",
 	"mcp_skills.validation.invalid_service_ids":  "一个或多个服务ID无效",
 	"mcp_skills.validation.service_in_use":       "无法删除正在被分组使用的服务",
 
@@ -15,8 +15,8 @@ var MessagesZhCN = map[string]string{
 	"mcp_skills.service_created":           "MCP服务创建成功",
 	"mcp_skills.service_updated":           "MCP服务更新成功",
 	"mcp_skills.service_deleted":           "MCP服务删除成功",
-	"mcp_skills.services_deleted_all":      "已删除 {{deleted}} 个未使用的服务",
-	"mcp_skills.service_toggled":           "服务状态已更改为{{status}}",
+	"mcp_skills.services_deleted_all":      "已删除 {{.deleted}} 个未使用的服务",
+	"mcp_skills.service_toggled":           "服务状态已更改为{{.status}}",
 	"mcp_skills.group_created":             "服务分组创建成功",
 	"mcp_skills.group_updated":             "服务分组更新成功",
 	"mcp_skills.group_deleted":             "服务分组删除成功",

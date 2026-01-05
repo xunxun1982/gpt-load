@@ -108,6 +108,7 @@ type CreateMCPServiceRequest struct {
 	Type            string                       `json:"type"`
 	Command         string                       `json:"command,omitempty"`
 	Args            []string                     `json:"args,omitempty"`
+	Cwd             string                       `json:"cwd,omitempty"`
 	APIEndpoint     string                       `json:"api_endpoint,omitempty"`
 	APIKeyName      string                       `json:"api_key_name,omitempty"`
 	APIKeyValue     string                       `json:"api_key_value,omitempty"`
@@ -141,6 +142,7 @@ func (s *Server) CreateMCPService(c *gin.Context) {
 		Type:            req.Type,
 		Command:         req.Command,
 		Args:            req.Args,
+		Cwd:             req.Cwd,
 		APIEndpoint:     req.APIEndpoint,
 		APIKeyName:      req.APIKeyName,
 		APIKeyValue:     req.APIKeyValue,
@@ -172,6 +174,7 @@ type UpdateMCPServiceRequest struct {
 	Type            *string                        `json:"type,omitempty"`
 	Command         *string                        `json:"command,omitempty"`
 	Args            *[]string                      `json:"args,omitempty"`
+	Cwd             *string                        `json:"cwd,omitempty"`
 	APIEndpoint     *string                        `json:"api_endpoint,omitempty"`
 	APIKeyName      *string                        `json:"api_key_name,omitempty"`
 	APIKeyValue     *string                        `json:"api_key_value,omitempty"`
@@ -211,6 +214,7 @@ func (s *Server) UpdateMCPService(c *gin.Context) {
 		Type:            req.Type,
 		Command:         req.Command,
 		Args:            req.Args,
+		Cwd:             req.Cwd,
 		APIEndpoint:     req.APIEndpoint,
 		APIKeyName:      req.APIKeyName,
 		APIKeyValue:     req.APIKeyValue,
