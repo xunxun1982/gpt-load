@@ -522,11 +522,11 @@ func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {
 	var sites []ManagedSite
 	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	// Use GORM column names from model tags to ensure database compatibility
-	// ManagedSite model defines: checkin_enabled, auto_checkin_enabled (not check_in_enabled)
+	// Query sites where auto check-in should run: enabled=true AND (checkin_enabled=true OR auto_checkin_enabled=true)
+	// This supports both new logic (checkin_enabled) and legacy data (auto_checkin_enabled)
 	err = s.db.WithContext(qctx).
-		Select("id, name, base_url, site_type, user_id, custom_checkin_url, checkin_enabled, auto_checkin_enabled, auth_type, auth_value").
-		Where("enabled = ? AND checkin_enabled = ? AND auto_checkin_enabled = ?", true, true, true).
+		Select("id, name, base_url, site_type, user_id, custom_checkin_url, checkin_enabled, auth_type, auth_value").
+		Where("enabled = ? AND (checkin_enabled = ? OR auto_checkin_enabled = ?)", true, true, true).
 		Order("id ASC").
 		Find(&sites).Error
 	if err != nil {

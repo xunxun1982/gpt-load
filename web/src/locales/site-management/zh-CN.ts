@@ -38,6 +38,7 @@ export default {
   checkinAvailableTooltip: "标记此站点是否支持签到功能（系统内置或第三方）",
   checkinEnabled: "启用签到",
   checkinEnabledTooltip: "是否允许对此站点执行签到操作",
+  autoCheckinEnabled: "自动签到",
 
   // Auth related
   authType: "认证方式",

@@ -38,6 +38,7 @@ export default {
   checkinAvailableTooltip: "Whether this site supports check-in (system or third-party)",
   checkinEnabled: "Check-in",
   checkinEnabledTooltip: "Allow check-in operations for this site",
+  autoCheckinEnabled: "Auto Check-in",
 
   // Auth related
   authType: "Auth Type",

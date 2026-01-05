@@ -63,10 +63,9 @@ type CreateSiteParams struct {
 	UserID         string
 	CheckInPageURL string
 
-	CheckInAvailable   bool
-	CheckInEnabled     bool
-	AutoCheckInEnabled bool
-	CustomCheckInURL   string
+	CheckInAvailable bool
+	CheckInEnabled   bool
+	CustomCheckInURL string
 
 	AuthType  string
 	AuthValue string
@@ -84,10 +83,9 @@ type UpdateSiteParams struct {
 	UserID         *string
 	CheckInPageURL *string
 
-	CheckInAvailable   *bool
-	CheckInEnabled     *bool
-	AutoCheckInEnabled *bool
-	CustomCheckInURL   *string
+	CheckInAvailable *bool
+	CheckInEnabled   *bool
+	CustomCheckInURL *string
 
 	AuthType  *string
 	AuthValue *string
@@ -281,7 +279,6 @@ func (s *SiteService) siteToDTO(site *ManagedSite, groupNameMap map[uint]string)
 		CheckInPageURL:            site.CheckInPageURL,
 		CheckInAvailable:          site.CheckInAvailable,
 		CheckInEnabled:            site.CheckInEnabled,
-		AutoCheckInEnabled:        site.AutoCheckInEnabled,
 		CustomCheckInURL:          site.CustomCheckInURL,
 		AuthType:                  site.AuthType,
 		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
@@ -335,15 +332,6 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_auth_type", nil)
 	}
 
-	checkInEnabled := params.CheckInEnabled
-	autoCheckInEnabled := params.AutoCheckInEnabled
-	if autoCheckInEnabled {
-		checkInEnabled = true
-	}
-	if !checkInEnabled {
-		autoCheckInEnabled = false
-	}
-
 	encryptedAuth := ""
 	if authType != AuthTypeNone {
 		value := strings.TrimSpace(params.AuthValue)
@@ -365,21 +353,20 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 	}
 
 	site := &ManagedSite{
-		Name:               name,
-		Notes:              strings.TrimSpace(params.Notes),
-		Description:        strings.TrimSpace(params.Description),
-		Sort:               params.Sort,
-		Enabled:            params.Enabled,
-		BaseURL:            baseURL,
-		SiteType:           siteType,
-		UserID:             encryptedUserID,
-		CheckInPageURL:     strings.TrimSpace(params.CheckInPageURL),
-		CheckInAvailable:   params.CheckInAvailable,
-		CheckInEnabled:     checkInEnabled,
-		AutoCheckInEnabled: autoCheckInEnabled,
-		CustomCheckInURL:   strings.TrimSpace(params.CustomCheckInURL),
-		AuthType:           authType,
-		AuthValue:          encryptedAuth,
+		Name:             name,
+		Notes:            strings.TrimSpace(params.Notes),
+		Description:      strings.TrimSpace(params.Description),
+		Sort:             params.Sort,
+		Enabled:          params.Enabled,
+		BaseURL:          baseURL,
+		SiteType:         siteType,
+		UserID:           encryptedUserID,
+		CheckInPageURL:   strings.TrimSpace(params.CheckInPageURL),
+		CheckInAvailable: params.CheckInAvailable,
+		CheckInEnabled:   params.CheckInEnabled,
+		CustomCheckInURL: strings.TrimSpace(params.CustomCheckInURL),
+		AuthType:         authType,
+		AuthValue:        encryptedAuth,
 	}
 
 	if err := s.db.WithContext(ctx).Create(site).Error; err != nil {
@@ -499,15 +486,6 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 	}
 	if params.CheckInEnabled != nil {
 		site.CheckInEnabled = *params.CheckInEnabled
-		if !site.CheckInEnabled {
-			site.AutoCheckInEnabled = false
-		}
-	}
-	if params.AutoCheckInEnabled != nil {
-		site.AutoCheckInEnabled = *params.AutoCheckInEnabled
-		if site.AutoCheckInEnabled {
-			site.CheckInEnabled = true
-		}
 	}
 
 	if err := s.db.WithContext(ctx).Save(&site).Error; err != nil {
@@ -681,21 +659,20 @@ func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDT
 
 	// Create the copy (without binding, checkin status, and timestamps)
 	newSite := &ManagedSite{
-		Name:               uniqueName,
-		Notes:              source.Notes,
-		Description:        source.Description,
-		Sort:               source.Sort,
-		Enabled:            source.Enabled,
-		BaseURL:            source.BaseURL,
-		SiteType:           source.SiteType,
-		UserID:             source.UserID,
-		CheckInPageURL:     source.CheckInPageURL,
-		CheckInAvailable:   source.CheckInAvailable,
-		CheckInEnabled:     source.CheckInEnabled,
-		AutoCheckInEnabled: source.AutoCheckInEnabled,
-		CustomCheckInURL:   source.CustomCheckInURL,
-		AuthType:           source.AuthType,
-		AuthValue:          source.AuthValue,
+		Name:             uniqueName,
+		Notes:            source.Notes,
+		Description:      source.Description,
+		Sort:             source.Sort,
+		Enabled:          source.Enabled,
+		BaseURL:          source.BaseURL,
+		SiteType:         source.SiteType,
+		UserID:           source.UserID,
+		CheckInPageURL:   source.CheckInPageURL,
+		CheckInAvailable: source.CheckInAvailable,
+		CheckInEnabled:   source.CheckInEnabled,
+		CustomCheckInURL: source.CustomCheckInURL,
+		AuthType:         source.AuthType,
+		AuthValue:        source.AuthValue,
 		// BoundGroupID is intentionally not copied
 		// LastCheckIn* fields are intentionally not copied
 	}
@@ -889,7 +866,6 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 		CheckInPageURL:            site.CheckInPageURL,
 		CheckInAvailable:          site.CheckInAvailable,
 		CheckInEnabled:            site.CheckInEnabled,
-		AutoCheckInEnabled:        site.AutoCheckInEnabled,
 		CustomCheckInURL:          site.CustomCheckInURL,
 		AuthType:                  site.AuthType,
 		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
@@ -1190,15 +1166,8 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			}
 		}
 
-		// Ensure checkin flags are consistent
-		checkInEnabled := siteInfo.CheckInEnabled
-		autoCheckInEnabled := siteInfo.AutoCheckInEnabled
-		if autoCheckInEnabled {
-			checkInEnabled = true
-		}
-		if !checkInEnabled {
-			autoCheckInEnabled = false
-		}
+		// Ensure checkin flags are consistent (merge auto_checkin_enabled into checkin_enabled for backward compatibility)
+		checkInEnabled := siteInfo.CheckInEnabled || siteInfo.AutoCheckInEnabled
 
 		// Generate unique name if conflict exists
 		uniqueName, err := s.generateUniqueSiteName(ctx, name)
@@ -1209,19 +1178,18 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 		}
 
 		site := &ManagedSite{
-			Name:               uniqueName,
-			Notes:              strings.TrimSpace(siteInfo.Notes),
-			Description:        strings.TrimSpace(siteInfo.Description),
-			Sort:               siteInfo.Sort,
-			Enabled:            siteInfo.Enabled,
-			BaseURL:            baseURL,
-			SiteType:           siteType,
-			UserID:             encryptedUserID,
-			CheckInPageURL:     strings.TrimSpace(siteInfo.CheckInPageURL),
-			CheckInAvailable:   siteInfo.CheckInAvailable,
-			CheckInEnabled:     checkInEnabled,
-			AutoCheckInEnabled: autoCheckInEnabled,
-			CustomCheckInURL:   strings.TrimSpace(siteInfo.CustomCheckInURL),
+			Name:             uniqueName,
+			Notes:            strings.TrimSpace(siteInfo.Notes),
+			Description:      strings.TrimSpace(siteInfo.Description),
+			Sort:             siteInfo.Sort,
+			Enabled:          siteInfo.Enabled,
+			BaseURL:          baseURL,
+			SiteType:         siteType,
+			UserID:           encryptedUserID,
+			CheckInPageURL:   strings.TrimSpace(siteInfo.CheckInPageURL),
+			CheckInAvailable: siteInfo.CheckInAvailable,
+			CheckInEnabled:   checkInEnabled,
+			CustomCheckInURL: strings.TrimSpace(siteInfo.CustomCheckInURL),
 			AuthType:           authType,
 			AuthValue:          encryptedAuth,
 		}

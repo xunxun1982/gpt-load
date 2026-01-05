@@ -38,6 +38,7 @@ export default {
   checkinAvailableTooltip: "このサイトがチェックインをサポートしているかどうか",
   checkinEnabled: "サインイン",
   checkinEnabledTooltip: "このサイトのチェックイン操作を許可",
+  autoCheckinEnabled: "自動サインイン",
 
   // Auth related
   authType: "認証方式",

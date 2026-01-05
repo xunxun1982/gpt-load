@@ -24,10 +24,9 @@ type CreateManagedSiteRequest struct {
 	UserID         string `json:"user_id"`
 	CheckInPageURL string `json:"checkin_page_url"`
 
-	CheckInAvailable   bool   `json:"checkin_available"`
-	CheckInEnabled     bool   `json:"checkin_enabled"`
-	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
-	CustomCheckInURL   string `json:"custom_checkin_url"`
+	CheckInAvailable bool   `json:"checkin_available"`
+	CheckInEnabled   bool   `json:"checkin_enabled"`
+	CustomCheckInURL string `json:"custom_checkin_url"`
 
 	AuthType  string `json:"auth_type"`
 	AuthValue string `json:"auth_value"`
@@ -45,10 +44,9 @@ type UpdateManagedSiteRequest struct {
 	UserID         *string `json:"user_id"`
 	CheckInPageURL *string `json:"checkin_page_url"`
 
-	CheckInAvailable   *bool   `json:"checkin_available"`
-	CheckInEnabled     *bool   `json:"checkin_enabled"`
-	AutoCheckInEnabled *bool   `json:"auto_checkin_enabled"`
-	CustomCheckInURL   *string `json:"custom_checkin_url"`
+	CheckInAvailable *bool   `json:"checkin_available"`
+	CheckInEnabled   *bool   `json:"checkin_enabled"`
+	CustomCheckInURL *string `json:"custom_checkin_url"`
 
 	AuthType  *string `json:"auth_type"`
 	AuthValue *string `json:"auth_value"`
@@ -125,21 +123,20 @@ func (s *Server) CreateManagedSite(c *gin.Context) {
 	}
 
 	site, err := s.SiteService.CreateSite(c.Request.Context(), sitemanagement.CreateSiteParams{
-		Name:               req.Name,
-		Notes:              req.Notes,
-		Description:        req.Description,
-		Sort:               req.Sort,
-		Enabled:            req.Enabled,
-		BaseURL:            req.BaseURL,
-		SiteType:           req.SiteType,
-		UserID:             req.UserID,
-		CheckInPageURL:     req.CheckInPageURL,
-		CheckInAvailable:   req.CheckInAvailable,
-		CheckInEnabled:     req.CheckInEnabled,
-		AutoCheckInEnabled: req.AutoCheckInEnabled,
-		CustomCheckInURL:   req.CustomCheckInURL,
-		AuthType:           req.AuthType,
-		AuthValue:          req.AuthValue,
+		Name:             req.Name,
+		Notes:            req.Notes,
+		Description:      req.Description,
+		Sort:             req.Sort,
+		Enabled:          req.Enabled,
+		BaseURL:          req.BaseURL,
+		SiteType:         req.SiteType,
+		UserID:           req.UserID,
+		CheckInPageURL:   req.CheckInPageURL,
+		CheckInAvailable: req.CheckInAvailable,
+		CheckInEnabled:   req.CheckInEnabled,
+		CustomCheckInURL: req.CustomCheckInURL,
+		AuthType:         req.AuthType,
+		AuthValue:        req.AuthValue,
 	})
 	if HandleServiceError(c, err) {
 		return
@@ -161,21 +158,20 @@ func (s *Server) UpdateManagedSite(c *gin.Context) {
 	}
 
 	site, err := s.SiteService.UpdateSite(c.Request.Context(), uint(id), sitemanagement.UpdateSiteParams{
-		Name:               req.Name,
-		Notes:              req.Notes,
-		Description:        req.Description,
-		Sort:               req.Sort,
-		Enabled:            req.Enabled,
-		BaseURL:            req.BaseURL,
-		SiteType:           req.SiteType,
-		UserID:             req.UserID,
-		CheckInPageURL:     req.CheckInPageURL,
-		CheckInAvailable:   req.CheckInAvailable,
-		CheckInEnabled:     req.CheckInEnabled,
-		AutoCheckInEnabled: req.AutoCheckInEnabled,
-		CustomCheckInURL:   req.CustomCheckInURL,
-		AuthType:           req.AuthType,
-		AuthValue:          req.AuthValue,
+		Name:             req.Name,
+		Notes:            req.Notes,
+		Description:      req.Description,
+		Sort:             req.Sort,
+		Enabled:          req.Enabled,
+		BaseURL:          req.BaseURL,
+		SiteType:         req.SiteType,
+		UserID:           req.UserID,
+		CheckInPageURL:   req.CheckInPageURL,
+		CheckInAvailable: req.CheckInAvailable,
+		CheckInEnabled:   req.CheckInEnabled,
+		CustomCheckInURL: req.CustomCheckInURL,
+		AuthType:         req.AuthType,
+		AuthValue:        req.AuthValue,
 	})
 	if HandleServiceError(c, err) {
 		return
