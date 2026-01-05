@@ -278,7 +278,7 @@ func (s *SiteService) siteToDTO(site *ManagedSite, groupNameMap map[uint]string)
 		UserID:                    userID,
 		CheckInPageURL:            site.CheckInPageURL,
 		CheckInAvailable:          site.CheckInAvailable,
-		CheckInEnabled:            site.CheckInEnabled,
+		CheckInEnabled:            site.CheckInEnabled || site.AutoCheckInEnabled, // Merge legacy field for UI consistency
 		CustomCheckInURL:          site.CustomCheckInURL,
 		AuthType:                  site.AuthType,
 		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
@@ -486,6 +486,10 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 	}
 	if params.CheckInEnabled != nil {
 		site.CheckInEnabled = *params.CheckInEnabled
+		// Migrate legacy AutoCheckInEnabled field to ensure UI toggle is effective
+		// Without this, legacy sites with AutoCheckInEnabled=true would continue auto-checkin
+		// even after user turns off the toggle (because query uses OR condition)
+		site.AutoCheckInEnabled = false
 	}
 
 	if err := s.db.WithContext(ctx).Save(&site).Error; err != nil {
@@ -866,7 +870,7 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 		UserID:                    userID,
 		CheckInPageURL:            site.CheckInPageURL,
 		CheckInAvailable:          site.CheckInAvailable,
-		CheckInEnabled:            site.CheckInEnabled,
+		CheckInEnabled:            site.CheckInEnabled || site.AutoCheckInEnabled, // Merge legacy field for UI consistency
 		CustomCheckInURL:          site.CustomCheckInURL,
 		AuthType:                  site.AuthType,
 		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
