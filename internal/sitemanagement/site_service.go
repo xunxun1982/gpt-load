@@ -658,6 +658,7 @@ func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDT
 	}
 
 	// Create the copy (without binding, checkin status, and timestamps)
+	// Merge auto_checkin_enabled into checkin_enabled for backward compatibility with legacy data
 	newSite := &ManagedSite{
 		Name:             uniqueName,
 		Notes:            source.Notes,
@@ -669,7 +670,7 @@ func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDT
 		UserID:           source.UserID,
 		CheckInPageURL:   source.CheckInPageURL,
 		CheckInAvailable: source.CheckInAvailable,
-		CheckInEnabled:   source.CheckInEnabled,
+		CheckInEnabled:   source.CheckInEnabled || source.AutoCheckInEnabled,
 		CustomCheckInURL: source.CustomCheckInURL,
 		AuthType:         source.AuthType,
 		AuthValue:        source.AuthValue,

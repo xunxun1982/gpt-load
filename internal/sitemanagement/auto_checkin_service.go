@@ -631,7 +631,8 @@ func (s *AutoCheckinService) CheckInSite(ctx context.Context, siteID uint) (*Che
 	if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
-	if !site.Enabled || !site.CheckInEnabled {
+	// Check both checkin_enabled and auto_checkin_enabled for backward compatibility with legacy data
+	if !site.Enabled || (!site.CheckInEnabled && !site.AutoCheckInEnabled) {
 		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "check-in is disabled")
 	}
 	res := s.checkInOne(ctx, site)
