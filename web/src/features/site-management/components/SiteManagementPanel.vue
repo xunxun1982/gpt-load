@@ -8,18 +8,32 @@
  * to users, so local error handling is intentionally omitted to avoid duplicate messages.
  */
 import {
-  siteManagementApi,
   autoCheckinApi,
-  type CheckinLogDTO,
-  type ManagedSiteDTO,
-  type ManagedSiteType,
-  type ManagedSiteAuthType,
-  type SiteImportData,
-  type SiteListParams,
+  siteManagementApi,
   type AutoCheckinConfig,
   type AutoCheckinStatus,
+  type CheckinLogDTO,
+  type ManagedSiteAuthType,
+  type ManagedSiteDTO,
+  type ManagedSiteType,
+  type SiteImportData,
+  type SiteListParams,
 } from "@/api/site-management";
 import { appState } from "@/utils/app-state";
+import { askExportMode, askImportMode } from "@/utils/export-import";
+import {
+  Close,
+  CloudDownloadOutline,
+  CloudUploadOutline,
+  LinkOutline,
+  LogInOutline,
+  OpenOutline,
+  PlayOutline,
+  RefreshOutline,
+  Search,
+  SettingsOutline,
+} from "@vicons/ionicons5";
+import { debounce } from "lodash-es";
 import {
   NButton,
   NCard,
@@ -45,20 +59,6 @@ import {
 } from "naive-ui";
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import {
-  OpenOutline,
-  Close,
-  CloudDownloadOutline,
-  CloudUploadOutline,
-  LogInOutline,
-  Search,
-  LinkOutline,
-  RefreshOutline,
-  PlayOutline,
-  SettingsOutline,
-} from "@vicons/ionicons5";
-import { askExportMode, askImportMode } from "@/utils/export-import";
-import { debounce } from "lodash-es";
 
 const { t } = useI18n();
 const message = useMessage();
@@ -1515,7 +1515,7 @@ onMounted(() => {
               <n-form-item :label="t('siteManagement.checkinAvailable')" class="form-item-switch">
                 <n-switch v-model:value="siteForm.checkin_available" />
               </n-form-item>
-              <n-form-item :label="t('siteManagement.checkinEnabled')" class="form-item-switch">
+              <n-form-item :label="t('siteManagement.autoCheckinEnabled')" class="form-item-switch">
                 <n-switch v-model:value="siteForm.checkin_enabled" />
               </n-form-item>
             </div>
