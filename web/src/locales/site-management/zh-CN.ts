@@ -40,6 +40,12 @@ export default {
   checkinEnabledTooltip: "是否允许对此站点执行签到操作",
   autoCheckinEnabled: "自动签到",
 
+  // Proxy settings
+  useProxy: "使用代理",
+  proxyUrl: "代理地址",
+  proxyUrlPlaceholder: "http://127.0.0.1:7890",
+  proxyUrlTooltip: "签到请求使用的代理地址，支持HTTP/SOCKS5",
+
   // Auth related
   authType: "认证方式",
   authValue: "认证信息",
@@ -58,6 +64,7 @@ export default {
   siteTypeOneHub: "One Hub",
   siteTypeDoneHub: "Done Hub",
   siteTypeWong: "Wong公益站",
+  siteTypeAnyrouter: "Anyrouter",
 
   // Status
   lastStatus: "最近状态",

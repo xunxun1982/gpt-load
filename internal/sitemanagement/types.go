@@ -37,6 +37,8 @@ type ManagedSiteDTO struct {
 	CheckInAvailable bool   `json:"checkin_available"`
 	CheckInEnabled   bool   `json:"checkin_enabled"`
 	CustomCheckInURL string `json:"custom_checkin_url"`
+	UseProxy         bool   `json:"use_proxy"`
+	ProxyURL         string `json:"proxy_url"`
 
 	AuthType string `json:"auth_type"`
 	HasAuth  bool   `json:"has_auth"`

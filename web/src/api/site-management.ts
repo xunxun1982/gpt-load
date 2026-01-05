@@ -47,6 +47,8 @@ export interface ManagedSiteDTO {
   checkin_available: boolean;
   checkin_enabled: boolean;
   custom_checkin_url: string;
+  use_proxy: boolean;
+  proxy_url: string;
 
   auth_type: ManagedSiteAuthType;
   has_auth: boolean;
@@ -97,6 +99,8 @@ export interface CreateManagedSiteRequest {
   checkin_available: boolean;
   checkin_enabled: boolean;
   custom_checkin_url: string;
+  use_proxy: boolean;
+  proxy_url: string;
 
   auth_type: ManagedSiteAuthType;
   auth_value: string;
@@ -258,6 +262,8 @@ export interface SiteExportInfo {
   checkin_available: boolean;
   checkin_enabled: boolean;
   custom_checkin_url: string;
+  use_proxy?: boolean;
+  proxy_url?: string;
   auth_type: ManagedSiteAuthType;
   auth_value?: string;
 }

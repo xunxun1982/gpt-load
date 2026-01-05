@@ -8,9 +8,9 @@ const (
 	SiteTypeWongGongyi = "wong-gongyi"
 	SiteTypeOneHub     = "one-hub"
 	SiteTypeDoneHub    = "done-hub"
+	SiteTypeAnyrouter  = "anyrouter"
 	SiteTypeBrand      = "brand"  // Label-only type, no special checkin logic
 	SiteTypeUnknown    = "unknown"
-	// Note: SiteTypeAnyrouter removed - it only supported cookie-based auth
 )
 
 const (
@@ -50,6 +50,8 @@ type ManagedSite struct {
 	CheckInEnabled     bool   `gorm:"column:checkin_enabled;not null;default:false;index:idx_managed_sites_auto,priority:3" json:"checkin_enabled"`
 	AutoCheckInEnabled bool   `gorm:"column:auto_checkin_enabled;not null;default:false;index:idx_managed_sites_auto,priority:1" json:"auto_checkin_enabled"`
 	CustomCheckInURL   string `gorm:"column:custom_checkin_url;type:varchar(512);not null;default:''" json:"custom_checkin_url"`
+	UseProxy           bool   `gorm:"column:use_proxy;not null;default:false" json:"use_proxy"`
+	ProxyURL           string `gorm:"column:proxy_url;type:varchar(512);not null;default:''" json:"proxy_url"`
 
 	AuthType  string `gorm:"type:varchar(32);not null;default:'none'" json:"auth_type"`
 	AuthValue string `gorm:"type:text;not null;default:''" json:"-"`

@@ -116,6 +116,8 @@ const siteForm = reactive({
   checkin_available: false,
   checkin_enabled: false,
   custom_checkin_url: "",
+  use_proxy: false,
+  proxy_url: "",
   auth_type: "none" as ManagedSiteAuthType,
 });
 
@@ -130,6 +132,7 @@ const siteTypeOptions = computed(() => [
   { label: t("siteManagement.siteTypeOneHub"), value: "one-hub" },
   { label: t("siteManagement.siteTypeDoneHub"), value: "done-hub" },
   { label: t("siteManagement.siteTypeWong"), value: "wong-gongyi" },
+  { label: t("siteManagement.siteTypeAnyrouter"), value: "anyrouter" },
   { label: t("siteManagement.siteTypeBrand"), value: "brand" },
   { label: t("siteManagement.siteTypeOther"), value: "unknown" },
 ]);
@@ -247,6 +250,8 @@ function resetSiteForm() {
     checkin_available: false,
     checkin_enabled: false,
     custom_checkin_url: "",
+    use_proxy: false,
+    proxy_url: "",
     auth_type: "none",
   });
   authValueInput.value = "";
@@ -273,6 +278,8 @@ function openEditSite(site: ManagedSiteDTO) {
     checkin_available: site.checkin_available,
     checkin_enabled: site.checkin_enabled,
     custom_checkin_url: site.custom_checkin_url,
+    use_proxy: site.use_proxy,
+    proxy_url: site.proxy_url,
     auth_type: site.auth_type,
   });
   authValueInput.value = "";
@@ -1518,7 +1525,16 @@ onMounted(() => {
               <n-form-item :label="t('siteManagement.autoCheckinEnabled')" class="form-item-switch">
                 <n-switch v-model:value="siteForm.checkin_enabled" />
               </n-form-item>
+              <n-form-item :label="t('siteManagement.useProxy')" class="form-item-switch">
+                <n-switch v-model:value="siteForm.use_proxy" />
+              </n-form-item>
             </div>
+            <n-form-item v-if="siteForm.use_proxy" :label="t('siteManagement.proxyUrl')">
+              <n-input
+                v-model:value="siteForm.proxy_url"
+                :placeholder="t('siteManagement.proxyUrlPlaceholder')"
+              />
+            </n-form-item>
           </div>
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.authSettings") }}</h4>
