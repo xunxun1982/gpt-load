@@ -142,6 +142,9 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(mcpskills.NewServiceMCPHandler); err != nil {
 		return nil, err
 	}
+	if err := container.Provide(mcpskills.NewCacheCleanupService); err != nil {
+		return nil, err
+	}
 
 	// Handlers
 	if err := container.Provide(handler.NewServer); err != nil {

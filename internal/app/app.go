@@ -30,56 +30,59 @@ import (
 
 // App holds all services and manages the application lifecycle.
 type App struct {
-	engine             *gin.Engine
-	configManager      types.ConfigManager
-	settingsManager    *config.SystemSettingsManager
-	groupManager       *services.GroupManager
-	childGroupService  *services.ChildGroupService
-	logCleanupService  *services.LogCleanupService
-	requestLogService  *services.RequestLogService
-	autoCheckinService *sitemanagement.AutoCheckinService
-	cronChecker        *keypool.CronChecker
-	keyPoolProvider    *keypool.KeyProvider
-	proxyServer        *proxy.ProxyServer
-	storage            store.Store
-	db                 *gorm.DB
-	httpServer         *http.Server
+	engine                 *gin.Engine
+	configManager          types.ConfigManager
+	settingsManager        *config.SystemSettingsManager
+	groupManager           *services.GroupManager
+	childGroupService      *services.ChildGroupService
+	logCleanupService      *services.LogCleanupService
+	requestLogService      *services.RequestLogService
+	autoCheckinService     *sitemanagement.AutoCheckinService
+	cronChecker            *keypool.CronChecker
+	keyPoolProvider        *keypool.KeyProvider
+	proxyServer            *proxy.ProxyServer
+	mcpCacheCleanupService *mcpskills.CacheCleanupService
+	storage                store.Store
+	db                     *gorm.DB
+	httpServer             *http.Server
 }
 
 // AppParams defines the dependencies for the App.
 type AppParams struct {
 	dig.In
-	Engine             *gin.Engine
-	ConfigManager      types.ConfigManager
-	SettingsManager    *config.SystemSettingsManager
-	GroupManager       *services.GroupManager
-	ChildGroupService  *services.ChildGroupService
-	LogCleanupService  *services.LogCleanupService
-	RequestLogService  *services.RequestLogService
-	AutoCheckinService *sitemanagement.AutoCheckinService
-	CronChecker        *keypool.CronChecker
-	KeyPoolProvider    *keypool.KeyProvider
-	ProxyServer        *proxy.ProxyServer
-	Storage            store.Store
-	DB                 *gorm.DB
+	Engine                 *gin.Engine
+	ConfigManager          types.ConfigManager
+	SettingsManager        *config.SystemSettingsManager
+	GroupManager           *services.GroupManager
+	ChildGroupService      *services.ChildGroupService
+	LogCleanupService      *services.LogCleanupService
+	RequestLogService      *services.RequestLogService
+	AutoCheckinService     *sitemanagement.AutoCheckinService
+	CronChecker            *keypool.CronChecker
+	KeyPoolProvider        *keypool.KeyProvider
+	ProxyServer            *proxy.ProxyServer
+	MCPCacheCleanupService *mcpskills.CacheCleanupService
+	Storage                store.Store
+	DB                     *gorm.DB
 }
 
 // NewApp is the constructor for App, with dependencies injected by dig.
 func NewApp(params AppParams) *App {
 	return &App{
-		engine:             params.Engine,
-		configManager:      params.ConfigManager,
-		settingsManager:    params.SettingsManager,
-		groupManager:       params.GroupManager,
-		childGroupService:  params.ChildGroupService,
-		logCleanupService:  params.LogCleanupService,
-		requestLogService:  params.RequestLogService,
-		autoCheckinService: params.AutoCheckinService,
-		cronChecker:        params.CronChecker,
-		keyPoolProvider:    params.KeyPoolProvider,
-		proxyServer:        params.ProxyServer,
-		storage:            params.Storage,
-		db:                 params.DB,
+		engine:                 params.Engine,
+		configManager:          params.ConfigManager,
+		settingsManager:        params.SettingsManager,
+		groupManager:           params.GroupManager,
+		childGroupService:      params.ChildGroupService,
+		logCleanupService:      params.LogCleanupService,
+		requestLogService:      params.RequestLogService,
+		autoCheckinService:     params.AutoCheckinService,
+		cronChecker:            params.CronChecker,
+		keyPoolProvider:        params.KeyPoolProvider,
+		proxyServer:            params.ProxyServer,
+		mcpCacheCleanupService: params.MCPCacheCleanupService,
+		storage:                params.Storage,
+		db:                     params.DB,
 	}
 }
 
@@ -157,6 +160,7 @@ func (a *App) Start() error {
 		a.autoCheckinService.Start()
 		a.logCleanupService.Start()
 		a.cronChecker.Start()
+		a.mcpCacheCleanupService.Start()
 	} else {
 		logrus.Info("Starting as Slave Node.")
 		a.settingsManager.Initialize(a.storage, a.groupManager, a.configManager.IsMaster())
@@ -228,6 +232,7 @@ func (a *App) Stop(ctx context.Context) {
 			a.autoCheckinService.Stop,
 			a.logCleanupService.Stop,
 			a.requestLogService.Stop,
+			a.mcpCacheCleanupService.Stop,
 		)
 	}
 

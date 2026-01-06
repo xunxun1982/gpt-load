@@ -216,9 +216,14 @@ func (e *APIExecutor) executeAPIRequest(ctx context.Context, svc *MCPService, to
 	}, nil
 }
 
-// getAPIPath returns the API path for a given service and tool
+// getAPIPath returns the API path for a given service and tool.
+// Design note: Path mappings are hardcoded here intentionally for simplicity.
+// Most APIs follow RESTful conventions where path = "/" + toolName.
+// Only services with non-standard paths (like Exa's camelCase endpoints) need explicit mappings.
+// If the number of special cases grows significantly, consider moving to a configuration-based approach.
 func (e *APIExecutor) getAPIPath(serviceName, toolName string) string {
 	// API path mappings for predefined services in APIBridgeTemplates
+	// Only services with non-standard API paths need to be listed here
 	pathMappings := map[string]map[string]string{
 		"exa-search": {
 			"search":       "/search",
@@ -233,7 +238,7 @@ func (e *APIExecutor) getAPIPath(serviceName, toolName string) string {
 		}
 	}
 
-	// Default: use tool name as path
+	// Default: use tool name as path (convention over configuration)
 	return "/" + toolName
 }
 

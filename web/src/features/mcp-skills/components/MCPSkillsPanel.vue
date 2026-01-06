@@ -235,9 +235,13 @@ interface EnvVarItem {
 }
 const envVars = ref<EnvVarItem[]>([]);
 
+// Counter for generating unique env var IDs within component lifecycle
+// Using counter instead of Date.now() + random for guaranteed uniqueness and simplicity
+let envVarIdCounter = 0;
+
 function addEnvVar() {
   envVars.value.push({
-    id: `env-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: `env-${++envVarIdCounter}`,
     key: "",
     value: "",
     enabled: true,
