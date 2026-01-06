@@ -17,6 +17,7 @@ var MessagesEnUS = map[string]string{
 	"mcp_skills.service_deleted":           "MCP service deleted successfully",
 	"mcp_skills.services_deleted_all":      "Deleted {{.deleted}} unused services",
 	"mcp_skills.service_toggled":           "Service status changed to {{.status}}",
+	"mcp_skills.mcp_toggled":               "MCP endpoint status changed to {{.status}}",
 	"mcp_skills.group_created":             "Service group created successfully",
 	"mcp_skills.group_updated":             "Service group updated successfully",
 	"mcp_skills.group_deleted":             "Service group deleted successfully",

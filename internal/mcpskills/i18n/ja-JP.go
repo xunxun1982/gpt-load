@@ -17,6 +17,7 @@ var MessagesJaJP = map[string]string{
 	"mcp_skills.service_deleted":           "MCPサービスが削除されました",
 	"mcp_skills.services_deleted_all":      "{{.deleted}}件の未使用サービスを削除しました",
 	"mcp_skills.service_toggled":           "サービスのステータスが{{.status}}に変更されました",
+	"mcp_skills.mcp_toggled":               "MCPエンドポイントのステータスが{{.status}}に変更されました",
 	"mcp_skills.group_created":             "サービスグループが作成されました",
 	"mcp_skills.group_updated":             "サービスグループが更新されました",
 	"mcp_skills.group_deleted":             "サービスグループが削除されました",

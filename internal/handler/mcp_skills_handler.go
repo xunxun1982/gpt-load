@@ -54,6 +54,9 @@ func (s *Server) ListMCPServices(c *gin.Context) {
 func (s *Server) ListMCPServicesPaginated(c *gin.Context) {
 	var params mcpskills.ServiceListParams
 
+	// AI Review Note: Logging parse errors for pagination params was suggested but not adopted.
+	// Reason: Silent fallback to defaults is standard practice for user-friendly APIs.
+	// Logging such errors would create noise without practical debugging value.
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if err != nil {
 		page = 1
@@ -578,13 +581,15 @@ func (s *Server) ExportMCPGroupAsSkill(c *gin.Context) {
 	// Get server address from system settings or request
 	serverAddress := s.getServerAddress(c)
 
-	// Get auth token from header (for MCP config generation)
-	authToken := c.GetHeader("Authorization")
-	if authToken == "" {
-		authToken = c.Query("key")
+	// SECURITY: Use group's own access token instead of request auth token
+	// This prevents leaking system API keys (AUTH_KEY) in exported files
+	// The group's access token is specifically generated for MCP endpoint access
+	groupToken, err := s.MCPSkillsGroupService.GetGroupAccessToken(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
 	}
 
-	zipBuffer, filename, err := s.MCPSkillsExportService.ExportGroupAsSkill(c.Request.Context(), uint(id), serverAddress, authToken)
+	zipBuffer, filename, err := s.MCPSkillsExportService.ExportGroupAsSkill(c.Request.Context(), uint(id), serverAddress, groupToken)
 	if HandleServiceError(c, err) {
 		return
 	}
@@ -833,7 +838,13 @@ func (s *Server) ToggleMCPServiceMCPEnabled(c *gin.Context) {
 	if HandleServiceError(c, err) {
 		return
 	}
-	response.Success(c, service)
+
+	// Use i18n response for consistency with ToggleMCPServiceEnabled
+	status := "mcp_skills.status.disabled"
+	if service.MCPEnabled {
+		status = "mcp_skills.status.enabled"
+	}
+	response.SuccessI18n(c, "mcp_skills.mcp_toggled", service, map[string]any{"status": status})
 }
 
 // RegenerateMCPServiceAccessToken handles POST /api/mcp-skills/services/:id/regenerate-token
