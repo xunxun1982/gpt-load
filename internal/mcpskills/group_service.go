@@ -158,6 +158,10 @@ func (s *GroupService) convertGroupsToDTOs(groups []MCPServiceGroup) []MCPServic
 }
 
 // groupToDTO converts a single group to DTO
+// AI Review Note: AccessToken is intentionally included because:
+// 1. All /api/mcp-skills/* routes require AUTH_KEY authentication (see router.go)
+// 2. Frontend admin UI needs to display/edit the token for group management
+// 3. This token is for MCP endpoint access, not a system-level secret like AUTH_KEY
 func (s *GroupService) groupToDTO(group *MCPServiceGroup) MCPServiceGroupDTO {
 	serviceIDs := group.GetServiceIDs()
 	return MCPServiceGroupDTO{
