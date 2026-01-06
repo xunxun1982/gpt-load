@@ -189,6 +189,7 @@ export default {
   exportPlain: "明文导出",
   exportSuccess: "导出成功",
   importSuccess: "导入成功：{services} 个服务，{groups} 个服务组",
+  importFailed: "导入失败：{error}",
   importInvalidFormat: "导入文件格式无效",
   importInvalidJSON: "JSON 格式错误",
 

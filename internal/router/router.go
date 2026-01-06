@@ -286,9 +286,10 @@ func registerAggregationMCPRoutes(router *gin.Engine, serverHandler *handler.Ser
 	// This endpoint handles JSON-RPC 2.0 MCP protocol requests
 	router.POST("/mcp/aggregation/:name", serverHandler.HandleAggregationMCP)
 
-	// Single service MCP endpoint: /mcp/service/:name
+	// Single service MCP endpoint: /mcp/service/:id
 	// This endpoint exposes a single service's tools via standard MCP protocol
-	router.POST("/mcp/service/:name", serverHandler.HandleServiceMCP)
+	// Using ID instead of name to support duplicate service names
+	router.POST("/mcp/service/:id", serverHandler.HandleServiceMCP)
 }
 
 // registerProxyRoutes registers proxy routes

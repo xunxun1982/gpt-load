@@ -189,6 +189,7 @@ export default {
   exportPlain: "平文エクスポート",
   exportSuccess: "エクスポート成功",
   importSuccess: "インポート成功：{services} サービス、{groups} グループ",
+  importFailed: "インポート失敗：{error}",
   importInvalidFormat: "インポートファイル形式が無効です",
   importInvalidJSON: "JSON形式が無効です",
 

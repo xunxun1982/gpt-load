@@ -91,8 +91,9 @@ const templateApiKey = ref("");
 const templateCustomEndpoint = ref("");
 
 // Computed to get selected template object
+// Note: Using 'tpl' instead of 't' to avoid shadowing the i18n t() function
 const selectedTemplate = computed(
-  () => templates.value.find(t => t.id === selectedTemplateId.value) || null
+  () => templates.value.find(tpl => tpl.id === selectedTemplateId.value) || null
 );
 
 // Testing state
@@ -271,12 +272,13 @@ function getEnvVarsAsRecord(): Record<string, string> {
 }
 
 // Load envVars from Record<string, string>
+// AI review: Use counter-based ID generation for consistency with addEnvVar()
 function loadEnvVarsFromRecord(record: Record<string, string> | undefined) {
   envVars.value = [];
   if (record) {
     for (const [key, value] of Object.entries(record)) {
       envVars.value.push({
-        id: `env-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id: `env-${++envVarIdCounter}`,
         key,
         value,
         enabled: true,
@@ -925,6 +927,10 @@ async function handleFileChange(event: Event) {
   } catch (e) {
     if (e instanceof SyntaxError) {
       message.error(t("mcpSkills.importInvalidJSON"));
+    } else if (e instanceof Error) {
+      // Handle non-JSON errors (network issues, server errors, etc.)
+      // AI review suggestion: show generic error message for import failures
+      message.error(t("mcpSkills.importFailed", { error: e.message }));
     }
   } finally {
     importLoading.value = false;

@@ -189,6 +189,7 @@ export default {
   exportPlain: "Export Plain",
   exportSuccess: "Export successful",
   importSuccess: "Import successful: {services} services, {groups} groups",
+  importFailed: "Import failed: {error}",
   importInvalidFormat: "Invalid import file format",
   importInvalidJSON: "Invalid JSON format",
 

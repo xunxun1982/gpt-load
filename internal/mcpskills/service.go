@@ -336,6 +336,8 @@ func (s *Service) GetServiceByName(ctx context.Context, name string) (*MCPServic
 
 // GetServiceByNameWithToken retrieves a service by name and validates access token
 // Returns error if service not found, MCP not enabled, or token invalid
+// Note: This method is kept for backward compatibility but GetServiceByIDWithToken is preferred
+// since service names can be duplicated
 func (s *Service) GetServiceByNameWithToken(ctx context.Context, name string, token string) (*MCPServiceDTO, error) {
 	var svc MCPService
 	if err := s.db.WithContext(ctx).Where("name = ?", name).First(&svc).Error; err != nil {
@@ -359,7 +361,34 @@ func (s *Service) GetServiceByNameWithToken(ctx context.Context, name string, to
 	return &dto, nil
 }
 
+// GetServiceByIDWithToken retrieves a service by ID and validates access token
+// Returns error if service not found, MCP not enabled, or token invalid
+// This is the preferred method since service names can be duplicated
+func (s *Service) GetServiceByIDWithToken(ctx context.Context, id uint, token string) (*MCPServiceDTO, error) {
+	var svc MCPService
+	if err := s.db.WithContext(ctx).First(&svc, id).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	if !svc.MCPEnabled {
+		return nil, services.NewI18nError(app_errors.ErrForbidden, "mcp_skills.mcp_not_enabled", nil)
+	}
+
+	if !svc.Enabled {
+		return nil, services.NewI18nError(app_errors.ErrForbidden, "mcp_skills.service_disabled", nil)
+	}
+
+	// Validate access token if set
+	if svc.AccessToken != "" && svc.AccessToken != token {
+		return nil, services.NewI18nError(app_errors.ErrUnauthorized, "mcp_skills.invalid_access_token", nil)
+	}
+
+	dto := s.serviceToDTO(&svc)
+	return &dto, nil
+}
+
 // GetServiceEndpointInfo returns endpoint information for a service
+// MCP endpoint URL uses service ID to support duplicate service names
 func (s *Service) GetServiceEndpointInfo(ctx context.Context, serviceID uint, serverAddress string) (*ServiceEndpointInfo, error) {
 	var svc MCPService
 	if err := s.db.WithContext(ctx).First(&svc, serviceID).Error; err != nil {
@@ -372,9 +401,9 @@ func (s *Service) GetServiceEndpointInfo(ctx context.Context, serviceID uint, se
 		ServiceType: svc.Type,
 	}
 
-	// MCP endpoint (for MCP protocol access)
+	// MCP endpoint (for MCP protocol access) - uses ID to support duplicate names
 	if svc.MCPEnabled {
-		info.MCPEndpoint = fmt.Sprintf("%s/mcp/service/%s", serverAddress, svc.Name)
+		info.MCPEndpoint = fmt.Sprintf("%s/mcp/service/%d", serverAddress, svc.ID)
 	}
 
 	// API endpoint (for direct API bridge access)
@@ -389,22 +418,30 @@ func (s *Service) GetServiceEndpointInfo(ctx context.Context, serviceID uint, se
 }
 
 // generateMCPConfigForService generates MCP configuration JSON for a service
+// Uses service ID in URL to support duplicate service names
 func (s *Service) generateMCPConfigForService(svc *MCPService, serverAddress string) string {
 	if !svc.MCPEnabled {
 		return ""
 	}
 
+	// Use display name or name as the config key for readability
+	// URL uses ID to ensure uniqueness even with duplicate names
+	configKey := svc.DisplayName
+	if configKey == "" {
+		configKey = svc.Name
+	}
+
 	config := map[string]interface{}{
 		"mcpServers": map[string]interface{}{
-			svc.Name: map[string]interface{}{
-				"url": fmt.Sprintf("%s/mcp/service/%s", serverAddress, svc.Name),
+			configKey: map[string]interface{}{
+				"url": fmt.Sprintf("%s/mcp/service/%d", serverAddress, svc.ID),
 			},
 		},
 	}
 
 	// Add headers with actual access token
 	if svc.AccessToken != "" {
-		config["mcpServers"].(map[string]interface{})[svc.Name].(map[string]interface{})["headers"] = map[string]string{
+		config["mcpServers"].(map[string]interface{})[configKey].(map[string]interface{})["headers"] = map[string]string{
 			"Authorization": fmt.Sprintf("Bearer %s", svc.AccessToken),
 		}
 	}
@@ -456,6 +493,8 @@ func (s *Service) RegenerateServiceAccessToken(ctx context.Context, id uint) (st
 }
 
 // CreateService creates a new MCP service
+// Note: Duplicate names are allowed since each service has a unique ID
+// and MCP endpoints use ID-based URLs (/mcp/service/:id)
 func (s *Service) CreateService(ctx context.Context, params CreateServiceParams) (*MCPServiceDTO, error) {
 	name := strings.TrimSpace(params.Name)
 	if name == "" {
@@ -467,14 +506,7 @@ func (s *Service) CreateService(ctx context.Context, params CreateServiceParams)
 		return nil, services.NewI18nError(app_errors.ErrValidation, "mcp_skills.validation.invalid_name_format", nil)
 	}
 
-	// Check for duplicate name
-	var count int64
-	if err := s.db.WithContext(ctx).Model(&MCPService{}).Where("name = ?", name).Count(&count).Error; err != nil {
-		return nil, app_errors.ParseDBError(err)
-	}
-	if count > 0 {
-		return nil, services.NewI18nError(app_errors.ErrValidation, "mcp_skills.validation.name_duplicate", map[string]any{"name": name})
-	}
+	// Duplicate names are allowed - each service has unique ID and MCP endpoint URL
 
 	displayName := strings.TrimSpace(params.DisplayName)
 	if displayName == "" {
@@ -616,16 +648,7 @@ func (s *Service) UpdateService(ctx context.Context, id uint, params UpdateServi
 		if !isValidServiceName(name) {
 			return nil, services.NewI18nError(app_errors.ErrValidation, "mcp_skills.validation.invalid_name_format", nil)
 		}
-		// Check for duplicate name (exclude current service)
-		if name != svc.Name {
-			var count int64
-			if err := s.db.WithContext(ctx).Model(&MCPService{}).Where("name = ? AND id != ?", name, id).Count(&count).Error; err != nil {
-				return nil, app_errors.ParseDBError(err)
-			}
-			if count > 0 {
-				return nil, services.NewI18nError(app_errors.ErrValidation, "mcp_skills.validation.name_duplicate", map[string]any{"name": name})
-			}
-		}
+		// Duplicate names are allowed - each service has unique ID and MCP endpoint URL
 		svc.Name = name
 	}
 
@@ -1206,6 +1229,7 @@ func (s *Service) ExportServices(ctx context.Context, plainMode bool) ([]MCPServ
 
 // ImportServices imports services from export data
 // plainMode: if true, input data is plain and needs encryption; if false, input is already encrypted
+// Note: Duplicate names are allowed since each service has a unique ID
 // Returns (imported count, skipped count, error)
 func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExportInfo, plainMode bool) (int, int, error) {
 	if len(services) == 0 {
@@ -1222,23 +1246,7 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 			continue
 		}
 
-		// Check if service already exists
-		var count int64
-		if err := s.db.WithContext(ctx).Model(&MCPService{}).Where("name = ?", name).Count(&count).Error; err != nil {
-			logrus.WithError(err).Warnf("Failed to check service existence for %s", name)
-			skipped++
-			continue
-		}
-		if count > 0 {
-			// Generate unique name
-			uniqueName, err := s.generateUniqueServiceName(ctx, name)
-			if err != nil {
-				logrus.WithError(err).Warnf("Failed to generate unique name for service %s", name)
-				skipped++
-				continue
-			}
-			name = uniqueName
-		}
+		// Duplicate names are allowed - each service has unique ID and MCP endpoint URL
 
 		displayName := strings.TrimSpace(info.DisplayName)
 		if displayName == "" {
@@ -1346,23 +1354,6 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 	return imported, skipped, nil
 }
 
-// generateUniqueServiceName generates a unique service name by appending a suffix
-func (s *Service) generateUniqueServiceName(ctx context.Context, baseName string) (string, error) {
-	name := baseName
-	maxAttempts := 10
-	for i := 1; i <= maxAttempts; i++ {
-		var count int64
-		if err := s.db.WithContext(ctx).Model(&MCPService{}).Where("name = ?", name).Count(&count).Error; err != nil {
-			return "", err
-		}
-		if count == 0 {
-			return name, nil
-		}
-		name = fmt.Sprintf("%s-%d", baseName, i)
-	}
-	return "", fmt.Errorf("failed to generate unique name after %d attempts", maxAttempts)
-}
-
 // importServiceTask represents a service to be imported with its prepared data
 type importServiceTask struct {
 	name         string
@@ -1394,7 +1385,8 @@ func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServer
 		return result, nil
 	}
 
-	// Phase 1: Prepare all services (validate names, check existence, create objects)
+	// Phase 1: Prepare all services (validate names, create objects)
+	// Note: Duplicate names are allowed since each service has a unique ID
 	var tasks []importServiceTask
 	for serverName, serverConfig := range config.MCPServers {
 		name := strings.TrimSpace(serverName)
@@ -1415,20 +1407,7 @@ func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServer
 			name = sanitized
 		}
 
-		// Check if service already exists - skip if exists (don't rename)
-		var count int64
-		if err := s.db.WithContext(ctx).Model(&MCPService{}).Where("name = ?", name).Count(&count).Error; err != nil {
-			logrus.WithError(err).Warnf("Failed to check service existence for %s", name)
-			result.Skipped++
-			result.Errors = append(result.Errors, fmt.Sprintf("Database error for %s", name))
-			continue
-		}
-		if count > 0 {
-			result.Skipped++
-			result.Errors = append(result.Errors, fmt.Sprintf("Service already exists: %s", name))
-			logrus.WithField("service", name).Debug("Skipping existing service during import")
-			continue
-		}
+		// Duplicate names are allowed - each service has unique ID and MCP endpoint URL
 
 		// Determine service type
 		serviceType := s.determineServiceType(serverConfig)

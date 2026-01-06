@@ -176,6 +176,9 @@ func (e *APIExecutor) executeAPIRequest(ctx context.Context, svc *MCPService, to
 	}
 
 	// Handle error responses (4xx, 5xx status codes)
+	// Design note: Returns success map with "success": false instead of Go error.
+	// This is intentional for MCP protocol compatibility - MCP clients expect
+	// structured responses even for errors, not transport-level failures.
 	if resp.StatusCode >= 400 {
 		logrus.WithFields(logrus.Fields{
 			"service":     svc.Name,

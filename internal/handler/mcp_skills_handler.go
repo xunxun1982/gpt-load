@@ -886,14 +886,23 @@ func (s *Server) RefreshMCPServiceTools(c *gin.Context) {
 	response.SuccessI18n(c, "mcp_skills.tools_refreshed", result)
 }
 
-// HandleServiceMCP handles POST /mcp/service/:name - Single service MCP JSON-RPC endpoint
+// HandleServiceMCP handles POST /mcp/service/:id - Single service MCP JSON-RPC endpoint
 // This endpoint exposes the service's tools via standard MCP protocol
+// Using ID instead of name to support duplicate service names
 func (s *Server) HandleServiceMCP(c *gin.Context) {
-	serviceName := c.Param("name")
+	serviceID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(400, mcpskills.MCPResponse{
+			JSONRPC: "2.0",
+			Error:   &mcpskills.MCPError{Code: -32602, Message: "Invalid service ID"},
+		})
+		return
+	}
+
 	accessToken := extractAccessToken(c)
 
 	// Get service with token validation
-	service, err := s.MCPSkillsService.GetServiceByNameWithToken(c.Request.Context(), serviceName, accessToken)
+	service, err := s.MCPSkillsService.GetServiceByIDWithToken(c.Request.Context(), uint(serviceID), accessToken)
 	if HandleServiceError(c, err) {
 		return
 	}
