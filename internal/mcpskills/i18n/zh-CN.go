@@ -17,6 +17,7 @@ var MessagesZhCN = map[string]string{
 	"mcp_skills.service_deleted":           "MCP服务删除成功",
 	"mcp_skills.services_deleted_all":      "已删除 {{.deleted}} 个未使用的服务",
 	"mcp_skills.service_toggled":           "服务状态已更改为{{.status}}",
+	"mcp_skills.group_toggled":             "分组状态已更改为{{.status}}",
 	"mcp_skills.mcp_toggled":               "MCP端点状态已更改为{{.status}}",
 	"mcp_skills.group_created":             "服务分组创建成功",
 	"mcp_skills.group_updated":             "服务分组更新成功",

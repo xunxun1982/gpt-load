@@ -520,7 +520,8 @@ func (s *Server) ToggleMCPServiceGroupEnabled(c *gin.Context) {
 	if group.Enabled {
 		status = "mcp_skills.status.enabled"
 	}
-	response.SuccessI18n(c, "mcp_skills.service_toggled", group, map[string]any{"status": status})
+	// AI Review: Use group-specific i18n key for semantic clarity
+	response.SuccessI18n(c, "mcp_skills.group_toggled", group, map[string]any{"status": status})
 }
 
 // AddServicesToGroupRequest represents the request to add services to a group
