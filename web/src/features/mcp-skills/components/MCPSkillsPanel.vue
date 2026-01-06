@@ -723,6 +723,8 @@ async function testService(service: MCPServiceDTO) {
     const result = await mcpSkillsApi.testService(service.id);
     if (result.success) {
       message.success(t("mcpSkills.testSuccess", { name: service.display_name || service.name }));
+      // Refresh service list to update tool_count and mcp_enabled status
+      await loadServices();
     } else {
       message.error(t("mcpSkills.testFailed", { error: result.error || "Unknown error" }));
     }

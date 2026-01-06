@@ -1062,12 +1062,26 @@ func (s *Service) testMCPServiceConnection(ctx context.Context, svc *MCPService)
 			if discoveryResult.Description != "" && svc.Description == "" {
 				updates["description"] = discoveryResult.Description
 			}
+			// Auto-enable MCP endpoint if tools discovered and not already enabled
+			if !svc.MCPEnabled {
+				updates["mcp_enabled"] = true
+				// Generate access token if not exists
+				if svc.AccessToken == "" {
+					token, tokenErr := generateAccessToken()
+					if tokenErr != nil {
+						logrus.WithError(tokenErr).Warn("Failed to generate access token during test")
+					} else {
+						updates["access_token"] = token
+					}
+				}
+			}
 			if err := s.db.WithContext(ctx).Model(svc).Updates(updates).Error; err != nil {
 				logrus.WithError(err).Warn("Failed to update service tools after successful test")
 			} else {
 				logrus.WithFields(logrus.Fields{
-					"service":    svc.Name,
-					"tool_count": len(tools),
+					"service":     svc.Name,
+					"tool_count":  len(tools),
+					"mcp_enabled": true,
 				}).Info("Service tools updated after successful test")
 				s.InvalidateServiceListCache()
 			}
@@ -2103,6 +2117,9 @@ func (s *Service) discoverAndCacheTools(ctx context.Context, svc *MCPService) (*
 	if err := svc.SetTools(tools); err == nil {
 		if err := s.db.WithContext(ctx).Model(svc).Update("tools_json", svc.ToolsJSON).Error; err != nil {
 			logrus.WithError(err).Warn("Failed to update service tools")
+		} else {
+			// Invalidate service list cache so tool_count is refreshed in list view
+			s.InvalidateServiceListCache()
 		}
 	}
 

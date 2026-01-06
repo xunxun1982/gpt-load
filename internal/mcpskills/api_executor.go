@@ -183,13 +183,21 @@ func (e *APIExecutor) executeAPIRequest(ctx context.Context, svc *MCPService, to
 			"status_code": resp.StatusCode,
 		}).Warn("API bridge request returned error status")
 
+		// Truncate large error bodies to prevent excessive log output
+		// Some APIs return verbose HTML error pages that can bloat logs
+		bodyText := string(body)
+		const maxErrorBodyLen = 500
+		if len(bodyText) > maxErrorBodyLen {
+			bodyText = bodyText[:maxErrorBodyLen] + "... (truncated)"
+		}
+
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("API returned status %d", resp.StatusCode),
 			"content": []map[string]interface{}{
 				{
 					"type": "text",
-					"text": fmt.Sprintf("Error: API returned status %d - %s", resp.StatusCode, string(body)),
+					"text": fmt.Sprintf("Error: API returned status %d - %s", resp.StatusCode, bodyText),
 				},
 			},
 		}, nil
