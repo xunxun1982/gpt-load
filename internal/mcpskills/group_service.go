@@ -725,11 +725,9 @@ func (s *GroupService) ImportGroups(ctx context.Context, groups []MCPServiceGrou
 			continue
 		}
 		if count > 0 {
-			// AI Review Note: Unlike service import which skips duplicates, group import
-			// renames duplicates to preserve all imported data. This is intentional because:
-			// 1. Groups contain references to services, losing a group means losing those associations
-			// 2. Users can manually merge or delete renamed groups after import
-			// 3. Service import skips because services are standalone and can be re-imported individually
+			// AI Review Note: Both service and group imports now use auto-rename for duplicates.
+			// This ensures all imported data is preserved and users can manually merge or delete
+			// renamed items after import. The rename pattern is: name-2, name-3, etc.
 			uniqueName, err := s.generateUniqueGroupName(ctx, name)
 			if err != nil {
 				logrus.WithError(err).Warnf("Failed to generate unique name for group %s", name)
