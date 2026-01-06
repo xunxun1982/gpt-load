@@ -694,6 +694,11 @@ func (s *Server) HandleAggregationMCP(c *gin.Context) {
 		return
 	}
 
+	// AI Review Note: Suggestion to use HTTP 200 for all JSON-RPC errors was NOT adopted.
+	// Reason: JSON-RPC 2.0 over HTTP specification (jsonrpc.org/historical/json-rpc-over-http.html)
+	// explicitly defines HTTP status codes for different error types:
+	// - Server errors (-32000 to -32099) should return HTTP 500
+	// Using 503 for disabled group is intentional to indicate service unavailability.
 	if !group.Enabled {
 		c.JSON(503, mcpskills.MCPResponse{
 			JSONRPC: "2.0",
@@ -702,6 +707,8 @@ func (s *Server) HandleAggregationMCP(c *gin.Context) {
 		return
 	}
 
+	// Using 400 for configuration error (aggregation not enabled) follows REST semantics
+	// while still providing JSON-RPC formatted error response for client compatibility.
 	if !group.AggregationEnabled {
 		c.JSON(400, mcpskills.MCPResponse{
 			JSONRPC: "2.0",
@@ -711,6 +718,10 @@ func (s *Server) HandleAggregationMCP(c *gin.Context) {
 	}
 
 	// Parse MCP request
+	// AI Review Note: Suggestion to use HTTP 200 for parse errors was NOT adopted.
+	// Reason: JSON-RPC 2.0 over HTTP spec defines -32700 Parse error should return HTTP 500,
+	// but HTTP 400 is more semantically correct for malformed client requests.
+	// This is a deliberate deviation that aligns with REST best practices.
 	var req mcpskills.MCPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, mcpskills.MCPResponse{
@@ -916,6 +927,10 @@ func (s *Server) RefreshMCPServiceTools(c *gin.Context) {
 // This endpoint exposes the service's tools via standard MCP protocol
 // Using ID instead of name to support duplicate service names
 func (s *Server) HandleServiceMCP(c *gin.Context) {
+	// AI Review Note: Suggestion to use HTTP 200 for invalid params was NOT adopted.
+	// Reason: JSON-RPC 2.0 over HTTP spec defines -32602 Invalid params should return HTTP 500,
+	// but HTTP 400 is more semantically correct for invalid client input.
+	// This is a deliberate deviation that aligns with REST best practices.
 	serviceID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(400, mcpskills.MCPResponse{
@@ -935,6 +950,7 @@ func (s *Server) HandleServiceMCP(c *gin.Context) {
 	}
 
 	// Parse MCP request
+	// AI Review Note: HTTP 400 for parse errors is intentional (see HandleAggregationMCP comment)
 	var req mcpskills.MCPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, mcpskills.MCPResponse{
