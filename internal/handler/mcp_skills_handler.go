@@ -636,23 +636,26 @@ func (s *Server) GetMCPGroupAccessToken(c *gin.Context) {
 	response.Success(c, map[string]string{"access_token": token})
 }
 
+// extractAccessToken extracts access token from request using multiple sources
+// Priority: query "key" -> X-Access-Token header -> Bearer token from Authorization header
+func extractAccessToken(c *gin.Context) string {
+	if token := c.Query("key"); token != "" {
+		return token
+	}
+	if token := c.GetHeader("X-Access-Token"); token != "" {
+		return token
+	}
+	if auth := c.GetHeader("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
+		return auth[7:]
+	}
+	return ""
+}
+
 // HandleAggregationMCP handles POST /mcp/aggregation/:name - MCP Aggregation JSON-RPC endpoint
 // This endpoint exposes only search_tools and execute_tool for reduced context usage
 func (s *Server) HandleAggregationMCP(c *gin.Context) {
 	groupName := c.Param("name")
-
-	// Get access token from query or header
-	accessToken := c.Query("key")
-	if accessToken == "" {
-		accessToken = c.GetHeader("X-Access-Token")
-	}
-	if accessToken == "" {
-		// Try Bearer token from Authorization header
-		auth := c.GetHeader("Authorization")
-		if len(auth) > 7 && auth[:7] == "Bearer " {
-			accessToken = auth[7:]
-		}
-	}
+	accessToken := extractAccessToken(c)
 
 	// Get group with token validation
 	group, err := s.MCPSkillsGroupService.GetGroupByNameWithToken(c.Request.Context(), groupName, accessToken)
@@ -879,19 +882,7 @@ func (s *Server) RefreshMCPServiceTools(c *gin.Context) {
 // This endpoint exposes the service's tools via standard MCP protocol
 func (s *Server) HandleServiceMCP(c *gin.Context) {
 	serviceName := c.Param("name")
-
-	// Get access token from query or header
-	accessToken := c.Query("key")
-	if accessToken == "" {
-		accessToken = c.GetHeader("X-Access-Token")
-	}
-	if accessToken == "" {
-		// Try Bearer token from Authorization header
-		auth := c.GetHeader("Authorization")
-		if len(auth) > 7 && auth[:7] == "Bearer " {
-			accessToken = auth[7:]
-		}
-	}
+	accessToken := extractAccessToken(c)
 
 	// Get service with token validation
 	service, err := s.MCPSkillsService.GetServiceByNameWithToken(c.Request.Context(), serviceName, accessToken)

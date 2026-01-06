@@ -228,6 +228,11 @@ export default {
   mcpEndpoint: "MCPエンドポイント",
   serviceEndpointInfo: "サービスエンドポイント情報",
   noMcpEndpoint: "MCPエンドポイントが有効になっていません",
+  mcpEndpointNotEnabled: "このサービスのMCPエンドポイントは有効になっていません",
+  enableMcpEndpoint: "MCPエンドポイントを有効にする",
+  loadingEndpointInfo: "エンドポイント情報を読み込み中...",
+  mcpEndpointEnabled: "MCPエンドポイントが有効になりました",
+  mcpEndpointDisabled: "MCPエンドポイントが無効になりました",
 
   // Tool expansion
   expandTools: "ツールを表示",
@@ -242,4 +247,11 @@ export default {
   toolsRefreshed: "ツールが正常に更新されました",
   toolsRefreshFailed: "ツールの更新に失敗しました：{error}",
   toolInputSchema: "入力スキーマ",
+
+  // Selection hints
+  selectItemHint: "左パネルからサービスまたはグループを選択してください",
+  selectServiceHint: "サービスを選択して詳細を表示",
+  selectGroupHint: "グループを選択して詳細を表示",
+  noMatchingItems: "一致する項目が見つかりません",
+  noItems: "サービスまたはグループがありません",
 };

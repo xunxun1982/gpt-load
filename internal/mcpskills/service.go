@@ -1,6 +1,7 @@
 package mcpskills
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -396,15 +397,20 @@ func (s *Service) generateMCPConfigForService(svc *MCPService, serverAddress str
 		},
 	}
 
-	// Add headers if access token is set
+	// Add headers with actual access token
 	if svc.AccessToken != "" {
 		config["mcpServers"].(map[string]interface{})[svc.Name].(map[string]interface{})["headers"] = map[string]string{
-			"Authorization": "Bearer <your-access-token>",
+			"Authorization": fmt.Sprintf("Bearer %s", svc.AccessToken),
 		}
 	}
 
-	jsonBytes, _ := json.Marshal(config)
-	return string(jsonBytes)
+	// Use encoder with SetEscapeHTML(false) to avoid escaping < and >
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(config)
+	// Remove trailing newline added by Encode
+	return strings.TrimSpace(buf.String())
 }
 
 // ToggleMCPEnabled toggles the MCP endpoint enabled status
@@ -554,6 +560,17 @@ func (s *Service) CreateService(ctx context.Context, params CreateServiceParams)
 			if err := svc.SetTools(discoveredTools); err != nil {
 				logrus.WithError(err).Warn("Failed to set discovered tools")
 			}
+		}
+	}
+
+	// Auto-enable MCP endpoint if tools are available (tool_count > 0)
+	// Skip for api_bridge type - it will be enabled after successful test in CreateServiceFromTemplate
+	tools, _ := svc.GetTools()
+	if len(tools) > 0 && !svc.MCPEnabled && serviceType != string(ServiceTypeAPIBridge) {
+		svc.MCPEnabled = true
+		// Generate access token for MCP endpoint
+		if svc.AccessToken == "" {
+			svc.AccessToken = generateAccessToken()
 		}
 	}
 
@@ -842,7 +859,9 @@ func (s *Service) CreateServiceFromTemplate(ctx context.Context, templateID stri
 		endpoint = customEndpoint
 	}
 
-	return s.CreateService(ctx, CreateServiceParams{
+	// Create service with MCP disabled initially for api_bridge type
+	// It will be enabled after successful test
+	dto, err := s.CreateService(ctx, CreateServiceParams{
 		Name:         template.Name,
 		DisplayName:  template.DisplayName,
 		Description:  template.Description,
@@ -856,7 +875,29 @@ func (s *Service) CreateServiceFromTemplate(ctx context.Context, templateID stri
 		APIKeyPrefix: template.APIKeyPrefix,
 		Tools:        template.Tools,
 		Enabled:      true,
+		MCPEnabled:   false, // Will be enabled after successful test
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Test the service and enable MCP endpoint if successful
+	testResult, testErr := s.TestService(ctx, dto.ID, "", nil)
+	if testErr == nil && testResult != nil && testResult.Success {
+		// Test passed, enable MCP endpoint
+		mcpEnabled := true
+		if _, updateErr := s.UpdateService(ctx, dto.ID, UpdateServiceParams{
+			MCPEnabled: &mcpEnabled,
+		}); updateErr != nil {
+			logrus.WithError(updateErr).Warnf("Failed to enable MCP endpoint for service %s after successful test", dto.Name)
+		} else {
+			dto.MCPEnabled = true
+			dto.HasAccessToken = true
+			logrus.WithField("service", dto.Name).Info("MCP endpoint auto-enabled after successful test")
+		}
+	}
+
+	return dto, nil
 }
 
 // TestService tests if an MCP service is working correctly
@@ -1191,6 +1232,11 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 		// Set tools
 		if len(info.Tools) > 0 {
 			_ = svc.SetTools(info.Tools)
+			// Auto-enable MCP endpoint if tools are available
+			svc.MCPEnabled = true
+			if svc.AccessToken == "" {
+				svc.AccessToken = generateAccessToken()
+			}
 		}
 
 		// Handle API key encryption
@@ -1458,6 +1504,11 @@ func (s *Service) processImportTask(ctx context.Context, task importServiceTask)
 	if len(discoveredTools) > 0 {
 		if err := task.svc.SetTools(discoveredTools); err != nil {
 			logrus.WithError(err).Warnf("Failed to set tools for service %s", task.name)
+		}
+		// Auto-enable MCP endpoint if tools are discovered
+		task.svc.MCPEnabled = true
+		if task.svc.AccessToken == "" {
+			task.svc.AccessToken = generateAccessToken()
 		}
 	}
 

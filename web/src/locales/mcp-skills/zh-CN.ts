@@ -228,6 +228,11 @@ export default {
   mcpEndpoint: "MCP 端点",
   serviceEndpointInfo: "服务端点信息",
   noMcpEndpoint: "MCP 端点未启用",
+  mcpEndpointNotEnabled: "此服务的 MCP 端点未启用",
+  enableMcpEndpoint: "启用 MCP 端点",
+  loadingEndpointInfo: "加载端点信息中...",
+  mcpEndpointEnabled: "MCP 端点已启用",
+  mcpEndpointDisabled: "MCP 端点已禁用",
 
   // Tool expansion
   expandTools: "查看工具",
@@ -242,4 +247,11 @@ export default {
   toolsRefreshed: "工具刷新成功",
   toolsRefreshFailed: "刷新工具失败：{error}",
   toolInputSchema: "输入参数",
+
+  // Selection hints
+  selectItemHint: "从左侧面板选择一个服务或服务组",
+  selectServiceHint: "选择一个服务查看详情",
+  selectGroupHint: "选择一个服务组查看详情",
+  noMatchingItems: "未找到匹配项",
+  noItems: "暂无服务或服务组",
 };

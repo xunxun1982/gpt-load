@@ -273,7 +273,14 @@ func (d *MCPToolDiscovery) DiscoverToolsForService(ctx context.Context, svc *MCP
 
 	switch svc.Type {
 	case string(ServiceTypeStdio):
-		args, _ := svc.GetArgs()
+		args, err := svc.GetArgs()
+		if err != nil {
+			return &DiscoveryResult{
+				Success: false,
+				Tools:   []DiscoveredTool{},
+				Error:   fmt.Sprintf("Failed to parse service args: %v", err),
+			}, nil
+		}
 		return d.DiscoverToolsForStdio(ctx, svc.Command, args, envVars)
 
 	case string(ServiceTypeSSE):

@@ -113,7 +113,7 @@ function isToolsExpanded(serviceId: number): boolean {
   return expandedTools.value.has(serviceId);
 }
 
-// Toggle tool expansion for a service
+// Toggle tool expansion for a service (only one can be expanded at a time)
 async function toggleToolsExpansion(service: MCPServiceDTO) {
   const serviceId = service.id;
 
@@ -122,6 +122,9 @@ async function toggleToolsExpansion(service: MCPServiceDTO) {
     expandedTools.value.delete(serviceId);
     return;
   }
+
+  // Collapse all other expanded services first
+  expandedTools.value.clear();
 
   // Expand - load tools
   expandedTools.value.set(serviceId, { loading: true, data: null, error: null });
@@ -217,6 +220,7 @@ const serviceForm = reactive<CreateServiceRequest>({
   api_key_prefix: "",
   tools: [],
   rpd_limit: 0,
+  mcp_enabled: false,
 });
 const apiKeyInput = ref("");
 const argsInput = ref("");
@@ -435,6 +439,7 @@ function resetServiceForm() {
     api_key_prefix: "",
     tools: [],
     rpd_limit: 0,
+    mcp_enabled: false,
   });
   apiKeyInput.value = "";
   argsInput.value = "";
@@ -468,6 +473,7 @@ function openEditService(service: MCPServiceDTO) {
     api_key_prefix: service.api_key_prefix || "",
     tools: service.tools || [],
     rpd_limit: service.rpd_limit,
+    mcp_enabled: service.mcp_enabled,
   });
   apiKeyInput.value = "";
   argsInput.value = (service.args || []).join("\n");
@@ -988,21 +994,27 @@ const serviceColumns = computed<DataTableColumns<MCPServiceDTO>>(() => [
   {
     title: t("mcpSkills.serviceInfo"),
     key: "info",
-    width: 150,
+    width: 180,
     render: row => {
       const items: ReturnType<typeof h>[] = [];
-      // Show args count
+      // Show args count (for stdio type)
       const argsLen = row.args?.length ?? 0;
       if (argsLen > 0) {
         items.push(
           h(NTag, { size: "tiny", bordered: false }, () => `${argsLen} ${t("mcpSkills.argsCount")}`)
         );
       }
-      // Show env count
+      // Show env count (for stdio type)
       const envLen = row.default_envs ? Object.keys(row.default_envs).length : 0;
       if (envLen > 0) {
         items.push(
           h(NTag, { size: "tiny", bordered: false }, () => `${envLen} ${t("mcpSkills.envCount")}`)
+        );
+      }
+      // Show API key name for api_bridge type
+      if (row.type === "api_bridge" && row.api_key_name) {
+        items.push(
+          h(NTag, { size: "tiny", bordered: false, type: "info" }, () => row.api_key_name)
         );
       }
       // Show tool count with expand/collapse button
@@ -1395,18 +1407,23 @@ onMounted(() => {
       v-model:show="showServiceModal"
       preset="card"
       :title="editingService ? t('mcpSkills.editService') : t('mcpSkills.createService')"
-      style="width: 600px"
+      style="width: 560px"
     >
-      <n-form label-placement="left" label-width="100">
-        <n-form-item :label="t('mcpSkills.name')">
-          <n-input v-model:value="serviceForm.name" :placeholder="t('mcpSkills.namePlaceholder')" />
-        </n-form-item>
-        <n-form-item :label="t('mcpSkills.displayName')">
-          <n-input
-            v-model:value="serviceForm.display_name"
-            :placeholder="t('mcpSkills.displayNamePlaceholder')"
-          />
-        </n-form-item>
+      <n-form label-placement="left" label-width="90" size="small" class="compact-form">
+        <div class="form-row">
+          <n-form-item :label="t('mcpSkills.name')" style="flex: 1">
+            <n-input
+              v-model:value="serviceForm.name"
+              :placeholder="t('mcpSkills.namePlaceholder')"
+            />
+          </n-form-item>
+          <n-form-item :label="t('mcpSkills.displayName')" style="flex: 1">
+            <n-input
+              v-model:value="serviceForm.display_name"
+              :placeholder="t('mcpSkills.displayNamePlaceholder')"
+            />
+          </n-form-item>
+        </div>
         <n-form-item :label="t('mcpSkills.description')">
           <n-input
             v-model:value="serviceForm.description"
@@ -1415,25 +1432,31 @@ onMounted(() => {
             :placeholder="t('mcpSkills.descriptionPlaceholder')"
           />
         </n-form-item>
-        <n-form-item :label="t('mcpSkills.type')">
-          <n-select v-model:value="serviceForm.type" :options="typeOptions" />
-        </n-form-item>
-        <n-form-item :label="t('mcpSkills.category')">
-          <n-select v-model:value="serviceForm.category" :options="categoryOptions" />
-        </n-form-item>
-        <n-form-item :label="t('mcpSkills.icon')">
-          <n-input
-            v-model:value="serviceForm.icon"
-            :placeholder="t('mcpSkills.iconPlaceholder')"
-            style="width: 80px"
-          />
-        </n-form-item>
-        <n-form-item :label="t('mcpSkills.sort')">
-          <n-input-number v-model:value="serviceForm.sort" :min="0" />
-        </n-form-item>
-        <n-form-item :label="t('mcpSkills.enabled')">
-          <n-switch v-model:value="serviceForm.enabled" />
-        </n-form-item>
+        <div class="form-row">
+          <n-form-item :label="t('mcpSkills.type')" style="flex: 1">
+            <n-select v-model:value="serviceForm.type" :options="typeOptions" />
+          </n-form-item>
+          <n-form-item :label="t('mcpSkills.category')" style="flex: 1">
+            <n-select v-model:value="serviceForm.category" :options="categoryOptions" />
+          </n-form-item>
+        </div>
+        <div class="form-row">
+          <n-form-item :label="t('mcpSkills.icon')" style="width: 120px">
+            <n-input
+              v-model:value="serviceForm.icon"
+              :placeholder="t('mcpSkills.iconPlaceholder')"
+            />
+          </n-form-item>
+          <n-form-item :label="t('mcpSkills.sort')" style="width: 120px">
+            <n-input-number v-model:value="serviceForm.sort" :min="0" style="width: 100%" />
+          </n-form-item>
+          <n-form-item :label="t('mcpSkills.enabled')" style="width: 100px">
+            <n-switch v-model:value="serviceForm.enabled" />
+          </n-form-item>
+          <n-form-item :label="t('mcpSkills.mcpEnabled')" style="flex: 1">
+            <n-switch v-model:value="serviceForm.mcp_enabled" />
+          </n-form-item>
+        </div>
         <template
           v-if="
             serviceForm.type === 'stdio' ||
@@ -1547,7 +1570,10 @@ onMounted(() => {
           </n-form-item>
         </template>
         <n-form-item :label="t('mcpSkills.rpdLimit')">
-          <n-input-number v-model:value="serviceForm.rpd_limit" :min="0" />
+          <n-input-number v-model:value="serviceForm.rpd_limit" :min="0" style="width: 150px" />
+          <n-text depth="3" style="margin-left: 8px; font-size: 11px">
+            {{ t("mcpSkills.mcpEnabledTooltip") }}
+          </n-text>
         </n-form-item>
       </n-form>
       <template #footer>
@@ -1835,6 +1861,21 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-top: 12px;
+}
+/* Compact form styles */
+.compact-form :deep(.n-form-item) {
+  margin-bottom: 8px;
+}
+.compact-form :deep(.n-form-item-label) {
+  font-size: 13px;
+}
+.form-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.form-row > * {
+  margin-bottom: 8px;
 }
 .endpoint-info {
   display: flex;

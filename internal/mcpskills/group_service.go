@@ -1,6 +1,7 @@
 package mcpskills
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -538,12 +539,14 @@ func (s *GroupService) generateMCPConfigForGroup(group *MCPServiceGroupDTO, serv
 		},
 	}
 
-	// json.Marshal for simple map structures rarely fails
-	jsonBytes, err := json.Marshal(config)
-	if err != nil {
+	// Use encoder with SetEscapeHTML(false) to avoid escaping < and >
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(config); err != nil {
 		return ""
 	}
-	return string(jsonBytes)
+	return strings.TrimSpace(buf.String())
 }
 
 // RegenerateAccessToken generates a new access token for a group

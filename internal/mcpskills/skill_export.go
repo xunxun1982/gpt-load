@@ -235,13 +235,15 @@ func (s *SkillExportService) generateMCPConfig(services []MCPServiceDTO, serverA
 		}
 	}
 
-	// json.MarshalIndent for simple map structures rarely fails
-	// If it does fail, return a minimal valid JSON
-	jsonBytes, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
+	// Use encoder with SetEscapeHTML(false) and indent for readability
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(config); err != nil {
 		return `{"mcpServers": {}}`
 	}
-	return string(jsonBytes)
+	return strings.TrimSpace(buf.String())
 }
 
 // generateExecutorPy generates the executor.py script

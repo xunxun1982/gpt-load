@@ -230,8 +230,8 @@ func (h *AggregationMCPHandler) ExecuteTool(ctx context.Context, group *MCPServi
 		return h.apiExecutor.ExecuteAPIBridgeTool(ctx, targetService.ID, args.ToolName, args.Arguments)
 	}
 
-	// For other service types, return execution info for client-side handling
-	result := map[string]interface{}{
+	// For other service types (stdio/sse/streamable_http), return execution info for client-side handling
+	return map[string]interface{}{
 		"service":   args.MCPName,
 		"tool":      args.ToolName,
 		"type":      targetService.Type,
@@ -242,13 +242,7 @@ func (h *AggregationMCPHandler) ExecuteTool(ctx context.Context, group *MCPServi
 				"text": fmt.Sprintf("Tool '%s' from service '%s' ready for execution with provided arguments.", args.ToolName, args.MCPName),
 			},
 		},
-	}
-
-	if targetService.Type == string(ServiceTypeAPIBridge) {
-		result["api_endpoint"] = targetService.APIEndpoint
-	}
-
-	return result, nil
+	}, nil
 }
 
 // HandleMCPRequest handles an MCP JSON-RPC request

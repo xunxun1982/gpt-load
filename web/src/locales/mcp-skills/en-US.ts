@@ -228,6 +228,11 @@ export default {
   mcpEndpoint: "MCP Endpoint",
   serviceEndpointInfo: "Service Endpoint Info",
   noMcpEndpoint: "MCP endpoint not enabled",
+  mcpEndpointNotEnabled: "MCP endpoint is not enabled for this service",
+  enableMcpEndpoint: "Enable MCP Endpoint",
+  loadingEndpointInfo: "Loading endpoint info...",
+  mcpEndpointEnabled: "MCP endpoint enabled",
+  mcpEndpointDisabled: "MCP endpoint disabled",
 
   // Tool expansion
   expandTools: "View Tools",
@@ -242,4 +247,11 @@ export default {
   toolsRefreshed: "Tools refreshed successfully",
   toolsRefreshFailed: "Failed to refresh tools: {error}",
   toolInputSchema: "Input Schema",
+
+  // Selection hints
+  selectItemHint: "Select a service or group from the left panel",
+  selectServiceHint: "Select a service to view details",
+  selectGroupHint: "Select a group to view details",
+  noMatchingItems: "No matching items found",
+  noItems: "No services or groups yet",
 };
