@@ -474,6 +474,8 @@ type MCPSkillsExportData struct {
 }
 
 // MCPServiceExportInfo represents a single service in export data
+// WARNING: When plainMode=true is used during export, APIKeyValue will contain
+// decrypted secrets. Handle exported data with appropriate security measures.
 type MCPServiceExportInfo struct {
 	Name            string             `json:"name"`
 	DisplayName     string             `json:"display_name"`
@@ -488,7 +490,7 @@ type MCPServiceExportInfo struct {
 	Cwd             string             `json:"cwd,omitempty"` // Working directory for stdio
 	APIEndpoint     string             `json:"api_endpoint,omitempty"`
 	APIKeyName      string             `json:"api_key_name,omitempty"`
-	APIKeyValue     string             `json:"api_key_value,omitempty"` // Encrypted or plain based on export mode
+	APIKeyValue     string             `json:"api_key_value,omitempty"` // SECURITY: Encrypted or plain based on export mode
 	APIKeyHeader    string             `json:"api_key_header,omitempty"`
 	APIKeyPrefix    string             `json:"api_key_prefix,omitempty"`
 	RequiredEnvVars []EnvVarDefinition `json:"required_env_vars,omitempty"`

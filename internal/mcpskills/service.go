@@ -437,7 +437,11 @@ func (s *Service) RegenerateServiceAccessToken(ctx context.Context, id uint) (st
 		return "", app_errors.ParseDBError(err)
 	}
 
-	svc.AccessToken = generateAccessToken()
+	token, err := generateAccessToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate access token: %w", err)
+	}
+	svc.AccessToken = token
 	if err := s.db.WithContext(ctx).Save(&svc).Error; err != nil {
 		return "", app_errors.ParseDBError(err)
 	}
@@ -506,7 +510,11 @@ func (s *Service) CreateService(ctx context.Context, params CreateServiceParams)
 		if params.AccessToken != "" {
 			svc.AccessToken = params.AccessToken
 		} else {
-			svc.AccessToken = generateAccessToken()
+			token, err := generateAccessToken()
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate access token: %w", err)
+			}
+			svc.AccessToken = token
 		}
 	}
 
@@ -570,7 +578,11 @@ func (s *Service) CreateService(ctx context.Context, params CreateServiceParams)
 		svc.MCPEnabled = true
 		// Generate access token for MCP endpoint
 		if svc.AccessToken == "" {
-			svc.AccessToken = generateAccessToken()
+			token, err := generateAccessToken()
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate access token: %w", err)
+			}
+			svc.AccessToken = token
 		}
 	}
 
@@ -695,7 +707,11 @@ func (s *Service) UpdateService(ctx context.Context, id uint, params UpdateServi
 		svc.MCPEnabled = *params.MCPEnabled
 		// Generate access token if enabling MCP and no token exists
 		if *params.MCPEnabled && svc.AccessToken == "" {
-			svc.AccessToken = generateAccessToken()
+			token, err := generateAccessToken()
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate access token: %w", err)
+			}
+			svc.AccessToken = token
 		}
 	}
 	if params.AccessToken != nil {
@@ -968,6 +984,7 @@ func (s *Service) TestService(ctx context.Context, id uint, toolName string, arg
 }
 
 // testMCPServiceConnection tests MCP service by attempting to connect and list tools
+// If successful, it also updates the service's tools in the database
 func (s *Service) testMCPServiceConnection(ctx context.Context, svc *MCPService) *ServiceTestResult {
 	result := &ServiceTestResult{
 		ServiceID:   svc.ID,
@@ -1024,7 +1041,34 @@ func (s *Service) testMCPServiceConnection(ctx context.Context, svc *MCPService)
 		return result
 	}
 
-	// Connection successful
+	// Connection successful - update service tools in database
+	tools := ConvertDiscoveredToolsToDefinitions(discoveryResult.Tools)
+	if len(tools) > 0 {
+		if err := svc.SetTools(tools); err == nil {
+			// Update service in database with discovered tools and metadata
+			updates := map[string]interface{}{
+				"tools_json": svc.ToolsJSON,
+			}
+			// Update display name if discovered and current is same as name
+			if discoveryResult.ServerName != "" && (svc.DisplayName == svc.Name || svc.DisplayName == "") {
+				updates["display_name"] = discoveryResult.ServerName
+			}
+			// Update description if discovered and current is empty
+			if discoveryResult.Description != "" && svc.Description == "" {
+				updates["description"] = discoveryResult.Description
+			}
+			if err := s.db.WithContext(ctx).Model(svc).Updates(updates).Error; err != nil {
+				logrus.WithError(err).Warn("Failed to update service tools after successful test")
+			} else {
+				logrus.WithFields(logrus.Fields{
+					"service":    svc.Name,
+					"tool_count": len(tools),
+				}).Info("Service tools updated after successful test")
+				s.InvalidateServiceListCache()
+			}
+		}
+	}
+
 	result.Success = true
 	result.Message = fmt.Sprintf("Service is working correctly. Server: %s, Tools: %d",
 		discoveryResult.ServerName, len(discoveryResult.Tools))
@@ -1235,7 +1279,13 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 			// Auto-enable MCP endpoint if tools are available
 			svc.MCPEnabled = true
 			if svc.AccessToken == "" {
-				svc.AccessToken = generateAccessToken()
+				token, err := generateAccessToken()
+				if err != nil {
+					logrus.WithError(err).Warnf("Failed to generate access token for service %s", name)
+					skipped++
+					continue
+				}
+				svc.AccessToken = token
 			}
 		}
 
@@ -1508,7 +1558,14 @@ func (s *Service) processImportTask(ctx context.Context, task importServiceTask)
 		// Auto-enable MCP endpoint if tools are discovered
 		task.svc.MCPEnabled = true
 		if task.svc.AccessToken == "" {
-			task.svc.AccessToken = generateAccessToken()
+			// Token generation failure during import is non-fatal, just log and continue without MCP
+			token, err := generateAccessToken()
+			if err != nil {
+				logrus.WithError(err).Warnf("Failed to generate access token for service %s, MCP will be disabled", task.name)
+				task.svc.MCPEnabled = false
+			} else {
+				task.svc.AccessToken = token
+			}
 		}
 	}
 
@@ -2017,7 +2074,11 @@ func (s *Service) discoverAndCacheTools(ctx context.Context, svc *MCPService) (*
 		logrus.WithError(err).Warn("Failed to set tools in cache")
 	}
 
-	// Upsert cache entry using raw SQL for better compatibility
+	// Upsert cache entry using FirstOrCreate + Assign pattern
+	// AI Review Note: We intentionally use FirstOrCreate+Assign instead of Clauses(OnConflict)
+	// because it provides better cross-database compatibility (SQLite, PostgreSQL, MySQL).
+	// The potential race condition is acceptable here since this is just a cache update -
+	// worst case is the cache gets written twice with the same data.
 	err = s.db.WithContext(ctx).Where("service_id = ?", svc.ID).
 		Assign(MCPToolCache{
 			ToolsJSON:   cache.ToolsJSON,

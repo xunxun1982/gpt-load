@@ -250,7 +250,15 @@ func (s *Server) DeleteMCPService(c *gin.Context) {
 
 // DeleteAllMCPServices handles DELETE /api/mcp-skills/services/all
 // Deletes ALL MCP services and clears service references from groups
+// Requires ?confirm=true query parameter to prevent accidental deletion
 func (s *Server) DeleteAllMCPServices(c *gin.Context) {
+	// Require explicit confirmation to prevent accidental deletion
+	if c.Query("confirm") != "true" {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation,
+			"Add ?confirm=true to confirm deletion of all services"))
+		return
+	}
+
 	deleted, err := s.MCPSkillsService.DeleteAllServices(c.Request.Context())
 	if HandleServiceError(c, err) {
 		return

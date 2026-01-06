@@ -354,13 +354,16 @@ func GuessPackageManagerFromCommand(command string, args []string) (packageManag
 // findPackageNameInArgs finds package name from command arguments
 func findPackageNameInArgs(args []string, checkAtSign bool) string {
 	for _, arg := range args {
+		// Skip flags and -y option
 		if strings.HasPrefix(arg, "-") || arg == "-y" {
 			continue
 		}
+		// For npm/npx, look for package with @ or / (scoped packages or versions)
 		if checkAtSign && (strings.Contains(arg, "@") || strings.Contains(arg, "/")) {
 			return arg
 		}
-		if !checkAtSign || (!strings.HasPrefix(arg, "-") && arg != "-y") {
+		// Return first non-flag argument as package name
+		if !checkAtSign {
 			return arg
 		}
 	}

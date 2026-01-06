@@ -274,7 +274,11 @@ func (s *GroupService) CreateGroup(ctx context.Context, params CreateGroupParams
 		if params.AccessToken != "" {
 			group.AccessToken = params.AccessToken
 		} else {
-			group.AccessToken = generateAccessToken()
+			token, err := generateAccessToken()
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate access token: %w", err)
+			}
+			group.AccessToken = token
 		}
 	}
 
@@ -342,7 +346,11 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params UpdateGr
 		group.AggregationEnabled = *params.AggregationEnabled
 		// Generate access token if enabling aggregation and no token exists
 		if *params.AggregationEnabled && group.AccessToken == "" {
-			group.AccessToken = generateAccessToken()
+			token, err := generateAccessToken()
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate access token: %w", err)
+			}
+			group.AccessToken = token
 		}
 	}
 	if params.AccessToken != nil {
@@ -556,7 +564,11 @@ func (s *GroupService) RegenerateAccessToken(ctx context.Context, groupID uint) 
 		return "", app_errors.ParseDBError(err)
 	}
 
-	group.AccessToken = generateAccessToken()
+	token, err := generateAccessToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate access token: %w", err)
+	}
+	group.AccessToken = token
 	if err := s.db.WithContext(ctx).Save(&group).Error; err != nil {
 		return "", app_errors.ParseDBError(err)
 	}
@@ -575,16 +587,16 @@ func (s *GroupService) GetGroupAccessToken(ctx context.Context, groupID uint) (s
 }
 
 // generateAccessToken generates a random access token
-// Returns empty string if crypto/rand fails (extremely rare)
-func generateAccessToken() string {
+// Returns error if crypto/rand fails (extremely rare, indicates system entropy issues)
+// Per security best practices, callers should handle the error and not proceed with empty tokens
+func generateAccessToken() (string, error) {
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
 		// crypto/rand.Read failure is extremely rare and indicates system entropy issues
-		// Log the error and return empty string to let caller handle it
 		logrus.WithError(err).Error("Failed to generate access token: crypto/rand.Read failed")
-		return ""
+		return "", fmt.Errorf("failed to generate access token: %w", err)
 	}
-	return hex.EncodeToString(bytes)
+	return hex.EncodeToString(bytes), nil
 }
 
 // CalculateTotalToolCount calculates total tool count for a group
@@ -717,7 +729,13 @@ func (s *GroupService) ImportGroups(ctx context.Context, groups []MCPServiceGrou
 
 		// Generate access token if aggregation is enabled
 		if info.AggregationEnabled {
-			group.AccessToken = generateAccessToken()
+			token, err := generateAccessToken()
+			if err != nil {
+				logrus.WithError(err).Warnf("Failed to generate access token for group %s", name)
+				skipped++
+				continue
+			}
+			group.AccessToken = token
 		}
 
 		if err := s.db.WithContext(ctx).Create(group).Error; err != nil {
