@@ -488,7 +488,12 @@ func (s *GroupService) GetGroupByNameWithToken(ctx context.Context, name string,
 	}
 
 	// Validate access token if aggregation is enabled
-	if group.AggregationEnabled && group.AccessToken != "" {
+	// Security: When aggregation is enabled, token validation is required
+	// Empty AccessToken means misconfigured group - reject for security
+	if group.AggregationEnabled {
+		if group.AccessToken == "" {
+			return nil, services.NewI18nError(app_errors.ErrUnauthorized, "mcp_skills.missing_access_token", nil)
+		}
 		if token != group.AccessToken {
 			return nil, services.NewI18nError(app_errors.ErrUnauthorized, "mcp_skills.invalid_access_token", nil)
 		}

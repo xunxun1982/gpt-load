@@ -28,13 +28,14 @@ var MessagesZhCN = map[string]string{
 	"mcp_skills.mcp_json_import_completed": "MCP JSON 导入完成",
 
 	// Error messages
-	"mcp_skills.service_not_found":    "MCP服务不存在",
-	"mcp_skills.group_not_found":      "服务分组不存在",
-	"mcp_skills.template_not_found":   "API桥接模板不存在",
-	"mcp_skills.export_failed":        "Skill包导出失败",
-	"mcp_skills.invalid_access_token": "访问令牌无效",
-	"mcp_skills.mcp_not_enabled":      "该服务未启用MCP端点",
-	"mcp_skills.service_disabled":     "服务已禁用",
+	"mcp_skills.service_not_found":     "MCP服务不存在",
+	"mcp_skills.group_not_found":       "服务分组不存在",
+	"mcp_skills.template_not_found":    "API桥接模板不存在",
+	"mcp_skills.export_failed":         "Skill包导出失败",
+	"mcp_skills.invalid_access_token":  "访问令牌无效",
+	"mcp_skills.missing_access_token":  "聚合端点未配置访问令牌",
+	"mcp_skills.mcp_not_enabled":       "该服务未启用MCP端点",
+	"mcp_skills.service_disabled":      "服务已禁用",
 
 	// Status
 	"mcp_skills.status.enabled":  "启用",

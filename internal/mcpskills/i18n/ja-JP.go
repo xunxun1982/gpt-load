@@ -28,13 +28,14 @@ var MessagesJaJP = map[string]string{
 	"mcp_skills.mcp_json_import_completed": "MCP JSONインポートが完了しました",
 
 	// Error messages
-	"mcp_skills.service_not_found":    "MCPサービスが見つかりません",
-	"mcp_skills.group_not_found":      "サービスグループが見つかりません",
-	"mcp_skills.template_not_found":   "APIブリッジテンプレートが見つかりません",
-	"mcp_skills.export_failed":        "Skillパッケージのエクスポートに失敗しました",
-	"mcp_skills.invalid_access_token": "アクセストークンが無効です",
-	"mcp_skills.mcp_not_enabled":      "このサービスのMCPエンドポイントは有効になっていません",
-	"mcp_skills.service_disabled":     "サービスは無効です",
+	"mcp_skills.service_not_found":     "MCPサービスが見つかりません",
+	"mcp_skills.group_not_found":       "サービスグループが見つかりません",
+	"mcp_skills.template_not_found":    "APIブリッジテンプレートが見つかりません",
+	"mcp_skills.export_failed":         "Skillパッケージのエクスポートに失敗しました",
+	"mcp_skills.invalid_access_token":  "アクセストークンが無効です",
+	"mcp_skills.missing_access_token":  "集約エンドポイントにアクセストークンが設定されていません",
+	"mcp_skills.mcp_not_enabled":       "このサービスのMCPエンドポイントは有効になっていません",
+	"mcp_skills.service_disabled":      "サービスは無効です",
 
 	// Status
 	"mcp_skills.status.enabled":  "有効",

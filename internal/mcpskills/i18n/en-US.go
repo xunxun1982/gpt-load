@@ -28,13 +28,14 @@ var MessagesEnUS = map[string]string{
 	"mcp_skills.mcp_json_import_completed": "MCP JSON import completed",
 
 	// Error messages
-	"mcp_skills.service_not_found":    "MCP service not found",
-	"mcp_skills.group_not_found":      "Service group not found",
-	"mcp_skills.template_not_found":   "API bridge template not found",
-	"mcp_skills.export_failed":        "Failed to export skill package",
-	"mcp_skills.invalid_access_token": "Invalid access token",
-	"mcp_skills.mcp_not_enabled":      "MCP endpoint is not enabled for this service",
-	"mcp_skills.service_disabled":     "Service is disabled",
+	"mcp_skills.service_not_found":     "MCP service not found",
+	"mcp_skills.group_not_found":       "Service group not found",
+	"mcp_skills.template_not_found":    "API bridge template not found",
+	"mcp_skills.export_failed":         "Failed to export skill package",
+	"mcp_skills.invalid_access_token":  "Invalid access token",
+	"mcp_skills.missing_access_token":  "Aggregation endpoint has no access token configured",
+	"mcp_skills.mcp_not_enabled":       "MCP endpoint is not enabled for this service",
+	"mcp_skills.service_disabled":      "Service is disabled",
 
 	// Status
 	"mcp_skills.status.enabled":  "enabled",
