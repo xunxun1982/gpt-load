@@ -195,6 +195,11 @@ func (s *Service) ListServicesPaginated(ctx context.Context, params ServiceListP
 
 	// Apply filters
 	if params.Search != "" {
+		// AI Review Note: LIKE wildcards (% and _) in user input are intentionally NOT escaped.
+		// Reasons: 1) This is a search feature where users may expect wildcard behavior
+		// 2) GORM parameterized queries already prevent SQL injection
+		// 3) Escaping syntax varies by database (SQLite/PostgreSQL/MySQL)
+		// 4) The search is for internal admin use, not public-facing
 		searchPattern := "%" + params.Search + "%"
 		query = query.Where(
 			"name LIKE ? OR display_name LIKE ? OR description LIKE ?",

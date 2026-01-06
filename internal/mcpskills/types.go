@@ -417,7 +417,6 @@ var APIBridgeTemplates = []APIBridgeTemplate{
 	},
 }
 
-
 // AggregationMCPTool represents a tool in the MCP aggregation response
 type AggregationMCPTool struct {
 	ServiceName string `json:"service_name"`

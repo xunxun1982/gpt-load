@@ -210,18 +210,12 @@ func (e *APIExecutor) executeAPIRequest(ctx context.Context, svc *MCPService, to
 
 // getAPIPath returns the API path for a given service and tool
 func (e *APIExecutor) getAPIPath(serviceName, toolName string) string {
-	// Common API path mappings for known services
+	// API path mappings for predefined services in APIBridgeTemplates
 	pathMappings := map[string]map[string]string{
 		"exa-search": {
 			"search":       "/search",
 			"find_similar": "/findSimilar",
 			"get_contents": "/contents",
-		},
-		"tavily-search": {
-			"search": "/search",
-		},
-		"serper-search": {
-			"search": "/search",
 		},
 	}
 
