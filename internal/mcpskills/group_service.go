@@ -169,7 +169,7 @@ func (s *GroupService) groupToDTO(group *MCPServiceGroup) MCPServiceGroupDTO {
 		ServiceCount:       len(serviceIDs),
 		Enabled:            group.Enabled,
 		AggregationEnabled: group.AggregationEnabled,
-		HasAccessToken:     group.AccessToken != "",
+		AccessToken:        group.AccessToken,
 		CreatedAt:          group.CreatedAt,
 		UpdatedAt:          group.UpdatedAt,
 	}
@@ -511,9 +511,10 @@ func (s *GroupService) GetGroupByNameWithToken(ctx context.Context, name string,
 
 // GetGroupEndpointInfo returns endpoint information for a group
 func (s *GroupService) GetGroupEndpointInfo(ctx context.Context, groupID uint, serverAddress string) (*GroupEndpointInfo, error) {
-	group, err := s.GetGroupByID(ctx, groupID)
-	if err != nil {
-		return nil, err
+	// Get raw group from database to access access_token
+	var group MCPServiceGroup
+	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
 	}
 
 	info := &GroupEndpointInfo{
@@ -526,14 +527,47 @@ func (s *GroupService) GetGroupEndpointInfo(ctx context.Context, groupID uint, s
 		info.AggregationEndpoint = fmt.Sprintf("%s/mcp/aggregation/%s", serverAddress, group.Name)
 	}
 
-	// Generate MCP config JSON for clients
-	mcpConfig := s.generateMCPConfigForGroup(group, serverAddress)
+	// Generate MCP config JSON for clients (with access token if set)
+	mcpConfig := s.generateMCPConfigForGroupWithToken(&group, serverAddress)
 	info.MCPConfigJSON = mcpConfig
 
 	return info, nil
 }
 
-// generateMCPConfigForGroup generates MCP configuration JSON for a group
+// generateMCPConfigForGroupWithToken generates MCP configuration JSON for a group with access token
+func (s *GroupService) generateMCPConfigForGroupWithToken(group *MCPServiceGroup, serverAddress string) string {
+	if !group.AggregationEnabled {
+		return ""
+	}
+
+	serverConfig := map[string]interface{}{
+		"url": fmt.Sprintf("%s/mcp/aggregation/%s", serverAddress, group.Name),
+	}
+
+	// Add headers with access token if set
+	if group.AccessToken != "" {
+		serverConfig["headers"] = map[string]string{
+			"Authorization": fmt.Sprintf("Bearer %s", group.AccessToken),
+		}
+	}
+
+	config := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			group.Name: serverConfig,
+		},
+	}
+
+	// Use encoder with SetEscapeHTML(false) to avoid escaping < and >
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(config); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(buf.String())
+}
+
+// generateMCPConfigForGroup generates MCP configuration JSON for a group (without token, for DTO)
 func (s *GroupService) generateMCPConfigForGroup(group *MCPServiceGroupDTO, serverAddress string) string {
 	if !group.AggregationEnabled {
 		return ""

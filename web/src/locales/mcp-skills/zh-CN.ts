@@ -3,11 +3,11 @@
  */
 export default {
   title: "MCP & Skills",
-  subtitle: "管理 MCP 服务、服务组和技能导出",
+  subtitle: "管理 MCP、MCP聚合和 Skills 导出",
 
   // Tabs
-  tabServices: "服务",
-  tabGroups: "服务组",
+  tabServices: "MCP",
+  tabGroups: "MCP聚合",
 
   // Section titles
   basicInfo: "基本信息",
@@ -17,11 +17,11 @@ export default {
 
   // Service fields
   name: "名称",
-  namePlaceholder: "输入服务名称（小写，无空格）",
+  namePlaceholder: "输入名称（小写，无空格）",
   displayName: "显示名称",
   displayNamePlaceholder: "输入显示名称",
   description: "描述",
-  descriptionPlaceholder: "输入服务描述",
+  descriptionPlaceholder: "输入描述",
   category: "分类",
   icon: "图标",
   iconPlaceholder: "输入 emoji 图标",
@@ -36,11 +36,20 @@ export default {
   typeStreamableHttp: "Streamable HTTP",
   typeApiBridge: "API Bridge",
 
-  // Categories
+  // Categories - matching backend ServiceCategory enum in models.go
   categorySearch: "搜索",
-  categoryCode: "代码",
-  categoryData: "数据",
+  categoryFetch: "抓取",
+  categoryAI: "AI服务",
   categoryUtility: "工具",
+  categoryStorage: "对象存储",
+  categoryDatabase: "数据库",
+  categoryFilesystem: "文件系统",
+  categoryBrowser: "浏览器",
+  categoryCommunication: "通信",
+  categoryDevelopment: "开发工具",
+  categoryCloud: "云服务",
+  categoryMonitoring: "监控",
+  categoryProductivity: "生产力",
   categoryCustom: "自定义",
 
   // Stdio/SSE fields
@@ -54,7 +63,7 @@ export default {
   urlPlaceholder: "https://example.com/sse-endpoint",
 
   // Service info display
-  serviceInfo: "服务信息",
+  serviceInfo: "MCP 信息",
   argsCount: "个参数",
   envCount: "个环境变量",
 
@@ -63,7 +72,7 @@ export default {
   envKeyPlaceholder: "KEY",
   envValuePlaceholder: "value",
   addEnvVar: "添加环境变量",
-  envVarsHint: "只有启用的环境变量会被添加到服务配置中",
+  envVarsHint: "只有启用的环境变量会被添加到配置中",
   envVarEnabled: "已启用",
   envVarDisabled: "已禁用",
 
@@ -104,31 +113,35 @@ export default {
   healthUnknown: "未知",
 
   // Group fields
-  groupName: "组名称",
-  groupNamePlaceholder: "输入组名称（小写，无空格）",
+  groupName: "聚合名称",
+  groupNamePlaceholder: "输入聚合名称（小写，无空格）",
   groupDisplayName: "显示名称",
   groupDescription: "描述",
-  services: "服务",
-  serviceCount: "{count} 个服务",
-  selectServices: "选择服务",
-  noServicesSelected: "未选择服务",
+  services: "MCP服务",
+  serviceCount: "{count} 个MCP服务",
+  selectServices: "选择MCP服务",
+  noServicesSelected: "未选择MCP服务",
 
   // MCP聚合
-  aggregationEnabled: "MCP聚合",
-  aggregationEnabledTooltip: "为此服务组启用MCP聚合端点",
+  aggregationEnabled: "启用聚合",
+  aggregationEnabledTooltip: "启用MCP聚合端点",
   aggregationEndpoint: "聚合端点",
   accessToken: "访问令牌",
   accessTokenPlaceholder: "留空自动生成",
+  accessTokenSetPlaceholder: "已设置，留空保持不变",
+  accessTokenAlreadySet: "已设置访问令牌，留空将保持原有令牌不变",
   regenerateToken: "重新生成",
   copyToken: "复制令牌",
   tokenCopied: "令牌已复制",
   tokenRegenerated: "令牌已重新生成",
+  generate: "生成",
+  tokenGenerated: "访问令牌已生成",
 
   // Skill export
-  skillExport: "技能导出",
-  skillExportEndpoint: "技能导出 URL",
-  exportAsSkill: "导出为技能",
-  skillExported: "技能导出成功",
+  skillExport: "Skills 导出",
+  skillExportEndpoint: "Skills 导出 URL",
+  exportAsSkill: "导出为Skills",
+  skillExported: "Skills 导出成功",
 
   // Endpoint info
   endpointInfo: "端点信息",
@@ -140,17 +153,17 @@ export default {
   templates: "模板",
   useTemplate: "使用模板",
   createFromTemplate: "从模板创建",
-  templateCreated: "已从模板创建服务",
+  templateCreated: "已从模板创建MCP",
 
   // Actions
-  createService: "创建服务",
-  editService: "编辑服务",
-  deleteService: "删除服务",
-  createGroup: "创建服务组",
-  editGroup: "编辑服务组",
-  deleteGroup: "删除服务组",
-  confirmDeleteService: "确定要删除服务「{name}」吗？",
-  confirmDeleteGroup: "确定要删除服务组「{name}」吗？",
+  createService: "创建MCP",
+  editService: "编辑MCP",
+  deleteService: "删除MCP",
+  createGroup: "创建MCP聚合",
+  editGroup: "编辑MCP聚合",
+  deleteGroup: "删除MCP聚合",
+  confirmDeleteService: "确定要删除MCP「{name}」吗？",
+  confirmDeleteGroup: "确定要删除MCP聚合「{name}」吗？",
 
   // Filter & Search
   filterEnabled: "状态",
@@ -165,30 +178,29 @@ export default {
   totalCount: "共 {count} 项",
 
   // Messages
-  serviceCreated: "服务创建成功",
-  serviceUpdated: "服务更新成功",
-  serviceDeleted: "服务删除成功",
-  groupCreated: "服务组创建成功",
-  groupUpdated: "服务组更新成功",
-  groupDeleted: "服务组删除成功",
+  serviceCreated: "MCP创建成功",
+  serviceUpdated: "MCP更新成功",
+  serviceDeleted: "MCP删除成功",
+  groupCreated: "MCP聚合创建成功",
+  groupUpdated: "MCP聚合更新成功",
+  groupDeleted: "MCP聚合删除成功",
 
   // Import/Export/Delete
   exportAll: "导出全部",
   importAll: "导入",
   deleteAll: "删除所有",
-  deleteAllWarning:
-    "确定要删除所有 {count} 个服务吗？此操作将同时清空所有服务组中的服务引用。请输入 ",
+  deleteAllWarning: "确定要删除所有 {count} 个MCP吗？此操作将同时清空所有MCP聚合中的引用。请输入 ",
   deleteAllConfirmText: "确认删除",
   toConfirmDeletion: " 以确认删除。",
   deleteAllPlaceholder: "请输入「确认删除」",
   confirmDelete: "确认删除",
   incorrectConfirmText: "输入的确认文本不正确",
-  deleteAllSuccess: "已删除 {count} 个服务",
-  deleteAllNone: "没有可删除的服务",
+  deleteAllSuccess: "已删除 {count} 个MCP",
+  deleteAllNone: "没有可删除的MCP",
   exportEncrypted: "加密导出",
   exportPlain: "明文导出",
   exportSuccess: "导出成功",
-  importSuccess: "导入成功：{services} 个服务，{groups} 个服务组",
+  importSuccess: "导入成功：{services} 个MCP，{groups} 个MCP聚合",
   importFailed: "导入失败：{error}",
   importInvalidFormat: "导入文件格式无效",
   importInvalidJSON: "JSON 格式错误",
@@ -204,7 +216,7 @@ export default {
 
   // Test
   test: "测试",
-  testSuccess: "服务「{name}」工作正常",
+  testSuccess: "MCP「{name}」工作正常",
   testFailed: "测试失败：{error}",
 
   // Custom endpoint
@@ -213,23 +225,26 @@ export default {
   // JSON Import
   importMcpJson: "导入 MCP JSON",
   importMcpJsonBtn: "导入",
-  jsonImportLabel: "MCP 配置 JSON",
+  jsonImportFromFile: "从文件导入",
+  selectFile: "选择文件",
+  fileReadError: "读取文件失败",
+  jsonImportLabel: "或粘贴 JSON 配置",
   jsonImportPlaceholder: "粘贴 MCP JSON 配置",
   jsonImportHint:
     "支持标准 MCP JSON 格式（Claude Desktop、Kiro 等）。autoApprove 和 disabledTools 等字段将被忽略。",
   jsonImportEmpty: "请输入 JSON 配置",
   jsonImportInvalidFormat: "格式无效：必须包含 mcpServers 对象",
-  jsonImportNoServers: "配置中未找到 MCP 服务",
+  jsonImportNoServers: "配置中未找到 MCP",
   jsonImportSuccess: "导入成功：{imported} 个已导入，{skipped} 个已跳过",
-  jsonImportAllSkipped: "所有服务已跳过（共 {skipped} 个）",
+  jsonImportAllSkipped: "所有MCP已跳过（共 {skipped} 个）",
 
   // MCP Endpoint
   mcpEnabled: "MCP 端点",
   mcpEnabledTooltip: "启用 MCP 端点供外部访问",
   mcpEndpoint: "MCP 端点",
-  serviceEndpointInfo: "服务端点信息",
+  serviceEndpointInfo: "MCP端点信息",
   noMcpEndpoint: "MCP 端点未启用",
-  mcpEndpointNotEnabled: "此服务的 MCP 端点未启用",
+  mcpEndpointNotEnabled: "此MCP的端点未启用",
   enableMcpEndpoint: "启用 MCP 端点",
   loadingEndpointInfo: "加载端点信息中...",
   mcpEndpointEnabled: "MCP 端点已启用",
@@ -250,9 +265,9 @@ export default {
   toolInputSchema: "输入参数",
 
   // Selection hints
-  selectItemHint: "从左侧面板选择一个服务或服务组",
-  selectServiceHint: "选择一个服务查看详情",
-  selectGroupHint: "选择一个服务组查看详情",
+  selectItemHint: "从左侧面板选择一个MCP或MCP聚合",
+  selectServiceHint: "选择一个MCP查看详情",
+  selectGroupHint: "选择一个MCP聚合查看详情",
   noMatchingItems: "未找到匹配项",
-  noItems: "暂无服务或服务组",
+  noItems: "暂无MCP或MCP聚合",
 };

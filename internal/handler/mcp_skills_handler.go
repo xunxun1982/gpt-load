@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -266,7 +267,7 @@ func (s *Server) DeleteAllMCPServices(c *gin.Context) {
 	if HandleServiceError(c, err) {
 		return
 	}
-	response.SuccessI18n(c, "mcp_skills.services_deleted_all", map[string]int64{"deleted": deleted})
+	response.SuccessI18n(c, "mcp_skills.services_deleted_all", map[string]int64{"deleted": deleted}, map[string]any{"deleted": deleted})
 }
 
 // CountAllMCPServices handles GET /api/mcp-skills/services/count
@@ -572,6 +573,7 @@ func (s *Server) RemoveServicesFromMCPGroup(c *gin.Context) {
 }
 
 // ExportMCPGroupAsSkill handles GET /api/mcp-skills/groups/:id/export
+// Supports both Authorization header and ?token= query parameter for authentication
 func (s *Server) ExportMCPGroupAsSkill(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -595,10 +597,22 @@ func (s *Server) ExportMCPGroupAsSkill(c *gin.Context) {
 		return
 	}
 
-	c.Header("Content-Disposition", "attachment; filename="+filename)
+	zipData := zipBuffer.Bytes()
+	fileSize := len(zipData)
+
+	// Bypass gzip middleware for binary file download
+	c.Request.Header.Del("Accept-Encoding")
+
+	// Set headers for file download
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, filename, filename))
+	c.Header("Content-Length", strconv.Itoa(fileSize))
 	c.Header("Content-Type", "application/zip")
-	c.Header("Content-Length", strconv.Itoa(zipBuffer.Len()))
-	c.Data(200, "application/zip", zipBuffer.Bytes())
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+
+	c.Status(200)
+	_, _ = c.Writer.Write(zipData)
 }
 
 

@@ -130,7 +130,7 @@ export interface MCPServiceGroupDTO {
   enabled: boolean;
   aggregation_enabled: boolean;
   aggregation_endpoint?: string;
-  has_access_token: boolean;
+  access_token?: string;
   skill_export_endpoint?: string;
   total_tool_count: number;
   created_at: string;
@@ -360,7 +360,7 @@ export const mcpSkillsApi = {
 
   // Delete all services (including those in groups)
   async deleteAllServices(): Promise<{ deleted: number }> {
-    const res = await http.delete("/mcp-skills/services/all");
+    const res = await http.delete("/mcp-skills/services/all?confirm=true");
     return res.data;
   },
 
@@ -520,12 +520,34 @@ export const mcpSkillsApi = {
     return res.data;
   },
 
-  // Export group as skill (returns blob)
+  // Export group as skill - now uses direct URL download in component
+  // This method is kept for backward compatibility but may not be used
   async exportGroupAsSkill(groupId: number): Promise<Blob> {
-    const res = await http.get(`/mcp-skills/groups/${groupId}/export`, {
-      responseType: "blob",
+    const authKey = localStorage.getItem("authKey");
+    const locale = localStorage.getItem("locale") || "zh-CN";
+
+    const response = await fetch(`/api/mcp-skills/groups/${groupId}/export`, {
+      method: "GET",
+      headers: {
+        ...(authKey ? { Authorization: `Bearer ${authKey}` } : {}),
+        "Accept-Language": locale,
+      },
     });
-    return res as unknown as Blob;
+
+    if (!response.ok) {
+      const text = await response.text();
+      let errorMessage = `Request failed: ${response.status}`;
+      try {
+        const json = JSON.parse(text);
+        errorMessage = json.message || errorMessage;
+      } catch {
+        // ignore parse error
+      }
+      throw new Error(errorMessage);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return new Blob([arrayBuffer], { type: "application/zip" });
   },
 
   // ============ Import/Export ============

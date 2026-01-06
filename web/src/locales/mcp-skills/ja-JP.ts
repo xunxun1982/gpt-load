@@ -3,11 +3,11 @@
  */
 export default {
   title: "MCP & Skills",
-  subtitle: "MCPサービス、サービスグループ、スキルエクスポートを管理",
+  subtitle: "MCP、MCP集約、Skillsエクスポートを管理",
 
   // Tabs
-  tabServices: "サービス",
-  tabGroups: "グループ",
+  tabServices: "MCP",
+  tabGroups: "MCP集約",
 
   // Section titles
   basicInfo: "基本情報",
@@ -17,11 +17,11 @@ export default {
 
   // Service fields
   name: "名前",
-  namePlaceholder: "サービス名を入力（小文字、スペースなし）",
+  namePlaceholder: "名前を入力（小文字、スペースなし）",
   displayName: "表示名",
   displayNamePlaceholder: "表示名を入力",
   description: "説明",
-  descriptionPlaceholder: "サービスの説明を入力",
+  descriptionPlaceholder: "説明を入力",
   category: "カテゴリ",
   icon: "アイコン",
   iconPlaceholder: "絵文字アイコンを入力",
@@ -36,11 +36,20 @@ export default {
   typeStreamableHttp: "Streamable HTTP",
   typeApiBridge: "API Bridge",
 
-  // Categories
+  // Categories - matching backend ServiceCategory enum in models.go
   categorySearch: "検索",
-  categoryCode: "コード",
-  categoryData: "データ",
+  categoryFetch: "フェッチ",
+  categoryAI: "AI",
   categoryUtility: "ユーティリティ",
+  categoryStorage: "ストレージ",
+  categoryDatabase: "データベース",
+  categoryFilesystem: "ファイルシステム",
+  categoryBrowser: "ブラウザ",
+  categoryCommunication: "通信",
+  categoryDevelopment: "開発ツール",
+  categoryCloud: "クラウド",
+  categoryMonitoring: "監視",
+  categoryProductivity: "生産性",
   categoryCustom: "カスタム",
 
   // Stdio/SSE fields
@@ -54,7 +63,7 @@ export default {
   urlPlaceholder: "https://example.com/sse-endpoint",
 
   // Service info display
-  serviceInfo: "情報",
+  serviceInfo: "MCP情報",
   argsCount: "引数",
   envCount: "環境変数",
 
@@ -63,7 +72,7 @@ export default {
   envKeyPlaceholder: "KEY",
   envValuePlaceholder: "value",
   addEnvVar: "変数を追加",
-  envVarsHint: "有効な変数のみがサービス設定に追加されます",
+  envVarsHint: "有効な変数のみが設定に追加されます",
   envVarEnabled: "有効",
   envVarDisabled: "無効",
 
@@ -104,31 +113,36 @@ export default {
   healthUnknown: "不明",
 
   // Group fields
-  groupName: "グループ名",
-  groupNamePlaceholder: "グループ名を入力（小文字、スペースなし）",
+  groupName: "集約名",
+  groupNamePlaceholder: "集約名を入力（小文字、スペースなし）",
   groupDisplayName: "表示名",
   groupDescription: "説明",
-  services: "サービス",
-  serviceCount: "{count} サービス",
-  selectServices: "サービスを選択",
-  noServicesSelected: "サービス未選択",
+  services: "MCPサービス",
+  serviceCount: "{count} MCPサービス",
+  selectServices: "MCPサービスを選択",
+  noServicesSelected: "MCPサービス未選択",
 
   // MCP集約
-  aggregationEnabled: "MCP集約",
-  aggregationEnabledTooltip: "このグループのMCP集約エンドポイントを有効化",
+  aggregationEnabled: "集約を有効化",
+  aggregationEnabledTooltip: "MCP集約エンドポイントを有効化",
   aggregationEndpoint: "集約エンドポイント",
   accessToken: "アクセストークン",
   accessTokenPlaceholder: "空欄で自動生成",
+  accessTokenSetPlaceholder: "設定済み、空欄で維持",
+  accessTokenAlreadySet:
+    "アクセストークンは設定済みです。空欄のままにすると既存のトークンが維持されます。",
   regenerateToken: "再生成",
   copyToken: "トークンをコピー",
   tokenCopied: "トークンをコピーしました",
   tokenRegenerated: "トークンを再生成しました",
+  generate: "生成",
+  tokenGenerated: "アクセストークンを生成しました",
 
   // Skill export
-  skillExport: "スキルエクスポート",
-  skillExportEndpoint: "スキルエクスポートURL",
-  exportAsSkill: "スキルとしてエクスポート",
-  skillExported: "スキルをエクスポートしました",
+  skillExport: "Skillsエクスポート",
+  skillExportEndpoint: "SkillsエクスポートURL",
+  exportAsSkill: "Skillsとしてエクスポート",
+  skillExported: "Skillsをエクスポートしました",
 
   // Endpoint info
   endpointInfo: "エンドポイント情報",
@@ -140,17 +154,17 @@ export default {
   templates: "テンプレート",
   useTemplate: "テンプレートを使用",
   createFromTemplate: "テンプレートから作成",
-  templateCreated: "テンプレートからサービスを作成しました",
+  templateCreated: "テンプレートからMCPを作成しました",
 
   // Actions
-  createService: "サービスを作成",
-  editService: "サービスを編集",
-  deleteService: "サービスを削除",
-  createGroup: "グループを作成",
-  editGroup: "グループを編集",
-  deleteGroup: "グループを削除",
-  confirmDeleteService: "サービス「{name}」を削除しますか？",
-  confirmDeleteGroup: "グループ「{name}」を削除しますか？",
+  createService: "MCPを作成",
+  editService: "MCPを編集",
+  deleteService: "MCPを削除",
+  createGroup: "MCP集約を作成",
+  editGroup: "MCP集約を編集",
+  deleteGroup: "MCP集約を削除",
+  confirmDeleteService: "MCP「{name}」を削除しますか？",
+  confirmDeleteGroup: "MCP集約「{name}」を削除しますか？",
 
   // Filter & Search
   filterEnabled: "ステータス",
@@ -165,30 +179,30 @@ export default {
   totalCount: "{count} 件",
 
   // Messages
-  serviceCreated: "サービスを作成しました",
-  serviceUpdated: "サービスを更新しました",
-  serviceDeleted: "サービスを削除しました",
-  groupCreated: "グループを作成しました",
-  groupUpdated: "グループを更新しました",
-  groupDeleted: "グループを削除しました",
+  serviceCreated: "MCPを作成しました",
+  serviceUpdated: "MCPを更新しました",
+  serviceDeleted: "MCPを削除しました",
+  groupCreated: "MCP集約を作成しました",
+  groupUpdated: "MCP集約を更新しました",
+  groupDeleted: "MCP集約を削除しました",
 
   // Import/Export/Delete
   exportAll: "全てエクスポート",
   importAll: "インポート",
   deleteAll: "全て削除",
   deleteAllWarning:
-    "すべての {count} 件のサービスを削除しますか？この操作により、すべてのグループからサービス参照も削除されます。確認するには ",
+    "すべての {count} 件のMCPを削除しますか？この操作により、すべてのMCP集約からの参照も削除されます。確認するには ",
   deleteAllConfirmText: "削除確認",
   toConfirmDeletion: " と入力してください。",
   deleteAllPlaceholder: "「削除確認」と入力",
   confirmDelete: "削除を確認",
   incorrectConfirmText: "確認テキストが正しくありません",
-  deleteAllSuccess: "{count}件のサービスを削除しました",
-  deleteAllNone: "削除するサービスがありません",
+  deleteAllSuccess: "{count}件のMCPを削除しました",
+  deleteAllNone: "削除するMCPがありません",
   exportEncrypted: "暗号化エクスポート",
   exportPlain: "平文エクスポート",
   exportSuccess: "エクスポート成功",
-  importSuccess: "インポート成功：{services} サービス、{groups} グループ",
+  importSuccess: "インポート成功：{services} MCP、{groups} MCP集約",
   importFailed: "インポート失敗：{error}",
   importInvalidFormat: "インポートファイル形式が無効です",
   importInvalidJSON: "JSON形式が無効です",
@@ -204,7 +218,7 @@ export default {
 
   // Test
   test: "テスト",
-  testSuccess: "サービス「{name}」は正常に動作しています",
+  testSuccess: "MCP「{name}」は正常に動作しています",
   testFailed: "テスト失敗：{error}",
 
   // Custom endpoint
@@ -213,23 +227,26 @@ export default {
   // JSON import
   importMcpJson: "MCP JSONインポート",
   importMcpJsonBtn: "インポート",
-  jsonImportLabel: "MCP JSON設定",
+  jsonImportFromFile: "ファイルからインポート",
+  selectFile: "ファイル選択",
+  fileReadError: "ファイルの読み込みに失敗しました",
+  jsonImportLabel: "またはJSON設定を貼り付け",
   jsonImportPlaceholder: "MCP JSON設定を貼り付け",
   jsonImportHint:
     "Claude Desktop、Kiro、その他のMCPクライアントで使用される標準MCP JSON形式をサポート。autoApproveやdisabledToolsなどのフィールドは無視されます。",
   jsonImportEmpty: "JSON設定を入力してください",
   jsonImportInvalidFormat: "無効な形式：mcpServersオブジェクトが必要です",
-  jsonImportNoServers: "設定にMCPサーバーが見つかりません",
+  jsonImportNoServers: "設定にMCPが見つかりません",
   jsonImportSuccess: "インポート成功：{imported}件インポート、{skipped}件スキップ",
-  jsonImportAllSkipped: "すべてのサーバーがスキップされました（{skipped}件）",
+  jsonImportAllSkipped: "すべてのMCPがスキップされました（{skipped}件）",
 
   // MCP Endpoint
   mcpEnabled: "MCPエンドポイント",
   mcpEnabledTooltip: "外部アクセス用のMCPエンドポイントを有効にする",
   mcpEndpoint: "MCPエンドポイント",
-  serviceEndpointInfo: "サービスエンドポイント情報",
+  serviceEndpointInfo: "MCPエンドポイント情報",
   noMcpEndpoint: "MCPエンドポイントが有効になっていません",
-  mcpEndpointNotEnabled: "このサービスのMCPエンドポイントは有効になっていません",
+  mcpEndpointNotEnabled: "このMCPのエンドポイントは有効になっていません",
   enableMcpEndpoint: "MCPエンドポイントを有効にする",
   loadingEndpointInfo: "エンドポイント情報を読み込み中...",
   mcpEndpointEnabled: "MCPエンドポイントが有効になりました",
@@ -250,9 +267,9 @@ export default {
   toolInputSchema: "入力スキーマ",
 
   // Selection hints
-  selectItemHint: "左パネルからサービスまたはグループを選択してください",
-  selectServiceHint: "サービスを選択して詳細を表示",
-  selectGroupHint: "グループを選択して詳細を表示",
+  selectItemHint: "左パネルからMCPまたはMCP集約を選択してください",
+  selectServiceHint: "MCPを選択して詳細を表示",
+  selectGroupHint: "MCP集約を選択して詳細を表示",
   noMatchingItems: "一致する項目が見つかりません",
-  noItems: "サービスまたはグループがありません",
+  noItems: "MCPまたはMCP集約がありません",
 };

@@ -24,6 +24,7 @@ import {
   CloudDownloadOutline,
   CloudUploadOutline,
   CopyOutline,
+  Key,
   RefreshOutline,
   Search,
   TrashOutline,
@@ -174,6 +175,8 @@ function formatDate(dateStr: string | undefined): string {
 const showJsonImportModal = ref(false);
 const jsonImportText = ref("");
 const jsonImportLoading = ref(false);
+const jsonFileInputRef = ref<HTMLInputElement | null>(null);
+const selectedJsonFileName = ref("");
 
 // JSON import placeholder - defined here to avoid i18n parsing issues with curly braces
 const jsonImportPlaceholderText = `{
@@ -298,6 +301,44 @@ const groupForm = reactive<CreateGroupRequest>({
   access_token: "",
 });
 
+// Service access token input (separate from serviceForm for edit mode)
+const serviceAccessTokenInput = ref("");
+
+// Generate random access token for MCP endpoints
+// Uses cryptographically secure random when available, falls back to Math.random
+function generateRandomAccessToken(): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const length = 32;
+  let result = "";
+
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const randomValues = new Uint32Array(length);
+    crypto.getRandomValues(randomValues);
+    for (let i = 0; i < length; i++) {
+      const value = randomValues[i] ?? 0;
+      result += chars.charAt(value % chars.length);
+    }
+    return result;
+  }
+
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+// Generate and set access token for group form
+function generateGroupAccessToken() {
+  groupForm.access_token = generateRandomAccessToken();
+  message.success(t("mcpSkills.tokenGenerated"));
+}
+
+// Generate and set access token for service form
+function generateServiceAccessToken() {
+  serviceAccessTokenInput.value = generateRandomAccessToken();
+  message.success(t("mcpSkills.tokenGenerated"));
+}
+
 // Options
 const typeOptions = computed<SelectOption[]>(() => [
   { label: t("mcpSkills.typeStdio"), value: "stdio" },
@@ -306,11 +347,21 @@ const typeOptions = computed<SelectOption[]>(() => [
   { label: t("mcpSkills.typeApiBridge"), value: "api_bridge" },
 ]);
 
+// Category options matching backend ServiceCategory enum in models.go
 const categoryOptions = computed<SelectOption[]>(() => [
   { label: t("mcpSkills.categorySearch"), value: "search" },
-  { label: t("mcpSkills.categoryCode"), value: "code" },
-  { label: t("mcpSkills.categoryData"), value: "data" },
+  { label: t("mcpSkills.categoryFetch"), value: "fetch" },
+  { label: t("mcpSkills.categoryAI"), value: "ai" },
   { label: t("mcpSkills.categoryUtility"), value: "utility" },
+  { label: t("mcpSkills.categoryStorage"), value: "storage" },
+  { label: t("mcpSkills.categoryDatabase"), value: "database" },
+  { label: t("mcpSkills.categoryFilesystem"), value: "filesystem" },
+  { label: t("mcpSkills.categoryBrowser"), value: "browser" },
+  { label: t("mcpSkills.categoryCommunication"), value: "communication" },
+  { label: t("mcpSkills.categoryDevelopment"), value: "development" },
+  { label: t("mcpSkills.categoryCloud"), value: "cloud" },
+  { label: t("mcpSkills.categoryMonitoring"), value: "monitoring" },
+  { label: t("mcpSkills.categoryProductivity"), value: "productivity" },
   { label: t("mcpSkills.categoryCustom"), value: "custom" },
 ]);
 
@@ -451,6 +502,7 @@ function resetServiceForm() {
   argsInput.value = "";
   cwdInput.value = "";
   envVars.value = [];
+  serviceAccessTokenInput.value = "";
 }
 
 function openCreateService() {
@@ -510,6 +562,10 @@ async function submitService() {
       if (apiKeyInput.value.trim()) {
         payload.api_key_value = apiKeyInput.value;
       }
+      // Only include access_token if user provided one
+      if (serviceAccessTokenInput.value.trim()) {
+        payload.access_token = serviceAccessTokenInput.value;
+      }
       await mcpSkillsApi.updateService(editingService.value.id, payload);
       message.success(t("mcpSkills.serviceUpdated"));
     } else {
@@ -517,6 +573,7 @@ async function submitService() {
         ...serviceForm,
         api_key_value: apiKeyInput.value,
         default_envs: defaultEnvs,
+        access_token: serviceAccessTokenInput.value || undefined,
       });
       message.success(t("mcpSkills.serviceCreated"));
     }
@@ -582,7 +639,7 @@ function openEditGroup(group: MCPServiceGroupDTO) {
     service_ids: group.service_ids || [],
     enabled: group.enabled,
     aggregation_enabled: group.aggregation_enabled,
-    access_token: "",
+    access_token: group.access_token || "",
   });
   loadAllServices();
   showGroupModal.value = true;
@@ -677,17 +734,24 @@ async function copyToClipboard(text: string, msgKey: string) {
 async function exportGroupAsSkill(group: MCPServiceGroupDTO) {
   try {
     const blob = await mcpSkillsApi.exportGroupAsSkill(group.id);
+    const filename = `gpt-load-${group.name.replace(/_/g, "-")}.zip`;
+
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `skill-${group.name}-${Date.now()}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    // Delay URL revocation for download manager compatibility
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+
     message.success(t("mcpSkills.skillExported"));
-  } catch (_) {
-    /* handled by centralized error handler */
+  } catch (e) {
+    if (e instanceof Error) {
+      message.error(e.message);
+    }
   }
 }
 
@@ -743,7 +807,35 @@ async function testService(service: MCPServiceDTO) {
 
 function openJsonImportModal() {
   jsonImportText.value = "";
+  selectedJsonFileName.value = "";
   showJsonImportModal.value = true;
+}
+
+// Trigger file input click
+function triggerJsonFileInput() {
+  jsonFileInputRef.value?.click();
+}
+
+// Handle JSON file selection
+async function handleJsonFileSelect(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  selectedJsonFileName.value = file.name;
+
+  try {
+    const content = await file.text();
+    jsonImportText.value = content;
+  } catch (err) {
+    message.error(t("mcpSkills.fileReadError"));
+    selectedJsonFileName.value = "";
+  }
+
+  // Reset input to allow selecting the same file again
+  input.value = "";
 }
 
 async function importFromJson() {
@@ -1421,7 +1513,7 @@ onMounted(() => {
       :title="editingService ? t('mcpSkills.editService') : t('mcpSkills.createService')"
       style="width: 560px"
     >
-      <n-form label-placement="left" label-width="90" size="small" class="compact-form">
+      <n-form label-placement="left" label-width="70" size="small" class="compact-form">
         <div class="form-row">
           <n-form-item :label="t('mcpSkills.name')" style="flex: 1">
             <n-input
@@ -1453,20 +1545,38 @@ onMounted(() => {
           </n-form-item>
         </div>
         <div class="form-row">
-          <n-form-item :label="t('mcpSkills.icon')" style="width: 120px">
-            <n-input
-              v-model:value="serviceForm.icon"
-              :placeholder="t('mcpSkills.iconPlaceholder')"
-            />
+          <n-form-item :label="t('mcpSkills.icon')" style="flex: 1">
+            <n-space align="center" :size="8">
+              <n-input v-model:value="serviceForm.icon" style="width: 50px" />
+              <n-text depth="3">|</n-text>
+              <n-text depth="3" style="font-size: 12px">{{ t("mcpSkills.sort") }}:</n-text>
+              <n-input-number
+                v-model:value="serviceForm.sort"
+                :min="0"
+                style="width: 60px"
+                :show-button="false"
+              />
+            </n-space>
           </n-form-item>
-          <n-form-item :label="t('mcpSkills.sort')" style="width: 120px">
-            <n-input-number v-model:value="serviceForm.sort" :min="0" style="width: 100%" />
-          </n-form-item>
-          <n-form-item :label="t('mcpSkills.enabled')" style="width: 100px">
-            <n-switch v-model:value="serviceForm.enabled" />
-          </n-form-item>
-          <n-form-item :label="t('mcpSkills.mcpEnabled')" style="flex: 1">
-            <n-switch v-model:value="serviceForm.mcp_enabled" />
+          <n-form-item :label="t('mcpSkills.enabled')" style="flex: 1">
+            <n-space align="center" :size="8">
+              <n-switch v-model:value="serviceForm.enabled" size="small" />
+              <n-text depth="3">|</n-text>
+              <n-text depth="3" style="font-size: 12px">{{ t("mcpSkills.mcpEnabled") }}:</n-text>
+              <n-switch v-model:value="serviceForm.mcp_enabled" size="small" />
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-icon size="14" style="color: var(--n-text-color-3); cursor: help">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                      <path
+                        d="M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10zm-1-7v2h2v-2h-2zm0-8v6h2V7h-2z"
+                      />
+                    </svg>
+                  </n-icon>
+                </template>
+                {{ t("mcpSkills.mcpEnabledTooltip") }}
+              </n-tooltip>
+            </n-space>
           </n-form-item>
         </div>
         <template
@@ -1581,12 +1691,36 @@ onMounted(() => {
             />
           </n-form-item>
         </template>
-        <n-form-item :label="t('mcpSkills.rpdLimit')">
-          <n-input-number v-model:value="serviceForm.rpd_limit" :min="0" style="width: 150px" />
-          <n-text depth="3" style="margin-left: 8px; font-size: 11px">
-            {{ t("mcpSkills.mcpEnabledTooltip") }}
-          </n-text>
-        </n-form-item>
+        <div class="form-row">
+          <n-form-item :label="t('mcpSkills.rpdLimit')" style="width: 200px">
+            <n-input-number
+              v-model:value="serviceForm.rpd_limit"
+              :min="0"
+              style="width: 100px"
+              :show-button="false"
+            />
+            <n-text depth="3" style="margin-left: 4px; font-size: 10px">
+              (0={{ t("common.unlimited") }})
+            </n-text>
+          </n-form-item>
+          <n-form-item :label="t('mcpSkills.accessToken')" style="flex: 1">
+            <n-input
+              v-model:value="serviceAccessTokenInput"
+              type="password"
+              show-password-on="click"
+              :placeholder="t('mcpSkills.accessTokenPlaceholder')"
+            >
+              <template #suffix>
+                <n-button text type="primary" size="small" @click="generateServiceAccessToken">
+                  <template #icon>
+                    <n-icon :component="Key" />
+                  </template>
+                  {{ t("mcpSkills.generate") }}
+                </n-button>
+              </template>
+            </n-input>
+          </n-form-item>
+        </div>
       </n-form>
       <template #footer>
         <n-space justify="end">
@@ -1638,13 +1772,22 @@ onMounted(() => {
         <n-form-item :label="t('mcpSkills.aggregationEnabled')">
           <n-switch v-model:value="groupForm.aggregation_enabled" />
         </n-form-item>
-        <n-form-item v-if="editingGroup" :label="t('mcpSkills.accessToken')">
+        <n-form-item :label="t('mcpSkills.accessToken')">
           <n-input
             v-model:value="groupForm.access_token"
             type="password"
             show-password-on="click"
             :placeholder="t('mcpSkills.accessTokenPlaceholder')"
-          />
+          >
+            <template #suffix>
+              <n-button text type="primary" size="small" @click="generateGroupAccessToken">
+                <template #icon>
+                  <n-icon :component="Key" />
+                </template>
+                {{ t("mcpSkills.generate") }}
+              </n-button>
+            </template>
+          </n-input>
         </n-form-item>
       </n-form>
       <template #footer>
@@ -1826,12 +1969,29 @@ onMounted(() => {
       :title="t('mcpSkills.importMcpJson')"
       style="width: 700px"
     >
-      <div style="display: flex; flex-direction: column; gap: 8px">
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <!-- File upload section -->
+        <div style="display: flex; align-items: center; gap: 8px">
+          <n-text strong>{{ t("mcpSkills.jsonImportFromFile") }}:</n-text>
+          <input
+            ref="jsonFileInputRef"
+            type="file"
+            accept=".json"
+            style="display: none"
+            @change="handleJsonFileSelect"
+          />
+          <n-button size="small" @click="triggerJsonFileInput">
+            {{ t("mcpSkills.selectFile") }}
+          </n-button>
+          <n-text v-if="selectedJsonFileName" depth="3">{{ selectedJsonFileName }}</n-text>
+        </div>
+        <n-divider style="margin: 4px 0">{{ t("common.or") }}</n-divider>
+        <!-- Text input section -->
         <n-text strong>{{ t("mcpSkills.jsonImportLabel") }}</n-text>
         <n-input
           v-model:value="jsonImportText"
           type="textarea"
-          :rows="12"
+          :rows="10"
           :placeholder="jsonImportPlaceholderText"
           style="font-family: monospace; font-size: 12px"
         />
@@ -1876,18 +2036,22 @@ onMounted(() => {
 }
 /* Compact form styles */
 .compact-form :deep(.n-form-item) {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 .compact-form :deep(.n-form-item-label) {
-  font-size: 13px;
+  font-size: 12px;
+  padding-right: 4px;
+}
+.compact-form :deep(.n-form-item-feedback-wrapper) {
+  min-height: 0;
 }
 .form-row {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   align-items: flex-start;
 }
 .form-row > * {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 .endpoint-info {
   display: flex;

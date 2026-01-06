@@ -10,15 +10,25 @@ import (
 )
 
 // ServiceCategory represents different categories of MCP services
+// Categories are based on common MCP server classifications in the ecosystem
+// Reference: glama.ai/mcp, mcpserve.com, one-mcp project
 type ServiceCategory string
 
 const (
-	CategorySearch  ServiceCategory = "search"
-	CategoryFetch   ServiceCategory = "fetch"
-	CategoryAI      ServiceCategory = "ai"
-	CategoryUtil    ServiceCategory = "utility"
-	CategoryStorage ServiceCategory = "storage"
-	CategoryCustom  ServiceCategory = "custom"
+	CategorySearch        ServiceCategory = "search"        // Web search, information retrieval
+	CategoryFetch         ServiceCategory = "fetch"         // Web scraping, content extraction
+	CategoryAI            ServiceCategory = "ai"            // AI/ML services, model inference
+	CategoryUtil          ServiceCategory = "utility"       // General utilities, text processing
+	CategoryStorage       ServiceCategory = "storage"       // Object storage, cloud storage (S3, R2, etc.)
+	CategoryDatabase      ServiceCategory = "database"      // Database operations (SQL, NoSQL, vector DB)
+	CategoryFilesystem    ServiceCategory = "filesystem"    // Local file system operations
+	CategoryBrowser       ServiceCategory = "browser"       // Browser automation, web interaction
+	CategoryCommunication ServiceCategory = "communication" // Email, messaging, notifications
+	CategoryDevelopment   ServiceCategory = "development"   // Code tools, Git, CI/CD
+	CategoryCloud         ServiceCategory = "cloud"         // Cloud platform services (AWS, GCP, Azure)
+	CategoryMonitoring    ServiceCategory = "monitoring"    // Logging, metrics, observability
+	CategoryProductivity  ServiceCategory = "productivity"  // Notion, calendar, task management
+	CategoryCustom        ServiceCategory = "custom"        // User-defined custom services
 )
 
 // ServiceType represents the underlying type of an MCP service

@@ -3,11 +3,11 @@
  */
 export default {
   title: "MCP & Skills",
-  subtitle: "Manage MCP services, service groups, and skill exports",
+  subtitle: "Manage MCP, MCP Aggregation, and Skills exports",
 
   // Tabs
-  tabServices: "Services",
-  tabGroups: "Groups",
+  tabServices: "MCP",
+  tabGroups: "MCP Aggregation",
 
   // Section titles
   basicInfo: "Basic Info",
@@ -17,11 +17,11 @@ export default {
 
   // Service fields
   name: "Name",
-  namePlaceholder: "Enter service name (lowercase, no spaces)",
+  namePlaceholder: "Enter name (lowercase, no spaces)",
   displayName: "Display Name",
   displayNamePlaceholder: "Enter display name",
   description: "Description",
-  descriptionPlaceholder: "Enter service description",
+  descriptionPlaceholder: "Enter description",
   category: "Category",
   icon: "Icon",
   iconPlaceholder: "Enter emoji icon",
@@ -36,11 +36,20 @@ export default {
   typeStreamableHttp: "Streamable HTTP",
   typeApiBridge: "API Bridge",
 
-  // Categories
+  // Categories - matching backend ServiceCategory enum in models.go
   categorySearch: "Search",
-  categoryCode: "Code",
-  categoryData: "Data",
+  categoryFetch: "Fetch",
+  categoryAI: "AI",
   categoryUtility: "Utility",
+  categoryStorage: "Storage",
+  categoryDatabase: "Database",
+  categoryFilesystem: "Filesystem",
+  categoryBrowser: "Browser",
+  categoryCommunication: "Communication",
+  categoryDevelopment: "Development",
+  categoryCloud: "Cloud",
+  categoryMonitoring: "Monitoring",
+  categoryProductivity: "Productivity",
   categoryCustom: "Custom",
 
   // Stdio/SSE fields
@@ -54,7 +63,7 @@ export default {
   urlPlaceholder: "https://example.com/sse-endpoint",
 
   // Service info display
-  serviceInfo: "Info",
+  serviceInfo: "MCP Info",
   argsCount: "args",
   envCount: "env vars",
 
@@ -63,7 +72,7 @@ export default {
   envKeyPlaceholder: "KEY",
   envValuePlaceholder: "value",
   addEnvVar: "Add Variable",
-  envVarsHint: "Only enabled variables will be added to the service configuration",
+  envVarsHint: "Only enabled variables will be added to the configuration",
   envVarEnabled: "Enabled",
   envVarDisabled: "Disabled",
 
@@ -104,31 +113,35 @@ export default {
   healthUnknown: "Unknown",
 
   // Group fields
-  groupName: "Group Name",
-  groupNamePlaceholder: "Enter group name (lowercase, no spaces)",
+  groupName: "Aggregation Name",
+  groupNamePlaceholder: "Enter aggregation name (lowercase, no spaces)",
   groupDisplayName: "Display Name",
   groupDescription: "Description",
-  services: "Services",
-  serviceCount: "{count} services",
-  selectServices: "Select Services",
-  noServicesSelected: "No services selected",
+  services: "MCP Services",
+  serviceCount: "{count} MCP services",
+  selectServices: "Select MCP Services",
+  noServicesSelected: "No MCP services selected",
 
   // MCP Aggregation
-  aggregationEnabled: "MCP Aggregation",
-  aggregationEnabledTooltip: "Enable MCP Aggregation endpoint for this group",
+  aggregationEnabled: "Enable Aggregation",
+  aggregationEnabledTooltip: "Enable MCP Aggregation endpoint",
   aggregationEndpoint: "Aggregation Endpoint",
   accessToken: "Access Token",
   accessTokenPlaceholder: "Auto-generated if empty",
+  accessTokenSetPlaceholder: "Already set, leave empty to keep",
+  accessTokenAlreadySet: "Access token is set. Leave empty to keep the existing token.",
   regenerateToken: "Regenerate",
   copyToken: "Copy Token",
   tokenCopied: "Token copied",
   tokenRegenerated: "Token regenerated",
+  generate: "Generate",
+  tokenGenerated: "Access token generated",
 
   // Skill export
-  skillExport: "Skill Export",
-  skillExportEndpoint: "Skill Export URL",
-  exportAsSkill: "Export as Skill",
-  skillExported: "Skill exported successfully",
+  skillExport: "Skills Export",
+  skillExportEndpoint: "Skills Export URL",
+  exportAsSkill: "Export as Skills",
+  skillExported: "Skills exported successfully",
 
   // Endpoint info
   endpointInfo: "Endpoint Info",
@@ -140,17 +153,17 @@ export default {
   templates: "Templates",
   useTemplate: "Use Template",
   createFromTemplate: "Create from Template",
-  templateCreated: "Service created from template",
+  templateCreated: "MCP created from template",
 
   // Actions
-  createService: "Create Service",
-  editService: "Edit Service",
-  deleteService: "Delete Service",
-  createGroup: "Create Group",
-  editGroup: "Edit Group",
-  deleteGroup: "Delete Group",
-  confirmDeleteService: 'Are you sure you want to delete service "{name}"?',
-  confirmDeleteGroup: 'Are you sure you want to delete group "{name}"?',
+  createService: "Create MCP",
+  editService: "Edit MCP",
+  deleteService: "Delete MCP",
+  createGroup: "Create MCP Aggregation",
+  editGroup: "Edit MCP Aggregation",
+  deleteGroup: "Delete MCP Aggregation",
+  confirmDeleteService: 'Are you sure you want to delete MCP "{name}"?',
+  confirmDeleteGroup: 'Are you sure you want to delete MCP Aggregation "{name}"?',
 
   // Filter & Search
   filterEnabled: "Status",
@@ -165,30 +178,30 @@ export default {
   totalCount: "{count} items",
 
   // Messages
-  serviceCreated: "Service created successfully",
-  serviceUpdated: "Service updated successfully",
-  serviceDeleted: "Service deleted successfully",
-  groupCreated: "Group created successfully",
-  groupUpdated: "Group updated successfully",
-  groupDeleted: "Group deleted successfully",
+  serviceCreated: "MCP created successfully",
+  serviceUpdated: "MCP updated successfully",
+  serviceDeleted: "MCP deleted successfully",
+  groupCreated: "MCP Aggregation created successfully",
+  groupUpdated: "MCP Aggregation updated successfully",
+  groupDeleted: "MCP Aggregation deleted successfully",
 
   // Import/Export/Delete
   exportAll: "Export All",
   importAll: "Import",
   deleteAll: "Delete All",
   deleteAllWarning:
-    "Are you sure you want to delete all {count} services? This will also clear service references from all groups. Please enter ",
+    "Are you sure you want to delete all {count} MCPs? This will also clear references from all MCP Aggregations. Please enter ",
   deleteAllConfirmText: "confirm delete",
   toConfirmDeletion: " to confirm deletion.",
   deleteAllPlaceholder: 'Enter "confirm delete"',
   confirmDelete: "Confirm Delete",
   incorrectConfirmText: "Incorrect confirmation text",
-  deleteAllSuccess: "Deleted {count} services",
-  deleteAllNone: "No services to delete",
+  deleteAllSuccess: "Deleted {count} MCPs",
+  deleteAllNone: "No MCPs to delete",
   exportEncrypted: "Export Encrypted",
   exportPlain: "Export Plain",
   exportSuccess: "Export successful",
-  importSuccess: "Import successful: {services} services, {groups} groups",
+  importSuccess: "Import successful: {services} MCPs, {groups} MCP Aggregations",
   importFailed: "Import failed: {error}",
   importInvalidFormat: "Invalid import file format",
   importInvalidJSON: "Invalid JSON format",
@@ -204,7 +217,7 @@ export default {
 
   // Test
   test: "Test",
-  testSuccess: 'Service "{name}" is working correctly',
+  testSuccess: 'MCP "{name}" is working correctly',
   testFailed: "Test failed: {error}",
 
   // Custom endpoint
@@ -213,23 +226,26 @@ export default {
   // JSON Import
   importMcpJson: "Import MCP JSON",
   importMcpJsonBtn: "Import",
-  jsonImportLabel: "MCP Configuration JSON",
+  jsonImportFromFile: "Import from file",
+  selectFile: "Select File",
+  fileReadError: "Failed to read file",
+  jsonImportLabel: "Or paste JSON configuration",
   jsonImportPlaceholder: "Paste MCP JSON configuration",
   jsonImportHint:
     "Supports standard MCP JSON format (Claude Desktop, Kiro, etc.). Fields like autoApprove and disabledTools will be ignored.",
   jsonImportEmpty: "Please enter JSON configuration",
   jsonImportInvalidFormat: 'Invalid format: must contain "mcpServers" object',
-  jsonImportNoServers: "No MCP servers found in configuration",
+  jsonImportNoServers: "No MCP found in configuration",
   jsonImportSuccess: "Import successful: {imported} imported, {skipped} skipped",
-  jsonImportAllSkipped: "All servers skipped ({skipped} total)",
+  jsonImportAllSkipped: "All MCPs skipped ({skipped} total)",
 
   // MCP Endpoint
   mcpEnabled: "MCP Endpoint",
   mcpEnabledTooltip: "Enable MCP endpoint for external access",
   mcpEndpoint: "MCP Endpoint",
-  serviceEndpointInfo: "Service Endpoint Info",
+  serviceEndpointInfo: "MCP Endpoint Info",
   noMcpEndpoint: "MCP endpoint not enabled",
-  mcpEndpointNotEnabled: "MCP endpoint is not enabled for this service",
+  mcpEndpointNotEnabled: "MCP endpoint is not enabled for this MCP",
   enableMcpEndpoint: "Enable MCP Endpoint",
   loadingEndpointInfo: "Loading endpoint info...",
   mcpEndpointEnabled: "MCP endpoint enabled",
@@ -250,9 +266,9 @@ export default {
   toolInputSchema: "Input Schema",
 
   // Selection hints
-  selectItemHint: "Select a service or group from the left panel",
-  selectServiceHint: "Select a service to view details",
-  selectGroupHint: "Select a group to view details",
+  selectItemHint: "Select an MCP or MCP Aggregation from the left panel",
+  selectServiceHint: "Select an MCP to view details",
+  selectGroupHint: "Select an MCP Aggregation to view details",
   noMatchingItems: "No matching items found",
-  noItems: "No services or groups yet",
+  noItems: "No MCPs or MCP Aggregations yet",
 };

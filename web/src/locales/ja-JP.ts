@@ -59,6 +59,8 @@ export default {
     endTime: "終了時間",
     selectAll: "すべて選択",
     deselectAll: "選択を解除",
+    unlimited: "無制限",
+    or: "または",
   },
   login: {
     title: "GPT Load",

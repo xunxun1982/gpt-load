@@ -179,7 +179,7 @@ type MCPServiceGroupDTO struct {
 	// MCP Aggregation settings
 	AggregationEnabled  bool   `json:"aggregation_enabled"`
 	AggregationEndpoint string `json:"aggregation_endpoint,omitempty"` // Generated endpoint URL
-	HasAccessToken      bool   `json:"has_access_token"`
+	AccessToken         string `json:"access_token,omitempty"`
 
 	// Skill export info
 	SkillExportEndpoint string `json:"skill_export_endpoint,omitempty"`

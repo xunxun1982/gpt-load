@@ -59,6 +59,8 @@ export default {
     endTime: "End Time",
     selectAll: "Select All",
     deselectAll: "Deselect All",
+    unlimited: "∞",
+    or: "OR",
   },
   login: {
     title: "GPT Load",

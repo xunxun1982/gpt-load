@@ -493,7 +493,7 @@ func (s *Service) RegenerateServiceAccessToken(ctx context.Context, id uint) (st
 }
 
 // CreateService creates a new MCP service
-// Note: Duplicate names are allowed since each service has a unique ID
+// Duplicate names are auto-renamed with numeric suffix (e.g., name-2, name-3)
 // and MCP endpoints use ID-based URLs (/mcp/service/:id)
 func (s *Service) CreateService(ctx context.Context, params CreateServiceParams) (*MCPServiceDTO, error) {
 	name := strings.TrimSpace(params.Name)
@@ -506,7 +506,8 @@ func (s *Service) CreateService(ctx context.Context, params CreateServiceParams)
 		return nil, services.NewI18nError(app_errors.ErrValidation, "mcp_skills.validation.invalid_name_format", nil)
 	}
 
-	// Duplicate names are allowed - each service has unique ID and MCP endpoint URL
+	// Generate unique name if duplicate exists (auto-rename with suffix)
+	name = s.generateUniqueName(ctx, name)
 
 	displayName := strings.TrimSpace(params.DisplayName)
 	if displayName == "" {
@@ -1229,7 +1230,7 @@ func (s *Service) ExportServices(ctx context.Context, plainMode bool) ([]MCPServ
 
 // ImportServices imports services from export data
 // plainMode: if true, input data is plain and needs encryption; if false, input is already encrypted
-// Note: Duplicate names are allowed since each service has a unique ID
+// Duplicate names are auto-renamed with numeric suffix (e.g., name-2, name-3)
 // Returns (imported count, skipped count, error)
 func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExportInfo, plainMode bool) (int, int, error) {
 	if len(services) == 0 {
@@ -1246,7 +1247,8 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 			continue
 		}
 
-		// Duplicate names are allowed - each service has unique ID and MCP endpoint URL
+		// Generate unique name if duplicate exists (auto-rename with suffix)
+		uniqueName := s.generateUniqueName(ctx, name)
 
 		displayName := strings.TrimSpace(info.DisplayName)
 		if displayName == "" {
@@ -1264,7 +1266,7 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 		}
 
 		svc := &MCPService{
-			Name:         name,
+			Name:         uniqueName,
 			DisplayName:  displayName,
 			Description:  strings.TrimSpace(info.Description),
 			Category:     category,
@@ -1308,7 +1310,7 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 			if svc.AccessToken == "" {
 				token, err := generateAccessToken()
 				if err != nil {
-					logrus.WithError(err).Warnf("Failed to generate access token for service %s", name)
+					logrus.WithError(err).Warnf("Failed to generate access token for service %s", uniqueName)
 					skipped++
 					continue
 				}
@@ -1322,7 +1324,7 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 				// Input is plain, need to encrypt
 				encrypted, err := s.encryptionSvc.Encrypt(info.APIKeyValue)
 				if err != nil {
-					logrus.WithError(err).Warnf("Failed to encrypt API key for service %s", name)
+					logrus.WithError(err).Warnf("Failed to encrypt API key for service %s", uniqueName)
 					skipped++
 					continue
 				}
@@ -1330,7 +1332,7 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 			} else {
 				// Input is already encrypted, verify it can be decrypted
 				if _, err := s.encryptionSvc.Decrypt(info.APIKeyValue); err != nil {
-					logrus.WithError(err).Warnf("Failed to decrypt API key for service %s, skipping", name)
+					logrus.WithError(err).Warnf("Failed to decrypt API key for service %s, skipping", uniqueName)
 					skipped++
 					continue
 				}
@@ -1339,7 +1341,7 @@ func (s *Service) ImportServices(ctx context.Context, services []MCPServiceExpor
 		}
 
 		if err := s.db.WithContext(ctx).Create(svc).Error; err != nil {
-			logrus.WithError(err).Warnf("Failed to create service %s", name)
+			logrus.WithError(err).Warnf("Failed to create service %s", uniqueName)
 			skipped++
 			continue
 		}
@@ -1373,7 +1375,7 @@ type importServiceResult struct {
 // ImportMCPServersFromJSON imports MCP services from standard MCP JSON configuration format
 // This supports the format used by Claude Desktop, Kiro, and other MCP clients
 // It uses concurrent tool discovery for better performance during batch imports
-// Services that already exist are skipped (not renamed)
+// Duplicate names are auto-renamed with numeric suffix (e.g., name-2, name-3)
 func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServersConfig) (*MCPServersImportResult, error) {
 	result := &MCPServersImportResult{
 		Imported: 0,
@@ -1386,7 +1388,7 @@ func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServer
 	}
 
 	// Phase 1: Prepare all services (validate names, create objects)
-	// Note: Duplicate names are allowed since each service has a unique ID
+	// Duplicate names are auto-renamed with numeric suffix
 	var tasks []importServiceTask
 	for serverName, serverConfig := range config.MCPServers {
 		name := strings.TrimSpace(serverName)
@@ -1407,7 +1409,8 @@ func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServer
 			name = sanitized
 		}
 
-		// Duplicate names are allowed - each service has unique ID and MCP endpoint URL
+		// Generate unique name if duplicate exists (auto-rename with suffix)
+		uniqueName := s.generateUniqueName(ctx, name)
 
 		// Determine service type
 		serviceType := s.determineServiceType(serverConfig)
@@ -1423,9 +1426,9 @@ func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServer
 			description = fmt.Sprintf("Remote MCP server: %s", serverConfig.URL)
 		}
 
-		// Create service object
+		// Create service object with unique name
 		svc := &MCPService{
-			Name:        name,
+			Name:        uniqueName,
 			DisplayName: serverName,
 			Description: description,
 			Category:    string(CategoryCustom), // Will be updated after discovery
@@ -1440,14 +1443,14 @@ func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServer
 		// Set args
 		if len(serverConfig.Args) > 0 {
 			if err := svc.SetArgs(serverConfig.Args); err != nil {
-				logrus.WithError(err).Warnf("Failed to set args for service %s", name)
+				logrus.WithError(err).Warnf("Failed to set args for service %s", uniqueName)
 			}
 		}
 
 		// Set environment variables
 		if len(serverConfig.Env) > 0 {
 			if err := svc.SetDefaultEnvs(serverConfig.Env); err != nil {
-				logrus.WithError(err).Warnf("Failed to set env vars for service %s", name)
+				logrus.WithError(err).Warnf("Failed to set env vars for service %s", uniqueName)
 			}
 		}
 
@@ -1459,12 +1462,12 @@ func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServer
 		// Set headers
 		if len(serverConfig.Headers) > 0 {
 			if err := svc.SetHeaders(serverConfig.Headers); err != nil {
-				logrus.WithError(err).Warnf("Failed to set headers for service %s", name)
+				logrus.WithError(err).Warnf("Failed to set headers for service %s", uniqueName)
 			}
 		}
 
 		tasks = append(tasks, importServiceTask{
-			name:         name,
+			name:         uniqueName,
 			displayName:  serverName,
 			serverConfig: serverConfig,
 			svc:          svc,
@@ -1660,41 +1663,493 @@ func (s *Service) discoverToolsForNewServiceAsync(ctx context.Context, svc *MCPS
 	return tools
 }
 
-// guessCategoryFromTools guesses category based on discovered tool names
+// guessCategoryFromTools guesses category based on discovered tool names and descriptions
+// This function analyzes tool names to automatically categorize MCP services
+// Keywords are based on popular MCP servers from GitHub modelcontextprotocol/servers,
+// punkpeye/awesome-mcp-servers, glama.ai, mcpserve.com, and community lists
+// Coverage: 500+ MCP servers across 14 categories
 func guessCategoryFromTools(tools []ToolDefinition) string {
 	if len(tools) == 0 {
 		return ""
 	}
 
-	// Collect all tool names
+	// Collect all tool names and descriptions
 	var toolNames []string
 	for _, tool := range tools {
 		toolNames = append(toolNames, strings.ToLower(tool.Name))
+		toolNames = append(toolNames, strings.ToLower(tool.Description))
 	}
 	allNames := strings.Join(toolNames, " ")
 
-	// Search related
-	if strings.Contains(allNames, "search") || strings.Contains(allNames, "query") ||
-		strings.Contains(allNames, "find") || strings.Contains(allNames, "lookup") {
+	// Helper function to check if any keyword matches
+	containsAny := func(text string, keywords []string) bool {
+		for _, kw := range keywords {
+			if strings.Contains(text, kw) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Browser automation related (Puppeteer, Playwright, Selenium, BrowserBase, Stagehand, etc.)
+	// Popular MCP servers: @anthropic/mcp-server-puppeteer, @anthropic/mcp-server-playwright,
+	// browserbase, stagehand, hyperbrowser, steel, browserless, agentql, browser-use
+	browserKeywords := []string{
+		"browser", "playwright", "puppeteer", "selenium", "click", "navigate",
+		"screenshot", "page", "webdriver", "chromium", "headless", "dom",
+		"element", "selector", "browserbase", "browserless", "stagehand",
+		"hyperbrowser", "steel", "agentql", "browser-use", "browseract",
+		"webkit", "firefox", "edge", "safari", "tab", "window", "scroll",
+		"hover", "drag", "drop", "input", "form", "submit", "cookie",
+		"session", "viewport", "devtools", "network", "console", "pdf",
+		"automation", "web-automation", "e2e", "testing", "crawlee",
+	}
+	if containsAny(allNames, browserKeywords) {
+		return string(CategoryBrowser)
+	}
+
+	// Database related (SQL, NoSQL, Vector DB, Graph DB, Time Series, Data Warehouses)
+	// Popular MCP servers: @anthropic/mcp-server-postgres, @anthropic/mcp-server-sqlite,
+	// supabase, neon, planetscale, turso, qdrant, pinecone, weaviate, milvus, chroma,
+	// mongodb, redis, elasticsearch, clickhouse, snowflake, bigquery, duckdb, neo4j
+	dbKeywords := []string{
+		"sql", "query", "database", "table", "postgres", "postgresql", "mysql",
+		"mariadb", "mongo", "mongodb", "redis", "memcached", "vector", "qdrant",
+		"pinecone", "weaviate", "milvus", "chroma", "sqlite", "bigquery",
+		"snowflake", "clickhouse", "cassandra", "dynamodb", "firestore",
+		"supabase", "neon", "planetscale", "turso", "libsql", "drizzle",
+		"prisma", "schema", "migration", "upstash", "fauna", "xata", "convex",
+		// Extended: More databases from MCP ecosystem
+		"cockroach", "cockroachdb", "tidb", "yugabyte", "yugabytedb", "singlestore",
+		"timescale", "timescaledb", "questdb", "influxdb", "influx", "duckdb",
+		"motherduck", "databricks", "athena", "redshift", "edgedb", "surrealdb",
+		"arangodb", "couchdb", "couchbase", "rethinkdb", "scylladb", "foundationdb",
+		"vitess", "oceanbase", "polardb", "gaussdb", "opengauss", "doris",
+		"starrocks", "apache-doris", "greenplum", "vertica", "teradata",
+		// Vector databases
+		"pgvector", "vespa", "vald", "marqo", "zilliz", "lancedb", "chromadb",
+		// Graph databases
+		"neo4j", "neptune", "janusgraph", "dgraph", "tigergraph", "memgraph",
+		"agensgraph", "orientdb", "arcadedb", "nebula", "hugegraph",
+		// ORMs and query builders
+		"typeorm", "sequelize", "knex", "kysely", "objection", "bookshelf",
+		"mikro-orm", "sqlalchemy", "gorm", "ent", "bun", "sqlx", "diesel",
+		// Database operations
+		"insert", "update", "delete", "select", "join", "index", "transaction",
+		"backup", "restore", "replicate", "shard", "partition",
+	}
+	if containsAny(allNames, dbKeywords) {
+		return string(CategoryDatabase)
+	}
+
+	// Filesystem related
+	// Popular MCP servers: @anthropic/mcp-server-filesystem, desktop-commander,
+	// secure-filesystem, file-context, everything-search
+	fsKeywords := []string{
+		"file", "directory", "folder", "path", "read_file", "write_file",
+		"list_dir", "mkdir", "filesystem", "rename", "copy", "move",
+		"delete_file", "create_file", "desktop-commander", "secure-filesystem",
+		"file-context", "everything-search", "glob", "watch", "inotify",
+		"fswatch", "chokidar", "recursive", "symlink", "hardlink", "permission",
+		"chmod", "chown", "stat", "exists", "isfile", "isdir", "basename",
+		"dirname", "extension", "mime", "filetype", "encoding", "line",
+		"append", "truncate", "seek", "stream", "buffer", "temp", "tmp",
+	}
+	if containsAny(allNames, fsKeywords) {
+		return string(CategoryFilesystem)
+	}
+
+	// Search related (Web search, information retrieval, documentation, knowledge)
+	// Popular MCP servers: @anthropic/mcp-server-brave-search, exa, tavily, serper,
+	// context7, kagi, you.com, perplexity, algolia, elasticsearch, meilisearch
+	searchKeywords := []string{
+		"search", "find", "lookup", "web_search", "google", "bing",
+		"duckduckgo", "brave", "serper", "tavily", "perplexity", "algolia",
+		"elasticsearch", "meilisearch", "typesense", "index", "resolve-library",
+		"library-docs", "query-docs", "get-library",
+		// Extended: More search services from MCP ecosystem
+		"exa", "kagi", "you.com", "searxng", "searx", "serpapi", "searchapi",
+		"search1api", "metaphor", "phind", "devdocs", "dash", "zeal",
+		"context7", "api-docs", "documentation", "docs-search", "knowledge",
+		"semantic-search", "hybrid-search", "full-text", "fuzzy", "autocomplete",
+		"suggest", "ranking", "relevance", "facet", "filter", "aggregation",
+		"wikipedia", "arxiv", "pubmed", "scholar", "academic", "research",
+		"wolfram", "alpha", "answer", "qa", "question", "retrieval", "rag",
+	}
+	if containsAny(allNames, searchKeywords) {
 		return string(CategorySearch)
 	}
 
-	// AI related
-	if strings.Contains(allNames, "generate") || strings.Contains(allNames, "complete") ||
-		strings.Contains(allNames, "chat") || strings.Contains(allNames, "embed") {
+	// Fetch/Scraping related (Web scraping, content extraction, RSS, APIs)
+	// Popular MCP servers: @anthropic/mcp-server-fetch, firecrawl, jina-reader,
+	// apify, brightdata, scrapingbee, diffbot, readability
+	fetchKeywords := []string{
+		"fetch", "scrape", "crawl", "extract", "download", "http",
+		"firecrawl", "jina", "reader", "parse", "html", "markdown",
+		"content", "webpage",
+		// Extended: More scraping/fetch services from MCP ecosystem
+		"apify", "brightdata", "bright-data", "scrapingbee", "scrapingant",
+		"zenrows", "oxylabs", "smartproxy", "webshare", "diffbot", "import.io",
+		"parsehub", "octoparse", "webscraper", "scrapy", "colly", "goquery",
+		"cheerio", "beautifulsoup", "lxml", "readability", "mercury",
+		"rss", "atom", "feed", "syndication", "opml", "podcast",
+		"sitemap", "robots", "seo", "meta", "og", "twitter-card",
+		"structured-data", "schema.org", "microdata", "rdfa", "json-ld",
+		"headless", "render", "javascript", "spa", "ajax", "xhr",
+		"proxy", "rotate", "captcha", "antibot", "fingerprint",
+		"url", "link", "href", "anchor", "redirect", "canonical",
+	}
+	if containsAny(allNames, fetchKeywords) {
+		return string(CategoryFetch)
+	}
+
+	// Communication related (Email, messaging, notifications, CRM, support)
+	// Popular MCP servers: @anthropic/mcp-server-slack, discord, telegram, twilio,
+	// sendgrid, resend, mailgun, postmark, intercom, zendesk, hubspot
+	commKeywords := []string{
+		"email", "mail", "slack", "discord", "telegram", "message",
+		"notification", "sms", "twilio", "sendgrid", "resend", "mailgun",
+		"postmark", "teams", "whatsapp", "webhook", "push", "chat",
+		// Extended: More communication services from MCP ecosystem
+		"mailchimp", "constantcontact", "sendinblue", "brevo", "klaviyo",
+		"drip", "convertkit", "activecampaign", "aweber", "getresponse",
+		"zoom", "meet", "webex", "gotomeeting", "whereby", "jitsi",
+		"livekit", "daily", "twitch", "youtube-live", "stream",
+		"intercom", "zendesk", "freshdesk", "helpscout", "crisp", "drift",
+		"tawk", "livechat", "olark", "tidio", "chatwoot", "rocket.chat",
+		"mattermost", "zulip", "element", "matrix", "signal", "viber",
+		"line", "wechat", "kakaotalk", "messenger", "facebook",
+		"hubspot", "salesforce", "pipedrive", "zoho", "copper", "close",
+		"apollo", "outreach", "salesloft", "lemlist", "woodpecker",
+		"voice", "call", "phone", "voip", "pbx", "asterisk", "twilio-voice",
+		"plivo", "vonage", "nexmo", "bandwidth", "telnyx", "sinch",
+		"inbox", "imap", "smtp", "pop3", "mime", "attachment",
+	}
+	if containsAny(allNames, commKeywords) {
+		return string(CategoryCommunication)
+	}
+
+	// Development tools related (Git, CI/CD, code tools, code context, IDE, testing)
+	// Popular MCP servers: @anthropic/mcp-server-github, @anthropic/mcp-server-gitlab,
+	// @anthropic/mcp-server-git, linear, jira, sentry, sourcegraph, codeium,
+	// sequential-thinking, memory-bank, context7, ace-tool
+	devKeywords := []string{
+		"git", "commit", "branch", "pull_request", "issue", "code",
+		"lint", "test", "github", "gitlab", "bitbucket", "jira",
+		"linear", "sentry", "raygun", "npm", "pypi", "package",
+		"dependency", "build", "deploy", "ci", "pipeline", "workflow",
+		"action", "runner", "search_context", "codebase", "thinking", "sequential",
+		// Extended: More dev tools from MCP ecosystem
+		"sourcegraph", "codeium", "tabnine", "copilot", "cursor", "continue",
+		"aider", "gpt-engineer", "gpt-pilot", "smol-developer", "devika",
+		"devin", "opendevin", "swe-agent", "auto-gpt", "babyagi",
+		// CI/CD platforms
+		"jenkins", "circleci", "travisci", "travis", "buildkite", "drone",
+		"argocd", "argo", "flux", "fluxcd", "tekton", "spinnaker",
+		"harness", "codefresh", "semaphore", "buddy", "woodpecker-ci",
+		"concourse", "gocd", "teamcity", "bamboo", "azure-devops",
+		// Code quality and security
+		"sonarqube", "sonar", "codecov", "coveralls", "codeclimate",
+		"snyk", "dependabot", "renovate", "whitesource", "mend",
+		"checkmarx", "veracode", "fortify", "bandit", "semgrep", "codeql",
+		// Package managers and registries
+		"cargo", "crates", "maven", "gradle", "nuget", "composer",
+		"packagist", "rubygems", "gems", "hex", "pub", "cocoapods",
+		"carthage", "spm", "vcpkg", "conan", "homebrew", "brew",
+		"apt", "yum", "dnf", "pacman", "snap", "flatpak", "appimage",
+		// IDE and editor integrations
+		"vscode", "vim", "neovim", "emacs", "jetbrains", "intellij",
+		"pycharm", "webstorm", "goland", "rider", "clion", "datagrip",
+		"sublime", "atom", "brackets", "notepad++", "textmate",
+		// Code context and analysis
+		"ast", "treesitter", "tree-sitter", "lsp", "language-server",
+		"semantic", "symbol", "reference", "definition", "hover",
+		"completion", "diagnostic", "refactor", "rename", "format",
+		"memory-bank", "knowledge-graph", "context7", "ace-tool", "acemcp",
+		"augment", "code-context", "serena", "modelcontextprotocol",
+		// Testing frameworks
+		"jest", "mocha", "vitest", "pytest", "unittest", "rspec",
+		"minitest", "phpunit", "junit", "testng", "nunit", "xunit",
+		"cypress", "playwright-test", "selenium-test", "webdriverio",
+		"puppeteer-test", "testcafe", "nightwatch", "protractor",
+		// Version control
+		"svn", "subversion", "mercurial", "hg", "perforce", "p4",
+		"fossil", "darcs", "bazaar", "cvs", "tfs",
+		"merge", "rebase", "cherry-pick", "stash", "tag", "release",
+		"changelog", "semver", "version", "bump",
+	}
+	if containsAny(allNames, devKeywords) {
+		return string(CategoryDevelopment)
+	}
+
+	// Cloud services related (AWS, GCP, Azure, Cloudflare, PaaS, IaC, containers)
+	// Popular MCP servers: @anthropic/mcp-server-cloudflare, aws-kb-retrieval,
+	// terraform, kubernetes, docker, vercel, netlify, railway, fly.io
+	cloudKeywords := []string{
+		"aws", "s3", "lambda", "cloudflare", "azure", "gcp",
+		"kubernetes", "k8s", "docker", "container", "pod", "helm",
+		"terraform", "pulumi", "vercel", "netlify", "railway", "render",
+		"fly", "digitalocean", "linode", "vultr", "ec2", "ecs",
+		"fargate", "cloudrun", "function", "serverless",
+		// Extended: More cloud services from MCP ecosystem
+		"amazon", "sqs", "sns", "kinesis", "dynamodb-streams", "eventbridge",
+		"step-functions", "appsync", "cognito", "iam", "kms", "secrets-manager",
+		"parameter-store", "ssm", "cloudwatch", "xray", "cloudtrail",
+		"route53", "cloudfront", "elb", "alb", "nlb", "api-gateway",
+		"vpc", "subnet", "security-group", "nacl", "nat", "igw",
+		"rds", "aurora", "elasticache", "documentdb", "neptune", "timestream",
+		"glue", "emr", "sagemaker", "bedrock", "comprehend", "rekognition",
+		"textract", "polly", "transcribe", "translate", "lex",
+		// Google Cloud
+		"google-cloud", "gke", "cloud-functions", "cloud-run", "app-engine",
+		"compute-engine", "cloud-storage", "gcs", "bigtable", "spanner",
+		"pubsub", "dataflow", "dataproc", "vertex-ai", "automl",
+		"cloud-sql", "memorystore", "filestore", "cloud-cdn", "cloud-armor",
+		// Azure
+		"azure-functions", "azure-devops", "azure-pipelines", "aks",
+		"azure-storage", "cosmos-db", "azure-sql", "service-bus",
+		"event-hubs", "event-grid", "logic-apps", "azure-ml",
+		"cognitive-services", "azure-openai", "azure-search",
+		// Other cloud providers
+		"hetzner", "ovh", "scaleway", "upcloud", "oracle-cloud", "oci",
+		"ibm-cloud", "alibaba-cloud", "aliyun", "tencent-cloud",
+		// PaaS and hosting
+		"heroku", "deno-deploy", "cloudflare-workers", "cloudflare-pages",
+		"workers", "pages", "edge", "cdn", "wrangler", "miniflare",
+		"apprunner", "beanstalk", "lightsail", "amplify", "firebase",
+		"supabase-hosting", "planetscale-hosting", "neon-hosting",
+		// Container orchestration
+		"k3s", "k0s", "microk8s", "minikube", "kind", "rancher",
+		"openshift", "nomad", "swarm", "compose", "podman", "containerd",
+		"cri-o", "buildah", "skopeo", "kaniko", "buildkit",
+		// Infrastructure as Code
+		"crossplane", "ansible", "chef", "puppet", "saltstack",
+		"cloudformation", "cdk", "sam", "serverless-framework",
+		"sst", "arc", "winglang", "nitric", "encore",
+		// Service mesh and networking
+		"istio", "linkerd", "consul", "envoy", "nginx", "traefik",
+		"haproxy", "caddy", "kong", "ambassador", "gloo",
+	}
+	if containsAny(allNames, cloudKeywords) {
+		return string(CategoryCloud)
+	}
+
+	// Monitoring related (Logging, metrics, observability, APM, analytics)
+	// Popular MCP servers: datadog, grafana, prometheus, sentry, axiom,
+	// newrelic, splunk, honeycomb, opentelemetry, posthog, mixpanel
+	monitorKeywords := []string{
+		"log", "metric", "trace", "monitor", "alert", "health",
+		"datadog", "grafana", "prometheus", "axiom", "logstash",
+		"kibana", "newrelic", "splunk", "honeycomb", "lightstep",
+		"jaeger", "zipkin", "opentelemetry", "otel", "apm", "observ",
+		"digma", "uptime",
+		// Extended: More monitoring services from MCP ecosystem
+		"dynatrace", "appdynamics", "instana", "elastic-apm", "scout",
+		"skywalking", "signoz", "uptrace", "highlight", "logrocket",
+		"fullstory", "hotjar", "clarity", "heap", "pendo", "amplitude",
+		"mixpanel", "segment", "rudderstack", "jitsu", "snowplow",
+		"posthog", "plausible", "umami", "matomo", "fathom", "simple-analytics",
+		"countly", "pirsch", "goatcounter", "ackee", "shynet",
+		// Alerting and incident management
+		"pagerduty", "opsgenie", "victorops", "splunk-oncall", "incident.io",
+		"firehydrant", "rootly", "statuspage", "atlassian-statuspage",
+		"betteruptime", "uptime-kuma", "pingdom", "uptimerobot", "statuscake",
+		"checkly", "synthetic", "rum", "real-user-monitoring",
+		// Log management
+		"loki", "fluentd", "fluent-bit", "vector", "logdna", "papertrail",
+		"loggly", "sumo-logic", "graylog", "seq", "serilog", "bunyan",
+		"winston", "pino", "morgan", "log4j", "logback", "slf4j",
+		// Metrics and time series
+		"influx", "telegraf", "statsd", "collectd", "netdata", "zabbix",
+		"nagios", "icinga", "checkmk", "sensu", "riemann", "bosun",
+		"thanos", "cortex", "mimir", "victoria-metrics", "m3db",
+		// Distributed tracing
+		"tempo", "x-ray", "cloud-trace", "application-insights",
+		"span", "baggage", "context-propagation", "w3c-trace",
+	}
+	if containsAny(allNames, monitorKeywords) {
+		return string(CategoryMonitoring)
+	}
+
+	// Productivity related (Notion, calendar, task management, notes, collaboration)
+	// Popular MCP servers: notion, airtable, todoist, asana, trello, obsidian,
+	// google-drive, google-docs, google-sheets, confluence, linear
+	prodKeywords := []string{
+		"notion", "calendar", "task", "todo", "note", "document",
+		"airtable", "todoist", "asana", "trello", "monday", "clickup",
+		"obsidian", "roam", "logseq", "coda", "confluence", "wiki",
+		"docs", "sheet", "spreadsheet", "drive", "dropbox", "onedrive",
+		"sharepoint", "box",
+		// Extended: More productivity tools from MCP ecosystem
+		"basecamp", "wrike", "smartsheet", "teamwork", "podio", "workfront",
+		"monday.com", "height", "shortcut", "clubhouse", "pivotal",
+		"youtrack", "plane", "taiga", "openproject", "redmine",
+		// Note-taking and PKM
+		"evernote", "onenote", "bear", "craft", "mem", "reflect",
+		"tana", "capacities", "anytype", "fibery", "heptabase",
+		"remnote", "supernotes", "amplenote", "notesnook", "joplin",
+		"standard-notes", "simplenote", "apple-notes", "google-keep",
+		// Document collaboration
+		"google-docs", "google-sheets", "google-slides", "google-forms",
+		"microsoft-365", "office-365", "word", "excel", "powerpoint",
+		"quip", "paper", "slite", "gitbook", "readme", "docusaurus",
+		"mintlify", "nextra", "vitepress", "docsify", "mkdocs",
+		// Time management
+		"toggl", "clockify", "harvest", "timely", "rescuetime",
+		"wakatime", "activitywatch", "timing", "hours", "everhour",
+		// Bookmarking and reading
+		"pocket", "instapaper", "raindrop", "pinboard", "wallabag",
+		"omnivore", "readwise", "matter", "feedbin", "feedly", "inoreader",
+		// Whiteboard and diagramming
+		"miro", "figma", "figjam", "whimsical", "lucidchart", "draw.io",
+		"excalidraw", "tldraw", "mermaid", "plantuml", "diagrams.net",
+		// Password and secrets
+		"1password", "bitwarden", "lastpass", "dashlane", "keeper",
+		"nordpass", "enpass", "keychain", "vault", "doppler",
+	}
+	if containsAny(allNames, prodKeywords) {
+		return string(CategoryProductivity)
+	}
+
+	// AI related (LLM, ML, model inference, agents, image/audio/video generation)
+	// Popular MCP servers: openai, anthropic, gemini, mistral, groq, replicate,
+	// huggingface, together, cohere, stability, midjourney, elevenlabs
+	aiKeywords := []string{
+		"generate", "complete", "embed", "llm", "model", "inference",
+		"openai", "anthropic", "claude", "gpt", "gemini", "mistral",
+		"llama", "huggingface", "replicate", "together", "groq", "cohere",
+		"ai21", "stability", "midjourney", "dalle", "whisper", "transcribe",
+		"tts", "speech",
+		// Extended: More AI services from MCP ecosystem
+		"perplexity-ai", "you-ai", "phind-ai", "kagi-ai", "poe",
+		"character-ai", "pi", "inflection", "adept", "aleph-alpha",
+		"writer", "jasper", "copy.ai", "anyword", "writesonic",
+		// Open source models
+		"llama2", "llama3", "codellama", "vicuna", "alpaca", "falcon",
+		"mpt", "dolly", "pythia", "gpt-j", "gpt-neo", "gpt-neox",
+		"bloom", "opt", "cerebras", "starcoder", "codegen", "santacoder",
+		"phi", "phi-2", "phi-3", "orca", "zephyr", "neural-chat",
+		"mixtral", "qwen", "yi", "deepseek", "internlm", "baichuan",
+		"chatglm", "glm", "aquila", "moss", "tigerbot", "skywork",
+		// Image generation
+		"stable-diffusion", "sdxl", "sd3", "flux", "imagen", "parti",
+		"muse", "kandinsky", "deepfloyd", "playground", "leonardo",
+		"ideogram", "firefly", "bing-image", "copilot-image",
+		"controlnet", "lora", "dreambooth", "textual-inversion",
+		"img2img", "inpaint", "outpaint", "upscale", "enhance",
+		// Video generation
+		"runway", "pika", "luma", "gen-2", "gen-3", "sora", "kling",
+		"haiper", "minimax", "morph", "kaiber", "synthesia", "heygen",
+		"d-id", "colossyan", "elai", "rephrase", "tavus", "vidnoz",
+		// Audio generation
+		"suno", "udio", "musicgen", "audiogen", "bark", "tortoise",
+		"coqui", "elevenlabs", "play.ht", "murf", "resemble", "descript",
+		"wellsaid", "lovo", "speechify", "naturalreader", "voicemod",
+		// Speech recognition
+		"deepgram", "assembly", "assemblyai", "speechmatics", "rev",
+		"otter", "fireflies", "grain", "trint", "sonix", "happy-scribe",
+		// AI frameworks and tools
+		"langchain", "llamaindex", "llama-index", "haystack", "semantic-kernel",
+		"autogen", "crewai", "agentgpt", "babyagi", "superagi", "camel",
+		"flowise", "langflow", "dify", "openagents", "chatdev",
+		"metagpt", "gpt-researcher", "storm", "khoj", "quivr",
+		// Vector and embedding
+		"embedding", "vectorize", "chunk", "split", "tokenize",
+		"sentence-transformer", "instructor", "bge", "e5", "gte",
+		"nomic", "voyage", "jina-embedding", "cohere-embed",
+		// Fine-tuning and training
+		"finetune", "fine-tune", "lora", "qlora", "peft", "adapter",
+		"train", "dataset", "annotation", "label", "doccano", "prodigy",
+	}
+	if containsAny(allNames, aiKeywords) {
 		return string(CategoryAI)
 	}
 
-	// Storage/Data related
-	if strings.Contains(allNames, "read") || strings.Contains(allNames, "write") ||
-		strings.Contains(allNames, "file") || strings.Contains(allNames, "database") ||
-		strings.Contains(allNames, "fetch") || strings.Contains(allNames, "get") {
+	// Storage related (Object storage, CDN, media management)
+	// Popular MCP servers: cloudflare-r2, minio, backblaze, cloudinary,
+	// uploadthing, imagekit, bunny, fastly
+	storageKeywords := []string{
+		"bucket", "object", "upload", "storage", "blob", "r2",
+		"minio", "backblaze", "cloudinary", "imgix", "uploadthing", "cdn",
+		// Extended: More storage services from MCP ecosystem
+		"wasabi", "filebase", "storj", "sia", "filecoin", "ipfs",
+		"arweave", "ceramic", "textile", "web3.storage", "nft.storage",
+		"uploadcare", "filestack", "transloadit", "imagekit", "sirv",
+		"bunny-cdn", "keycdn", "fastly", "akamai", "cloudfront",
+		"stackpath", "limelight", "verizon-media", "edgecast",
+		// Media processing
+		"ffmpeg", "imagemagick", "sharp", "jimp", "pillow", "opencv",
+		"mediaconvert", "elastic-transcoder", "mux", "cloudflare-stream",
+		"api.video", "vimeo", "wistia", "brightcove", "jwplayer",
+		"video.js", "hls", "dash", "webrtc", "mediasoup", "janus",
+		// File sharing
+		"wetransfer", "sendanywhere", "filemail", "smash", "gofile",
+		"mega", "mediafire", "zippyshare", "rapidshare", "4shared",
+		// Backup and sync
+		"restic", "borg", "duplicati", "rclone", "syncthing", "rsync",
+		"time-machine", "backblaze-backup", "crashplan", "carbonite",
+	}
+	if containsAny(allNames, storageKeywords) {
 		return string(CategoryStorage)
 	}
 
-	// Utility
-	if strings.Contains(allNames, "convert") || strings.Contains(allNames, "format") ||
-		strings.Contains(allNames, "parse") || strings.Contains(allNames, "validate") {
+	// Utility (General tools, converters, formatters, data processing)
+	// Popular MCP servers: everything, time, weather, currency, qr, pdf,
+	// pandoc, ffmpeg, imagemagick, translate
+	utilKeywords := []string{
+		"convert", "format", "validate", "transform", "calculate", "encode",
+		"decode", "compress", "hash", "encrypt", "decrypt", "uuid",
+		"random", "time", "date", "timezone", "currency", "unit",
+		"weather", "translate", "qr", "barcode", "pdf", "image",
+		"resize", "crop",
+		// Extended: More utility tools from MCP ecosystem
+		"pandoc", "latex", "tex", "markdown", "asciidoc", "rst",
+		"docx", "xlsx", "pptx", "odt", "rtf", "epub", "mobi",
+		"json", "yaml", "toml", "xml", "csv", "tsv", "parquet",
+		"avro", "protobuf", "msgpack", "bson", "cbor", "ion",
+		// Text processing
+		"regex", "regexp", "pattern", "match", "replace", "split",
+		"join", "trim", "pad", "case", "slug", "sanitize", "escape",
+		"diff", "patch", "merge", "compare", "dedupe", "unique",
+		// Data validation
+		"schema", "jsonschema", "ajv", "zod", "yup", "joi", "valibot",
+		"typebox", "io-ts", "runtypes", "superstruct",
+		// Compression
+		"gzip", "bzip2", "xz", "lzma", "zstd", "lz4", "snappy",
+		"brotli", "deflate", "zip", "tar", "rar", "7z", "archive",
+		// Cryptography
+		"aes", "rsa", "ecdsa", "ed25519", "sha256", "sha512", "md5",
+		"bcrypt", "argon2", "scrypt", "pbkdf2", "hmac", "jwt", "jwe",
+		"pgp", "gpg", "ssl", "tls", "certificate", "x509",
+		// Math and science
+		"math", "calc", "calculator", "formula", "equation", "algebra",
+		"statistics", "probability", "matrix", "vector", "tensor",
+		"numpy", "scipy", "pandas", "matplotlib", "plotly", "chart",
+		// Location and maps
+		"geo", "geocode", "reverse-geocode", "coordinates", "latitude",
+		"longitude", "distance", "route", "directions", "maps",
+		"openstreetmap", "osm", "mapbox", "here", "tomtom",
+		// Weather and environment
+		"openweather", "weatherapi", "accuweather", "darksky",
+		"forecast", "temperature", "humidity", "wind", "precipitation",
+		"air-quality", "aqi", "pollen", "uv-index",
+		// Translation and language
+		"deepl", "google-translate", "azure-translate", "amazon-translate",
+		"libretranslate", "argos", "language-detect", "spell-check",
+		"grammar", "grammarly", "languagetool", "prowritingaid",
+		// Finance and currency
+		"exchange-rate", "forex", "stock", "crypto", "bitcoin", "ethereum",
+		"coinbase", "binance", "kraken", "coingecko", "coinmarketcap",
+		"stripe", "paypal", "square", "adyen", "braintree", "mollie",
+		// Misc utilities
+		"clipboard", "screenshot", "screen-capture", "ocr", "tesseract",
+		"barcode-reader", "qr-reader", "color", "palette", "gradient",
+		"lorem", "faker", "mock", "placeholder", "avatar", "gravatar",
+		"shorturl", "bitly", "tinyurl", "rebrandly", "dub",
+		"cron", "schedule", "timer", "countdown", "stopwatch",
+		"notification", "toast", "alert", "modal", "dialog",
+	}
+	if containsAny(allNames, utilKeywords) {
 		return string(CategoryUtil)
 	}
 
@@ -1750,39 +2205,250 @@ func (s *Service) getIconForServiceType(serviceType string) string {
 }
 
 // guessCategoryFromName tries to guess the service category from its name
+// This function is used when tool discovery fails or for quick categorization
+// Keywords are based on popular MCP servers from GitHub modelcontextprotocol/servers,
+// punkpeye/awesome-mcp-servers, glama.ai, mcpserve.com, and community lists
+// Coverage: 500+ MCP servers across 14 categories
 func guessCategoryFromName(name string) string {
 	nameLower := strings.ToLower(name)
 
-	// Search related
-	searchKeywords := []string{"search", "exa", "tavily", "serper", "brave", "google", "bing", "duckduckgo", "web"}
-	for _, kw := range searchKeywords {
-		if strings.Contains(nameLower, kw) {
-			return string(CategorySearch)
+	// Helper function to check if any keyword matches
+	containsAny := func(text string, keywords []string) bool {
+		for _, kw := range keywords {
+			if strings.Contains(text, kw) {
+				return true
+			}
 		}
+		return false
 	}
 
-	// AI related
-	aiKeywords := []string{"ai", "llm", "gpt", "claude", "openai", "anthropic", "gemini", "model"}
-	for _, kw := range aiKeywords {
-		if strings.Contains(nameLower, kw) {
-			return string(CategoryAI)
-		}
+	// Browser automation related (Puppeteer, Playwright, Selenium, BrowserBase, Stagehand, etc.)
+	browserKeywords := []string{
+		"browser", "playwright", "puppeteer", "selenium", "chrome", "firefox",
+		"webdriver", "browseract", "browserbase", "headless", "chromium", "webkit",
+		"stagehand", "hyperbrowser", "steel", "agentql", "browser-use", "browserless",
+		"crawlee", "e2e", "web-automation",
+	}
+	if containsAny(nameLower, browserKeywords) {
+		return string(CategoryBrowser)
 	}
 
-	// Storage/Data related
-	storageKeywords := []string{"data", "database", "db", "sql", "postgres", "mysql", "mongo", "redis", "elastic", "file", "storage", "s3", "fetch"}
-	for _, kw := range storageKeywords {
-		if strings.Contains(nameLower, kw) {
-			return string(CategoryStorage)
-		}
+	// Database related (SQL, NoSQL, Vector DB, Graph DB, Time Series)
+	dbKeywords := []string{
+		"postgres", "postgresql", "mysql", "mariadb", "sqlite", "mongo", "mongodb",
+		"redis", "memcached", "elastic", "elasticsearch", "qdrant", "pinecone",
+		"weaviate", "milvus", "chroma", "supabase", "neon", "planetscale", "turso",
+		"libsql", "drizzle", "prisma", "typeorm", "sequelize", "knex", "kysely",
+		"bigquery", "snowflake", "clickhouse", "cassandra", "dynamodb", "firestore",
+		"cockroach", "cockroachdb", "tidb", "yugabyte", "yugabytedb", "singlestore",
+		"timescale", "timescaledb", "questdb", "influxdb", "influx", "duckdb",
+		"motherduck", "databricks", "athena", "redshift", "edgedb", "surrealdb",
+		"arangodb", "couchdb", "couchbase", "rethinkdb", "scylladb", "foundationdb",
+		"vitess", "oceanbase", "polardb", "gaussdb", "opengauss", "doris", "starrocks",
+		"greenplum", "vertica", "teradata", "upstash", "fauna", "xata", "convex",
+		"pgvector", "vespa", "vald", "marqo", "zilliz", "lancedb", "chromadb",
+		"neo4j", "neptune", "janusgraph", "dgraph", "tigergraph", "memgraph",
+		"agensgraph", "orientdb", "arcadedb", "nebula", "hugegraph",
+		"mikro-orm", "sqlalchemy", "gorm", "ent", "bun", "sqlx", "diesel",
+	}
+	if containsAny(nameLower, dbKeywords) {
+		return string(CategoryDatabase)
 	}
 
-	// Utility related
-	utilityKeywords := []string{"util", "tool", "helper", "convert", "transform", "time", "date", "math", "calc", "weather", "translate", "code", "github", "gitlab", "git"}
-	for _, kw := range utilityKeywords {
-		if strings.Contains(nameLower, kw) {
-			return string(CategoryUtil)
-		}
+	// Filesystem related
+	fsKeywords := []string{
+		"filesystem", "file-system", "fs-", "directory", "folder", "desktop-commander",
+		"secure-filesystem", "file-context", "everything-search",
+	}
+	if containsAny(nameLower, fsKeywords) {
+		return string(CategoryFilesystem)
+	}
+
+	// Search related (Web search, information retrieval, documentation)
+	searchKeywords := []string{
+		"search", "exa", "tavily", "serper", "brave-search", "google-search",
+		"bing", "duckduckgo", "perplexity", "you.com", "algolia", "meilisearch",
+		"typesense", "search1api", "serpapi", "searchapi", "kagi", "searxng", "searx",
+		"context7", "devdocs", "dash", "zeal", "library-docs", "api-docs",
+		"metaphor", "phind", "wikipedia", "arxiv", "pubmed", "scholar", "wolfram",
+	}
+	if containsAny(nameLower, searchKeywords) {
+		return string(CategorySearch)
+	}
+
+	// Fetch/Scraping related (Web scraping, content extraction)
+	fetchKeywords := []string{
+		"fetch", "scrape", "crawl", "firecrawl", "jina", "reader", "extract",
+		"apify", "brightdata", "bright-data", "scrapingbee", "scrapingant",
+		"zenrows", "oxylabs", "smartproxy", "diffbot", "import.io", "parsehub",
+		"octoparse", "webscraper", "scrapy", "readability", "mercury",
+		"rss", "feed", "sitemap",
+	}
+	if containsAny(nameLower, fetchKeywords) {
+		return string(CategoryFetch)
+	}
+
+	// Communication related (Email, messaging, notifications, CRM)
+	commKeywords := []string{
+		"email", "mail", "slack", "discord", "telegram", "twilio", "sendgrid",
+		"resend", "mailgun", "postmark", "mailchimp", "notification", "sms",
+		"whatsapp", "teams", "zoom", "meet", "webex", "intercom", "zendesk",
+		"freshdesk", "crisp", "drift", "hubspot", "salesforce", "pipedrive",
+		"mattermost", "zulip", "element", "matrix", "signal", "viber", "line",
+		"wechat", "messenger", "rocket.chat", "chatwoot", "livekit", "daily",
+		"apollo", "outreach", "salesloft", "lemlist", "plivo", "vonage", "nexmo",
+		"bandwidth", "telnyx", "sinch",
+	}
+	if containsAny(nameLower, commKeywords) {
+		return string(CategoryCommunication)
+	}
+
+	// Development tools related (Git, CI/CD, code tools, code context, IDE)
+	devKeywords := []string{
+		"github", "gitlab", "bitbucket", "git", "linear", "jira", "sentry",
+		"raygun", "vercel", "netlify", "railway", "render", "docker", "npm",
+		"pypi", "cargo", "crates", "maven", "gradle", "nuget", "composer",
+		"jenkins", "circleci", "travisci", "travis", "buildkite", "drone",
+		"argocd", "argo", "flux", "fluxcd", "tekton", "spinnaker", "harness",
+		"codefresh", "semaphore", "concourse", "gocd", "teamcity", "bamboo",
+		"sonarqube", "sonar", "codecov", "coveralls", "codeclimate",
+		"snyk", "dependabot", "renovate", "whitesource", "mend", "checkmarx",
+		"veracode", "semgrep", "codeql", "bandit",
+		"copilot", "codeium", "tabnine", "sourcegraph", "codesandbox", "stackblitz",
+		"replit", "gitpod", "codespaces", "devcontainer", "continue", "cursor",
+		"aider", "gpt-engineer", "gpt-pilot", "smol-developer", "devika", "devin",
+		"opendevin", "swe-agent",
+		"sequential-thinking", "memory-bank", "knowledge-graph", "serena",
+		"ace-tool", "acemcp", "augment", "codebase", "code-context", "ast",
+		"treesitter", "tree-sitter", "lsp", "language-server", "modelcontextprotocol",
+		"vscode", "vim", "neovim", "emacs", "jetbrains", "intellij",
+		"jest", "mocha", "vitest", "pytest", "cypress", "playwright-test",
+	}
+	if containsAny(nameLower, devKeywords) {
+		return string(CategoryDevelopment)
+	}
+
+	// Cloud services related (AWS, GCP, Azure, Cloudflare, PaaS, IaC)
+	cloudKeywords := []string{
+		"aws", "amazon", "s3", "lambda", "ec2", "ecs", "fargate", "cloudflare",
+		"azure", "gcp", "google-cloud", "digitalocean", "linode", "vultr",
+		"hetzner", "ovh", "scaleway", "upcloud", "oracle-cloud", "oci",
+		"ibm-cloud", "alibaba-cloud", "aliyun", "tencent-cloud",
+		"kubernetes", "k8s", "k3s", "k0s", "microk8s", "minikube", "kind",
+		"rancher", "openshift", "nomad", "swarm", "podman", "containerd",
+		"terraform", "pulumi", "crossplane", "ansible", "chef", "puppet", "saltstack",
+		"cloudformation", "cdk", "sam", "serverless", "sst", "arc", "winglang", "nitric",
+		"cloudrun", "apprunner", "beanstalk", "heroku", "fly", "deno-deploy",
+		"cloudflare-workers", "cloudflare-pages", "workers", "pages", "wrangler",
+		"istio", "linkerd", "consul", "envoy", "nginx", "traefik", "kong",
+		"sqs", "sns", "kinesis", "eventbridge", "step-functions", "appsync",
+		"cognito", "iam", "kms", "secrets-manager", "route53", "cloudfront",
+		"gke", "cloud-functions", "cloud-run", "app-engine", "pubsub",
+		"azure-functions", "aks", "cosmos-db", "service-bus", "event-hubs",
+	}
+	if containsAny(nameLower, cloudKeywords) {
+		return string(CategoryCloud)
+	}
+
+	// Monitoring related (Logging, metrics, observability, analytics)
+	monitorKeywords := []string{
+		"datadog", "grafana", "prometheus", "sentry", "axiom", "logstash",
+		"kibana", "newrelic", "splunk", "honeycomb", "lightstep", "jaeger",
+		"zipkin", "opentelemetry", "otel", "dynatrace", "appdynamics", "instana",
+		"elastic-apm", "scout", "skywalking", "signoz", "uptrace", "highlight",
+		"logrocket", "fullstory", "hotjar", "clarity", "heap", "pendo",
+		"mixpanel", "amplitude", "segment", "rudderstack", "jitsu", "snowplow",
+		"posthog", "plausible", "umami", "matomo", "fathom", "simple-analytics",
+		"pagerduty", "opsgenie", "victorops", "splunk-oncall", "incident.io",
+		"firehydrant", "rootly", "statuspage", "betteruptime", "uptime-kuma",
+		"uptime", "pingdom", "uptimerobot", "statuscake", "checkly", "digma",
+		"loki", "fluentd", "fluent-bit", "vector", "logdna", "papertrail", "loggly",
+		"tempo", "thanos", "cortex", "mimir", "victoria-metrics",
+	}
+	if containsAny(nameLower, monitorKeywords) {
+		return string(CategoryMonitoring)
+	}
+
+	// Productivity related (Notion, calendar, task management, notes)
+	prodKeywords := []string{
+		"notion", "airtable", "todoist", "asana", "trello", "monday", "clickup",
+		"basecamp", "wrike", "smartsheet", "teamwork", "podio", "workfront",
+		"height", "shortcut", "clubhouse", "pivotal", "youtrack", "plane", "taiga",
+		"calendar", "google-docs", "google-sheets", "google-drive", "google-slides",
+		"obsidian", "roam", "logseq", "coda", "confluence", "wiki",
+		"dropbox", "onedrive", "sharepoint", "box",
+		"evernote", "onenote", "bear", "craft", "mem", "reflect", "tana",
+		"capacities", "anytype", "fibery", "heptabase", "remnote", "supernotes",
+		"amplenote", "notesnook", "joplin", "standard-notes",
+		"toggl", "clockify", "harvest", "timely", "rescuetime", "wakatime",
+		"pocket", "instapaper", "raindrop", "pinboard", "omnivore", "readwise",
+		"miro", "figma", "figjam", "whimsical", "lucidchart", "draw.io", "excalidraw",
+		"1password", "bitwarden", "lastpass", "dashlane", "keeper",
+	}
+	if containsAny(nameLower, prodKeywords) {
+		return string(CategoryProductivity)
+	}
+
+	// AI related (LLM, ML, model inference, agents, generation)
+	aiKeywords := []string{
+		"ai", "llm", "gpt", "claude", "openai", "anthropic", "gemini", "mistral",
+		"llama", "llama2", "llama3", "codellama", "vicuna", "alpaca", "falcon",
+		"huggingface", "replicate", "together", "groq", "cohere", "ai21",
+		"stability", "midjourney", "dalle", "whisper", "deepgram", "assembly",
+		"assemblyai", "speechmatics", "elevenlabs", "play.ht", "murf", "descript",
+		"runway", "pika", "luma", "gen-2", "gen-3", "sora", "kling", "haiper",
+		"suno", "udio", "musicgen", "audiogen", "bark", "tortoise", "coqui",
+		"langchain", "llamaindex", "llama-index", "haystack", "semantic-kernel",
+		"autogen", "crewai", "agentgpt", "babyagi", "superagi", "camel",
+		"flowise", "langflow", "dify", "openagents", "chatdev", "metagpt",
+		"gpt-researcher", "storm", "khoj", "quivr",
+		"stable-diffusion", "sdxl", "sd3", "flux", "imagen", "controlnet",
+		"perplexity-ai", "you-ai", "phind-ai", "kagi-ai", "poe", "character-ai",
+		"mixtral", "qwen", "yi", "deepseek", "internlm", "baichuan", "chatglm",
+		"phi", "phi-2", "phi-3", "orca", "zephyr", "neural-chat",
+		"synthesia", "heygen", "d-id", "colossyan", "elai", "rephrase",
+	}
+	if containsAny(nameLower, aiKeywords) {
+		return string(CategoryAI)
+	}
+
+	// Storage related (Object storage, CDN, media)
+	storageKeywords := []string{
+		"storage", "bucket", "blob", "r2", "minio", "backblaze", "wasabi",
+		"cloudinary", "imgix", "uploadthing", "uploadcare", "filestack",
+		"transloadit", "imagekit", "bunny", "bunny-cdn", "keycdn", "fastly", "akamai",
+		"filebase", "storj", "sia", "filecoin", "ipfs", "arweave", "ceramic",
+		"web3.storage", "nft.storage", "sirv", "stackpath", "cloudfront",
+		"mux", "cloudflare-stream", "api.video", "vimeo", "wistia", "brightcove",
+		"restic", "borg", "duplicati", "rclone", "syncthing",
+	}
+	if containsAny(nameLower, storageKeywords) {
+		return string(CategoryStorage)
+	}
+
+	// Utility related (General tools, converters, formatters)
+	utilityKeywords := []string{
+		"util", "tool", "helper", "convert", "transform", "time", "date",
+		"math", "calc", "calculator", "weather", "translate", "currency", "unit", "qr",
+		"barcode", "pdf", "image", "video", "audio", "ffmpeg", "imagemagick",
+		"pandoc", "latex", "tex", "markdown", "asciidoc",
+		"json", "yaml", "toml", "xml", "csv", "tsv", "parquet", "excel",
+		"compass", "mcp-compass",
+		"regex", "diff", "patch", "merge", "dedupe",
+		"gzip", "bzip2", "xz", "zstd", "lz4", "zip", "tar", "archive",
+		"aes", "rsa", "sha256", "md5", "bcrypt", "argon2", "jwt", "pgp",
+		"geo", "geocode", "coordinates", "maps", "openstreetmap", "mapbox",
+		"openweather", "weatherapi", "accuweather", "forecast",
+		"deepl", "google-translate", "libretranslate", "spell-check", "grammar",
+		"exchange-rate", "forex", "stock", "crypto", "bitcoin", "ethereum",
+		"coinbase", "binance", "coingecko", "coinmarketcap",
+		"stripe", "paypal", "square", "adyen", "braintree", "mollie",
+		"clipboard", "screenshot", "ocr", "tesseract", "color", "palette",
+		"lorem", "faker", "mock", "placeholder", "shorturl", "bitly",
+		"cron", "schedule", "timer",
+	}
+	if containsAny(nameLower, utilityKeywords) {
+		return string(CategoryUtil)
 	}
 
 	return string(CategoryCustom)
@@ -1812,6 +2478,29 @@ func sanitizeServiceName(name string) string {
 	}
 
 	return result
+}
+
+// generateUniqueName generates a unique service name by appending a numeric suffix if needed
+// It checks the database for existing names and returns a unique one
+func (s *Service) generateUniqueName(ctx context.Context, baseName string) string {
+	// First check if base name is available
+	var count int64
+	s.db.WithContext(ctx).Model(&MCPService{}).Where("name = ?", baseName).Count(&count)
+	if count == 0 {
+		return baseName
+	}
+
+	// Try with numeric suffix: name-2, name-3, etc.
+	for i := 2; i <= 100; i++ {
+		candidateName := fmt.Sprintf("%s-%d", baseName, i)
+		s.db.WithContext(ctx).Model(&MCPService{}).Where("name = ?", candidateName).Count(&count)
+		if count == 0 {
+			return candidateName
+		}
+	}
+
+	// Fallback: append timestamp
+	return fmt.Sprintf("%s-%d", baseName, time.Now().UnixNano()%1000000)
 }
 
 // toolCacheKey generates a cache key for tool cache in KV store
