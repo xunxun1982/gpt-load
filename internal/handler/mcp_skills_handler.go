@@ -665,6 +665,22 @@ func extractAccessToken(c *gin.Context) string {
 	return ""
 }
 
+// handleJSONRPCAuthError handles authentication errors for JSON-RPC endpoints.
+// Returns JSON-RPC formatted error response instead of standard REST JSON response.
+// This ensures consistent response format for MCP protocol endpoints.
+// AI Review: Adopted suggestion to use JSON-RPC error format for auth failures in MCP endpoints.
+func handleJSONRPCAuthError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	// Return JSON-RPC 2.0 formatted error for authentication/authorization failures
+	c.JSON(200, mcpskills.MCPResponse{
+		JSONRPC: "2.0",
+		Error:   &mcpskills.MCPError{Code: -32000, Message: "Authentication failed: " + err.Error()},
+	})
+	return true
+}
+
 // HandleAggregationMCP handles POST /mcp/aggregation/:name - MCP Aggregation JSON-RPC endpoint
 // This endpoint exposes only search_tools and execute_tool for reduced context usage
 func (s *Server) HandleAggregationMCP(c *gin.Context) {
@@ -672,8 +688,9 @@ func (s *Server) HandleAggregationMCP(c *gin.Context) {
 	accessToken := extractAccessToken(c)
 
 	// Get group with token validation
+	// AI Review: Use JSON-RPC error format for auth failures to maintain protocol consistency
 	group, err := s.MCPSkillsGroupService.GetGroupByNameWithToken(c.Request.Context(), groupName, accessToken)
-	if HandleServiceError(c, err) {
+	if handleJSONRPCAuthError(c, err) {
 		return
 	}
 
@@ -911,8 +928,9 @@ func (s *Server) HandleServiceMCP(c *gin.Context) {
 	accessToken := extractAccessToken(c)
 
 	// Get service with token validation
+	// AI Review: Use JSON-RPC error format for auth failures to maintain protocol consistency
 	service, err := s.MCPSkillsService.GetServiceByIDWithToken(c.Request.Context(), uint(serviceID), accessToken)
-	if HandleServiceError(c, err) {
+	if handleJSONRPCAuthError(c, err) {
 		return
 	}
 
