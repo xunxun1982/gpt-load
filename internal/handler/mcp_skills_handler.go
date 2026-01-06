@@ -757,15 +757,13 @@ func (s *Server) ImportMCPSkills(c *gin.Context) {
 
 	// Import services first (groups depend on services)
 	servicesImported, servicesSkipped, err := s.MCPSkillsService.ImportServices(c.Request.Context(), req.Services, plainMode)
-	if err != nil {
-		HandleServiceError(c, err)
+	if HandleServiceError(c, err) {
 		return
 	}
 
 	// Import groups
 	groupsImported, groupsSkipped, err := s.MCPSkillsGroupService.ImportGroups(c.Request.Context(), req.Groups)
-	if err != nil {
-		HandleServiceError(c, err)
+	if HandleServiceError(c, err) {
 		return
 	}
 
@@ -803,8 +801,7 @@ func (s *Server) ImportMCPServers(c *gin.Context) {
 	}
 
 	result, err := s.MCPSkillsService.ImportMCPServersFromJSON(c.Request.Context(), config)
-	if err != nil {
-		HandleServiceError(c, err)
+	if HandleServiceError(c, err) {
 		return
 	}
 
