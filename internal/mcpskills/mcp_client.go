@@ -264,11 +264,23 @@ func (d *MCPToolDiscovery) DiscoverToolsForService(ctx context.Context, svc *MCP
 	envVars := make(map[string]string)
 	if defaultEnvs, err := svc.GetDefaultEnvs(); err == nil {
 		envVars = defaultEnvs
+	} else {
+		// Log parse failure to help debug malformed JSON in service config
+		logrus.WithFields(logrus.Fields{
+			"service": svc.Name,
+			"error":   err.Error(),
+		}).Warn("Failed to parse default env vars for tool discovery, using empty env")
 	}
 
 	headers := make(map[string]string)
 	if h, err := svc.GetHeaders(); err == nil {
 		headers = h
+	} else {
+		// Log parse failure to help debug malformed JSON in service config
+		logrus.WithFields(logrus.Fields{
+			"service": svc.Name,
+			"error":   err.Error(),
+		}).Warn("Failed to parse headers for tool discovery, using empty headers")
 	}
 
 	switch svc.Type {

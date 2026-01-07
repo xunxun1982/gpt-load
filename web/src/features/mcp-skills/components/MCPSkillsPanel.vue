@@ -754,6 +754,7 @@ function resetGroupForm() {
     service_ids: [],
     service_weights: {},
     tool_aliases: {},
+    tool_alias_configs: undefined, // Reset to prevent stale alias configs leaking into new group
     enabled: true,
     aggregation_enabled: false,
     access_token: "",

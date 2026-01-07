@@ -119,6 +119,11 @@ type yamlTool struct {
 
 // GetAggregationTools returns the aggregation tools
 // Optimized for minimal token usage while providing full functionality
+//
+// Note: list_similar_tools is implemented but intentionally NOT exposed here.
+// It's an internal/advanced tool for debugging service routing, not part of
+// the standard aggregation workflow. AI review suggested adding it, but keeping
+// the public API minimal reduces token usage and cognitive load for AI clients.
 func (h *AggregationMCPHandler) GetAggregationTools(group *MCPServiceGroupDTO) AggregationToolsListResult {
 	serviceNames := make([]interface{}, 0, len(group.Services))
 	for _, svc := range group.Services {

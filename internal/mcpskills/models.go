@@ -361,6 +361,12 @@ type ToolAliasConfig struct {
 // GetToolAliases returns the tool aliases map (canonical_name -> []aliases)
 // This allows different tool names across services to be treated as the same tool
 // Supports both old format (map[string][]string) and new format (map[string]ToolAliasConfig)
+//
+// Design note: Format detection checks if any entry has non-empty Aliases or Description.
+// If all entries are empty, it falls back to old format parsing. This is intentional:
+// - Empty new-format entries (all aliases/descriptions empty) are effectively no-ops
+// - Returning empty map in this edge case is the correct behavior
+// - AI review suggested logging for ambiguous cases, but silent empty return is cleaner
 func (g *MCPServiceGroup) GetToolAliases() map[string][]string {
 	aliases := make(map[string][]string)
 	if g.ToolAliasesJSON == "" {

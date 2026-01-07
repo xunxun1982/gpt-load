@@ -222,6 +222,12 @@ func (s *SkillExportService) generateToolsMD(svc *MCPServiceDTO) string {
 }
 
 // generateMCPConfig generates the mcp-config.json content
+// Note: URL encoding is intentionally not used here because:
+// - svc.Name is a system-controlled identifier (alphanumeric + hyphen/underscore only)
+// - authToken is generated random string (alphanumeric only, see generateRandomAccessToken)
+// AI review suggested using net/url for encoding, but it adds unnecessary complexity
+// for our controlled input values. If user-provided values are ever allowed in URLs,
+// this should be revisited.
 func (s *SkillExportService) generateMCPConfig(services []MCPServiceDTO, serverAddress string, authToken string) string {
 	config := map[string]interface{}{
 		"mcpServers": map[string]interface{}{},

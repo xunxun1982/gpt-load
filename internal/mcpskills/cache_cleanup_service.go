@@ -15,6 +15,8 @@ type CacheCleanupService struct {
 	mcpService *Service
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
+	startOnce  sync.Once // Prevents multiple Start() calls from spawning duplicate goroutines
+	stopOnce   sync.Once // Prevents panic from double-closing stopCh
 }
 
 // NewCacheCleanupService creates a new cache cleanup service.
@@ -26,15 +28,21 @@ func NewCacheCleanupService(mcpService *Service) *CacheCleanupService {
 }
 
 // Start starts the cache cleanup service.
+// Safe to call multiple times - only the first call will start the goroutine.
 func (s *CacheCleanupService) Start() {
-	s.wg.Add(1)
-	go s.run()
-	logrus.Debug("MCP cache cleanup service started")
+	s.startOnce.Do(func() {
+		s.wg.Add(1)
+		go s.run()
+		logrus.Debug("MCP cache cleanup service started")
+	})
 }
 
 // Stop stops the cache cleanup service gracefully.
+// Safe to call multiple times - only the first call will close the channel.
 func (s *CacheCleanupService) Stop(ctx context.Context) {
-	close(s.stopCh)
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+	})
 
 	done := make(chan struct{})
 	go func() {

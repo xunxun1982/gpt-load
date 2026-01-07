@@ -87,7 +87,11 @@ func (e *APIExecutor) ExecuteAPIBridgeTool(ctx context.Context, serviceID uint, 
 // It handles authentication, custom headers, and response parsing
 func (e *APIExecutor) executeAPIRequest(ctx context.Context, svc *MCPService, tool *ToolDefinition, arguments map[string]interface{}, apiKey string) (map[string]interface{}, error) {
 	// Build full URL from endpoint and tool-specific path
-	endpoint := svc.APIEndpoint
+	// Validate endpoint before composing URL to fail fast with clear error
+	endpoint := strings.TrimSpace(svc.APIEndpoint)
+	if endpoint == "" {
+		return nil, fmt.Errorf("API endpoint is not configured for service '%s'", svc.Name)
+	}
 	endpoint = strings.TrimSuffix(endpoint, "/")
 
 	// Map tool names to API paths based on service type
@@ -123,18 +127,14 @@ func (e *APIExecutor) executeAPIRequest(ctx context.Context, svc *MCPService, to
 		}
 		req.Header.Set(authHeader, authValue)
 
-		// Debug log for authentication (mask API key for security)
-		maskedKey := "***"
-		if len(apiKey) > 4 {
-			maskedKey = apiKey[:4] + "***"
-		}
+		// Security: Never log any part of API keys, even masked versions
+		// Only log non-sensitive metadata for debugging
 		logrus.WithFields(logrus.Fields{
 			"service":     svc.Name,
 			"auth_header": authHeader,
 			"auth_prefix": svc.APIKeyPrefix,
-			"api_key":     maskedKey,
 			"url":         fullURL,
-		}).Debug("API bridge request authentication")
+		}).Debug("API bridge request authentication configured")
 	} else {
 		logrus.WithFields(logrus.Fields{
 			"service": svc.Name,
