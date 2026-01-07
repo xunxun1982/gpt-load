@@ -9,6 +9,7 @@ import {
   type CreateGroupRequest,
   type CreateServiceRequest,
   type GroupListParams,
+  type GroupServicesWithToolsResult,
   type MCPServersConfig,
   type MCPServiceDTO,
   type MCPServiceGroupDTO,
@@ -76,6 +77,10 @@ const groups = ref<MCPServiceGroupDTO[]>([]);
 const groupPagination = reactive({ page: 1, pageSize: 20, total: 0, totalPages: 0 });
 const groupFilters = reactive({ search: "", enabled: "all" });
 
+// Group services with tools for alias configuration
+const groupServicesWithTools = ref<GroupServicesWithToolsResult | null>(null);
+const loadingGroupServicesWithTools = ref(false);
+
 // Modal states
 const showServiceModal = ref(false);
 const showGroupModal = ref(false);
@@ -109,6 +114,24 @@ interface ExpandedToolsState {
 }
 const expandedTools = ref<Map<number, ExpandedToolsState>>(new Map());
 const refreshingTools = ref<Set<number>>(new Set());
+
+// Track which tool description is currently expanded (only one at a time)
+// Format: "service-{serviceId}-{toolName}" or "group-{groupId}-{serviceName}-{toolName}"
+const expandedToolDescription = ref<string | null>(null);
+
+// Toggle tool description expansion
+function toggleToolDescriptionExpansion(key: string) {
+  if (expandedToolDescription.value === key) {
+    expandedToolDescription.value = null;
+  } else {
+    expandedToolDescription.value = key;
+  }
+}
+
+// Check if a tool description is expanded
+function isToolDescriptionExpanded(key: string): boolean {
+  return expandedToolDescription.value === key;
+}
 
 // Check if a service's tools are expanded
 function isToolsExpanded(serviceId: number): boolean {
@@ -169,6 +192,92 @@ function formatDate(dateStr: string | undefined): string {
   } catch {
     return dateStr;
   }
+}
+
+// Group tool expansion state - tracks which groups have expanded tool lists
+interface ExpandedGroupToolsState {
+  loading: boolean;
+  data: GroupServicesWithToolsResult | null;
+  error: string | null;
+}
+const expandedGroupTools = ref<Map<number, ExpandedGroupToolsState>>(new Map());
+
+// Check if a group's tools are expanded
+function isGroupToolsExpanded(groupId: number): boolean {
+  return expandedGroupTools.value.has(groupId);
+}
+
+// Toggle tool expansion for a group (only one can be expanded at a time)
+async function toggleGroupToolsExpansion(group: MCPServiceGroupDTO) {
+  const groupId = group.id;
+
+  if (expandedGroupTools.value.has(groupId)) {
+    // Collapse - remove from map
+    expandedGroupTools.value.delete(groupId);
+    return;
+  }
+
+  // Collapse all other expanded groups first
+  expandedGroupTools.value.clear();
+
+  // Expand - load tools
+  expandedGroupTools.value.set(groupId, { loading: true, data: null, error: null });
+
+  try {
+    const result = await mcpSkillsApi.getGroupServicesWithTools(groupId);
+    expandedGroupTools.value.set(groupId, { loading: false, data: result, error: null });
+  } catch (e) {
+    const errorMsg = e instanceof Error ? e.message : "Unknown error";
+    expandedGroupTools.value.set(groupId, { loading: false, data: null, error: errorMsg });
+  }
+}
+
+// Get the display description for a tool, considering alias configurations
+// Priority: 1. Custom unified description from alias config, 2. Original tool description
+function getToolDisplayDescription(
+  group: MCPServiceGroupDTO,
+  toolName: string,
+  originalDescription: string
+): string {
+  // Check if this tool has a custom description in alias configs
+  if (group.tool_alias_configs) {
+    // Check if toolName is a canonical name with custom description
+    const directConfig = group.tool_alias_configs[toolName];
+    if (directConfig?.description) {
+      return directConfig.description;
+    }
+    // Check if toolName is an alias of some canonical name
+    for (const [_canonical, config] of Object.entries(group.tool_alias_configs)) {
+      if (config.aliases?.includes(toolName) && config.description) {
+        return config.description;
+      }
+    }
+  }
+  // Fallback to original description
+  return originalDescription;
+}
+
+// Get the display name for a tool (canonical name if aliased)
+function getToolDisplayName(
+  group: MCPServiceGroupDTO,
+  toolName: string
+): { displayName: string; isAliased: boolean; canonicalName?: string } {
+  if (group.tool_alias_configs) {
+    // Check if toolName is an alias
+    for (const [canonical, config] of Object.entries(group.tool_alias_configs)) {
+      if (config.aliases?.includes(toolName)) {
+        return { displayName: toolName, isAliased: true, canonicalName: canonical };
+      }
+    }
+  } else if (group.tool_aliases) {
+    // Fallback to old format
+    for (const [canonical, aliases] of Object.entries(group.tool_aliases)) {
+      if (aliases.includes(toolName)) {
+        return { displayName: toolName, isAliased: true, canonicalName: canonical };
+      }
+    }
+  }
+  return { displayName: toolName, isAliased: false };
 }
 
 // JSON import state
@@ -291,11 +400,18 @@ function loadEnvVarsFromRecord(record: Record<string, string> | undefined) {
 }
 
 // Group form
-const groupForm = reactive<CreateGroupRequest>({
+const groupForm = reactive<
+  CreateGroupRequest & {
+    tool_alias_configs?: Record<string, { aliases: string[]; description?: string }>;
+  }
+>({
   name: "",
   display_name: "",
   description: "",
   service_ids: [],
+  service_weights: {},
+  tool_aliases: {},
+  tool_alias_configs: undefined,
   enabled: true,
   aggregation_enabled: false,
   access_token: "",
@@ -381,12 +497,28 @@ const typeFilterOptions = computed<SelectOption[]>(() => [
   ...typeOptions.value,
 ]);
 
+// Service options with disabled status indicator
 const serviceOptions = computed<SelectOption[]>(() =>
   services.value.map(s => ({
-    label: `${s.icon} ${s.display_name || s.name}`,
+    label: s.enabled
+      ? `${s.icon} ${s.display_name || s.name}`
+      : `${s.icon} ${s.display_name || s.name} (${t("mcpSkills.disabled")})`,
     value: s.id,
+    disabled: false, // Allow selection but show disabled status
+    style: s.enabled ? undefined : { opacity: 0.5 },
   }))
 );
+
+// Helper to check if a service is enabled
+function isServiceEnabled(serviceId: number): boolean {
+  const service = services.value.find(s => s.id === serviceId);
+  return service?.enabled ?? true;
+}
+
+// Count enabled services in group
+function countEnabledServices(serviceIds: number[]): number {
+  return serviceIds.filter(id => isServiceEnabled(id)).length;
+}
 
 // Load services
 async function loadServices() {
@@ -420,6 +552,9 @@ async function loadAllServices() {
 async function loadGroups() {
   loading.value = true;
   try {
+    // Load all services first to calculate enabled service counts
+    await loadAllServices();
+
     const params: GroupListParams = {
       page: groupPagination.page,
       page_size: groupPagination.pageSize,
@@ -617,6 +752,8 @@ function resetGroupForm() {
     display_name: "",
     description: "",
     service_ids: [],
+    service_weights: {},
+    tool_aliases: {},
     enabled: true,
     aggregation_enabled: false,
     access_token: "",
@@ -625,24 +762,200 @@ function resetGroupForm() {
 
 function openCreateGroup() {
   editingGroup.value = null;
+  groupServicesWithTools.value = null;
   resetGroupForm();
+  syncToolAliasesToEntries();
   loadAllServices();
   showGroupModal.value = true;
 }
 
-function openEditGroup(group: MCPServiceGroupDTO) {
+async function openEditGroup(group: MCPServiceGroupDTO) {
   editingGroup.value = group;
   Object.assign(groupForm, {
     name: group.name,
     display_name: group.display_name,
     description: group.description,
     service_ids: group.service_ids || [],
+    service_weights: group.service_weights || {},
+    tool_aliases: group.tool_aliases || {},
+    tool_alias_configs: group.tool_alias_configs || undefined,
     enabled: group.enabled,
     aggregation_enabled: group.aggregation_enabled,
     access_token: group.access_token || "",
   });
+  syncToolAliasesToEntries();
   loadAllServices();
   showGroupModal.value = true;
+
+  // Load services with tools for alias configuration
+  if (group.id && group.aggregation_enabled) {
+    loadingGroupServicesWithTools.value = true;
+    try {
+      groupServicesWithTools.value = await mcpSkillsApi.getGroupServicesWithTools(group.id);
+    } catch (_err) {
+      groupServicesWithTools.value = null;
+    } finally {
+      loadingGroupServicesWithTools.value = false;
+    }
+  } else {
+    groupServicesWithTools.value = null;
+  }
+}
+
+// Get weight for a service (default 100)
+function getServiceWeight(serviceId: number): number {
+  return groupForm.service_weights?.[serviceId] ?? 100;
+}
+
+// Set weight for a service
+function setServiceWeight(serviceId: number, weight: number) {
+  if (!groupForm.service_weights) {
+    groupForm.service_weights = {};
+  }
+  groupForm.service_weights[serviceId] = weight;
+}
+
+// Tool alias management - use array structure to avoid key-based re-rendering issues
+interface ToolAliasEntry {
+  id: number;
+  canonicalName: string;
+  aliases: string;
+  description: string; // Unified description for this alias group
+  expanded: boolean; // UI state: whether to show tool descriptions
+}
+
+// Tool description info from services
+interface ToolDescriptionInfo {
+  serviceName: string;
+  toolName: string;
+  description: string;
+}
+
+const toolAliasEntries = ref<ToolAliasEntry[]>([]);
+let toolAliasIdCounter = 0;
+
+// Get tool descriptions for a given canonical name and its aliases
+function getToolDescriptionsForAlias(entry: ToolAliasEntry): ToolDescriptionInfo[] {
+  const result: ToolDescriptionInfo[] = [];
+  const toolNames = new Set<string>();
+
+  // Add canonical name
+  if (entry.canonicalName.trim()) {
+    toolNames.add(entry.canonicalName.trim());
+  }
+
+  // Add aliases
+  entry.aliases.split(",").forEach(alias => {
+    const trimmed = alias.trim();
+    if (trimmed) {
+      toolNames.add(trimmed);
+    }
+  });
+
+  // Search in group services
+  if (groupServicesWithTools.value) {
+    for (const svc of groupServicesWithTools.value.services) {
+      for (const tool of svc.tools) {
+        if (toolNames.has(tool.name)) {
+          result.push({
+            serviceName: svc.service_name,
+            toolName: tool.name,
+            description: tool.description || "",
+          });
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+// Sync tool_aliases from groupForm to toolAliasEntries (when opening modal)
+function syncToolAliasesToEntries() {
+  toolAliasEntries.value = [];
+  toolAliasIdCounter = 0;
+
+  // Try new format first (tool_alias_configs)
+  if (groupForm.tool_alias_configs && Object.keys(groupForm.tool_alias_configs).length > 0) {
+    for (const [canonicalName, config] of Object.entries(groupForm.tool_alias_configs)) {
+      toolAliasEntries.value.push({
+        id: ++toolAliasIdCounter,
+        canonicalName,
+        aliases: config.aliases?.join(", ") || "",
+        description: config.description || "",
+        expanded: false,
+      });
+    }
+  } else if (groupForm.tool_aliases) {
+    // Fallback to old format
+    for (const [canonicalName, aliases] of Object.entries(groupForm.tool_aliases)) {
+      toolAliasEntries.value.push({
+        id: ++toolAliasIdCounter,
+        canonicalName,
+        aliases: aliases.join(", "),
+        description: "",
+        expanded: false,
+      });
+    }
+  }
+}
+
+// Sync toolAliasEntries back to groupForm (when saving)
+function syncEntriesToToolAliases() {
+  const configs: Record<string, { aliases: string[]; description?: string }> = {};
+  const simpleAliases: Record<string, string[]> = {};
+
+  for (const entry of toolAliasEntries.value) {
+    const name = entry.canonicalName.trim();
+    if (!name) {
+      continue;
+    }
+    const aliases = entry.aliases
+      .split(",")
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+    if (aliases.length > 0 || entry.description.trim()) {
+      configs[name] = {
+        aliases,
+        ...(entry.description.trim() ? { description: entry.description.trim() } : {}),
+      };
+      simpleAliases[name] = aliases;
+    }
+  }
+
+  // Use new format if any entry has description, otherwise use old format for compatibility
+  const hasDescription = Object.values(configs).some(c => c.description);
+  if (hasDescription) {
+    groupForm.tool_alias_configs = configs;
+    groupForm.tool_aliases = simpleAliases; // Keep for backward compatibility
+  } else {
+    groupForm.tool_aliases = simpleAliases;
+    groupForm.tool_alias_configs = undefined;
+  }
+}
+
+// Add a new tool alias entry
+function addToolAliasEntry() {
+  toolAliasEntries.value.push({
+    id: ++toolAliasIdCounter,
+    canonicalName: "",
+    aliases: "",
+    description: "",
+    expanded: false,
+  });
+}
+
+// Remove a tool alias entry by id
+function removeToolAliasEntry(id: number) {
+  const idx = toolAliasEntries.value.findIndex(e => e.id === id);
+  if (idx !== -1) {
+    toolAliasEntries.value.splice(idx, 1);
+  }
+}
+
+// Toggle expanded state for an entry
+function toggleAliasExpanded(entry: ToolAliasEntry) {
+  entry.expanded = !entry.expanded;
 }
 
 async function submitGroup() {
@@ -654,6 +967,8 @@ async function submitGroup() {
     message.warning(t("mcpSkills.displayNameRequired"));
     return;
   }
+  // Sync tool alias entries back to groupForm before saving
+  syncEntriesToToolAliases();
   try {
     if (editingGroup.value) {
       const payload: Record<string, unknown> = { ...groupForm };
@@ -829,7 +1144,7 @@ async function handleJsonFileSelect(event: Event) {
   try {
     const content = await file.text();
     jsonImportText.value = content;
-  } catch (err) {
+  } catch (_err) {
     message.error(t("mcpSkills.fileReadError"));
     selectedJsonFileName.value = "";
   }
@@ -1214,14 +1529,64 @@ const groupColumns = computed<DataTableColumns<MCPServiceGroupDTO>>(() => [
     key: "service_count",
     width: 100,
     align: "center",
-    render: row => h(NText, null, () => t("mcpSkills.serviceCount", { count: row.service_count })),
+    render: row => {
+      // Calculate enabled service count from loaded services
+      const enabledCount = countEnabledServices(row.service_ids || []);
+      const totalCount = row.service_count;
+      const hasDisabled = enabledCount < totalCount;
+
+      return h(NText, { type: hasDisabled ? "warning" : undefined }, () =>
+        hasDisabled
+          ? `${enabledCount}/${totalCount}`
+          : t("mcpSkills.serviceCount", { count: totalCount })
+      );
+    },
   },
   {
     title: t("mcpSkills.tools"),
     key: "total_tool_count",
-    width: 80,
+    width: 120,
     align: "center",
-    render: row => h(NText, null, () => t("mcpSkills.toolCount", { count: row.total_tool_count })),
+    render: row => {
+      const isExpanded = isGroupToolsExpanded(row.id);
+      const toolState = expandedGroupTools.value.get(row.id);
+      const isLoading = toolState?.loading ?? false;
+
+      // Show unique count if there are aliases, otherwise show total
+      const hasAliases = (row.aliased_tool_count ?? 0) > 0;
+      const displayCount = hasAliases
+        ? (row.unique_tool_count ?? row.total_tool_count)
+        : row.total_tool_count;
+      const tooltipText = hasAliases
+        ? `${row.total_tool_count} ${t("mcpSkills.totalTools")} → ${row.unique_tool_count} ${t("mcpSkills.uniqueTools")}`
+        : "";
+
+      return h(
+        NButton,
+        {
+          size: "tiny",
+          text: true,
+          type: isExpanded ? "primary" : "default",
+          loading: isLoading,
+          title: tooltipText,
+          onClick: (e: Event) => {
+            e.stopPropagation();
+            toggleGroupToolsExpansion(row);
+          },
+        },
+        () =>
+          h("span", { style: "display: flex; align-items: center; gap: 2px;" }, [
+            h("span", null, isExpanded ? "▼" : "▶"),
+            h(
+              "span",
+              null,
+              hasAliases
+                ? `${displayCount}/${row.total_tool_count}`
+                : t("mcpSkills.toolCount", { count: row.total_tool_count })
+            ),
+          ])
+      );
+    },
   },
   {
     title: t("mcpSkills.aggregationEnabled"),
@@ -1426,22 +1791,35 @@ onMounted(() => {
               <div
                 v-for="tool in expandedTools.get(service.id)?.data?.tools"
                 :key="tool.name"
-                class="tool-item"
+                class="tool-item-clickable"
               >
-                <div class="tool-header">
+                <div
+                  class="tool-name-row"
+                  @click="toggleToolDescriptionExpansion(`service-${service.id}-${tool.name}`)"
+                >
                   <n-text strong>{{ tool.name }}</n-text>
-                </div>
-                <div v-if="tool.description" class="tool-description">
-                  <n-text depth="2">{{ tool.description }}</n-text>
+                  <span class="tool-expand-icon">
+                    {{
+                      isToolDescriptionExpanded(`service-${service.id}-${tool.name}`) ? "▼" : "▶"
+                    }}
+                  </span>
                 </div>
                 <div
-                  v-if="tool.input_schema && Object.keys(tool.input_schema).length > 0"
-                  class="tool-schema"
+                  v-if="isToolDescriptionExpanded(`service-${service.id}-${tool.name}`)"
+                  class="tool-detail-panel"
                 >
-                  <n-text depth="3" style="font-size: 11px">
-                    {{ t("mcpSkills.toolInputSchema") }}:
-                  </n-text>
-                  <pre class="schema-code">{{ JSON.stringify(tool.input_schema, null, 2) }}</pre>
+                  <div v-if="tool.description" class="tool-description">
+                    <n-text depth="2">{{ tool.description }}</n-text>
+                  </div>
+                  <div
+                    v-if="tool.input_schema && Object.keys(tool.input_schema).length > 0"
+                    class="tool-schema"
+                  >
+                    <n-text depth="3" style="font-size: 11px">
+                      {{ t("mcpSkills.toolInputSchema") }}:
+                    </n-text>
+                    <pre class="schema-code">{{ JSON.stringify(tool.input_schema, null, 2) }}</pre>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1492,6 +1870,126 @@ onMounted(() => {
           :bordered="false"
           size="small"
         />
+        <!-- Expanded group tools panel -->
+        <template v-for="group in groups" :key="`group-tools-${group.id}`">
+          <div v-if="isGroupToolsExpanded(group.id)" class="tools-expansion-panel">
+            <div class="tools-expansion-header">
+              <n-space align="center">
+                <n-text strong>
+                  {{ group.display_name || group.name }}
+                </n-text>
+                <n-tag size="tiny" type="info">
+                  {{
+                    t("mcpSkills.serviceCount", {
+                      count: expandedGroupTools.get(group.id)?.data?.service_count || 0,
+                    })
+                  }}
+                </n-tag>
+              </n-space>
+              <n-button size="tiny" @click="toggleGroupToolsExpansion(group)">
+                {{ t("mcpSkills.collapseTools") }}
+              </n-button>
+            </div>
+            <div v-if="expandedGroupTools.get(group.id)?.loading" class="tools-loading">
+              <n-text depth="3">{{ t("mcpSkills.loadingTools") }}</n-text>
+            </div>
+            <div v-else-if="expandedGroupTools.get(group.id)?.error" class="tools-error">
+              <n-text type="error">{{ expandedGroupTools.get(group.id)?.error }}</n-text>
+            </div>
+            <div
+              v-else-if="
+                !expandedGroupTools.get(group.id)?.data?.services?.filter(s => s.enabled)?.length
+              "
+              class="tools-empty"
+            >
+              <n-text depth="3">{{ t("mcpSkills.noEnabledServices") }}</n-text>
+            </div>
+            <div v-else class="group-services-list">
+              <template
+                v-for="svc in expandedGroupTools.get(group.id)?.data?.services"
+                :key="svc.service_id"
+              >
+                <!-- Only show enabled services -->
+                <div v-if="svc.enabled" class="group-service-item">
+                  <div class="group-service-header">
+                    <n-space align="center">
+                      <span>{{ svc.icon }}</span>
+                      <n-text strong>{{ svc.display_name || svc.service_name }}</n-text>
+                      <n-tag size="tiny" type="success">{{ svc.type }}</n-tag>
+                      <n-tag size="tiny">
+                        {{ t("mcpSkills.toolCount", { count: svc.tool_count }) }}
+                      </n-tag>
+                    </n-space>
+                  </div>
+                  <div v-if="svc.tools?.length" class="tools-list">
+                    <div v-for="tool in svc.tools" :key="tool.name" class="tool-item-clickable">
+                      <div
+                        class="tool-name-row"
+                        @click="
+                          toggleToolDescriptionExpansion(
+                            `group-${group.id}-${svc.service_name}-${tool.name}`
+                          )
+                        "
+                      >
+                        <n-text strong>{{ tool.name }}</n-text>
+                        <n-tag
+                          v-if="getToolDisplayName(group, tool.name).isAliased"
+                          size="tiny"
+                          type="info"
+                          style="margin-left: 4px"
+                        >
+                          → {{ getToolDisplayName(group, tool.name).canonicalName }}
+                        </n-tag>
+                        <span class="tool-expand-icon">
+                          {{
+                            isToolDescriptionExpanded(
+                              `group-${group.id}-${svc.service_name}-${tool.name}`
+                            )
+                              ? "▼"
+                              : "▶"
+                          }}
+                        </span>
+                      </div>
+                      <div
+                        v-if="
+                          isToolDescriptionExpanded(
+                            `group-${group.id}-${svc.service_name}-${tool.name}`
+                          )
+                        "
+                        class="tool-detail-panel"
+                      >
+                        <div
+                          v-if="getToolDisplayDescription(group, tool.name, tool.description || '')"
+                          class="tool-description"
+                        >
+                          <n-text depth="2">
+                            {{
+                              getToolDisplayDescription(group, tool.name, tool.description || "")
+                            }}
+                          </n-text>
+                        </div>
+                        <div
+                          v-if="tool.input_schema && Object.keys(tool.input_schema).length > 0"
+                          class="tool-schema"
+                        >
+                          <n-text depth="3" style="font-size: 11px">
+                            {{ t("mcpSkills.toolInputSchema") }}:
+                          </n-text>
+                          <pre class="schema-code">{{
+                            JSON.stringify(tool.input_schema, null, 2)
+                          }}</pre>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="tools-empty" style="padding: 8px">
+                    <n-text depth="3" style="font-size: 12px">{{ t("mcpSkills.noTools") }}</n-text>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
         <div class="pagination-row">
           <n-text depth="3">
             {{ t("mcpSkills.totalCount", { count: groupPagination.total }) }}
@@ -1735,21 +2233,23 @@ onMounted(() => {
       v-model:show="showGroupModal"
       preset="card"
       :title="editingGroup ? t('mcpSkills.editGroup') : t('mcpSkills.createGroup')"
-      style="width: 600px"
+      style="width: 560px"
     >
-      <n-form label-placement="left" label-width="100">
-        <n-form-item :label="t('mcpSkills.groupName')">
-          <n-input
-            v-model:value="groupForm.name"
-            :placeholder="t('mcpSkills.groupNamePlaceholder')"
-          />
-        </n-form-item>
-        <n-form-item :label="t('mcpSkills.groupDisplayName')">
-          <n-input
-            v-model:value="groupForm.display_name"
-            :placeholder="t('mcpSkills.displayNamePlaceholder')"
-          />
-        </n-form-item>
+      <n-form label-placement="left" label-width="70" size="small" class="compact-form">
+        <div class="form-row">
+          <n-form-item :label="t('mcpSkills.groupName')" style="flex: 1">
+            <n-input
+              v-model:value="groupForm.name"
+              :placeholder="t('mcpSkills.groupNamePlaceholder')"
+            />
+          </n-form-item>
+          <n-form-item :label="t('mcpSkills.groupDisplayName')" style="flex: 1">
+            <n-input
+              v-model:value="groupForm.display_name"
+              :placeholder="t('mcpSkills.displayNamePlaceholder')"
+            />
+          </n-form-item>
+        </div>
         <n-form-item :label="t('mcpSkills.groupDescription')">
           <n-input
             v-model:value="groupForm.description"
@@ -1766,11 +2266,174 @@ onMounted(() => {
             :placeholder="t('mcpSkills.selectServices')"
           />
         </n-form-item>
-        <n-form-item :label="t('mcpSkills.enabled')">
-          <n-switch v-model:value="groupForm.enabled" />
+        <!-- Service Weights Configuration -->
+        <n-form-item v-if="groupForm.service_ids.length > 0" :label="t('mcpSkills.serviceWeights')">
+          <div style="width: 100%">
+            <n-space vertical :size="4">
+              <div
+                v-for="serviceId in groupForm.service_ids"
+                :key="serviceId"
+                style="display: flex; align-items: center; gap: 8px"
+                :style="{ opacity: isServiceEnabled(serviceId) ? 1 : 0.5 }"
+              >
+                <span
+                  style="
+                    min-width: 120px;
+                    font-size: 12px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                  "
+                >
+                  {{ serviceOptions.find(s => s.value === serviceId)?.label || serviceId }}
+                  <n-tag
+                    v-if="!isServiceEnabled(serviceId)"
+                    size="tiny"
+                    type="warning"
+                    style="margin-left: 4px"
+                  >
+                    {{ t("mcpSkills.disabled") }}
+                  </n-tag>
+                </span>
+                <n-input-number
+                  :value="getServiceWeight(serviceId)"
+                  :min="1"
+                  :max="1000"
+                  size="small"
+                  style="width: 100px"
+                  :show-button="false"
+                  @update:value="(v: number | null) => setServiceWeight(serviceId, v ?? 100)"
+                />
+              </div>
+            </n-space>
+            <n-text depth="3" style="font-size: 11px; margin-top: 4px; display: block">
+              {{ t("mcpSkills.weightHint") }}
+            </n-text>
+          </div>
         </n-form-item>
-        <n-form-item :label="t('mcpSkills.aggregationEnabled')">
-          <n-switch v-model:value="groupForm.aggregation_enabled" />
+        <div class="form-row">
+          <n-form-item :label="t('mcpSkills.enabled')" style="flex: 1">
+            <n-space align="center" :size="8">
+              <n-switch v-model:value="groupForm.enabled" size="small" />
+              <n-text depth="3">|</n-text>
+              <n-text depth="3" style="font-size: 12px">
+                {{ t("mcpSkills.aggregationEnabled") }}:
+              </n-text>
+              <n-switch v-model:value="groupForm.aggregation_enabled" size="small" />
+            </n-space>
+          </n-form-item>
+        </div>
+        <!-- Tool Aliases Configuration -->
+        <n-form-item v-if="groupForm.aggregation_enabled" :label="t('mcpSkills.toolAliases')">
+          <div style="width: 100%">
+            <n-space vertical :size="8">
+              <div
+                v-for="entry in toolAliasEntries"
+                :key="entry.id"
+                style="border: 1px solid var(--n-border-color); border-radius: 6px; padding: 8px"
+              >
+                <!-- Main row: canonical name, aliases, expand/delete buttons -->
+                <div style="display: flex; align-items: center; gap: 6px">
+                  <n-input
+                    v-model:value="entry.canonicalName"
+                    size="small"
+                    style="width: 120px"
+                    :placeholder="t('mcpSkills.canonicalName')"
+                  />
+                  <span style="color: var(--n-text-color-3); font-size: 12px">→</span>
+                  <n-input
+                    v-model:value="entry.aliases"
+                    size="small"
+                    style="flex: 1"
+                    :placeholder="t('mcpSkills.aliasesPlaceholder')"
+                  />
+                  <n-button
+                    quaternary
+                    size="small"
+                    :type="entry.expanded ? 'primary' : 'default'"
+                    @click="toggleAliasExpanded(entry)"
+                    :title="t('mcpSkills.viewToolDescriptions')"
+                  >
+                    {{ entry.expanded ? "▼" : "▶" }}
+                  </n-button>
+                  <n-button
+                    quaternary
+                    size="small"
+                    type="error"
+                    @click="removeToolAliasEntry(entry.id)"
+                  >
+                    ✕
+                  </n-button>
+                </div>
+                <!-- Expanded section: show tool descriptions and unified description input -->
+                <div
+                  v-if="entry.expanded"
+                  style="
+                    margin-top: 8px;
+                    padding-top: 8px;
+                    border-top: 1px dashed var(--n-border-color);
+                  "
+                >
+                  <!-- Original tool descriptions from services -->
+                  <div style="margin-bottom: 8px">
+                    <n-text depth="3" style="font-size: 11px; display: block; margin-bottom: 4px">
+                      {{ t("mcpSkills.originalDescriptions") }}:
+                    </n-text>
+                    <div v-if="getToolDescriptionsForAlias(entry).length > 0">
+                      <div
+                        v-for="(desc, idx) in getToolDescriptionsForAlias(entry)"
+                        :key="idx"
+                        style="
+                          font-size: 11px;
+                          padding: 4px 8px;
+                          margin-bottom: 2px;
+                          background: var(--n-color-embedded);
+                          border-radius: 4px;
+                        "
+                      >
+                        <n-text type="info" style="font-weight: 500">{{ desc.serviceName }}</n-text>
+                        <span style="color: var(--n-text-color-3)">/ {{ desc.toolName }}:</span>
+                        <br />
+                        <n-text depth="2" style="font-size: 11px; white-space: pre-wrap">
+                          {{ desc.description || "(no description)" }}
+                        </n-text>
+                      </div>
+                    </div>
+                    <n-text v-else depth="3" style="font-size: 11px; font-style: italic">
+                      {{ t("mcpSkills.noMatchingTools") }}
+                    </n-text>
+                  </div>
+                  <!-- Unified description input -->
+                  <div>
+                    <n-text depth="3" style="font-size: 11px; display: block; margin-bottom: 4px">
+                      {{ t("mcpSkills.unifiedDescription") }}:
+                    </n-text>
+                    <n-input
+                      v-model:value="entry.description"
+                      type="textarea"
+                      size="small"
+                      :rows="2"
+                      :placeholder="t('mcpSkills.unifiedDescriptionPlaceholder')"
+                    />
+                  </div>
+                </div>
+              </div>
+            </n-space>
+            <n-button
+              size="small"
+              dashed
+              style="width: 100%; margin-top: 6px"
+              @click="addToolAliasEntry"
+            >
+              + {{ t("mcpSkills.addToolAlias") }}
+            </n-button>
+            <n-text
+              depth="3"
+              style="font-size: 11px; margin-top: 6px; display: block; line-height: 1.4"
+            >
+              {{ t("mcpSkills.toolAliasesHint") }}
+            </n-text>
+          </div>
         </n-form-item>
         <n-form-item :label="t('mcpSkills.accessToken')">
           <n-input
@@ -2129,15 +2792,36 @@ onMounted(() => {
 .tools-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   max-height: 400px;
   overflow-y: auto;
 }
-.tool-item {
-  padding: 10px;
+.tool-item-clickable {
   background: var(--n-color);
   border-radius: 4px;
   border: 1px solid var(--n-border-color);
+  overflow: hidden;
+}
+.tool-name-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+  gap: 8px;
+}
+.tool-name-row:hover {
+  background: var(--n-color-hover);
+}
+.tool-expand-icon {
+  margin-left: auto;
+  color: var(--n-text-color-3);
+  font-size: 10px;
+}
+.tool-detail-panel {
+  padding: 8px 10px;
+  border-top: 1px dashed var(--n-border-color);
+  background: var(--n-color-embedded);
 }
 .tool-header {
   margin-bottom: 4px;
@@ -2159,5 +2843,31 @@ onMounted(() => {
   max-height: 150px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* Group services list styles */
+.group-services-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+.group-service-item {
+  padding: 10px;
+  background: var(--n-color);
+  border-radius: 4px;
+  border: 1px solid var(--n-border-color);
+}
+.group-service-header {
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--n-border-color);
+}
+.group-service-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 8px;
 }
 </style>

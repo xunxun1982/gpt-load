@@ -118,6 +118,12 @@ export interface CreateServiceRequest {
 // Update service request (partial)
 export type UpdateServiceRequest = Partial<CreateServiceRequest>;
 
+// Tool alias config with optional description
+export interface ToolAliasConfig {
+  aliases: string[];
+  description?: string;
+}
+
 // Group DTO matching backend MCPServiceGroupDTO
 export interface MCPServiceGroupDTO {
   id: number;
@@ -125,6 +131,9 @@ export interface MCPServiceGroupDTO {
   display_name: string;
   description: string;
   service_ids: number[];
+  service_weights?: Record<number, number>; // service_id -> weight for load balancing
+  tool_aliases?: Record<string, string[]>; // canonical_name -> [alias1, alias2, ...] (backward compatible)
+  tool_alias_configs?: Record<string, ToolAliasConfig>; // canonical_name -> {aliases, description} (new format)
   service_count: number;
   services?: MCPServiceDTO[];
   enabled: boolean;
@@ -133,6 +142,8 @@ export interface MCPServiceGroupDTO {
   access_token?: string;
   skill_export_endpoint?: string;
   total_tool_count: number;
+  unique_tool_count?: number;
+  aliased_tool_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -160,6 +171,9 @@ export interface CreateGroupRequest {
   display_name: string;
   description: string;
   service_ids: number[];
+  service_weights?: Record<number, number>; // Optional weights for load balancing
+  tool_aliases?: Record<string, string[]>; // Tool name aliases (backward compatible)
+  tool_alias_configs?: Record<string, ToolAliasConfig>; // Full format with descriptions
   enabled: boolean;
   aggregation_enabled: boolean;
   access_token?: string;
@@ -298,6 +312,28 @@ export interface ServiceToolsResult {
   from_cache: boolean;
   cached_at?: string;
   expires_at?: string;
+}
+
+// Service with tools result for group expansion
+export interface ServiceWithToolsResult {
+  service_id: number;
+  service_name: string;
+  display_name: string;
+  icon: string;
+  type: string;
+  enabled: boolean;
+  tools: ToolDefinition[];
+  tool_count: number;
+  from_cache: boolean;
+}
+
+// Group services with tools result
+export interface GroupServicesWithToolsResult {
+  group_id: number;
+  group_name: string;
+  services: ServiceWithToolsResult[];
+  total_tools: number;
+  service_count: number;
 }
 
 // API client
@@ -505,6 +541,12 @@ export const mcpSkillsApi = {
   // Get group endpoint info
   async getGroupEndpointInfo(groupId: number): Promise<GroupEndpointInfo> {
     const res = await http.get(`/mcp-skills/groups/${groupId}/endpoint-info`);
+    return res.data;
+  },
+
+  // Get group services with tools
+  async getGroupServicesWithTools(groupId: number): Promise<GroupServicesWithToolsResult> {
+    const res = await http.get(`/mcp-skills/groups/${groupId}/services-with-tools`);
     return res.data;
   },
 

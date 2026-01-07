@@ -148,13 +148,87 @@ func (s *GroupService) ListGroupsPaginated(ctx context.Context, params GroupList
 	}, nil
 }
 
-// convertGroupsToDTOs converts group models to DTOs
+// convertGroupsToDTOs converts group models to DTOs with tool counts
 func (s *GroupService) convertGroupsToDTOs(groups []MCPServiceGroup) []MCPServiceGroupDTO {
+	// Collect all service IDs from all groups
+	allServiceIDs := make([]uint, 0)
+	for i := range groups {
+		allServiceIDs = append(allServiceIDs, groups[i].GetServiceIDs()...)
+	}
+
+	// Batch fetch services to get tool counts, tool names, and enabled status
+	serviceToolCounts := make(map[uint]int)
+	serviceToolNames := make(map[uint][]string) // service_id -> tool names
+	serviceEnabled := make(map[uint]bool)       // service_id -> enabled status
+	if len(allServiceIDs) > 0 {
+		var services []MCPService
+		if err := s.db.Where("id IN ?", allServiceIDs).Find(&services).Error; err == nil {
+			for _, svc := range services {
+				serviceEnabled[svc.ID] = svc.Enabled
+				if tools, err := svc.GetTools(); err == nil {
+					serviceToolCounts[svc.ID] = len(tools)
+					names := make([]string, 0, len(tools))
+					for _, t := range tools {
+						names = append(names, t.Name)
+					}
+					serviceToolNames[svc.ID] = names
+				}
+			}
+		}
+	}
+
 	dtos := make([]MCPServiceGroupDTO, 0, len(groups))
 	for i := range groups {
-		dtos = append(dtos, s.groupToDTO(&groups[i]))
+		dto := s.groupToDTO(&groups[i])
+
+		// Calculate total tool count for this group (only enabled services)
+		allToolNames := make([]string, 0)
+		for _, svcID := range groups[i].GetServiceIDs() {
+			// Only count tools from enabled services
+			if serviceEnabled[svcID] {
+				dto.TotalToolCount += serviceToolCounts[svcID]
+				allToolNames = append(allToolNames, serviceToolNames[svcID]...)
+			}
+		}
+
+		// Calculate unique tool count considering aliases (only from enabled services)
+		dto.UniqueToolCount, dto.AliasedToolCount = s.calculateUniqueToolCount(allToolNames, groups[i].GetToolAliases())
+
+		dtos = append(dtos, dto)
 	}
 	return dtos
+}
+
+// calculateUniqueToolCount calculates unique tools after alias deduplication
+// Returns (uniqueCount, aliasedCount)
+func (s *GroupService) calculateUniqueToolCount(toolNames []string, aliases map[string][]string) (int, int) {
+	if len(toolNames) == 0 {
+		return 0, 0
+	}
+
+	// Build reverse lookup: alias -> canonical name
+	aliasToCanonical := make(map[string]string)
+	for canonical, aliasList := range aliases {
+		aliasToCanonical[canonical] = canonical
+		for _, alias := range aliasList {
+			aliasToCanonical[alias] = canonical
+		}
+	}
+
+	// Count unique canonical names
+	uniqueNames := make(map[string]bool)
+	aliasedNames := make(map[string]bool)
+
+	for _, name := range toolNames {
+		if canonical, ok := aliasToCanonical[name]; ok {
+			uniqueNames[canonical] = true
+			aliasedNames[canonical] = true
+		} else {
+			uniqueNames[name] = true
+		}
+	}
+
+	return len(uniqueNames), len(aliasedNames)
 }
 
 // groupToDTO converts a single group to DTO
@@ -170,6 +244,9 @@ func (s *GroupService) groupToDTO(group *MCPServiceGroup) MCPServiceGroupDTO {
 		DisplayName:        group.DisplayName,
 		Description:        group.Description,
 		ServiceIDs:         serviceIDs,
+		ServiceWeights:     group.GetServiceWeights(),
+		ToolAliases:        group.GetToolAliases(),
+		ToolAliasConfigs:   group.GetToolAliasConfigs(),
 		ServiceCount:       len(serviceIDs),
 		Enabled:            group.Enabled,
 		AggregationEnabled: group.AggregationEnabled,
@@ -227,6 +304,92 @@ func (s *GroupService) GetGroupByName(ctx context.Context, name string) (*MCPSer
 	return &dto, nil
 }
 
+// GroupServicesWithToolsResult represents the result of getting group services with tools
+type GroupServicesWithToolsResult struct {
+	GroupID      uint                     `json:"group_id"`
+	GroupName    string                   `json:"group_name"`
+	Services     []ServiceWithToolsResult `json:"services"`
+	TotalTools   int                      `json:"total_tools"`
+	ServiceCount int                      `json:"service_count"`
+}
+
+// ServiceWithToolsResult represents a service with its tools
+type ServiceWithToolsResult struct {
+	ServiceID   uint             `json:"service_id"`
+	ServiceName string           `json:"service_name"`
+	DisplayName string           `json:"display_name"`
+	Icon        string           `json:"icon"`
+	Type        string           `json:"type"`
+	Enabled     bool             `json:"enabled"`
+	Tools       []ToolDefinition `json:"tools"`
+	ToolCount   int              `json:"tool_count"`
+	FromCache   bool             `json:"from_cache"`
+}
+
+// GetGroupServicesWithTools retrieves a group's services with their tools
+func (s *GroupService) GetGroupServicesWithTools(ctx context.Context, groupID uint) (*GroupServicesWithToolsResult, error) {
+	var group MCPServiceGroup
+	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	result := &GroupServicesWithToolsResult{
+		GroupID:   group.ID,
+		GroupName: group.Name,
+		Services:  make([]ServiceWithToolsResult, 0),
+	}
+
+	serviceIDs := group.GetServiceIDs()
+	if len(serviceIDs) == 0 {
+		return result, nil
+	}
+
+	// Get all services
+	var services []MCPService
+	if err := s.db.WithContext(ctx).Where("id IN ?", serviceIDs).Find(&services).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	totalTools := 0
+	for _, svc := range services {
+		svcResult := ServiceWithToolsResult{
+			ServiceID:   svc.ID,
+			ServiceName: svc.Name,
+			DisplayName: svc.DisplayName,
+			Icon:        svc.Icon,
+			Type:        string(svc.Type),
+			Enabled:     svc.Enabled,
+			Tools:       make([]ToolDefinition, 0),
+			FromCache:   true,
+		}
+
+		// Get tools from service's tools_json field (cached tools)
+		tools, _ := svc.GetTools()
+		if len(tools) > 0 {
+			svcResult.Tools = tools
+			svcResult.ToolCount = len(tools)
+			// Only count tools from enabled services in total
+			if svc.Enabled {
+				totalTools += len(tools)
+			}
+		}
+
+		result.Services = append(result.Services, svcResult)
+	}
+
+	result.TotalTools = totalTools
+	// Count only enabled services
+	enabledCount := 0
+	for _, svc := range result.Services {
+		if svc.Enabled {
+			enabledCount++
+		}
+	}
+	result.ServiceCount = enabledCount
+
+	return result, nil
+}
+
 // CreateGroup creates a new MCP service group
 func (s *GroupService) CreateGroup(ctx context.Context, params CreateGroupParams) (*MCPServiceGroupDTO, error) {
 	name := strings.TrimSpace(params.Name)
@@ -272,6 +435,15 @@ func (s *GroupService) CreateGroup(ctx context.Context, params CreateGroupParams
 		AggregationEnabled: params.AggregationEnabled,
 	}
 	group.SetServiceIDs(params.ServiceIDs)
+	if params.ServiceWeights != nil {
+		group.SetServiceWeights(params.ServiceWeights)
+	}
+	// Prefer ToolAliasConfigs (new format) over ToolAliases (old format)
+	if params.ToolAliasConfigs != nil {
+		group.SetToolAliasConfigs(params.ToolAliasConfigs)
+	} else if params.ToolAliases != nil {
+		group.SetToolAliases(params.ToolAliases)
+	}
 
 	// Generate access token if aggregation is enabled
 	if params.AggregationEnabled {
@@ -345,6 +517,15 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params UpdateGr
 			}
 		}
 		group.SetServiceIDs(*params.ServiceIDs)
+	}
+	if params.ServiceWeights != nil {
+		group.SetServiceWeights(*params.ServiceWeights)
+	}
+	// Prefer ToolAliasConfigs (new format) over ToolAliases (old format)
+	if params.ToolAliasConfigs != nil {
+		group.SetToolAliasConfigs(*params.ToolAliasConfigs)
+	} else if params.ToolAliases != nil {
+		group.SetToolAliases(*params.ToolAliases)
 	}
 	if params.AggregationEnabled != nil {
 		group.AggregationEnabled = *params.AggregationEnabled

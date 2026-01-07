@@ -416,15 +416,32 @@ func (s *Server) GetMCPServiceGroup(c *gin.Context) {
 	response.Success(c, group)
 }
 
+// GetMCPGroupServicesWithTools handles GET /api/mcp-skills/groups/:id/services-with-tools
+func (s *Server) GetMCPGroupServicesWithTools(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	result, err := s.MCPSkillsGroupService.GetGroupServicesWithTools(c.Request.Context(), uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, result)
+}
+
 // CreateMCPServiceGroupRequest represents the create group request
 type CreateMCPServiceGroupRequest struct {
-	Name               string `json:"name"`
-	DisplayName        string `json:"display_name"`
-	Description        string `json:"description"`
-	ServiceIDs         []uint `json:"service_ids"`
-	Enabled            bool   `json:"enabled"`
-	AggregationEnabled bool   `json:"aggregation_enabled"`
-	AccessToken        string `json:"access_token,omitempty"`
+	Name               string              `json:"name"`
+	DisplayName        string              `json:"display_name"`
+	Description        string              `json:"description"`
+	ServiceIDs         []uint              `json:"service_ids"`
+	ServiceWeights     map[uint]int        `json:"service_weights,omitempty"`
+	ToolAliases        map[string][]string `json:"tool_aliases,omitempty"`
+	Enabled            bool                `json:"enabled"`
+	AggregationEnabled bool                `json:"aggregation_enabled"`
+	AccessToken        string              `json:"access_token,omitempty"`
 }
 
 // CreateMCPServiceGroup handles POST /api/mcp-skills/groups
@@ -440,6 +457,8 @@ func (s *Server) CreateMCPServiceGroup(c *gin.Context) {
 		DisplayName:        req.DisplayName,
 		Description:        req.Description,
 		ServiceIDs:         req.ServiceIDs,
+		ServiceWeights:     req.ServiceWeights,
+		ToolAliases:        req.ToolAliases,
 		Enabled:            req.Enabled,
 		AggregationEnabled: req.AggregationEnabled,
 		AccessToken:        req.AccessToken,
@@ -452,13 +471,15 @@ func (s *Server) CreateMCPServiceGroup(c *gin.Context) {
 
 // UpdateMCPServiceGroupRequest represents the update group request
 type UpdateMCPServiceGroupRequest struct {
-	Name               *string `json:"name,omitempty"`
-	DisplayName        *string `json:"display_name,omitempty"`
-	Description        *string `json:"description,omitempty"`
-	ServiceIDs         *[]uint `json:"service_ids,omitempty"`
-	Enabled            *bool   `json:"enabled,omitempty"`
-	AggregationEnabled *bool   `json:"aggregation_enabled,omitempty"`
-	AccessToken        *string `json:"access_token,omitempty"`
+	Name               *string              `json:"name,omitempty"`
+	DisplayName        *string              `json:"display_name,omitempty"`
+	Description        *string              `json:"description,omitempty"`
+	ServiceIDs         *[]uint              `json:"service_ids,omitempty"`
+	ServiceWeights     *map[uint]int        `json:"service_weights,omitempty"`
+	ToolAliases        *map[string][]string `json:"tool_aliases,omitempty"`
+	Enabled            *bool                `json:"enabled,omitempty"`
+	AggregationEnabled *bool                `json:"aggregation_enabled,omitempty"`
+	AccessToken        *string              `json:"access_token,omitempty"`
 }
 
 // UpdateMCPServiceGroup handles PUT /api/mcp-skills/groups/:id
@@ -480,6 +501,8 @@ func (s *Server) UpdateMCPServiceGroup(c *gin.Context) {
 		DisplayName:        req.DisplayName,
 		Description:        req.Description,
 		ServiceIDs:         req.ServiceIDs,
+		ServiceWeights:     req.ServiceWeights,
+		ToolAliases:        req.ToolAliases,
 		Enabled:            req.Enabled,
 		AggregationEnabled: req.AggregationEnabled,
 		AccessToken:        req.AccessToken,

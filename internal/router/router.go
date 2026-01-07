@@ -261,6 +261,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		mcpSkills.GET("/groups/:id/endpoint-info", serverHandler.GetMCPGroupEndpointInfo)
 		mcpSkills.POST("/groups/:id/regenerate-token", serverHandler.RegenerateMCPGroupAccessToken)
 		mcpSkills.GET("/groups/:id/access-token", serverHandler.GetMCPGroupAccessToken)
+		mcpSkills.GET("/groups/:id/services-with-tools", serverHandler.GetMCPGroupServicesWithTools)
 
 		// Import/Export
 		mcpSkills.GET("/export", serverHandler.ExportMCPSkills)

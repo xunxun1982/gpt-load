@@ -6,6 +6,7 @@ package mcpskills
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -255,6 +256,16 @@ type MCPServiceGroup struct {
 	// MCP Aggregation settings - expose unified endpoint with search_tools and execute_tool
 	AggregationEnabled bool `gorm:"column:aggregation_enabled;default:false" json:"aggregation_enabled"`
 
+	// Service weights for load balancing (JSON: {"service_id": weight})
+	// Higher weight = higher priority, used for smart_execute tool
+	ServiceWeightsJSON string `gorm:"type:text" json:"service_weights_json"`
+
+	// Tool aliases for unifying different tool names across services
+	// Format: {"canonical_name": ["alias1", "alias2", ...]}
+	// Example: {"search": ["web_search_exa", "exa_search", "search_web"]}
+	// When smart_execute is called with "search", it will match services with any of these tool names
+	ToolAliasesJSON string `gorm:"type:text" json:"tool_aliases_json"`
+
 	// Access control
 	AccessToken string `gorm:"type:varchar(255)" json:"-"` // Token for accessing aggregation endpoint
 
@@ -294,6 +305,168 @@ func (g *MCPServiceGroup) SetServiceIDs(ids []uint) {
 		return
 	}
 	g.ServiceIDsJSON = string(data)
+}
+
+// GetServiceWeights returns the service weights map (service_id -> weight)
+// Default weight is 100 if not specified
+func (g *MCPServiceGroup) GetServiceWeights() map[uint]int {
+	weights := make(map[uint]int)
+	if g.ServiceWeightsJSON != "" {
+		// Parse as map[string]int first (JSON keys are strings)
+		var strWeights map[string]int
+		if err := json.Unmarshal([]byte(g.ServiceWeightsJSON), &strWeights); err == nil {
+			for k, v := range strWeights {
+				var id uint
+				if _, err := fmt.Sscanf(k, "%d", &id); err == nil {
+					weights[id] = v
+				}
+			}
+		}
+	}
+	// Set default weight for services without explicit weight
+	for _, id := range g.GetServiceIDs() {
+		if _, ok := weights[id]; !ok {
+			weights[id] = 100 // Default weight
+		}
+	}
+	return weights
+}
+
+// SetServiceWeights sets the service weights as JSON
+func (g *MCPServiceGroup) SetServiceWeights(weights map[uint]int) {
+	if len(weights) == 0 {
+		g.ServiceWeightsJSON = ""
+		return
+	}
+	// Convert to map[string]int for JSON
+	strWeights := make(map[string]int)
+	for k, v := range weights {
+		strWeights[fmt.Sprintf("%d", k)] = v
+	}
+	data, err := json.Marshal(strWeights)
+	if err != nil {
+		g.ServiceWeightsJSON = "{}"
+		return
+	}
+	g.ServiceWeightsJSON = string(data)
+}
+
+// ToolAliasConfig represents configuration for a tool alias
+// Includes the list of aliases and an optional unified description
+type ToolAliasConfig struct {
+	Aliases     []string `json:"aliases"`               // List of tool names that map to this canonical name
+	Description string   `json:"description,omitempty"` // Optional unified description (saves tokens)
+}
+
+// GetToolAliases returns the tool aliases map (canonical_name -> []aliases)
+// This allows different tool names across services to be treated as the same tool
+// Supports both old format (map[string][]string) and new format (map[string]ToolAliasConfig)
+func (g *MCPServiceGroup) GetToolAliases() map[string][]string {
+	aliases := make(map[string][]string)
+	if g.ToolAliasesJSON == "" {
+		return aliases
+	}
+
+	// Try new format first: map[string]ToolAliasConfig
+	var newFormat map[string]ToolAliasConfig
+	if err := json.Unmarshal([]byte(g.ToolAliasesJSON), &newFormat); err == nil {
+		// Check if it's actually new format (has "aliases" key in any entry)
+		isNewFormat := false
+		for _, v := range newFormat {
+			if len(v.Aliases) > 0 || v.Description != "" {
+				isNewFormat = true
+				break
+			}
+		}
+		if isNewFormat {
+			for canonical, config := range newFormat {
+				aliases[canonical] = config.Aliases
+			}
+			return aliases
+		}
+	}
+
+	// Fall back to old format: map[string][]string
+	if err := json.Unmarshal([]byte(g.ToolAliasesJSON), &aliases); err != nil {
+		return make(map[string][]string)
+	}
+	return aliases
+}
+
+// GetToolAliasConfigs returns the full tool alias configurations including descriptions
+func (g *MCPServiceGroup) GetToolAliasConfigs() map[string]ToolAliasConfig {
+	configs := make(map[string]ToolAliasConfig)
+	if g.ToolAliasesJSON == "" {
+		return configs
+	}
+
+	// Try new format first
+	if err := json.Unmarshal([]byte(g.ToolAliasesJSON), &configs); err == nil {
+		// Validate it's new format
+		for _, v := range configs {
+			if len(v.Aliases) > 0 || v.Description != "" {
+				return configs
+			}
+		}
+	}
+
+	// Fall back to old format and convert
+	var oldFormat map[string][]string
+	if err := json.Unmarshal([]byte(g.ToolAliasesJSON), &oldFormat); err == nil {
+		for canonical, aliases := range oldFormat {
+			configs[canonical] = ToolAliasConfig{Aliases: aliases}
+		}
+	}
+	return configs
+}
+
+// SetToolAliases sets the tool aliases as JSON (old format for backward compatibility)
+func (g *MCPServiceGroup) SetToolAliases(aliases map[string][]string) {
+	if len(aliases) == 0 {
+		g.ToolAliasesJSON = ""
+		return
+	}
+	// Convert to new format
+	configs := make(map[string]ToolAliasConfig)
+	for canonical, aliasList := range aliases {
+		configs[canonical] = ToolAliasConfig{Aliases: aliasList}
+	}
+	data, err := json.Marshal(configs)
+	if err != nil {
+		g.ToolAliasesJSON = "{}"
+		return
+	}
+	g.ToolAliasesJSON = string(data)
+}
+
+// SetToolAliasConfigs sets the full tool alias configurations
+func (g *MCPServiceGroup) SetToolAliasConfigs(configs map[string]ToolAliasConfig) {
+	if len(configs) == 0 {
+		g.ToolAliasesJSON = ""
+		return
+	}
+	data, err := json.Marshal(configs)
+	if err != nil {
+		g.ToolAliasesJSON = "{}"
+		return
+	}
+	g.ToolAliasesJSON = string(data)
+}
+
+// BuildToolAliasLookup builds a reverse lookup map from alias -> canonical name
+// This is used for efficient tool name resolution during smart_execute
+func (g *MCPServiceGroup) BuildToolAliasLookup() map[string]string {
+	lookup := make(map[string]string)
+	aliases := g.GetToolAliases()
+	for canonical, aliasList := range aliases {
+		// Canonical name maps to itself
+		lookup[canonical] = canonical
+		// Each alias maps to canonical name
+		for _, alias := range aliasList {
+			lookup[alias] = canonical
+		}
+	}
+	return lookup
 }
 
 // MCPLog represents a log entry for MCP service operations

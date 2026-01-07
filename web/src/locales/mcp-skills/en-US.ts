@@ -76,6 +76,9 @@ export default {
   envVarEnabled: "Enabled",
   envVarDisabled: "Disabled",
 
+  // Status
+  disabled: "Disabled",
+
   // API Bridge fields
   apiEndpoint: "API Endpoint",
   apiEndpointPlaceholder: "https://api.example.com",
@@ -96,6 +99,8 @@ export default {
   toolName: "Tool Name",
   toolDescription: "Tool Description",
   toolCount: "{count} tools",
+  totalTools: "total",
+  uniqueTools: "unique",
   addTool: "Add Tool",
   editTool: "Edit Tool",
   deleteTool: "Delete Tool",
@@ -121,10 +126,36 @@ export default {
   serviceCount: "{count} MCP services",
   selectServices: "Select MCP Services",
   noServicesSelected: "No MCP services selected",
+  noServices: "No services available",
+
+  // Service weights for smart routing
+  serviceWeights: "Service Weights",
+  serviceWeightsHint:
+    "Higher weight = higher probability of being selected by smart_execute. Default weight is 100",
+  weight: "Weight",
+  weightHint:
+    "Higher weight = higher priority. Services with high error rates are automatically deprioritized",
+  weightPlaceholder: "1-1000",
+  errorRate: "Error Rate",
+  totalCalls: "Total Calls",
+
+  // Tool aliases for smart routing
+  toolAliases: "Tool Aliases",
+  toolAliasesHint:
+    "Left: unified name (can repeat). Right: actual tool names (comma-separated). smart_execute will match all aliased tools",
+  canonicalName: "Unified Name",
+  aliasesPlaceholder: "tool_name1, tool_name2, ...",
+  addToolAlias: "Add Tool Alias",
+  viewToolDescriptions: "View tool descriptions",
+  originalDescriptions: "Original descriptions",
+  noMatchingTools: "No matching tools found",
+  unifiedDescription: "Unified description (optional, saves tokens)",
+  unifiedDescriptionPlaceholder: "Enter unified description to replace original descriptions",
 
   // MCP Aggregation
-  aggregationEnabled: "Enable Aggregation",
-  aggregationEnabledTooltip: "Enable MCP Aggregation endpoint",
+  aggregationEnabled: "Enable Aggregation Endpoint",
+  aggregationEnabledTooltip:
+    "Enable to access all MCP tools in this group via aggregation endpoint URL",
   aggregationEndpoint: "Aggregation Endpoint",
   accessToken: "Access Token",
   accessTokenPlaceholder: "Auto-generated if empty",
@@ -256,6 +287,7 @@ export default {
   collapseTools: "Hide Tools",
   loadingTools: "Loading tools...",
   noTools: "No tools available",
+  noEnabledServices: "No enabled services",
   refreshTools: "Refresh",
   toolsFromCache: "From cache",
   toolsFresh: "Fresh",

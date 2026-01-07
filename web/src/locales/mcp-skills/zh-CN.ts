@@ -76,6 +76,9 @@ export default {
   envVarEnabled: "已启用",
   envVarDisabled: "已禁用",
 
+  // Status
+  disabled: "已禁用",
+
   // API Bridge fields
   apiEndpoint: "API 端点",
   apiEndpointPlaceholder: "https://api.example.com",
@@ -96,6 +99,8 @@ export default {
   toolName: "工具名称",
   toolDescription: "工具描述",
   toolCount: "{count} 个工具",
+  totalTools: "总工具",
+  uniqueTools: "唯一工具",
   addTool: "添加工具",
   editTool: "编辑工具",
   deleteTool: "删除工具",
@@ -121,10 +126,33 @@ export default {
   serviceCount: "{count} 个MCP服务",
   selectServices: "选择MCP服务",
   noServicesSelected: "未选择MCP服务",
+  noServices: "暂无服务",
+
+  // Service weights for smart routing
+  serviceWeights: "服务权重",
+  serviceWeightsHint: "权重越高，smart_execute 选择该服务的概率越大。默认权重为 100",
+  weight: "权重",
+  weightHint: "权重越高优先级越高，错误率高的服务会自动降低选择概率",
+  weightPlaceholder: "1-1000",
+  errorRate: "错误率",
+  totalCalls: "总调用",
+
+  // Tool aliases for smart routing
+  toolAliases: "工具别名",
+  toolAliasesHint:
+    "左侧填写统一名称（可重复），右侧填写该名称对应的实际工具名（逗号分隔）。smart_execute 调用时会自动匹配所有别名对应的工具",
+  canonicalName: "统一名称",
+  aliasesPlaceholder: "实际工具名1, 实际工具名2, ...",
+  addToolAlias: "添加工具别名",
+  viewToolDescriptions: "查看工具描述",
+  originalDescriptions: "原始描述",
+  noMatchingTools: "未找到匹配的工具",
+  unifiedDescription: "统一描述（可选，节省tokens）",
+  unifiedDescriptionPlaceholder: "输入统一描述，将替代各服务的原始描述",
 
   // MCP聚合
-  aggregationEnabled: "启用聚合",
-  aggregationEnabledTooltip: "启用MCP聚合端点",
+  aggregationEnabled: "启用聚合端点",
+  aggregationEnabledTooltip: "启用后可通过聚合端点URL访问此聚合下的所有MCP工具",
   aggregationEndpoint: "聚合端点",
   accessToken: "访问令牌",
   accessTokenPlaceholder: "留空自动生成",
@@ -255,6 +283,7 @@ export default {
   collapseTools: "收起工具",
   loadingTools: "加载工具中...",
   noTools: "暂无工具",
+  noEnabledServices: "没有启用的服务",
   refreshTools: "刷新",
   toolsFromCache: "来自缓存",
   toolsFresh: "最新",

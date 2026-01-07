@@ -76,6 +76,9 @@ export default {
   envVarEnabled: "有効",
   envVarDisabled: "無効",
 
+  // Status
+  disabled: "無効",
+
   // API Bridge fields
   apiEndpoint: "APIエンドポイント",
   apiEndpointPlaceholder: "https://api.example.com",
@@ -96,6 +99,8 @@ export default {
   toolName: "ツール名",
   toolDescription: "ツール説明",
   toolCount: "{count} ツール",
+  totalTools: "合計",
+  uniqueTools: "ユニーク",
   addTool: "ツールを追加",
   editTool: "ツールを編集",
   deleteTool: "ツールを削除",
@@ -121,10 +126,31 @@ export default {
   serviceCount: "{count} MCPサービス",
   selectServices: "MCPサービスを選択",
   noServicesSelected: "MCPサービス未選択",
+  noServices: "サービスがありません",
+
+  // Service weights for smart routing
+  serviceWeights: "サービス重み",
+  serviceWeightsHint:
+    "重みが高いほど、smart_executeで選択される確率が高くなります。デフォルトは100",
+  weight: "重み",
+  weightHint:
+    "重みが高いほど優先度が高くなります。エラー率の高いサービスは自動的に優先度が下がります",
+  weightPlaceholder: "1-1000",
+  errorRate: "エラー率",
+  totalCalls: "総呼び出し",
+
+  // Tool aliases for smart routing
+  toolAliases: "ツールエイリアス",
+  toolAliasesHint:
+    "左側：統一名（重複可）。右側：実際のツール名（カンマ区切り）。smart_executeはすべてのエイリアスツールにマッチします",
+  canonicalName: "統一名",
+  aliasesPlaceholder: "ツール名1, ツール名2, ...",
+  addToolAlias: "ツールエイリアスを追加",
 
   // MCP集約
-  aggregationEnabled: "集約を有効化",
-  aggregationEnabledTooltip: "MCP集約エンドポイントを有効化",
+  aggregationEnabled: "集約エンドポイントを有効化",
+  aggregationEnabledTooltip:
+    "有効にすると、集約エンドポイントURLからこのグループ内のすべてのMCPツールにアクセスできます",
   aggregationEndpoint: "集約エンドポイント",
   accessToken: "アクセストークン",
   accessTokenPlaceholder: "空欄で自動生成",

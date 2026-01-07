@@ -167,50 +167,64 @@ type GroupListResult struct {
 
 // MCPServiceGroupDTO represents the data transfer object for MCP service group
 type MCPServiceGroupDTO struct {
-	ID           uint             `json:"id"`
-	Name         string           `json:"name"`
-	DisplayName  string           `json:"display_name"`
-	Description  string           `json:"description"`
-	ServiceIDs   []uint           `json:"service_ids"`
-	ServiceCount int              `json:"service_count"`
-	Services     []MCPServiceDTO  `json:"services,omitempty"` // Populated when needed
-	Enabled      bool             `json:"enabled"`
+	ID             uint            `json:"id"`
+	Name           string          `json:"name"`
+	DisplayName    string          `json:"display_name"`
+	Description    string          `json:"description"`
+	ServiceIDs     []uint          `json:"service_ids"`
+	ServiceWeights map[uint]int    `json:"service_weights,omitempty"` // service_id -> weight for load balancing
+	ServiceCount   int             `json:"service_count"`
+	Services       []MCPServiceDTO `json:"services,omitempty"` // Populated when needed
+	Enabled        bool            `json:"enabled"`
 
 	// MCP Aggregation settings
 	AggregationEnabled  bool   `json:"aggregation_enabled"`
 	AggregationEndpoint string `json:"aggregation_endpoint,omitempty"` // Generated endpoint URL
 	AccessToken         string `json:"access_token,omitempty"`
 
+	// Tool aliases for unifying different tool names across services
+	// New format with optional description: {"canonical_name": {"aliases": [...], "description": "..."}}
+	ToolAliases map[string][]string `json:"tool_aliases,omitempty"` // Backward compatible simple format
+	ToolAliasConfigs map[string]ToolAliasConfig `json:"tool_alias_configs,omitempty"` // Full format with descriptions
+
 	// Skill export info
 	SkillExportEndpoint string `json:"skill_export_endpoint,omitempty"`
 
 	// Stats
-	TotalToolCount int `json:"total_tool_count"`
+	TotalToolCount       int `json:"total_tool_count"`        // Total tools (raw count)
+	UniqueToolCount      int `json:"unique_tool_count"`       // Unique tools after alias deduplication
+	AliasedToolCount     int `json:"aliased_tool_count"`      // Number of tools that have aliases
 
-	CreatedAt    time.Time        `json:"created_at"`
-	UpdatedAt    time.Time        `json:"updated_at"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // CreateGroupParams defines parameters for creating a new MCP service group
 type CreateGroupParams struct {
-	Name               string `json:"name"`
-	DisplayName        string `json:"display_name"`
-	Description        string `json:"description"`
-	ServiceIDs         []uint `json:"service_ids"`
-	Enabled            bool   `json:"enabled"`
-	AggregationEnabled bool   `json:"aggregation_enabled"`
-	AccessToken        string `json:"access_token,omitempty"`
+	Name               string              `json:"name"`
+	DisplayName        string              `json:"display_name"`
+	Description        string              `json:"description"`
+	ServiceIDs         []uint              `json:"service_ids"`
+	ServiceWeights     map[uint]int        `json:"service_weights,omitempty"`  // Optional weights for load balancing
+	ToolAliases        map[string][]string `json:"tool_aliases,omitempty"`     // Tool name aliases (backward compatible)
+	ToolAliasConfigs   map[string]ToolAliasConfig `json:"tool_alias_configs,omitempty"` // Full format with descriptions
+	Enabled            bool                `json:"enabled"`
+	AggregationEnabled bool                `json:"aggregation_enabled"`
+	AccessToken        string              `json:"access_token,omitempty"`
 }
 
 // UpdateGroupParams defines parameters for updating an MCP service group
 type UpdateGroupParams struct {
-	Name               *string `json:"name,omitempty"`
-	DisplayName        *string `json:"display_name,omitempty"`
-	Description        *string `json:"description,omitempty"`
-	ServiceIDs         *[]uint `json:"service_ids,omitempty"`
-	Enabled            *bool   `json:"enabled,omitempty"`
-	AggregationEnabled *bool   `json:"aggregation_enabled,omitempty"`
-	AccessToken        *string `json:"access_token,omitempty"`
+	Name               *string              `json:"name,omitempty"`
+	DisplayName        *string              `json:"display_name,omitempty"`
+	Description        *string              `json:"description,omitempty"`
+	ServiceIDs         *[]uint              `json:"service_ids,omitempty"`
+	ServiceWeights     *map[uint]int        `json:"service_weights,omitempty"`
+	ToolAliases        *map[string][]string `json:"tool_aliases,omitempty"`
+	ToolAliasConfigs   *map[string]ToolAliasConfig `json:"tool_alias_configs,omitempty"` // Full format with descriptions
+	Enabled            *bool                `json:"enabled,omitempty"`
+	AggregationEnabled *bool                `json:"aggregation_enabled,omitempty"`
+	AccessToken        *string              `json:"access_token,omitempty"`
 }
 
 // LogListParams defines pagination and filter parameters for log listing
