@@ -151,7 +151,6 @@ export default {
   noMatchingTools: "一致するツールが見つかりません",
   unifiedDescription: "統一説明（オプション、トークン節約）",
   unifiedDescriptionPlaceholder: "統一説明を入力すると、元の説明を置き換えます",
-  noEnabledServices: "有効なサービスがありません",
 
   // MCP集約
   aggregationEnabled: "集約エンドポイントを有効化",
@@ -290,6 +289,7 @@ export default {
   collapseTools: "ツールを非表示",
   loadingTools: "ツールを読み込み中...",
   noTools: "ツールがありません",
+  noEnabledServices: "有効なサービスがありません",
   refreshTools: "更新",
   toolsFromCache: "キャッシュから",
   toolsFresh: "最新",
