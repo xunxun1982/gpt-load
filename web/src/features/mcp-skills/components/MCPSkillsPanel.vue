@@ -1042,7 +1042,7 @@ async function copyToClipboard(text: string, msgKey: string) {
     await navigator.clipboard.writeText(text);
     message.success(t(msgKey));
   } catch (_) {
-    message.error(t("keys.copyFailed"));
+    message.error(t("mcpSkills.copyFailed"));
   }
 }
 

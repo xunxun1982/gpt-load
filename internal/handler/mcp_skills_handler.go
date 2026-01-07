@@ -433,15 +433,16 @@ func (s *Server) GetMCPGroupServicesWithTools(c *gin.Context) {
 
 // CreateMCPServiceGroupRequest represents the create group request
 type CreateMCPServiceGroupRequest struct {
-	Name               string              `json:"name"`
-	DisplayName        string              `json:"display_name"`
-	Description        string              `json:"description"`
-	ServiceIDs         []uint              `json:"service_ids"`
-	ServiceWeights     map[uint]int        `json:"service_weights,omitempty"`
-	ToolAliases        map[string][]string `json:"tool_aliases,omitempty"`
-	Enabled            bool                `json:"enabled"`
-	AggregationEnabled bool                `json:"aggregation_enabled"`
-	AccessToken        string              `json:"access_token,omitempty"`
+	Name               string                          `json:"name"`
+	DisplayName        string                          `json:"display_name"`
+	Description        string                          `json:"description"`
+	ServiceIDs         []uint                          `json:"service_ids"`
+	ServiceWeights     map[uint]int                    `json:"service_weights,omitempty"`
+	ToolAliases        map[string][]string             `json:"tool_aliases,omitempty"`
+	ToolAliasConfigs   map[string]mcpskills.ToolAliasConfig `json:"tool_alias_configs,omitempty"` // New format with descriptions
+	Enabled            bool                            `json:"enabled"`
+	AggregationEnabled bool                            `json:"aggregation_enabled"`
+	AccessToken        string                          `json:"access_token,omitempty"`
 }
 
 // CreateMCPServiceGroup handles POST /api/mcp-skills/groups
@@ -459,6 +460,7 @@ func (s *Server) CreateMCPServiceGroup(c *gin.Context) {
 		ServiceIDs:         req.ServiceIDs,
 		ServiceWeights:     req.ServiceWeights,
 		ToolAliases:        req.ToolAliases,
+		ToolAliasConfigs:   req.ToolAliasConfigs,
 		Enabled:            req.Enabled,
 		AggregationEnabled: req.AggregationEnabled,
 		AccessToken:        req.AccessToken,
@@ -471,15 +473,16 @@ func (s *Server) CreateMCPServiceGroup(c *gin.Context) {
 
 // UpdateMCPServiceGroupRequest represents the update group request
 type UpdateMCPServiceGroupRequest struct {
-	Name               *string              `json:"name,omitempty"`
-	DisplayName        *string              `json:"display_name,omitempty"`
-	Description        *string              `json:"description,omitempty"`
-	ServiceIDs         *[]uint              `json:"service_ids,omitempty"`
-	ServiceWeights     *map[uint]int        `json:"service_weights,omitempty"`
-	ToolAliases        *map[string][]string `json:"tool_aliases,omitempty"`
-	Enabled            *bool                `json:"enabled,omitempty"`
-	AggregationEnabled *bool                `json:"aggregation_enabled,omitempty"`
-	AccessToken        *string              `json:"access_token,omitempty"`
+	Name               *string                           `json:"name,omitempty"`
+	DisplayName        *string                           `json:"display_name,omitempty"`
+	Description        *string                           `json:"description,omitempty"`
+	ServiceIDs         *[]uint                           `json:"service_ids,omitempty"`
+	ServiceWeights     *map[uint]int                     `json:"service_weights,omitempty"`
+	ToolAliases        *map[string][]string              `json:"tool_aliases,omitempty"`
+	ToolAliasConfigs   *map[string]mcpskills.ToolAliasConfig `json:"tool_alias_configs,omitempty"` // New format with descriptions
+	Enabled            *bool                             `json:"enabled,omitempty"`
+	AggregationEnabled *bool                             `json:"aggregation_enabled,omitempty"`
+	AccessToken        *string                           `json:"access_token,omitempty"`
 }
 
 // UpdateMCPServiceGroup handles PUT /api/mcp-skills/groups/:id
@@ -503,6 +506,7 @@ func (s *Server) UpdateMCPServiceGroup(c *gin.Context) {
 		ServiceIDs:         req.ServiceIDs,
 		ServiceWeights:     req.ServiceWeights,
 		ToolAliases:        req.ToolAliases,
+		ToolAliasConfigs:   req.ToolAliasConfigs,
 		Enabled:            req.Enabled,
 		AggregationEnabled: req.AggregationEnabled,
 		AccessToken:        req.AccessToken,

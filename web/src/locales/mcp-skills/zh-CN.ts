@@ -176,6 +176,7 @@ export default {
   mcpConfig: "MCP 配置",
   copyConfig: "复制配置",
   configCopied: "配置已复制",
+  copyFailed: "复制失败",
 
   // Templates
   templates: "模板",

@@ -146,6 +146,12 @@ export default {
   canonicalName: "統一名",
   aliasesPlaceholder: "ツール名1, ツール名2, ...",
   addToolAlias: "ツールエイリアスを追加",
+  viewToolDescriptions: "ツール説明を表示",
+  originalDescriptions: "元の説明",
+  noMatchingTools: "一致するツールが見つかりません",
+  unifiedDescription: "統一説明（オプション、トークン節約）",
+  unifiedDescriptionPlaceholder: "統一説明を入力すると、元の説明を置き換えます",
+  noEnabledServices: "有効なサービスがありません",
 
   // MCP集約
   aggregationEnabled: "集約エンドポイントを有効化",
@@ -175,6 +181,7 @@ export default {
   mcpConfig: "MCP設定",
   copyConfig: "設定をコピー",
   configCopied: "設定をコピーしました",
+  copyFailed: "コピーに失敗しました",
 
   // Templates
   templates: "テンプレート",
