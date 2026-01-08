@@ -1431,12 +1431,7 @@ const serviceColumns = computed<DataTableColumns<MCPServiceDTO>>(() => [
           h(NTag, { size: "tiny", bordered: false }, () => `${envLen} ${t("mcpSkills.envCount")}`)
         );
       }
-      // Show API key name for api_bridge type
-      if (row.type === "api_bridge" && row.api_key_name) {
-        items.push(
-          h(NTag, { size: "tiny", bordered: false, type: "info" }, () => row.api_key_name)
-        );
-      }
+
       // Show tool count with expand/collapse button
       const toolCount = row.tool_count || 0;
       const isExpanded = isToolsExpanded(row.id);

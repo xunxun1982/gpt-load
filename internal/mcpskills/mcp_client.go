@@ -127,7 +127,7 @@ func convertToolsResult(toolsResult *mcp.ListToolsResult) []DiscoveredTool {
 func (d *MCPToolDiscovery) discoverFromClient(ctx context.Context, mcpClient mcpClientInterface, clientType string) *DiscoveryResult {
 	result := &DiscoveryResult{Success: false, Tools: []DiscoveredTool{}}
 
-	// Use parent context timeout if shorter than default, otherwise use default
+	// Apply discovery timeout; Go will honor parent deadline if shorter
 	timeoutCtx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 
@@ -210,7 +210,10 @@ func (d *MCPToolDiscovery) DiscoverToolsForSSE(ctx context.Context, url string, 
 	}
 	defer mcpClient.Close()
 
-	// Start the client
+	// Start the client with its own timeout budget.
+	// Note: Start() and discoverFromClient() use separate timeout contexts intentionally.
+	// This allows connection setup and tool discovery to each have their own time budget,
+	// which is appropriate since network connection may take time before MCP operations begin.
 	timeoutCtx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 	if err := mcpClient.Start(timeoutCtx); err != nil {
@@ -245,7 +248,10 @@ func (d *MCPToolDiscovery) DiscoverToolsForStreamableHTTP(ctx context.Context, u
 	}
 	defer mcpClient.Close()
 
-	// Start the client
+	// Start the client with its own timeout budget.
+	// Note: Start() and discoverFromClient() use separate timeout contexts intentionally.
+	// This allows connection setup and tool discovery to each have their own time budget,
+	// which is appropriate since network connection may take time before MCP operations begin.
 	timeoutCtx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 	if err := mcpClient.Start(timeoutCtx); err != nil {
@@ -369,8 +375,8 @@ func GuessPackageManagerFromCommand(command string, args []string) (packageManag
 // findPackageNameInArgs finds package name from command arguments
 func findPackageNameInArgs(args []string, checkAtSign bool) string {
 	for _, arg := range args {
-		// Skip flags and -y option
-		if strings.HasPrefix(arg, "-") || arg == "-y" {
+		// Skip flags (including -y which starts with -)
+		if strings.HasPrefix(arg, "-") {
 			continue
 		}
 		// For npm/npx, look for package with @ or / (scoped packages or versions)

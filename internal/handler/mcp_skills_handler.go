@@ -7,6 +7,7 @@ import (
 	"time"
 
 	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/i18n"
 	"gpt-load/internal/mcpskills"
 	"gpt-load/internal/response"
 
@@ -296,7 +297,9 @@ func (s *Server) ToggleMCPServiceEnabled(c *gin.Context) {
 	if service.Enabled {
 		status = "mcp_skills.status.enabled"
 	}
-	response.SuccessI18n(c, "mcp_skills.service_toggled", service, map[string]any{"status": status})
+	// Translate status before passing to template
+	translatedStatus := i18n.Message(c, status)
+	response.SuccessI18n(c, "mcp_skills.service_toggled", service, map[string]any{"status": translatedStatus})
 }
 
 // GetAPIBridgeTemplates handles GET /api/mcp-skills/templates
@@ -549,7 +552,9 @@ func (s *Server) ToggleMCPServiceGroupEnabled(c *gin.Context) {
 		status = "mcp_skills.status.enabled"
 	}
 	// AI Review: Use group-specific i18n key for semantic clarity
-	response.SuccessI18n(c, "mcp_skills.group_toggled", group, map[string]any{"status": status})
+	// Translate status before passing to template
+	translatedStatus := i18n.Message(c, status)
+	response.SuccessI18n(c, "mcp_skills.group_toggled", group, map[string]any{"status": translatedStatus})
 }
 
 // AddServicesToGroupRequest represents the request to add services to a group
@@ -911,7 +916,9 @@ func (s *Server) ToggleMCPServiceMCPEnabled(c *gin.Context) {
 	if service.MCPEnabled {
 		status = "mcp_skills.status.enabled"
 	}
-	response.SuccessI18n(c, "mcp_skills.mcp_toggled", service, map[string]any{"status": status})
+	// Translate status before passing to template
+	translatedStatus := i18n.Message(c, status)
+	response.SuccessI18n(c, "mcp_skills.mcp_toggled", service, map[string]any{"status": translatedStatus})
 }
 
 // RegenerateMCPServiceAccessToken handles POST /api/mcp-skills/services/:id/regenerate-token
