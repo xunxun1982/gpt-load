@@ -9,7 +9,6 @@ import (
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/i18n"
-	"gpt-load/internal/mcpskills"
 	"gpt-load/internal/services"
 	"gpt-load/internal/sitemanagement"
 	"gpt-load/internal/types"
@@ -41,11 +40,6 @@ type Server struct {
 	SiteService                   *sitemanagement.SiteService
 	AutoCheckinService            *sitemanagement.AutoCheckinService
 	BindingService                *sitemanagement.BindingService
-	MCPSkillsService              *mcpskills.Service
-	MCPSkillsGroupService         *mcpskills.GroupService
-	MCPSkillsExportService        *mcpskills.SkillExportService
-	MCPSkillsAggregationHandler   *mcpskills.AggregationMCPHandler
-	MCPSkillsServiceHandler       *mcpskills.ServiceMCPHandler
 }
 
 // NewServerParams defines the dependencies for the NewServer constructor.
@@ -71,11 +65,6 @@ type NewServerParams struct {
 	SiteService                *sitemanagement.SiteService
 	AutoCheckinService         *sitemanagement.AutoCheckinService
 	BindingService             *sitemanagement.BindingService
-	MCPSkillsService              *mcpskills.Service
-	MCPSkillsGroupService         *mcpskills.GroupService
-	MCPSkillsExportService        *mcpskills.SkillExportService
-	MCPSkillsAggregationHandler   *mcpskills.AggregationMCPHandler
-	MCPSkillsServiceHandler       *mcpskills.ServiceMCPHandler
 }
 
 // NewServer creates a new handler instance with dependencies injected by dig.
@@ -101,11 +90,6 @@ func NewServer(params NewServerParams) *Server {
 		SiteService:                   params.SiteService,
 		AutoCheckinService:            params.AutoCheckinService,
 		BindingService:                params.BindingService,
-		MCPSkillsService:              params.MCPSkillsService,
-		MCPSkillsGroupService:         params.MCPSkillsGroupService,
-		MCPSkillsExportService:        params.MCPSkillsExportService,
-		MCPSkillsAggregationHandler:   params.MCPSkillsAggregationHandler,
-		MCPSkillsServiceHandler:       params.MCPSkillsServiceHandler,
 	}
 
 	// Set binding callbacks to avoid circular dependency between services and sitemanagement packages

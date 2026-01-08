@@ -13,7 +13,6 @@ import (
 	dbmigrations "gpt-load/internal/db/migrations"
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/keypool"
-	"gpt-load/internal/mcpskills"
 	"gpt-load/internal/models"
 	"gpt-load/internal/proxy"
 	"gpt-load/internal/services"
@@ -41,7 +40,6 @@ type App struct {
 	cronChecker            *keypool.CronChecker
 	keyPoolProvider        *keypool.KeyProvider
 	proxyServer            *proxy.ProxyServer
-	mcpCacheCleanupService *mcpskills.CacheCleanupService
 	storage                store.Store
 	db                     *gorm.DB
 	httpServer             *http.Server
@@ -61,7 +59,6 @@ type AppParams struct {
 	CronChecker            *keypool.CronChecker
 	KeyPoolProvider        *keypool.KeyProvider
 	ProxyServer            *proxy.ProxyServer
-	MCPCacheCleanupService *mcpskills.CacheCleanupService
 	Storage                store.Store
 	DB                     *gorm.DB
 }
@@ -80,7 +77,6 @@ func NewApp(params AppParams) *App {
 		cronChecker:            params.CronChecker,
 		keyPoolProvider:        params.KeyPoolProvider,
 		proxyServer:            params.ProxyServer,
-		mcpCacheCleanupService: params.MCPCacheCleanupService,
 		storage:                params.Storage,
 		db:                     params.DB,
 	}
@@ -114,10 +110,6 @@ func (a *App) Start() error {
 			&sitemanagement.ManagedSite{},
 			&sitemanagement.ManagedSiteCheckinLog{},
 			&sitemanagement.ManagedSiteSetting{},
-			&mcpskills.MCPService{},
-			&mcpskills.MCPServiceGroup{},
-			&mcpskills.MCPLog{},
-			&mcpskills.MCPToolCache{},
 		); err != nil {
 			return fmt.Errorf("database auto-migration failed: %w", err)
 		}
@@ -160,7 +152,6 @@ func (a *App) Start() error {
 		a.autoCheckinService.Start()
 		a.logCleanupService.Start()
 		a.cronChecker.Start()
-		a.mcpCacheCleanupService.Start()
 	} else {
 		logrus.Info("Starting as Slave Node.")
 		a.settingsManager.Initialize(a.storage, a.groupManager, a.configManager.IsMaster())
@@ -232,7 +223,6 @@ func (a *App) Stop(ctx context.Context) {
 			a.autoCheckinService.Stop,
 			a.logCleanupService.Stop,
 			a.requestLogService.Stop,
-			a.mcpCacheCleanupService.Stop,
 		)
 	}
 
