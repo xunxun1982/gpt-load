@@ -549,11 +549,19 @@ function formatDateTime(dateStr?: string) {
   }
 }
 
+// Calculate first column width based on max sort number digits
+const sortColumnWidth = computed(() => {
+  const maxSort = Math.max(0, ...sites.value.map(s => s.sort));
+  const digits = maxSort > 0 ? Math.floor(Math.log10(maxSort)) + 1 : 1;
+  // Base width 28px + 9px per digit, min 40px
+  return Math.max(40, 28 + digits * 9);
+});
+
 const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
   {
     title: "#",
     key: "sort",
-    width: 45,
+    width: sortColumnWidth.value,
     align: "center",
     titleAlign: "center",
     render: row => h(NText, { depth: 3 }, () => row.sort),
