@@ -59,6 +59,8 @@ export default {
     endTime: "结束时间",
     selectAll: "全选",
     deselectAll: "取消选中",
+    unlimited: "无限",
+    or: "或",
   },
   login: {
     title: "GPT Load",

@@ -1,6 +1,9 @@
 package locales
 
-import sitei18n "gpt-load/internal/sitemanagement/i18n"
+import (
+	mcpskillsi18n "gpt-load/internal/mcpskills/i18n"
+	sitei18n "gpt-load/internal/sitemanagement/i18n"
+)
 
 // Messages Chinese (Simplified) translations
 var MessagesZhCN = map[string]string{
@@ -248,6 +251,9 @@ var MessagesZhCN = map[string]string{
 
 func init() {
 	for k, v := range sitei18n.MessagesZhCN {
+		MessagesZhCN[k] = v
+	}
+	for k, v := range mcpskillsi18n.MessagesZhCN {
 		MessagesZhCN[k] = v
 	}
 }

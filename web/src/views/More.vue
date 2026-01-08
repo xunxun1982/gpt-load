@@ -1,13 +1,20 @@
 <script setup lang="ts">
-import SiteManagementPanel from "@/features/site-management/components/SiteManagementPanel.vue";
 import { NCard, NEmpty, NTabPane, NTabs } from "naive-ui";
-import { ref, watch } from "vue";
+import { defineAsyncComponent, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
+// Async components for code splitting - each feature loads independently
+const SiteManagementPanel = defineAsyncComponent(
+  () => import("@/features/site-management/components/SiteManagementPanel.vue")
+);
+const MCPSkillsPanel = defineAsyncComponent(
+  () => import("@/features/mcp-skills/components/MCPSkillsPanel.vue")
+);
+
 const { t } = useI18n();
 
-type MoreTab = "site" | "central" | "agent";
+type MoreTab = "site" | "mcp" | "agent";
 
 const DEFAULT_TAB: MoreTab = "site";
 
@@ -16,14 +23,16 @@ const route = useRoute();
 
 const panes: Array<{ key: MoreTab; labelKey: string }> = [
   { key: "site", labelKey: "more.siteManagement" },
-  { key: "central", labelKey: "more.centralService" },
+  { key: "mcp", labelKey: "mcpSkills.title" },
   { key: "agent", labelKey: "more.agent" },
 ];
 
 // Sanitizes route query parameter to a valid tab value
+// AI Review Note: No backward compatibility needed for "central" -> "mcp" rename
+// because "central" tab was never released to production
 function normalizeTab(value: unknown): MoreTab {
   const raw = Array.isArray(value) ? value[0] : value;
-  if (raw === "site" || raw === "central" || raw === "agent") {
+  if (raw === "site" || raw === "mcp" || raw === "agent") {
     return raw;
   }
   return DEFAULT_TAB;
@@ -87,6 +96,7 @@ function handleNavigateToGroup(groupId: number) {
             v-if="pane.key === 'site'"
             @navigate-to-group="handleNavigateToGroup"
           />
+          <m-c-p-skills-panel v-else-if="pane.key === 'mcp'" />
           <n-empty
             v-else
             size="tiny"
