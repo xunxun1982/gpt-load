@@ -437,7 +437,9 @@ function generateRandomAccessToken(): string {
   crypto.getRandomValues(randomValues);
   let result = "";
   for (let i = 0; i < length; i++) {
-    // TypeScript strict mode requires explicit check, but getRandomValues always fills the array
+    // AI Review: Type assertion kept for TypeScript strict mode compatibility.
+    // Note: crypto.getRandomValues() always fills the entire array per Web Crypto API spec,
+    // so randomValues[i] is guaranteed to be a number. The assertion is only for type safety.
     const value = randomValues[i] as number;
     result += chars.charAt(value % chars.length);
   }
@@ -2835,6 +2837,8 @@ onMounted(() => {
   border-radius: 4px;
   border: 1px solid var(--border-color, #e0e0e0);
   overflow: hidden;
+  /* Prevent flex shrink when tools-list has max-height constraint */
+  flex-shrink: 0;
 }
 .tool-name-row {
   display: flex;
@@ -2911,6 +2915,8 @@ onMounted(() => {
   background: var(--card-bg, #fff);
   border-radius: 4px;
   border: 1px solid var(--border-color, #e0e0e0);
+  /* Prevent flex shrink when group-services-list has max-height constraint */
+  flex-shrink: 0;
 }
 .group-service-header {
   margin-bottom: 8px;
