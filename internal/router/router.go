@@ -67,7 +67,6 @@ func NewRouter(
 	// Register routes
 	registerSystemRoutes(router, serverHandler)
 	registerAPIRoutes(router, serverHandler, configManager)
-	registerAggregationMCPRoutes(router, serverHandler)
 	registerProxyRoutes(router, proxyServer, groupManager, serverHandler, requestLogService)
 	registerFrontendRoutes(router, buildFS, indexPage)
 
@@ -225,50 +224,6 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		siteMgmt.GET("/sites-for-binding", serverHandler.ListSitesForBinding)
 	}
 
-	// MCP Skills management
-	mcpSkills := api.Group("/mcp-skills")
-	{
-		// Services
-		mcpSkills.GET("/services", serverHandler.ListMCPServices)
-		mcpSkills.POST("/services", serverHandler.CreateMCPService)
-		mcpSkills.GET("/services/count", serverHandler.CountAllMCPServices)
-		mcpSkills.DELETE("/services/all", serverHandler.DeleteAllMCPServices)
-		mcpSkills.GET("/services/:id", serverHandler.GetMCPService)
-		mcpSkills.PUT("/services/:id", serverHandler.UpdateMCPService)
-		mcpSkills.DELETE("/services/:id", serverHandler.DeleteMCPService)
-		mcpSkills.POST("/services/:id/toggle", serverHandler.ToggleMCPServiceEnabled)
-		mcpSkills.POST("/services/:id/toggle-mcp", serverHandler.ToggleMCPServiceMCPEnabled)
-		mcpSkills.POST("/services/:id/test", serverHandler.TestMCPService)
-		mcpSkills.GET("/services/:id/endpoint-info", serverHandler.GetMCPServiceEndpointInfo)
-		mcpSkills.POST("/services/:id/regenerate-token", serverHandler.RegenerateMCPServiceAccessToken)
-		mcpSkills.GET("/services/:id/tools", serverHandler.GetMCPServiceTools)
-		mcpSkills.POST("/services/:id/tools/refresh", serverHandler.RefreshMCPServiceTools)
-
-		// Templates
-		mcpSkills.GET("/templates", serverHandler.GetAPIBridgeTemplates)
-		mcpSkills.POST("/services/from-template", serverHandler.CreateMCPServiceFromTemplate)
-
-		// Groups
-		mcpSkills.GET("/groups", serverHandler.ListMCPServiceGroups)
-		mcpSkills.POST("/groups", serverHandler.CreateMCPServiceGroup)
-		mcpSkills.GET("/groups/:id", serverHandler.GetMCPServiceGroup)
-		mcpSkills.PUT("/groups/:id", serverHandler.UpdateMCPServiceGroup)
-		mcpSkills.DELETE("/groups/:id", serverHandler.DeleteMCPServiceGroup)
-		mcpSkills.POST("/groups/:id/toggle", serverHandler.ToggleMCPServiceGroupEnabled)
-		mcpSkills.POST("/groups/:id/services", serverHandler.AddServicesToMCPGroup)
-		mcpSkills.DELETE("/groups/:id/services", serverHandler.RemoveServicesFromMCPGroup)
-		mcpSkills.GET("/groups/:id/export", serverHandler.ExportMCPGroupAsSkill)
-		mcpSkills.GET("/groups/:id/endpoint-info", serverHandler.GetMCPGroupEndpointInfo)
-		mcpSkills.POST("/groups/:id/regenerate-token", serverHandler.RegenerateMCPGroupAccessToken)
-		mcpSkills.GET("/groups/:id/access-token", serverHandler.GetMCPGroupAccessToken)
-		mcpSkills.GET("/groups/:id/services-with-tools", serverHandler.GetMCPGroupServicesWithTools)
-
-		// Import/Export
-		mcpSkills.GET("/export", serverHandler.ExportMCPSkills)
-		mcpSkills.POST("/import", serverHandler.ImportMCPSkills)
-		mcpSkills.POST("/import-mcp-json", serverHandler.ImportMCPServers)
-	}
-
 	// System-wide import/export
 	system := api.Group("/system")
 	{
@@ -278,19 +233,6 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		system.POST("/import-groups-batch", serverHandler.ImportGroupsBatch)
 		system.GET("/environment", serverHandler.GetEnvironmentInfo)
 	}
-}
-
-// registerAggregationMCPRoutes registers MCP Aggregation routes for service groups
-// MCP Aggregation exposes only search_tools and execute_tool for reduced context usage
-func registerAggregationMCPRoutes(router *gin.Engine, serverHandler *handler.Server) {
-	// MCP Aggregation endpoint: /mcp/aggregation/:name
-	// This endpoint handles JSON-RPC 2.0 MCP protocol requests
-	router.POST("/mcp/aggregation/:name", serverHandler.HandleAggregationMCP)
-
-	// Single service MCP endpoint: /mcp/service/:id
-	// This endpoint exposes a single service's tools via standard MCP protocol
-	// Using ID instead of name to support duplicate service names
-	router.POST("/mcp/service/:id", serverHandler.HandleServiceMCP)
 }
 
 // registerProxyRoutes registers proxy routes

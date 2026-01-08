@@ -10,7 +10,6 @@ import (
 	"gpt-load/internal/handler"
 	"gpt-load/internal/httpclient"
 	"gpt-load/internal/keypool"
-	"gpt-load/internal/mcpskills"
 	"gpt-load/internal/proxy"
 	"gpt-load/internal/router"
 	"gpt-load/internal/services"
@@ -120,29 +119,6 @@ func BuildContainer() (*dig.Container, error) {
 		return nil, err
 	}
 	if err := container.Provide(sitemanagement.NewBindingService); err != nil {
-		return nil, err
-	}
-
-	// MCP Skills Services
-	if err := container.Provide(mcpskills.NewService); err != nil {
-		return nil, err
-	}
-	if err := container.Provide(mcpskills.NewGroupService); err != nil {
-		return nil, err
-	}
-	if err := container.Provide(mcpskills.NewSkillExportService); err != nil {
-		return nil, err
-	}
-	if err := container.Provide(mcpskills.NewAPIExecutor); err != nil {
-		return nil, err
-	}
-	if err := container.Provide(mcpskills.NewAggregationMCPHandler); err != nil {
-		return nil, err
-	}
-	if err := container.Provide(mcpskills.NewServiceMCPHandler); err != nil {
-		return nil, err
-	}
-	if err := container.Provide(mcpskills.NewCacheCleanupService); err != nil {
 		return nil, err
 	}
 
