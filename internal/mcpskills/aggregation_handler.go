@@ -525,6 +525,9 @@ func (h *AggregationMCPHandler) findServicesWithTool(group *MCPServiceGroupDTO, 
 }
 
 // selectServiceByWeight selects a service using weighted random selection adjusted by error rate
+// Note: No manual seeding of math/rand is needed. Go 1.20+ automatically seeds the global
+// random generator with a random value at program startup (crypto/rand based).
+// See: https://go.dev/doc/go1.20#math/rand
 func (h *AggregationMCPHandler) selectServiceByWeight(services []serviceWithTool, excludeIDs map[uint]bool) *serviceWithTool {
 	if len(services) == 0 {
 		return nil

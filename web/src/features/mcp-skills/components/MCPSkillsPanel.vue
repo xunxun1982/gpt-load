@@ -1258,6 +1258,11 @@ async function confirmDeleteAll() {
 
   // Show confirmation dialog with input
   deleteAllConfirmInput.value = "";
+  // AI Review: Suggested using locale-independent confirmation text (e.g., "DELETE ALL").
+  // Rejected: The confirmation text shown to user is localized, so the input validation
+  // must also use the same localized text. Using a fixed English string would confuse
+  // non-English users who see localized prompt but must type English text.
+  // The current approach is correct: display and validate using the same i18n key.
   dialog.create({
     title: t("mcpSkills.deleteAll"),
     content: () =>
@@ -2746,7 +2751,7 @@ onMounted(() => {
 .endpoint-value code {
   flex: 1;
   padding: 8px;
-  background: var(--n-color-embedded);
+  background: var(--bg-secondary, #f5f5f5);
   border-radius: 4px;
   word-break: break-all;
   font-size: 12px;
@@ -2754,7 +2759,7 @@ onMounted(() => {
 .config-block pre {
   flex: 1;
   padding: 8px;
-  background: var(--n-color-embedded);
+  background: var(--bg-secondary, #f5f5f5);
   border-radius: 4px;
   font-size: 12px;
   white-space: pre-wrap;
@@ -2783,9 +2788,9 @@ onMounted(() => {
 .tools-expansion-panel {
   margin: 8px 0;
   padding: 12px;
-  background: var(--n-color-embedded);
+  background: var(--bg-secondary, #f5f5f5);
   border-radius: 6px;
-  border: 1px solid var(--n-border-color);
+  border: 1px solid var(--border-color, #e0e0e0);
 }
 .tools-expansion-header {
   display: flex;
@@ -2793,7 +2798,7 @@ onMounted(() => {
   align-items: center;
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--n-border-color);
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
 }
 .tools-loading,
 .tools-error,
@@ -2807,11 +2812,28 @@ onMounted(() => {
   gap: 4px;
   max-height: 400px;
   overflow-y: auto;
+  /* Ensure scrollbar is always visible when content overflows */
+  scrollbar-gutter: stable;
+}
+/* Force scrollbar visibility for tools list */
+.tools-list::-webkit-scrollbar {
+  width: 8px;
+}
+.tools-list::-webkit-scrollbar-track {
+  background: var(--bg-secondary, #f5f5f5);
+  border-radius: 4px;
+}
+.tools-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-bg, rgba(0, 0, 0, 0.2));
+  border-radius: 4px;
+}
+.tools-list::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-bg-hover, rgba(0, 0, 0, 0.3));
 }
 .tool-item-clickable {
-  background: var(--n-color);
+  background: var(--card-bg, #fff);
   border-radius: 4px;
-  border: 1px solid var(--n-border-color);
+  border: 1px solid var(--border-color, #e0e0e0);
   overflow: hidden;
 }
 .tool-name-row {
@@ -2821,19 +2843,21 @@ onMounted(() => {
   cursor: pointer;
   user-select: none;
   gap: 8px;
+  background: var(--card-bg, #fff);
+  color: var(--text-primary, #333);
 }
 .tool-name-row:hover {
-  background: var(--n-color-hover);
+  background: var(--hover-bg, rgba(0, 0, 0, 0.05));
 }
 .tool-expand-icon {
   margin-left: auto;
-  color: var(--n-text-color-3);
+  color: var(--text-secondary, #666);
   font-size: 10px;
 }
 .tool-detail-panel {
   padding: 8px 10px;
-  border-top: 1px dashed var(--n-border-color);
-  background: var(--n-color-embedded);
+  border-top: 1px dashed var(--border-color, #e0e0e0);
+  background: var(--bg-secondary, #f5f5f5);
 }
 .tool-header {
   margin-bottom: 4px;
@@ -2848,7 +2872,7 @@ onMounted(() => {
 .schema-code {
   margin: 4px 0 0 0;
   padding: 8px;
-  background: var(--n-color-embedded);
+  background: var(--bg-secondary, #f5f5f5);
   border-radius: 4px;
   font-size: 11px;
   overflow-x: auto;
@@ -2864,17 +2888,34 @@ onMounted(() => {
   gap: 12px;
   max-height: 500px;
   overflow-y: auto;
+  /* Ensure scrollbar is always visible when content overflows */
+  scrollbar-gutter: stable;
+}
+/* Force scrollbar visibility for group services list */
+.group-services-list::-webkit-scrollbar {
+  width: 8px;
+}
+.group-services-list::-webkit-scrollbar-track {
+  background: var(--bg-secondary, #f5f5f5);
+  border-radius: 4px;
+}
+.group-services-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-bg, rgba(0, 0, 0, 0.2));
+  border-radius: 4px;
+}
+.group-services-list::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-bg-hover, rgba(0, 0, 0, 0.3));
 }
 .group-service-item {
   padding: 10px;
-  background: var(--n-color);
+  background: var(--card-bg, #fff);
   border-radius: 4px;
-  border: 1px solid var(--n-border-color);
+  border: 1px solid var(--border-color, #e0e0e0);
 }
 .group-service-header {
   margin-bottom: 8px;
   padding-bottom: 6px;
-  border-bottom: 1px dashed var(--n-border-color);
+  border-bottom: 1px dashed var(--border-color, #e0e0e0);
 }
 .group-service-tools {
   display: flex;
