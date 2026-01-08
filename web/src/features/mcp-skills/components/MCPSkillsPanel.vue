@@ -510,6 +510,11 @@ const serviceOptions = computed<SelectOption[]>(() =>
 );
 
 // Helper to check if a service is enabled
+// AI Review Note: Returns true for unknown service IDs intentionally.
+// Reason: When a service is deleted but still referenced in a group's service_ids,
+// returning false would cause UI issues (e.g., all services appearing disabled).
+// The group's service_ids should be cleaned up when services are deleted.
+// This is a defensive default that prevents UI breakage during edge cases.
 function isServiceEnabled(serviceId: number): boolean {
   const service = services.value.find(s => s.id === serviceId);
   return service?.enabled ?? true;

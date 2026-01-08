@@ -207,7 +207,12 @@ func (h *AggregationMCPHandler) SearchTools(ctx context.Context, group *MCPServi
 		yamlTools = append(yamlTools, yt)
 	}
 
-	yamlBytes, _ := yaml.Marshal(yamlTools)
+	// AI Review: yaml.Marshal rarely fails for simple structs, but log errors for debugging
+	yamlBytes, err := yaml.Marshal(yamlTools)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{"service": targetService.Name, "error": err}).Warn("Failed to marshal tools to YAML")
+		yamlBytes = []byte("# marshal error")
+	}
 	return map[string]interface{}{
 		"tools_yaml": string(yamlBytes),
 		"tool_count": len(targetService.Tools),
@@ -299,7 +304,12 @@ func (h *AggregationMCPHandler) ListAllTools(ctx context.Context, group *MCPServ
 		tools = append(tools, *t)
 	}
 
-	yamlBytes, _ := yaml.Marshal(tools)
+	// AI Review: yaml.Marshal rarely fails for simple structs, but log errors for debugging
+	yamlBytes, err := yaml.Marshal(tools)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{"group": group.Name, "error": err}).Warn("Failed to marshal unified tools to YAML")
+		yamlBytes = []byte("# marshal error")
+	}
 	return map[string]interface{}{
 		"tools_yaml":    string(yamlBytes),
 		"tool_count":    len(tools),
@@ -419,7 +429,12 @@ func (h *AggregationMCPHandler) ListSimilarTools(ctx context.Context, group *MCP
 		})
 	}
 
-	yamlBytes, _ := yaml.Marshal(serviceInfos)
+	// AI Review: yaml.Marshal rarely fails for simple structs, but log errors for debugging
+	yamlBytes, err := yaml.Marshal(serviceInfos)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{"tool": args.ToolName, "error": err}).Warn("Failed to marshal service infos to YAML")
+		yamlBytes = []byte("# marshal error")
+	}
 	return map[string]interface{}{
 		"tool_name": args.ToolName, "service_count": len(services), "services": serviceInfos,
 		"content": []map[string]interface{}{{"type": "text", "text": fmt.Sprintf("Tool '%s' in %d services:\n%s", args.ToolName, len(services), string(yamlBytes))}},
