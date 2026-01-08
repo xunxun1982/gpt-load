@@ -28,6 +28,7 @@ import {
   Key,
   RefreshOutline,
   Search,
+  SettingsOutline,
   TrashOutline,
 } from "@vicons/ionicons5";
 import { debounce } from "lodash-es";
@@ -53,8 +54,9 @@ import {
   type DataTableColumns,
   type SelectOption,
 } from "naive-ui";
-import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import RuntimeManagementModal from "./RuntimeManagementModal.vue";
 
 const { t } = useI18n();
 const message = useMessage();
@@ -104,6 +106,19 @@ const selectedTemplate = computed(
 
 // Testing state
 const testingServices = ref<Set<number>>(new Set());
+
+// Runtime management modal state
+const showRuntimeModal = ref(false);
+const runtimeModalRef = ref<InstanceType<typeof RuntimeManagementModal> | null>(null);
+
+// Open runtime management modal
+function openRuntimeModal() {
+  showRuntimeModal.value = true;
+  // Use nextTick to ensure modal is mounted before calling loadRuntimes
+  nextTick(() => {
+    runtimeModalRef.value?.loadRuntimes();
+  });
+}
 
 // Tool expansion state - tracks which services have expanded tool lists
 
@@ -1122,7 +1137,17 @@ async function testService(service: MCPServiceDTO) {
       // Refresh service list to update tool_count and mcp_enabled status
       await loadServices();
     } else {
-      message.error(t("mcpSkills.testFailed", { error: result.error || "Unknown error" }));
+      // Check if it's a command not found error (common in Docker/container environments)
+      if (result.command_not_found && result.missing_command) {
+        // Show detailed error with installation hint
+        const errorMsg = t("mcpSkills.commandNotFound", {
+          command: result.missing_command,
+          hint: result.install_hint || "",
+        });
+        message.error(errorMsg, { duration: 8000 });
+      } else {
+        message.error(t("mcpSkills.testFailed", { error: result.error || "Unknown error" }));
+      }
     }
   } catch (_) {
     /* handled by centralized error handler */
@@ -1195,12 +1220,29 @@ async function importFromJson() {
   try {
     const result = await mcpSkillsApi.importMCPServers(config);
     if (result.imported > 0) {
-      message.success(
-        t("mcpSkills.jsonImportSuccess", {
-          imported: result.imported,
-          skipped: result.skipped,
-        })
-      );
+      // Check if any services have missing commands
+      if (result.command_not_found_services && result.command_not_found_services.length > 0) {
+        // Show warning about missing commands
+        const missingCmds = result.command_not_found_services
+          .map(s => `${s.service_name}: ${s.missing_command}`)
+          .join(", ");
+        message.warning(
+          t("mcpSkills.jsonImportWithMissingCommands", {
+            imported: result.imported,
+            skipped: result.skipped,
+            missingCount: result.command_not_found_services.length,
+            commands: missingCmds,
+          }),
+          { duration: 10000 }
+        );
+      } else {
+        message.success(
+          t("mcpSkills.jsonImportSuccess", {
+            imported: result.imported,
+            skipped: result.skipped,
+          })
+        );
+      }
       showJsonImportModal.value = false;
       await loadServices();
     } else {
@@ -1689,6 +1731,10 @@ onMounted(() => {
         <n-button size="small" :loading="importLoading" @click="triggerImport">
           <template #icon><n-icon :component="CloudUploadOutline" /></template>
           {{ t("mcpSkills.importAll") }}
+        </n-button>
+        <n-button size="small" @click="openRuntimeModal">
+          <template #icon><n-icon :component="SettingsOutline" /></template>
+          {{ t("mcpSkills.runtimeManagement") }}
         </n-button>
       </n-space>
     </div>
@@ -2690,6 +2736,9 @@ onMounted(() => {
         </n-space>
       </template>
     </n-modal>
+
+    <!-- Runtime Management Modal -->
+    <runtime-management-modal ref="runtimeModalRef" v-model:show="showRuntimeModal" />
   </div>
 </template>
 
@@ -2928,5 +2977,37 @@ onMounted(() => {
   flex-direction: column;
   gap: 4px;
   padding-left: 8px;
+}
+
+/* Runtime management styles */
+.runtime-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.runtime-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 12px;
+  background: var(--bg-secondary, #f5f5f5);
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #e0e0e0);
+}
+.runtime-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+.runtime-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.runtime-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 </style>

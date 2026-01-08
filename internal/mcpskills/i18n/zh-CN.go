@@ -26,6 +26,14 @@ var MessagesZhCN = map[string]string{
 	"mcp_skills.token_regenerated":         "访问令牌已重新生成",
 	"mcp_skills.import_completed":          "导入完成",
 	"mcp_skills.mcp_json_import_completed": "MCP JSON 导入完成",
+	"mcp_skills.tools_refreshed":           "工具列表已刷新",
+
+	// Runtime management
+	"mcp_skills.runtime_installed":   "运行时 {{.runtime}} 安装成功",
+	"mcp_skills.runtime_uninstalled": "运行时 {{.runtime}} 已卸载",
+	"mcp_skills.runtime_upgraded":    "运行时 {{.runtime}} 已升级",
+	"mcp_skills.package_installed":   "包 {{.package}} 安装成功",
+	"mcp_skills.package_uninstalled": "包 {{.package}} 已卸载",
 
 	// Error messages
 	"mcp_skills.service_not_found":     "MCP服务不存在",

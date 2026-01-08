@@ -252,6 +252,8 @@ export default {
   test: "テスト",
   testSuccess: "MCP「{name}」は正常に動作しています",
   testFailed: "テスト失敗：{error}",
+  commandNotFound:
+    "コマンド '{command}' が見つかりません。{hint} Dockerで実行している場合は、リモートMCPサービス（SSE/HTTP）の使用を検討してください。",
 
   // Custom endpoint
   customEndpointHint: "空欄で公式エンドポイントを使用",
@@ -275,6 +277,8 @@ export default {
   jsonImportNoServers: "設定にMCPが見つかりません",
   jsonImportSuccess: "インポート成功：{imported}件インポート、{skipped}件スキップ",
   jsonImportAllSkipped: "すべてのMCPがスキップされました（{skipped}件）",
+  jsonImportWithMissingCommands:
+    "インポート成功：{imported}件インポート、{skipped}件スキップ。注意：{missingCount}件のサービスでコマンドが見つかりません（{commands}）。使用するには必要なランタイムをインストールしてください。",
 
   // MCP Endpoint
   mcpEnabled: "MCPエンドポイント",
@@ -309,4 +313,33 @@ export default {
   selectGroupHint: "MCP集約を選択して詳細を表示",
   noMatchingItems: "一致する項目が見つかりません",
   noItems: "MCPまたはMCP集約がありません",
+
+  // Runtime management
+  runtimeManagement: "ランタイム管理",
+  runtimeManagementHint:
+    "MCPサービスに必要なランタイム環境を管理します。インストールされたランタイムはデータボリュームに永続化され、コンテナの再構築後も保持されます。",
+  runtimeInstalled: "インストール済み",
+  runtimeNotInstalled: "未インストール",
+  runtimeHostOnly: "ホストのみ",
+  runtimeVersion: "バージョン",
+  runtimeInstall: "インストール",
+  runtimeUninstall: "アンインストール",
+  runtimeUpgrade: "アップグレード",
+  runtimeCannotInstall: "現在の環境ではインストールできません",
+  runtimeDockerWarning:
+    "Dockerはホストシステムにインストールする必要があり、コンテナ内にはインストールできません",
+  runtimeContainerNote:
+    "現在コンテナ環境で実行中です。インストールされたランタイムはマップされたデータボリュームに保存されます。",
+  runtimeInstalled_success: "ランタイム {name} のインストールが完了しました",
+  runtimeUninstalled_success: "ランタイム {name} のアンインストールが完了しました",
+  runtimeUpgraded_success: "ランタイム {name} のアップグレードが完了しました",
+  runtimeUseProxy: "プロキシを使用してダウンロード",
+  runtimeProxyUrlPlaceholder: "プロキシURL、例：http://127.0.0.1:7890",
+  customPackageInstall: "カスタムパッケージをインストール",
+  customPackageHint: "ace-tool、MCPサーバーなどのグローバルCLIツールをインストール",
+  customPackageNamePlaceholder: "パッケージ名、例：ace-tool",
+  customInstallCommandPlaceholder: "インストールコマンド、例：npm install -g ace-tool@latest",
+  customPackageInstallBtn: "インストール",
+  customPackageRequired: "パッケージ名とインストールコマンドを入力してください",
+  customPackageInstalled_success: "パッケージ {name} のインストールが完了しました",
 };

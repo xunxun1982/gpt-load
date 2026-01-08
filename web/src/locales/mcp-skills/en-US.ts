@@ -251,6 +251,8 @@ export default {
   test: "Test",
   testSuccess: 'MCP "{name}" is working correctly',
   testFailed: "Test failed: {error}",
+  commandNotFound:
+    "Command '{command}' not found. {hint} If running in Docker, consider using remote MCP services (SSE/HTTP).",
 
   // Custom endpoint
   customEndpointHint: "Leave empty to use official endpoint",
@@ -274,6 +276,8 @@ export default {
   jsonImportNoServers: "No MCP found in configuration",
   jsonImportSuccess: "Import successful: {imported} imported, {skipped} skipped",
   jsonImportAllSkipped: "All MCPs skipped ({skipped} total)",
+  jsonImportWithMissingCommands:
+    "Import successful: {imported} imported, {skipped} skipped. Note: {missingCount} service(s) have missing commands ({commands}), install the required runtime to use them.",
 
   // MCP Endpoint
   mcpEnabled: "MCP Endpoint",
@@ -308,4 +312,33 @@ export default {
   selectGroupHint: "Select an MCP Aggregation to view details",
   noMatchingItems: "No matching items found",
   noItems: "No MCPs or MCP Aggregations yet",
+
+  // Runtime management
+  runtimeManagement: "Runtime Management",
+  runtimeManagementHint:
+    "Manage runtime environments required by MCP services. Installed runtimes are persisted to the data volume and survive container rebuilds.",
+  runtimeInstalled: "Installed",
+  runtimeNotInstalled: "Not Installed",
+  runtimeHostOnly: "Host Only",
+  runtimeVersion: "Version",
+  runtimeInstall: "Install",
+  runtimeUninstall: "Uninstall",
+  runtimeUpgrade: "Upgrade",
+  runtimeCannotInstall: "Cannot install in current environment",
+  runtimeDockerWarning:
+    "Docker must be installed on the host system, cannot be installed inside a container",
+  runtimeContainerNote:
+    "Currently running in a container environment. Installed runtimes will be saved to the mapped data volume.",
+  runtimeInstalled_success: "Runtime {name} installed successfully",
+  runtimeUninstalled_success: "Runtime {name} uninstalled successfully",
+  runtimeUpgraded_success: "Runtime {name} upgraded successfully",
+  runtimeUseProxy: "Use proxy for download",
+  runtimeProxyUrlPlaceholder: "Proxy URL, e.g., http://127.0.0.1:7890",
+  customPackageInstall: "Install Custom Package",
+  customPackageHint: "Install global CLI tools like ace-tool, MCP servers, etc.",
+  customPackageNamePlaceholder: "Package name, e.g., ace-tool",
+  customInstallCommandPlaceholder: "Install command, e.g., npm install -g ace-tool@latest",
+  customPackageInstallBtn: "Install",
+  customPackageRequired: "Please fill in package name and install command",
+  customPackageInstalled_success: "Package {name} installed successfully",
 };

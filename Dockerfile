@@ -48,13 +48,23 @@ RUN go build \
 FROM alpine
 
 WORKDIR /app
+
+# Install minimal runtime dependencies
+# MCP service runtimes (Node.js, Python, etc.) will be installed on-demand
 RUN apk upgrade --no-cache \
-    && apk add --no-cache ca-certificates tzdata \
+    && apk add --no-cache \
+        ca-certificates \
+        tzdata \
+        curl \
+        bash \
     && update-ca-certificates
 
 # Runtime optimization environment variables
-# Limit memory usage to prevent container OOM
 ENV GOMEMLIMIT=512MiB
+# Ensure npm/npx can find global packages (if Node.js is installed later)
+ENV PATH="/root/.npm-global/bin:/root/.local/bin:$PATH"
+# Set npm global directory (avoids permission issues when Node.js is installed)
+ENV NPM_CONFIG_PREFIX="/root/.npm-global"
 
 COPY --from=go-builder /build/gpt-load .
 EXPOSE 3001

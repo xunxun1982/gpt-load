@@ -86,6 +86,11 @@ type MCPService struct {
 	ArgsJSON string `gorm:"type:text" json:"args_json,omitempty"`
 	Cwd      string `gorm:"type:varchar(512)" json:"cwd,omitempty"` // Working directory for stdio
 
+	// Installation command for custom tools (e.g., "npm install -g ace-tool@latest")
+	// Used when the command is not a standard runtime (npx, uvx, node, python, etc.)
+	// If empty, the system will try to auto-detect based on command and args
+	InstallCommand string `gorm:"type:varchar(512)" json:"install_command,omitempty"`
+
 	// For API bridge services (converting REST APIs to MCP)
 	APIEndpoint  string `gorm:"type:varchar(512)" json:"api_endpoint,omitempty"`
 	APIKeyName   string `gorm:"type:varchar(255)" json:"api_key_name,omitempty"`
@@ -462,21 +467,7 @@ func (g *MCPServiceGroup) SetToolAliasConfigs(configs map[string]ToolAliasConfig
 	g.ToolAliasesJSON = string(data)
 }
 
-// BuildToolAliasLookup builds a reverse lookup map from alias -> canonical name
-// This is used for efficient tool name resolution during smart_execute
-func (g *MCPServiceGroup) BuildToolAliasLookup() map[string]string {
-	lookup := make(map[string]string)
-	aliases := g.GetToolAliases()
-	for canonical, aliasList := range aliases {
-		// Canonical name maps to itself
-		lookup[canonical] = canonical
-		// Each alias maps to canonical name
-		for _, alias := range aliasList {
-			lookup[alias] = canonical
-		}
-	}
-	return lookup
-}
+
 
 // MCPLog represents a log entry for MCP service operations
 type MCPLog struct {
@@ -542,21 +533,4 @@ func (c *MCPToolCache) SetTools(tools []ToolDefinition) error {
 	c.ToolsJSON = string(data)
 	c.ToolCount = len(tools)
 	return nil
-}
-
-// IsStale checks if the cache entry is stale (past soft expiry but before hard expiry)
-// Stale cache can still be served while triggering background refresh
-func (c *MCPToolCache) IsStale() bool {
-	now := time.Now()
-	return now.After(c.SoftExpiry) && now.Before(c.HardExpiry)
-}
-
-// IsExpired checks if the cache entry has hard expired (must refresh synchronously)
-func (c *MCPToolCache) IsExpired() bool {
-	return time.Now().After(c.HardExpiry)
-}
-
-// IsFresh checks if the cache entry is fresh (before soft expiry)
-func (c *MCPToolCache) IsFresh() bool {
-	return time.Now().Before(c.SoftExpiry)
 }

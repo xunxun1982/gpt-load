@@ -75,8 +75,28 @@ func (s *Service) discoverToolsForNewService(ctx context.Context, svc *MCPServic
 	canDiscover := false
 	switch svc.Type {
 	case string(ServiceTypeStdio):
-		if svc.Command != "" && CheckCommandExists(svc.Command) {
-			canDiscover = true
+		if svc.Command != "" {
+			// Check if command exists, try to install if not
+			if !CheckCommandExists(svc.Command) {
+				args, _ := svc.GetArgs()
+				installer := GetRuntimeInstaller()
+				if err := installer.EnsureRuntimeInstalled(ctx, svc.Command, args, svc.InstallCommand); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"service": svc.Name,
+						"command": svc.Command,
+						"error":   err.Error(),
+					}).Warn("Failed to auto-install runtime for tool discovery")
+				} else {
+					logrus.WithFields(logrus.Fields{
+						"service": svc.Name,
+						"command": svc.Command,
+					}).Info("Successfully installed runtime on-demand for tool discovery")
+				}
+			}
+			// Re-check after installation attempt
+			if CheckCommandExists(svc.Command) {
+				canDiscover = true
+			}
 		}
 	case string(ServiceTypeSSE), string(ServiceTypeStreamableHTTP):
 		if svc.APIEndpoint != "" {
@@ -271,6 +291,7 @@ func (s *Service) serviceToDTO(svc *MCPService) MCPServiceDTO {
 		Type:            svc.Type,
 		Command:         svc.Command,
 		Cwd:             svc.Cwd,
+		InstallCommand:  svc.InstallCommand,
 		APIEndpoint:     svc.APIEndpoint,
 		APIKeyName:      svc.APIKeyName,
 		HasAPIKey:       strings.TrimSpace(svc.APIKeyValue) != "",
@@ -526,23 +547,24 @@ func (s *Service) CreateService(ctx context.Context, params CreateServiceParams)
 	}
 
 	svc := &MCPService{
-		Name:         name,
-		DisplayName:  displayName,
-		Description:  strings.TrimSpace(params.Description),
-		Category:     category,
-		Icon:         strings.TrimSpace(params.Icon),
-		Sort:         params.Sort,
-		Enabled:      params.Enabled,
-		Type:         serviceType,
-		Command:      strings.TrimSpace(params.Command),
-		Cwd:          strings.TrimSpace(params.Cwd),
-		APIEndpoint:  strings.TrimSpace(params.APIEndpoint),
-		APIKeyName:   strings.TrimSpace(params.APIKeyName),
-		APIKeyHeader: strings.TrimSpace(params.APIKeyHeader),
-		APIKeyPrefix: strings.TrimSpace(params.APIKeyPrefix),
-		RPDLimit:     params.RPDLimit,
-		MCPEnabled:   params.MCPEnabled,
-		Remark:       strings.TrimSpace(params.Remark),
+		Name:           name,
+		DisplayName:    displayName,
+		Description:    strings.TrimSpace(params.Description),
+		Category:       category,
+		Icon:           strings.TrimSpace(params.Icon),
+		Sort:           params.Sort,
+		Enabled:        params.Enabled,
+		Type:           serviceType,
+		Command:        strings.TrimSpace(params.Command),
+		Cwd:            strings.TrimSpace(params.Cwd),
+		InstallCommand: strings.TrimSpace(params.InstallCommand),
+		APIEndpoint:    strings.TrimSpace(params.APIEndpoint),
+		APIKeyName:     strings.TrimSpace(params.APIKeyName),
+		APIKeyHeader:   strings.TrimSpace(params.APIKeyHeader),
+		APIKeyPrefix:   strings.TrimSpace(params.APIKeyPrefix),
+		RPDLimit:       params.RPDLimit,
+		MCPEnabled:     params.MCPEnabled,
+		Remark:         strings.TrimSpace(params.Remark),
 	}
 
 	// Set access token if MCP enabled
@@ -672,6 +694,10 @@ func (s *Service) UpdateService(ctx context.Context, id uint, params UpdateServi
 	}
 	if params.Enabled != nil {
 		svc.Enabled = *params.Enabled
+		// When disabling a service, also disable its MCP endpoint
+		if !*params.Enabled && svc.MCPEnabled {
+			svc.MCPEnabled = false
+		}
 	}
 	if params.Type != nil {
 		svc.Type = strings.TrimSpace(*params.Type)
@@ -816,24 +842,22 @@ func (s *Service) DeleteAllServices(ctx context.Context) (int64, error) {
 			return nil
 		}
 
-		// Clear service_ids from all groups first to maintain referential integrity
-		var groups []MCPServiceGroup
-		if err := tx.Find(&groups).Error; err != nil {
+		// Clear service_ids from all groups using batch update to avoid N+1 queries
+		// This is more efficient than loading all groups and saving them one by one
+		if err := tx.Model(&MCPServiceGroup{}).
+			Where("service_ids_json != ? AND service_ids_json != ?", "", "[]").
+			Update("service_ids_json", "[]").Error; err != nil {
 			return app_errors.ParseDBError(err)
 		}
 
-		for i := range groups {
-			if len(groups[i].GetServiceIDs()) > 0 {
-				groups[i].ServiceIDsJSON = "[]"
-				if err := tx.Save(&groups[i]).Error; err != nil {
-					return app_errors.ParseDBError(err)
-				}
-			}
-		}
-
-		// Delete all associated logs
+		// Delete all associated logs using batch delete
 		if err := tx.Where("1 = 1").Delete(&MCPLog{}).Error; err != nil {
 			logrus.WithError(err).Warn("Failed to delete MCP logs")
+		}
+
+		// Delete all tool cache entries
+		if err := tx.Where("1 = 1").Delete(&MCPToolCache{}).Error; err != nil {
+			logrus.WithError(err).Warn("Failed to delete MCP tool cache")
 		}
 
 		// Delete all services
@@ -867,6 +891,7 @@ func (s *Service) CountAllServices(ctx context.Context) (int64, error) {
 }
 
 // ToggleServiceEnabled toggles the enabled status of a service
+// When a service is disabled, its MCP endpoint is also disabled to prevent access
 func (s *Service) ToggleServiceEnabled(ctx context.Context, id uint) (*MCPServiceDTO, error) {
 	var svc MCPService
 	if err := s.db.WithContext(ctx).First(&svc, id).Error; err != nil {
@@ -874,6 +899,13 @@ func (s *Service) ToggleServiceEnabled(ctx context.Context, id uint) (*MCPServic
 	}
 
 	svc.Enabled = !svc.Enabled
+
+	// When disabling a service, also disable its MCP endpoint
+	// This ensures disabled services cannot be accessed via MCP protocol
+	if !svc.Enabled && svc.MCPEnabled {
+		svc.MCPEnabled = false
+	}
+
 	if err := s.db.WithContext(ctx).Save(&svc).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
@@ -1035,11 +1067,29 @@ func (s *Service) testMCPServiceConnection(ctx context.Context, svc *MCPService)
 			result.Error = "No command configured"
 			return result
 		}
-		// Check if command exists in PATH
-		if !CheckCommandExists(svc.Command) {
-			result.Success = false
-			result.Error = fmt.Sprintf("Command '%s' not found in PATH", svc.Command)
-			return result
+		// Check if command exists in PATH with detailed hint
+		cmdCheck := CheckCommandWithHint(svc.Command)
+		if !cmdCheck.Exists {
+			// Try to install runtime on-demand
+			args, _ := svc.GetArgs()
+			installer := GetRuntimeInstaller()
+			if err := installer.EnsureRuntimeInstalled(ctx, svc.Command, args, svc.InstallCommand); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"service": svc.Name,
+					"command": svc.Command,
+					"error":   err.Error(),
+				}).Warn("Failed to auto-install runtime")
+				result.Success = false
+				result.CommandNotFound = true
+				result.MissingCommand = svc.Command
+				result.InstallHint = cmdCheck.InstallHint
+				result.Error = fmt.Sprintf("Command '%s' not found in PATH. %s", svc.Command, cmdCheck.InstallHint)
+				return result
+			}
+			logrus.WithFields(logrus.Fields{
+				"service": svc.Name,
+				"command": svc.Command,
+			}).Info("Successfully installed runtime on-demand")
 		}
 	case string(ServiceTypeSSE), string(ServiceTypeStreamableHTTP):
 		endpoint := svc.APIEndpoint
@@ -1371,21 +1421,26 @@ type importServiceTask struct {
 
 // importServiceResult represents the result of importing a single service
 type importServiceResult struct {
-	name       string
-	success    bool
-	toolCount  int
-	errMsg     string
+	name            string
+	success         bool
+	toolCount       int
+	errMsg          string
+	commandNotFound bool   // Command not found in PATH (for stdio services)
+	missingCommand  string // The command that was not found
+	installHint     string // Installation hint for the missing command
 }
 
 // ImportMCPServersFromJSON imports MCP services from standard MCP JSON configuration format
 // This supports the format used by Claude Desktop, Kiro, and other MCP clients
 // It uses concurrent tool discovery for better performance during batch imports
 // Duplicate names are auto-renamed with numeric suffix (e.g., name-2, name-3)
+// Services with missing commands (e.g., npx, uvx) are still imported but flagged
 func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServersConfig) (*MCPServersImportResult, error) {
 	result := &MCPServersImportResult{
-		Imported: 0,
-		Skipped:  0,
-		Errors:   []string{},
+		Imported:                0,
+		Skipped:                 0,
+		Errors:                  []string{},
+		CommandNotFoundServices: []CommandNotFoundInfo{},
 	}
 
 	if len(config.MCPServers) == 0 {
@@ -1523,9 +1578,18 @@ func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServer
 	for res := range resultChan {
 		if res.success {
 			result.Imported++
+			// Track services with missing commands (still imported but may not work)
+			if res.commandNotFound {
+				result.CommandNotFoundServices = append(result.CommandNotFoundServices, CommandNotFoundInfo{
+					ServiceName:    res.name,
+					MissingCommand: res.missingCommand,
+					InstallHint:    res.installHint,
+				})
+			}
 			logrus.WithFields(logrus.Fields{
-				"service":    res.name,
-				"tool_count": res.toolCount,
+				"service":           res.name,
+				"tool_count":        res.toolCount,
+				"command_not_found": res.commandNotFound,
 			}).Info("Successfully imported MCP service")
 		} else {
 			result.Skipped++
@@ -1544,10 +1608,38 @@ func (s *Service) ImportMCPServersFromJSON(ctx context.Context, config MCPServer
 
 // processImportTask processes a single import task (tool discovery + DB save)
 // This runs in a worker goroutine for concurrent processing
+// Services with missing commands are still saved but flagged for user awareness
 func (s *Service) processImportTask(ctx context.Context, task importServiceTask) importServiceResult {
 	res := importServiceResult{
 		name:    task.name,
 		success: false,
+	}
+
+	// Check if command exists for stdio services before attempting discovery
+	// Try to install runtime on-demand if command is missing
+	if task.svc.Type == string(ServiceTypeStdio) && task.svc.Command != "" {
+		cmdCheck := CheckCommandWithHint(task.svc.Command)
+		if !cmdCheck.Exists {
+			// Try to install runtime on-demand
+			args, _ := task.svc.GetArgs()
+			installer := GetRuntimeInstaller()
+			if err := installer.EnsureRuntimeInstalled(ctx, task.svc.Command, args, task.svc.InstallCommand); err != nil {
+				res.commandNotFound = true
+				res.missingCommand = task.svc.Command
+				res.installHint = cmdCheck.InstallHint
+				logrus.WithFields(logrus.Fields{
+					"service":     task.name,
+					"command":     task.svc.Command,
+					"installHint": cmdCheck.InstallHint,
+					"error":       err.Error(),
+				}).Warn("Failed to auto-install runtime, service will be imported without tool discovery")
+			} else {
+				logrus.WithFields(logrus.Fields{
+					"service": task.name,
+					"command": task.svc.Command,
+				}).Info("Successfully installed runtime on-demand during import")
+			}
+		}
 	}
 
 	// Use a shorter timeout for tool discovery during import (15s instead of 30s)
@@ -1555,8 +1647,12 @@ func (s *Service) processImportTask(ctx context.Context, task importServiceTask)
 	discoveryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	// Discover tools (best effort - don't fail import if discovery fails)
-	discoveredTools := s.discoverToolsForNewServiceAsync(discoveryCtx, task.svc)
+	// Discover tools only if command exists (best effort - don't fail import if discovery fails)
+	var discoveredTools []ToolDefinition
+	if !res.commandNotFound {
+		discoveredTools = s.discoverToolsForNewServiceAsync(discoveryCtx, task.svc)
+	}
+
 	if len(discoveredTools) > 0 {
 		if err := task.svc.SetTools(discoveredTools); err != nil {
 			logrus.WithError(err).Warnf("Failed to set tools for service %s", task.name)
@@ -1575,7 +1671,7 @@ func (s *Service) processImportTask(ctx context.Context, task importServiceTask)
 		}
 	}
 
-	// Save to database
+	// Save to database (even if command not found - service can be used in other environments)
 	if err := s.db.WithContext(ctx).Create(task.svc).Error; err != nil {
 		logrus.WithError(err).Warnf("Failed to create service %s", task.name)
 		res.errMsg = fmt.Sprintf("Failed to create %s: %v", task.name, err)
@@ -2830,4 +2926,17 @@ func (s *Service) InvalidateServiceToolCache(ctx context.Context, serviceID uint
 func (s *Service) CleanExpiredToolCache(ctx context.Context) (int64, error) {
 	result := s.db.WithContext(ctx).Where("hard_expiry < ?", time.Now()).Delete(&MCPToolCache{})
 	return result.RowsAffected, result.Error
+}
+
+// GetRuntimeStatus returns the installation status of all supported MCP runtimes
+func (s *Service) GetRuntimeStatus() []RuntimeInfo {
+	installer := GetRuntimeInstaller()
+	return installer.GetRuntimeStatus()
+}
+
+// InstallRuntime installs a specific runtime on-demand.
+// proxyURL is optional - if provided, it will be used for downloading.
+func (s *Service) InstallRuntime(ctx context.Context, runtimeType RuntimeType, proxyURL string) error {
+	installer := GetRuntimeInstaller()
+	return installer.InstallRuntime(ctx, runtimeType, proxyURL)
 }

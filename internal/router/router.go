@@ -267,6 +267,15 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		mcpSkills.GET("/export", serverHandler.ExportMCPSkills)
 		mcpSkills.POST("/import", serverHandler.ImportMCPSkills)
 		mcpSkills.POST("/import-mcp-json", serverHandler.ImportMCPServers)
+
+		// Runtime management
+		mcpSkills.GET("/runtimes", serverHandler.GetMCPRuntimes)
+		mcpSkills.POST("/runtimes/install", serverHandler.InstallMCPRuntime)
+		mcpSkills.POST("/runtimes/uninstall", serverHandler.UninstallMCPRuntime)
+		mcpSkills.POST("/runtimes/upgrade", serverHandler.UpgradeMCPRuntime)
+		mcpSkills.GET("/runtimes/packages", serverHandler.GetMCPInstalledPackages)
+		mcpSkills.POST("/runtimes/packages/install", serverHandler.InstallCustomPackage)
+		mcpSkills.POST("/runtimes/packages/uninstall", serverHandler.UninstallMCPPackage)
 	}
 
 	// System-wide import/export

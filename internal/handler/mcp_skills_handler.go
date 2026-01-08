@@ -124,6 +124,7 @@ type CreateMCPServiceRequest struct {
 	Command         string                       `json:"command,omitempty"`
 	Args            []string                     `json:"args,omitempty"`
 	Cwd             string                       `json:"cwd,omitempty"`
+	InstallCommand  string                       `json:"install_command,omitempty"`
 	APIEndpoint     string                       `json:"api_endpoint,omitempty"`
 	APIKeyName      string                       `json:"api_key_name,omitempty"`
 	APIKeyValue     string                       `json:"api_key_value,omitempty"`
@@ -158,6 +159,7 @@ func (s *Server) CreateMCPService(c *gin.Context) {
 		Command:         req.Command,
 		Args:            req.Args,
 		Cwd:             req.Cwd,
+		InstallCommand:  req.InstallCommand,
 		APIEndpoint:     req.APIEndpoint,
 		APIKeyName:      req.APIKeyName,
 		APIKeyValue:     req.APIKeyValue,
@@ -1022,4 +1024,196 @@ func (s *Server) HandleServiceMCP(c *gin.Context) {
 	// Handle the MCP request
 	resp := s.MCPSkillsServiceHandler.HandleMCPRequest(c.Request.Context(), service, &req)
 	c.JSON(200, resp)
+}
+
+// Runtime Management Handlers
+
+// GetMCPRuntimes handles GET /api/mcp-skills/runtimes
+// Returns the installation status of all supported MCP runtimes
+func (s *Server) GetMCPRuntimes(c *gin.Context) {
+	runtimes := s.MCPSkillsService.GetRuntimeStatus()
+	response.Success(c, runtimes)
+}
+
+// InstallMCPRuntimeRequest represents the request to install a runtime
+type InstallMCPRuntimeRequest struct {
+	RuntimeType string `json:"runtime_type"`
+	UseProxy    bool   `json:"use_proxy"` // Whether to use proxy for downloading
+	ProxyURL    string `json:"proxy_url"` // Proxy URL (required when use_proxy is true)
+}
+
+// InstallMCPRuntime handles POST /api/mcp-skills/runtimes/install
+// Installs a specific MCP runtime on-demand
+func (s *Server) InstallMCPRuntime(c *gin.Context) {
+	var req InstallMCPRuntimeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	runtimeType := mcpskills.RuntimeType(req.RuntimeType)
+	// Validate runtime type to prevent arbitrary command execution
+	if !mcpskills.IsValidRuntimeType(runtimeType) {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "invalid runtime type"))
+		return
+	}
+
+	// Get proxy URL from request (only if use_proxy is true)
+	proxyURL := ""
+	if req.UseProxy {
+		proxyURL = req.ProxyURL
+	}
+
+	installer := mcpskills.GetRuntimeInstaller()
+	if err := installer.InstallRuntime(c.Request.Context(), runtimeType, proxyURL); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, err.Error()))
+		return
+	}
+
+	response.SuccessI18n(c, "mcp_skills.runtime_installed", nil, map[string]any{"runtime": req.RuntimeType})
+}
+
+// UninstallMCPRuntime handles POST /api/mcp-skills/runtimes/uninstall
+// Uninstalls a specific MCP runtime
+func (s *Server) UninstallMCPRuntime(c *gin.Context) {
+	var req InstallMCPRuntimeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	runtimeType := mcpskills.RuntimeType(req.RuntimeType)
+	// Validate runtime type to prevent arbitrary command execution
+	if !mcpskills.IsValidRuntimeType(runtimeType) {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "invalid runtime type"))
+		return
+	}
+
+	installer := mcpskills.GetRuntimeInstaller()
+	if err := installer.UninstallRuntime(c.Request.Context(), runtimeType); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, err.Error()))
+		return
+	}
+
+	response.SuccessI18n(c, "mcp_skills.runtime_uninstalled", nil, map[string]any{"runtime": req.RuntimeType})
+}
+
+// UpgradeMCPRuntime handles POST /api/mcp-skills/runtimes/upgrade
+// Upgrades a specific MCP runtime to the latest version
+func (s *Server) UpgradeMCPRuntime(c *gin.Context) {
+	var req InstallMCPRuntimeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	runtimeType := mcpskills.RuntimeType(req.RuntimeType)
+	// Validate runtime type to prevent arbitrary command execution
+	if !mcpskills.IsValidRuntimeType(runtimeType) {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "invalid runtime type"))
+		return
+	}
+
+	// Get proxy URL from request (only if use_proxy is true)
+	proxyURL := ""
+	if req.UseProxy {
+		proxyURL = req.ProxyURL
+	}
+
+	installer := mcpskills.GetRuntimeInstaller()
+	if err := installer.UpgradeRuntime(c.Request.Context(), runtimeType, proxyURL); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, err.Error()))
+		return
+	}
+
+	response.SuccessI18n(c, "mcp_skills.runtime_upgraded", nil, map[string]any{"runtime": req.RuntimeType})
+}
+
+// GetMCPInstalledPackages handles GET /api/mcp-skills/runtimes/packages
+// Returns list of installed MCP packages
+func (s *Server) GetMCPInstalledPackages(c *gin.Context) {
+	installer := mcpskills.GetRuntimeInstaller()
+	packages := installer.GetInstalledPackages()
+	response.Success(c, packages)
+}
+
+// UninstallMCPPackageRequest represents the request to uninstall a package
+type UninstallMCPPackageRequest struct {
+	PackageName string `json:"package_name"`
+	RuntimeType string `json:"runtime_type"`
+}
+
+// UninstallMCPPackage handles POST /api/mcp-skills/runtimes/packages/uninstall
+// Uninstalls a specific MCP package
+func (s *Server) UninstallMCPPackage(c *gin.Context) {
+	var req UninstallMCPPackageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	runtimeType := mcpskills.RuntimeType(req.RuntimeType)
+	// Validate runtime type to prevent arbitrary command execution
+	if !mcpskills.IsValidRuntimeType(runtimeType) {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "invalid runtime type"))
+		return
+	}
+
+	installer := mcpskills.GetRuntimeInstaller()
+	if err := installer.UninstallPackage(c.Request.Context(), req.PackageName, runtimeType); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, err.Error()))
+		return
+	}
+
+	response.SuccessI18n(c, "mcp_skills.package_uninstalled", nil, map[string]any{"package": req.PackageName})
+}
+
+// InstallCustomPackageRequest represents the request to install a custom package
+type InstallCustomPackageRequest struct {
+	PackageName    string `json:"package_name"`              // Package name for display/tracking
+	InstallCommand string `json:"install_command"`           // Full install command, e.g., "npm install -g ace-tool@latest"
+	RuntimeType    string `json:"runtime_type"`              // Runtime type: nodejs, python, bun, deno, custom
+	UseProxy       bool   `json:"use_proxy"`                 // Whether to use proxy
+	ProxyURL       string `json:"proxy_url"`                 // Proxy URL
+}
+
+// InstallCustomPackage handles POST /api/mcp-skills/runtimes/packages/install
+// Installs a custom package using the provided install command
+func (s *Server) InstallCustomPackage(c *gin.Context) {
+	var req InstallCustomPackageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	// Validate required fields
+	if req.PackageName == "" {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "package_name is required"))
+		return
+	}
+	if req.InstallCommand == "" {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "install_command is required"))
+		return
+	}
+
+	runtimeType := mcpskills.RuntimeType(req.RuntimeType)
+	// Validate runtime type
+	if !mcpskills.IsValidRuntimeType(runtimeType) {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "invalid runtime type"))
+		return
+	}
+
+	// Get proxy URL
+	proxyURL := ""
+	if req.UseProxy {
+		proxyURL = req.ProxyURL
+	}
+
+	installer := mcpskills.GetRuntimeInstaller()
+	if err := installer.InstallCustomPackage(c.Request.Context(), req.PackageName, req.InstallCommand, runtimeType, proxyURL); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, err.Error()))
+		return
+	}
+
+	response.SuccessI18n(c, "mcp_skills.package_installed", nil, map[string]any{"package": req.PackageName})
 }

@@ -36,6 +36,7 @@ export interface MCPServiceDTO {
   command?: string;
   args?: string[];
   cwd?: string; // Working directory for stdio
+  install_command?: string; // Custom install command for the service
 
   // For API bridge services
   api_endpoint?: string;
@@ -104,6 +105,7 @@ export interface CreateServiceRequest {
   command?: string;
   args?: string[];
   cwd?: string; // Working directory for stdio
+  install_command?: string; // Custom install command (e.g., "npm install -g ace-tool@latest")
   api_endpoint?: string;
   api_key_name?: string;
   api_key_value?: string;
@@ -278,6 +280,10 @@ export interface ServiceTestResult {
   error?: string;
   response?: Record<string, unknown>;
   tested_at: string;
+  // Command not found info (for stdio services in Docker/container environments)
+  command_not_found?: boolean;
+  missing_command?: string;
+  install_hint?: string;
 }
 
 // MCP servers JSON import types
@@ -302,6 +308,15 @@ export interface MCPServersImportResult {
   imported: number;
   skipped: number;
   errors?: string[];
+  // Services where command was not found (still imported but may not work)
+  command_not_found_services?: CommandNotFoundInfo[];
+}
+
+// Info about a service with missing command
+export interface CommandNotFoundInfo {
+  service_name: string;
+  missing_command: string;
+  install_hint: string;
 }
 
 // Service tools result with cache info
@@ -316,6 +331,29 @@ export interface ServiceToolsResult {
   from_cache: boolean;
   cached_at?: string;
   expires_at?: string;
+}
+
+// Runtime info for MCP service runtimes
+export interface RuntimeInfo {
+  type: string;
+  name: string;
+  version?: string;
+  installed: boolean;
+  install_hint?: string;
+  install_path?: string;
+  installed_at?: string;
+  can_install: boolean; // Whether this runtime can be installed in current environment
+  is_host_only?: boolean; // Whether this runtime must be installed on host (e.g., Docker)
+  in_container?: boolean; // Whether currently running in a container
+}
+
+// Package info for installed MCP packages
+export interface PackageInfo {
+  name: string;
+  runtime_type: string;
+  version?: string;
+  install_command?: string;
+  installed_at: string;
 }
 
 // Service with tools result for group expansion
@@ -634,5 +672,75 @@ export const mcpSkillsApi = {
   async refreshServiceTools(id: number): Promise<ServiceToolsResult> {
     const res = await http.post(`/mcp-skills/services/${id}/tools/refresh`);
     return res.data;
+  },
+
+  // ============ Runtime Management ============
+
+  // Get runtime installation status
+  async getRuntimes(): Promise<RuntimeInfo[]> {
+    const res = await http.get("/mcp-skills/runtimes");
+    return res.data || [];
+  },
+
+  // Install a runtime
+  async installRuntime(
+    runtimeType: string,
+    useProxy: boolean = false,
+    proxyUrl: string = ""
+  ): Promise<void> {
+    await http.post("/mcp-skills/runtimes/install", {
+      runtime_type: runtimeType,
+      use_proxy: useProxy,
+      proxy_url: proxyUrl,
+    });
+  },
+
+  // Uninstall a runtime
+  async uninstallRuntime(runtimeType: string): Promise<void> {
+    await http.post("/mcp-skills/runtimes/uninstall", { runtime_type: runtimeType });
+  },
+
+  // Upgrade a runtime
+  async upgradeRuntime(
+    runtimeType: string,
+    useProxy: boolean = false,
+    proxyUrl: string = ""
+  ): Promise<void> {
+    await http.post("/mcp-skills/runtimes/upgrade", {
+      runtime_type: runtimeType,
+      use_proxy: useProxy,
+      proxy_url: proxyUrl,
+    });
+  },
+
+  // Get installed packages
+  async getInstalledPackages(): Promise<PackageInfo[]> {
+    const res = await http.get("/mcp-skills/runtimes/packages");
+    return res.data || [];
+  },
+
+  // Install a custom package
+  async installCustomPackage(
+    packageName: string,
+    installCommand: string,
+    runtimeType: string,
+    useProxy: boolean = false,
+    proxyUrl: string = ""
+  ): Promise<void> {
+    await http.post("/mcp-skills/runtimes/packages/install", {
+      package_name: packageName,
+      install_command: installCommand,
+      runtime_type: runtimeType,
+      use_proxy: useProxy,
+      proxy_url: proxyUrl,
+    });
+  },
+
+  // Uninstall a package
+  async uninstallPackage(packageName: string, runtimeType: string): Promise<void> {
+    await http.post("/mcp-skills/runtimes/packages/uninstall", {
+      package_name: packageName,
+      runtime_type: runtimeType,
+    });
   },
 };

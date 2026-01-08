@@ -4,7 +4,6 @@ package mcpskills
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -164,18 +163,43 @@ func (d *MCPToolDiscovery) discoverFromClient(ctx context.Context, mcpClient mcp
 }
 
 // DiscoverToolsForStdio discovers tools from a stdio MCP server
+// SECURITY: This function applies multiple security measures:
+// 1. Command whitelist validation (only allowed MCP commands)
+// 2. Environment variable filtering (removes AUTH_KEY, ENCRYPTION_KEY, etc.)
+// 3. Process group isolation (prevents signal injection to parent process)
 func (d *MCPToolDiscovery) DiscoverToolsForStdio(ctx context.Context, command string, args []string, envVars map[string]string) (*DiscoveryResult, error) {
 	if command == "" {
 		return &DiscoveryResult{Success: false, Tools: []DiscoveredTool{}, Error: "Command is empty"}, nil
 	}
 
-	// Prepare environment variables
-	env := os.Environ()
-	for key, value := range envVars {
-		env = append(env, fmt.Sprintf("%s=%s", key, value))
+	// SECURITY: Validate MCP server command before execution
+	if err := ValidateMCPServerCommand(command, args); err != nil {
+		return &DiscoveryResult{
+			Success: false,
+			Tools:   []DiscoveredTool{},
+			Error:   fmt.Sprintf("Security validation failed: %v", err),
+		}, nil
 	}
 
-	mcpClient, err := client.NewStdioMCPClient(command, env, args...)
+	// SECURITY: Use filtered environment variables to prevent credential leakage
+	// GetSafeEnvForMCP filters out sensitive vars like AUTH_KEY, ENCRYPTION_KEY, etc.
+	env := GetSafeEnvForMCP(envVars)
+
+	// SECURITY: Use WithCommandFunc to apply process isolation
+	// This creates a new process group to prevent signal injection to parent process
+	securityConfig := MCPSecurityConfig()
+	cmdOption := transport.WithCommandFunc(func(cmdCtx context.Context, cmd string, cmdEnv []string, cmdArgs []string) (*exec.Cmd, error) {
+		if cmdCtx == nil {
+			cmdCtx = context.Background()
+		}
+		execCmd := exec.CommandContext(cmdCtx, cmd, cmdArgs...)
+		execCmd.Env = cmdEnv
+		// Apply process isolation to prevent signal injection
+		applyProcessIsolation(execCmd, securityConfig)
+		return execCmd, nil
+	})
+
+	mcpClient, err := client.NewStdioMCPClientWithOptions(command, env, args, cmdOption)
 	if err != nil {
 		return &DiscoveryResult{
 			Success: false,
@@ -397,4 +421,47 @@ func findPackageNameInArgs(args []string, checkAtSign bool) string {
 		}
 	}
 	return fallback
+}
+
+// GetInstallHintForCommand returns installation instructions for a missing command.
+// This helps users in Docker/container environments understand how to install required runtimes.
+func GetInstallHintForCommand(command string) string {
+	cmd := strings.ToLower(command)
+
+	switch cmd {
+	case "npx", "npm", "node":
+		return "Install Node.js (v18+): https://nodejs.org/ or use 'nvm install 18'"
+	case "uvx", "uv":
+		return "Install uv: https://docs.astral.sh/uv/getting-started/installation/ or 'pip install uv'"
+	case "python", "python3", "pip", "pip3":
+		return "Install Python (3.8+): https://www.python.org/downloads/"
+	case "docker":
+		return "Install Docker: https://docs.docker.com/get-docker/"
+	case "deno":
+		return "Install Deno: https://deno.land/#installation"
+	case "bun":
+		return "Install Bun: https://bun.sh/"
+	default:
+		return fmt.Sprintf("Install '%s' and ensure it's in your PATH", command)
+	}
+}
+
+// CheckCommandResult contains the result of checking if a command exists
+type CheckCommandResult struct {
+	Exists      bool   // Whether the command exists in PATH
+	Command     string // The command that was checked
+	InstallHint string // Installation hint if command doesn't exist
+}
+
+// CheckCommandWithHint checks if a command exists and returns installation hint if not
+func CheckCommandWithHint(command string) CheckCommandResult {
+	exists := CheckCommandExists(command)
+	result := CheckCommandResult{
+		Exists:  exists,
+		Command: command,
+	}
+	if !exists {
+		result.InstallHint = GetInstallHintForCommand(command)
+	}
+	return result
 }

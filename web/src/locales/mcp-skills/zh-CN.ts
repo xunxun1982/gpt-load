@@ -247,6 +247,8 @@ export default {
   test: "测试",
   testSuccess: "MCP「{name}」工作正常",
   testFailed: "测试失败：{error}",
+  commandNotFound:
+    "命令 '{command}' 未找到。{hint} 如果在 Docker 容器中运行，请考虑使用远程 MCP 服务（SSE/HTTP）。",
 
   // Custom endpoint
   customEndpointHint: "留空使用官方端点",
@@ -270,6 +272,8 @@ export default {
   jsonImportNoServers: "配置中未找到 MCP",
   jsonImportSuccess: "导入成功：{imported} 个已导入，{skipped} 个已跳过",
   jsonImportAllSkipped: "所有MCP已跳过（共 {skipped} 个）",
+  jsonImportWithMissingCommands:
+    "导入成功：{imported} 个已导入，{skipped} 个已跳过。注意：{missingCount} 个服务的命令未找到（{commands}），需要安装相应运行时才能使用。",
 
   // MCP Endpoint
   mcpEnabled: "MCP 端点",
@@ -304,4 +308,31 @@ export default {
   selectGroupHint: "选择一个MCP聚合查看详情",
   noMatchingItems: "未找到匹配项",
   noItems: "暂无MCP或MCP聚合",
+
+  // Runtime management
+  runtimeManagement: "运行时管理",
+  runtimeManagementHint:
+    "管理MCP服务所需的运行时环境。安装的运行时会持久化到数据卷，容器重建后无需重新安装。",
+  runtimeInstalled: "已安装",
+  runtimeNotInstalled: "未安装",
+  runtimeHostOnly: "仅宿主机",
+  runtimeVersion: "版本",
+  runtimeInstall: "安装",
+  runtimeUninstall: "卸载",
+  runtimeUpgrade: "升级",
+  runtimeCannotInstall: "无法在当前环境安装",
+  runtimeDockerWarning: "Docker 必须在宿主机上安装，无法在容器内安装",
+  runtimeContainerNote: "当前运行在容器环境中。安装的运行时会保存到映射的数据卷目录。",
+  runtimeInstalled_success: "运行时 {name} 安装成功",
+  runtimeUninstalled_success: "运行时 {name} 卸载成功",
+  runtimeUpgraded_success: "运行时 {name} 升级成功",
+  runtimeUseProxy: "使用代理下载",
+  runtimeProxyUrlPlaceholder: "代理地址，例如：http://127.0.0.1:7890",
+  customPackageInstall: "安装自定义包",
+  customPackageHint: "安装全局CLI工具，如 ace-tool、MCP服务器等",
+  customPackageNamePlaceholder: "包名称，如 ace-tool",
+  customInstallCommandPlaceholder: "安装命令，如 npm install -g ace-tool@latest",
+  customPackageInstallBtn: "安装",
+  customPackageRequired: "请填写包名称和安装命令",
+  customPackageInstalled_success: "包 {name} 安装成功",
 };

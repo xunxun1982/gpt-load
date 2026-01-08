@@ -38,6 +38,9 @@ type MCPServiceDTO struct {
 	Args    []string `json:"args,omitempty"`
 	Cwd     string   `json:"cwd,omitempty"` // Working directory for stdio
 
+	// Installation command for custom tools
+	InstallCommand string `json:"install_command,omitempty"`
+
 	// For API bridge services
 	APIEndpoint  string `json:"api_endpoint,omitempty"`
 	APIKeyName   string `json:"api_key_name,omitempty"`
@@ -88,6 +91,9 @@ type CreateServiceParams struct {
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
 	Cwd     string   `json:"cwd,omitempty"` // Working directory for stdio
+
+	// Installation command for custom tools (e.g., "npm install -g ace-tool@latest")
+	InstallCommand string `json:"install_command,omitempty"`
 
 	// For API bridge services
 	APIEndpoint  string `json:"api_endpoint,omitempty"`
@@ -550,6 +556,17 @@ type ServiceTestResult struct {
 	Error       string                 `json:"error,omitempty"`
 	Response    map[string]interface{} `json:"response,omitempty"`
 	TestedAt    time.Time              `json:"tested_at"`
+
+	// CommandNotFound indicates the command executable was not found in PATH.
+	// This is common in Docker/container environments without Node.js/Python installed.
+	// When true, the service config can still be saved for use in environments with the runtime.
+	CommandNotFound bool `json:"command_not_found,omitempty"`
+
+	// MissingCommand is the command that was not found (e.g., "npx", "uvx", "node")
+	MissingCommand string `json:"missing_command,omitempty"`
+
+	// InstallHint provides installation instructions for the missing command
+	InstallHint string `json:"install_hint,omitempty"`
 }
 
 // ServiceToolsResult represents the result of fetching tools for a service
@@ -596,4 +613,15 @@ type MCPServersImportResult struct {
 	Imported int      `json:"imported"`
 	Skipped  int      `json:"skipped"`
 	Errors   []string `json:"errors,omitempty"`
+
+	// CommandNotFoundServices lists services where the command was not found in PATH.
+	// These services are still imported but may not work until the runtime is installed.
+	CommandNotFoundServices []CommandNotFoundInfo `json:"command_not_found_services,omitempty"`
+}
+
+// CommandNotFoundInfo provides details about a service with missing command
+type CommandNotFoundInfo struct {
+	ServiceName    string `json:"service_name"`
+	MissingCommand string `json:"missing_command"`
+	InstallHint    string `json:"install_hint"`
 }

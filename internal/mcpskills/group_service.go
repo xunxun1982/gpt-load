@@ -976,19 +976,29 @@ func (s *GroupService) ImportGroups(ctx context.Context, groups []MCPServiceGrou
 	return imported, skipped, nil
 }
 
-// generateUniqueGroupName generates a unique group name by appending a suffix
+// generateUniqueGroupName generates a unique group name by appending a numeric suffix if needed
+// Uses the same pattern as service name generation: name-2, name-3, etc.
 func (s *GroupService) generateUniqueGroupName(ctx context.Context, baseName string) (string, error) {
-	name := baseName
-	maxAttempts := 10
-	for i := 1; i <= maxAttempts; i++ {
-		var count int64
-		if err := s.db.WithContext(ctx).Model(&MCPServiceGroup{}).Where("name = ?", name).Count(&count).Error; err != nil {
+	// First check if base name is available
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&MCPServiceGroup{}).Where("name = ?", baseName).Count(&count).Error; err != nil {
+		return "", err
+	}
+	if count == 0 {
+		return baseName, nil
+	}
+
+	// Try with numeric suffix: name-2, name-3, etc.
+	for i := 2; i <= 100; i++ {
+		candidateName := fmt.Sprintf("%s-%d", baseName, i)
+		if err := s.db.WithContext(ctx).Model(&MCPServiceGroup{}).Where("name = ?", candidateName).Count(&count).Error; err != nil {
 			return "", err
 		}
 		if count == 0 {
-			return name, nil
+			return candidateName, nil
 		}
-		name = fmt.Sprintf("%s-%d", baseName, i)
 	}
-	return "", fmt.Errorf("failed to generate unique name after %d attempts", maxAttempts)
+
+	// Fallback: append timestamp
+	return fmt.Sprintf("%s-%d", baseName, time.Now().UnixNano()%1000000), nil
 }

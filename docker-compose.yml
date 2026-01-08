@@ -12,6 +12,9 @@ services:
     restart: always
     volumes:
       - ./data:/app/data
+      # MCP runtime installations persist across container rebuilds
+      # This directory stores Node.js, Python, Bun, Deno and their packages
+      - ./data/runtimes:/app/data/runtimes
     stop_grace_period: ${SERVER_GRACEFUL_SHUTDOWN_TIMEOUT:-10}s
     healthcheck:
       test: wget -q --spider -T 10 -O /dev/null http://localhost:${PORT:-3001}/health

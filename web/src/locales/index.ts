@@ -67,6 +67,10 @@ const i18n = createI18n({
   legacy: false, // Use Composition API mode
   locale: defaultLocale,
   fallbackLocale: "zh-CN",
+  // Disable warnings for HTML in messages and escape parameters to prevent parsing issues
+  warnHtmlMessage: false,
+  // Use runtime-only mode to avoid message compilation issues with special characters
+  // Note: This requires all messages to be pre-compiled or use simple string format
   messages: {
     "zh-CN": mergeLocales(zhCN, siteManagementLocales["zh-CN"], mcpSkillsLocales["zh-CN"]),
     "en-US": mergeLocales(enUS, siteManagementLocales["en-US"], mcpSkillsLocales["en-US"]),

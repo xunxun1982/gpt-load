@@ -26,6 +26,14 @@ var MessagesJaJP = map[string]string{
 	"mcp_skills.token_regenerated":         "アクセストークンが再生成されました",
 	"mcp_skills.import_completed":          "インポートが完了しました",
 	"mcp_skills.mcp_json_import_completed": "MCP JSONインポートが完了しました",
+	"mcp_skills.tools_refreshed":           "ツールリストが更新されました",
+
+	// Runtime management
+	"mcp_skills.runtime_installed":   "ランタイム {{.runtime}} がインストールされました",
+	"mcp_skills.runtime_uninstalled": "ランタイム {{.runtime}} がアンインストールされました",
+	"mcp_skills.runtime_upgraded":    "ランタイム {{.runtime}} がアップグレードされました",
+	"mcp_skills.package_installed":   "パッケージ {{.package}} がインストールされました",
+	"mcp_skills.package_uninstalled": "パッケージ {{.package}} がアンインストールされました",
 
 	// Error messages
 	"mcp_skills.service_not_found":     "MCPサービスが見つかりません",

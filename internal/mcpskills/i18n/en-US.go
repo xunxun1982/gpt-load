@@ -26,6 +26,14 @@ var MessagesEnUS = map[string]string{
 	"mcp_skills.token_regenerated":         "Access token regenerated successfully",
 	"mcp_skills.import_completed":          "Import completed successfully",
 	"mcp_skills.mcp_json_import_completed": "MCP JSON import completed",
+	"mcp_skills.tools_refreshed":           "Tools list refreshed successfully",
+
+	// Runtime management
+	"mcp_skills.runtime_installed":   "Runtime {{.runtime}} installed successfully",
+	"mcp_skills.runtime_uninstalled": "Runtime {{.runtime}} uninstalled successfully",
+	"mcp_skills.runtime_upgraded":    "Runtime {{.runtime}} upgraded successfully",
+	"mcp_skills.package_installed":   "Package {{.package}} installed successfully",
+	"mcp_skills.package_uninstalled": "Package {{.package}} uninstalled successfully",
 
 	// Error messages
 	"mcp_skills.service_not_found":     "MCP service not found",
