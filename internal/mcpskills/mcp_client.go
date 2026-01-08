@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"gpt-load/internal/version"
+
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -72,12 +74,13 @@ type mcpClientWithStart interface {
 }
 
 // buildInitRequest creates a standard MCP initialize request
+// Uses version.Version as single source of truth for version number
 func buildInitRequest() mcp.InitializeRequest {
 	req := mcp.InitializeRequest{}
 	req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	req.Params.ClientInfo = mcp.Implementation{
 		Name:    "gpt-load",
-		Version: "1.0.0",
+		Version: version.Version,
 	}
 	return req
 }
