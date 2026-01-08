@@ -129,7 +129,7 @@ export default {
   noServices: "サービスがありません",
 
   // Service weights for smart routing
-  serviceWeights: "サービス重み",
+  serviceWeights: "MCP重み",
   serviceWeightsHint:
     "重みが高いほど、smart_executeで選択される確率が高くなります。デフォルトは100",
   weight: "重み",
@@ -142,7 +142,7 @@ export default {
   // Tool aliases for smart routing
   toolAliases: "ツールエイリアス",
   toolAliasesHint:
-    "左側：統一名（重複可）。右側：実際のツール名（カンマ区切り）。smart_executeはすべてのエイリアスツールにマッチします",
+    "左側：統一名（重複可）。右側：実際のツール名（カンマ区切り）。設定後、list_all_toolsは統一名のみ表示し、smart_executeは対応サービスに自動ルーティング",
   canonicalName: "統一名",
   aliasesPlaceholder: "ツール名1, ツール名2, ...",
   addToolAlias: "ツールエイリアスを追加",

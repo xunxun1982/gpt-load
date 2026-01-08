@@ -14,15 +14,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// getServerAddress returns the server address from system settings or derives it from the request
+// getServerAddress returns the server address from system settings or derives it from the request.
+// SECURITY: Always prefer settings.AppUrl in production to avoid Host header injection attacks.
+// The fallback is only for development/testing when AppUrl is not configured.
+// Callers: ExportGroupAsSkill, GetGroupEndpointInfo, GetServiceEndpointInfo
 func (s *Server) getServerAddress(c *gin.Context) string {
-	// Try to get from system settings (AppUrl)
+	// Try to get from system settings (AppUrl) - preferred and secure
 	settings := s.SettingsManager.GetSettings()
 	if settings.AppUrl != "" {
 		return strings.TrimSuffix(settings.AppUrl, "/")
 	}
 
-	// Fallback: derive from request
+	// Fallback: derive from request (for development only)
 	scheme := "https"
 	if c.Request.TLS == nil {
 		// Check X-Forwarded-Proto header for reverse proxy scenarios
@@ -32,7 +35,14 @@ func (s *Server) getServerAddress(c *gin.Context) string {
 			scheme = "http"
 		}
 	}
-	return scheme + "://" + c.Request.Host
+
+	// Validate Host header to prevent CRLF injection attacks
+	// AI Review: Adopted suggestion to sanitize Host header
+	host := c.Request.Host
+	if strings.ContainsAny(host, "\r\n") {
+		host = "localhost"
+	}
+	return scheme + "://" + host
 }
 
 // MCP Service Handlers
@@ -632,8 +642,9 @@ func (s *Server) ExportMCPGroupAsSkill(c *gin.Context) {
 	zipData := zipBuffer.Bytes()
 	fileSize := len(zipData)
 
-	// Bypass gzip middleware for binary file download
-	c.Request.Header.Del("Accept-Encoding")
+	// AI Review: Adopted suggestion - set response header instead of modifying request header
+	// Setting Content-Encoding to identity prevents gzip middleware from compressing binary data
+	c.Header("Content-Encoding", "identity")
 
 	// Set headers for file download
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, filename, filename))

@@ -1548,13 +1548,13 @@ const groupColumns = computed<DataTableColumns<MCPServiceGroupDTO>>(() => [
       const toolState = expandedGroupTools.value.get(row.id);
       const isLoading = toolState?.loading ?? false;
 
-      // Show unique count if there are aliases, otherwise show total
-      const hasAliases = (row.aliased_tool_count ?? 0) > 0;
-      const displayCount = hasAliases
-        ? (row.unique_tool_count ?? row.total_tool_count)
-        : row.total_tool_count;
-      const tooltipText = hasAliases
-        ? `${row.total_tool_count} ${t("mcpSkills.totalTools")} → ${row.unique_tool_count} ${t("mcpSkills.uniqueTools")}`
+      // Show unique count if there are duplicates (same tool name across services) or aliases
+      const uniqueCount = row.unique_tool_count ?? row.total_tool_count;
+      const totalCount = row.total_tool_count ?? 0;
+      const hasDuplicates = uniqueCount < totalCount;
+      const displayCount = hasDuplicates ? uniqueCount : totalCount;
+      const tooltipText = hasDuplicates
+        ? `${totalCount} ${t("mcpSkills.totalTools")} → ${uniqueCount} ${t("mcpSkills.uniqueTools")}`
         : "";
 
       return h(
@@ -1576,9 +1576,9 @@ const groupColumns = computed<DataTableColumns<MCPServiceGroupDTO>>(() => [
             h(
               "span",
               null,
-              hasAliases
-                ? `${displayCount}/${row.total_tool_count}`
-                : t("mcpSkills.toolCount", { count: row.total_tool_count })
+              hasDuplicates
+                ? `${displayCount}/${totalCount}`
+                : t("mcpSkills.toolCount", { count: totalCount })
             ),
           ])
       );

@@ -155,11 +155,11 @@ func (h *AggregationMCPHandler) GetAggregationTools(group *MCPServiceGroupDTO) A
 			},
 			{
 				Name:        "smart_execute",
-				Description: "Execute tool with auto service selection and failover. RECOMMENDED.",
+				Description: "Execute tool with auto service selection and failover. Supports unified alias names. RECOMMENDED.",
 				InputSchema: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"tool_name": map[string]interface{}{"type": "string"},
+						"tool_name": map[string]interface{}{"type": "string", "description": "Tool name (supports unified alias names)"},
 						"arguments": map[string]interface{}{"type": "object"},
 					},
 					"required": []string{"tool_name", "arguments"},

@@ -129,7 +129,7 @@ export default {
   noServices: "No services available",
 
   // Service weights for smart routing
-  serviceWeights: "Service Weights",
+  serviceWeights: "MCP Weights",
   serviceWeightsHint:
     "Higher weight = higher probability of being selected by smart_execute. Default weight is 100",
   weight: "Weight",
@@ -142,7 +142,7 @@ export default {
   // Tool aliases for smart routing
   toolAliases: "Tool Aliases",
   toolAliasesHint:
-    "Left: unified name (can repeat). Right: actual tool names (comma-separated). smart_execute will match all aliased tools",
+    "Left: unified name (can repeat). Right: actual tool names (comma-separated). After configuration, list_all_tools only shows unified names, and smart_execute auto-routes to the corresponding service",
   canonicalName: "Unified Name",
   aliasesPlaceholder: "tool_name1, tool_name2, ...",
   addToolAlias: "Add Tool Alias",

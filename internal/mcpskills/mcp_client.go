@@ -319,8 +319,10 @@ func (d *MCPToolDiscovery) DiscoverToolsForService(ctx context.Context, svc *MCP
 		return d.DiscoverToolsForStreamableHTTP(ctx, url, headers)
 
 	default:
+		// AI Review: Adopted suggestion - initialize Tools slice to prevent nil pointer issues
 		return &DiscoveryResult{
 			Success: false,
+			Tools:   []DiscoveredTool{},
 			Error:   fmt.Sprintf("Unsupported service type for tool discovery: %s", svc.Type),
 		}, nil
 	}
@@ -372,21 +374,27 @@ func GuessPackageManagerFromCommand(command string, args []string) (packageManag
 	return
 }
 
-// findPackageNameInArgs finds package name from command arguments
+// findPackageNameInArgs finds package name from command arguments.
+// AI Review: Adopted suggestion - added fallback for simple npm package names
 func findPackageNameInArgs(args []string, checkAtSign bool) string {
+	var fallback string
 	for _, arg := range args {
 		// Skip flags (including -y which starts with -)
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
-		// For npm/npx, look for package with @ or / (scoped packages or versions)
+		// For npm/npx, prefer package with @ or / (scoped packages or versions)
 		if checkAtSign && (strings.Contains(arg, "@") || strings.Contains(arg, "/")) {
 			return arg
 		}
-		// Return first non-flag argument as package name
+		// Return first non-flag argument as package name for non-npm
 		if !checkAtSign {
 			return arg
 		}
+		// Save first non-flag as fallback for npm case (simple package names like "some-package")
+		if fallback == "" {
+			fallback = arg
+		}
 	}
-	return ""
+	return fallback
 }

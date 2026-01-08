@@ -129,8 +129,8 @@ export default {
   noServices: "暂无服务",
 
   // Service weights for smart routing
-  serviceWeights: "服务权重",
-  serviceWeightsHint: "权重越高，smart_execute 选择该服务的概率越大。默认权重为 100",
+  serviceWeights: "MCP权重",
+  serviceWeightsHint: "权重越高，smart_execute 选择该MCP的概率越大。默认权重为 100",
   weight: "权重",
   weightHint: "权重越高优先级越高，错误率高的服务会自动降低选择概率",
   weightPlaceholder: "1-1000",
@@ -140,7 +140,7 @@ export default {
   // Tool aliases for smart routing
   toolAliases: "工具别名",
   toolAliasesHint:
-    "左侧填写统一名称（可重复），右侧填写该名称对应的实际工具名（逗号分隔）。smart_execute 调用时会自动匹配所有别名对应的工具",
+    "左侧填写统一名称（可重复），右侧填写该名称对应的实际工具名（逗号分隔）。配置后 list_all_tools 只显示统一名称，smart_execute 调用统一名称时会自动路由到对应服务",
   canonicalName: "统一名称",
   aliasesPlaceholder: "实际工具名1, 实际工具名2, ...",
   addToolAlias: "添加工具别名",
