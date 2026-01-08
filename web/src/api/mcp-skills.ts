@@ -60,6 +60,9 @@ export interface MCPServiceDTO {
   mcp_enabled: boolean;
   has_access_token: boolean;
 
+  // User notes
+  remark: string;
+
   // Status
   health_status: string;
   last_health_check?: string;
@@ -113,6 +116,7 @@ export interface CreateServiceRequest {
   rpd_limit?: number;
   mcp_enabled?: boolean;
   access_token?: string;
+  remark?: string;
 }
 
 // Update service request (partial)

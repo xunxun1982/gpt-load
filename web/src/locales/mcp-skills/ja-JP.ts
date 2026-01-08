@@ -256,6 +256,10 @@ export default {
   // Custom endpoint
   customEndpointHint: "空欄で公式エンドポイントを使用",
 
+  // Remark
+  remark: "備考",
+  remarkPlaceholder: "備考を入力（例：ソース、用途）",
+
   // JSON import
   importMcpJson: "MCP JSONインポート",
   importMcpJsonBtn: "インポート",

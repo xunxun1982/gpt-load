@@ -108,6 +108,9 @@ type MCPService struct {
 	MCPEnabled  bool   `gorm:"default:false" json:"mcp_enabled"`              // Enable MCP endpoint for this service
 	AccessToken string `gorm:"type:varchar(255)" json:"-"`                    // Token for accessing MCP endpoint
 
+	// User notes
+	Remark string `gorm:"type:text" json:"remark"` // User remark/notes for recording source, etc.
+
 	// Timestamps
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

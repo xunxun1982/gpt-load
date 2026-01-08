@@ -454,12 +454,23 @@ func (h *AggregationMCPHandler) executeToolOnService(ctx context.Context, servic
 
 // findServicesWithTool finds all enabled services that have a specific tool
 // Supports tool aliases: if toolName matches a canonical name or any alias, all matching services are returned
+// Handles both ToolAliasConfigs (new format) and ToolAliases (old format) for backward compatibility
 func (h *AggregationMCPHandler) findServicesWithTool(group *MCPServiceGroupDTO, toolName string) []serviceWithTool {
 	var result []serviceWithTool
 
 	// Build alias lookup map for efficient matching
+	// Supports both new format (ToolAliasConfigs) and old format (ToolAliases)
 	aliasLookup := make(map[string]string) // alias -> canonical
-	if group.ToolAliases != nil {
+	if group.ToolAliasConfigs != nil && len(group.ToolAliasConfigs) > 0 {
+		// New format with optional descriptions
+		for canonical, config := range group.ToolAliasConfigs {
+			aliasLookup[canonical] = canonical
+			for _, alias := range config.Aliases {
+				aliasLookup[alias] = canonical
+			}
+		}
+	} else if group.ToolAliases != nil {
+		// Fallback to old format
 		for canonical, aliases := range group.ToolAliases {
 			aliasLookup[canonical] = canonical
 			for _, alias := range aliases {
@@ -476,7 +487,14 @@ func (h *AggregationMCPHandler) findServicesWithTool(group *MCPServiceGroupDTO, 
 
 	// Collect all tool names that should match (canonical + all aliases)
 	matchingNames := map[string]bool{toolName: true, canonicalName: true}
-	if group.ToolAliases != nil {
+	// Get aliases from appropriate source
+	if group.ToolAliasConfigs != nil && len(group.ToolAliasConfigs) > 0 {
+		if config, ok := group.ToolAliasConfigs[canonicalName]; ok {
+			for _, alias := range config.Aliases {
+				matchingNames[alias] = true
+			}
+		}
+	} else if group.ToolAliases != nil {
 		if aliases, ok := group.ToolAliases[canonicalName]; ok {
 			for _, alias := range aliases {
 				matchingNames[alias] = true
@@ -796,6 +814,7 @@ func (h *AggregationMCPHandler) extractRemainingAsArguments(args map[string]inte
 
 // buildAggregationInstructions builds minimal instructions for the model
 // Keep it short to save tokens - detailed tool info is available via list_all_tools
+// Handles both ToolAliasConfigs (new format) and ToolAliases (old format)
 func (h *AggregationMCPHandler) buildAggregationInstructions(group *MCPServiceGroupDTO, serviceNames []string) string {
 	var sb strings.Builder
 
@@ -812,12 +831,28 @@ func (h *AggregationMCPHandler) buildAggregationInstructions(group *MCPServiceGr
 	sb.WriteString("Use list_all_tools first, then smart_execute.\n")
 
 	// Only show aliases if configured (important for smart_execute)
-	if len(group.ToolAliases) > 0 {
+	// Support both new format (ToolAliasConfigs) and old format (ToolAliases)
+	hasAliases := len(group.ToolAliases) > 0 || len(group.ToolAliasConfigs) > 0
+	if hasAliases {
 		sb.WriteString("Aliases: ")
-		aliasPairs := make([]string, 0, len(group.ToolAliases))
-		for canonical, aliases := range group.ToolAliases {
-			aliasPairs = append(aliasPairs, fmt.Sprintf("%s=%s", canonical, strings.Join(aliases, "/")))
+		var aliasPairs []string
+
+		if group.ToolAliasConfigs != nil && len(group.ToolAliasConfigs) > 0 {
+			// New format with optional descriptions
+			aliasPairs = make([]string, 0, len(group.ToolAliasConfigs))
+			for canonical, config := range group.ToolAliasConfigs {
+				if len(config.Aliases) > 0 {
+					aliasPairs = append(aliasPairs, fmt.Sprintf("%s=%s", canonical, strings.Join(config.Aliases, "/")))
+				}
+			}
+		} else if group.ToolAliases != nil {
+			// Fallback to old format
+			aliasPairs = make([]string, 0, len(group.ToolAliases))
+			for canonical, aliases := range group.ToolAliases {
+				aliasPairs = append(aliasPairs, fmt.Sprintf("%s=%s", canonical, strings.Join(aliases, "/")))
+			}
 		}
+
 		sb.WriteString(strings.Join(aliasPairs, "; "))
 	}
 

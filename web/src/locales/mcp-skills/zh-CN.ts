@@ -251,6 +251,10 @@ export default {
   // Custom endpoint
   customEndpointHint: "留空使用官方端点",
 
+  // Remark
+  remark: "备注",
+  remarkPlaceholder: "输入备注信息（如来源、用途等）",
+
   // JSON Import
   importMcpJson: "导入 MCP JSON",
   importMcpJsonBtn: "导入",

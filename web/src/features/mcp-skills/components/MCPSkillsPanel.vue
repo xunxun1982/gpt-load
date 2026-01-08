@@ -334,6 +334,7 @@ const serviceForm = reactive<CreateServiceRequest>({
   tools: [],
   rpd_limit: 0,
   mcp_enabled: false,
+  remark: "",
 });
 const apiKeyInput = ref("");
 const argsInput = ref("");
@@ -421,24 +422,24 @@ const groupForm = reactive<
 const serviceAccessTokenInput = ref("");
 
 // Generate random access token for MCP endpoints
-// Uses cryptographically secure random when available, falls back to Math.random
+// Uses cryptographically secure random - throws error if unavailable
+// Note: crypto.getRandomValues is supported in all modern browsers (IE11+, all evergreen browsers)
+// AI review suggested removing Math.random fallback for security - accepted
 function generateRandomAccessToken(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   const length = 32;
-  let result = "";
 
-  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
-    const randomValues = new Uint32Array(length);
-    crypto.getRandomValues(randomValues);
-    for (let i = 0; i < length; i++) {
-      const value = randomValues[i] ?? 0;
-      result += chars.charAt(value % chars.length);
-    }
-    return result;
+  if (typeof crypto === "undefined" || typeof crypto.getRandomValues !== "function") {
+    throw new Error("Cryptographically secure random number generator not available");
   }
 
+  const randomValues = new Uint32Array(length);
+  crypto.getRandomValues(randomValues);
+  let result = "";
   for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+    // TypeScript strict mode requires explicit check, but getRandomValues always fills the array
+    const value = randomValues[i] as number;
+    result += chars.charAt(value % chars.length);
   }
   return result;
 }
@@ -637,6 +638,7 @@ function resetServiceForm() {
     tools: [],
     rpd_limit: 0,
     mcp_enabled: false,
+    remark: "",
   });
   apiKeyInput.value = "";
   argsInput.value = "";
@@ -672,6 +674,7 @@ function openEditService(service: MCPServiceDTO) {
     tools: service.tools || [],
     rpd_limit: service.rpd_limit,
     mcp_enabled: service.mcp_enabled,
+    remark: service.remark || "",
   });
   apiKeyInput.value = "";
   argsInput.value = (service.args || []).join("\n");
@@ -2220,6 +2223,14 @@ onMounted(() => {
             </n-input>
           </n-form-item>
         </div>
+        <n-form-item :label="t('mcpSkills.remark')">
+          <n-input
+            v-model:value="serviceForm.remark"
+            type="textarea"
+            :autosize="{ minRows: 1, maxRows: 4 }"
+            :placeholder="t('mcpSkills.remarkPlaceholder')"
+          />
+        </n-form-item>
       </n-form>
       <template #footer>
         <n-space justify="end">

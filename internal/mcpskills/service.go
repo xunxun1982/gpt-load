@@ -279,6 +279,7 @@ func (s *Service) serviceToDTO(svc *MCPService) MCPServiceDTO {
 		RPDLimit:        svc.RPDLimit,
 		MCPEnabled:      svc.MCPEnabled,
 		HasAccessToken:  strings.TrimSpace(svc.AccessToken) != "",
+		Remark:          svc.Remark,
 		HealthStatus:    string(svc.HealthStatus),
 		LastHealthCheck: svc.LastHealthCheck,
 		CreatedAt:       svc.CreatedAt,
@@ -541,6 +542,7 @@ func (s *Service) CreateService(ctx context.Context, params CreateServiceParams)
 		APIKeyPrefix: strings.TrimSpace(params.APIKeyPrefix),
 		RPDLimit:     params.RPDLimit,
 		MCPEnabled:   params.MCPEnabled,
+		Remark:       strings.TrimSpace(params.Remark),
 	}
 
 	// Set access token if MCP enabled
@@ -745,6 +747,9 @@ func (s *Service) UpdateService(ctx context.Context, id uint, params UpdateServi
 	}
 	if params.AccessToken != nil {
 		svc.AccessToken = strings.TrimSpace(*params.AccessToken)
+	}
+	if params.Remark != nil {
+		svc.Remark = strings.TrimSpace(*params.Remark)
 	}
 
 	if err := s.db.WithContext(ctx).Save(&svc).Error; err != nil {

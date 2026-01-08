@@ -255,6 +255,10 @@ export default {
   // Custom endpoint
   customEndpointHint: "Leave empty to use official endpoint",
 
+  // Remark
+  remark: "Remark",
+  remarkPlaceholder: "Enter remark (e.g., source, purpose)",
+
   // JSON Import
   importMcpJson: "Import MCP JSON",
   importMcpJsonBtn: "Import",

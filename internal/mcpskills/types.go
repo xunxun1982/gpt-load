@@ -61,6 +61,9 @@ type MCPServiceDTO struct {
 	MCPEnabled     bool `json:"mcp_enabled"`
 	HasAccessToken bool `json:"has_access_token"`
 
+	// User notes
+	Remark string `json:"remark"`
+
 	// Status
 	HealthStatus    string    `json:"health_status"`
 	LastHealthCheck time.Time `json:"last_health_check,omitempty"`
@@ -107,6 +110,9 @@ type CreateServiceParams struct {
 	// MCP endpoint exposure
 	MCPEnabled  bool   `json:"mcp_enabled"`
 	AccessToken string `json:"access_token,omitempty"`
+
+	// User notes
+	Remark string `json:"remark"`
 }
 
 // UpdateServiceParams defines parameters for updating an MCP service
@@ -146,6 +152,9 @@ type UpdateServiceParams struct {
 	// MCP endpoint exposure
 	MCPEnabled  *bool   `json:"mcp_enabled,omitempty"`
 	AccessToken *string `json:"access_token,omitempty"`
+
+	// User notes
+	Remark *string `json:"remark,omitempty"`
 }
 
 // GroupListParams defines pagination parameters for group listing
