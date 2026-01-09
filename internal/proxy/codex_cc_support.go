@@ -504,9 +504,11 @@ const codexToolNameLimit = 64
 // buildToolNameShortMap builds a map of original names to shortened names,
 // ensuring uniqueness within the request. This is necessary because multiple
 // tools may have the same shortened name after truncation.
+// Duplicate original names are skipped to prevent map overwrite issues.
 func buildToolNameShortMap(names []string) map[string]string {
 	used := make(map[string]struct{}, len(names))
 	result := make(map[string]string, len(names))
+	seenOrig := make(map[string]struct{}, len(names))
 
 	// Helper to get base candidate name
 	baseCandidate := func(n string) string {
@@ -552,6 +554,11 @@ func buildToolNameShortMap(names []string) map[string]string {
 	}
 
 	for _, n := range names {
+		// Skip duplicate original names to prevent map overwrite
+		if _, ok := seenOrig[n]; ok {
+			continue
+		}
+		seenOrig[n] = struct{}{}
 		cand := baseCandidate(n)
 		uniq := makeUnique(cand)
 		used[uniq] = struct{}{}
@@ -576,7 +583,8 @@ func buildReverseToolNameMap(shortMap map[string]string) map[string]string {
 // 2. "input" array uses structured format: {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "..."}]}
 // Claude's system prompt is converted to a developer message in the input array.
 // The customInstructions parameter allows overriding the default instructions for providers that validate this field.
-// Returns the converted request and a map of original->shortened tool names for response restoration.
+// Tool name shortening is handled internally via buildToolNameShortMap; the reverse map is stored
+// in context for response restoration (see setCodexToolNameReverseMap).
 func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (*CodexRequest, error) {
 	// Use custom instructions if provided, otherwise use default
 	instructions := codexDefaultInstructions
@@ -721,9 +729,12 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 		}
 	}
 
-	// Enable parallel tool calls for better performance
-	parallelCalls := true
-	codexReq.ParallelToolCalls = &parallelCalls
+	// Enable parallel tool calls only when tools are present.
+	// Some OpenAI-compatible upstreams reject parallel_tool_calls when no tools are defined.
+	if len(codexReq.Tools) > 0 {
+		parallelCalls := true
+		codexReq.ParallelToolCalls = &parallelCalls
+	}
 
 	// Configure reasoning for Codex API when thinking is enabled.
 	// This converts Claude's thinking.budget_tokens to Codex's reasoning.effort level.
@@ -1038,14 +1049,22 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 			}
 		case "function_call":
 			if item.CallID != "" && item.Name != "" {
-				// Validate arguments before conversion
-				if !isValidToolCallArguments(item.Name, item.Arguments) {
+				// Restore original tool name first for validation and cleanup.
+				// This ensures tool-specific logic uses the correct name.
+				toolName := item.Name
+				if reverseToolNameMap != nil {
+					if orig, ok := reverseToolNameMap[item.Name]; ok {
+						toolName = orig
+					}
+				}
+				// Validate arguments before conversion using restored tool name
+				if !isValidToolCallArguments(toolName, item.Arguments) {
 					continue
 				}
 				inputJSON := json.RawMessage("{}")
 				if item.Arguments != "" {
 					// Clean up WebSearch tool arguments for upstream compatibility
-					argsStr := cleanToolCallArguments(item.Name, item.Arguments)
+					argsStr := cleanToolCallArguments(toolName, item.Arguments)
 					// Apply Windows path escape fix for Bash commands
 					argsStr = doubleEscapeWindowsPathsForBash(argsStr)
 					inputJSON = json.RawMessage(argsStr)
@@ -1054,13 +1073,6 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 				toolUseID := item.CallID
 				if strings.HasPrefix(toolUseID, "call_") {
 					toolUseID = strings.TrimPrefix(toolUseID, "call_")
-				}
-				// Restore original tool name if it was shortened
-				toolName := item.Name
-				if reverseToolNameMap != nil {
-					if orig, ok := reverseToolNameMap[item.Name]; ok {
-						toolName = orig
-					}
 				}
 				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 					Type:  "tool_use",
@@ -1562,9 +1574,14 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		return
 	}
 
+	// Track original encoding and decompression state to ensure correct header handling.
+	// When decompression fails, we must preserve Content-Encoding if returning original bytes.
+	origEncoding := resp.Header.Get("Content-Encoding")
+	decompressed := false
+
 	// Decompress response body if encoded with size limit to prevent memory exhaustion.
 	// The limit matches maxUpstreamResponseBodySize to ensure consistent memory bounds.
-	bodyBytes, err = utils.DecompressResponseWithLimit(resp.Header.Get("Content-Encoding"), bodyBytes, maxUpstreamResponseBodySize)
+	bodyBytes, err = utils.DecompressResponseWithLimit(origEncoding, bodyBytes, maxUpstreamResponseBodySize)
 	if err != nil {
 		// Use errors.Is() for sentinel error comparison to handle wrapped errors properly
 		if errors.Is(err, utils.ErrDecompressedTooLarge) {
@@ -1583,8 +1600,11 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			c.JSON(http.StatusBadGateway, claudeErr)
 			return
 		}
-		// Other decompression errors are logged but we continue with original data
+		// Other decompression errors: continue with original data but preserve encoding header
 		logrus.WithError(err).Warn("Codex CC: Decompression failed, using original data")
+	} else if origEncoding != "" {
+		// Decompression succeeded, mark as decompressed
+		decompressed = true
 	}
 
 	// Parse Codex response
@@ -1594,6 +1614,10 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			Warn("Failed to parse Codex response for CC conversion, returning body without conversion")
 		c.Set("response_body", string(bodyBytes))
 		clearUpstreamEncodingHeaders(c)
+		// Preserve original Content-Encoding if data was not decompressed
+		if !decompressed && origEncoding != "" {
+			c.Header("Content-Encoding", origEncoding)
+		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
@@ -1645,6 +1669,11 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 	claudeBody, err := json.Marshal(claudeResp)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to marshal Claude response")
+		clearUpstreamEncodingHeaders(c)
+		// Preserve original Content-Encoding if data was not decompressed
+		if !decompressed && origEncoding != "" {
+			c.Header("Content-Encoding", origEncoding)
+		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}

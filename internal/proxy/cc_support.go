@@ -1925,10 +1925,15 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	}
 	// defer resp.Body.Close() - caller (executeRequestWithRetry) handles this
 
+	// Track original encoding and decompression state to ensure correct header handling.
+	// When decompression fails, we must preserve Content-Encoding if returning original bytes.
+	origEncoding := resp.Header.Get("Content-Encoding")
+	decompressed := false
+
 	// Decompress response body if it is encoded (e.g., gzip) before JSON parsing.
 	// This avoids returning compressed bytes to Claude clients and matches CC API expectations.
 	// Use size-limited decompression to prevent memory exhaustion from malicious compressed payloads.
-	bodyBytes, err = utils.DecompressResponseWithLimit(resp.Header.Get("Content-Encoding"), bodyBytes, maxUpstreamResponseBodySize)
+	bodyBytes, err = utils.DecompressResponseWithLimit(origEncoding, bodyBytes, maxUpstreamResponseBodySize)
 	if err != nil {
 		// Use errors.Is() for sentinel error comparison to handle wrapped errors properly
 		if errors.Is(err, utils.ErrDecompressedTooLarge) {
@@ -1947,8 +1952,11 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			c.JSON(http.StatusBadGateway, claudeErr)
 			return
 		}
-		// Other decompression errors are logged but we continue with original data
+		// Other decompression errors: continue with original data but preserve encoding header
 		logrus.WithError(err).Warn("CC: Decompression failed, using original data")
+	} else if origEncoding != "" {
+		// Decompression succeeded, mark as decompressed
+		decompressed = true
 	}
 
 	// Parse OpenAI response
@@ -1963,6 +1971,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		// Returning decompressed bytes with a stale Content-Encoding header would cause clients
 		// to attempt decompression again and corrupt the payload.
 		clearUpstreamEncodingHeaders(c)
+		// Preserve original Content-Encoding if data was not decompressed
+		if !decompressed && origEncoding != "" {
+			c.Header("Content-Encoding", origEncoding)
+		}
 
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
@@ -2109,6 +2121,11 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	claudeBody, err := json.Marshal(claudeResp)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to marshal Claude response")
+		// Clear headers and preserve original encoding if data was not decompressed
+		clearUpstreamEncodingHeaders(c)
+		if !decompressed && origEncoding != "" {
+			c.Header("Content-Encoding", origEncoding)
+		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
