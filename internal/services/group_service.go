@@ -2510,6 +2510,14 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		req.Header.Set("User-Agent", channel.CodexUserAgent)
 	}
 
+	// Set User-Agent for Anthropic channel when fetching models
+	// Similar to Codex, this is ONLY for model fetching requests.
+	// Normal Anthropic requests preserve client's original UA.
+	// OpenAI CC mode (/claude path) sets UA separately in server.go via isCCMode() check.
+	if group.ChannelType == "anthropic" {
+		req.Header.Set("User-Agent", channel.ClaudeCodeUserAgent)
+	}
+
 	// NOTE: ParamOverrides are NOT applied to GET requests (like /v1/models).
 	// ParamOverrides are designed to modify request body parameters (e.g., enable_thinking, temperature),
 	// which only make sense for POST/PUT/PATCH requests with JSON bodies.
