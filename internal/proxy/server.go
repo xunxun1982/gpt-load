@@ -261,11 +261,16 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 	}
 
 	path := c.Request.URL.Path
+	// Path is already rewritten from /claude/v1/messages/count_tokens to /v1/messages/count_tokens
+	// by rewriteClaudePathToOpenAIGeneric() before this function is called.
+	// This works for both OpenAI CC mode and Codex CC mode (/claude entry point).
 	if !strings.HasSuffix(path, "/v1/messages/count_tokens") {
 		return false
 	}
 
 	// Local heuristic estimation: count runes and assume ~4 runes per token.
+	// This endpoint is intercepted locally and not forwarded to upstream.
+	// Supports: OpenAI channel CC mode, Codex channel CC mode (/claude entry).
 	estimatedTokens := estimateTokensForClaudeCountTokens(bodyBytes)
 
 	// Apply multiplier (billing adjustment).
@@ -289,9 +294,11 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 }
 
 // handleEventLoggingBatch handles Claude Code event logging batch endpoint.
-// This endpoint is effective when:
-// 1. CC support is enabled (OpenAI channel) - intercepts /claude/api/event_logging/batch
-// 2. Intercept event log is enabled (Anthropic channel) - intercepts /api/event_logging/batch
+// This endpoint is intercepted locally and not forwarded to upstream.
+// Supports:
+// 1. OpenAI channel CC mode - intercepts /claude/api/event_logging/batch
+// 2. Codex channel CC mode (/claude entry) - intercepts /claude/api/event_logging/batch
+// 3. Anthropic channel (intercept_event_log enabled) - intercepts /api/event_logging/batch
 // Returns: {"accepted_count": X, "rejected_count": 0} where X is the number of events.
 func (ps *ProxyServer) handleEventLoggingBatch(c *gin.Context, group *models.Group, bodyBytes []byte) bool {
 	if c == nil || c.Request == nil || group == nil {
@@ -303,7 +310,8 @@ func (ps *ProxyServer) handleEventLoggingBatch(c *gin.Context, group *models.Gro
 
 	path := c.Request.URL.Path
 
-	// Check if this is a CC support case (OpenAI channel with /claude/api/event_logging/batch)
+	// Check if this is a CC support case (OpenAI or Codex channel with /claude/api/event_logging/batch)
+	// isCCSupportEnabled() returns true for both OpenAI and Codex channels when cc_support is enabled.
 	isCCCase := isCCSupportEnabled(group) && strings.HasSuffix(path, "/claude/api/event_logging/batch")
 
 	// Check if this is an Anthropic intercept case (/api/event_logging/batch without /claude/ prefix)
