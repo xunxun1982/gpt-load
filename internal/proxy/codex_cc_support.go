@@ -992,19 +992,23 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 	c.Set(ctxKeyCodexCC, true) // Mark as Codex CC mode for response handling
 
 	// Debug log: output converted request details for troubleshooting
-	inputPreview := string(codexReq.Input)
-	if len(inputPreview) > 500 {
-		inputPreview = inputPreview[:500] + "..."
-	}
-	logrus.WithFields(logrus.Fields{
+	// Only log input_preview when EnableRequestBodyLogging is enabled to avoid leaking sensitive data
+	logFields := logrus.Fields{
 		"group":              group.Name,
 		"original_model":     originalModel,
 		"codex_model":        codexReq.Model,
 		"stream":             codexReq.Stream,
 		"tools_count":        len(codexReq.Tools),
-		"input_preview":      inputPreview,
 		"converted_body_len": len(convertedBody),
-	}).Debug("Codex CC: Converted Claude request to Codex format")
+	}
+	if group.EffectiveConfig.EnableRequestBodyLogging {
+		inputPreview := string(codexReq.Input)
+		if len(inputPreview) > 500 {
+			inputPreview = inputPreview[:500] + "..."
+		}
+		logFields["input_preview"] = inputPreview
+	}
+	logrus.WithFields(logFields).Debug("Codex CC: Converted Claude request to Codex format")
 
 	return convertedBody, true, nil
 }
@@ -1026,14 +1030,22 @@ type CodexStreamEvent struct {
 
 // codexStreamState tracks state during Codex streaming response conversion.
 type codexStreamState struct {
-	messageID       string
-	currentText     strings.Builder
-	currentToolID   string
-	currentToolName string
-	currentToolArgs strings.Builder
-	toolUseBlocks   []ClaudeContentBlock
-	hasContent      bool
-	model           string
+	messageID         string
+	currentText       strings.Builder
+	currentToolID     string
+	currentToolName   string
+	currentToolArgs   strings.Builder
+	toolUseBlocks     []ClaudeContentBlock
+	hasContent        bool
+	model             string
+	// nextClaudeIndex tracks the next content_block index for Claude events.
+	// This is independent of Codex's output_index/content_index to ensure
+	// Claude clients receive sequential, non-conflicting indices.
+	nextClaudeIndex   int
+	// finalSent tracks whether the final message_delta/message_stop events have been sent.
+	// This prevents duplicate final events when response.completed is received multiple times
+	// or when [DONE] is processed after response.completed.
+	finalSent         bool
 }
 
 // newCodexStreamState creates a new stream state for Codex CC conversion.
@@ -1091,12 +1103,13 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 					toolUseID = strings.TrimPrefix(toolUseID, "call_")
 				}
 				logrus.WithFields(logrus.Fields{
-					"tool_id":   toolUseID,
-					"tool_name": s.currentToolName,
+					"tool_id":      toolUseID,
+					"tool_name":    s.currentToolName,
+					"claude_index": s.nextClaudeIndex,
 				}).Debug("Codex CC: Function call started")
 				events = append(events, ClaudeStreamEvent{
 					Type:  "content_block_start",
-					Index: event.OutputIdx,
+					Index: s.nextClaudeIndex,
 					ContentBlock: &ClaudeContentBlock{
 						Type:  "tool_use",
 						ID:    toolUseID,
@@ -1112,7 +1125,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		if event.Part != nil && event.Part.Type == "output_text" {
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_start",
-				Index: event.ContentIdx,
+				Index: s.nextClaudeIndex,
 				ContentBlock: &ClaudeContentBlock{
 					Type: "text",
 					Text: "",
@@ -1126,7 +1139,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			s.hasContent = true
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
-				Index: event.ContentIdx,
+				Index: s.nextClaudeIndex,
 				Delta: &ClaudeStreamDelta{
 					Type: "text_delta",
 					Text: event.Delta,
@@ -1139,11 +1152,12 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		logrus.WithField("text_len", len(event.Text)).Debug("Codex CC: Text output done")
 
 	case "response.content_part.done":
-		// Content part complete - send content_block_stop
+		// Content part complete - send content_block_stop and increment index
 		events = append(events, ClaudeStreamEvent{
 			Type:  "content_block_stop",
-			Index: event.ContentIdx,
+			Index: s.nextClaudeIndex,
 		})
+		s.nextClaudeIndex++
 
 	case "response.function_call_arguments.delta":
 		if event.Delta != "" {
@@ -1151,7 +1165,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			logrus.WithField("delta_len", len(event.Delta)).Debug("Codex CC: Function call arguments delta")
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
-				Index: event.OutputIdx,
+				Index: s.nextClaudeIndex,
 				Delta: &ClaudeStreamDelta{
 					Type:        "input_json_delta",
 					PartialJSON: event.Delta,
@@ -1191,12 +1205,20 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				})
 				events = append(events, ClaudeStreamEvent{
 					Type:  "content_block_stop",
-					Index: event.OutputIdx,
+					Index: s.nextClaudeIndex,
 				})
+				s.nextClaudeIndex++
 			}
 		}
 
 	case "response.completed", "response.done":
+		// Prevent duplicate final events when response.completed is received multiple times
+		// or when [DONE] is processed after response.completed
+		if s.finalSent {
+			return events
+		}
+		s.finalSent = true
+
 		// Determine stop reason
 		stopReason := "end_turn"
 		if len(s.toolUseBlocks) > 0 {
@@ -1251,8 +1273,29 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		return
 	}
 
-	// Decompress response body if encoded
-	bodyBytes, _ = utils.DecompressResponse(resp.Header.Get("Content-Encoding"), bodyBytes)
+	// Decompress response body if encoded with size limit to prevent memory exhaustion.
+	// The limit matches maxUpstreamResponseBodySize to ensure consistent memory bounds.
+	bodyBytes, err = utils.DecompressResponseWithLimit(resp.Header.Get("Content-Encoding"), bodyBytes, maxUpstreamResponseBodySize)
+	if err != nil {
+		if err == utils.ErrDecompressedTooLarge {
+			maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
+			message := fmt.Sprintf("Decompressed response exceeded maximum allowed size (%dMB) for Codex CC conversion", maxMB)
+			logrus.WithField("limit_mb", maxMB).
+				Warn("Codex CC: Decompressed response body too large for conversion")
+			claudeErr := ClaudeErrorResponse{
+				Type: "error",
+				Error: ClaudeError{
+					Type:    "invalid_request_error",
+					Message: message,
+				},
+			}
+			clearUpstreamEncodingHeaders(c)
+			c.JSON(http.StatusBadGateway, claudeErr)
+			return
+		}
+		// Other decompression errors are logged but we continue with original data
+		logrus.WithError(err).Warn("Codex CC: Decompression failed, using original data")
+	}
 
 	// Parse Codex response
 	var codexResp CodexResponse

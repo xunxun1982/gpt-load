@@ -2501,10 +2501,12 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Set User-Agent for Codex channel AFTER header rules to ensure upstream compatibility
-	// This prevents header rules from accidentally removing/overriding the required User-Agent
-	// Codex upstream may reject requests without proper User-Agent
-	if group.ChannelType == "codex" && req.Header.Get("User-Agent") == "" {
+	// Set User-Agent for Codex channel when fetching models
+	// IMPORTANT: This UA is ONLY set for model fetching requests, NOT for normal proxy requests.
+	// Normal Codex requests should use passthrough behavior (preserve client's original UA).
+	// Codex CC mode (/claude path) sets UA separately in server.go via isCodexCCMode() check.
+	// Codex upstream may reject model list requests without proper User-Agent.
+	if group.ChannelType == "codex" {
 		req.Header.Set("User-Agent", channel.CodexUserAgent)
 	}
 
@@ -2562,11 +2564,21 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		}
 
 		// Log detailed error information for debugging (use original URL in logs for ops debugging)
+		// Error body preview is logged at Debug level only to aid troubleshooting while
+		// avoiding exposure in production logs. Client-facing messages exclude error body
+		// to prevent information disclosure.
+		logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"status_code":   resp.StatusCode,
+			"request_url":   safeURL,
+			"channel_type":  group.ChannelType,
+			"content_type":  resp.Header.Get("Content-Type"),
+			"error_preview": errorPreview,
+		}).Debug("FetchGroupModels: Upstream error response details")
+
 		logrus.WithContext(ctx).WithFields(logrus.Fields{
 			"status_code":  resp.StatusCode,
 			"request_url":  safeURL,
 			"channel_type": group.ChannelType,
-			"content_type": resp.Header.Get("Content-Type"),
 		}).Error("FetchGroupModels: Upstream returned non-OK status")
 
 		// Provide specific error messages based on status code.
@@ -2599,9 +2611,15 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 	}
 
 	// Decompress response body if needed (gzip/deflate), mirroring proxy model list handling
+	// Use size-limited decompression to prevent memory exhaustion from malicious compressed payloads
 	contentEncoding := resp.Header.Get("Content-Encoding")
-	decompressed, err := utils.DecompressResponse(contentEncoding, bodyBytes)
+	decompressed, err := utils.DecompressResponseWithLimit(contentEncoding, bodyBytes, maxModelListBodySize)
 	if err != nil {
+		if err == utils.ErrDecompressedTooLarge {
+			logrus.WithContext(ctx).WithField("limit_mb", maxModelListBodySize/(1024*1024)).
+				Warn("Decompressed model list response too large")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "decompressed response too large")
+		}
 		logrus.WithContext(ctx).WithError(err).Warn("Failed to decompress response body, using raw bytes")
 		decompressed = bodyBytes
 	}

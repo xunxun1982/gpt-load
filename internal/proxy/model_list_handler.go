@@ -4,7 +4,6 @@ import (
 	"gpt-load/internal/channel"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"io"
 	"net/http"
 	"strings"
 
@@ -26,18 +25,31 @@ func shouldInterceptModelList(path string, method string) bool {
 
 // handleModelListResponse processes the model list response and applies filtering based on redirect rules
 func (ps *ProxyServer) handleModelListResponse(c *gin.Context, resp *http.Response, group *models.Group, channelHandler channel.ChannelProxy) {
-	// Read the upstream response body
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// Read the upstream response body with size limit to prevent memory exhaustion
+	const maxModelListBodySize = 10 * 1024 * 1024 // 10MB limit for model list responses
+	bodyBytes, err := readAllWithLimit(resp.Body, maxModelListBodySize)
 	if err != nil {
+		if err == ErrBodyTooLarge {
+			logrus.WithField("limit_mb", maxModelListBodySize/(1024*1024)).
+				Warn("Model list response body too large")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Model list response too large"})
+			return
+		}
 		logrus.WithError(err).Error("Failed to read model list response body")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
 		return
 	}
 
-	// Decompress response data based on Content-Encoding
+	// Decompress response data based on Content-Encoding with size limit
 	contentEncoding := resp.Header.Get("Content-Encoding")
-	decompressed, err := utils.DecompressResponse(contentEncoding, bodyBytes)
+	decompressed, err := utils.DecompressResponseWithLimit(contentEncoding, bodyBytes, maxModelListBodySize)
 	if err != nil {
+		if err == utils.ErrDecompressedTooLarge {
+			logrus.WithField("limit_mb", maxModelListBodySize/(1024*1024)).
+				Warn("Decompressed model list response too large")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Decompressed response too large"})
+			return
+		}
 		logrus.WithError(err).Warn("Decompression failed, using original data")
 		decompressed = bodyBytes
 	}

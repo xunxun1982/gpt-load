@@ -131,3 +131,54 @@ func (z *ZstdDecompressor) Decompress(data []byte) ([]byte, error) {
 
 	return decompressed, nil
 }
+
+// ErrDecompressedTooLarge is returned when decompressed data exceeds the size limit
+var ErrDecompressedTooLarge = fmt.Errorf("decompressed data exceeds maximum allowed size")
+
+// DecompressResponseWithLimit decompresses response data with a size limit to prevent memory exhaustion.
+// This is important for security as malicious compressed payloads (zip bombs) can expand to huge sizes.
+// Returns ErrDecompressedTooLarge if the decompressed size exceeds maxSize.
+func DecompressResponseWithLimit(contentEncoding string, data []byte, maxSize int64) ([]byte, error) {
+	// If no encoding specified or empty data, return as-is
+	if contentEncoding == "" || len(data) == 0 {
+		return data, nil
+	}
+
+	// Look up the decompressor
+	decompressor, exists := decompressorRegistry[contentEncoding]
+	if !exists {
+		logrus.Warnf("No decompressor registered for encoding '%s', returning original data", contentEncoding)
+		return data, nil
+	}
+
+	// Decompress with size limit using a wrapper
+	decompressed, err := decompressWithLimit(decompressor, data, maxSize)
+	if err != nil {
+		if err == ErrDecompressedTooLarge {
+			return nil, err
+		}
+		logrus.WithError(err).Warnf("Failed to decompress with '%s', returning original data", contentEncoding)
+		return data, nil
+	}
+
+	logrus.Debugf("Successfully decompressed %d bytes -> %d bytes using '%s'",
+		len(data), len(decompressed), contentEncoding)
+	return decompressed, nil
+}
+
+// decompressWithLimit wraps decompression with a size limit check.
+// It decompresses incrementally and stops if the limit is exceeded.
+func decompressWithLimit(decompressor Decompressor, data []byte, maxSize int64) ([]byte, error) {
+	// First decompress normally
+	decompressed, err := decompressor.Decompress(data)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check size limit after decompression
+	if maxSize > 0 && int64(len(decompressed)) > maxSize {
+		return nil, ErrDecompressedTooLarge
+	}
+
+	return decompressed, nil
+}

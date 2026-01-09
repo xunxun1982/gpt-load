@@ -612,6 +612,9 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			// Apply CC support: convert Claude requests to target format
 			// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
 			// We check for /v1/messages (after rewrite) and CC support enabled
+			// Query params are already sanitized in the path rewriting block above (sanitizeCCQueryParams)
+			// when wasClaudePath is true. Non-Claude paths don't need sanitization as they are
+			// direct API calls that should preserve their original query parameters.
 			if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
 				// Handle Codex channel CC support (Claude -> Codex/Responses API)
 				if group.ChannelType == "codex" {
@@ -785,16 +788,19 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	// Log request
 	channelHandler.ModifyRequest(req, apiKey, group)
 
-	// Set User-Agent for Codex CC mode to ensure upstream compatibility
-	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version
-	if isCodexCCMode(c) {
-		req.Header.Set("User-Agent", channel.CodexUserAgent)
-	}
-
 	// Apply custom header rules
 	if len(group.HeaderRuleList) > 0 {
 		headerCtx := utils.NewHeaderVariableContextFromGin(c, group, apiKey)
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
+	}
+
+	// Set User-Agent for Codex CC mode AFTER header rules to ensure upstream compatibility
+	// IMPORTANT: This UA is ONLY set when CC mode is enabled (/claude path with cc_support=true).
+	// Normal Codex requests (non-CC) should use passthrough behavior (preserve client's original UA).
+	// Model fetching sets UA separately in group_service.go FetchGroupModels().
+	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version.
+	if isCodexCCMode(c) {
+		req.Header.Set("User-Agent", channel.CodexUserAgent)
 	}
 
 	// Use the upstream-specific client (with its dedicated proxy configuration)
@@ -1323,16 +1329,19 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	subGroupChannelHandler.ModifyRequest(req, apiKey, group)
 
-	// Set User-Agent for Codex CC mode to ensure upstream compatibility
-	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version
-	if isCodexCCMode(c) {
-		req.Header.Set("User-Agent", channel.CodexUserAgent)
-	}
-
 	// Apply custom header rules
 	if len(group.HeaderRuleList) > 0 {
 		headerCtx := utils.NewHeaderVariableContextFromGin(c, group, apiKey)
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
+	}
+
+	// Set User-Agent for Codex CC mode AFTER header rules to ensure upstream compatibility
+	// IMPORTANT: This UA is ONLY set when CC mode is enabled (/claude path with cc_support=true).
+	// Normal Codex requests (non-CC) should use passthrough behavior (preserve client's original UA).
+	// Model fetching sets UA separately in group_service.go FetchGroupModels().
+	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version.
+	if isCodexCCMode(c) {
+		req.Header.Set("User-Agent", channel.CodexUserAgent)
 	}
 
 	// Use the upstream-specific client

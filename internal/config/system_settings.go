@@ -431,6 +431,8 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			if !validModes[mode] {
 				return fmt.Errorf("invalid value for %s: must be 'auto', 'official', or 'custom'", key)
 			}
+			// Persist the normalized value back to configMap for consistent storage
+			configMap[key] = mode
 			continue
 		}
 

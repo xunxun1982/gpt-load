@@ -1893,7 +1893,28 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 
 	// Decompress response body if it is encoded (e.g., gzip) before JSON parsing.
 	// This avoids returning compressed bytes to Claude clients and matches CC API expectations.
-	bodyBytes, _ = utils.DecompressResponse(resp.Header.Get("Content-Encoding"), bodyBytes)
+	// Use size-limited decompression to prevent memory exhaustion from malicious compressed payloads.
+	bodyBytes, err = utils.DecompressResponseWithLimit(resp.Header.Get("Content-Encoding"), bodyBytes, maxUpstreamResponseBodySize)
+	if err != nil {
+		if err == utils.ErrDecompressedTooLarge {
+			maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
+			message := fmt.Sprintf("Decompressed response exceeded maximum allowed size (%dMB) for CC conversion", maxMB)
+			logrus.WithField("limit_mb", maxMB).
+				Warn("CC: Decompressed response body too large for conversion")
+			claudeErr := ClaudeErrorResponse{
+				Type: "error",
+				Error: ClaudeError{
+					Type:    "invalid_request_error",
+					Message: message,
+				},
+			}
+			clearUpstreamEncodingHeaders(c)
+			c.JSON(http.StatusBadGateway, claudeErr)
+			return
+		}
+		// Other decompression errors are logged but we continue with original data
+		logrus.WithError(err).Warn("CC: Decompression failed, using original data")
+	}
 
 	// Parse OpenAI response
 	var openaiResp OpenAIResponse
