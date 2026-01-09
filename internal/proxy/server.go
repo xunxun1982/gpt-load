@@ -636,6 +636,13 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 						return
 					} else if converted {
 						finalBodyBytes = convertedBody
+						// Re-apply param overrides after CC conversion to allow overriding
+						// converted parameters (e.g., reasoning.effort for Codex API).
+						// This enables users to force specific values like {"reasoning": {"effort": "xhigh"}}.
+						finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+						if err != nil {
+							logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex CC conversion")
+						}
 						// Rewrite path from /v1/messages to /v1/responses for Codex
 						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
 						logrus.WithFields(logrus.Fields{
@@ -656,6 +663,12 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 						return
 					} else if converted {
 						finalBodyBytes = convertedBody
+						// Re-apply param overrides after CC conversion to allow overriding
+						// converted parameters (e.g., reasoning_effort for OpenAI API).
+						finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+						if err != nil {
+							logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI CC conversion")
+						}
 						// Rewrite path from /v1/messages to /v1/chat/completions
 						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
 						logrus.WithFields(logrus.Fields{
@@ -1180,6 +1193,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				logrus.WithFields(outFields).Debug("Codex CC: Conversion completed for aggregate sub-group")
 
 				finalBodyBytes = convertedBody
+				// Re-apply param overrides after CC conversion to allow overriding
+				// converted parameters (e.g., reasoning.effort for Codex API).
+				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex CC conversion for sub-group")
+				}
 				// Rewrite path from /v1/messages to /v1/responses for Codex
 				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
 				logrus.WithFields(logrus.Fields{
@@ -1204,6 +1223,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				return
 			} else if converted {
 				finalBodyBytes = convertedBody
+				// Re-apply param overrides after CC conversion to allow overriding
+				// converted parameters (e.g., reasoning_effort for OpenAI API).
+				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI CC conversion for sub-group")
+				}
 				// Rewrite path from /v1/messages to /v1/chat/completions
 				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
 				logrus.WithFields(logrus.Fields{
