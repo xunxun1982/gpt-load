@@ -2490,12 +2490,6 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 	// This delegates to OpenAIChannel, GeminiChannel, or AnthropicChannel ModifyRequest methods
 	channelProxy.ModifyRequest(req, selectedKey, group)
 
-	// Set User-Agent for Codex channel to ensure upstream compatibility when fetching models
-	// Codex upstream may reject requests without proper User-Agent
-	if group.ChannelType == "codex" {
-		req.Header.Set("User-Agent", channel.CodexUserAgent)
-	}
-
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
 		"channel_type": group.ChannelType,
 		"masked_key":   maskedKey,
@@ -2505,6 +2499,13 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 	if len(group.HeaderRuleList) > 0 {
 		headerCtx := utils.NewHeaderVariableContext(group, selectedKey)
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
+	}
+
+	// Set User-Agent for Codex channel AFTER header rules to ensure upstream compatibility
+	// This prevents header rules from accidentally removing/overriding the required User-Agent
+	// Codex upstream may reject requests without proper User-Agent
+	if group.ChannelType == "codex" && req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", channel.CodexUserAgent)
 	}
 
 	// NOTE: ParamOverrides are NOT applied to GET requests (like /v1/models).
@@ -2551,32 +2552,41 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 			errorPreview = errorPreview[:500] + "..."
 		}
 
-		// Log detailed error information for debugging
+		// Redact credentials from URL for safe logging and error messages
+		// This prevents leaking sensitive information like API keys in query params or userinfo
+		safeURL := selection.URL
+		if u, parseErr := url.Parse(selection.URL); parseErr == nil {
+			u.User = nil
+			u.RawQuery = ""
+			safeURL = u.String()
+		}
+
+		// Log detailed error information for debugging (use original URL in logs for ops debugging)
 		logrus.WithContext(ctx).WithFields(logrus.Fields{
-			"status_code":   resp.StatusCode,
-			"request_url":   selection.URL,
-			"channel_type":  group.ChannelType,
-			"error_body":    errorPreview,
-			"content_type":  resp.Header.Get("Content-Type"),
+			"status_code":  resp.StatusCode,
+			"request_url":  safeURL,
+			"channel_type": group.ChannelType,
+			"content_type": resp.Header.Get("Content-Type"),
 		}).Error("FetchGroupModels: Upstream returned non-OK status")
 
 		// Provide specific error messages based on status code.
-		// Include request URL and response body in error message for frontend display.
+		// Use redacted URL in client-facing error messages to avoid leaking internal details.
+		// Error body preview is intentionally excluded from client messages to prevent information disclosure.
 		switch resp.StatusCode {
 		case http.StatusBadRequest: // 400
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("bad request (URL: %s): %s", selection.URL, errorPreview))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("bad request (URL: %s)", safeURL))
 		case http.StatusUnauthorized: // 401
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("authentication failed (URL: %s): invalid or expired API key", selection.URL))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("authentication failed (URL: %s): invalid or expired API key", safeURL))
 		case http.StatusForbidden: // 403
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("access forbidden (URL: %s): insufficient permissions", selection.URL))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("access forbidden (URL: %s): insufficient permissions", safeURL))
 		case http.StatusNotFound: // 404
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("models endpoint not found (URL: %s): %s", selection.URL, errorPreview))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("models endpoint not found (URL: %s)", safeURL))
 		case http.StatusTooManyRequests: // 429
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("rate limit exceeded (URL: %s)", selection.URL))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("rate limit exceeded (URL: %s)", safeURL))
 		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable: // 500, 502, 503
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream server error (URL: %s): %s", selection.URL, errorPreview))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream server error (URL: %s)", safeURL))
 		default:
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream returned error status %d (URL: %s): %s", resp.StatusCode, selection.URL, errorPreview))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream returned error status %d (URL: %s)", resp.StatusCode, safeURL))
 		}
 	}
 

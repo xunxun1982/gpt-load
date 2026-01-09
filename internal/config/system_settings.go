@@ -425,6 +425,8 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			if !ok {
 				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
 			}
+			// Normalize input: trim whitespace and convert to lowercase for case-insensitive matching
+			mode = strings.ToLower(strings.TrimSpace(mode))
 			validModes := map[string]bool{"auto": true, "official": true, "custom": true}
 			if !validModes[mode] {
 				return fmt.Errorf("invalid value for %s: must be 'auto', 'official', or 'custom'", key)

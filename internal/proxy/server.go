@@ -1121,17 +1121,21 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			sanitizeCCQueryParams(c.Request.URL)
 
 			// Debug log: input body before conversion
-			inputPreview := string(finalBodyBytes)
-			if len(inputPreview) > 1000 {
-				inputPreview = inputPreview[:1000] + "..."
+			// Only log body preview when EnableRequestBodyLogging is enabled to avoid leaking sensitive data
+			logFields := logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"path":            c.Request.URL.Path,
+				"input_body_len":  len(finalBodyBytes),
 			}
-			logrus.WithFields(logrus.Fields{
-				"aggregate_group":  originalGroup.Name,
-				"sub_group":        group.Name,
-				"path":             c.Request.URL.Path,
-				"input_body_len":   len(finalBodyBytes),
-				"input_body_preview": inputPreview,
-			}).Debug("Codex CC: Starting conversion for aggregate sub-group")
+			if group.EffectiveConfig.EnableRequestBodyLogging {
+				inputPreview := string(finalBodyBytes)
+				if len(inputPreview) > 1000 {
+					inputPreview = inputPreview[:1000] + "..."
+				}
+				logFields["input_body_preview"] = inputPreview
+			}
+			logrus.WithFields(logFields).Debug("Codex CC: Starting conversion for aggregate sub-group")
 
 			convertedBody, converted, ccErr := ps.applyCodexCCRequestConversion(c, group, finalBodyBytes)
 			if ccErr != nil {
@@ -1144,16 +1148,20 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				return
 			} else if converted {
 				// Debug log: output body after conversion
-				outputPreview := string(convertedBody)
-				if len(outputPreview) > 1000 {
-					outputPreview = outputPreview[:1000] + "..."
+				// Only log body preview when EnableRequestBodyLogging is enabled to avoid leaking sensitive data
+				outFields := logrus.Fields{
+					"aggregate_group": originalGroup.Name,
+					"sub_group":       group.Name,
+					"output_body_len": len(convertedBody),
 				}
-				logrus.WithFields(logrus.Fields{
-					"aggregate_group":    originalGroup.Name,
-					"sub_group":          group.Name,
-					"output_body_len":    len(convertedBody),
-					"output_body_preview": outputPreview,
-				}).Debug("Codex CC: Conversion completed for aggregate sub-group")
+				if group.EffectiveConfig.EnableRequestBodyLogging {
+					outputPreview := string(convertedBody)
+					if len(outputPreview) > 1000 {
+						outputPreview = outputPreview[:1000] + "..."
+					}
+					outFields["output_body_preview"] = outputPreview
+				}
+				logrus.WithFields(outFields).Debug("Codex CC: Conversion completed for aggregate sub-group")
 
 				finalBodyBytes = convertedBody
 				// Rewrite path from /v1/messages to /v1/responses for Codex

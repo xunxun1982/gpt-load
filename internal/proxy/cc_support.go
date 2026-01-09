@@ -140,6 +140,7 @@ func getGroupConfigBool(group *models.Group, key string) bool {
 
 // getGroupConfigString extracts a string value from group config.
 // Returns empty string if the key doesn't exist or the value is not a string.
+// Trims whitespace for consistency with other config handling.
 func getGroupConfigString(group *models.Group, key string) string {
 	if group == nil || group.Config == nil {
 		return ""
@@ -151,7 +152,7 @@ func getGroupConfigString(group *models.Group, key string) string {
 	}
 
 	if v, ok := raw.(string); ok {
-		return v
+		return strings.TrimSpace(v)
 	}
 	return ""
 }
