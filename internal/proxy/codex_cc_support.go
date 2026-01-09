@@ -510,6 +510,8 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 
 	// Note: max_output_tokens is intentionally NOT sent.
 	// Codex CLI (as of commit f7d2f3e) does not send this parameter.
+	// Reason: Some providers may reject or mishandle this parameter, and the
+	// Codex API typically uses provider defaults for output length.
 	// See: https://github.com/openai/codex/issues/4138
 
 	// Build input array using Codex format
@@ -518,6 +520,13 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 	// Convert Claude system prompt to user message in input array
 	// Note: Codex API doesn't support "developer" role in input, only in instructions
 	// We prepend system content as a user message with clear delimiter
+	//
+	// AI REVIEW NOTE: Suggestion to merge system prompt into instructions was considered.
+	// Current design keeps them separate because:
+	// 1. instructions field contains Codex-specific behavior instructions (codexDefaultInstructions)
+	// 2. Claude's system prompt is application-specific context from the client
+	// 3. Merging could cause instruction conflicts and unpredictable behavior
+	// 4. Using delimiters makes the system context clearly distinguishable
 	if len(claudeReq.System) > 0 {
 		systemContent := extractSystemContent(claudeReq.System)
 		if systemContent != "" {
@@ -580,6 +589,8 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 	}
 
 	// Convert tool_choice
+	// Claude tool_choice types: "auto", "any", "tool" (with name), "none"
+	// Codex/OpenAI tool_choice: "auto", "required", "none", or {"type": "function", "name": "..."}
 	if len(claudeReq.ToolChoice) > 0 {
 		var toolChoice map[string]interface{}
 		if err := json.Unmarshal(claudeReq.ToolChoice, &toolChoice); err == nil {
@@ -596,6 +607,9 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 					codexReq.ToolChoice = "required"
 				case "auto":
 					codexReq.ToolChoice = "auto"
+				case "none":
+					// Prevent tool calling even when tools are defined
+					codexReq.ToolChoice = "none"
 				}
 			}
 		}
