@@ -976,6 +976,12 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	delete(req, "tools")
 	delete(req, "tool_choice")
 
+	// Remove reasoning_effort when force_function_call is enabled.
+	// Many OpenAI-compatible upstreams don't support this field, and it can cause
+	// request failures. The force_function_call mode uses prompt-based tool injection
+	// which doesn't require native reasoning support.
+	delete(req, "reasoning_effort")
+
 	// Remove max_tokens only when it's too low to prevent truncation of the XML block.
 	// The XML format requires more tokens than standard text, and low limits (e.g. 100)
 	// will cause the response to be cut off mid-XML, breaking parsing.

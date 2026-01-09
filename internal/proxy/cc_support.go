@@ -361,21 +361,24 @@ type OpenAIFunction struct {
 // z.ai chat-completion APIs. Advanced fields like metadata and Anthropic-style
 // tool_choice objects are intentionally not forwarded to avoid parameter errors.
 type OpenAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
-	Stop        json.RawMessage `json:"stop,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []OpenAIMessage `json:"messages"`
+	MaxTokens       *int            `json:"max_tokens,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	TopP            *float64        `json:"top_p,omitempty"`
+	Stream          bool            `json:"stream"`
+	Tools           []OpenAITool    `json:"tools,omitempty"`
+	Stop            json.RawMessage `json:"stop,omitempty"`
 	// NOTE: We intentionally keep interface{} here (instead of json.RawMessage).
 	// This field is only used for outbound serialization to upstream OpenAI-style APIs,
 	// not for inbound JSON parsing. Using json.RawMessage would require manual JSON
 	// quoting for string values (e.g. "auto") and increases the chance of producing
 	// invalid JSON. With interface{}, json.Marshal guarantees correct JSON encoding
 	// for both string and object forms while keeping the code simple (KISS).
-	ToolChoice interface{} `json:"tool_choice,omitempty"`
+	ToolChoice      interface{} `json:"tool_choice,omitempty"`
+	// ReasoningEffort enables reasoning for models that support it (e.g., o1, o3 series).
+	// Valid values: "low", "medium", "high". Only sent when thinking is enabled.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // convertClaudeToOpenAI converts a Claude request to OpenAI format.
@@ -557,6 +560,17 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 		}
 	}
 
+	// Set reasoning_effort for models that support native reasoning (e.g., o1, o3 series).
+	// This is complementary to thinking hints - some models use reasoning_effort instead of ANTML tags.
+	// Reference: CLIProxyAPI ApplyReasoningEffortMetadata implementation
+	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
+		openaiReq.ReasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
+		logrus.WithFields(logrus.Fields{
+			"budget_tokens":    claudeReq.Thinking.BudgetTokens,
+			"reasoning_effort": openaiReq.ReasoningEffort,
+		}).Debug("CC: Set reasoning_effort for thinking mode")
+	}
+
 	return openaiReq, nil
 }
 
@@ -710,6 +724,26 @@ func getThinkingModel(group *models.Group) string {
 	default:
 		return ""
 	}
+}
+
+// thinkingBudgetToReasoningEffortOpenAI converts Claude thinking budget_tokens to OpenAI reasoning effort.
+// Returns the effort level ("low", "medium", "high") based on token budget.
+// This is used for OpenAI models that support native reasoning (e.g., o1, o3 series).
+func thinkingBudgetToReasoningEffortOpenAI(budgetTokens int) string {
+	// Mapping based on typical token budgets:
+	// - low: < 1000 tokens (quick responses)
+	// - medium: 1000-10000 tokens (default, balanced)
+	// - high: > 10000 tokens (deep reasoning)
+	if budgetTokens <= 0 {
+		return "medium" // Default when not specified
+	}
+	if budgetTokens < 1000 {
+		return "low"
+	}
+	if budgetTokens > 10000 {
+		return "high"
+	}
+	return "medium"
 }
 
 // applyCCRequestConversionDirect converts Claude request to OpenAI format directly.

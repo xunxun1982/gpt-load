@@ -50,16 +50,26 @@ type CodexTool struct {
 
 // CodexRequest represents a Codex/Responses API request.
 type CodexRequest struct {
-	Model             string          `json:"model"`
-	Input             json.RawMessage `json:"input"`
-	Instructions      string          `json:"instructions,omitempty"`
-	MaxOutputTokens   *int            `json:"max_output_tokens,omitempty"`
-	Temperature       *float64        `json:"temperature,omitempty"`
-	TopP              *float64        `json:"top_p,omitempty"`
-	Stream            bool            `json:"stream"`
-	Tools             []CodexTool     `json:"tools,omitempty"`
-	ToolChoice        interface{}     `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	Model             string            `json:"model"`
+	Input             json.RawMessage   `json:"input"`
+	Instructions      string            `json:"instructions,omitempty"`
+	MaxOutputTokens   *int              `json:"max_output_tokens,omitempty"`
+	Temperature       *float64          `json:"temperature,omitempty"`
+	TopP              *float64          `json:"top_p,omitempty"`
+	Stream            bool              `json:"stream"`
+	Tools             []CodexTool       `json:"tools,omitempty"`
+	ToolChoice        interface{}       `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
+	Reasoning         *CodexReasoning   `json:"reasoning,omitempty"`
+	Store             *bool             `json:"store,omitempty"`
+	Include           []string          `json:"include,omitempty"`
+}
+
+// CodexReasoning represents reasoning configuration for Codex API.
+// This enables thinking/reasoning capabilities in Codex models.
+type CodexReasoning struct {
+	Effort  string `json:"effort,omitempty"`  // "low", "medium", "high"
+	Summary string `json:"summary,omitempty"` // "auto", "none", "detailed"
 }
 
 // CodexOutputItem represents an output item in Codex/Responses API format.
@@ -487,12 +497,86 @@ When steps have been completed, use ` + "`update_plan`" + ` to mark each finishe
 
 If all steps are complete, ensure you call ` + "`update_plan`" + ` to mark all steps as ` + "`completed`" + `.`
 
+// codexToolNameLimit is the maximum length for tool names in Codex API.
+// Names exceeding this limit will be shortened to ensure compatibility.
+const codexToolNameLimit = 64
+
+// buildToolNameShortMap builds a map of original names to shortened names,
+// ensuring uniqueness within the request. This is necessary because multiple
+// tools may have the same shortened name after truncation.
+func buildToolNameShortMap(names []string) map[string]string {
+	used := make(map[string]struct{}, len(names))
+	result := make(map[string]string, len(names))
+
+	// Helper to get base candidate name
+	baseCandidate := func(n string) string {
+		if len(n) <= codexToolNameLimit {
+			return n
+		}
+		if strings.HasPrefix(n, "mcp__") {
+			idx := strings.LastIndex(n, "__")
+			if idx > 0 {
+				cand := "mcp__" + n[idx+2:]
+				if len(cand) > codexToolNameLimit {
+					return cand[:codexToolNameLimit]
+				}
+				return cand
+			}
+		}
+		return n[:codexToolNameLimit]
+	}
+
+	// Helper to make name unique by appending suffix
+	makeUnique := func(cand string) string {
+		if _, ok := used[cand]; !ok {
+			return cand
+		}
+		base := cand
+		for i := 1; i < 1000; i++ {
+			suffix := "_" + fmt.Sprintf("%d", i)
+			allowed := codexToolNameLimit - len(suffix)
+			if allowed < 0 {
+				allowed = 0
+			}
+			tmp := base
+			if len(tmp) > allowed {
+				tmp = tmp[:allowed]
+			}
+			tmp = tmp + suffix
+			if _, ok := used[tmp]; !ok {
+				return tmp
+			}
+		}
+		// Fallback: should never reach here
+		return cand
+	}
+
+	for _, n := range names {
+		cand := baseCandidate(n)
+		uniq := makeUnique(cand)
+		used[uniq] = struct{}{}
+		result[n] = uniq
+	}
+	return result
+}
+
+// buildReverseToolNameMap builds a reverse map from shortened to original names.
+// This is used to restore original tool names in responses.
+func buildReverseToolNameMap(shortMap map[string]string) map[string]string {
+	reverse := make(map[string]string, len(shortMap))
+	for orig, short := range shortMap {
+		reverse[short] = orig
+	}
+	return reverse
+}
+
 // convertClaudeToCodex converts a Claude request to Codex/Responses API format.
 // The Codex/Responses API requires:
 // 1. "instructions" field MUST be non-empty and contain a valid system prompt
 // 2. "input" array uses structured format: {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "..."}]}
 // Claude's system prompt is converted to a developer message in the input array.
 // The customInstructions parameter allows overriding the default instructions for providers that validate this field.
+// Returns the converted request and a map of original->shortened tool names for response restoration.
 func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (*CodexRequest, error) {
 	// Use custom instructions if provided, otherwise use default
 	instructions := codexDefaultInstructions
@@ -513,6 +597,16 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 	// Reason: Some providers may reject or mishandle this parameter, and the
 	// Codex API typically uses provider defaults for output length.
 	// See: https://github.com/openai/codex/issues/4138
+
+	// Build tool name short map for tools that exceed the 64 char limit
+	var toolNameShortMap map[string]string
+	if len(claudeReq.Tools) > 0 {
+		names := make([]string, 0, len(claudeReq.Tools))
+		for _, tool := range claudeReq.Tools {
+			names = append(names, tool.Name)
+		}
+		toolNameShortMap = buildToolNameShortMap(names)
+	}
 
 	// Build input array using Codex format
 	var inputItems []interface{}
@@ -553,9 +647,9 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 		})
 	}
 
-	// Convert messages
+	// Convert messages with tool name mapping
 	for _, msg := range claudeReq.Messages {
-		converted, err := convertClaudeMessageToCodexFormat(msg)
+		converted, err := convertClaudeMessageToCodexFormatWithToolMap(msg, toolNameShortMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
 		}
@@ -574,21 +668,29 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 	}
 	codexReq.Input = inputBytes
 
-	// Convert tools
+	// Convert tools with shortened names
 	if len(claudeReq.Tools) > 0 {
 		tools := make([]CodexTool, 0, len(claudeReq.Tools))
 		for _, tool := range claudeReq.Tools {
+			// Apply shortened name if needed
+			toolName := tool.Name
+			if short, ok := toolNameShortMap[tool.Name]; ok {
+				toolName = short
+			}
+			// Normalize tool parameters to ensure valid JSON schema
+			params := normalizeToolParameters(tool.InputSchema)
 			tools = append(tools, CodexTool{
 				Type:        "function",
-				Name:        tool.Name,
+				Name:        toolName,
 				Description: tool.Description,
-				Parameters:  tool.InputSchema,
+				Parameters:  params,
+				Strict:      false, // Codex API requires strict=false for flexibility
 			})
 		}
 		codexReq.Tools = tools
 	}
 
-	// Convert tool_choice
+	// Convert tool_choice with shortened name if applicable
 	// Claude tool_choice types: "auto", "any", "tool" (with name), "none"
 	// Codex/OpenAI tool_choice: "auto", "required", "none", or {"type": "function", "name": "..."}
 	if len(claudeReq.ToolChoice) > 0 {
@@ -598,6 +700,10 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 				switch tcType {
 				case "tool":
 					if toolName, ok := toolChoice["name"].(string); ok {
+						// Apply shortened name if needed
+						if short, ok := toolNameShortMap[toolName]; ok {
+							toolName = short
+						}
 						codexReq.ToolChoice = map[string]interface{}{
 							"type": "function",
 							"name": toolName,
@@ -615,7 +721,161 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 		}
 	}
 
+	// Enable parallel tool calls for better performance
+	parallelCalls := true
+	codexReq.ParallelToolCalls = &parallelCalls
+
+	// Configure reasoning for Codex API when thinking is enabled.
+	// This converts Claude's thinking.budget_tokens to Codex's reasoning.effort level.
+	// Reference: CLIProxyAPI codex_claude_request.go reasoning configuration
+	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
+		reasoningEffort := thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
+		codexReq.Reasoning = &CodexReasoning{
+			Effort:  reasoningEffort,
+			Summary: "auto", // Enable reasoning summary for streaming responses
+		}
+		// Disable response storage for privacy
+		storeDisabled := false
+		codexReq.Store = &storeDisabled
+		// Include encrypted reasoning content for full thinking support
+		codexReq.Include = []string{"reasoning.encrypted_content"}
+		logrus.WithFields(logrus.Fields{
+			"budget_tokens":    claudeReq.Thinking.BudgetTokens,
+			"reasoning_effort": reasoningEffort,
+		}).Debug("Codex CC: Configured reasoning for thinking mode")
+	}
+
 	return codexReq, nil
+}
+
+// normalizeToolParameters ensures tool parameters have valid JSON schema structure.
+// Returns a valid JSON schema with at least type and properties fields.
+func normalizeToolParameters(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+
+	var schema map[string]interface{}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+
+	// Ensure type field exists
+	if _, ok := schema["type"]; !ok {
+		schema["type"] = "object"
+	}
+
+	// Ensure properties field exists for object type
+	if schema["type"] == "object" {
+		if _, ok := schema["properties"]; !ok {
+			schema["properties"] = map[string]interface{}{}
+		}
+	}
+
+	// Remove $schema field if present (not needed for Codex API)
+	delete(schema, "$schema")
+
+	result, err := json.Marshal(schema)
+	if err != nil {
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	return result
+}
+
+// convertClaudeMessageToCodexFormatWithToolMap converts a single Claude message to Codex input items.
+// Uses the tool name short map to apply shortened names for tool_use blocks.
+func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameShortMap map[string]string) ([]interface{}, error) {
+	var result []interface{}
+
+	// Try to parse content as string first
+	var contentStr string
+	if err := json.Unmarshal(msg.Content, &contentStr); err == nil {
+		contentType := "input_text"
+		if msg.Role == "assistant" {
+			contentType = "output_text"
+		}
+		result = append(result, map[string]interface{}{
+			"type": "message",
+			"role": msg.Role,
+			"content": []map[string]interface{}{
+				{"type": contentType, "text": contentStr},
+			},
+		})
+		return result, nil
+	}
+
+	// Parse content as array of blocks
+	var blocks []ClaudeContentBlock
+	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+		return nil, fmt.Errorf("failed to parse content blocks: %w", err)
+	}
+
+	// Separate different block types
+	var textParts []string
+	var toolCalls []interface{}
+	var toolResults []interface{}
+
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			textParts = append(textParts, block.Text)
+		case "thinking":
+			if block.Thinking != "" {
+				textParts = append(textParts, block.Thinking)
+			}
+		case "tool_use":
+			// Apply shortened name if needed
+			toolName := block.Name
+			if short, ok := toolNameShortMap[block.Name]; ok {
+				toolName = short
+			}
+			// Clean up tool arguments for compatibility with upstream APIs
+			argsStr := cleanToolCallArguments(block.Name, string(block.Input))
+			toolCalls = append(toolCalls, map[string]interface{}{
+				"type":      "function_call",
+				"id":        "fc_" + block.ID,
+				"call_id":   "call_" + block.ID,
+				"name":      toolName,
+				"arguments": argsStr,
+			})
+		case "tool_result":
+			resultContent := extractToolResultContent(block)
+			toolResults = append(toolResults, map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": "call_" + block.ToolUseID,
+				"output":  resultContent,
+			})
+		}
+	}
+
+	// Build result based on role
+	switch msg.Role {
+	case "assistant":
+		if len(textParts) > 0 {
+			result = append(result, map[string]interface{}{
+				"type":   "message",
+				"role":   "assistant",
+				"status": "completed",
+				"content": []map[string]interface{}{
+					{"type": "output_text", "text": strings.Join(textParts, "")},
+				},
+			})
+		}
+		result = append(result, toolCalls...)
+	case "user":
+		if len(textParts) > 0 {
+			result = append(result, map[string]interface{}{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": strings.Join(textParts, "")},
+				},
+			})
+		}
+		result = append(result, toolResults...)
+	}
+
+	return result, nil
 }
 
 // extractSystemContent extracts text content from Claude system field.
@@ -666,97 +926,6 @@ func injectThinkingHint(inputItems []interface{}, budgetTokens int) {
 			}
 		}
 	}
-}
-
-// convertClaudeMessageToCodexFormat converts a single Claude message to Codex input items.
-// Uses the correct Codex format: {"type": "message", "role": "...", "content": [{"type": "input_text/output_text", "text": "..."}]}
-func convertClaudeMessageToCodexFormat(msg ClaudeMessage) ([]interface{}, error) {
-	var result []interface{}
-
-	// Try to parse content as string first
-	var contentStr string
-	if err := json.Unmarshal(msg.Content, &contentStr); err == nil {
-		contentType := "input_text"
-		if msg.Role == "assistant" {
-			contentType = "output_text"
-		}
-		result = append(result, map[string]interface{}{
-			"type": "message",
-			"role": msg.Role,
-			"content": []map[string]interface{}{
-				{"type": contentType, "text": contentStr},
-			},
-		})
-		return result, nil
-	}
-
-	// Parse content as array of blocks
-	var blocks []ClaudeContentBlock
-	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
-		return nil, fmt.Errorf("failed to parse content blocks: %w", err)
-	}
-
-	// Separate different block types
-	var textParts []string
-	var toolCalls []interface{}
-	var toolResults []interface{}
-
-	for _, block := range blocks {
-		switch block.Type {
-		case "text":
-			textParts = append(textParts, block.Text)
-		case "thinking":
-			if block.Thinking != "" {
-				textParts = append(textParts, block.Thinking)
-			}
-		case "tool_use":
-			// Clean up tool arguments for compatibility with upstream APIs
-			argsStr := cleanToolCallArguments(block.Name, string(block.Input))
-			toolCalls = append(toolCalls, map[string]interface{}{
-				"type":      "function_call",
-				"id":        "fc_" + block.ID,
-				"call_id":   "call_" + block.ID,
-				"name":      block.Name,
-				"arguments": argsStr,
-			})
-		case "tool_result":
-			resultContent := extractToolResultContent(block)
-			toolResults = append(toolResults, map[string]interface{}{
-				"type":    "function_call_output",
-				"call_id": "call_" + block.ToolUseID,
-				"output":  resultContent,
-			})
-		}
-	}
-
-	// Build result based on role
-	switch msg.Role {
-	case "assistant":
-		if len(textParts) > 0 {
-			result = append(result, map[string]interface{}{
-				"type":   "message",
-				"role":   "assistant",
-				"status": "completed",
-				"content": []map[string]interface{}{
-					{"type": "output_text", "text": strings.Join(textParts, "")},
-				},
-			})
-		}
-		result = append(result, toolCalls...)
-	case "user":
-		if len(textParts) > 0 {
-			result = append(result, map[string]interface{}{
-				"type": "message",
-				"role": "user",
-				"content": []map[string]interface{}{
-					{"type": "input_text", "text": strings.Join(textParts, "")},
-				},
-			})
-		}
-		result = append(result, toolResults...)
-	}
-
-	return result, nil
 }
 
 // cleanToolCallArguments cleans up tool call arguments for compatibility with upstream APIs.
@@ -836,7 +1005,8 @@ func extractToolResultContent(block ClaudeContentBlock) string {
 }
 
 // convertCodexToClaudeResponse converts a Codex/Responses API response to Claude format.
-func convertCodexToClaudeResponse(codexResp *CodexResponse) *ClaudeResponse {
+// The reverseToolNameMap is used to restore original tool names that were shortened.
+func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap map[string]string) *ClaudeResponse {
 	claudeResp := &ClaudeResponse{
 		ID:      codexResp.ID,
 		Type:    "message",
@@ -885,10 +1055,17 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse) *ClaudeResponse {
 				if strings.HasPrefix(toolUseID, "call_") {
 					toolUseID = strings.TrimPrefix(toolUseID, "call_")
 				}
+				// Restore original tool name if it was shortened
+				toolName := item.Name
+				if reverseToolNameMap != nil {
+					if orig, ok := reverseToolNameMap[item.Name]; ok {
+						toolName = orig
+					}
+				}
 				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    toolUseID,
-					Name:  item.Name,
+					Name:  toolName,
 					Input: inputJSON,
 				})
 			}
@@ -939,8 +1116,12 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse) *ClaudeResponse {
 	return claudeResp
 }
 
+// Context key for storing tool name reverse map for response conversion.
+const ctxKeyCodexToolNameReverseMap = "codex_tool_name_reverse_map"
+
 // applyCodexCCRequestConversion converts Claude request to Codex format.
 // Returns the converted body bytes, whether conversion was applied, and any error.
+// Also stores the tool name reverse map in context for response conversion.
 func (ps *ProxyServer) applyCodexCCRequestConversion(
 	c *gin.Context,
 	group *models.Group,
@@ -993,6 +1174,17 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 		customInstructions = ""
 	}
 
+	// Build tool name short map and store reverse map in context for response conversion
+	if len(claudeReq.Tools) > 0 {
+		names := make([]string, 0, len(claudeReq.Tools))
+		for _, tool := range claudeReq.Tools {
+			names = append(names, tool.Name)
+		}
+		shortMap := buildToolNameShortMap(names)
+		reverseMap := buildReverseToolNameMap(shortMap)
+		c.Set(ctxKeyCodexToolNameReverseMap, reverseMap)
+	}
+
 	// Convert to Codex format with custom instructions
 	codexReq, err := convertClaudeToCodex(&claudeReq, customInstructions)
 	if err != nil {
@@ -1032,6 +1224,17 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 	return convertedBody, true, nil
 }
 
+// getCodexToolNameReverseMap retrieves the tool name reverse map from context.
+// Returns nil if not found.
+func getCodexToolNameReverseMap(c *gin.Context) map[string]string {
+	if v, ok := c.Get(ctxKeyCodexToolNameReverseMap); ok {
+		if m, ok := v.(map[string]string); ok {
+			return m
+		}
+	}
+	return nil
+}
+
 // CodexStreamEvent represents a Codex streaming event.
 type CodexStreamEvent struct {
 	Type         string           `json:"type"`
@@ -1065,12 +1268,20 @@ type codexStreamState struct {
 	// This prevents duplicate final events when response.completed is received multiple times
 	// or when [DONE] is processed after response.completed.
 	finalSent         bool
+	// reverseToolNameMap maps shortened tool names back to original names.
+	// Used to restore original tool names in streaming responses.
+	reverseToolNameMap map[string]string
+	// inThinkingBlock tracks whether we are currently inside a thinking/reasoning block.
+	// Used to properly handle reasoning summary events.
+	inThinkingBlock   bool
 }
 
 // newCodexStreamState creates a new stream state for Codex CC conversion.
-func newCodexStreamState() *codexStreamState {
+// The reverseToolNameMap is used to restore original tool names in streaming responses.
+func newCodexStreamState(reverseToolNameMap map[string]string) *codexStreamState {
 	return &codexStreamState{
-		messageID: "msg_" + uuid.New().String()[:8],
+		messageID:          "msg_" + uuid.New().String()[:8],
+		reverseToolNameMap: reverseToolNameMap,
 	}
 }
 
@@ -1095,6 +1306,43 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			},
 		})
 
+	// Reasoning summary events - convert to Claude thinking blocks
+	case "response.reasoning_summary_part.added":
+		// Start a thinking content block
+		s.inThinkingBlock = true
+		events = append(events, ClaudeStreamEvent{
+			Type:  "content_block_start",
+			Index: s.nextClaudeIndex,
+			ContentBlock: &ClaudeContentBlock{
+				Type:     "thinking",
+				Thinking: "",
+			},
+		})
+
+	case "response.reasoning_summary_text.delta":
+		// Delta for thinking content
+		if event.Delta != "" && s.inThinkingBlock {
+			events = append(events, ClaudeStreamEvent{
+				Type:  "content_block_delta",
+				Index: s.nextClaudeIndex,
+				Delta: &ClaudeStreamDelta{
+					Type:     "thinking_delta",
+					Thinking: event.Delta,
+				},
+			})
+		}
+
+	case "response.reasoning_summary_part.done":
+		// End thinking content block
+		if s.inThinkingBlock {
+			events = append(events, ClaudeStreamEvent{
+				Type:  "content_block_stop",
+				Index: s.nextClaudeIndex,
+			})
+			s.nextClaudeIndex++
+			s.inThinkingBlock = false
+		}
+
 	case "response.in_progress", "response.queued":
 		// Response is being generated, no action needed
 		logrus.WithField("status", event.Type).Debug("Codex CC: Response status update")
@@ -1115,6 +1363,12 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			case "function_call":
 				s.currentToolID = event.Item.CallID
 				s.currentToolName = event.Item.Name
+				// Restore original tool name if it was shortened
+				if s.reverseToolNameMap != nil {
+					if orig, ok := s.reverseToolNameMap[event.Item.Name]; ok {
+						s.currentToolName = orig
+					}
+				}
 				s.currentToolArgs.Reset()
 				// Content block start for tool_use
 				toolUseID := s.currentToolID
@@ -1122,9 +1376,10 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 					toolUseID = strings.TrimPrefix(toolUseID, "call_")
 				}
 				logrus.WithFields(logrus.Fields{
-					"tool_id":      toolUseID,
-					"tool_name":    s.currentToolName,
-					"claude_index": s.nextClaudeIndex,
+					"tool_id":       toolUseID,
+					"tool_name":     s.currentToolName,
+					"original_name": event.Item.Name,
+					"claude_index":  s.nextClaudeIndex,
 				}).Debug("Codex CC: Function call started")
 				events = append(events, ClaudeStreamEvent{
 					Type:  "content_block_start",
@@ -1212,14 +1467,21 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				if argsStr == "" {
 					argsStr = s.currentToolArgs.String()
 				}
+				// Restore original tool name if it was shortened
+				toolName := event.Item.Name
+				if s.reverseToolNameMap != nil {
+					if orig, ok := s.reverseToolNameMap[event.Item.Name]; ok {
+						toolName = orig
+					}
+				}
 				// Clean up WebSearch tool arguments for upstream compatibility
-				argsStr = cleanToolCallArguments(event.Item.Name, argsStr)
+				argsStr = cleanToolCallArguments(toolName, argsStr)
 				// Apply Windows path escape fix
 				argsStr = doubleEscapeWindowsPathsForBash(argsStr)
 				s.toolUseBlocks = append(s.toolUseBlocks, ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    toolUseID,
-					Name:  event.Item.Name,
+					Name:  toolName,
 					Input: json.RawMessage(argsStr),
 				})
 				events = append(events, ClaudeStreamEvent{
@@ -1355,8 +1617,11 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		return
 	}
 
-	// Convert to Claude format
-	claudeResp := convertCodexToClaudeResponse(&codexResp)
+	// Get tool name reverse map from context for restoring original tool names
+	reverseToolNameMap := getCodexToolNameReverseMap(c)
+
+	// Convert to Claude format with tool name restoration
+	claudeResp := convertCodexToClaudeResponse(&codexResp, reverseToolNameMap)
 
 	// Debug: log output items
 	for i, item := range codexResp.Output {
@@ -1412,7 +1677,9 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		return
 	}
 
-	state := newCodexStreamState()
+	// Get tool name reverse map from context for restoring original tool names
+	reverseToolNameMap := getCodexToolNameReverseMap(c)
+	state := newCodexStreamState(reverseToolNameMap)
 	reader := bufio.NewReader(resp.Body)
 
 	// Helper function to write Claude SSE event

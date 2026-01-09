@@ -802,7 +802,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Set User-Agent for Codex CC mode AFTER header rules to ensure upstream compatibility
+	// Set User-Agent for Codex CC mode AFTER header rules to ensure upstream compatibility.
+	// NOTE: This intentionally overrides any custom User-Agent set by header rules.
+	// Reason: Codex upstream may reject requests without proper User-Agent header.
 	// IMPORTANT: This UA is ONLY set when CC mode is enabled (/claude path with cc_support=true).
 	// Normal Codex requests (non-CC) should use passthrough behavior (preserve client's original UA).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
@@ -1343,7 +1345,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Set User-Agent for Codex CC mode AFTER header rules to ensure upstream compatibility
+	// Set User-Agent for Codex CC mode AFTER header rules to ensure upstream compatibility.
+	// NOTE: This intentionally overrides any custom User-Agent set by header rules.
+	// Reason: Codex upstream may reject requests without proper User-Agent header.
 	// IMPORTANT: This UA is ONLY set when CC mode is enabled (/claude path with cc_support=true).
 	// Normal Codex requests (non-CC) should use passthrough behavior (preserve client's original UA).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
