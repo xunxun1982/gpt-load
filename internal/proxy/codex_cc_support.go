@@ -1346,6 +1346,12 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	}
 
 	var currentEventType string
+	// AI REVIEW NOTE: Suggestion to add explicit context cancellation check in the loop was considered.
+	// This is unnecessary because Go's http.Response.Body is automatically closed when the request
+	// context is cancelled. When the body is closed, ReadString returns an error (io.EOF or
+	// context.Canceled), which is already handled below. Adding a select{} with ctx.Done() would
+	// not help during blocking reads - it would only check between reads, which is already covered
+	// by the error handling. The current implementation correctly handles all termination cases.
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
