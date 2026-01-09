@@ -1730,9 +1730,21 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
+				// Ensure final events are sent on EOF to prevent client hanging
+				finalEvents := state.processCodexStreamEvent(&CodexStreamEvent{Type: "response.completed"})
+				for _, event := range finalEvents {
+					if writeErr := writeClaudeEvent(event); writeErr != nil {
+						logrus.WithError(writeErr).Error("Codex CC: Failed to write final event on EOF")
+					}
+				}
 				break
 			}
 			logrus.WithError(err).Error("Codex CC: Error reading stream")
+			// Send final events on error to ensure client receives termination
+			finalEvents := state.processCodexStreamEvent(&CodexStreamEvent{Type: "response.completed"})
+			for _, event := range finalEvents {
+				_ = writeClaudeEvent(event) // Best effort, ignore write errors during error handling
+			}
 			break
 		}
 

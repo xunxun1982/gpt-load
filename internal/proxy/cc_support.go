@@ -3140,6 +3140,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if err != nil {
 			if err == io.EOF {
 				logrus.Debug("CC: Upstream stream EOF")
+				// Ensure final events are sent on EOF to prevent client hanging
+				finalize("end_turn", nil)
+			} else {
+				logrus.WithError(err).Error("CC: Error reading stream")
+				// Send final events on error to ensure client receives termination
+				finalize("end_turn", nil)
 			}
 			break
 		}
