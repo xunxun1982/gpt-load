@@ -182,10 +182,16 @@ var ErrDecompressedTooLarge = errors.New("decompressed data exceeds maximum allo
 // DecompressResponseWithLimit decompresses response data with a size limit to prevent memory exhaustion.
 // This uses io.LimitReader to stop decompression early when the limit is reached, preventing zip bomb attacks.
 // Returns ErrDecompressedTooLarge if the decompressed size exceeds maxSize.
+// maxSize must be >= 0; values close to math.MaxInt64 should be avoided to prevent overflow.
 func DecompressResponseWithLimit(contentEncoding string, data []byte, maxSize int64) ([]byte, error) {
 	// If no encoding specified or empty data, return as-is
 	if contentEncoding == "" || len(data) == 0 {
 		return data, nil
+	}
+
+	// Validate maxSize to prevent edge cases and overflow
+	if maxSize < 0 {
+		return nil, fmt.Errorf("maxSize must be >= 0: %d", maxSize)
 	}
 
 	// Look up the decompressor
@@ -206,7 +212,12 @@ func DecompressResponseWithLimit(contentEncoding string, data []byte, maxSize in
 	// Use io.LimitReader to prevent reading more than maxSize+1 bytes.
 	// Reading maxSize+1 allows us to detect if the data exceeds the limit.
 	// This stops decompression early, preventing zip bomb memory exhaustion.
-	limitedReader := io.LimitReader(reader, maxSize+1)
+	// Guard against overflow when maxSize is very large (close to MaxInt64)
+	limit := maxSize + 1
+	if maxSize > (1<<62) { // Avoid overflow for very large maxSize values
+		limit = maxSize
+	}
+	limitedReader := io.LimitReader(reader, limit)
 	decompressed, err := io.ReadAll(limitedReader)
 	if err != nil {
 		logrus.WithError(err).Warnf("Failed to decompress with '%s', returning original data", contentEncoding)

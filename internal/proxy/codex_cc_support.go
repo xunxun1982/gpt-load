@@ -1452,7 +1452,8 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 
 			var codexEvent CodexStreamEvent
 			if err := json.Unmarshal([]byte(data), &codexEvent); err != nil {
-				logrus.WithError(err).WithField("data", data).Debug("Codex CC: Failed to parse stream event")
+				// Truncate data to prevent sensitive information leakage in logs
+				logrus.WithError(err).WithField("data_preview", utils.TruncateString(data, 512)).Debug("Codex CC: Failed to parse stream event")
 				continue
 			}
 

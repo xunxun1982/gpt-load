@@ -31,7 +31,8 @@ func (ps *ProxyServer) handleModelListResponse(c *gin.Context, resp *http.Respon
 	const maxModelListBodySize = 10 * 1024 * 1024 // 10MB limit for model list responses
 	bodyBytes, err := readAllWithLimit(resp.Body, maxModelListBodySize)
 	if err != nil {
-		if err == ErrBodyTooLarge {
+		// Use errors.Is() for sentinel error comparison to handle wrapped errors properly
+		if errors.Is(err, ErrBodyTooLarge) {
 			logrus.WithField("limit_mb", maxModelListBodySize/(1024*1024)).
 				Warn("Model list response body too large")
 			c.JSON(http.StatusBadGateway, gin.H{"error": "Model list response too large"})

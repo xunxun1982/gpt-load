@@ -2563,7 +2563,7 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 			safeURL = u.String()
 		}
 
-		// Log detailed error information for debugging (use original URL in logs for ops debugging)
+		// Log detailed error information for debugging (use redacted URL in logs to avoid leaking secrets)
 		// Error body preview is logged at Debug level only to aid troubleshooting while
 		// avoiding exposure in production logs. Client-facing messages exclude error body
 		// to prevent information disclosure.
@@ -2603,11 +2603,17 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 	}
 
 	// Read response body with size limit to prevent memory exhaustion on large model lists
+	// Use limit+1 pattern to detect oversized bodies instead of silently truncating
 	const maxModelListBodySize = 10 * 1024 * 1024 // 10MB limit for model list responses
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxModelListBodySize))
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxModelListBodySize+1))
 	if err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("Failed to read response body")
 		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to read upstream response")
+	}
+	if int64(len(bodyBytes)) > maxModelListBodySize {
+		logrus.WithContext(ctx).WithField("limit_mb", maxModelListBodySize/(1024*1024)).
+			Warn("Model list response body too large")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "model list response too large")
 	}
 
 	// Decompress response body if needed (gzip/deflate), mirroring proxy model list handling
