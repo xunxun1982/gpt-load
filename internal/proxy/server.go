@@ -884,12 +884,15 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 			errorBody = handleGzipCompression(resp, errorBody)
 
-			// Store error response body in context for logging
+			// Store error response body in context for logging.
+			// Per AI review: sanitize sensitive data before storing to prevent
+			// accidental leakage of API keys, tokens, or PII in logs.
 			if len(errorBody) > 0 {
-				if len(errorBody) > maxResponseCaptureBytes {
-					c.Set("response_body", string(errorBody[:maxResponseCaptureBytes]))
+				sanitized := utils.SanitizeErrorBody(string(errorBody))
+				if len(sanitized) > maxResponseCaptureBytes {
+					c.Set("response_body", sanitized[:maxResponseCaptureBytes])
 				} else {
-					c.Set("response_body", string(errorBody))
+					c.Set("response_body", sanitized)
 				}
 			}
 

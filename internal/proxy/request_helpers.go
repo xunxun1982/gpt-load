@@ -22,8 +22,16 @@ func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group
 		return bodyBytes, nil
 	}
 
+	// Apply each override and log for debugging
 	for key, value := range group.ParamOverrides {
 		requestData[key] = value
+		// Serialize value to JSON string for clear logging of nested objects
+		valueJSON, _ := json.Marshal(value)
+		logrus.WithFields(logrus.Fields{
+			"group":      group.Name,
+			"param_key":  key,
+			"param_value": string(valueJSON),
+		}).Debug("Applied param override")
 	}
 
 	return json.Marshal(requestData)

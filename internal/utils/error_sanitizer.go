@@ -1,0 +1,66 @@
+// Package utils provides utility functions for the application.
+package utils
+
+import (
+	"regexp"
+	"strings"
+)
+
+// Compiled regex patterns for sensitive data detection.
+// Pre-compiled for performance in hot paths.
+var (
+	// API key patterns (OpenAI sk-..., Anthropic, etc.)
+	// Matches standalone API keys like sk-1234567890abcdefghij
+	apiKeyStandalonePattern = regexp.MustCompile(`\bsk-[a-zA-Z0-9]{20,}\b`)
+	// Bearer token pattern
+	bearerPattern = regexp.MustCompile(`(?i)Bearer\s+[a-zA-Z0-9\-._~+/]+=*`)
+	// Authorization header value pattern (more specific)
+	authHeaderPattern = regexp.MustCompile(`(?i)Authorization:\s*[^\s,}\]]+`)
+	// Generic secret/password/token patterns in JSON
+	secretJSONPattern = regexp.MustCompile(`(?i)"(api_key|apikey|secret|password|token|auth|credential|private_key)":\s*"[^"]*"`)
+	// Email pattern (basic PII)
+	emailPattern = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+)
+
+// SanitizeErrorBody removes or masks sensitive data from error response bodies
+// before logging. This helps prevent accidental leakage of API keys, tokens,
+// passwords, and other sensitive information in logs.
+//
+// Patterns redacted:
+// - API keys (sk-...)
+// - Bearer tokens
+// - Authorization header values
+// - JSON fields containing secrets/passwords/tokens
+// - Email addresses (basic PII protection)
+func SanitizeErrorBody(body string) string {
+	if body == "" {
+		return body
+	}
+
+	// Apply redaction patterns in order of specificity
+	result := body
+
+	// Redact JSON secret fields first (most specific)
+	result = secretJSONPattern.ReplaceAllStringFunc(result, func(match string) string {
+		// Extract the field name and redact only the value
+		idx := strings.Index(match, ":")
+		if idx > 0 {
+			return match[:idx+1] + ` "[REDACTED]"`
+		}
+		return "[REDACTED_SECRET]"
+	})
+
+	// Redact standalone API keys (sk-...)
+	result = apiKeyStandalonePattern.ReplaceAllString(result, "[REDACTED_API_KEY]")
+
+	// Redact Bearer tokens
+	result = bearerPattern.ReplaceAllString(result, "Bearer [REDACTED]")
+
+	// Redact Authorization header values
+	result = authHeaderPattern.ReplaceAllString(result, "Authorization: [REDACTED]")
+
+	// Redact email addresses
+	result = emailPattern.ReplaceAllString(result, "[REDACTED_EMAIL]")
+
+	return result
+}

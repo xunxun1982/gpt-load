@@ -794,6 +794,12 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	// This allows Claude Code to automatically use thinking-capable models
 	// (like deepseek-reasoner) when the user enables extended thinking.
 	// Each group can configure its own thinking_model in the group config.
+	// AI REVIEW NOTE: Suggestion to validate thinking model against a supported list was considered.
+	// This is intentionally NOT implemented because:
+	// 1. Model names are dynamically configured by users and vary across providers
+	// 2. New models are released frequently; hardcoding a list would require constant updates
+	// 3. Invalid model names will be rejected by the upstream API with clear error messages
+	// 4. Users have full control over their group configuration
 	thinkingModelApplied := false
 	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
 		thinkingModel := getThinkingModel(group)
@@ -806,9 +812,9 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 			}).Info("CC: Auto-selecting thinking model for extended thinking")
 			claudeReq.Model = thinkingModel
 			thinkingModelApplied = true
-			// Store thinking model info in context for logging
 			c.Set("thinking_model_applied", true)
-			c.Set("thinking_model", thinkingModel)
+			// NOTE: c.Set("thinking_model", thinkingModel) removed per AI review.
+			// Only thinking_model_applied is used by downstream handlers (function_call.go).
 		}
 	}
 

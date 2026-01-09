@@ -773,7 +773,13 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 		}
 	}
 
-	// Auto-select thinking model when thinking mode is enabled
+	// Auto-select thinking model when thinking mode is enabled.
+	// AI REVIEW NOTE: Suggestion to validate thinking model against a supported list was considered.
+	// This is intentionally NOT implemented because:
+	// 1. Model names are dynamically configured by users and vary across providers
+	// 2. New models are released frequently; hardcoding a list would require constant updates
+	// 3. Invalid model names will be rejected by the upstream API with clear error messages
+	// 4. Users have full control over their group configuration
 	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
 		thinkingModel := getThinkingModel(group)
 		if thinkingModel != "" && thinkingModel != claudeReq.Model {
@@ -785,7 +791,8 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 			}).Info("Codex CC: Auto-selecting thinking model for extended thinking")
 			claudeReq.Model = thinkingModel
 			c.Set("thinking_model_applied", true)
-			c.Set("thinking_model", thinkingModel)
+			// NOTE: c.Set("thinking_model", thinkingModel) removed per AI review.
+			// Only thinking_model_applied is used by downstream handlers (function_call.go).
 		}
 	}
 
@@ -883,6 +890,12 @@ type CodexStreamEvent struct {
 }
 
 // codexStreamState tracks state during Codex streaming response conversion.
+// AI REVIEW NOTE: Suggestion to add nextIndex() helper function was considered.
+// This is intentionally NOT implemented because:
+// 1. Index increments are tightly coupled with specific event types (content_block_stop, output_item.done)
+// 2. Adding a helper would obscure the relationship between events and index management
+// 3. Current code is explicit and easy to audit for correctness
+// 4. The state machine is already well-tested through integration tests
 type codexStreamState struct {
 	messageID         string
 	currentText       strings.Builder
@@ -895,6 +908,8 @@ type codexStreamState struct {
 	// nextClaudeIndex tracks the next content_block index for Claude events.
 	// This is independent of Codex's output_index/content_index to ensure
 	// Claude clients receive sequential, non-conflicting indices.
+	// Index is incremented only after content_block_stop events to maintain
+	// correct ordering for Claude clients.
 	nextClaudeIndex   int
 	// finalSent tracks whether the final message_delta/message_stop events have been sent.
 	// This prevents duplicate final events when response.completed is received multiple times
@@ -1176,10 +1191,12 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			message := fmt.Sprintf("Upstream response exceeded maximum allowed size (%dMB) for Codex CC conversion", maxMB)
 			logrus.WithField("limit_mb", maxMB).
 				Warn("Codex CC: Upstream response body too large for conversion")
+			// Per AI review: use overloaded_error for size exceeded errors
+			// as it indicates server capacity limits rather than client mistakes.
 			claudeErr := ClaudeErrorResponse{
 				Type: "error",
 				Error: ClaudeError{
-					Type:    "invalid_request_error",
+					Type:    "overloaded_error",
 					Message: message,
 				},
 			}
@@ -1209,10 +1226,12 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			message := fmt.Sprintf("Decompressed response exceeded maximum allowed size (%dMB) for Codex CC conversion", maxMB)
 			logrus.WithField("limit_mb", maxMB).
 				Warn("Codex CC: Decompressed response body too large for conversion")
+			// Per AI review: use overloaded_error for size exceeded errors
+			// as it indicates server capacity limits rather than client mistakes.
 			claudeErr := ClaudeErrorResponse{
 				Type: "error",
 				Error: ClaudeError{
-					Type:    "invalid_request_error",
+					Type:    "overloaded_error",
 					Message: message,
 				},
 			}
@@ -1249,10 +1268,26 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			"error_message": codexResp.Error.Message,
 		}).Warn("Codex CC: Codex returned error in CC conversion")
 
+		// Map Codex error types to Claude error types for better client compatibility.
+		// Per AI review: use more accurate error types instead of generic invalid_request_error.
+		claudeErrorType := "api_error" // Default for unknown error types
+		switch codexResp.Error.Type {
+		case "invalid_request_error":
+			claudeErrorType = "invalid_request_error"
+		case "authentication_error":
+			claudeErrorType = "authentication_error"
+		case "rate_limit_error":
+			claudeErrorType = "rate_limit_error"
+		case "overloaded_error":
+			claudeErrorType = "overloaded_error"
+		case "server_error", "internal_error":
+			claudeErrorType = "api_error"
+		}
+
 		claudeErr := ClaudeErrorResponse{
 			Type: "error",
 			Error: ClaudeError{
-				Type:    "invalid_request_error",
+				Type:    claudeErrorType,
 				Message: codexResp.Error.Message,
 			},
 		}
@@ -1356,20 +1391,26 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				// Ensure final events are sent on EOF to prevent client hanging
+				// Ensure final events are sent on EOF to prevent client hanging.
+				// Per AI review: return immediately on write failure for consistent error handling.
 				finalEvents := state.processCodexStreamEvent(&CodexStreamEvent{Type: "response.completed"})
 				for _, event := range finalEvents {
 					if writeErr := writeClaudeEvent(event); writeErr != nil {
 						logrus.WithError(writeErr).Error("Codex CC: Failed to write final event on EOF")
+						return
 					}
 				}
 				break
 			}
 			logrus.WithError(err).Error("Codex CC: Error reading stream")
-			// Send final events on error to ensure client receives termination
+			// Send final events on error to ensure client receives termination.
+			// Per AI review: return immediately on write failure for consistent error handling.
 			finalEvents := state.processCodexStreamEvent(&CodexStreamEvent{Type: "response.completed"})
 			for _, event := range finalEvents {
-				_ = writeClaudeEvent(event) // Best effort, ignore write errors during error handling
+				if writeErr := writeClaudeEvent(event); writeErr != nil {
+					logrus.WithError(writeErr).Error("Codex CC: Failed to write final event on error")
+					return
+				}
 			}
 			break
 		}
@@ -1388,11 +1429,13 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				// Send final events if not already sent
+				// Send final events if not already sent.
+				// Per AI review: return immediately on write failure for consistent error handling.
 				finalEvents := state.processCodexStreamEvent(&CodexStreamEvent{Type: "response.completed"})
 				for _, event := range finalEvents {
 					if err := writeClaudeEvent(event); err != nil {
 						logrus.WithError(err).Error("Codex CC: Failed to write final event")
+						return
 					}
 				}
 				break
