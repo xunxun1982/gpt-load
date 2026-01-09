@@ -728,12 +728,29 @@ func getThinkingModel(group *models.Group) string {
 
 // thinkingBudgetToReasoningEffortOpenAI converts Claude thinking budget_tokens to OpenAI reasoning effort.
 // Returns the effort level ("low", "medium", "high") based on token budget.
-// This is used for OpenAI models that support native reasoning (e.g., o1, o3 series).
+// This is used for OpenAI models that support native reasoning (e.g., o1, o3, o4-mini, GPT-5 series).
+//
+// COMPATIBILITY NOTE: We intentionally use only "low", "medium", "high" values for maximum compatibility.
+// While newer models (GPT-5.2) support additional levels like "minimal", "none", and "xhigh", these are
+// not universally supported across all reasoning models:
+// - o1, o3, o3-mini, o4-mini: only support "low", "medium", "high"
+// - GPT-5, GPT-5-mini, GPT-5-nano: support "none", "minimal", "low", "medium", "high"
+// - GPT-5.2: supports "none", "minimal", "low", "medium", "high", "xhigh"
+// Using unsupported values would cause API errors. The three-level mapping provides safe coverage
+// for all reasoning models while still offering meaningful differentiation.
+//
+// AI REVIEW NOTE: Suggestion to use proportional allocation (budgetTokens/maxTokens) was rejected.
+// OpenAI's reasoning_effort is an independent parameter controlling reasoning depth, NOT a proportion
+// of max_tokens. Per OpenAI API docs, it accepts discrete values that control how many reasoning
+// tokens the model generates internally. Claude's budget_tokens represents user's expected thinking
+// depth, which maps naturally to OpenAI's effort levels using absolute thresholds.
+// Reference: https://platform.openai.com/docs/guides/reasoning
 func thinkingBudgetToReasoningEffortOpenAI(budgetTokens int) string {
 	// Mapping based on typical token budgets:
 	// - low: < 1000 tokens (quick responses)
 	// - medium: 1000-10000 tokens (default, balanced)
 	// - high: > 10000 tokens (deep reasoning)
+	// NOTE: We don't use "xhigh" (GPT-5.2 only) or "minimal"/"none" (GPT-5+ only) for compatibility.
 	if budgetTokens <= 0 {
 		return "medium" // Default when not specified
 	}
