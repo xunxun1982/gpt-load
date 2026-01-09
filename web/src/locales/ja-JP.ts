@@ -471,6 +471,17 @@ export default {
     thinkingModelTooltip:
       "Claude Code が拡張思考モードを有効にすると、このモデルが自動的に使用されます。空のままにすると、リクエストの元のモデルが使用されます。例：deepseek-reasoner",
     thinkingModelPlaceholder: "例：deepseek-reasoner",
+    codexInstructionsMode: "Codex 指示モード",
+    codexInstructionsModeTooltip:
+      "Codex API の instructions フィールドの処理方法を制御します。自動：組み込みのデフォルト指示を使用；公式：公式 Codex CLI 指示を使用；カスタム：以下に入力したカスタム指示を使用。",
+    codexInstructionsModeAuto: "自動",
+    codexInstructionsModeOfficial: "公式",
+    codexInstructionsModeCustom: "カスタム",
+    codexInstructions: "Codex 指示",
+    codexInstructionsTooltip:
+      "Codex API のカスタム instructions フィールド。一部のプロバイダー（88code.ai など）はこのフィールドを厳密に検証します。空のままにするとデフォルトを使用します。必要に応じて実際の Codex CLI リクエストから抽出してください。",
+    codexInstructionsPlaceholder:
+      "デフォルト指示を使用する場合は空のまま、またはこのフィールドを検証するプロバイダー用のカスタム指示を貼り付け",
     interceptEventLog: "イベントログ傍受",
     interceptEventLogTooltip:
       "有効にすると、/api/event_logging/batch エンドポイントが傍受され、上流に転送されません。Anthropic プロキシに接続する Claude Code クライアントに便利です。",

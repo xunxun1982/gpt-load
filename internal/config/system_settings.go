@@ -409,6 +409,29 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
+		// Allow codex_instructions string field for Codex CC support.
+		// This specifies custom instructions for providers that validate this field strictly.
+		if key == "codex_instructions" {
+			if _, ok := value.(string); !ok {
+				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
+			}
+			continue
+		}
+
+		// Allow codex_instructions_mode string field for Codex CC support.
+		// Values: "auto", "official", "custom"
+		if key == "codex_instructions_mode" {
+			mode, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
+			}
+			validModes := map[string]bool{"auto": true, "official": true, "custom": true}
+			if !validModes[mode] {
+				return fmt.Errorf("invalid value for %s: must be 'auto', 'official', or 'custom'", key)
+			}
+			continue
+		}
+
 		field, ok := jsonToField[key]
 		if !ok {
 			return fmt.Errorf("invalid setting key: %s", key)

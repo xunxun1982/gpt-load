@@ -145,11 +145,13 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		}
 
 		// Channel type compatibility check
-		// For Anthropic aggregate groups, allow both Anthropic channels and OpenAI channels with CC support
+		// For Anthropic aggregate groups, allow Anthropic channels, OpenAI channels with CC support,
+		// and Codex channels with CC support
 		isOpenAIWithCC := sg.ChannelType == "openai" && isGroupCCSupportEnabled(&sg)
+		isCodexWithCC := sg.ChannelType == "codex" && isGroupCCSupportEnabled(&sg)
 		if channelType == "anthropic" {
 			isAnthropic := sg.ChannelType == "anthropic"
-			if !isAnthropic && !isOpenAIWithCC {
+			if !isAnthropic && !isOpenAIWithCC && !isCodexWithCC {
 				return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_channel_mismatch", nil)
 			}
 		} else {
@@ -160,9 +162,9 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		}
 
 		// Calculate effective endpoint for this sub-group in the context of the aggregate group.
-		// For Anthropic aggregates with OpenAI+CC sub-groups, the CC endpoint uses /v1/messages
-		// (via /claude/v1/messages route) instead of OpenAI's /v1/chat/completions.
-		effectiveEndpoint := getEffectiveEndpointForAggregation(&sg, channelType, isOpenAIWithCC)
+		// For Anthropic aggregates with OpenAI+CC or Codex+CC sub-groups, the CC endpoint uses /v1/messages
+		// (via /claude/v1/messages route) instead of the native endpoint.
+		effectiveEndpoint := getEffectiveEndpointForAggregation(&sg, channelType, isOpenAIWithCC || isCodexWithCC)
 
 		// Validate endpoint consistency
 		if validationEndpoint == "" {
@@ -261,8 +263,10 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 		var existingGroup models.Group
 		if err := s.db.WithContext(ctx).Where("id = ?", existingSubGroups[0].SubGroupID).Limit(1).Find(&existingGroup).Error; err == nil && existingGroup.ID != 0 {
 			// Use effective endpoint for the aggregate context, not the raw endpoint
+			// Support both OpenAI+CC and Codex+CC sub-groups
 			isOpenAIWithCC := existingGroup.ChannelType == "openai" && isGroupCCSupportEnabled(&existingGroup)
-			existingEndpoint = getEffectiveEndpointForAggregation(&existingGroup, group.ChannelType, isOpenAIWithCC)
+			isCodexWithCC := existingGroup.ChannelType == "codex" && isGroupCCSupportEnabled(&existingGroup)
+			existingEndpoint = getEffectiveEndpointForAggregation(&existingGroup, group.ChannelType, isOpenAIWithCC || isCodexWithCC)
 		}
 	}
 

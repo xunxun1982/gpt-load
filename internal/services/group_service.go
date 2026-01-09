@@ -2490,6 +2490,12 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 	// This delegates to OpenAIChannel, GeminiChannel, or AnthropicChannel ModifyRequest methods
 	channelProxy.ModifyRequest(req, selectedKey, group)
 
+	// Set User-Agent for Codex channel to ensure upstream compatibility when fetching models
+	// Codex upstream may reject requests without proper User-Agent
+	if group.ChannelType == "codex" {
+		req.Header.Set("User-Agent", channel.CodexUserAgent)
+	}
+
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
 		"channel_type": group.ChannelType,
 		"masked_key":   maskedKey,
@@ -2541,35 +2547,36 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		const maxErrorBodySize = 1 * 1024 * 1024 // 1MB limit for error body preview
 		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		errorPreview := string(errorBody)
-		if len(errorPreview) > 200 {
-			errorPreview = errorPreview[:200] + "..."
+		if len(errorPreview) > 500 {
+			errorPreview = errorPreview[:500] + "..."
 		}
 
+		// Log detailed error information for debugging
 		logrus.WithContext(ctx).WithFields(logrus.Fields{
-			"status_code":  resp.StatusCode,
-			"error_body":   errorPreview,
-			"content_type": resp.Header.Get("Content-Type"),
-		}).Error("Upstream returned non-OK status")
+			"status_code":   resp.StatusCode,
+			"request_url":   selection.URL,
+			"channel_type":  group.ChannelType,
+			"error_body":    errorPreview,
+			"content_type":  resp.Header.Get("Content-Type"),
+		}).Error("FetchGroupModels: Upstream returned non-OK status")
 
 		// Provide specific error messages based on status code.
-		// Note: we intentionally map upstream HTTP errors to ErrBadRequest in this admin API.
-		// More granular error kinds (e.g. ErrUpstreamError, ErrUnauthorized) were suggested by AI review,
-		// but are not adopted here to avoid changing existing client error handling semantics.
+		// Include request URL and response body in error message for frontend display.
 		switch resp.StatusCode {
 		case http.StatusBadRequest: // 400
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("bad request: %s", errorPreview))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("bad request (URL: %s): %s", selection.URL, errorPreview))
 		case http.StatusUnauthorized: // 401
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "authentication failed: invalid or expired API key")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("authentication failed (URL: %s): invalid or expired API key", selection.URL))
 		case http.StatusForbidden: // 403
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "access forbidden: insufficient permissions")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("access forbidden (URL: %s): insufficient permissions", selection.URL))
 		case http.StatusNotFound: // 404
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "models endpoint not found on upstream server")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("models endpoint not found (URL: %s): %s", selection.URL, errorPreview))
 		case http.StatusTooManyRequests: // 429
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "rate limit exceeded on upstream server")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("rate limit exceeded (URL: %s)", selection.URL))
 		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable: // 500, 502, 503
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "upstream server error, please try again later")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream server error (URL: %s): %s", selection.URL, errorPreview))
 		default:
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream returned error status: %d", resp.StatusCode))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream returned error status %d (URL: %s): %s", resp.StatusCode, selection.URL, errorPreview))
 		}
 	}
 

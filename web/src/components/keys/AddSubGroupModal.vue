@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
+import GroupSelectLabel from "@/components/common/GroupSelectLabel.vue";
 import type { Group, SubGroupInfo } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
+import { sortGroupsWithChildren } from "@/utils/sort";
 import { Add, Close } from "@vicons/ionicons5";
 import {
   NButton,
@@ -16,8 +18,6 @@ import {
   type FormRules,
   type SelectOption,
 } from "naive-ui";
-import GroupSelectLabel from "@/components/common/GroupSelectLabel.vue";
-import { sortGroupsWithChildren } from "@/utils/sort";
 import { computed, h, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -90,7 +90,8 @@ const getAvailableOptions = computed(() => {
       if (props.aggregateGroup?.channel_type === "anthropic") {
         const isAnthropic = group.channel_type === "anthropic";
         const isOpenAIWithCC = group.channel_type === "openai" && group.config?.cc_support === true;
-        if (!isAnthropic && !isOpenAIWithCC) {
+        const isCodexWithCC = group.channel_type === "codex" && group.config?.cc_support === true;
+        if (!isAnthropic && !isOpenAIWithCC && !isCodexWithCC) {
           return false;
         }
       } else {

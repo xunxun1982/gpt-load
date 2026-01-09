@@ -2,7 +2,13 @@ import type { Group } from "@/types/models";
 import { naturalCompare } from "@/utils/sort";
 
 const DEFAULT_CHANNEL_TYPE = "default";
-const KNOWN_CHANNEL_ORDER: string[] = ["openai", "gemini", "anthropic", DEFAULT_CHANNEL_TYPE];
+const KNOWN_CHANNEL_ORDER: string[] = [
+  "openai",
+  "codex",
+  "gemini",
+  "anthropic",
+  DEFAULT_CHANNEL_TYPE,
+];
 
 export function normalizeChannelType(channelType?: string | null): string {
   return channelType?.trim() || DEFAULT_CHANNEL_TYPE;

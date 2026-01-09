@@ -18,11 +18,11 @@ const props = withDefaults(defineProps<Props>(), {
 const { t } = useI18n();
 
 // For accuracy, use config as the single source of truth:
-// show badge ONLY when channelType is OpenAI and ccSupport is explicitly true.
+// show badge ONLY when channelType is OpenAI or Codex and ccSupport is explicitly true.
 // We do NOT infer from name/displayName to avoid false positives.
 const showBadge = computed(() => {
   const { channelType, ccSupport } = props;
-  return channelType === "openai" && ccSupport === true;
+  return (channelType === "openai" || channelType === "codex") && ccSupport === true;
 });
 </script>
 

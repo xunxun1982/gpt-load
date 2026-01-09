@@ -17,6 +17,8 @@ import {
   type FormInst,
   type FormRules,
 } from "naive-ui";
+import { reactive, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 
 // Type definitions for better type safety
 // Note: These are component-local interfaces. While shared types could be considered,
@@ -35,8 +37,6 @@ interface ApiError {
     };
   };
 }
-import { reactive, ref, watch } from "vue";
-import { useI18n } from "vue-i18n";
 
 interface Props {
   show: boolean;
@@ -64,6 +64,7 @@ const channelTypeOptions = [
   { label: "OpenAI", value: "openai" as ChannelType },
   { label: "Gemini", value: "gemini" as ChannelType },
   { label: "Anthropic", value: "anthropic" as ChannelType },
+  { label: "Codex", value: "codex" as ChannelType },
 ];
 
 // Default form data

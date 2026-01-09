@@ -609,27 +609,50 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				return
 			}
 
-			// Apply CC support: convert Claude requests to OpenAI format
+			// Apply CC support: convert Claude requests to target format
 			// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
 			// We check for /v1/messages (after rewrite) and CC support enabled
 			if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
-				convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
-				if ccErr != nil {
-					logrus.WithError(ccErr).WithFields(logrus.Fields{
-						"group": group.Name,
-						"path":  c.Request.URL.Path,
-					}).Error("Failed to convert Claude request to OpenAI format")
-					response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("CC conversion failed: %v", ccErr)))
-					return
-				} else if converted {
-					finalBodyBytes = convertedBody
-					// Rewrite path from /v1/messages to /v1/chat/completions
-					c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
-					logrus.WithFields(logrus.Fields{
-						"group":        group.Name,
-						"channel_type": group.ChannelType,
-						"new_path":     c.Request.URL.Path,
-					}).Debug("CC support: converted Claude request to OpenAI format")
+				// Handle Codex channel CC support (Claude -> Codex/Responses API)
+				if group.ChannelType == "codex" {
+					convertedBody, converted, ccErr := ps.applyCodexCCRequestConversion(c, group, finalBodyBytes)
+					if ccErr != nil {
+						logrus.WithError(ccErr).WithFields(logrus.Fields{
+							"group": group.Name,
+							"path":  c.Request.URL.Path,
+						}).Error("Failed to convert Claude request to Codex format")
+						response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Codex CC conversion failed: %v", ccErr)))
+						return
+					} else if converted {
+						finalBodyBytes = convertedBody
+						// Rewrite path from /v1/messages to /v1/responses for Codex
+						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
+						logrus.WithFields(logrus.Fields{
+							"group":        group.Name,
+							"channel_type": group.ChannelType,
+							"new_path":     c.Request.URL.Path,
+						}).Debug("Codex CC support: converted Claude request to Codex format")
+					}
+				} else {
+					// Handle OpenAI channel CC support (Claude -> OpenAI Chat Completions)
+					convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
+					if ccErr != nil {
+						logrus.WithError(ccErr).WithFields(logrus.Fields{
+							"group": group.Name,
+							"path":  c.Request.URL.Path,
+						}).Error("Failed to convert Claude request to OpenAI format")
+						response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("CC conversion failed: %v", ccErr)))
+						return
+					} else if converted {
+						finalBodyBytes = convertedBody
+						// Rewrite path from /v1/messages to /v1/chat/completions
+						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
+						logrus.WithFields(logrus.Fields{
+							"group":        group.Name,
+							"channel_type": group.ChannelType,
+							"new_path":     c.Request.URL.Path,
+						}).Debug("CC support: converted Claude request to OpenAI format")
+					}
 				}
 			}
 
@@ -762,6 +785,12 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	// Log request
 	channelHandler.ModifyRequest(req, apiKey, group)
 
+	// Set User-Agent for Codex CC mode to ensure upstream compatibility
+	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version
+	if isCodexCCMode(c) {
+		req.Header.Set("User-Agent", channel.CodexUserAgent)
+	}
+
 	// Apply custom header rules
 	if len(group.HeaderRuleList) > 0 {
 		headerCtx := utils.NewHeaderVariableContextFromGin(c, group, apiKey)
@@ -825,6 +854,16 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			}
 
 			errorBody = handleGzipCompression(resp, errorBody)
+
+			// Store error response body in context for logging
+			if len(errorBody) > 0 {
+				if len(errorBody) > maxResponseCaptureBytes {
+					c.Set("response_body", string(errorBody[:maxResponseCaptureBytes]))
+				} else {
+					c.Set("response_body", string(errorBody))
+				}
+			}
+
 			parsedError = app_errors.ParseUpstreamError(errorBody)
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), parsedError)
 		}
@@ -869,8 +908,19 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// For streaming chat completions with function call enabled, use the
 			// function-call aware streaming handler. Other streaming requests keep
 			// the existing behavior.
-			if isCCEnabled(c) {
-				ps.handleCCStreamingResponse(c, resp)
+			ccEnabled := isCCEnabled(c)
+			codexCCMode := isCodexCCMode(c)
+			logrus.WithFields(logrus.Fields{
+				"cc_enabled":    ccEnabled,
+				"codex_cc_mode": codexCCMode,
+				"is_stream":     isStream,
+			}).Debug("Response handler selection")
+			if ccEnabled {
+				if codexCCMode {
+					ps.handleCodexCCStreamingResponse(c, resp)
+				} else {
+					ps.handleCCStreamingResponse(c, resp)
+				}
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
@@ -879,8 +929,19 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		} else {
 			// For non-streaming chat completions with function call enabled, use
 			// the function-call aware response handler.
-			if isCCEnabled(c) {
-				ps.handleCCNormalResponse(c, resp)
+			ccEnabled := isCCEnabled(c)
+			codexCCMode := isCodexCCMode(c)
+			logrus.WithFields(logrus.Fields{
+				"cc_enabled":    ccEnabled,
+				"codex_cc_mode": codexCCMode,
+				"is_stream":     isStream,
+			}).Debug("Response handler selection")
+			if ccEnabled {
+				if codexCCMode {
+					ps.handleCodexCCNormalResponse(c, resp)
+				} else {
+					ps.handleCCNormalResponse(c, resp)
+				}
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {
@@ -1024,7 +1085,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Apply CC support for eligible OpenAI sub-groups.
 	// Clear any stale CC state from previous sub-group attempts.
 	c.Set(ctxKeyCCEnabled, false)
-	wasClaudePath := isClaudePath(c.Request.URL.Path, group.Name)
+	// Use originalGroup.Name for path check since request path is /proxy/{aggregate_group}/claude/v1/...
+	wasClaudePath := isClaudePath(c.Request.URL.Path, originalGroup.Name)
 
 	// Handle CC support path rewriting for sub-groups
 	// This rewrites /claude/ paths to standard OpenAI paths. For groups named "claude",
@@ -1047,30 +1109,86 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}).Debug("CC support: rewritten Claude path for sub-group and sanitized query params")
 	}
 
-	// Convert Claude messages request to OpenAI format
+	// Convert Claude messages request to target format (OpenAI or Codex)
 	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
+	// Clear any stale Codex CC state from previous sub-group attempts
+	c.Set(ctxKeyCodexCC, false)
 	if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
-		convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
-		if ccErr != nil {
-			logrus.WithError(ccErr).WithFields(logrus.Fields{
-				"aggregate_group": originalGroup.Name,
-				"sub_group":       group.Name,
-				"path":            c.Request.URL.Path,
-			}).Error("Failed to convert Claude request for sub-group")
-			// For aggregate groups, we might want to try another sub-group, but conversion failure usually implies
-			// malformed input which will fail for all. So we return error.
-			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("CC conversion failed: %v", ccErr)))
-			return
-		} else if converted {
-			finalBodyBytes = convertedBody
-			// Rewrite path from /v1/messages to /v1/chat/completions
-			c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
+		// Handle Codex channel CC support (Claude -> Codex/Responses API)
+		if group.ChannelType == "codex" {
+			// Sanitize query parameters for Codex CC (remove Claude-specific params like beta=true)
+			// This is needed even if path wasn't /claude/ since Anthropic aggregate may send directly to /v1/messages
+			sanitizeCCQueryParams(c.Request.URL)
+
+			// Debug log: input body before conversion
+			inputPreview := string(finalBodyBytes)
+			if len(inputPreview) > 1000 {
+				inputPreview = inputPreview[:1000] + "..."
+			}
 			logrus.WithFields(logrus.Fields{
-				"aggregate_group": originalGroup.Name,
-				"sub_group":       group.Name,
-				"channel_type":    group.ChannelType,
-				"new_path":        c.Request.URL.Path,
-			}).Debug("CC support: converted Claude request for sub-group")
+				"aggregate_group":  originalGroup.Name,
+				"sub_group":        group.Name,
+				"path":             c.Request.URL.Path,
+				"input_body_len":   len(finalBodyBytes),
+				"input_body_preview": inputPreview,
+			}).Debug("Codex CC: Starting conversion for aggregate sub-group")
+
+			convertedBody, converted, ccErr := ps.applyCodexCCRequestConversion(c, group, finalBodyBytes)
+			if ccErr != nil {
+				logrus.WithError(ccErr).WithFields(logrus.Fields{
+					"aggregate_group": originalGroup.Name,
+					"sub_group":       group.Name,
+					"path":            c.Request.URL.Path,
+				}).Error("Failed to convert Claude request to Codex format for sub-group")
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Codex CC conversion failed: %v", ccErr)))
+				return
+			} else if converted {
+				// Debug log: output body after conversion
+				outputPreview := string(convertedBody)
+				if len(outputPreview) > 1000 {
+					outputPreview = outputPreview[:1000] + "..."
+				}
+				logrus.WithFields(logrus.Fields{
+					"aggregate_group":    originalGroup.Name,
+					"sub_group":          group.Name,
+					"output_body_len":    len(convertedBody),
+					"output_body_preview": outputPreview,
+				}).Debug("Codex CC: Conversion completed for aggregate sub-group")
+
+				finalBodyBytes = convertedBody
+				// Rewrite path from /v1/messages to /v1/responses for Codex
+				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
+				logrus.WithFields(logrus.Fields{
+					"aggregate_group": originalGroup.Name,
+					"sub_group":       group.Name,
+					"channel_type":    group.ChannelType,
+					"new_path":        c.Request.URL.Path,
+				}).Debug("Codex CC support: converted Claude request for sub-group")
+			}
+		} else {
+			// Handle OpenAI channel CC support (Claude -> OpenAI Chat Completions)
+			convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
+			if ccErr != nil {
+				logrus.WithError(ccErr).WithFields(logrus.Fields{
+					"aggregate_group": originalGroup.Name,
+					"sub_group":       group.Name,
+					"path":            c.Request.URL.Path,
+				}).Error("Failed to convert Claude request for sub-group")
+				// For aggregate groups, we might want to try another sub-group, but conversion failure usually implies
+				// malformed input which will fail for all. So we return error.
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("CC conversion failed: %v", ccErr)))
+				return
+			} else if converted {
+				finalBodyBytes = convertedBody
+				// Rewrite path from /v1/messages to /v1/chat/completions
+				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
+				logrus.WithFields(logrus.Fields{
+					"aggregate_group": originalGroup.Name,
+					"sub_group":       group.Name,
+					"channel_type":    group.ChannelType,
+					"new_path":        c.Request.URL.Path,
+				}).Debug("CC support: converted Claude request for sub-group")
+			}
 		}
 	}
 
@@ -1197,6 +1315,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	subGroupChannelHandler.ModifyRequest(req, apiKey, group)
 
+	// Set User-Agent for Codex CC mode to ensure upstream compatibility
+	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version
+	if isCodexCCMode(c) {
+		req.Header.Set("User-Agent", channel.CodexUserAgent)
+	}
+
 	// Apply custom header rules
 	if len(group.HeaderRuleList) > 0 {
 		headerCtx := utils.NewHeaderVariableContextFromGin(c, group, apiKey)
@@ -1260,6 +1384,16 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}
 
 			errorBody = handleGzipCompression(resp, errorBody)
+
+			// Store error response body in context for logging
+			if len(errorBody) > 0 {
+				if len(errorBody) > maxResponseCaptureBytes {
+					c.Set("response_body", string(errorBody[:maxResponseCaptureBytes]))
+				} else {
+					c.Set("response_body", string(errorBody))
+				}
+			}
+
 			parsedError = app_errors.ParseUpstreamError(errorBody)
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCtx.attemptCount+1, maxRetries, utils.MaskAPIKey(apiKey.KeyValue), parsedError)
 		}
@@ -1355,8 +1489,19 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// function-call and CC support behavior is consistent between normal and
 		// aggregate groups.
 		if isStream {
-			if isCCEnabled(c) {
-				ps.handleCCStreamingResponse(c, resp)
+			ccEnabled := isCCEnabled(c)
+			codexCCMode := isCodexCCMode(c)
+			logrus.WithFields(logrus.Fields{
+				"cc_enabled":    ccEnabled,
+				"codex_cc_mode": codexCCMode,
+				"is_stream":     isStream,
+			}).Debug("Aggregate response handler selection")
+			if ccEnabled {
+				if codexCCMode {
+					ps.handleCodexCCStreamingResponse(c, resp)
+				} else {
+					ps.handleCCStreamingResponse(c, resp)
+				}
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
@@ -1373,8 +1518,19 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}).Debug("Detected /models endpoint with model mapping, applying enhancement")
 			ps.handleModelsResponse(c, resp, group)
 		} else {
-			if isCCEnabled(c) {
-				ps.handleCCNormalResponse(c, resp)
+			ccEnabled := isCCEnabled(c)
+			codexCCMode := isCodexCCMode(c)
+			logrus.WithFields(logrus.Fields{
+				"cc_enabled":    ccEnabled,
+				"codex_cc_mode": codexCCMode,
+				"is_stream":     isStream,
+			}).Debug("Aggregate response handler selection")
+			if ccEnabled {
+				if codexCCMode {
+					ps.handleCodexCCNormalResponse(c, resp)
+				} else {
+					ps.handleCCNormalResponse(c, resp)
+				}
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {

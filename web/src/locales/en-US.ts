@@ -472,6 +472,17 @@ export default {
     thinkingModelTooltip:
       "When Claude Code enables extended thinking mode, this model will be used automatically. Leave empty to use the original model from request. e.g., deepseek-reasoner",
     thinkingModelPlaceholder: "e.g., deepseek-reasoner",
+    codexInstructionsMode: "Codex Instructions Mode",
+    codexInstructionsModeTooltip:
+      "Controls how the Codex API instructions field is handled. Auto: use built-in default instructions; Official: use official Codex CLI instructions; Custom: use custom instructions entered below.",
+    codexInstructionsModeAuto: "Auto",
+    codexInstructionsModeOfficial: "Official",
+    codexInstructionsModeCustom: "Custom",
+    codexInstructions: "Codex Instructions",
+    codexInstructionsTooltip:
+      "Custom instructions field for Codex API. Some providers (like 88code.ai) validate this field strictly. Leave empty to use default. Extract from real Codex CLI requests if needed.",
+    codexInstructionsPlaceholder:
+      "Leave empty to use default instructions, or paste custom instructions for providers that validate this field",
     interceptEventLog: "Intercept Event Log",
     interceptEventLogTooltip:
       "When enabled, the /api/event_logging/batch endpoint will be intercepted and not forwarded to upstream. This is useful for Claude Code clients connecting to Anthropic proxies.",

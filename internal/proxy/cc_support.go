@@ -34,6 +34,7 @@ import (
 const (
 	ctxKeyCCEnabled      = "cc_enabled"
 	ctxKeyOriginalFormat = "cc_original_format"
+	ctxKeyCodexCC        = "codex_cc" // Indicates Codex CC mode (Claude -> Codex/Responses API)
 )
 
 // ctxKeyTriggerSignal and ctxKeyFunctionCallEnabled are declared in server.go (same package proxy).
@@ -137,11 +138,30 @@ func getGroupConfigBool(group *models.Group, key string) bool {
 	}
 }
 
+// getGroupConfigString extracts a string value from group config.
+// Returns empty string if the key doesn't exist or the value is not a string.
+func getGroupConfigString(group *models.Group, key string) string {
+	if group == nil || group.Config == nil {
+		return ""
+	}
+
+	raw, ok := group.Config[key]
+	if !ok || raw == nil {
+		return ""
+	}
+
+	if v, ok := raw.(string); ok {
+		return v
+	}
+	return ""
+}
+
 // isCCSupportEnabled checks whether the cc_support flag is enabled for the given group.
 // This flag is stored in the group-level JSON config.
+// Supports both OpenAI and Codex channel types.
 func isCCSupportEnabled(group *models.Group) bool {
-	// Only enable CC support for OpenAI channel groups.
-	if group == nil || group.ChannelType != "openai" {
+	// Enable CC support for OpenAI and Codex channel groups.
+	if group == nil || (group.ChannelType != "openai" && group.ChannelType != "codex") {
 		return false
 	}
 	return getGroupConfigBool(group, "cc_support")
