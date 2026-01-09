@@ -2615,7 +2615,8 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 	contentEncoding := resp.Header.Get("Content-Encoding")
 	decompressed, err := utils.DecompressResponseWithLimit(contentEncoding, bodyBytes, maxModelListBodySize)
 	if err != nil {
-		if err == utils.ErrDecompressedTooLarge {
+		// Use errors.Is() for sentinel error comparison to handle wrapped errors properly
+		if errors.Is(err, utils.ErrDecompressedTooLarge) {
 			logrus.WithContext(ctx).WithField("limit_mb", maxModelListBodySize/(1024*1024)).
 				Warn("Decompressed model list response too large")
 			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "decompressed response too large")

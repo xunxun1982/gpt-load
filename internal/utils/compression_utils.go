@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
 	"fmt"
 	"io"
 
@@ -173,8 +174,10 @@ func (z *ZstdDecompressor) NewReader(data []byte) (io.Reader, func(), error) {
 	return reader, cleanup, nil
 }
 
-// ErrDecompressedTooLarge is returned when decompressed data exceeds the size limit
-var ErrDecompressedTooLarge = fmt.Errorf("decompressed data exceeds maximum allowed size")
+// ErrDecompressedTooLarge is returned when decompressed data exceeds the size limit.
+// Using errors.New instead of fmt.Errorf for sentinel errors is more idiomatic
+// and avoids the overhead of fmt.Errorf when no formatting is needed.
+var ErrDecompressedTooLarge = errors.New("decompressed data exceeds maximum allowed size")
 
 // DecompressResponseWithLimit decompresses response data with a size limit to prevent memory exhaustion.
 // This uses io.LimitReader to stop decompression early when the limit is reached, preventing zip bomb attacks.

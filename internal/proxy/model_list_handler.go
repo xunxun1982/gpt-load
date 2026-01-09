@@ -1,11 +1,13 @@
 package proxy
 
 import (
+	"errors"
+	"net/http"
+	"strings"
+
 	"gpt-load/internal/channel"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -44,7 +46,8 @@ func (ps *ProxyServer) handleModelListResponse(c *gin.Context, resp *http.Respon
 	contentEncoding := resp.Header.Get("Content-Encoding")
 	decompressed, err := utils.DecompressResponseWithLimit(contentEncoding, bodyBytes, maxModelListBodySize)
 	if err != nil {
-		if err == utils.ErrDecompressedTooLarge {
+		// Use errors.Is() for sentinel error comparison to handle wrapped errors properly
+		if errors.Is(err, utils.ErrDecompressedTooLarge) {
 			logrus.WithField("limit_mb", maxModelListBodySize/(1024*1024)).
 				Warn("Decompressed model list response too large")
 			c.JSON(http.StatusBadGateway, gin.H{"error": "Decompressed response too large"})

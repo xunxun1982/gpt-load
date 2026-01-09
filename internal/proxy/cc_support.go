@@ -1896,7 +1896,8 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// Use size-limited decompression to prevent memory exhaustion from malicious compressed payloads.
 	bodyBytes, err = utils.DecompressResponseWithLimit(resp.Header.Get("Content-Encoding"), bodyBytes, maxUpstreamResponseBodySize)
 	if err != nil {
-		if err == utils.ErrDecompressedTooLarge {
+		// Use errors.Is() for sentinel error comparison to handle wrapped errors properly
+		if errors.Is(err, utils.ErrDecompressedTooLarge) {
 			maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
 			message := fmt.Sprintf("Decompressed response exceeded maximum allowed size (%dMB) for CC conversion", maxMB)
 			logrus.WithField("limit_mb", maxMB).
