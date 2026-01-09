@@ -15,6 +15,9 @@ import (
 // Decompressor defines the interface for different decompression algorithms
 type Decompressor interface {
 	Decompress(data []byte) ([]byte, error)
+	// NewReader creates a streaming reader for decompression.
+	// Returns the reader and a cleanup function that must be called when done.
+	NewReader(data []byte) (io.Reader, func(), error)
 }
 
 // decompressorRegistry holds all registered decompressors
@@ -79,6 +82,16 @@ func (g *GzipDecompressor) Decompress(data []byte) ([]byte, error) {
 	return decompressed, nil
 }
 
+// NewReader creates a streaming gzip reader
+func (g *GzipDecompressor) NewReader(data []byte) (io.Reader, func(), error) {
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	cleanup := func() { reader.Close() }
+	return reader, cleanup, nil
+}
+
 // BrotliDecompressor handles brotli compression
 type BrotliDecompressor struct{}
 
@@ -92,6 +105,14 @@ func (b *BrotliDecompressor) Decompress(data []byte) ([]byte, error) {
 	}
 
 	return decompressed, nil
+}
+
+// NewReader creates a streaming brotli reader
+func (b *BrotliDecompressor) NewReader(data []byte) (io.Reader, func(), error) {
+	reader := brotli.NewReader(bytes.NewReader(data))
+	// Brotli reader doesn't need explicit close
+	cleanup := func() {}
+	return reader, cleanup, nil
 }
 
 // DeflateDecompressor handles deflate compression
@@ -113,6 +134,16 @@ func (d *DeflateDecompressor) Decompress(data []byte) ([]byte, error) {
 	return decompressed, nil
 }
 
+// NewReader creates a streaming deflate reader
+func (d *DeflateDecompressor) NewReader(data []byte) (io.Reader, func(), error) {
+	reader, err := zlib.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create deflate reader: %w", err)
+	}
+	cleanup := func() { reader.Close() }
+	return reader, cleanup, nil
+}
+
 // ZstdDecompressor handles Zstandard compression
 type ZstdDecompressor struct{}
 
@@ -132,11 +163,21 @@ func (z *ZstdDecompressor) Decompress(data []byte) ([]byte, error) {
 	return decompressed, nil
 }
 
+// NewReader creates a streaming zstd reader
+func (z *ZstdDecompressor) NewReader(data []byte) (io.Reader, func(), error) {
+	reader, err := zstd.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create zstd reader: %w", err)
+	}
+	cleanup := func() { reader.Close() }
+	return reader, cleanup, nil
+}
+
 // ErrDecompressedTooLarge is returned when decompressed data exceeds the size limit
 var ErrDecompressedTooLarge = fmt.Errorf("decompressed data exceeds maximum allowed size")
 
 // DecompressResponseWithLimit decompresses response data with a size limit to prevent memory exhaustion.
-// This is important for security as malicious compressed payloads (zip bombs) can expand to huge sizes.
+// This uses io.LimitReader to stop decompression early when the limit is reached, preventing zip bomb attacks.
 // Returns ErrDecompressedTooLarge if the decompressed size exceeds maxSize.
 func DecompressResponseWithLimit(contentEncoding string, data []byte, maxSize int64) ([]byte, error) {
 	// If no encoding specified or empty data, return as-is
@@ -151,34 +192,30 @@ func DecompressResponseWithLimit(contentEncoding string, data []byte, maxSize in
 		return data, nil
 	}
 
-	// Decompress with size limit using a wrapper
-	decompressed, err := decompressWithLimit(decompressor, data, maxSize)
+	// Create streaming reader for decompression
+	reader, cleanup, err := decompressor.NewReader(data)
 	if err != nil {
-		if err == ErrDecompressedTooLarge {
-			return nil, err
-		}
+		logrus.WithError(err).Warnf("Failed to create decompression reader for '%s', returning original data", contentEncoding)
+		return data, nil
+	}
+	defer cleanup()
+
+	// Use io.LimitReader to prevent reading more than maxSize+1 bytes.
+	// Reading maxSize+1 allows us to detect if the data exceeds the limit.
+	// This stops decompression early, preventing zip bomb memory exhaustion.
+	limitedReader := io.LimitReader(reader, maxSize+1)
+	decompressed, err := io.ReadAll(limitedReader)
+	if err != nil {
 		logrus.WithError(err).Warnf("Failed to decompress with '%s', returning original data", contentEncoding)
 		return data, nil
 	}
 
-	logrus.Debugf("Successfully decompressed %d bytes -> %d bytes using '%s'",
-		len(data), len(decompressed), contentEncoding)
-	return decompressed, nil
-}
-
-// decompressWithLimit wraps decompression with a size limit check.
-// It decompresses incrementally and stops if the limit is exceeded.
-func decompressWithLimit(decompressor Decompressor, data []byte, maxSize int64) ([]byte, error) {
-	// First decompress normally
-	decompressed, err := decompressor.Decompress(data)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check size limit after decompression
-	if maxSize > 0 && int64(len(decompressed)) > maxSize {
+	// Check if we hit the limit (read more than maxSize bytes)
+	if int64(len(decompressed)) > maxSize {
 		return nil, ErrDecompressedTooLarge
 	}
 
+	logrus.Debugf("Successfully decompressed %d bytes -> %d bytes using '%s'",
+		len(data), len(decompressed), contentEncoding)
 	return decompressed, nil
 }

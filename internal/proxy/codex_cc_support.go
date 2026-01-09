@@ -1240,6 +1240,14 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		events = append(events, ClaudeStreamEvent{
 			Type: "message_stop",
 		})
+
+	default:
+		// Log unknown event types at debug level for forward compatibility.
+		// New Codex API event types may be introduced; logging helps debugging
+		// without breaking existing functionality.
+		if event.Type != "" {
+			logrus.WithField("event_type", event.Type).Debug("Codex CC: Ignoring unknown stream event type")
+		}
 	}
 
 	return events
