@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { Group, ChildGroupInfo } from "@/types/models";
+import { keysApi } from "@/api/keys";
+import type { ChildGroupInfo, Group } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
 import {
   groupByChannelType,
@@ -9,22 +10,22 @@ import {
 import { naturalCompare } from "@/utils/sort";
 import {
   Add,
-  LinkOutline,
-  Search,
   ChevronDown,
   ChevronForward,
   CloudDownloadOutline,
   CloudUploadOutline,
   GitBranchOutline,
+  LinkOutline,
+  Search,
 } from "@vicons/ionicons5";
 import {
   NButton,
   NCard,
   NEmpty,
+  NIcon,
   NInput,
   NSpin,
   NTag,
-  NIcon,
   NTooltip,
   useDialog,
   useMessage,
@@ -32,9 +33,8 @@ import {
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
-import GroupFormModal from "./GroupFormModal.vue";
 import ChildGroupModal from "./ChildGroupModal.vue";
-import { keysApi } from "@/api/keys";
+import GroupFormModal from "./GroupFormModal.vue";
 
 const { t } = useI18n();
 const message = useMessage();
@@ -365,13 +365,27 @@ function canHaveChildGroups(group: Group): boolean {
 }
 
 // Load child groups when groups change
+// Use a computed key based on group IDs to detect actual data changes,
+// not just reference changes. This ensures childGroupsMap is refreshed
+// when groups are reloaded from backend (e.g., after editing a child group).
+const groupsKey = computed(() => {
+  return props.groups.map(g => `${g.id}:${g.display_name}:${g.name}`).join(",");
+});
+
 watch(
-  () => props.groups,
+  groupsKey,
   () => {
     loadAllChildGroups();
   },
   { immediate: true }
 );
+
+// Expose loadAllChildGroups for parent component to call directly when needed.
+// This is more reliable than relying solely on watch for props changes,
+// especially for child group updates where the parent groups array may not change.
+defineExpose({
+  loadAllChildGroups,
+});
 
 // Find group by ID from child group info
 function findGroupById(groupId: number): Group | undefined {
