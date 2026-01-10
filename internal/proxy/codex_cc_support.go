@@ -1065,6 +1065,10 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 	case "response.reasoning_summary_text.delta":
 		// Delta for thinking content
 		// Auto-start thinking block if not present (handles case where part.added event is missing or out of order)
+		// NOTE: AI suggested extracting auto-start logic to a helper function, but we intentionally keep it inline because:
+		// 1. Each block type has different state requirements (thinking needs inThinkingBlock, tool needs ID/Name fallback)
+		// 2. ContentBlock structures differ significantly between types
+		// 3. Inline code is more readable and easier to maintain for this state machine pattern
 		if event.Delta != "" && !s.inThinkingBlock {
 			closeOpenBlock()
 			s.inThinkingBlock = true
@@ -1642,6 +1646,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		lineCount++
 		// Per AI review: only log line preview when EnableRequestBodyLogging is enabled
 		// to avoid leaking sensitive SSE payloads (tool args, file paths, etc.)
+		// Limit to first 5 lines for initial handshake debugging without overwhelming logs
 		if lineCount <= 5 && enableBodyLogging {
 			logrus.WithFields(logrus.Fields{
 				"line_num":     lineCount,
