@@ -161,6 +161,10 @@ func buildToolNameShortMap(names []string) map[string]string {
 	// Per AI review: ensure at least 1 character from base is preserved to avoid
 	// names like "_1" which may be rejected by Codex API's tool name charset rules.
 	makeUnique := func(cand string) string {
+		// Per AI review: guard against empty candidate to avoid invalid tool names like "_1"
+		if cand == "" {
+			cand = "tool"
+		}
 		if _, ok := used[cand]; !ok {
 			return cand
 		}
@@ -345,7 +349,10 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	// Codex/OpenAI tool_choice: "auto", "required", "none", or {"type": "function", "name": "..."}
 	if len(claudeReq.ToolChoice) > 0 {
 		var toolChoice map[string]interface{}
-		if err := json.Unmarshal(claudeReq.ToolChoice, &toolChoice); err == nil {
+		if err := json.Unmarshal(claudeReq.ToolChoice, &toolChoice); err != nil {
+			// Per AI review: log parse error at debug level for troubleshooting
+			logrus.WithError(err).Debug("Codex CC: Failed to parse tool_choice, using default")
+		} else {
 			if tcType, ok := toolChoice["type"].(string); ok {
 				switch tcType {
 				case "tool":
@@ -383,14 +390,15 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	// Non-reasoning models (e.g., gpt-4o) will reject these parameters with 400 errors.
 	// Only set when client explicitly requests thinking to avoid breaking non-reasoning models.
 	// Codex uses "reasoning.effort" (nested object) vs OpenAI Chat's "reasoning_effort" (flat field).
+	//
+	// NOTE: Users can override reasoning via param_overrides, e.g., {"reasoning": {"effort": "xhigh", "summary": "auto"}}
+	// When overriding, include "summary" field to ensure reasoning summaries are returned in streaming responses.
 	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
-		// Get default effort from config, override with budget-derived value
-		reasoningEffort := getGroupConfigString(group, "codex_reasoning_effort")
-		if reasoningEffort == "" {
-			reasoningEffort = "medium" // Default when not configured
+		// Derive effort from thinking budget, default to "medium" when budget is 0 or not specified
+		reasoningEffort := "medium"
+		if claudeReq.Thinking.BudgetTokens > 0 {
+			reasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
 		}
-		// Override with effort derived from thinking budget
-		reasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
 		logrus.WithFields(logrus.Fields{
 			"budget_tokens":    claudeReq.Thinking.BudgetTokens,
 			"reasoning_effort": reasoningEffort,
@@ -588,6 +596,8 @@ func injectThinkingHint(inputItems []interface{}, budgetTokens int) {
 			}
 		}
 	}
+	// Per AI review: log when hint cannot be injected to aid debugging
+	logrus.Debug("Codex CC: Could not inject thinking hint - no suitable user message found")
 }
 
 // cleanToolCallArguments cleans up tool call arguments for compatibility with upstream APIs.
@@ -864,7 +874,13 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 		customInstructions = ""
 	}
 
-	// Build tool name short map and store reverse map in context for response conversion
+	// Build tool name short map and store reverse map in context for response conversion.
+	// AI REVIEW NOTE: This map is also built inside convertClaudeToCodex for internal use.
+	// The duplication is intentional because:
+	// 1. The function is deterministic (same input produces same output)
+	// 2. We need the reverse map stored in context for response conversion
+	// 3. Changing convertClaudeToCodex signature would affect other callers
+	// 4. The performance impact is negligible (typically < 100 tools)
 	if len(claudeReq.Tools) > 0 {
 		names := make([]string, 0, len(claudeReq.Tools))
 		for _, tool := range claudeReq.Tools {
