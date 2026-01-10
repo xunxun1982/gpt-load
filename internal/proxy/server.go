@@ -911,6 +911,12 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 		// If this is the last attempt, return error directly without recursion
 		if isLastAttempt {
+			// For CC mode (Claude Code), return Claude-formatted error response
+			// to ensure the client can properly parse and display the error message.
+			if isCCEnabled(c) {
+				returnClaudeError(c, statusCode, parsedError)
+				return
+			}
 			response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", parsedError))
 			return
 		}
@@ -1665,6 +1671,12 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 
 	// If this is the last attempt, return error
 	if isLastAttempt {
+		// For CC mode (Claude Code), return Claude-formatted error response
+		// to ensure the client can properly parse and display the error message.
+		if isCCEnabled(c) {
+			returnClaudeError(c, statusCode, err.Error())
+			return
+		}
 		response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", err.Error()))
 		return
 	}

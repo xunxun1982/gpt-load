@@ -10,6 +10,12 @@ package proxy
 // for complex code, engineering tasks, and difficult problems.
 // Users can set codex_instructions_mode="official" for the full detailed instructions.
 // Reference: https://cookbook.openai.com/examples/gpt-5-codex_prompting_guide
+//
+// NOTE: This instruction references AGENTS.md (not CLAUDE.md) because:
+// 1. AGENTS.md is the OpenAI Codex CLI standard configuration file
+// 2. Users of Codex CLI will have AGENTS.md in their projects
+// 3. Claude Code has its own system for handling CLAUDE.md files
+// 4. This instruction is for Codex CC mode, not direct Claude Code usage
 const codexDefaultInstructions = `You are Codex, a coding agent. Be precise, safe, and helpful.
 
 ## Core Principles

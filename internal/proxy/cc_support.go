@@ -906,6 +906,53 @@ type ClaudeError struct {
 	Message string `json:"message"`
 }
 
+// mapStatusToClaudeErrorType maps HTTP status codes to Claude error types.
+// This centralizes the mapping logic to avoid duplication across error handlers.
+func mapStatusToClaudeErrorType(statusCode int) string {
+	switch {
+	case statusCode == 400:
+		return "invalid_request_error"
+	case statusCode == 401:
+		return "authentication_error"
+	case statusCode == 403:
+		return "permission_error"
+	case statusCode == 404:
+		return "not_found_error"
+	case statusCode == 429:
+		return "rate_limit_error"
+	case statusCode == 502 || statusCode == 503:
+		return "overloaded_error"
+	case statusCode >= 500 && statusCode < 600:
+		return "api_error"
+	default:
+		return "api_error"
+	}
+}
+
+// returnClaudeError sends a Claude-formatted error response.
+// This is used when CC mode is enabled to ensure Claude Code clients
+// can properly parse and display error messages from upstream.
+// Per AI review: clears upstream encoding headers and sanitizes message to prevent credential leakage.
+func returnClaudeError(c *gin.Context, statusCode int, message string) {
+	// Clear upstream encoding headers to avoid mismatches with rewritten body
+	clearUpstreamEncodingHeaders(c)
+
+	// Sanitize message to prevent leaking sensitive data (API keys, tokens, etc.)
+	message = strings.TrimSpace(utils.SanitizeErrorBody(message))
+	if message == "" {
+		message = fmt.Sprintf("Upstream returned status %d", statusCode)
+	}
+
+	claudeErr := ClaudeErrorResponse{
+		Type: "error",
+		Error: ClaudeError{
+			Type:    mapStatusToClaudeErrorType(statusCode),
+			Message: message,
+		},
+	}
+	c.JSON(statusCode, claudeErr)
+}
+
 // OpenAIChoice represents a choice in OpenAI response.
 type OpenAIChoice struct {
 	Index        int                `json:"index"`
@@ -1985,11 +2032,36 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// Parse OpenAI response
 	var openaiResp OpenAIResponse
 	if err := json.Unmarshal(bodyBytes, &openaiResp); err != nil {
-		logrus.WithError(err).WithField("body_preview", utils.TruncateString(string(bodyBytes), 512)).
-			Warn("Failed to parse OpenAI response for CC conversion, returning body without CC conversion")
-		// Store original body for downstream logging (will be truncated by logger).
-		c.Set("response_body", string(bodyBytes))
+		// Per AI review: sanitize BEFORE truncate to prevent leaking truncated secrets
+		safePreview := utils.TruncateString(utils.SanitizeErrorBody(string(bodyBytes)), 512)
+		logrus.WithError(err).WithField("body_preview", safePreview).
+			Warn("Failed to parse OpenAI response for CC conversion")
+		// Store sanitized preview for downstream logging
+		c.Set("response_body", safePreview)
 
+		// For non-2xx responses, convert to Claude error format
+		// so Claude Code can properly display the error message to the user.
+		// This handles cases like upstream returning plain text errors (e.g., "当前模型负载过高，请稍后重试")
+		// Per AI review: removed "|| err != nil" since we're already inside err != nil block,
+		// making that condition always true and the 2xx fallback unreachable
+		if resp.StatusCode >= 400 {
+			// Extract error message from response body
+			errorMessage := strings.TrimSpace(string(bodyBytes))
+
+			// Per AI review: reuse returnClaudeError to eliminate duplicate mapping logic
+			// and ensure consistent sanitization of error messages
+			logrus.WithFields(logrus.Fields{
+				"status_code":   resp.StatusCode,
+				"error_type":    mapStatusToClaudeErrorType(resp.StatusCode),
+				"error_message": utils.TruncateString(utils.SanitizeErrorBody(errorMessage), 200),
+			}).Warn("CC: Converting upstream error to Claude format")
+
+			returnClaudeError(c, resp.StatusCode, errorMessage)
+			return
+		}
+
+		// For 2xx responses with JSON parse failure, return original body
+		// (this shouldn't happen normally but provides a fallback)
 		// Clear upstream encoding/length headers since we may have decompressed the body above.
 		// Returning decompressed bytes with a stale Content-Encoding header would cause clients
 		// to attempt decompression again and corrupt the payload.
