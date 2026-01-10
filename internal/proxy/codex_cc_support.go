@@ -187,16 +187,22 @@ func buildToolNameShortMap(names []string) map[string]string {
 		}
 		// Per AI review: use UUID suffix if 1000 iterations exhausted to guarantee uniqueness.
 		// This should never happen in practice but provides a robust fallback.
-		suffix := "_" + uuid.New().String()[:8]
-		allowed := codexToolNameLimit - len(suffix)
-		if allowed < 1 {
-			allowed = 1
+		// Loop until unique name found (UUID collision probability ~10^-18 per attempt).
+		for {
+			suffix := "_" + uuid.New().String()[:8]
+			allowed := codexToolNameLimit - len(suffix)
+			if allowed < 1 {
+				allowed = 1
+			}
+			tmp := base
+			if len(tmp) > allowed {
+				tmp = tmp[:allowed]
+			}
+			candidate := tmp + suffix
+			if _, ok := used[candidate]; !ok {
+				return candidate
+			}
 		}
-		tmp := base
-		if len(tmp) > allowed {
-			tmp = tmp[:allowed]
-		}
-		return tmp + suffix
 	}
 
 	for _, n := range names {
@@ -490,6 +496,13 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 		case "text":
 			textParts = append(textParts, block.Text)
 		case "thinking":
+			// AI REVIEW NOTE: Suggestion to handle thinking blocks separately was considered.
+			// This is intentionally merged into textParts because:
+			// 1. This is Claude→Codex REQUEST conversion (not response conversion)
+			// 2. Codex API does not support thinking blocks as input format
+			// 3. Thinking content from Claude client's history provides important reasoning context
+			// 4. Discarding thinking would lose valuable context for multi-turn conversations
+			// 5. Merging preserves the assistant's reasoning chain for better continuity
 			if block.Thinking != "" {
 				textParts = append(textParts, block.Thinking)
 			}
@@ -1229,10 +1242,19 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		if event.Delta != "" && s.openBlockType != "tool" {
 			closeOpenBlock()
 			s.openBlockType = "tool"
-			// Use current tool info if available
+			// Use current tool info if available, with fallback for out-of-order events.
+			// Per AI review: add fallback for empty tool ID/name to handle edge cases
+			// where arguments.delta arrives before output_item.added (unlikely but possible).
 			toolUseID := s.currentToolID
+			if toolUseID == "" {
+				toolUseID = "call_" + uuid.New().String()[:8]
+			}
 			if strings.HasPrefix(toolUseID, "call_") {
 				toolUseID = strings.TrimPrefix(toolUseID, "call_")
+			}
+			toolName := s.currentToolName
+			if toolName == "" {
+				toolName = "unknown_tool"
 			}
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_start",
@@ -1240,7 +1262,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				ContentBlock: &ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    toolUseID,
-					Name:  s.currentToolName,
+					Name:  toolName,
 					Input: json.RawMessage("{}"),
 				},
 			})
