@@ -1459,10 +1459,12 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		logrus.WithError(err).WithField("body_preview", safePreview).
 			Warn("Failed to parse Codex response for CC conversion")
 
-		// For non-2xx responses or JSON parse failures, convert to Claude error format
+		// For non-2xx responses, convert to Claude error format
 		// so Claude Code can properly display the error message to the user.
 		// This handles cases like upstream returning plain text errors (e.g., "当前模型负载过高，请稍后重试")
-		if resp.StatusCode >= 400 || err != nil {
+		// Per AI review: removed "|| err != nil" since we're already inside err != nil block,
+		// making that condition always true and the 2xx fallback unreachable
+		if resp.StatusCode >= 400 {
 			// Extract error message from response body
 			errorMessage := strings.TrimSpace(string(bodyBytes))
 			if errorMessage == "" {
@@ -1654,14 +1656,25 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	// context.Canceled), which is already handled below. Adding a select{} with ctx.Done() would
 	// not help during blocking reads - it would only check between reads, which is already covered
 	// by the error handling. The current implementation correctly handles all termination cases.
+
+	// Per AI review: check if request body logging is enabled for debug log safety
+	enableBodyLogging := false
+	if gv, ok := c.Get("group"); ok {
+		if g, ok := gv.(*models.Group); ok {
+			enableBodyLogging = g.EffectiveConfig.EnableRequestBodyLogging
+		}
+	}
+
 	for {
 		line, err := reader.ReadString('\n')
 		lineCount++
-		if lineCount <= 5 {
+		// Per AI review: only log line preview when EnableRequestBodyLogging is enabled
+		// to avoid leaking sensitive SSE payloads (tool args, file paths, etc.)
+		if lineCount <= 5 && enableBodyLogging {
 			logrus.WithFields(logrus.Fields{
-				"line_num":  lineCount,
-				"line_len":  len(line),
-				"line_preview": utils.TruncateString(line, 200),
+				"line_num":     lineCount,
+				"line_len":     len(line),
+				"line_preview": utils.TruncateString(utils.SanitizeErrorBody(line), 200),
 			}).Debug("Codex CC: Read stream line")
 		}
 		if err != nil {

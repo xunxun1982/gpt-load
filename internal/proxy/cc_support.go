@@ -911,6 +911,7 @@ type ClaudeError struct {
 // can properly parse and display error messages from upstream.
 func returnClaudeError(c *gin.Context, statusCode int, message string) {
 	// Map HTTP status codes to Claude error types
+	// Per AI review: 502/503 should map to overloaded_error for consistency with handleCCNormalResponse
 	claudeErrorType := "api_error" // Default for unknown errors
 	switch {
 	case statusCode == 400:
@@ -923,6 +924,8 @@ func returnClaudeError(c *gin.Context, statusCode int, message string) {
 		claudeErrorType = "not_found_error"
 	case statusCode == 429:
 		claudeErrorType = "rate_limit_error"
+	case statusCode == 502 || statusCode == 503:
+		claudeErrorType = "overloaded_error"
 	case statusCode >= 500 && statusCode < 600:
 		claudeErrorType = "api_error"
 	}
@@ -2016,15 +2019,19 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// Parse OpenAI response
 	var openaiResp OpenAIResponse
 	if err := json.Unmarshal(bodyBytes, &openaiResp); err != nil {
-		logrus.WithError(err).WithField("body_preview", utils.TruncateString(string(bodyBytes), 512)).
+		// Per AI review: sanitize BEFORE truncate to prevent leaking truncated secrets
+		safePreview := utils.TruncateString(utils.SanitizeErrorBody(string(bodyBytes)), 512)
+		logrus.WithError(err).WithField("body_preview", safePreview).
 			Warn("Failed to parse OpenAI response for CC conversion")
-		// Store original body for downstream logging (will be truncated by logger).
-		c.Set("response_body", string(bodyBytes))
+		// Store sanitized preview for downstream logging
+		c.Set("response_body", safePreview)
 
-		// For non-2xx responses or JSON parse failures, convert to Claude error format
+		// For non-2xx responses, convert to Claude error format
 		// so Claude Code can properly display the error message to the user.
 		// This handles cases like upstream returning plain text errors (e.g., "当前模型负载过高，请稍后重试")
-		if resp.StatusCode >= 400 || err != nil {
+		// Per AI review: removed "|| err != nil" since we're already inside err != nil block,
+		// making that condition always true and the 2xx fallback unreachable
+		if resp.StatusCode >= 400 {
 			// Extract error message from response body
 			errorMessage := strings.TrimSpace(string(bodyBytes))
 			if errorMessage == "" {
