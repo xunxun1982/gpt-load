@@ -10,8 +10,9 @@ import (
 // Pre-compiled for performance in hot paths.
 var (
 	// API key patterns (OpenAI sk-..., Anthropic, etc.)
-	// Matches standalone API keys like sk-1234567890abcdefghij
-	apiKeyStandalonePattern = regexp.MustCompile(`\bsk-[a-zA-Z0-9]{20,}\b`)
+	// Matches standalone API keys like sk-1234567890abcdefghij or sk-proj-abcdefghij...
+	// Per AI review: allow hyphens after sk- to cover formats like sk-proj-...
+	apiKeyStandalonePattern = regexp.MustCompile(`\bsk-[a-zA-Z0-9][a-zA-Z0-9-]{19,}\b`)
 	// Bearer token pattern (avoid spanning newlines)
 	bearerPattern = regexp.MustCompile(`(?i)\bBearer[ \t]+[a-zA-Z0-9\-._~+/]+=*`)
 	// Authorization header pattern (redact entire value on the line)

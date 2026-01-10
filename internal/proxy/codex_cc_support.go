@@ -365,31 +365,34 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		codexReq.ParallelToolCalls = &parallelCalls
 	}
 
-	// Configure reasoning for Codex API (Responses API).
+	// Configure reasoning for Codex API (Responses API) only when thinking is enabled.
+	// AI REVIEW NOTE: Reasoning/Include fields are now gated behind thinking mode.
+	// Non-reasoning models (e.g., gpt-4o) will reject these parameters with 400 errors.
+	// Only set when client explicitly requests thinking to avoid breaking non-reasoning models.
 	// Codex uses "reasoning.effort" (nested object) vs OpenAI Chat's "reasoning_effort" (flat field).
-	// Default effort can be configured via group config "codex_reasoning_effort".
-	// When thinking is enabled, budget_tokens overrides the default effort level.
-	reasoningEffort := getGroupConfigString(group, "codex_reasoning_effort")
-	if reasoningEffort == "" {
-		reasoningEffort = "medium" // Default when not configured
-	}
 	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
+		// Get default effort from config, override with budget-derived value
+		reasoningEffort := getGroupConfigString(group, "codex_reasoning_effort")
+		if reasoningEffort == "" {
+			reasoningEffort = "medium" // Default when not configured
+		}
 		// Override with effort derived from thinking budget
 		reasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
 		logrus.WithFields(logrus.Fields{
 			"budget_tokens":    claudeReq.Thinking.BudgetTokens,
 			"reasoning_effort": reasoningEffort,
 		}).Debug("Codex CC: Configured reasoning effort from thinking budget")
+
+		codexReq.Reasoning = &CodexReasoning{
+			Effort:  reasoningEffort,
+			Summary: "auto", // Enable reasoning summary for streaming responses
+		}
+		// Disable response storage for privacy
+		storeDisabled := false
+		codexReq.Store = &storeDisabled
+		// Include encrypted reasoning content for full thinking support
+		codexReq.Include = []string{"reasoning.encrypted_content"}
 	}
-	codexReq.Reasoning = &CodexReasoning{
-		Effort:  reasoningEffort,
-		Summary: "auto", // Enable reasoning summary for streaming responses
-	}
-	// Disable response storage for privacy
-	storeDisabled := false
-	codexReq.Store = &storeDisabled
-	// Include encrypted reasoning content for full thinking support
-	codexReq.Include = []string{"reasoning.encrypted_content"}
 
 	return codexReq, nil
 }
@@ -925,12 +928,8 @@ type CodexStreamEvent struct {
 }
 
 // codexStreamState tracks state during Codex streaming response conversion.
-// AI REVIEW NOTE: Suggestion to add nextIndex() helper function was considered.
-// This is intentionally NOT implemented because:
-// 1. Index increments are tightly coupled with specific event types (content_block_stop, output_item.done)
-// 2. Adding a helper would obscure the relationship between events and index management
-// 3. Current code is explicit and easy to audit for correctness
-// 4. The state machine is already well-tested through integration tests
+// AI REVIEW NOTE: Added openBlockType field per AI review to track block start/stop pairing.
+// This prevents orphaned stops and ensures proper SSE contract compliance.
 type codexStreamState struct {
 	messageID         string
 	currentToolID     string
@@ -944,6 +943,10 @@ type codexStreamState struct {
 	// Index is incremented only after content_block_stop events to maintain
 	// correct ordering for Claude clients.
 	nextClaudeIndex   int
+	// openBlockType tracks the type of currently open block at nextClaudeIndex.
+	// Values: "", "text", "thinking", "tool". Empty means no block is open.
+	// Used to prevent orphaned stops and ensure proper block pairing.
+	openBlockType     string
 	// finalSent tracks whether the final message_delta/message_stop events have been sent.
 	// This prevents duplicate final events when response.completed is received multiple times
 	// or when [DONE] is processed after response.completed.
@@ -969,6 +972,21 @@ func newCodexStreamState(reverseToolNameMap map[string]string) *codexStreamState
 func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []ClaudeStreamEvent {
 	var events []ClaudeStreamEvent
 
+	// closeOpenBlock closes any currently open block and increments the index.
+	// This helper ensures proper block pairing and prevents orphaned stops.
+	closeOpenBlock := func() {
+		if s.openBlockType == "" {
+			return
+		}
+		events = append(events, ClaudeStreamEvent{
+			Type:  "content_block_stop",
+			Index: s.nextClaudeIndex,
+		})
+		s.nextClaudeIndex++
+		s.openBlockType = ""
+		s.inThinkingBlock = false
+	}
+
 	switch event.Type {
 	case "response.created":
 		if event.Response != nil {
@@ -988,8 +1006,11 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	// Reasoning summary events - convert to Claude thinking blocks
 	case "response.reasoning_summary_part.added":
+		// Close any open block before starting thinking block
+		closeOpenBlock()
 		// Start a thinking content block
 		s.inThinkingBlock = true
+		s.openBlockType = "thinking"
 		logrus.WithField("claude_index", s.nextClaudeIndex).Debug("Codex CC: Starting thinking block")
 		events = append(events, ClaudeStreamEvent{
 			Type:  "content_block_start",
@@ -1002,7 +1023,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	case "response.reasoning_summary_text.delta":
 		// Delta for thinking content
-		if event.Delta != "" && s.inThinkingBlock {
+		if event.Delta != "" && s.inThinkingBlock && s.openBlockType == "thinking" {
 			logrus.WithFields(logrus.Fields{
 				"delta_len":    len(event.Delta),
 				"claude_index": s.nextClaudeIndex,
@@ -1023,22 +1044,33 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		logrus.WithField("text_len", len(event.Text)).Debug("Codex CC: Reasoning summary text done")
 
 	case "response.reasoning_summary_part.done":
-		// End thinking content block
-		if s.inThinkingBlock {
+		// End thinking content block only if one is open
+		if s.openBlockType == "thinking" {
 			logrus.WithField("claude_index", s.nextClaudeIndex).Debug("Codex CC: Ending thinking block")
-			events = append(events, ClaudeStreamEvent{
-				Type:  "content_block_stop",
-				Index: s.nextClaudeIndex,
-			})
-			s.nextClaudeIndex++
-			s.inThinkingBlock = false
+			closeOpenBlock()
 		}
 
 	// Handle non-summary reasoning events (encrypted reasoning content).
 	// These events contain the raw reasoning text when include=["reasoning.encrypted_content"] is set.
 	case "response.reasoning_text.delta":
-		// Delta for raw reasoning content - treat same as summary delta
-		if event.Delta != "" && s.inThinkingBlock {
+		// Auto-start thinking block if not present (reasoning_text independent of summary).
+		// Per AI review: reasoning_text and reasoning_summary are independent event streams.
+		if event.Delta != "" && !s.inThinkingBlock {
+			closeOpenBlock()
+			s.inThinkingBlock = true
+			s.openBlockType = "thinking"
+			logrus.WithField("claude_index", s.nextClaudeIndex).Debug("Codex CC: Auto-starting thinking block for reasoning_text")
+			events = append(events, ClaudeStreamEvent{
+				Type:  "content_block_start",
+				Index: s.nextClaudeIndex,
+				ContentBlock: &ClaudeContentBlock{
+					Type:     "thinking",
+					Thinking: "",
+				},
+			})
+		}
+		// Delta for raw reasoning content
+		if event.Delta != "" && s.inThinkingBlock && s.openBlockType == "thinking" {
 			logrus.WithFields(logrus.Fields{
 				"delta_len":    len(event.Delta),
 				"claude_index": s.nextClaudeIndex,
@@ -1075,6 +1107,8 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				// Message item added, wait for content_part.added for actual content
 				logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Message item added")
 			case "function_call":
+				// Close any open block before starting tool block
+				closeOpenBlock()
 				s.currentToolID = event.Item.CallID
 				s.currentToolName = event.Item.Name
 				// Restore original tool name if it was shortened
@@ -1095,6 +1129,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 					"original_name": event.Item.Name,
 					"claude_index":  s.nextClaudeIndex,
 				}).Debug("Codex CC: Function call started")
+				s.openBlockType = "tool"
 				events = append(events, ClaudeStreamEvent{
 					Type:  "content_block_start",
 					Index: s.nextClaudeIndex,
@@ -1109,8 +1144,11 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		}
 
 	case "response.content_part.added":
-		// Content part added - start a new content block
+		// Content part added - start a new content block only for output_text
 		if event.Part != nil && event.Part.Type == "output_text" {
+			// Close any open block before starting text block
+			closeOpenBlock()
+			s.openBlockType = "text"
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_start",
 				Index: s.nextClaudeIndex,
@@ -1138,12 +1176,10 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		logrus.WithField("text_len", len(event.Text)).Debug("Codex CC: Text output done")
 
 	case "response.content_part.done":
-		// Content part complete - send content_block_stop and increment index
-		events = append(events, ClaudeStreamEvent{
-			Type:  "content_block_stop",
-			Index: s.nextClaudeIndex,
-		})
-		s.nextClaudeIndex++
+		// Content part complete - only close if a text block is open
+		if s.openBlockType == "text" {
+			closeOpenBlock()
+		}
 
 	case "response.function_call_arguments.delta":
 		if event.Delta != "" {
@@ -1196,11 +1232,10 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 					Name:  toolName,
 					Input: json.RawMessage(argsStr),
 				})
-				events = append(events, ClaudeStreamEvent{
-					Type:  "content_block_stop",
-					Index: s.nextClaudeIndex,
-				})
-				s.nextClaudeIndex++
+				// Only close if a tool block is open
+				if s.openBlockType == "tool" {
+					closeOpenBlock()
+				}
 			}
 		}
 

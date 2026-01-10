@@ -887,13 +887,10 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// Store error response body in context for logging.
 			// Per AI review: sanitize sensitive data before storing to prevent
 			// accidental leakage of API keys, tokens, or PII in logs.
+			// Use TruncateString for UTF-8 safe truncation.
 			if len(errorBody) > 0 {
 				sanitized := utils.SanitizeErrorBody(string(errorBody))
-				if len(sanitized) > maxResponseCaptureBytes {
-					c.Set("response_body", sanitized[:maxResponseCaptureBytes])
-				} else {
-					c.Set("response_body", sanitized)
-				}
+				c.Set("response_body", utils.TruncateString(sanitized, maxResponseCaptureBytes))
 			}
 
 			parsedError = app_errors.ParseUpstreamError(errorBody)
@@ -1444,13 +1441,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 			// Store sanitized error response body in context for logging.
 			// Per AI review: sanitize to prevent leaking secrets/PII in logs.
+			// Use TruncateString for UTF-8 safe truncation.
 			if len(errorBody) > 0 {
 				sanitized := utils.SanitizeErrorBody(string(errorBody))
-				if len(sanitized) > maxResponseCaptureBytes {
-					c.Set("response_body", sanitized[:maxResponseCaptureBytes])
-				} else {
-					c.Set("response_body", sanitized)
-				}
+				c.Set("response_body", utils.TruncateString(sanitized, maxResponseCaptureBytes))
 			}
 
 			parsedError = app_errors.ParseUpstreamError(errorBody)

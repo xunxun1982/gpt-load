@@ -11,6 +11,8 @@ func TestSanitizeErrorBody(t *testing.T) {
 	apiKeyJSON := `{"error": "invalid key", "key": "` + apiKey + `"}`
 	authKey := "s" + "k-proj-" + strings.Repeat("b", 24)
 	authHeader := "Authorization: " + authKey
+	// Per AI review: test sk-proj-... as JSON value (not just Authorization header)
+	projKeyJSON := `{"error": "auth failed", "details": "` + authKey + `"}`
 
 	tests := []struct {
 		name     string
@@ -35,6 +37,12 @@ func TestSanitizeErrorBody(t *testing.T) {
 			input:    apiKeyJSON,
 			contains: []string{"[REDACTED_API_KEY]"},
 			excludes: []string{apiKey},
+		},
+		{
+			name:     "sk-proj key as json value",
+			input:    projKeyJSON,
+			contains: []string{"[REDACTED_API_KEY]"},
+			excludes: []string{authKey},
 		},
 		{
 			name:     "bearer token",
