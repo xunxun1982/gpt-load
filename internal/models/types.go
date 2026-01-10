@@ -50,6 +50,14 @@ type GroupConfig struct {
 	// When a request has thinking.type="enabled", the model will be automatically
 	// switched to this model. Leave empty to use the original model from request.
 	ThinkingModel *string `json:"thinking_model,omitempty"`
+	// CodexInstructions specifies custom instructions for Codex API requests.
+	// Some providers (like 88code.ai) validate this field strictly.
+	// Leave empty to use default instructions.
+	CodexInstructions *string `json:"codex_instructions,omitempty"`
+	// CodexInstructionsMode controls how Codex instructions are handled.
+	// Values: "auto" (default, use codexDefaultInstructions), "official" (use official Codex CLI instructions),
+	// "custom" (use CodexInstructions field value).
+	CodexInstructionsMode *string `json:"codex_instructions_mode,omitempty"`
 	// InterceptEventLog enables interception of Claude Code event logging endpoint.
 	// Only applies to Anthropic channel groups. When enabled, /api/event_logging/batch
 	// requests are intercepted and not forwarded to upstream.

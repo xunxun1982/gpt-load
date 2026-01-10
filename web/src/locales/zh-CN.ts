@@ -450,6 +450,16 @@ export default {
     thinkingModelTooltip:
       "当 Claude Code 启用扩展思考模式时，自动使用此模型。留空则使用请求中的原始模型。例如：deepseek-reasoner",
     thinkingModelPlaceholder: "例如：deepseek-reasoner",
+    codexInstructionsMode: "Codex 指令模式",
+    codexInstructionsModeTooltip:
+      "控制 Codex API 的 instructions 字段如何处理。自动：使用内置默认指令；强制官方：使用官方 Codex CLI 指令；自定义：使用下方输入的自定义指令。",
+    codexInstructionsModeAuto: "自动",
+    codexInstructionsModeOfficial: "强制官方",
+    codexInstructionsModeCustom: "自定义",
+    codexInstructions: "Codex 指令",
+    codexInstructionsTooltip:
+      "Codex API 的自定义 instructions 字段。部分提供商（如 88code.ai）会严格验证此字段。留空使用默认值。如需自定义，请从真实 Codex CLI 请求中提取。",
+    codexInstructionsPlaceholder: "留空使用默认指令，或粘贴自定义指令（用于验证此字段的提供商）",
     interceptEventLog: "拦截事件日志",
     interceptEventLogTooltip:
       "开启后，/api/event_logging/batch 端点将被拦截，不会转发到上游。适用于 Claude Code 客户端连接 Anthropic 代理的场景。",

@@ -21,7 +21,10 @@ const props = withDefaults(defineProps<Props>(), {
 const { t } = useI18n();
 
 const trimmedLabel = computed(() => props.label.trim());
-const showCCBadge = computed(() => props.channelType === "openai" && props.ccSupport);
+// Show CC badge for both OpenAI and Codex channels when CC support is enabled
+const showCCBadge = computed(
+  () => (props.channelType === "openai" || props.channelType === "codex") && props.ccSupport
+);
 </script>
 
 <template>

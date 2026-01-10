@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import { settingsApi } from "@/api/settings";
-import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
-import type { Group, GroupConfigOption, UpstreamInfo, PathRedirectRule } from "@/types/models";
+import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
+import type { Group, GroupConfigOption, PathRedirectRule, UpstreamInfo } from "@/types/models";
 import { Add, Close, CloudDownloadOutline, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
   NButton,
@@ -81,7 +81,7 @@ interface GroupFormData {
   display_name: string;
   description: string;
   upstreams: UpstreamInfo[];
-  channel_type: "anthropic" | "gemini" | "openai";
+  channel_type: "anthropic" | "gemini" | "openai" | "codex";
   sort: number;
   test_model: string;
   validation_endpoint: string;
@@ -93,6 +93,8 @@ interface GroupFormData {
   cc_support: boolean;
   intercept_event_log: boolean;
   thinking_model: string;
+  codex_instructions_mode: "auto" | "official" | "custom";
+  codex_instructions: string;
 
   config: Record<string, number | string | boolean>;
   configItems: ConfigItem[];
@@ -125,6 +127,8 @@ const formData = reactive<GroupFormData>({
   cc_support: false,
   intercept_event_log: false,
   thinking_model: "",
+  codex_instructions_mode: "auto",
+  codex_instructions: "",
 
   config: {},
   configItems: [] as ConfigItem[],
@@ -145,7 +149,7 @@ const userModifiedFields = ref({
   upstream: false,
 });
 const channelDefaults: Record<
-  "openai" | "gemini" | "anthropic",
+  "openai" | "gemini" | "anthropic" | "codex",
   { testModel: string; upstream: string; validationEndpoint: string }
 > = {
   openai: {
@@ -162,6 +166,11 @@ const channelDefaults: Record<
     testModel: "claude-3-haiku-20240307",
     upstream: "https://api.anthropic.com",
     validationEndpoint: "/v1/messages",
+  },
+  codex: {
+    testModel: "gpt-5-codex",
+    upstream: "https://api.openai.com",
+    validationEndpoint: "/v1/responses",
   },
 };
 
@@ -331,8 +340,11 @@ watch(
     }
 
     // Force disable function call when channel is not OpenAI.
+    // CC support is available for both OpenAI and Codex channels.
     if (newChannelType !== "openai") {
       formData.force_function_call = false;
+    }
+    if (newChannelType !== "openai" && newChannelType !== "codex") {
       formData.cc_support = false;
     }
     // Force disable intercept_event_log when channel is not Anthropic.
@@ -385,6 +397,8 @@ function resetForm() {
     cc_support: false,
     intercept_event_log: false,
     thinking_model: "",
+    codex_instructions_mode: "auto",
+    codex_instructions: "",
 
     config: {},
     configItems: [],
@@ -414,8 +428,12 @@ function loadGroupData() {
   const forceFunctionCall =
     props.group.channel_type === "openai" && typeof fcRaw === "boolean" ? fcRaw : false;
   const ccRaw = rawConfig["cc_support"];
+  // CC support is available for both OpenAI and Codex channels
   const ccSupport =
-    props.group.channel_type === "openai" && typeof ccRaw === "boolean" ? ccRaw : false;
+    (props.group.channel_type === "openai" || props.group.channel_type === "codex") &&
+    typeof ccRaw === "boolean"
+      ? ccRaw
+      : false;
   const interceptEventLogRaw = rawConfig["intercept_event_log"];
   const interceptEventLog =
     props.group.channel_type === "anthropic" && typeof interceptEventLogRaw === "boolean"
@@ -423,6 +441,14 @@ function loadGroupData() {
       : false;
   const thinkingModelRaw = rawConfig["thinking_model"];
   const thinkingModel = typeof thinkingModelRaw === "string" ? thinkingModelRaw : "";
+  const codexInstructionsRaw = rawConfig["codex_instructions"];
+  const codexInstructions = typeof codexInstructionsRaw === "string" ? codexInstructionsRaw : "";
+  const codexInstructionsModeRaw = rawConfig["codex_instructions_mode"];
+  const codexInstructionsMode =
+    typeof codexInstructionsModeRaw === "string" &&
+    ["auto", "official", "custom"].includes(codexInstructionsModeRaw)
+      ? (codexInstructionsModeRaw as "auto" | "official" | "custom")
+      : "auto";
 
   const configItems = Object.entries(rawConfig)
     .filter(([key]) => {
@@ -431,6 +457,8 @@ function loadGroupData() {
         "cc_support",
         "intercept_event_log",
         "thinking_model",
+        "codex_instructions",
+        "codex_instructions_mode",
         "cc_opus_model",
         "cc_sonnet_model",
         "cc_haiku_model",
@@ -471,6 +499,8 @@ function loadGroupData() {
     cc_support: ccSupport,
     intercept_event_log: interceptEventLog,
     thinking_model: thinkingModel,
+    codex_instructions: codexInstructions,
+    codex_instructions_mode: codexInstructionsMode,
 
     config: {},
     configItems,
@@ -899,6 +929,25 @@ async function handleSubmit() {
       config["thinking_model"] = formData.thinking_model.trim();
     } else {
       delete config["thinking_model"];
+    }
+
+    // Persist codex_instructions_mode and codex_instructions as dedicated config keys (only when cc_support is enabled for Codex channel).
+    if (formData.cc_support && formData.channel_type === "codex") {
+      // Always save mode if not "auto"
+      if (formData.codex_instructions_mode && formData.codex_instructions_mode !== "auto") {
+        config["codex_instructions_mode"] = formData.codex_instructions_mode;
+      } else {
+        delete config["codex_instructions_mode"];
+      }
+      // Only save custom instructions when mode is "custom"
+      if (formData.codex_instructions_mode === "custom" && formData.codex_instructions.trim()) {
+        config["codex_instructions"] = formData.codex_instructions.trim();
+      } else {
+        delete config["codex_instructions"];
+      }
+    } else {
+      delete config["codex_instructions_mode"];
+      delete config["codex_instructions"];
     }
 
     // Validate path redirects for duplicates
@@ -1778,10 +1827,13 @@ async function handleSubmit() {
                 </n-form-item>
               </div>
 
-              <!-- CC Support toggle (OpenAI channel only) -->
+              <!-- CC Support toggle (OpenAI and Codex channels) -->
               <div
                 class="config-section"
-                v-if="formData.group_type !== 'aggregate' && formData.channel_type === 'openai'"
+                v-if="
+                  formData.group_type !== 'aggregate' &&
+                  (formData.channel_type === 'openai' || formData.channel_type === 'codex')
+                "
               >
                 <n-form-item path="cc_support">
                   <template #label>
@@ -1832,6 +1884,70 @@ async function handleSubmit() {
                       <n-input
                         v-model:value="formData.thinking_model"
                         :placeholder="t('keys.thinkingModelPlaceholder')"
+                        size="small"
+                        style="width: 100%"
+                      />
+                    </div>
+                    <!-- Codex Instructions Mode (only shown when cc_support is enabled for Codex channel) -->
+                    <div
+                      v-if="formData.cc_support && formData.channel_type === 'codex'"
+                      style="margin-top: 12px"
+                    >
+                      <div style="font-size: 13px; color: #666; margin-bottom: 4px">
+                        {{ t("keys.codexInstructionsMode") }}
+                        <n-tooltip trigger="hover" placement="right">
+                          <template #trigger>
+                            <n-icon
+                              :component="HelpCircleOutline"
+                              class="help-icon config-help"
+                              style="margin-left: 4px"
+                            />
+                          </template>
+                          <div style="max-width: 350px">
+                            {{ t("keys.codexInstructionsModeTooltip") }}
+                          </div>
+                        </n-tooltip>
+                      </div>
+                      <n-select
+                        v-model:value="formData.codex_instructions_mode"
+                        :options="[
+                          { label: t('keys.codexInstructionsModeAuto'), value: 'auto' },
+                          { label: t('keys.codexInstructionsModeOfficial'), value: 'official' },
+                          { label: t('keys.codexInstructionsModeCustom'), value: 'custom' },
+                        ]"
+                        size="small"
+                        style="width: 100%"
+                      />
+                    </div>
+                    <!-- Codex Instructions Input (only shown when mode is "custom") -->
+                    <div
+                      v-if="
+                        formData.cc_support &&
+                        formData.channel_type === 'codex' &&
+                        formData.codex_instructions_mode === 'custom'
+                      "
+                      style="margin-top: 12px"
+                    >
+                      <div style="font-size: 13px; color: #666; margin-bottom: 4px">
+                        {{ t("keys.codexInstructions") }}
+                        <n-tooltip trigger="hover" placement="right">
+                          <template #trigger>
+                            <n-icon
+                              :component="HelpCircleOutline"
+                              class="help-icon config-help"
+                              style="margin-left: 4px"
+                            />
+                          </template>
+                          <div style="max-width: 350px">
+                            {{ t("keys.codexInstructionsTooltip") }}
+                          </div>
+                        </n-tooltip>
+                      </div>
+                      <n-input
+                        v-model:value="formData.codex_instructions"
+                        type="textarea"
+                        :placeholder="t('keys.codexInstructionsPlaceholder')"
+                        :autosize="{ minRows: 3, maxRows: 10 }"
                         size="small"
                         style="width: 100%"
                       />

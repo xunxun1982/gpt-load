@@ -34,6 +34,7 @@ import (
 const (
 	ctxKeyCCEnabled      = "cc_enabled"
 	ctxKeyOriginalFormat = "cc_original_format"
+	ctxKeyCodexCC        = "codex_cc" // Indicates Codex CC mode (Claude -> Codex/Responses API)
 )
 
 // ctxKeyTriggerSignal and ctxKeyFunctionCallEnabled are declared in server.go (same package proxy).
@@ -137,11 +138,31 @@ func getGroupConfigBool(group *models.Group, key string) bool {
 	}
 }
 
+// getGroupConfigString extracts a string value from group config.
+// Returns empty string if the key doesn't exist or the value is not a string.
+// Trims whitespace for consistency with other config handling.
+func getGroupConfigString(group *models.Group, key string) string {
+	if group == nil || group.Config == nil {
+		return ""
+	}
+
+	raw, ok := group.Config[key]
+	if !ok || raw == nil {
+		return ""
+	}
+
+	if v, ok := raw.(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
 // isCCSupportEnabled checks whether the cc_support flag is enabled for the given group.
 // This flag is stored in the group-level JSON config.
+// Supports both OpenAI and Codex channel types.
 func isCCSupportEnabled(group *models.Group) bool {
-	// Only enable CC support for OpenAI channel groups.
-	if group == nil || group.ChannelType != "openai" {
+	// Enable CC support for OpenAI and Codex channel groups.
+	if group == nil || (group.ChannelType != "openai" && group.ChannelType != "codex") {
 		return false
 	}
 	return getGroupConfigBool(group, "cc_support")
@@ -340,21 +361,24 @@ type OpenAIFunction struct {
 // z.ai chat-completion APIs. Advanced fields like metadata and Anthropic-style
 // tool_choice objects are intentionally not forwarded to avoid parameter errors.
 type OpenAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
-	Stop        json.RawMessage `json:"stop,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []OpenAIMessage `json:"messages"`
+	MaxTokens       *int            `json:"max_tokens,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	TopP            *float64        `json:"top_p,omitempty"`
+	Stream          bool            `json:"stream"`
+	Tools           []OpenAITool    `json:"tools,omitempty"`
+	Stop            json.RawMessage `json:"stop,omitempty"`
 	// NOTE: We intentionally keep interface{} here (instead of json.RawMessage).
 	// This field is only used for outbound serialization to upstream OpenAI-style APIs,
 	// not for inbound JSON parsing. Using json.RawMessage would require manual JSON
 	// quoting for string values (e.g. "auto") and increases the chance of producing
 	// invalid JSON. With interface{}, json.Marshal guarantees correct JSON encoding
 	// for both string and object forms while keeping the code simple (KISS).
-	ToolChoice interface{} `json:"tool_choice,omitempty"`
+	ToolChoice      interface{} `json:"tool_choice,omitempty"`
+	// ReasoningEffort enables reasoning for models that support it (e.g., o1, o3 series).
+	// Valid values: "low", "medium", "high". Only sent when thinking is enabled.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // convertClaudeToOpenAI converts a Claude request to OpenAI format.
@@ -536,6 +560,17 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 		}
 	}
 
+	// Set reasoning_effort for models that support native reasoning (e.g., o1, o3 series).
+	// This is complementary to thinking hints - some models use reasoning_effort instead of ANTML tags.
+	// OpenAI Chat Completions API uses flat "reasoning_effort" field (vs Codex's nested "reasoning.effort").
+	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
+		openaiReq.ReasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
+		logrus.WithFields(logrus.Fields{
+			"budget_tokens":    claudeReq.Thinking.BudgetTokens,
+			"reasoning_effort": openaiReq.ReasoningEffort,
+		}).Debug("CC: Set reasoning_effort for thinking mode")
+	}
+
 	return openaiReq, nil
 }
 
@@ -691,6 +726,43 @@ func getThinkingModel(group *models.Group) string {
 	}
 }
 
+// thinkingBudgetToReasoningEffortOpenAI converts Claude thinking budget_tokens to OpenAI reasoning effort.
+// Returns the effort level ("low", "medium", "high") based on token budget.
+// This is used for OpenAI models that support native reasoning (e.g., o1, o3, o4-mini, GPT-5 series).
+//
+// COMPATIBILITY NOTE: We intentionally use only "low", "medium", "high" values for maximum compatibility.
+// While newer models (GPT-5.2) support additional levels like "minimal", "none", and "xhigh", these are
+// not universally supported across all reasoning models:
+// - o1, o3, o3-mini, o4-mini: only support "low", "medium", "high"
+// - GPT-5, GPT-5-mini, GPT-5-nano: support "none", "minimal", "low", "medium", "high"
+// - GPT-5.2: supports "none", "minimal", "low", "medium", "high", "xhigh"
+// Using unsupported values would cause API errors. The three-level mapping provides safe coverage
+// for all reasoning models while still offering meaningful differentiation.
+//
+// AI REVIEW NOTE: Suggestion to use proportional allocation (budgetTokens/maxTokens) was rejected.
+// OpenAI's reasoning_effort is an independent parameter controlling reasoning depth, NOT a proportion
+// of max_tokens. Per OpenAI API docs, it accepts discrete values that control how many reasoning
+// tokens the model generates internally. Claude's budget_tokens represents user's expected thinking
+// depth, which maps naturally to OpenAI's effort levels using absolute thresholds.
+// Reference: https://platform.openai.com/docs/guides/reasoning
+func thinkingBudgetToReasoningEffortOpenAI(budgetTokens int) string {
+	// Mapping based on typical token budgets:
+	// - low: < 1000 tokens (quick responses)
+	// - medium: 1000-10000 tokens (default, balanced)
+	// - high: > 10000 tokens (deep reasoning)
+	// NOTE: We don't use "xhigh" (GPT-5.2 only) or "minimal"/"none" (GPT-5+ only) for compatibility.
+	if budgetTokens <= 0 {
+		return "medium" // Default when not specified
+	}
+	if budgetTokens < 1000 {
+		return "low"
+	}
+	if budgetTokens > 10000 {
+		return "high"
+	}
+	return "medium"
+}
+
 // applyCCRequestConversionDirect converts Claude request to OpenAI format directly.
 // This function does not check the path, assuming the caller has already verified
 // that this is a Claude messages endpoint. Used when path has been pre-rewritten.
@@ -722,6 +794,12 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	// This allows Claude Code to automatically use thinking-capable models
 	// (like deepseek-reasoner) when the user enables extended thinking.
 	// Each group can configure its own thinking_model in the group config.
+	// AI REVIEW NOTE: Suggestion to validate thinking model against a supported list was considered.
+	// This is intentionally NOT implemented because:
+	// 1. Model names are dynamically configured by users and vary across providers
+	// 2. New models are released frequently; hardcoding a list would require constant updates
+	// 3. Invalid model names will be rejected by the upstream API with clear error messages
+	// 4. Users have full control over their group configuration
 	thinkingModelApplied := false
 	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
 		thinkingModel := getThinkingModel(group)
@@ -734,9 +812,9 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 			}).Info("CC: Auto-selecting thinking model for extended thinking")
 			claudeReq.Model = thinkingModel
 			thinkingModelApplied = true
-			// Store thinking model info in context for logging
 			c.Set("thinking_model_applied", true)
-			c.Set("thinking_model", thinkingModel)
+			// NOTE: c.Set("thinking_model", thinkingModel) removed per AI review.
+			// Only thinking_model_applied is used by downstream handlers (function_call.go).
 		}
 	}
 
@@ -1870,9 +1948,39 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	}
 	// defer resp.Body.Close() - caller (executeRequestWithRetry) handles this
 
+	// Track original encoding and decompression state to ensure correct header handling.
+	// When decompression fails, we must preserve Content-Encoding if returning original bytes.
+	origEncoding := resp.Header.Get("Content-Encoding")
+	decompressed := false
+
 	// Decompress response body if it is encoded (e.g., gzip) before JSON parsing.
 	// This avoids returning compressed bytes to Claude clients and matches CC API expectations.
-	bodyBytes, _ = utils.DecompressResponse(resp.Header.Get("Content-Encoding"), bodyBytes)
+	// Use size-limited decompression to prevent memory exhaustion from malicious compressed payloads.
+	bodyBytes, err = utils.DecompressResponseWithLimit(origEncoding, bodyBytes, maxUpstreamResponseBodySize)
+	if err != nil {
+		// Use errors.Is() for sentinel error comparison to handle wrapped errors properly
+		if errors.Is(err, utils.ErrDecompressedTooLarge) {
+			maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
+			message := fmt.Sprintf("Decompressed response exceeded maximum allowed size (%dMB) for CC conversion", maxMB)
+			logrus.WithField("limit_mb", maxMB).
+				Warn("CC: Decompressed response body too large for conversion")
+			claudeErr := ClaudeErrorResponse{
+				Type: "error",
+				Error: ClaudeError{
+					Type:    "invalid_request_error",
+					Message: message,
+				},
+			}
+			clearUpstreamEncodingHeaders(c)
+			c.JSON(http.StatusBadGateway, claudeErr)
+			return
+		}
+		// Other decompression errors: continue with original data but preserve encoding header
+		logrus.WithError(err).Warn("CC: Decompression failed, using original data")
+	} else if origEncoding != "" {
+		// Decompression succeeded, mark as decompressed
+		decompressed = true
+	}
 
 	// Parse OpenAI response
 	var openaiResp OpenAIResponse
@@ -1886,6 +1994,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		// Returning decompressed bytes with a stale Content-Encoding header would cause clients
 		// to attempt decompression again and corrupt the payload.
 		clearUpstreamEncodingHeaders(c)
+		// Preserve original Content-Encoding if data was not decompressed
+		if !decompressed && origEncoding != "" {
+			c.Header("Content-Encoding", origEncoding)
+		}
 
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
@@ -2032,6 +2144,11 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	claudeBody, err := json.Marshal(claudeResp)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to marshal Claude response")
+		// Clear headers and preserve original encoding if data was not decompressed
+		clearUpstreamEncodingHeaders(c)
+		if !decompressed && origEncoding != "" {
+			c.Header("Content-Encoding", origEncoding)
+		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
@@ -3046,6 +3163,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if err != nil {
 			if err == io.EOF {
 				logrus.Debug("CC: Upstream stream EOF")
+				// Ensure final events are sent on EOF to prevent client hanging
+				finalize("end_turn", nil)
+			} else {
+				logrus.WithError(err).Error("CC: Error reading stream")
+				// Send final events on error to ensure client receives termination
+				finalize("end_turn", nil)
 			}
 			break
 		}

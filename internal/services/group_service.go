@@ -2501,6 +2501,23 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
+	// Set User-Agent for Codex channel when fetching models
+	// IMPORTANT: This UA is ONLY set for model fetching requests, NOT for normal proxy requests.
+	// Normal Codex requests should use passthrough behavior (preserve client's original UA).
+	// Codex CC mode (/claude path) sets UA separately in server.go via isCodexCCMode() check.
+	// Codex upstream may reject model list requests without proper User-Agent.
+	if group.ChannelType == "codex" {
+		req.Header.Set("User-Agent", channel.CodexUserAgent)
+	}
+
+	// Set User-Agent for Anthropic channel when fetching models
+	// Similar to Codex, this is ONLY for model fetching requests.
+	// Normal Anthropic requests preserve client's original UA.
+	// OpenAI CC mode (/claude path) sets UA separately in server.go via isCCMode() check.
+	if group.ChannelType == "anthropic" {
+		req.Header.Set("User-Agent", channel.ClaudeCodeUserAgent)
+	}
+
 	// NOTE: ParamOverrides are NOT applied to GET requests (like /v1/models).
 	// ParamOverrides are designed to modify request body parameters (e.g., enable_thinking, temperature),
 	// which only make sense for POST/PUT/PATCH requests with JSON bodies.
@@ -2541,50 +2558,83 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		const maxErrorBodySize = 1 * 1024 * 1024 // 1MB limit for error body preview
 		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
 		errorPreview := string(errorBody)
-		if len(errorPreview) > 200 {
-			errorPreview = errorPreview[:200] + "..."
+		if len(errorPreview) > 500 {
+			errorPreview = errorPreview[:500] + "..."
 		}
+
+		// Redact credentials from URL for safe logging and error messages
+		// This prevents leaking sensitive information like API keys in query params or userinfo
+		safeURL := selection.URL
+		if u, parseErr := url.Parse(selection.URL); parseErr == nil {
+			u.User = nil
+			u.RawQuery = ""
+			safeURL = u.String()
+		}
+
+		// Log detailed error information for debugging (use redacted URL in logs to avoid leaking secrets)
+		// Error body preview is logged at Debug level only to aid troubleshooting while
+		// avoiding exposure in production logs. Client-facing messages exclude error body
+		// to prevent information disclosure.
+		logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"status_code":   resp.StatusCode,
+			"request_url":   safeURL,
+			"channel_type":  group.ChannelType,
+			"content_type":  resp.Header.Get("Content-Type"),
+			"error_preview": errorPreview,
+		}).Debug("FetchGroupModels: Upstream error response details")
 
 		logrus.WithContext(ctx).WithFields(logrus.Fields{
 			"status_code":  resp.StatusCode,
-			"error_body":   errorPreview,
-			"content_type": resp.Header.Get("Content-Type"),
-		}).Error("Upstream returned non-OK status")
+			"request_url":  safeURL,
+			"channel_type": group.ChannelType,
+		}).Error("FetchGroupModels: Upstream returned non-OK status")
 
 		// Provide specific error messages based on status code.
-		// Note: we intentionally map upstream HTTP errors to ErrBadRequest in this admin API.
-		// More granular error kinds (e.g. ErrUpstreamError, ErrUnauthorized) were suggested by AI review,
-		// but are not adopted here to avoid changing existing client error handling semantics.
+		// Use redacted URL in client-facing error messages to avoid leaking internal details.
+		// Error body preview is intentionally excluded from client messages to prevent information disclosure.
 		switch resp.StatusCode {
 		case http.StatusBadRequest: // 400
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("bad request: %s", errorPreview))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("bad request (URL: %s)", safeURL))
 		case http.StatusUnauthorized: // 401
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "authentication failed: invalid or expired API key")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("authentication failed (URL: %s): invalid or expired API key", safeURL))
 		case http.StatusForbidden: // 403
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "access forbidden: insufficient permissions")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("access forbidden (URL: %s): insufficient permissions", safeURL))
 		case http.StatusNotFound: // 404
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "models endpoint not found on upstream server")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("models endpoint not found (URL: %s)", safeURL))
 		case http.StatusTooManyRequests: // 429
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "rate limit exceeded on upstream server")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("rate limit exceeded (URL: %s)", safeURL))
 		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable: // 500, 502, 503
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "upstream server error, please try again later")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream server error (URL: %s)", safeURL))
 		default:
-			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream returned error status: %d", resp.StatusCode))
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("upstream returned error status %d (URL: %s)", resp.StatusCode, safeURL))
 		}
 	}
 
 	// Read response body with size limit to prevent memory exhaustion on large model lists
+	// Use limit+1 pattern to detect oversized bodies instead of silently truncating
 	const maxModelListBodySize = 10 * 1024 * 1024 // 10MB limit for model list responses
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxModelListBodySize))
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxModelListBodySize+1))
 	if err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("Failed to read response body")
 		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to read upstream response")
 	}
+	if int64(len(bodyBytes)) > maxModelListBodySize {
+		logrus.WithContext(ctx).WithField("limit_mb", maxModelListBodySize/(1024*1024)).
+			Warn("Model list response body too large")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "model list response too large")
+	}
 
 	// Decompress response body if needed (gzip/deflate), mirroring proxy model list handling
+	// Use size-limited decompression to prevent memory exhaustion from malicious compressed payloads
 	contentEncoding := resp.Header.Get("Content-Encoding")
-	decompressed, err := utils.DecompressResponse(contentEncoding, bodyBytes)
+	decompressed, err := utils.DecompressResponseWithLimit(contentEncoding, bodyBytes, maxModelListBodySize)
 	if err != nil {
+		// Use errors.Is() for sentinel error comparison to handle wrapped errors properly
+		if errors.Is(err, utils.ErrDecompressedTooLarge) {
+			logrus.WithContext(ctx).WithField("limit_mb", maxModelListBodySize/(1024*1024)).
+				Warn("Decompressed model list response too large")
+			return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "decompressed response too large")
+		}
 		logrus.WithContext(ctx).WithError(err).Warn("Failed to decompress response body, using raw bytes")
 		decompressed = bodyBytes
 	}
