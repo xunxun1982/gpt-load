@@ -12,12 +12,13 @@ var (
 	// API key patterns (OpenAI sk-..., Anthropic, etc.)
 	// Matches standalone API keys like sk-1234567890abcdefghij
 	apiKeyStandalonePattern = regexp.MustCompile(`\bsk-[a-zA-Z0-9]{20,}\b`)
-	// Bearer token pattern
-	bearerPattern = regexp.MustCompile(`(?i)Bearer\s+[a-zA-Z0-9\-._~+/]+=*`)
-	// Authorization header value pattern (more specific)
-	authHeaderPattern = regexp.MustCompile(`(?i)Authorization:\s*[^\s,}\]]+`)
+	// Bearer token pattern (avoid spanning newlines)
+	bearerPattern = regexp.MustCompile(`(?i)\bBearer[ \t]+[a-zA-Z0-9\-._~+/]+=*`)
+	// Authorization header pattern (redact entire value on the line)
+	authHeaderPattern = regexp.MustCompile(`(?im)\bAuthorization:\s*[^\r\n]*`)
 	// Generic secret/password/token patterns in JSON
-	secretJSONPattern = regexp.MustCompile(`(?i)"(api_key|apikey|secret|password|token|auth|credential|private_key)":\s*"[^"]*"`)
+	// Added "authorization" to key list per AI review
+	secretJSONPattern = regexp.MustCompile(`(?i)"(api_key|apikey|secret|password|token|auth|authorization|credential|private_key)":\s*"[^"]*"`)
 	// Email pattern (basic PII)
 	emailPattern = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
 )

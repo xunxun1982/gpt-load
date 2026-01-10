@@ -22,15 +22,21 @@ func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group
 		return bodyBytes, nil
 	}
 
-	// Apply each override and log for debugging
+	// Apply each override and log for debugging.
+	// Per AI review: sanitize param values to prevent leaking secrets/PII in logs.
 	for key, value := range group.ParamOverrides {
 		requestData[key] = value
-		// Serialize value to JSON string for clear logging of nested objects
-		valueJSON, _ := json.Marshal(value)
+		// Only log value when request body logging is enabled, and sanitize it.
+		valueStr := "[REDACTED]"
+		if group.EffectiveConfig.EnableRequestBodyLogging {
+			if valueJSON, err := json.Marshal(value); err == nil {
+				valueStr = utils.SanitizeErrorBody(string(valueJSON))
+			}
+		}
 		logrus.WithFields(logrus.Fields{
-			"group":      group.Name,
-			"param_key":  key,
-			"param_value": string(valueJSON),
+			"group":       group.Name,
+			"param_key":   key,
+			"param_value": valueStr,
 		}).Debug("Applied param override")
 	}
 

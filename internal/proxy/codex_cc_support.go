@@ -81,9 +81,18 @@ type CodexOutputItem struct {
 	Status    string              `json:"status,omitempty"`
 	Role      string              `json:"role,omitempty"`
 	Content   []CodexContentBlock `json:"content,omitempty"`
+	// Summary is used for reasoning output items to contain the thinking summary.
+	// Each summary item has type "summary_text" and text field.
+	Summary   []CodexSummaryItem  `json:"summary,omitempty"`
 	CallID    string              `json:"call_id,omitempty"`
 	Name      string              `json:"name,omitempty"`
 	Arguments string              `json:"arguments,omitempty"`
+}
+
+// CodexSummaryItem represents a summary item in reasoning output.
+type CodexSummaryItem struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // CodexUsage represents usage information in Codex/Responses API format.
@@ -205,7 +214,7 @@ func buildReverseToolNameMap(shortMap map[string]string) map[string]string {
 // The customInstructions parameter allows overriding the default instructions for providers that validate this field.
 // Tool name shortening is handled internally via buildToolNameShortMap; the reverse map is stored
 // in context for response restoration (see setCodexToolNameReverseMap).
-func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (*CodexRequest, error) {
+func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, group *models.Group) (*CodexRequest, error) {
 	// Use custom instructions if provided, otherwise use default
 	instructions := codexDefaultInstructions
 	if customInstructions != "" {
@@ -356,25 +365,31 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string) (
 		codexReq.ParallelToolCalls = &parallelCalls
 	}
 
-	// Configure reasoning for Codex API when thinking is enabled.
-	// This converts Claude's thinking.budget_tokens to Codex's reasoning.effort level.
-	// Reference: CLIProxyAPI codex_claude_request.go reasoning configuration
+	// Configure reasoning for Codex API (Responses API).
+	// Codex uses "reasoning.effort" (nested object) vs OpenAI Chat's "reasoning_effort" (flat field).
+	// Default effort can be configured via group config "codex_reasoning_effort".
+	// When thinking is enabled, budget_tokens overrides the default effort level.
+	reasoningEffort := getGroupConfigString(group, "codex_reasoning_effort")
+	if reasoningEffort == "" {
+		reasoningEffort = "medium" // Default when not configured
+	}
 	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
-		reasoningEffort := thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
-		codexReq.Reasoning = &CodexReasoning{
-			Effort:  reasoningEffort,
-			Summary: "auto", // Enable reasoning summary for streaming responses
-		}
-		// Disable response storage for privacy
-		storeDisabled := false
-		codexReq.Store = &storeDisabled
-		// Include encrypted reasoning content for full thinking support
-		codexReq.Include = []string{"reasoning.encrypted_content"}
+		// Override with effort derived from thinking budget
+		reasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
 		logrus.WithFields(logrus.Fields{
 			"budget_tokens":    claudeReq.Thinking.BudgetTokens,
 			"reasoning_effort": reasoningEffort,
-		}).Debug("Codex CC: Configured reasoning for thinking mode")
+		}).Debug("Codex CC: Configured reasoning effort from thinking budget")
 	}
+	codexReq.Reasoning = &CodexReasoning{
+		Effort:  reasoningEffort,
+		Summary: "auto", // Enable reasoning summary for streaming responses
+	}
+	// Disable response storage for privacy
+	storeDisabled := false
+	codexReq.Store = &storeDisabled
+	// Include encrypted reasoning content for full thinking support
+	codexReq.Include = []string{"reasoning.encrypted_content"}
 
 	return codexReq, nil
 }
@@ -702,14 +717,34 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 				})
 			}
 		case "reasoning":
-			// Convert reasoning to thinking block
-			for _, content := range item.Content {
-				if content.Type == "output_text" && content.Text != "" {
-					claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
-						Type:     "thinking",
-						Thinking: content.Text,
-					})
+			// Convert reasoning to thinking block.
+			// Codex API returns reasoning in "summary" field with type "summary_text".
+			// First try summary field (standard Codex format), then fall back to content.
+			var thinkingText strings.Builder
+			for _, summaryItem := range item.Summary {
+				if summaryItem.Type == "summary_text" && summaryItem.Text != "" {
+					thinkingText.WriteString(summaryItem.Text)
 				}
+			}
+			// Fall back to content field if summary is empty (for compatibility)
+			if thinkingText.Len() == 0 {
+				for _, content := range item.Content {
+					if content.Type == "output_text" && content.Text != "" {
+						thinkingText.WriteString(content.Text)
+					}
+				}
+			}
+			if thinkingText.Len() > 0 {
+				logrus.WithField("thinking_len", thinkingText.Len()).Debug("Codex CC: Converted reasoning to thinking block")
+				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
+					Type:     "thinking",
+					Thinking: thinkingText.String(),
+				})
+			} else {
+				logrus.WithFields(logrus.Fields{
+					"summary_count":  len(item.Summary),
+					"content_count":  len(item.Content),
+				}).Debug("Codex CC: Reasoning item has no text content")
 			}
 		}
 	}
@@ -825,7 +860,7 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 	}
 
 	// Convert to Codex format with custom instructions
-	codexReq, err := convertClaudeToCodex(&claudeReq, customInstructions)
+	codexReq, err := convertClaudeToCodex(&claudeReq, customInstructions, group)
 	if err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to convert Claude to Codex: %w", err)
 	}
@@ -898,12 +933,10 @@ type CodexStreamEvent struct {
 // 4. The state machine is already well-tested through integration tests
 type codexStreamState struct {
 	messageID         string
-	currentText       strings.Builder
 	currentToolID     string
 	currentToolName   string
 	currentToolArgs   strings.Builder
 	toolUseBlocks     []ClaudeContentBlock
-	hasContent        bool
 	model             string
 	// nextClaudeIndex tracks the next content_block index for Claude events.
 	// This is independent of Codex's output_index/content_index to ensure
@@ -957,6 +990,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 	case "response.reasoning_summary_part.added":
 		// Start a thinking content block
 		s.inThinkingBlock = true
+		logrus.WithField("claude_index", s.nextClaudeIndex).Debug("Codex CC: Starting thinking block")
 		events = append(events, ClaudeStreamEvent{
 			Type:  "content_block_start",
 			Index: s.nextClaudeIndex,
@@ -969,6 +1003,10 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 	case "response.reasoning_summary_text.delta":
 		// Delta for thinking content
 		if event.Delta != "" && s.inThinkingBlock {
+			logrus.WithFields(logrus.Fields{
+				"delta_len":    len(event.Delta),
+				"claude_index": s.nextClaudeIndex,
+			}).Debug("Codex CC: Thinking delta received")
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
 				Index: s.nextClaudeIndex,
@@ -979,9 +1017,15 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			})
 		}
 
+	case "response.reasoning_summary_text.done":
+		// Text done event - no action needed, part.done handles block closure.
+		// This event contains the full text but we've already streamed deltas.
+		logrus.WithField("text_len", len(event.Text)).Debug("Codex CC: Reasoning summary text done")
+
 	case "response.reasoning_summary_part.done":
 		// End thinking content block
 		if s.inThinkingBlock {
+			logrus.WithField("claude_index", s.nextClaudeIndex).Debug("Codex CC: Ending thinking block")
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_stop",
 				Index: s.nextClaudeIndex,
@@ -989,6 +1033,29 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			s.nextClaudeIndex++
 			s.inThinkingBlock = false
 		}
+
+	// Handle non-summary reasoning events (encrypted reasoning content).
+	// These events contain the raw reasoning text when include=["reasoning.encrypted_content"] is set.
+	case "response.reasoning_text.delta":
+		// Delta for raw reasoning content - treat same as summary delta
+		if event.Delta != "" && s.inThinkingBlock {
+			logrus.WithFields(logrus.Fields{
+				"delta_len":    len(event.Delta),
+				"claude_index": s.nextClaudeIndex,
+			}).Debug("Codex CC: Reasoning text delta received")
+			events = append(events, ClaudeStreamEvent{
+				Type:  "content_block_delta",
+				Index: s.nextClaudeIndex,
+				Delta: &ClaudeStreamDelta{
+					Type:     "thinking_delta",
+					Thinking: event.Delta,
+				},
+			})
+		}
+
+	case "response.reasoning_text.done":
+		// Raw reasoning text done - no action needed, part.done handles block closure.
+		logrus.WithField("text_len", len(event.Text)).Debug("Codex CC: Reasoning text done")
 
 	case "response.in_progress", "response.queued":
 		// Response is being generated, no action needed
@@ -1056,8 +1123,6 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	case "response.output_text.delta":
 		if event.Delta != "" {
-			s.currentText.WriteString(event.Delta)
-			s.hasContent = true
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
 				Index: s.nextClaudeIndex,
@@ -1249,9 +1314,11 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 	// Parse Codex response
 	var codexResp CodexResponse
 	if err := json.Unmarshal(bodyBytes, &codexResp); err != nil {
-		logrus.WithError(err).WithField("body_preview", utils.TruncateString(string(bodyBytes), 512)).
+		// Per AI review: sanitize body preview to prevent leaking secrets/PII in logs
+		safePreview := utils.SanitizeErrorBody(utils.TruncateString(string(bodyBytes), 512))
+		logrus.WithError(err).WithField("body_preview", safePreview).
 			Warn("Failed to parse Codex response for CC conversion, returning body without conversion")
-		c.Set("response_body", string(bodyBytes))
+		c.Set("response_body", safePreview)
 		clearUpstreamEncodingHeaders(c)
 		// Preserve original Content-Encoding if data was not decompressed
 		if !decompressed && origEncoding != "" {
@@ -1443,8 +1510,9 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 
 			var codexEvent CodexStreamEvent
 			if err := json.Unmarshal([]byte(data), &codexEvent); err != nil {
-				// Truncate data to prevent sensitive information leakage in logs
-				logrus.WithError(err).WithField("data_preview", utils.TruncateString(data, 512)).Debug("Codex CC: Failed to parse stream event")
+				// Per AI review: sanitize data preview to prevent leaking secrets/PII in logs
+				logrus.WithError(err).WithField("data_preview", utils.SanitizeErrorBody(utils.TruncateString(data, 512))).
+					Debug("Codex CC: Failed to parse stream event")
 				continue
 			}
 

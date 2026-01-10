@@ -562,7 +562,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 
 	// Set reasoning_effort for models that support native reasoning (e.g., o1, o3 series).
 	// This is complementary to thinking hints - some models use reasoning_effort instead of ANTML tags.
-	// Reference: CLIProxyAPI ApplyReasoningEffortMetadata implementation
+	// OpenAI Chat Completions API uses flat "reasoning_effort" field (vs Codex's nested "reasoning.effort").
 	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
 		openaiReq.ReasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
 		logrus.WithFields(logrus.Fields{
