@@ -103,9 +103,10 @@ type GroupService struct {
 	groupListCacheMaxTTL  time.Duration // Maximum TTL for adaptive extension
 
 	// Callbacks for binding operations (set by handler layer to avoid circular dependency)
-	CheckGroupCanDeleteCallback       func(ctx context.Context, groupID uint) error
-	SyncGroupEnabledToSiteCallback    func(ctx context.Context, groupID uint, enabled bool) error
-	SyncChildGroupsEnabledCallback    func(ctx context.Context, parentGroupID uint, enabled bool) error // Sync enabled status to child groups
+	CheckGroupCanDeleteCallback          func(ctx context.Context, groupID uint) error
+	SyncGroupEnabledToSiteCallback       func(ctx context.Context, groupID uint, enabled bool) error
+	SyncChildGroupsEnabledCallback       func(ctx context.Context, parentGroupID uint, enabled bool) error // Sync enabled status to child groups
+	InvalidateChildGroupsCacheCallback   func()                                                            // Invalidate child groups cache after updating a child group
 }
 
 // NewGroupService constructs a GroupService.
@@ -823,6 +824,12 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 	// Invalidate group list cache after updating a group
 	s.invalidateGroupListCache()
+
+	// Invalidate child groups cache if this is a child group update.
+	// This ensures GetAllChildGroups returns fresh data with updated display_name.
+	if group.ParentGroupID != nil && s.InvalidateChildGroupsCacheCallback != nil {
+		s.InvalidateChildGroupsCacheCallback()
+	}
 
 	return &group, nil
 }

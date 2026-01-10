@@ -18,6 +18,8 @@ const subGroups = ref<SubGroupInfo[]>([]);
 const loadingSubGroups = ref(false);
 const router = useRouter();
 const route = useRoute();
+// Ref to GroupList component for direct method calls
+const groupListRef = ref<InstanceType<typeof GroupList> | null>(null);
 
 function getLastSelectedGroupId(): string | null {
   if (typeof localStorage === "undefined") {
@@ -213,6 +215,12 @@ function handleGroupRefresh(updatedGroup?: Group) {
     // Check if enabled status changed - need full refresh to update child groups
     const enabledChanged = selectedGroup.value?.enabled !== updatedGroup.enabled;
 
+    // Check if this is a child group - need to refresh sidebar childGroupsMap
+    // The childGroupsMap in GroupList.vue is loaded separately from backend,
+    // so we need to explicitly refresh it to sync the sidebar display.
+    const isChildGroup =
+      updatedGroup.parent_group_id !== null && updatedGroup.parent_group_id !== undefined;
+
     // Update selected group with new data from child component
     selectedGroup.value = updatedGroup;
     // Also update the group in the list to keep sidebar in sync
@@ -224,6 +232,10 @@ function handleGroupRefresh(updatedGroup?: Group) {
     // If enabled status changed, reload all groups to sync child groups status
     if (enabledChanged) {
       refreshGroupsAndSelect(updatedGroup.id);
+    } else if (isChildGroup) {
+      // For child group updates, directly call loadAllChildGroups to refresh sidebar
+      // This is more reliable than depending on watch to detect props changes
+      groupListRef.value?.loadAllChildGroups();
     }
   } else {
     refreshGroupsAndSelect();
@@ -239,6 +251,7 @@ function handleGroupRefresh(updatedGroup?: Group) {
     <div class="keys-container">
       <div class="sidebar">
         <group-list
+          ref="groupListRef"
           :groups="groups"
           :selected-group="selectedGroup"
           :loading="loading"
