@@ -28,6 +28,18 @@ var (
 // before logging. This helps prevent accidental leakage of API keys, tokens,
 // passwords, and other sensitive information in logs.
 //
+// IMPORTANT: Always call SanitizeErrorBody BEFORE TruncateString to prevent
+// leaking truncated secrets. If truncation cuts a token, it may no longer match
+// the sanitization regex patterns.
+//
+// Correct usage:
+//
+//	safePreview := utils.TruncateString(utils.SanitizeErrorBody(body), 512)
+//
+// Incorrect usage (may leak secrets):
+//
+//	safePreview := utils.SanitizeErrorBody(utils.TruncateString(body, 512))
+//
 // Patterns redacted:
 // - API keys (sk-...)
 // - Bearer tokens

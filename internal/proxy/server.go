@@ -1158,10 +1158,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"input_body_len":  len(finalBodyBytes),
 			}
 			if group.EffectiveConfig.EnableRequestBodyLogging {
-				inputPreview := string(finalBodyBytes)
-				if len(inputPreview) > 1000 {
-					inputPreview = inputPreview[:1000] + "..."
-				}
+				// Per AI review: use TruncateString for UTF-8 safe truncation and SanitizeErrorBody
+				// to prevent leaking secrets/PII. Sanitize first, then truncate.
+				inputPreview := utils.TruncateString(utils.SanitizeErrorBody(string(finalBodyBytes)), 1000)
 				logFields["input_body_preview"] = inputPreview
 			}
 			logrus.WithFields(logFields).Debug("Codex CC: Starting conversion for aggregate sub-group")
@@ -1184,10 +1183,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					"output_body_len": len(convertedBody),
 				}
 				if group.EffectiveConfig.EnableRequestBodyLogging {
-					outputPreview := string(convertedBody)
-					if len(outputPreview) > 1000 {
-						outputPreview = outputPreview[:1000] + "..."
-					}
+					// Per AI review: use TruncateString for UTF-8 safe truncation and SanitizeErrorBody
+					// to prevent leaking secrets/PII. Sanitize first, then truncate.
+					outputPreview := utils.TruncateString(utils.SanitizeErrorBody(string(convertedBody)), 1000)
 					outFields["output_body_preview"] = outputPreview
 				}
 				logrus.WithFields(outFields).Debug("Codex CC: Conversion completed for aggregate sub-group")

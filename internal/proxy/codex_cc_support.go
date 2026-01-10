@@ -157,7 +157,9 @@ func buildToolNameShortMap(names []string) map[string]string {
 		return n[:codexToolNameLimit]
 	}
 
-	// Helper to make name unique by appending suffix
+	// Helper to make name unique by appending suffix.
+	// Per AI review: ensure at least 1 character from base is preserved to avoid
+	// names like "_1" which may be rejected by Codex API's tool name charset rules.
 	makeUnique := func(cand string) string {
 		if _, ok := used[cand]; !ok {
 			return cand
@@ -166,8 +168,9 @@ func buildToolNameShortMap(names []string) map[string]string {
 		for i := 1; i < 1000; i++ {
 			suffix := "_" + fmt.Sprintf("%d", i)
 			allowed := codexToolNameLimit - len(suffix)
-			if allowed < 0 {
-				allowed = 0
+			// Ensure at least 1 character from base is preserved
+			if allowed < 1 {
+				allowed = 1
 			}
 			tmp := base
 			if len(tmp) > allowed {
@@ -890,10 +893,9 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 		"converted_body_len": len(convertedBody),
 	}
 	if group.EffectiveConfig.EnableRequestBodyLogging {
-		inputPreview := string(codexReq.Input)
-		if len(inputPreview) > 500 {
-			inputPreview = inputPreview[:500] + "..."
-		}
+		// Per AI review: use TruncateString for UTF-8 safe truncation and SanitizeErrorBody
+		// to prevent leaking secrets/PII. Sanitize first, then truncate.
+		inputPreview := utils.TruncateString(utils.SanitizeErrorBody(string(codexReq.Input)), 500)
 		logFields["input_preview"] = inputPreview
 	}
 	logrus.WithFields(logFields).Debug("Codex CC: Converted Claude request to Codex format")
@@ -1160,6 +1162,20 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		}
 
 	case "response.output_text.delta":
+		// Per AI review: guard delta emission with block state to prevent orphan deltas.
+		// Auto-open text block if not present when receiving first delta.
+		if event.Delta != "" && s.openBlockType != "text" {
+			closeOpenBlock()
+			s.openBlockType = "text"
+			events = append(events, ClaudeStreamEvent{
+				Type:  "content_block_start",
+				Index: s.nextClaudeIndex,
+				ContentBlock: &ClaudeContentBlock{
+					Type: "text",
+					Text: "",
+				},
+			})
+		}
 		if event.Delta != "" {
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
@@ -1182,6 +1198,27 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		}
 
 	case "response.function_call_arguments.delta":
+		// Per AI review: guard delta emission with block state to prevent orphan deltas.
+		// Auto-open tool block if not present when receiving first delta.
+		if event.Delta != "" && s.openBlockType != "tool" {
+			closeOpenBlock()
+			s.openBlockType = "tool"
+			// Use current tool info if available
+			toolUseID := s.currentToolID
+			if strings.HasPrefix(toolUseID, "call_") {
+				toolUseID = strings.TrimPrefix(toolUseID, "call_")
+			}
+			events = append(events, ClaudeStreamEvent{
+				Type:  "content_block_start",
+				Index: s.nextClaudeIndex,
+				ContentBlock: &ClaudeContentBlock{
+					Type:  "tool_use",
+					ID:    toolUseID,
+					Name:  s.currentToolName,
+					Input: json.RawMessage("{}"),
+				},
+			})
+		}
 		if event.Delta != "" {
 			s.currentToolArgs.WriteString(event.Delta)
 			logrus.WithField("delta_len", len(event.Delta)).Debug("Codex CC: Function call arguments delta")
@@ -1246,6 +1283,10 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			return events
 		}
 		s.finalSent = true
+
+		// Per AI review: ensure all open blocks are closed before final message events.
+		// This prevents Claude clients from hanging or rejecting the stream.
+		closeOpenBlock()
 
 		// Determine stop reason
 		stopReason := "end_turn"
@@ -1349,8 +1390,9 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 	// Parse Codex response
 	var codexResp CodexResponse
 	if err := json.Unmarshal(bodyBytes, &codexResp); err != nil {
-		// Per AI review: sanitize body preview to prevent leaking secrets/PII in logs
-		safePreview := utils.SanitizeErrorBody(utils.TruncateString(string(bodyBytes), 512))
+		// Per AI review: sanitize BEFORE truncate to prevent leaking truncated secrets.
+		// If truncation cuts a token, it may no longer match the sanitization regex.
+		safePreview := utils.TruncateString(utils.SanitizeErrorBody(string(bodyBytes)), 512)
 		logrus.WithError(err).WithField("body_preview", safePreview).
 			Warn("Failed to parse Codex response for CC conversion, returning body without conversion")
 		c.Set("response_body", safePreview)
@@ -1545,8 +1587,8 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 
 			var codexEvent CodexStreamEvent
 			if err := json.Unmarshal([]byte(data), &codexEvent); err != nil {
-				// Per AI review: sanitize data preview to prevent leaking secrets/PII in logs
-				logrus.WithError(err).WithField("data_preview", utils.SanitizeErrorBody(utils.TruncateString(data, 512))).
+				// Per AI review: sanitize BEFORE truncate to prevent leaking truncated secrets
+				logrus.WithError(err).WithField("data_preview", utils.TruncateString(utils.SanitizeErrorBody(data), 512)).
 					Debug("Codex CC: Failed to parse stream event")
 				continue
 			}
