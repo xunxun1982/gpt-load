@@ -906,34 +906,47 @@ type ClaudeError struct {
 	Message string `json:"message"`
 }
 
+// mapStatusToClaudeErrorType maps HTTP status codes to Claude error types.
+// This centralizes the mapping logic to avoid duplication across error handlers.
+func mapStatusToClaudeErrorType(statusCode int) string {
+	switch {
+	case statusCode == 400:
+		return "invalid_request_error"
+	case statusCode == 401:
+		return "authentication_error"
+	case statusCode == 403:
+		return "permission_error"
+	case statusCode == 404:
+		return "not_found_error"
+	case statusCode == 429:
+		return "rate_limit_error"
+	case statusCode == 502 || statusCode == 503:
+		return "overloaded_error"
+	case statusCode >= 500 && statusCode < 600:
+		return "api_error"
+	default:
+		return "api_error"
+	}
+}
+
 // returnClaudeError sends a Claude-formatted error response.
 // This is used when CC mode is enabled to ensure Claude Code clients
 // can properly parse and display error messages from upstream.
+// Per AI review: clears upstream encoding headers and sanitizes message to prevent credential leakage.
 func returnClaudeError(c *gin.Context, statusCode int, message string) {
-	// Map HTTP status codes to Claude error types
-	// Per AI review: 502/503 should map to overloaded_error for consistency with handleCCNormalResponse
-	claudeErrorType := "api_error" // Default for unknown errors
-	switch {
-	case statusCode == 400:
-		claudeErrorType = "invalid_request_error"
-	case statusCode == 401:
-		claudeErrorType = "authentication_error"
-	case statusCode == 403:
-		claudeErrorType = "permission_error"
-	case statusCode == 404:
-		claudeErrorType = "not_found_error"
-	case statusCode == 429:
-		claudeErrorType = "rate_limit_error"
-	case statusCode == 502 || statusCode == 503:
-		claudeErrorType = "overloaded_error"
-	case statusCode >= 500 && statusCode < 600:
-		claudeErrorType = "api_error"
+	// Clear upstream encoding headers to avoid mismatches with rewritten body
+	clearUpstreamEncodingHeaders(c)
+
+	// Sanitize message to prevent leaking sensitive data (API keys, tokens, etc.)
+	message = strings.TrimSpace(utils.SanitizeErrorBody(message))
+	if message == "" {
+		message = fmt.Sprintf("Upstream returned status %d", statusCode)
 	}
 
 	claudeErr := ClaudeErrorResponse{
 		Type: "error",
 		Error: ClaudeError{
-			Type:    claudeErrorType,
+			Type:    mapStatusToClaudeErrorType(statusCode),
 			Message: message,
 		},
 	}
@@ -2034,44 +2047,16 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		if resp.StatusCode >= 400 {
 			// Extract error message from response body
 			errorMessage := strings.TrimSpace(string(bodyBytes))
-			if errorMessage == "" {
-				errorMessage = fmt.Sprintf("Upstream returned status %d", resp.StatusCode)
-			}
 
-			// Map HTTP status codes to Claude error types
-			claudeErrorType := "api_error"
-			switch {
-			case resp.StatusCode == 400:
-				claudeErrorType = "invalid_request_error"
-			case resp.StatusCode == 401:
-				claudeErrorType = "authentication_error"
-			case resp.StatusCode == 403:
-				claudeErrorType = "permission_error"
-			case resp.StatusCode == 404:
-				claudeErrorType = "not_found_error"
-			case resp.StatusCode == 429:
-				claudeErrorType = "rate_limit_error"
-			case resp.StatusCode == 503 || resp.StatusCode == 502:
-				claudeErrorType = "overloaded_error"
-			case resp.StatusCode >= 500:
-				claudeErrorType = "api_error"
-			}
-
+			// Per AI review: reuse returnClaudeError to eliminate duplicate mapping logic
+			// and ensure consistent sanitization of error messages
 			logrus.WithFields(logrus.Fields{
 				"status_code":   resp.StatusCode,
-				"error_type":    claudeErrorType,
-				"error_message": utils.TruncateString(errorMessage, 200),
+				"error_type":    mapStatusToClaudeErrorType(resp.StatusCode),
+				"error_message": utils.TruncateString(utils.SanitizeErrorBody(errorMessage), 200),
 			}).Warn("CC: Converting upstream error to Claude format")
 
-			claudeErr := ClaudeErrorResponse{
-				Type: "error",
-				Error: ClaudeError{
-					Type:    claudeErrorType,
-					Message: errorMessage,
-				},
-			}
-			clearUpstreamEncodingHeaders(c)
-			c.JSON(resp.StatusCode, claudeErr)
+			returnClaudeError(c, resp.StatusCode, errorMessage)
 			return
 		}
 

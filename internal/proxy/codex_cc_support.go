@@ -1467,45 +1467,17 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		if resp.StatusCode >= 400 {
 			// Extract error message from response body
 			errorMessage := strings.TrimSpace(string(bodyBytes))
-			if errorMessage == "" {
-				errorMessage = fmt.Sprintf("Upstream returned status %d", resp.StatusCode)
-			}
 
-			// Map HTTP status codes to Claude error types
-			claudeErrorType := "api_error"
-			switch {
-			case resp.StatusCode == 400:
-				claudeErrorType = "invalid_request_error"
-			case resp.StatusCode == 401:
-				claudeErrorType = "authentication_error"
-			case resp.StatusCode == 403:
-				claudeErrorType = "permission_error"
-			case resp.StatusCode == 404:
-				claudeErrorType = "not_found_error"
-			case resp.StatusCode == 429:
-				claudeErrorType = "rate_limit_error"
-			case resp.StatusCode == 503 || resp.StatusCode == 502:
-				claudeErrorType = "overloaded_error"
-			case resp.StatusCode >= 500:
-				claudeErrorType = "api_error"
-			}
-
+			// Per AI review: reuse returnClaudeError to eliminate duplicate mapping logic
+			// and ensure consistent sanitization of error messages
 			logrus.WithFields(logrus.Fields{
 				"status_code":   resp.StatusCode,
-				"error_type":    claudeErrorType,
-				"error_message": utils.TruncateString(errorMessage, 200),
+				"error_type":    mapStatusToClaudeErrorType(resp.StatusCode),
+				"error_message": utils.TruncateString(utils.SanitizeErrorBody(errorMessage), 200),
 			}).Warn("Codex CC: Converting upstream error to Claude format")
 
-			claudeErr := ClaudeErrorResponse{
-				Type: "error",
-				Error: ClaudeError{
-					Type:    claudeErrorType,
-					Message: errorMessage,
-				},
-			}
 			c.Set("response_body", safePreview)
-			clearUpstreamEncodingHeaders(c)
-			c.JSON(resp.StatusCode, claudeErr)
+			returnClaudeError(c, resp.StatusCode, errorMessage)
 			return
 		}
 
