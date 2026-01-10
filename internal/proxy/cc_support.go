@@ -906,6 +906,37 @@ type ClaudeError struct {
 	Message string `json:"message"`
 }
 
+// returnClaudeError sends a Claude-formatted error response.
+// This is used when CC mode is enabled to ensure Claude Code clients
+// can properly parse and display error messages from upstream.
+func returnClaudeError(c *gin.Context, statusCode int, message string) {
+	// Map HTTP status codes to Claude error types
+	claudeErrorType := "api_error" // Default for unknown errors
+	switch {
+	case statusCode == 400:
+		claudeErrorType = "invalid_request_error"
+	case statusCode == 401:
+		claudeErrorType = "authentication_error"
+	case statusCode == 403:
+		claudeErrorType = "permission_error"
+	case statusCode == 404:
+		claudeErrorType = "not_found_error"
+	case statusCode == 429:
+		claudeErrorType = "rate_limit_error"
+	case statusCode >= 500 && statusCode < 600:
+		claudeErrorType = "api_error"
+	}
+
+	claudeErr := ClaudeErrorResponse{
+		Type: "error",
+		Error: ClaudeError{
+			Type:    claudeErrorType,
+			Message: message,
+		},
+	}
+	c.JSON(statusCode, claudeErr)
+}
+
 // OpenAIChoice represents a choice in OpenAI response.
 type OpenAIChoice struct {
 	Index        int                `json:"index"`
@@ -1986,10 +2017,59 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	var openaiResp OpenAIResponse
 	if err := json.Unmarshal(bodyBytes, &openaiResp); err != nil {
 		logrus.WithError(err).WithField("body_preview", utils.TruncateString(string(bodyBytes), 512)).
-			Warn("Failed to parse OpenAI response for CC conversion, returning body without CC conversion")
+			Warn("Failed to parse OpenAI response for CC conversion")
 		// Store original body for downstream logging (will be truncated by logger).
 		c.Set("response_body", string(bodyBytes))
 
+		// For non-2xx responses or JSON parse failures, convert to Claude error format
+		// so Claude Code can properly display the error message to the user.
+		// This handles cases like upstream returning plain text errors (e.g., "当前模型负载过高，请稍后重试")
+		if resp.StatusCode >= 400 || err != nil {
+			// Extract error message from response body
+			errorMessage := strings.TrimSpace(string(bodyBytes))
+			if errorMessage == "" {
+				errorMessage = fmt.Sprintf("Upstream returned status %d", resp.StatusCode)
+			}
+
+			// Map HTTP status codes to Claude error types
+			claudeErrorType := "api_error"
+			switch {
+			case resp.StatusCode == 400:
+				claudeErrorType = "invalid_request_error"
+			case resp.StatusCode == 401:
+				claudeErrorType = "authentication_error"
+			case resp.StatusCode == 403:
+				claudeErrorType = "permission_error"
+			case resp.StatusCode == 404:
+				claudeErrorType = "not_found_error"
+			case resp.StatusCode == 429:
+				claudeErrorType = "rate_limit_error"
+			case resp.StatusCode == 503 || resp.StatusCode == 502:
+				claudeErrorType = "overloaded_error"
+			case resp.StatusCode >= 500:
+				claudeErrorType = "api_error"
+			}
+
+			logrus.WithFields(logrus.Fields{
+				"status_code":   resp.StatusCode,
+				"error_type":    claudeErrorType,
+				"error_message": utils.TruncateString(errorMessage, 200),
+			}).Warn("CC: Converting upstream error to Claude format")
+
+			claudeErr := ClaudeErrorResponse{
+				Type: "error",
+				Error: ClaudeError{
+					Type:    claudeErrorType,
+					Message: errorMessage,
+				},
+			}
+			clearUpstreamEncodingHeaders(c)
+			c.JSON(resp.StatusCode, claudeErr)
+			return
+		}
+
+		// For 2xx responses with JSON parse failure, return original body
+		// (this shouldn't happen normally but provides a fallback)
 		// Clear upstream encoding/length headers since we may have decompressed the body above.
 		// Returning decompressed bytes with a stale Content-Encoding header would cause clients
 		// to attempt decompression again and corrupt the payload.

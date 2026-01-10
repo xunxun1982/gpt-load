@@ -1064,6 +1064,21 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	case "response.reasoning_summary_text.delta":
 		// Delta for thinking content
+		// Auto-start thinking block if not present (handles case where part.added event is missing or out of order)
+		if event.Delta != "" && !s.inThinkingBlock {
+			closeOpenBlock()
+			s.inThinkingBlock = true
+			s.openBlockType = "thinking"
+			logrus.WithField("claude_index", s.nextClaudeIndex).Debug("Codex CC: Auto-starting thinking block for reasoning_summary_text")
+			events = append(events, ClaudeStreamEvent{
+				Type:  "content_block_start",
+				Index: s.nextClaudeIndex,
+				ContentBlock: &ClaudeContentBlock{
+					Type:     "thinking",
+					Thinking: "",
+				},
+			})
+		}
 		if event.Delta != "" && s.inThinkingBlock && s.openBlockType == "thinking" {
 			logrus.WithFields(logrus.Fields{
 				"delta_len":    len(event.Delta),
@@ -1442,7 +1457,58 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		// If truncation cuts a token, it may no longer match the sanitization regex.
 		safePreview := utils.TruncateString(utils.SanitizeErrorBody(string(bodyBytes)), 512)
 		logrus.WithError(err).WithField("body_preview", safePreview).
-			Warn("Failed to parse Codex response for CC conversion, returning body without conversion")
+			Warn("Failed to parse Codex response for CC conversion")
+
+		// For non-2xx responses or JSON parse failures, convert to Claude error format
+		// so Claude Code can properly display the error message to the user.
+		// This handles cases like upstream returning plain text errors (e.g., "当前模型负载过高，请稍后重试")
+		if resp.StatusCode >= 400 || err != nil {
+			// Extract error message from response body
+			errorMessage := strings.TrimSpace(string(bodyBytes))
+			if errorMessage == "" {
+				errorMessage = fmt.Sprintf("Upstream returned status %d", resp.StatusCode)
+			}
+
+			// Map HTTP status codes to Claude error types
+			claudeErrorType := "api_error"
+			switch {
+			case resp.StatusCode == 400:
+				claudeErrorType = "invalid_request_error"
+			case resp.StatusCode == 401:
+				claudeErrorType = "authentication_error"
+			case resp.StatusCode == 403:
+				claudeErrorType = "permission_error"
+			case resp.StatusCode == 404:
+				claudeErrorType = "not_found_error"
+			case resp.StatusCode == 429:
+				claudeErrorType = "rate_limit_error"
+			case resp.StatusCode == 503 || resp.StatusCode == 502:
+				claudeErrorType = "overloaded_error"
+			case resp.StatusCode >= 500:
+				claudeErrorType = "api_error"
+			}
+
+			logrus.WithFields(logrus.Fields{
+				"status_code":   resp.StatusCode,
+				"error_type":    claudeErrorType,
+				"error_message": utils.TruncateString(errorMessage, 200),
+			}).Warn("Codex CC: Converting upstream error to Claude format")
+
+			claudeErr := ClaudeErrorResponse{
+				Type: "error",
+				Error: ClaudeError{
+					Type:    claudeErrorType,
+					Message: errorMessage,
+				},
+			}
+			c.Set("response_body", safePreview)
+			clearUpstreamEncodingHeaders(c)
+			c.JSON(resp.StatusCode, claudeErr)
+			return
+		}
+
+		// For 2xx responses with JSON parse failure, return original body
+		// (this shouldn't happen normally but provides a fallback)
 		c.Set("response_body", safePreview)
 		clearUpstreamEncodingHeaders(c)
 		// Preserve original Content-Encoding if data was not decompressed
@@ -1533,6 +1599,14 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 
 // handleCodexCCStreamingResponse handles streaming Codex response conversion to Claude format.
 func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http.Response) {
+	// Log response headers for debugging
+	logrus.WithFields(logrus.Fields{
+		"content_type":     resp.Header.Get("Content-Type"),
+		"content_encoding": resp.Header.Get("Content-Encoding"),
+		"transfer_encoding": resp.Header.Get("Transfer-Encoding"),
+		"status_code":      resp.StatusCode,
+	}).Debug("Codex CC: Streaming response headers")
+
 	// Set streaming headers
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -1573,6 +1647,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	}
 
 	var currentEventType string
+	lineCount := 0
 	// AI REVIEW NOTE: Suggestion to add explicit context cancellation check in the loop was considered.
 	// This is unnecessary because Go's http.Response.Body is automatically closed when the request
 	// context is cancelled. When the body is closed, ReadString returns an error (io.EOF or
@@ -1581,6 +1656,14 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	// by the error handling. The current implementation correctly handles all termination cases.
 	for {
 		line, err := reader.ReadString('\n')
+		lineCount++
+		if lineCount <= 5 {
+			logrus.WithFields(logrus.Fields{
+				"line_num":  lineCount,
+				"line_len":  len(line),
+				"line_preview": utils.TruncateString(line, 200),
+			}).Debug("Codex CC: Read stream line")
+		}
 		if err != nil {
 			if err == io.EOF {
 				// Ensure final events are sent on EOF to prevent client hanging.
