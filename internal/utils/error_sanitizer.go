@@ -22,6 +22,11 @@ var (
 	secretJSONPattern = regexp.MustCompile(`(?i)"(api_key|apikey|secret|password|token|auth|authorization|credential|private_key)":\s*"[^"]*"`)
 	// Email pattern (basic PII)
 	emailPattern = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+	// Per AI review: add cloud provider key patterns for broader coverage
+	// AWS Access Key ID pattern (starts with AKIA, ABIA, ACCA, ASIA)
+	awsKeyPattern = regexp.MustCompile(`\b(AKIA|ABIA|ACCA|ASIA)[A-Z0-9]{16}\b`)
+	// AWS Secret Access Key pattern (40 character base64-like string)
+	awsSecretPattern = regexp.MustCompile(`(?i)(aws_secret_access_key|aws_secret_key)\s*[=:]\s*[A-Za-z0-9/+=]{40}`)
 )
 
 // SanitizeErrorBody removes or masks sensitive data from error response bodies
@@ -75,6 +80,12 @@ func SanitizeErrorBody(body string) string {
 
 	// Redact email addresses
 	result = emailPattern.ReplaceAllString(result, "[REDACTED_EMAIL]")
+
+	// Per AI review: redact cloud provider keys for broader coverage
+	// Redact AWS Access Key IDs
+	result = awsKeyPattern.ReplaceAllString(result, "[REDACTED_AWS_KEY]")
+	// Redact AWS Secret Access Keys
+	result = awsSecretPattern.ReplaceAllString(result, "[REDACTED_AWS_SECRET]")
 
 	return result
 }

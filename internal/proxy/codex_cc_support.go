@@ -181,8 +181,18 @@ func buildToolNameShortMap(names []string) map[string]string {
 				return tmp
 			}
 		}
-		// Fallback: should never reach here
-		return cand
+		// Per AI review: use UUID suffix if 1000 iterations exhausted to guarantee uniqueness.
+		// This should never happen in practice but provides a robust fallback.
+		suffix := "_" + uuid.New().String()[:8]
+		allowed := codexToolNameLimit - len(suffix)
+		if allowed < 1 {
+			allowed = 1
+		}
+		tmp := base
+		if len(tmp) > allowed {
+			tmp = tmp[:allowed]
+		}
+		return tmp + suffix
 	}
 
 	for _, n := range names {
