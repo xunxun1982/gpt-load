@@ -7766,7 +7766,7 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 				"PROHIBITED",
 				"Do NOT output the trigger signal",
 			},
-			// AI Review Enhancement (2026-01-11): Negative assertions to catch contradictory constraints
+			// NOTE: Negative assertions to catch contradictory constraints
 			expectNot: []string{
 				"MUST call at least one tool",
 			},
@@ -7864,7 +7864,7 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 				"PROHIBITED",
 			},
 		},
-		// AI Review Fix (2026-01-11): Added test for Claude-style {"type":"none"}.
+		// NOTE: Added test for Claude-style {"type":"none"}.
 		// Anthropic added this option in Feb 2025 API release.
 		{
 			name: "tool_choice_claude_none_format",
@@ -7881,7 +7881,7 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 				"MUST call at least one tool",
 			},
 		},
-		// AI Review Note (2026-01-11): This test verifies that convertToolChoiceToPrompt
+		// NOTE: This test verifies that convertToolChoiceToPrompt
 		// generates the correct prompt constraint for nonexistent tools. The function
 		// logs a warning but still generates the constraint (graceful degradation).
 		// Actual validation/rejection of nonexistent tools would happen at a higher level
@@ -7929,6 +7929,10 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := convertToolChoiceToPrompt(tt.toolChoice, tt.toolDefs)
 
+			// NOTE: We intentionally use exact empty string
+			// comparison (result != "") instead of TrimSpace. If the function returns a string
+			// containing only whitespace, that's a bug that should be caught by the test.
+			// The function should return either "" or a constraint starting with "\n\n".
 			if tt.expectEmpty {
 				if result != "" {
 					t.Errorf("expected empty result, got: %q", result)
@@ -7947,7 +7951,7 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 				}
 			}
 
-			// AI Review Enhancement (2026-01-11): Negative assertions to catch contradictory constraints
+			// NOTE: Negative assertions to catch contradictory constraints
 			for _, notExpected := range tt.expectNot {
 				if strings.Contains(result, notExpected) {
 					t.Errorf("expected result NOT to contain %q, got: %q", notExpected, result)
@@ -7984,7 +7988,7 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			expectedCode:  "NO_TRIGGER",
 			expectedInMsg: "Trigger signal not found",
 		},
-		// AI Review Enhancement (2026-01-11): Test NO_TRIGGER with XML markers present
+		// NOTE: Test NO_TRIGGER with XML markers present
 		// This verifies the enhanced diagnostics that mention XML markers when trigger is missing.
 		{
 			name:          "no_trigger_but_xml_markers_present",
@@ -8040,7 +8044,7 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			expectedInMsg: "Invalid JSON",
 		},
 		// Valid structure but still fails (fallback case)
-		// AI Review Note (2026-01-11): This test case verifies the fallback behavior when
+		// NOTE: This test case verifies the fallback behavior when
 		// XML structure appears valid but parsing still fails. Named "no_obvious_issue_fallback"
 		// to clarify this is a catch-all case. If diagnoseFCParseError learns to detect more
 		// specific issues in the future, this test may need adjustment.
@@ -8057,7 +8061,7 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			triggerSignal: "",
 			expectedCode:  "NO_INVOKE",
 		},
-		// AI Review Enhancement (2026-01-11): Test ANTML thinking block trigger detection
+		// NOTE: Test ANTML thinking block trigger detection
 		// Note: In Go strings, \b is backspace. Use \\b for literal backslash-b.
 		{
 			name:          "trigger_in_antml_thinking",
@@ -8219,7 +8223,7 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceConversion(t *testing.T) {
 				t.Errorf("expected tool_choice to be removed from request")
 			}
 
-			// AI Review Enhancement (2026-01-11): Also verify tools is removed when
+			// NOTE: Also verify tools is removed when
 			// force_function_call is enabled, to catch regressions that reintroduce native fields.
 			if _, ok := rewrittenReq["tools"]; ok {
 				t.Errorf("expected tools to be removed from request when force_function_call is enabled")
@@ -8290,7 +8294,7 @@ func TestExtractThinkingContent(t *testing.T) {
 		{
 			name:     "mixed_think_and_thinking",
 			content:  "<think>Short</think> and <thinking>Long thinking</thinking>",
-			// AI Review Note (2026-01-11): The extraction order is intentional by design:
+			// NOTE: The extraction order is intentional by design:
 			// <thinking> blocks are processed first, then <think>, then ANTML variants.
 			// All extracted content is concatenated in this order. This is not a bug.
 			expected: "Long thinkingShort",
@@ -8310,7 +8314,7 @@ func TestExtractThinkingContent(t *testing.T) {
 			content:  "<thinking>Unclosed content",
 			expected: "",
 		},
-		// AI Review Enhancement (2026-01-11): Test ANTML thinking block extraction
+		// NOTE: Test ANTML thinking block extraction
 		// Note: In Go strings, \b is backspace. Use \\b for literal backslash-b.
 		{
 			name:     "antml_thinking_block",
@@ -8340,6 +8344,11 @@ func TestExtractThinkingContent(t *testing.T) {
 }
 
 // TestIsValidJSON tests the JSON validation helper function.
+// NOTE: This test covers all JSON types (primitives included)
+// even though the current production call site only validates objects/arrays. This is intentional:
+// 1. isValidJSON is a general-purpose helper that may be used elsewhere in the future
+// 2. Tests should document the complete behavior of the function, not just current usage
+// 3. Removing primitive tests would reduce coverage without any benefit
 func TestIsValidJSON(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -8391,7 +8400,7 @@ func TestIsValidJSON(t *testing.T) {
 			input:    ``,
 			expected: false,
 		},
-		// AI Review Enhancement (2026-01-11): Test whitespace handling.
+		// NOTE: Test whitespace handling.
 		// json.Valid considers leading/trailing whitespace as valid JSON.
 		{
 			name:     "valid_with_whitespace",
