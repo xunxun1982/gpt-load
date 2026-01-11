@@ -7737,6 +7737,55 @@ func TestIsToolCallResultJSON_ThinkingModelWithResultFields(t *testing.T) {
 	}
 }
 
+// TestSanitizeToolNameForPrompt tests the tool name sanitization function.
+func TestSanitizeToolNameForPrompt(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "normal_tool_name",
+			input:    "web_search",
+			expected: "web_search",
+		},
+		{
+			name:     "tool_name_with_backticks",
+			input:    "tool`with`backticks",
+			expected: "tool'with'backticks",
+		},
+		{
+			name:     "tool_name_with_newlines",
+			input:    "tool\nwith\nnewlines",
+			expected: "tool with newlines",
+		},
+		{
+			name:     "tool_name_with_carriage_return",
+			input:    "tool\rwith\rreturns",
+			expected: "tool with returns",
+		},
+		{
+			name:     "tool_name_with_mixed_special_chars",
+			input:    "tool`name\nwith\r`mixed",
+			expected: "tool'name with 'mixed",
+		},
+		{
+			name:     "empty_tool_name",
+			input:    "",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeToolNameForPrompt(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeToolNameForPrompt(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 // TestConvertToolChoiceToPrompt tests the tool_choice to prompt conversion.
 // This function converts OpenAI tool_choice parameter to prompt instructions
 // for prompt-based function calling.
@@ -8153,7 +8202,9 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceConversion(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
-			c.Request = httptest.NewRequest("POST", "/proxy/test/v1/chat/completions", nil)
+			// NOTE: URL path uses group name "test-group" to align with group.Name below.
+			// This ensures consistency if rewrite logic ever derives anything from the path.
+			c.Request = httptest.NewRequest("POST", "/proxy/test-group/v1/chat/completions", nil)
 
 			group := &models.Group{
 				Name:        "test-group",
@@ -8264,6 +8315,11 @@ func TestFCParseError_ErrorInterface(t *testing.T) {
 				Details: "",
 			},
 			expected: "SIMPLE_ERROR: Simple message",
+		},
+		{
+			name:     "nil_receiver",
+			err:      nil,
+			expected: "<nil>",
 		},
 	}
 

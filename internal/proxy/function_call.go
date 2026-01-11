@@ -934,17 +934,33 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	// NOTE: Use dedicated function instead of string matching
 	// for more robust detection of tool prohibition.
 	toolChoiceProhibitsTools := false
+	toolChoiceRequiresTools := false
 	var toolChoicePrompt string
 	if toolChoiceVal, ok := req["tool_choice"]; ok && toolChoiceVal != nil {
 		toolChoiceProhibitsTools = isToolUsageProhibitedByToolChoice(toolChoiceVal)
 		toolChoicePrompt = convertToolChoiceToPrompt(toolChoiceVal, toolDefs)
+		// Check if tool_choice explicitly requires tool usage
+		// NOTE: tool_choice="auto" means model decides; we should NOT force tool calls.
+		// Only "required", "any", or specific tool selection requires tool usage.
+		if s, ok := toolChoiceVal.(string); ok && (s == "required" || s == "any") {
+			toolChoiceRequiresTools = true
+		}
+		if m, ok := toolChoiceVal.(map[string]any); ok {
+			if t, _ := m["type"].(string); t == "function" || t == "tool" || t == "any" {
+				toolChoiceRequiresTools = true
+			}
+		}
 	}
 
 	// Add stronger continuation reminder for multi-turn conversations.
 	// This helps reasoning models (like deepseek-reasoner) that may plan in
 	// reasoning_content but fail to output actual XML in content.
 	// Skip this when tool_choice prohibits tool usage to avoid contradictory instructions.
-	if hasToolHistory && !toolChoiceProhibitsTools {
+	// NOTE: For tool_choice="auto", we should NOT force tool calls - the model
+	// should be allowed to answer using existing tool results without calling more tools.
+	// Only force continuation when: (1) tool_choice requires tools, OR (2) there were errors to retry.
+	// When tool_choice is not set (nil), we default to requiring tools for backward compatibility.
+	if hasToolHistory && !toolChoiceProhibitsTools && (hasToolErrors || toolChoiceRequiresTools || toolChoicePrompt == "") {
 		continuation := "\n\nCRITICAL CONTINUATION: Previous tool results shown above. "
 		if hasToolErrors {
 			continuation += "Some failed - fix and retry. "
@@ -4654,6 +4670,19 @@ func isToolUsageProhibitedByToolChoice(toolChoice any) bool {
 	return false
 }
 
+// sanitizeToolNameForPrompt sanitizes a tool name before embedding it into prompt constraints.
+// This prevents prompt injection or formatting issues from malicious/malformed tool names.
+// Replaces backticks (which could break markdown formatting) and newlines (which could
+// inject additional instructions) with safe alternatives.
+func sanitizeToolNameForPrompt(name string) string {
+	// Replace backticks with single quotes to prevent markdown code block injection
+	name = strings.ReplaceAll(name, "`", "'")
+	// Replace newlines with spaces to prevent prompt injection via line breaks
+	name = strings.ReplaceAll(name, "\n", " ")
+	name = strings.ReplaceAll(name, "\r", " ")
+	return name
+}
+
 // convertToolChoiceToPrompt converts tool_choice parameter to prompt instructions.
 // This preserves the semantic meaning of tool_choice when using prompt-based function calling.
 //
@@ -4746,10 +4775,12 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 					// NOTE: Changed wording from "MUST use ONLY" to
 					// "MUST call ... at least once" to explicitly require at least one call,
 					// matching OpenAI's "Call exactly one specific function" semantics.
+					// NOTE: Sanitize tool name to prevent prompt injection via backticks/newlines.
+					safeName := sanitizeToolNameForPrompt(requiredToolName)
 					return fmt.Sprintf("\n\n**TOOL USAGE CONSTRAINT:**\n"+
 						"You MUST call the tool named `%s` at least once in this response, and you MUST NOT use any other tools. "+
 						"Output the trigger signal specified above, then call the tool using the specified XML format.",
-						requiredToolName)
+						safeName)
 				}
 			}
 		}
@@ -4780,10 +4811,12 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 				// NOTE: Changed wording from "MUST use ONLY" to
 				// "MUST call ... at least once" to explicitly require at least one call,
 				// matching OpenAI's "Call exactly one specific function" semantics.
+				// NOTE: Sanitize tool name to prevent prompt injection via backticks/newlines.
+				safeName := sanitizeToolNameForPrompt(toolName)
 				return fmt.Sprintf("\n\n**TOOL USAGE CONSTRAINT:**\n"+
 					"You MUST call the tool named `%s` at least once in this response, and you MUST NOT use any other tools. "+
 					"Output the trigger signal specified above, then call the tool using the specified XML format.",
-					toolName)
+					safeName)
 			}
 		} else if tcType == "any" {
 			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
@@ -4815,7 +4848,12 @@ type FCParseError struct {
 }
 
 // Error implements the error interface.
+// NOTE: Nil receiver check added per Go best practice to prevent panic
+// when a typed-nil *FCParseError escapes as error interface.
 func (e *FCParseError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
 	if e.Details != "" {
 		return fmt.Sprintf("%s: %s (%s)", e.Code, e.Message, e.Details)
 	}
