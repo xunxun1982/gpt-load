@@ -935,8 +935,10 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	// for more robust detection of tool prohibition.
 	toolChoiceProhibitsTools := false
 	toolChoiceRequiresTools := false
+	toolChoiceIsSet := false // Distinguish "unset" from explicit "auto"
 	var toolChoicePrompt string
 	if toolChoiceVal, ok := req["tool_choice"]; ok && toolChoiceVal != nil {
+		toolChoiceIsSet = true
 		toolChoiceProhibitsTools = isToolUsageProhibitedByToolChoice(toolChoiceVal)
 		toolChoicePrompt = convertToolChoiceToPrompt(toolChoiceVal, toolDefs)
 		// Check if tool_choice explicitly requires tool usage
@@ -958,9 +960,13 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	// Skip this when tool_choice prohibits tool usage to avoid contradictory instructions.
 	// NOTE: For tool_choice="auto", we should NOT force tool calls - the model
 	// should be allowed to answer using existing tool results without calling more tools.
-	// Only force continuation when: (1) tool_choice requires tools, OR (2) there were errors to retry.
-	// When tool_choice is not set (nil), we default to requiring tools for backward compatibility.
-	if hasToolHistory && !toolChoiceProhibitsTools && (hasToolErrors || toolChoiceRequiresTools || toolChoicePrompt == "") {
+	// Only force continuation when:
+	//   (1) tool_choice requires tools (required/any/specific), OR
+	//   (2) there were errors to retry, OR
+	//   (3) tool_choice is NOT set (nil) - default to requiring tools for backward compatibility.
+	// BUG FIX: Previously used (toolChoicePrompt == "") which incorrectly matched "auto"
+	// since convertToolChoiceToPrompt("auto") returns "". Now use explicit !toolChoiceIsSet flag.
+	if hasToolHistory && !toolChoiceProhibitsTools && (hasToolErrors || toolChoiceRequiresTools || !toolChoiceIsSet) {
 		continuation := "\n\nCRITICAL CONTINUATION: Previous tool results shown above. "
 		if hasToolErrors {
 			continuation += "Some failed - fix and retry. "
@@ -4672,14 +4678,21 @@ func isToolUsageProhibitedByToolChoice(toolChoice any) bool {
 
 // sanitizeToolNameForPrompt sanitizes a tool name before embedding it into prompt constraints.
 // This prevents prompt injection or formatting issues from malicious/malformed tool names.
-// Replaces backticks (which could break markdown formatting) and newlines (which could
-// inject additional instructions) with safe alternatives.
+// Replaces backticks (which could break markdown formatting), newlines and tabs (which could
+// inject additional instructions) with safe alternatives, and normalizes whitespace.
 func sanitizeToolNameForPrompt(name string) string {
 	// Replace backticks with single quotes to prevent markdown code block injection
 	name = strings.ReplaceAll(name, "`", "'")
-	// Replace newlines with spaces to prevent prompt injection via line breaks
+	// Replace newlines and tabs with spaces to prevent prompt injection
 	name = strings.ReplaceAll(name, "\n", " ")
 	name = strings.ReplaceAll(name, "\r", " ")
+	name = strings.ReplaceAll(name, "\t", " ")
+	// Collapse consecutive spaces to single space to avoid odd formatting
+	for strings.Contains(name, "  ") {
+		name = strings.ReplaceAll(name, "  ", " ")
+	}
+	// Trim leading/trailing whitespace
+	name = strings.TrimSpace(name)
 	return name
 }
 

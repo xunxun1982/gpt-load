@@ -7765,9 +7765,24 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			expected: "tool with returns",
 		},
 		{
+			name:     "tool_name_with_tabs",
+			input:    "tool\twith\ttabs",
+			expected: "tool with tabs",
+		},
+		{
 			name:     "tool_name_with_mixed_special_chars",
 			input:    "tool`name\nwith\r`mixed",
 			expected: "tool'name with 'mixed",
+		},
+		{
+			name:     "tool_name_with_consecutive_spaces",
+			input:    "tool  with   spaces",
+			expected: "tool with spaces",
+		},
+		{
+			name:     "tool_name_with_leading_trailing_spaces",
+			input:    "  tool_name  ",
+			expected: "tool_name",
 		},
 		{
 			name:     "empty_tool_name",
@@ -8288,6 +8303,108 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceConversion(t *testing.T) {
 				t.Errorf("expected tools to be removed from request when force_function_call is enabled")
 			}
 		})
+	}
+}
+
+// TestApplyFunctionCallRequestRewrite_ToolChoiceAutoWithToolHistory tests that
+// tool_choice="auto" does NOT force tool calls even when there is tool history.
+// This is a regression test for the bug where convertToolChoiceToPrompt("auto")
+// returns "" which was incorrectly treated as "unset" tool_choice.
+func TestApplyFunctionCallRequestRewrite_ToolChoiceAutoWithToolHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/proxy/test-group/v1/chat/completions", nil)
+
+	group := &models.Group{
+		Name:        "test-group",
+		ChannelType: "openai",
+		Config: map[string]any{
+			"force_function_call": true,
+		},
+	}
+
+	// Multi-turn conversation with tool history
+	reqBody := map[string]any{
+		"model": "test-model",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "search for golang best practices"},
+			map[string]any{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []any{
+					map[string]any{
+						"id":   "call_123",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "web_search",
+							"arguments": `{"query": "golang best practices"}`,
+						},
+					},
+				},
+			},
+			map[string]any{
+				"role":         "tool",
+				"tool_call_id": "call_123",
+				"content":      "Here are some golang best practices...",
+			},
+			map[string]any{"role": "user", "content": "thanks, summarize that for me"},
+		},
+		"tools": []any{
+			map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "web_search",
+					"description": "Search the web",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{},
+					},
+				},
+			},
+		},
+		"tool_choice": "auto", // Explicitly set to auto
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	ps := &ProxyServer{}
+	rewrittenBody, _, err := ps.applyFunctionCallRequestRewrite(c, group, bodyBytes)
+	if err != nil {
+		t.Fatalf("applyFunctionCallRequestRewrite() error = %v", err)
+	}
+
+	var rewrittenReq map[string]any
+	if err := json.Unmarshal(rewrittenBody, &rewrittenReq); err != nil {
+		t.Fatalf("failed to unmarshal rewritten body: %v", err)
+	}
+
+	// Extract system prompt from messages
+	messages, ok := rewrittenReq["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatalf("expected messages array in rewritten request")
+	}
+
+	firstMsg, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first message to be a map")
+	}
+
+	systemPrompt, ok := firstMsg["content"].(string)
+	if !ok {
+		t.Fatalf("expected system prompt content to be a string")
+	}
+
+	// When tool_choice="auto" with tool history, should NOT contain forced continuation
+	// The model should be allowed to answer using existing tool results
+	// NOTE: "You MUST output" appears in the tool call format instructions, which is expected.
+	// We specifically check for "CRITICAL CONTINUATION" which is the forced continuation hint.
+	if strings.Contains(systemPrompt, "CRITICAL CONTINUATION") {
+		t.Errorf("tool_choice=auto should NOT force continuation even with tool history")
+	}
+	// Also check for the specific forced continuation phrase
+	if strings.Contains(systemPrompt, "You MUST output <<CALL_") && strings.Contains(systemPrompt, "followed by <invoke>") && strings.Contains(systemPrompt, "NOW") {
+		t.Errorf("tool_choice=auto should NOT contain forced continuation constraint")
 	}
 }
 
