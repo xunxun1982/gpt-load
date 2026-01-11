@@ -931,13 +931,13 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	// AI Review Fix (2026-01-11): Check tool_choice constraints BEFORE adding continuation hints.
 	// This prevents contradictory prompts when tool_choice="none" but hasToolHistory=true.
 	// We need to know if tools are prohibited to skip the "MUST output tool calls" continuation.
+	// AI Review Enhancement (2026-01-11): Use dedicated function instead of string matching
+	// for more robust detection of tool prohibition.
 	toolChoiceProhibitsTools := false
 	var toolChoicePrompt string
 	if toolChoiceVal, ok := req["tool_choice"]; ok && toolChoiceVal != nil {
+		toolChoiceProhibitsTools = isToolUsageProhibitedByToolChoice(toolChoiceVal)
 		toolChoicePrompt = convertToolChoiceToPrompt(toolChoiceVal, toolDefs)
-		if toolChoicePrompt != "" && strings.Contains(toolChoicePrompt, "PROHIBITED") {
-			toolChoiceProhibitsTools = true
-		}
 	}
 
 	// Add stronger continuation reminder for multi-turn conversations.
@@ -1214,7 +1214,10 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			// portion. This is acceptable for debug logging purposes only.
 			// AI Review Note (2026-01-11): The nil check is defensive programming - currently
 			// diagnoseFCParseError never returns nil, but keeping the check for future safety.
-			if triggerSignal != "" || strings.Contains(parseInput, "<function_calls>") || strings.Contains(parseInput, "<invoke") {
+			// AI Review Enhancement (2026-01-11): Gate behind DebugLevel to avoid CPU waste
+			// when debug logging is disabled.
+			if logrus.IsLevelEnabled(logrus.DebugLevel) &&
+				(triggerSignal != "" || strings.Contains(parseInput, "<function_calls>") || strings.Contains(parseInput, "<invoke")) {
 				parseErr := diagnoseFCParseError(parseInput, triggerSignal)
 				if parseErr != nil {
 					// AI Review Enhancement (2026-01-11): Add truncated flag to help identify
@@ -1734,13 +1737,17 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		// Diagnose why parsing failed for debugging purposes.
 		// AI Review Note (2026-01-11): The nil check is defensive programming - currently
 		// diagnoseFCParseError never returns nil, but keeping the check for future safety.
-		if triggerSignal != "" || strings.Contains(contentStr, "<function_calls>") || strings.Contains(contentStr, "<invoke") {
+		// AI Review Enhancement (2026-01-11): Gate behind DebugLevel to avoid CPU waste
+		// when debug logging is disabled.
+		if logrus.IsLevelEnabled(logrus.DebugLevel) &&
+			(triggerSignal != "" || strings.Contains(contentStr, "<function_calls>") || strings.Contains(contentStr, "<invoke")) {
 			parseErr := diagnoseFCParseError(contentStr, triggerSignal)
 			if parseErr != nil {
 				logrus.WithFields(logrus.Fields{
-					"error_code":    parseErr.Code,
-					"error_message": parseErr.Message,
-					"error_details": parseErr.Details,
+					"error_code":      parseErr.Code,
+					"error_message":   parseErr.Message,
+					"error_details":   parseErr.Details,
+					"input_truncated": contentBufFullWarned,
 				}).Debug("Function call streaming: parsing failed with diagnostic")
 			}
 		}
@@ -4595,6 +4602,25 @@ func formatToolResultAsText(toolCallID, name, content string) string {
 	return sb.String()
 }
 
+// isToolUsageProhibitedByToolChoice returns true if the tool_choice parameter forbids tool usage.
+// This is used to avoid contradictory prompts (e.g., "MUST call tools" + "PROHIBITED from tools").
+func isToolUsageProhibitedByToolChoice(toolChoice any) bool {
+	if toolChoice == nil {
+		return false
+	}
+	// String "none" prohibits tools
+	if s, ok := toolChoice.(string); ok {
+		return s == "none"
+	}
+	// Object {"type":"none"} prohibits tools (Claude-style)
+	if m, ok := toolChoice.(map[string]any); ok {
+		if t, _ := m["type"].(string); t == "none" {
+			return true
+		}
+	}
+	return false
+}
+
 // convertToolChoiceToPrompt converts tool_choice parameter to prompt instructions.
 // This preserves the semantic meaning of tool_choice when using prompt-based function calling.
 //
@@ -4638,6 +4664,10 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 		case "auto":
 			// Default behavior, no additional constraints needed
 			return ""
+		// AI Review Design Decision (2026-01-11): String "any" is kept for compatibility.
+		// While OpenAI API only accepts "none", "auto", "required" as string values,
+		// and Anthropic uses object format {"type":"any"}, some clients may send string "any".
+		// We treat it as equivalent to "required" for graceful compatibility.
 		case "required", "any":
 			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
 				"You MUST call at least one tool in this response. " +

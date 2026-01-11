@@ -7753,6 +7753,7 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 		toolChoice     any
 		toolDefs       []functionToolDefinition
 		expectContains []string // Strings that should be in the result
+		expectNot      []string // Strings that should NOT be in the result (negative assertions)
 		expectEmpty    bool     // Whether result should be empty
 	}{
 		// String values
@@ -7764,6 +7765,10 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			expectContains: []string{
 				"PROHIBITED",
 				"Do NOT output the trigger signal",
+			},
+			// AI Review Enhancement (2026-01-11): Negative assertions to catch contradictory constraints
+			expectNot: []string{
+				"MUST call at least one tool",
 			},
 		},
 		{
@@ -7780,6 +7785,9 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			expectContains: []string{
 				"MUST call at least one tool",
 			},
+			expectNot: []string{
+				"PROHIBITED",
+			},
 		},
 		{
 			name:        "tool_choice_any",
@@ -7788,6 +7796,9 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			expectEmpty: false,
 			expectContains: []string{
 				"MUST call at least one tool",
+			},
+			expectNot: []string{
+				"PROHIBITED",
 			},
 		},
 		{
@@ -7849,6 +7860,9 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			expectContains: []string{
 				"MUST call at least one tool",
 			},
+			expectNot: []string{
+				"PROHIBITED",
+			},
 		},
 		// AI Review Fix (2026-01-11): Added test for Claude-style {"type":"none"}.
 		// Anthropic added this option in Feb 2025 API release.
@@ -7862,6 +7876,9 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			expectContains: []string{
 				"PROHIBITED",
 				"Do NOT output the trigger signal",
+			},
+			expectNot: []string{
+				"MUST call at least one tool",
 			},
 		},
 		// AI Review Note (2026-01-11): This test verifies that convertToolChoiceToPrompt
@@ -7927,6 +7944,13 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			for _, expected := range tt.expectContains {
 				if !strings.Contains(result, expected) {
 					t.Errorf("expected result to contain %q, got: %q", expected, result)
+				}
+			}
+
+			// AI Review Enhancement (2026-01-11): Negative assertions to catch contradictory constraints
+			for _, notExpected := range tt.expectNot {
+				if strings.Contains(result, notExpected) {
+					t.Errorf("expected result NOT to contain %q, got: %q", notExpected, result)
 				}
 			}
 		})
