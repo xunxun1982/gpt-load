@@ -272,6 +272,9 @@ func getTriggerSignal(c *gin.Context) string {
 
 // getOpenAIToolNameReverseMap retrieves the tool name reverse map from context.
 // Returns nil if not found or if tool name shortening was not applied.
+// NOTE: Returns the underlying map by reference for zero-copy performance.
+// Callers MUST treat the returned map as read-only; mutation would affect
+// subsequent restorations within the same request.
 func getOpenAIToolNameReverseMap(c *gin.Context) map[string]string {
 	if v, ok := c.Get(ctxKeyOpenAIToolNameReverseMap); ok {
 		if m, ok := v.(map[string]string); ok {
@@ -285,6 +288,10 @@ func getOpenAIToolNameReverseMap(c *gin.Context) map[string]string {
 // This is controlled by the "shorten_tool_names" config option.
 // Default: true (enabled) for compatibility with OpenAI's 64-char tool name limit.
 // Set to false for third-party OpenAI-compatible APIs that don't have this limit.
+// NOTE: This function intentionally does NOT reuse getGroupConfigBool because:
+// 1. Default value is true (vs false in getGroupConfigBool)
+// 2. String logic is inverted: only explicit "false"/"no"/"off"/"0" disables
+// 3. Invalid/unknown values default to enabled for safety (OpenAI compatibility)
 func isShortenToolNamesEnabled(group *models.Group) bool {
 	if group == nil || group.Config == nil {
 		return true // Default enabled for OpenAI compatibility

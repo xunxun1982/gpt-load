@@ -23,11 +23,6 @@ import (
 // memory growth for very long streaming responses.
 const maxContentBufferBytes = 256 * 1024
 
-// NOTE: Suggested removing unused regex patterns reTruncatedEscapedQuoteJSON*
-// and reTruncatedJSONNoEscape*. These patterns were originally designed for truncated JSON cleanup
-// but were superseded by the more comprehensive cleanTruncatedToolResultJSON function which uses
-// string-based detection instead of regex. The patterns are removed to reduce dead code.
-
 // functionCall represents a parsed tool call from the XML block.
 type functionCall struct {
 	Name string
@@ -935,37 +930,53 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	// for more robust detection of tool prohibition.
 	toolChoiceProhibitsTools := false
 	toolChoiceRequiresTools := false
-	toolChoiceIsSet := false // Distinguish "unset" from explicit "auto"
+	toolChoiceIsSet := false // Distinguish "unset" from explicit valid values (incl "auto")
 	var toolChoicePrompt string
 	if toolChoiceVal, ok := req["tool_choice"]; ok && toolChoiceVal != nil {
-		toolChoiceIsSet = true
 		toolChoiceProhibitsTools = isToolUsageProhibitedByToolChoice(toolChoiceVal)
 		toolChoicePrompt = convertToolChoiceToPrompt(toolChoiceVal, toolDefs)
 		// Check if tool_choice explicitly requires tool usage
 		// NOTE: tool_choice="auto" means model decides; we should NOT force tool calls.
 		// Only "required", "any", or specific tool selection requires tool usage.
-		if s, ok := toolChoiceVal.(string); ok && (s == "required" || s == "any") {
-			toolChoiceRequiresTools = true
-		}
-		// For object format, only set toolChoiceRequiresTools if the object has valid required fields.
-		// This aligns with convertToolChoiceToPrompt which only generates constraints for valid objects.
-		// Invalid objects like {"type":"function"} without function.name should not force tool calls.
-		if m, ok := toolChoiceVal.(map[string]any); ok {
-			if t, _ := m["type"].(string); t == "any" {
+		// NOTE: For invalid/unknown tool_choice values, treat as unset and log warning.
+		// This prevents flaky behavior where invalid values suppress continuation prompts.
+		switch v := toolChoiceVal.(type) {
+		case string:
+			switch v {
+			case "none", "auto", "required", "any":
+				toolChoiceIsSet = true
+			default:
+				logrus.WithField("tool_choice", v).Warn("applyFunctionCallRequestRewrite: unknown tool_choice string; treating as unset")
+			}
+			toolChoiceRequiresTools = (v == "required" || v == "any")
+		case map[string]any:
+			t, _ := v["type"].(string)
+			switch t {
+			case "none", "auto":
+				toolChoiceIsSet = true
+			case "any":
+				toolChoiceIsSet = true
 				toolChoiceRequiresTools = true
-			} else if t == "function" {
+			case "function":
 				// OpenAI format: {"type":"function","function":{"name":"xxx"}}
-				if fn, _ := m["function"].(map[string]any); fn != nil {
+				if fn, _ := v["function"].(map[string]any); fn != nil {
 					if name, _ := fn["name"].(string); name != "" {
+						toolChoiceIsSet = true
 						toolChoiceRequiresTools = true
 					}
 				}
-			} else if t == "tool" {
+			case "tool":
 				// Claude format: {"type":"tool","name":"xxx"}
-				if name, _ := m["name"].(string); name != "" {
+				if name, _ := v["name"].(string); name != "" {
+					toolChoiceIsSet = true
 					toolChoiceRequiresTools = true
 				}
+			default:
+				logrus.WithField("tool_choice_type", t).Warn("applyFunctionCallRequestRewrite: unknown tool_choice object type; treating as unset")
 			}
+		default:
+			logrus.WithField("tool_choice_go_type", fmt.Sprintf("%T", toolChoiceVal)).
+				Warn("applyFunctionCallRequestRewrite: unsupported tool_choice type; treating as unset")
 		}
 	}
 
@@ -5048,6 +5059,9 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 
 	// Check for malformed JSON in parameters (common with complex arguments)
 	// NOTE: Include <param> variant since reMcpParam regex supports both.
+	// NOTE: reMcpParam only matches double-quoted name attributes. Single-quoted
+	// attributes (rare in practice) will skip this JSON validation check but still
+	// be parsed correctly by extractParameters which uses reMcpOpenParam.
 	if strings.Contains(content, "<parameter") || strings.Contains(content, "<param") {
 		// Extract parameter content and check for JSON validity
 		paramMatches := reMcpParam.FindAllStringSubmatch(content, -1)
