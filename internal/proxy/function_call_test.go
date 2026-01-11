@@ -7850,8 +7850,25 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 				"MUST call at least one tool",
 			},
 		},
-		// AI Review Fix (2026-01-11): Added test for Claude-style tool_choice with nonexistent tool
-		// This verifies that the validation added per AI review suggestion works correctly.
+		// AI Review Fix (2026-01-11): Added test for Claude-style {"type":"none"}.
+		// Anthropic added this option in Feb 2025 API release.
+		{
+			name: "tool_choice_claude_none_format",
+			toolChoice: map[string]any{
+				"type": "none",
+			},
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				"PROHIBITED",
+				"Do NOT output the trigger signal",
+			},
+		},
+		// AI Review Note (2026-01-11): This test verifies that convertToolChoiceToPrompt
+		// generates the correct prompt constraint for nonexistent tools. The function
+		// logs a warning but still generates the constraint (graceful degradation).
+		// Actual validation/rejection of nonexistent tools would happen at a higher level
+		// (e.g., applyFunctionCallRequestRewrite), not in this prompt conversion function.
 		{
 			name: "tool_choice_claude_tool_not_in_list",
 			toolChoice: map[string]any{
@@ -8230,7 +8247,9 @@ func TestExtractThinkingContent(t *testing.T) {
 		{
 			name:     "mixed_think_and_thinking",
 			content:  "<think>Short</think> and <thinking>Long thinking</thinking>",
-			// Note: The function processes <thinking> first, then <think>
+			// AI Review Note (2026-01-11): The extraction order is intentional by design:
+			// <thinking> blocks are processed first, then <think>, then ANTML variants.
+			// All extracted content is concatenated in this order. This is not a bug.
 			expected: "Long thinkingShort",
 		},
 		{
