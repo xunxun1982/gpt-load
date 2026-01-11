@@ -928,10 +928,23 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 		prompt += thinkingInstructions
 	}
 
+	// AI Review Fix (2026-01-11): Check tool_choice constraints BEFORE adding continuation hints.
+	// This prevents contradictory prompts when tool_choice="none" but hasToolHistory=true.
+	// We need to know if tools are prohibited to skip the "MUST output tool calls" continuation.
+	toolChoiceProhibitsTools := false
+	var toolChoicePrompt string
+	if toolChoiceVal, ok := req["tool_choice"]; ok && toolChoiceVal != nil {
+		toolChoicePrompt = convertToolChoiceToPrompt(toolChoiceVal, toolDefs)
+		if toolChoicePrompt != "" && strings.Contains(toolChoicePrompt, "PROHIBITED") {
+			toolChoiceProhibitsTools = true
+		}
+	}
+
 	// Add stronger continuation reminder for multi-turn conversations.
 	// This helps reasoning models (like deepseek-reasoner) that may plan in
 	// reasoning_content but fail to output actual XML in content.
-	if hasToolHistory {
+	// Skip this when tool_choice prohibits tool usage to avoid contradictory instructions.
+	if hasToolHistory && !toolChoiceProhibitsTools {
 		continuation := "\n\nCRITICAL CONTINUATION: Previous tool results shown above. "
 		if hasToolErrors {
 			continuation += "Some failed - fix and retry. "
@@ -941,15 +954,9 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 		prompt += continuation
 	}
 
-	// Convert tool_choice to prompt instructions before removing it.
-	// This preserves the semantic meaning of tool_choice (none/auto/required/specific)
-	// by translating it into explicit prompt instructions for the model.
-	// Reference: Toolify safe_process_tool_choice implementation.
-	if toolChoiceVal, ok := req["tool_choice"]; ok && toolChoiceVal != nil {
-		toolChoicePrompt := convertToolChoiceToPrompt(toolChoiceVal, toolDefs)
-		if toolChoicePrompt != "" {
-			prompt += toolChoicePrompt
-		}
+	// Append tool_choice prompt if generated (already computed above).
+	if toolChoicePrompt != "" {
+		prompt += toolChoicePrompt
 	}
 
 	newMessages := make([]any, 0, len(messages)+1)
@@ -1210,10 +1217,14 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			if triggerSignal != "" || strings.Contains(parseInput, "<function_calls>") || strings.Contains(parseInput, "<invoke") {
 				parseErr := diagnoseFCParseError(parseInput, triggerSignal)
 				if parseErr != nil {
+					// AI Review Enhancement (2026-01-11): Add truncated flag to help identify
+					// potential false positives in NO_TRIGGER diagnostics.
+					inputTruncated := len(contentStr) > maxContentBufferBytes
 					logrus.WithFields(logrus.Fields{
-						"error_code":    parseErr.Code,
-						"error_message": parseErr.Message,
-						"error_details": parseErr.Details,
+						"error_code":      parseErr.Code,
+						"error_message":   parseErr.Message,
+						"error_details":   parseErr.Details,
+						"input_truncated": inputTruncated,
 					}).Debug("Function call normal response: parsing failed with diagnostic")
 				}
 			}
@@ -4594,6 +4605,15 @@ func formatToolResultAsText(toolCallID, name, content string) string {
 //   - {"type":"function","function":{"name":"xxx"}}: Must call specific tool
 //
 // Reference: Toolify safe_process_tool_choice implementation.
+//
+// AI Review Design Decision (2026-01-11): Constraint strings are intentionally embedded
+// inline rather than extracted to package-level constants. This keeps the prompt logic
+// self-contained and easier to modify. Tests use Contains() for flexibility.
+//
+// AI Review Design Decision (2026-01-11): When a specific tool is requested but not found
+// in toolDefs, we log a warning but still generate the constraint (graceful degradation).
+// This is intentional - the model may still attempt the call, which will fail gracefully
+// at the tool execution layer. Returning an error here would break the request flow.
 func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition) string {
 	if toolChoice == nil {
 		return ""
@@ -4792,6 +4812,14 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 	hasFunctionCall := strings.Contains(content, "<function_call>")
 
 	if !hasInvoke && !hasFunctionCalls && !hasFunctionCall {
+		// AI Review Fix (2026-01-11): Adjust message wording when triggerSignal is empty.
+		if triggerSignal == "" {
+			return &FCParseError{
+				Code:    "NO_INVOKE",
+				Message: "No <invoke> or <function_calls> block found in response",
+				Details: "Expected XML tool call block but none found",
+			}
+		}
 		return &FCParseError{
 			Code:    "NO_INVOKE",
 			Message: "No <invoke> or <function_calls> block found after trigger signal",
@@ -4890,6 +4918,9 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 // approach which may behave unexpectedly if thinking text itself contains literal <thinking>
 // tags. This is a rare edge case in practice. A more robust solution would advance the
 // cursor past the closing tag, but current implementation is sufficient for typical use.
+// AI Review Design Note (2026-01-11): Blocks are concatenated without delimiters by design.
+// This is intentional for trigger signal detection - we only need to check if the trigger
+// exists anywhere in thinking content, not preserve block boundaries.
 func extractThinkingContent(content string) string {
 	var sb strings.Builder
 
@@ -5004,7 +5035,8 @@ func extractThinkingContent(content string) string {
 }
 
 // isValidJSON checks if a string is valid JSON.
-// Uses json.Valid for better performance (no allocation for valid JSON).
+// Uses json.Valid for better performance (validation without unmarshalling).
+// Note: []byte(s) conversion allocates, but json.Valid itself is allocation-free.
 func isValidJSON(s string) bool {
 	return json.Valid([]byte(s))
 }

@@ -8007,8 +8007,12 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			expectedInMsg: "Invalid JSON",
 		},
 		// Valid structure but still fails (fallback case)
+		// AI Review Note (2026-01-11): This test case verifies the fallback behavior when
+		// XML structure appears valid but parsing still fails. Named "no_obvious_issue_fallback"
+		// to clarify this is a catch-all case. If diagnoseFCParseError learns to detect more
+		// specific issues in the future, this test may need adjustment.
 		{
-			name:          "valid_structure_parse_failed",
+			name:          "no_obvious_issue_fallback",
 			content:       triggerSignal + "\n<invoke name=\"test\"><parameter name=\"arg\">value</parameter></invoke>",
 			triggerSignal: triggerSignal,
 			expectedCode:  "PARSE_FAILED",
@@ -8181,6 +8185,12 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceConversion(t *testing.T) {
 			if _, ok := rewrittenReq["tool_choice"]; ok {
 				t.Errorf("expected tool_choice to be removed from request")
 			}
+
+			// AI Review Enhancement (2026-01-11): Also verify tools is removed when
+			// force_function_call is enabled, to catch regressions that reintroduce native fields.
+			if _, ok := rewrittenReq["tools"]; ok {
+				t.Errorf("expected tools to be removed from request when force_function_call is enabled")
+			}
 		})
 	}
 }
@@ -8346,6 +8356,18 @@ func TestIsValidJSON(t *testing.T) {
 		{
 			name:     "empty_string",
 			input:    ``,
+			expected: false,
+		},
+		// AI Review Enhancement (2026-01-11): Test whitespace handling.
+		// json.Valid considers leading/trailing whitespace as valid JSON.
+		{
+			name:     "valid_with_whitespace",
+			input:    "  {\"key\": 1}\n",
+			expected: true,
+		},
+		{
+			name:     "whitespace_only",
+			input:    "   \n\t  ",
 			expected: false,
 		},
 	}
