@@ -294,9 +294,15 @@ func isShortenToolNamesEnabled(group *models.Group) bool {
 		return true // Default enabled
 	}
 	// If explicitly set, use the value
+	// Handle multiple types since JSON decoding may produce float64 for numbers
 	switch v := raw.(type) {
 	case bool:
 		return v
+	case float64:
+		// JSON numbers decode as float64; treat 0 as disabled
+		return v != 0
+	case int:
+		return v != 0
 	case string:
 		lower := strings.ToLower(strings.TrimSpace(v))
 		// Only disable if explicitly set to false/no/off/0
@@ -2026,10 +2032,20 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 		// Generate unique tool use ID
 		toolUseID := fmt.Sprintf("toolu_%s_%d", utils.GenerateRandomSuffix(), i)
 
+		// Restore original tool name from reverse map if tool name shortening was applied.
+		// The model outputs shortened names (from request conversion), but Claude client
+		// expects original names. This mirrors the restoration in convertOpenAIToClaudeResponse.
+		toolName := call.Name
+		if reverseMap := getOpenAIToolNameReverseMap(c); reverseMap != nil {
+			if orig, ok := reverseMap[call.Name]; ok {
+				toolName = orig
+			}
+		}
+
 		toolUseBlocks = append(toolUseBlocks, ClaudeContentBlock{
 			Type:  "tool_use",
 			ID:    toolUseID,
-			Name:  call.Name,
+			Name:  toolName,
 			Input: json.RawMessage(inputJSON),
 		})
 	}

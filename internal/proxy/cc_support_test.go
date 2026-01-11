@@ -4460,6 +4460,27 @@ func TestIsShortenToolNamesEnabled(t *testing.T) {
 			config:   map[string]interface{}{"shorten_tool_names": "no"},
 			expected: false,
 		},
+		// JSON numbers decode as float64; test numeric type handling
+		{
+			name:     "float64 zero - disabled",
+			config:   map[string]interface{}{"shorten_tool_names": float64(0)},
+			expected: false,
+		},
+		{
+			name:     "float64 one - enabled",
+			config:   map[string]interface{}{"shorten_tool_names": float64(1)},
+			expected: true,
+		},
+		{
+			name:     "int zero - disabled",
+			config:   map[string]interface{}{"shorten_tool_names": int(0)},
+			expected: false,
+		},
+		{
+			name:     "int one - enabled",
+			config:   map[string]interface{}{"shorten_tool_names": int(1)},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {

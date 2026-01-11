@@ -947,9 +947,24 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 		if s, ok := toolChoiceVal.(string); ok && (s == "required" || s == "any") {
 			toolChoiceRequiresTools = true
 		}
+		// For object format, only set toolChoiceRequiresTools if the object has valid required fields.
+		// This aligns with convertToolChoiceToPrompt which only generates constraints for valid objects.
+		// Invalid objects like {"type":"function"} without function.name should not force tool calls.
 		if m, ok := toolChoiceVal.(map[string]any); ok {
-			if t, _ := m["type"].(string); t == "function" || t == "tool" || t == "any" {
+			if t, _ := m["type"].(string); t == "any" {
 				toolChoiceRequiresTools = true
+			} else if t == "function" {
+				// OpenAI format: {"type":"function","function":{"name":"xxx"}}
+				if fn, _ := m["function"].(map[string]any); fn != nil {
+					if name, _ := fn["name"].(string); name != "" {
+						toolChoiceRequiresTools = true
+					}
+				}
+			} else if t == "tool" {
+				// Claude format: {"type":"tool","name":"xxx"}
+				if name, _ := m["name"].(string); name != "" {
+					toolChoiceRequiresTools = true
+				}
 			}
 		}
 	}
@@ -5140,7 +5155,8 @@ func extractThinkingContent(content string) string {
 	}
 
 	// Track extracted ranges to avoid duplicates
-	extractedRanges := make(map[string]bool)
+	// Use [2]int as key instead of fmt.Sprintf for better performance (zero allocation)
+	extractedRanges := make(map[[2]int]struct{})
 
 	for _, pattern := range antmlPatterns {
 		searchStart := 0
@@ -5170,10 +5186,10 @@ func extractThinkingContent(content string) string {
 			startIdx := start + len(pattern.open)
 			endIdx := startIdx + minEnd
 			if endIdx > startIdx {
-				// Create a unique key for this range to avoid duplicates
-				rangeKey := fmt.Sprintf("%d-%d", startIdx, endIdx)
-				if !extractedRanges[rangeKey] {
-					extractedRanges[rangeKey] = true
+				// Use fixed-size array key to avoid string allocation
+				rangeKey := [2]int{startIdx, endIdx}
+				if _, seen := extractedRanges[rangeKey]; !seen {
+					extractedRanges[rangeKey] = struct{}{}
 					sb.WriteString(content[startIdx:endIdx])
 				}
 			}
