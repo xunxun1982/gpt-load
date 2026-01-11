@@ -4640,6 +4640,11 @@ func isToolUsageProhibitedByToolChoice(toolChoice any) bool {
 // in toolDefs, we log a warning but still generate the constraint (graceful degradation).
 // This is intentional - the model may still attempt the call, which will fail gracefully
 // at the tool execution layer. Returning an error here would break the request flow.
+//
+// AI Review Design Decision (2026-01-11): This function does NOT validate whether toolDefs
+// is empty when tool_choice="required". Empty toolDefs validation should happen at a higher
+// level (e.g., applyFunctionCallRequestRewrite). This function only converts tool_choice to
+// prompt instructions, following single responsibility principle.
 func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition) string {
 	if toolChoice == nil {
 		return ""
@@ -4702,9 +4707,11 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 					}
 				// AI Review Enhancement (2026-01-11): Explicitly mention trigger signal
 					// for clarity, as it's injected in the system prompt earlier.
+					// AI Review Fix (2026-01-11): Changed wording from "MUST use ONLY" to
+					// "MUST call ... at least once" to explicitly require at least one call,
+					// matching OpenAI's "Call exactly one specific function" semantics.
 					return fmt.Sprintf("\n\n**TOOL USAGE CONSTRAINT:**\n"+
-						"You MUST use ONLY the tool named `%s` in this response. "+
-						"Do NOT use any other tools. "+
+						"You MUST call the tool named `%s` at least once in this response, and you MUST NOT use any other tools. "+
 						"Output the trigger signal specified above, then call the tool using the specified XML format.",
 						requiredToolName)
 				}
@@ -4731,9 +4738,11 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 				}
 				// AI Review Enhancement (2026-01-11): Explicitly mention trigger signal
 				// for clarity, as it's injected in the system prompt earlier.
+				// AI Review Fix (2026-01-11): Changed wording from "MUST use ONLY" to
+				// "MUST call ... at least once" to explicitly require at least one call,
+				// matching OpenAI's "Call exactly one specific function" semantics.
 				return fmt.Sprintf("\n\n**TOOL USAGE CONSTRAINT:**\n"+
-					"You MUST use ONLY the tool named `%s` in this response. "+
-					"Do NOT use any other tools. "+
+					"You MUST call the tool named `%s` at least once in this response, and you MUST NOT use any other tools. "+
 					"Output the trigger signal specified above, then call the tool using the specified XML format.",
 					toolName)
 			}
@@ -4837,7 +4846,9 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 	}
 
 	// Check for invoke/function_calls blocks
-	hasInvoke := strings.Contains(content, "<invoke")
+	// AI Review Fix (2026-01-11): Use stricter tag detection to avoid false positives.
+	// "<invoke" would match "<invocation", "<invokename", etc.
+	hasInvoke := strings.Contains(content, "<invoke ") || strings.Contains(content, "<invoke>")
 	hasFunctionCalls := strings.Contains(content, "<function_calls>")
 	hasFunctionCall := strings.Contains(content, "<function_call>")
 
@@ -4858,7 +4869,8 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 	}
 
 	// Check for unclosed invoke tags
-	invokeOpenCount := strings.Count(content, "<invoke")
+	// AI Review Fix (2026-01-11): Count actual <invoke> tags, not substrings like <invokename>
+	invokeOpenCount := strings.Count(content, "<invoke ") + strings.Count(content, "<invoke>")
 	invokeCloseCount := strings.Count(content, "</invoke>")
 	if invokeOpenCount > invokeCloseCount {
 		return &FCParseError{
@@ -4897,8 +4909,10 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 	}
 
 	// Check for malformed parameter tags
-	if strings.Contains(content, "<parameter") {
-		paramOpenCount := strings.Count(content, "<parameter")
+	// AI Review Fix (2026-01-11): Use stricter detection for <parameter> tags to avoid
+	// matching <parametername> or similar malformed variants.
+	if strings.Contains(content, "<parameter ") || strings.Contains(content, "<parameter>") {
+		paramOpenCount := strings.Count(content, "<parameter ") + strings.Count(content, "<parameter>")
 		paramCloseCount := strings.Count(content, "</parameter>")
 		if paramOpenCount > paramCloseCount {
 			return &FCParseError{
@@ -5066,8 +5080,12 @@ func extractThinkingContent(content string) string {
 
 // isValidJSON checks if a string is valid JSON.
 // Uses json.Valid for better performance (validation without unmarshalling).
-// Note: []byte(s) conversion allocates, but json.Valid itself is allocation-free.
+// AI Review Enhancement (2026-01-11): TrimSpace before validation for robustness.
 func isValidJSON(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
 	return json.Valid([]byte(s))
 }
 

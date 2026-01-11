@@ -7819,8 +7819,8 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			toolDefs:    toolDefs,
 			expectEmpty: false,
 			expectContains: []string{
-				"MUST use ONLY the tool named `web_search`",
-				"Do NOT use any other tools",
+				"MUST call the tool named `web_search` at least once",
+				"MUST NOT use any other tools",
 			},
 		},
 		{
@@ -7834,7 +7834,7 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			toolDefs:    toolDefs,
 			expectEmpty: false,
 			expectContains: []string{
-				"MUST use ONLY the tool named `nonexistent_tool`",
+				"MUST call the tool named `nonexistent_tool` at least once",
 			},
 		},
 		// Object values - Claude format
@@ -7847,7 +7847,7 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			toolDefs:    toolDefs,
 			expectEmpty: false,
 			expectContains: []string{
-				"MUST use ONLY the tool named `read_file`",
+				"MUST call the tool named `read_file` at least once",
 			},
 		},
 		{
@@ -7895,7 +7895,7 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			toolDefs:    toolDefs,
 			expectEmpty: false,
 			expectContains: []string{
-				"MUST use ONLY the tool named `nonexistent_claude_tool`",
+				"MUST call the tool named `nonexistent_claude_tool` at least once",
 			},
 		},
 		// Edge cases
@@ -8123,7 +8123,7 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceConversion(t *testing.T) {
 				},
 			},
 			expectContains: []string{
-				"MUST use ONLY the tool named `web_search`",
+				"MUST call the tool named `web_search` at least once",
 			},
 		},
 	}
