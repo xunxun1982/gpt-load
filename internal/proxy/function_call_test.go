@@ -8140,6 +8140,21 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			expectedCode:  "TRIGGER_IN_THINKING",
 			expectedInMsg: "thinking block",
 		},
+		// NOTE: Test <param> variant detection (short form of <parameter>)
+		// reMcpParam regex supports both, so diagnoseFCParseError should too.
+		{
+			name:          "unclosed_param_tag",
+			content:       triggerSignal + "\n<invoke name=\"test\"><param name=\"arg\">value",
+			triggerSignal: triggerSignal,
+			expectedCode:  "UNCLOSED_INVOKE",
+		},
+		{
+			name:          "invalid_json_in_param",
+			content:       triggerSignal + "\n<invoke name=\"test\"><param name=\"data\">{invalid json}</param></invoke>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "INVALID_JSON_PARAM",
+			expectedInMsg: "Invalid JSON",
+		},
 	}
 
 	for _, tt := range tests {

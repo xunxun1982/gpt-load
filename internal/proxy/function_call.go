@@ -1234,9 +1234,18 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			if anchor < 0 {
 				anchor = 0
 			}
+			// Avoid splitting UTF-8 runes when we had to fall back to a raw byte window.
+			// Move anchor forward to the next rune boundary if we're in the middle of a multi-byte char.
+			for anchor < len(parseInput) && !utf8.RuneStart(parseInput[anchor]) {
+				anchor++
+			}
 			// Ensure we don't exceed the buffer cap
 			if len(parseInput)-anchor > maxContentBufferBytes {
 				anchor = len(parseInput) - maxContentBufferBytes
+				// Re-align to rune boundary after adjustment
+				for anchor < len(parseInput) && !utf8.RuneStart(parseInput[anchor]) {
+					anchor++
+				}
 			}
 			parseInput = parseInput[anchor:]
 		}
@@ -4687,12 +4696,9 @@ func sanitizeToolNameForPrompt(name string) string {
 	name = strings.ReplaceAll(name, "\n", " ")
 	name = strings.ReplaceAll(name, "\r", " ")
 	name = strings.ReplaceAll(name, "\t", " ")
-	// Collapse consecutive spaces to single space to avoid odd formatting
-	for strings.Contains(name, "  ") {
-		name = strings.ReplaceAll(name, "  ", " ")
-	}
-	// Trim leading/trailing whitespace
-	name = strings.TrimSpace(name)
+	// Normalize whitespace in O(n) using strings.Fields (splits on any whitespace)
+	// and strings.Join (rejoins with single space). This also trims leading/trailing.
+	name = strings.Join(strings.Fields(name), " ")
 	return name
 }
 
@@ -5008,11 +5014,14 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 	}
 
 	// Check for malformed parameter tags
-	// NOTE: Use stricter detection for <parameter> tags to avoid
+	// NOTE: Use stricter detection for <parameter> and <param> tags to avoid
 	// matching <parametername> or similar malformed variants.
-	if strings.Contains(content, "<parameter ") || strings.Contains(content, "<parameter>") {
-		paramOpenCount := strings.Count(content, "<parameter ") + strings.Count(content, "<parameter>")
-		paramCloseCount := strings.Count(content, "</parameter>")
+	// NOTE: Include <param> variant since reMcpParam regex supports both.
+	if strings.Contains(content, "<parameter ") || strings.Contains(content, "<parameter>") ||
+		strings.Contains(content, "<param ") || strings.Contains(content, "<param>") {
+		paramOpenCount := strings.Count(content, "<parameter ") + strings.Count(content, "<parameter>") +
+			strings.Count(content, "<param ") + strings.Count(content, "<param>")
+		paramCloseCount := strings.Count(content, "</parameter>") + strings.Count(content, "</param>")
 		if paramOpenCount > paramCloseCount {
 			return &FCParseError{
 				Code:    "UNCLOSED_PARAMETER",
@@ -5023,7 +5032,8 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 	}
 
 	// Check for malformed JSON in parameters (common with complex arguments)
-	if strings.Contains(content, "<parameter") {
+	// NOTE: Include <param> variant since reMcpParam regex supports both.
+	if strings.Contains(content, "<parameter") || strings.Contains(content, "<param") {
 		// Extract parameter content and check for JSON validity
 		paramMatches := reMcpParam.FindAllStringSubmatch(content, -1)
 		for _, match := range paramMatches {
