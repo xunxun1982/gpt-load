@@ -7737,6 +7737,570 @@ func TestIsToolCallResultJSON_ThinkingModelWithResultFields(t *testing.T) {
 	}
 }
 
+// TestConvertToolChoiceToPrompt tests the tool_choice to prompt conversion.
+// This function converts OpenAI tool_choice parameter to prompt instructions
+// for prompt-based function calling.
+func TestConvertToolChoiceToPrompt(t *testing.T) {
+	// Sample tool definitions for testing
+	toolDefs := []functionToolDefinition{
+		{Name: "web_search", Description: "Search the web", Parameters: nil},
+		{Name: "read_file", Description: "Read a file", Parameters: nil},
+		{Name: "write_file", Description: "Write to a file", Parameters: nil},
+	}
+
+	tests := []struct {
+		name           string
+		toolChoice     any
+		toolDefs       []functionToolDefinition
+		expectContains []string // Strings that should be in the result
+		expectEmpty    bool     // Whether result should be empty
+	}{
+		// String values
+		{
+			name:        "tool_choice_none",
+			toolChoice:  "none",
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				"PROHIBITED",
+				"Do NOT output the trigger signal",
+			},
+		},
+		{
+			name:        "tool_choice_auto",
+			toolChoice:  "auto",
+			toolDefs:    toolDefs,
+			expectEmpty: true,
+		},
+		{
+			name:        "tool_choice_required",
+			toolChoice:  "required",
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				"MUST call at least one tool",
+			},
+		},
+		{
+			name:        "tool_choice_any",
+			toolChoice:  "any",
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				"MUST call at least one tool",
+			},
+		},
+		{
+			name:        "tool_choice_unknown_string",
+			toolChoice:  "unknown_value",
+			toolDefs:    toolDefs,
+			expectEmpty: true,
+		},
+		// Object values - OpenAI format
+		{
+			name: "tool_choice_specific_tool_openai_format",
+			toolChoice: map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": "web_search",
+				},
+			},
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				"MUST use ONLY the tool named `web_search`",
+				"Do NOT use any other tools",
+			},
+		},
+		{
+			name: "tool_choice_specific_tool_not_in_list",
+			toolChoice: map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": "nonexistent_tool",
+				},
+			},
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				"MUST use ONLY the tool named `nonexistent_tool`",
+			},
+		},
+		// Object values - Claude format
+		{
+			name: "tool_choice_claude_tool_format",
+			toolChoice: map[string]any{
+				"type": "tool",
+				"name": "read_file",
+			},
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				"MUST use ONLY the tool named `read_file`",
+			},
+		},
+		{
+			name: "tool_choice_claude_any_format",
+			toolChoice: map[string]any{
+				"type": "any",
+			},
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				"MUST call at least one tool",
+			},
+		},
+		// Edge cases
+		{
+			name:        "tool_choice_nil",
+			toolChoice:  nil,
+			toolDefs:    toolDefs,
+			expectEmpty: true,
+		},
+		{
+			name:        "tool_choice_empty_tool_defs",
+			toolChoice:  "required",
+			toolDefs:    []functionToolDefinition{},
+			expectEmpty: false,
+			expectContains: []string{
+				"MUST call at least one tool",
+			},
+		},
+		{
+			name: "tool_choice_missing_function_name",
+			toolChoice: map[string]any{
+				"type":     "function",
+				"function": map[string]any{},
+			},
+			toolDefs:    toolDefs,
+			expectEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := convertToolChoiceToPrompt(tt.toolChoice, tt.toolDefs)
+
+			if tt.expectEmpty {
+				if result != "" {
+					t.Errorf("expected empty result, got: %q", result)
+				}
+				return
+			}
+
+			if result == "" {
+				t.Errorf("expected non-empty result, got empty")
+				return
+			}
+
+			for _, expected := range tt.expectContains {
+				if !strings.Contains(result, expected) {
+					t.Errorf("expected result to contain %q, got: %q", expected, result)
+				}
+			}
+		})
+	}
+}
+
+// TestDiagnoseFCParseError tests the function call parsing error diagnosis.
+// This function analyzes content to determine why function call parsing failed.
+func TestDiagnoseFCParseError(t *testing.T) {
+	triggerSignal := "<Function_test_Start/>"
+
+	tests := []struct {
+		name           string
+		content        string
+		triggerSignal  string
+		expectedCode   string
+		expectedInMsg  string // Substring expected in Message or Details
+	}{
+		// Empty content
+		{
+			name:          "empty_content",
+			content:       "",
+			triggerSignal: triggerSignal,
+			expectedCode:  "EMPTY_CONTENT",
+		},
+		// Missing trigger signal
+		{
+			name:          "no_trigger_signal",
+			content:       "Hello, I will help you with that.",
+			triggerSignal: triggerSignal,
+			expectedCode:  "NO_TRIGGER",
+			expectedInMsg: "Trigger signal not found",
+		},
+		// Trigger present but no invoke block
+		{
+			name:          "trigger_but_no_invoke",
+			content:       triggerSignal + "\nI will now search for information.",
+			triggerSignal: triggerSignal,
+			expectedCode:  "NO_INVOKE",
+			expectedInMsg: "No <invoke> or <function_calls> block",
+		},
+		// Unclosed invoke tag
+		{
+			name:          "unclosed_invoke_tag",
+			content:       triggerSignal + "\n<invoke name=\"test\"><parameter name=\"arg\">value</parameter>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "UNCLOSED_INVOKE",
+			expectedInMsg: "Unclosed <invoke> tag",
+		},
+		// Unclosed function_calls tag
+		{
+			name:          "unclosed_function_calls",
+			content:       triggerSignal + "\n<function_calls><function_call><tool>test</tool></function_call>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "UNCLOSED_FUNCTION_CALLS",
+		},
+		// Missing invoke name attribute
+		{
+			name:          "missing_invoke_name",
+			content:       triggerSignal + "\n<invoke><parameter name=\"arg\">value</parameter></invoke>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "MISSING_INVOKE_NAME",
+			expectedInMsg: "missing name attribute",
+		},
+		// Unclosed parameter tag (detected as unclosed invoke since invoke is also unclosed)
+		{
+			name:          "unclosed_parameter",
+			content:       triggerSignal + "\n<invoke name=\"test\"><parameter name=\"arg\">value",
+			triggerSignal: triggerSignal,
+			expectedCode:  "UNCLOSED_INVOKE",
+		},
+		// Invalid JSON in parameter
+		{
+			name:          "invalid_json_in_parameter",
+			content:       triggerSignal + "\n<invoke name=\"test\"><parameter name=\"data\">{invalid json}</parameter></invoke>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "INVALID_JSON_PARAM",
+			expectedInMsg: "Invalid JSON",
+		},
+		// Valid structure but still fails (fallback case)
+		{
+			name:          "valid_structure_parse_failed",
+			content:       triggerSignal + "\n<invoke name=\"test\"><parameter name=\"arg\">value</parameter></invoke>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "PARSE_FAILED",
+		},
+		// Empty trigger signal with no invoke blocks
+		{
+			name:          "empty_trigger_no_invoke",
+			content:       "Just some text without any tool calls",
+			triggerSignal: "",
+			expectedCode:  "NO_INVOKE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := diagnoseFCParseError(tt.content, tt.triggerSignal)
+
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+
+			if err.Code != tt.expectedCode {
+				t.Errorf("expected code %q, got %q (message: %s, details: %s)",
+					tt.expectedCode, err.Code, err.Message, err.Details)
+			}
+
+			if tt.expectedInMsg != "" {
+				fullMsg := err.Message + " " + err.Details
+				if !strings.Contains(fullMsg, tt.expectedInMsg) {
+					t.Errorf("expected message/details to contain %q, got message=%q details=%q",
+						tt.expectedInMsg, err.Message, err.Details)
+				}
+			}
+		})
+	}
+}
+
+// TestApplyFunctionCallRequestRewrite_ToolChoiceConversion tests that tool_choice
+// is properly converted to prompt instructions during request rewrite.
+func TestApplyFunctionCallRequestRewrite_ToolChoiceConversion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name           string
+		toolChoice     any
+		expectContains []string // Strings expected in the system prompt
+		expectAbsent   []string // Strings that should NOT be in the system prompt
+	}{
+		{
+			name:       "tool_choice_none_adds_prohibition",
+			toolChoice: "none",
+			expectContains: []string{
+				"PROHIBITED",
+				"Do NOT output the trigger signal",
+			},
+		},
+		{
+			name:           "tool_choice_auto_no_extra_constraint",
+			toolChoice:     "auto",
+			expectAbsent:   []string{"TOOL USAGE CONSTRAINT"},
+		},
+		{
+			name:       "tool_choice_required_adds_must_call",
+			toolChoice: "required",
+			expectContains: []string{
+				"MUST call at least one tool",
+			},
+		},
+		{
+			name: "tool_choice_specific_tool",
+			toolChoice: map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": "web_search",
+				},
+			},
+			expectContains: []string{
+				"MUST use ONLY the tool named `web_search`",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/proxy/test/v1/chat/completions", nil)
+
+			group := &models.Group{
+				Name:        "test-group",
+				ChannelType: "openai",
+				Config: map[string]any{
+					"force_function_call": true,
+				},
+			}
+
+			reqBody := map[string]any{
+				"model": "test-model",
+				"messages": []any{
+					map[string]any{"role": "user", "content": "hi"},
+				},
+				"tools": []any{
+					map[string]any{
+						"type": "function",
+						"function": map[string]any{
+							"name":        "web_search",
+							"description": "Search the web",
+							"parameters": map[string]any{
+								"type":       "object",
+								"properties": map[string]any{},
+							},
+						},
+					},
+				},
+				"tool_choice": tt.toolChoice,
+			}
+			bodyBytes, _ := json.Marshal(reqBody)
+
+			ps := &ProxyServer{}
+			rewrittenBody, _, err := ps.applyFunctionCallRequestRewrite(c, group, bodyBytes)
+			if err != nil {
+				t.Fatalf("applyFunctionCallRequestRewrite() error = %v", err)
+			}
+
+			var rewrittenReq map[string]any
+			if err := json.Unmarshal(rewrittenBody, &rewrittenReq); err != nil {
+				t.Fatalf("failed to unmarshal rewritten body: %v", err)
+			}
+
+			// Extract system prompt from messages
+			messages, ok := rewrittenReq["messages"].([]any)
+			if !ok || len(messages) == 0 {
+				t.Fatalf("expected messages array in rewritten request")
+			}
+
+			firstMsg, ok := messages[0].(map[string]any)
+			if !ok {
+				t.Fatalf("expected first message to be a map")
+			}
+
+			systemPrompt, ok := firstMsg["content"].(string)
+			if !ok {
+				t.Fatalf("expected system prompt content to be a string")
+			}
+
+			// Check expected strings are present
+			for _, expected := range tt.expectContains {
+				if !strings.Contains(systemPrompt, expected) {
+					t.Errorf("expected system prompt to contain %q", expected)
+				}
+			}
+
+			// Check absent strings are not present
+			for _, absent := range tt.expectAbsent {
+				if strings.Contains(systemPrompt, absent) {
+					t.Errorf("expected system prompt NOT to contain %q", absent)
+				}
+			}
+
+			// Verify tool_choice is removed from request
+			if _, ok := rewrittenReq["tool_choice"]; ok {
+				t.Errorf("expected tool_choice to be removed from request")
+			}
+		})
+	}
+}
+
+// TestFCParseError_ErrorInterface tests that FCParseError implements error interface correctly.
+func TestFCParseError_ErrorInterface(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      *FCParseError
+		expected string
+	}{
+		{
+			name: "error_with_details",
+			err: &FCParseError{
+				Code:    "TEST_ERROR",
+				Message: "Test error message",
+				Details: "Additional details",
+			},
+			expected: "TEST_ERROR: Test error message (Additional details)",
+		},
+		{
+			name: "error_without_details",
+			err: &FCParseError{
+				Code:    "SIMPLE_ERROR",
+				Message: "Simple message",
+				Details: "",
+			},
+			expected: "SIMPLE_ERROR: Simple message",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.err.Error()
+			if result != tt.expected {
+				t.Errorf("Error() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestExtractThinkingContent tests the extraction of thinking content from text.
+func TestExtractThinkingContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		expected string
+	}{
+		{
+			name:     "single_thinking_block",
+			content:  "Before <thinking>This is thinking content</thinking> After",
+			expected: "This is thinking content",
+		},
+		{
+			name:     "single_think_block",
+			content:  "Before <think>Short think</think> After",
+			expected: "Short think",
+		},
+		{
+			name:     "multiple_thinking_blocks",
+			content:  "<thinking>First</thinking> middle <thinking>Second</thinking>",
+			expected: "FirstSecond",
+		},
+		{
+			name:     "mixed_think_and_thinking",
+			content:  "<think>Short</think> and <thinking>Long thinking</thinking>",
+			// Note: The function processes <thinking> first, then <think>
+			expected: "Long thinkingShort",
+		},
+		{
+			name:     "no_thinking_blocks",
+			content:  "Just regular content without thinking",
+			expected: "",
+		},
+		{
+			name:     "empty_content",
+			content:  "",
+			expected: "",
+		},
+		{
+			name:     "unclosed_thinking_block",
+			content:  "<thinking>Unclosed content",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractThinkingContent(tt.content)
+			if result != tt.expected {
+				t.Errorf("extractThinkingContent() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsValidJSON tests the JSON validation helper function.
+func TestIsValidJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{
+			name:     "valid_object",
+			input:    `{"key": "value"}`,
+			expected: true,
+		},
+		{
+			name:     "valid_array",
+			input:    `[1, 2, 3]`,
+			expected: true,
+		},
+		{
+			name:     "valid_string",
+			input:    `"hello"`,
+			expected: true,
+		},
+		{
+			name:     "valid_number",
+			input:    `123`,
+			expected: true,
+		},
+		{
+			name:     "valid_boolean",
+			input:    `true`,
+			expected: true,
+		},
+		{
+			name:     "valid_null",
+			input:    `null`,
+			expected: true,
+		},
+		{
+			name:     "invalid_json",
+			input:    `{invalid}`,
+			expected: false,
+		},
+		{
+			name:     "unclosed_object",
+			input:    `{"key": "value"`,
+			expected: false,
+		},
+		{
+			name:     "empty_string",
+			input:    ``,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isValidJSON(tt.input)
+			if result != tt.expected {
+				t.Errorf("isValidJSON(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 // TestRemoveThinkBlocks_PreservesThinkingModelToolCalls tests that removeThinkBlocks correctly
 // preserves tool calls from thinking model output, even when they are wrapped in <glm_block> tags
 // and contain result-like fields.

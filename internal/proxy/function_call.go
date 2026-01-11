@@ -941,6 +941,17 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 		prompt += continuation
 	}
 
+	// Convert tool_choice to prompt instructions before removing it.
+	// This preserves the semantic meaning of tool_choice (none/auto/required/specific)
+	// by translating it into explicit prompt instructions for the model.
+	// Reference: Toolify safe_process_tool_choice implementation.
+	if toolChoiceVal, ok := req["tool_choice"]; ok && toolChoiceVal != nil {
+		toolChoicePrompt := convertToolChoiceToPrompt(toolChoiceVal, toolDefs)
+		if toolChoicePrompt != "" {
+			prompt += toolChoicePrompt
+		}
+	}
+
 	newMessages := make([]any, 0, len(messages)+1)
 	newMessages = append(newMessages, map[string]any{
 		"role":    "system",
@@ -1188,6 +1199,20 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		}
 
 		if len(calls) == 0 {
+			// Diagnose why parsing failed for debugging purposes.
+			// This helps identify common issues like missing trigger signals,
+			// unclosed tags, or malformed XML structure.
+			if triggerSignal != "" || strings.Contains(parseInput, "<function_calls>") || strings.Contains(parseInput, "<invoke") {
+				parseErr := diagnoseFCParseError(parseInput, triggerSignal)
+				if parseErr != nil {
+					logrus.WithFields(logrus.Fields{
+						"error_code":    parseErr.Code,
+						"error_message": parseErr.Message,
+						"error_details": parseErr.Details,
+					}).Debug("Function call normal response: parsing failed with diagnostic")
+				}
+			}
+
 			// If we see a <function_calls> block but could not parse any valid calls,
 			// treat it as invalid tool XML and strip it from the visible content. This
 			// prevents downstream clients (including Claude Code) from seeing malformed
@@ -1690,6 +1715,18 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	}
 
 	if len(parsedCalls) == 0 || prevEventData == "" {
+		// Diagnose why parsing failed for debugging purposes.
+		if triggerSignal != "" || strings.Contains(contentStr, "<function_calls>") || strings.Contains(contentStr, "<invoke") {
+			parseErr := diagnoseFCParseError(contentStr, triggerSignal)
+			if parseErr != nil {
+				logrus.WithFields(logrus.Fields{
+					"error_code":    parseErr.Code,
+					"error_message": parseErr.Message,
+					"error_details": parseErr.Details,
+				}).Debug("Function call streaming: parsing failed with diagnostic")
+			}
+		}
+
 		// Log if we detected execution intent but no tool calls (helps with debugging)
 		reasoningStr := reasoningBuf.String()
 		hasContentIntent := reExecutionIntent.MatchString(contentStr) && !strings.Contains(contentStr, "<function_calls>")
@@ -4539,6 +4576,289 @@ func formatToolResultAsText(toolCallID, name, content string) string {
 	sb.WriteString("\n</tool_result>")
 	return sb.String()
 }
+
+// convertToolChoiceToPrompt converts tool_choice parameter to prompt instructions.
+// This preserves the semantic meaning of tool_choice when using prompt-based function calling.
+//
+// Supported tool_choice values:
+//   - "none": Prohibit tool usage, respond as normal chat assistant
+//   - "auto": Default behavior, model decides whether to use tools
+//   - "required" / "any": Must call at least one tool
+//   - {"type":"function","function":{"name":"xxx"}}: Must call specific tool
+//
+// Reference: Toolify safe_process_tool_choice implementation.
+func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition) string {
+	if toolChoice == nil {
+		return ""
+	}
+
+	// Handle string values: "none", "auto", "required", "any"
+	if tcStr, ok := toolChoice.(string); ok {
+		switch tcStr {
+		case "none":
+			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
+				"You are PROHIBITED from using any tools in this response. " +
+				"Respond as a normal chat assistant and answer the user's question directly. " +
+				"Do NOT output the trigger signal or any XML tool calls."
+		case "auto":
+			// Default behavior, no additional constraints needed
+			return ""
+		case "required", "any":
+			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
+				"You MUST call at least one tool in this response. " +
+				"Do NOT respond without using tools. " +
+				"Output the trigger signal followed by at least one <invoke> block."
+		default:
+			logrus.WithField("tool_choice", tcStr).Debug("convertToolChoiceToPrompt: unknown string value")
+			return ""
+		}
+	}
+
+	// Handle object value: {"type":"function","function":{"name":"xxx"}}
+	if tcMap, ok := toolChoice.(map[string]any); ok {
+		tcType, _ := tcMap["type"].(string)
+		if tcType == "function" {
+			if funcObj, ok := tcMap["function"].(map[string]any); ok {
+				requiredToolName, _ := funcObj["name"].(string)
+				if requiredToolName != "" {
+					// Validate that the tool exists in the available tools
+					toolExists := false
+					for _, def := range toolDefs {
+						if def.Name == requiredToolName {
+							toolExists = true
+							break
+						}
+					}
+					if !toolExists {
+						// Log warning but still generate the constraint
+						// The model may still attempt to call it, which will fail gracefully
+						logrus.WithField("tool_name", requiredToolName).
+							Warn("convertToolChoiceToPrompt: specified tool not found in available tools")
+					}
+					return fmt.Sprintf("\n\n**TOOL USAGE CONSTRAINT:**\n"+
+						"You MUST use ONLY the tool named `%s` in this response. "+
+						"Do NOT use any other tools. "+
+						"Generate the necessary parameters and output in the specified XML format.",
+						requiredToolName)
+				}
+			}
+		}
+		// Handle Claude-style tool_choice: {"type":"tool","name":"xxx"} or {"type":"any"}
+		if tcType == "tool" {
+			if toolName, ok := tcMap["name"].(string); ok && toolName != "" {
+				return fmt.Sprintf("\n\n**TOOL USAGE CONSTRAINT:**\n"+
+					"You MUST use ONLY the tool named `%s` in this response. "+
+					"Do NOT use any other tools. "+
+					"Generate the necessary parameters and output in the specified XML format.",
+					toolName)
+			}
+		} else if tcType == "any" {
+			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
+				"You MUST call at least one tool in this response. " +
+				"Do NOT respond without using tools. " +
+				"Output the trigger signal followed by at least one <invoke> block."
+		}
+	}
+
+	return ""
+}
+
+// FCParseError represents a function call parsing error with diagnostic details.
+// This struct provides structured error information for debugging and retry logic.
+type FCParseError struct {
+	// Code is a short identifier for the error type (e.g., "NO_TRIGGER", "NO_INVOKE")
+	Code string
+	// Message is a human-readable description of the error
+	Message string
+	// Details contains additional context (e.g., what was found vs expected)
+	Details string
+}
+
+// Error implements the error interface.
+func (e *FCParseError) Error() string {
+	if e.Details != "" {
+		return fmt.Sprintf("%s: %s (%s)", e.Code, e.Message, e.Details)
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+// diagnoseFCParseError analyzes content to determine why function call parsing failed.
+// Returns a structured error with diagnostic information useful for debugging and retry.
+//
+// This function checks for common failure patterns:
+//   - Missing trigger signal
+//   - Missing <invoke> or <function_calls> blocks
+//   - Malformed XML structure (unclosed tags, missing attributes)
+//   - Invalid JSON in parameters
+//   - Trigger signal inside <thinking> blocks (should be outside)
+//
+// Reference: Toolify _diagnose_fc_parse_error implementation.
+func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
+	if content == "" {
+		return &FCParseError{
+			Code:    "EMPTY_CONTENT",
+			Message: "Response content is empty",
+		}
+	}
+
+	// Check for trigger signal presence
+	hasTrigger := triggerSignal != "" && strings.Contains(content, triggerSignal)
+	if !hasTrigger && triggerSignal != "" {
+		// Check if trigger signal is inside thinking block (common mistake)
+		if strings.Contains(content, "<thinking>") || strings.Contains(content, "<think>") {
+			// Extract thinking content and check if trigger is there
+			thinkingContent := extractThinkingContent(content)
+			if strings.Contains(thinkingContent, triggerSignal) {
+				return &FCParseError{
+					Code:    "TRIGGER_IN_THINKING",
+					Message: "Trigger signal found inside <thinking> block",
+					Details: "Trigger signal must be output OUTSIDE of thinking tags",
+				}
+			}
+		}
+		return &FCParseError{
+			Code:    "NO_TRIGGER",
+			Message: "Trigger signal not found in response",
+			Details: fmt.Sprintf("Expected: %s", utils.TruncateString(triggerSignal, 30)),
+		}
+	}
+
+	// Check for invoke/function_calls blocks
+	hasInvoke := strings.Contains(content, "<invoke")
+	hasFunctionCalls := strings.Contains(content, "<function_calls>")
+	hasFunctionCall := strings.Contains(content, "<function_call>")
+
+	if !hasInvoke && !hasFunctionCalls && !hasFunctionCall {
+		return &FCParseError{
+			Code:    "NO_INVOKE",
+			Message: "No <invoke> or <function_calls> block found after trigger signal",
+			Details: "Model output trigger but did not follow with XML tool call",
+		}
+	}
+
+	// Check for unclosed invoke tags
+	invokeOpenCount := strings.Count(content, "<invoke")
+	invokeCloseCount := strings.Count(content, "</invoke>")
+	if invokeOpenCount > invokeCloseCount {
+		return &FCParseError{
+			Code:    "UNCLOSED_INVOKE",
+			Message: "Unclosed <invoke> tag detected",
+			Details: fmt.Sprintf("Found %d opening tags but only %d closing tags", invokeOpenCount, invokeCloseCount),
+		}
+	}
+
+	// Check for function_calls block structure
+	if hasFunctionCalls {
+		if !strings.Contains(content, "</function_calls>") {
+			return &FCParseError{
+				Code:    "UNCLOSED_FUNCTION_CALLS",
+				Message: "Missing closing </function_calls> tag",
+			}
+		}
+		if hasFunctionCall && !strings.Contains(content, "</function_call>") {
+			return &FCParseError{
+				Code:    "UNCLOSED_FUNCTION_CALL",
+				Message: "Missing closing </function_call> tag",
+			}
+		}
+	}
+
+	// Check for missing tool name in invoke
+	if hasInvoke {
+		// Check for <invoke> without name attribute
+		if strings.Contains(content, "<invoke>") && !strings.Contains(content, "<invoke name=") {
+			return &FCParseError{
+				Code:    "MISSING_INVOKE_NAME",
+				Message: "<invoke> tag missing name attribute",
+				Details: "Expected format: <invoke name=\"ToolName\">",
+			}
+		}
+	}
+
+	// Check for malformed parameter tags
+	if strings.Contains(content, "<parameter") {
+		paramOpenCount := strings.Count(content, "<parameter")
+		paramCloseCount := strings.Count(content, "</parameter>")
+		if paramOpenCount > paramCloseCount {
+			return &FCParseError{
+				Code:    "UNCLOSED_PARAMETER",
+				Message: "Unclosed <parameter> tag detected",
+				Details: fmt.Sprintf("Found %d opening tags but only %d closing tags", paramOpenCount, paramCloseCount),
+			}
+		}
+	}
+
+	// Check for malformed JSON in parameters (common with complex arguments)
+	if strings.Contains(content, "<parameter") {
+		// Extract parameter content and check for JSON validity
+		paramMatches := reMcpParam.FindAllStringSubmatch(content, -1)
+		for _, match := range paramMatches {
+			if len(match) >= 3 {
+				paramValue := strings.TrimSpace(match[2])
+				// Check if it looks like JSON but is malformed
+				if (strings.HasPrefix(paramValue, "{") || strings.HasPrefix(paramValue, "[")) &&
+					!isValidJSON(paramValue) {
+					return &FCParseError{
+						Code:    "INVALID_JSON_PARAM",
+						Message: "Invalid JSON in parameter value",
+						Details: fmt.Sprintf("Parameter '%s' contains malformed JSON", match[1]),
+					}
+				}
+			}
+		}
+	}
+
+	// If we get here, the structure looks okay but parsing still failed
+	// This might be due to subtle issues not caught above
+	return &FCParseError{
+		Code:    "PARSE_FAILED",
+		Message: "XML structure appears valid but parsing failed",
+		Details: "Check for encoding issues or unexpected characters",
+	}
+}
+
+// extractThinkingContent extracts content from <thinking> or <think> blocks.
+func extractThinkingContent(content string) string {
+	var sb strings.Builder
+
+	// Extract <thinking>...</thinking>
+	thinkingStart := strings.Index(content, "<thinking>")
+	for thinkingStart != -1 {
+		thinkingEnd := strings.Index(content[thinkingStart:], "</thinking>")
+		if thinkingEnd != -1 {
+			sb.WriteString(content[thinkingStart+10 : thinkingStart+thinkingEnd])
+		}
+		nextStart := strings.Index(content[thinkingStart+10:], "<thinking>")
+		if nextStart == -1 {
+			break
+		}
+		thinkingStart = thinkingStart + 10 + nextStart
+	}
+
+	// Extract <think>...</think>
+	thinkStart := strings.Index(content, "<think>")
+	for thinkStart != -1 {
+		thinkEnd := strings.Index(content[thinkStart:], "</think>")
+		if thinkEnd != -1 {
+			sb.WriteString(content[thinkStart+7 : thinkStart+thinkEnd])
+		}
+		nextStart := strings.Index(content[thinkStart+7:], "<think>")
+		if nextStart == -1 {
+			break
+		}
+		thinkStart = thinkStart + 7 + nextStart
+	}
+
+	return sb.String()
+}
+
+// isValidJSON checks if a string is valid JSON.
+// Uses json.Valid for better performance (no allocation for valid JSON).
+func isValidJSON(s string) bool {
+	return json.Valid([]byte(s))
+}
+
+
 
 type functionToolDefinition struct {
 	Name        string
