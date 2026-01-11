@@ -7864,8 +7864,8 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 				"PROHIBITED",
 			},
 		},
-		// NOTE: Added test for Claude-style {"type":"none"}.
-		// Anthropic added this option in Feb 2025 API release.
+		// NOTE: Test for Claude-style {"type":"none"} tool_choice.
+		// This Anthropic API option prevents Claude from calling tools.
 		{
 			name: "tool_choice_claude_none_format",
 			toolChoice: map[string]any{
@@ -7943,6 +7943,12 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			if result == "" {
 				t.Errorf("expected non-empty result, got empty")
 				return
+			}
+
+			// NOTE: Enforce the documented contract: non-empty constraints must start with "\n\n"
+			// to ensure proper separation from preceding system prompt content.
+			if !strings.HasPrefix(result, "\n\n") {
+				t.Errorf("expected result to start with \\n\\n, got: %q", result)
 			}
 
 			for _, expected := range tt.expectContains {
@@ -8116,9 +8122,11 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceConversion(t *testing.T) {
 			},
 		},
 		{
-			name:           "tool_choice_auto_no_extra_constraint",
-			toolChoice:     "auto",
-			expectAbsent:   []string{"TOOL USAGE CONSTRAINT"},
+			name:       "tool_choice_auto_no_extra_constraint",
+			toolChoice: "auto",
+			// NOTE: Check for actual constraint content rather than header string
+			// to avoid fragile assertions that break if header wording changes.
+			expectAbsent: []string{"PROHIBITED", "MUST call at least one tool", "MUST call the tool named"},
 		},
 		{
 			name:       "tool_choice_required_adds_must_call",

@@ -1193,9 +1193,30 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		// Bound parsing window to avoid feeding arbitrarily large content into
 		// the XML parser. We keep only the tail of the content where the
 		// <function_calls> block is expected to appear.
+		// NOTE: Use anchored truncation to avoid missing function calls
+		// when they appear before the default tail window. Anchor on trigger signal
+		// or <function_calls> tag if present.
 		parseInput := contentStr
 		if len(parseInput) > maxContentBufferBytes {
-			parseInput = parseInput[len(parseInput)-maxContentBufferBytes:]
+			anchor := -1
+			if triggerSignal != "" {
+				anchor = strings.LastIndex(parseInput, triggerSignal)
+			}
+			if anchor == -1 {
+				anchor = strings.LastIndex(parseInput, "<function_calls>")
+			}
+			if anchor == -1 {
+				// No anchor found, use default tail truncation
+				anchor = len(parseInput) - maxContentBufferBytes
+			}
+			if anchor < 0 {
+				anchor = 0
+			}
+			// Ensure we don't exceed the buffer cap
+			if len(parseInput)-anchor > maxContentBufferBytes {
+				anchor = len(parseInput) - maxContentBufferBytes
+			}
+			parseInput = parseInput[anchor:]
 		}
 
 		calls := parseFunctionCallsXML(parseInput, triggerSignal)
@@ -1242,7 +1263,9 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			// treat it as invalid tool XML and strip it from the visible content. This
 			// prevents downstream clients (including Claude Code) from seeing malformed
 			// <function_calls> markers without corresponding structured tool_calls.
-			if strings.Contains(parseInput, "<function_calls>") {
+			// NOTE: Use contentStr for detection to avoid false negatives when
+			// parseInput is truncated and misses the <function_calls> tag.
+			if strings.Contains(contentStr, "<function_calls>") {
 				cleaned := removeFunctionCallsBlocks(contentStr, cleanupModeFull)
 				if cleaned != contentStr {
 					msg["content"] = cleaned
@@ -4983,10 +5006,6 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 // then <think>, then ANTML) is intentional - all are concatenated to the result.
 // NOTE: Added ANTML thinking block support per AI review
 // suggestion to detect TRIGGER_IN_THINKING for ANTML variants.
-// NOTE: This function uses a simple "find next open tag"
-// approach which may behave unexpectedly if thinking text itself contains literal <thinking>
-// tags. This is a rare edge case in practice. A more robust solution would advance the
-// cursor past the closing tag, but current implementation is sufficient for typical use.
 // NOTE: Blocks are concatenated without delimiters by design.
 // This is intentional for trigger signal detection - we only need to check if the trigger
 // exists anywhere in thinking content, not preserve block boundaries.
@@ -5002,42 +5021,44 @@ func extractThinkingContent(content string) string {
 	)
 
 	// Extract <thinking>...</thinking>
-	thinkingStart := strings.Index(content, openThinking)
-	for thinkingStart != -1 {
-		thinkingEnd := strings.Index(content[thinkingStart:], closeThinking)
-		if thinkingEnd != -1 {
-			// Safe slice: thinkingEnd is offset from thinkingStart, so
-			// thinkingStart + len(openThinking) <= thinkingStart + thinkingEnd
-			// is guaranteed when thinkingEnd >= len(openThinking)
-			startIdx := thinkingStart + len(openThinking)
-			endIdx := thinkingStart + thinkingEnd
-			if endIdx > startIdx {
-				sb.WriteString(content[startIdx:endIdx])
-			}
-		}
-		nextStart := strings.Index(content[thinkingStart+len(openThinking):], openThinking)
-		if nextStart == -1 {
+	// NOTE: Iterate by advancing cursor past closing tag to correctly handle
+	// consecutive blocks and avoid missing content.
+	for search := 0; ; {
+		thinkingStart := strings.Index(content[search:], openThinking)
+		if thinkingStart == -1 {
 			break
 		}
-		thinkingStart = thinkingStart + len(openThinking) + nextStart
+		thinkingStart += search
+		closeRel := strings.Index(content[thinkingStart+len(openThinking):], closeThinking)
+		if closeRel == -1 {
+			break
+		}
+		startIdx := thinkingStart + len(openThinking)
+		endIdx := startIdx + closeRel
+		if endIdx > startIdx {
+			sb.WriteString(content[startIdx:endIdx])
+		}
+		search = endIdx + len(closeThinking)
 	}
 
 	// Extract <think>...</think>
-	thinkStart := strings.Index(content, openThink)
-	for thinkStart != -1 {
-		thinkEnd := strings.Index(content[thinkStart:], closeThink)
-		if thinkEnd != -1 {
-			startIdx := thinkStart + len(openThink)
-			endIdx := thinkStart + thinkEnd
-			if endIdx > startIdx {
-				sb.WriteString(content[startIdx:endIdx])
-			}
-		}
-		nextStart := strings.Index(content[thinkStart+len(openThink):], openThink)
-		if nextStart == -1 {
+	// NOTE: Same cursor advancement strategy as <thinking> blocks.
+	for search := 0; ; {
+		thinkStart := strings.Index(content[search:], openThink)
+		if thinkStart == -1 {
 			break
 		}
-		thinkStart = thinkStart + len(openThink) + nextStart
+		thinkStart += search
+		closeRel := strings.Index(content[thinkStart+len(openThink):], closeThink)
+		if closeRel == -1 {
+			break
+		}
+		startIdx := thinkStart + len(openThink)
+		endIdx := startIdx + closeRel
+		if endIdx > startIdx {
+			sb.WriteString(content[startIdx:endIdx])
+		}
+		search = endIdx + len(closeThink)
 	}
 
 	// Extract ANTML thinking blocks: <antml\b:thinking>...</antml\b:thinking> or </antml>
