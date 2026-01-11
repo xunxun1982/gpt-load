@@ -1712,7 +1712,7 @@ func TestToolChoiceConversion(t *testing.T) {
 				MaxTokens:  100,
 			}
 
-			openaiReq, err := convertClaudeToOpenAI(claudeReq)
+			openaiReq, err := convertClaudeToOpenAI(claudeReq, nil)
 			if err != nil {
 				t.Fatalf("conversion failed: %v", err)
 			}
@@ -1859,7 +1859,7 @@ func TestClaudeToOpenAIConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			openaiReq, err := convertClaudeToOpenAI(tt.claudeReq)
+			openaiReq, err := convertClaudeToOpenAI(tt.claudeReq, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("convertClaudeToOpenAI() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -4191,5 +4191,384 @@ func TestDoubleEscapeWindowsPathsForBash(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestToolNameShortening tests the tool name shortening functionality for OpenAI CC support.
+// OpenAI API has a 64-character limit for tool names, so long MCP tool names need to be shortened.
+func TestToolNameShortening(t *testing.T) {
+	tests := []struct {
+		name           string
+		toolNames      []string
+		expectedShort  map[string]string // original -> expected shortened
+		expectShortMap bool              // whether shortening should occur
+	}{
+		{
+			name:           "short names unchanged",
+			toolNames:      []string{"Read", "Write", "Bash"},
+			expectShortMap: true,
+			expectedShort: map[string]string{
+				"Read":  "Read",
+				"Write": "Write",
+				"Bash":  "Bash",
+			},
+		},
+		{
+			name:           "MCP tool name exceeding 64 chars",
+			toolNames:      []string{"mcp__very_long_server_name__extremely_long_tool_name_that_exceeds_limit"},
+			expectShortMap: true,
+			expectedShort: map[string]string{
+				"mcp__very_long_server_name__extremely_long_tool_name_that_exceeds_limit": "mcp__extremely_long_tool_name_that_exceeds_limit",
+			},
+		},
+		{
+			name:           "multiple MCP tools with collision",
+			toolNames:      []string{"mcp__server1__tool_name", "mcp__server2__tool_name"},
+			expectShortMap: true,
+			// Both should be shortened but made unique
+		},
+		{
+			name:           "non-MCP long name truncated",
+			toolNames:      []string{"this_is_a_very_long_tool_name_that_definitely_exceeds_the_sixty_four_character_limit"},
+			expectShortMap: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			shortMap := buildToolNameShortMap(tt.toolNames)
+
+			if !tt.expectShortMap {
+				if len(shortMap) != 0 {
+					t.Errorf("expected empty short map, got %v", shortMap)
+				}
+				return
+			}
+
+			// Verify all original names are in the map
+			for _, name := range tt.toolNames {
+				short, ok := shortMap[name]
+				if !ok {
+					t.Errorf("original name %q not found in short map", name)
+					continue
+				}
+
+				// Verify shortened name is <= 64 chars
+				if len(short) > 64 {
+					t.Errorf("shortened name %q exceeds 64 chars (len=%d)", short, len(short))
+				}
+
+				// If expected value is specified, verify it
+				if tt.expectedShort != nil {
+					if expected, ok := tt.expectedShort[name]; ok {
+						if short != expected {
+							t.Errorf("short name for %q = %q, want %q", name, short, expected)
+						}
+					}
+				}
+			}
+
+			// Verify uniqueness of shortened names
+			seen := make(map[string]string)
+			for orig, short := range shortMap {
+				if prevOrig, exists := seen[short]; exists {
+					t.Errorf("duplicate short name %q for both %q and %q", short, prevOrig, orig)
+				}
+				seen[short] = orig
+			}
+		})
+	}
+}
+
+// TestToolNameReverseMap tests the reverse map generation for tool name restoration.
+func TestToolNameReverseMap(t *testing.T) {
+	shortMap := map[string]string{
+		"mcp__server__very_long_tool_name": "mcp__very_long_tool_name",
+		"Read":                             "Read",
+		"Write":                            "Write",
+	}
+
+	reverseMap := buildReverseToolNameMap(shortMap)
+
+	// Verify reverse mapping
+	for orig, short := range shortMap {
+		if restored, ok := reverseMap[short]; ok {
+			if restored != orig {
+				t.Errorf("reverse map[%q] = %q, want %q", short, restored, orig)
+			}
+		} else {
+			t.Errorf("short name %q not found in reverse map", short)
+		}
+	}
+}
+
+// TestConvertClaudeToOpenAI_WithToolNameShortening tests that tool names are properly
+// shortened when converting Claude request to OpenAI format.
+func TestConvertClaudeToOpenAI_WithToolNameShortening(t *testing.T) {
+	longToolName := "mcp__very_long_server_name__extremely_long_tool_name_that_exceeds_limit"
+
+	claudeReq := &ClaudeRequest{
+		Model:     "gpt-4",
+		MaxTokens: 100,
+		Messages:  []ClaudeMessage{{Role: "user", Content: json.RawMessage(`"test"`)}},
+		Tools: []ClaudeTool{
+			{
+				Name:        longToolName,
+				Description: "A tool with a very long name",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			},
+			{
+				Name:        "Read",
+				Description: "Read a file",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			},
+		},
+	}
+
+	// Build short map
+	names := make([]string, 0, len(claudeReq.Tools))
+	for _, tool := range claudeReq.Tools {
+		names = append(names, tool.Name)
+	}
+	shortMap := buildToolNameShortMap(names)
+
+	// Convert with shortening
+	openaiReq, err := convertClaudeToOpenAI(claudeReq, shortMap)
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+
+	// Verify tools are shortened
+	if len(openaiReq.Tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(openaiReq.Tools))
+	}
+
+	for _, tool := range openaiReq.Tools {
+		if len(tool.Function.Name) > 64 {
+			t.Errorf("tool name %q exceeds 64 chars", tool.Function.Name)
+		}
+	}
+
+	// Verify the long tool name was shortened
+	foundShortened := false
+	for _, tool := range openaiReq.Tools {
+		if tool.Function.Name == shortMap[longToolName] {
+			foundShortened = true
+			break
+		}
+	}
+	if !foundShortened {
+		t.Errorf("expected shortened tool name %q not found", shortMap[longToolName])
+	}
+}
+
+// TestConvertOpenAIToClaudeResponse_WithToolNameRestoration tests that tool names
+// are properly restored when converting OpenAI response to Claude format.
+func TestConvertOpenAIToClaudeResponse_WithToolNameRestoration(t *testing.T) {
+	originalName := "mcp__server__very_long_tool_name"
+	shortName := "mcp__very_long_tool_name"
+
+	reverseMap := map[string]string{
+		shortName: originalName,
+	}
+
+	content := "test response"
+	openaiResp := &OpenAIResponse{
+		ID:      "test-id",
+		Model:   "gpt-4",
+		Choices: []OpenAIChoice{
+			{
+				Message: &OpenAIRespMessage{
+					Role:    "assistant",
+					Content: &content,
+					ToolCalls: []OpenAIToolCall{
+						{
+							ID:   "call_123",
+							Type: "function",
+							Function: OpenAIFunctionCall{
+								Name:      shortName,
+								Arguments: `{"path": "/test"}`,
+							},
+						},
+					},
+				},
+				FinishReason: func() *string { s := "tool_calls"; return &s }(),
+			},
+		},
+	}
+
+	claudeResp := convertOpenAIToClaudeResponse(openaiResp, cleanupModeArtifactsOnly, false, reverseMap)
+
+	// Find the tool_use block
+	var toolUseBlock *ClaudeContentBlock
+	for i := range claudeResp.Content {
+		if claudeResp.Content[i].Type == "tool_use" {
+			toolUseBlock = &claudeResp.Content[i]
+			break
+		}
+	}
+
+	if toolUseBlock == nil {
+		t.Fatal("expected tool_use block not found")
+	}
+
+	// Verify the tool name was restored to original
+	if toolUseBlock.Name != originalName {
+		t.Errorf("tool name = %q, want %q", toolUseBlock.Name, originalName)
+	}
+}
+
+// TestIsShortenToolNamesEnabled tests the configuration check for tool name shortening.
+func TestIsShortenToolNamesEnabled(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   map[string]interface{}
+		expected bool
+	}{
+		{
+			name:     "nil config - default enabled",
+			config:   nil,
+			expected: true,
+		},
+		{
+			name:     "empty config - default enabled",
+			config:   map[string]interface{}{},
+			expected: true,
+		},
+		{
+			name:     "explicitly enabled",
+			config:   map[string]interface{}{"shorten_tool_names": true},
+			expected: true,
+		},
+		{
+			name:     "explicitly disabled",
+			config:   map[string]interface{}{"shorten_tool_names": false},
+			expected: false,
+		},
+		{
+			name:     "string true",
+			config:   map[string]interface{}{"shorten_tool_names": "true"},
+			expected: true,
+		},
+		{
+			name:     "string false",
+			config:   map[string]interface{}{"shorten_tool_names": "false"},
+			expected: false,
+		},
+		{
+			name:     "string no",
+			config:   map[string]interface{}{"shorten_tool_names": "no"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			group := &models.Group{Config: tt.config}
+			result := isShortenToolNamesEnabled(group)
+			if result != tt.expected {
+				t.Errorf("isShortenToolNamesEnabled() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestToolNameShortening_WithForceFunctionCall tests that tool name shortening
+// works correctly when force function call mode is enabled.
+// In FC mode, tool calls are typically parsed from XML content, not from OpenAI tool_calls.
+func TestToolNameShortening_WithForceFunctionCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Test that tool names in historical messages are shortened correctly
+	longToolName := "mcp__very_long_server_name__extremely_long_tool_name_that_exceeds_limit"
+
+	claudeReq := &ClaudeRequest{
+		Model:     "gpt-4",
+		MaxTokens: 100,
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: json.RawMessage(`"Please use the tool"`)},
+			{
+				Role: "assistant",
+				Content: json.RawMessage(`[{"type":"tool_use","id":"toolu_123","name":"` + longToolName + `","input":{"path":"/test"}}]`),
+			},
+			{
+				Role: "user",
+				Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"toolu_123","content":"success"}]`),
+			},
+		},
+		Tools: []ClaudeTool{
+			{
+				Name:        longToolName,
+				Description: "A tool with a very long name",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			},
+		},
+	}
+
+	// Build short map
+	names := make([]string, 0, len(claudeReq.Tools))
+	for _, tool := range claudeReq.Tools {
+		names = append(names, tool.Name)
+	}
+	shortMap := buildToolNameShortMap(names)
+
+	// Convert with shortening
+	openaiReq, err := convertClaudeToOpenAI(claudeReq, shortMap)
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+
+	// Verify tools are shortened
+	if len(openaiReq.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(openaiReq.Tools))
+	}
+
+	if len(openaiReq.Tools[0].Function.Name) > 64 {
+		t.Errorf("tool name %q exceeds 64 chars", openaiReq.Tools[0].Function.Name)
+	}
+
+	// Verify historical tool_use in messages is also shortened
+	// The assistant message should have the tool call with shortened name
+	foundShortenedInHistory := false
+	for _, msg := range openaiReq.Messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				if tc.Function.Name == shortMap[longToolName] {
+					foundShortenedInHistory = true
+					break
+				}
+			}
+		}
+	}
+	if !foundShortenedInHistory {
+		t.Errorf("expected shortened tool name in historical messages")
+	}
+}
+
+// TestToolNameRestoration_StreamingWithForceFunctionCall tests that tool names
+// are properly restored in streaming mode when force function call is enabled.
+func TestToolNameRestoration_StreamingWithForceFunctionCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	originalName := "mcp__server__very_long_tool_name"
+	shortName := "mcp__very_long_tool_name"
+
+	reverseMap := map[string]string{
+		shortName: originalName,
+	}
+
+	// Create a mock context with the reverse map
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyOpenAIToolNameReverseMap, reverseMap)
+
+	// Verify the reverse map can be retrieved
+	retrievedMap := getOpenAIToolNameReverseMap(c)
+	if retrievedMap == nil {
+		t.Fatal("expected reverse map to be retrievable from context")
+	}
+
+	if orig, ok := retrievedMap[shortName]; !ok || orig != originalName {
+		t.Errorf("reverse map[%q] = %q, want %q", shortName, orig, originalName)
 	}
 }

@@ -35,6 +35,9 @@ const (
 	ctxKeyCCEnabled      = "cc_enabled"
 	ctxKeyOriginalFormat = "cc_original_format"
 	ctxKeyCodexCC        = "codex_cc" // Indicates Codex CC mode (Claude -> Codex/Responses API)
+	// ctxKeyOpenAIToolNameReverseMap stores the reverse map for tool name restoration in OpenAI CC mode.
+	// This is used to restore original tool names that were shortened to comply with OpenAI's 64-char limit.
+	ctxKeyOpenAIToolNameReverseMap = "openai_tool_name_reverse_map"
 )
 
 // ctxKeyTriggerSignal and ctxKeyFunctionCallEnabled are declared in server.go (same package proxy).
@@ -267,6 +270,42 @@ func getTriggerSignal(c *gin.Context) string {
 	return ""
 }
 
+// getOpenAIToolNameReverseMap retrieves the tool name reverse map from context.
+// Returns nil if not found or if tool name shortening was not applied.
+func getOpenAIToolNameReverseMap(c *gin.Context) map[string]string {
+	if v, ok := c.Get(ctxKeyOpenAIToolNameReverseMap); ok {
+		if m, ok := v.(map[string]string); ok {
+			return m
+		}
+	}
+	return nil
+}
+
+// isShortenToolNamesEnabled checks whether tool name shortening is enabled for the group.
+// This is controlled by the "shorten_tool_names" config option.
+// Default: true (enabled) for compatibility with OpenAI's 64-char tool name limit.
+// Set to false for third-party OpenAI-compatible APIs that don't have this limit.
+func isShortenToolNamesEnabled(group *models.Group) bool {
+	if group == nil || group.Config == nil {
+		return true // Default enabled for OpenAI compatibility
+	}
+	raw, ok := group.Config["shorten_tool_names"]
+	if !ok {
+		return true // Default enabled
+	}
+	// If explicitly set, use the value
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		// Only disable if explicitly set to false/no/off/0
+		return lower != "false" && lower != "no" && lower != "off" && lower != "0"
+	default:
+		return true
+	}
+}
+
 // ClaudeMessage represents a message in Claude format.
 type ClaudeMessage struct {
 	Role    string          `json:"role"`
@@ -382,7 +421,9 @@ type OpenAIRequest struct {
 }
 
 // convertClaudeToOpenAI converts a Claude request to OpenAI format.
-func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
+// toolNameShortMap is used to apply shortened tool names for OpenAI's 64-char limit.
+// Pass nil to disable tool name shortening (for third-party APIs without this limit).
+func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string]string) (*OpenAIRequest, error) {
 	openaiReq := &OpenAIRequest{
 		Model:       claudeReq.Model,
 		Stream:      claudeReq.Stream,
@@ -438,7 +479,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 
 	// Convert messages
 	for _, msg := range claudeReq.Messages {
-		openaiMsg, err := convertClaudeMessageToOpenAI(msg)
+		openaiMsg, err := convertClaudeMessageToOpenAI(msg, toolNameShortMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
 		}
@@ -482,14 +523,21 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 		}
 	}
 
-	// Convert tools
+	// Convert tools with optional name shortening for OpenAI's 64-char limit
 	if len(claudeReq.Tools) > 0 {
 		tools := make([]OpenAITool, 0, len(claudeReq.Tools))
 		for _, tool := range claudeReq.Tools {
+			// Apply shortened name if available
+			toolName := tool.Name
+			if toolNameShortMap != nil {
+				if short, ok := toolNameShortMap[tool.Name]; ok {
+					toolName = short
+				}
+			}
 			tools = append(tools, OpenAITool{
 				Type: "function",
 				Function: OpenAIFunction{
-					Name:        tool.Name,
+					Name:        toolName,
 					Description: tool.Description,
 					Parameters:  tool.InputSchema,
 				},
@@ -535,6 +583,12 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 				case "tool":
 					// Force call specific tool
 					if toolName, ok := toolChoice["name"].(string); ok {
+						// Apply shortened name if available
+						if toolNameShortMap != nil {
+							if short, ok := toolNameShortMap[toolName]; ok {
+								toolName = short
+							}
+						}
 						openaiReq.ToolChoice = map[string]interface{}{
 							"type": "function",
 							"function": map[string]string{
@@ -575,7 +629,8 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 }
 
 // convertClaudeMessageToOpenAI converts a single Claude message to OpenAI format.
-func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
+// toolNameShortMap is used to apply shortened tool names for historical tool_use blocks.
+func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string]string) ([]OpenAIMessage, error) {
 	var result []OpenAIMessage
 
 	// Try to parse content as string first
@@ -625,11 +680,18 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 				thinkingParts = append(thinkingParts, block.Thinking)
 			}
 		case "tool_use":
+			// Apply shortened name if available for historical tool_use blocks
+			toolName := block.Name
+			if toolNameShortMap != nil {
+				if short, ok := toolNameShortMap[block.Name]; ok {
+					toolName = short
+				}
+			}
 			toolCalls = append(toolCalls, OpenAIToolCall{
 				ID:   block.ID,
 				Type: "function",
 				Function: OpenAIFunctionCall{
-					Name:      block.Name,
+					Name:      toolName,
 					Arguments: string(block.Input),
 				},
 			})
@@ -818,8 +880,23 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 		}
 	}
 
-	// Convert to OpenAI format
-	openaiReq, err := convertClaudeToOpenAI(&claudeReq)
+	// Build tool name short map for tools that exceed the 64 char limit.
+	// This is controlled by the "shorten_tool_names" config option (default: true).
+	// Set to false for third-party OpenAI-compatible APIs without this limit.
+	var toolNameShortMap map[string]string
+	if len(claudeReq.Tools) > 0 && isShortenToolNamesEnabled(group) {
+		names := make([]string, 0, len(claudeReq.Tools))
+		for _, tool := range claudeReq.Tools {
+			names = append(names, tool.Name)
+		}
+		toolNameShortMap = buildToolNameShortMap(names)
+		// Store reverse map in context for response conversion
+		reverseMap := buildReverseToolNameMap(toolNameShortMap)
+		c.Set(ctxKeyOpenAIToolNameReverseMap, reverseMap)
+	}
+
+	// Convert to OpenAI format with tool name shortening
+	openaiReq, err := convertClaudeToOpenAI(&claudeReq, toolNameShortMap)
 	if err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to convert Claude to OpenAI: %w", err)
 	}
@@ -997,7 +1074,8 @@ type ClaudeUsage struct {
 // convertOpenAIToClaudeResponse converts OpenAI response to Claude format.
 // When normalizeToolArgs is true, tool call arguments are normalized (JSON parsed and re-serialized).
 // When false, arguments are passed through unchanged to preserve upstream formatting.
-func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode functionCallCleanupMode, normalizeToolArgs bool) *ClaudeResponse {
+// reverseToolNameMap is used to restore original tool names that were shortened.
+func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode functionCallCleanupMode, normalizeToolArgs bool, reverseToolNameMap map[string]string) *ClaudeResponse {
 	claudeResp := &ClaudeResponse{
 		ID:      openaiResp.ID,
 		Type:    "message",
@@ -1043,8 +1121,15 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode funct
 				if tc.ID == "" || tc.Function.Name == "" {
 					continue
 				}
+				// Restore original tool name if it was shortened
+				toolName := tc.Function.Name
+				if reverseToolNameMap != nil {
+					if orig, ok := reverseToolNameMap[tc.Function.Name]; ok {
+						toolName = orig
+					}
+				}
 				// Validate arguments before conversion - skip empty/placeholder tool_calls
-				if !isValidToolCallArguments(tc.Function.Name, tc.Function.Arguments) {
+				if !isValidToolCallArguments(toolName, tc.Function.Arguments) {
 					continue
 				}
 				inputJSON := json.RawMessage("{}")
@@ -1054,7 +1139,7 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode funct
 					// to fix potential issues like Windows path escapes and tool-specific formatting.
 					// When false (only CC support), pass through arguments unchanged.
 					if normalizeToolArgs {
-						if normalized, ok := normalizeOpenAIToolCallArguments(tc.Function.Name, argsStr); ok {
+						if normalized, ok := normalizeOpenAIToolCallArguments(toolName, argsStr); ok {
 							argsStr = normalized
 						}
 					}
@@ -1069,7 +1154,7 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode funct
 				content = append(content, ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    tc.ID,
-					Name:  tc.Function.Name,
+					Name:  toolName,
 					Input: inputJSON,
 				})
 			}
@@ -2122,7 +2207,9 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// - Bash command double-escaping (doubleEscapeWindowsPathsForBash) is always applied for CC
 	//   to fix Claude Code's Windows path escape bug, regardless of FC mode
 	normalizeToolArgs := isFunctionCallEnabled(c)
-	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode, normalizeToolArgs)
+	// Get tool name reverse map from context for restoring original tool names
+	reverseToolNameMap := getOpenAIToolNameReverseMap(c)
+	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode, normalizeToolArgs, reverseToolNameMap)
 
 	// Handle error finish_reason for non-streaming responses.
 	// When upstream returns error (network_error, timeout, etc.) with no content,
@@ -2830,6 +2917,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	hasValidToolCalls := false // Track if any valid tool_calls were processed
 	isErrorRecovery := false   // Track if error recovery was triggered (don't downgrade stop_reason)
 
+	// Get tool name reverse map from context for restoring original tool names
+	reverseToolNameMap := getOpenAIToolNameReverseMap(c)
+
 	// Buffer to hold potential partial malformed tags across aggregator flushes
 	var partialTagBuffer strings.Builder
 
@@ -3382,7 +3472,13 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 						continue
 					}
 					currentToolCall = &call
+					// Restore original tool name if it was shortened
 					currentToolCallName = call.Function.Name
+					if reverseToolNameMap != nil {
+						if orig, ok := reverseToolNameMap[call.Function.Name]; ok {
+							currentToolCallName = orig
+						}
+					}
 					currentToolCallArgs.Reset()
 					// NOTE: Don't set hasValidToolCalls here - wait until we have valid arguments
 					// This prevents empty tool_calls from being counted as valid
