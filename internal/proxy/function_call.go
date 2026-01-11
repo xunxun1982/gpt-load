@@ -4604,6 +4604,10 @@ func formatToolResultAsText(toolCallID, name, content string) string {
 
 // isToolUsageProhibitedByToolChoice returns true if the tool_choice parameter forbids tool usage.
 // This is used to avoid contradictory prompts (e.g., "MUST call tools" + "PROHIBITED from tools").
+//
+// AI Review Design Decision (2026-01-11): We do NOT normalize tool_choice values (TrimSpace/ToLower).
+// OpenAI and Anthropic APIs specify exact lowercase values ("none", "auto", "required", "any").
+// Normalizing would mask client errors and make debugging harder. Clients should send correct values.
 func isToolUsageProhibitedByToolChoice(toolChoice any) bool {
 	if toolChoice == nil {
 		return false
@@ -4670,9 +4674,9 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 			// Default behavior, no additional constraints needed
 			return ""
 		// AI Review Design Decision (2026-01-11): String "any" is kept for compatibility.
-		// While OpenAI API only accepts "none", "auto", "required" as string values,
-		// and Anthropic uses object format {"type":"any"}, some clients may send string "any".
-		// We treat it as equivalent to "required" for graceful compatibility.
+		// OpenAI API accepts "none", "auto", "required" as string values.
+		// Anthropic API accepts "auto", "any", "none" as string values (plus object format for specific tools).
+		// We accept "any" as a string to support Anthropic-style clients, treating it as "required".
 		case "required", "any":
 			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
 				"You MUST call at least one tool in this response. " +
@@ -4838,10 +4842,19 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 	}
 
 	if !hasTrigger && triggerSignal != "" {
+		// AI Review Enhancement (2026-01-11): Include XML marker presence in diagnostics
+		// to help distinguish "no output at all" from "XML present but no trigger".
+		hasXMLMarkers := strings.Contains(content, "<function_calls>") ||
+			strings.Contains(content, "<function_call>") ||
+			strings.Contains(content, "<invoke ") || strings.Contains(content, "<invoke>")
+		details := fmt.Sprintf("Expected: %s", utils.TruncateString(triggerSignal, 30))
+		if hasXMLMarkers {
+			details += "; found XML-like tool markers without trigger signal"
+		}
 		return &FCParseError{
 			Code:    "NO_TRIGGER",
 			Message: "Trigger signal not found in response",
-			Details: fmt.Sprintf("Expected: %s", utils.TruncateString(triggerSignal, 30)),
+			Details: details,
 		}
 	}
 

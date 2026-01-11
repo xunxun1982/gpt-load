@@ -7984,6 +7984,15 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			expectedCode:  "NO_TRIGGER",
 			expectedInMsg: "Trigger signal not found",
 		},
+		// AI Review Enhancement (2026-01-11): Test NO_TRIGGER with XML markers present
+		// This verifies the enhanced diagnostics that mention XML markers when trigger is missing.
+		{
+			name:          "no_trigger_but_xml_markers_present",
+			content:       "<invoke name=\"test\"><parameter name=\"arg\">value</parameter></invoke>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "NO_TRIGGER",
+			expectedInMsg: "XML-like tool markers without trigger",
+		},
 		// Trigger present but no invoke block
 		{
 			name:          "trigger_but_no_invoke",
