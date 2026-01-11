@@ -1202,6 +1202,11 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			// Diagnose why parsing failed for debugging purposes.
 			// This helps identify common issues like missing trigger signals,
 			// unclosed tags, or malformed XML structure.
+			// AI Review Note (2026-01-11): parseInput is tail-truncated (maxContentBufferBytes),
+			// so NO_TRIGGER diagnostic may be a false positive if trigger was in the truncated
+			// portion. This is acceptable for debug logging purposes only.
+			// AI Review Note (2026-01-11): The nil check is defensive programming - currently
+			// diagnoseFCParseError never returns nil, but keeping the check for future safety.
 			if triggerSignal != "" || strings.Contains(parseInput, "<function_calls>") || strings.Contains(parseInput, "<invoke") {
 				parseErr := diagnoseFCParseError(parseInput, triggerSignal)
 				if parseErr != nil {
@@ -1716,6 +1721,8 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
 	if len(parsedCalls) == 0 || prevEventData == "" {
 		// Diagnose why parsing failed for debugging purposes.
+		// AI Review Note (2026-01-11): The nil check is defensive programming - currently
+		// diagnoseFCParseError never returns nil, but keeping the check for future safety.
 		if triggerSignal != "" || strings.Contains(contentStr, "<function_calls>") || strings.Contains(contentStr, "<invoke") {
 			parseErr := diagnoseFCParseError(contentStr, triggerSignal)
 			if parseErr != nil {
@@ -4596,6 +4603,14 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 	if tcStr, ok := toolChoice.(string); ok {
 		switch tcStr {
 		case "none":
+			// AI Review Design Decision (2026-01-11): When tool_choice="none", we still inject
+			// tool availability information in the system prompt (done earlier in buildFunctionCallPrompt).
+			// This is intentional: the model needs context about available tools to understand the
+			// conversation history (e.g., previous tool calls/results), but is explicitly prohibited
+			// from using them in this response. The constraint below overrides the tool availability.
+			// Alternative approach (not used): Skip tool injection entirely when tool_choice="none".
+			// We chose the current approach because it preserves conversation context while still
+			// enforcing the constraint.
 			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
 				"You are PROHIBITED from using any tools in this response. " +
 				"Respond as a normal chat assistant and answer the user's question directly. " +
@@ -4644,8 +4659,24 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 			}
 		}
 		// Handle Claude-style tool_choice: {"type":"tool","name":"xxx"} or {"type":"any"}
+		// AI Review Fix (2026-01-11): Added tool existence validation for Claude-style format,
+		// matching the validation done for OpenAI-style format above.
 		if tcType == "tool" {
 			if toolName, ok := tcMap["name"].(string); ok && toolName != "" {
+				// Validate that the tool exists in the available tools
+				toolExists := false
+				for _, def := range toolDefs {
+					if def.Name == toolName {
+						toolExists = true
+						break
+					}
+				}
+				if !toolExists {
+					// Log warning but still generate the constraint
+					// The model may still attempt to call it, which will fail gracefully
+					logrus.WithField("tool_name", toolName).
+						Warn("convertToolChoiceToPrompt: Claude-style specified tool not found in available tools")
+				}
 				return fmt.Sprintf("\n\n**TOOL USAGE CONSTRAINT:**\n"+
 					"You MUST use ONLY the tool named `%s` in this response. "+
 					"Do NOT use any other tools. "+
@@ -4703,19 +4734,36 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 
 	// Check for trigger signal presence
 	hasTrigger := triggerSignal != "" && strings.Contains(content, triggerSignal)
-	if !hasTrigger && triggerSignal != "" {
-		// Check if trigger signal is inside thinking block (common mistake)
-		if strings.Contains(content, "<thinking>") || strings.Contains(content, "<think>") {
-			// Extract thinking content and check if trigger is there
+
+	// AI Review Enhancement (2026-01-11): Check if trigger signal is ONLY inside thinking blocks.
+	// This is a common mistake where models output the trigger inside <thinking> tags.
+	// We need to check this even when hasTrigger is true, because the trigger might be
+	// inside a thinking block (which should be treated as if no trigger was found).
+	if triggerSignal != "" {
+		hasThinkingTags := strings.Contains(content, "<thinking>") ||
+			strings.Contains(content, "<think>") ||
+			strings.Contains(content, "<antml\\b:thinking>")
+		if hasThinkingTags {
 			thinkingContent := extractThinkingContent(content)
-			if strings.Contains(thinkingContent, triggerSignal) {
+			triggerInThinking := strings.Contains(thinkingContent, triggerSignal)
+
+			// Check if trigger exists outside thinking blocks
+			// Simple approach: if trigger is in thinking and total trigger count equals
+			// trigger count in thinking, then all triggers are inside thinking blocks
+			triggerCountTotal := strings.Count(content, triggerSignal)
+			triggerCountInThinking := strings.Count(thinkingContent, triggerSignal)
+
+			if triggerInThinking && triggerCountTotal == triggerCountInThinking {
 				return &FCParseError{
 					Code:    "TRIGGER_IN_THINKING",
-					Message: "Trigger signal found inside <thinking> block",
-					Details: "Trigger signal must be output OUTSIDE of thinking tags",
+					Message: "Trigger signal found inside thinking block",
+					Details: "Trigger signal must be output OUTSIDE of thinking tags (including ANTML variants)",
 				}
 			}
 		}
+	}
+
+	if !hasTrigger && triggerSignal != "" {
 		return &FCParseError{
 			Code:    "NO_TRIGGER",
 			Message: "Trigger signal not found in response",
@@ -4817,36 +4865,120 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 	}
 }
 
-// extractThinkingContent extracts content from <thinking> or <think> blocks.
+// extractThinkingContent extracts content from <thinking>, <think>, and ANTML thinking blocks.
+// AI Review Note (2026-01-11): Uses len() for tag lengths instead of hardcoded numbers
+// for better readability and maintainability. The extraction order (<thinking> first,
+// then <think>, then ANTML) is intentional - all are concatenated to the result.
+// AI Review Enhancement (2026-01-11): Added ANTML thinking block support per AI review
+// suggestion to detect TRIGGER_IN_THINKING for ANTML variants.
 func extractThinkingContent(content string) string {
 	var sb strings.Builder
 
+	// Define tag constants for clarity and safety
+	const (
+		openThinking  = "<thinking>"
+		closeThinking = "</thinking>"
+		openThink     = "<think>"
+		closeThink    = "</think>"
+	)
+
 	// Extract <thinking>...</thinking>
-	thinkingStart := strings.Index(content, "<thinking>")
+	thinkingStart := strings.Index(content, openThinking)
 	for thinkingStart != -1 {
-		thinkingEnd := strings.Index(content[thinkingStart:], "</thinking>")
+		thinkingEnd := strings.Index(content[thinkingStart:], closeThinking)
 		if thinkingEnd != -1 {
-			sb.WriteString(content[thinkingStart+10 : thinkingStart+thinkingEnd])
+			// Safe slice: thinkingEnd is offset from thinkingStart, so
+			// thinkingStart + len(openThinking) <= thinkingStart + thinkingEnd
+			// is guaranteed when thinkingEnd >= len(openThinking)
+			startIdx := thinkingStart + len(openThinking)
+			endIdx := thinkingStart + thinkingEnd
+			if endIdx > startIdx {
+				sb.WriteString(content[startIdx:endIdx])
+			}
 		}
-		nextStart := strings.Index(content[thinkingStart+10:], "<thinking>")
+		nextStart := strings.Index(content[thinkingStart+len(openThinking):], openThinking)
 		if nextStart == -1 {
 			break
 		}
-		thinkingStart = thinkingStart + 10 + nextStart
+		thinkingStart = thinkingStart + len(openThinking) + nextStart
 	}
 
 	// Extract <think>...</think>
-	thinkStart := strings.Index(content, "<think>")
+	thinkStart := strings.Index(content, openThink)
 	for thinkStart != -1 {
-		thinkEnd := strings.Index(content[thinkStart:], "</think>")
+		thinkEnd := strings.Index(content[thinkStart:], closeThink)
 		if thinkEnd != -1 {
-			sb.WriteString(content[thinkStart+7 : thinkStart+thinkEnd])
+			startIdx := thinkStart + len(openThink)
+			endIdx := thinkStart + thinkEnd
+			if endIdx > startIdx {
+				sb.WriteString(content[startIdx:endIdx])
+			}
 		}
-		nextStart := strings.Index(content[thinkStart+7:], "<think>")
+		nextStart := strings.Index(content[thinkStart+len(openThink):], openThink)
 		if nextStart == -1 {
 			break
 		}
-		thinkStart = thinkStart + 7 + nextStart
+		thinkStart = thinkStart + len(openThink) + nextStart
+	}
+
+	// Extract ANTML thinking blocks: <antml\b:thinking>...</antml\b:thinking> or </antml>
+	// Note: In Go strings, `\b` is a backspace character, but in raw strings or
+	// double-escaped form, we need to handle the literal backslash-b sequence.
+	// The patterns below cover both escaped forms that may appear in content.
+	// AI Review Note (2026-01-11): Using a map to track processed ranges to avoid
+	// duplicate extraction when multiple patterns match the same content.
+	type antmlPattern struct {
+		open  string
+		close []string
+	}
+	antmlPatterns := []antmlPattern{
+		// Double backslash in regular string = single backslash in content
+		{open: "<antml\\b:thinking>", close: []string{"</antml\\b:thinking>", "</antml>"}},
+		// Quadruple backslash in regular string = double backslash in content
+		{open: "<antml\\\\b:thinking>", close: []string{"</antml\\\\b:thinking>", "</antml>"}},
+	}
+
+	// Track extracted ranges to avoid duplicates
+	extractedRanges := make(map[string]bool)
+
+	for _, pattern := range antmlPatterns {
+		searchStart := 0
+		for {
+			start := strings.Index(content[searchStart:], pattern.open)
+			if start == -1 {
+				break
+			}
+			start += searchStart
+
+			// Find the closest closing tag
+			minEnd := -1
+			closerLen := 0
+			for _, closer := range pattern.close {
+				end := strings.Index(content[start+len(pattern.open):], closer)
+				if end >= 0 && (minEnd == -1 || end < minEnd) {
+					minEnd = end
+					closerLen = len(closer)
+				}
+			}
+
+			if minEnd == -1 {
+				break
+			}
+
+			// Extract content inside ANTML thinking block
+			startIdx := start + len(pattern.open)
+			endIdx := startIdx + minEnd
+			if endIdx > startIdx {
+				// Create a unique key for this range to avoid duplicates
+				rangeKey := fmt.Sprintf("%d-%d", startIdx, endIdx)
+				if !extractedRanges[rangeKey] {
+					extractedRanges[rangeKey] = true
+					sb.WriteString(content[startIdx:endIdx])
+				}
+			}
+
+			searchStart = startIdx + minEnd + closerLen
+		}
 	}
 
 	return sb.String()

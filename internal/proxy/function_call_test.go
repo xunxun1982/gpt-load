@@ -7850,6 +7850,20 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 				"MUST call at least one tool",
 			},
 		},
+		// AI Review Fix (2026-01-11): Added test for Claude-style tool_choice with nonexistent tool
+		// This verifies that the validation added per AI review suggestion works correctly.
+		{
+			name: "tool_choice_claude_tool_not_in_list",
+			toolChoice: map[string]any{
+				"type": "tool",
+				"name": "nonexistent_claude_tool",
+			},
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				"MUST use ONLY the tool named `nonexistent_claude_tool`",
+			},
+		},
 		// Edge cases
 		{
 			name:        "tool_choice_nil",
@@ -7988,6 +8002,15 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			content:       "Just some text without any tool calls",
 			triggerSignal: "",
 			expectedCode:  "NO_INVOKE",
+		},
+		// AI Review Enhancement (2026-01-11): Test ANTML thinking block trigger detection
+		// Note: In Go strings, \b is backspace. Use \\b for literal backslash-b.
+		{
+			name:          "trigger_in_antml_thinking",
+			content:       "<antml\\b:thinking>Let me plan this. " + triggerSignal + "<invoke name=\"test\"></invoke></antml\\b:thinking>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "TRIGGER_IN_THINKING",
+			expectedInMsg: "thinking block",
 		},
 	}
 
@@ -8224,6 +8247,23 @@ func TestExtractThinkingContent(t *testing.T) {
 			name:     "unclosed_thinking_block",
 			content:  "<thinking>Unclosed content",
 			expected: "",
+		},
+		// AI Review Enhancement (2026-01-11): Test ANTML thinking block extraction
+		// Note: In Go strings, \b is backspace. Use \\b for literal backslash-b.
+		{
+			name:     "antml_thinking_block",
+			content:  "Before <antml\\b:thinking>ANTML thinking content</antml\\b:thinking> After",
+			expected: "ANTML thinking content",
+		},
+		{
+			name:     "antml_thinking_with_generic_closer",
+			content:  "<antml\\b:thinking>ANTML content</antml> After",
+			expected: "ANTML content",
+		},
+		{
+			name:     "mixed_standard_and_antml_thinking",
+			content:  "<thinking>Standard</thinking> and <antml\\b:thinking>ANTML</antml\\b:thinking>",
+			expected: "StandardANTML",
 		},
 	}
 

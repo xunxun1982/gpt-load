@@ -40,6 +40,10 @@ func newCodexChannel(f *Factory, group *models.Group) (ChannelProxy, error) {
 
 // CodexUserAgent is the User-Agent header value for Codex CLI requests.
 // This matches the format used by the official Codex CLI client.
+// AI Review Note (2026-01-11): Version maintenance strategy - this value should be updated
+// when the official Codex CLI releases a new version. Check the official Codex CLI repository
+// for the latest version. The version here (0.80.0) was current at the time of implementation.
+// If version drift causes issues, update this constant to match the latest stable release.
 const CodexUserAgent = "codex-cli/0.80.0"
 
 // ModifyRequest sets the Authorization header for the Codex/Responses API.
