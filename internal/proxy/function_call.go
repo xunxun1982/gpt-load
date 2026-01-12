@@ -1350,6 +1350,9 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			}
 
 			// Log when we detect execution intent phrases but no function_calls XML at all.
+			// NOTE: content_preview contains model output, not user input or secrets.
+			// Model output may include user-provided content in context, but AUTH_KEY and
+			// ENCRYPTION_KEY are never included in model prompts, so they cannot leak here.
 			if reExecutionIntent.MatchString(parseInput) && !strings.Contains(parseInput, "<function_calls>") {
 				fields := logrus.Fields{
 					"trigger_signal":  triggerSignal,
@@ -2626,10 +2629,10 @@ func removeUnclosedTagLines(text string) string {
 // IMPORTANT: This function should NOT remove content inside <invoke> or <parameter> tags,
 // as those are tool call requests, not tool call results.
 //
-// NOTE: This function only removes the FIRST detected fragment.
-// Based on production log analysis, multiple truncated result fragments in a single response
-// are extremely rare. If this becomes an issue, the function can be wrapped in a loop.
-// Current design prioritizes simplicity and performance over handling edge cases.
+// AI REVIEW: Added bounded loop (max 3 iterations) per AI review suggestion to handle
+// rare cases where multiple truncated result fragments appear in a single response.
+// Based on production log analysis, multiple fragments are extremely rare, but the
+// bounded loop provides defense-in-depth without significant performance impact.
 //
 // NOTE: For purely ASCII tool outputs without CJK characters,
 // the end detection may not find a CJK boundary. This is an acceptable tradeoff because:
@@ -2646,6 +2649,24 @@ func cleanTruncatedToolResultJSON(text string) string {
 		return text
 	}
 
+	// Bounded loop to handle multiple fragments (max 3 iterations)
+	// This is a tradeoff between completeness and performance
+	const maxIterations = 3
+	result := text
+	for i := 0; i < maxIterations; i++ {
+		cleaned := cleanTruncatedToolResultJSONOnce(result)
+		if cleaned == result {
+			// No more fragments found
+			break
+		}
+		result = cleaned
+	}
+	return result
+}
+
+// cleanTruncatedToolResultJSONOnce removes a single truncated tool result JSON fragment.
+// This is the core implementation called by cleanTruncatedToolResultJSON in a bounded loop.
+func cleanTruncatedToolResultJSONOnce(text string) string {
 	// Fast path: no tool result indicators (both regular and escaped quote patterns)
 	if !strings.Contains(text, `"is_error"`) && !strings.Contains(text, `"status":"completed"`) &&
 		!strings.Contains(text, `"status":"error"`) && !strings.Contains(text, `"mcp_server"`) &&
@@ -2658,7 +2679,7 @@ func cleanTruncatedToolResultJSON(text string) string {
 		return text
 	}
 
-	logrus.WithField("text_length", len(text)).Debug("cleanTruncatedToolResultJSON: Starting cleanup")
+	logrus.WithField("text_length", len(text)).Debug("cleanTruncatedToolResultJSONOnce: Starting cleanup")
 
 	result := text
 
@@ -2972,7 +2993,7 @@ func cleanTruncatedToolResultJSON(text string) string {
 		logrus.WithFields(logrus.Fields{
 			"start":   startIdx,
 			"end":     endIdx,
-		}).Debug("cleanTruncatedToolResultJSON: Removed fragment")
+		}).Debug("cleanTruncatedToolResultJSONOnce: Removed fragment")
 	}
 
 	return result
@@ -4730,11 +4751,19 @@ func isToolUsageProhibitedByToolChoice(toolChoice any) bool {
 	return false
 }
 
+// MaxToolNameRunes is the maximum rune count for tool names in prompts.
+// Used to prevent prompt bloat and log spam from user-controlled tool_choice names.
+// 80 runes is sufficient for any legitimate tool name while preventing abuse.
+// Exported as a constant so tests can reference it to avoid silent drift.
+const MaxToolNameRunes = 80
+
 // sanitizeToolNameForPrompt sanitizes a tool name before embedding it into prompt constraints.
 // This prevents prompt injection or formatting issues from malicious/malformed tool names.
 // Replaces backticks (which could break markdown formatting), newlines and tabs (which could
 // inject additional instructions) with safe alternatives, and normalizes whitespace.
-// Also truncates to maxToolNameRunes to prevent prompt bloat and log spam from user-controlled input.
+// Also truncates to MaxToolNameRunes to prevent prompt bloat and log spam from user-controlled input.
+// AI REVIEW: Added ASCII control character filtering per AI review suggestion to prevent
+// log/prompt pollution from characters like \x00, \x1b, etc.
 func sanitizeToolNameForPrompt(name string) string {
 	// Replace backticks with single quotes to prevent markdown code block injection
 	name = strings.ReplaceAll(name, "`", "'")
@@ -4742,14 +4771,20 @@ func sanitizeToolNameForPrompt(name string) string {
 	name = strings.ReplaceAll(name, "\n", " ")
 	name = strings.ReplaceAll(name, "\r", " ")
 	name = strings.ReplaceAll(name, "\t", " ")
+	// Drop remaining ASCII control chars (0x00-0x1F except space, and 0x7F DEL)
+	// to prevent log/prompt pollution from malicious input.
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, name)
 	// Normalize whitespace in O(n) using strings.Fields (splits on any whitespace)
 	// and strings.Join (rejoins with single space). This also trims leading/trailing.
 	name = strings.Join(strings.Fields(name), " ")
 	// Truncate to prevent prompt bloat and log spam from user-controlled tool_choice names.
-	// 80 runes is sufficient for any legitimate tool name while preventing abuse.
-	const maxToolNameRunes = 80
-	if utf8.RuneCountInString(name) > maxToolNameRunes {
-		name = utils.TruncateString(name, maxToolNameRunes)
+	if utf8.RuneCountInString(name) > MaxToolNameRunes {
+		name = utils.TruncateString(name, MaxToolNameRunes)
 	}
 	return name
 }
@@ -4778,6 +4813,14 @@ func sanitizeToolNameForPrompt(name string) string {
 // is empty when tool_choice="required". Empty toolDefs validation should happen at a higher
 // level (e.g., applyFunctionCallRequestRewrite). This function only converts tool_choice to
 // prompt instructions, following single responsibility principle.
+//
+// AI REVIEW RESPONSE: This is a proxy server that needs to accept various client formats.
+// We intentionally accept both OpenAI and Anthropic formats without strict validation:
+// - OpenAI: "none", "auto", "required" (strings) + {"type":"function","function":{"name":"..."}}
+// - Anthropic: {"type":"auto"}, {"type":"any"}, {"type":"none"}, {"type":"tool","name":"..."}
+// We also accept "any" as a string alias for "required" to handle potential client errors.
+// This "lenient input" design is intentional for a proxy server - we convert all formats
+// to unified prompt instructions rather than rejecting non-standard inputs.
 func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition) string {
 	if toolChoice == nil {
 		return ""
@@ -4806,6 +4849,10 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 		// OpenAI API accepts "none", "auto", "required" as string values.
 		// Anthropic API accepts "auto", "any", "none" as string values (plus object format for specific tools).
 		// We accept "any" as a string to support Anthropic-style clients, treating it as "required".
+		// AI REVIEW RESPONSE: We intentionally accept "any" as string even though Anthropic
+		// officially only supports object format {"type":"any"}. This is lenient input handling
+		// for a proxy server - some clients may send string "any" by mistake, and we gracefully
+		// convert it to the same behavior as "required" rather than rejecting the request.
 		case "required", "any":
 			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
 				"You MUST call at least one tool in this response. " +
@@ -5127,6 +5174,11 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 // NOTE: Blocks are concatenated without delimiters by design.
 // This is intentional for trigger signal detection - we only need to check if the trigger
 // exists anywhere in thinking content, not preserve block boundaries.
+// AI REVIEW RESPONSE: Current implementation uses exact substring matching for ANTML tags.
+// If models start emitting <antml\b:thinking someAttr="...">, this extractor will miss it.
+// This is an acceptable tradeoff for now - regex-based extraction would add complexity
+// and performance overhead. If ANTML attribute variants appear in production, we can
+// extend the pattern list or switch to regex. Current patterns cover known formats.
 func extractThinkingContent(content string) string {
 	var sb strings.Builder
 

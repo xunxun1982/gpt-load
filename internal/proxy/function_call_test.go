@@ -7738,6 +7738,8 @@ func TestIsToolCallResultJSON_ThinkingModelWithResultFields(t *testing.T) {
 }
 
 // TestSanitizeToolNameForPrompt tests the tool name sanitization function.
+// AI REVIEW: Tests reference MaxToolNameRunes constant to avoid silent drift between
+// production code and test expectations.
 func TestSanitizeToolNameForPrompt(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -7804,6 +7806,17 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			input:    "工具名称_" + strings.Repeat("测试", 40), // 5 + 80 = 85 runes
 			expected: "工具名称_" + strings.Repeat("测试", 37) + "测", // 5 + 74 + 1 = 80 runes (truncated at 80)
 		},
+		{
+			// AI REVIEW: Test ASCII control character filtering
+			name:     "tool_name_with_control_chars",
+			input:    "tool\x00name\x1bwith\x7fcontrol",
+			expected: "toolnamewithcontrol",
+		},
+	}
+
+	// Verify MaxToolNameRunes constant is used correctly
+	if MaxToolNameRunes != 80 {
+		t.Errorf("MaxToolNameRunes = %d, expected 80", MaxToolNameRunes)
 	}
 
 	for _, tt := range tests {
@@ -8475,16 +8488,11 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceAutoWithToolHistory(t *testin
 	// The model should be allowed to answer using existing tool results
 	// NOTE: "You MUST output" appears in the tool call format instructions, which is expected.
 	// We specifically check for "CRITICAL CONTINUATION" which is the forced continuation hint.
+	// AI REVIEW: Removed the secondary brittle assertion ("followed by <invoke>" && "NOW")
+	// per AI review suggestion. The "CRITICAL CONTINUATION" check is the unique behavioral
+	// marker and is sufficient for regression testing.
 	if strings.Contains(systemPrompt, "CRITICAL CONTINUATION") {
 		t.Errorf("tool_choice=auto should NOT force continuation even with tool history")
-	}
-	// NOTE: AI review suggested removing this second assertion as potentially brittle.
-	// DECISION: Keep it as a secondary guard but simplify to just check for "NOW" keyword
-	// which is the unique behavioral marker of forced continuation. The "CRITICAL CONTINUATION"
-	// check above is the primary assertion; this provides defense-in-depth.
-	// If format instructions evolve, update this assertion accordingly.
-	if strings.Contains(systemPrompt, "followed by <invoke>") && strings.Contains(systemPrompt, "NOW") {
-		t.Errorf("tool_choice=auto should NOT contain forced continuation constraint")
 	}
 }
 
