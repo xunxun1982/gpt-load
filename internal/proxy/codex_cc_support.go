@@ -754,10 +754,7 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 					inputJSON = json.RawMessage(argsStr)
 				}
 				// Extract tool use ID from call_id (remove "call_" prefix if present)
-				toolUseID := item.CallID
-				if strings.HasPrefix(toolUseID, "call_") {
-					toolUseID = strings.TrimPrefix(toolUseID, "call_")
-				}
+				toolUseID := strings.TrimPrefix(item.CallID, "call_")
 				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    toolUseID,
@@ -1189,10 +1186,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				}
 				s.currentToolArgs.Reset()
 				// Content block start for tool_use
-				toolUseID := s.currentToolID
-				if strings.HasPrefix(toolUseID, "call_") {
-					toolUseID = strings.TrimPrefix(toolUseID, "call_")
-				}
+				toolUseID := strings.TrimPrefix(s.currentToolID, "call_")
 				logrus.WithFields(logrus.Fields{
 					"tool_id":       toolUseID,
 					"tool_name":     s.currentToolName,
@@ -1278,9 +1272,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			if toolUseID == "" {
 				toolUseID = "call_" + uuid.New().String()[:8]
 			}
-			if strings.HasPrefix(toolUseID, "call_") {
-				toolUseID = strings.TrimPrefix(toolUseID, "call_")
-			}
+			toolUseID = strings.TrimPrefix(toolUseID, "call_")
 			toolName := s.currentToolName
 			if toolName == "" {
 				toolName = "unknown_tool"
@@ -1322,9 +1314,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			case "function_call":
 				// Store completed tool use block
 				toolUseID := event.Item.CallID
-				if strings.HasPrefix(toolUseID, "call_") {
-					toolUseID = strings.TrimPrefix(toolUseID, "call_")
-				}
+				toolUseID = strings.TrimPrefix(toolUseID, "call_")
 				argsStr := event.Item.Arguments
 				if argsStr == "" {
 					argsStr = s.currentToolArgs.String()

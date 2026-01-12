@@ -100,6 +100,17 @@ func TestRemoveFunctionCallsBlocks(t *testing.T) {
 			input:    `<><invokename="mcp__serena__activate_project">xx`,
 			expected: "",
 		},
+		// Test ANTML format
+		{
+			name:     "remove antml:function_calls block",
+			input:    `<antml:function_calls><antml:invoke name="read"><antml:parameter name="path">f</antml:parameter></antml:invoke></antml:function_calls>`,
+			expected: "",
+		},
+		{
+			name:     "remove standalone antml:invoke",
+			input:    `Executing <antml:invoke name="read"><antml:parameter name="path">f</antml:parameter></antml:invoke> tool`,
+			expected: "Executing  tool",
+		},
 		{
 			name:     "remove malformed parameter tags with <> and newline",
 			input:    "Hello <>\n<parametername=\"todos\">[{}]",
@@ -10359,6 +10370,413 @@ func TestRemoveFunctionCallsBlocks_StatusQuotePattern(t *testing.T) {
 			result := removeFunctionCallsBlocks(tt.input)
 			if result != tt.expected {
 				t.Errorf("removeFunctionCallsBlocks() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestParseFunctionCallsXML_ANTMLInvoke tests parsing of ANTML-style function calls
+// used by KiloCode/Claude Code native clients.
+func TestParseFunctionCallsXML_ANTMLInvoke(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []functionCall
+	}{
+		{
+			name: "basic_antml_invoke",
+			input: `<antml:function_calls>
+<antml:invoke name="read_file">
+<antml:parameter name="path">hello.py</antml:parameter>
+</antml:invoke>
+</antml:function_calls>`,
+			expected: []functionCall{
+				{
+					Name: "read_file",
+					Args: map[string]any{
+						"path": "hello.py",
+					},
+				},
+			},
+		},
+		{
+			name: "antml_invoke_with_mixed_content",
+			input: `Here is the function call:
+<antml:invoke name="write_to_file">
+<antml:parameter name="path">test.txt</antml:parameter>
+<antml:parameter name="content">Hello World</antml:parameter>
+</antml:invoke>`,
+			expected: []functionCall{
+				{
+					Name: "write_to_file",
+					Args: map[string]any{
+						"path":    "test.txt",
+						"content": "Hello World",
+					},
+				},
+			},
+		},
+		{
+			name: "antml_invoke_with_json_param",
+			input: `<antml:invoke name="TodoWrite">
+<antml:parameter name="todos">[{"id":"1","status":"todo","content":"test"}]</antml:parameter>
+</antml:invoke>`,
+			expected: []functionCall{
+				{
+					Name: "TodoWrite",
+					Args: map[string]any{
+						"todos": []interface{}{
+							map[string]interface{}{
+								"id":      "1",
+								"status":  "todo",
+								"content": "test",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseFunctionCallsXML(tt.input, "")
+			if len(got) != len(tt.expected) {
+				t.Fatalf("got %d calls, want %d", len(got), len(tt.expected))
+			}
+			for i, wantCall := range tt.expected {
+				if got[i].Name != wantCall.Name {
+					t.Errorf("call %d name = %q, want %q", i, got[i].Name, wantCall.Name)
+				}
+				// Basic args check
+				for k, v := range wantCall.Args {
+					gotVal, ok := got[i].Args[k]
+					if !ok {
+						t.Errorf("call %d missing arg %q", i, k)
+						continue
+					}
+					// For JSON comparisons we might need deep equal, but for this test string match or type check might suffice
+					if s1, ok1 := v.(string); ok1 {
+						if s2, ok2 := gotVal.(string); ok2 {
+							if s1 != s2 {
+								t.Errorf("call %d arg %q = %q, want %q", i, k, s2, s1)
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestParseFunctionCallsXML_KiloCodeNativeFormat tests parsing of KiloCode/Kiro native format
+// tool calls when force_function_call is enabled without /claude entry point.
+// Issue: User reported loop when using KiloCode native format with force_function_call + cc_support.
+// KiloCode uses ANTML-style format: <invoke name="..."><parameter name="...">...</parameter></invoke>
+func TestParseFunctionCallsXML_KiloCodeNativeFormat(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		triggerSignal  string
+		expectedCount  int
+		expectedName   string
+		expectedArgs   map[string]string
+	}{
+		{
+			name: "kilocode_read_file_with_trigger",
+			input: `Let me read the file first.
+<<CALL_abc123>>
+<invoke name="read_file">
+<parameter name="path">hello.py</parameter>
+</invoke>`,
+			triggerSignal: "<<CALL_abc123>>",
+			expectedCount: 1,
+			expectedName:  "read_file",
+			expectedArgs:  map[string]string{"path": "hello.py"},
+		},
+		{
+			name: "kilocode_read_file_without_trigger",
+			input: `<invoke name="read_file">
+<parameter name="path">hello.py</parameter>
+</invoke>`,
+			triggerSignal: "",
+			expectedCount: 1,
+			expectedName:  "read_file",
+			expectedArgs:  map[string]string{"path": "hello.py"},
+		},
+		{
+			name: "kilocode_write_file_multiline_content",
+			input: `<<CALL_xyz789>>
+<invoke name="write_to_file">
+<parameter name="path">test.py</parameter>
+<parameter name="content">import tkinter as tk
+root = tk.Tk()
+root.title("Hello World")
+root.mainloop()</parameter>
+</invoke>`,
+			triggerSignal: "<<CALL_xyz789>>",
+			expectedCount: 1,
+			expectedName:  "write_to_file",
+			expectedArgs: map[string]string{
+				"path": "test.py",
+			},
+		},
+		{
+			name: "kilocode_function_calls_wrapper",
+			input: `<<CALL_test01>>
+<function_calls>
+<invoke name="read_file">
+<parameter name="path">config.json</parameter>
+</invoke>
+</function_calls>`,
+			triggerSignal: "<<CALL_test01>>",
+			expectedCount: 1,
+			expectedName:  "read_file",
+			expectedArgs:  map[string]string{"path": "config.json"},
+		},
+		{
+			name: "kilocode_bash_command",
+			input: `<<CALL_cmd001>>
+<invoke name="Bash">
+<parameter name="command">python hello.py</parameter>
+<parameter name="description">Run the hello world script</parameter>
+</invoke>`,
+			triggerSignal: "<<CALL_cmd001>>",
+			expectedCount: 1,
+			expectedName:  "Bash",
+			expectedArgs: map[string]string{
+				"command":     "python hello.py",
+				"description": "Run the hello world script",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := parseFunctionCallsXML(tt.input, tt.triggerSignal)
+			if len(calls) != tt.expectedCount {
+				t.Fatalf("expected %d calls, got %d", tt.expectedCount, len(calls))
+			}
+			if tt.expectedCount > 0 {
+				if calls[0].Name != tt.expectedName {
+					t.Errorf("expected name %q, got %q", tt.expectedName, calls[0].Name)
+				}
+				for k, v := range tt.expectedArgs {
+					gotVal, ok := calls[0].Args[k]
+					if !ok {
+						t.Errorf("missing arg %q", k)
+						continue
+					}
+					if gotStr, ok := gotVal.(string); ok {
+						if gotStr != v {
+							t.Errorf("arg %q = %q, want %q", k, gotStr, v)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestRemoveFunctionCallsBlocks_KiloCodeNativeFormat tests cleanup of KiloCode native format
+// tool calls to ensure no XML fragments leak to the client.
+// Issue: User reported loop when using KiloCode native format - XML fragments may cause client confusion.
+func TestRemoveFunctionCallsBlocks_KiloCodeNativeFormat(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		expected    string
+		notContains []string
+	}{
+		{
+			name: "remove_kilocode_invoke_with_trigger",
+			input: `Let me read the file.
+<<CALL_abc123>>
+<invoke name="read_file">
+<parameter name="path">hello.py</parameter>
+</invoke>`,
+			expected:    "Let me read the file.",
+			notContains: []string{"<<CALL_", "<invoke", "<parameter", "</invoke>", "</parameter>"},
+		},
+		{
+			name: "remove_kilocode_function_calls_wrapper",
+			input: `I'll check the file content.
+<<CALL_test01>>
+<function_calls>
+<invoke name="read_file">
+<parameter name="path">config.json</parameter>
+</invoke>
+</function_calls>`,
+			expected:    "I'll check the file content.",
+			notContains: []string{"<<CALL_", "<function_calls>", "<invoke", "</function_calls>"},
+		},
+		{
+			name: "preserve_text_before_and_after",
+			input: `Before text.
+<<CALL_xyz123>>
+<invoke name="test">
+<parameter name="arg">value</parameter>
+</invoke>
+After text.`,
+			expected:    "Before text.\n\nAfter text.",
+			notContains: []string{"<<CALL_", "<invoke", "<parameter"},
+		},
+		{
+			name:        "remove_standalone_invoke",
+			input:       `<invoke name="read_file"><parameter name="path">test.py</parameter></invoke>`,
+			expected:    "",
+			notContains: []string{"<invoke", "<parameter", "</invoke>"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := removeFunctionCallsBlocks(tt.input)
+			// Normalize whitespace for comparison
+			result = strings.TrimSpace(result)
+			expected := strings.TrimSpace(tt.expected)
+			if result != expected {
+				t.Errorf("removeFunctionCallsBlocks() = %q, want %q", result, expected)
+			}
+			for _, s := range tt.notContains {
+				if strings.Contains(result, s) {
+					t.Errorf("result should NOT contain %q, got %q", s, result)
+				}
+			}
+		})
+	}
+}
+
+// TestKiloCodeLoopScenario tests the specific scenario where KiloCode enters a loop
+// when force_function_call is enabled but /claude entry point is not used.
+// The loop occurs when:
+// 1. KiloCode sends a request with tools in OpenAI format
+// 2. force_function_call injects tools via system prompt
+// 3. Model outputs ANTML format tool calls
+// 4. Tool calls are parsed and converted to OpenAI tool_calls format
+// 5. If conversion is incomplete or incorrect, KiloCode may retry the same operation
+func TestKiloCodeLoopScenario(t *testing.T) {
+	// Simulate the exact output that causes loop: model outputs read_file repeatedly
+	loopInput := `I need to read the hello.py file first.
+<<CALL_ukuun7>>
+<invoke name="read_file">
+<parameter name="path">hello.py</parameter>
+</invoke>`
+
+	// Parse should succeed
+	calls := parseFunctionCallsXML(loopInput, "<<CALL_ukuun7>>")
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Name != "read_file" {
+		t.Errorf("expected name 'read_file', got %q", calls[0].Name)
+	}
+	if path, ok := calls[0].Args["path"].(string); !ok || path != "hello.py" {
+		t.Errorf("expected path 'hello.py', got %v", calls[0].Args["path"])
+	}
+
+	// Cleanup should remove all XML fragments
+	cleaned := removeFunctionCallsBlocks(loopInput)
+	cleaned = strings.TrimSpace(cleaned)
+	if strings.Contains(cleaned, "<invoke") {
+		t.Errorf("cleaned result should not contain '<invoke', got %q", cleaned)
+	}
+	if strings.Contains(cleaned, "<<CALL_") {
+		t.Errorf("cleaned result should not contain '<<CALL_', got %q", cleaned)
+	}
+	if strings.Contains(cleaned, "<parameter") {
+		t.Errorf("cleaned result should not contain '<parameter', got %q", cleaned)
+	}
+
+	// The cleaned content should only contain the preamble text
+	expected := "I need to read the hello.py file first."
+	if cleaned != expected {
+		t.Errorf("cleaned result = %q, want %q", cleaned, expected)
+	}
+}
+
+
+// TestKiloCodeStreamingXMLSuppression tests that <invoke> and <parameter> tags
+// are properly detected and suppressed in streaming responses.
+// This prevents XML fragments from leaking to KiloCode clients.
+func TestKiloCodeStreamingXMLSuppression(t *testing.T) {
+	tests := []struct {
+		name           string
+		text           string
+		shouldSuppress bool
+	}{
+		{
+			name:           "invoke tag should trigger suppression",
+			text:           `<invoke name="read_file">`,
+			shouldSuppress: true,
+		},
+		{
+			name:           "parameter tag should trigger suppression",
+			text:           `<parameter name="path">hello.py</parameter>`,
+			shouldSuppress: true,
+		},
+		{
+			name:           "closing invoke tag should trigger suppression",
+			text:           `</invoke>`,
+			shouldSuppress: true,
+		},
+		{
+			name:           "closing parameter tag should trigger suppression",
+			text:           `</parameter>`,
+			shouldSuppress: true,
+		},
+		{
+			name:           "partial invoke tag should trigger suppression",
+			text:           `<invoke`,
+			shouldSuppress: true,
+		},
+		{
+			name:           "partial parameter tag should trigger suppression",
+			text:           `<parameter`,
+			shouldSuppress: true,
+		},
+		{
+			name:           "normal text should not trigger suppression",
+			text:           `I will help you read the file.`,
+			shouldSuppress: false,
+		},
+		{
+			name:           "text with angle brackets but not XML should not trigger",
+			text:           `if x < 5 and y > 3`,
+			shouldSuppress: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate the hasInternalXml detection logic from handleFunctionCallStreamingResponse
+			hasInternalXml := strings.Contains(tt.text, "<function_call") ||
+				strings.Contains(tt.text, "</function_call") ||
+				strings.Contains(tt.text, "<invocation") ||
+				strings.Contains(tt.text, "</invocation") ||
+				strings.Contains(tt.text, "<invoke") ||
+				strings.Contains(tt.text, "</invoke") ||
+				strings.Contains(tt.text, "<parameter") ||
+				strings.Contains(tt.text, "</parameter") ||
+				strings.Contains(tt.text, "<parameters") ||
+				strings.Contains(tt.text, "</parameters") ||
+				strings.Contains(tt.text, "<name>") ||
+				strings.Contains(tt.text, "</name>") ||
+				strings.Contains(tt.text, "<args") ||
+				strings.Contains(tt.text, "</args") ||
+				strings.Contains(tt.text, "<tool>") ||
+				strings.Contains(tt.text, "</tool>") ||
+				strings.Contains(tt.text, "<tool_call") ||
+				strings.Contains(tt.text, "</tool_call") ||
+				strings.Contains(tt.text, "<todo") ||
+				strings.Contains(tt.text, "</todo") ||
+				strings.Contains(tt.text, "<command") ||
+				strings.Contains(tt.text, "</command") ||
+				strings.Contains(tt.text, "<filePath") ||
+				strings.Contains(tt.text, "</filePath")
+
+			if hasInternalXml != tt.shouldSuppress {
+				t.Errorf("hasInternalXml = %v, want %v for text %q", hasInternalXml, tt.shouldSuppress, tt.text)
 			}
 		})
 	}

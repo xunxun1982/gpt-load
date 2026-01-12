@@ -252,10 +252,11 @@ func getParallelToolCallsConfig(group *models.Group) *bool {
 		return v
 	case string:
 		lower := strings.ToLower(strings.TrimSpace(v))
-		if lower == "true" || lower == "1" || lower == "yes" || lower == "on" {
+		switch lower {
+		case "true", "1", "yes", "on":
 			result := true
 			return &result
-		} else if lower == "false" || lower == "0" || lower == "no" || lower == "off" {
+		case "false", "0", "no", "off":
 			result := false
 			return &result
 		}

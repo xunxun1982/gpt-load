@@ -55,9 +55,18 @@ var (
 	reGenericParam       = regexp.MustCompile(`(?s)<([^\s>/]+)(?:\s+[^>]*)?>(.*?)</([^\s>/]+)>`) // Note: Go RE2 doesn't support backreferences
 	reToolCallBlock      = regexp.MustCompile(`(?s)<tool_call\s+name="([^"]+)"[^>]*>(.*?)</tool_call>`)
 	reInvokeFlat         = regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"[^>]*>(.*?)</invoke>`)
+
 	// Trigger signal pattern - no (?s) needed, single line match
 	// Optimized: Use character class [a-zA-Z0-9] instead of \w for explicit ASCII matching
 	reTriggerSignal = regexp.MustCompile(`<Function_[a-zA-Z0-9]+_Start/>|<<CALL_[a-zA-Z0-9]{4,16}>>`)
+
+	// ANTML-style patterns used by KiloCode, Kiro, Claude Code, and similar clients.
+	// These clients use XML namespace-style tags: <function_calls> <invoke> <parameter>
+	// Format: <function_calls><invoke name="..."><parameter name="...">value
+	// We support optional antml: prefix for invoke and parameter tags.
+	reANTMLFunctionCallsBlock = regexp.MustCompile(`(?s)<antml:function_calls>(.*?)</antml:function_calls>`)
+	reANTMLInvoke             = regexp.MustCompile(`(?s)<antml:invoke\s+name="([^"]+)"[^>]*>(.*?)</antml:invoke>`)
+	reANTMLParameter          = regexp.MustCompile(`(?s)<antml:parameter\s+name="([^"]+)"[^>]*>(.*?)</antml:parameter>`)
 
 	// Pattern to match malformed parameter/invocation tags WITH closing tags
 	// Examples:
@@ -1850,10 +1859,15 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 									hasClose := strings.Contains(text, "</function_calls>")
 									// Detect internal XML tags to track XML block boundaries.
 									// Include both complete tags and partial patterns for robustness.
+									// CRITICAL: Include <invoke and <parameter for ANTML format (KiloCode/Kiro)
 									hasInternalXml := strings.Contains(text, "<function_call") ||
 										strings.Contains(text, "</function_call") ||
 										strings.Contains(text, "<invocation") ||
 										strings.Contains(text, "</invocation") ||
+										strings.Contains(text, "<invoke") ||
+										strings.Contains(text, "</invoke") ||
+										strings.Contains(text, "<parameter") ||
+										strings.Contains(text, "</parameter") ||
 										strings.Contains(text, "<parameters") ||
 										strings.Contains(text, "</parameters") ||
 										strings.Contains(text, "<name>") ||
@@ -3405,6 +3419,11 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 	}
 	// Remove ANTML role tags (internal markers that should not be visible)
 	if hasANTML {
+		// Remove antml:function_calls blocks first to prevent content leak
+		text = reANTMLFunctionCallsBlock.ReplaceAllString(text, "")
+		// Remove standalone antml:invoke blocks
+		text = reANTMLInvoke.ReplaceAllString(text, "")
+
 		// First remove entire ANTML blocks with content (e.g., <antml\b:format>...</antml\b:format>)
 		text = reANTMLBlockWithContent.ReplaceAllString(text, "")
 		// Then remove individual ANTML tags
@@ -6075,6 +6094,18 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		}
 	}
 
+	// Try parsing ANTML-style <antml:invoke name="..."> format
+	// This supports KiloCode/Claude Code native format
+	if antmlMatches := reANTMLInvoke.FindAllStringSubmatch(segment, -1); len(antmlMatches) > 0 {
+		antmlCalls := parseANTMLInvokes(antmlMatches)
+		if len(antmlCalls) > 0 {
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithField("parsed_count", len(antmlCalls)).Debug("Function call parsing: parsed ANTML invoke format")
+			}
+			return antmlCalls
+		}
+	}
+
 	// Try parsing malformed <invokename="..."> format (no space between tag and attribute)
 	// This handles cases where models output <><invokename="TodoWrite"><parametername="todos">[...]
 	if malformedCalls := parseMalformedInvokes(segment); len(malformedCalls) > 0 {
@@ -6361,6 +6392,64 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		return nil
 	}
 	return results
+}
+
+// parseANTMLInvokes parses ANTML-style <antml:invoke name="...">...</antml:invoke> format tool calls.
+// This format is used by KiloCode/Claude Code native clients (Force CC mode).
+func parseANTMLInvokes(matches [][]string) []functionCall {
+	if len(matches) == 0 {
+		return nil
+	}
+
+	// Only return the first valid tool call, consistent with single-call policy
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		name := strings.TrimSpace(m[1])
+		if name == "" {
+			continue
+		}
+
+		argsContent := m[2]
+		args := make(map[string]any)
+
+		// Extract ANTML parameters from args content using reANTMLParameter
+		paramMatches := reANTMLParameter.FindAllStringSubmatch(argsContent, -1)
+		for _, pm := range paramMatches {
+			if len(pm) < 3 {
+				continue
+			}
+			paramName := strings.TrimSpace(pm[1])
+			paramValue := strings.TrimSpace(pm[2])
+
+			if paramName == "" {
+				continue
+			}
+
+			// Try parsing value as JSON if it looks like JSON (array or object)
+			// This handles cases where parameter value is a JSON structure
+			trimmedValue := strings.TrimSpace(paramValue)
+			if strings.HasPrefix(trimmedValue, "{") || strings.HasPrefix(trimmedValue, "[") {
+				if jsonVal, ok := tryParseJSON(trimmedValue); ok {
+					args[paramName] = jsonVal
+					continue
+				}
+			}
+
+			args[paramName] = paramValue
+		}
+
+		// If no parameters found via ANTML regex, try generic parameters as fallback
+		// This handles cases where inner content might use standard <parameter> tags
+		if len(args) == 0 {
+			args = extractParameters(argsContent, reMcpParam, reGenericParam)
+		}
+
+		return []functionCall{{Name: name, Args: args}}
+	}
+
+	return nil
 }
 
 // parseFlatInvokes parses flat <invoke name="...">...</invoke> format tool calls.
