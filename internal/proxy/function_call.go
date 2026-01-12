@@ -48,7 +48,10 @@ var (
 	reInvocationTag      = regexp.MustCompile(`(?s)<(?:invocation|invoke)(?:\s+name="([^"]+)")?[^>]*>(.*?)</(?:invocation|invoke)>`)
 	reArgsBlock          = regexp.MustCompile(`(?s)<args>(.*?)</args>`)
 	reParamsBlock        = regexp.MustCompile(`(?s)<parameters>(.*?)</parameters>`)
-	reMcpParam           = regexp.MustCompile(`(?s)<(?:parameter|param)\s+name="([^"]+)"[^>]*>(.*?)</(?:parameter|param)>`)
+	// Support both <parameter name="..."> and <parametername="..."> (missing space) formats
+	reMcpParam           = regexp.MustCompile(`(?s)<(?:parameter|param)\s*name="([^"]+)"[^>]*>(.*?)</(?:parameter|param)>`)
+	// Support malformed <parametername="..."> format (no space, tag name includes "name")
+	reMcpParamNoSpace    = regexp.MustCompile(`(?s)<(?:parametername|paramname)="([^"]+)"[^>]*>(.*?)</(?:parametername|paramname|parameter|param)>`)
 	reGenericParam       = regexp.MustCompile(`(?s)<([^\s>/]+)(?:\s+[^>]*)?>(.*?)</([^\s>/]+)>`) // Note: Go RE2 doesn't support backreferences
 	reToolCallBlock      = regexp.MustCompile(`(?s)<tool_call\s+name="([^"]+)"[^>]*>(.*?)</tool_call>`)
 	reInvokeFlat         = regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"[^>]*>(.*?)</invoke>`)
@@ -526,6 +529,13 @@ var (
 	// Use \b to avoid matching "id": (which contains "d":)
 	reJSONMalformedIdShort = regexp.MustCompile(`\bd":\s*"`)
 
+	// Pattern to fix numeric id merged with field name
+	// Pattern from production log: 3",title":hello.py为GUI程序"
+	// Matches: digit(s) followed by ",fieldname": (missing opening quote for field name)
+	// Captures: $1 = numeric id, $2 = field name
+	// Result: "$1","$2":
+	reJSONNumericIdMergedField = regexp.MustCompile(`(\d+)",([a-zA-Z_][a-zA-Z0-9_]*)":`)
+
 	// Pattern to fix content text between objects without field name
 	// Matches: },检查hello.py是否存在", -> }, {"content": "检查hello.py是否存在",
 	// Note: Captures the text content to wrap it properly
@@ -644,22 +654,28 @@ var (
 	//   - 'activeForm": "正在读取hello.py文件' -> '' (entire line is JSON fragment)
 	//   - 'Form":设计简短漂亮的GUI程序方案' -> '' (entire line is JSON fragment)
 	//   - 'content": "联网搜索PythonGUI最佳实践' -> '' (entire line is JSON fragment)
+	//   - '_progresstitle":库并设计简洁方案' -> '' (merged status+field name)
+	//   - '_progressactiveForm": "查看当前目录' -> '' (merged status+activeForm)
 	// Pattern explanation:
-	//   - ^(?:status|activeForm|content|id|priority|state|Form)"\s*: : field name at start followed by quote-colon
+	//   - ^(?:status|activeForm|content|id|priority|state|Form|title|description|task-\d+|medium|high|low|pending|completed|_progress\w*)"\s*: : field name at start followed by quote-colon
 	//   - This catches truncated field names that lost their opening quote and appear at line start
 	// NOTE: This is a structural pattern - detects JSON field pattern at line start
 	// ENHANCED: Also match field names followed by ": (quote-colon) without space
-	reTruncatedJSONFieldAtStart = regexp.MustCompile(`^(?:status|activeForm|content|id|priority|state|Form)"?\s*:\s*`)
+	// ENHANCED: Added title, description, task-\d+, priority values, and _progress\w* to handle merged patterns
+	reTruncatedJSONFieldAtStart = regexp.MustCompile(`^(?:status|activeForm|content|id|priority|state|Form|title|description|task-\d+|medium|high|low|pending|completed|_progress\w*)"?\s*:\s*`)
 
 	// Pattern to detect truncated JSON field names without leading quote (in middle of text)
 	// This handles cases where field names appear directly after text without proper JSON structure.
 	// Examples from user report:
 	//   - '查找hello.py文件", "state":_progress' -> '查找hello.py文件'
+	//   - '● 我将帮您创建GUI程序。_progresstitle":库并设计' -> '● 我将帮您创建GUI程序。'
+	//   - '最佳实践（简短HelloWorld程序）_progressactiveForm": "查看' -> '最佳实践（简短HelloWorld程序）'
 	// Pattern explanation:
-	//   - (?:status|activeForm|content|id|priority|state|Form)": : field name followed by quote-colon
+	//   - (?:status|activeForm|content|id|priority|state|Form|title|description|task-\d+|medium|high|low|pending|completed|_progress\w*)": : field name followed by quote-colon
 	//   - This catches truncated field names that lost their opening quote
 	// NOTE: This is a structural pattern - detects JSON field pattern without opening quote
-	reTruncatedJSONFieldNoQuote = regexp.MustCompile(`(?:status|activeForm|content|id|priority|state|Form)"?\s*:\s*`)
+	// ENHANCED: Added title, description, task-\d+, priority values, and _progress\w* to handle merged patterns
+	reTruncatedJSONFieldNoQuote = regexp.MustCompile(`(?:status|activeForm|content|id|priority|state|Form|title|description|task-\d+|medium|high|low|pending|completed|_progress\w*)"?\s*:\s*`)
 
 	// Pattern to detect truncated JSON array/object fragments after text
 	// Examples:
@@ -674,6 +690,87 @@ var (
 	//   - 'pending"},设计简短漂亮的GUI程序方案' -> '' (entire line is JSON fragment)
 	// Pattern: closing brace/bracket followed by comma or text
 	reTruncatedJSONClosingFragment = regexp.MustCompile(`^(?:pending|completed|in_progress)"?\s*[}\]],?`)
+
+	// Pattern to detect merged task-id with field name (e.g., '-3activeForm' or '-2content')
+	// Examples from user report:
+	//   - 'GUI库并设计简洁方案-3activeForm修改hello.py' -> '' (entire line is JSON fragment)
+	// Pattern: -digit(s) followed by field name (no space between)
+	// STRUCTURAL: Detects merged task id and field name pattern
+	reTruncatedJSONMergedTaskIdField = regexp.MustCompile(`-\d+(?:activeForm|content|status|priority|title|description|id|state|Form)`)
+
+	// Pattern to detect merged priority field name and value (e.g., 'prioritymedium', 'priorityhigh')
+	// Examples from user report:
+	//   - 'task-4", "prioritymedium",程序能否自动运行' -> '' (entire line is JSON fragment)
+	// Pattern: priority followed immediately by value (no colon or quote between)
+	// STRUCTURAL: Detects merged priority field name and value
+	reTruncatedJSONMergedPriorityValue = regexp.MustCompile(`priority(?:medium|high|low)`)
+
+	// Pattern to detect task-N followed by quote-comma (orphaned task id value)
+	// Examples from user report:
+	//   - 'task-4", "prioritymedium"' -> '' (entire line is JSON fragment)
+	// Pattern: task-digit(s) followed by quote-comma
+	reTruncatedJSONOrphanedTaskId = regexp.MustCompile(`task-\d+"\s*,`)
+
+	// =============================================================================
+	// GENERIC JSON ARRAY INDEX LEAK PATTERNS (January 2026)
+	// =============================================================================
+	// These patterns detect JSON array index leaks where array indices appear
+	// directly in the output without proper JSON structure.
+	// Examples:
+	//   - 'todo"2,label":现有 hello.py' -> array index 2 leaked
+	//   - '",3,label":最佳实践' -> array index 3 leaked
+	//   - 'todo"4,设计简洁' -> array index 4 leaked
+	// =============================================================================
+
+	// Pattern to detect word followed by quote-number-comma (JSON array index leak)
+	// Examples:
+	//   - 'todo"2,label":' -> word followed by quote-number-comma pattern
+	//   - '方案"4,设计' -> word followed by quote-number-comma pattern
+	// Pattern: word character followed by quote, digit(s), and comma
+	// STRUCTURAL: Detects JSON array index leak pattern
+	// NOTE: We match the word char before quote to find the correct truncation point
+	reTruncatedJSONQuoteNumberComma = regexp.MustCompile(`\w"\d+,`)
+
+	// Pattern to detect comma-number-comma (consecutive array indices)
+	// Examples:
+	//   - '",3,label":' -> comma-number-comma pattern
+	//   - '",5,label":' -> comma-number-comma pattern
+	// Pattern: quote-comma followed by digit(s) and comma
+	// STRUCTURAL: Detects consecutive JSON array index pattern
+	reTruncatedJSONCommaNumberComma = regexp.MustCompile(`",\d+,`)
+
+	// Pattern to detect word followed by quote-number-comma-word-quote-colon
+	// This is a more specific pattern for the exact leak format
+	// Examples:
+	//   - 'todo"2,label":' -> word"number,word":
+	// Pattern: word boundary, quote, number, comma, word, quote, colon
+	reTruncatedJSONWordQuoteNumFieldColon = regexp.MustCompile(`\w"\d+,\w+"\s*:`)
+
+	// Pattern to detect closing bracket/quote followed by text without proper separator
+	// Examples:
+	//   - 'todo"]' at end of line -> orphaned array close
+	// Pattern: word followed by quote and closing bracket
+	reTruncatedJSONOrphanedArrayClose = regexp.MustCompile(`\w"\s*\]$`)
+
+	// Pattern to detect truncated/merged field name 'label' (likely truncated from 'title' or similar)
+	// Examples from user report:
+	//   - 'pending"搜索GUI编程最佳实践",label":/修改hello.py' -> '' (entire line is JSON fragment)
+	// Pattern: label followed by quote-colon
+	// STRUCTURAL: Detects truncated field name pattern
+	reTruncatedJSONLabelField = regexp.MustCompile(`label"?\s*:\s*`)
+
+	// Pattern to detect status value directly followed by content (no field separator)
+	// Examples from user report:
+	//   - 'pending"搜索GUI编程最佳实践"' -> '' (entire line is JSON fragment)
+	// Pattern: status value followed by quote and content
+	// STRUCTURAL: Detects merged status value and content pattern
+	reTruncatedJSONStatusValueContent = regexp.MustCompile(`(?:pending|completed|in_progress)"[^",\[\]{}]+`)
+
+	// Pattern to detect numeric id followed by quote-comma and field name
+	// Examples from user report:
+	//   - '4",label":运行GUI程序' -> '' (entire line is JSON fragment)
+	// Pattern: digit(s) followed by quote-comma and field name
+	reTruncatedJSONNumericIdThenField = regexp.MustCompile(`\d+"\s*,\s*(?:label|title|content|status|priority|activeForm|description|id|state|Form)"?\s*:`)
 
 
 	// Pattern to fix status field ending with bracket
@@ -1339,6 +1436,59 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			}
 		}
 
+		// Fallback: If no calls found in content, try parsing from reasoning_content.
+		// DeepSeek reasoner and similar models may output tool calls in reasoning_content
+		// instead of content field when force_function_call + CC mode is enabled.
+		if len(calls) == 0 {
+			if reasoningVal, ok := msg["reasoning_content"]; ok {
+				if reasoningStr, ok := reasoningVal.(string); ok && reasoningStr != "" {
+					// Bound parsing window for reasoning_content as well
+					reasoningInput := reasoningStr
+					if len(reasoningInput) > maxContentBufferBytes {
+						start := -1
+						if triggerSignal != "" {
+							start = strings.LastIndex(reasoningInput, triggerSignal)
+						}
+						if start == -1 {
+							start = strings.LastIndex(reasoningInput, "<function_calls>")
+						}
+						if start == -1 {
+							start = strings.LastIndex(reasoningInput, "<invoke")
+						}
+						if start == -1 {
+							start = len(reasoningInput) - maxContentBufferBytes
+						}
+						if start < 0 {
+							start = 0
+						}
+						for start < len(reasoningInput) && !utf8.RuneStart(reasoningInput[start]) {
+							start++
+						}
+						end := len(reasoningInput)
+						if end-start > maxContentBufferBytes {
+							end = start + maxContentBufferBytes
+						}
+						for end > start && end < len(reasoningInput) && !utf8.RuneStart(reasoningInput[end]) {
+							end--
+						}
+						reasoningInput = reasoningInput[start:end]
+					}
+
+					// Check if reasoning_content contains tool call indicators
+					if strings.Contains(reasoningInput, triggerSignal) || strings.Contains(reasoningInput, "<invoke") || strings.Contains(reasoningInput, "<function_calls>") {
+						calls = parseFunctionCallsXML(reasoningInput, triggerSignal)
+						if len(calls) == 0 {
+							calls = parseFunctionCallsXML(reasoningInput, "")
+						}
+						if len(calls) > 0 {
+							logrus.WithField("parsed_count", len(calls)).
+								Debug("Function call normal response: parsed calls from reasoning_content")
+						}
+					}
+				}
+			}
+		}
+
 		if len(calls) == 0 {
 			// Diagnose why parsing failed for debugging purposes.
 			// This helps identify common issues like missing trigger signals,
@@ -1891,6 +2041,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	// At this point, prevEventLines holds the last event before [DONE]. Attempt to
 	// parse function calls from the accumulated content buffer.
 	contentStr := contentBuf.String()
+	reasoningStr := reasoningBuf.String()
 	parsedCalls := parseFunctionCallsXML(contentStr, triggerSignal)
 
 	// Fallback: If no calls found with trigger signal, try parsing without it.
@@ -1900,6 +2051,25 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		if len(parsedCalls) > 0 {
 			logrus.WithField("parsed_count", len(parsedCalls)).
 				Debug("Function call streaming: parsed calls using fallback (no trigger signal)")
+		}
+	}
+
+	// Fallback: If no calls found in content, try parsing from reasoning_content.
+	// DeepSeek reasoner and similar models may output tool calls in reasoning_content
+	// instead of content field when force_function_call + CC mode is enabled.
+	// This is a known behavior where the model plans tool calls in its thinking process.
+	if len(parsedCalls) == 0 && reasoningStr != "" {
+		// First try with trigger signal
+		if strings.Contains(reasoningStr, triggerSignal) || strings.Contains(reasoningStr, "<invoke") || strings.Contains(reasoningStr, "<function_calls>") {
+			parsedCalls = parseFunctionCallsXML(reasoningStr, triggerSignal)
+			if len(parsedCalls) == 0 {
+				// Try without trigger signal
+				parsedCalls = parseFunctionCallsXML(reasoningStr, "")
+			}
+			if len(parsedCalls) > 0 {
+				logrus.WithField("parsed_count", len(parsedCalls)).
+					Debug("Function call streaming: parsed calls from reasoning_content")
+			}
 		}
 	}
 
@@ -3082,7 +3252,16 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 		reTruncatedJSONValueThenNumber.MatchString(text) ||
 		reTruncatedJSONOrphanedFieldSep.MatchString(text) ||
 		reTruncatedJSONEntireLine.MatchString(text) ||
-		reTruncatedJSONValueWithOrphanedSep.MatchString(text)
+		reTruncatedJSONValueWithOrphanedSep.MatchString(text) ||
+		reTruncatedJSONMergedTaskIdField.MatchString(text) ||
+		reTruncatedJSONMergedPriorityValue.MatchString(text) ||
+		reTruncatedJSONOrphanedTaskId.MatchString(text)
+	// SMART DETECTION: Use heuristic scanning instead of hardcoded patterns
+	// This replaces Pattern 10-13 (reTruncatedJSONQuoteNumberComma, etc.)
+	// and can detect new patterns without code changes
+	if !hasTruncatedJSON {
+		hasTruncatedJSON = findSmartJSONLeakPosition(text) >= 0
+	}
 	if !strings.Contains(text, "<") && !hasOrphanJson && !hasTruncatedJSON {
 		if strings.ContainsAny(text, "\n\r") {
 			lines := strings.Split(text, "\n")
@@ -3983,8 +4162,55 @@ func findJSONLeakStartIndex(text string) int {
 		}
 	}
 
+	// Pattern 7: merged task-id with field name (e.g., '-3activeForm' or '-2content')
+	// This handles cases where task id is merged with field name
+	if loc := reTruncatedJSONMergedTaskIdField.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// Pattern 8: merged priority field name and value (e.g., 'prioritymedium')
+	// This handles cases where priority field name is merged with value
+	if loc := reTruncatedJSONMergedPriorityValue.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// Pattern 9: orphaned task id value (e.g., 'task-4", ')
+	// This handles cases where task id appears as orphaned value
+	if loc := reTruncatedJSONOrphanedTaskId.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// SMART DETECTION: Generic JSON syntax anomaly scanner
+	// Instead of hardcoding specific patterns, scan for JSON syntax element combinations
+	// that indicate malformed/leaked JSON content.
+	// This handles patterns like:
+	//   - 'todo"2,label":' (word + quote + number + comma)
+	//   - '",3,label":' (quote + comma + number + comma)
+	//   - 'todo"]' (word + quote + bracket)
+	//   - Any combination of JSON syntax elements in abnormal positions
+	if smartPos := findSmartJSONLeakPosition(text); smartPos >= 0 {
+		// Ensure smartPos is at a valid UTF-8 boundary
+		// If it's in the middle of a multi-byte character, move back to the start
+		for smartPos > 0 && !utf8.RuneStart(text[smartPos]) {
+			smartPos--
+		}
+		if minPos == -1 || smartPos < minPos {
+			minPos = smartPos
+		}
+	}
+
 	// If we found a match from the regex patterns, return it
 	if minPos >= 0 {
+		// Final check: ensure minPos is at a valid UTF-8 boundary
+		for minPos > 0 && !utf8.RuneStart(text[minPos]) {
+			minPos--
+		}
 		return minPos
 	}
 
@@ -4312,6 +4538,202 @@ func isOrphanedHeaderText(trimmed string) bool {
 // Returns -1 if no sentence end is found.
 // Sentence-ending punctuation includes: 。！？.!?
 // NOTE: For ASCII punctuation (.!?), only consider it a sentence end if followed by
+// findSmartJSONLeakPosition uses heuristic scanning to detect JSON syntax anomalies.
+// Instead of hardcoding specific patterns, it scans for combinations of JSON syntax
+// elements that indicate malformed/leaked JSON content.
+//
+// SMART DETECTION APPROACH:
+// 1. Scan for quote (") followed by digit and comma/bracket - array index leak
+// 2. Scan for comma followed by digit and comma - consecutive array indices
+// 3. Scan for word followed by quote and bracket - orphaned array close
+// 4. Scan for known field names in abnormal positions (without proper JSON structure)
+//
+// Returns the position where JSON leak starts, or -1 if no leak detected.
+// When a leak is detected, scans backwards to find the start of the leaked word.
+func findSmartJSONLeakPosition(text string) int {
+	if len(text) < 3 {
+		return -1
+	}
+
+	minPos := -1
+
+	// Scan through text looking for JSON syntax anomalies
+	for i := 0; i < len(text)-1; i++ {
+		c := text[i]
+
+		// Pattern A: quote followed by digit and (comma or bracket)
+		// Examples: 'todo"2,' 'todo"2]' '方案"4,'
+		if c == '"' && i > 0 {
+			// Check if followed by digit
+			if i+1 < len(text) && isDigit(text[i+1]) {
+				// Find end of digit sequence
+				j := i + 1
+				for j < len(text) && isDigit(text[j]) {
+					j++
+				}
+				// Check if followed by comma, bracket, or field pattern
+				if j < len(text) && (text[j] == ',' || text[j] == ']' || text[j] == '}') {
+					// Check if preceded by word character (not just quote)
+					if i > 0 && isWordChar(text[i-1]) {
+						// Scan backwards to find start of word
+						wordStart := scanBackToWordStart(text, i-1)
+						if minPos == -1 || wordStart < minPos {
+							minPos = wordStart
+						}
+					}
+				}
+			}
+		}
+
+		// Pattern B: comma followed by digit and comma (consecutive array indices)
+		// Examples: '",3,' '",5,'
+		if c == ',' && i > 0 && text[i-1] == '"' {
+			// Check if followed by digit
+			if i+1 < len(text) && isDigit(text[i+1]) {
+				// Find end of digit sequence
+				j := i + 1
+				for j < len(text) && isDigit(text[j]) {
+					j++
+				}
+				// Check if followed by comma
+				if j < len(text) && text[j] == ',' {
+					// This is a consecutive array index pattern
+					// Return position of the quote before comma
+					if minPos == -1 || i-1 < minPos {
+						minPos = i - 1
+					}
+				}
+			}
+		}
+
+		// Pattern C: word followed by quote and closing bracket
+		// Examples: 'todo"]' 'label"]'
+		if c == '"' && i > 0 && isWordChar(text[i-1]) {
+			// Check if followed by closing bracket (with optional whitespace)
+			j := i + 1
+			for j < len(text) && (text[j] == ' ' || text[j] == '\t') {
+				j++
+			}
+			if j < len(text) && text[j] == ']' {
+				// Scan backwards to find start of word
+				wordStart := scanBackToWordStart(text, i-1)
+				if minPos == -1 || wordStart < minPos {
+					minPos = wordStart
+				}
+			}
+		}
+
+		// Pattern D: underscore followed by known field name pattern
+		// Examples: '_progressactiveForm' '_statusin_progress'
+		if c == '_' && i > 0 {
+			// Check for known field names after underscore
+			rest := text[i+1:]
+			if hasKnownFieldNamePrefix(rest) {
+				// Scan backwards to find start of the anomaly
+				wordStart := scanBackToWordStart(text, i-1)
+				if minPos == -1 || wordStart < minPos {
+					minPos = wordStart
+				}
+			}
+		}
+
+		// Pattern E: dash followed by digit and known field name
+		// Examples: '-3activeForm' '-2content'
+		if c == '-' && i > 0 {
+			// Check if followed by digit
+			if i+1 < len(text) && isDigit(text[i+1]) {
+				// Find end of digit sequence
+				j := i + 1
+				for j < len(text) && isDigit(text[j]) {
+					j++
+				}
+				// Check if followed by known field name
+				if j < len(text) {
+					rest := text[j:]
+					if hasKnownFieldNamePrefix(rest) {
+						// Scan backwards to find start of word
+						wordStart := scanBackToWordStart(text, i-1)
+						if minPos == -1 || wordStart < minPos {
+							minPos = wordStart
+						}
+					}
+				}
+			}
+		}
+
+		// Pattern F: known status value followed by quote (JSON value leak)
+		// Examples: 'pending"内容"' 'completed"任务"'
+		// This detects status values directly followed by quote without proper JSON structure
+		if c == '"' && i >= 7 {
+			// Check if preceded by known status value
+			// We check for: pending, completed, in_progress
+			beforeQuote := text[:i]
+			if strings.HasSuffix(beforeQuote, "pending") ||
+				strings.HasSuffix(beforeQuote, "completed") ||
+				strings.HasSuffix(beforeQuote, "in_progress") {
+				// Find the start of the status word
+				wordStart := scanBackToWordStart(text, i-1)
+				if minPos == -1 || wordStart < minPos {
+					minPos = wordStart
+				}
+			}
+		}
+	}
+
+	return minPos
+}
+
+// isDigit checks if a byte is an ASCII digit
+func isDigit(c byte) bool {
+	return c >= '0' && c <= '9'
+}
+
+// isWordChar checks if a byte is a word character (alphanumeric, underscore, or dash)
+func isWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '_' || c == '-'
+}
+
+// scanBackToWordStart scans backwards from position to find the start of a word.
+// For ASCII word characters, it scans back to find the word boundary.
+// For UTF-8 text, it ensures we don't cut in the middle of a multi-byte character.
+func scanBackToWordStart(text string, pos int) int {
+	start := pos
+	for start > 0 {
+		c := text[start-1]
+		if isWordChar(c) {
+			start--
+		} else {
+			break
+		}
+	}
+	// Ensure we're at a valid UTF-8 boundary
+	// If start is in the middle of a UTF-8 sequence, move forward to the next valid boundary
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return start
+}
+
+// hasKnownFieldNamePrefix checks if text starts with a known JSON field name
+// that commonly appears in TodoWrite and similar tool outputs.
+// This is a heuristic check, not an exhaustive list.
+func hasKnownFieldNamePrefix(text string) bool {
+	// Known field names from TodoWrite and similar tools
+	// These are checked as prefixes to handle merged patterns
+	knownFields := []string{
+		"activeForm", "content", "status", "priority", "label", "title",
+		"description", "id", "state", "Form", "progress", "todos",
+		"pending", "completed", "in_progress", "medium", "high", "low",
+	}
+	for _, field := range knownFields {
+		if strings.HasPrefix(text, field) {
+			return true
+		}
+	}
+	return false
+}
+
 // whitespace or CJK character (to avoid matching file extensions like "hello.py")
 func findLastSentenceEnd(text string) int {
 	lastPos := -1
@@ -5718,9 +6140,9 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		callsContent = fcMatch[1]
 	} else {
 		// Fuzzy fallback: tolerate missing <function_calls> root as long as the
-		// content still contains <function_call>, <invocation>, or <tool_call> blocks.
+		// content still contains <function_call>, <invocation>, <invoke>, or <tool_call> blocks.
 		// This helps when the model omits the wrapper but emits valid inner structures.
-		if strings.Contains(segment, "<function_call>") || strings.Contains(segment, "<tool_call") || strings.Contains(segment, "<invocation") {
+		if strings.Contains(segment, "<function_call>") || strings.Contains(segment, "<tool_call") || strings.Contains(segment, "<invocation") || strings.Contains(segment, "<invoke>") {
 			callsContent = segment
 		} else {
 			return nil
@@ -5736,6 +6158,19 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	// Pre-allocate with estimated capacity: each function_call block may contain
 	// multiple <invoke> tags, so we use a generous estimate to reduce reallocation.
 	results := make([]functionCall, 0, len(callMatches)*2)
+
+	// Fallback: If no complete <function_call>...</function_call> blocks found,
+	// try parsing unclosed <function_call> blocks. This handles cases where
+	// models output <function_call><tool>...</tool><args>...</args> without
+	// the closing </function_call> tag.
+	if len(callMatches) == 0 && strings.Contains(callsContent, "<function_call>") {
+		if unclosedCalls := parseUnclosedFunctionCallBlocks(callsContent); len(unclosedCalls) > 0 {
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithField("parsed_count", len(unclosedCalls)).Debug("Function call parsing: parsed unclosed function_call blocks")
+			}
+			return unclosedCalls
+		}
+	}
 
 	// First, handle traditional <function_call> blocks.
 	for _, m := range callMatches {
@@ -5760,6 +6195,16 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 					nameMatch := reNameTag.FindStringSubmatch(argsContent)
 					if len(nameMatch) >= 2 {
 						name = strings.TrimSpace(nameMatch[1])
+					}
+				}
+
+				// If name is still empty, try to find <tool> or <tool_name> tag inside the content.
+				// This handles the format: <invoke><tool>toolname</tool><parameter>...</parameter></invoke>
+				// which is output by some models (e.g., DeepSeek reasoner with force function call).
+				if name == "" {
+					toolMatch := reToolTag.FindStringSubmatch(argsContent)
+					if len(toolMatch) >= 2 {
+						name = strings.TrimSpace(toolMatch[1])
 					}
 				}
 
@@ -5851,6 +6296,50 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 				"param_content": utils.TruncateString(paramContent, 200),
 				"args_count":    len(args),
 			}).Debug("Function call parsing: extracted via fuzzy invocation fallback")
+		}
+	}
+
+	// Fuzzy fallback: if still nothing but content contains <invoke>, try parsing
+	// <invoke><tool>...</tool><parameter>...</parameter></invoke> format.
+	// This handles cases where models output <invoke> blocks with <tool> child tag
+	// instead of name attribute (e.g., DeepSeek reasoner with force function call + CC mode).
+	if len(results) == 0 && strings.Contains(callsContent, "<invoke>") {
+		invMatches := reInvocationTag.FindAllStringSubmatch(callsContent, -1)
+		for _, invMatch := range invMatches {
+			if len(invMatch) < 3 {
+				continue
+			}
+			name := strings.TrimSpace(invMatch[1])
+			argsContent := invMatch[2]
+
+			// If name attribute is missing, try to find <name> tag inside the content.
+			if name == "" {
+				nameMatch := reNameTag.FindStringSubmatch(argsContent)
+				if len(nameMatch) >= 2 {
+					name = strings.TrimSpace(nameMatch[1])
+				}
+			}
+
+			// If name is still empty, try to find <tool> or <tool_name> tag inside the content.
+			if name == "" {
+				toolMatch := reToolTag.FindStringSubmatch(argsContent)
+				if len(toolMatch) >= 2 {
+					name = strings.TrimSpace(toolMatch[1])
+				}
+			}
+
+			if name == "" {
+				continue
+			}
+
+			args := extractParameters(argsContent, reMcpParam, reGenericParam)
+			results = append(results, functionCall{Name: name, Args: args})
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"tool_name":  name,
+					"args_count": len(args),
+				}).Debug("Function call parsing: extracted via invoke with tool tag fallback")
+			}
 		}
 	}
 
@@ -5985,6 +6474,81 @@ func parseFlatInvokesWithContentCheck(segment string, matches [][]string) []func
 
 // parseUnclosedInvokes parses unclosed <invoke name="..."> formats (truncated output).
 // It captures the name and all remaining content as the parameter source.
+// parseUnclosedFunctionCallBlocks parses <function_call> blocks that are missing
+// the closing </function_call> tag. This handles cases where models output:
+// <function_call><tool>name</tool><args>...</args> without </function_call>
+// This is a common issue with DeepSeek reasoner models.
+func parseUnclosedFunctionCallBlocks(text string) []functionCall {
+	// Find all <function_call> opening tags
+	openTag := "<function_call>"
+	results := make([]functionCall, 0)
+
+	idx := 0
+	for {
+		start := strings.Index(text[idx:], openTag)
+		if start == -1 {
+			break
+		}
+		start += idx
+
+		// Find the end of this block (next <function_call> or </function_calls> or end of text)
+		contentStart := start + len(openTag)
+		contentEnd := len(text)
+
+		// Check for next <function_call> tag
+		nextOpen := strings.Index(text[contentStart:], openTag)
+		if nextOpen != -1 {
+			contentEnd = contentStart + nextOpen
+		}
+
+		// Check for </function_calls> tag
+		closeWrapper := strings.Index(text[contentStart:], "</function_calls>")
+		if closeWrapper != -1 && contentStart+closeWrapper < contentEnd {
+			contentEnd = contentStart + closeWrapper
+		}
+
+		// Check for </function_call> tag (in case it's actually closed)
+		closeTag := strings.Index(text[contentStart:], "</function_call>")
+		if closeTag != -1 && contentStart+closeTag < contentEnd {
+			contentEnd = contentStart + closeTag
+		}
+
+		block := text[contentStart:contentEnd]
+
+		// Extract tool name from <tool> or <tool_name> tag
+		toolMatch := reToolTag.FindStringSubmatch(block)
+		if len(toolMatch) < 2 {
+			idx = contentEnd
+			continue
+		}
+		name := strings.TrimSpace(toolMatch[1])
+		if name == "" {
+			idx = contentEnd
+			continue
+		}
+
+		// Extract args from <args> or <parameters> tag
+		var argsContent string
+		argsBlockMatch := reArgsBlock.FindStringSubmatch(block)
+		if len(argsBlockMatch) >= 2 {
+			argsContent = argsBlockMatch[1]
+		} else {
+			// Try <parameters> tag
+			paramsBlockMatch := reParamsBlock.FindStringSubmatch(block)
+			if len(paramsBlockMatch) >= 2 {
+				argsContent = paramsBlockMatch[1]
+			}
+		}
+
+		args := extractParameters(argsContent, reMcpParam, reGenericParam)
+		results = append(results, functionCall{Name: name, Args: args})
+
+		idx = contentEnd
+	}
+
+	return results
+}
+
 // Uses precompiled reUnclosedInvoke regex at package level for performance.
 func parseUnclosedInvokes(text string) []functionCall {
 	matches := reUnclosedInvoke.FindAllStringSubmatchIndex(text, -1)
@@ -6471,6 +7035,29 @@ func repairMalformedJSON(s string) string {
 		result = reJSONMalformedStatusEmpty.ReplaceAllString(result, `"status":"pending"}`)
 	}
 
+	// STRUCTURAL FIX 11.5: Fix truncated status value "_progress" -> "in_progress"
+	// This handles cases where model outputs truncated status values like:
+	// "status":"_progress" -> "status":"in_progress"
+	// Pattern from production log: _progresstitle":库并设计简洁方案"
+	if strings.Contains(result, `"_progress"`) {
+		result = strings.ReplaceAll(result, `"_progress"`, `"in_progress"`)
+	}
+	// Also handle unquoted _progress: "status":_progress -> "status":"in_progress"
+	if strings.Contains(result, `:_progress`) {
+		result = strings.ReplaceAll(result, `:_progress`, `:"in_progress"`)
+	}
+
+	// STRUCTURAL FIX 11.6: Fix numeric id merged with field name
+	// Pattern from production log: 3",title":hello.py为GUI程序"
+	// This is a severely truncated pattern where:
+	// - "3" is the id value
+	// - ",title": is the next field (missing opening quote)
+	// Should become: "3","title":"hello.py为GUI程序"
+	// Use regex to match: digit(s) followed by ",fieldname":
+	if reJSONNumericIdMergedField != nil {
+		result = reJSONNumericIdMergedField.ReplaceAllString(result, `"$1","$2":`)
+	}
+
 	// --- Fixes for production log malformed JSON ---
 	// --- Fixes for production log malformed JSON ---
 	// Remove strings.Contains checks to ensure regexes run (they are fast enough)
@@ -6871,6 +7458,19 @@ func fixTruncatedFieldNames(s string) string {
 		result = strings.ReplaceAll(result, `{task":`, `{"task":`)
 	}
 
+	// Fix truncated title field (from production log: _progresstitle":库并设计简洁方案")
+	// Pattern: ,title": -> ,"title":
+	// Pattern: _progresstitle": -> ,"in_progress","title": (status value merged with field name)
+	if strings.Contains(result, `title":`) && !strings.Contains(result, `"title":`) {
+		// First handle the merged pattern: _progresstitle": -> ,"in_progress","title":
+		result = strings.ReplaceAll(result, `_progresstitle":`, `,"status":"in_progress","title":`)
+		result = strings.ReplaceAll(result, `pendingtitle":`, `,"status":"pending","title":`)
+		result = strings.ReplaceAll(result, `completedtitle":`, `,"status":"completed","title":`)
+		// Then handle normal truncated pattern
+		result = strings.ReplaceAll(result, `,title":`, `,"title":`)
+		result = strings.ReplaceAll(result, `{title":`, `{"title":`)
+	}
+
 	return result
 }
 
@@ -6927,19 +7527,41 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 	}
 
 	// First attempt: MCP parameter blocks with name attributes.
+	// Parse both standard <parameter name="..."> and malformed <parametername="..."> formats.
 	mcpMatches := mcpParamRe.FindAllStringSubmatch(content, -1)
-	if len(mcpMatches) > 0 {
-		for _, pm := range mcpMatches {
-			if len(pm) < 3 {
-				continue
-			}
-			key := strings.TrimSpace(pm[1])
-			valStr := strings.TrimSpace(pm[2])
-			if key == "" {
-				continue
-			}
+	for _, pm := range mcpMatches {
+		if len(pm) < 3 {
+			continue
+		}
+		key := strings.TrimSpace(pm[1])
+		valStr := strings.TrimSpace(pm[2])
+		if key == "" {
+			continue
+		}
+		args[key] = parseValueOrString(valStr)
+	}
+
+	// Also try malformed <parametername="..."> format (no space between tag and attribute).
+	// This handles cases where models output <parametername="status">completed</parameter>
+	// instead of <parameter name="status">completed</parameter>.
+	noSpaceMatches := reMcpParamNoSpace.FindAllStringSubmatch(content, -1)
+	for _, pm := range noSpaceMatches {
+		if len(pm) < 3 {
+			continue
+		}
+		key := strings.TrimSpace(pm[1])
+		valStr := strings.TrimSpace(pm[2])
+		if key == "" {
+			continue
+		}
+		// Only add if not already present (standard format takes precedence)
+		if _, exists := args[key]; !exists {
 			args[key] = parseValueOrString(valStr)
 		}
+	}
+
+	// If we found any MCP-style parameters, return them
+	if len(args) > 0 {
 		return args
 	}
 

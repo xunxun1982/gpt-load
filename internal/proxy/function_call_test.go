@@ -1808,6 +1808,28 @@ func TestRemoveFunctionCallsBlocks_TruncatedJSONAfterText(t *testing.T) {
 			input:    `Form":设计简短漂亮的GUI程序方案", "state":/创建hello.py为GUI程序`,
 			expected: ``,
 		},
+		// New test case from user report (January 2026) - severely truncated TodoWrite output
+		{
+			name:     "user report - _progresstitle merged pattern",
+			input:    `_progresstitle":库并设计简洁方案",3",title":hello.py为GUI程序",4",title":`,
+			expected: ``,
+		},
+		{
+			name:     "user report - text before _progresstitle pattern",
+			input:    `● 我将帮您创建GUI程序。_progresstitle":库并设计简洁方案",3",title":hello.py为GUI程序"`,
+			expected: `● 我将帮您创建GUI程序。`,
+		},
+		// New test case from user report (January 2026) - _progressactiveForm merged pattern
+		{
+			name:     "user report - _progressactiveForm merged pattern",
+			input:    `最佳实践（简短HelloWorld程序）_progressactiveForm": "查看当前目录的hello.py当前目录的hello.py文件内容",task-2",medium",GUI库并设计简洁方案`,
+			expected: `最佳实践（简短HelloWorld程序）`,
+		},
+		{
+			name:     "user report - task-id and priority merged",
+			input:    `task-2",medium",GUI库并设计简洁方案`,
+			expected: ``,
+		},
 		{
 			name:     "user report - complex mixed pattern",
 			input:    `pending"},设计简短漂亮的GUI程序方案Form":设计简短漂亮的GUI程序方案", "state":/创建hello.py为GUI程序", "activeForm":修改/创建hello.py为GUI程序`,
@@ -2883,6 +2905,47 @@ func TestRepairMalformedJSON(t *testing.T) {
 			err := json.Unmarshal([]byte(repaired), &result)
 			if tt.shouldParse && err != nil {
 				t.Errorf("repairMalformedJSON() failed to produce valid JSON: %v, repaired: %q", err, repaired)
+			}
+		})
+	}
+}
+
+// TestRepairMalformedJSON_UnderscoreProgressConversion tests that _progress is converted to in_progress
+func TestRepairMalformedJSON_UnderscoreProgressConversion(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		contains string
+		notContains string
+	}{
+		{
+			name:        "quoted _progress to in_progress",
+			input:       `[{"id":"1","status":"_progress"}]`,
+			contains:    `"in_progress"`,
+			notContains: `"_progress"`,
+		},
+		{
+			name:        "unquoted _progress to in_progress",
+			input:       `[{"id":"1","status":_progress}]`,
+			contains:    `"in_progress"`,
+			notContains: `:_progress`,
+		},
+		{
+			name:        "multiple _progress values",
+			input:       `[{"id":"1","status":"_progress"},{"id":"2","status":"_progress"}]`,
+			contains:    `"in_progress"`,
+			notContains: `"_progress"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := repairMalformedJSON(tt.input)
+			if !strings.Contains(result, tt.contains) {
+				t.Errorf("Expected result to contain %q, got: %s", tt.contains, result)
+			}
+			if tt.notContains != "" && strings.Contains(result, tt.notContains) {
+				t.Errorf("Expected result to NOT contain %q, got: %s", tt.notContains, result)
 			}
 		})
 	}
@@ -4987,6 +5050,22 @@ func TestRepairMalformedJSON_ProductionLogSeverePatterns(t *testing.T) {
 			input:    `[{"id":"1","content":"测试","activeForm":"测试","status":"_progress"}]`,
 			wantJSON: true,
 			desc:     "_progress should be converted to in_progress",
+		},
+		{
+			name: "numeric_id_merged_with_title_field",
+			// Pattern from user report: 3",title":hello.py为GUI程序"
+			// This is a severely truncated pattern where id value is merged with next field name
+			input:    `[{"id":"1","content":"任务1","status":"pending"},{"id":"2",title":"任务2","status":"pending"},{"id":"3",title":"任务3","status":"pending"}]`,
+			wantJSON: true,
+			desc:     "Numeric id merged with title field should be repaired",
+		},
+		{
+			name: "status_merged_with_title_field",
+			// Pattern from user report: _progresstitle":库并设计简洁方案"
+			// This is status value merged with next field name
+			input:    `[{"id":"1","content":"任务","status":"_progresstitle":"设计方案"}]`,
+			wantJSON: false, // This is too malformed to repair into valid JSON
+			desc:     "Status merged with title is severely malformed",
 		},
 	}
 
@@ -9281,6 +9360,1005 @@ func TestParseFunctionCallsXML_Unclosed(t *testing.T) {
 				if got, ok := calls[0].Args[k]; !ok || got != v {
 					t.Errorf("Expected arg %q = %v, got %v", k, v, got)
 				}
+			}
+		})
+	}
+}
+
+// TestFunctionCallStreamingResponse_ReasoningContentToolCalls tests that tool calls
+// in reasoning_content are correctly parsed when content field has no tool calls.
+// This is a critical fix for DeepSeek reasoner models that output tool calls in
+// reasoning_content instead of content when force_function_call + CC mode is enabled.
+func TestFunctionCallStreamingResponse_ReasoningContentToolCalls(t *testing.T) {
+	triggerSignal := "<<CALL_test123>>"
+
+	tests := []struct {
+		name              string
+		contentStr        string
+		reasoningStr      string
+		triggerSignal     string
+		wantCallCount     int
+		wantFirstToolName string
+	}{
+		{
+			name:              "tool_calls_in_content_only",
+			contentStr:        triggerSignal + "\n<invoke name=\"Read\"><parameter name=\"path\">test.py</parameter></invoke>",
+			reasoningStr:      "Let me think about this...",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     1,
+			wantFirstToolName: "Read",
+		},
+		{
+			name:              "tool_calls_in_reasoning_only",
+			contentStr:        "I will help you with that.",
+			reasoningStr:      triggerSignal + "\n<invoke name=\"TodoWrite\"><parameter name=\"todos\">[{\"content\":\"task1\"}]</parameter></invoke>",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     1,
+			wantFirstToolName: "TodoWrite",
+		},
+		{
+			name:              "tool_calls_in_both_prefer_content",
+			contentStr:        triggerSignal + "\n<invoke name=\"Read\"><parameter name=\"path\">a.py</parameter></invoke>",
+			reasoningStr:      triggerSignal + "\n<invoke name=\"Write\"><parameter name=\"path\">b.py</parameter></invoke>",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     1,
+			wantFirstToolName: "Read",
+		},
+		{
+			name:              "reasoning_with_function_calls_block",
+			contentStr:        "",
+			reasoningStr:      "<function_calls>\n<invoke name=\"Search\"><parameter name=\"query\">test</parameter></invoke>\n</function_calls>",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     1,
+			wantFirstToolName: "Search",
+		},
+		{
+			name:              "reasoning_without_trigger_but_with_invoke",
+			contentStr:        "",
+			reasoningStr:      "<invoke name=\"Bash\"><parameter name=\"command\">ls -la</parameter></invoke>",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     1,
+			wantFirstToolName: "Bash",
+		},
+		{
+			name:              "no_tool_calls_anywhere",
+			contentStr:        "Here is my response.",
+			reasoningStr:      "I thought about this carefully.",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     0,
+			wantFirstToolName: "",
+		},
+		{
+			name:              "empty_reasoning",
+			contentStr:        "No tools needed.",
+			reasoningStr:      "",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     0,
+			wantFirstToolName: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate the parsing logic from handleFunctionCallStreamingResponse
+			parsedCalls := parseFunctionCallsXML(tt.contentStr, tt.triggerSignal)
+
+			// Fallback: try without trigger signal
+			if len(parsedCalls) == 0 && strings.Contains(tt.contentStr, "<function_calls>") {
+				parsedCalls = parseFunctionCallsXML(tt.contentStr, "")
+			}
+
+			// Fallback: try parsing from reasoning_content
+			if len(parsedCalls) == 0 && tt.reasoningStr != "" {
+				if strings.Contains(tt.reasoningStr, tt.triggerSignal) || strings.Contains(tt.reasoningStr, "<invoke") || strings.Contains(tt.reasoningStr, "<function_calls>") {
+					parsedCalls = parseFunctionCallsXML(tt.reasoningStr, tt.triggerSignal)
+					if len(parsedCalls) == 0 {
+						parsedCalls = parseFunctionCallsXML(tt.reasoningStr, "")
+					}
+				}
+			}
+
+			if len(parsedCalls) != tt.wantCallCount {
+				t.Errorf("Expected %d calls, got %d", tt.wantCallCount, len(parsedCalls))
+			}
+
+			if tt.wantCallCount > 0 && len(parsedCalls) > 0 {
+				if parsedCalls[0].Name != tt.wantFirstToolName {
+					t.Errorf("Expected first tool name %q, got %q", tt.wantFirstToolName, parsedCalls[0].Name)
+				}
+			}
+		})
+	}
+}
+
+// TestFunctionCallNormalResponse_ReasoningContentToolCalls tests that tool calls
+// in reasoning_content are correctly parsed in non-streaming responses.
+func TestFunctionCallNormalResponse_ReasoningContentToolCalls(t *testing.T) {
+	triggerSignal := "<<CALL_abc123>>"
+
+	tests := []struct {
+		name              string
+		contentStr        string
+		reasoningStr      string
+		triggerSignal     string
+		wantCallCount     int
+		wantFirstToolName string
+	}{
+		{
+			name:              "deepseek_reasoner_tool_in_reasoning",
+			contentStr:        "我将帮您将hello.py修改为漂亮的GUI程序。",
+			reasoningStr:      "嗯，用户想将hello.py改成漂亮的GUI程序。\n" + triggerSignal + "\n<invoke name=\"todo-add\"><parameter name=\"content\">[\"Read file\", \"Modify code\"]</parameter></invoke>",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     1,
+			wantFirstToolName: "todo-add",
+		},
+		{
+			name:              "reasoning_with_multiple_tools",
+			contentStr:        "",
+			reasoningStr:      triggerSignal + "\n<invoke name=\"Read\"><parameter name=\"path\">a.py</parameter></invoke>\n<invoke name=\"Write\"><parameter name=\"path\">b.py</parameter><parameter name=\"content\">test</parameter></invoke>",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     1, // Parser returns first valid call only in flat invoke mode
+			wantFirstToolName: "Read",
+		},
+		{
+			name:              "malformed_invoke_in_reasoning",
+			contentStr:        "",
+			reasoningStr:      "<><invokename=\"TodoWrite\"><parametername=\"todos\">[{\"content\":\"task\"}]</parameter></invoke>",
+			triggerSignal:     triggerSignal,
+			wantCallCount:     1,
+			wantFirstToolName: "TodoWrite",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate the parsing logic from handleFunctionCallNormalResponse
+			parsedCalls := parseFunctionCallsXML(tt.contentStr, tt.triggerSignal)
+
+			// Fallback: try without trigger signal
+			if len(parsedCalls) == 0 && strings.Contains(tt.contentStr, "<function_calls>") {
+				parsedCalls = parseFunctionCallsXML(tt.contentStr, "")
+			}
+
+			// Fallback: try parsing from reasoning_content
+			if len(parsedCalls) == 0 && tt.reasoningStr != "" {
+				if strings.Contains(tt.reasoningStr, tt.triggerSignal) || strings.Contains(tt.reasoningStr, "<invoke") || strings.Contains(tt.reasoningStr, "<function_calls>") {
+					parsedCalls = parseFunctionCallsXML(tt.reasoningStr, tt.triggerSignal)
+					if len(parsedCalls) == 0 {
+						parsedCalls = parseFunctionCallsXML(tt.reasoningStr, "")
+					}
+				}
+			}
+
+			if len(parsedCalls) != tt.wantCallCount {
+				t.Errorf("Expected %d calls, got %d", tt.wantCallCount, len(parsedCalls))
+			}
+
+			if tt.wantCallCount > 0 && len(parsedCalls) > 0 {
+				if parsedCalls[0].Name != tt.wantFirstToolName {
+					t.Errorf("Expected first tool name %q, got %q", tt.wantFirstToolName, parsedCalls[0].Name)
+				}
+			}
+		})
+	}
+}
+
+// TestDetectToolIntentInReasoning tests the detectToolIntentInReasoning function
+// which is used to detect if reasoning_content contains tool call indicators.
+func TestDetectToolIntentInReasoning(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{
+			name:     "empty_string",
+			input:    "",
+			expected: false,
+		},
+		{
+			name:     "no_tool_intent",
+			input:    "Let me think about this problem carefully.",
+			expected: false,
+		},
+		{
+			name:     "contains_function_call",
+			input:    "I need to use function_call to read the file.",
+			expected: true,
+		},
+		{
+			name:     "contains_tool_call",
+			input:    "I will make a tool_call to search.",
+			expected: true,
+		},
+		{
+			name:     "contains_invoke",
+			input:    "I should invoke the read function.",
+			expected: true,
+		},
+		{
+			name:     "contains_function_calls_tag",
+			input:    "Let me output <function_calls> block.",
+			expected: true,
+		},
+		{
+			name:     "contains_filesystem_read",
+			input:    "I will use filesystem-read to check the file.",
+			expected: true,
+		},
+		{
+			name:     "contains_todo_create",
+			input:    "First, I'll use todo-create to plan the tasks.",
+			expected: true,
+		},
+		{
+			name:     "contains_bash_exec",
+			input:    "I need to bash-exec this command.",
+			expected: true,
+		},
+		{
+			name:     "contains_web_search",
+			input:    "Let me web-search for more information.",
+			expected: true,
+		},
+		{
+			name:     "contains_call_the_tool",
+			input:    "I should call the tool to get the data.",
+			expected: true,
+		},
+		{
+			name:     "contains_use_the_tool",
+			input:    "I will use the tool to complete this task.",
+			expected: true,
+		},
+		{
+			name:     "contains_execute_the",
+			input:    "I need to execute the command.",
+			expected: true,
+		},
+		{
+			name:     "contains_run_the_command",
+			input:    "Let me run the command to check.",
+			expected: true,
+		},
+		{
+			name:     "case_insensitive_function_call",
+			input:    "I will use FUNCTION_CALL here.",
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := detectToolIntentInReasoning(tt.input)
+			if result != tt.expected {
+				t.Errorf("detectToolIntentInReasoning(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestParseFunctionCallsXML_FunctionCallToolArgsFormat tests parsing of the
+// <function_calls><function_call><tool>...</tool><args>...</args></function_call></function_calls> format.
+// This format is used by some models (e.g., DeepSeek reasoner) when force_function_call is enabled.
+func TestParseFunctionCallsXML_FunctionCallToolArgsFormat(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		triggerSignal  string
+		wantCallCount  int
+		wantToolName   string
+		wantArgKey     string
+		wantArgValue   any
+	}{
+		{
+			name: "basic_function_call_tool_args",
+			input: `<function_calls>
+<function_call>
+<tool>todo-update</tool>
+<args>
+{"status": "completed", "todoId": "todo-123"}
+</args>
+</function_call>
+</function_calls>`,
+			triggerSignal: "",
+			wantCallCount: 1,
+			wantToolName:  "todo-update",
+			wantArgKey:    "status",
+			wantArgValue:  "completed",
+		},
+		{
+			name: "production_log_format_with_preamble",
+			input: `我看到您的hello.py文件已经是使用tkinter的GUI程序了，但有一个字体格式的小错误需要修正。我已经修复了这个问题，现在让我测试运行修复后的程序：
+
+<function_calls>
+<function_call>
+<tool>todo-update</tool>
+<args>
+{"status": "completed", "todoId": "todo-1768234480341_n0kngsy"}
+</args>
+</function_call>
+</function_calls>`,
+			triggerSignal: "",
+			wantCallCount: 1,
+			wantToolName:  "todo-update",
+			wantArgKey:    "todoId",
+			wantArgValue:  "todo-1768234480341_n0kngsy",
+		},
+		{
+			name: "multiple_function_calls",
+			input: `<function_calls>
+<function_call>
+<tool>Read</tool>
+<args>{"path": "hello.py"}</args>
+</function_call>
+<function_call>
+<tool>Write</tool>
+<args>{"path": "output.txt", "content": "test"}</args>
+</function_call>
+</function_calls>`,
+			triggerSignal: "",
+			wantCallCount: 2,
+			wantToolName:  "Read",
+			wantArgKey:    "path",
+			wantArgValue:  "hello.py",
+		},
+		{
+			name: "function_call_with_tool_name_tag",
+			input: `<function_calls>
+<function_call>
+<tool_name>bash</tool_name>
+<args>{"command": "ls -la"}</args>
+</function_call>
+</function_calls>`,
+			triggerSignal: "",
+			wantCallCount: 1,
+			wantToolName:  "bash",
+			wantArgKey:    "command",
+			wantArgValue:  "ls -la",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := parseFunctionCallsXML(tt.input, tt.triggerSignal)
+			if len(calls) != tt.wantCallCount {
+				t.Errorf("Expected %d calls, got %d", tt.wantCallCount, len(calls))
+				return
+			}
+			if tt.wantCallCount > 0 {
+				if calls[0].Name != tt.wantToolName {
+					t.Errorf("Expected tool name %q, got %q", tt.wantToolName, calls[0].Name)
+				}
+				if tt.wantArgKey != "" {
+					if got, ok := calls[0].Args[tt.wantArgKey]; !ok {
+						t.Errorf("Expected arg %q to exist", tt.wantArgKey)
+					} else if got != tt.wantArgValue {
+						t.Errorf("Expected arg %q = %v, got %v", tt.wantArgKey, tt.wantArgValue, got)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestParseFunctionCallsXML_TruncatedFunctionCall tests parsing of truncated
+// <function_calls><function_call><tool>... format where the closing tags are missing.
+// This is the exact issue from production: model outputs tool call but stream ends early.
+// Note: With parseUnclosedFunctionCallBlocks fallback, we can now parse blocks that have
+// at least a complete <tool>name</tool> tag, even without </function_call> closing tag.
+func TestParseFunctionCallsXML_TruncatedFunctionCall(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		triggerSignal string
+		wantCallCount int
+		wantToolName  string
+	}{
+		{
+			name:          "truncated_at_tool_tag",
+			input:         `<function_calls><function_call><tool>todo-update`,
+			triggerSignal: "",
+			wantCallCount: 0, // Cannot parse without complete <tool>...</tool> tag
+			wantToolName:  "",
+		},
+		{
+			name:          "truncated_after_tool_close",
+			input:         `<function_calls><function_call><tool>todo-update</tool>`,
+			triggerSignal: "",
+			wantCallCount: 1, // Can parse with complete tool tag, args will be empty
+			wantToolName:  "todo-update",
+		},
+		{
+			name:          "truncated_in_args",
+			input:         `<function_calls><function_call><tool>todo-update</tool><args>{"status": "completed"`,
+			triggerSignal: "",
+			wantCallCount: 1, // Can parse tool name, incomplete JSON args may be partially parsed
+			wantToolName:  "todo-update",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := parseFunctionCallsXML(tt.input, tt.triggerSignal)
+			if len(calls) != tt.wantCallCount {
+				t.Errorf("Expected %d calls, got %d", tt.wantCallCount, len(calls))
+			}
+			if tt.wantCallCount > 0 && len(calls) > 0 && calls[0].Name != tt.wantToolName {
+				t.Errorf("Expected tool name %q, got %q", tt.wantToolName, calls[0].Name)
+			}
+		})
+	}
+}
+
+// TestParseFunctionCallsXML_TriggerSignalNotInContent tests that when a trigger signal
+// is provided but not present in the content, the parser still correctly parses
+// <function_calls> blocks. This is a critical scenario for DeepSeek reasoner models
+// that may output tool calls without the trigger signal.
+func TestParseFunctionCallsXML_TriggerSignalNotInContent(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		triggerSignal  string
+		wantCallCount  int
+		wantToolName   string
+		wantArgKey     string
+		wantArgValue   any
+	}{
+		{
+			name: "trigger_signal_provided_but_not_in_content",
+			input: `我看到您的hello.py文件已经是使用tkinter的GUI程序了，但有一个字体格式的小错误需要修正。我已经修复了这个问题，现在让我测试运行修复后的程序：
+
+<function_calls>
+<function_call>
+<tool>todo-update</tool>
+<args>
+{"status": "completed", "todoId": "todo-1768234480341_n0kngsy"}
+</args>
+</function_call>
+</function_calls>`,
+			triggerSignal: "<<CALL_test123>>",
+			wantCallCount: 1,
+			wantToolName:  "todo-update",
+			wantArgKey:    "status",
+			wantArgValue:  "completed",
+		},
+		{
+			name: "trigger_signal_provided_and_in_content",
+			input: `Let me help you.
+<<CALL_abc123>>
+<function_calls>
+<function_call>
+<tool>Read</tool>
+<args>{"path": "test.py"}</args>
+</function_call>
+</function_calls>`,
+			triggerSignal: "<<CALL_abc123>>",
+			wantCallCount: 1,
+			wantToolName:  "Read",
+			wantArgKey:    "path",
+			wantArgValue:  "test.py",
+		},
+		{
+			name: "empty_trigger_signal_with_function_calls",
+			input: `<function_calls>
+<function_call>
+<tool>Write</tool>
+<args>{"path": "output.txt", "content": "hello"}</args>
+</function_call>
+</function_calls>`,
+			triggerSignal: "",
+			wantCallCount: 1,
+			wantToolName:  "Write",
+			wantArgKey:    "path",
+			wantArgValue:  "output.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := parseFunctionCallsXML(tt.input, tt.triggerSignal)
+			if len(calls) != tt.wantCallCount {
+				t.Errorf("Expected %d calls, got %d", tt.wantCallCount, len(calls))
+				return
+			}
+			if tt.wantCallCount > 0 {
+				if calls[0].Name != tt.wantToolName {
+					t.Errorf("Expected tool name %q, got %q", tt.wantToolName, calls[0].Name)
+				}
+				if tt.wantArgKey != "" {
+					if got, ok := calls[0].Args[tt.wantArgKey]; !ok {
+						t.Errorf("Expected arg %q to exist", tt.wantArgKey)
+					} else if got != tt.wantArgValue {
+						t.Errorf("Expected arg %q = %v, got %v", tt.wantArgKey, tt.wantArgValue, got)
+					}
+				}
+			}
+		})
+	}
+}
+
+
+// TestParseFunctionCallsXML_ProductionLogExactFormat tests parsing of the exact format
+// from production logs where DeepSeek reasoner outputs tool calls in content field.
+func TestParseFunctionCallsXML_ProductionLogExactFormat(t *testing.T) {
+	// This is the exact content from production logs (reconstructed from streaming chunks)
+	content := `我看到您的hello.py文件已经是使用tkinter的GUI程序了，但有一个字体格式的小错误需要修正。我已经修复了这个问题，现在让我测试运行修复后的程序：
+
+<function_calls>
+<function_call>
+<tool>todo-update</tool>
+<args>
+{"status": "completed", "todoId": "todo-1768234480341_n0kngsy"}
+</args>
+</function_call>
+</function_calls>`
+
+	// Test with trigger signal that is NOT in the content
+	triggerSignal := "<<CALL_test123>>"
+
+	// First try with trigger signal
+	calls := parseFunctionCallsXML(content, triggerSignal)
+	if len(calls) != 1 {
+		t.Errorf("Expected 1 call with trigger signal, got %d", len(calls))
+	}
+
+	// Verify the parsed call
+	if len(calls) > 0 {
+		if calls[0].Name != "todo-update" {
+			t.Errorf("Expected tool name 'todo-update', got %q", calls[0].Name)
+		}
+		if status, ok := calls[0].Args["status"]; !ok || status != "completed" {
+			t.Errorf("Expected status='completed', got %v", calls[0].Args["status"])
+		}
+		if todoId, ok := calls[0].Args["todoId"]; !ok || todoId != "todo-1768234480341_n0kngsy" {
+			t.Errorf("Expected todoId='todo-1768234480341_n0kngsy', got %v", calls[0].Args["todoId"])
+		}
+	}
+
+	// Also test the fallback path (no trigger signal)
+	calls2 := parseFunctionCallsXML(content, "")
+	if len(calls2) != 1 {
+		t.Errorf("Expected 1 call without trigger signal, got %d", len(calls2))
+	}
+}
+
+
+// TestParseFunctionCallsXML_StreamingAccumulation tests that content accumulated
+// from streaming chunks can be correctly parsed. This simulates the exact scenario
+// from production where content is accumulated character by character.
+func TestParseFunctionCallsXML_StreamingAccumulation(t *testing.T) {
+	// Simulate streaming chunks (based on actual production log)
+	chunks := []string{
+		"我看到", "您的", "hello", ".py", "文件", "已经是", "使用", "tk", "inter", "的",
+		"GUI", "程序", "了", "，", "但", "有一个", "字体", "格式", "的小", "错误",
+		"需要", "修正", "。", "我已经", "修复", "了", "这个问题", "，", "现在", "让我",
+		"测试", "运行", "修复", "后的", "程序", "：\n\n",
+		"<", "function", "_calls", ">\n",
+		"<", "function", "_call", ">\n",
+		"<", "tool", ">", "todo", "-up", "date", "</", "tool", ">\n",
+		"<", "args", ">\n",
+		"{\"", "status", "\":", " \"", "completed", "\",", " \"", "todo", "Id", "\":",
+		" \"", "todo", "-", "176", "823", "448", "034", "1", "_n", "0", "k", "ng", "sy", "\"}\n",
+		"</", "args", ">\n",
+		"</", "function", "_call", ">\n",
+		"</", "function", "_calls", ">",
+	}
+
+	// Accumulate chunks
+	var contentBuf strings.Builder
+	for _, chunk := range chunks {
+		contentBuf.WriteString(chunk)
+	}
+	content := contentBuf.String()
+
+	// Test with trigger signal that is NOT in the content
+	triggerSignal := "<<CALL_test123>>"
+
+	// First try with trigger signal
+	calls := parseFunctionCallsXML(content, triggerSignal)
+	if len(calls) != 1 {
+		t.Errorf("Expected 1 call with trigger signal, got %d", len(calls))
+		t.Logf("Content: %s", content)
+	}
+
+	// Verify the parsed call
+	if len(calls) > 0 {
+		if calls[0].Name != "todo-update" {
+			t.Errorf("Expected tool name 'todo-update', got %q", calls[0].Name)
+		}
+		if status, ok := calls[0].Args["status"]; !ok || status != "completed" {
+			t.Errorf("Expected status='completed', got %v", calls[0].Args["status"])
+		}
+	}
+
+	// Also test the fallback path (no trigger signal)
+	calls2 := parseFunctionCallsXML(content, "")
+	if len(calls2) != 1 {
+		t.Errorf("Expected 1 call without trigger signal, got %d", len(calls2))
+	}
+}
+
+
+// TestParseFunctionCallsXML_MissingFunctionCallCloseTag tests parsing when
+// the </function_call> closing tag is missing. This is a real scenario from
+// production where DeepSeek reasoner outputs incomplete XML.
+func TestParseFunctionCallsXML_MissingFunctionCallCloseTag(t *testing.T) {
+	// Content with missing </function_call> tag (based on production log)
+	content := `我看到您的hello.py文件已经是使用tkinter的GUI程序了，但有一个字体格式的小错误需要修正。我已经修复了这个问题，现在让我测试运行修复后的程序：
+
+<function_calls>
+<function_call>
+<tool>todo-update</tool>
+<args>
+{"status": "completed", "todoId": "todo-1768234480341_n0kngsy"}
+</args>
+</function_calls>`
+
+	// Test with trigger signal that is NOT in the content
+	triggerSignal := "<<CALL_test123>>"
+
+	// First try with trigger signal
+	calls := parseFunctionCallsXML(content, triggerSignal)
+	t.Logf("Parsed %d calls with trigger signal", len(calls))
+	if len(calls) > 0 {
+		t.Logf("First call: name=%s, args=%v", calls[0].Name, calls[0].Args)
+	}
+
+	// Also test the fallback path (no trigger signal)
+	calls2 := parseFunctionCallsXML(content, "")
+	t.Logf("Parsed %d calls without trigger signal", len(calls2))
+	if len(calls2) > 0 {
+		t.Logf("First call: name=%s, args=%v", calls2[0].Name, calls2[0].Args)
+	}
+
+	// We expect at least 1 call to be parsed even with missing </function_call> tag
+	if len(calls) == 0 && len(calls2) == 0 {
+		t.Errorf("Expected at least 1 call to be parsed, got 0")
+	}
+}
+
+
+// TestParseFunctionCallsXML_InvokeWithToolTag tests parsing of <invoke> blocks
+// that contain <tool> tag for tool name instead of name attribute.
+// This is a format output by some models (e.g., DeepSeek reasoner with force function call + CC mode).
+func TestParseFunctionCallsXML_InvokeWithToolTag(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		triggerSignal string
+		wantCallCount int
+		wantToolName  string
+		wantArgKey    string
+		wantArgValue  any
+	}{
+		{
+			name: "invoke_with_tool_tag_and_parameter",
+			input: `<<CALL_ssyxe9>>
+<invoke>
+<tool>todo-update</tool>
+<parameter name="todoId">todo-1768237241465_9dg7wt3</parameter>
+<parameter name="status">completed</parameter>
+</invoke>`,
+			triggerSignal: "<<CALL_ssyxe9>>",
+			wantCallCount: 1,
+			wantToolName:  "todo-update",
+			wantArgKey:    "status",
+			wantArgValue:  "completed",
+		},
+		{
+			name: "invoke_with_tool_tag_no_trigger",
+			input: `<invoke>
+<tool>filesystem-read</tool>
+<parameter name="filePath">F:\MyProjects\test\hello.py</parameter>
+</invoke>`,
+			triggerSignal: "",
+			wantCallCount: 1,
+			wantToolName:  "filesystem-read",
+			wantArgKey:    "filePath",
+			wantArgValue:  `F:\MyProjects\test\hello.py`,
+		},
+		{
+			name: "multiple_invoke_with_tool_tag",
+			input: `<<CALL_test>>
+<invoke>
+<tool>todo-update</tool>
+<parameter name="todoId">todo-1</parameter>
+<parameter name="status">completed</parameter>
+</invoke>
+<invoke>
+<tool>filesystem-read</tool>
+<parameter name="filePath">test.py</parameter>
+</invoke>`,
+			triggerSignal: "<<CALL_test>>",
+			wantCallCount: 2,
+			wantToolName:  "todo-update",
+			wantArgKey:    "status",
+			wantArgValue:  "completed",
+		},
+		{
+			name: "invoke_with_parametername_no_space",
+			input: `<<CALL_ssyxe9>>
+<invoke>
+<tool>todo-update</tool>
+<parameter name="todoId">todo-1768237241465_9dg7wt3</parameter>
+<parametername="status">completed</parametername>
+</invoke>`,
+			triggerSignal: "<<CALL_ssyxe9>>",
+			wantCallCount: 1,
+			wantToolName:  "todo-update",
+			wantArgKey:    "status",
+			wantArgValue:  "completed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := parseFunctionCallsXML(tt.input, tt.triggerSignal)
+			if len(calls) != tt.wantCallCount {
+				t.Errorf("Expected %d calls, got %d", tt.wantCallCount, len(calls))
+				return
+			}
+			if tt.wantCallCount > 0 {
+				if calls[0].Name != tt.wantToolName {
+					t.Errorf("Expected tool name %q, got %q", tt.wantToolName, calls[0].Name)
+				}
+				if tt.wantArgKey != "" {
+					if got, ok := calls[0].Args[tt.wantArgKey]; !ok {
+						t.Errorf("Expected arg %q to exist, got args: %v", tt.wantArgKey, calls[0].Args)
+					} else if got != tt.wantArgValue {
+						t.Errorf("Expected arg %q = %v, got %v", tt.wantArgKey, tt.wantArgValue, got)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestRemoveFunctionCallsBlocks_January2026SevereMalformedPattern tests the specific
+// severely malformed pattern from user's CC output in January 2026.
+// Pattern: 最佳实践（简短HelloWorld程序）_progressactiveForm": "查看当前目录的hello.py...
+// This is a severely malformed JSON where multiple fields are merged together.
+func TestRemoveFunctionCallsBlocks_January2026SevereMalformedPattern(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			// User reported pattern from January 2026
+			// Contains merged field names like _progressactiveForm, task-2, prioritymedium
+			name:     "severely_malformed_merged_fields",
+			input:    `最佳实践（简短HelloWorld程序）_progressactiveForm": "查看当前目录的hello.py当前目录的hello.py文件内容",task-2",medium",GUI库并设计简洁方案GUI库并设计简洁方案-3activeForm修改hello.py为GUI程序为GUI程序",task-4", "prioritymedium",程序能否自动运行程序能否自动运行-5`,
+			expected: "最佳实践（简短HelloWorld程序）",
+		},
+		{
+			// Simpler version with _progressactiveForm
+			name:     "_progressactiveForm_merged_pattern",
+			input:    `我将帮您创建GUI程序。_progressactiveForm": "查看当前目录`,
+			expected: "我将帮您创建GUI程序。",
+		},
+		{
+			// Pattern with task-N merged with content
+			// NOTE: The text before the merged pattern is preserved
+			name:     "task_id_merged_with_content",
+			input:    `GUI库并设计简洁方案-3activeForm修改hello.py`,
+			expected: "GUI库并设计简洁方案",
+		},
+		{
+			// Pattern with prioritymedium merged
+			name:     "priority_merged_pattern",
+			input:    `task-4", "prioritymedium",程序能否自动运行`,
+			expected: "",
+		},
+		{
+			// Pattern starting with _progress
+			name:     "_progress_at_start",
+			input:    `_progressactiveForm": "查看当前目录`,
+			expected: "",
+		},
+		{
+			// Preserve normal text without JSON patterns
+			name:     "preserve_normal_text",
+			input:    "最佳实践（简短HelloWorld程序）是使用Tkinter库",
+			expected: "最佳实践（简短HelloWorld程序）是使用Tkinter库",
+		},
+		// New test cases for January 2026 array index leak pattern
+		{
+			// User reported pattern: todo"2,label":现有 hello.py 文件内容
+			name:     "array_index_leak_todo_label",
+			input:    `我来帮你将hello.py修改为漂亮的GUI程序。让我先了解当前目录结构，然后制定实施方案。todo"2,label":现有 hello.py 文件内容`,
+			expected: "我来帮你将hello.py修改为漂亮的GUI程序。让我先了解当前目录结构，然后制定实施方案。",
+		},
+		{
+			// Pattern with multiple array indices
+			name:     "multiple_array_indices",
+			input:    `todo"2,label":现有 hello.py 文件内容",3,label":最佳实践和最短实现方案`,
+			expected: "",
+		},
+		{
+			// Pattern ending with todo"]
+			// NOTE: The text before the JSON leak is preserved
+			name:     "orphaned_array_close",
+			input:    `修改hello.py 为GUI程序",6,label":并运行GUI程序todo"]`,
+			expected: "修改hello.py 为GUI程序",
+		},
+		{
+			// Full user reported pattern
+			name:     "full_array_index_leak_pattern",
+			input:    `● 我来帮你将hello.py修改为漂亮的GUI程序。让我先了解当前目录结构，然后制定实施方案。todo"2,label":现有 hello.py 文件内容",3,label":最佳实践和最短实现方案todo"4,设计简洁漂亮的GUI方案",5,label": "修改hello.py 为GUI程序",6,label":并运行GUI程序todo"]`,
+			expected: "● 我来帮你将hello.py修改为漂亮的GUI程序。让我先了解当前目录结构，然后制定实施方案。",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := removeFunctionCallsBlocks(tt.input)
+			if result != tt.expected {
+				t.Errorf("removeFunctionCallsBlocks() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestFindSmartJSONLeakPosition tests the smart JSON leak detection function.
+// This function uses heuristic scanning instead of hardcoded patterns.
+func TestFindSmartJSONLeakPosition(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantPos  int // -1 means no leak detected
+	}{
+		// Pattern A: quote followed by digit and comma
+		{
+			name:    "word_quote_digit_comma",
+			input:   `todo"2,label":`,
+			wantPos: 0, // "todo" starts at 0
+		},
+		{
+			name:    "cjk_word_quote_digit_comma",
+			input:   `方案"4,设计`,
+			wantPos: -1, // CJK chars are not word chars, so no backward scan
+		},
+		// Pattern B: comma followed by digit and comma
+		{
+			name:    "quote_comma_digit_comma",
+			input:   `",3,label":`,
+			wantPos: 0, // quote at position 0
+		},
+		// Pattern C: word followed by quote and bracket
+		{
+			name:    "word_quote_bracket",
+			input:   `todo"]`,
+			wantPos: 0, // "todo" starts at 0
+		},
+		// Pattern D: underscore followed by known field name
+		// NOTE: Pattern D requires i > 0 (underscore must not be at start)
+		{
+			name:    "underscore_known_field_at_start",
+			input:   `_progressactiveForm": "查看`,
+			wantPos: -1, // underscore at start, Pattern D requires i > 0
+		},
+		{
+			name:    "text_underscore_known_field",
+			input:   `程序_progressactiveForm": "查看`,
+			wantPos: 6, // underscore at byte 6 (after CJK chars)
+		},
+		// Pattern E: dash followed by digit and known field name
+		// NOTE: Pattern E requires i > 0 (dash must not be at start)
+		{
+			name:    "dash_digit_known_field_at_start",
+			input:   `-3activeForm修改`,
+			wantPos: -1, // dash at start, Pattern E requires i > 0
+		},
+		{
+			name:    "word_dash_digit_known_field",
+			input:   `task-3activeForm修改`,
+			wantPos: 0, // "task" starts at 0
+		},
+		// Pattern F: status value followed by quote
+		{
+			name:    "pending_quote",
+			input:   `pending"内容"`,
+			wantPos: 0, // "pending" starts at 0
+		},
+		{
+			name:    "completed_quote",
+			input:   `completed"任务"`,
+			wantPos: 0, // "completed" starts at 0
+		},
+		{
+			name:    "text_pending_quote",
+			input:   `创建任务。pending"搜索"`,
+			wantPos: 15, // "pending" starts after CJK text (4 CJK chars * 3 bytes + 1 CJK period * 3 bytes = 15)
+		},
+		// No leak cases
+		{
+			name:    "normal_text",
+			input:   `这是正常的文本，没有JSON泄漏`,
+			wantPos: -1,
+		},
+		{
+			name:    "normal_quote",
+			input:   `He said "hello" to me`,
+			wantPos: -1,
+		},
+		{
+			name:    "normal_dash",
+			input:   `task-manager is running`,
+			wantPos: -1,
+		},
+		{
+			name:    "normal_pending_word",
+			input:   `The task is pending approval.`,
+			wantPos: -1, // "pending" not followed by quote
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findSmartJSONLeakPosition(tt.input)
+			if got != tt.wantPos {
+				t.Errorf("findSmartJSONLeakPosition(%q) = %d, want %d", tt.input, got, tt.wantPos)
+			}
+		})
+	}
+}
+
+
+// TestRemoveFunctionCallsBlocks_StatusQuotePattern tests the pattern where
+// status value (pending/completed/in_progress) is directly followed by quote and content.
+// Example: pending"搜索PythonGUI最佳实践（最短代码实现）修改hello.py为GUI程序pending"测试程序是否正常运行",
+func TestRemoveFunctionCallsBlocks_StatusQuotePattern(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			// User reported pattern from January 2026
+			// Status value directly followed by quote and content
+			name:     "pending_quote_content",
+			input:    `● 首先，让我创建一个任务清单来规划这个工作。pending"搜索PythonGUI最佳实践（最短代码实现）修改hello.py为GUI程序pending"测试程序是否正常运行",`,
+			expected: "● 首先，让我创建一个任务清单来规划这个工作。",
+		},
+		{
+			// Simpler version
+			name:     "pending_quote_simple",
+			input:    `创建任务清单。pending"搜索最佳实践"`,
+			expected: "创建任务清单。",
+		},
+		{
+			// completed status
+			name:     "completed_quote_content",
+			input:    `任务已完成。completed"下一步操作"`,
+			expected: "任务已完成。",
+		},
+		{
+			// in_progress status
+			name:     "in_progress_quote_content",
+			input:    `正在执行。in_progress"当前任务"`,
+			expected: "正在执行。",
+		},
+		{
+			// Multiple status values merged
+			name:     "multiple_status_merged",
+			input:    `pending"任务1"pending"任务2"completed"任务3"`,
+			expected: "",
+		},
+		{
+			// Preserve normal text with "pending" word
+			name:     "preserve_normal_pending",
+			input:    `The task is pending approval.`,
+			expected: "The task is pending approval.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := removeFunctionCallsBlocks(tt.input)
+			if result != tt.expected {
+				t.Errorf("removeFunctionCallsBlocks() = %q, want %q", result, tt.expected)
 			}
 		})
 	}
