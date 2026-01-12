@@ -1307,6 +1307,20 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
+	// Apply parallel_tool_calls config for OpenAI sub-groups when force_function_call is NOT enabled.
+	// This mirrors the behavior in the main HandleProxy path for standard groups.
+	// When force_function_call is enabled, native tools are removed and replaced with prompt-based
+	// tool injection, so parallel_tool_calls is not applicable.
+	if group.ChannelType == "openai" && !isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+		finalBodyBytes, err = ps.applyParallelToolCallsConfig(finalBodyBytes, group)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply parallel_tool_calls config for sub-group")
+		}
+	}
+
 	// Apply function call request rewrite for eligible OpenAI sub-groups.
 	// Clear any stale function call state from previous sub-group attempts
 	// so that downstream response handlers do not see outdated flags.

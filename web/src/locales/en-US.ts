@@ -461,7 +461,7 @@ export default {
     parallelToolCallsEnabled: "Enabled",
     parallelToolCallsDisabled: "Disabled",
     parallelToolCallsTip:
-      "Only effective when native tools are present in the request. Has no effect when Force Function Call is enabled.",
+      "Only effective when native tools are present in the request. Has no effect when Force Function Call is enabled. Codex channel defaults to enabled.",
     ccSupport: "Force CC Support",
     ccSupportTooltip1:
       "Enable Claude Code compatibility mode, allowing Claude clients to connect via /claude endpoint.",

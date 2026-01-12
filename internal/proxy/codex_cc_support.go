@@ -388,6 +388,8 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	// Only set when tools are present (some upstreams reject the parameter without tools).
 	// Default behavior: if not configured, enable parallel tool calls (true) for Codex.
 	// Users can disable via group config: {"parallel_tool_calls": false}
+	// NOTE: force_function_call precedence check is not needed here because force_function_call
+	// is UI-restricted to OpenAI-only channels and is not applicable to Codex channel.
 	if len(codexReq.Tools) > 0 {
 		parallelConfig := getParallelToolCallsConfig(group)
 		if parallelConfig != nil {

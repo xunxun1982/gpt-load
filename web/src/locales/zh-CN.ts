@@ -441,7 +441,8 @@ export default {
     parallelToolCallsDefault: "默认（由上游决定）",
     parallelToolCallsEnabled: "启用",
     parallelToolCallsDisabled: "禁用",
-    parallelToolCallsTip: "仅在请求中包含原生工具时生效。启用「强制函数调用」时此配置无效。",
+    parallelToolCallsTip:
+      "仅在请求中包含原生工具时生效。启用「强制函数调用」时此配置无效。Codex 渠道默认启用并行调用。",
     ccSupport: "强制 CC 支持",
     ccSupportTooltip1: "启用 Claude Code 兼容模式，允许 Claude 客户端通过 /claude 端点连接。",
     ccSupportTooltip2: "请求将自动从 Claude 格式转换为 OpenAI 格式后转发到上游。",

@@ -461,7 +461,7 @@ export default {
     parallelToolCallsEnabled: "有効",
     parallelToolCallsDisabled: "無効",
     parallelToolCallsTip:
-      "リクエストにネイティブツールが含まれている場合にのみ有効です。「強制関数呼び出し」が有効な場合、この設定は無効です。",
+      "リクエストにネイティブツールが含まれている場合にのみ有効です。「強制関数呼び出し」が有効な場合、この設定は無効です。Codex チャンネルはデフォルトで有効です。",
     ccSupport: "強制 CC サポート",
     ccSupportTooltip1:
       "Claude Code 互換モードを有効にし、Claude クライアントが /claude エンドポイント経由で接続できるようにします。",
