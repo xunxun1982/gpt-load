@@ -682,6 +682,32 @@ var (
 
 	// Pattern to match just the closing thinking tag for manual scanning
 	reANTMLClosingTag = regexp.MustCompile(`(?s)</antml\\{0,2}b:thinking>`)
+
+	// Tool result indicator patterns for cleanTruncatedToolResultJSONOnce
+	// Moved to package level to avoid repeated allocation in hot path
+	// Both regular and escaped quote patterns are included
+	toolResultIndicatorPatterns = []string{
+		// Regular quote patterns
+		`"display_result"`,
+		`"is_error":true`,
+		`"is_error":false`,
+		`"is_error": true`,
+		`"is_error": false`,
+		`"status":"completed"`,
+		`"status":"error"`,
+		`"status": "completed"`,
+		`"status": "error"`,
+		`"mcp_server"`,
+		`"duration"`,
+		// Escaped quote patterns (for JSON inside strings)
+		`\"is_error\":true`,
+		`\"is_error\":false`,
+		`\"status\":\"completed\"`,
+		`\"status\":\"error\"`,
+		`\"mcp_server\"`,
+		`\"display_result\"`,
+		`\"duration\"`,
+	}
 )
 
 var (
@@ -1672,11 +1698,13 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 									// Examples: "<>", "<><invokename=", "<parametername="
 									// Detection: Check for specific malformed patterns that indicate tool call fragments.
 									// ENHANCED: Also detect JSON arrays with task fields
+									// NOTE: activeForm detection narrowed to require JSON separator pattern ":"
+									// to reduce false positives on legitimate user-visible text
 									hasMalformedXml := strings.Contains(text, "<>") ||
 										strings.Contains(text, "<invokename") ||
 										strings.Contains(text, "<parametername") ||
 										(strings.Contains(text, `"todos"`) && strings.Contains(text, `[{`)) ||
-										(strings.Contains(text, `"activeForm"`) && strings.Contains(text, `"`))
+										(strings.Contains(text, `"activeForm"`) && strings.Contains(text, `":`))
 
 									// If malformed XML is detected, use full removeFunctionCallsBlocks cleanup.
 									// This ensures malformed fragments are never sent to the client.
@@ -1709,7 +1737,10 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 											if len(remaining) > 0 {
 												nextChar := remaining[0]
 												// XML tag names start with letter or underscore; / for closing tags
-												if (nextChar >= 'a' && nextChar <= 'z') ||
+												// Also treat "<<" as a partial trigger start (e.g., split <<CALL_...>>)
+												// This prevents trigger signal leakage when split across streaming chunks
+												if nextChar == '<' ||
+													(nextChar >= 'a' && nextChar <= 'z') ||
 													(nextChar >= 'A' && nextChar <= 'Z') ||
 													nextChar == '/' || nextChar == '_' {
 													// CRITICAL: Do NOT suppress <think or <thinking tags
@@ -2686,34 +2717,12 @@ func cleanTruncatedToolResultJSONOnce(text string) string {
 
 	result := text
 
-	// Tool result indicator patterns to search for (both regular and escaped quote patterns)
-	indicatorPatterns := []string{
-		// Regular quote patterns
-		`"display_result"`,
-		`"is_error":true`,
-		`"is_error":false`,
-		`"is_error": true`,
-		`"is_error": false`,
-		`"status":"completed"`,
-		`"status":"error"`,
-		`"status": "completed"`,
-		`"status": "error"`,
-		`"mcp_server"`,
-		`"duration"`,
-		// Escaped quote patterns (for JSON inside strings)
-		`\"is_error\":true`,
-		`\"is_error\":false`,
-		`\"status\":\"completed\"`,
-		`\"status\":\"error\"`,
-		`\"mcp_server\"`,
-		`\"display_result\"`,
-		`\"duration\"`,
-	}
-
 	// Find the first tool result indicator
+	// NOTE: toolResultIndicatorPatterns is a package-level variable to avoid
+	// repeated allocation in hot path (per AI review suggestion)
 	firstIndicatorIdx := -1
 	isEscapedPattern := false
-	for _, pattern := range indicatorPatterns {
+	for _, pattern := range toolResultIndicatorPatterns {
 		idx := strings.Index(result, pattern)
 		if idx >= 0 && (firstIndicatorIdx == -1 || idx < firstIndicatorIdx) {
 			firstIndicatorIdx = idx

@@ -7573,7 +7573,7 @@ func TestShouldSkipMalformedLine(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("shouldSkipMalformedLine(%q) = %v, want %v", tt.input, result, tt.expected)
 			}
-	})
+		})
 	}
 }
 
