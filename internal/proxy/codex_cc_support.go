@@ -384,11 +384,19 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		}
 	}
 
-	// Enable parallel tool calls only when tools are present.
-	// Some OpenAI-compatible upstreams reject parallel_tool_calls when no tools are defined.
+	// Apply parallel_tool_calls config for Codex channel.
+	// Only set when tools are present (some upstreams reject the parameter without tools).
+	// Default behavior: if not configured, enable parallel tool calls (true) for Codex.
+	// Users can disable via group config: {"parallel_tool_calls": false}
 	if len(codexReq.Tools) > 0 {
-		parallelCalls := true
-		codexReq.ParallelToolCalls = &parallelCalls
+		parallelConfig := getParallelToolCallsConfig(group)
+		if parallelConfig != nil {
+			codexReq.ParallelToolCalls = parallelConfig
+		} else {
+			// Default to true for Codex channel (original behavior)
+			parallelCalls := true
+			codexReq.ParallelToolCalls = &parallelCalls
+		}
 	}
 
 	// Configure reasoning for Codex API (Responses API) only when thinking is enabled.

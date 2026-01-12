@@ -44,6 +44,52 @@ func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group
 	return json.Marshal(requestData)
 }
 
+// applyParallelToolCallsConfig applies the parallel_tool_calls configuration to the request.
+// This is only applied when:
+//   - The request contains tools (native tool calling)
+//   - force_function_call is NOT enabled (prompt-based tool calling removes native tools)
+//   - The group has parallel_tool_calls configured (not nil)
+//
+// When parallel_tool_calls is not configured, the parameter is not added to the request,
+// allowing the upstream API to use its default behavior (typically true for OpenAI).
+//
+// Use cases:
+//   - Set to false for gpt-4.1-nano which may have issues with parallel tool calls
+//   - Set to false for simpler client handling (one tool call per response)
+//   - Set to false for upstreams that don't support parallel tool calls
+func (ps *ProxyServer) applyParallelToolCallsConfig(bodyBytes []byte, group *models.Group) ([]byte, error) {
+	if len(bodyBytes) == 0 {
+		return bodyBytes, nil
+	}
+
+	// Get parallel_tool_calls config; nil means not configured
+	parallelConfig := getParallelToolCallsConfig(group)
+	if parallelConfig == nil {
+		return bodyBytes, nil
+	}
+
+	var requestData map[string]any
+	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+		logrus.Warnf("failed to unmarshal request body for parallel_tool_calls, passing through: %v", err)
+		return bodyBytes, nil
+	}
+
+	// Only apply if request has tools (native tool calling)
+	if _, hasTools := requestData["tools"]; !hasTools {
+		return bodyBytes, nil
+	}
+
+	// Apply the configuration
+	requestData["parallel_tool_calls"] = *parallelConfig
+
+	logrus.WithFields(logrus.Fields{
+		"group":               group.Name,
+		"parallel_tool_calls": *parallelConfig,
+	}).Debug("Applied parallel_tool_calls config")
+
+	return json.Marshal(requestData)
+}
+
 // applyModelMapping applies model name mapping based on group configuration.
 // It modifies the request body to replace the model name if a mapping is configured.
 // Returns the modified body bytes and the original model name (empty if no mapping occurred).

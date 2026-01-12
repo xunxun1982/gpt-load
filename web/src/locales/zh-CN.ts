@@ -435,6 +435,13 @@ export default {
       "仅在上游模型本身不支持原生函数调用时启用。对于已经原生支持函数调用的渠道，请不要开启该开关，否则可能出现重复调用或未定义的行为。",
     functionCallOpenAITip:
       "此开关仅对 OpenAI 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
+    parallelToolCalls: "并行工具调用",
+    parallelToolCallsTooltip:
+      "控制模型是否可以在单次响应中调用多个工具。对于 gpt-4.1-nano 或需要简化客户端处理时，建议设为「禁用」。",
+    parallelToolCallsDefault: "默认（由上游决定）",
+    parallelToolCallsEnabled: "启用",
+    parallelToolCallsDisabled: "禁用",
+    parallelToolCallsTip: "仅在请求中包含原生工具时生效。启用「强制函数调用」时此配置无效。",
     ccSupport: "强制 CC 支持",
     ccSupportTooltip1: "启用 Claude Code 兼容模式，允许 Claude 客户端通过 /claude 端点连接。",
     ccSupportTooltip2: "请求将自动从 Claude 格式转换为 OpenAI 格式后转发到上游。",
