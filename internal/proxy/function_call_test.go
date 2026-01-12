@@ -7738,7 +7738,7 @@ func TestIsToolCallResultJSON_ThinkingModelWithResultFields(t *testing.T) {
 }
 
 // TestSanitizeToolNameForPrompt tests the tool name sanitization function.
-// AI REVIEW: Tests reference MaxToolNameRunes constant to avoid silent drift between
+// NOTE: Tests reference MaxToolNameRunes constant to avoid silent drift between
 // production code and test expectations.
 func TestSanitizeToolNameForPrompt(t *testing.T) {
 	tests := []struct {
@@ -7807,7 +7807,7 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			expected: "工具名称_" + strings.Repeat("测试", 37) + "测", // 5 + 74 + 1 = 80 runes (truncated at 80)
 		},
 		{
-			// AI REVIEW: Test ASCII control character filtering
+			// NOTE: Test ASCII control character filtering
 			name:     "tool_name_with_control_chars",
 			input:    "tool\x00name\x1bwith\x7fcontrol",
 			expected: "toolnamewithcontrol",
@@ -8165,12 +8165,14 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			expectedInMsg: "Invalid JSON",
 		},
 		// Valid structure but still fails (fallback case)
-		// NOTE: This test case verifies the fallback behavior when
-		// XML structure appears valid but parsing still fails. Named "no_obvious_issue_fallback"
-		// to clarify this is a catch-all case. If diagnoseFCParseError learns to detect more
-		// specific issues in the future, this test may need adjustment.
+		// NOTE: This test exercises the diagnostics fallback path. The content appears
+		// well-formed but diagnoseFCParseError returns PARSE_FAILED because it's a
+		// diagnostic function (called AFTER parsing fails), not a parser itself.
+		// The actual parser (parseFunctionCallsXML) may have stricter requirements
+		// that cause it to fail on this input. This test verifies the fallback
+		// behavior when no specific issue is detected by the diagnostic checks.
 		{
-			name:          "no_obvious_issue_fallback",
+			name:          "diagnostics_fallback_path",
 			content:       triggerSignal + "\n<invoke name=\"test\"><parameter name=\"arg\">value</parameter></invoke>",
 			triggerSignal: triggerSignal,
 			expectedCode:  "PARSE_FAILED",

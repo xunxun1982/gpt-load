@@ -2679,7 +2679,10 @@ func cleanTruncatedToolResultJSONOnce(text string) string {
 		return text
 	}
 
-	logrus.WithField("text_length", len(text)).Debug("cleanTruncatedToolResultJSONOnce: Starting cleanup")
+	// Guard debug logging to avoid field allocation overhead in hot path
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithField("text_length", len(text)).Debug("cleanTruncatedToolResultJSONOnce: Starting cleanup")
+	}
 
 	result := text
 
@@ -2990,10 +2993,13 @@ func cleanTruncatedToolResultJSONOnce(text string) string {
 	// Remove the JSON fragment
 	if startIdx < endIdx && endIdx <= len(result) {
 		result = result[:startIdx] + result[endIdx:]
-		logrus.WithFields(logrus.Fields{
-			"start":   startIdx,
-			"end":     endIdx,
-		}).Debug("cleanTruncatedToolResultJSONOnce: Removed fragment")
+		// Guard debug logging to avoid field allocation overhead in hot path
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"start": startIdx,
+				"end":   endIdx,
+			}).Debug("cleanTruncatedToolResultJSONOnce: Removed fragment")
+		}
 	}
 
 	return result
@@ -5169,12 +5175,11 @@ func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
 // NOTE: Uses len() for tag lengths instead of hardcoded numbers
 // for better readability and maintainability. The extraction order (<thinking> first,
 // then <think>, then ANTML) is intentional - all are concatenated to the result.
-// NOTE: Added ANTML thinking block support per AI review
-// suggestion to detect TRIGGER_IN_THINKING for ANTML variants.
+// NOTE: Added ANTML thinking block support to detect TRIGGER_IN_THINKING for ANTML variants.
 // NOTE: Blocks are concatenated without delimiters by design.
 // This is intentional for trigger signal detection - we only need to check if the trigger
 // exists anywhere in thinking content, not preserve block boundaries.
-// AI REVIEW RESPONSE: Current implementation uses exact substring matching for ANTML tags.
+// NOTE: Current implementation uses exact substring matching for ANTML tags.
 // If models start emitting <antml\b:thinking someAttr="...">, this extractor will miss it.
 // This is an acceptable tradeoff for now - regex-based extraction would add complexity
 // and performance overhead. If ANTML attribute variants appear in production, we can
