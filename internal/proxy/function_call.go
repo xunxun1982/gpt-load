@@ -5426,7 +5426,9 @@ func buildToolSummaries(defs []functionToolDefinition) []string {
 		}
 
 		var block strings.Builder
-		fmt.Fprintf(&block, "%d. <tool name=\"%s\">\n", i+1, def.Name)
+		// AI REVIEW FIX: Escape tool name to prevent XML injection from client-provided tool definitions.
+		// Tool names come from client requests and may contain special characters like <, >, &, ", '.
+		fmt.Fprintf(&block, "%d. <tool name=\"%s\">\n", i+1, escapeXml(def.Name))
 		block.WriteString("   Description:\n")
 		if def.Description != "" {
 			block.WriteString("```\n")
