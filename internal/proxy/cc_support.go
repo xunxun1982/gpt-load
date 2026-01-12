@@ -310,6 +310,12 @@ func isShortenToolNamesEnabled(group *models.Group) bool {
 		return v != 0
 	case int:
 		return v != 0
+	case json.Number:
+		// Support json.Number when UseNumber is enabled in decoder
+		if f, err := v.Float64(); err == nil {
+			return f != 0
+		}
+		return true // Default enabled on parse error
 	case string:
 		lower := strings.ToLower(strings.TrimSpace(v))
 		// Only disable if explicitly set to false/no/off/0
@@ -619,8 +625,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 					openaiReq.ToolChoice = "auto"
 					logrus.Debug("CC: Converted tool_choice to 'auto'")
 				case "none":
-					// Prohibit tool usage - model must respond without tools
-					// NOTE: Added in Anthropic API Feb 2025 release.
+					// Prohibit tool usage - model must respond without tools.
 					// Maps directly to OpenAI "none" which is widely supported.
 					openaiReq.ToolChoice = "none"
 					logrus.Debug("CC: Converted tool_choice to 'none' (prohibit tools)")

@@ -946,7 +946,8 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 			case "none", "auto", "required", "any":
 				toolChoiceIsSet = true
 			default:
-				logrus.WithField("tool_choice", v).Warn("applyFunctionCallRequestRewrite: unknown tool_choice string; treating as unset")
+				// NOTE: Sanitize tool_choice before logging to prevent log injection and DoS.
+				logrus.WithField("tool_choice", sanitizeToolNameForPrompt(v)).Warn("applyFunctionCallRequestRewrite: unknown tool_choice string; treating as unset")
 			}
 			toolChoiceRequiresTools = (v == "required" || v == "any")
 		case map[string]any:
@@ -4715,6 +4716,7 @@ func isToolUsageProhibitedByToolChoice(toolChoice any) bool {
 // This prevents prompt injection or formatting issues from malicious/malformed tool names.
 // Replaces backticks (which could break markdown formatting), newlines and tabs (which could
 // inject additional instructions) with safe alternatives, and normalizes whitespace.
+// Also truncates to maxToolNameRunes to prevent prompt bloat and log spam from user-controlled input.
 func sanitizeToolNameForPrompt(name string) string {
 	// Replace backticks with single quotes to prevent markdown code block injection
 	name = strings.ReplaceAll(name, "`", "'")
@@ -4725,6 +4727,12 @@ func sanitizeToolNameForPrompt(name string) string {
 	// Normalize whitespace in O(n) using strings.Fields (splits on any whitespace)
 	// and strings.Join (rejoins with single space). This also trims leading/trailing.
 	name = strings.Join(strings.Fields(name), " ")
+	// Truncate to prevent prompt bloat and log spam from user-controlled tool_choice names.
+	// 80 runes is sufficient for any legitimate tool name while preventing abuse.
+	const maxToolNameRunes = 80
+	if utf8.RuneCountInString(name) > maxToolNameRunes {
+		name = utils.TruncateString(name, maxToolNameRunes)
+	}
 	return name
 }
 
@@ -4786,7 +4794,8 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 				"Do NOT respond without using tools. " +
 				"Output the trigger signal followed by at least one <invoke> block."
 		default:
-			logrus.WithField("tool_choice", tcStr).Debug("convertToolChoiceToPrompt: unknown string value")
+			// NOTE: Sanitize tool_choice before logging to prevent log injection and DoS.
+			logrus.WithField("tool_choice", sanitizeToolNameForPrompt(tcStr)).Debug("convertToolChoiceToPrompt: unknown string value")
 			return ""
 		}
 	}
@@ -4812,7 +4821,8 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 						// NOTE: Using Warn level intentionally.
 						// Specifying a nonexistent tool is a potential configuration error that
 						// should be noticed. If log noise is a concern, use log sampling at infra level.
-						logrus.WithField("tool_name", requiredToolName).
+						// NOTE: Sanitize tool name before logging to prevent log injection and DoS.
+						logrus.WithField("tool_name", sanitizeToolNameForPrompt(requiredToolName)).
 							Warn("convertToolChoiceToPrompt: specified tool not found in available tools")
 					}
 				// NOTE: Explicitly mention trigger signal
@@ -4848,7 +4858,8 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 					// NOTE: Using Warn level intentionally.
 					// Specifying a nonexistent tool is a potential configuration error that
 					// should be noticed. If log noise is a concern, use log sampling at infra level.
-					logrus.WithField("tool_name", toolName).
+					// NOTE: Sanitize tool name before logging to prevent log injection and DoS.
+					logrus.WithField("tool_name", sanitizeToolNameForPrompt(toolName)).
 						Warn("convertToolChoiceToPrompt: Claude-style specified tool not found in available tools")
 				}
 				// NOTE: Explicitly mention trigger signal
@@ -4869,8 +4880,7 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 				"Do NOT respond without using tools. " +
 				"Output the trigger signal followed by at least one <invoke> block."
 		} else if tcType == "none" {
-			// NOTE: Added Claude-style {"type":"none"} handling.
-			// Anthropic added this option in Feb 2025 API release.
+			// Handle Claude-style {"type":"none"} to prohibit tool usage.
 			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
 				"You are PROHIBITED from using any tools in this response. " +
 				"Respond as a normal chat assistant and answer the user's question directly. " +

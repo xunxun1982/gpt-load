@@ -7789,6 +7789,16 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			input:    "",
 			expected: "",
 		},
+		{
+			name:     "long_tool_name_truncation",
+			input:    "this_is_a_very_long_tool_name_that_exceeds_the_maximum_allowed_length_of_eighty_runes_and_should_be_truncated",
+			expected: "this_is_a_very_long_tool_name_that_exceeds_the_maximum_allowed_length_of_eighty_",
+		},
+		{
+			name:     "long_tool_name_with_unicode",
+			input:    "工具名称_" + strings.Repeat("测试", 40), // 4 + 80 = 84 runes
+			expected: "工具名称_" + strings.Repeat("测试", 37) + "测", // 4 + 75 = 79 runes (truncated at 80)
+		},
 	}
 
 	for _, tt := range tests {

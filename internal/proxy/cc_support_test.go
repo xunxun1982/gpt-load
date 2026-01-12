@@ -4487,6 +4487,17 @@ func TestIsShortenToolNamesEnabled(t *testing.T) {
 			config:   map[string]interface{}{"shorten_tool_names": int(1)},
 			expected: true,
 		},
+		// json.Number support for UseNumber decoder mode
+		{
+			name:     "json.Number zero - disabled",
+			config:   map[string]interface{}{"shorten_tool_names": json.Number("0")},
+			expected: false,
+		},
+		{
+			name:     "json.Number one - enabled",
+			config:   map[string]interface{}{"shorten_tool_names": json.Number("1")},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
