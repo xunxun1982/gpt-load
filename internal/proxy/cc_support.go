@@ -611,13 +611,19 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 						logrus.WithField("tool_name", toolName).Debug("CC: Converted tool_choice to force specific tool")
 					}
 				case "any":
-					// Force call any tool
+					// Force call any tool - maps to OpenAI "required"
 					openaiReq.ToolChoice = "required"
 					logrus.Debug("CC: Converted tool_choice to 'required' (force any tool)")
 				case "auto":
-					// Auto decide
+					// Auto decide - model determines whether to use tools
 					openaiReq.ToolChoice = "auto"
 					logrus.Debug("CC: Converted tool_choice to 'auto'")
+				case "none":
+					// Prohibit tool usage - model must respond without tools
+					// NOTE: Added in Anthropic API Feb 2025 release.
+					// Maps directly to OpenAI "none" which is widely supported.
+					openaiReq.ToolChoice = "none"
+					logrus.Debug("CC: Converted tool_choice to 'none' (prohibit tools)")
 				default:
 					logrus.WithField("type", tcType).Warn("CC: Unknown tool_choice type, skipping")
 				}

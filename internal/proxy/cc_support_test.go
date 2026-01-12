@@ -1701,6 +1701,12 @@ func TestToolChoiceConversion(t *testing.T) {
 			expectedType:  "string",
 			expectedValue: "auto",
 		},
+		{
+			name:          "none - prohibit tools",
+			claudeChoice:  `{"type":"none"}`,
+			expectedType:  "string",
+			expectedValue: "none",
+		},
 	}
 
 	for _, tt := range tests {
