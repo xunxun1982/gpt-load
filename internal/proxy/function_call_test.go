@@ -8231,6 +8231,22 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			expectedCode:  "INVALID_JSON_PARAM",
 			expectedInMsg: "Invalid JSON",
 		},
+		// NOTE: Test <<CALL_...>> trigger format per AI review suggestion.
+		// This verifies the new trigger format is properly detected in diagnostics.
+		{
+			name:          "new_trigger_format_no_invoke",
+			content:       "<<CALL_test1234>>\nI will now search for information.",
+			triggerSignal: "<<CALL_test1234>>",
+			expectedCode:  "NO_INVOKE",
+			expectedInMsg: "No <invoke> or <function_calls> block",
+		},
+		{
+			name:          "new_trigger_format_in_thinking",
+			content:       "<thinking>Planning: <<CALL_abcd1234>><invoke name=\"test\"></invoke></thinking>",
+			triggerSignal: "<<CALL_abcd1234>>",
+			expectedCode:  "TRIGGER_IN_THINKING",
+			expectedInMsg: "thinking block",
+		},
 	}
 
 	for _, tt := range tests {
@@ -8495,6 +8511,16 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceAutoWithToolHistory(t *testin
 	// marker and is sufficient for regression testing.
 	if strings.Contains(systemPrompt, "CRITICAL CONTINUATION") {
 		t.Errorf("tool_choice=auto should NOT force continuation even with tool history")
+	}
+
+	// AI REVIEW: Also verify that tool_choice="auto" doesn't accidentally add
+	// must/prohibit constraints that would override the auto behavior.
+	// These are the explicit constraint markers from convertToolChoiceToPrompt.
+	if strings.Contains(systemPrompt, "PROHIBITED") {
+		t.Errorf("tool_choice=auto should NOT add PROHIBITED constraint")
+	}
+	if strings.Contains(systemPrompt, "You MUST call at least one tool") {
+		t.Errorf("tool_choice=auto should NOT add must-call constraint")
 	}
 }
 

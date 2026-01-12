@@ -708,6 +708,29 @@ var (
 		`\"display_result\"`,
 		`\"duration\"`,
 	}
+
+	// Prefixes for isPotentialMalformedTagStart function
+	// Moved to package level to avoid per-call allocation in hot path
+	// This function is called frequently during streaming chunk processing
+	malformedTagPrefixes = []string{
+		"<>",
+		"<<CALL_",
+		"<invokename",
+		"<parametername",
+		"<propertyname",
+		"<function_calls",
+		"<function_call",
+		"<invoke",
+		"<parameter",
+		"<tool_call",
+		"<invocation",
+		"<antml",
+		"</antml",
+		"<thinking",
+		"</thinking",
+		"<think",
+		"</think",
+	}
 )
 
 var (
@@ -755,28 +778,9 @@ func isPotentialMalformedTagStart(s string) bool {
 		return true
 	}
 
-	// Check for known tag prefixes
-	prefixes := []string{
-		"<>",
-		"<<CALL_",
-		"<invokename",
-		"<parametername",
-		"<propertyname",
-		"<function_calls",
-		"<function_call",
-		"<invoke",
-		"<parameter",
-		"<tool_call",
-		"<invocation",
-		"<antml",
-		"</antml",
-		"<thinking",
-		"</thinking",
-		"<think",
-		"</think",
-	}
-
-	for _, prefix := range prefixes {
+	// Check for known tag prefixes using package-level slice
+	// to avoid per-call allocation in hot path
+	for _, prefix := range malformedTagPrefixes {
 		if strings.HasPrefix(s, prefix) {
 			return true
 		}
@@ -1376,9 +1380,8 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			}
 
 			// Log when we detect execution intent phrases but no function_calls XML at all.
-			// NOTE: content_preview contains model output, not user input or secrets.
-			// Model output may include user-provided content in context, but AUTH_KEY and
-			// ENCRYPTION_KEY are never included in model prompts, so they cannot leak here.
+			// NOTE: content_preview is model output and may include user-provided content.
+			// Treat it as potentially sensitive and keep it Debug-gated / redacted by policy.
 			if reExecutionIntent.MatchString(parseInput) && !strings.Contains(parseInput, "<function_calls>") {
 				fields := logrus.Fields{
 					"trigger_signal":  triggerSignal,
@@ -1662,11 +1665,16 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
 									// First, always strip trigger signals from content.
 									// These should never be visible to clients.
-									// Also, detecting trigger means XML block follows, enter suppression.
-									if reTriggerSignal.MatchString(text) {
+									// IMPORTANT: If trigger appears mid-chunk, preserve any prefix text
+									// before the trigger and suppress everything after.
+									if loc := reTriggerSignal.FindStringIndex(text); loc != nil {
+										prefix := strings.TrimSpace(text[:loc[0]])
 										insideFunctionCalls = true
+										// Keep only prefix (trigger + trailing content suppressed)
+										text = prefix
+									} else {
+										text = reTriggerSignal.ReplaceAllString(text, "")
 									}
-									text = reTriggerSignal.ReplaceAllString(text, "")
 
 									hasOpen := strings.Contains(text, "<function_calls>")
 									hasClose := strings.Contains(text, "</function_calls>")
