@@ -32,9 +32,11 @@ type ChildGroupService struct {
 	keyService   *KeyService
 	taskService  *TaskService
 	// Cache for GetAllChildGroups
-	cache   *childGroupsCacheEntry
-	cacheMu sync.RWMutex
+	cache    *childGroupsCacheEntry
+	cacheMu  sync.RWMutex
 	cacheTTL time.Duration
+	// Callback to invalidate group list cache after creating/deleting child groups
+	InvalidateGroupListCacheCallback func()
 }
 
 // NewChildGroupService creates a new ChildGroupService instance.
@@ -234,6 +236,11 @@ func (s *ChildGroupService) CreateChildGroup(ctx context.Context, params CreateC
 
 	// Invalidate child groups cache so GetAllChildGroups returns fresh data
 	s.InvalidateCache()
+
+	// Invalidate group list cache so ListGroups returns fresh data including the new child group
+	if s.InvalidateGroupListCacheCallback != nil {
+		s.InvalidateGroupListCacheCallback()
+	}
 
 	return &childGroup, nil
 }
@@ -610,6 +617,11 @@ func (s *ChildGroupService) SyncChildGroupsEnabled(ctx context.Context, parentGr
 
 		// Invalidate child groups cache
 		s.InvalidateCache()
+
+		// Invalidate group list cache so ListGroups returns fresh data with updated enabled status
+		if s.InvalidateGroupListCacheCallback != nil {
+			s.InvalidateGroupListCacheCallback()
+		}
 
 		// Invalidate group manager cache to refresh group list in UI
 		if s.groupManager != nil {
