@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
@@ -7825,6 +7826,14 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("sanitizeToolNameForPrompt(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
+			// AI REVIEW: For truncation cases, verify the result is exactly MaxToolNameRunes.
+			// This makes failures more diagnosable if truncation logic changes.
+			if strings.Contains(tt.name, "truncation") || strings.Contains(tt.name, "unicode") {
+				runeCount := utf8.RuneCountInString(result)
+				if runeCount != MaxToolNameRunes {
+					t.Errorf("truncated result has %d runes, expected %d", runeCount, MaxToolNameRunes)
+				}
+			}
 		})
 	}
 }
@@ -8184,6 +8193,15 @@ func TestDiagnoseFCParseError(t *testing.T) {
 			triggerSignal: "",
 			expectedCode:  "NO_INVOKE",
 		},
+		// AI REVIEW: Test empty trigger signal with XML markers present.
+		// This verifies the code path doesn't misclassify as NO_TRIGGER vs NO_INVOKE
+		// when triggerSignal is empty but content contains XML markers.
+		{
+			name:          "empty_trigger_with_xml_markers",
+			content:       "<invoke name=\"test\"><parameter name=\"arg\">value</parameter></invoke>",
+			triggerSignal: "",
+			expectedCode:  "PARSE_FAILED",
+		},
 		// NOTE: Test ANTML thinking block trigger detection
 		// Note: In Go strings, \b is backspace. Use \\b for literal backslash-b.
 		{
@@ -8519,7 +8537,10 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceAutoWithToolHistory(t *testin
 	if strings.Contains(systemPrompt, "PROHIBITED") {
 		t.Errorf("tool_choice=auto should NOT add PROHIBITED constraint")
 	}
-	if strings.Contains(systemPrompt, "You MUST call at least one tool") {
+	// AI REVIEW FIX: Use substring "MUST call at least one tool" instead of
+	// "You MUST call at least one tool" to match the actual constraint marker
+	// and be resilient to minor wording changes in the prefix.
+	if strings.Contains(systemPrompt, "MUST call at least one tool") {
 		t.Errorf("tool_choice=auto should NOT add must-call constraint")
 	}
 }
@@ -8635,6 +8656,15 @@ func TestExtractThinkingContent(t *testing.T) {
 			result := extractThinkingContent(tt.content)
 			if result != tt.expected {
 				t.Errorf("extractThinkingContent() = %q, want %q", result, tt.expected)
+			}
+			// AI REVIEW: Verify that output does not include tag text when extraction succeeds.
+			// This catches regressions where tags leak into extracted content.
+			if tt.expected != "" {
+				if strings.Contains(result, "<thinking>") || strings.Contains(result, "</thinking>") ||
+					strings.Contains(result, "<think>") || strings.Contains(result, "</think>") ||
+					strings.Contains(result, "<antml") || strings.Contains(result, "</antml") {
+					t.Errorf("extractThinkingContent() result contains tag text: %q", result)
+				}
 			}
 		})
 	}

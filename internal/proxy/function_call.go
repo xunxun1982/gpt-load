@@ -686,6 +686,7 @@ var (
 	// Tool result indicator patterns for cleanTruncatedToolResultJSONOnce
 	// Moved to package level to avoid repeated allocation in hot path
 	// Both regular and escaped quote patterns are included
+	// DO NOT MUTATE: This slice is shared across goroutines in hot path
 	toolResultIndicatorPatterns = []string{
 		// Regular quote patterns
 		`"display_result"`,
@@ -712,6 +713,7 @@ var (
 	// Prefixes for isPotentialMalformedTagStart function
 	// Moved to package level to avoid per-call allocation in hot path
 	// This function is called frequently during streaming chunk processing
+	// DO NOT MUTATE: This slice is shared across goroutines in hot path
 	malformedTagPrefixes = []string{
 		"<>",
 		"<<CALL_",
@@ -1667,8 +1669,14 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 									// These should never be visible to clients.
 									// IMPORTANT: If trigger appears mid-chunk, preserve any prefix text
 									// before the trigger and suppress everything after.
+									// AI REVIEW FIX: Use triggerFoundMidChunk flag to ensure prefix is
+									// preserved in deltaVal["content"] before entering suppression mode.
+									// Without this flag, the "else if insideFunctionCalls" branch would
+									// incorrectly blank the content, dropping the prefix.
+									triggerFoundMidChunk := false
 									if loc := reTriggerSignal.FindStringIndex(text); loc != nil {
 										prefix := strings.TrimSpace(text[:loc[0]])
+										triggerFoundMidChunk = true
 										insideFunctionCalls = true
 										// Keep only prefix (trigger + trailing content suppressed)
 										text = prefix
@@ -1762,7 +1770,13 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 										}
 									}
 
-									if hasOpen && hasClose {
+									// AI REVIEW FIX: Handle triggerFoundMidChunk first to preserve prefix.
+									// This must be checked before insideFunctionCalls because we just set
+									// insideFunctionCalls = true, but we still need to output the prefix.
+									if triggerFoundMidChunk {
+										// Preserve prefix content for this chunk; suppression applies after.
+										deltaVal["content"] = text
+									} else if hasOpen && hasClose {
 										// Entire block in one chunk: strip only the XML block, keep prefix and suffix.
 										startIdx := strings.Index(text, "<function_calls>")
 										if startIdx >= 0 {
