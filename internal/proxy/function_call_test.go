@@ -7743,9 +7743,10 @@ func TestIsToolCallResultJSON_ThinkingModelWithResultFields(t *testing.T) {
 // production code and test expectations.
 func TestSanitizeToolNameForPrompt(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		expected string
+		name               string
+		input              string
+		expected           string
+		expectExactRuneLen int // If > 0, verify result has exactly this many runes
 	}{
 		{
 			name:     "normal_tool_name",
@@ -7793,9 +7794,10 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			expected: "",
 		},
 		{
-			name:     "long_tool_name_truncation",
-			input:    "this_is_a_very_long_tool_name_that_exceeds_the_maximum_allowed_length_of_eighty_runes_and_should_be_truncated",
-			expected: "this_is_a_very_long_tool_name_that_exceeds_the_maximum_allowed_length_of_eighty_",
+			name:               "long_tool_name_truncation",
+			input:              "this_is_a_very_long_tool_name_that_exceeds_the_maximum_allowed_length_of_eighty_runes_and_should_be_truncated",
+			expected:           "this_is_a_very_long_tool_name_that_exceeds_the_maximum_allowed_length_of_eighty_",
+			expectExactRuneLen: MaxToolNameRunes,
 		},
 		{
 			// NOTE: AI suggested using a helper function to compute expected value dynamically.
@@ -7803,9 +7805,10 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			// any changes in truncation behavior. The rune counts are verified:
 			// - Input: "工具名称_" (5 runes) + "测试"*40 (80 runes) = 85 runes
 			// - Expected: "工具名称_" (5 runes) + "测试"*37 (74 runes) + "测" (1 rune) = 80 runes
-			name:     "long_tool_name_with_unicode",
-			input:    "工具名称_" + strings.Repeat("测试", 40), // 5 + 80 = 85 runes
-			expected: "工具名称_" + strings.Repeat("测试", 37) + "测", // 5 + 74 + 1 = 80 runes (truncated at 80)
+			name:               "long_tool_name_with_unicode",
+			input:              "工具名称_" + strings.Repeat("测试", 40), // 5 + 80 = 85 runes
+			expected:           "工具名称_" + strings.Repeat("测试", 37) + "测", // 5 + 74 + 1 = 80 runes (truncated at 80)
+			expectExactRuneLen: MaxToolNameRunes,
 		},
 		{
 			// NOTE: Test ASCII control character filtering
@@ -7826,12 +7829,12 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("sanitizeToolNameForPrompt(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
-			// AI REVIEW: For truncation cases, verify the result is exactly MaxToolNameRunes.
-			// This makes failures more diagnosable if truncation logic changes.
-			if strings.Contains(tt.name, "truncation") || strings.Contains(tt.name, "unicode") {
+			// AI REVIEW FIX: Use explicit field instead of strings.Contains on test name.
+			// This makes the test more robust against test renaming.
+			if tt.expectExactRuneLen > 0 {
 				runeCount := utf8.RuneCountInString(result)
-				if runeCount != MaxToolNameRunes {
-					t.Errorf("truncated result has %d runes, expected %d", runeCount, MaxToolNameRunes)
+				if runeCount != tt.expectExactRuneLen {
+					t.Errorf("result has %d runes, expected %d", runeCount, tt.expectExactRuneLen)
 				}
 			}
 		})

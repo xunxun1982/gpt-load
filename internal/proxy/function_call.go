@@ -687,6 +687,11 @@ var (
 	// Moved to package level to avoid repeated allocation in hot path
 	// Both regular and escaped quote patterns are included
 	// DO NOT MUTATE: This slice is shared across goroutines in hot path
+	// AI REVIEW RESPONSE: We use slice instead of array intentionally.
+	// Arrays require fixed length in type definition, making maintenance harder
+	// when adding new patterns. The "DO NOT MUTATE" comment is sufficient for
+	// documenting immutability intent. Go's type system doesn't enforce slice
+	// immutability, but code review and this comment provide adequate protection.
 	toolResultIndicatorPatterns = []string{
 		// Regular quote patterns
 		`"display_result"`,
@@ -714,6 +719,8 @@ var (
 	// Moved to package level to avoid per-call allocation in hot path
 	// This function is called frequently during streaming chunk processing
 	// DO NOT MUTATE: This slice is shared across goroutines in hot path
+	// AI REVIEW RESPONSE: Same as toolResultIndicatorPatterns - we use slice
+	// for maintainability. See comment above for rationale.
 	malformedTagPrefixes = []string{
 		"<>",
 		"<<CALL_",
@@ -1374,20 +1381,21 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 					chMap["message"] = msg
 					choices[i] = chMap
 					modified = true // Mark response as modified to write cleaned content back to client
+					// Sanitize before truncate to prevent leaking truncated secrets
 					logrus.WithFields(logrus.Fields{
 						"trigger_signal":  triggerSignal,
-						"content_preview": utils.TruncateString(parseInput, 200),
+						"content_preview": utils.TruncateString(utils.SanitizeErrorBody(parseInput), 200),
 					}).Debug("Function call normal response: removed invalid <function_calls> block with no parsed tool calls")
 				}
 			}
 
 			// Log when we detect execution intent phrases but no function_calls XML at all.
 			// NOTE: content_preview is model output and may include user-provided content.
-			// Treat it as potentially sensitive and keep it Debug-gated / redacted by policy.
+			// Sanitize before truncate to prevent leaking truncated secrets.
 			if reExecutionIntent.MatchString(parseInput) && !strings.Contains(parseInput, "<function_calls>") {
 				fields := logrus.Fields{
 					"trigger_signal":  triggerSignal,
-					"content_preview": utils.TruncateString(parseInput, 200),
+					"content_preview": utils.TruncateString(utils.SanitizeErrorBody(parseInput), 200),
 				}
 				if fr, ok := chMap["finish_reason"].(string); ok {
 					fields["finish_reason"] = fr
@@ -1919,10 +1927,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		hasReasoningIntent := detectToolIntentInReasoning(reasoningStr)
 
 		if hasContentIntent || hasReasoningIntent {
+			// Sanitize before truncate to prevent leaking truncated secrets
 			logrus.WithFields(logrus.Fields{
 				"trigger_signal":    triggerSignal,
-				"content_preview":   utils.TruncateString(contentStr, 200),
-				"reasoning_preview": utils.TruncateString(reasoningStr, 200),
+				"content_preview":   utils.TruncateString(utils.SanitizeErrorBody(contentStr), 200),
+				"reasoning_preview": utils.TruncateString(utils.SanitizeErrorBody(reasoningStr), 200),
 				"content_intent":    hasContentIntent,
 				"reasoning_intent":  hasReasoningIntent,
 			}).Debug("Function call streaming: detected execution intent without tool call XML")
@@ -2098,8 +2107,9 @@ func processGLMBlockContent(content string) string {
 	if !strings.Contains(content, "{") {
 		// NOTE: Added debug log for observability when GLM block
 		// is removed due to no JSON content. Helps detect GLM format drift in production.
+		// Sanitize before truncate to prevent leaking truncated secrets.
 		if logrus.IsLevelEnabled(logrus.DebugLevel) {
-			logrus.WithField("content_preview", utils.TruncateString(content, 100)).
+			logrus.WithField("content_preview", utils.TruncateString(utils.SanitizeErrorBody(content), 100)).
 				Debug("processGLMBlockContent: Removed GLM block with no JSON content")
 		}
 		return ""
@@ -5811,8 +5821,9 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	if len(results) == 0 {
 		// NOTE: Log when all parsing strategies fail but XML-like content exists.
 		// This helps diagnose new malformed formats that may need dedicated parsing paths.
+		// Sanitize before truncate to prevent leaking truncated secrets.
 		if logrus.IsLevelEnabled(logrus.DebugLevel) && (strings.Contains(text, "<invoke") || strings.Contains(text, "<function")) {
-			logrus.WithField("content_preview", utils.TruncateString(text, 300)).Debug("Function call parsing: all strategies failed, no tool calls extracted")
+			logrus.WithField("content_preview", utils.TruncateString(utils.SanitizeErrorBody(text), 300)).Debug("Function call parsing: all strategies failed, no tool calls extracted")
 		}
 		return nil
 	}
