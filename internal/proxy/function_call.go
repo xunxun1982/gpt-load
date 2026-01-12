@@ -1683,7 +1683,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 									// incorrectly blank the content, dropping the prefix.
 									triggerFoundMidChunk := false
 									if loc := reTriggerSignal.FindStringIndex(text); loc != nil {
-										prefix := strings.TrimSpace(text[:loc[0]])
+										// AI REVIEW FIX: Use TrimRight instead of TrimSpace to preserve
+										// meaningful leading newlines/spaces in user-visible prefix.
+										// TrimSpace would remove all leading/trailing whitespace, potentially
+										// losing formatting that the model intended to output.
+										prefix := strings.TrimRight(text[:loc[0]], " \t\r\n")
 										triggerFoundMidChunk = true
 										insideFunctionCalls = true
 										// Keep only prefix (trigger + trailing content suppressed)
@@ -4804,6 +4808,13 @@ func isToolUsageProhibitedByToolChoice(toolChoice any) bool {
 // Exported as a constant so tests can reference it to avoid silent drift.
 const MaxToolNameRunes = 80
 
+// MaxToolDescriptionRunes is the maximum rune count for tool descriptions in prompts.
+// OpenAI has a 1024 character limit for function descriptions. We use 1024 runes
+// to match this limit while supporting Unicode characters properly.
+// This prevents prompt bloat from excessively long client-provided descriptions.
+// AI REVIEW FIX: Added per AI review suggestion to limit tool description length.
+const MaxToolDescriptionRunes = 1024
+
 // sanitizeToolNameForPrompt sanitizes a tool name before embedding it into prompt constraints.
 // This prevents prompt injection or formatting issues from malicious/malformed tool names.
 // Replaces backticks (which could break markdown formatting), newlines and tabs (which could
@@ -4834,6 +4845,33 @@ func sanitizeToolNameForPrompt(name string) string {
 		name = utils.TruncateString(name, MaxToolNameRunes)
 	}
 	return name
+}
+
+// sanitizeToolDescriptionForPrompt sanitizes a tool description before embedding it into prompts.
+// This prevents prompt injection or formatting issues from malicious/malformed descriptions.
+// Unlike tool names, descriptions preserve newlines (converted to spaces would lose formatting),
+// but still removes control characters and truncates to MaxToolDescriptionRunes.
+// AI REVIEW FIX: Added per AI review suggestion to sanitize and limit tool description length.
+func sanitizeToolDescriptionForPrompt(desc string) string {
+	if desc == "" {
+		return ""
+	}
+	// Replace backticks with single quotes to prevent markdown code block injection
+	desc = strings.ReplaceAll(desc, "`", "'")
+	// Drop ASCII control chars (0x00-0x1F except space/tab/newline/CR, and 0x7F DEL)
+	// to prevent log/prompt pollution from malicious input.
+	// NOTE: Unlike tool names, we preserve \n, \r, \t for description formatting.
+	desc = strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n' && r != '\r' && r != '\t') || r == 0x7f {
+			return -1
+		}
+		return r
+	}, desc)
+	// Truncate to prevent prompt bloat from excessively long descriptions.
+	if utf8.RuneCountInString(desc) > MaxToolDescriptionRunes {
+		desc = utils.TruncateString(desc, MaxToolDescriptionRunes)
+	}
+	return desc
 }
 
 // convertToolChoiceToPrompt converts tool_choice parameter to prompt instructions.
@@ -5431,8 +5469,10 @@ func buildToolSummaries(defs []functionToolDefinition) []string {
 		fmt.Fprintf(&block, "%d. <tool name=\"%s\">\n", i+1, escapeXml(def.Name))
 		block.WriteString("   Description:\n")
 		if def.Description != "" {
+			// AI REVIEW FIX: Sanitize description to prevent prompt bloat and injection.
+			safeDesc := sanitizeToolDescriptionForPrompt(def.Description)
 			block.WriteString("```\n")
-			block.WriteString(def.Description)
+			block.WriteString(safeDesc)
 			block.WriteString("\n```\n")
 		} else {
 			block.WriteString("None\n")
@@ -5451,7 +5491,9 @@ func buildToolsXml(defs []functionToolDefinition) string {
 	for i, def := range defs {
 		fmt.Fprintf(&sb, "  <tool id=\"%d\">\n", i+1)
 		sb.WriteString(fmt.Sprintf("    <name>%s</name>\n", escapeXml(def.Name)))
-		sb.WriteString(fmt.Sprintf("    <description>%s</description>\n", escapeXml(def.Description)))
+		// AI REVIEW FIX: Sanitize description to prevent prompt bloat and injection.
+		safeDesc := sanitizeToolDescriptionForPrompt(def.Description)
+		sb.WriteString(fmt.Sprintf("    <description>%s</description>\n", escapeXml(safeDesc)))
 
 		if def.Parameters != nil {
 			params, ok := def.Parameters["properties"].(map[string]any)

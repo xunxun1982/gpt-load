@@ -7841,6 +7841,80 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 	}
 }
 
+// TestSanitizeToolDescriptionForPrompt tests the tool description sanitization function.
+// AI REVIEW FIX: Added test for new sanitizeToolDescriptionForPrompt function.
+func TestSanitizeToolDescriptionForPrompt(t *testing.T) {
+	tests := []struct {
+		name               string
+		input              string
+		expected           string
+		expectExactRuneLen int // If > 0, verify result has exactly this many runes
+	}{
+		{
+			name:     "normal_description",
+			input:    "Search the web for information",
+			expected: "Search the web for information",
+		},
+		{
+			name:     "description_with_backticks",
+			input:    "Use `code` formatting",
+			expected: "Use 'code' formatting",
+		},
+		{
+			name:     "description_with_newlines_preserved",
+			input:    "Line 1\nLine 2\nLine 3",
+			expected: "Line 1\nLine 2\nLine 3",
+		},
+		{
+			name:     "description_with_tabs_preserved",
+			input:    "Column1\tColumn2\tColumn3",
+			expected: "Column1\tColumn2\tColumn3",
+		},
+		{
+			name:     "description_with_control_chars",
+			input:    "desc\x00with\x1bcontrol\x7fchars",
+			expected: "descwithcontrolchars",
+		},
+		{
+			name:     "empty_description",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:               "long_description_truncation",
+			input:              strings.Repeat("a", 1100),
+			expected:           strings.Repeat("a", MaxToolDescriptionRunes),
+			expectExactRuneLen: MaxToolDescriptionRunes,
+		},
+		{
+			name:               "long_description_with_unicode",
+			input:              strings.Repeat("测试", 600), // 1200 runes
+			expected:           strings.Repeat("测试", 512), // 1024 runes
+			expectExactRuneLen: MaxToolDescriptionRunes,
+		},
+	}
+
+	// Verify MaxToolDescriptionRunes constant is used correctly
+	if MaxToolDescriptionRunes != 1024 {
+		t.Errorf("MaxToolDescriptionRunes = %d, expected 1024", MaxToolDescriptionRunes)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeToolDescriptionForPrompt(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeToolDescriptionForPrompt() = %q, want %q", result, tt.expected)
+			}
+			if tt.expectExactRuneLen > 0 {
+				runeCount := utf8.RuneCountInString(result)
+				if runeCount != tt.expectExactRuneLen {
+					t.Errorf("result has %d runes, expected %d", runeCount, tt.expectExactRuneLen)
+				}
+			}
+		})
+	}
+}
+
 // TestConvertToolChoiceToPrompt tests the tool_choice to prompt conversion.
 // This function converts OpenAI tool_choice parameter to prompt instructions
 // for prompt-based function calling.
