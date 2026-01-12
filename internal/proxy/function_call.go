@@ -928,6 +928,13 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	// We need to know if tools are prohibited to skip the "MUST output tool calls" continuation.
 	// NOTE: Use dedicated function instead of string matching
 	// for more robust detection of tool prohibition.
+	//
+	// NOTE: AI review suggested centralizing isSet/requires/prohibits into a single helper
+	// function to reduce duplication with convertToolChoiceToPrompt. DECISION: Keep current
+	// approach because: (1) isToolUsageProhibitedByToolChoice already exists as a helper,
+	// (2) the classification logic here includes logging for unknown values which is specific
+	// to this call site, (3) convertToolChoiceToPrompt has different responsibilities (prompt
+	// generation vs. flag extraction), (4) premature abstraction may reduce code clarity.
 	toolChoiceProhibitsTools := false
 	toolChoiceRequiresTools := false
 	toolChoiceIsSet := false // Distinguish "unset" from explicit valid values (incl "auto")
@@ -1491,8 +1498,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	var contentBuf strings.Builder
 	// reasoningBuf accumulates reasoning_content for detecting tool call intent in thinking.
 	var reasoningBuf strings.Builder
-	// contentBufFullWarned ensures we log the buffer-limit warning at most once.
-	contentBufFullWarned := false
+	// contentBufTruncated tracks whether content was actually truncated due to buffer overflow.
+	// NOTE: AI review suggested using a dedicated flag instead of inferring from length.
+	// len(contentStr) >= maxContentBufferBytes can over-report truncation if stream naturally
+	// ends exactly at the cap. This flag is set only when overflow actually happens.
+	contentBufTruncated := false
 
 	// prevEvent holds the last non-[DONE] event that we have not yet forwarded.
 	var prevEventLines []string
@@ -1615,10 +1625,10 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 									// Accumulate content for final XML parsing.
 									if contentBuf.Len()+len(text) <= maxContentBufferBytes {
 										contentBuf.WriteString(text)
-									} else if !contentBufFullWarned {
+									} else if !contentBufTruncated {
 										// Log once when buffer limit is first reached to aid debugging.
 										logrus.Warn("Function call streaming: content buffer limit reached, subsequent content will not be parsed for tool calls")
-										contentBufFullWarned = true
+										contentBufTruncated = true
 									}
 
 									// First, always strip trigger signals from content.
@@ -1835,15 +1845,14 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 			(triggerSignal != "" || strings.Contains(contentStr, "<function_calls>") || strings.Contains(contentStr, "<invoke")) {
 			parseErr := diagnoseFCParseError(contentStr, triggerSignal)
 			if parseErr != nil {
-				// NOTE: Use actual buffer length check instead of one-time flag.
-				// contentBufFullWarned is set once when buffer first overflows and stays true,
-				// which doesn't accurately reflect whether current content was truncated.
-				inputTruncated := len(contentStr) >= maxContentBufferBytes
+				// NOTE: Use contentBufTruncated flag instead of length inference per AI review.
+				// len(contentStr) >= maxContentBufferBytes can over-report truncation if stream
+				// naturally ends exactly at the cap. The flag is set only when overflow happens.
 				logrus.WithFields(logrus.Fields{
 					"error_code":      parseErr.Code,
 					"error_message":   parseErr.Message,
 					"error_details":   parseErr.Details,
-					"input_truncated": inputTruncated,
+					"input_truncated": contentBufTruncated,
 				}).Debug("Function call streaming: parsing failed with diagnostic")
 			}
 		}

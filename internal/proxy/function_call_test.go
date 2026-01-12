@@ -8002,6 +8002,29 @@ func TestConvertToolChoiceToPrompt(t *testing.T) {
 			toolDefs:    toolDefs,
 			expectEmpty: true,
 		},
+		// NOTE: Adversarial tool name test case per AI review suggestion.
+		// This verifies that sanitizeToolNameForPrompt is actually applied through
+		// convertToolChoiceToPrompt, not just tested in isolation. The tool name
+		// comes from user-provided tool_choice objects which is a higher-risk path.
+		{
+			name: "tool_choice_specific_tool_name_is_sanitized",
+			toolChoice: map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": "bad`\nname",
+				},
+			},
+			toolDefs:    toolDefs,
+			expectEmpty: false,
+			expectContains: []string{
+				// Backticks replaced with single quotes, newlines replaced with spaces
+				"MUST call the tool named `bad' name` at least once",
+			},
+			expectNot: []string{
+				// Raw backticks and newlines must not survive into prompt constraints
+				"`\n",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -8151,6 +8174,29 @@ func TestDiagnoseFCParseError(t *testing.T) {
 		{
 			name:          "trigger_in_antml_thinking",
 			content:       "<antml\\b:thinking>Let me plan this. " + triggerSignal + "<invoke name=\"test\"></invoke></antml\\b:thinking>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "TRIGGER_IN_THINKING",
+			expectedInMsg: "thinking block",
+		},
+		// NOTE: Additional TRIGGER_IN_THINKING test cases per AI review suggestion.
+		// These verify detection across <thinking>, <think>, and both ANTML escape variants.
+		{
+			name:          "trigger_in_standard_thinking",
+			content:       "<thinking>Planning: " + triggerSignal + "<invoke name=\"test\"></invoke></thinking>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "TRIGGER_IN_THINKING",
+			expectedInMsg: "thinking block",
+		},
+		{
+			name:          "trigger_in_think_block",
+			content:       "<think>Let me think. " + triggerSignal + "<invoke name=\"test\"></invoke></think>",
+			triggerSignal: triggerSignal,
+			expectedCode:  "TRIGGER_IN_THINKING",
+			expectedInMsg: "thinking block",
+		},
+		{
+			name:          "trigger_in_antml_double_backslash",
+			content:       "<antml\\\\b:thinking>Planning: " + triggerSignal + "<invoke name=\"test\"></invoke></antml\\\\b:thinking>",
 			triggerSignal: triggerSignal,
 			expectedCode:  "TRIGGER_IN_THINKING",
 			expectedInMsg: "thinking block",
@@ -8432,8 +8478,12 @@ func TestApplyFunctionCallRequestRewrite_ToolChoiceAutoWithToolHistory(t *testin
 	if strings.Contains(systemPrompt, "CRITICAL CONTINUATION") {
 		t.Errorf("tool_choice=auto should NOT force continuation even with tool history")
 	}
-	// Also check for the specific forced continuation phrase
-	if strings.Contains(systemPrompt, "You MUST output <<CALL_") && strings.Contains(systemPrompt, "followed by <invoke>") && strings.Contains(systemPrompt, "NOW") {
+	// NOTE: AI review suggested removing this second assertion as potentially brittle.
+	// DECISION: Keep it as a secondary guard but simplify to just check for "NOW" keyword
+	// which is the unique behavioral marker of forced continuation. The "CRITICAL CONTINUATION"
+	// check above is the primary assertion; this provides defense-in-depth.
+	// If format instructions evolve, update this assertion accordingly.
+	if strings.Contains(systemPrompt, "followed by <invoke>") && strings.Contains(systemPrompt, "NOW") {
 		t.Errorf("tool_choice=auto should NOT contain forced continuation constraint")
 	}
 }
