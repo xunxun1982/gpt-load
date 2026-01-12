@@ -310,6 +310,12 @@ func isShortenToolNamesEnabled(group *models.Group) bool {
 		return v != 0
 	case int:
 		return v != 0
+	case int64:
+		// Support int64 for programmatically constructed configs
+		return v != 0
+	case uint64:
+		// Support uint64 for programmatically constructed configs
+		return v != 0
 	case json.Number:
 		// Support json.Number when UseNumber is enabled in decoder
 		if f, err := v.Float64(); err == nil {

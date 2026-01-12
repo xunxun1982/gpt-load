@@ -6019,7 +6019,7 @@ func TestRemoveFunctionCallsBlocks_ProductionLogDecember2025_CCOutput(t *testing
 			}
 		})
 	}
-	}
+}
 
 // TestRemoveFunctionCallsBlocks_UserLogDecember2025 tests specific patterns from
 // user's production log dated December 2025 that caused format and display issues.
@@ -7795,9 +7795,14 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			expected: "this_is_a_very_long_tool_name_that_exceeds_the_maximum_allowed_length_of_eighty_",
 		},
 		{
+			// NOTE: AI suggested using a helper function to compute expected value dynamically.
+			// We keep the explicit expected value for better test readability and to catch
+			// any changes in truncation behavior. The rune counts are verified:
+			// - Input: "工具名称_" (5 runes) + "测试"*40 (80 runes) = 85 runes
+			// - Expected: "工具名称_" (5 runes) + "测试"*37 (74 runes) + "测" (1 rune) = 80 runes
 			name:     "long_tool_name_with_unicode",
-			input:    "工具名称_" + strings.Repeat("测试", 40), // 4 + 80 = 84 runes
-			expected: "工具名称_" + strings.Repeat("测试", 37) + "测", // 4 + 75 = 79 runes (truncated at 80)
+			input:    "工具名称_" + strings.Repeat("测试", 40), // 5 + 80 = 85 runes
+			expected: "工具名称_" + strings.Repeat("测试", 37) + "测", // 5 + 74 + 1 = 80 runes (truncated at 80)
 		},
 	}
 

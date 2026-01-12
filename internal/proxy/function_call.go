@@ -973,7 +973,8 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 					toolChoiceRequiresTools = true
 				}
 			default:
-				logrus.WithField("tool_choice_type", t).Warn("applyFunctionCallRequestRewrite: unknown tool_choice object type; treating as unset")
+				// NOTE: Sanitize tool_choice_type before logging to prevent log injection.
+				logrus.WithField("tool_choice_type", sanitizeToolNameForPrompt(t)).Warn("applyFunctionCallRequestRewrite: unknown tool_choice object type; treating as unset")
 			}
 		default:
 			logrus.WithField("tool_choice_go_type", fmt.Sprintf("%T", toolChoiceVal)).
@@ -1247,34 +1248,38 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		// or <function_calls> tag if present.
 		parseInput := contentStr
 		if len(parseInput) > maxContentBufferBytes {
-			anchor := -1
+			start := -1
 			if triggerSignal != "" {
-				anchor = strings.LastIndex(parseInput, triggerSignal)
+				start = strings.LastIndex(parseInput, triggerSignal)
 			}
-			if anchor == -1 {
-				anchor = strings.LastIndex(parseInput, "<function_calls>")
+			if start == -1 {
+				start = strings.LastIndex(parseInput, "<function_calls>")
 			}
-			if anchor == -1 {
+			if start == -1 {
 				// No anchor found, use default tail truncation
-				anchor = len(parseInput) - maxContentBufferBytes
+				start = len(parseInput) - maxContentBufferBytes
 			}
-			if anchor < 0 {
-				anchor = 0
+			if start < 0 {
+				start = 0
 			}
-			// Avoid splitting UTF-8 runes when we had to fall back to a raw byte window.
-			// Move anchor forward to the next rune boundary if we're in the middle of a multi-byte char.
-			for anchor < len(parseInput) && !utf8.RuneStart(parseInput[anchor]) {
-				anchor++
+			// Align start to rune boundary to avoid splitting UTF-8 characters
+			for start < len(parseInput) && !utf8.RuneStart(parseInput[start]) {
+				start++
 			}
-			// Ensure we don't exceed the buffer cap
-			if len(parseInput)-anchor > maxContentBufferBytes {
-				anchor = len(parseInput) - maxContentBufferBytes
-				// Re-align to rune boundary after adjustment
-				for anchor < len(parseInput) && !utf8.RuneStart(parseInput[anchor]) {
-					anchor++
-				}
+
+			// Take a bounded window forward from the anchor point
+			// NOTE: AI suggested taking window forward from anchor instead of
+			// resetting anchor to tail. This preserves the anchor context while
+			// respecting the buffer limit.
+			end := len(parseInput)
+			if end-start > maxContentBufferBytes {
+				end = start + maxContentBufferBytes
 			}
-			parseInput = parseInput[anchor:]
+			// Align end to rune boundary (move backward to avoid splitting UTF-8)
+			for end > start && end < len(parseInput) && !utf8.RuneStart(parseInput[end]) {
+				end--
+			}
+			parseInput = parseInput[start:end]
 		}
 
 		calls := parseFunctionCallsXML(parseInput, triggerSignal)
@@ -1830,11 +1835,15 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 			(triggerSignal != "" || strings.Contains(contentStr, "<function_calls>") || strings.Contains(contentStr, "<invoke")) {
 			parseErr := diagnoseFCParseError(contentStr, triggerSignal)
 			if parseErr != nil {
+				// NOTE: Use actual buffer length check instead of one-time flag.
+				// contentBufFullWarned is set once when buffer first overflows and stays true,
+				// which doesn't accurately reflect whether current content was truncated.
+				inputTruncated := len(contentStr) >= maxContentBufferBytes
 				logrus.WithFields(logrus.Fields{
 					"error_code":      parseErr.Code,
 					"error_message":   parseErr.Message,
 					"error_details":   parseErr.Details,
-					"input_truncated": contentBufFullWarned,
+					"input_truncated": inputTruncated,
 				}).Debug("Function call streaming: parsing failed with diagnostic")
 			}
 		}
@@ -7159,6 +7168,10 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 		// Previous ad-hoc field checks were looser than isToolCallResultJSON's logic, which could
 		// cause partial results (e.g., {"name":"Read","status":"pending","duration":"0s"}) to be
 		// treated as requests. Using the same function ensures consistent behavior across all paths.
+		// NOTE: We intentionally use the original jsonStr (not repairedJSON) here because
+		// isToolCallResultJSON uses string pattern matching (not JSON parsing) to detect result
+		// indicators. JSON repair only fixes syntax issues (missing commas, quotes) without
+		// changing field names or values, so the detection result is identical for both strings.
 		if isToolCallResultJSON(jsonStr) {
 			logrus.WithFields(logrus.Fields{
 				"tool_name": toolName,
