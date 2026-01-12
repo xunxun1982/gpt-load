@@ -87,7 +87,14 @@ func (ps *ProxyServer) applyParallelToolCallsConfig(bodyBytes []byte, group *mod
 		"parallel_tool_calls": *parallelConfig,
 	}).Debug("Applied parallel_tool_calls config")
 
-	return json.Marshal(requestData)
+	// Marshal and return; on error, pass through original body for graceful degradation
+	// (consistent with unmarshal error handling above)
+	result, err := json.Marshal(requestData)
+	if err != nil {
+		logrus.Warnf("failed to marshal request body after parallel_tool_calls config, passing through: %v", err)
+		return bodyBytes, nil
+	}
+	return result, nil
 }
 
 // applyModelMapping applies model name mapping based on group configuration.

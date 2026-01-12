@@ -44,6 +44,9 @@ func newCodexChannel(f *Factory, group *models.Group) (ChannelProxy, error) {
 // Codex CLI releases a new version. Check the official Codex CLI repository for the
 // latest version. The version here (0.80.0) was current at the time of implementation.
 // If version drift causes issues, update this constant to match the latest stable release.
+// AI REVIEW NOTE: AI suggested using 0.79.0 based on outdated data.
+// Verified 2026-01-12: GitHub releases show 0.80.0 as latest stable (released 2026-01-09).
+// 0.81.0-alpha.2 is prerelease only.
 const CodexUserAgent = "codex-cli/0.80.0"
 
 // ModifyRequest sets the Authorization header for the Codex/Responses API.
