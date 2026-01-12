@@ -4202,17 +4202,20 @@ func TestDoubleEscapeWindowsPathsForBash(t *testing.T) {
 
 // TestToolNameShortening tests the tool name shortening functionality for OpenAI CC support.
 // OpenAI API has a 64-character limit for tool names, so long MCP tool names need to be shortened.
+// Per AI review: Use invariant-based assertions instead of exact value assertions to allow
+// algorithm evolution while maintaining correctness guarantees.
 func TestToolNameShortening(t *testing.T) {
 	tests := []struct {
 		name           string
 		toolNames      []string
-		expectedShort  map[string]string // original -> expected shortened
+		expectedShort  map[string]string // original -> expected shortened (only for stable cases)
 		expectShortMap bool              // whether shortening should occur
 	}{
 		{
 			name:           "short names unchanged",
 			toolNames:      []string{"Read", "Write", "Bash"},
 			expectShortMap: true,
+			// Short names should remain unchanged - this is a stable invariant
 			expectedShort: map[string]string{
 				"Read":  "Read",
 				"Write": "Write",
@@ -4223,15 +4226,15 @@ func TestToolNameShortening(t *testing.T) {
 			name:           "MCP tool name exceeding 64 chars",
 			toolNames:      []string{"mcp__very_long_server_name__extremely_long_tool_name_that_exceeds_limit"},
 			expectShortMap: true,
-			expectedShort: map[string]string{
-				"mcp__very_long_server_name__extremely_long_tool_name_that_exceeds_limit": "mcp__extremely_long_tool_name_that_exceeds_limit",
-			},
+			// Per AI review: avoid asserting exact shortening algorithm output;
+			// invariants (<=64, mcp__ prefix, unique) are verified in test body
+			expectedShort: nil,
 		},
 		{
 			name:           "multiple MCP tools with collision",
 			toolNames:      []string{"mcp__server1__tool_name", "mcp__server2__tool_name"},
 			expectShortMap: true,
-			// Both should be shortened but made unique
+			// Both should be shortened but made unique - verified via invariants
 		},
 		{
 			name:           "non-MCP long name truncated",
@@ -4259,12 +4262,12 @@ func TestToolNameShortening(t *testing.T) {
 					continue
 				}
 
-				// Verify shortened name is <= 64 chars
+				// Invariant 1: shortened name must be <= 64 chars
 				if len(short) > 64 {
 					t.Errorf("shortened name %q exceeds 64 chars (len=%d)", short, len(short))
 				}
 
-				// If expected value is specified, verify it
+				// If expected value is specified (stable cases), verify it
 				if tt.expectedShort != nil {
 					if expected, ok := tt.expectedShort[name]; ok {
 						if short != expected {
@@ -4272,9 +4275,16 @@ func TestToolNameShortening(t *testing.T) {
 						}
 					}
 				}
+
+				// Invariant 2: MCP tools should keep mcp__ prefix for visibility
+				if strings.HasPrefix(name, "mcp__") {
+					if !strings.HasPrefix(short, "mcp__") {
+						t.Errorf("expected shortened MCP tool %q to keep mcp__ prefix, got %q", name, short)
+					}
+				}
 			}
 
-			// Verify uniqueness of shortened names
+			// Invariant 3: uniqueness of shortened names
 			seen := make(map[string]string)
 			for orig, short := range shortMap {
 				if prevOrig, exists := seen[short]; exists {
@@ -4585,6 +4595,12 @@ func TestToolNameShortening_WithForceFunctionCall(t *testing.T) {
 
 // TestToolNameRestoration_StreamingWithForceFunctionCall tests that tool names
 // are properly restored in streaming mode when force function call is enabled.
+//
+// Per AI review: This test validates context storage/retrieval but not the full
+// E2E streaming path through handleCCStreamingResponse. A full E2E test would
+// require complex mock setup with SSE writer and response parsing. The core
+// restoration logic is tested here; handleCCStreamingResponse uses the same
+// getOpenAIToolNameReverseMap function, so coverage is adequate.
 func TestToolNameRestoration_StreamingWithForceFunctionCall(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

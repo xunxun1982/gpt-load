@@ -134,7 +134,39 @@ const codexToolNameLimit = 64
 // ensuring uniqueness within the request. This is necessary because multiple
 // tools may have the same shortened name after truncation.
 // Duplicate original names are skipped to prevent map overwrite issues.
+//
+// Per AI review: Fast path optimization - if all names are already <=64 chars
+// and collision-free, we still build the map but avoid expensive shortening logic.
+// The map is always returned for consistent downstream handling.
 func buildToolNameShortMap(names []string) map[string]string {
+	if len(names) == 0 {
+		return nil
+	}
+
+	// Fast path: check if any name needs shortening
+	needsShortening := false
+	for _, n := range names {
+		if len(n) > codexToolNameLimit {
+			needsShortening = true
+			break
+		}
+	}
+
+	// If no shortening needed, build identity map directly (fast path)
+	if !needsShortening {
+		result := make(map[string]string, len(names))
+		seen := make(map[string]struct{}, len(names))
+		for _, n := range names {
+			if _, ok := seen[n]; ok {
+				continue // Skip duplicates
+			}
+			seen[n] = struct{}{}
+			result[n] = n
+		}
+		return result
+	}
+
+	// Slow path: need to shorten some names
 	used := make(map[string]struct{}, len(names))
 	result := make(map[string]string, len(names))
 	seenOrig := make(map[string]struct{}, len(names))

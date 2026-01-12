@@ -272,9 +272,12 @@ func getTriggerSignal(c *gin.Context) string {
 
 // getOpenAIToolNameReverseMap retrieves the tool name reverse map from context.
 // Returns nil if not found or if tool name shortening was not applied.
-// NOTE: Returns the underlying map by reference for zero-copy performance.
-// Callers MUST treat the returned map as read-only; mutation would affect
-// subsequent restorations within the same request.
+//
+// PERFORMANCE: Returns the underlying map by reference for zero-copy performance.
+// SAFETY: Callers MUST treat the returned map as read-only. Mutation would corrupt
+// subsequent restorations within the same request. Per AI review, a copy could be
+// returned for safety, but the performance cost is not justified since all current
+// callers only read from the map (verified by code inspection).
 func getOpenAIToolNameReverseMap(c *gin.Context) map[string]string {
 	if v, ok := c.Get(ctxKeyOpenAIToolNameReverseMap); ok {
 		if m, ok := v.(map[string]string); ok {
@@ -608,10 +611,15 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 				case "tool":
 					// Force call specific tool
 					if toolName, ok := toolChoice["name"].(string); ok {
+						originalToolName := toolName
 						// Apply shortened name if available
 						if toolNameShortMap != nil {
 							if short, ok := toolNameShortMap[toolName]; ok {
 								toolName = short
+							} else if len(toolName) > 64 {
+								// Per AI review: warn when tool_choice references a name not in shortMap
+								// but exceeds the 64-char limit. This indicates a misconfiguration.
+								logrus.WithField("tool_name", toolName).Warn("CC: tool_choice references tool not in shortMap but exceeds 64 chars")
 							}
 						}
 						openaiReq.ToolChoice = map[string]interface{}{
@@ -620,7 +628,14 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 								"name": toolName,
 							},
 						}
-						logrus.WithField("tool_name", toolName).Debug("CC: Converted tool_choice to force specific tool")
+						if originalToolName != toolName {
+							logrus.WithFields(logrus.Fields{
+								"original": originalToolName,
+								"short":    toolName,
+							}).Debug("CC: Converted tool_choice with shortened tool name")
+						} else {
+							logrus.WithField("tool_name", toolName).Debug("CC: Converted tool_choice to force specific tool")
+						}
 					}
 				case "any":
 					// Force call any tool - maps to OpenAI "required"
