@@ -4214,6 +4214,11 @@ func TestToolNameShortening(t *testing.T) {
 		expectShortMap bool              // whether shortening should occur
 	}{
 		{
+			name:           "empty input returns nil",
+			toolNames:      []string{},
+			expectShortMap: false,
+		},
+		{
 			name:           "short names unchanged",
 			toolNames:      []string{"Read", "Write", "Bash"},
 			expectShortMap: true,
@@ -4662,6 +4667,7 @@ func TestSSEReaderWithTimeout_FirstByteTimeout(t *testing.T) {
 // uses the subsequent timeout after receiving the first event.
 func TestSSEReaderWithTimeout_SubsequentTimeout(t *testing.T) {
 	pr, pw := io.Pipe()
+	defer pw.Close() // Clean up writer to prevent resource leak
 
 	// Send first event immediately
 	go func() {

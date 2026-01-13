@@ -1699,6 +1699,9 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 			resultCh <- readResult{line: line, err: err}
 		}()
 
+		// Cache timeout value before select to avoid calling getTimeout() twice
+		timeoutDuration := getTimeout()
+
 		var line string
 		var err error
 		select {
@@ -1708,12 +1711,11 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 			if err == nil {
 				firstByteReceived = true
 			}
-		case <-time.After(getTimeout()):
+		case <-time.After(timeoutDuration):
 			timeoutType := "subsequent"
 			if !firstByteReceived {
 				timeoutType = "first-byte"
 			}
-			timeoutDuration := getTimeout()
 			logrus.WithFields(logrus.Fields{
 				"timeout_type":    timeoutType,
 				"timeout_seconds": timeoutDuration.Seconds(),
