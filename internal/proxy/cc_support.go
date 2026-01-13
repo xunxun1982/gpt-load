@@ -2968,8 +2968,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 	// Use timeout-enabled SSE reader for CC support to prevent hanging when
 	// upstream models (e.g., deepseek-reasoner) are in thinking phase without sending data.
-	// First-byte timeout: 30 seconds, subsequent timeout: 60 seconds.
-	reader := NewSSEReaderWithTimeout(resp.Body, sseFirstByteTimeout, sseSubsequentTimeout)
+	// Timeout values are derived from group/system config with preset upper bounds.
+	firstByteTimeout, subsequentTimeout := getEffectiveSSETimeouts(c)
+	reader := NewSSEReaderWithTimeout(resp.Body, firstByteTimeout, subsequentTimeout)
 	contentBlockIndex := 0
 	var currentToolCall *OpenAIToolCall
 	var currentToolCallName string
@@ -3704,23 +3705,78 @@ func appendToContent(content json.RawMessage, suffix string) json.RawMessage {
 	return content
 }
 
-// SSE timeout constants for CC support streaming mode.
-// These timeouts prevent Claude Code from hanging indefinitely when upstream
-// models (e.g., deepseek-reasoner) are in thinking phase without sending data.
+// SSE timeout preset constants for CC support streaming mode.
+// These are the maximum allowed timeout values. Actual timeouts may be shorter
+// if group/system config specifies smaller values.
+// Priority: group config > system config > preset values
+// If config value < preset value, use config value; otherwise use preset value.
 const (
-	// sseFirstByteTimeout is the maximum time to wait for the first SSE event
+	// sseFirstByteTimeoutPreset is the maximum time to wait for the first SSE event
 	// in streaming mode. Set to 30 seconds to allow for model initialization.
-	sseFirstByteTimeout = 30 * time.Second
+	sseFirstByteTimeoutPreset = 30 * time.Second
 
-	// sseSubsequentTimeout is the maximum time to wait between SSE events
+	// sseSubsequentTimeoutPreset is the maximum time to wait between SSE events
 	// after the first event has been received. Set to 60 seconds to allow
 	// for reasonable pauses during model generation.
-	sseSubsequentTimeout = 60 * time.Second
+	sseSubsequentTimeoutPreset = 60 * time.Second
 
-	// nonStreamFirstByteTimeout is the maximum time to wait for the first byte
+	// nonStreamFirstByteTimeoutPreset is the maximum time to wait for the first byte
 	// in non-streaming mode. Set to 60 minutes to allow for complex reasoning tasks.
-	nonStreamFirstByteTimeout = 60 * time.Minute
+	nonStreamFirstByteTimeoutPreset = 60 * time.Minute
 )
+
+// Backward compatibility aliases for external references (e.g., codex_cc_support.go)
+const (
+	sseFirstByteTimeout       = sseFirstByteTimeoutPreset
+	sseSubsequentTimeout      = sseSubsequentTimeoutPreset
+	nonStreamFirstByteTimeout = nonStreamFirstByteTimeoutPreset
+)
+
+// getEffectiveSSETimeouts calculates effective SSE timeout values based on group config.
+// Priority: group config > system config > preset values
+// If config value < preset value, use config value; otherwise use preset value.
+// This allows users to configure shorter timeouts but prevents excessively long ones.
+//
+// Timeout mapping:
+// - firstByteTimeout: derived from ResponseHeaderTimeout (time to wait for first response)
+// - subsequentTimeout: derived from RequestTimeout (overall request timeout)
+func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeout time.Duration) {
+	// Default to preset values
+	firstByteTimeout = sseFirstByteTimeoutPreset
+	subsequentTimeout = sseSubsequentTimeoutPreset
+
+	// Try to get group from context
+	gv, ok := c.Get("group")
+	if !ok {
+		return
+	}
+	group, ok := gv.(*models.Group)
+	if !ok || group == nil {
+		return
+	}
+
+	cfg := group.EffectiveConfig
+
+	// Calculate effective first byte timeout from ResponseHeaderTimeout
+	// ResponseHeaderTimeout is the time to wait for response headers (first data)
+	if cfg.ResponseHeaderTimeout > 0 {
+		configTimeout := time.Duration(cfg.ResponseHeaderTimeout) * time.Second
+		if configTimeout < firstByteTimeout {
+			firstByteTimeout = configTimeout
+		}
+	}
+
+	// Calculate effective subsequent timeout from RequestTimeout
+	// RequestTimeout is the overall request timeout, used as upper bound for inter-event wait
+	if cfg.RequestTimeout > 0 {
+		configTimeout := time.Duration(cfg.RequestTimeout) * time.Second
+		if configTimeout < subsequentTimeout {
+			subsequentTimeout = configTimeout
+		}
+	}
+
+	return
+}
 
 // ErrSSETimeout is returned when SSE read times out waiting for data.
 var ErrSSETimeout = errors.New("SSE read timeout: upstream did not send data within the expected time")

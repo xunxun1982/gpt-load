@@ -1644,12 +1644,14 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	reader := bufio.NewReader(resp.Body)
 
 	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
+	// Timeout values are derived from group/system config with preset upper bounds.
 	firstByteReceived := false
+	effectiveFirstByteTimeout, effectiveSubsequentTimeout := getEffectiveSSETimeouts(c)
 	getTimeout := func() time.Duration {
 		if !firstByteReceived {
-			return sseFirstByteTimeout
+			return effectiveFirstByteTimeout
 		}
-		return sseSubsequentTimeout
+		return effectiveSubsequentTimeout
 	}
 
 	// Helper function to write Claude SSE event
