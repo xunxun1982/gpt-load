@@ -50,8 +50,9 @@ func NewBindingService(db *gorm.DB, readDB services.ReadOnlyDB, taskService *ser
 	}
 }
 
-// BindGroupToSite binds a standard group to a managed site (bidirectional)
-// Only standard groups (not aggregate, not child groups) can be bound to sites
+// BindGroupToSite binds a standard group to a managed site.
+// Multiple groups can bind to the same site (many-to-one relationship).
+// Only standard groups (not aggregate, not child groups) can be bound to sites.
 func (s *BindingService) BindGroupToSite(ctx context.Context, groupID uint, siteID uint) error {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Validate group exists and is a standard group (not aggregate, not child)
@@ -84,20 +85,12 @@ func (s *BindingService) BindGroupToSite(ctx context.Context, groupID uint, site
 			return services.NewI18nError(app_errors.ErrValidation, "binding.group_already_bound", nil)
 		}
 
-		// Check if site is already bound to another group
-		if site.BoundGroupID != nil && *site.BoundGroupID != groupID {
-			return services.NewI18nError(app_errors.ErrValidation, "binding.site_already_bound", nil)
-		}
+		// Note: Multiple groups can bind to the same site (many-to-one)
+		// No need to check if site is already bound to another group
 
 		// Update group's bound_site_id
 		if err := tx.Model(&models.Group{}).Where("id = ?", groupID).
 			Update("bound_site_id", siteID).Error; err != nil {
-			return app_errors.ParseDBError(err)
-		}
-
-		// Update site's bound_group_id
-		if err := tx.Model(&ManagedSite{}).Where("id = ?", siteID).
-			Update("bound_group_id", groupID).Error; err != nil {
 			return app_errors.ParseDBError(err)
 		}
 
@@ -139,12 +132,6 @@ func (s *BindingService) UnbindGroupFromSite(ctx context.Context, groupID uint) 
 			return app_errors.ParseDBError(err)
 		}
 
-		// Clear site's bound_group_id
-		if err := tx.Model(&ManagedSite{}).Where("id = ?", siteID).
-			Update("bound_group_id", nil).Error; err != nil {
-			return app_errors.ParseDBError(err)
-		}
-
 		logrus.WithContext(ctx).WithFields(logrus.Fields{
 			"groupID": groupID,
 			"siteID":  siteID,
@@ -158,10 +145,10 @@ func (s *BindingService) UnbindGroupFromSite(ctx context.Context, groupID uint) 
 	return err
 }
 
-// UnbindSiteFromGroup removes the binding from site side
+// UnbindSiteFromGroup removes all group bindings from a site (many-to-one)
 func (s *BindingService) UnbindSiteFromGroup(ctx context.Context, siteID uint) error {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get site to find bound group
+		// Verify site exists
 		var site ManagedSite
 		if err := tx.First(&site, siteID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -170,29 +157,20 @@ func (s *BindingService) UnbindSiteFromGroup(ctx context.Context, siteID uint) e
 			return app_errors.ParseDBError(err)
 		}
 
-		if site.BoundGroupID == nil {
-			// Already unbound, nothing to do
-			return nil
+		// Clear bound_site_id for all groups bound to this site (single UPDATE)
+		result := tx.Model(&models.Group{}).
+			Where("bound_site_id = ?", siteID).
+			Update("bound_site_id", nil)
+		if result.Error != nil {
+			return app_errors.ParseDBError(result.Error)
 		}
 
-		groupID := *site.BoundGroupID
-
-		// Clear site's bound_group_id
-		if err := tx.Model(&ManagedSite{}).Where("id = ?", siteID).
-			Update("bound_group_id", nil).Error; err != nil {
-			return app_errors.ParseDBError(err)
+		if result.RowsAffected > 0 {
+			logrus.WithContext(ctx).WithFields(logrus.Fields{
+				"siteID":        siteID,
+				"unboundGroups": result.RowsAffected,
+			}).Info("Unbound all groups from site")
 		}
-
-		// Clear group's bound_site_id
-		if err := tx.Model(&models.Group{}).Where("id = ?", groupID).
-			Update("bound_site_id", nil).Error; err != nil {
-			return app_errors.ParseDBError(err)
-		}
-
-		logrus.WithContext(ctx).WithFields(logrus.Fields{
-			"groupID": groupID,
-			"siteID":  siteID,
-		}).Info("Unbound site from group")
 
 		return nil
 	})
@@ -219,7 +197,7 @@ func (s *BindingService) CheckGroupCanDelete(ctx context.Context, groupID uint) 
 	return nil
 }
 
-// CheckSiteCanDelete checks if a site can be deleted (must unbind first)
+// CheckSiteCanDelete checks if a site can be deleted (must unbind all groups first)
 func (s *BindingService) CheckSiteCanDelete(ctx context.Context, siteID uint) error {
 	var site ManagedSite
 	if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {
@@ -229,69 +207,63 @@ func (s *BindingService) CheckSiteCanDelete(ctx context.Context, siteID uint) er
 		return app_errors.ParseDBError(err)
 	}
 
-	if site.BoundGroupID != nil {
-		return services.NewI18nError(app_errors.ErrValidation, "binding.must_unbind_before_delete_site", nil)
-	}
-
-	return nil
-}
-
-// SyncGroupEnabledToSite syncs group enabled status to bound site
-func (s *BindingService) SyncGroupEnabledToSite(ctx context.Context, groupID uint, enabled bool) error {
-	var group models.Group
-	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
-		return app_errors.ParseDBError(err)
-	}
-
-	if group.BoundSiteID == nil {
-		return nil // No bound site, nothing to sync
-	}
-
-	if err := s.db.WithContext(ctx).Model(&ManagedSite{}).
-		Where("id = ?", *group.BoundSiteID).
-		Update("enabled", enabled).Error; err != nil {
-		return app_errors.ParseDBError(err)
-	}
-
-	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"groupID": groupID,
-		"siteID":  *group.BoundSiteID,
-		"enabled": enabled,
-	}).Info("Synced group enabled status to bound site")
-
-	return nil
-}
-
-// SyncSiteEnabledToGroup syncs site enabled status to bound group and its child groups
-func (s *BindingService) SyncSiteEnabledToGroup(ctx context.Context, siteID uint, enabled bool) error {
-	var site ManagedSite
-	if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {
-		return app_errors.ParseDBError(err)
-	}
-
-	if site.BoundGroupID == nil {
-		return nil // No bound group, nothing to sync
-	}
-
-	groupID := *site.BoundGroupID
-
+	// Check if any groups are bound to this site
+	var boundCount int64
 	if err := s.db.WithContext(ctx).Model(&models.Group{}).
-		Where("id = ?", groupID).
-		Update("enabled", enabled).Error; err != nil {
+		Where("bound_site_id = ?", siteID).
+		Count(&boundCount).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
 
-	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"siteID":  siteID,
-		"groupID": groupID,
-		"enabled": enabled,
-	}).Info("Synced site enabled status to bound group")
+	if boundCount > 0 {
+		return services.NewI18nError(app_errors.ErrValidation, "binding.must_unbind_before_delete_site", map[string]any{"count": boundCount})
+	}
 
-	// Sync enabled status to child groups of the bound group
+	return nil
+}
+
+// Note: SyncGroupEnabledToSite is intentionally removed.
+// Group disable does NOT cascade to site (one-way sync: site -> groups only).
+
+// SyncSiteEnabledToGroup syncs site enabled status to all bound groups and their child groups.
+// When a site is disabled, all groups bound to it will be disabled.
+// Note: Group disable does NOT cascade to site (one-way sync only).
+func (s *BindingService) SyncSiteEnabledToGroup(ctx context.Context, siteID uint, enabled bool) error {
+	// Update enabled status for all bound groups (single UPDATE)
+	result := s.db.WithContext(ctx).Model(&models.Group{}).
+		Where("bound_site_id = ?", siteID).
+		Update("enabled", enabled)
+	if result.Error != nil {
+		return app_errors.ParseDBError(result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return nil // No bound groups, nothing to sync
+	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"siteID":     siteID,
+		"enabled":    enabled,
+		"groupCount": result.RowsAffected,
+	}).Info("Synced site enabled status to all bound groups")
+
+	// Sync enabled status to child groups of each bound group
 	if s.SyncChildGroupsEnabledCallback != nil {
-		if err := s.SyncChildGroupsEnabledCallback(ctx, groupID, enabled); err != nil {
-			logrus.WithContext(ctx).WithError(err).Warn("Failed to sync enabled status to child groups after site enabled change")
-			// Don't fail the operation, just log the warning
+		// Only fetch group IDs for child sync (minimal data)
+		var boundGroupIDs []uint
+		if err := s.db.WithContext(ctx).Model(&models.Group{}).
+			Where("bound_site_id = ?", siteID).
+			Pluck("id", &boundGroupIDs).Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to fetch bound group IDs for child sync")
+			return nil // Don't fail, main sync already succeeded
+		}
+
+		for _, groupID := range boundGroupIDs {
+			if err := s.SyncChildGroupsEnabledCallback(ctx, groupID, enabled); err != nil {
+				logrus.WithContext(ctx).WithError(err).WithField("groupID", groupID).
+					Warn("Failed to sync enabled status to child groups after site enabled change")
+				// Don't fail the operation, just log the warning
+			}
 		}
 	}
 
@@ -323,29 +295,38 @@ func (s *BindingService) GetBoundSiteInfo(ctx context.Context, groupID uint) (*M
 	}, nil
 }
 
-// GetBoundGroupInfo returns bound group info for a site
-func (s *BindingService) GetBoundGroupInfo(ctx context.Context, siteID uint) (*models.Group, error) {
+// GetBoundGroupInfo returns all groups bound to a site (many-to-one relationship)
+func (s *BindingService) GetBoundGroupInfo(ctx context.Context, siteID uint) ([]BoundGroupInfo, error) {
 	var site ManagedSite
 	if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	if site.BoundGroupID == nil {
-		return nil, nil
-	}
-
-	var group models.Group
-	if err := s.db.WithContext(ctx).First(&group, *site.BoundGroupID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
+	// Find all groups bound to this site
+	var groups []models.Group
+	if err := s.db.WithContext(ctx).
+		Select("id", "name", "display_name", "enabled").
+		Where("bound_site_id = ?", siteID).
+		Order("sort ASC, id ASC").
+		Find(&groups).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	return &group, nil
+	result := make([]BoundGroupInfo, 0, len(groups))
+	for _, g := range groups {
+		result = append(result, BoundGroupInfo{
+			ID:          g.ID,
+			Name:        g.Name,
+			DisplayName: g.DisplayName,
+			Enabled:     g.Enabled,
+		})
+	}
+
+	return result, nil
 }
 
 // ListSitesForBinding returns sites available for binding (sorted by sort order)
+// Each site includes the count of groups currently bound to it.
 func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSiteDTO, error) {
 	// Check cache first
 	s.cacheMu.RLock()
@@ -388,14 +369,45 @@ func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSite
 		return nil, app_errors.ParseDBError(err)
 	}
 
+	// Batch query to get bound group counts for all sites
+	siteIDs := make([]uint, len(sites))
+	for i, site := range sites {
+		siteIDs[i] = site.ID
+	}
+
+	// Get bound group counts per site using single query
+	type siteGroupCount struct {
+		SiteID uint
+		Count  int64
+	}
+	var counts []siteGroupCount
+	if len(siteIDs) > 0 {
+		if err := s.readDB.WithContext(queryCtx).
+			Model(&models.Group{}).
+			Select("bound_site_id as site_id, COUNT(*) as count").
+			Where("bound_site_id IN ?", siteIDs).
+			Group("bound_site_id").
+			Scan(&counts).Error; err != nil {
+			logrus.WithError(err).Warn("Failed to get bound group counts")
+			// Continue without counts
+		}
+	}
+
+	// Build count map for O(1) lookup
+	countMap := make(map[uint]int64, len(counts))
+	for _, c := range counts {
+		countMap[c.SiteID] = c.Count
+	}
+
 	result := make([]ManagedSiteDTO, 0, len(sites))
 	for _, site := range sites {
+		boundCount := countMap[site.ID]
 		result = append(result, ManagedSiteDTO{
-			ID:           site.ID,
-			Name:         site.Name,
-			Sort:         site.Sort,
-			Enabled:      site.Enabled,
-			BoundGroupID: site.BoundGroupID,
+			ID:               site.ID,
+			Name:             site.Name,
+			Sort:             site.Sort,
+			Enabled:          site.Enabled,
+			BoundGroupCount:  boundCount,
 		})
 	}
 

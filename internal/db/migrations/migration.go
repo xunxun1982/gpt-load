@@ -75,7 +75,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.9.0 migration - Add performance optimization indexes
-	return V1_9_0_AddPerformanceIndexes(db)
+	if err := V1_9_0_AddPerformanceIndexes(db); err != nil {
+		return err
+	}
+	// Run v1.10.0 migration - Convert to many-groups-to-one-site relationship
+	return V1_10_0_ManyGroupsToOneSite(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

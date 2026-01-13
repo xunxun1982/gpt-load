@@ -104,7 +104,7 @@ type GroupService struct {
 
 	// Callbacks for binding operations (set by handler layer to avoid circular dependency)
 	CheckGroupCanDeleteCallback          func(ctx context.Context, groupID uint) error
-	SyncGroupEnabledToSiteCallback       func(ctx context.Context, groupID uint, enabled bool) error
+	// Note: SyncGroupEnabledToSiteCallback removed - group disable does NOT cascade to site
 	SyncChildGroupsEnabledCallback       func(ctx context.Context, parentGroupID uint, enabled bool) error // Sync enabled status to child groups
 	InvalidateChildGroupsCacheCallback   func()                                                            // Invalidate child groups cache after updating a child group
 }
@@ -2334,13 +2334,7 @@ func (s *GroupService) ToggleGroupEnabled(ctx context.Context, id uint, enabled 
 		return app_errors.ErrResourceNotFound
 	}
 
-	// Sync enabled status to bound site
-	if s.SyncGroupEnabledToSiteCallback != nil {
-		if err := s.SyncGroupEnabledToSiteCallback(ctx, id, enabled); err != nil {
-			logrus.WithContext(ctx).WithError(err).Warn("Failed to sync group enabled status to bound site")
-			// Don't fail the operation, just log the warning
-		}
-	}
+	// Note: Group disable does NOT cascade to bound site (one-way sync: site -> groups only)
 
 	// Sync enabled status to child groups (for standard groups with children)
 	if s.SyncChildGroupsEnabledCallback != nil {

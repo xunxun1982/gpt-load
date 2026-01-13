@@ -243,9 +243,8 @@ var MessagesJaJP = map[string]string{
 	"binding.aggregate_cannot_bind":          "集約グループはサイトにバインドできません",
 	"binding.child_group_cannot_bind":        "子グループはサイトにバインドできません",
 	"binding.group_already_bound":            "このグループは既に別のサイトにバインドされています",
-	"binding.site_already_bound":             "このサイトは既に別のグループにバインドされています",
 	"binding.must_unbind_before_delete_group": "グループを削除する前にサイトとのバインドを解除してください",
-	"binding.must_unbind_before_delete_site": "サイトを削除する前にグループとのバインドを解除してください",
+	"binding.must_unbind_before_delete_site": "サイトを削除する前にすべてのグループ（{{.count}}個）のバインドを解除してください",
 }
 
 func init() {

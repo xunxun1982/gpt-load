@@ -243,9 +243,8 @@ var MessagesZhCN = map[string]string{
 	"binding.aggregate_cannot_bind":          "聚合分组不能绑定站点",
 	"binding.child_group_cannot_bind":        "子分组不能绑定站点",
 	"binding.group_already_bound":            "该分组已绑定其他站点",
-	"binding.site_already_bound":             "该站点已绑定其他分组",
 	"binding.must_unbind_before_delete_group": "请先解除与站点的绑定后再删除分组",
-	"binding.must_unbind_before_delete_site": "请先解除与分组的绑定后再删除站点",
+	"binding.must_unbind_before_delete_site": "请先解除所有分组（共{{.count}}个）的绑定后再删除站点",
 }
 
 func init() {

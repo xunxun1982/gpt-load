@@ -212,51 +212,55 @@ func (s *SiteService) ListSitesPaginated(ctx context.Context, params SiteListPar
 	}, nil
 }
 
-// convertSitesToDTOs converts sites to DTOs with batch operations for group names
+// convertSitesToDTOs converts sites to DTOs with batch operations for bound groups
 func (s *SiteService) convertSitesToDTOs(ctx context.Context, sites []ManagedSite) ([]ManagedSiteDTO, error) {
 	if len(sites) == 0 {
 		return []ManagedSiteDTO{}, nil
 	}
 
-	// Collect bound group IDs for batch query
-	boundGroupIDs := make([]uint, 0, len(sites))
-	for _, site := range sites {
-		if site.BoundGroupID != nil {
-			boundGroupIDs = append(boundGroupIDs, *site.BoundGroupID)
-		}
+	// Collect site IDs for batch query
+	siteIDs := make([]uint, len(sites))
+	for i, site := range sites {
+		siteIDs[i] = site.ID
 	}
 
-	// Batch fetch group names for display purposes.
-	// Errors are logged but not propagated since group names are non-critical display data.
-	groupNameMap := make(map[uint]string)
-	if len(boundGroupIDs) > 0 {
-		var groups []models.Group
-		if err := s.db.WithContext(ctx).Select("id", "name").Where("id IN ?", boundGroupIDs).Find(&groups).Error; err != nil {
-			logrus.WithContext(ctx).WithError(err).Warn("Failed to fetch group names for site list")
-		} else {
-			for _, g := range groups {
-				groupNameMap[g.ID] = g.Name
-			}
+	// Batch fetch all groups bound to these sites
+	var boundGroups []models.Group
+	if err := s.db.WithContext(ctx).
+		Select("id", "name", "display_name", "enabled", "bound_site_id").
+		Where("bound_site_id IN ?", siteIDs).
+		Order("sort ASC, id ASC").
+		Find(&boundGroups).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("Failed to fetch bound groups for site list")
+	}
+
+	// Build map of site ID -> bound groups
+	boundGroupsMap := make(map[uint][]BoundGroupInfo)
+	for _, g := range boundGroups {
+		if g.BoundSiteID != nil {
+			siteID := *g.BoundSiteID
+			boundGroupsMap[siteID] = append(boundGroupsMap[siteID], BoundGroupInfo{
+				ID:          g.ID,
+				Name:        g.Name,
+				DisplayName: g.DisplayName,
+				Enabled:     g.Enabled,
+			})
 		}
 	}
 
 	// Convert to DTOs
 	dtos := make([]ManagedSiteDTO, 0, len(sites))
 	for i := range sites {
-		dtos = append(dtos, s.siteToDTO(&sites[i], groupNameMap))
+		dtos = append(dtos, s.siteToDTO(&sites[i], boundGroupsMap))
 	}
 
 	return dtos, nil
 }
 
-// siteToDTO converts a single site to DTO using pre-fetched group name map.
-// Note: This method is optimized for batch operations where group names are pre-fetched.
+// siteToDTO converts a single site to DTO using pre-fetched group data.
+// Note: This method is optimized for batch operations where group data is pre-fetched.
 // For single-site operations (create/update), use toDTO() which performs individual lookup.
-// AI suggested consolidating these methods, but keeping them separate provides:
-// 1. Clear separation between batch (efficient) and single (simple) use cases
-// 2. Avoids nil map checks and optional parameter complexity
-// 3. Better code readability for each specific use case
-func (s *SiteService) siteToDTO(site *ManagedSite, groupNameMap map[uint]string) ManagedSiteDTO {
+func (s *SiteService) siteToDTO(site *ManagedSite, boundGroupsMap map[uint][]BoundGroupInfo) ManagedSiteDTO {
 	// Decrypt user_id for display
 	userID := site.UserID
 	if userID != "" {
@@ -265,9 +269,10 @@ func (s *SiteService) siteToDTO(site *ManagedSite, groupNameMap map[uint]string)
 		}
 	}
 
-	var boundGroupName string
-	if site.BoundGroupID != nil {
-		boundGroupName = groupNameMap[*site.BoundGroupID]
+	boundGroups := boundGroupsMap[site.ID]
+	var boundGroupCount int64
+	if boundGroups != nil {
+		boundGroupCount = int64(len(boundGroups))
 	}
 
 	return ManagedSiteDTO{
@@ -294,8 +299,8 @@ func (s *SiteService) siteToDTO(site *ManagedSite, groupNameMap map[uint]string)
 		LastCheckInMessage:        site.LastCheckInMessage,
 		LastSiteOpenedDate:        site.LastSiteOpenedDate,
 		LastCheckinPageOpenedDate: site.LastCheckinPageOpenedDate,
-		BoundGroupID:              site.BoundGroupID,
-		BoundGroupName:            boundGroupName,
+		BoundGroups:               boundGroups,
+		BoundGroupCount:           boundGroupCount,
 		CreatedAt:                 site.CreatedAt,
 		UpdatedAt:                 site.UpdatedAt,
 	}
@@ -564,17 +569,16 @@ func (s *SiteService) RecordCheckinPageOpened(ctx context.Context, siteID uint) 
 }
 
 func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
-	// Check if site is bound to a group
-	var site ManagedSite
-	if err := s.db.WithContext(ctx).Select("id", "bound_group_id").First(&site, siteID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil // Site doesn't exist, idempotent delete
-		}
+	// Check if any groups are bound to this site
+	var boundCount int64
+	if err := s.db.WithContext(ctx).Model(&models.Group{}).
+		Where("bound_site_id = ?", siteID).
+		Count(&boundCount).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
 
-	if site.BoundGroupID != nil {
-		return services.NewI18nError(app_errors.ErrValidation, "binding.must_unbind_before_delete_site", nil)
+	if boundCount > 0 {
+		return services.NewI18nError(app_errors.ErrValidation, "binding.must_unbind_before_delete_site", map[string]any{"count": boundCount})
 	}
 
 	// Best-effort cascade delete logs (fast because of idx_site_time).
@@ -596,17 +600,30 @@ func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
 	return nil
 }
 
-// DeleteAllUnboundSites deletes all sites that are not bound to any group.
+// DeleteAllUnboundSites deletes all sites that have no groups bound to them.
 // Returns the count of deleted sites.
 // Uses transaction to prevent race condition between fetching IDs and deletion.
 func (s *SiteService) DeleteAllUnboundSites(ctx context.Context) (int64, error) {
 	var deletedCount int64
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Find all unbound site IDs (sites where bound_group_id IS NULL)
+		// Get all site IDs that have groups bound to them (for exclusion)
+		var boundSiteIDs []uint
+		if err := tx.Model(&models.Group{}).
+			Where("bound_site_id IS NOT NULL").
+			Distinct("bound_site_id").
+			Pluck("bound_site_id", &boundSiteIDs).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
+
+		// Build delete query for unbound sites
+		deleteQuery := tx.Model(&ManagedSite{})
+		if len(boundSiteIDs) > 0 {
+			deleteQuery = deleteQuery.Where("id NOT IN ?", boundSiteIDs)
+		}
+
+		// Get IDs of sites to be deleted (for log cleanup)
 		var unboundSiteIDs []uint
-		if err := tx.Model(&ManagedSite{}).
-			Where("bound_group_id IS NULL").
-			Pluck("id", &unboundSiteIDs).Error; err != nil {
+		if err := deleteQuery.Pluck("id", &unboundSiteIDs).Error; err != nil {
 			return app_errors.ParseDBError(err)
 		}
 
@@ -614,17 +631,14 @@ func (s *SiteService) DeleteAllUnboundSites(ctx context.Context) (int64, error) 
 			return nil
 		}
 
-		// Delete sites first with re-check condition to prevent deleting concurrently-bound sites.
-		// This ensures business rule consistency: bound sites cannot be deleted.
-		result := tx.Where("id IN ? AND bound_group_id IS NULL", unboundSiteIDs).Delete(&ManagedSite{})
+		// Delete unbound sites
+		result := tx.Where("id IN ?", unboundSiteIDs).Delete(&ManagedSite{})
 		if result.Error != nil {
 			return app_errors.ParseDBError(result.Error)
 		}
 		deletedCount = result.RowsAffected
 
-		// Delete orphaned logs for actually deleted sites.
-		// Note: Some logs may remain if sites were bound between fetch and delete,
-		// but those sites still exist so their logs are still valid.
+		// Delete orphaned logs for deleted sites
 		if deletedCount > 0 {
 			if err := tx.Where("site_id IN ?", unboundSiteIDs).
 				Delete(&ManagedSiteCheckinLog{}).Error; err != nil {
@@ -646,13 +660,25 @@ func (s *SiteService) DeleteAllUnboundSites(ctx context.Context) (int64, error) 
 	return deletedCount, nil
 }
 
-// CountUnboundSites returns the count of sites not bound to any group.
+// CountUnboundSites returns the count of sites that have no groups bound to them.
 func (s *SiteService) CountUnboundSites(ctx context.Context) (int64, error) {
+	// Get all site IDs that have groups bound to them
+	var boundSiteIDs []uint
+	if err := s.db.WithContext(ctx).Model(&models.Group{}).
+		Where("bound_site_id IS NOT NULL").
+		Distinct("bound_site_id").
+		Pluck("bound_site_id", &boundSiteIDs).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+
+	// Count sites not in the bound list
+	query := s.db.WithContext(ctx).Model(&ManagedSite{})
+	if len(boundSiteIDs) > 0 {
+		query = query.Where("id NOT IN ?", boundSiteIDs)
+	}
+
 	var count int64
-	if err := s.db.WithContext(ctx).
-		Model(&ManagedSite{}).
-		Where("bound_group_id IS NULL").
-		Count(&count).Error; err != nil {
+	if err := query.Count(&count).Error; err != nil {
 		return 0, app_errors.ParseDBError(err)
 	}
 	return count, nil
@@ -866,12 +892,20 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 		}
 	}
 
-	// Get bound group name if bound
-	var boundGroupName string
-	if site.BoundGroupID != nil {
-		var group models.Group
-		if err := s.db.Select("name").First(&group, *site.BoundGroupID).Error; err == nil {
-			boundGroupName = group.Name
+	// Get all groups bound to this site (many-to-one relationship)
+	var boundGroups []BoundGroupInfo
+	var groups []models.Group
+	if err := s.db.Select("id", "name", "display_name", "enabled").
+		Where("bound_site_id = ?", site.ID).
+		Order("sort ASC, id ASC").
+		Find(&groups).Error; err == nil {
+		for _, g := range groups {
+			boundGroups = append(boundGroups, BoundGroupInfo{
+				ID:          g.ID,
+				Name:        g.Name,
+				DisplayName: g.DisplayName,
+				Enabled:     g.Enabled,
+			})
 		}
 	}
 
@@ -899,8 +933,8 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 		LastCheckInMessage:        site.LastCheckInMessage,
 		LastSiteOpenedDate:        site.LastSiteOpenedDate,
 		LastCheckinPageOpenedDate: site.LastCheckinPageOpenedDate,
-		BoundGroupID:              site.BoundGroupID,
-		BoundGroupName:            boundGroupName,
+		BoundGroups:               boundGroups,
+		BoundGroupCount:           int64(len(boundGroups)),
 		CreatedAt:                 site.CreatedAt,
 		UpdatedAt:                 site.UpdatedAt,
 	}
