@@ -570,6 +570,8 @@ func (s *SiteService) RecordCheckinPageOpened(ctx context.Context, siteID uint) 
 
 func (s *SiteService) DeleteSite(ctx context.Context, siteID uint) error {
 	// Check if any groups are bound to this site
+	// Note: This check duplicates BindingService.CheckSiteCanDelete() logic intentionally.
+	// SiteService and BindingService are decoupled by design to avoid circular dependencies.
 	var boundCount int64
 	if err := s.db.WithContext(ctx).Model(&models.Group{}).
 		Where("bound_site_id = ?", siteID).
