@@ -930,9 +930,21 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	// Set to false for third-party OpenAI-compatible APIs without this limit.
 	var toolNameShortMap map[string]string
 	if len(claudeReq.Tools) > 0 && isShortenToolNamesEnabled(group) {
-		names := make([]string, 0, len(claudeReq.Tools))
+		names := make([]string, 0, len(claudeReq.Tools)+1)
 		for _, tool := range claudeReq.Tools {
 			names = append(names, tool.Name)
+		}
+		// Per AI review: also include tool_choice name if present, in case it's not in Tools.
+		// This prevents tool_choice from bypassing shortening and exceeding upstream limits.
+		if len(claudeReq.ToolChoice) > 0 {
+			var tc map[string]any
+			if err := json.Unmarshal(claudeReq.ToolChoice, &tc); err == nil {
+				if t, _ := tc["type"].(string); t == "tool" {
+					if n, _ := tc["name"].(string); n != "" {
+						names = append(names, n)
+					}
+				}
+			}
 		}
 		toolNameShortMap = buildToolNameShortMap(names)
 		// Store reverse map in context for response conversion
@@ -2969,8 +2981,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	textBlockOpen := false
 	thinkingBlockOpen := false // Track if thinking block is open for content merging
 	var aggregator *TextAggregator
-	hasValidToolCalls := false // Track if any valid tool_calls were processed
-	isErrorRecovery := false   // Track if error recovery was triggered (don't downgrade stop_reason)
+	hasValidToolCalls := false    // Track if any valid tool_calls were processed
+	isErrorRecovery := false      // Track if error recovery was triggered (don't downgrade stop_reason)
+	toolBlockStartSent := false   // Track if content_block_start was sent for current tool block
 
 	// Get tool name reverse map from context for restoring original tool names
 	reverseToolNameMap := getOpenAIToolNameReverseMap(c)
@@ -3094,27 +3107,55 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		argsLen := currentToolCallArgs.Len()
 		argsStr := currentToolCallArgs.String()
 		logrus.WithFields(logrus.Fields{
-			"tool_id":        currentToolCall.ID,
-			"tool_name":      currentToolCallName,
-			"args_len":       argsLen,
-			"content_index":  contentBlockIndex,
+			"tool_id":           currentToolCall.ID,
+			"tool_name":         currentToolCallName,
+			"args_len":          argsLen,
+			"content_index":     contentBlockIndex,
+			"block_start_sent":  toolBlockStartSent,
 		}).Debug("CC: closeToolBlock() called")
 
 		// Validate arguments before emitting - skip empty/placeholder tool_calls
 		// Some upstream models (e.g., deepseek-reasoner in thinking mode) may return
 		// tool_calls with empty arguments as placeholders during reasoning phase.
-		// NOTE: Since we now defer content_block_start until arguments are received,
-		// if argsLen == 0, no content_block_start was sent, so we just reset state.
+		//
+		// Per AI review: This validation now happens BEFORE sending content_block_start.
+		// Previously, content_block_start was sent when first args chunk arrived, but if
+		// accumulated args became "{}" (e.g., "{" + "}"), closeToolBlock would skip
+		// content_block_stop, corrupting the SSE block sequence.
+		// Now we defer content_block_start until here, ensuring start/delta/stop are
+		// always emitted together or not at all.
 		if !isValidToolCallArguments(currentToolCallName, argsStr) {
 			logrus.WithFields(logrus.Fields{
 				"tool_name": currentToolCallName,
 				"tool_id":   currentToolCall.ID,
 			}).Warn("CC: Skipping tool_call with empty arguments in streaming mode")
-			// No content_block_start was sent (deferred until args received), just reset state
+			// Reset state without sending any events
 			currentToolCall = nil
 			currentToolCallName = ""
 			currentToolCallArgs.Reset()
+			toolBlockStartSent = false
 			return
+		}
+
+		// Now we know args are valid; emit complete tool_use block (start -> delta -> stop)
+		hasValidToolCalls = true
+
+		// Send content_block_start if not already sent
+		if !toolBlockStartSent {
+			startEvent := ClaudeStreamEvent{
+				Type:         "content_block_start",
+				Index:        contentBlockIndex,
+				ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: currentToolCall.ID, Name: currentToolCallName},
+			}
+			if err := writer.Send(startEvent, true); err != nil {
+				logrus.WithError(err).Debug("CC: Failed to start tool_use block")
+				currentToolCall = nil
+				currentToolCallName = ""
+				currentToolCallArgs.Reset()
+				toolBlockStartSent = false
+				return
+			}
+			toolBlockStartSent = true
 		}
 
 		if currentToolCallName != "" && argsLen > 0 {
@@ -3154,12 +3195,17 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
 		if err := writer.Send(stopEvent, true); err != nil {
 			logrus.WithError(err).Debug("CC: Failed to stop tool block")
+			currentToolCall = nil
+			currentToolCallName = ""
+			currentToolCallArgs.Reset()
+			toolBlockStartSent = false
 			return
 		}
 		contentBlockIndex++
 		currentToolCall = nil
 		currentToolCallName = ""
 		currentToolCallArgs.Reset()
+		toolBlockStartSent = false
 	}
 
 	// ensureThinkingBlock ensures a thinking block is open for content merging.
@@ -3480,34 +3526,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				if call.ID == "" {
 					// This is a continuation chunk with only arguments
 					if currentToolCall != nil && call.Function.Arguments != "" {
-						// First time receiving arguments for this tool_call - send content_block_start
-						if currentToolCallArgs.Len() == 0 {
-							// Validate arguments before starting the block to prevent stream state corruption.
-							// If first chunk is "{}" (empty object), skip entirely to avoid sending
-							// content_block_start without a matching content_block_stop.
-							if !isValidToolCallArguments(currentToolCallName, call.Function.Arguments) {
-								logrus.WithFields(logrus.Fields{
-									"tool_id":   currentToolCall.ID,
-									"tool_name": currentToolCallName,
-									"arguments": call.Function.Arguments,
-								}).Debug("CC: Skipping tool_call with invalid initial arguments (continuation)")
-								continue
-							}
-							hasValidToolCalls = true // Now we know this is a valid tool call
-							logrus.WithFields(logrus.Fields{
-								"tool_id":   currentToolCall.ID,
-								"tool_name": currentToolCallName,
-							}).Debug("CC: Starting tool_use block (received first arguments)")
-							startEvent := ClaudeStreamEvent{
-								Type:         "content_block_start",
-								Index:        contentBlockIndex,
-								ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: currentToolCall.ID, Name: currentToolCallName},
-							}
-							if err := writer.Send(startEvent, true); err != nil {
-								logrus.WithError(err).Debug("CC: Failed to start tool_use block")
-								continue
-							}
-						}
+						// Per AI review: Defer content_block_start until closeToolBlock().
+						// This prevents SSE block sequence corruption when args like "{" + "}"
+						// accumulate to "{}" which would fail validation in closeToolBlock.
 						currentToolCallArgs.WriteString(call.Function.Arguments)
 						logrus.WithFields(logrus.Fields{
 							"tool_id":         currentToolCall.ID,
@@ -3546,34 +3567,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				}
 
 				if call.Function.Arguments != "" && currentToolCall != nil {
-					// First time receiving arguments for this tool_call - send content_block_start
-					if currentToolCallArgs.Len() == 0 {
-						// Validate arguments before starting the block to prevent stream state corruption.
-						// If first chunk is "{}" (empty object), skip entirely to avoid sending
-						// content_block_start without a matching content_block_stop.
-						if !isValidToolCallArguments(currentToolCallName, call.Function.Arguments) {
-							logrus.WithFields(logrus.Fields{
-								"tool_id":   currentToolCall.ID,
-								"tool_name": currentToolCallName,
-								"arguments": call.Function.Arguments,
-							}).Debug("CC: Skipping tool_call with invalid initial arguments")
-							continue
-						}
-						hasValidToolCalls = true // Now we know this is a valid tool call
-						logrus.WithFields(logrus.Fields{
-							"tool_id":   currentToolCall.ID,
-							"tool_name": currentToolCallName,
-						}).Debug("CC: Starting tool_use block (received first arguments)")
-						startEvent := ClaudeStreamEvent{
-							Type:         "content_block_start",
-							Index:        contentBlockIndex,
-							ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: currentToolCall.ID, Name: currentToolCallName},
-						}
-						if err := writer.Send(startEvent, true); err != nil {
-							logrus.WithError(err).Debug("CC: Failed to start tool_use block")
-							continue
-						}
-					}
+					// Per AI review: Defer content_block_start until closeToolBlock().
+					// This prevents SSE block sequence corruption when args like "{" + "}"
+					// accumulate to "{}" which would fail validation in closeToolBlock.
 					currentToolCallArgs.WriteString(call.Function.Arguments)
 					logrus.WithFields(logrus.Fields{
 						"tool_id":        call.ID,
