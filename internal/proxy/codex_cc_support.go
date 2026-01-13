@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
@@ -1642,6 +1643,15 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	state := newCodexStreamState(reverseToolNameMap)
 	reader := bufio.NewReader(resp.Body)
 
+	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
+	firstByteReceived := false
+	getTimeout := func() time.Duration {
+		if !firstByteReceived {
+			return sseFirstByteTimeout
+		}
+		return sseSubsequentTimeout
+	}
+
 	// Helper function to write Claude SSE event
 	writeClaudeEvent := func(event ClaudeStreamEvent) error {
 		eventBytes, err := json.Marshal(event)
@@ -1674,7 +1684,53 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	}
 
 	for {
-		line, err := reader.ReadString('\n')
+		// Use goroutine + channel pattern for timeout support since bufio.Reader doesn't support timeouts
+		type readResult struct {
+			line string
+			err  error
+		}
+		resultCh := make(chan readResult, 1)
+
+		go func() {
+			line, err := reader.ReadString('\n')
+			resultCh <- readResult{line: line, err: err}
+		}()
+
+		var line string
+		var err error
+		select {
+		case result := <-resultCh:
+			line = result.line
+			err = result.err
+			if err == nil {
+				firstByteReceived = true
+			}
+		case <-time.After(getTimeout()):
+			timeoutType := "subsequent"
+			if !firstByteReceived {
+				timeoutType = "first-byte"
+			}
+			logrus.WithFields(logrus.Fields{
+				"timeout_type":    timeoutType,
+				"timeout_seconds": getTimeout().Seconds(),
+			}).Warn("Codex CC: SSE read timeout, upstream did not send data")
+			// Send error event to client
+			errorEvent := ClaudeStreamEvent{
+				Type: "error",
+				Error: &ClaudeError{
+					Type:    "timeout_error",
+					Message: fmt.Sprintf("Upstream did not respond within %v seconds", getTimeout().Seconds()),
+				},
+			}
+			_ = writeClaudeEvent(errorEvent)
+			// Send final events to properly terminate the stream
+			finalEvents := state.processCodexStreamEvent(&CodexStreamEvent{Type: "response.completed"})
+			for _, event := range finalEvents {
+				_ = writeClaudeEvent(event)
+			}
+			return
+		}
+
 		lineCount++
 		// Per AI review: only log line preview when EnableRequestBodyLogging is enabled
 		// to avoid leaking sensitive SSE payloads (tool args, file paths, etc.)

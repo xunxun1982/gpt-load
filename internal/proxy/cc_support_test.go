@@ -2,12 +2,14 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"gpt-load/internal/models"
 
@@ -4624,5 +4626,151 @@ func TestToolNameRestoration_StreamingWithForceFunctionCall(t *testing.T) {
 
 	if orig, ok := retrievedMap[shortName]; !ok || orig != originalName {
 		t.Errorf("reverse map[%q] = %q, want %q", shortName, orig, originalName)
+	}
+}
+
+
+// TestSSEReaderWithTimeout_FirstByteTimeout tests that SSEReaderWithTimeout
+// correctly times out when no data is received within the first-byte timeout.
+func TestSSEReaderWithTimeout_FirstByteTimeout(t *testing.T) {
+	// Create a reader that never sends data (simulates upstream thinking phase)
+	pr, _ := io.Pipe()
+	// Don't write anything to simulate timeout
+
+	reader := NewSSEReaderWithTimeout(pr, 50*time.Millisecond, 100*time.Millisecond)
+
+	start := time.Now()
+	_, err := reader.ReadEvent()
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+
+	if !errors.Is(err, ErrSSETimeout) {
+		t.Errorf("expected ErrSSETimeout, got %v", err)
+	}
+
+	// Should timeout around 50ms (first-byte timeout)
+	if elapsed < 40*time.Millisecond || elapsed > 200*time.Millisecond {
+		t.Errorf("expected timeout around 50ms, got %v", elapsed)
+	}
+}
+
+// TestSSEReaderWithTimeout_SubsequentTimeout tests that SSEReaderWithTimeout
+// uses the subsequent timeout after receiving the first event.
+func TestSSEReaderWithTimeout_SubsequentTimeout(t *testing.T) {
+	pr, pw := io.Pipe()
+
+	// Send first event immediately
+	go func() {
+		pw.Write([]byte("data: {\"test\": 1}\n\n"))
+		// Don't send more data to trigger subsequent timeout
+	}()
+
+	reader := NewSSEReaderWithTimeout(pr, 50*time.Millisecond, 100*time.Millisecond)
+
+	// First read should succeed
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatalf("first read failed: %v", err)
+	}
+	if event.Data != `{"test": 1}` {
+		t.Errorf("unexpected data: %s", event.Data)
+	}
+
+	// Second read should timeout with subsequent timeout (100ms)
+	start := time.Now()
+	_, err = reader.ReadEvent()
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error on second read")
+	}
+
+	if !errors.Is(err, ErrSSETimeout) {
+		t.Errorf("expected ErrSSETimeout, got %v", err)
+	}
+
+	// Should timeout around 100ms (subsequent timeout)
+	if elapsed < 80*time.Millisecond || elapsed > 300*time.Millisecond {
+		t.Errorf("expected timeout around 100ms, got %v", elapsed)
+	}
+}
+
+// TestSSEReaderWithTimeout_NormalOperation tests that SSEReaderWithTimeout
+// works correctly when data is received within timeout.
+func TestSSEReaderWithTimeout_NormalOperation(t *testing.T) {
+	pr, pw := io.Pipe()
+
+	events := []string{
+		"data: {\"id\": 1}\n\n",
+		"data: {\"id\": 2}\n\n",
+		"data: [DONE]\n\n",
+	}
+
+	go func() {
+		for _, e := range events {
+			time.Sleep(10 * time.Millisecond)
+			pw.Write([]byte(e))
+		}
+		pw.Close()
+	}()
+
+	reader := NewSSEReaderWithTimeout(pr, 500*time.Millisecond, 500*time.Millisecond)
+
+	// Read all events
+	for i := 0; i < 3; i++ {
+		event, err := reader.ReadEvent()
+		if err != nil {
+			t.Fatalf("read %d failed: %v", i, err)
+		}
+		if event == nil {
+			t.Fatalf("read %d returned nil event", i)
+		}
+	}
+}
+
+// TestSSEReaderWithTimeout_SkipsComments tests that SSEReaderWithTimeout
+// correctly skips SSE comment lines (like keep-alive).
+func TestSSEReaderWithTimeout_SkipsComments(t *testing.T) {
+	pr, pw := io.Pipe()
+
+	go func() {
+		// Send keep-alive comments followed by actual data
+		pw.Write([]byte(": keep-alive\n"))
+		pw.Write([]byte(": another comment\n"))
+		pw.Write([]byte("data: {\"test\": true}\n\n"))
+		pw.Close()
+	}()
+
+	reader := NewSSEReaderWithTimeout(pr, 500*time.Millisecond, 500*time.Millisecond)
+
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+
+	if event.Data != `{"test": true}` {
+		t.Errorf("expected data to skip comments, got: %s", event.Data)
+	}
+}
+
+// TestSSEReader_BasicOperation tests that the basic SSEReader works correctly.
+func TestSSEReader_BasicOperation(t *testing.T) {
+	data := "event: message\ndata: {\"content\": \"hello\"}\n\n"
+	reader := NewSSEReader(strings.NewReader(data))
+
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+
+	if event.Event != "message" {
+		t.Errorf("expected event type 'message', got %s", event.Event)
+	}
+
+	if event.Data != `{"content": "hello"}` {
+		t.Errorf("unexpected data: %s", event.Data)
 	}
 }

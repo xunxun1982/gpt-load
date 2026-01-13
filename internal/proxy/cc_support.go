@@ -2966,7 +2966,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		"trigger_signal": triggerSignal,
 	}).Debug("CC: Started streaming response")
 
-	reader := NewSSEReader(resp.Body)
+	// Use timeout-enabled SSE reader for CC support to prevent hanging when
+	// upstream models (e.g., deepseek-reasoner) are in thinking phase without sending data.
+	// First-byte timeout: 20 seconds, subsequent timeout: 60 seconds.
+	reader := NewSSEReaderWithTimeout(resp.Body, sseFirstByteTimeout, sseSubsequentTimeout)
 	contentBlockIndex := 0
 	var currentToolCall *OpenAIToolCall
 	var currentToolCallName string
@@ -3428,6 +3431,23 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				logrus.Debug("CC: Upstream stream EOF")
 				// Ensure final events are sent on EOF to prevent client hanging
 				finalize("end_turn", nil)
+			} else if errors.Is(err, ErrSSETimeout) {
+				// Handle timeout error - send error event to client instead of hanging
+				logrus.WithError(err).Warn("CC: SSE read timeout, sending error to client")
+				isErrorRecovery = true
+				// Send error event to client
+				errorEvent := ClaudeStreamEvent{
+					Type: "error",
+					Error: &ClaudeError{
+						Type:    "timeout_error",
+						Message: "Upstream did not respond within the expected time. The model may be processing a complex request.",
+					},
+				}
+				if sendErr := writer.Send(errorEvent, true); sendErr != nil {
+					logrus.WithError(sendErr).Error("CC: Failed to send timeout error event")
+				}
+				// Send final events to properly terminate the stream
+				finalize("end_turn", nil)
 			} else {
 				logrus.WithError(err).Error("CC: Error reading stream")
 				// Send final events on error to ensure client receives termination
@@ -3684,6 +3704,27 @@ func appendToContent(content json.RawMessage, suffix string) json.RawMessage {
 	return content
 }
 
+// SSE timeout constants for CC support streaming mode.
+// These timeouts prevent Claude Code from hanging indefinitely when upstream
+// models (e.g., deepseek-reasoner) are in thinking phase without sending data.
+const (
+	// sseFirstByteTimeout is the maximum time to wait for the first SSE event
+	// in streaming mode. Set to 30 seconds to allow for model initialization.
+	sseFirstByteTimeout = 30 * time.Second
+
+	// sseSubsequentTimeout is the maximum time to wait between SSE events
+	// after the first event has been received. Set to 60 seconds to allow
+	// for reasonable pauses during model generation.
+	sseSubsequentTimeout = 60 * time.Second
+
+	// nonStreamFirstByteTimeout is the maximum time to wait for the first byte
+	// in non-streaming mode. Set to 60 minutes to allow for complex reasoning tasks.
+	nonStreamFirstByteTimeout = 60 * time.Minute
+)
+
+// ErrSSETimeout is returned when SSE read times out waiting for data.
+var ErrSSETimeout = errors.New("SSE read timeout: upstream did not send data within the expected time")
+
 // SSEReader reads Server-Sent Events from a reader.
 type SSEReader struct {
 	reader *bufio.Reader
@@ -3720,6 +3761,104 @@ func (r *SSEReader) ReadEvent() (*SSEEvent, error) {
 		}
 
 		// Skip SSE comment lines
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			event.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if event.Data != "" {
+				event.Data += "\n" + data
+			} else {
+				event.Data = data
+			}
+		}
+	}
+}
+
+// SSEReaderWithTimeout wraps SSEReader with timeout support for streaming reads.
+// This is used when force_function_call + cc_support are both enabled to prevent
+// Claude Code from hanging indefinitely when upstream models are in thinking phase.
+type SSEReaderWithTimeout struct {
+	reader           *bufio.Reader
+	firstByteTimeout time.Duration
+	subsequentTimeout time.Duration
+	receivedFirst    bool
+}
+
+// NewSSEReaderWithTimeout creates a new SSE reader with timeout support.
+// firstByteTimeout: maximum time to wait for the first SSE event
+// subsequentTimeout: maximum time to wait between subsequent SSE events
+func NewSSEReaderWithTimeout(r io.Reader, firstByteTimeout, subsequentTimeout time.Duration) *SSEReaderWithTimeout {
+	return &SSEReaderWithTimeout{
+		reader:            bufio.NewReader(r),
+		firstByteTimeout:  firstByteTimeout,
+		subsequentTimeout: subsequentTimeout,
+		receivedFirst:     false,
+	}
+}
+
+// ReadEvent reads the next SSE event with timeout support.
+// Uses goroutine + channel pattern since bufio.Reader doesn't support timeouts directly.
+func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
+	timeout := r.subsequentTimeout
+	if !r.receivedFirst {
+		timeout = r.firstByteTimeout
+	}
+
+	type readResult struct {
+		event *SSEEvent
+		err   error
+	}
+
+	resultCh := make(chan readResult, 1)
+
+	go func() {
+		event, err := r.readEventInternal()
+		resultCh <- readResult{event: event, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		if result.err == nil && result.event != nil {
+			r.receivedFirst = true
+		}
+		return result.event, result.err
+	case <-time.After(timeout):
+		timeoutType := "subsequent"
+		if !r.receivedFirst {
+			timeoutType = "first-byte"
+		}
+		logrus.WithFields(logrus.Fields{
+			"timeout_type":    timeoutType,
+			"timeout_seconds": timeout.Seconds(),
+		}).Warn("CC+FC: SSE read timeout, upstream did not send data")
+		return nil, ErrSSETimeout
+	}
+}
+
+// readEventInternal reads the next SSE event without timeout (internal implementation).
+func (r *SSEReaderWithTimeout) readEventInternal() (*SSEEvent, error) {
+	event := &SSEEvent{}
+	for {
+		line, err := r.reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+
+		line = strings.TrimSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\r")
+
+		if line == "" {
+			if event.Data != "" {
+				return event, nil
+			}
+			continue
+		}
+
+		// Skip SSE comment lines (including keep-alive comments like ": keep-alive")
 		if strings.HasPrefix(line, ":") {
 			continue
 		}
