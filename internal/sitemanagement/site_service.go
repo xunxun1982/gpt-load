@@ -898,7 +898,11 @@ func (s *SiteService) toDTO(ctx context.Context, site *ManagedSite) *ManagedSite
 	if err := s.db.WithContext(ctx).Select("id", "name", "display_name", "enabled").
 		Where("bound_site_id = ?", site.ID).
 		Order("sort ASC, id ASC").
-		Find(&groups).Error; err == nil {
+		Find(&groups).Error; err != nil {
+		// Log warning but continue with empty bound groups (graceful degradation)
+		logrus.WithContext(ctx).WithError(err).WithField("siteID", site.ID).
+			Warn("Failed to fetch bound groups for site")
+	} else {
 		for _, g := range groups {
 			boundGroups = append(boundGroups, BoundGroupInfo{
 				ID:          g.ID,

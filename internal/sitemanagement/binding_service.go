@@ -277,7 +277,7 @@ func (s *BindingService) SyncSiteEnabledToGroup(ctx context.Context, siteID uint
 // GetBoundSiteInfo returns bound site info for a group
 func (s *BindingService) GetBoundSiteInfo(ctx context.Context, groupID uint) (*ManagedSiteDTO, error) {
 	var group models.Group
-	if err := s.db.WithContext(ctx).First(&group, groupID).Error; err != nil {
+	if err := s.readDB.WithContext(ctx).First(&group, groupID).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 
@@ -286,7 +286,7 @@ func (s *BindingService) GetBoundSiteInfo(ctx context.Context, groupID uint) (*M
 	}
 
 	var site ManagedSite
-	if err := s.db.WithContext(ctx).First(&site, *group.BoundSiteID).Error; err != nil {
+	if err := s.readDB.WithContext(ctx).First(&site, *group.BoundSiteID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -302,13 +302,13 @@ func (s *BindingService) GetBoundSiteInfo(ctx context.Context, groupID uint) (*M
 // GetBoundGroupInfo returns all groups bound to a site (many-to-one relationship)
 func (s *BindingService) GetBoundGroupInfo(ctx context.Context, siteID uint) ([]BoundGroupInfo, error) {
 	var site ManagedSite
-	if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {
+	if err := s.readDB.WithContext(ctx).First(&site, siteID).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 
 	// Find all groups bound to this site
 	var groups []models.Group
-	if err := s.db.WithContext(ctx).
+	if err := s.readDB.WithContext(ctx).
 		Select("id", "name", "display_name", "enabled").
 		Where("bound_site_id = ?", siteID).
 		Order("sort ASC, id ASC").
