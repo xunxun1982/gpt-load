@@ -3733,15 +3733,18 @@ const (
 )
 
 // getEffectiveSSETimeouts calculates effective SSE timeout values based on group config.
-// Priority: group config > system config > preset values
-// If config value < preset value, use config value; otherwise use preset value.
-// This allows users to configure shorter timeouts but prevents excessively long ones.
+// The EffectiveConfig already merges group-level overrides with system settings,
+// so we only need to compare against preset upper bounds.
+//
+// Logic: min(preset_value, effective_config_value)
+// - If config value < preset value: use config value (allows stricter timeouts)
+// - If config value >= preset value: use preset value (prevents excessively long timeouts)
 //
 // Timeout mapping:
 // - firstByteTimeout: derived from ResponseHeaderTimeout (time to wait for first response)
 // - subsequentTimeout: derived from RequestTimeout (overall request timeout)
 func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeout time.Duration) {
-	// Default to preset values
+	// Default to preset values (upper bounds)
 	firstByteTimeout = sseFirstByteTimeoutPreset
 	subsequentTimeout = sseSubsequentTimeoutPreset
 
@@ -3755,10 +3758,10 @@ func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeou
 		return
 	}
 
+	// EffectiveConfig already contains merged group + system settings
 	cfg := group.EffectiveConfig
 
-	// Calculate effective first byte timeout from ResponseHeaderTimeout
-	// ResponseHeaderTimeout is the time to wait for response headers (first data)
+	// Apply ResponseHeaderTimeout if smaller than preset (stricter timeout)
 	if cfg.ResponseHeaderTimeout > 0 {
 		configTimeout := time.Duration(cfg.ResponseHeaderTimeout) * time.Second
 		if configTimeout < firstByteTimeout {
@@ -3766,8 +3769,7 @@ func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeou
 		}
 	}
 
-	// Calculate effective subsequent timeout from RequestTimeout
-	// RequestTimeout is the overall request timeout, used as upper bound for inter-event wait
+	// Apply RequestTimeout if smaller than preset (stricter timeout)
 	if cfg.RequestTimeout > 0 {
 		configTimeout := time.Duration(cfg.RequestTimeout) * time.Second
 		if configTimeout < subsequentTimeout {
