@@ -95,7 +95,7 @@ func NewServer(params NewServerParams) *Server {
 	// Set binding callbacks to avoid circular dependency between services and sitemanagement packages
 	if params.GroupService != nil && params.BindingService != nil {
 		params.GroupService.CheckGroupCanDeleteCallback = params.BindingService.CheckGroupCanDelete
-		params.GroupService.SyncGroupEnabledToSiteCallback = params.BindingService.SyncGroupEnabledToSite
+		// Note: SyncGroupEnabledToSiteCallback removed - group disable does NOT cascade to site
 		// Set cache invalidation callback so binding changes invalidate group list cache
 		params.BindingService.CacheInvalidationCallback = params.GroupService.InvalidateGroupListCache
 	}

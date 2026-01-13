@@ -30,7 +30,7 @@ interface SiteOption {
   name: string;
   sort: number;
   enabled: boolean;
-  bound_group_id?: number;
+  bound_group_count?: number;
 }
 
 const sites = ref<SiteOption[]>([]);
@@ -38,17 +38,13 @@ const loading = ref(false);
 const selectedSiteId = ref<number | null>(null);
 const boundSiteName = ref<string>("");
 
-// Filter options for select (exclude already bound sites, except current binding)
+// Filter options for select - allow binding to any enabled site (many-to-one)
 const siteOptions = computed(() => {
-  return sites.value
-    .filter(
-      s => !s.bound_group_id || s.bound_group_id === props.groupId || s.id === props.boundSiteId
-    )
-    .map(s => ({
-      label: `${s.name}${!s.enabled ? ` (${t("keys.disabled")})` : ""}`,
-      value: s.id,
-      disabled: !s.enabled && s.id !== props.boundSiteId,
-    }));
+  return sites.value.map(s => ({
+    label: `${s.name}${!s.enabled ? ` (${t("keys.disabled")})` : ""}${s.bound_group_count ? ` [${s.bound_group_count}]` : ""}`,
+    value: s.id,
+    disabled: !s.enabled && s.id !== props.boundSiteId,
+  }));
 });
 
 // Check if current group has a bound site

@@ -96,6 +96,9 @@ export default {
   confirmDelete: "确认删除",
   incorrectSiteName: "站点名称输入不正确",
   siteHasBinding: "站点「{name}」已绑定分组「{groupName}」，请先解绑后再删除。",
+  siteHasBindings: "站点「{name}」已绑定 {count} 个分组（{groupNames}），请先解绑后再删除。",
+  unknownGroups: "未知分组",
+  boundGroupsTooltip: "已绑定 {count} 个分组，点击查看",
   mustUnbindFirst: "请先解绑",
 
   // Logs

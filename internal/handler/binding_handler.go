@@ -96,7 +96,7 @@ func (s *Server) UnbindSiteFromGroup(c *gin.Context) {
 	response.SuccessI18n(c, "success.site_unbound_from_group", nil)
 }
 
-// GetBoundGroupInfo returns the bound group info for a site
+// GetBoundGroupInfo returns all groups bound to a site (many-to-one relationship)
 func (s *Server) GetBoundGroupInfo(c *gin.Context) {
 	siteID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -104,20 +104,10 @@ func (s *Server) GetBoundGroupInfo(c *gin.Context) {
 		return
 	}
 
-	groupInfo, err := s.BindingService.GetBoundGroupInfo(c.Request.Context(), uint(siteID))
+	groups, err := s.BindingService.GetBoundGroupInfo(c.Request.Context(), uint(siteID))
 	if HandleServiceError(c, err) {
 		return
 	}
 
-	if groupInfo == nil {
-		response.Success(c, nil)
-		return
-	}
-
-	// Return minimal group info
-	response.Success(c, map[string]interface{}{
-		"id":           groupInfo.ID,
-		"name":         groupInfo.Name,
-		"display_name": groupInfo.DisplayName,
-	})
+	response.Success(c, groups)
 }

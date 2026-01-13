@@ -31,6 +31,14 @@ export interface SiteListResult {
   total_pages: number;
 }
 
+// Bound group info for many-to-one relationship
+export interface BoundGroupInfo {
+  id: number;
+  name: string;
+  display_name: string;
+  enabled: boolean;
+}
+
 export interface ManagedSiteDTO {
   id: number;
   name: string;
@@ -63,8 +71,14 @@ export interface ManagedSiteDTO {
   last_site_opened_date: string;
   last_checkin_page_opened_date: string;
 
+  // Deprecated: kept for backward compatibility, use bound_groups instead
   bound_group_id?: number;
   bound_group_name?: string;
+
+  // All groups bound to this site (many-to-one relationship)
+  bound_groups?: BoundGroupInfo[];
+  // Number of groups bound to this site (for list views)
+  bound_group_count?: number;
 
   created_at: string;
   updated_at: string;
@@ -215,24 +229,23 @@ export const siteManagementApi = {
   },
 
   // Get sites available for binding (sorted by sort order)
+  // Each site includes bound_group_count for display
   async listSitesForBinding(): Promise<
-    { id: number; name: string; sort: number; enabled: boolean; bound_group_id?: number }[]
+    { id: number; name: string; sort: number; enabled: boolean; bound_group_count?: number }[]
   > {
     const res = await http.get("/site-management/sites-for-binding");
     return res.data || [];
   },
 
-  // Unbind site from its bound group
+  // Unbind all groups from a site
   async unbindSiteFromGroup(siteId: number): Promise<void> {
     await http.delete(`/site-management/sites/${siteId}/binding`);
   },
 
-  // Get bound group info for a site
-  async getBoundGroupInfo(
-    siteId: number
-  ): Promise<{ id: number; name: string; display_name: string } | null> {
+  // Get all groups bound to a site (many-to-one relationship)
+  async getBoundGroupInfo(siteId: number): Promise<BoundGroupInfo[]> {
     const res = await http.get(`/site-management/sites/${siteId}/bound-group`);
-    return res.data;
+    return res.data || [];
   },
 
   // Get count of unbound sites

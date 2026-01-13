@@ -47,6 +47,7 @@ export default {
     status: "Status",
     enable: "Enable",
     disable: "Disable",
+    disabled: "Disabled",
     copy: "Copy",
     copied: "Copied",
     download: "Download",

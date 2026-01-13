@@ -243,9 +243,8 @@ var MessagesEnUS = map[string]string{
 	"binding.aggregate_cannot_bind":          "Aggregate groups cannot be bound to sites",
 	"binding.child_group_cannot_bind":        "Child groups cannot be bound to sites",
 	"binding.group_already_bound":            "This group is already bound to another site",
-	"binding.site_already_bound":             "This site is already bound to another group",
 	"binding.must_unbind_before_delete_group": "Please unbind from the site before deleting the group",
-	"binding.must_unbind_before_delete_site": "Please unbind from the group before deleting the site",
+	"binding.must_unbind_before_delete_site": "Please unbind all groups ({{.count}} bound) from the site before deleting",
 }
 
 func init() {

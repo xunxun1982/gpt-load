@@ -53,11 +53,24 @@ type ManagedSiteDTO struct {
 	LastSiteOpenedDate        string `json:"last_site_opened_date"`
 	LastCheckinPageOpenedDate string `json:"last_checkin_page_opened_date"`
 
-	BoundGroupID   *uint  `json:"bound_group_id,omitempty"`
-	BoundGroupName string `json:"bound_group_name,omitempty"`
+	BoundGroupID   *uint  `json:"bound_group_id,omitempty"`   // Deprecated: kept for backward compatibility, use BoundGroups instead
+	BoundGroupName string `json:"bound_group_name,omitempty"` // Deprecated: kept for backward compatibility, use BoundGroups instead
+
+	// BoundGroups contains all groups bound to this site (many-to-one relationship)
+	BoundGroups []BoundGroupInfo `json:"bound_groups,omitempty"`
+	// BoundGroupCount is the number of groups bound to this site (for list views)
+	BoundGroupCount int64 `json:"bound_group_count,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// BoundGroupInfo represents minimal group info for site binding display
+type BoundGroupInfo struct {
+	ID          uint   `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Enabled     bool   `json:"enabled"`
 }
 
 type AutoCheckinRetryStrategy struct {

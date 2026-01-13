@@ -98,6 +98,10 @@ export default {
   incorrectSiteName: "サイト名が正しくありません",
   siteHasBinding:
     "サイト「{name}」はグループ「{groupName}」にバインドされています。削除する前にバインドを解除してください。",
+  siteHasBindings:
+    "サイト「{name}」は {count} 個のグループ（{groupNames}）にバインドされています。削除する前にバインドを解除してください。",
+  unknownGroups: "不明なグループ",
+  boundGroupsTooltip: "{count} 個のグループにバインド済み、クリックして表示",
   mustUnbindFirst: "先にバインド解除",
 
   // Logs
