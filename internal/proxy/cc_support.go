@@ -35,6 +35,9 @@ const (
 	ctxKeyCCEnabled      = "cc_enabled"
 	ctxKeyOriginalFormat = "cc_original_format"
 	ctxKeyCodexCC        = "codex_cc" // Indicates Codex CC mode (Claude -> Codex/Responses API)
+	// ctxKeyOpenAIToolNameReverseMap stores the reverse map for tool name restoration in OpenAI CC mode.
+	// This is used to restore original tool names that were shortened to comply with OpenAI's 64-char limit.
+	ctxKeyOpenAIToolNameReverseMap = "openai_tool_name_reverse_map"
 )
 
 // ctxKeyTriggerSignal and ctxKeyFunctionCallEnabled are declared in server.go (same package proxy).
@@ -267,6 +270,70 @@ func getTriggerSignal(c *gin.Context) string {
 	return ""
 }
 
+// getOpenAIToolNameReverseMap retrieves the tool name reverse map from context.
+// Returns nil if not found or if tool name shortening was not applied.
+//
+// PERFORMANCE: Returns the underlying map by reference for zero-copy performance.
+// SAFETY: Callers MUST treat the returned map as read-only. Mutation would corrupt
+// subsequent restorations within the same request. Per AI review, a copy could be
+// returned for safety, but the performance cost is not justified since all current
+// callers only read from the map (verified by code inspection).
+func getOpenAIToolNameReverseMap(c *gin.Context) map[string]string {
+	if v, ok := c.Get(ctxKeyOpenAIToolNameReverseMap); ok {
+		if m, ok := v.(map[string]string); ok {
+			return m
+		}
+	}
+	return nil
+}
+
+// isShortenToolNamesEnabled checks whether tool name shortening is enabled for the group.
+// This is controlled by the "shorten_tool_names" config option.
+// Default: true (enabled) for compatibility with OpenAI's 64-char tool name limit.
+// Set to false for third-party OpenAI-compatible APIs that don't have this limit.
+// NOTE: This function intentionally does NOT reuse getGroupConfigBool because:
+// 1. Default value is true (vs false in getGroupConfigBool)
+// 2. String logic is inverted: only explicit "false"/"no"/"off"/"0" disables
+// 3. Invalid/unknown values default to enabled for safety (OpenAI compatibility)
+func isShortenToolNamesEnabled(group *models.Group) bool {
+	if group == nil || group.Config == nil {
+		return true // Default enabled for OpenAI compatibility
+	}
+	raw, ok := group.Config["shorten_tool_names"]
+	if !ok {
+		return true // Default enabled
+	}
+	// If explicitly set, use the value
+	// Handle multiple types since JSON decoding may produce float64 for numbers
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case float64:
+		// JSON numbers decode as float64; treat 0 as disabled
+		return v != 0
+	case int:
+		return v != 0
+	case int64:
+		// Support int64 for programmatically constructed configs
+		return v != 0
+	case uint64:
+		// Support uint64 for programmatically constructed configs
+		return v != 0
+	case json.Number:
+		// Support json.Number when UseNumber is enabled in decoder
+		if f, err := v.Float64(); err == nil {
+			return f != 0
+		}
+		return true // Default enabled on parse error
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		// Only disable if explicitly set to false/no/off/0
+		return lower != "false" && lower != "no" && lower != "off" && lower != "0"
+	default:
+		return true
+	}
+}
+
 // ClaudeMessage represents a message in Claude format.
 type ClaudeMessage struct {
 	Role    string          `json:"role"`
@@ -382,7 +449,9 @@ type OpenAIRequest struct {
 }
 
 // convertClaudeToOpenAI converts a Claude request to OpenAI format.
-func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
+// toolNameShortMap is used to apply shortened tool names for OpenAI's 64-char limit.
+// Pass nil to disable tool name shortening (for third-party APIs without this limit).
+func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string]string) (*OpenAIRequest, error) {
 	openaiReq := &OpenAIRequest{
 		Model:       claudeReq.Model,
 		Stream:      claudeReq.Stream,
@@ -438,7 +507,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 
 	// Convert messages
 	for _, msg := range claudeReq.Messages {
-		openaiMsg, err := convertClaudeMessageToOpenAI(msg)
+		openaiMsg, err := convertClaudeMessageToOpenAI(msg, toolNameShortMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
 		}
@@ -482,14 +551,21 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 		}
 	}
 
-	// Convert tools
+	// Convert tools with optional name shortening for OpenAI's 64-char limit
 	if len(claudeReq.Tools) > 0 {
 		tools := make([]OpenAITool, 0, len(claudeReq.Tools))
 		for _, tool := range claudeReq.Tools {
+			// Apply shortened name if available
+			toolName := tool.Name
+			if toolNameShortMap != nil {
+				if short, ok := toolNameShortMap[tool.Name]; ok {
+					toolName = short
+				}
+			}
 			tools = append(tools, OpenAITool{
 				Type: "function",
 				Function: OpenAIFunction{
-					Name:        tool.Name,
+					Name:        toolName,
 					Description: tool.Description,
 					Parameters:  tool.InputSchema,
 				},
@@ -535,22 +611,45 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 				case "tool":
 					// Force call specific tool
 					if toolName, ok := toolChoice["name"].(string); ok {
+						originalToolName := toolName
+						// Apply shortened name if available
+						if toolNameShortMap != nil {
+							if short, ok := toolNameShortMap[toolName]; ok {
+								toolName = short
+							} else if len(toolName) > 64 {
+								// Per AI review: warn when tool_choice references a name not in shortMap
+								// but exceeds the 64-char limit. This indicates a misconfiguration.
+								logrus.WithField("tool_name", toolName).Warn("CC: tool_choice references tool not in shortMap but exceeds 64 chars")
+							}
+						}
 						openaiReq.ToolChoice = map[string]interface{}{
 							"type": "function",
 							"function": map[string]string{
 								"name": toolName,
 							},
 						}
-						logrus.WithField("tool_name", toolName).Debug("CC: Converted tool_choice to force specific tool")
+						if originalToolName != toolName {
+							logrus.WithFields(logrus.Fields{
+								"original": originalToolName,
+								"short":    toolName,
+							}).Debug("CC: Converted tool_choice with shortened tool name")
+						} else {
+							logrus.WithField("tool_name", toolName).Debug("CC: Converted tool_choice to force specific tool")
+						}
 					}
 				case "any":
-					// Force call any tool
+					// Force call any tool - maps to OpenAI "required"
 					openaiReq.ToolChoice = "required"
 					logrus.Debug("CC: Converted tool_choice to 'required' (force any tool)")
 				case "auto":
-					// Auto decide
+					// Auto decide - model determines whether to use tools
 					openaiReq.ToolChoice = "auto"
 					logrus.Debug("CC: Converted tool_choice to 'auto'")
+				case "none":
+					// Prohibit tool usage - model must respond without tools.
+					// Maps directly to OpenAI "none" which is widely supported.
+					openaiReq.ToolChoice = "none"
+					logrus.Debug("CC: Converted tool_choice to 'none' (prohibit tools)")
 				default:
 					logrus.WithField("type", tcType).Warn("CC: Unknown tool_choice type, skipping")
 				}
@@ -575,7 +674,8 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest) (*OpenAIRequest, error) {
 }
 
 // convertClaudeMessageToOpenAI converts a single Claude message to OpenAI format.
-func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
+// toolNameShortMap is used to apply shortened tool names for historical tool_use blocks.
+func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string]string) ([]OpenAIMessage, error) {
 	var result []OpenAIMessage
 
 	// Try to parse content as string first
@@ -625,11 +725,18 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage) ([]OpenAIMessage, error) {
 				thinkingParts = append(thinkingParts, block.Thinking)
 			}
 		case "tool_use":
+			// Apply shortened name if available for historical tool_use blocks
+			toolName := block.Name
+			if toolNameShortMap != nil {
+				if short, ok := toolNameShortMap[block.Name]; ok {
+					toolName = short
+				}
+			}
 			toolCalls = append(toolCalls, OpenAIToolCall{
 				ID:   block.ID,
 				Type: "function",
 				Function: OpenAIFunctionCall{
-					Name:      block.Name,
+					Name:      toolName,
 					Arguments: string(block.Input),
 				},
 			})
@@ -818,8 +925,35 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 		}
 	}
 
-	// Convert to OpenAI format
-	openaiReq, err := convertClaudeToOpenAI(&claudeReq)
+	// Build tool name short map for tools that exceed the 64 char limit.
+	// This is controlled by the "shorten_tool_names" config option (default: true).
+	// Set to false for third-party OpenAI-compatible APIs without this limit.
+	var toolNameShortMap map[string]string
+	if len(claudeReq.Tools) > 0 && isShortenToolNamesEnabled(group) {
+		names := make([]string, 0, len(claudeReq.Tools)+1)
+		for _, tool := range claudeReq.Tools {
+			names = append(names, tool.Name)
+		}
+		// Per AI review: also include tool_choice name if present, in case it's not in Tools.
+		// This prevents tool_choice from bypassing shortening and exceeding upstream limits.
+		if len(claudeReq.ToolChoice) > 0 {
+			var tc map[string]any
+			if err := json.Unmarshal(claudeReq.ToolChoice, &tc); err == nil {
+				if t, _ := tc["type"].(string); t == "tool" {
+					if n, _ := tc["name"].(string); n != "" {
+						names = append(names, n)
+					}
+				}
+			}
+		}
+		toolNameShortMap = buildToolNameShortMap(names)
+		// Store reverse map in context for response conversion
+		reverseMap := buildReverseToolNameMap(toolNameShortMap)
+		c.Set(ctxKeyOpenAIToolNameReverseMap, reverseMap)
+	}
+
+	// Convert to OpenAI format with tool name shortening
+	openaiReq, err := convertClaudeToOpenAI(&claudeReq, toolNameShortMap)
 	if err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to convert Claude to OpenAI: %w", err)
 	}
@@ -997,7 +1131,8 @@ type ClaudeUsage struct {
 // convertOpenAIToClaudeResponse converts OpenAI response to Claude format.
 // When normalizeToolArgs is true, tool call arguments are normalized (JSON parsed and re-serialized).
 // When false, arguments are passed through unchanged to preserve upstream formatting.
-func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode functionCallCleanupMode, normalizeToolArgs bool) *ClaudeResponse {
+// reverseToolNameMap is used to restore original tool names that were shortened.
+func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode functionCallCleanupMode, normalizeToolArgs bool, reverseToolNameMap map[string]string) *ClaudeResponse {
 	claudeResp := &ClaudeResponse{
 		ID:      openaiResp.ID,
 		Type:    "message",
@@ -1043,8 +1178,15 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode funct
 				if tc.ID == "" || tc.Function.Name == "" {
 					continue
 				}
+				// Restore original tool name if it was shortened
+				toolName := tc.Function.Name
+				if reverseToolNameMap != nil {
+					if orig, ok := reverseToolNameMap[tc.Function.Name]; ok {
+						toolName = orig
+					}
+				}
 				// Validate arguments before conversion - skip empty/placeholder tool_calls
-				if !isValidToolCallArguments(tc.Function.Name, tc.Function.Arguments) {
+				if !isValidToolCallArguments(toolName, tc.Function.Arguments) {
 					continue
 				}
 				inputJSON := json.RawMessage("{}")
@@ -1054,7 +1196,7 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode funct
 					// to fix potential issues like Windows path escapes and tool-specific formatting.
 					// When false (only CC support), pass through arguments unchanged.
 					if normalizeToolArgs {
-						if normalized, ok := normalizeOpenAIToolCallArguments(tc.Function.Name, argsStr); ok {
+						if normalized, ok := normalizeOpenAIToolCallArguments(toolName, argsStr); ok {
 							argsStr = normalized
 						}
 					}
@@ -1069,7 +1211,7 @@ func convertOpenAIToClaudeResponse(openaiResp *OpenAIResponse, cleanupMode funct
 				content = append(content, ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    tc.ID,
-					Name:  tc.Function.Name,
+					Name:  toolName,
 					Input: inputJSON,
 				})
 			}
@@ -1941,10 +2083,20 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 		// Generate unique tool use ID
 		toolUseID := fmt.Sprintf("toolu_%s_%d", utils.GenerateRandomSuffix(), i)
 
+		// Restore original tool name from reverse map if tool name shortening was applied.
+		// The model outputs shortened names (from request conversion), but Claude client
+		// expects original names. This mirrors the restoration in convertOpenAIToClaudeResponse.
+		toolName := call.Name
+		if reverseMap := getOpenAIToolNameReverseMap(c); reverseMap != nil {
+			if orig, ok := reverseMap[call.Name]; ok {
+				toolName = orig
+			}
+		}
+
 		toolUseBlocks = append(toolUseBlocks, ClaudeContentBlock{
 			Type:  "tool_use",
 			ID:    toolUseID,
-			Name:  call.Name,
+			Name:  toolName,
 			Input: json.RawMessage(inputJSON),
 		})
 	}
@@ -2122,7 +2274,9 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// - Bash command double-escaping (doubleEscapeWindowsPathsForBash) is always applied for CC
 	//   to fix Claude Code's Windows path escape bug, regardless of FC mode
 	normalizeToolArgs := isFunctionCallEnabled(c)
-	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode, normalizeToolArgs)
+	// Get tool name reverse map from context for restoring original tool names
+	reverseToolNameMap := getOpenAIToolNameReverseMap(c)
+	claudeResp := convertOpenAIToClaudeResponse(&openaiResp, cleanupMode, normalizeToolArgs, reverseToolNameMap)
 
 	// Handle error finish_reason for non-streaming responses.
 	// When upstream returns error (network_error, timeout, etc.) with no content,
@@ -2812,7 +2966,11 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		"trigger_signal": triggerSignal,
 	}).Debug("CC: Started streaming response")
 
-	reader := NewSSEReader(resp.Body)
+	// Use timeout-enabled SSE reader for CC support to prevent hanging when
+	// upstream models (e.g., deepseek-reasoner) are in thinking phase without sending data.
+	// Timeout values are derived from group/system config with preset upper bounds.
+	firstByteTimeout, subsequentTimeout := getEffectiveSSETimeouts(c)
+	reader := NewSSEReaderWithTimeout(resp.Body, firstByteTimeout, subsequentTimeout)
 	contentBlockIndex := 0
 	var currentToolCall *OpenAIToolCall
 	var currentToolCallName string
@@ -2827,8 +2985,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	textBlockOpen := false
 	thinkingBlockOpen := false // Track if thinking block is open for content merging
 	var aggregator *TextAggregator
-	hasValidToolCalls := false // Track if any valid tool_calls were processed
-	isErrorRecovery := false   // Track if error recovery was triggered (don't downgrade stop_reason)
+	hasValidToolCalls := false    // Track if any valid tool_calls were processed
+	isErrorRecovery := false      // Track if error recovery was triggered (don't downgrade stop_reason)
+	toolBlockStartSent := false   // Track if content_block_start was sent for current tool block
+
+	// Get tool name reverse map from context for restoring original tool names
+	reverseToolNameMap := getOpenAIToolNameReverseMap(c)
 
 	// Buffer to hold potential partial malformed tags across aggregator flushes
 	var partialTagBuffer strings.Builder
@@ -2949,27 +3111,55 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		argsLen := currentToolCallArgs.Len()
 		argsStr := currentToolCallArgs.String()
 		logrus.WithFields(logrus.Fields{
-			"tool_id":        currentToolCall.ID,
-			"tool_name":      currentToolCallName,
-			"args_len":       argsLen,
-			"content_index":  contentBlockIndex,
+			"tool_id":           currentToolCall.ID,
+			"tool_name":         currentToolCallName,
+			"args_len":          argsLen,
+			"content_index":     contentBlockIndex,
+			"block_start_sent":  toolBlockStartSent,
 		}).Debug("CC: closeToolBlock() called")
 
 		// Validate arguments before emitting - skip empty/placeholder tool_calls
 		// Some upstream models (e.g., deepseek-reasoner in thinking mode) may return
 		// tool_calls with empty arguments as placeholders during reasoning phase.
-		// NOTE: Since we now defer content_block_start until arguments are received,
-		// if argsLen == 0, no content_block_start was sent, so we just reset state.
+		//
+		// Per AI review: This validation now happens BEFORE sending content_block_start.
+		// Previously, content_block_start was sent when first args chunk arrived, but if
+		// accumulated args became "{}" (e.g., "{" + "}"), closeToolBlock would skip
+		// content_block_stop, corrupting the SSE block sequence.
+		// Now we defer content_block_start until here, ensuring start/delta/stop are
+		// always emitted together or not at all.
 		if !isValidToolCallArguments(currentToolCallName, argsStr) {
 			logrus.WithFields(logrus.Fields{
 				"tool_name": currentToolCallName,
 				"tool_id":   currentToolCall.ID,
 			}).Warn("CC: Skipping tool_call with empty arguments in streaming mode")
-			// No content_block_start was sent (deferred until args received), just reset state
+			// Reset state without sending any events
 			currentToolCall = nil
 			currentToolCallName = ""
 			currentToolCallArgs.Reset()
+			toolBlockStartSent = false
 			return
+		}
+
+		// Now we know args are valid; emit complete tool_use block (start -> delta -> stop)
+		hasValidToolCalls = true
+
+		// Send content_block_start if not already sent
+		if !toolBlockStartSent {
+			startEvent := ClaudeStreamEvent{
+				Type:         "content_block_start",
+				Index:        contentBlockIndex,
+				ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: currentToolCall.ID, Name: currentToolCallName},
+			}
+			if err := writer.Send(startEvent, true); err != nil {
+				logrus.WithError(err).Debug("CC: Failed to start tool_use block")
+				currentToolCall = nil
+				currentToolCallName = ""
+				currentToolCallArgs.Reset()
+				toolBlockStartSent = false
+				return
+			}
+			toolBlockStartSent = true
 		}
 
 		if currentToolCallName != "" && argsLen > 0 {
@@ -3009,12 +3199,17 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		stopEvent := ClaudeStreamEvent{Type: "content_block_stop", Index: contentBlockIndex}
 		if err := writer.Send(stopEvent, true); err != nil {
 			logrus.WithError(err).Debug("CC: Failed to stop tool block")
+			currentToolCall = nil
+			currentToolCallName = ""
+			currentToolCallArgs.Reset()
+			toolBlockStartSent = false
 			return
 		}
 		contentBlockIndex++
 		currentToolCall = nil
 		currentToolCallName = ""
 		currentToolCallArgs.Reset()
+		toolBlockStartSent = false
 	}
 
 	// ensureThinkingBlock ensures a thinking block is open for content merging.
@@ -3237,6 +3432,28 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				logrus.Debug("CC: Upstream stream EOF")
 				// Ensure final events are sent on EOF to prevent client hanging
 				finalize("end_turn", nil)
+			} else if errors.Is(err, ErrSSETimeout) {
+				// Handle timeout error - send error event to client instead of hanging
+				logrus.WithError(err).Warn("CC: SSE read timeout, sending error to client")
+				isErrorRecovery = true
+				// Send error event to client
+				// NOTE: Using "api_error" instead of "timeout_error" per Claude API documentation.
+				// Claude's standard error types are: invalid_request_error, authentication_error,
+				// permission_error, not_found_error, request_too_large, rate_limit_error, api_error,
+				// overloaded_error. "timeout_error" is not a standard type, so we use "api_error"
+				// which maps to HTTP 500 for unexpected server-side failures including timeouts.
+				errorEvent := ClaudeStreamEvent{
+					Type: "error",
+					Error: &ClaudeError{
+						Type:    "api_error",
+						Message: "Upstream did not respond within the expected time. The model may be processing a complex request.",
+					},
+				}
+				if sendErr := writer.Send(errorEvent, true); sendErr != nil {
+					logrus.WithError(sendErr).Error("CC: Failed to send timeout error event")
+				}
+				// Send final events to properly terminate the stream
+				finalize("end_turn", nil)
 			} else {
 				logrus.WithError(err).Error("CC: Error reading stream")
 				// Send final events on error to ensure client receives termination
@@ -3335,34 +3552,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				if call.ID == "" {
 					// This is a continuation chunk with only arguments
 					if currentToolCall != nil && call.Function.Arguments != "" {
-						// First time receiving arguments for this tool_call - send content_block_start
-						if currentToolCallArgs.Len() == 0 {
-							// Validate arguments before starting the block to prevent stream state corruption.
-							// If first chunk is "{}" (empty object), skip entirely to avoid sending
-							// content_block_start without a matching content_block_stop.
-							if !isValidToolCallArguments(currentToolCallName, call.Function.Arguments) {
-								logrus.WithFields(logrus.Fields{
-									"tool_id":   currentToolCall.ID,
-									"tool_name": currentToolCallName,
-									"arguments": call.Function.Arguments,
-								}).Debug("CC: Skipping tool_call with invalid initial arguments (continuation)")
-								continue
-							}
-							hasValidToolCalls = true // Now we know this is a valid tool call
-							logrus.WithFields(logrus.Fields{
-								"tool_id":   currentToolCall.ID,
-								"tool_name": currentToolCallName,
-							}).Debug("CC: Starting tool_use block (received first arguments)")
-							startEvent := ClaudeStreamEvent{
-								Type:         "content_block_start",
-								Index:        contentBlockIndex,
-								ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: currentToolCall.ID, Name: currentToolCallName},
-							}
-							if err := writer.Send(startEvent, true); err != nil {
-								logrus.WithError(err).Debug("CC: Failed to start tool_use block")
-								continue
-							}
-						}
+						// Per AI review: Defer content_block_start until closeToolBlock().
+						// This prevents SSE block sequence corruption when args like "{" + "}"
+						// accumulate to "{}" which would fail validation in closeToolBlock.
 						currentToolCallArgs.WriteString(call.Function.Arguments)
 						logrus.WithFields(logrus.Fields{
 							"tool_id":         currentToolCall.ID,
@@ -3382,7 +3574,13 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 						continue
 					}
 					currentToolCall = &call
+					// Restore original tool name if it was shortened
 					currentToolCallName = call.Function.Name
+					if reverseToolNameMap != nil {
+						if orig, ok := reverseToolNameMap[call.Function.Name]; ok {
+							currentToolCallName = orig
+						}
+					}
 					currentToolCallArgs.Reset()
 					// NOTE: Don't set hasValidToolCalls here - wait until we have valid arguments
 					// This prevents empty tool_calls from being counted as valid
@@ -3395,34 +3593,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				}
 
 				if call.Function.Arguments != "" && currentToolCall != nil {
-					// First time receiving arguments for this tool_call - send content_block_start
-					if currentToolCallArgs.Len() == 0 {
-						// Validate arguments before starting the block to prevent stream state corruption.
-						// If first chunk is "{}" (empty object), skip entirely to avoid sending
-						// content_block_start without a matching content_block_stop.
-						if !isValidToolCallArguments(currentToolCallName, call.Function.Arguments) {
-							logrus.WithFields(logrus.Fields{
-								"tool_id":   currentToolCall.ID,
-								"tool_name": currentToolCallName,
-								"arguments": call.Function.Arguments,
-							}).Debug("CC: Skipping tool_call with invalid initial arguments")
-							continue
-						}
-						hasValidToolCalls = true // Now we know this is a valid tool call
-						logrus.WithFields(logrus.Fields{
-							"tool_id":   currentToolCall.ID,
-							"tool_name": currentToolCallName,
-						}).Debug("CC: Starting tool_use block (received first arguments)")
-						startEvent := ClaudeStreamEvent{
-							Type:         "content_block_start",
-							Index:        contentBlockIndex,
-							ContentBlock: &ClaudeContentBlock{Type: "tool_use", ID: currentToolCall.ID, Name: currentToolCallName},
-						}
-						if err := writer.Send(startEvent, true); err != nil {
-							logrus.WithError(err).Debug("CC: Failed to start tool_use block")
-							continue
-						}
-					}
+					// Per AI review: Defer content_block_start until closeToolBlock().
+					// This prevents SSE block sequence corruption when args like "{" + "}"
+					// accumulate to "{}" which would fail validation in closeToolBlock.
 					currentToolCallArgs.WriteString(call.Function.Arguments)
 					logrus.WithFields(logrus.Fields{
 						"tool_id":        call.ID,
@@ -3537,6 +3710,84 @@ func appendToContent(content json.RawMessage, suffix string) json.RawMessage {
 	return content
 }
 
+// SSE timeout preset constants for CC support streaming mode.
+// These are the maximum allowed timeout values. Actual timeouts may be shorter
+// if group/system config specifies smaller values.
+// Priority: group config > system config > preset values
+// If config value < preset value, use config value; otherwise use preset value.
+const (
+	// sseFirstByteTimeoutPreset is the maximum time to wait for the first SSE event
+	// in streaming mode. Set to 30 seconds to allow for model initialization.
+	sseFirstByteTimeoutPreset = 30 * time.Second
+
+	// sseSubsequentTimeoutPreset is the maximum time to wait between SSE events
+	// after the first event has been received. Set to 60 seconds to allow
+	// for reasonable pauses during model generation.
+	sseSubsequentTimeoutPreset = 60 * time.Second
+
+	// nonStreamFirstByteTimeoutPreset is the maximum time to wait for the first byte
+	// in non-streaming mode. Set to 60 minutes to allow for complex reasoning tasks.
+	nonStreamFirstByteTimeoutPreset = 60 * time.Minute
+)
+
+// Backward compatibility aliases for external references (e.g., codex_cc_support.go)
+const (
+	sseFirstByteTimeout       = sseFirstByteTimeoutPreset
+	sseSubsequentTimeout      = sseSubsequentTimeoutPreset
+	nonStreamFirstByteTimeout = nonStreamFirstByteTimeoutPreset
+)
+
+// getEffectiveSSETimeouts calculates effective SSE timeout values based on group config.
+// The EffectiveConfig already merges group-level overrides with system settings,
+// so we only need to compare against preset upper bounds.
+//
+// Logic: min(preset_value, effective_config_value)
+// - If config value < preset value: use config value (allows stricter timeouts)
+// - If config value >= preset value: use preset value (prevents excessively long timeouts)
+//
+// Timeout mapping:
+// - firstByteTimeout: derived from ResponseHeaderTimeout (time to wait for first response)
+// - subsequentTimeout: derived from RequestTimeout (overall request timeout)
+func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeout time.Duration) {
+	// Default to preset values (upper bounds)
+	firstByteTimeout = sseFirstByteTimeoutPreset
+	subsequentTimeout = sseSubsequentTimeoutPreset
+
+	// Try to get group from context
+	gv, ok := c.Get("group")
+	if !ok {
+		return
+	}
+	group, ok := gv.(*models.Group)
+	if !ok || group == nil {
+		return
+	}
+
+	// EffectiveConfig already contains merged group + system settings
+	cfg := group.EffectiveConfig
+
+	// Apply ResponseHeaderTimeout if smaller than preset (stricter timeout)
+	if cfg.ResponseHeaderTimeout > 0 {
+		configTimeout := time.Duration(cfg.ResponseHeaderTimeout) * time.Second
+		if configTimeout < firstByteTimeout {
+			firstByteTimeout = configTimeout
+		}
+	}
+
+	// Apply RequestTimeout if smaller than preset (stricter timeout)
+	if cfg.RequestTimeout > 0 {
+		configTimeout := time.Duration(cfg.RequestTimeout) * time.Second
+		if configTimeout < subsequentTimeout {
+			subsequentTimeout = configTimeout
+		}
+	}
+
+	return
+}
+
+// ErrSSETimeout is returned when SSE read times out waiting for data.
+var ErrSSETimeout = errors.New("SSE read timeout: upstream did not send data within the expected time")
+
 // SSEReader reads Server-Sent Events from a reader.
 type SSEReader struct {
 	reader *bufio.Reader
@@ -3573,6 +3824,119 @@ func (r *SSEReader) ReadEvent() (*SSEEvent, error) {
 		}
 
 		// Skip SSE comment lines
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			event.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if event.Data != "" {
+				event.Data += "\n" + data
+			} else {
+				event.Data = data
+			}
+		}
+	}
+}
+
+// SSEReaderWithTimeout wraps SSEReader with timeout support for streaming reads.
+// This is used when force_function_call + cc_support are both enabled to prevent
+// Claude Code from hanging indefinitely when upstream models are in thinking phase.
+type SSEReaderWithTimeout struct {
+	reader           *bufio.Reader
+	firstByteTimeout time.Duration
+	subsequentTimeout time.Duration
+	receivedFirst    bool
+}
+
+// NewSSEReaderWithTimeout creates a new SSE reader with timeout support.
+// firstByteTimeout: maximum time to wait for the first SSE event
+// subsequentTimeout: maximum time to wait between subsequent SSE events
+func NewSSEReaderWithTimeout(r io.Reader, firstByteTimeout, subsequentTimeout time.Duration) *SSEReaderWithTimeout {
+	return &SSEReaderWithTimeout{
+		reader:            bufio.NewReader(r),
+		firstByteTimeout:  firstByteTimeout,
+		subsequentTimeout: subsequentTimeout,
+		receivedFirst:     false,
+	}
+}
+
+// ReadEvent reads the next SSE event with timeout support.
+// Uses goroutine + channel pattern since bufio.Reader doesn't support timeouts directly.
+//
+// KNOWN LIMITATION: When timeout fires, the goroutine spawned for readEventInternal()
+// will remain blocked on bufio.Reader.ReadString('\n') until the underlying HTTP
+// response body is closed. This is a known limitation of this pattern - the goroutine
+// (~2KB stack) will be released when the connection terminates. The buffered channel
+// (size 1) prevents send-side blocking. This trade-off is acceptable because:
+// 1. HTTP connections eventually close (upstream timeout, client disconnect, server close)
+// 2. User-facing behavior is correct (timeout error returned promptly)
+// 3. This pattern is commonly used for timeout support on non-cancellable readers
+func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
+	timeout := r.subsequentTimeout
+	if !r.receivedFirst {
+		timeout = r.firstByteTimeout
+	}
+
+	type readResult struct {
+		event *SSEEvent
+		err   error
+	}
+
+	resultCh := make(chan readResult, 1)
+
+	go func() {
+		event, err := r.readEventInternal()
+		resultCh <- readResult{event: event, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		if result.err == nil && result.event != nil {
+			r.receivedFirst = true
+		}
+		return result.event, result.err
+	case <-time.After(timeout):
+		timeoutType := "subsequent"
+		if !r.receivedFirst {
+			timeoutType = "first-byte"
+		}
+		logrus.WithFields(logrus.Fields{
+			"timeout_type":    timeoutType,
+			"timeout_seconds": timeout.Seconds(),
+		}).Warn("CC: SSE read timeout, upstream did not send data")
+		return nil, ErrSSETimeout
+	}
+}
+
+// readEventInternal reads the next SSE event without timeout (internal implementation).
+// NOTE: AI review suggested extracting shared SSE parsing logic with SSEReader.ReadEvent().
+// We intentionally keep them separate because:
+// 1. The code is small (~30 lines) and duplication cost is minimal
+// 2. Extracting would add function call overhead in a hot path
+// 3. SSEReaderWithTimeout may need different behavior in the future (e.g., keep-alive handling)
+// 4. Current implementation is stable and well-tested
+func (r *SSEReaderWithTimeout) readEventInternal() (*SSEEvent, error) {
+	event := &SSEEvent{}
+	for {
+		line, err := r.reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+
+		line = strings.TrimSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\r")
+
+		if line == "" {
+			if event.Data != "" {
+				return event, nil
+			}
+			continue
+		}
+
+		// Skip SSE comment lines (including keep-alive comments like ": keep-alive")
 		if strings.HasPrefix(line, ":") {
 			continue
 		}

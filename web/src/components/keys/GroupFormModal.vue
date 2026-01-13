@@ -90,6 +90,7 @@ interface GroupFormData {
   model_redirect_items: ModelRedirectItem[];
   model_redirect_strict: boolean;
   force_function_call: boolean;
+  parallel_tool_calls: "default" | "true" | "false"; // Three-state: default (not set), true, false
   cc_support: boolean;
   intercept_event_log: boolean;
   thinking_model: string;
@@ -124,6 +125,7 @@ const formData = reactive<GroupFormData>({
   model_redirect_items: [] as ModelRedirectItem[],
   model_redirect_strict: false,
   force_function_call: false,
+  parallel_tool_calls: "default",
   cc_support: false,
   intercept_event_log: false,
   thinking_model: "",
@@ -394,6 +396,7 @@ function resetForm() {
     model_redirect_items: [],
     model_redirect_strict: false,
     force_function_call: false,
+    parallel_tool_calls: "default",
     cc_support: false,
     intercept_event_log: false,
     thinking_model: "",
@@ -427,6 +430,12 @@ function loadGroupData() {
   const fcRaw = rawConfig["force_function_call"];
   const forceFunctionCall =
     props.group.channel_type === "openai" && typeof fcRaw === "boolean" ? fcRaw : false;
+  // Read parallel_tool_calls config (three-state: default, true, false)
+  const ptcRaw = rawConfig["parallel_tool_calls"];
+  let parallelToolCalls: "default" | "true" | "false" = "default";
+  if (typeof ptcRaw === "boolean") {
+    parallelToolCalls = ptcRaw ? "true" : "false";
+  }
   const ccRaw = rawConfig["cc_support"];
   // CC support is available for both OpenAI and Codex channels
   const ccSupport =
@@ -454,6 +463,7 @@ function loadGroupData() {
     .filter(([key]) => {
       const ignoredKeys = [
         "force_function_call",
+        "parallel_tool_calls",
         "cc_support",
         "intercept_event_log",
         "thinking_model",
@@ -496,6 +506,7 @@ function loadGroupData() {
       .filter(item => item.from && item.to),
     model_redirect_strict: props.group.model_redirect_strict || false,
     force_function_call: forceFunctionCall,
+    parallel_tool_calls: parallelToolCalls,
     cc_support: ccSupport,
     intercept_event_log: interceptEventLog,
     thinking_model: thinkingModel,
@@ -547,11 +558,13 @@ function removeUpstream(index: number) {
 
 async function fetchGroupConfigOptions() {
   const options = await keysApi.getGroupConfigOptions();
-  // Hide force_function_call from generic config options so it is only
-  // controlled via the dedicated toggle. This avoids confusing UX where
-  // users could add the key manually in the advanced config list while the
+  // Hide force_function_call and parallel_tool_calls from generic config options
+  // so they are only controlled via dedicated toggles. This avoids confusing UX
+  // where users could add the key manually in the advanced config list while the
   // toggle remains the single source of truth.
-  const normalized = (options || []).filter(opt => opt.key !== "force_function_call");
+  const normalized = (options || []).filter(
+    opt => opt.key !== "force_function_call" && opt.key !== "parallel_tool_calls"
+  );
   configOptions.value = normalized;
   configOptionsFetched.value = true;
 }
@@ -908,6 +921,17 @@ async function handleSubmit() {
       config["force_function_call"] = true;
     } else {
       delete config["force_function_call"];
+    }
+
+    // Persist parallel_tool_calls as a dedicated config key.
+    // Three-state: "default" (not set), "true", "false"
+    // Only set when explicitly configured to true or false.
+    if (formData.parallel_tool_calls === "true") {
+      config["parallel_tool_calls"] = true;
+    } else if (formData.parallel_tool_calls === "false") {
+      config["parallel_tool_calls"] = false;
+    } else {
+      delete config["parallel_tool_calls"];
     }
 
     // Persist cc_support toggle as a dedicated config key.
@@ -1822,6 +1846,46 @@ async function handleSubmit() {
                   <template #feedback>
                     <div style="font-size: 12px; color: #999; margin-top: 4px">
                       {{ t("keys.functionCallOpenAITip") }}
+                    </div>
+                  </template>
+                </n-form-item>
+              </div>
+
+              <!-- Parallel Tool Calls toggle (OpenAI and Codex channels) -->
+              <div
+                class="config-section"
+                v-if="
+                  formData.group_type !== 'aggregate' &&
+                  (formData.channel_type === 'openai' || formData.channel_type === 'codex')
+                "
+              >
+                <n-form-item path="parallel_tool_calls">
+                  <template #label>
+                    <div class="form-label-with-tooltip">
+                      {{ t("keys.parallelToolCalls") }}
+                      <n-tooltip trigger="hover" placement="right-start">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        <div>
+                          {{ t("keys.parallelToolCallsTooltip") }}
+                        </div>
+                      </n-tooltip>
+                    </div>
+                  </template>
+                  <n-select
+                    v-model:value="formData.parallel_tool_calls"
+                    :options="[
+                      { label: t('keys.parallelToolCallsDefault'), value: 'default' },
+                      { label: t('keys.parallelToolCallsEnabled'), value: 'true' },
+                      { label: t('keys.parallelToolCallsDisabled'), value: 'false' },
+                    ]"
+                    size="small"
+                    style="width: 200px"
+                  />
+                  <template #feedback>
+                    <div style="font-size: 12px; color: #999; margin-top: 4px">
+                      {{ t("keys.parallelToolCallsTip") }}
                     </div>
                   </template>
                 </n-form-item>

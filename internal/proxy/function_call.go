@@ -23,11 +23,6 @@ import (
 // memory growth for very long streaming responses.
 const maxContentBufferBytes = 256 * 1024
 
-// NOTE: AI Review (2026-01-03) suggested removing unused regex patterns reTruncatedEscapedQuoteJSON*
-// and reTruncatedJSONNoEscape*. These patterns were originally designed for truncated JSON cleanup
-// but were superseded by the more comprehensive cleanTruncatedToolResultJSON function which uses
-// string-based detection instead of regex. The patterns are removed to reduce dead code.
-
 // functionCall represents a parsed tool call from the XML block.
 type functionCall struct {
 	Name string
@@ -53,13 +48,25 @@ var (
 	reInvocationTag      = regexp.MustCompile(`(?s)<(?:invocation|invoke)(?:\s+name="([^"]+)")?[^>]*>(.*?)</(?:invocation|invoke)>`)
 	reArgsBlock          = regexp.MustCompile(`(?s)<args>(.*?)</args>`)
 	reParamsBlock        = regexp.MustCompile(`(?s)<parameters>(.*?)</parameters>`)
-	reMcpParam           = regexp.MustCompile(`(?s)<(?:parameter|param)\s+name="([^"]+)"[^>]*>(.*?)</(?:parameter|param)>`)
+	// Support both <parameter name="..."> and <parametername="..."> (missing space) formats
+	reMcpParam           = regexp.MustCompile(`(?s)<(?:parameter|param)\s*name="([^"]+)"[^>]*>(.*?)</(?:parameter|param)>`)
+	// Support malformed <parametername="..."> format (no space, tag name includes "name")
+	reMcpParamNoSpace    = regexp.MustCompile(`(?s)<(?:parametername|paramname)="([^"]+)"[^>]*>(.*?)</(?:parametername|paramname|parameter|param)>`)
 	reGenericParam       = regexp.MustCompile(`(?s)<([^\s>/]+)(?:\s+[^>]*)?>(.*?)</([^\s>/]+)>`) // Note: Go RE2 doesn't support backreferences
 	reToolCallBlock      = regexp.MustCompile(`(?s)<tool_call\s+name="([^"]+)"[^>]*>(.*?)</tool_call>`)
 	reInvokeFlat         = regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"[^>]*>(.*?)</invoke>`)
+
 	// Trigger signal pattern - no (?s) needed, single line match
 	// Optimized: Use character class [a-zA-Z0-9] instead of \w for explicit ASCII matching
 	reTriggerSignal = regexp.MustCompile(`<Function_[a-zA-Z0-9]+_Start/>|<<CALL_[a-zA-Z0-9]{4,16}>>`)
+
+	// ANTML-style patterns used by KiloCode, Kiro, Claude Code, and similar clients.
+	// These clients use XML namespace-style tags: <function_calls> <invoke> <parameter>
+	// Format: <function_calls><invoke name="..."><parameter name="...">value
+	// We support optional antml: prefix for invoke and parameter tags.
+	reANTMLFunctionCallsBlock = regexp.MustCompile(`(?s)<antml:function_calls>(.*?)</antml:function_calls>`)
+	reANTMLInvoke             = regexp.MustCompile(`(?s)<antml:invoke\s+name="([^"]+)"[^>]*>(.*?)</antml:invoke>`)
+	reANTMLParameter          = regexp.MustCompile(`(?s)<antml:parameter\s+name="([^"]+)"[^>]*>(.*?)</antml:parameter>`)
 
 	// Pattern to match malformed parameter/invocation tags WITH closing tags
 	// Examples:
@@ -317,9 +324,9 @@ var (
 	// This handles cases where thinking models output tool calls with <arg_key>/<arg_value> pairs
 	// Captures: group 1 = tool name, group 2 = remaining content with arg_key/arg_value pairs (including first <arg_key>)
 	// Performance: O(n) character class matching
-	// AI Review Fix (2026-01-03): Added (?s) dotall flag to match multiline arg_key/arg_value content.
+	// NOTE: Added (?s) dotall flag to match multiline arg_key/arg_value content.
 	// Thinking models may output tool calls with arguments spanning multiple lines.
-	// AI Review Note (2026-01-03): This pattern only matches <invoke name="Tool<arg_key>... format where
+	// NOTE: This pattern only matches <invoke name="Tool<arg_key>... format where
 	// <arg_key> is immediately appended inside the name attribute. The alternative format
 	// <invoke name="Tool"><arg_key>... (with closing quote before arg_key) is NOT matched by this pattern.
 	// Based on production logs, only the in-attribute format has been observed. If the alternative format
@@ -331,7 +338,7 @@ var (
 	// Captures: group 1 = key name, group 2 = value (may contain special chars)
 	// Uses non-greedy match to stop at </arg_value>
 	// Performance: O(n) character class matching
-	// AI Review Fix (2026-01-03): Added \s* between </arg_key> and <arg_value> to allow
+	// NOTE: Added \s* between </arg_key> and <arg_value> to allow
 	// optional whitespace/newlines between tags. Models may insert line breaks or spaces
 	// between closing and opening tags in multiline output.
 	reArgKeyValuePair = regexp.MustCompile(`(?s)<arg_key>([^<]+)</arg_key>\s*<arg_value>(.*?)</arg_value>`)
@@ -346,25 +353,25 @@ var (
 
 	// Pattern for parsing unclosed <invoke name="..."> tags (truncated output)
 	// Precompiled at package level per Go regex best practice to avoid per-call compilation overhead.
-	// AI Review (2026-01-03): Moved from parseUnclosedInvokes function to package level.
+	// NOTE: Moved from parseUnclosedInvokes function to package level.
 	reUnclosedInvoke = regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"[^>]*>`)
 
 	// Pattern for extracting tool calls from embedded JSON content
 	// Matches: "name":"ToolName" or "name": "ToolName"
 	// Precompiled at package level per Go regex best practice to avoid per-call compilation overhead.
-	// AI Review (2026-01-03): Moved from extractToolCallsFromJSONContent function to package level.
+	// NOTE: Moved from extractToolCallsFromJSONContent function to package level.
 	reToolNameInJSON = regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
 
 	// Pattern for matching <parameter name="..."> or <param name="..."> tags with unclosed content
 	// Supports both single and double quotes for name attribute
 	// Precompiled at package level per Go regex best practice to avoid per-call compilation overhead.
-	// AI Review (2026-01-03): Moved from extractParameters function to package level.
+	// NOTE: Moved from extractParameters function to package level.
 	reMcpOpenParam = regexp.MustCompile(`<(?:parameter|param)\s+name=['"]([^'"]+)['"][^>]*>`)
 
 	// Pattern for matching generic <tag> patterns (simple tag names without attributes)
 	// Used as fallback when MCP-style parameter tags are not found
 	// Precompiled at package level per Go regex best practice to avoid per-call compilation overhead.
-	// AI Review (2026-01-03): Moved from extractParameters function to package level.
+	// NOTE: Moved from extractParameters function to package level.
 	reGenericOpenTag = regexp.MustCompile(`<([a-zA-Z][a-zA-Z0-9_-]*)>`)
 
 	// ANTML (Anthropic Markup Language) patterns used by Claude Code and Kiro
@@ -531,6 +538,13 @@ var (
 	// Use \b to avoid matching "id": (which contains "d":)
 	reJSONMalformedIdShort = regexp.MustCompile(`\bd":\s*"`)
 
+	// Pattern to fix numeric id merged with field name
+	// Pattern from production log: 3",title":hello.py为GUI程序"
+	// Matches: digit(s) followed by ",fieldname": (missing opening quote for field name)
+	// Captures: $1 = numeric id, $2 = field name
+	// Result: "$1","$2":
+	reJSONNumericIdMergedField = regexp.MustCompile(`(\d+)",([a-zA-Z_][a-zA-Z0-9_]*)":`)
+
 	// Pattern to fix content text between objects without field name
 	// Matches: },检查hello.py是否存在", -> }, {"content": "检查hello.py是否存在",
 	// Note: Captures the text content to wrap it properly
@@ -559,7 +573,7 @@ var (
 	// =============================================================================
 	// TRUNCATED JSON LEAK DETECTION PATTERNS
 	// =============================================================================
-	// AI Review Note (2026-01-03): These patterns are designed to detect TodoWrite-style
+	// NOTE: These patterns are designed to detect TodoWrite-style
 	// JSON output leaks. They are tightly coupled to current log shapes. When adding new
 	// tools or models, ensure new leak patterns either match these structures or add
 	// corresponding test cases and patterns.
@@ -649,22 +663,28 @@ var (
 	//   - 'activeForm": "正在读取hello.py文件' -> '' (entire line is JSON fragment)
 	//   - 'Form":设计简短漂亮的GUI程序方案' -> '' (entire line is JSON fragment)
 	//   - 'content": "联网搜索PythonGUI最佳实践' -> '' (entire line is JSON fragment)
+	//   - '_progresstitle":库并设计简洁方案' -> '' (merged status+field name)
+	//   - '_progressactiveForm": "查看当前目录' -> '' (merged status+activeForm)
 	// Pattern explanation:
-	//   - ^(?:status|activeForm|content|id|priority|state|Form)"\s*: : field name at start followed by quote-colon
+	//   - ^(?:status|activeForm|content|id|priority|state|Form|title|description|task-\d+|medium|high|low|pending|completed|_progress\w*)"\s*: : field name at start followed by quote-colon
 	//   - This catches truncated field names that lost their opening quote and appear at line start
 	// NOTE: This is a structural pattern - detects JSON field pattern at line start
 	// ENHANCED: Also match field names followed by ": (quote-colon) without space
-	reTruncatedJSONFieldAtStart = regexp.MustCompile(`^(?:status|activeForm|content|id|priority|state|Form)"?\s*:\s*`)
+	// ENHANCED: Added title, description, task-\d+, priority values, and _progress\w* to handle merged patterns
+	reTruncatedJSONFieldAtStart = regexp.MustCompile(`^(?:status|activeForm|content|id|priority|state|Form|title|description|task-\d+|medium|high|low|pending|completed|_progress\w*)"?\s*:\s*`)
 
 	// Pattern to detect truncated JSON field names without leading quote (in middle of text)
 	// This handles cases where field names appear directly after text without proper JSON structure.
 	// Examples from user report:
 	//   - '查找hello.py文件", "state":_progress' -> '查找hello.py文件'
+	//   - '● 我将帮您创建GUI程序。_progresstitle":库并设计' -> '● 我将帮您创建GUI程序。'
+	//   - '最佳实践（简短HelloWorld程序）_progressactiveForm": "查看' -> '最佳实践（简短HelloWorld程序）'
 	// Pattern explanation:
-	//   - (?:status|activeForm|content|id|priority|state|Form)": : field name followed by quote-colon
+	//   - (?:status|activeForm|content|id|priority|state|Form|title|description|task-\d+|medium|high|low|pending|completed|_progress\w*)": : field name followed by quote-colon
 	//   - This catches truncated field names that lost their opening quote
 	// NOTE: This is a structural pattern - detects JSON field pattern without opening quote
-	reTruncatedJSONFieldNoQuote = regexp.MustCompile(`(?:status|activeForm|content|id|priority|state|Form)"?\s*:\s*`)
+	// ENHANCED: Added title, description, task-\d+, priority values, and _progress\w* to handle merged patterns
+	reTruncatedJSONFieldNoQuote = regexp.MustCompile(`(?:status|activeForm|content|id|priority|state|Form|title|description|task-\d+|medium|high|low|pending|completed|_progress\w*)"?\s*:\s*`)
 
 	// Pattern to detect truncated JSON array/object fragments after text
 	// Examples:
@@ -680,6 +700,87 @@ var (
 	// Pattern: closing brace/bracket followed by comma or text
 	reTruncatedJSONClosingFragment = regexp.MustCompile(`^(?:pending|completed|in_progress)"?\s*[}\]],?`)
 
+	// Pattern to detect merged task-id with field name (e.g., '-3activeForm' or '-2content')
+	// Examples from user report:
+	//   - 'GUI库并设计简洁方案-3activeForm修改hello.py' -> '' (entire line is JSON fragment)
+	// Pattern: -digit(s) followed by field name (no space between)
+	// STRUCTURAL: Detects merged task id and field name pattern
+	reTruncatedJSONMergedTaskIdField = regexp.MustCompile(`-\d+(?:activeForm|content|status|priority|title|description|id|state|Form)`)
+
+	// Pattern to detect merged priority field name and value (e.g., 'prioritymedium', 'priorityhigh')
+	// Examples from user report:
+	//   - 'task-4", "prioritymedium",程序能否自动运行' -> '' (entire line is JSON fragment)
+	// Pattern: priority followed immediately by value (no colon or quote between)
+	// STRUCTURAL: Detects merged priority field name and value
+	reTruncatedJSONMergedPriorityValue = regexp.MustCompile(`priority(?:medium|high|low)`)
+
+	// Pattern to detect task-N followed by quote-comma (orphaned task id value)
+	// Examples from user report:
+	//   - 'task-4", "prioritymedium"' -> '' (entire line is JSON fragment)
+	// Pattern: task-digit(s) followed by quote-comma
+	reTruncatedJSONOrphanedTaskId = regexp.MustCompile(`task-\d+"\s*,`)
+
+	// =============================================================================
+	// GENERIC JSON ARRAY INDEX LEAK PATTERNS (January 2026)
+	// =============================================================================
+	// These patterns detect JSON array index leaks where array indices appear
+	// directly in the output without proper JSON structure.
+	// Examples:
+	//   - 'todo"2,label":现有 hello.py' -> array index 2 leaked
+	//   - '",3,label":最佳实践' -> array index 3 leaked
+	//   - 'todo"4,设计简洁' -> array index 4 leaked
+	// =============================================================================
+
+	// Pattern to detect word followed by quote-number-comma (JSON array index leak)
+	// Examples:
+	//   - 'todo"2,label":' -> word followed by quote-number-comma pattern
+	//   - '方案"4,设计' -> word followed by quote-number-comma pattern
+	// Pattern: word character followed by quote, digit(s), and comma
+	// STRUCTURAL: Detects JSON array index leak pattern
+	// NOTE: We match the word char before quote to find the correct truncation point
+	reTruncatedJSONQuoteNumberComma = regexp.MustCompile(`\w"\d+,`)
+
+	// Pattern to detect comma-number-comma (consecutive array indices)
+	// Examples:
+	//   - '",3,label":' -> comma-number-comma pattern
+	//   - '",5,label":' -> comma-number-comma pattern
+	// Pattern: quote-comma followed by digit(s) and comma
+	// STRUCTURAL: Detects consecutive JSON array index pattern
+	reTruncatedJSONCommaNumberComma = regexp.MustCompile(`",\d+,`)
+
+	// Pattern to detect word followed by quote-number-comma-word-quote-colon
+	// This is a more specific pattern for the exact leak format
+	// Examples:
+	//   - 'todo"2,label":' -> word"number,word":
+	// Pattern: word boundary, quote, number, comma, word, quote, colon
+	reTruncatedJSONWordQuoteNumFieldColon = regexp.MustCompile(`\w"\d+,\w+"\s*:`)
+
+	// Pattern to detect closing bracket/quote followed by text without proper separator
+	// Examples:
+	//   - 'todo"]' at end of line -> orphaned array close
+	// Pattern: word followed by quote and closing bracket
+	reTruncatedJSONOrphanedArrayClose = regexp.MustCompile(`\w"\s*\]$`)
+
+	// Pattern to detect truncated/merged field name 'label' (likely truncated from 'title' or similar)
+	// Examples from user report:
+	//   - 'pending"搜索GUI编程最佳实践",label":/修改hello.py' -> '' (entire line is JSON fragment)
+	// Pattern: label followed by quote-colon
+	// STRUCTURAL: Detects truncated field name pattern
+	reTruncatedJSONLabelField = regexp.MustCompile(`label"?\s*:\s*`)
+
+	// Pattern to detect status value directly followed by content (no field separator)
+	// Examples from user report:
+	//   - 'pending"搜索GUI编程最佳实践"' -> '' (entire line is JSON fragment)
+	// Pattern: status value followed by quote and content
+	// STRUCTURAL: Detects merged status value and content pattern
+	reTruncatedJSONStatusValueContent = regexp.MustCompile(`(?:pending|completed|in_progress)"[^",\[\]{}]+`)
+
+	// Pattern to detect numeric id followed by quote-comma and field name
+	// Examples from user report:
+	//   - '4",label":运行GUI程序' -> '' (entire line is JSON fragment)
+	// Pattern: digit(s) followed by quote-comma and field name
+	reTruncatedJSONNumericIdThenField = regexp.MustCompile(`\d+"\s*,\s*(?:label|title|content|status|priority|activeForm|description|id|state|Form)"?\s*:`)
+
 
 	// Pattern to fix status field ending with bracket
 	// Matches: "status":] -> "status": "pending"]
@@ -687,6 +788,64 @@ var (
 
 	// Pattern to match just the closing thinking tag for manual scanning
 	reANTMLClosingTag = regexp.MustCompile(`(?s)</antml\\{0,2}b:thinking>`)
+
+	// Tool result indicator patterns for cleanTruncatedToolResultJSONOnce
+	// Moved to package level to avoid repeated allocation in hot path
+	// Both regular and escaped quote patterns are included
+	// DO NOT MUTATE: This slice is shared across goroutines in hot path
+	// AI REVIEW RESPONSE: We use slice instead of array intentionally.
+	// Arrays require fixed length in type definition, making maintenance harder
+	// when adding new patterns. The "DO NOT MUTATE" comment is sufficient for
+	// documenting immutability intent. Go's type system doesn't enforce slice
+	// immutability, but code review and this comment provide adequate protection.
+	toolResultIndicatorPatterns = []string{
+		// Regular quote patterns
+		`"display_result"`,
+		`"is_error":true`,
+		`"is_error":false`,
+		`"is_error": true`,
+		`"is_error": false`,
+		`"status":"completed"`,
+		`"status":"error"`,
+		`"status": "completed"`,
+		`"status": "error"`,
+		`"mcp_server"`,
+		`"duration"`,
+		// Escaped quote patterns (for JSON inside strings)
+		`\"is_error\":true`,
+		`\"is_error\":false`,
+		`\"status\":\"completed\"`,
+		`\"status\":\"error\"`,
+		`\"mcp_server\"`,
+		`\"display_result\"`,
+		`\"duration\"`,
+	}
+
+	// Prefixes for isPotentialMalformedTagStart function
+	// Moved to package level to avoid per-call allocation in hot path
+	// This function is called frequently during streaming chunk processing
+	// DO NOT MUTATE: This slice is shared across goroutines in hot path
+	// AI REVIEW RESPONSE: Same as toolResultIndicatorPatterns - we use slice
+	// for maintainability. See comment above for rationale.
+	malformedTagPrefixes = []string{
+		"<>",
+		"<<CALL_",
+		"<invokename",
+		"<parametername",
+		"<propertyname",
+		"<function_calls",
+		"<function_call",
+		"<invoke",
+		"<parameter",
+		"<tool_call",
+		"<invocation",
+		"<antml",
+		"</antml",
+		"<thinking",
+		"</thinking",
+		"<think",
+		"</think",
+	}
 )
 
 var (
@@ -734,28 +893,9 @@ func isPotentialMalformedTagStart(s string) bool {
 		return true
 	}
 
-	// Check for known tag prefixes
-	prefixes := []string{
-		"<>",
-		"<<CALL_",
-		"<invokename",
-		"<parametername",
-		"<propertyname",
-		"<function_calls",
-		"<function_call",
-		"<invoke",
-		"<parameter",
-		"<tool_call",
-		"<invocation",
-		"<antml",
-		"</antml",
-		"<thinking",
-		"</thinking",
-		"<think",
-		"</think",
-	}
-
-	for _, prefix := range prefixes {
+	// Check for known tag prefixes using package-level slice
+	// to avoid per-call allocation in hot path
+	for _, prefix := range malformedTagPrefixes {
 		if strings.HasPrefix(s, prefix) {
 			return true
 		}
@@ -928,10 +1068,85 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 		prompt += thinkingInstructions
 	}
 
+	// NOTE: Check tool_choice constraints BEFORE adding continuation hints.
+	// This prevents contradictory prompts when tool_choice="none" but hasToolHistory=true.
+	// We need to know if tools are prohibited to skip the "MUST output tool calls" continuation.
+	// NOTE: Use dedicated function instead of string matching
+	// for more robust detection of tool prohibition.
+	//
+	// NOTE: AI review suggested centralizing isSet/requires/prohibits into a single helper
+	// function to reduce duplication with convertToolChoiceToPrompt. DECISION: Keep current
+	// approach because: (1) isToolUsageProhibitedByToolChoice already exists as a helper,
+	// (2) the classification logic here includes logging for unknown values which is specific
+	// to this call site, (3) convertToolChoiceToPrompt has different responsibilities (prompt
+	// generation vs. flag extraction), (4) premature abstraction may reduce code clarity.
+	toolChoiceProhibitsTools := false
+	toolChoiceRequiresTools := false
+	toolChoiceIsSet := false // Distinguish "unset" from explicit valid values (incl "auto")
+	var toolChoicePrompt string
+	if toolChoiceVal, ok := req["tool_choice"]; ok && toolChoiceVal != nil {
+		toolChoiceProhibitsTools = isToolUsageProhibitedByToolChoice(toolChoiceVal)
+		toolChoicePrompt = convertToolChoiceToPrompt(toolChoiceVal, toolDefs)
+		// Check if tool_choice explicitly requires tool usage
+		// NOTE: tool_choice="auto" means model decides; we should NOT force tool calls.
+		// Only "required", "any", or specific tool selection requires tool usage.
+		// NOTE: For invalid/unknown tool_choice values, treat as unset and log warning.
+		// This prevents flaky behavior where invalid values suppress continuation prompts.
+		switch v := toolChoiceVal.(type) {
+		case string:
+			switch v {
+			case "none", "auto", "required", "any":
+				toolChoiceIsSet = true
+			default:
+				// NOTE: Sanitize tool_choice before logging to prevent log injection and DoS.
+				logrus.WithField("tool_choice", sanitizeToolNameForPrompt(v)).Warn("applyFunctionCallRequestRewrite: unknown tool_choice string; treating as unset")
+			}
+			toolChoiceRequiresTools = (v == "required" || v == "any")
+		case map[string]any:
+			t, _ := v["type"].(string)
+			switch t {
+			case "none", "auto":
+				toolChoiceIsSet = true
+			case "any":
+				toolChoiceIsSet = true
+				toolChoiceRequiresTools = true
+			case "function":
+				// OpenAI format: {"type":"function","function":{"name":"xxx"}}
+				if fn, _ := v["function"].(map[string]any); fn != nil {
+					if name, _ := fn["name"].(string); name != "" {
+						toolChoiceIsSet = true
+						toolChoiceRequiresTools = true
+					}
+				}
+			case "tool":
+				// Claude format: {"type":"tool","name":"xxx"}
+				if name, _ := v["name"].(string); name != "" {
+					toolChoiceIsSet = true
+					toolChoiceRequiresTools = true
+				}
+			default:
+				// NOTE: Sanitize tool_choice_type before logging to prevent log injection.
+				logrus.WithField("tool_choice_type", sanitizeToolNameForPrompt(t)).Warn("applyFunctionCallRequestRewrite: unknown tool_choice object type; treating as unset")
+			}
+		default:
+			logrus.WithField("tool_choice_go_type", fmt.Sprintf("%T", toolChoiceVal)).
+				Warn("applyFunctionCallRequestRewrite: unsupported tool_choice type; treating as unset")
+		}
+	}
+
 	// Add stronger continuation reminder for multi-turn conversations.
 	// This helps reasoning models (like deepseek-reasoner) that may plan in
 	// reasoning_content but fail to output actual XML in content.
-	if hasToolHistory {
+	// Skip this when tool_choice prohibits tool usage to avoid contradictory instructions.
+	// NOTE: For tool_choice="auto", we should NOT force tool calls - the model
+	// should be allowed to answer using existing tool results without calling more tools.
+	// Only force continuation when:
+	//   (1) tool_choice requires tools (required/any/specific), OR
+	//   (2) there were errors to retry, OR
+	//   (3) tool_choice is NOT set (nil) - default to requiring tools for backward compatibility.
+	// BUG FIX: Previously used (toolChoicePrompt == "") which incorrectly matched "auto"
+	// since convertToolChoiceToPrompt("auto") returns "". Now use explicit !toolChoiceIsSet flag.
+	if hasToolHistory && !toolChoiceProhibitsTools && (hasToolErrors || toolChoiceRequiresTools || !toolChoiceIsSet) {
 		continuation := "\n\nCRITICAL CONTINUATION: Previous tool results shown above. "
 		if hasToolErrors {
 			continuation += "Some failed - fix and retry. "
@@ -939,6 +1154,15 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 		continuation += "You MUST output " + triggerSignal + " followed by <invoke> or <function_calls> XML NOW. " +
 			"Do NOT summarize or describe - just output the XML block."
 		prompt += continuation
+	}
+
+	// Append tool_choice prompt if generated (already computed above).
+	// NOTE: toolChoicePrompt is intentionally appended LAST
+	// in the system prompt. This leverages "recency bias" - models tend to give more weight
+	// to instructions that appear later. Placing the constraint at the end ensures it takes
+	// precedence over earlier instructions (like continuation hints).
+	if toolChoicePrompt != "" {
+		prompt += toolChoicePrompt
 	}
 
 	newMessages := make([]any, 0, len(messages)+1)
@@ -1171,9 +1395,43 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		// Bound parsing window to avoid feeding arbitrarily large content into
 		// the XML parser. We keep only the tail of the content where the
 		// <function_calls> block is expected to appear.
+		// NOTE: Use anchored truncation to avoid missing function calls
+		// when they appear before the default tail window. Anchor on trigger signal
+		// or <function_calls> tag if present.
 		parseInput := contentStr
 		if len(parseInput) > maxContentBufferBytes {
-			parseInput = parseInput[len(parseInput)-maxContentBufferBytes:]
+			start := -1
+			if triggerSignal != "" {
+				start = strings.LastIndex(parseInput, triggerSignal)
+			}
+			if start == -1 {
+				start = strings.LastIndex(parseInput, "<function_calls>")
+			}
+			if start == -1 {
+				// No anchor found, use default tail truncation
+				start = len(parseInput) - maxContentBufferBytes
+			}
+			if start < 0 {
+				start = 0
+			}
+			// Align start to rune boundary to avoid splitting UTF-8 characters
+			for start < len(parseInput) && !utf8.RuneStart(parseInput[start]) {
+				start++
+			}
+
+			// Take a bounded window forward from the anchor point
+			// NOTE: AI suggested taking window forward from anchor instead of
+			// resetting anchor to tail. This preserves the anchor context while
+			// respecting the buffer limit.
+			end := len(parseInput)
+			if end-start > maxContentBufferBytes {
+				end = start + maxContentBufferBytes
+			}
+			// Align end to rune boundary (move backward to avoid splitting UTF-8)
+			for end > start && end < len(parseInput) && !utf8.RuneStart(parseInput[end]) {
+				end--
+			}
+			parseInput = parseInput[start:end]
 		}
 
 		calls := parseFunctionCallsXML(parseInput, triggerSignal)
@@ -1187,30 +1445,116 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			}
 		}
 
+		// Fallback: If no calls found in content, try parsing from reasoning_content.
+		// DeepSeek reasoner and similar models may output tool calls in reasoning_content
+		// instead of content field when force_function_call + CC mode is enabled.
 		if len(calls) == 0 {
+			if reasoningVal, ok := msg["reasoning_content"]; ok {
+				if reasoningStr, ok := reasoningVal.(string); ok && reasoningStr != "" {
+					// Bound parsing window for reasoning_content as well
+					reasoningInput := reasoningStr
+					if len(reasoningInput) > maxContentBufferBytes {
+						start := -1
+						if triggerSignal != "" {
+							start = strings.LastIndex(reasoningInput, triggerSignal)
+						}
+						if start == -1 {
+							start = strings.LastIndex(reasoningInput, "<function_calls>")
+						}
+						if start == -1 {
+							start = strings.LastIndex(reasoningInput, "<invoke")
+						}
+						if start == -1 {
+							start = len(reasoningInput) - maxContentBufferBytes
+						}
+						if start < 0 {
+							start = 0
+						}
+						for start < len(reasoningInput) && !utf8.RuneStart(reasoningInput[start]) {
+							start++
+						}
+						end := len(reasoningInput)
+						if end-start > maxContentBufferBytes {
+							end = start + maxContentBufferBytes
+						}
+						for end > start && end < len(reasoningInput) && !utf8.RuneStart(reasoningInput[end]) {
+							end--
+						}
+						reasoningInput = reasoningInput[start:end]
+					}
+
+					// Check if reasoning_content contains tool call indicators
+					if strings.Contains(reasoningInput, triggerSignal) || strings.Contains(reasoningInput, "<invoke") || strings.Contains(reasoningInput, "<function_calls>") {
+						calls = parseFunctionCallsXML(reasoningInput, triggerSignal)
+						if len(calls) == 0 {
+							calls = parseFunctionCallsXML(reasoningInput, "")
+						}
+						if len(calls) > 0 {
+							logrus.WithField("parsed_count", len(calls)).
+								Debug("Function call normal response: parsed calls from reasoning_content")
+						}
+					}
+				}
+			}
+		}
+
+		if len(calls) == 0 {
+			// Diagnose why parsing failed for debugging purposes.
+			// This helps identify common issues like missing trigger signals,
+			// unclosed tags, or malformed XML structure.
+			// NOTE: parseInput is tail-truncated (maxContentBufferBytes),
+			// so NO_TRIGGER diagnostic may be a false positive if trigger was in the truncated
+			// portion. This is acceptable for debug logging purposes only.
+			// NOTE: The nil check is defensive programming - currently
+			// diagnoseFCParseError never returns nil, but keeping the check for future safety.
+			// NOTE: Gate behind DebugLevel to avoid CPU waste
+			// when debug logging is disabled.
+			if logrus.IsLevelEnabled(logrus.DebugLevel) &&
+				(triggerSignal != "" || strings.Contains(parseInput, "<function_calls>") || strings.Contains(parseInput, "<invoke")) {
+				parseErr := diagnoseFCParseError(parseInput, triggerSignal)
+				if parseErr != nil {
+					// NOTE: Add truncated flag to help identify
+					// potential false positives in NO_TRIGGER diagnostics.
+					inputTruncated := len(contentStr) > maxContentBufferBytes
+					// NOTE: Add choice_index for multi-choice correlation.
+					logrus.WithFields(logrus.Fields{
+						"error_code":      parseErr.Code,
+						"error_message":   parseErr.Message,
+						"error_details":   parseErr.Details,
+						"input_truncated": inputTruncated,
+						"choice_index":    i,
+					}).Debug("Function call normal response: parsing failed with diagnostic")
+				}
+			}
+
 			// If we see a <function_calls> block but could not parse any valid calls,
 			// treat it as invalid tool XML and strip it from the visible content. This
 			// prevents downstream clients (including Claude Code) from seeing malformed
 			// <function_calls> markers without corresponding structured tool_calls.
-			if strings.Contains(parseInput, "<function_calls>") {
+			// NOTE: Use contentStr for detection to avoid false negatives when
+			// parseInput is truncated and misses the <function_calls> tag.
+			if strings.Contains(contentStr, "<function_calls>") {
 				cleaned := removeFunctionCallsBlocks(contentStr, cleanupModeFull)
 				if cleaned != contentStr {
 					msg["content"] = cleaned
 					chMap["message"] = msg
 					choices[i] = chMap
 					modified = true // Mark response as modified to write cleaned content back to client
+					// Sanitize before truncate to prevent leaking truncated secrets
 					logrus.WithFields(logrus.Fields{
 						"trigger_signal":  triggerSignal,
-						"content_preview": utils.TruncateString(parseInput, 200),
+						"content_preview": utils.TruncateString(utils.SanitizeErrorBody(parseInput), 200),
 					}).Debug("Function call normal response: removed invalid <function_calls> block with no parsed tool calls")
 				}
 			}
 
 			// Log when we detect execution intent phrases but no function_calls XML at all.
+			// NOTE: content_preview is model output and may include user-provided content.
+			// Sanitize before truncate to prevent leaking truncated secrets.
 			if reExecutionIntent.MatchString(parseInput) && !strings.Contains(parseInput, "<function_calls>") {
 				fields := logrus.Fields{
 					"trigger_signal":  triggerSignal,
-					"content_preview": utils.TruncateString(parseInput, 200),
+					"content_preview": utils.TruncateString(utils.SanitizeErrorBody(parseInput), 200),
 				}
 				if fr, ok := chMap["finish_reason"].(string); ok {
 					fields["finish_reason"] = fr
@@ -1355,8 +1699,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	var contentBuf strings.Builder
 	// reasoningBuf accumulates reasoning_content for detecting tool call intent in thinking.
 	var reasoningBuf strings.Builder
-	// contentBufFullWarned ensures we log the buffer-limit warning at most once.
-	contentBufFullWarned := false
+	// contentBufTruncated tracks whether content was actually truncated due to buffer overflow.
+	// NOTE: AI review suggested using a dedicated flag instead of inferring from length.
+	// len(contentStr) >= maxContentBufferBytes can over-report truncation if stream naturally
+	// ends exactly at the cap. This flag is set only when overflow actually happens.
+	contentBufTruncated := false
 
 	// prevEvent holds the last non-[DONE] event that we have not yet forwarded.
 	var prevEventLines []string
@@ -1479,28 +1826,48 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 									// Accumulate content for final XML parsing.
 									if contentBuf.Len()+len(text) <= maxContentBufferBytes {
 										contentBuf.WriteString(text)
-									} else if !contentBufFullWarned {
+									} else if !contentBufTruncated {
 										// Log once when buffer limit is first reached to aid debugging.
 										logrus.Warn("Function call streaming: content buffer limit reached, subsequent content will not be parsed for tool calls")
-										contentBufFullWarned = true
+										contentBufTruncated = true
 									}
 
 									// First, always strip trigger signals from content.
 									// These should never be visible to clients.
-									// Also, detecting trigger means XML block follows, enter suppression.
-									if reTriggerSignal.MatchString(text) {
+									// IMPORTANT: If trigger appears mid-chunk, preserve any prefix text
+									// before the trigger and suppress everything after.
+									// AI REVIEW FIX: Use triggerFoundMidChunk flag to ensure prefix is
+									// preserved in deltaVal["content"] before entering suppression mode.
+									// Without this flag, the "else if insideFunctionCalls" branch would
+									// incorrectly blank the content, dropping the prefix.
+									triggerFoundMidChunk := false
+									if loc := reTriggerSignal.FindStringIndex(text); loc != nil {
+										// AI REVIEW FIX: Use TrimRight instead of TrimSpace to preserve
+										// meaningful leading newlines/spaces in user-visible prefix.
+										// TrimSpace would remove all leading/trailing whitespace, potentially
+										// losing formatting that the model intended to output.
+										prefix := strings.TrimRight(text[:loc[0]], " \t\r\n")
+										triggerFoundMidChunk = true
 										insideFunctionCalls = true
+										// Keep only prefix (trigger + trailing content suppressed)
+										text = prefix
+									} else {
+										text = reTriggerSignal.ReplaceAllString(text, "")
 									}
-									text = reTriggerSignal.ReplaceAllString(text, "")
 
 									hasOpen := strings.Contains(text, "<function_calls>")
 									hasClose := strings.Contains(text, "</function_calls>")
 									// Detect internal XML tags to track XML block boundaries.
 									// Include both complete tags and partial patterns for robustness.
+									// CRITICAL: Include <invoke and <parameter for ANTML format (KiloCode/Kiro)
 									hasInternalXml := strings.Contains(text, "<function_call") ||
 										strings.Contains(text, "</function_call") ||
 										strings.Contains(text, "<invocation") ||
 										strings.Contains(text, "</invocation") ||
+										strings.Contains(text, "<invoke") ||
+										strings.Contains(text, "</invoke") ||
+										strings.Contains(text, "<parameter") ||
+										strings.Contains(text, "</parameter") ||
 										strings.Contains(text, "<parameters") ||
 										strings.Contains(text, "</parameters") ||
 										strings.Contains(text, "<name>") ||
@@ -1523,11 +1890,13 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 									// Examples: "<>", "<><invokename=", "<parametername="
 									// Detection: Check for specific malformed patterns that indicate tool call fragments.
 									// ENHANCED: Also detect JSON arrays with task fields
+									// NOTE: activeForm detection narrowed to require JSON separator pattern ":"
+									// to reduce false positives on legitimate user-visible text
 									hasMalformedXml := strings.Contains(text, "<>") ||
 										strings.Contains(text, "<invokename") ||
 										strings.Contains(text, "<parametername") ||
 										(strings.Contains(text, `"todos"`) && strings.Contains(text, `[{`)) ||
-										(strings.Contains(text, `"activeForm"`) && strings.Contains(text, `"`))
+										(strings.Contains(text, `"activeForm"`) && strings.Contains(text, `":`))
 
 									// If malformed XML is detected, use full removeFunctionCallsBlocks cleanup.
 									// This ensures malformed fragments are never sent to the client.
@@ -1560,7 +1929,10 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 											if len(remaining) > 0 {
 												nextChar := remaining[0]
 												// XML tag names start with letter or underscore; / for closing tags
-												if (nextChar >= 'a' && nextChar <= 'z') ||
+												// Also treat "<<" as a partial trigger start (e.g., split <<CALL_...>>)
+												// This prevents trigger signal leakage when split across streaming chunks
+												if nextChar == '<' ||
+													(nextChar >= 'a' && nextChar <= 'z') ||
 													(nextChar >= 'A' && nextChar <= 'Z') ||
 													nextChar == '/' || nextChar == '_' {
 													// CRITICAL: Do NOT suppress <think or <thinking tags
@@ -1574,7 +1946,13 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 										}
 									}
 
-									if hasOpen && hasClose {
+									// AI REVIEW FIX: Handle triggerFoundMidChunk first to preserve prefix.
+									// This must be checked before insideFunctionCalls because we just set
+									// insideFunctionCalls = true, but we still need to output the prefix.
+									if triggerFoundMidChunk {
+										// Preserve prefix content for this chunk; suppression applies after.
+										deltaVal["content"] = text
+									} else if hasOpen && hasClose {
 										// Entire block in one chunk: strip only the XML block, keep prefix and suffix.
 										startIdx := strings.Index(text, "<function_calls>")
 										if startIdx >= 0 {
@@ -1677,6 +2055,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	// At this point, prevEventLines holds the last event before [DONE]. Attempt to
 	// parse function calls from the accumulated content buffer.
 	contentStr := contentBuf.String()
+	reasoningStr := reasoningBuf.String()
 	parsedCalls := parseFunctionCallsXML(contentStr, triggerSignal)
 
 	// Fallback: If no calls found with trigger signal, try parsing without it.
@@ -1689,17 +2068,58 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		}
 	}
 
+	// Fallback: If no calls found in content, try parsing from reasoning_content.
+	// DeepSeek reasoner and similar models may output tool calls in reasoning_content
+	// instead of content field when force_function_call + CC mode is enabled.
+	// This is a known behavior where the model plans tool calls in its thinking process.
+	if len(parsedCalls) == 0 && reasoningStr != "" {
+		// First try with trigger signal
+		if strings.Contains(reasoningStr, triggerSignal) || strings.Contains(reasoningStr, "<invoke") || strings.Contains(reasoningStr, "<function_calls>") {
+			parsedCalls = parseFunctionCallsXML(reasoningStr, triggerSignal)
+			if len(parsedCalls) == 0 {
+				// Try without trigger signal
+				parsedCalls = parseFunctionCallsXML(reasoningStr, "")
+			}
+			if len(parsedCalls) > 0 {
+				logrus.WithField("parsed_count", len(parsedCalls)).
+					Debug("Function call streaming: parsed calls from reasoning_content")
+			}
+		}
+	}
+
 	if len(parsedCalls) == 0 || prevEventData == "" {
+		// Diagnose why parsing failed for debugging purposes.
+		// NOTE: The nil check is defensive programming - currently
+		// diagnoseFCParseError never returns nil, but keeping the check for future safety.
+		// NOTE: Gate behind DebugLevel to avoid CPU waste
+		// when debug logging is disabled.
+		if logrus.IsLevelEnabled(logrus.DebugLevel) &&
+			(triggerSignal != "" || strings.Contains(contentStr, "<function_calls>") || strings.Contains(contentStr, "<invoke")) {
+			parseErr := diagnoseFCParseError(contentStr, triggerSignal)
+			if parseErr != nil {
+				// NOTE: Use contentBufTruncated flag instead of length inference per AI review.
+				// len(contentStr) >= maxContentBufferBytes can over-report truncation if stream
+				// naturally ends exactly at the cap. The flag is set only when overflow happens.
+				logrus.WithFields(logrus.Fields{
+					"error_code":      parseErr.Code,
+					"error_message":   parseErr.Message,
+					"error_details":   parseErr.Details,
+					"input_truncated": contentBufTruncated,
+				}).Debug("Function call streaming: parsing failed with diagnostic")
+			}
+		}
+
 		// Log if we detected execution intent but no tool calls (helps with debugging)
 		reasoningStr := reasoningBuf.String()
 		hasContentIntent := reExecutionIntent.MatchString(contentStr) && !strings.Contains(contentStr, "<function_calls>")
 		hasReasoningIntent := detectToolIntentInReasoning(reasoningStr)
 
 		if hasContentIntent || hasReasoningIntent {
+			// Sanitize before truncate to prevent leaking truncated secrets
 			logrus.WithFields(logrus.Fields{
 				"trigger_signal":    triggerSignal,
-				"content_preview":   utils.TruncateString(contentStr, 200),
-				"reasoning_preview": utils.TruncateString(reasoningStr, 200),
+				"content_preview":   utils.TruncateString(utils.SanitizeErrorBody(contentStr), 200),
+				"reasoning_preview": utils.TruncateString(utils.SanitizeErrorBody(reasoningStr), 200),
 				"content_intent":    hasContentIntent,
 				"reasoning_intent":  hasReasoningIntent,
 			}).Debug("Function call streaming: detected execution intent without tool call XML")
@@ -1859,11 +2279,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 // GLM blocks typically contain tool call results or thinking content that should be removed.
 // Only preserve content that looks like a valid tool call request (JSON with name field but no result indicators).
 //
-// AI Review Note (2026-01-03): This function intentionally discards non-JSON text inside GLM blocks.
+// NOTE: This function intentionally discards non-JSON text inside GLM blocks.
 // Based on production log analysis, GLM blocks only contain tool call JSON or thinking content,
 // never user-visible prose. If GLM format changes to include mixed content, this logic should be revisited.
 //
-// AI Review Note (2026-01-03): Preserved request JSON from GLM blocks is NOT automatically converted
+// NOTE: Preserved request JSON from GLM blocks is NOT automatically converted
 // to tool calls because extractToolCalls only recognizes XML format (<function_calls>/<invoke>).
 // This is an intentional behavior gap - GLM blocks primarily contain tool results, not new requests.
 // If GLM blocks start containing request JSON that needs execution, consider either:
@@ -1873,10 +2293,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 func processGLMBlockContent(content string) string {
 	// If content doesn't contain JSON object, it's likely thinking content - remove it
 	if !strings.Contains(content, "{") {
-		// AI Review Fix (2026-01-03): Added debug log for observability when GLM block
+		// NOTE: Added debug log for observability when GLM block
 		// is removed due to no JSON content. Helps detect GLM format drift in production.
+		// Sanitize before truncate to prevent leaking truncated secrets.
 		if logrus.IsLevelEnabled(logrus.DebugLevel) {
-			logrus.WithField("content_preview", utils.TruncateString(content, 100)).
+			logrus.WithField("content_preview", utils.TruncateString(utils.SanitizeErrorBody(content), 100)).
 				Debug("processGLMBlockContent: Removed GLM block with no JSON content")
 		}
 		return ""
@@ -2106,7 +2527,7 @@ func removeThinkBlocks(text string) string {
 
 		if strings.TrimSpace(processedContent) == "" {
 			// All content was tool call results - remove the entire block
-			// AI Review Fix (2026-01-03): Added debug log for observability when entire
+			// NOTE: Added debug log for observability when entire
 			// GLM block is removed. Helps detect GLM format drift in production.
 			if logrus.IsLevelEnabled(logrus.DebugLevel) {
 				logrus.WithField("original_length", len(glmContent)).
@@ -2135,7 +2556,7 @@ func removeThinkBlocks(text string) string {
 			// For glm_block, check for <glm_block>
 			// For antml closers, check for various antml opening patterns
 			//
-			// AI Review Note (2026-01-03): This hasOpener check uses simple Contains() rather than
+			// NOTE: This hasOpener check uses simple Contains() rather than
 			// balanced pair counting. In malformed cases with an extra closer after a valid block,
 			// that closer may be treated as matched and left in the text. This is acceptable because:
 			// 1. The main processing loops above already handle properly paired tags
@@ -2164,7 +2585,7 @@ func removeThinkBlocks(text string) string {
 			// Try to find JSON-like content before the closer that should be removed
 			// Look for patterns like: ..."name":"Read"..."is_error":true...}</glm_block>
 			// We need to find where the JSON object starts (look for { before the closer)
-			// AI Review Note (2026-01-03): This brace scan uses simple depth counting without
+			// NOTE: This brace scan uses simple depth counting without
 			// tracking string/escape state. While processGLMBlockContent has a more robust scanner,
 			// this simpler approach is acceptable here because:
 			// 1. The subsequent isToolCallResultJSON check validates the content semantically
@@ -2320,7 +2741,7 @@ func removeThinkBlocks(text string) string {
 //   - is_error:false alone is NOT sufficient (could be a tool request with default value)
 //   - Secondary indicators (duration, display_result, mcp_server) require multiple to confirm
 //
-// AI Review Note (2026-01-03): This function uses raw substring matching which could
+// NOTE: This function uses raw substring matching which could
 // theoretically match any JSON/text containing these patterns. However, it is ONLY called
 // from GLM block processing and truncated JSON cleanup paths where the context is already
 // known to be tool-related. Do NOT use this as a general-purpose JSON classifier.
@@ -2459,12 +2880,12 @@ func removeUnclosedTagLines(text string) string {
 // IMPORTANT: This function should NOT remove content inside <invoke> or <parameter> tags,
 // as those are tool call requests, not tool call results.
 //
-// AI Review Note (2026-01-03): This function only removes the FIRST detected fragment.
-// Based on production log analysis, multiple truncated result fragments in a single response
-// are extremely rare. If this becomes an issue, the function can be wrapped in a loop.
-// Current design prioritizes simplicity and performance over handling edge cases.
+// AI REVIEW: Added bounded loop (max 3 iterations) per AI review suggestion to handle
+// rare cases where multiple truncated result fragments appear in a single response.
+// Based on production log analysis, multiple fragments are extremely rare, but the
+// bounded loop provides defense-in-depth without significant performance impact.
 //
-// AI Review Note (2026-01-03): For purely ASCII tool outputs without CJK characters,
+// NOTE: For purely ASCII tool outputs without CJK characters,
 // the end detection may not find a CJK boundary. This is an acceptable tradeoff because:
 // 1. Production logs show tool results are predominantly in Chinese context
 // 2. ASCII-only outputs are rare in our use case
@@ -2479,6 +2900,24 @@ func cleanTruncatedToolResultJSON(text string) string {
 		return text
 	}
 
+	// Bounded loop to handle multiple fragments (max 3 iterations)
+	// This is a tradeoff between completeness and performance
+	const maxIterations = 3
+	result := text
+	for i := 0; i < maxIterations; i++ {
+		cleaned := cleanTruncatedToolResultJSONOnce(result)
+		if cleaned == result {
+			// No more fragments found
+			break
+		}
+		result = cleaned
+	}
+	return result
+}
+
+// cleanTruncatedToolResultJSONOnce removes a single truncated tool result JSON fragment.
+// This is the core implementation called by cleanTruncatedToolResultJSON in a bounded loop.
+func cleanTruncatedToolResultJSONOnce(text string) string {
 	// Fast path: no tool result indicators (both regular and escaped quote patterns)
 	if !strings.Contains(text, `"is_error"`) && !strings.Contains(text, `"status":"completed"`) &&
 		!strings.Contains(text, `"status":"error"`) && !strings.Contains(text, `"mcp_server"`) &&
@@ -2491,38 +2930,19 @@ func cleanTruncatedToolResultJSON(text string) string {
 		return text
 	}
 
-	logrus.WithField("text_length", len(text)).Debug("cleanTruncatedToolResultJSON: Starting cleanup")
+	// Guard debug logging to avoid field allocation overhead in hot path
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithField("text_length", len(text)).Debug("cleanTruncatedToolResultJSONOnce: Starting cleanup")
+	}
 
 	result := text
 
-	// Tool result indicator patterns to search for (both regular and escaped quote patterns)
-	indicatorPatterns := []string{
-		// Regular quote patterns
-		`"display_result"`,
-		`"is_error":true`,
-		`"is_error":false`,
-		`"is_error": true`,
-		`"is_error": false`,
-		`"status":"completed"`,
-		`"status":"error"`,
-		`"status": "completed"`,
-		`"status": "error"`,
-		`"mcp_server"`,
-		`"duration"`,
-		// Escaped quote patterns (for JSON inside strings)
-		`\"is_error\":true`,
-		`\"is_error\":false`,
-		`\"status\":\"completed\"`,
-		`\"status\":\"error\"`,
-		`\"mcp_server\"`,
-		`\"display_result\"`,
-		`\"duration\"`,
-	}
-
 	// Find the first tool result indicator
+	// NOTE: toolResultIndicatorPatterns is a package-level variable to avoid
+	// repeated allocation in hot path (per AI review suggestion)
 	firstIndicatorIdx := -1
 	isEscapedPattern := false
-	for _, pattern := range indicatorPatterns {
+	for _, pattern := range toolResultIndicatorPatterns {
 		idx := strings.Index(result, pattern)
 		if idx >= 0 && (firstIndicatorIdx == -1 || idx < firstIndicatorIdx) {
 			firstIndicatorIdx = idx
@@ -2698,7 +3118,7 @@ func cleanTruncatedToolResultJSON(text string) string {
 	}
 
 	// Pattern 5: Just sentence boundary (fallback)
-	// AI Review Note (2026-01-03): This pattern is more aggressive than findLastSentenceEnd
+	// NOTE: This pattern is more aggressive than findLastSentenceEnd
 	// because it matches ASCII punctuation (., !, ?) without checking the following character.
 	// findLastSentenceEnd requires whitespace or CJK after ASCII punctuation.
 	// This is an acceptable tradeoff because:
@@ -2708,7 +3128,7 @@ func cleanTruncatedToolResultJSON(text string) string {
 	// 4. If miscuts occur, they will be visible in logs for future improvement
 	// If ASCII tool outputs become more common, consider aligning with findLastSentenceEnd logic.
 	//
-	// AI REVIEW NOTE (2026-01-03): Suggested reusing findLastSentenceEnd here for consistency.
+	// NOTE: Suggested reusing findLastSentenceEnd here for consistency.
 	// DECISION: Keep current simpler logic because:
 	// - This is a fallback path only reached when structural patterns fail
 	// - Tool result context is different from general text (more tolerant of aggressive cuts)
@@ -2802,10 +3222,13 @@ func cleanTruncatedToolResultJSON(text string) string {
 	// Remove the JSON fragment
 	if startIdx < endIdx && endIdx <= len(result) {
 		result = result[:startIdx] + result[endIdx:]
-		logrus.WithFields(logrus.Fields{
-			"start":   startIdx,
-			"end":     endIdx,
-		}).Debug("cleanTruncatedToolResultJSON: Removed fragment")
+		// Guard debug logging to avoid field allocation overhead in hot path
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"start": startIdx,
+				"end":   endIdx,
+			}).Debug("cleanTruncatedToolResultJSONOnce: Removed fragment")
+		}
 	}
 
 	return result
@@ -2843,7 +3266,16 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 		reTruncatedJSONValueThenNumber.MatchString(text) ||
 		reTruncatedJSONOrphanedFieldSep.MatchString(text) ||
 		reTruncatedJSONEntireLine.MatchString(text) ||
-		reTruncatedJSONValueWithOrphanedSep.MatchString(text)
+		reTruncatedJSONValueWithOrphanedSep.MatchString(text) ||
+		reTruncatedJSONMergedTaskIdField.MatchString(text) ||
+		reTruncatedJSONMergedPriorityValue.MatchString(text) ||
+		reTruncatedJSONOrphanedTaskId.MatchString(text)
+	// SMART DETECTION: Use heuristic scanning instead of hardcoded patterns
+	// This replaces Pattern 10-13 (reTruncatedJSONQuoteNumberComma, etc.)
+	// and can detect new patterns without code changes
+	if !hasTruncatedJSON {
+		hasTruncatedJSON = findSmartJSONLeakPosition(text) >= 0
+	}
 	if !strings.Contains(text, "<") && !hasOrphanJson && !hasTruncatedJSON {
 		if strings.ContainsAny(text, "\n\r") {
 			lines := strings.Split(text, "\n")
@@ -2987,6 +3419,11 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 	}
 	// Remove ANTML role tags (internal markers that should not be visible)
 	if hasANTML {
+		// Remove antml:function_calls blocks first to prevent content leak
+		text = reANTMLFunctionCallsBlock.ReplaceAllString(text, "")
+		// Remove standalone antml:invoke blocks
+		text = reANTMLInvoke.ReplaceAllString(text, "")
+
 		// First remove entire ANTML blocks with content (e.g., <antml\b:format>...</antml\b:format>)
 		text = reANTMLBlockWithContent.ReplaceAllString(text, "")
 		// Then remove individual ANTML tags
@@ -3617,7 +4054,7 @@ func removeClaudeCodePreamble(text string) string {
 // findJSONLeakStartIndex finds the position where JSON leak starts in text.
 // Returns -1 if no JSON leak is detected, 0 if entire line is JSON, or position of leak start.
 //
-// AI Review Note (2026-01-03): This function is designed for CC tool output cleanup paths only.
+// NOTE: This function is designed for CC tool output cleanup paths only.
 // It may produce false positives on general text containing JSON-like patterns (e.g., prose with
 // "status", "id" words or JSON examples). This is acceptable because:
 // 1. It is ONLY called from CC leak-cleaning flows (removeFunctionCallsBlocks, removeClaudeCodePreamble)
@@ -3744,8 +4181,55 @@ func findJSONLeakStartIndex(text string) int {
 		}
 	}
 
+	// Pattern 7: merged task-id with field name (e.g., '-3activeForm' or '-2content')
+	// This handles cases where task id is merged with field name
+	if loc := reTruncatedJSONMergedTaskIdField.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// Pattern 8: merged priority field name and value (e.g., 'prioritymedium')
+	// This handles cases where priority field name is merged with value
+	if loc := reTruncatedJSONMergedPriorityValue.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// Pattern 9: orphaned task id value (e.g., 'task-4", ')
+	// This handles cases where task id appears as orphaned value
+	if loc := reTruncatedJSONOrphanedTaskId.FindStringIndex(text); loc != nil {
+		if minPos == -1 || loc[0] < minPos {
+			minPos = loc[0]
+		}
+	}
+
+	// SMART DETECTION: Generic JSON syntax anomaly scanner
+	// Instead of hardcoding specific patterns, scan for JSON syntax element combinations
+	// that indicate malformed/leaked JSON content.
+	// This handles patterns like:
+	//   - 'todo"2,label":' (word + quote + number + comma)
+	//   - '",3,label":' (quote + comma + number + comma)
+	//   - 'todo"]' (word + quote + bracket)
+	//   - Any combination of JSON syntax elements in abnormal positions
+	if smartPos := findSmartJSONLeakPosition(text); smartPos >= 0 {
+		// Ensure smartPos is at a valid UTF-8 boundary
+		// If it's in the middle of a multi-byte character, move back to the start
+		for smartPos > 0 && !utf8.RuneStart(text[smartPos]) {
+			smartPos--
+		}
+		if minPos == -1 || smartPos < minPos {
+			minPos = smartPos
+		}
+	}
+
 	// If we found a match from the regex patterns, return it
 	if minPos >= 0 {
+		// Final check: ensure minPos is at a valid UTF-8 boundary
+		for minPos > 0 && !utf8.RuneStart(text[minPos]) {
+			minPos--
+		}
 		return minPos
 	}
 
@@ -4073,6 +4557,202 @@ func isOrphanedHeaderText(trimmed string) bool {
 // Returns -1 if no sentence end is found.
 // Sentence-ending punctuation includes: 。！？.!?
 // NOTE: For ASCII punctuation (.!?), only consider it a sentence end if followed by
+// findSmartJSONLeakPosition uses heuristic scanning to detect JSON syntax anomalies.
+// Instead of hardcoding specific patterns, it scans for combinations of JSON syntax
+// elements that indicate malformed/leaked JSON content.
+//
+// SMART DETECTION APPROACH:
+// 1. Scan for quote (") followed by digit and comma/bracket - array index leak
+// 2. Scan for comma followed by digit and comma - consecutive array indices
+// 3. Scan for word followed by quote and bracket - orphaned array close
+// 4. Scan for known field names in abnormal positions (without proper JSON structure)
+//
+// Returns the position where JSON leak starts, or -1 if no leak detected.
+// When a leak is detected, scans backwards to find the start of the leaked word.
+func findSmartJSONLeakPosition(text string) int {
+	if len(text) < 3 {
+		return -1
+	}
+
+	minPos := -1
+
+	// Scan through text looking for JSON syntax anomalies
+	for i := 0; i < len(text)-1; i++ {
+		c := text[i]
+
+		// Pattern A: quote followed by digit and (comma or bracket)
+		// Examples: 'todo"2,' 'todo"2]' '方案"4,'
+		if c == '"' && i > 0 {
+			// Check if followed by digit
+			if i+1 < len(text) && isDigit(text[i+1]) {
+				// Find end of digit sequence
+				j := i + 1
+				for j < len(text) && isDigit(text[j]) {
+					j++
+				}
+				// Check if followed by comma, bracket, or field pattern
+				if j < len(text) && (text[j] == ',' || text[j] == ']' || text[j] == '}') {
+					// Check if preceded by word character (not just quote)
+					if i > 0 && isWordChar(text[i-1]) {
+						// Scan backwards to find start of word
+						wordStart := scanBackToWordStart(text, i-1)
+						if minPos == -1 || wordStart < minPos {
+							minPos = wordStart
+						}
+					}
+				}
+			}
+		}
+
+		// Pattern B: comma followed by digit and comma (consecutive array indices)
+		// Examples: '",3,' '",5,'
+		if c == ',' && i > 0 && text[i-1] == '"' {
+			// Check if followed by digit
+			if i+1 < len(text) && isDigit(text[i+1]) {
+				// Find end of digit sequence
+				j := i + 1
+				for j < len(text) && isDigit(text[j]) {
+					j++
+				}
+				// Check if followed by comma
+				if j < len(text) && text[j] == ',' {
+					// This is a consecutive array index pattern
+					// Return position of the quote before comma
+					if minPos == -1 || i-1 < minPos {
+						minPos = i - 1
+					}
+				}
+			}
+		}
+
+		// Pattern C: word followed by quote and closing bracket
+		// Examples: 'todo"]' 'label"]'
+		if c == '"' && i > 0 && isWordChar(text[i-1]) {
+			// Check if followed by closing bracket (with optional whitespace)
+			j := i + 1
+			for j < len(text) && (text[j] == ' ' || text[j] == '\t') {
+				j++
+			}
+			if j < len(text) && text[j] == ']' {
+				// Scan backwards to find start of word
+				wordStart := scanBackToWordStart(text, i-1)
+				if minPos == -1 || wordStart < minPos {
+					minPos = wordStart
+				}
+			}
+		}
+
+		// Pattern D: underscore followed by known field name pattern
+		// Examples: '_progressactiveForm' '_statusin_progress'
+		if c == '_' && i > 0 {
+			// Check for known field names after underscore
+			rest := text[i+1:]
+			if hasKnownFieldNamePrefix(rest) {
+				// Scan backwards to find start of the anomaly
+				wordStart := scanBackToWordStart(text, i-1)
+				if minPos == -1 || wordStart < minPos {
+					minPos = wordStart
+				}
+			}
+		}
+
+		// Pattern E: dash followed by digit and known field name
+		// Examples: '-3activeForm' '-2content'
+		if c == '-' && i > 0 {
+			// Check if followed by digit
+			if i+1 < len(text) && isDigit(text[i+1]) {
+				// Find end of digit sequence
+				j := i + 1
+				for j < len(text) && isDigit(text[j]) {
+					j++
+				}
+				// Check if followed by known field name
+				if j < len(text) {
+					rest := text[j:]
+					if hasKnownFieldNamePrefix(rest) {
+						// Scan backwards to find start of word
+						wordStart := scanBackToWordStart(text, i-1)
+						if minPos == -1 || wordStart < minPos {
+							minPos = wordStart
+						}
+					}
+				}
+			}
+		}
+
+		// Pattern F: known status value followed by quote (JSON value leak)
+		// Examples: 'pending"内容"' 'completed"任务"'
+		// This detects status values directly followed by quote without proper JSON structure
+		if c == '"' && i >= 7 {
+			// Check if preceded by known status value
+			// We check for: pending, completed, in_progress
+			beforeQuote := text[:i]
+			if strings.HasSuffix(beforeQuote, "pending") ||
+				strings.HasSuffix(beforeQuote, "completed") ||
+				strings.HasSuffix(beforeQuote, "in_progress") {
+				// Find the start of the status word
+				wordStart := scanBackToWordStart(text, i-1)
+				if minPos == -1 || wordStart < minPos {
+					minPos = wordStart
+				}
+			}
+		}
+	}
+
+	return minPos
+}
+
+// isDigit checks if a byte is an ASCII digit
+func isDigit(c byte) bool {
+	return c >= '0' && c <= '9'
+}
+
+// isWordChar checks if a byte is a word character (alphanumeric, underscore, or dash)
+func isWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '_' || c == '-'
+}
+
+// scanBackToWordStart scans backwards from position to find the start of a word.
+// For ASCII word characters, it scans back to find the word boundary.
+// For UTF-8 text, it ensures we don't cut in the middle of a multi-byte character.
+func scanBackToWordStart(text string, pos int) int {
+	start := pos
+	for start > 0 {
+		c := text[start-1]
+		if isWordChar(c) {
+			start--
+		} else {
+			break
+		}
+	}
+	// Ensure we're at a valid UTF-8 boundary
+	// If start is in the middle of a UTF-8 sequence, move forward to the next valid boundary
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return start
+}
+
+// hasKnownFieldNamePrefix checks if text starts with a known JSON field name
+// that commonly appears in TodoWrite and similar tool outputs.
+// This is a heuristic check, not an exhaustive list.
+func hasKnownFieldNamePrefix(text string) bool {
+	// Known field names from TodoWrite and similar tools
+	// These are checked as prefixes to handle merged patterns
+	knownFields := []string{
+		"activeForm", "content", "status", "priority", "label", "title",
+		"description", "id", "state", "Form", "progress", "todos",
+		"pending", "completed", "in_progress", "medium", "high", "low",
+	}
+	for _, field := range knownFields {
+		if strings.HasPrefix(text, field) {
+			return true
+		}
+	}
+	return false
+}
+
 // whitespace or CJK character (to avoid matching file extensions like "hello.py")
 func findLastSentenceEnd(text string) int {
 	lastPos := -1
@@ -4169,7 +4849,7 @@ func isLeakedJSONFieldLine(trimmed string) bool {
 // STRUCTURAL APPROACH: Detects tool markers by function call pattern (e.g., "ToolName(args)").
 // Performance: O(n) character scanning where n is the tool name length (max 40 chars).
 //
-// AI Review Note (2026-01-03): This function is used in removeClaudeCodePreamble to filter
+// NOTE: This function is used in removeClaudeCodePreamble to filter
 // leaked tool markers. It intentionally returns false for bullet-prefixed lines to preserve
 // user-facing content. Lines like "● Read(file.py)" are preserved as they may be legitimate
 // bullet points in user content. Only standalone markers without bullets are filtered.
@@ -4540,6 +5220,619 @@ func formatToolResultAsText(toolCallID, name, content string) string {
 	return sb.String()
 }
 
+// isToolUsageProhibitedByToolChoice returns true if the tool_choice parameter forbids tool usage.
+// This is used to avoid contradictory prompts (e.g., "MUST call tools" + "PROHIBITED from tools").
+//
+// NOTE: We do NOT normalize tool_choice values (TrimSpace/ToLower).
+// OpenAI and Anthropic APIs specify exact lowercase values ("none", "auto", "required", "any").
+// Normalizing would mask client errors and make debugging harder. Clients should send correct values.
+func isToolUsageProhibitedByToolChoice(toolChoice any) bool {
+	if toolChoice == nil {
+		return false
+	}
+	// String "none" prohibits tools
+	if s, ok := toolChoice.(string); ok {
+		return s == "none"
+	}
+	// Object {"type":"none"} prohibits tools (Claude-style)
+	if m, ok := toolChoice.(map[string]any); ok {
+		if t, _ := m["type"].(string); t == "none" {
+			return true
+		}
+	}
+	return false
+}
+
+// MaxToolNameRunes is the maximum rune count for tool names in prompts.
+// Used to prevent prompt bloat and log spam from user-controlled tool_choice names.
+// 80 runes is sufficient for any legitimate tool name while preventing abuse.
+// Exported as a constant so tests can reference it to avoid silent drift.
+const MaxToolNameRunes = 80
+
+// MaxToolDescriptionRunes is the maximum rune count for tool descriptions in prompts.
+// OpenAI has a 1024 character limit for function descriptions. We use 1024 runes
+// to match this limit while supporting Unicode characters properly.
+// This prevents prompt bloat from excessively long client-provided descriptions.
+// AI REVIEW FIX: Added per AI review suggestion to limit tool description length.
+const MaxToolDescriptionRunes = 1024
+
+// sanitizeToolNameForPrompt sanitizes a tool name before embedding it into prompt constraints.
+// This prevents prompt injection or formatting issues from malicious/malformed tool names.
+// Replaces backticks (which could break markdown formatting), newlines and tabs (which could
+// inject additional instructions) with safe alternatives, and normalizes whitespace.
+// Also truncates to MaxToolNameRunes to prevent prompt bloat and log spam from user-controlled input.
+// AI REVIEW: Added ASCII control character filtering per AI review suggestion to prevent
+// log/prompt pollution from characters like \x00, \x1b, etc.
+func sanitizeToolNameForPrompt(name string) string {
+	// Replace backticks with single quotes to prevent markdown code block injection
+	name = strings.ReplaceAll(name, "`", "'")
+	// Replace newlines and tabs with spaces to prevent prompt injection
+	name = strings.ReplaceAll(name, "\n", " ")
+	name = strings.ReplaceAll(name, "\r", " ")
+	name = strings.ReplaceAll(name, "\t", " ")
+	// Drop remaining ASCII control chars (0x00-0x1F except space, and 0x7F DEL)
+	// to prevent log/prompt pollution from malicious input.
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, name)
+	// Normalize whitespace in O(n) using strings.Fields (splits on any whitespace)
+	// and strings.Join (rejoins with single space). This also trims leading/trailing.
+	name = strings.Join(strings.Fields(name), " ")
+	// Truncate to prevent prompt bloat and log spam from user-controlled tool_choice names.
+	if utf8.RuneCountInString(name) > MaxToolNameRunes {
+		name = utils.TruncateString(name, MaxToolNameRunes)
+	}
+	return name
+}
+
+// sanitizeToolDescriptionForPrompt sanitizes a tool description before embedding it into prompts.
+// This prevents prompt injection or formatting issues from malicious/malformed descriptions.
+// Unlike tool names, descriptions preserve newlines (converted to spaces would lose formatting),
+// but still removes control characters and truncates to MaxToolDescriptionRunes.
+// AI REVIEW FIX: Added per AI review suggestion to sanitize and limit tool description length.
+func sanitizeToolDescriptionForPrompt(desc string) string {
+	if desc == "" {
+		return ""
+	}
+	// Replace backticks with single quotes to prevent markdown code block injection
+	desc = strings.ReplaceAll(desc, "`", "'")
+	// Drop ASCII control chars (0x00-0x1F except space/tab/newline/CR, and 0x7F DEL)
+	// to prevent log/prompt pollution from malicious input.
+	// NOTE: Unlike tool names, we preserve \n, \r, \t for description formatting.
+	desc = strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n' && r != '\r' && r != '\t') || r == 0x7f {
+			return -1
+		}
+		return r
+	}, desc)
+	// Truncate to prevent prompt bloat from excessively long descriptions.
+	if utf8.RuneCountInString(desc) > MaxToolDescriptionRunes {
+		desc = utils.TruncateString(desc, MaxToolDescriptionRunes)
+	}
+	return desc
+}
+
+// convertToolChoiceToPrompt converts tool_choice parameter to prompt instructions.
+// This preserves the semantic meaning of tool_choice when using prompt-based function calling.
+//
+// Supported tool_choice values:
+//   - "none": Prohibit tool usage, respond as normal chat assistant
+//   - "auto": Default behavior, model decides whether to use tools
+//   - "required" / "any": Must call at least one tool
+//   - {"type":"function","function":{"name":"xxx"}}: Must call specific tool
+//
+// Reference: Toolify safe_process_tool_choice implementation.
+//
+// NOTE: Constraint strings are intentionally embedded
+// inline rather than extracted to package-level constants. This keeps the prompt logic
+// self-contained and easier to modify. Tests use Contains() for flexibility.
+//
+// NOTE: When a specific tool is requested but not found
+// in toolDefs, we log a warning but still generate the constraint (graceful degradation).
+// This is intentional - the model may still attempt the call, which will fail gracefully
+// at the tool execution layer. Returning an error here would break the request flow.
+//
+// NOTE: This function does NOT validate whether toolDefs
+// is empty when tool_choice="required". Empty toolDefs validation should happen at a higher
+// level (e.g., applyFunctionCallRequestRewrite). This function only converts tool_choice to
+// prompt instructions, following single responsibility principle.
+//
+// AI REVIEW RESPONSE: This is a proxy server that needs to accept various client formats.
+// We intentionally accept both OpenAI and Anthropic formats without strict validation:
+// - OpenAI: "none", "auto", "required" (strings) + {"type":"function","function":{"name":"..."}}
+// - Anthropic: {"type":"auto"}, {"type":"any"}, {"type":"none"}, {"type":"tool","name":"..."}
+// We also accept "any" as a string alias for "required" to handle potential client errors.
+// This "lenient input" design is intentional for a proxy server - we convert all formats
+// to unified prompt instructions rather than rejecting non-standard inputs.
+func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition) string {
+	if toolChoice == nil {
+		return ""
+	}
+
+	// Handle string values: "none", "auto", "required", "any"
+	if tcStr, ok := toolChoice.(string); ok {
+		switch tcStr {
+		case "none":
+			// NOTE: When tool_choice="none", we still inject
+			// tool availability information in the system prompt (done earlier in buildFunctionCallPrompt).
+			// This is intentional: the model needs context about available tools to understand the
+			// conversation history (e.g., previous tool calls/results), but is explicitly prohibited
+			// from using them in this response. The constraint below overrides the tool availability.
+			// Alternative approach (not used): Skip tool injection entirely when tool_choice="none".
+			// We chose the current approach because it preserves conversation context while still
+			// enforcing the constraint.
+			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
+				"You are PROHIBITED from using any tools in this response. " +
+				"Respond as a normal chat assistant and answer the user's question directly. " +
+				"Do NOT output the trigger signal or any XML tool calls."
+		case "auto":
+			// Default behavior, no additional constraints needed
+			return ""
+		// NOTE: String "any" is kept for compatibility.
+		// OpenAI API accepts "none", "auto", "required" as string values.
+		// Anthropic API accepts "auto", "any", "none" as string values (plus object format for specific tools).
+		// We accept "any" as a string to support Anthropic-style clients, treating it as "required".
+		// AI REVIEW RESPONSE: We intentionally accept "any" as string even though Anthropic
+		// officially only supports object format {"type":"any"}. This is lenient input handling
+		// for a proxy server - some clients may send string "any" by mistake, and we gracefully
+		// convert it to the same behavior as "required" rather than rejecting the request.
+		case "required", "any":
+			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
+				"You MUST call at least one tool in this response. " +
+				"Do NOT respond without using tools. " +
+				"Output the trigger signal followed by at least one <invoke> block."
+		default:
+			// NOTE: Sanitize tool_choice before logging to prevent log injection and DoS.
+			logrus.WithField("tool_choice", sanitizeToolNameForPrompt(tcStr)).Debug("convertToolChoiceToPrompt: unknown string value")
+			return ""
+		}
+	}
+
+	// Handle object value: {"type":"function","function":{"name":"xxx"}}
+	if tcMap, ok := toolChoice.(map[string]any); ok {
+		tcType, _ := tcMap["type"].(string)
+		if tcType == "function" {
+			if funcObj, ok := tcMap["function"].(map[string]any); ok {
+				requiredToolName, _ := funcObj["name"].(string)
+				if requiredToolName != "" {
+					// Validate that the tool exists in the available tools
+					toolExists := false
+					for _, def := range toolDefs {
+						if def.Name == requiredToolName {
+							toolExists = true
+							break
+						}
+					}
+					if !toolExists {
+						// Log warning but still generate the constraint
+						// The model may still attempt to call it, which will fail gracefully
+						// NOTE: Using Warn level intentionally.
+						// Specifying a nonexistent tool is a potential configuration error that
+						// should be noticed. If log noise is a concern, use log sampling at infra level.
+						// NOTE: Sanitize tool name before logging to prevent log injection and DoS.
+						logrus.WithField("tool_name", sanitizeToolNameForPrompt(requiredToolName)).
+							Warn("convertToolChoiceToPrompt: specified tool not found in available tools")
+					}
+				// NOTE: Explicitly mention trigger signal
+					// for clarity, as it's injected in the system prompt earlier.
+					// NOTE: Changed wording from "MUST use ONLY" to
+					// "MUST call ... at least once" to explicitly require at least one call,
+					// matching OpenAI's "Call exactly one specific function" semantics.
+					// NOTE: Sanitize tool name to prevent prompt injection via backticks/newlines.
+					safeName := sanitizeToolNameForPrompt(requiredToolName)
+					return fmt.Sprintf("\n\n**TOOL USAGE CONSTRAINT:**\n"+
+						"You MUST call the tool named `%s` at least once in this response, and you MUST NOT use any other tools. "+
+						"Output the trigger signal specified above, then call the tool using the specified XML format.",
+						safeName)
+				}
+			}
+		}
+		// Handle Claude-style tool_choice: {"type":"tool","name":"xxx"} or {"type":"any"}
+		// NOTE: Added tool existence validation for Claude-style format,
+		// matching the validation done for OpenAI-style format above.
+		if tcType == "tool" {
+			if toolName, ok := tcMap["name"].(string); ok && toolName != "" {
+				// Validate that the tool exists in the available tools
+				toolExists := false
+				for _, def := range toolDefs {
+					if def.Name == toolName {
+						toolExists = true
+						break
+					}
+				}
+				if !toolExists {
+					// Log warning but still generate the constraint
+					// The model may still attempt to call it, which will fail gracefully
+					// NOTE: Using Warn level intentionally.
+					// Specifying a nonexistent tool is a potential configuration error that
+					// should be noticed. If log noise is a concern, use log sampling at infra level.
+					// NOTE: Sanitize tool name before logging to prevent log injection and DoS.
+					logrus.WithField("tool_name", sanitizeToolNameForPrompt(toolName)).
+						Warn("convertToolChoiceToPrompt: Claude-style specified tool not found in available tools")
+				}
+				// NOTE: Explicitly mention trigger signal
+				// for clarity, as it's injected in the system prompt earlier.
+				// NOTE: Changed wording from "MUST use ONLY" to
+				// "MUST call ... at least once" to explicitly require at least one call,
+				// matching OpenAI's "Call exactly one specific function" semantics.
+				// NOTE: Sanitize tool name to prevent prompt injection via backticks/newlines.
+				safeName := sanitizeToolNameForPrompt(toolName)
+				return fmt.Sprintf("\n\n**TOOL USAGE CONSTRAINT:**\n"+
+					"You MUST call the tool named `%s` at least once in this response, and you MUST NOT use any other tools. "+
+					"Output the trigger signal specified above, then call the tool using the specified XML format.",
+					safeName)
+			}
+		} else if tcType == "any" {
+			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
+				"You MUST call at least one tool in this response. " +
+				"Do NOT respond without using tools. " +
+				"Output the trigger signal followed by at least one <invoke> block."
+		} else if tcType == "none" {
+			// Handle Claude-style {"type":"none"} to prohibit tool usage.
+			return "\n\n**TOOL USAGE CONSTRAINT:**\n" +
+				"You are PROHIBITED from using any tools in this response. " +
+				"Respond as a normal chat assistant and answer the user's question directly. " +
+				"Do NOT output the trigger signal or any XML tool calls."
+		}
+	}
+
+	return ""
+}
+
+// FCParseError represents a function call parsing error with diagnostic details.
+// This struct provides structured error information for debugging and retry logic.
+type FCParseError struct {
+	// Code is a short identifier for the error type (e.g., "NO_TRIGGER", "NO_INVOKE")
+	Code string
+	// Message is a human-readable description of the error
+	Message string
+	// Details contains additional context (e.g., what was found vs expected)
+	Details string
+}
+
+// Error implements the error interface.
+// NOTE: Nil receiver check added per Go best practice to prevent panic
+// when a typed-nil *FCParseError escapes as error interface.
+func (e *FCParseError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Details != "" {
+		return fmt.Sprintf("%s: %s (%s)", e.Code, e.Message, e.Details)
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+// diagnoseFCParseError analyzes content to determine why function call parsing failed.
+// Returns a structured error with diagnostic information useful for debugging and retry.
+//
+// This function checks for common failure patterns:
+//   - Missing trigger signal
+//   - Missing <invoke> or <function_calls> blocks
+//   - Malformed XML structure (unclosed tags, missing attributes)
+//   - Invalid JSON in parameters
+//   - Trigger signal inside <thinking> blocks (should be outside)
+//
+// Reference: Toolify _diagnose_fc_parse_error implementation.
+func diagnoseFCParseError(content, triggerSignal string) *FCParseError {
+	if content == "" {
+		return &FCParseError{
+			Code:    "EMPTY_CONTENT",
+			Message: "Response content is empty",
+		}
+	}
+
+	// Check for trigger signal presence
+	hasTrigger := triggerSignal != "" && strings.Contains(content, triggerSignal)
+
+	// NOTE: Check if trigger signal is ONLY inside thinking blocks.
+	// This is a common mistake where models output the trigger inside <thinking> tags.
+	// We need to check this even when hasTrigger is true, because the trigger might be
+	// inside a thinking block (which should be treated as if no trigger was found).
+	if triggerSignal != "" {
+		// NOTE: Expanded ANTML variant detection to include
+		// double-escaped form and conservative prefix match for better coverage.
+		hasThinkingTags := strings.Contains(content, "<thinking>") ||
+			strings.Contains(content, "<think>") ||
+			strings.Contains(content, "<antml\\b:thinking>") ||
+			strings.Contains(content, "<antml\\\\b:thinking>") ||
+			strings.Contains(content, "<antml") // Conservative: let extractor decide
+		if hasThinkingTags {
+			thinkingContent := extractThinkingContent(content)
+			triggerInThinking := strings.Contains(thinkingContent, triggerSignal)
+
+			// Check if trigger exists outside thinking blocks
+			// Simple approach: if trigger is in thinking and total trigger count equals
+			// trigger count in thinking, then all triggers are inside thinking blocks
+			triggerCountTotal := strings.Count(content, triggerSignal)
+			triggerCountInThinking := strings.Count(thinkingContent, triggerSignal)
+
+			if triggerInThinking && triggerCountTotal == triggerCountInThinking {
+				return &FCParseError{
+					Code:    "TRIGGER_IN_THINKING",
+					Message: "Trigger signal found inside thinking block",
+					Details: "Trigger signal must be output OUTSIDE of thinking tags (including ANTML variants)",
+				}
+			}
+		}
+	}
+
+	if !hasTrigger && triggerSignal != "" {
+		// NOTE: Include XML marker presence in diagnostics
+		// to help distinguish "no output at all" from "XML present but no trigger".
+		hasXMLMarkers := strings.Contains(content, "<function_calls>") ||
+			strings.Contains(content, "<function_call>") ||
+			strings.Contains(content, "<invoke ") || strings.Contains(content, "<invoke>")
+		details := fmt.Sprintf("Expected: %s", utils.TruncateString(triggerSignal, 30))
+		if hasXMLMarkers {
+			details += "; found XML-like tool markers without trigger signal"
+		}
+		return &FCParseError{
+			Code:    "NO_TRIGGER",
+			Message: "Trigger signal not found in response",
+			Details: details,
+		}
+	}
+
+	// Check for invoke/function_calls blocks
+	// NOTE: Use stricter tag detection to avoid false positives.
+	// "<invoke" would match "<invocation", "<invokename", etc.
+	hasInvoke := strings.Contains(content, "<invoke ") || strings.Contains(content, "<invoke>")
+	hasFunctionCalls := strings.Contains(content, "<function_calls>")
+	hasFunctionCall := strings.Contains(content, "<function_call>")
+
+	if !hasInvoke && !hasFunctionCalls && !hasFunctionCall {
+		// NOTE: Adjust message wording when triggerSignal is empty.
+		if triggerSignal == "" {
+			return &FCParseError{
+				Code:    "NO_INVOKE",
+				Message: "No <invoke> or <function_calls> block found in response",
+				Details: "Expected XML tool call block but none found",
+			}
+		}
+		return &FCParseError{
+			Code:    "NO_INVOKE",
+			Message: "No <invoke> or <function_calls> block found after trigger signal",
+			Details: "Model output trigger but did not follow with XML tool call",
+		}
+	}
+
+	// Check for unclosed invoke tags
+	// NOTE: Count actual <invoke> tags, not substrings like <invokename>
+	invokeOpenCount := strings.Count(content, "<invoke ") + strings.Count(content, "<invoke>")
+	invokeCloseCount := strings.Count(content, "</invoke>")
+	if invokeOpenCount > invokeCloseCount {
+		return &FCParseError{
+			Code:    "UNCLOSED_INVOKE",
+			Message: "Unclosed <invoke> tag detected",
+			Details: fmt.Sprintf("Found %d opening tags but only %d closing tags", invokeOpenCount, invokeCloseCount),
+		}
+	}
+
+	// Check for function_calls block structure
+	if hasFunctionCalls {
+		if !strings.Contains(content, "</function_calls>") {
+			return &FCParseError{
+				Code:    "UNCLOSED_FUNCTION_CALLS",
+				Message: "Missing closing </function_calls> tag",
+			}
+		}
+		if hasFunctionCall && !strings.Contains(content, "</function_call>") {
+			return &FCParseError{
+				Code:    "UNCLOSED_FUNCTION_CALL",
+				Message: "Missing closing </function_call> tag",
+			}
+		}
+	}
+
+	// Check for missing tool name in invoke
+	if hasInvoke {
+		// Check for <invoke> without name attribute
+		if strings.Contains(content, "<invoke>") && !strings.Contains(content, "<invoke name=") {
+			return &FCParseError{
+				Code:    "MISSING_INVOKE_NAME",
+				Message: "<invoke> tag missing name attribute",
+				Details: "Expected format: <invoke name=\"ToolName\">",
+			}
+		}
+	}
+
+	// Check for malformed parameter tags
+	// NOTE: Use stricter detection for <parameter> and <param> tags to avoid
+	// matching <parametername> or similar malformed variants.
+	// NOTE: Include <param> variant since reMcpParam regex supports both.
+	if strings.Contains(content, "<parameter ") || strings.Contains(content, "<parameter>") ||
+		strings.Contains(content, "<param ") || strings.Contains(content, "<param>") {
+		paramOpenCount := strings.Count(content, "<parameter ") + strings.Count(content, "<parameter>") +
+			strings.Count(content, "<param ") + strings.Count(content, "<param>")
+		paramCloseCount := strings.Count(content, "</parameter>") + strings.Count(content, "</param>")
+		if paramOpenCount > paramCloseCount {
+			return &FCParseError{
+				Code:    "UNCLOSED_PARAMETER",
+				Message: "Unclosed <parameter> tag detected",
+				Details: fmt.Sprintf("Found %d opening tags but only %d closing tags", paramOpenCount, paramCloseCount),
+			}
+		}
+	}
+
+	// Check for malformed JSON in parameters (common with complex arguments)
+	// NOTE: Include <param> variant since reMcpParam regex supports both.
+	// NOTE: reMcpParam only matches double-quoted name attributes. Single-quoted
+	// attributes (rare in practice) will skip this JSON validation check but still
+	// be parsed correctly by extractParameters which uses reMcpOpenParam.
+	if strings.Contains(content, "<parameter") || strings.Contains(content, "<param") {
+		// Extract parameter content and check for JSON validity
+		paramMatches := reMcpParam.FindAllStringSubmatch(content, -1)
+		for _, match := range paramMatches {
+			if len(match) >= 3 {
+				paramValue := strings.TrimSpace(match[2])
+				// Check if it looks like JSON but is malformed
+				if (strings.HasPrefix(paramValue, "{") || strings.HasPrefix(paramValue, "[")) &&
+					!isValidJSON(paramValue) {
+					return &FCParseError{
+						Code:    "INVALID_JSON_PARAM",
+						Message: "Invalid JSON in parameter value",
+						Details: fmt.Sprintf("Parameter '%s' contains malformed JSON", match[1]),
+					}
+				}
+			}
+		}
+	}
+
+	// If we get here, the structure looks okay but parsing still failed
+	// This might be due to subtle issues not caught above
+	return &FCParseError{
+		Code:    "PARSE_FAILED",
+		Message: "XML structure appears valid but parsing failed",
+		Details: "Check for encoding issues or unexpected characters",
+	}
+}
+
+// extractThinkingContent extracts content from <thinking>, <think>, and ANTML thinking blocks.
+// NOTE: Uses len() for tag lengths instead of hardcoded numbers
+// for better readability and maintainability. The extraction order (<thinking> first,
+// then <think>, then ANTML) is intentional - all are concatenated to the result.
+// NOTE: Added ANTML thinking block support to detect TRIGGER_IN_THINKING for ANTML variants.
+// NOTE: Blocks are concatenated without delimiters by design.
+// This is intentional for trigger signal detection - we only need to check if the trigger
+// exists anywhere in thinking content, not preserve block boundaries.
+// NOTE: Current implementation uses exact substring matching for ANTML tags.
+// If models start emitting <antml\b:thinking someAttr="...">, this extractor will miss it.
+// This is an acceptable tradeoff for now - regex-based extraction would add complexity
+// and performance overhead. If ANTML attribute variants appear in production, we can
+// extend the pattern list or switch to regex. Current patterns cover known formats.
+func extractThinkingContent(content string) string {
+	var sb strings.Builder
+
+	// Define tag constants for clarity and safety
+	const (
+		openThinking  = "<thinking>"
+		closeThinking = "</thinking>"
+		openThink     = "<think>"
+		closeThink    = "</think>"
+	)
+
+	// Extract <thinking>...</thinking>
+	// NOTE: Iterate by advancing cursor past closing tag to correctly handle
+	// consecutive blocks and avoid missing content.
+	for search := 0; ; {
+		thinkingStart := strings.Index(content[search:], openThinking)
+		if thinkingStart == -1 {
+			break
+		}
+		thinkingStart += search
+		closeRel := strings.Index(content[thinkingStart+len(openThinking):], closeThinking)
+		if closeRel == -1 {
+			break
+		}
+		startIdx := thinkingStart + len(openThinking)
+		endIdx := startIdx + closeRel
+		if endIdx > startIdx {
+			sb.WriteString(content[startIdx:endIdx])
+		}
+		search = endIdx + len(closeThinking)
+	}
+
+	// Extract <think>...</think>
+	// NOTE: Same cursor advancement strategy as <thinking> blocks.
+	for search := 0; ; {
+		thinkStart := strings.Index(content[search:], openThink)
+		if thinkStart == -1 {
+			break
+		}
+		thinkStart += search
+		closeRel := strings.Index(content[thinkStart+len(openThink):], closeThink)
+		if closeRel == -1 {
+			break
+		}
+		startIdx := thinkStart + len(openThink)
+		endIdx := startIdx + closeRel
+		if endIdx > startIdx {
+			sb.WriteString(content[startIdx:endIdx])
+		}
+		search = endIdx + len(closeThink)
+	}
+
+	// Extract ANTML thinking blocks: <antml\b:thinking>...</antml\b:thinking> or </antml>
+	// Note: In Go strings, `\b` is a backspace character, but in raw strings or
+	// double-escaped form, we need to handle the literal backslash-b sequence.
+	// The patterns below cover both escaped forms that may appear in content.
+	// NOTE: Using a map to track processed ranges to avoid
+	// duplicate extraction when multiple patterns match the same content.
+	type antmlPattern struct {
+		open  string
+		close []string
+	}
+	antmlPatterns := []antmlPattern{
+		// Double backslash in regular string = single backslash in content
+		{open: "<antml\\b:thinking>", close: []string{"</antml\\b:thinking>", "</antml>"}},
+		// Quadruple backslash in regular string = double backslash in content
+		{open: "<antml\\\\b:thinking>", close: []string{"</antml\\\\b:thinking>", "</antml>"}},
+	}
+
+	// Track extracted ranges to avoid duplicates
+	// Use [2]int as key instead of fmt.Sprintf for better performance (zero allocation)
+	extractedRanges := make(map[[2]int]struct{})
+
+	for _, pattern := range antmlPatterns {
+		searchStart := 0
+		for {
+			start := strings.Index(content[searchStart:], pattern.open)
+			if start == -1 {
+				break
+			}
+			start += searchStart
+
+			// Find the closest closing tag
+			minEnd := -1
+			closerLen := 0
+			for _, closer := range pattern.close {
+				end := strings.Index(content[start+len(pattern.open):], closer)
+				if end >= 0 && (minEnd == -1 || end < minEnd) {
+					minEnd = end
+					closerLen = len(closer)
+				}
+			}
+
+			if minEnd == -1 {
+				break
+			}
+
+			// Extract content inside ANTML thinking block
+			startIdx := start + len(pattern.open)
+			endIdx := startIdx + minEnd
+			if endIdx > startIdx {
+				// Use fixed-size array key to avoid string allocation
+				rangeKey := [2]int{startIdx, endIdx}
+				if _, seen := extractedRanges[rangeKey]; !seen {
+					extractedRanges[rangeKey] = struct{}{}
+					sb.WriteString(content[startIdx:endIdx])
+				}
+			}
+
+			searchStart = startIdx + minEnd + closerLen
+		}
+	}
+
+	return sb.String()
+}
+
+// isValidJSON checks if a string is valid JSON.
+// Uses json.Valid for better performance (validation without unmarshalling).
+// NOTE: TrimSpace before validation for robustness.
+func isValidJSON(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	return json.Valid([]byte(s))
+}
+
+
+
 type functionToolDefinition struct {
 	Name        string
 	Description string
@@ -4612,11 +5905,15 @@ func buildToolSummaries(defs []functionToolDefinition) []string {
 		}
 
 		var block strings.Builder
-		fmt.Fprintf(&block, "%d. <tool name=\"%s\">\n", i+1, def.Name)
+		// AI REVIEW FIX: Escape tool name to prevent XML injection from client-provided tool definitions.
+		// Tool names come from client requests and may contain special characters like <, >, &, ", '.
+		fmt.Fprintf(&block, "%d. <tool name=\"%s\">\n", i+1, escapeXml(def.Name))
 		block.WriteString("   Description:\n")
 		if def.Description != "" {
+			// AI REVIEW FIX: Sanitize description to prevent prompt bloat and injection.
+			safeDesc := sanitizeToolDescriptionForPrompt(def.Description)
 			block.WriteString("```\n")
-			block.WriteString(def.Description)
+			block.WriteString(safeDesc)
 			block.WriteString("\n```\n")
 		} else {
 			block.WriteString("None\n")
@@ -4635,7 +5932,9 @@ func buildToolsXml(defs []functionToolDefinition) string {
 	for i, def := range defs {
 		fmt.Fprintf(&sb, "  <tool id=\"%d\">\n", i+1)
 		sb.WriteString(fmt.Sprintf("    <name>%s</name>\n", escapeXml(def.Name)))
-		sb.WriteString(fmt.Sprintf("    <description>%s</description>\n", escapeXml(def.Description)))
+		// AI REVIEW FIX: Sanitize description to prevent prompt bloat and injection.
+		safeDesc := sanitizeToolDescriptionForPrompt(def.Description)
+		sb.WriteString(fmt.Sprintf("    <description>%s</description>\n", escapeXml(safeDesc)))
 
 		if def.Parameters != nil {
 			params, ok := def.Parameters["properties"].(map[string]any)
@@ -4795,6 +6094,18 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		}
 	}
 
+	// Try parsing ANTML-style <antml:invoke name="..."> format
+	// This supports KiloCode/Claude Code native format
+	if antmlMatches := reANTMLInvoke.FindAllStringSubmatch(segment, -1); len(antmlMatches) > 0 {
+		antmlCalls := parseANTMLInvokes(antmlMatches)
+		if len(antmlCalls) > 0 {
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithField("parsed_count", len(antmlCalls)).Debug("Function call parsing: parsed ANTML invoke format")
+			}
+			return antmlCalls
+		}
+	}
+
 	// Try parsing malformed <invokename="..."> format (no space between tag and attribute)
 	// This handles cases where models output <><invokename="TodoWrite"><parametername="todos">[...]
 	if malformedCalls := parseMalformedInvokes(segment); len(malformedCalls) > 0 {
@@ -4860,9 +6171,9 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		callsContent = fcMatch[1]
 	} else {
 		// Fuzzy fallback: tolerate missing <function_calls> root as long as the
-		// content still contains <function_call>, <invocation>, or <tool_call> blocks.
+		// content still contains <function_call>, <invocation>, <invoke>, or <tool_call> blocks.
 		// This helps when the model omits the wrapper but emits valid inner structures.
-		if strings.Contains(segment, "<function_call>") || strings.Contains(segment, "<tool_call") || strings.Contains(segment, "<invocation") {
+		if strings.Contains(segment, "<function_call>") || strings.Contains(segment, "<tool_call") || strings.Contains(segment, "<invocation") || strings.Contains(segment, "<invoke>") {
 			callsContent = segment
 		} else {
 			return nil
@@ -4878,6 +6189,19 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	// Pre-allocate with estimated capacity: each function_call block may contain
 	// multiple <invoke> tags, so we use a generous estimate to reduce reallocation.
 	results := make([]functionCall, 0, len(callMatches)*2)
+
+	// Fallback: If no complete <function_call>...</function_call> blocks found,
+	// try parsing unclosed <function_call> blocks. This handles cases where
+	// models output <function_call><tool>...</tool><args>...</args> without
+	// the closing </function_call> tag.
+	if len(callMatches) == 0 && strings.Contains(callsContent, "<function_call>") {
+		if unclosedCalls := parseUnclosedFunctionCallBlocks(callsContent); len(unclosedCalls) > 0 {
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithField("parsed_count", len(unclosedCalls)).Debug("Function call parsing: parsed unclosed function_call blocks")
+			}
+			return unclosedCalls
+		}
+	}
 
 	// First, handle traditional <function_call> blocks.
 	for _, m := range callMatches {
@@ -4902,6 +6226,16 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 					nameMatch := reNameTag.FindStringSubmatch(argsContent)
 					if len(nameMatch) >= 2 {
 						name = strings.TrimSpace(nameMatch[1])
+					}
+				}
+
+				// If name is still empty, try to find <tool> or <tool_name> tag inside the content.
+				// This handles the format: <invoke><tool>toolname</tool><parameter>...</parameter></invoke>
+				// which is output by some models (e.g., DeepSeek reasoner with force function call).
+				if name == "" {
+					toolMatch := reToolTag.FindStringSubmatch(argsContent)
+					if len(toolMatch) >= 2 {
+						name = strings.TrimSpace(toolMatch[1])
 					}
 				}
 
@@ -4996,6 +6330,50 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 		}
 	}
 
+	// Fuzzy fallback: if still nothing but content contains <invoke>, try parsing
+	// <invoke><tool>...</tool><parameter>...</parameter></invoke> format.
+	// This handles cases where models output <invoke> blocks with <tool> child tag
+	// instead of name attribute (e.g., DeepSeek reasoner with force function call + CC mode).
+	if len(results) == 0 && strings.Contains(callsContent, "<invoke>") {
+		invMatches := reInvocationTag.FindAllStringSubmatch(callsContent, -1)
+		for _, invMatch := range invMatches {
+			if len(invMatch) < 3 {
+				continue
+			}
+			name := strings.TrimSpace(invMatch[1])
+			argsContent := invMatch[2]
+
+			// If name attribute is missing, try to find <name> tag inside the content.
+			if name == "" {
+				nameMatch := reNameTag.FindStringSubmatch(argsContent)
+				if len(nameMatch) >= 2 {
+					name = strings.TrimSpace(nameMatch[1])
+				}
+			}
+
+			// If name is still empty, try to find <tool> or <tool_name> tag inside the content.
+			if name == "" {
+				toolMatch := reToolTag.FindStringSubmatch(argsContent)
+				if len(toolMatch) >= 2 {
+					name = strings.TrimSpace(toolMatch[1])
+				}
+			}
+
+			if name == "" {
+				continue
+			}
+
+			args := extractParameters(argsContent, reMcpParam, reGenericParam)
+			results = append(results, functionCall{Name: name, Args: args})
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"tool_name":  name,
+					"args_count": len(args),
+				}).Debug("Function call parsing: extracted via invoke with tool tag fallback")
+			}
+		}
+	}
+
 	// Final fuzzy fallback: if still nothing, try parsing any unclosed <invoke> in the callsContent
 	if len(results) == 0 && strings.Contains(callsContent, "<invoke") {
 		if unclosed := parseUnclosedInvokes(callsContent); len(unclosed) > 0 {
@@ -5005,14 +6383,73 @@ func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	}
 
 	if len(results) == 0 {
-		// AI Review Note (2026-01-03): Log when all parsing strategies fail but XML-like content exists.
+		// NOTE: Log when all parsing strategies fail but XML-like content exists.
 		// This helps diagnose new malformed formats that may need dedicated parsing paths.
+		// Sanitize before truncate to prevent leaking truncated secrets.
 		if logrus.IsLevelEnabled(logrus.DebugLevel) && (strings.Contains(text, "<invoke") || strings.Contains(text, "<function")) {
-			logrus.WithField("content_preview", utils.TruncateString(text, 300)).Debug("Function call parsing: all strategies failed, no tool calls extracted")
+			logrus.WithField("content_preview", utils.TruncateString(utils.SanitizeErrorBody(text), 300)).Debug("Function call parsing: all strategies failed, no tool calls extracted")
 		}
 		return nil
 	}
 	return results
+}
+
+// parseANTMLInvokes parses ANTML-style <antml:invoke name="...">...</antml:invoke> format tool calls.
+// This format is used by KiloCode/Claude Code native clients (Force CC mode).
+func parseANTMLInvokes(matches [][]string) []functionCall {
+	if len(matches) == 0 {
+		return nil
+	}
+
+	// Only return the first valid tool call, consistent with single-call policy
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		name := strings.TrimSpace(m[1])
+		if name == "" {
+			continue
+		}
+
+		argsContent := m[2]
+		args := make(map[string]any)
+
+		// Extract ANTML parameters from args content using reANTMLParameter
+		paramMatches := reANTMLParameter.FindAllStringSubmatch(argsContent, -1)
+		for _, pm := range paramMatches {
+			if len(pm) < 3 {
+				continue
+			}
+			paramName := strings.TrimSpace(pm[1])
+			paramValue := strings.TrimSpace(pm[2])
+
+			if paramName == "" {
+				continue
+			}
+
+			// Try parsing value as JSON if it looks like JSON (array or object)
+			// This handles cases where parameter value is a JSON structure
+			trimmedValue := strings.TrimSpace(paramValue)
+			if strings.HasPrefix(trimmedValue, "{") || strings.HasPrefix(trimmedValue, "[") {
+				if jsonVal, ok := tryParseJSON(trimmedValue); ok {
+					args[paramName] = jsonVal
+					continue
+				}
+			}
+
+			args[paramName] = paramValue
+		}
+
+		// If no parameters found via ANTML regex, try generic parameters as fallback
+		// This handles cases where inner content might use standard <parameter> tags
+		if len(args) == 0 {
+			args = extractParameters(argsContent, reMcpParam, reGenericParam)
+		}
+
+		return []functionCall{{Name: name, Args: args}}
+	}
+
+	return nil
 }
 
 // parseFlatInvokes parses flat <invoke name="...">...</invoke> format tool calls.
@@ -5126,6 +6563,81 @@ func parseFlatInvokesWithContentCheck(segment string, matches [][]string) []func
 
 // parseUnclosedInvokes parses unclosed <invoke name="..."> formats (truncated output).
 // It captures the name and all remaining content as the parameter source.
+// parseUnclosedFunctionCallBlocks parses <function_call> blocks that are missing
+// the closing </function_call> tag. This handles cases where models output:
+// <function_call><tool>name</tool><args>...</args> without </function_call>
+// This is a common issue with DeepSeek reasoner models.
+func parseUnclosedFunctionCallBlocks(text string) []functionCall {
+	// Find all <function_call> opening tags
+	openTag := "<function_call>"
+	results := make([]functionCall, 0)
+
+	idx := 0
+	for {
+		start := strings.Index(text[idx:], openTag)
+		if start == -1 {
+			break
+		}
+		start += idx
+
+		// Find the end of this block (next <function_call> or </function_calls> or end of text)
+		contentStart := start + len(openTag)
+		contentEnd := len(text)
+
+		// Check for next <function_call> tag
+		nextOpen := strings.Index(text[contentStart:], openTag)
+		if nextOpen != -1 {
+			contentEnd = contentStart + nextOpen
+		}
+
+		// Check for </function_calls> tag
+		closeWrapper := strings.Index(text[contentStart:], "</function_calls>")
+		if closeWrapper != -1 && contentStart+closeWrapper < contentEnd {
+			contentEnd = contentStart + closeWrapper
+		}
+
+		// Check for </function_call> tag (in case it's actually closed)
+		closeTag := strings.Index(text[contentStart:], "</function_call>")
+		if closeTag != -1 && contentStart+closeTag < contentEnd {
+			contentEnd = contentStart + closeTag
+		}
+
+		block := text[contentStart:contentEnd]
+
+		// Extract tool name from <tool> or <tool_name> tag
+		toolMatch := reToolTag.FindStringSubmatch(block)
+		if len(toolMatch) < 2 {
+			idx = contentEnd
+			continue
+		}
+		name := strings.TrimSpace(toolMatch[1])
+		if name == "" {
+			idx = contentEnd
+			continue
+		}
+
+		// Extract args from <args> or <parameters> tag
+		var argsContent string
+		argsBlockMatch := reArgsBlock.FindStringSubmatch(block)
+		if len(argsBlockMatch) >= 2 {
+			argsContent = argsBlockMatch[1]
+		} else {
+			// Try <parameters> tag
+			paramsBlockMatch := reParamsBlock.FindStringSubmatch(block)
+			if len(paramsBlockMatch) >= 2 {
+				argsContent = paramsBlockMatch[1]
+			}
+		}
+
+		args := extractParameters(argsContent, reMcpParam, reGenericParam)
+		results = append(results, functionCall{Name: name, Args: args})
+
+		idx = contentEnd
+	}
+
+	return results
+}
+
 // Uses precompiled reUnclosedInvoke regex at package level for performance.
 func parseUnclosedInvokes(text string) []functionCall {
 	matches := reUnclosedInvoke.FindAllStringSubmatchIndex(text, -1)
@@ -5612,6 +7124,29 @@ func repairMalformedJSON(s string) string {
 		result = reJSONMalformedStatusEmpty.ReplaceAllString(result, `"status":"pending"}`)
 	}
 
+	// STRUCTURAL FIX 11.5: Fix truncated status value "_progress" -> "in_progress"
+	// This handles cases where model outputs truncated status values like:
+	// "status":"_progress" -> "status":"in_progress"
+	// Pattern from production log: _progresstitle":库并设计简洁方案"
+	if strings.Contains(result, `"_progress"`) {
+		result = strings.ReplaceAll(result, `"_progress"`, `"in_progress"`)
+	}
+	// Also handle unquoted _progress: "status":_progress -> "status":"in_progress"
+	if strings.Contains(result, `:_progress`) {
+		result = strings.ReplaceAll(result, `:_progress`, `:"in_progress"`)
+	}
+
+	// STRUCTURAL FIX 11.6: Fix numeric id merged with field name
+	// Pattern from production log: 3",title":hello.py为GUI程序"
+	// This is a severely truncated pattern where:
+	// - "3" is the id value
+	// - ",title": is the next field (missing opening quote)
+	// Should become: "3","title":"hello.py为GUI程序"
+	// Use regex to match: digit(s) followed by ",fieldname":
+	if reJSONNumericIdMergedField != nil {
+		result = reJSONNumericIdMergedField.ReplaceAllString(result, `"$1","$2":`)
+	}
+
 	// --- Fixes for production log malformed JSON ---
 	// --- Fixes for production log malformed JSON ---
 	// Remove strings.Contains checks to ensure regexes run (they are fast enough)
@@ -6012,6 +7547,19 @@ func fixTruncatedFieldNames(s string) string {
 		result = strings.ReplaceAll(result, `{task":`, `{"task":`)
 	}
 
+	// Fix truncated title field (from production log: _progresstitle":库并设计简洁方案")
+	// Pattern: ,title": -> ,"title":
+	// Pattern: _progresstitle": -> ,"in_progress","title": (status value merged with field name)
+	if strings.Contains(result, `title":`) && !strings.Contains(result, `"title":`) {
+		// First handle the merged pattern: _progresstitle": -> ,"in_progress","title":
+		result = strings.ReplaceAll(result, `_progresstitle":`, `,"status":"in_progress","title":`)
+		result = strings.ReplaceAll(result, `pendingtitle":`, `,"status":"pending","title":`)
+		result = strings.ReplaceAll(result, `completedtitle":`, `,"status":"completed","title":`)
+		// Then handle normal truncated pattern
+		result = strings.ReplaceAll(result, `,title":`, `,"title":`)
+		result = strings.ReplaceAll(result, `{title":`, `{"title":`)
+	}
+
 	return result
 }
 
@@ -6068,19 +7616,41 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 	}
 
 	// First attempt: MCP parameter blocks with name attributes.
+	// Parse both standard <parameter name="..."> and malformed <parametername="..."> formats.
 	mcpMatches := mcpParamRe.FindAllStringSubmatch(content, -1)
-	if len(mcpMatches) > 0 {
-		for _, pm := range mcpMatches {
-			if len(pm) < 3 {
-				continue
-			}
-			key := strings.TrimSpace(pm[1])
-			valStr := strings.TrimSpace(pm[2])
-			if key == "" {
-				continue
-			}
+	for _, pm := range mcpMatches {
+		if len(pm) < 3 {
+			continue
+		}
+		key := strings.TrimSpace(pm[1])
+		valStr := strings.TrimSpace(pm[2])
+		if key == "" {
+			continue
+		}
+		args[key] = parseValueOrString(valStr)
+	}
+
+	// Also try malformed <parametername="..."> format (no space between tag and attribute).
+	// This handles cases where models output <parametername="status">completed</parameter>
+	// instead of <parameter name="status">completed</parameter>.
+	noSpaceMatches := reMcpParamNoSpace.FindAllStringSubmatch(content, -1)
+	for _, pm := range noSpaceMatches {
+		if len(pm) < 3 {
+			continue
+		}
+		key := strings.TrimSpace(pm[1])
+		valStr := strings.TrimSpace(pm[2])
+		if key == "" {
+			continue
+		}
+		// Only add if not already present (standard format takes precedence)
+		if _, exists := args[key]; !exists {
 			args[key] = parseValueOrString(valStr)
 		}
+	}
+
+	// If we found any MCP-style parameters, return them
+	if len(args) > 0 {
 		return args
 	}
 
@@ -6278,7 +7848,7 @@ func sanitizeJsonValue(v any) any {
 // Performance: Uses structural detection to identify JSON tool call patterns.
 // Only processes content that contains JSON-like structures.
 //
-// AI Review Note (2026-01-03): This function is called from cc_support.go as a fallback
+// NOTE: This function is called from cc_support.go as a fallback
 // when parseFunctionCallsXML returns no results. It is NOT called directly from
 // parseFunctionCallsXML to maintain separation of concerns. If JSON-only tool calls
 // become more common, consider integrating this as a fallback within parseFunctionCallsXML.
@@ -6297,7 +7867,7 @@ func extractToolCallsFromEmbeddedJSON(content string) []functionCall {
 	}
 
 	// Known tool names that we should extract (structural detection)
-	// AI Review Note (2026-01-03): This hardcoded list is intentionally kept explicit rather than
+	// NOTE: This hardcoded list is intentionally kept explicit rather than
 	// derived from configured tool definitions for the following reasons:
 	// 1. Safety: Prevents accidental extraction of arbitrary JSON objects that happen to have a "name" field
 	// 2. Performance: Avoids runtime lookup overhead in hot path
@@ -6375,7 +7945,7 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 
 		// Find the start of the JSON object by counting braces backward
 		// When going backward: } increases depth, { decreases depth
-		// AI Review Note (2026-01-03): This brace scan uses simple depth counting without
+		// NOTE: This brace scan uses simple depth counting without
 		// tracking string/escape state (unlike processGLMBlockContent's robust scanner).
 		// This is acceptable here because:
 		// 1. json.Unmarshal is called after extraction to validate the JSON
@@ -6457,10 +8027,14 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 		}
 
 		// Skip tool call results - these contain execution results, not new tool call requests
-		// AI Review Fix (2026-01-03): Use isToolCallResultJSON for consistent result detection.
+		// NOTE: Use isToolCallResultJSON for consistent result detection.
 		// Previous ad-hoc field checks were looser than isToolCallResultJSON's logic, which could
 		// cause partial results (e.g., {"name":"Read","status":"pending","duration":"0s"}) to be
 		// treated as requests. Using the same function ensures consistent behavior across all paths.
+		// NOTE: We intentionally use the original jsonStr (not repairedJSON) here because
+		// isToolCallResultJSON uses string pattern matching (not JSON parsing) to detect result
+		// indicators. JSON repair only fixes syntax issues (missing commas, quotes) without
+		// changing field names or values, so the detection result is identical for both strings.
 		if isToolCallResultJSON(jsonStr) {
 			logrus.WithFields(logrus.Fields{
 				"tool_name": toolName,
@@ -6469,7 +8043,7 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 		}
 
 		// Extract tool arguments from the JSON object
-		// AI Review Note (2026-01-03): Unlike XML parsing path, we do NOT apply sanitizeJsonValue here.
+		// NOTE: Unlike XML parsing path, we do NOT apply sanitizeJsonValue here.
 		// Reason: json.Unmarshal already handles JSON escaping correctly. The sanitizeJsonValue function
 		// is designed for XML-extracted values that may contain unescaped special characters.
 		// Applying it here would double-process already-valid JSON values.
@@ -6484,7 +8058,7 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 			args[k] = v
 		}
 
-		// AI Review Fix (2026-01-03): Always add the call even with zero arguments.
+		// NOTE: Always add the call even with zero arguments.
 		// Zero-argument tools like KillShell, EnterPlanMode, ExitPlanMode are valid.
 		// The standard XML parser allows zero-argument calls, so this fallback path
 		// should behave consistently. Example: {"name":"KillShell"} is a valid tool call.

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
@@ -134,7 +135,39 @@ const codexToolNameLimit = 64
 // ensuring uniqueness within the request. This is necessary because multiple
 // tools may have the same shortened name after truncation.
 // Duplicate original names are skipped to prevent map overwrite issues.
+//
+// Per AI review: Fast path optimization - if all names are already <=64 chars
+// and collision-free, we still build the map but avoid expensive shortening logic.
+// The map is always returned for consistent downstream handling.
 func buildToolNameShortMap(names []string) map[string]string {
+	if len(names) == 0 {
+		return nil
+	}
+
+	// Fast path: check if any name needs shortening
+	needsShortening := false
+	for _, n := range names {
+		if len(n) > codexToolNameLimit {
+			needsShortening = true
+			break
+		}
+	}
+
+	// If no shortening needed, build identity map directly (fast path)
+	if !needsShortening {
+		result := make(map[string]string, len(names))
+		seen := make(map[string]struct{}, len(names))
+		for _, n := range names {
+			if _, ok := seen[n]; ok {
+				continue // Skip duplicates
+			}
+			seen[n] = struct{}{}
+			result[n] = n
+		}
+		return result
+	}
+
+	// Slow path: need to shorten some names
 	used := make(map[string]struct{}, len(names))
 	result := make(map[string]string, len(names))
 	seenOrig := make(map[string]struct{}, len(names))
@@ -384,11 +417,21 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		}
 	}
 
-	// Enable parallel tool calls only when tools are present.
-	// Some OpenAI-compatible upstreams reject parallel_tool_calls when no tools are defined.
+	// Apply parallel_tool_calls config for Codex channel.
+	// Only set when tools are present (some upstreams reject the parameter without tools).
+	// Default behavior: if not configured, enable parallel tool calls (true) for Codex.
+	// Users can disable via group config: {"parallel_tool_calls": false}
+	// NOTE: force_function_call precedence check is not needed here because force_function_call
+	// is UI-restricted to OpenAI-only channels and is not applicable to Codex channel.
 	if len(codexReq.Tools) > 0 {
-		parallelCalls := true
-		codexReq.ParallelToolCalls = &parallelCalls
+		parallelConfig := getParallelToolCallsConfig(group)
+		if parallelConfig != nil {
+			codexReq.ParallelToolCalls = parallelConfig
+		} else {
+			// Default to true for Codex channel (original behavior)
+			parallelCalls := true
+			codexReq.ParallelToolCalls = &parallelCalls
+		}
 	}
 
 	// Configure reasoning for Codex API (Responses API) only when thinking is enabled.
@@ -744,10 +787,7 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 					inputJSON = json.RawMessage(argsStr)
 				}
 				// Extract tool use ID from call_id (remove "call_" prefix if present)
-				toolUseID := item.CallID
-				if strings.HasPrefix(toolUseID, "call_") {
-					toolUseID = strings.TrimPrefix(toolUseID, "call_")
-				}
+				toolUseID := strings.TrimPrefix(item.CallID, "call_")
 				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    toolUseID,
@@ -1179,10 +1219,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				}
 				s.currentToolArgs.Reset()
 				// Content block start for tool_use
-				toolUseID := s.currentToolID
-				if strings.HasPrefix(toolUseID, "call_") {
-					toolUseID = strings.TrimPrefix(toolUseID, "call_")
-				}
+				toolUseID := strings.TrimPrefix(s.currentToolID, "call_")
 				logrus.WithFields(logrus.Fields{
 					"tool_id":       toolUseID,
 					"tool_name":     s.currentToolName,
@@ -1268,9 +1305,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			if toolUseID == "" {
 				toolUseID = "call_" + uuid.New().String()[:8]
 			}
-			if strings.HasPrefix(toolUseID, "call_") {
-				toolUseID = strings.TrimPrefix(toolUseID, "call_")
-			}
+			toolUseID = strings.TrimPrefix(toolUseID, "call_")
 			toolName := s.currentToolName
 			if toolName == "" {
 				toolName = "unknown_tool"
@@ -1312,9 +1347,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			case "function_call":
 				// Store completed tool use block
 				toolUseID := event.Item.CallID
-				if strings.HasPrefix(toolUseID, "call_") {
-					toolUseID = strings.TrimPrefix(toolUseID, "call_")
-				}
+				toolUseID = strings.TrimPrefix(toolUseID, "call_")
 				argsStr := event.Item.Arguments
 				if argsStr == "" {
 					argsStr = s.currentToolArgs.String()
@@ -1610,6 +1643,17 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	state := newCodexStreamState(reverseToolNameMap)
 	reader := bufio.NewReader(resp.Body)
 
+	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
+	// Timeout values are derived from group/system config with preset upper bounds.
+	firstByteReceived := false
+	effectiveFirstByteTimeout, effectiveSubsequentTimeout := getEffectiveSSETimeouts(c)
+	getTimeout := func() time.Duration {
+		if !firstByteReceived {
+			return effectiveFirstByteTimeout
+		}
+		return effectiveSubsequentTimeout
+	}
+
 	// Helper function to write Claude SSE event
 	writeClaudeEvent := func(event ClaudeStreamEvent) error {
 		eventBytes, err := json.Marshal(event)
@@ -1642,7 +1686,64 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	}
 
 	for {
-		line, err := reader.ReadString('\n')
+		// Use goroutine + channel pattern for timeout support since bufio.Reader doesn't support timeouts.
+		// KNOWN LIMITATION: When timeout fires, the goroutine blocked on ReadString('\n') will remain
+		// alive until the connection closes. This is acceptable as HTTP connections eventually terminate.
+		// See SSEReaderWithTimeout.ReadEvent() in cc_support.go for detailed explanation.
+		type readResult struct {
+			line string
+			err  error
+		}
+		resultCh := make(chan readResult, 1)
+
+		go func() {
+			line, err := reader.ReadString('\n')
+			resultCh <- readResult{line: line, err: err}
+		}()
+
+		// Cache timeout value before select to avoid calling getTimeout() twice
+		timeoutDuration := getTimeout()
+
+		var line string
+		var err error
+		select {
+		case result := <-resultCh:
+			line = result.line
+			err = result.err
+			if err == nil {
+				firstByteReceived = true
+			}
+		case <-time.After(timeoutDuration):
+			timeoutType := "subsequent"
+			if !firstByteReceived {
+				timeoutType = "first-byte"
+			}
+			logrus.WithFields(logrus.Fields{
+				"timeout_type":    timeoutType,
+				"timeout_seconds": timeoutDuration.Seconds(),
+			}).Warn("Codex CC: SSE read timeout, upstream did not send data")
+			// Send error event to client
+			// NOTE: Using "api_error" instead of "timeout_error" per Claude API documentation.
+			// Claude's standard error types are: invalid_request_error, authentication_error,
+			// permission_error, not_found_error, request_too_large, rate_limit_error, api_error,
+			// overloaded_error. "timeout_error" is not a standard type, so we use "api_error"
+			// which maps to HTTP 500 for unexpected server-side failures including timeouts.
+			errorEvent := ClaudeStreamEvent{
+				Type: "error",
+				Error: &ClaudeError{
+					Type:    "api_error",
+					Message: fmt.Sprintf("Upstream did not respond within %.0f seconds", timeoutDuration.Seconds()),
+				},
+			}
+			_ = writeClaudeEvent(errorEvent)
+			// Send final events to properly terminate the stream
+			finalEvents := state.processCodexStreamEvent(&CodexStreamEvent{Type: "response.completed"})
+			for _, event := range finalEvents {
+				_ = writeClaudeEvent(event)
+			}
+			return
+		}
+
 		lineCount++
 		// Per AI review: only log line preview when EnableRequestBodyLogging is enabled
 		// to avoid leaking sensitive SSE payloads (tool args, file paths, etc.)

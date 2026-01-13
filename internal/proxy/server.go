@@ -223,6 +223,57 @@ func isForceFunctionCallEnabled(group *models.Group) bool {
 	return false
 }
 
+// getParallelToolCallsConfig returns the parallel_tool_calls configuration for the group.
+// Returns:
+//   - *bool: pointer to the configured value, or nil if not configured
+//
+// When nil is returned, the caller should either:
+//   - Not include the parameter (let upstream use its default, typically true)
+//   - Use a sensible default based on the use case
+//
+// This configuration is useful for:
+//   - Disabling parallel tool calls for models like gpt-4.1-nano that may have issues
+//   - Ensuring single tool call per request for simpler client handling
+//   - Compatibility with upstreams that don't support parallel tool calls
+func getParallelToolCallsConfig(group *models.Group) *bool {
+	if group == nil || group.Config == nil {
+		return nil
+	}
+
+	raw, ok := group.Config["parallel_tool_calls"]
+	if !ok || raw == nil {
+		return nil
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return &v
+	case *bool:
+		return v
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		switch lower {
+		case "true", "1", "yes", "on":
+			result := true
+			return &result
+		case "false", "0", "no", "off":
+			result := false
+			return &result
+		}
+	case float64:
+		result := v != 0
+		return &result
+	case int:
+		result := v != 0
+		return &result
+	case int64:
+		result := v != 0
+		return &result
+	}
+
+	return nil
+}
+
 // isChatCompletionsEndpoint checks whether the current request targets the
 // OpenAI-style chat completions endpoint.
 func isChatCompletionsEndpoint(path, method string) bool {
@@ -677,6 +728,18 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 							"new_path":     c.Request.URL.Path,
 						}).Debug("CC support: converted Claude request to OpenAI format")
 					}
+				}
+			}
+
+			// Apply parallel_tool_calls config for OpenAI channel when force_function_call is NOT enabled.
+			// When force_function_call is enabled, native tools are removed and replaced with prompt-based
+			// tool injection, so parallel_tool_calls is not applicable.
+			// This must be applied before applyFunctionCallRequestRewrite to ensure the parameter is set
+			// before tools are potentially removed.
+			if group.ChannelType == "openai" && !isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+				finalBodyBytes, err = ps.applyParallelToolCallsConfig(finalBodyBytes, group)
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to apply parallel_tool_calls config")
 				}
 			}
 
@@ -1242,6 +1305,20 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					"new_path":        c.Request.URL.Path,
 				}).Debug("CC support: converted Claude request for sub-group")
 			}
+		}
+	}
+
+	// Apply parallel_tool_calls config for OpenAI sub-groups when force_function_call is NOT enabled.
+	// This mirrors the behavior in the main HandleProxy path for standard groups.
+	// When force_function_call is enabled, native tools are removed and replaced with prompt-based
+	// tool injection, so parallel_tool_calls is not applicable.
+	if group.ChannelType == "openai" && !isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+		finalBodyBytes, err = ps.applyParallelToolCallsConfig(finalBodyBytes, group)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply parallel_tool_calls config for sub-group")
 		}
 	}
 

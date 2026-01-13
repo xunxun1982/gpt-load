@@ -454,6 +454,14 @@ export default {
       "ネイティブで関数呼び出しをサポートしていないプロバイダーでのみ有効にしてください。すでにネイティブの関数呼び出しを持つチャンネルで有効にすると、二重呼び出しや予期しない動作を引き起こす可能性があります。",
     functionCallOpenAITip:
       "このスイッチは OpenAI チャンネルのグループにのみ有効で、他のプロバイダーでは表示も効果もありません。",
+    parallelToolCalls: "並列ツール呼び出し",
+    parallelToolCallsTooltip:
+      "モデルが単一の応答で複数のツールを呼び出せるかどうかを制御します。gpt-4.1-nano やクライアント処理を簡素化する必要がある場合は「無効」に設定することをお勧めします。",
+    parallelToolCallsDefault: "デフォルト（上流に依存）",
+    parallelToolCallsEnabled: "有効",
+    parallelToolCallsDisabled: "無効",
+    parallelToolCallsTip:
+      "リクエストにネイティブツールが含まれている場合にのみ有効です。「強制関数呼び出し」が有効な場合、この設定は無効です。Codex チャンネルはデフォルトで有効です。",
     ccSupport: "強制 CC サポート",
     ccSupportTooltip1:
       "Claude Code 互換モードを有効にし、Claude クライアントが /claude エンドポイント経由で接続できるようにします。",

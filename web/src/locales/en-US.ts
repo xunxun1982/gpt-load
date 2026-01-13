@@ -454,6 +454,14 @@ export default {
       "Only enable this for providers that do NOT have native function call support. Enabling it on providers with built-in function call may cause duplicated or undefined behavior.",
     functionCallOpenAITip:
       "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
+    parallelToolCalls: "Parallel Tool Calls",
+    parallelToolCallsTooltip:
+      "Control whether the model can make multiple tool calls in a single response. Set to 'Disabled' for gpt-4.1-nano or when you need simpler client handling.",
+    parallelToolCallsDefault: "Default (upstream decides)",
+    parallelToolCallsEnabled: "Enabled",
+    parallelToolCallsDisabled: "Disabled",
+    parallelToolCallsTip:
+      "Only effective when native tools are present in the request. Has no effect when Force Function Call is enabled. Codex channel defaults to enabled.",
     ccSupport: "Force CC Support",
     ccSupportTooltip1:
       "Enable Claude Code compatibility mode, allowing Claude clients to connect via /claude endpoint.",

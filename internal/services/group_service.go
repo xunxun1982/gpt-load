@@ -1115,6 +1115,12 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	for _, groupID := range relatedGroupIDs {
 		s.InvalidateKeyStatsCache(groupID)
 	}
+	// Invalidate child groups cache to ensure sidebar refreshes correctly after deletion.
+	// This is necessary because deleting a child group or a parent with children
+	// should immediately reflect in the UI without waiting for cache expiration.
+	if s.InvalidateChildGroupsCacheCallback != nil {
+		s.InvalidateChildGroupsCacheCallback()
+	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
 		"groupID":         id,
@@ -1226,6 +1232,11 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 
 	// Invalidate group list cache after deleting all groups
 	s.invalidateGroupListCache()
+
+	// Invalidate child groups cache to ensure sidebar refreshes correctly
+	if s.InvalidateChildGroupsCacheCallback != nil {
+		s.InvalidateChildGroupsCacheCallback()
+	}
 
 	// Step 11: Reset in-memory key stats cache to avoid serving stale data for reused IDs
 	s.keyStatsCacheMu.Lock()
