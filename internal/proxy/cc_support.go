@@ -3437,10 +3437,15 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				logrus.WithError(err).Warn("CC: SSE read timeout, sending error to client")
 				isErrorRecovery = true
 				// Send error event to client
+				// NOTE: Using "api_error" instead of "timeout_error" per Claude API documentation.
+				// Claude's standard error types are: invalid_request_error, authentication_error,
+				// permission_error, not_found_error, request_too_large, rate_limit_error, api_error,
+				// overloaded_error. "timeout_error" is not a standard type, so we use "api_error"
+				// which maps to HTTP 500 for unexpected server-side failures including timeouts.
 				errorEvent := ClaudeStreamEvent{
 					Type: "error",
 					Error: &ClaudeError{
-						Type:    "timeout_error",
+						Type:    "api_error",
 						Message: "Upstream did not respond within the expected time. The model may be processing a complex request.",
 					},
 				}
@@ -3907,6 +3912,12 @@ func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
 }
 
 // readEventInternal reads the next SSE event without timeout (internal implementation).
+// NOTE: AI review suggested extracting shared SSE parsing logic with SSEReader.ReadEvent().
+// We intentionally keep them separate because:
+// 1. The code is small (~30 lines) and duplication cost is minimal
+// 2. Extracting would add function call overhead in a hot path
+// 3. SSEReaderWithTimeout may need different behavior in the future (e.g., keep-alive handling)
+// 4. Current implementation is stable and well-tested
 func (r *SSEReaderWithTimeout) readEventInternal() (*SSEEvent, error) {
 	event := &SSEEvent{}
 	for {
