@@ -47,6 +47,7 @@ export default {
     status: "状态",
     enable: "启用",
     disable: "禁用",
+    disabled: "已禁用",
     copy: "复制",
     copied: "已复制",
     download: "下载",

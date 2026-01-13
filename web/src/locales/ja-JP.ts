@@ -47,6 +47,7 @@ export default {
     status: "ステータス",
     enable: "有効化",
     disable: "無効化",
+    disabled: "無効",
     copy: "コピー",
     copied: "コピー済み",
     download: "ダウンロード",
