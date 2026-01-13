@@ -98,6 +98,10 @@ export default {
   incorrectSiteName: "Incorrect site name",
   siteHasBinding:
     'Site "{name}" is bound to group "{groupName}". Please unbind first before deleting.',
+  siteHasBindings:
+    'Site "{name}" is bound to {count} groups ({groupNames}). Please unbind first before deleting.',
+  unknownGroups: "unknown groups",
+  boundGroupsTooltip: "Bound to {count} groups, click to view",
   mustUnbindFirst: "Unbind First",
 
   // Logs

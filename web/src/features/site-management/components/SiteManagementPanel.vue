@@ -46,6 +46,7 @@ import {
   NInputNumber,
   NModal,
   NPagination,
+  NPopover,
   NSelect,
   NSpace,
   NSwitch,
@@ -320,22 +321,19 @@ async function submitSite() {
 }
 
 function confirmDeleteSite(site: ManagedSiteDTO) {
-  // Step 1: Check if site has binding
-  if (site.bound_group_id) {
+  // Step 1: Check if site has binding (many-to-one: multiple groups can bind to one site)
+  const boundCount = site.bound_group_count || site.bound_groups?.length || 0;
+  if (boundCount > 0) {
+    const groupNames = site.bound_groups?.map(g => g.name).join(", ") || "";
     dialog.warning({
       title: t("siteManagement.deleteSite"),
-      content: t("siteManagement.siteHasBinding", {
+      content: t("siteManagement.siteHasBindings", {
         name: site.name,
-        groupName: site.bound_group_name || `#${site.bound_group_id}`,
+        count: boundCount,
+        groupNames: groupNames || t("siteManagement.unknownGroups"),
       }),
-      positiveText: t("siteManagement.mustUnbindFirst"),
+      positiveText: t("common.ok"),
       negativeText: t("common.cancel"),
-      onPositiveClick: () => {
-        // Navigate to the bound group for unbinding
-        if (site.bound_group_id) {
-          handleNavigateToGroup(site.bound_group_id);
-        }
-      },
     });
     return;
   }
@@ -571,35 +569,107 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     key: "name",
     width: 140,
     titleAlign: "center",
-    render: row =>
-      h("div", { class: "site-name-row" }, [
-        // Show bound group icon before site name if bound to a group
-        row.bound_group_id
-          ? h(
-              NTooltip,
-              { trigger: "hover" },
-              {
-                trigger: () =>
+    render: row => {
+      // Get bound groups count (many-to-one relationship)
+      const boundCount = row.bound_group_count || row.bound_groups?.length || 0;
+      const boundGroups = row.bound_groups || [];
+
+      // Build bound groups icon with click behavior
+      const buildBoundGroupsIcon = () => {
+        if (boundCount === 0) return null;
+
+        // Single group: direct navigation on click with tooltip
+        if (boundCount === 1) {
+          const g = boundGroups[0];
+          const groupId = g?.id || row.bound_group_id;
+          const groupName = g?.display_name || g?.name || row.bound_group_name || `#${groupId}`;
+          return h(
+            NTooltip,
+            { trigger: "hover" },
+            {
+              trigger: () =>
+                h(
+                  NIcon,
+                  {
+                    size: 14,
+                    color: "var(--success-color)",
+                    style: "cursor: pointer; flex-shrink: 0;",
+                    onClick: (e: Event) => {
+                      e.stopPropagation();
+                      if (groupId) handleNavigateToGroup(groupId);
+                    },
+                  },
+                  () => h(LinkOutline)
+                ),
+              default: () => `${t("binding.navigateToGroup")}: ${groupName}`,
+            }
+          );
+        }
+
+        // Multiple groups: show popover with clickable list
+        return h(
+          NPopover,
+          {
+            trigger: "click",
+            placement: "bottom-start",
+            style: { padding: "4px 0" },
+          },
+          {
+            trigger: () =>
+              h(
+                "div",
+                {
+                  style:
+                    "display: inline-flex; align-items: center; cursor: pointer; flex-shrink: 0;",
+                },
+                [
+                  h(NIcon, { size: 14, color: "var(--success-color)" }, () => h(LinkOutline)),
                   h(
-                    NIcon,
+                    "span",
                     {
-                      size: 14,
-                      color: "var(--success-color)",
-                      style: "cursor: pointer; flex-shrink: 0;",
-                      onClick: (e: Event) => {
-                        e.stopPropagation();
-                        if (row.bound_group_id) {
-                          handleNavigateToGroup(row.bound_group_id);
-                        }
+                      style: "font-size: 10px; color: var(--success-color); margin-left: 1px;",
+                    },
+                    boundCount
+                  ),
+                ]
+              ),
+            default: () =>
+              h(
+                "div",
+                { class: "bound-groups-list" },
+                boundGroups.map(g =>
+                  h(
+                    "div",
+                    {
+                      class: "bound-group-item",
+                      onClick: () => {
+                        if (g.id) handleNavigateToGroup(g.id);
                       },
                     },
-                    () => h(LinkOutline)
-                  ),
-                default: () =>
-                  `${t("binding.navigateToGroup")}: ${row.bound_group_name || `#${row.bound_group_id}`}`,
-              }
-            )
-          : null,
+                    [
+                      h(NIcon, { size: 12, style: "margin-right: 6px;" }, () => h(LinkOutline)),
+                      h(
+                        "span",
+                        { class: "bound-group-name" },
+                        g.display_name || g.name || `#${g.id}`
+                      ),
+                      !g.enabled
+                        ? h(
+                            NTag,
+                            { size: "tiny", type: "default", style: "margin-left: 6px;" },
+                            () => t("common.disabled")
+                          )
+                        : null,
+                    ]
+                  )
+                )
+              ),
+          }
+        );
+      };
+
+      return h("div", { class: "site-name-row" }, [
+        buildBoundGroupsIcon(),
         // Site name with tooltip on hover
         h(
           NTooltip,
@@ -613,7 +683,8 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
             default: () => row.name,
           }
         ),
-      ]),
+      ]);
+    },
   },
   {
     title: t("siteManagement.notes"),
@@ -1987,5 +2058,32 @@ onMounted(() => {
   .form-item-auth-type :deep(.n-select) {
     width: 100% !important;
   }
+}
+</style>
+
+<!-- Global styles for popover content (teleported outside scoped context) -->
+<style>
+.bound-groups-list {
+  min-width: 140px;
+  max-width: 280px;
+}
+.bound-group-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  border-radius: 4px;
+  margin: 2px 4px;
+}
+.bound-group-item:hover {
+  background-color: var(--n-color-hover, rgba(0, 0, 0, 0.05));
+}
+.bound-group-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
 }
 </style>

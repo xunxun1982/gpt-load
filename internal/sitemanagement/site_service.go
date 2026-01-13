@@ -389,7 +389,7 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 	// Invalidate cache after creation
 	s.InvalidateSiteListCache()
 
-	return s.toDTO(site), nil
+	return s.toDTO(ctx, site), nil
 }
 
 func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params UpdateSiteParams) (*ManagedSiteDTO, error) {
@@ -527,7 +527,7 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		}
 	}
 
-	return s.toDTO(&site), nil
+	return s.toDTO(ctx, &site), nil
 }
 
 // RecordSiteOpened records when user clicked "Open Site" button.
@@ -732,7 +732,7 @@ func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDT
 	// Invalidate cache after copy
 	s.InvalidateSiteListCache()
 
-	return s.toDTO(newSite), nil
+	return s.toDTO(ctx, newSite), nil
 }
 
 func (s *SiteService) GetAutoCheckinConfig(ctx context.Context) (*AutoCheckinConfig, error) {
@@ -880,7 +880,7 @@ func (s *SiteService) ensureSettingsRow(ctx context.Context) (*ManagedSiteSettin
 	return &st, nil
 }
 
-func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
+func (s *SiteService) toDTO(ctx context.Context, site *ManagedSite) *ManagedSiteDTO {
 	if site == nil {
 		return nil
 	}
@@ -895,7 +895,7 @@ func (s *SiteService) toDTO(site *ManagedSite) *ManagedSiteDTO {
 	// Get all groups bound to this site (many-to-one relationship)
 	var boundGroups []BoundGroupInfo
 	var groups []models.Group
-	if err := s.db.Select("id", "name", "display_name", "enabled").
+	if err := s.db.WithContext(ctx).Select("id", "name", "display_name", "enabled").
 		Where("bound_site_id = ?", site.ID).
 		Order("sort ASC, id ASC").
 		Find(&groups).Error; err == nil {

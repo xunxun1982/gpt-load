@@ -228,6 +228,10 @@ func (s *BindingService) CheckSiteCanDelete(ctx context.Context, siteID uint) er
 // SyncSiteEnabledToGroup syncs site enabled status to all bound groups and their child groups.
 // When a site is disabled, all groups bound to it will be disabled.
 // Note: Group disable does NOT cascade to site (one-way sync only).
+//
+// Design Decision: We intentionally query bound group IDs AFTER the UPDATE succeeds,
+// rather than before. This ensures the main sync completes even if the child sync
+// query fails. The slight overhead of a second query is acceptable for this defensive approach.
 func (s *BindingService) SyncSiteEnabledToGroup(ctx context.Context, siteID uint, enabled bool) error {
 	// Update enabled status for all bound groups (single UPDATE)
 	result := s.db.WithContext(ctx).Model(&models.Group{}).
