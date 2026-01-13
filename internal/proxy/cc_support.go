@@ -2968,7 +2968,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 	// Use timeout-enabled SSE reader for CC support to prevent hanging when
 	// upstream models (e.g., deepseek-reasoner) are in thinking phase without sending data.
-	// First-byte timeout: 20 seconds, subsequent timeout: 60 seconds.
+	// First-byte timeout: 30 seconds, subsequent timeout: 60 seconds.
 	reader := NewSSEReaderWithTimeout(resp.Body, sseFirstByteTimeout, sseSubsequentTimeout)
 	contentBlockIndex := 0
 	var currentToolCall *OpenAIToolCall
@@ -3802,6 +3802,15 @@ func NewSSEReaderWithTimeout(r io.Reader, firstByteTimeout, subsequentTimeout ti
 
 // ReadEvent reads the next SSE event with timeout support.
 // Uses goroutine + channel pattern since bufio.Reader doesn't support timeouts directly.
+//
+// KNOWN LIMITATION: When timeout fires, the goroutine spawned for readEventInternal()
+// will remain blocked on bufio.Reader.ReadString('\n') until the underlying HTTP
+// response body is closed. This is a known limitation of this pattern - the goroutine
+// (~2KB stack) will be released when the connection terminates. The buffered channel
+// (size 1) prevents send-side blocking. This trade-off is acceptable because:
+// 1. HTTP connections eventually close (upstream timeout, client disconnect, server close)
+// 2. User-facing behavior is correct (timeout error returned promptly)
+// 3. This pattern is commonly used for timeout support on non-cancellable readers
 func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
 	timeout := r.subsequentTimeout
 	if !r.receivedFirst {
@@ -3834,7 +3843,7 @@ func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
 		logrus.WithFields(logrus.Fields{
 			"timeout_type":    timeoutType,
 			"timeout_seconds": timeout.Seconds(),
-		}).Warn("CC+FC: SSE read timeout, upstream did not send data")
+		}).Warn("CC: SSE read timeout, upstream did not send data")
 		return nil, ErrSSETimeout
 	}
 }

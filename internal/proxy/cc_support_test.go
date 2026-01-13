@@ -4634,7 +4634,8 @@ func TestToolNameRestoration_StreamingWithForceFunctionCall(t *testing.T) {
 // correctly times out when no data is received within the first-byte timeout.
 func TestSSEReaderWithTimeout_FirstByteTimeout(t *testing.T) {
 	// Create a reader that never sends data (simulates upstream thinking phase)
-	pr, _ := io.Pipe()
+	pr, pw := io.Pipe()
+	defer pw.Close() // Clean up writer to prevent resource leak
 	// Don't write anything to simulate timeout
 
 	reader := NewSSEReaderWithTimeout(pr, 50*time.Millisecond, 100*time.Millisecond)

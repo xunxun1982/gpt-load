@@ -1684,7 +1684,10 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	}
 
 	for {
-		// Use goroutine + channel pattern for timeout support since bufio.Reader doesn't support timeouts
+		// Use goroutine + channel pattern for timeout support since bufio.Reader doesn't support timeouts.
+		// KNOWN LIMITATION: When timeout fires, the goroutine blocked on ReadString('\n') will remain
+		// alive until the connection closes. This is acceptable as HTTP connections eventually terminate.
+		// See SSEReaderWithTimeout.ReadEvent() in cc_support.go for detailed explanation.
 		type readResult struct {
 			line string
 			err  error
@@ -1710,16 +1713,17 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 			if !firstByteReceived {
 				timeoutType = "first-byte"
 			}
+			timeoutDuration := getTimeout()
 			logrus.WithFields(logrus.Fields{
 				"timeout_type":    timeoutType,
-				"timeout_seconds": getTimeout().Seconds(),
+				"timeout_seconds": timeoutDuration.Seconds(),
 			}).Warn("Codex CC: SSE read timeout, upstream did not send data")
 			// Send error event to client
 			errorEvent := ClaudeStreamEvent{
 				Type: "error",
 				Error: &ClaudeError{
 					Type:    "timeout_error",
-					Message: fmt.Sprintf("Upstream did not respond within %v seconds", getTimeout().Seconds()),
+					Message: fmt.Sprintf("Upstream did not respond within %.0f seconds", timeoutDuration.Seconds()),
 				},
 			}
 			_ = writeClaudeEvent(errorEvent)
