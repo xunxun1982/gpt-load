@@ -268,10 +268,20 @@ func (b *BaseChannel) applyPathRedirects(reqPath string) string {
 	return reqPath
 }
 
+// modelRedirectSelector is a shared selector instance for V2 rules.
+// Stateless, safe for concurrent use.
+var modelRedirectSelector = models.NewModelRedirectSelector(utils.WeightedRandomSelect)
+
 // ApplyModelRedirect applies model redirection based on the group's redirect rules.
+// V2 rules (one-to-many) take priority over V1 rules (one-to-one).
 // Returns the modified body bytes and the original model name (empty if no redirect occurred).
 func (b *BaseChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error) {
-	if len(group.ModelRedirectMap) == 0 || len(bodyBytes) == 0 {
+	if len(bodyBytes) == 0 {
+		return bodyBytes, "", nil
+	}
+
+	// Check if any redirect rules exist
+	if len(group.ModelRedirectMap) == 0 && len(group.ModelRedirectMapV2) == 0 {
 		return bodyBytes, "", nil
 	}
 
@@ -290,16 +300,23 @@ func (b *BaseChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, gr
 		return bodyBytes, "", nil
 	}
 
-	// Direct match without any prefix processing
-	if targetModel, found := group.ModelRedirectMap[model]; found {
+	// Resolve target model (V2 first, then V1)
+	targetModel, ruleVersion, targetCount, err := models.ResolveTargetModel(
+		model, group.ModelRedirectMap, group.ModelRedirectMapV2, modelRedirectSelector,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to select target model: %w", err)
+	}
+
+	if targetModel != "" {
 		requestData["model"] = targetModel
 
-		// Log the redirection for audit
 		logrus.WithFields(logrus.Fields{
 			"group":          group.Name,
 			"original_model": model,
 			"target_model":   targetModel,
-			"channel":        "json_body",
+			"target_count":   targetCount,
+			"rule_version":   ruleVersion,
 		}).Debug("Model redirected")
 
 		modifiedBytes, err := json.Marshal(requestData)
@@ -309,6 +326,7 @@ func (b *BaseChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, gr
 		return modifiedBytes, model, nil
 	}
 
+	// Strict mode check
 	if group.ModelRedirectStrict {
 		return nil, "", fmt.Errorf("model '%s' is not configured in redirect rules", model)
 	}
@@ -317,6 +335,7 @@ func (b *BaseChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, gr
 }
 
 // TransformModelList transforms the model list response based on redirect rules.
+// Supports both V1 (one-to-one) and V2 (one-to-many) rules.
 func (b *BaseChannel) TransformModelList(req *http.Request, bodyBytes []byte, group *models.Group) (map[string]any, error) {
 	var response map[string]any
 	if err := json.Unmarshal(bodyBytes, &response); err != nil {
@@ -334,8 +353,8 @@ func (b *BaseChannel) TransformModelList(req *http.Request, bodyBytes []byte, gr
 		return response, nil
 	}
 
-	// Build configured source models list (common logic for both modes)
-	configuredModels := buildConfiguredModels(group.ModelRedirectMap)
+	// Build configured source models list from both V1 and V2 rules
+	configuredModels := buildConfiguredModelsFromRules(group.ModelRedirectMap, group.ModelRedirectMapV2)
 
 	// Strict mode: return only configured models (whitelist)
 	if group.ModelRedirectStrict {
@@ -365,22 +384,24 @@ func (b *BaseChannel) TransformModelList(req *http.Request, bodyBytes []byte, gr
 	return response, nil
 }
 
-// buildConfiguredModels builds a list of models from redirect rules
-func buildConfiguredModels(redirectMap map[string]string) []any {
-	if len(redirectMap) == 0 {
+// buildConfiguredModelsFromRules builds a list of models from redirect rules.
+// If V2 rules exist, only V2 source models are used (V1 is ignored for backward compatibility).
+func buildConfiguredModelsFromRules(v1Map map[string]string, v2Map map[string]*models.ModelRedirectRuleV2) []any {
+	sourceModels := models.CollectSourceModels(v1Map, v2Map)
+	if len(sourceModels) == 0 {
 		return []any{}
 	}
 
-	models := make([]any, 0, len(redirectMap))
-	for sourceModel := range redirectMap {
-		models = append(models, map[string]any{
+	result := make([]any, 0, len(sourceModels))
+	for _, sourceModel := range sourceModels {
+		result = append(result, map[string]any{
 			"id":       sourceModel,
 			"object":   "model",
 			"created":  0,
 			"owned_by": "system",
 		})
 	}
-	return models
+	return result
 }
 
 // mergeModelLists merges upstream and configured model lists

@@ -79,7 +79,15 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.10.0 migration - Convert to many-groups-to-one-site relationship
-	return V1_10_0_ManyGroupsToOneSite(db)
+	if err := V1_10_0_ManyGroupsToOneSite(db); err != nil {
+		return err
+	}
+	// Run v1.11.0 migration - Add model_redirect_rules_v2 for one-to-many mapping
+	if err := V1_11_0_AddModelRedirectRulesV2(db); err != nil {
+		return err
+	}
+	// Run v1.11.1 migration - Migrate V1 redirect rules to V2 format and clear V1
+	return V1_11_1_MigrateModelRedirectV1ToV2(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

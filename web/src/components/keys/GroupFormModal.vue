@@ -7,7 +7,6 @@ import type { Group, GroupConfigOption, PathRedirectRule, UpstreamInfo } from "@
 import { Add, Close, CloudDownloadOutline, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
   NButton,
-  NButtonGroup,
   NCard,
   NCollapse,
   NCollapseItem,
@@ -50,12 +49,6 @@ interface HeaderRuleItem {
   action: "set" | "remove";
 }
 
-// Model redirect item type
-interface ModelRedirectItem {
-  from: string;
-  to: string;
-}
-
 const props = withDefaults(defineProps<Props>(), {
   group: null,
 });
@@ -66,14 +59,22 @@ const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
-const modelRedirectEditMode = ref<"visual" | "json">("visual");
 const fetchingModels = ref(false);
 const showModelSelector = ref(false);
 const availableModels = ref<string[]>([]);
-const modelRedirectTip = `{
-  "gpt-5": "gpt-5-2025-08-07",
-  "gemini-2.5-flash": "gemini-2.5-flash-preview-09-2025"
-}`;
+
+// Model redirect target type (V2: one-to-many with weight)
+interface ModelRedirectTargetItem {
+  model: string;
+  weight: number;
+  enabled: boolean;
+}
+
+// Model redirect V2 item type
+interface ModelRedirectItemV2 {
+  from: string;
+  targets: ModelRedirectTargetItem[];
+}
 
 // Form data interface
 interface GroupFormData {
@@ -86,11 +87,10 @@ interface GroupFormData {
   test_model: string;
   validation_endpoint: string;
   param_overrides: string;
-  model_redirect_rules: string;
-  model_redirect_items: ModelRedirectItem[];
+  model_redirect_items_v2: ModelRedirectItemV2[];
   model_redirect_strict: boolean;
   force_function_call: boolean;
-  parallel_tool_calls: "default" | "true" | "false"; // Three-state: default (not set), true, false
+  parallel_tool_calls: "default" | "true" | "false";
   cc_support: boolean;
   intercept_event_log: boolean;
   thinking_model: string;
@@ -121,8 +121,7 @@ const formData = reactive<GroupFormData>({
   test_model: "",
   validation_endpoint: "",
   param_overrides: "",
-  model_redirect_rules: "",
-  model_redirect_items: [] as ModelRedirectItem[],
+  model_redirect_items_v2: [] as ModelRedirectItemV2[],
   model_redirect_strict: false,
   force_function_call: false,
   parallel_tool_calls: "default",
@@ -261,57 +260,6 @@ watch(
   }
 );
 
-// Watch model redirect array changes and sync to JSON
-watch(
-  () => formData.model_redirect_items,
-  items => {
-    if (modelRedirectEditMode.value === "visual") {
-      formData.model_redirect_rules = modelRedirectItemsToJson(items);
-    }
-  },
-  { deep: true }
-);
-
-// Watch model redirect JSON changes and sync to array
-watch(
-  () => formData.model_redirect_rules,
-  jsonStr => {
-    if (modelRedirectEditMode.value === "json") {
-      try {
-        formData.model_redirect_items = parseModelRedirect(jsonStr);
-      } catch {
-        // Ignore parse errors during typing; validation will run on submit
-      }
-    }
-  }
-);
-
-// Watch edit mode switch and auto-format
-watch(
-  () => modelRedirectEditMode.value,
-  (newMode, oldMode) => {
-    if (newMode === "json" && oldMode === "visual") {
-      // When switching to JSON mode, auto-format
-      const jsonStr = modelRedirectItemsToJson(formData.model_redirect_items);
-      if (jsonStr) {
-        try {
-          const obj = JSON.parse(jsonStr);
-          formData.model_redirect_rules = JSON.stringify(obj, null, 2);
-        } catch {
-          formData.model_redirect_rules = jsonStr;
-        }
-      }
-    } else if (newMode === "visual" && oldMode === "json") {
-      // When switching to visual mode, parse JSON
-      try {
-        formData.model_redirect_items = parseModelRedirect(formData.model_redirect_rules);
-      } catch {
-        message.warning(t("keys.modelRedirectInvalidJson"));
-      }
-    }
-  }
-);
-
 // Watch channel type changes and intelligently update defaults in create mode
 watch(
   () => formData.channel_type,
@@ -349,8 +297,14 @@ watch(
     if (newChannelType !== "openai" && newChannelType !== "codex") {
       formData.cc_support = false;
     }
-    // Force disable intercept_event_log when channel is not Anthropic.
-    if (newChannelType !== "anthropic") {
+    // Handle intercept_event_log based on channel type.
+    // Default to true for Anthropic channel, false for others.
+    if (newChannelType === "anthropic") {
+      // Only set to true if not explicitly configured (new group or channel type change)
+      if (!props.group || props.group.channel_type !== "anthropic") {
+        formData.intercept_event_log = true;
+      }
+    } else {
       formData.intercept_event_log = false;
     }
   }
@@ -392,8 +346,7 @@ function resetForm() {
     test_model: isCreateMode ? testModelPlaceholder.value : "",
     validation_endpoint: "",
     param_overrides: "",
-    model_redirect_rules: "",
-    model_redirect_items: [],
+    model_redirect_items_v2: [],
     model_redirect_strict: false,
     force_function_call: false,
     parallel_tool_calls: "default",
@@ -444,9 +397,12 @@ function loadGroupData() {
       ? ccRaw
       : false;
   const interceptEventLogRaw = rawConfig["intercept_event_log"];
+  // Default to true for Anthropic channel when not explicitly configured
   const interceptEventLog =
-    props.group.channel_type === "anthropic" && typeof interceptEventLogRaw === "boolean"
-      ? interceptEventLogRaw
+    props.group.channel_type === "anthropic"
+      ? typeof interceptEventLogRaw === "boolean"
+        ? interceptEventLogRaw
+        : true // Default to true for Anthropic
       : false;
   const thinkingModelRaw = rawConfig["thinking_model"];
   const thinkingModel = typeof thinkingModelRaw === "string" ? thinkingModelRaw : "";
@@ -493,17 +449,34 @@ function loadGroupData() {
     test_model: props.group.test_model || "",
     validation_endpoint: props.group.validation_endpoint || "",
     param_overrides: JSON.stringify(props.group.param_overrides || {}, null, 2),
-    model_redirect_rules: JSON.stringify(props.group.model_redirect_rules || {}, null, 2),
-    model_redirect_items: Object.entries(props.group.model_redirect_rules || {})
-      .map(([from, to]) => {
-        const fromStr = String(from).trim();
-        const toStr = String(to).trim();
-        return {
-          from: fromStr,
-          to: toStr,
-        };
-      })
-      .filter(item => item.from && item.to),
+    model_redirect_items_v2: (() => {
+      // Priority: V2 rules first, then convert V1 rules to V2 format
+      const v2Rules = props.group.model_redirect_rules_v2;
+      if (v2Rules && Object.keys(v2Rules).length > 0) {
+        return Object.entries(v2Rules).map(([from, rule]) => {
+          const targets = (rule.targets || []).map(t => ({
+            model: t.model || "",
+            weight: t.weight ?? 100,
+            enabled: t.enabled !== false,
+          }));
+          return {
+            from,
+            targets: targets.length > 0 ? targets : [{ model: "", weight: 100, enabled: true }],
+          };
+        });
+      }
+      // Convert V1 rules to V2 format for backward compatibility
+      const v1Rules = props.group.model_redirect_rules || {};
+      if (Object.keys(v1Rules).length > 0) {
+        return Object.entries(v1Rules)
+          .map(([from, to]) => ({
+            from: String(from).trim(),
+            targets: [{ model: String(to).trim(), weight: 100, enabled: true }],
+          }))
+          .filter(item => item.from && item.targets[0]?.model);
+      }
+      return [];
+    })(),
     model_redirect_strict: props.group.model_redirect_strict || false,
     force_function_call: forceFunctionCall,
     parallel_tool_calls: parallelToolCalls,
@@ -591,71 +564,74 @@ function addHeaderRule() {
   });
 }
 
-// Parse model redirect JSON into an array
-function parseModelRedirect(jsonStr: string): ModelRedirectItem[] {
-  if (!jsonStr || jsonStr.trim() === "" || jsonStr.trim() === "{}") {
-    return [];
-  }
-  const obj = JSON.parse(jsonStr);
-  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
-    throw new Error("Invalid model redirect format: expected object");
-  }
-  return Object.entries(obj)
-    .map(([from, to]) => {
-      const fromStr = String(from).trim();
-      const toStr = String(to).trim();
-      return {
-        from: fromStr,
-        to: toStr,
-      };
-    })
-    .filter(item => item.from && item.to);
+// Add model redirect rule (V2: one-to-many)
+function addModelRedirectItemV2() {
+  formData.model_redirect_items_v2.push({
+    from: "",
+    targets: [{ model: "", weight: 100, enabled: true }],
+  });
 }
 
-// Convert model redirect array to JSON string
-function modelRedirectItemsToJson(items: ModelRedirectItem[]): string {
+// Remove model redirect rule (V2)
+function removeModelRedirectItemV2(index: number) {
+  formData.model_redirect_items_v2.splice(index, 1);
+}
+
+// Add target to a redirect rule (V2)
+function addTargetToRedirectRule(ruleIndex: number) {
+  formData.model_redirect_items_v2[ruleIndex]?.targets.push({
+    model: "",
+    weight: 100,
+    enabled: true,
+  });
+}
+
+// Remove target from a redirect rule (V2)
+function removeTargetFromRedirectRule(ruleIndex: number, targetIndex: number) {
+  const rule = formData.model_redirect_items_v2[ruleIndex];
+  if (rule && rule.targets.length > 1) {
+    rule.targets.splice(targetIndex, 1);
+  }
+}
+
+// Calculate weight percentage for display
+function calculateWeightPercentage(
+  targets: ModelRedirectTargetItem[],
+  targetIndex: number
+): string {
+  const enabledTargets = targets.filter(t => t.enabled && t.weight > 0);
+  const totalWeight = enabledTargets.reduce((sum, t) => sum + t.weight, 0);
+  const target = targets[targetIndex];
+  if (!target || !target.enabled || target.weight <= 0 || totalWeight === 0) {
+    return "0%";
+  }
+  return `${((target.weight / totalWeight) * 100).toFixed(1)}%`;
+}
+
+// V2: Convert V2 items to JSON for submission
+function modelRedirectItemsV2ToJson(items: ModelRedirectItemV2[]): string {
   if (!items || items.length === 0) {
     return "";
   }
-  const obj: Record<string, string> = {};
+  const obj: Record<
+    string,
+    { targets: Array<{ model: string; weight?: number; enabled?: boolean }> }
+  > = {};
   items.forEach(item => {
-    if (
-      typeof item.from === "string" &&
-      typeof item.to === "string" &&
-      item.from.trim() &&
-      item.to.trim()
-    ) {
-      obj[item.from.trim()] = item.to.trim();
+    if (item.from.trim()) {
+      const validTargets = item.targets
+        .filter(t => t.model.trim())
+        .map(t => ({
+          model: t.model.trim(),
+          weight: t.weight !== 100 ? t.weight : undefined,
+          enabled: t.enabled === false ? false : undefined,
+        }));
+      if (validTargets.length > 0) {
+        obj[item.from.trim()] = { targets: validTargets };
+      }
     }
   });
   return Object.keys(obj).length > 0 ? JSON.stringify(obj) : "";
-}
-
-// Add model redirect item
-function addModelRedirectItem() {
-  formData.model_redirect_items.push({
-    from: "",
-    to: "",
-  });
-}
-
-// Remove model redirect item
-function removeModelRedirectItem(index: number) {
-  formData.model_redirect_items.splice(index, 1);
-}
-
-// Format model redirect JSON
-function formatModelRedirectJson() {
-  if (!formData.model_redirect_rules || formData.model_redirect_rules.trim() === "") {
-    return;
-  }
-  try {
-    const obj = JSON.parse(formData.model_redirect_rules);
-    formData.model_redirect_rules = JSON.stringify(obj, null, 2);
-  } catch {
-    // JSON is invalid - user will see validation error on submit
-    // Optionally: message.warning(t("keys.modelRedirectInvalidJson"));
-  }
 }
 
 // Remove header rule
@@ -778,45 +754,32 @@ async function fetchUpstreamModels() {
   }
 }
 
-// Handle model selector confirmation - add selected redirects to rules
+// Handle model selector confirmation - add selected redirects to V2 rules
 function handleModelSelectorConfirm(redirectRules: Record<string, string>) {
   if (Object.keys(redirectRules).length === 0) {
     message.warning(t("keys.noRedirectRulesAdded"));
     return;
   }
 
-  if (modelRedirectEditMode.value === "visual") {
-    // Add to visual edit items
-    Object.entries(redirectRules).forEach(([from, to]) => {
-      // Check if already exists
-      const existingIndex = formData.model_redirect_items.findIndex(item => item.from === from);
-      const existingItem = formData.model_redirect_items[existingIndex];
-      if (existingIndex >= 0 && existingItem) {
-        // Update existing
-        existingItem.to = to;
-      } else {
-        // Add new
-        formData.model_redirect_items.push({ from, to });
+  // Add to V2 items (one-to-many format)
+  Object.entries(redirectRules).forEach(([from, to]) => {
+    // Check if source model already exists
+    const existingIndex = formData.model_redirect_items_v2.findIndex(item => item.from === from);
+    const existingItem = formData.model_redirect_items_v2[existingIndex];
+    if (existingIndex >= 0 && existingItem) {
+      // Update existing: replace first target or add if different
+      const targetExists = existingItem.targets.some(t => t.model === to);
+      if (!targetExists) {
+        existingItem.targets.push({ model: to, weight: 100, enabled: true });
       }
-    });
-  } else {
-    // Add to JSON edit mode
-    try {
-      let existingRules: Record<string, string> = {};
-      if (formData.model_redirect_rules.trim()) {
-        existingRules = JSON.parse(formData.model_redirect_rules);
-      }
-
-      // Merge with new rules (new rules override existing ones)
-      const mergedRules = { ...existingRules, ...redirectRules };
-
-      // Format JSON with proper indentation
-      formData.model_redirect_rules = JSON.stringify(mergedRules, null, 2);
-    } catch (_error) {
-      // If existing JSON is invalid, replace entirely
-      formData.model_redirect_rules = JSON.stringify(redirectRules, null, 2);
+    } else {
+      // Add new rule
+      formData.model_redirect_items_v2.push({
+        from,
+        targets: [{ model: to, weight: 100, enabled: true }],
+      });
     }
-  }
+  });
 
   message.success(t("keys.redirectRulesAdded", { count: Object.keys(redirectRules).length }));
 }
@@ -843,46 +806,19 @@ async function handleSubmit() {
       }
     }
 
-    // Get model redirect rules based on current edit mode
-    let modelRedirectRules = {};
-    if (modelRedirectEditMode.value === "visual") {
-      // Visual mode: convert from array
-      const rulesJson = modelRedirectItemsToJson(formData.model_redirect_items);
-      if (rulesJson) {
-        try {
-          modelRedirectRules = JSON.parse(rulesJson);
-        } catch {
-          message.error(t("keys.modelRedirectInvalidJson"));
-          return;
-        }
-      }
-    } else {
-      // JSON mode: format and use
-      formatModelRedirectJson();
-      if (formData.model_redirect_rules) {
-        try {
-          const parsed = JSON.parse(formData.model_redirect_rules);
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            message.error(t("keys.modelRedirectInvalidFormat"));
-            return;
-          }
-          modelRedirectRules = parsed;
+    // Build V2 model redirect rules (unified format)
+    let modelRedirectRulesV2: Record<
+      string,
+      { targets: Array<{ model: string; weight?: number; enabled?: boolean }> }
+    > | null = null;
 
-          // Validate rule format
-          for (const [key, value] of Object.entries(modelRedirectRules)) {
-            if (typeof key !== "string" || typeof value !== "string") {
-              message.error(t("keys.modelRedirectInvalidFormat"));
-              return;
-            }
-            if (key.trim() === "" || (value as string).trim() === "") {
-              message.error(t("keys.modelRedirectEmptyModel"));
-              return;
-            }
-          }
-        } catch {
-          message.error(t("keys.modelRedirectInvalidJson"));
-          return;
-        }
+    const v2Json = modelRedirectItemsV2ToJson(formData.model_redirect_items_v2);
+    if (v2Json) {
+      try {
+        modelRedirectRulesV2 = JSON.parse(v2Json);
+      } catch {
+        message.error(t("keys.modelRedirectInvalidJson"));
+        return;
       }
     }
 
@@ -1025,7 +961,7 @@ async function handleSubmit() {
       test_model: formData.test_model,
       validation_endpoint: formData.validation_endpoint,
       param_overrides: paramOverrides,
-      model_redirect_rules: modelRedirectRules,
+      model_redirect_rules_v2: modelRedirectRulesV2 || undefined,
       model_redirect_strict: formData.model_redirect_strict,
       config,
       header_rules: formData.header_rules
@@ -1636,21 +1572,18 @@ async function handleSubmit() {
                   </template>
 
                   <div class="model-redirect-wrapper">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 12px">
-                      <n-button-group size="small">
-                        <n-button
-                          :type="modelRedirectEditMode === 'visual' ? 'primary' : 'default'"
-                          @click="modelRedirectEditMode = 'visual'"
-                        >
-                          {{ t("keys.visualEdit") }}
-                        </n-button>
-                        <n-button
-                          :type="modelRedirectEditMode === 'json' ? 'primary' : 'default'"
-                          @click="modelRedirectEditMode = 'json'"
-                        >
-                          {{ t("keys.jsonEdit") }}
-                        </n-button>
-                      </n-button-group>
+                    <!-- Header with description and fetch button -->
+                    <div
+                      style="
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        margin-bottom: 12px;
+                      "
+                    >
+                      <div style="font-size: 12px; color: #999">
+                        {{ t("keys.modelRedirectWeightTooltip") }}
+                      </div>
                       <n-button
                         size="small"
                         @click="fetchUpstreamModels"
@@ -1664,53 +1597,102 @@ async function handleSubmit() {
                       </n-button>
                     </div>
 
-                    <!-- Visual Edit Mode -->
-                    <div v-if="modelRedirectEditMode === 'visual'">
+                    <!-- V2 Rules List (one-to-many mapping with weights) -->
+                    <div class="model-redirect-v2-list">
                       <div
-                        v-for="(item, index) in formData.model_redirect_items"
-                        :key="index"
-                        class="model-redirect-row"
+                        v-for="(rule, ruleIndex) in formData.model_redirect_items_v2"
+                        :key="ruleIndex"
+                        class="model-redirect-v2-rule"
                       >
-                        <n-input
-                          v-model:value="item.from"
-                          :placeholder="t('keys.sourceModel')"
-                          style="flex: 1"
-                        />
-                        <span class="redirect-arrow">→</span>
-                        <n-input
-                          v-model:value="item.to"
-                          :placeholder="t('keys.targetModel')"
-                          style="flex: 1"
-                        />
-                        <n-button
-                          text
-                          type="error"
-                          @click="removeModelRedirectItem(index)"
-                          style="padding: 0 8px"
-                        >
-                          <template #icon>
-                            <n-icon :component="Close" />
-                          </template>
-                        </n-button>
-                      </div>
+                        <!-- Source model input -->
+                        <div class="model-redirect-v2-source">
+                          <n-input
+                            v-model:value="rule.from"
+                            :placeholder="t('keys.sourceModel')"
+                            size="small"
+                          />
+                          <n-button
+                            text
+                            type="error"
+                            size="small"
+                            @click="removeModelRedirectItemV2(ruleIndex)"
+                            style="margin-left: 8px"
+                          >
+                            <template #icon>
+                              <n-icon :component="Close" />
+                            </template>
+                          </n-button>
+                        </div>
 
-                      <n-button dashed block @click="addModelRedirectItem" style="margin-top: 12px">
-                        <template #icon>
-                          <n-icon :component="Add" />
-                        </template>
-                        {{ t("keys.addModelRedirect") }}
-                      </n-button>
+                        <!-- Target models with weights -->
+                        <div class="model-redirect-v2-targets">
+                          <div
+                            v-for="(target, targetIndex) in rule.targets"
+                            :key="targetIndex"
+                            class="model-redirect-v2-target"
+                          >
+                            <span class="redirect-arrow">→</span>
+                            <n-input
+                              v-model:value="target.model"
+                              :placeholder="t('keys.targetModel')"
+                              size="small"
+                              style="flex: 2"
+                            />
+                            <n-tooltip trigger="hover">
+                              <template #trigger>
+                                <n-input-number
+                                  v-model:value="target.weight"
+                                  :min="0"
+                                  :max="1000"
+                                  size="small"
+                                  style="width: 90px"
+                                  :placeholder="t('keys.modelRedirectWeight')"
+                                />
+                              </template>
+                              {{ t("keys.modelRedirectWeightTooltip") }}
+                            </n-tooltip>
+                            <span class="weight-percentage">
+                              {{ calculateWeightPercentage(rule.targets, targetIndex) }}
+                            </span>
+                            <n-switch
+                              v-model:value="target.enabled"
+                              size="small"
+                              style="margin-left: 4px"
+                            />
+                            <n-button
+                              v-if="rule.targets.length > 1"
+                              text
+                              type="error"
+                              size="small"
+                              @click="removeTargetFromRedirectRule(ruleIndex, targetIndex)"
+                              style="margin-left: 4px"
+                            >
+                              <template #icon>
+                                <n-icon :component="Remove" />
+                              </template>
+                            </n-button>
+                          </div>
+                          <n-button
+                            dashed
+                            size="small"
+                            @click="addTargetToRedirectRule(ruleIndex)"
+                            style="margin-top: 4px; margin-left: 24px"
+                          >
+                            <template #icon>
+                              <n-icon :component="Add" />
+                            </template>
+                            {{ t("keys.modelRedirectAddTarget") }}
+                          </n-button>
+                        </div>
+                      </div>
                     </div>
 
-                    <!-- JSON Edit Mode -->
-                    <n-input
-                      v-else
-                      v-model:value="formData.model_redirect_rules"
-                      type="textarea"
-                      :placeholder="modelRedirectTip"
-                      :rows="4"
-                      @blur="formatModelRedirectJson"
-                    />
+                    <n-button dashed block @click="addModelRedirectItemV2" style="margin-top: 12px">
+                      <template #icon>
+                        <n-icon :component="Add" />
+                      </template>
+                      {{ t("keys.addModelRedirect") }}
+                    </n-button>
                   </div>
                 </n-form-item>
               </div>
@@ -2421,6 +2403,54 @@ async function handleSubmit() {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px !important;
+}
+
+/* V2 Model Redirect Styles */
+.model-redirect-v2-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.model-redirect-v2-rule {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--bg-secondary);
+}
+
+.model-redirect-v2-source {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.model-redirect-v2-source :deep(.n-input) {
+  flex: 1;
+}
+
+.model-redirect-v2-targets {
+  padding-left: 8px;
+}
+
+.model-redirect-v2-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.model-redirect-v2-target .redirect-arrow {
+  flex: 0 0 20px;
+  height: 28px;
+  line-height: 28px;
+}
+
+.weight-percentage {
+  font-size: 12px;
+  color: #666;
+  min-width: 45px;
+  text-align: right;
 }
 
 /* Unified arrow style (for model and path redirect) */

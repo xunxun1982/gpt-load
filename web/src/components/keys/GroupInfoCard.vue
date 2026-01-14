@@ -95,6 +95,28 @@ const hasAdvancedConfig = computed(() => {
   );
 });
 
+// Check if group has model redirect rules (V1 or V2)
+const hasModelRedirectRules = computed(() => {
+  const v2Rules = props.group?.model_redirect_rules_v2;
+  const v1Rules = props.group?.model_redirect_rules;
+  return (
+    (v2Rules && Object.keys(v2Rules).length > 0) || (v1Rules && Object.keys(v1Rules).length > 0)
+  );
+});
+
+// Format model redirect rules for display (prefer V2, fallback to V1)
+const formatModelRedirectRules = computed(() => {
+  const v2Rules = props.group?.model_redirect_rules_v2;
+  if (v2Rules && Object.keys(v2Rules).length > 0) {
+    return JSON.stringify(v2Rules, null, 2);
+  }
+  const v1Rules = props.group?.model_redirect_rules;
+  if (v1Rules && Object.keys(v1Rules).length > 0) {
+    return JSON.stringify(v1Rules, null, 2);
+  }
+  return "{}";
+});
+
 // Check if it's an aggregate group
 const isAggregateGroup = computed(() => {
   return props.group?.group_type === "aggregate";
@@ -914,7 +936,7 @@ function handleNavigateToSite(siteId: number) {
                       </div>
                     </n-form-item>
                     <n-form-item
-                      v-if="group?.model_redirect_rules"
+                      v-if="hasModelRedirectRules"
                       :label="`${t('keys.modelRedirectPolicy')}：`"
                       :span="2"
                     >
@@ -930,13 +952,11 @@ function handleNavigateToSite(siteId: number) {
                       </n-tag>
                     </n-form-item>
                     <n-form-item
-                      v-if="group?.model_redirect_rules"
+                      v-if="hasModelRedirectRules"
                       :label="`${t('keys.modelRedirectRules')}：`"
                       :span="2"
                     >
-                      <pre class="config-json">{{
-                        JSON.stringify(group?.model_redirect_rules || {}, null, 2)
-                      }}</pre>
+                      <pre class="config-json">{{ formatModelRedirectRules }}</pre>
                     </n-form-item>
                     <n-form-item
                       v-if="group?.param_overrides"

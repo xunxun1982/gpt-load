@@ -1,11 +1,15 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -109,4 +113,285 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			logUpstreamError("copying response body", err)
 		}
 	}
+}
+
+
+// handleCodexForcedStreamResponse handles Codex streaming response and converts to non-streaming format.
+// This is used when client requests non-streaming but Codex API requires streaming internally.
+// Per CLIProxyAPI implementation: collect stream events until response.completed, then return non-streaming response.
+func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *http.Response) {
+	logrus.WithFields(logrus.Fields{
+		"content_type":     resp.Header.Get("Content-Type"),
+		"content_encoding": resp.Header.Get("Content-Encoding"),
+		"status_code":      resp.StatusCode,
+	}).Debug("Codex forced stream: collecting stream response for non-stream client")
+
+	// Collect stream events and build CodexResponse
+	codexResp, err := collectCodexStreamToResponse(resp)
+	if err != nil {
+		logrus.WithError(err).Error("Codex forced stream: failed to collect stream response")
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"message": "Failed to collect stream response: " + err.Error(),
+				"type":    "server_error",
+			},
+		})
+		return
+	}
+
+	// Check for Codex error in response
+	if codexResp.Error != nil {
+		logrus.WithFields(logrus.Fields{
+			"error_type":    codexResp.Error.Type,
+			"error_message": utils.TruncateString(codexResp.Error.Message, 200),
+		}).Warn("Codex forced stream: upstream returned error")
+		c.JSON(resp.StatusCode, codexResp)
+		return
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"response_id": codexResp.ID,
+		"model":       codexResp.Model,
+		"status":      codexResp.Status,
+		"output_len":  len(codexResp.Output),
+	}).Debug("Codex forced stream: converted stream to non-stream response")
+
+	// Marshal and return response
+	responseBody, err := json.Marshal(codexResp)
+	if err != nil {
+		logrus.WithError(err).Error("Codex forced stream: failed to marshal response")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{
+				"message": "Failed to marshal response",
+				"type":    "server_error",
+			},
+		})
+		return
+	}
+
+	// Store response for logging if enabled
+	if shouldCaptureResponse(c) {
+		if len(responseBody) > maxResponseCaptureBytes {
+			c.Set("response_body", string(responseBody[:maxResponseCaptureBytes]))
+		} else {
+			c.Set("response_body", string(responseBody))
+		}
+	}
+
+	c.Header("Content-Type", "application/json")
+	c.Data(resp.StatusCode, "application/json", responseBody)
+}
+
+// codexStreamResponse represents a Codex streaming response structure for collection.
+type codexStreamResponse struct {
+	ID        string                   `json:"id"`
+	Object    string                   `json:"object"`
+	CreatedAt int64                    `json:"created_at,omitempty"`
+	Status    string                   `json:"status"`
+	Model     string                   `json:"model"`
+	Output    []codexStreamOutputItem  `json:"output"`
+	Usage     *codexStreamUsage        `json:"usage,omitempty"`
+	Error     *codexStreamError        `json:"error,omitempty"`
+}
+
+type codexStreamOutputItem struct {
+	Type      string                    `json:"type"`
+	ID        string                    `json:"id,omitempty"`
+	Status    string                    `json:"status,omitempty"`
+	Role      string                    `json:"role,omitempty"`
+	Content   []codexStreamContentBlock `json:"content,omitempty"`
+	CallID    string                    `json:"call_id,omitempty"`
+	Name      string                    `json:"name,omitempty"`
+	Arguments string                    `json:"arguments,omitempty"`
+}
+
+type codexStreamContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+type codexStreamUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+type codexStreamError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	Code    string `json:"code,omitempty"`
+}
+
+// codexStreamEvent represents a single event in Codex streaming response.
+type codexStreamEvent struct {
+	Type      string               `json:"type"`
+	Response  *codexStreamResponse `json:"response,omitempty"`
+	ItemID    string               `json:"item_id,omitempty"`
+	OutputIdx int                  `json:"output_index,omitempty"`
+	Delta     string               `json:"delta,omitempty"`
+	Item      *codexStreamItem     `json:"item,omitempty"`
+}
+
+type codexStreamItem struct {
+	Type      string `json:"type"`
+	ID        string `json:"id,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Status    string `json:"status,omitempty"`
+}
+
+// collectCodexStreamToResponse reads streaming response and builds a complete CodexResponse.
+// Waits for response.completed event to get the final response state.
+func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, error) {
+	reader := bufio.NewReader(resp.Body)
+	defer resp.Body.Close()
+
+	var finalResp *codexStreamResponse
+	var currentEventType string
+
+	// Collectors for building response from stream events
+	var outputItems []codexStreamOutputItem
+	var currentTextContent strings.Builder
+	var currentToolID, currentToolName, currentToolArgs string
+	var model string
+	var responseID string
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Parse SSE format
+		if strings.HasPrefix(line, "event: ") {
+			currentEventType = strings.TrimPrefix(line, "event: ")
+			continue
+		}
+
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				break
+			}
+
+			var event codexStreamEvent
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				logrus.WithError(err).Debug("Codex forced stream: failed to parse stream event")
+				continue
+			}
+
+			if currentEventType != "" && event.Type == "" {
+				event.Type = currentEventType
+			}
+			currentEventType = ""
+
+			// Process events to build response
+			switch event.Type {
+			case "response.created":
+				if event.Response != nil {
+					model = event.Response.Model
+					responseID = event.Response.ID
+				}
+
+			case "response.output_item.added":
+				if event.Item != nil && event.Item.Type == "function_call" {
+					currentToolID = event.Item.CallID
+					currentToolName = event.Item.Name
+					currentToolArgs = ""
+				}
+
+			case "response.output_text.delta":
+				if event.Delta != "" {
+					currentTextContent.WriteString(event.Delta)
+				}
+
+			case "response.function_call_arguments.delta":
+				if event.Delta != "" {
+					currentToolArgs += event.Delta
+				}
+
+			case "response.output_item.done":
+				if event.Item != nil {
+					switch event.Item.Type {
+					case "message":
+						// Message complete - add text content if any
+						if currentTextContent.Len() > 0 {
+							outputItems = append(outputItems, codexStreamOutputItem{
+								Type:   "message",
+								Role:   "assistant",
+								Status: "completed",
+								Content: []codexStreamContentBlock{
+									{Type: "output_text", Text: currentTextContent.String()},
+								},
+							})
+							currentTextContent.Reset()
+						}
+					case "function_call":
+						// Function call complete
+						toolID := event.Item.CallID
+						if toolID == "" {
+							toolID = currentToolID
+						}
+						toolName := event.Item.Name
+						if toolName == "" {
+							toolName = currentToolName
+						}
+						args := event.Item.Arguments
+						if args == "" {
+							args = currentToolArgs
+						}
+						outputItems = append(outputItems, codexStreamOutputItem{
+							Type:      "function_call",
+							CallID:    toolID,
+							Name:      toolName,
+							Arguments: args,
+						})
+						currentToolID = ""
+						currentToolName = ""
+						currentToolArgs = ""
+					}
+				}
+
+			case "response.completed", "response.done":
+				// Final response - use the complete response if available
+				if event.Response != nil {
+					finalResp = event.Response
+				}
+			}
+		}
+	}
+
+	// If we didn't get a complete response from response.completed, build one from collected data
+	if finalResp == nil {
+		// Add any remaining text content
+		if currentTextContent.Len() > 0 {
+			outputItems = append(outputItems, codexStreamOutputItem{
+				Type:   "message",
+				Role:   "assistant",
+				Status: "completed",
+				Content: []codexStreamContentBlock{
+					{Type: "output_text", Text: currentTextContent.String()},
+				},
+			})
+		}
+
+		finalResp = &codexStreamResponse{
+			ID:     responseID,
+			Object: "response",
+			Status: "completed",
+			Model:  model,
+			Output: outputItems,
+		}
+	}
+
+	return finalResp, nil
 }

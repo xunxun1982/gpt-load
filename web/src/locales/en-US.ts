@@ -443,6 +443,15 @@ export default {
     modelRedirectTooltip:
       "Configure model redirect rules, key is the model name requested by user, value is the actual model name sent to upstream",
     modelRedirectMode: "Redirect Mode",
+    modelRedirectSimpleMode: "Simple Mode",
+    modelRedirectAdvancedMode: "Advanced Mode",
+    modelRedirectSimpleModeDesc: "One-to-one mapping, each source model maps to one target model",
+    modelRedirectAdvancedModeDesc: "One-to-many mapping with weighted load balancing",
+    modelRedirectWeight: "Weight",
+    modelRedirectWeightTooltip:
+      "Higher value means higher selection probability, traffic distributed by weight ratio (default: 100, set to 0 to disable)",
+    modelRedirectTargets: "Target Models",
+    modelRedirectAddTarget: "Add Target",
     strictMode: "Strict",
     looseMode: "Loose",
     strictModeDesc: "Only configured models allowed (whitelist)",

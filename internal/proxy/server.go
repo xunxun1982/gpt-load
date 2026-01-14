@@ -288,6 +288,26 @@ func isChatCompletionsEndpoint(path, method string) bool {
 	return strings.HasSuffix(path, "/v1/chat/completions")
 }
 
+// isCodexResponsesEndpoint checks whether the current request targets the
+// Codex/Responses API endpoint.
+func isCodexResponsesEndpoint(path string) bool {
+	if path == "/v1/responses" {
+		return true
+	}
+	return strings.HasSuffix(path, "/v1/responses")
+}
+
+// isCodexForcedStream returns true if Codex forced streaming was applied.
+// This indicates the response handler should collect stream and return non-stream.
+func isCodexForcedStream(c *gin.Context) bool {
+	if v, ok := c.Get(ctxKeyCodexForcedStream); ok {
+		if enabled, ok := v.(bool); ok && enabled {
+			return true
+		}
+	}
+	return false
+}
+
 // isFunctionCallEnabled returns true if the function-call middleware
 // was successfully applied for the current request. It reads a boolean flag
 // from Gin context and treats missing or non-bool values as false.
@@ -764,6 +784,23 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			}
 
 			isStream = channelHandler.IsStreamRequest(c, finalBodyBytes)
+
+			// Apply Codex forced streaming for direct Codex requests (non-CC mode).
+			// Per CLIProxyAPI implementation, Codex API requires stream: true for reliable responses.
+			// If client requests non-stream, we force stream: true to upstream and collect response.
+			if group.ChannelType == "codex" && !isCodexCCMode(c) && isCodexResponsesEndpoint(c.Request.URL.Path) {
+				modifiedBody, wasNonStream := channel.ForceStreamRequest(finalBodyBytes)
+				if wasNonStream {
+					finalBodyBytes = modifiedBody
+					c.Set(ctxKeyCodexForcedStream, true)
+					logrus.WithFields(logrus.Fields{
+						"group":        group.Name,
+						"channel_type": group.ChannelType,
+						"path":         c.Request.URL.Path,
+					}).Debug("Codex forced streaming: converted non-stream request to stream")
+					// Keep isStream as false so response handler knows to collect and convert
+				}
+			}
 		}
 	}
 
@@ -878,15 +915,19 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Set User-Agent for Codex CC mode AFTER header rules to ensure upstream compatibility.
-	// NOTE: This intentionally overrides any custom User-Agent set by header rules.
-	// Reason: Codex upstream may reject requests without proper User-Agent header.
-	// IMPORTANT: This UA is ONLY set when CC mode is enabled (/claude path with cc_support=true).
-	// Normal Codex requests (non-CC) should use passthrough behavior (preserve client's original UA).
+	// Set headers for Codex CC mode AFTER header rules to ensure upstream compatibility.
+	// NOTE: This intentionally overrides any custom headers set by header rules.
+	// Reason: Codex upstream may reject requests without proper headers.
+	// IMPORTANT: These headers are ONLY set when CC mode is enabled (/claude path with cc_support=true).
+	// Normal Codex requests (non-CC) should use passthrough behavior (preserve client's original headers).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
-	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version.
+	// Reference: CLIProxyAPI codex_executor.go applyCodexHeaders()
 	if isCodexCCMode(c) {
 		req.Header.Set("User-Agent", channel.CodexUserAgent)
+		// Additional headers required by Codex API (per CLIProxyAPI implementation)
+		req.Header.Set("Openai-Beta", "responses=experimental")
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Connection", "Keep-Alive")
 	}
 
 	// Use the upstream-specific client (with its dedicated proxy configuration)
@@ -1029,10 +1070,12 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// the function-call aware response handler.
 			ccEnabled := isCCEnabled(c)
 			codexCCMode := isCodexCCMode(c)
+			codexForcedStream := isCodexForcedStream(c)
 			logrus.WithFields(logrus.Fields{
-				"cc_enabled":    ccEnabled,
-				"codex_cc_mode": codexCCMode,
-				"is_stream":     isStream,
+				"cc_enabled":           ccEnabled,
+				"codex_cc_mode":        codexCCMode,
+				"codex_forced_stream":  codexForcedStream,
+				"is_stream":            isStream,
 			}).Debug("Response handler selection")
 			if ccEnabled {
 				if codexCCMode {
@@ -1040,6 +1083,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 				} else {
 					ps.handleCCNormalResponse(c, resp)
 				}
+			} else if codexForcedStream {
+				// Codex forced streaming: collect stream response and return as non-stream
+				ps.handleCodexForcedStreamResponse(c, resp)
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {
@@ -1348,6 +1394,24 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
+	// Apply Codex forced streaming for direct Codex sub-group requests (non-CC mode).
+	// Clear any stale forced stream state from previous sub-group attempts.
+	c.Set(ctxKeyCodexForcedStream, false)
+	if group.ChannelType == "codex" && !isCodexCCMode(c) && isCodexResponsesEndpoint(c.Request.URL.Path) {
+		modifiedBody, wasNonStream := channel.ForceStreamRequest(finalBodyBytes)
+		if wasNonStream {
+			finalBodyBytes = modifiedBody
+			c.Set(ctxKeyCodexForcedStream, true)
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"channel_type":    group.ChannelType,
+				"path":            c.Request.URL.Path,
+			}).Debug("Codex forced streaming: converted non-stream request to stream for sub-group")
+			// Keep isStream as false so response handler knows to collect and convert
+		}
+	}
+
 	cfg := group.EffectiveConfig
 
 	// Store group in context for response handlers to access
@@ -1458,8 +1522,13 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Normal Codex requests (non-CC) should use passthrough behavior (preserve client's original UA).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
 	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version.
+	// Reference: CLIProxyAPI codex_executor.go applyCodexHeaders()
 	if isCodexCCMode(c) {
 		req.Header.Set("User-Agent", channel.CodexUserAgent)
+		// Additional headers required by Codex API (per CLIProxyAPI implementation)
+		req.Header.Set("Openai-Beta", "responses=experimental")
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Connection", "Keep-Alive")
 	}
 
 	// Use the upstream-specific client
@@ -1654,10 +1723,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		} else {
 			ccEnabled := isCCEnabled(c)
 			codexCCMode := isCodexCCMode(c)
+			codexForcedStream := isCodexForcedStream(c)
 			logrus.WithFields(logrus.Fields{
-				"cc_enabled":    ccEnabled,
-				"codex_cc_mode": codexCCMode,
-				"is_stream":     isStream,
+				"cc_enabled":           ccEnabled,
+				"codex_cc_mode":        codexCCMode,
+				"codex_forced_stream":  codexForcedStream,
+				"is_stream":            isStream,
 			}).Debug("Aggregate response handler selection")
 			if ccEnabled {
 				if codexCCMode {
@@ -1665,6 +1736,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				} else {
 					ps.handleCCNormalResponse(c, resp)
 				}
+			} else if codexForcedStream {
+				// Codex forced streaming: collect stream response and return as non-stream
+				ps.handleCodexForcedStreamResponse(c, resp)
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallNormalResponse(c, resp)
 			} else {

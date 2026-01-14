@@ -443,6 +443,15 @@ export default {
     modelRedirectTooltip:
       "モデルリダイレクトルールを設定。キーはユーザーがリクエストするモデル名、値はアップストリームに送信する実際のモデル名",
     modelRedirectMode: "リダイレクトモード",
+    modelRedirectSimpleMode: "シンプルモード",
+    modelRedirectAdvancedMode: "アドバンスモード",
+    modelRedirectSimpleModeDesc: "1対1マッピング、各ソースモデルは1つのターゲットモデルに対応",
+    modelRedirectAdvancedModeDesc: "1対多マッピング、重み付け負荷分散をサポート",
+    modelRedirectWeight: "重み",
+    modelRedirectWeightTooltip:
+      "値が大きいほど選択確率が高くなり、重み比率でトラフィックを分配（デフォルト：100、0で無効化）",
+    modelRedirectTargets: "ターゲットモデル",
+    modelRedirectAddTarget: "ターゲットを追加",
     strictMode: "厳格",
     looseMode: "寛容",
     strictModeDesc: "設定されたモデルのみ許可（ホワイトリスト）",

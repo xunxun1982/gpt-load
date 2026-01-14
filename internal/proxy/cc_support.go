@@ -38,6 +38,9 @@ const (
 	// ctxKeyOpenAIToolNameReverseMap stores the reverse map for tool name restoration in OpenAI CC mode.
 	// This is used to restore original tool names that were shortened to comply with OpenAI's 64-char limit.
 	ctxKeyOpenAIToolNameReverseMap = "openai_tool_name_reverse_map"
+	// ctxKeyCodexForcedStream indicates that Codex channel forced stream: true for upstream.
+	// When set, the response handler should collect stream and return non-stream if client requested non-stream.
+	ctxKeyCodexForcedStream = "codex_forced_stream"
 )
 
 // ctxKeyTriggerSignal and ctxKeyFunctionCallEnabled are declared in server.go (same package proxy).
@@ -174,12 +177,20 @@ func isCCSupportEnabled(group *models.Group) bool {
 // isInterceptEventLogEnabled checks whether the intercept_event_log flag is enabled for the given group.
 // This flag is stored in the group-level JSON config and only applies to Anthropic channel groups.
 // When enabled, the /api/event_logging/batch endpoint is intercepted and not forwarded to upstream.
+// Default: true (enabled) for Anthropic channel groups when not explicitly configured.
 func isInterceptEventLogEnabled(group *models.Group) bool {
 	// Only enable for Anthropic channel groups.
 	if group == nil || group.ChannelType != "anthropic" {
 		return false
 	}
-	return getGroupConfigBool(group, "intercept_event_log")
+	// Check if explicitly configured
+	if group.Config != nil {
+		if raw, ok := group.Config["intercept_event_log"]; ok && raw != nil {
+			return getGroupConfigBool(group, "intercept_event_log")
+		}
+	}
+	// Default to true for Anthropic channel groups
+	return true
 }
 
 // sanitizeCCQueryParams removes Claude-specific query parameters from the URL.

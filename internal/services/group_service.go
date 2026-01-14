@@ -161,48 +161,50 @@ func NewGroupService(
 
 // GroupCreateParams captures all fields required to create a group.
 type GroupCreateParams struct {
-	Name                string
-	DisplayName         string
-	Description         string
-	GroupType           string
-	Upstreams           json.RawMessage
-	ChannelType         string
-	Sort                int
-	TestModel           string
-	ValidationEndpoint  string
-	ParamOverrides      map[string]any
-	Config              map[string]any
-	HeaderRules         []models.HeaderRule
-	ModelMapping        string // Deprecated: for backward compatibility
-	ModelRedirectRules  map[string]string
-	ModelRedirectStrict bool
-	PathRedirects       []models.PathRedirectRule
-	ProxyKeys           string
-	SubGroups           []SubGroupInput
+	Name                 string
+	DisplayName          string
+	Description          string
+	GroupType            string
+	Upstreams            json.RawMessage
+	ChannelType          string
+	Sort                 int
+	TestModel            string
+	ValidationEndpoint   string
+	ParamOverrides       map[string]any
+	Config               map[string]any
+	HeaderRules          []models.HeaderRule
+	ModelMapping         string // Deprecated: for backward compatibility
+	ModelRedirectRules   map[string]string
+	ModelRedirectRulesV2 json.RawMessage // V2: one-to-many mapping
+	ModelRedirectStrict  bool
+	PathRedirects        []models.PathRedirectRule
+	ProxyKeys            string
+	SubGroups            []SubGroupInput
 }
 
 // GroupUpdateParams captures updatable fields for a group.
 type GroupUpdateParams struct {
-	Name                *string
-	DisplayName         *string
-	Description         *string
-	GroupType           *string
-	Upstreams           json.RawMessage
-	HasUpstreams        bool
-	ChannelType         *string
-	Sort                *int
-	TestModel           string
-	HasTestModel        bool
-	ValidationEndpoint  *string
-	ParamOverrides      map[string]any
-	Config              map[string]any
-	HeaderRules         *[]models.HeaderRule
-	ModelMapping        *string // Deprecated: for backward compatibility
-	ModelRedirectRules  map[string]string
-	ModelRedirectStrict *bool
-	PathRedirects       []models.PathRedirectRule
-	ProxyKeys           *string
-	SubGroups           *[]SubGroupInput
+	Name                 *string
+	DisplayName          *string
+	Description          *string
+	GroupType            *string
+	Upstreams            json.RawMessage
+	HasUpstreams         bool
+	ChannelType          *string
+	Sort                 *int
+	TestModel            string
+	HasTestModel         bool
+	ValidationEndpoint   *string
+	ParamOverrides       map[string]any
+	Config               map[string]any
+	HeaderRules          *[]models.HeaderRule
+	ModelMapping         *string // Deprecated: for backward compatibility
+	ModelRedirectRules   map[string]string
+	ModelRedirectRulesV2 json.RawMessage // V2: one-to-many mapping
+	ModelRedirectStrict  *bool
+	PathRedirects        []models.PathRedirectRule
+	ProxyKeys            *string
+	SubGroups            *[]SubGroupInput
 }
 
 // KeyStats captures aggregated API key statistics for a group.
@@ -332,24 +334,28 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		return nil, err
 	}
 
+	// Handle V1 to V2 migration: merge V1 rules into V2, then clear V1
+	finalV2Rules, finalV1Rules := s.normalizeModelRedirectRules(modelRedirectRules, params.ModelRedirectRulesV2)
+
 	group := models.Group{
-		Name:                name,
-		DisplayName:         strings.TrimSpace(params.DisplayName),
-		Description:         strings.TrimSpace(params.Description),
-		GroupType:           groupType,
-		Upstreams:           cleanedUpstreams,
-		ChannelType:         channelType,
-		Sort:                params.Sort,
-		TestModel:           testModel,
-		ValidationEndpoint:  validationEndpoint,
-		ParamOverrides:      params.ParamOverrides,
-		Config:              cleanedConfig,
-		HeaderRules:         headerRulesJSON,
-		ModelMapping:        modelMapping, // Keep for backward compatibility
-		ModelRedirectRules:  convertToJSONMap(modelRedirectRules),
-		ModelRedirectStrict: params.ModelRedirectStrict,
-		PathRedirects:       pathRedirectsJSON,
-		ProxyKeys:           strings.TrimSpace(params.ProxyKeys),
+		Name:                 name,
+		DisplayName:          strings.TrimSpace(params.DisplayName),
+		Description:          strings.TrimSpace(params.Description),
+		GroupType:            groupType,
+		Upstreams:            cleanedUpstreams,
+		ChannelType:          channelType,
+		Sort:                 params.Sort,
+		TestModel:            testModel,
+		ValidationEndpoint:   validationEndpoint,
+		ParamOverrides:       params.ParamOverrides,
+		Config:               cleanedConfig,
+		HeaderRules:          headerRulesJSON,
+		ModelMapping:         modelMapping, // Keep for backward compatibility
+		ModelRedirectRules:   finalV1Rules,
+		ModelRedirectRulesV2: finalV2Rules,
+		ModelRedirectStrict:  params.ModelRedirectStrict,
+		PathRedirects:        pathRedirectsJSON,
+		ProxyKeys:            strings.TrimSpace(params.ProxyKeys),
 	}
 
 	tx := s.db.WithContext(ctx).Begin()
@@ -680,12 +686,34 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		return nil, NewI18nError(app_errors.ErrValidation, "validation.aggregate_no_model_redirect", nil)
 	}
 
-	// Validate model redirect rules format
+	// Validate model redirect rules format (V1)
 	if params.ModelRedirectRules != nil {
 		if err := validateModelRedirectRules(params.ModelRedirectRules); err != nil {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_model_redirect", map[string]any{"error": err.Error()})
 		}
-		group.ModelRedirectRules = convertToJSONMap(params.ModelRedirectRules)
+	}
+
+	// Handle V1 to V2 migration: merge V1 rules into V2, then clear V1
+	// This applies when either V1 or V2 rules are provided in params
+	if params.ModelRedirectRules != nil || params.ModelRedirectRulesV2 != nil {
+		// Get current V1 rules from params or existing group
+		v1Rules := params.ModelRedirectRules
+		if v1Rules == nil {
+			// Convert existing group's V1 rules to map[string]string
+			v1Rules = make(map[string]string)
+			for k, v := range group.ModelRedirectRules {
+				if str, ok := v.(string); ok {
+					v1Rules[k] = str
+				}
+			}
+		}
+
+		// Get V2 rules from params (may be nil)
+		v2RulesJSON := params.ModelRedirectRulesV2
+
+		finalV2Rules, finalV1Rules := s.normalizeModelRedirectRules(v1Rules, v2RulesJSON)
+		group.ModelRedirectRulesV2 = finalV2Rules
+		group.ModelRedirectRules = finalV1Rules
 	}
 
 	if params.ModelRedirectStrict != nil {
@@ -2354,22 +2382,39 @@ func (s *GroupService) ToggleGroupEnabled(ctx context.Context, id uint, enabled 
 	return nil
 }
 
-// convertToJSONMap converts a map[string]string to datatypes.JSONMap
-func convertToJSONMap(input map[string]string) datatypes.JSONMap {
-	if len(input) == 0 {
-		return datatypes.JSONMap{}
+// normalizeModelRedirectRules handles V1 to V2 migration and returns normalized rules.
+// If V2 rules exist, V1 rules are merged into V2 (V2 takes priority), then V1 is cleared.
+// If only V1 rules exist, they are converted to V2 format, then V1 is cleared.
+// Returns (finalV2JSON, emptyV1Map) to ensure only V2 rules are stored.
+func (s *GroupService) normalizeModelRedirectRules(v1Rules map[string]string, v2RulesJSON json.RawMessage) (datatypes.JSON, datatypes.JSONMap) {
+	// Parse V2 rules from JSON
+	var v2Map map[string]*models.ModelRedirectRuleV2
+	if len(v2RulesJSON) > 0 {
+		if err := json.Unmarshal(v2RulesJSON, &v2Map); err != nil {
+			logrus.WithError(err).Warn("Failed to parse V2 model redirect rules, treating as empty")
+			v2Map = nil
+		}
 	}
 
-	result := make(datatypes.JSONMap)
-	for k, v := range input {
-		trimmedKey := strings.TrimSpace(k)
-		trimmedValue := strings.TrimSpace(v)
-		if trimmedKey == "" || trimmedValue == "" {
-			continue
+	// Merge V1 into V2 (V2 takes priority)
+	mergedV2 := models.MergeV1IntoV2Rules(v1Rules, v2Map)
+
+	// Convert merged V2 rules back to JSON
+	var finalV2JSON datatypes.JSON
+	if len(mergedV2) > 0 {
+		jsonBytes, err := json.Marshal(mergedV2)
+		if err != nil {
+			logrus.WithError(err).Error("Failed to marshal merged V2 rules")
+			finalV2JSON = datatypes.JSON("{}") // Fallback to empty
+		} else {
+			finalV2JSON = datatypes.JSON(jsonBytes)
 		}
-		result[trimmedKey] = trimmedValue
+	} else {
+		finalV2JSON = datatypes.JSON("{}") // Empty V2 rules
 	}
-	return result
+
+	// Always clear V1 rules after migration
+	return finalV2JSON, datatypes.JSONMap{}
 }
 
 // validateModelRedirectRules validates the format and content of model redirect rules

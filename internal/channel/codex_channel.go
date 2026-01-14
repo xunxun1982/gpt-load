@@ -162,3 +162,37 @@ func (ch *CodexChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
 	}
 	return ""
 }
+
+// ForceStreamRequest modifies the request body to force stream: true.
+// Codex API requires streaming for reliable responses (per CLIProxyAPI implementation).
+// Returns the modified body bytes and whether the original request was non-streaming.
+func ForceStreamRequest(bodyBytes []byte) ([]byte, bool) {
+	if len(bodyBytes) == 0 {
+		return bodyBytes, false
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return bodyBytes, false
+	}
+
+	// Check original stream value
+	originalStream := false
+	if v, ok := payload["stream"].(bool); ok {
+		originalStream = v
+	}
+
+	// If already streaming, no modification needed
+	if originalStream {
+		return bodyBytes, false
+	}
+
+	// Force stream: true
+	payload["stream"] = true
+	modifiedBody, err := json.Marshal(payload)
+	if err != nil {
+		return bodyBytes, false
+	}
+
+	return modifiedBody, true
+}

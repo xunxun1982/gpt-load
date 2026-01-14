@@ -576,7 +576,9 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
 
       // Build bound groups icon with click behavior
       const buildBoundGroupsIcon = () => {
-        if (boundCount === 0) return null;
+        if (boundCount === 0) {
+          return null;
+        }
 
         // Single group: direct navigation on click with tooltip
         if (boundCount === 1) {
@@ -596,7 +598,9 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
                     style: "cursor: pointer; flex-shrink: 0;",
                     onClick: (e: Event) => {
                       e.stopPropagation();
-                      if (groupId) handleNavigateToGroup(groupId);
+                      if (groupId) {
+                        handleNavigateToGroup(groupId);
+                      }
                     },
                   },
                   () => h(LinkOutline)
@@ -643,7 +647,9 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
                     {
                       class: "bound-group-item",
                       onClick: () => {
-                        if (g.id) handleNavigateToGroup(g.id);
+                        if (g.id) {
+                          handleNavigateToGroup(g.id);
+                        }
                       },
                     },
                     [
