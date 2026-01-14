@@ -134,9 +134,13 @@ func CollectSourceModels(v1Map map[string]string, v2Map map[string]*ModelRedirec
 // ResolveTargetModel finds the target model from V2 or V1 rules using the provided selector.
 // Returns (targetModel, ruleVersion, targetCount, error).
 // ruleVersion is "v2", "v1", or "" if not found.
+// Note: selector must not be nil when V2 rules exist, otherwise returns error.
 func ResolveTargetModel(sourceModel string, v1Map map[string]string, v2Map map[string]*ModelRedirectRuleV2, selector *ModelRedirectSelector) (string, string, int, error) {
 	// Priority: V2 rules first
 	if rule, found := v2Map[sourceModel]; found {
+		if selector == nil {
+			return "", "", 0, errors.New("selector required for V2 rules")
+		}
 		targetModel, err := selector.SelectTarget(rule)
 		if err != nil {
 			return "", "", 0, err

@@ -243,9 +243,9 @@ type codexStreamItem struct {
 
 // collectCodexStreamToResponse reads streaming response and builds a complete CodexResponse.
 // Waits for response.completed event to get the final response state.
+// Note: Caller is responsible for closing resp.Body (typically via defer in server.go).
 func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, error) {
 	reader := bufio.NewReader(resp.Body)
-	defer resp.Body.Close()
 
 	var finalResp *codexStreamResponse
 	var currentEventType string
