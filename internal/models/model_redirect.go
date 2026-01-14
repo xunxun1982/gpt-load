@@ -45,7 +45,11 @@ type ModelRedirectSelector struct {
 }
 
 // NewModelRedirectSelector creates a new selector instance with the given weighted selection function.
+// Panics if weightedSelectFn is nil to fail fast during initialization.
 func NewModelRedirectSelector(weightedSelectFn WeightedSelectFunc) *ModelRedirectSelector {
+	if weightedSelectFn == nil {
+		panic("weightedSelectFn must not be nil")
+	}
 	return &ModelRedirectSelector{
 		weightedSelect: weightedSelectFn,
 	}

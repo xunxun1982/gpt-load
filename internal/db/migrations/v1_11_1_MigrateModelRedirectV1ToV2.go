@@ -86,8 +86,10 @@ func V1_11_1_MigrateModelRedirectV1ToV2(db *gorm.DB) error {
 		updates = append(updates, updateItem{ID: id, V2JSON: string(v2JSON)})
 	}
 	// Check rows.Err() for any errors during iteration (e.g., network issues, cursor problems)
+	// Return error to fail migration and allow retry, rather than proceeding with incomplete data
 	if err := rows.Err(); err != nil {
-		logrus.WithError(err).Warn("Error occurred during V1->V2 migration row iteration")
+		logrus.WithError(err).Error("Error occurred during V1->V2 migration row iteration")
+		return err
 	}
 	// Note: rows.Close() is already deferred at line 47, no need to call again
 

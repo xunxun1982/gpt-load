@@ -130,9 +130,10 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 	codexResp, err := collectCodexStreamToResponse(resp)
 	if err != nil {
 		logrus.WithError(err).Error("Codex forced stream: failed to collect stream response")
+		// Do not expose internal error details to client for security
 		c.JSON(http.StatusBadGateway, gin.H{
 			"error": gin.H{
-				"message": "Failed to collect stream response: " + err.Error(),
+				"message": "Failed to collect stream response",
 				"type":    "server_error",
 			},
 		})
@@ -244,11 +245,13 @@ type codexStreamItem struct {
 // collectCodexStreamToResponse reads streaming response and builds a complete CodexResponse.
 // Waits for response.completed event to get the final response state.
 // Note: Caller is responsible for closing resp.Body (typically via defer in server.go).
+// Note: Usage field is populated from response.completed event; fallback path has no usage data.
 func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, error) {
 	reader := bufio.NewReader(resp.Body)
 
 	var finalResp *codexStreamResponse
 	var currentEventType string
+	var parseErrorCount int // Track JSON parse errors for debugging
 
 	// Collectors for building response from stream events
 	var outputItems []codexStreamOutputItem
@@ -262,6 +265,7 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
+				logrus.Debug("Codex forced stream: stream ended with EOF")
 				break
 			}
 			return nil, err
@@ -286,6 +290,7 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 
 			var event codexStreamEvent
 			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				parseErrorCount++
 				logrus.WithError(err).Debug("Codex forced stream: failed to parse stream event")
 				continue
 			}
@@ -363,7 +368,7 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 				}
 
 			case "response.completed", "response.done":
-				// Final response - use the complete response if available
+				// Final response - use the complete response if available (includes Usage)
 				if event.Response != nil {
 					finalResp = event.Response
 				}
@@ -371,8 +376,15 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 		}
 	}
 
+	// Log warning if multiple parse errors occurred (may indicate upstream issues)
+	if parseErrorCount > 0 {
+		logrus.WithField("error_count", parseErrorCount).Warn("Codex forced stream: multiple JSON parse errors during stream collection")
+	}
+
 	// If we didn't get a complete response from response.completed, build one from collected data
 	if finalResp == nil {
+		logrus.Warn("Codex forced stream: stream ended without response.completed event, building response from collected data")
+
 		// Add any remaining text content
 		if currentTextContent.Len() > 0 {
 			outputItems = append(outputItems, codexStreamOutputItem{
@@ -385,12 +397,24 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 			})
 		}
 
+		// Log warning if partial function call data exists but not included
+		// Note: We intentionally do NOT include incomplete function calls as they may cause
+		// client-side parsing errors. The client should handle missing tool calls gracefully.
+		if currentToolID != "" || currentToolName != "" || currentToolArgs.Len() > 0 {
+			logrus.WithFields(logrus.Fields{
+				"tool_id":   currentToolID,
+				"tool_name": currentToolName,
+				"args_len":  currentToolArgs.Len(),
+			}).Warn("Codex forced stream: partial function call data lost due to stream interruption")
+		}
+
 		finalResp = &codexStreamResponse{
 			ID:     responseID,
 			Object: "response",
 			Status: "completed",
 			Model:  model,
 			Output: outputItems,
+			// Note: Usage is nil in fallback path as it's only available from response.completed event
 		}
 	}
 
