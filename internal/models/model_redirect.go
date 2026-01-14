@@ -97,7 +97,8 @@ func (s *ModelRedirectSelector) doWeightedSelect(targets []ModelRedirectTarget) 
 	}
 
 	idx := s.weightedSelect(weights)
-	if idx < 0 {
+	// Validate index bounds to prevent panic from invalid weighted selection result
+	if idx < 0 || idx >= len(targets) {
 		return "", errors.New("weighted selection failed")
 	}
 

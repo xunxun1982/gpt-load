@@ -85,7 +85,7 @@ func V1_11_1_MigrateModelRedirectV1ToV2(db *gorm.DB) error {
 
 		updates = append(updates, updateItem{ID: id, V2JSON: string(v2JSON)})
 	}
-	rows.Close()
+	// Note: rows.Close() is already deferred at line 47, no need to call again
 
 	if len(updates) == 0 {
 		return nil

@@ -704,6 +704,13 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			for k, v := range group.ModelRedirectRules {
 				if str, ok := v.(string); ok {
 					v1Rules[k] = str
+				} else {
+					// Skip non-string V1 rules during migration (should not happen in normal cases)
+					logrus.WithFields(logrus.Fields{
+						"group_id":   group.ID,
+						"rule_key":   k,
+						"value_type": fmt.Sprintf("%T", v),
+					}).Debug("Skipping non-string V1 redirect rule during migration")
 				}
 			}
 		}

@@ -178,7 +178,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 		}
 	}
 
-	c.Header("Content-Type", "application/json")
+	// c.Data already sets Content-Type, no need for redundant c.Header call
 	c.Data(resp.StatusCode, "application/json", responseBody)
 }
 
@@ -253,7 +253,8 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 	// Collectors for building response from stream events
 	var outputItems []codexStreamOutputItem
 	var currentTextContent strings.Builder
-	var currentToolID, currentToolName, currentToolArgs string
+	var currentToolArgs strings.Builder // Use strings.Builder for efficient concatenation in loop
+	var currentToolID, currentToolName string
 	var model string
 	var responseID string
 
@@ -306,7 +307,7 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 				if event.Item != nil && event.Item.Type == "function_call" {
 					currentToolID = event.Item.CallID
 					currentToolName = event.Item.Name
-					currentToolArgs = ""
+					currentToolArgs.Reset()
 				}
 
 			case "response.output_text.delta":
@@ -316,7 +317,7 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 
 			case "response.function_call_arguments.delta":
 				if event.Delta != "" {
-					currentToolArgs += event.Delta
+					currentToolArgs.WriteString(event.Delta)
 				}
 
 			case "response.output_item.done":
@@ -347,7 +348,7 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 						}
 						args := event.Item.Arguments
 						if args == "" {
-							args = currentToolArgs
+							args = currentToolArgs.String()
 						}
 						outputItems = append(outputItems, codexStreamOutputItem{
 							Type:      "function_call",
@@ -357,7 +358,7 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 						})
 						currentToolID = ""
 						currentToolName = ""
-						currentToolArgs = ""
+						currentToolArgs.Reset()
 					}
 				}
 

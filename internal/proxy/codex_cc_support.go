@@ -461,8 +461,8 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		}
 		// Disable response storage for privacy (store: false means don't store)
 		// Reference: CLIProxyAPI uses sjson.Set(template, "store", false)
-		storeDisabled := false
-		codexReq.Store = &storeDisabled
+		store := false
+		codexReq.Store = &store
 		// Include encrypted reasoning content for full thinking support
 		codexReq.Include = []string{"reasoning.encrypted_content"}
 	}

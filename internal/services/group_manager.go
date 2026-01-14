@@ -351,11 +351,13 @@ func parseModelRedirectRulesV2(rulesJSON []byte, groupName string) map[string]*m
 			}
 		}
 
+		// Delete rule if no valid enabled targets to prevent runtime errors in SelectTarget()
 		if validTargetCount == 0 {
 			logrus.WithFields(logrus.Fields{
 				"group_name":   groupName,
 				"source_model": sourceModel,
-			}).Warn("V2 redirect rule has no valid enabled targets")
+			}).Warn("V2 redirect rule has no valid enabled targets, removing from map")
+			delete(rules, sourceModel)
 		}
 	}
 
