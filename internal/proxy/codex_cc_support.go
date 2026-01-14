@@ -435,13 +435,15 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	}
 
 	// Configure reasoning for Codex API (Responses API) only when thinking is enabled.
-	// AI REVIEW NOTE: Reasoning/Include fields are now gated behind thinking mode.
 	// Non-reasoning models (e.g., gpt-4o) will reject these parameters with 400 errors.
 	// Only set when client explicitly requests thinking to avoid breaking non-reasoning models.
 	// Codex uses "reasoning.effort" (nested object) vs OpenAI Chat's "reasoning_effort" (flat field).
 	//
 	// NOTE: Users can override reasoning via param_overrides, e.g., {"reasoning": {"effort": "xhigh", "summary": "auto"}}
 	// When overriding, include "summary" field to ensure reasoning summaries are returned in streaming responses.
+	//
+	// Reference: CLIProxyAPI always sets these parameters, but we only set them when thinking is enabled
+	// to avoid breaking non-reasoning models.
 	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
 		// Derive effort from thinking budget, default to "medium" when budget is 0 or not specified
 		reasoningEffort := "medium"
@@ -457,9 +459,10 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 			Effort:  reasoningEffort,
 			Summary: "auto", // Enable reasoning summary for streaming responses
 		}
-		// Disable response storage for privacy
-		storeDisabled := false
-		codexReq.Store = &storeDisabled
+		// Disable response storage for privacy (store: false means don't store)
+		// Reference: CLIProxyAPI uses sjson.Set(template, "store", false)
+		store := false
+		codexReq.Store = &store
 		// Include encrypted reasoning content for full thinking support
 		codexReq.Include = []string{"reasoning.encrypted_content"}
 	}

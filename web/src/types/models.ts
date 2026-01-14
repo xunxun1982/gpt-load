@@ -45,6 +45,21 @@ export interface PathRedirectRule {
   to: string;
 }
 
+// V2 Model Redirect Types (one-to-many mapping with weighted selection)
+export interface ModelRedirectTarget {
+  model: string;
+  weight?: number; // Default 100, 0 means disabled
+  enabled?: boolean; // Default true
+}
+
+export interface ModelRedirectRuleV2 {
+  targets: ModelRedirectTarget[];
+  fallback?: string[]; // P1 extension
+}
+
+// V2 rules map: source model -> rule
+export type ModelRedirectRulesV2 = Record<string, ModelRedirectRuleV2>;
+
 // Sub-group configuration (used when creating/updating)
 export interface SubGroupConfig {
   group_id: number;
@@ -84,7 +99,8 @@ export interface Group {
   endpoint?: string;
   param_overrides: Record<string, unknown>;
   model_mapping?: string; // Deprecated: for backward compatibility
-  model_redirect_rules: Record<string, string>;
+  model_redirect_rules: Record<string, string>; // V1: one-to-one mapping
+  model_redirect_rules_v2?: ModelRedirectRulesV2; // V2: one-to-many mapping
   model_redirect_strict: boolean;
   header_rules?: HeaderRule[];
   path_redirects?: PathRedirectRule[];

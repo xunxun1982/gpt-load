@@ -94,8 +94,8 @@ func (gm *GroupManager) Initialize() error {
 				"id, name, display_name, description, group_type, enabled, upstreams, " +
 					"validation_endpoint, channel_type, sort, test_model, param_overrides, " +
 					"config, header_rules, model_mapping, model_redirect_rules, " +
-					"model_redirect_strict, path_redirects, proxy_keys, last_validated_at, " +
-					"created_at, updated_at",
+					"model_redirect_rules_v2, model_redirect_strict, path_redirects, proxy_keys, " +
+					"last_validated_at, created_at, updated_at",
 			).Find(&groups).Error
 			groupsCancel()
 			if err == nil {
@@ -191,7 +191,8 @@ func (gm *GroupManager) Initialize() error {
 				}
 			}
 
-			// Parse model redirect rules with error handling
+			// Parse model redirect rules with error handling (V1: one-to-one mapping)
+			// NOTE: V1 rules are migrated to V2 at startup (v1.11.1), kept for backward compatibility
 			g.ModelRedirectMap = make(map[string]string)
 			if len(group.ModelRedirectRules) > 0 {
 				hasInvalidRules := false
@@ -212,6 +213,9 @@ func (gm *GroupManager) Initialize() error {
 					logrus.WithField("group_name", g.Name).Warn("Group has invalid model redirect rules, some rules were skipped. Please check the configuration.")
 				}
 			}
+
+			// Parse V2 model redirect rules (one-to-many mapping with weighted selection)
+			g.ModelRedirectMapV2 = parseModelRedirectRulesV2(group.ModelRedirectRulesV2, g.Name)
 
 			// Parse path redirect rules (OpenAI only)
 			if len(group.PathRedirects) > 0 {
@@ -305,4 +309,61 @@ func (gm *GroupManager) Stop(ctx context.Context) {
 	if gm.syncer != nil {
 		gm.syncer.Stop()
 	}
+}
+
+// parseModelRedirectRulesV2 parses V2 model redirect rules from JSON.
+// Returns nil if the input is empty or parsing fails.
+func parseModelRedirectRulesV2(rulesJSON []byte, groupName string) map[string]*models.ModelRedirectRuleV2 {
+	if len(rulesJSON) == 0 {
+		return nil
+	}
+
+	var rules map[string]*models.ModelRedirectRuleV2
+	if err := json.Unmarshal(rulesJSON, &rules); err != nil {
+		logrus.WithError(err).WithField("group_name", groupName).Warn("Failed to parse V2 model redirect rules")
+		return nil
+	}
+
+	// Validate rules and log warnings for invalid configurations
+	for sourceModel, rule := range rules {
+		if rule == nil || len(rule.Targets) == 0 {
+			logrus.WithFields(logrus.Fields{
+				"group_name":   groupName,
+				"source_model": sourceModel,
+			}).Warn("V2 redirect rule has no targets, will be skipped")
+			delete(rules, sourceModel)
+			continue
+		}
+
+		// Validate each target
+		validTargetCount := 0
+		for i, target := range rule.Targets {
+			if target.Model == "" {
+				logrus.WithFields(logrus.Fields{
+					"group_name":   groupName,
+					"source_model": sourceModel,
+					"target_index": i,
+				}).Warn("V2 redirect target has empty model name")
+				continue
+			}
+			if target.IsEnabled() && target.GetWeight() > 0 {
+				validTargetCount++
+			}
+		}
+
+		// Delete rule if no valid enabled targets to prevent runtime errors in SelectTarget()
+		if validTargetCount == 0 {
+			logrus.WithFields(logrus.Fields{
+				"group_name":   groupName,
+				"source_model": sourceModel,
+			}).Warn("V2 redirect rule has no valid enabled targets, removing from map")
+			delete(rules, sourceModel)
+		}
+	}
+
+	if len(rules) == 0 {
+		return nil
+	}
+
+	return rules
 }

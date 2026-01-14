@@ -146,9 +146,12 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 }
 
 // ApplyModelRedirect overrides the default implementation for Gemini channel.
+// Supports both V1 (one-to-one) and V2 (one-to-many) redirect rules.
 // Returns the modified body bytes, the original model name (empty if no redirect), and error.
 func (ch *GeminiChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error) {
-	if len(group.ModelRedirectMap) == 0 {
+	hasV1Rules := len(group.ModelRedirectMap) > 0
+	hasV2Rules := len(group.ModelRedirectMapV2) > 0
+	if !hasV1Rules && !hasV2Rules {
 		return bodyBytes, "", nil
 	}
 
@@ -160,6 +163,7 @@ func (ch *GeminiChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte,
 }
 
 // applyNativeFormatRedirect handles model redirection for Gemini native format.
+// Supports both V1 and V2 redirect rules with V2 taking priority.
 // Returns the modified body bytes, the original model name (empty if no redirect), and error.
 func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error) {
 	path := req.URL.Path
@@ -170,7 +174,16 @@ func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes 
 			modelPart := parts[i+1]
 			originalModel := strings.Split(modelPart, ":")[0]
 
-			if targetModel, found := group.ModelRedirectMap[originalModel]; found {
+			// Resolve target model (V2 first, then V1)
+			targetModel, ruleVersion, targetCount, err := models.ResolveTargetModel(
+				originalModel, group.ModelRedirectMap, group.ModelRedirectMapV2, modelRedirectSelector,
+			)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to select target model: %w", err)
+			}
+
+			if targetModel != "" {
+				// Apply the redirect by updating URL path
 				suffix := ""
 				if colonIndex := strings.Index(modelPart, ":"); colonIndex != -1 {
 					suffix = modelPart[colonIndex:]
@@ -182,14 +195,15 @@ func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes 
 					"group":          group.Name,
 					"original_model": originalModel,
 					"target_model":   targetModel,
+					"target_count":   targetCount,
 					"channel":        "gemini_native",
-					"original_path":  path,
-					"new_path":       req.URL.Path,
+					"rule_version":   ruleVersion,
 				}).Debug("Model redirected")
 
 				return bodyBytes, originalModel, nil
 			}
 
+			// No redirect rule found
 			if group.ModelRedirectStrict {
 				return nil, "", fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)
 			}
@@ -201,6 +215,7 @@ func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes 
 }
 
 // TransformModelList transforms the model list response based on redirect rules.
+// Supports both V1 and V2 redirect rules.
 func (ch *GeminiChannel) TransformModelList(req *http.Request, bodyBytes []byte, group *models.Group) (map[string]any, error) {
 	var response map[string]any
 	if err := json.Unmarshal(bodyBytes, &response); err != nil {
@@ -219,14 +234,16 @@ func (ch *GeminiChannel) TransformModelList(req *http.Request, bodyBytes []byte,
 	return response, nil
 }
 
-// transformGeminiNativeFormat transforms Gemini native format model list
+// transformGeminiNativeFormat transforms Gemini native format model list.
+// Supports both V1 and V2 redirect rules.
 func (ch *GeminiChannel) transformGeminiNativeFormat(req *http.Request, response map[string]any, modelsInterface any, group *models.Group) map[string]any {
 	upstreamModels, ok := modelsInterface.([]any)
 	if !ok {
 		return response
 	}
 
-	configuredModels := buildConfiguredGeminiModels(group.ModelRedirectMap)
+	// Build configured models from both V1 and V2 rules
+	configuredModels := buildConfiguredGeminiModelsFromRules(group.ModelRedirectMap, group.ModelRedirectMapV2)
 
 	// Strict mode: return only configured models (whitelist)
 	if group.ModelRedirectStrict {
@@ -271,26 +288,28 @@ func (ch *GeminiChannel) transformGeminiNativeFormat(req *http.Request, response
 	return response
 }
 
-// buildConfiguredGeminiModels builds a list of models from redirect rules for Gemini format
-func buildConfiguredGeminiModels(redirectMap map[string]string) []any {
-	if len(redirectMap) == 0 {
+// buildConfiguredGeminiModelsFromRules builds a list of models from redirect rules for Gemini format.
+// If V2 rules exist, only V2 source models are used (V1 is ignored for backward compatibility).
+func buildConfiguredGeminiModelsFromRules(v1Map map[string]string, v2Map map[string]*models.ModelRedirectRuleV2) []any {
+	sourceModels := models.CollectSourceModels(v1Map, v2Map)
+	if len(sourceModels) == 0 {
 		return []any{}
 	}
 
-	models := make([]any, 0, len(redirectMap))
-	for sourceModel := range redirectMap {
+	result := make([]any, 0, len(sourceModels))
+	for _, sourceModel := range sourceModels {
 		modelName := sourceModel
 		if !strings.HasPrefix(sourceModel, "models/") {
 			modelName = "models/" + sourceModel
 		}
 
-		models = append(models, map[string]any{
+		result = append(result, map[string]any{
 			"name":                       modelName,
 			"displayName":                sourceModel,
 			"supportedGenerationMethods": []string{"generateContent"},
 		})
 	}
-	return models
+	return result
 }
 
 // mergeGeminiModelLists merges upstream and configured model lists for Gemini format

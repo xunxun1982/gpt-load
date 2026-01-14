@@ -138,7 +138,8 @@ type Group struct {
 	Config               datatypes.JSONMap    `gorm:"type:json" json:"config"`
 	HeaderRules          datatypes.JSON       `gorm:"type:json" json:"header_rules"`
 	ModelMapping         string               `gorm:"type:text" json:"model_mapping"`         // Deprecated: use ModelRedirectRules instead
-	ModelRedirectRules   datatypes.JSONMap    `gorm:"type:json" json:"model_redirect_rules"`  // Model redirect rules from upstream
+	ModelRedirectRules   datatypes.JSONMap    `gorm:"type:json" json:"model_redirect_rules"`    // Model redirect rules (one-to-one)
+	ModelRedirectRulesV2 datatypes.JSON       `gorm:"type:json" json:"model_redirect_rules_v2"` // Enhanced redirect rules (one-to-many)
 	ModelRedirectStrict  bool                 `gorm:"default:false" json:"model_redirect_strict"` // Strict mode for model redirect
 	PathRedirects        datatypes.JSON       `gorm:"type:json" json:"path_redirects"`        // JSON array of {from,to} rules (OpenAI only)
 	ParentGroupID        *uint                `gorm:"index" json:"parent_group_id"`           // Parent group ID for child groups
@@ -151,11 +152,12 @@ type Group struct {
 	UpdatedAt            time.Time            `json:"updated_at"`
 
 	// For cache
-	ProxyKeysMap         map[string]struct{} `gorm:"-" json:"-"`
-	HeaderRuleList       []HeaderRule        `gorm:"-" json:"-"`
-	ModelMappingCache    map[string]string   `gorm:"-" json:"-"` // Deprecated: for backward compatibility
-	ModelRedirectMap     map[string]string   `gorm:"-" json:"-"` // Parsed model redirect rules for performance
-	PathRedirectRuleList []PathRedirectRule  `gorm:"-" json:"-"` // Parsed path redirect rules for performance (OpenAI)
+	ProxyKeysMap         map[string]struct{}              `gorm:"-" json:"-"`
+	HeaderRuleList       []HeaderRule                     `gorm:"-" json:"-"`
+	ModelMappingCache    map[string]string                `gorm:"-" json:"-"` // Deprecated: for backward compatibility
+	ModelRedirectMap     map[string]string                `gorm:"-" json:"-"` // Parsed model redirect rules (one-to-one)
+	ModelRedirectMapV2   map[string]*ModelRedirectRuleV2  `gorm:"-" json:"-"` // Parsed V2 rules (one-to-many)
+	PathRedirectRuleList []PathRedirectRule               `gorm:"-" json:"-"` // Parsed path redirect rules (OpenAI)
 }
 
 // APIKey corresponds to the api_keys table.
