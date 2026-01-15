@@ -517,15 +517,11 @@ func (s *HubAccessKeyService) generateUniqueName(ctx context.Context, tx *gorm.D
 		}
 
 		// Generate new name with random suffix
-		if attempt < maxAttempts-1 {
-			if len(baseName)+4 > 100 {
-				baseName = baseName[:96]
-			}
-			name = baseName + utils.GenerateRandomSuffix()
-		} else {
-			return "", fmt.Errorf("failed to generate unique name for %s after %d attempts", baseName, maxAttempts)
+		if len(baseName)+4 > 100 {
+			baseName = baseName[:96]
 		}
+		name = baseName + utils.GenerateRandomSuffix()
 	}
 
-	return name, nil
+	return "", fmt.Errorf("failed to generate unique name for %s after %d attempts", baseName, maxAttempts)
 }

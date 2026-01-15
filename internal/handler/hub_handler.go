@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -419,11 +420,11 @@ func (h *HubHandler) getErrorType(status int) string {
 
 // bodyReader wraps a byte slice to implement io.ReadCloser.
 type bodyReader struct {
-	*strings.Reader
+	*bytes.Reader
 }
 
 func newBodyReader(data []byte) *bodyReader {
-	return &bodyReader{Reader: strings.NewReader(string(data))}
+	return &bodyReader{Reader: bytes.NewReader(data)}
 }
 
 func (b *bodyReader) Close() error {
@@ -523,9 +524,9 @@ func (h *HubHandler) HandleGetHubSettings(c *gin.Context) {
 
 // UpdateHubSettingsRequest defines the request body for updating Hub settings.
 type UpdateHubSettingsRequest struct {
-	MaxRetries      int     `json:"max_retries"`
-	RetryDelay      int     `json:"retry_delay"`
-	HealthThreshold float64 `json:"health_threshold"`
+	MaxRetries      int     `json:"max_retries" binding:"min=0"`
+	RetryDelay      int     `json:"retry_delay" binding:"min=0"`
+	HealthThreshold float64 `json:"health_threshold" binding:"min=0,max=1"`
 	EnablePriority  bool    `json:"enable_priority"`
 }
 
@@ -536,6 +537,12 @@ func (h *HubHandler) HandleUpdateHubSettings(c *gin.Context) {
 	var req UpdateHubSettingsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	// Additional validation for health threshold range
+	if req.HealthThreshold < 0 || req.HealthThreshold > 1 {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "health_threshold must be between 0 and 1"))
 		return
 	}
 

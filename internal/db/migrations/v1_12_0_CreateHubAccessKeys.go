@@ -20,7 +20,7 @@ import (
 //
 // Indexes:
 // - idx_hub_access_keys_enabled: For filtering by enabled status
-// - idx_hub_access_keys_key_value: Unique index for key lookup during validation
+// - idx_hub_access_keys_key_hash: Unique index for key hash lookup during validation
 func V1_12_0_CreateHubAccessKeys(db *gorm.DB) error {
 	migrator := db.Migrator()
 

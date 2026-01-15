@@ -684,12 +684,17 @@ func TestAccessKeyCRUD(t *testing.T) {
 			t.Fatalf("failed to unmarshal response: %v", err)
 		}
 
-		data, ok := resp["data"].([]any)
+		data, ok := resp["data"].(map[string]any)
 		if !ok {
-			t.Fatal("response should contain data array")
+			t.Fatal("response should contain data object")
 		}
 
-		if len(data) < 1 {
+		accessKeys, ok := data["access_keys"].([]any)
+		if !ok {
+			t.Fatal("response data should contain access_keys array")
+		}
+
+		if len(accessKeys) < 1 {
 			t.Error("should have at least 1 access key")
 		}
 	})

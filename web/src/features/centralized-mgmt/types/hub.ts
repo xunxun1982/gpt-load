@@ -8,6 +8,8 @@ export interface ModelSource {
   group_id: number;
   group_name: string;
   group_type: "standard" | "aggregate";
+  is_child_group: boolean; // True if this is a child group of a standard group
+  channel_type: string; // Channel type (e.g., "openai", "claude", etc.)
   sort: number;
   weight: number;
   health_score: number;

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gpt-load/internal/models"
@@ -77,8 +78,8 @@ type HubService struct {
 	modelPoolCacheTTL time.Duration
 	modelPoolMaxTTL   time.Duration
 
-	// Health score threshold for group selection
-	healthScoreThreshold float64
+	// Health score threshold for group selection (use atomic for thread-safe access)
+	healthScoreThreshold atomic.Value // stores float64
 }
 
 // NewHubService creates a new HubService instance.
@@ -87,19 +88,27 @@ func NewHubService(
 	groupManager *services.GroupManager,
 	dynamicWeightManager *services.DynamicWeightManager,
 ) *HubService {
-	return &HubService{
+	svc := &HubService{
 		db:                   db,
 		groupManager:         groupManager,
 		dynamicWeightManager: dynamicWeightManager,
 		modelPoolCacheTTL:    defaultModelPoolCacheTTL,
 		modelPoolMaxTTL:      defaultModelPoolCacheMaxTTL,
-		healthScoreThreshold: defaultHealthScoreThreshold,
 	}
+	svc.healthScoreThreshold.Store(defaultHealthScoreThreshold)
+	return svc
 }
 
 // SetHealthScoreThreshold sets the minimum health score for group selection.
+// Thread-safe using atomic operations.
 func (s *HubService) SetHealthScoreThreshold(threshold float64) {
-	s.healthScoreThreshold = threshold
+	s.healthScoreThreshold.Store(threshold)
+}
+
+// getHealthScoreThreshold returns the current health score threshold.
+// Thread-safe using atomic operations.
+func (s *HubService) getHealthScoreThreshold() float64 {
+	return s.healthScoreThreshold.Load().(float64)
 }
 
 // GetModelPool returns the aggregated model pool from all enabled groups.
@@ -152,6 +161,9 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 		return nil, err
 	}
 
+	// Get health score threshold once for this build
+	healthThreshold := s.getHealthScoreThreshold()
+
 	// Map to aggregate models by name
 	modelMap := make(map[string][]ModelSource)
 
@@ -172,7 +184,7 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 		}
 
 		effectiveWeight := int(float64(baseWeight) * healthScore)
-		if effectiveWeight < 1 && healthScore >= s.healthScoreThreshold {
+		if effectiveWeight < 1 && healthScore >= healthThreshold {
 			effectiveWeight = 1
 		}
 
@@ -224,9 +236,22 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 // For aggregate groups, returns the intersection of models from all sub-groups
 // (only models that exist in ALL sub-groups are valid for aggregation).
 func (s *HubService) getGroupModels(group *models.Group) []string {
+	return s.getGroupModelsWithVisited(group, make(map[uint]struct{}))
+}
+
+// getGroupModelsWithVisited returns the list of virtual models with cycle detection.
+// Uses visited set to prevent infinite recursion on circular group references.
+func (s *HubService) getGroupModelsWithVisited(group *models.Group, visited map[uint]struct{}) []string {
+	// Check for circular reference
+	if _, seen := visited[group.ID]; seen {
+		logrus.WithField("group_id", group.ID).Warn("Circular reference detected in group hierarchy")
+		return nil
+	}
+	visited[group.ID] = struct{}{}
+
 	if group.GroupType == "aggregate" {
 		// For aggregate groups, get intersection of models from all sub-groups
-		return s.getAggregateGroupModels(group.ID)
+		return s.getAggregateGroupModelsWithVisited(group.ID, visited)
 	}
 
 	// For standard groups, only use V2 redirect rules (V1 has been migrated)
@@ -248,6 +273,12 @@ func (s *HubService) getGroupModels(group *models.Group) []string {
 // Only models that exist in ALL sub-groups are returned, as aggregation requires
 // the same virtual model to be available across all sub-groups.
 func (s *HubService) getAggregateGroupModels(aggregateGroupID uint) []string {
+	return s.getAggregateGroupModelsWithVisited(aggregateGroupID, make(map[uint]struct{}))
+}
+
+// getAggregateGroupModelsWithVisited returns the intersection of models with cycle detection.
+// Uses visited set to prevent infinite recursion on circular group references.
+func (s *HubService) getAggregateGroupModelsWithVisited(aggregateGroupID uint, visited map[uint]struct{}) []string {
 	// Get sub-group relationships
 	var subGroupRels []models.GroupSubGroup
 	if err := s.db.Where("group_id = ? AND weight > 0", aggregateGroupID).Find(&subGroupRels).Error; err != nil {
@@ -262,6 +293,15 @@ func (s *HubService) getAggregateGroupModels(aggregateGroupID uint) []string {
 	// Collect models from each enabled sub-group
 	var allSubGroupModels []map[string]struct{}
 	for _, sg := range subGroupRels {
+		// Check for circular reference before querying
+		if _, seen := visited[sg.SubGroupID]; seen {
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group_id": aggregateGroupID,
+				"sub_group_id":       sg.SubGroupID,
+			}).Warn("Circular reference detected in sub-group hierarchy")
+			continue
+		}
+
 		var subGroup models.Group
 		if err := s.db.Select("id, name, group_type, model_redirect_rules_v2, enabled").
 			First(&subGroup, sg.SubGroupID).Error; err != nil {
@@ -272,8 +312,8 @@ func (s *HubService) getAggregateGroupModels(aggregateGroupID uint) []string {
 			continue
 		}
 
-		// Recursively get models (handles nested aggregates)
-		subModels := s.getGroupModels(&subGroup)
+		// Recursively get models with visited set (handles nested aggregates)
+		subModels := s.getGroupModelsWithVisited(&subGroup, visited)
 		if len(subModels) == 0 {
 			// If any sub-group has no models, intersection is empty
 			return nil
@@ -367,10 +407,13 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string) 
 		return nil, nil // Model not found
 	}
 
+	// Get health score threshold once
+	healthThreshold := s.getHealthScoreThreshold()
+
 	// Filter by enabled and health score threshold
 	var validSources []ModelSource
 	for _, source := range sources {
-		if source.Enabled && source.HealthScore >= s.healthScoreThreshold {
+		if source.Enabled && source.HealthScore >= healthThreshold {
 			validSources = append(validSources, source)
 		}
 	}
@@ -461,22 +504,25 @@ func (s *HubService) GetAvailableModels(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 
-	models := make([]string, 0, len(pool))
+	// Get health score threshold once
+	healthThreshold := s.getHealthScoreThreshold()
+
+	availableModels := make([]string, 0, len(pool))
 	for _, entry := range pool {
 		// Only include models that have at least one healthy source
 		hasHealthySource := false
 		for _, source := range entry.Sources {
-			if source.Enabled && source.HealthScore >= s.healthScoreThreshold {
+			if source.Enabled && source.HealthScore >= healthThreshold {
 				hasHealthySource = true
 				break
 			}
 		}
 		if hasHealthySource {
-			models = append(models, entry.ModelName)
+			availableModels = append(availableModels, entry.ModelName)
 		}
 	}
 
-	return models, nil
+	return availableModels, nil
 }
 
 // GetModelSources returns the sources for a specific model.
@@ -507,9 +553,12 @@ func (s *HubService) IsModelAvailable(ctx context.Context, modelName string) (bo
 		return false, nil
 	}
 
+	// Get health score threshold once
+	healthThreshold := s.getHealthScoreThreshold()
+
 	// Check if at least one source is healthy
 	for _, source := range sources {
-		if source.Enabled && source.HealthScore >= s.healthScoreThreshold {
+		if source.Enabled && source.HealthScore >= healthThreshold {
 			return true, nil
 		}
 	}
@@ -623,7 +672,13 @@ func (s *HubService) BatchUpdateModelGroupPriorities(ctx context.Context, update
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, update := range updates {
 			if update.Priority < 0 || update.Priority > 999 {
-				continue // Skip invalid priorities
+				// Log skipped invalid priorities for debugging
+				logrus.WithFields(logrus.Fields{
+					"model_name": update.ModelName,
+					"group_id":   update.GroupID,
+					"priority":   update.Priority,
+				}).Warn("Skipping invalid priority in batch update")
+				continue
 			}
 
 			var existing HubModelGroupPriority
@@ -727,10 +782,13 @@ func (s *HubService) SelectGroupForModelWithPriority(ctx context.Context, modelN
 		return nil, nil // Model not found
 	}
 
+	// Get health score threshold once
+	healthThreshold := s.getHealthScoreThreshold()
+
 	// Filter by enabled, non-zero priority, and health score threshold
 	var validGroups []ModelGroupPriorityDTO
 	for _, g := range groups {
-		if g.Enabled && g.Priority > 0 && g.HealthScore >= s.healthScoreThreshold {
+		if g.Enabled && g.Priority > 0 && g.HealthScore >= healthThreshold {
 			validGroups = append(validGroups, g)
 		}
 	}

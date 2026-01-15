@@ -230,6 +230,7 @@ async function handleSubmit() {
     }
   } catch (error) {
     console.error("Failed to save access key:", error);
+    message.error(t("common.saveFailed"));
   } finally {
     loading.value = false;
   }

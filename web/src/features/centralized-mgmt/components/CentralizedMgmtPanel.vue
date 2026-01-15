@@ -100,6 +100,7 @@ async function loadSettings() {
     hubSettings.value = await hubApi.getSettings();
   } catch (e) {
     console.error("Failed to load settings:", e);
+    message.error(t("common.loadFailed"));
   } finally {
     settingsLoading.value = false;
   }
@@ -113,6 +114,7 @@ async function saveSettings() {
     message.success(t("common.operationSuccess"));
   } catch (e) {
     console.error("Failed to save settings:", e);
+    message.error(t("common.saveFailed"));
   } finally {
     settingsLoading.value = false;
   }

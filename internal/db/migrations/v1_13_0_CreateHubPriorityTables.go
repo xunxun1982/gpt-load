@@ -47,6 +47,22 @@ func V1_13_0_CreateHubPriorityTables(db *gorm.DB) error {
 		}
 	} else {
 		logrus.Info("Table hub_settings already exists, skipping creation")
+
+		// Ensure default settings exist even if previous insertion failed
+		var count int64
+		if err := db.Model(&centralizedmgmt.HubSettings{}).Count(&count).Error; err == nil && count == 0 {
+			defaultSettings := centralizedmgmt.HubSettings{
+				MaxRetries:      3,
+				RetryDelay:      100,
+				HealthThreshold: 0.5,
+				EnablePriority:  true,
+			}
+			if err := db.Create(&defaultSettings).Error; err != nil {
+				logrus.WithError(err).Warn("Failed to insert default hub settings on retry")
+			} else {
+				logrus.Info("Inserted default hub settings on retry")
+			}
+		}
 	}
 
 	return nil

@@ -122,6 +122,14 @@ func HubAdminAuthMiddleware(authConfig types.AuthConfig) gin.HandlerFunc {
 			return
 		}
 
+		// Reject if server has no auth key configured (security: prevent empty key bypass)
+		if authConfig.Key == "" {
+			logrus.Warn("Hub admin auth rejected: AUTH_KEY not configured")
+			response.Error(c, app_errors.ErrUnauthorized)
+			c.Abort()
+			return
+		}
+
 		// Constant-time comparison to prevent timing attacks
 		if subtle.ConstantTimeCompare([]byte(key), []byte(authConfig.Key)) != 1 {
 			response.Error(c, app_errors.ErrUnauthorized)
