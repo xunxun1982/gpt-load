@@ -544,7 +544,11 @@ func TestHandleListModelsWithRestrictedKey(t *testing.T) {
 	}
 
 	if len(data) > 0 {
-		model := data[0].(map[string]any)
+		// Use checked type assertion to avoid panic on unexpected data format
+		model, ok := data[0].(map[string]any)
+		if !ok {
+			t.Fatal("expected model to be a map[string]any")
+		}
 		if model["id"] != "gpt-4" {
 			t.Errorf("expected model 'gpt-4', got %v", model["id"])
 		}
@@ -604,14 +608,15 @@ func TestHandleGetModelPool(t *testing.T) {
 		t.Fatal("response should contain data object")
 	}
 
-	models, ok := data["models"].([]any)
+	// Use modelList to avoid shadowing the imported models package
+	modelList, ok := data["models"].([]any)
 	if !ok {
 		t.Fatal("response data should contain models array")
 	}
 
 	// Should have at least 2 models (from V2 redirect rules)
-	if len(models) < 2 {
-		t.Errorf("expected at least 2 models in pool, got %d", len(models))
+	if len(modelList) < 2 {
+		t.Errorf("expected at least 2 models in pool, got %d", len(modelList))
 	}
 }
 

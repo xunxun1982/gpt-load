@@ -231,16 +231,17 @@ function getHealthScoreClass(score: number): string {
 }
 
 // Format ISO datetime string to localized format
+// Note: Date constructor doesn't throw on invalid strings, it returns Invalid Date
+// So we check with isNaN instead of try/catch
 function formatDateTime(isoString: string | null | undefined): string {
   if (!isoString) {
     return "-";
   }
-  try {
-    const date = new Date(isoString);
-    return date.toLocaleString();
-  } catch {
+  const date = new Date(isoString);
+  if (isNaN(date.getTime())) {
     return isoString;
   }
+  return date.toLocaleString();
 }
 </script>
 

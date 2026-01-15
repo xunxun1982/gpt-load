@@ -123,6 +123,7 @@ async function loadAccessKeys() {
   } catch (error) {
     console.error("Failed to load access keys:", error);
     accessKeys.value = [];
+    // Error already handled by interceptor, no additional message needed
   } finally {
     loading.value = false;
   }
@@ -137,6 +138,7 @@ async function handleToggle(key: HubAccessKey, enabled: boolean) {
     message.success(t("hub.accessKeyToggled"));
   } catch (error) {
     console.error("Failed to toggle access key:", error);
+    // Error already handled by interceptor, no additional message needed
   } finally {
     togglingIds.value.delete(key.id);
   }
@@ -156,6 +158,7 @@ function handleDelete(key: HubAccessKey) {
         await loadAccessKeys();
       } catch (error) {
         console.error("Failed to delete access key:", error);
+        // Error already handled by interceptor, no additional message needed
       }
     },
   });

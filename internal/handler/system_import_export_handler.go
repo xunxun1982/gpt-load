@@ -164,6 +164,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 		ExportedAt:     systemData.ExportedAt,
 		SystemSettings: systemData.SystemSettings,
 		Groups:         groupExports,
+		HubAccessKeys:  systemData.HubAccessKeys,
 	}
 
 	// Convert managed sites if present
@@ -241,10 +242,11 @@ func (s *Server) ExportAll(c *gin.Context) {
 
 // SystemImportData represents the data structure for system-wide import.
 type SystemImportData struct {
-	Version        string                  `json:"version"`
-	SystemSettings map[string]string       `json:"system_settings"`
-	Groups         []GroupExportData       `json:"groups"`
-	ManagedSites   *ManagedSitesExportData `json:"managed_sites,omitempty"`
+	Version        string                           `json:"version"`
+	SystemSettings map[string]string                `json:"system_settings"`
+	Groups         []GroupExportData                `json:"groups"`
+	ManagedSites   *ManagedSitesExportData          `json:"managed_sites,omitempty"`
+	HubAccessKeys  []services.HubAccessKeyExportInfo `json:"hub_access_keys,omitempty"`
 }
 
 // ImportAll imports all system data (system settings and all groups).
@@ -313,6 +315,7 @@ outer:
 		ExportedAt:     "", // Not needed for import
 		SystemSettings: importData.SystemSettings,
 		Groups:         make([]services.GroupExportData, 0, len(importData.Groups)),
+		HubAccessKeys:  importData.HubAccessKeys,
 	}
 
 	// Convert groups to service format

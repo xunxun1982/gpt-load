@@ -89,6 +89,7 @@ async function handleRefresh() {
     message.success(t("common.operationSuccess"));
   } catch (error) {
     console.error("Failed to refresh:", error);
+    // Error already handled by interceptor, no additional message needed
   } finally {
     refreshing.value = false;
   }
