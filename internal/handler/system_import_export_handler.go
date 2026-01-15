@@ -159,12 +159,33 @@ func (s *Server) ExportAll(c *gin.Context) {
 	logrus.Debugf("System export via new service: Total %d keys exported across %d groups",
 		totalKeys, len(systemData.Groups))
 
+	// Convert HubAccessKeys; when plain mode, decrypt key values
+	hubAccessKeys := systemData.HubAccessKeys
+	if exportMode == "plain" && len(hubAccessKeys) > 0 {
+		decryptedKeys := make([]services.HubAccessKeyExportInfo, 0, len(hubAccessKeys))
+		for _, key := range hubAccessKeys {
+			kv := key.KeyValue
+			if dec, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
+				kv = dec
+			} else {
+				logrus.WithError(derr).Debugf("Failed to decrypt hub access key %s during plain export, keeping original value", key.Name)
+			}
+			decryptedKeys = append(decryptedKeys, services.HubAccessKeyExportInfo{
+				Name:          key.Name,
+				KeyValue:      kv,
+				AllowedModels: key.AllowedModels,
+				Enabled:       key.Enabled,
+			})
+		}
+		hubAccessKeys = decryptedKeys
+	}
+
 	exportData := SystemExportData{
 		Version:        systemData.Version,
 		ExportedAt:     systemData.ExportedAt,
 		SystemSettings: systemData.SystemSettings,
 		Groups:         groupExports,
-		HubAccessKeys:  systemData.HubAccessKeys,
+		HubAccessKeys:  hubAccessKeys,
 	}
 
 	// Convert managed sites if present
@@ -309,13 +330,35 @@ outer:
 		}
 	}
 
+	// Convert HubAccessKeys; if input is plaintext, encrypt key values
+	hubAccessKeys := importData.HubAccessKeys
+	if inputIsPlain && len(hubAccessKeys) > 0 {
+		encryptedKeys := make([]services.HubAccessKeyExportInfo, 0, len(hubAccessKeys))
+		for _, key := range hubAccessKeys {
+			kv := key.KeyValue
+			if enc, e := s.EncryptionSvc.Encrypt(kv); e == nil {
+				kv = enc
+			} else {
+				logrus.WithError(e).Warnf("Failed to encrypt hub access key %s during import, skipping", key.Name)
+				continue
+			}
+			encryptedKeys = append(encryptedKeys, services.HubAccessKeyExportInfo{
+				Name:          key.Name,
+				KeyValue:      kv,
+				AllowedModels: key.AllowedModels,
+				Enabled:       key.Enabled,
+			})
+		}
+		hubAccessKeys = encryptedKeys
+	}
+
 	// Convert handler format to service format for unified import
 	serviceImportData := &services.SystemExportData{
 		Version:        importData.Version,
 		ExportedAt:     "", // Not needed for import
 		SystemSettings: importData.SystemSettings,
 		Groups:         make([]services.GroupExportData, 0, len(importData.Groups)),
-		HubAccessKeys:  importData.HubAccessKeys,
+		HubAccessKeys:  hubAccessKeys,
 	}
 
 	// Convert groups to service format

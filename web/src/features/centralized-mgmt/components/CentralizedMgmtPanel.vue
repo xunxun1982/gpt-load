@@ -121,8 +121,8 @@ async function saveSettings() {
   }
 }
 
-function openSettings() {
-  loadSettings();
+async function openSettings() {
+  await loadSettings();
   showSettingsModal.value = true;
 }
 </script>
@@ -221,6 +221,11 @@ function openSettings() {
           <n-text depth="3" style="font-size: 12px; margin-top: -8px">
             {{ t("hub.healthThresholdHint") }}
           </n-text>
+
+          <div class="setting-row">
+            <span class="setting-label">{{ t("hub.enablePriority") }}</span>
+            <n-switch v-model:value="hubSettings.enable_priority" />
+          </div>
         </n-space>
       </n-spin>
       <template #footer>

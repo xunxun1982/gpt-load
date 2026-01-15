@@ -21,9 +21,9 @@ func init() {
 
 // ClaudeCodeUserAgent is the User-Agent header value for Claude Code CLI requests.
 // Format: claude-cli/VERSION (external, cli) - matches the official Claude Code CLI client.
-// NOTE: Version 2.1.7 may be ahead of npm published version (npm shows 2.1.6 as of Jan 2026).
+// NOTE: Version 2.1.7 matches npm published version (@anthropic-ai/claude-code).
 // This version is obtained from actual Claude Code CLI `claude update` command output.
-// AI Review Note: Keeping 2.1.7 as it matches real CLI behavior, not npm registry.
+// AI Review Note: Keeping 2.1.7 as it matches real CLI behavior.
 // Check: run `claude update` or `npm view @anthropic-ai/claude-code version`
 const ClaudeCodeUserAgent = "claude-cli/2.1.7 (external, cli)"
 
