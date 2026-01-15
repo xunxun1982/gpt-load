@@ -12,6 +12,7 @@ import {
   NModal,
   NSpace,
   NSpin,
+  NSwitch,
   NTabPane,
   NTabs,
   NText,
@@ -101,7 +102,9 @@ async function loadSettings() {
     hubSettings.value = await hubApi.getSettings();
   } catch (e) {
     console.error("Failed to load settings:", e);
+    // Explicit error feedback for settings operations (not handled by global interceptor)
     message.error(t("common.loadFailed"));
+    throw e;
   } finally {
     settingsLoading.value = false;
   }
@@ -115,6 +118,7 @@ async function saveSettings() {
     message.success(t("common.operationSuccess"));
   } catch (e) {
     console.error("Failed to save settings:", e);
+    // Explicit error feedback for settings operations (not handled by global interceptor)
     message.error(t("common.saveFailed"));
   } finally {
     settingsLoading.value = false;
@@ -122,8 +126,12 @@ async function saveSettings() {
 }
 
 async function openSettings() {
-  await loadSettings();
-  showSettingsModal.value = true;
+  try {
+    await loadSettings();
+    showSettingsModal.value = true;
+  } catch {
+    // Modal not shown on load failure; error already reported by loadSettings
+  }
 }
 </script>
 
