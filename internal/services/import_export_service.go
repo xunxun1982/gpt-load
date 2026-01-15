@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -626,6 +627,18 @@ type SystemExportData struct {
 	SystemSettings map[string]string         `json:"system_settings"`
 	Groups         []GroupExportData         `json:"groups"`
 	ManagedSites   *ManagedSitesExportData   `json:"managed_sites,omitempty"`
+	HubAccessKeys  []HubAccessKeyExportInfo  `json:"hub_access_keys,omitempty"`
+}
+
+// HubAccessKeyExportInfo represents exported Hub access key data.
+// Key values remain encrypted (same as database storage) for security.
+// Note: This type is intentionally duplicated from centralizedmgmt package
+// to avoid circular dependency between services and centralizedmgmt packages.
+type HubAccessKeyExportInfo struct {
+	Name          string   `json:"name"`
+	KeyValue      string   `json:"key_value"`      // Encrypted value (same as storage)
+	AllowedModels []string `json:"allowed_models"` // Parsed from JSON for readability
+	Enabled       bool     `json:"enabled"`
 }
 
 // ManagedSitesExportData represents exported managed sites data
@@ -891,12 +904,16 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 	// Export managed sites
 	managedSitesData := s.exportManagedSites()
 
+	// Export Hub access keys
+	hubAccessKeysData := s.exportHubAccessKeys()
+
 	return &SystemExportData{
 		Version:        "2.0",
 		ExportedAt:     time.Now().Format(time.RFC3339),
 		SystemSettings: settingsMap,
 		Groups:         groupExports,
 		ManagedSites:   managedSitesData,
+		HubAccessKeys:  hubAccessKeysData,
 	}, nil
 }
 
@@ -964,6 +981,12 @@ func (s *ImportExportService) ImportSystem(tx *gorm.DB, data *SystemExportData) 
 	if data.ManagedSites != nil && len(data.ManagedSites.Sites) > 0 {
 		imported, skipped := s.importManagedSites(tx, data.ManagedSites)
 		logrus.Infof("Managed sites imported: %d imported, %d skipped", imported, skipped)
+	}
+
+	// Import Hub access keys if present
+	if len(data.HubAccessKeys) > 0 {
+		imported, skipped := s.importHubAccessKeys(tx, data.HubAccessKeys)
+		logrus.Infof("Hub access keys imported: %d imported, %d skipped", imported, skipped)
 	}
 
 	// Note: Cache refresh should be handled by the handler after transaction commits
@@ -1152,4 +1175,179 @@ func (s *ImportExportService) generateUniqueSiteName(tx *gorm.DB, baseName strin
 	}
 
 	return siteName, nil
+}
+
+// hubAccessKeyModel represents the database model for Hub access keys (minimal for export/import).
+// Note: This is intentionally separate from centralizedmgmt.HubAccessKey to:
+// 1. Avoid circular dependency between services and centralizedmgmt packages
+// 2. Keep export/import logic self-contained with only the fields needed
+type hubAccessKeyModel struct {
+	ID            uint   `gorm:"primaryKey"`
+	Name          string `gorm:"column:name"`
+	KeyHash       string `gorm:"column:key_hash"`
+	KeyValue      string `gorm:"column:key_value"`
+	AllowedModels []byte `gorm:"column:allowed_models"`
+	Enabled       bool   `gorm:"column:enabled"`
+}
+
+func (hubAccessKeyModel) TableName() string {
+	return "hub_access_keys"
+}
+
+// exportHubAccessKeys exports all Hub access keys for system backup.
+// Key values remain encrypted (same as database storage) for security.
+func (s *ImportExportService) exportHubAccessKeys() []HubAccessKeyExportInfo {
+	// Check if hub_access_keys table exists
+	if !s.db.Migrator().HasTable(&hubAccessKeyModel{}) {
+		return nil
+	}
+
+	var keys []hubAccessKeyModel
+	if err := s.db.Order("id ASC").Find(&keys).Error; err != nil {
+		logrus.WithError(err).Warn("Failed to export Hub access keys")
+		return nil
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	exports := make([]HubAccessKeyExportInfo, 0, len(keys))
+	for _, key := range keys {
+		// Parse allowed models from JSON
+		var allowedModels []string
+		if err := json.Unmarshal(key.AllowedModels, &allowedModels); err != nil {
+			allowedModels = []string{}
+		}
+
+		exports = append(exports, HubAccessKeyExportInfo{
+			Name:          key.Name,
+			KeyValue:      key.KeyValue, // Keep encrypted
+			AllowedModels: allowedModels,
+			Enabled:       key.Enabled,
+		})
+	}
+
+	logrus.Infof("Exported %d Hub access keys", len(exports))
+	return exports
+}
+
+// importHubAccessKeys imports Hub access keys from export data.
+// Validates decryption before import and generates unique names for conflicts.
+func (s *ImportExportService) importHubAccessKeys(tx *gorm.DB, keys []HubAccessKeyExportInfo) (int, int) {
+	if len(keys) == 0 {
+		return 0, 0
+	}
+
+	// Check if hub_access_keys table exists
+	if !tx.Migrator().HasTable(&hubAccessKeyModel{}) {
+		logrus.Warn("hub_access_keys table does not exist, skipping import")
+		return 0, len(keys)
+	}
+
+	imported := 0
+	skipped := 0
+
+	for _, keyInfo := range keys {
+		name := strings.TrimSpace(keyInfo.Name)
+		if name == "" {
+			skipped++
+			continue
+		}
+
+		// Validate encrypted key value can be decrypted
+		if keyInfo.KeyValue == "" {
+			skipped++
+			continue
+		}
+
+		decryptedKey, err := s.encryptionService.Decrypt(keyInfo.KeyValue)
+		if err != nil {
+			// Skip keys with decryption errors (different ENCRYPTION_KEY)
+			logrus.WithError(err).Warnf("Failed to decrypt Hub access key %s, skipping", name)
+			skipped++
+			continue
+		}
+
+		// Generate hash for the decrypted key
+		keyHash := s.encryptionService.Hash(decryptedKey)
+
+		// Check if key value already exists (by hash)
+		var existingCount int64
+		if err := tx.Model(&hubAccessKeyModel{}).Where("key_hash = ?", keyHash).Count(&existingCount).Error; err != nil {
+			skipped++
+			continue
+		}
+		if existingCount > 0 {
+			// Key value already exists, skip
+			logrus.Debugf("Hub access key %s already exists (by hash), skipping", name)
+			skipped++
+			continue
+		}
+
+		// Generate unique name if conflict exists
+		uniqueName, err := s.generateUniqueHubAccessKeyName(tx, name)
+		if err != nil {
+			logrus.WithError(err).Warnf("Failed to generate unique name for Hub access key %s", name)
+			skipped++
+			continue
+		}
+
+		// Serialize allowed models to JSON
+		allowedModelsJSON, err := json.Marshal(keyInfo.AllowedModels)
+		if err != nil {
+			allowedModelsJSON = []byte("[]")
+		}
+
+		// Create the key with the encrypted value from export
+		key := &hubAccessKeyModel{
+			Name:          uniqueName,
+			KeyHash:       keyHash,
+			KeyValue:      keyInfo.KeyValue, // Keep the encrypted value
+			AllowedModels: allowedModelsJSON,
+			Enabled:       keyInfo.Enabled,
+		}
+
+		if err := tx.Create(key).Error; err != nil {
+			logrus.WithError(err).Warnf("Failed to create Hub access key %s", uniqueName)
+			skipped++
+			continue
+		}
+
+		if uniqueName != name {
+			logrus.Infof("Imported Hub access key %s (renamed from %s)", uniqueName, name)
+		}
+		imported++
+	}
+
+	return imported, skipped
+}
+
+// generateUniqueHubAccessKeyName generates a unique Hub access key name by appending a random suffix if needed.
+func (s *ImportExportService) generateUniqueHubAccessKeyName(tx *gorm.DB, baseName string) (string, error) {
+	name := baseName
+	maxAttempts := 10
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var count int64
+		if err := tx.Model(&hubAccessKeyModel{}).Where("name = ?", name).Count(&count).Error; err != nil {
+			return "", fmt.Errorf("failed to check Hub access key name: %w", err)
+		}
+
+		if count == 0 {
+			return name, nil
+		}
+
+		// Generate new name with random suffix
+		if attempt < maxAttempts-1 {
+			if len(baseName)+4 > 100 {
+				baseName = baseName[:96]
+			}
+			name = baseName + utils.GenerateRandomSuffix()
+		} else {
+			return "", fmt.Errorf("failed to generate unique Hub access key name for %s after %d attempts", baseName, maxAttempts)
+		}
+	}
+
+	return name, nil
 }

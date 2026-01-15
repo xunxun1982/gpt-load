@@ -221,14 +221,20 @@ function formatNumber(num: number): string {
 
 // Get health score CSS class based on score value
 function getHealthScoreClass(score: number): string {
-  if (score >= 0.8) return "health-good";
-  if (score >= 0.5) return "health-warning";
+  if (score >= 0.8) {
+    return "health-good";
+  }
+  if (score >= 0.5) {
+    return "health-warning";
+  }
   return "health-critical";
 }
 
 // Format ISO datetime string to localized format
 function formatDateTime(isoString: string | null | undefined): string {
-  if (!isoString) return "-";
+  if (!isoString) {
+    return "-";
+  }
   try {
     const date = new Date(isoString);
     return date.toLocaleString();

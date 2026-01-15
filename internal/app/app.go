@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"gpt-load/internal/centralizedmgmt"
 	"gpt-load/internal/config"
 	"gpt-load/internal/db"
 	dbmigrations "gpt-load/internal/db/migrations"
@@ -66,12 +67,19 @@ type AppParams struct {
 	DynamicWeightManager    *services.DynamicWeightManager
 	Storage                 store.Store
 	DB                      *gorm.DB
+	HubService              *centralizedmgmt.HubService // Hub service for centralized management
 }
 
 // NewApp is the constructor for App, with dependencies injected by dig.
 func NewApp(params AppParams) *App {
 	// Set dynamic weight manager on proxy server for adaptive load balancing
 	params.ProxyServer.SetDynamicWeightManager(params.DynamicWeightManager)
+
+	// Set Hub model pool cache invalidation callback on GroupService
+	// This ensures the Hub cache is invalidated when groups are created, updated, or deleted
+	if params.GroupService != nil && params.HubService != nil {
+		params.GroupService.InvalidateHubModelPoolCacheCallback = params.HubService.InvalidateModelPoolCache
+	}
 
 	// Create persistence service for dynamic weight metrics
 	var dwPersistence *services.DynamicWeightPersistence

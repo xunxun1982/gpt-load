@@ -1,5 +1,6 @@
 import axios from "axios";
 import { createI18n } from "vue-i18n";
+import centralizedMgmtLocales from "./centralized-mgmt";
 import enUS from "./en-US";
 import jaJP from "./ja-JP";
 import siteManagementLocales from "./site-management";
@@ -44,13 +45,18 @@ function getDefaultLocale(): Locale {
 // Merge feature locales into main locales
 function mergeLocales<T extends Record<string, unknown>>(
   base: T,
-  siteManagement: Record<string, unknown>
+  siteManagement: Record<string, unknown>,
+  hub: Record<string, unknown>
 ): T {
   return {
     ...base,
     siteManagement: {
       ...((base.siteManagement as Record<string, unknown>) || {}),
       ...siteManagement,
+    },
+    hub: {
+      ...((base.hub as Record<string, unknown>) || {}),
+      ...hub,
     },
   } as T;
 }
@@ -62,9 +68,9 @@ const i18n = createI18n({
   locale: defaultLocale,
   fallbackLocale: "zh-CN",
   messages: {
-    "zh-CN": mergeLocales(zhCN, siteManagementLocales["zh-CN"]),
-    "en-US": mergeLocales(enUS, siteManagementLocales["en-US"]),
-    "ja-JP": mergeLocales(jaJP, siteManagementLocales["ja-JP"]),
+    "zh-CN": mergeLocales(zhCN, siteManagementLocales["zh-CN"], centralizedMgmtLocales["zh-CN"]),
+    "en-US": mergeLocales(enUS, siteManagementLocales["en-US"], centralizedMgmtLocales["en-US"]),
+    "ja-JP": mergeLocales(jaJP, siteManagementLocales["ja-JP"], centralizedMgmtLocales["ja-JP"]),
   },
 });
 

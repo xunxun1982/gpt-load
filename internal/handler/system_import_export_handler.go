@@ -22,12 +22,14 @@ import (
 )
 
 // SystemExportData represents the data structure for system-wide export.
+// Note: This type mirrors services.SystemExportData for JSON binding in handlers.
 type SystemExportData struct {
-	Version        string                        `json:"version"`
-	ExportedAt     string                        `json:"exported_at"`
-	SystemSettings map[string]string             `json:"system_settings"`
-	Groups         []GroupExportData             `json:"groups"`
-	ManagedSites   *ManagedSitesExportData       `json:"managed_sites,omitempty"`
+	Version        string                           `json:"version"`
+	ExportedAt     string                           `json:"exported_at"`
+	SystemSettings map[string]string                `json:"system_settings"`
+	Groups         []GroupExportData                `json:"groups"`
+	ManagedSites   *ManagedSitesExportData          `json:"managed_sites,omitempty"`
+	HubAccessKeys  []services.HubAccessKeyExportInfo `json:"hub_access_keys,omitempty"`
 }
 
 // ManagedSitesExportData represents exported managed sites data for handler

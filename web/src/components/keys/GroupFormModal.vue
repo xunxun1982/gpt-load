@@ -650,8 +650,12 @@ function getDynamicWeightInfo(sourceModel: string, targetIndex: number) {
 
 // Get health score class for styling
 function getHealthScoreClass(score: number): string {
-  if (score >= 0.8) return "health-good";
-  if (score >= 0.5) return "health-warning";
+  if (score >= 0.8) {
+    return "health-good";
+  }
+  if (score >= 0.5) {
+    return "health-warning";
+  }
   return "health-critical";
 }
 

@@ -5,20 +5,24 @@ import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
 // Async components for code splitting - each feature loads independently
+const CentralizedMgmtPanel = defineAsyncComponent(
+  () => import("@/features/centralized-mgmt/components/CentralizedMgmtPanel.vue")
+);
 const SiteManagementPanel = defineAsyncComponent(
   () => import("@/features/site-management/components/SiteManagementPanel.vue")
 );
 
 const { t } = useI18n();
 
-type MoreTab = "site" | "agent";
+type MoreTab = "hub" | "site" | "agent";
 
-const DEFAULT_TAB: MoreTab = "site";
+const DEFAULT_TAB: MoreTab = "hub";
 
 const router = useRouter();
 const route = useRoute();
 
 const panes: Array<{ key: MoreTab; labelKey: string }> = [
+  { key: "hub", labelKey: "hub.tabLabel" },
   { key: "site", labelKey: "more.siteManagement" },
   { key: "agent", labelKey: "more.agent" },
 ];
@@ -26,7 +30,7 @@ const panes: Array<{ key: MoreTab; labelKey: string }> = [
 // Sanitizes route query parameter to a valid tab value
 function normalizeTab(value: unknown): MoreTab {
   const raw = Array.isArray(value) ? value[0] : value;
-  if (raw === "site" || raw === "agent") {
+  if (raw === "hub" || raw === "site" || raw === "agent") {
     return raw;
   }
   return DEFAULT_TAB;
@@ -86,8 +90,9 @@ function handleNavigateToGroup(groupId: number) {
           <span class="more-title">{{ t("nav.more") }}</span>
         </template>
         <n-tab-pane v-for="pane in panes" :key="pane.key" :name="pane.key" :tab="t(pane.labelKey)">
+          <centralized-mgmt-panel v-if="pane.key === 'hub'" />
           <site-management-panel
-            v-if="pane.key === 'site'"
+            v-else-if="pane.key === 'site'"
             @navigate-to-group="handleNavigateToGroup"
           />
           <n-empty

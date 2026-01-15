@@ -2,6 +2,7 @@ package router
 
 import (
 	"embed"
+	"gpt-load/internal/centralizedmgmt"
 	"gpt-load/internal/handler"
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/middleware"
@@ -44,6 +45,8 @@ func NewRouter(
 	configManager types.ConfigManager,
 	groupManager *services.GroupManager,
 	requestLogService *services.RequestLogService,
+	hubHandler *handler.HubHandler,
+	hubAccessKeyService *centralizedmgmt.HubAccessKeyService,
 	buildFS embed.FS,
 	indexPage []byte,
 ) *gin.Engine {
@@ -68,6 +71,7 @@ func NewRouter(
 	registerSystemRoutes(router, serverHandler)
 	registerAPIRoutes(router, serverHandler, configManager)
 	registerProxyRoutes(router, proxyServer, groupManager, serverHandler, requestLogService)
+	RegisterHubRoutes(router, hubHandler, hubAccessKeyService, configManager)
 	registerFrontendRoutes(router, buildFS, indexPage)
 
 	return router
