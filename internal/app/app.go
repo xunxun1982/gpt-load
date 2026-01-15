@@ -29,40 +29,43 @@ import (
 
 // App holds all services and manages the application lifecycle.
 type App struct {
-	engine                 *gin.Engine
-	configManager          types.ConfigManager
-	settingsManager        *config.SystemSettingsManager
-	groupManager           *services.GroupManager
-	childGroupService      *services.ChildGroupService
-	logCleanupService      *services.LogCleanupService
-	requestLogService      *services.RequestLogService
-	autoCheckinService     *sitemanagement.AutoCheckinService
-	cronChecker            *keypool.CronChecker
-	keyPoolProvider        *keypool.KeyProvider
-	proxyServer            *proxy.ProxyServer
-	dynamicWeightManager   *services.DynamicWeightManager
-	storage                store.Store
-	db                     *gorm.DB
-	httpServer             *http.Server
+	engine                    *gin.Engine
+	configManager             types.ConfigManager
+	settingsManager           *config.SystemSettingsManager
+	groupManager              *services.GroupManager
+	childGroupService         *services.ChildGroupService
+	logCleanupService         *services.LogCleanupService
+	requestLogService         *services.RequestLogService
+	autoCheckinService        *sitemanagement.AutoCheckinService
+	cronChecker               *keypool.CronChecker
+	keyPoolProvider           *keypool.KeyProvider
+	proxyServer               *proxy.ProxyServer
+	dynamicWeightManager      *services.DynamicWeightManager
+	dynamicWeightPersistence  *services.DynamicWeightPersistence
+	storage                   store.Store
+	db                        *gorm.DB
+	httpServer                *http.Server
 }
 
 // AppParams defines the dependencies for the App.
 type AppParams struct {
 	dig.In
-	Engine                 *gin.Engine
-	ConfigManager          types.ConfigManager
-	SettingsManager        *config.SystemSettingsManager
-	GroupManager           *services.GroupManager
-	ChildGroupService      *services.ChildGroupService
-	LogCleanupService      *services.LogCleanupService
-	RequestLogService      *services.RequestLogService
-	AutoCheckinService     *sitemanagement.AutoCheckinService
-	CronChecker            *keypool.CronChecker
-	KeyPoolProvider        *keypool.KeyProvider
-	ProxyServer            *proxy.ProxyServer
-	DynamicWeightManager   *services.DynamicWeightManager
-	Storage                store.Store
-	DB                     *gorm.DB
+	Engine                  *gin.Engine
+	ConfigManager           types.ConfigManager
+	SettingsManager         *config.SystemSettingsManager
+	GroupManager            *services.GroupManager
+	GroupService            *services.GroupService
+	AggregateGroupService   *services.AggregateGroupService
+	ChildGroupService       *services.ChildGroupService
+	LogCleanupService       *services.LogCleanupService
+	RequestLogService       *services.RequestLogService
+	AutoCheckinService      *sitemanagement.AutoCheckinService
+	CronChecker             *keypool.CronChecker
+	KeyPoolProvider         *keypool.KeyProvider
+	ProxyServer             *proxy.ProxyServer
+	DynamicWeightManager    *services.DynamicWeightManager
+	Storage                 store.Store
+	DB                      *gorm.DB
 }
 
 // NewApp is the constructor for App, with dependencies injected by dig.
@@ -70,21 +73,64 @@ func NewApp(params AppParams) *App {
 	// Set dynamic weight manager on proxy server for adaptive load balancing
 	params.ProxyServer.SetDynamicWeightManager(params.DynamicWeightManager)
 
+	// Create persistence service for dynamic weight metrics
+	var dwPersistence *services.DynamicWeightPersistence
+	if params.DynamicWeightManager != nil {
+		dwPersistence = services.NewDynamicWeightPersistence(params.DB, params.DynamicWeightManager)
+
+		// Set callbacks for soft delete/restore operations on AggregateGroupService
+		params.AggregateGroupService.OnSubGroupRemoved = func(aggregateGroupID, subGroupID uint) {
+			if err := dwPersistence.DeleteSubGroupMetrics(aggregateGroupID, subGroupID); err != nil {
+				logrus.WithError(err).WithFields(logrus.Fields{
+					"aggregate_group_id": aggregateGroupID,
+					"sub_group_id":       subGroupID,
+				}).Warn("Failed to soft-delete sub-group metrics")
+			}
+		}
+		params.AggregateGroupService.OnSubGroupAdded = func(aggregateGroupID, subGroupID uint) {
+			if restored, err := dwPersistence.RestoreSubGroupMetrics(aggregateGroupID, subGroupID); err != nil {
+				logrus.WithError(err).WithFields(logrus.Fields{
+					"aggregate_group_id": aggregateGroupID,
+					"sub_group_id":       subGroupID,
+				}).Warn("Failed to restore sub-group metrics")
+			} else if restored {
+				logrus.WithFields(logrus.Fields{
+					"aggregate_group_id": aggregateGroupID,
+					"sub_group_id":       subGroupID,
+				}).Debug("Restored soft-deleted sub-group metrics")
+			}
+		}
+
+		// Set callback for group deletion on GroupService
+		params.GroupService.OnGroupDeleted = func(groupID uint, isAggregateGroup bool) {
+			if isAggregateGroup {
+				if err := dwPersistence.DeleteAllSubGroupMetricsForGroup(groupID); err != nil {
+					logrus.WithError(err).WithField("group_id", groupID).Warn("Failed to soft-delete aggregate group metrics")
+				}
+			} else {
+				if err := dwPersistence.DeleteAllModelRedirectMetricsForGroup(groupID); err != nil {
+					logrus.WithError(err).WithField("group_id", groupID).Warn("Failed to soft-delete model redirect metrics")
+				}
+			}
+		}
+	}
+
 	return &App{
-		engine:                 params.Engine,
-		configManager:          params.ConfigManager,
-		settingsManager:        params.SettingsManager,
-		groupManager:           params.GroupManager,
-		childGroupService:      params.ChildGroupService,
-		logCleanupService:      params.LogCleanupService,
-		requestLogService:      params.RequestLogService,
-		autoCheckinService:     params.AutoCheckinService,
-		cronChecker:            params.CronChecker,
-		keyPoolProvider:        params.KeyPoolProvider,
-		proxyServer:            params.ProxyServer,
-		dynamicWeightManager:   params.DynamicWeightManager,
-		storage:                params.Storage,
-		db:                     params.DB,
+		engine:                    params.Engine,
+		configManager:             params.ConfigManager,
+		settingsManager:           params.SettingsManager,
+		groupManager:              params.GroupManager,
+		childGroupService:         params.ChildGroupService,
+		logCleanupService:         params.LogCleanupService,
+		requestLogService:         params.RequestLogService,
+		autoCheckinService:        params.AutoCheckinService,
+		cronChecker:               params.CronChecker,
+		keyPoolProvider:           params.KeyPoolProvider,
+		proxyServer:               params.ProxyServer,
+		dynamicWeightManager:      params.DynamicWeightManager,
+		dynamicWeightPersistence:  dwPersistence,
+		storage:                   params.Storage,
+		db:                        params.DB,
 	}
 }
 
@@ -113,6 +159,7 @@ func (a *App) Start() error {
 			&models.APIKey{},
 			&models.RequestLog{},
 			&models.GroupHourlyStat{},
+			&models.DynamicWeightMetric{},
 			&sitemanagement.ManagedSite{},
 			&sitemanagement.ManagedSiteCheckinLog{},
 			&sitemanagement.ManagedSiteSetting{},
@@ -145,6 +192,15 @@ func (a *App) Start() error {
 		// can block the initial groups load.
 		if err := a.groupManager.Initialize(); err != nil {
 			return fmt.Errorf("failed to initialize group manager: %w", err)
+		}
+
+		// Load dynamic weight metrics from database and start persistence service.
+		// This ensures health scores are preserved across restarts.
+		if a.dynamicWeightManager != nil && a.dynamicWeightPersistence != nil {
+			if err := a.dynamicWeightPersistence.LoadFromDatabase(); err != nil {
+				logrus.WithError(err).Warn("Failed to load dynamic weight metrics from database (non-fatal)")
+			}
+			a.dynamicWeightPersistence.Start()
 		}
 
 		// Load keys from database to Redis
@@ -230,6 +286,10 @@ func (a *App) Stop(ctx context.Context) {
 			a.logCleanupService.Stop,
 			a.requestLogService.Stop,
 		)
+		// Stop dynamic weight persistence service
+		if a.dynamicWeightPersistence != nil {
+			stoppableServices = append(stoppableServices, a.dynamicWeightPersistence.Stop)
+		}
 	}
 
 	// Stop KeyProvider worker pool (runs on both master and slave)

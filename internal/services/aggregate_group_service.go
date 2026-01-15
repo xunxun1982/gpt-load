@@ -38,6 +38,10 @@ type AggregateGroupService struct {
 	statsCache    map[string]keyStatsCacheEntry
 	statsCacheMu  sync.RWMutex
 	statsCacheTTL time.Duration
+
+	// Callbacks for soft delete/restore operations (set by app layer)
+	OnSubGroupRemoved func(aggregateGroupID, subGroupID uint)
+	OnSubGroupAdded   func(aggregateGroupID, subGroupID uint)
 }
 
 // keyStatsCacheEntry stores cached key statistics with expiration time
@@ -338,6 +342,13 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 		return err
 	}
 
+	// Restore soft-deleted health metrics for re-added sub-groups
+	if s.OnSubGroupAdded != nil {
+		for _, sg := range result.SubGroups {
+			s.OnSubGroupAdded(groupID, sg.SubGroupID)
+		}
+	}
+
 	// Trigger cache update
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after adding sub groups")
@@ -408,6 +419,11 @@ func (s *AggregateGroupService) DeleteSubGroup(ctx context.Context, groupID, sub
 
 	if result.RowsAffected == 0 {
 		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
+	}
+
+	// Soft-delete health metrics for this sub-group (preserves data for potential restoration)
+	if s.OnSubGroupRemoved != nil {
+		s.OnSubGroupRemoved(groupID, subGroupID)
 	}
 
 	// Trigger cache update

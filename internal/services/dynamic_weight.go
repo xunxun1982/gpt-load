@@ -16,39 +16,41 @@ import (
 )
 
 // DynamicWeightMetrics holds the metrics used for dynamic weight calculation.
-// These metrics are stored in Redis and used to calculate health scores.
+// These metrics are stored in the key-value store and used to calculate health scores.
+// Time-windowed statistics enable weighted health calculation favoring recent data.
 type DynamicWeightMetrics struct {
-	ConsecutiveFailures int64     `json:"consecutive_failures"` // Number of consecutive failures
-	LastFailureAt       time.Time `json:"last_failure_at"`      // Timestamp of last failure
-	LastSuccessAt       time.Time `json:"last_success_at"`      // Timestamp of last success
-	RequestCount        int64     `json:"request_count"`        // Total request count
-	SuccessCount        int64     `json:"success_count"`        // Total success count
-	UpdatedAt           time.Time `json:"updated_at"`           // Last update timestamp
+	ConsecutiveFailures int64     `json:"consecutive_failures"`
+	LastFailureAt       time.Time `json:"last_failure_at"`
+	LastSuccessAt       time.Time `json:"last_success_at"`
+
+	// Time-windowed statistics (cumulative)
+	Requests7d   int64 `json:"requests_7d"`
+	Successes7d  int64 `json:"successes_7d"`
+	Requests14d  int64 `json:"requests_14d"`
+	Successes14d int64 `json:"successes_14d"`
+	Requests30d  int64 `json:"requests_30d"`
+	Successes30d int64 `json:"successes_30d"`
+	Requests90d  int64 `json:"requests_90d"`
+	Successes90d int64 `json:"successes_90d"`
+	Requests180d int64 `json:"requests_180d"`
+	Successes180d int64 `json:"successes_180d"`
+
+	LastRolloverAt time.Time `json:"last_rollover_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // DynamicWeightConfig holds configuration for dynamic weight calculation.
 type DynamicWeightConfig struct {
-	// ConsecutiveFailurePenalty is the penalty per consecutive failure (default: 0.1)
-	ConsecutiveFailurePenalty float64
-	// MaxConsecutiveFailurePenalty is the maximum penalty from consecutive failures (default: 0.5)
+	ConsecutiveFailurePenalty    float64
 	MaxConsecutiveFailurePenalty float64
-	// RecentFailurePenalty is the maximum penalty for recent failures (default: 0.2)
-	RecentFailurePenalty float64
-	// RecentFailureCooldown is the cooldown period for recent failure penalty (default: 5 minutes)
-	RecentFailureCooldown time.Duration
-	// LowSuccessRatePenalty is the penalty for low success rate (default: 0.2)
-	LowSuccessRatePenalty float64
-	// LowSuccessRateThreshold is the threshold below which low success rate penalty applies (default: 50%)
-	LowSuccessRateThreshold float64
-	// MinRequestsForSuccessRate is the minimum requests needed to calculate success rate (default: 5)
-	MinRequestsForSuccessRate int64
-	// MinHealthScore is the minimum health score to prevent complete disabling (default: 0.1)
-	MinHealthScore float64
-	// MetricsTTL is the TTL for metrics in Redis (default: 1 hour)
-	// Note: 1-hour TTL means metrics reset after inactivity, which may lose historical data
-	// for low-traffic endpoints. Consider longer TTL (e.g., 24 hours) for production use
-	// or make this configurable via environment variable for different deployment scenarios.
-	MetricsTTL time.Duration
+	RecentFailurePenalty         float64
+	RecentFailureCooldown        time.Duration
+	LowSuccessRatePenalty        float64
+	LowSuccessRateThreshold      float64
+	MinRequestsForSuccessRate    int64
+	MinHealthScore               float64
+	MetricsTTL                   time.Duration
+	TimeWindowConfigs            []models.TimeWindowConfig
 }
 
 // DefaultDynamicWeightConfig returns the default configuration.
@@ -62,20 +64,23 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 		LowSuccessRateThreshold:      50.0,
 		MinRequestsForSuccessRate:    5,
 		MinHealthScore:               0.1,
-		MetricsTTL:                   1 * time.Hour,
+		MetricsTTL:                   180 * 24 * time.Hour, // 180 days
+		TimeWindowConfigs:            models.DefaultTimeWindowConfigs(),
 	}
 }
 
+// DirtyKeyCallback is called when a metrics key is modified and needs persistence.
+type DirtyKeyCallback func(key string)
+
 // DynamicWeightManager manages dynamic weight calculation for sub-groups and model redirects.
-// It uses Redis to store metrics and calculates health scores based on request history.
 type DynamicWeightManager struct {
-	store  store.Store
-	config *DynamicWeightConfig
-	mu     sync.RWMutex
+	store         store.Store
+	config        *DynamicWeightConfig
+	mu            sync.RWMutex
+	dirtyCallback DirtyKeyCallback
 }
 
-// NewDynamicWeightManager creates a new dynamic weight manager.
-// Uses default configuration. For custom configuration, use NewDynamicWeightManagerWithConfig.
+// NewDynamicWeightManager creates a new dynamic weight manager with default configuration.
 func NewDynamicWeightManager(s store.Store) *DynamicWeightManager {
 	return NewDynamicWeightManagerWithConfig(s, nil)
 }
@@ -91,34 +96,43 @@ func NewDynamicWeightManagerWithConfig(s store.Store, config *DynamicWeightConfi
 	}
 }
 
-// subGroupMetricsKey returns the Redis key for sub-group metrics.
-func subGroupMetricsKey(aggregateGroupID, subGroupID uint) string {
+// SetDirtyCallback sets the callback function for dirty key notifications.
+// This should be called after persistence service is initialized.
+func (m *DynamicWeightManager) SetDirtyCallback(callback DirtyKeyCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dirtyCallback = callback
+}
+
+// GetConfig returns the current configuration.
+func (m *DynamicWeightManager) GetConfig() *DynamicWeightConfig {
+	return m.config
+}
+
+// SubGroupMetricsKey returns the store key for sub-group metrics.
+func SubGroupMetricsKey(aggregateGroupID, subGroupID uint) string {
 	return fmt.Sprintf("dw:sg:%d:%d", aggregateGroupID, subGroupID)
 }
 
-// modelRedirectMetricsKey returns the Redis key for model redirect metrics.
-// Uses URL encoding for sourceModel to prevent key collisions when model names contain colons.
-// Example: "anthropic:claude-3" becomes "anthropic%3Aclaude-3" in the key.
-func modelRedirectMetricsKey(groupID uint, sourceModel string, targetIndex int) string {
-	// URL-encode the model name to handle special characters like colons
-	// This prevents ambiguity in Redis key parsing (e.g., "dw:mr:1:model:with:colons:0")
+// ModelRedirectMetricsKey returns the store key for model redirect metrics.
+func ModelRedirectMetricsKey(groupID uint, sourceModel string, targetIndex int) string {
 	encodedModel := url.PathEscape(sourceModel)
 	return fmt.Sprintf("dw:mr:%d:%s:%d", groupID, encodedModel, targetIndex)
 }
 
 // GetSubGroupMetrics retrieves metrics for a sub-group.
 func (m *DynamicWeightManager) GetSubGroupMetrics(aggregateGroupID, subGroupID uint) (*DynamicWeightMetrics, error) {
-	key := subGroupMetricsKey(aggregateGroupID, subGroupID)
+	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
 	return m.getMetrics(key)
 }
 
 // GetModelRedirectMetrics retrieves metrics for a model redirect target.
 func (m *DynamicWeightManager) GetModelRedirectMetrics(groupID uint, sourceModel string, targetIndex int) (*DynamicWeightMetrics, error) {
-	key := modelRedirectMetricsKey(groupID, sourceModel, targetIndex)
+	key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
 	return m.getMetrics(key)
 }
 
-// getMetrics retrieves metrics from Redis.
+// getMetrics retrieves metrics from the store.
 func (m *DynamicWeightManager) getMetrics(key string) (*DynamicWeightMetrics, error) {
 	data, err := m.store.Get(key)
 	if err != nil {
@@ -130,14 +144,14 @@ func (m *DynamicWeightManager) getMetrics(key string) (*DynamicWeightMetrics, er
 
 	var metrics DynamicWeightMetrics
 	if err := json.Unmarshal(data, &metrics); err != nil {
-		logrus.WithError(err).WithField("key", key).Debug("Failed to unmarshal metrics from Redis")
+		logrus.WithError(err).WithField("key", key).Debug("Failed to unmarshal metrics")
 		return nil, err
 	}
 	return &metrics, nil
 }
 
-// setMetrics stores metrics in Redis.
-func (m *DynamicWeightManager) setMetrics(key string, metrics *DynamicWeightMetrics) error {
+// SetMetrics stores metrics in the store (exported for persistence layer).
+func (m *DynamicWeightManager) SetMetrics(key string, metrics *DynamicWeightMetrics) error {
 	metrics.UpdatedAt = time.Now()
 	data, err := json.Marshal(metrics)
 	if err != nil {
@@ -148,37 +162,29 @@ func (m *DynamicWeightManager) setMetrics(key string, metrics *DynamicWeightMetr
 
 // RecordSubGroupSuccess records a successful request for a sub-group.
 func (m *DynamicWeightManager) RecordSubGroupSuccess(aggregateGroupID, subGroupID uint) {
-	key := subGroupMetricsKey(aggregateGroupID, subGroupID)
+	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
 	m.recordSuccess(key)
 }
 
 // RecordSubGroupFailure records a failed request for a sub-group.
 func (m *DynamicWeightManager) RecordSubGroupFailure(aggregateGroupID, subGroupID uint) {
-	key := subGroupMetricsKey(aggregateGroupID, subGroupID)
+	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
 	m.recordFailure(key)
 }
 
 // RecordModelRedirectSuccess records a successful request for a model redirect target.
 func (m *DynamicWeightManager) RecordModelRedirectSuccess(groupID uint, sourceModel string, targetIndex int) {
-	key := modelRedirectMetricsKey(groupID, sourceModel, targetIndex)
+	key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
 	m.recordSuccess(key)
 }
 
 // RecordModelRedirectFailure records a failed request for a model redirect target.
 func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceModel string, targetIndex int) {
-	key := modelRedirectMetricsKey(groupID, sourceModel, targetIndex)
+	key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
 	m.recordFailure(key)
 }
 
 // recordSuccess records a successful request.
-// Note: Uses global mutex for simplicity and correctness within a single instance.
-// For high-load scenarios with many sub-groups/redirects, consider per-key locking
-// (sync.Map or sharded locks) or Redis WATCH/MULTI/EXEC transactions for better scalability.
-//
-// Distributed deployment consideration: In multi-instance deployments sharing Redis,
-// concurrent updates can cause lost writes due to non-atomic read-modify-write pattern.
-// This is acceptable for approximate health tracking where perfect accuracy isn't critical.
-// For precise counting, consider using Redis INCR/HINCRBY operations or Lua scripts.
 func (m *DynamicWeightManager) recordSuccess(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -189,13 +195,29 @@ func (m *DynamicWeightManager) recordSuccess(key string) {
 		metrics = &DynamicWeightMetrics{}
 	}
 
+	now := time.Now()
 	metrics.ConsecutiveFailures = 0
-	metrics.LastSuccessAt = time.Now()
-	metrics.RequestCount++
-	metrics.SuccessCount++
+	metrics.LastSuccessAt = now
 
-	if err := m.setMetrics(key, metrics); err != nil {
+	// Increment all time window counters (new request falls into all windows)
+	metrics.Requests7d++
+	metrics.Successes7d++
+	metrics.Requests14d++
+	metrics.Successes14d++
+	metrics.Requests30d++
+	metrics.Successes30d++
+	metrics.Requests90d++
+	metrics.Successes90d++
+	metrics.Requests180d++
+	metrics.Successes180d++
+
+	if err := m.SetMetrics(key, metrics); err != nil {
 		logrus.WithError(err).WithField("key", key).Debug("Failed to set metrics after success")
+	}
+
+	// Notify persistence layer about dirty key
+	if m.dirtyCallback != nil {
+		m.dirtyCallback(key)
 	}
 }
 
@@ -210,13 +232,64 @@ func (m *DynamicWeightManager) recordFailure(key string) {
 		metrics = &DynamicWeightMetrics{}
 	}
 
+	now := time.Now()
 	metrics.ConsecutiveFailures++
-	metrics.LastFailureAt = time.Now()
-	metrics.RequestCount++
+	metrics.LastFailureAt = now
 
-	if err := m.setMetrics(key, metrics); err != nil {
+	// Increment all time window request counters (failure doesn't increment success)
+	metrics.Requests7d++
+	metrics.Requests14d++
+	metrics.Requests30d++
+	metrics.Requests90d++
+	metrics.Requests180d++
+
+	if err := m.SetMetrics(key, metrics); err != nil {
 		logrus.WithError(err).WithField("key", key).Debug("Failed to set metrics after failure")
 	}
+
+	// Notify persistence layer about dirty key
+	if m.dirtyCallback != nil {
+		m.dirtyCallback(key)
+	}
+}
+
+// CalculateWeightedSuccessRate calculates the weighted success rate across time windows.
+// Recent data (7 days) has the highest weight, older data has progressively lower weights.
+// Returns a value between 0 and 100.
+func (m *DynamicWeightManager) CalculateWeightedSuccessRate(metrics *DynamicWeightMetrics) float64 {
+	if metrics == nil {
+		return 100.0
+	}
+
+	// Get incremental requests and successes for each time window
+	// Window data is cumulative, so we need to calculate incremental values
+	type windowData struct {
+		requests  int64
+		successes int64
+		weight    float64
+	}
+
+	windows := []windowData{
+		{metrics.Requests7d, metrics.Successes7d, 1.0},
+		{metrics.Requests14d - metrics.Requests7d, metrics.Successes14d - metrics.Successes7d, 0.8},
+		{metrics.Requests30d - metrics.Requests14d, metrics.Successes30d - metrics.Successes14d, 0.6},
+		{metrics.Requests90d - metrics.Requests30d, metrics.Successes90d - metrics.Successes30d, 0.3},
+		{metrics.Requests180d - metrics.Requests90d, metrics.Successes180d - metrics.Successes90d, 0.1},
+	}
+
+	var totalWeightedSuccesses, totalWeightedRequests float64
+	for _, w := range windows {
+		if w.requests > 0 {
+			totalWeightedSuccesses += float64(w.successes) * w.weight
+			totalWeightedRequests += float64(w.requests) * w.weight
+		}
+	}
+
+	if totalWeightedRequests == 0 {
+		return 100.0
+	}
+
+	return (totalWeightedSuccesses / totalWeightedRequests) * 100
 }
 
 // CalculateHealthScore calculates the health score based on metrics.
@@ -241,22 +314,21 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 	if !metrics.LastFailureAt.IsZero() {
 		timeSinceFailure := time.Since(metrics.LastFailureAt)
 		if timeSinceFailure < m.config.RecentFailureCooldown {
-			// Linear decay: full penalty at t=0, zero penalty at t=cooldown
 			decayRatio := 1.0 - (float64(timeSinceFailure) / float64(m.config.RecentFailureCooldown))
 			penalty := m.config.RecentFailurePenalty * decayRatio
 			score -= penalty
 		}
 	}
 
-	// Penalty for low success rate
-	if metrics.RequestCount >= m.config.MinRequestsForSuccessRate {
-		successRate := float64(metrics.SuccessCount) / float64(metrics.RequestCount) * 100
-		if successRate < m.config.LowSuccessRateThreshold {
+	// Penalty for low weighted success rate (using time-windowed calculation)
+	totalRequests := metrics.Requests180d
+	if totalRequests >= m.config.MinRequestsForSuccessRate {
+		weightedSuccessRate := m.CalculateWeightedSuccessRate(metrics)
+		if weightedSuccessRate < m.config.LowSuccessRateThreshold {
 			score -= m.config.LowSuccessRatePenalty
 		}
 	}
 
-	// Ensure minimum health score
 	if score < m.config.MinHealthScore {
 		score = m.config.MinHealthScore
 	}
@@ -273,12 +345,17 @@ func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *Dynam
 	healthScore := m.CalculateHealthScore(metrics)
 	effectiveWeight := int(float64(baseWeight) * healthScore)
 
-	// Ensure at least 1 if base weight is positive and health score is above minimum
 	if effectiveWeight < 1 && healthScore >= m.config.MinHealthScore {
 		effectiveWeight = 1
 	}
 
 	return effectiveWeight
+}
+
+// SubGroupWeightInput is the input for GetSubGroupDynamicWeights.
+type SubGroupWeightInput struct {
+	SubGroupID uint
+	Weight     int
 }
 
 // GetSubGroupDynamicWeights returns dynamic weight info for all sub-groups of an aggregate group.
@@ -297,20 +374,16 @@ func (m *DynamicWeightManager) GetSubGroupDynamicWeights(aggregateGroupID uint, 
 
 		healthScore := m.CalculateHealthScore(metrics)
 		effectiveWeight := m.GetEffectiveWeight(sg.Weight, metrics)
+		weightedSuccessRate := m.CalculateWeightedSuccessRate(metrics)
 
 		info := models.DynamicWeightInfo{
 			BaseWeight:      sg.Weight,
 			HealthScore:     healthScore,
 			EffectiveWeight: effectiveWeight,
-			RequestCount:    metrics.RequestCount,
+			RequestCount:    metrics.Requests180d,
+			SuccessRate:     weightedSuccessRate,
 		}
 
-		// Calculate success rate
-		if metrics.RequestCount > 0 {
-			info.SuccessRate = float64(metrics.SuccessCount) / float64(metrics.RequestCount) * 100
-		}
-
-		// Format timestamps
 		if !metrics.LastFailureAt.IsZero() {
 			ts := metrics.LastFailureAt.Format(time.RFC3339)
 			info.LastFailureAt = &ts
@@ -326,14 +399,7 @@ func (m *DynamicWeightManager) GetSubGroupDynamicWeights(aggregateGroupID uint, 
 	return result
 }
 
-// SubGroupWeightInput is the input for GetSubGroupDynamicWeights.
-type SubGroupWeightInput struct {
-	SubGroupID uint
-	Weight     int
-}
-
 // GetEffectiveWeightsForSelection returns effective weights for weighted random selection.
-// This is used by SubGroupManager to get dynamic weights for selection.
 func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID uint, subGroups []SubGroupWeightInput) []int {
 	weights := make([]int, len(subGroups))
 	for i, sg := range subGroups {
@@ -342,7 +408,7 @@ func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID 
 			logrus.WithError(err).WithFields(logrus.Fields{
 				"aggregate_group_id": aggregateGroupID,
 				"sub_group_id":       sg.SubGroupID,
-			}).Debug("Failed to get sub-group metrics for selection, using base weight")
+			}).Debug("Failed to get sub-group metrics for selection")
 		}
 		weights[i] = m.GetEffectiveWeight(sg.Weight, metrics)
 	}
@@ -350,7 +416,6 @@ func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID 
 }
 
 // GetModelRedirectEffectiveWeights returns effective weights for model redirect targets.
-// targetWeights is a slice of base weights for each target.
 func (m *DynamicWeightManager) GetModelRedirectEffectiveWeights(groupID uint, sourceModel string, targetWeights []int) []int {
 	weights := make([]int, len(targetWeights))
 	for i, baseWeight := range targetWeights {
@@ -360,7 +425,7 @@ func (m *DynamicWeightManager) GetModelRedirectEffectiveWeights(groupID uint, so
 				"group_id":     groupID,
 				"source_model": sourceModel,
 				"target_index": i,
-			}).Debug("Failed to get model redirect metrics for selection, using base weight")
+			}).Debug("Failed to get model redirect metrics for selection")
 		}
 		weights[i] = m.GetEffectiveWeight(baseWeight, metrics)
 	}
@@ -369,19 +434,23 @@ func (m *DynamicWeightManager) GetModelRedirectEffectiveWeights(groupID uint, so
 
 // ResetSubGroupMetrics resets metrics for a sub-group.
 func (m *DynamicWeightManager) ResetSubGroupMetrics(aggregateGroupID, subGroupID uint) error {
-	key := subGroupMetricsKey(aggregateGroupID, subGroupID)
+	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
 	return m.store.Delete(key)
 }
 
 // ResetModelRedirectMetrics resets metrics for a model redirect target.
 func (m *DynamicWeightManager) ResetModelRedirectMetrics(groupID uint, sourceModel string, targetIndex int) error {
-	key := modelRedirectMetricsKey(groupID, sourceModel, targetIndex)
+	key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
 	return m.store.Delete(key)
 }
 
 // DynamicWeightedRandomSelect performs weighted random selection using dynamic weights.
-// It calculates effective weights based on metrics and uses the standard weighted random selection.
 func (m *DynamicWeightManager) DynamicWeightedRandomSelect(aggregateGroupID uint, subGroups []SubGroupWeightInput) int {
 	weights := m.GetEffectiveWeightsForSelection(aggregateGroupID, subGroups)
 	return utils.WeightedRandomSelect(weights)
+}
+
+// GetStore returns the underlying store (for persistence layer).
+func (m *DynamicWeightManager) GetStore() store.Store {
+	return m.store
 }

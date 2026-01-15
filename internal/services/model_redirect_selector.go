@@ -181,9 +181,10 @@ func GetModelRedirectDynamicWeights(
 		}
 
 		if metrics != nil {
-			info.RequestCount = metrics.RequestCount
-			if metrics.RequestCount > 0 {
-				info.SuccessRate = float64(metrics.SuccessCount) / float64(metrics.RequestCount) * 100
+			info.RequestCount = metrics.Requests180d
+			if metrics.Requests180d > 0 {
+				// Use weighted success rate calculation
+				info.SuccessRate = dwm.CalculateWeightedSuccessRate(metrics)
 			}
 			if !metrics.LastFailureAt.IsZero() {
 				ts := metrics.LastFailureAt.Format(time.RFC3339)

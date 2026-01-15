@@ -107,6 +107,7 @@ type GroupService struct {
 	// Note: SyncGroupEnabledToSiteCallback removed - group disable does NOT cascade to site
 	SyncChildGroupsEnabledCallback       func(ctx context.Context, parentGroupID uint, enabled bool) error // Sync enabled status to child groups
 	InvalidateChildGroupsCacheCallback   func()                                                            // Invalidate child groups cache after updating a child group
+	OnGroupDeleted                       func(groupID uint, isAggregateGroup bool)                         // Soft-delete health metrics when group is deleted
 }
 
 // NewGroupService constructs a GroupService.
@@ -1155,6 +1156,14 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	// should immediately reflect in the UI without waiting for cache expiration.
 	if s.InvalidateChildGroupsCacheCallback != nil {
 		s.InvalidateChildGroupsCacheCallback()
+	}
+
+	// Soft-delete health metrics for the deleted group
+	// For aggregate groups, this deletes all sub-group metrics
+	// For standard groups, this deletes model redirect metrics
+	if s.OnGroupDeleted != nil {
+		isAggregateGroup := group.GroupType == "aggregate"
+		s.OnGroupDeleted(id, isAggregateGroup)
 	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
