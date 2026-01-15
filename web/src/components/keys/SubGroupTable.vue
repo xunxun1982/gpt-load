@@ -416,7 +416,7 @@ function formatDateTime(isoString: string | null | undefined): string {
                       <div class="info-row">
                         <span class="info-label">{{ t("subGroups.successRate") }}:</span>
                         <span class="info-value">
-                          {{ subGroup.dynamic_weight.success_rate.toFixed(1) }}%
+                          {{ (subGroup.dynamic_weight.success_rate ?? 0).toFixed(1) }}%
                         </span>
                       </div>
                       <div class="info-row">

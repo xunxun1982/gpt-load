@@ -107,9 +107,14 @@ func (m *SubGroupManager) SelectSubGroupWithRetry(group *models.Group, excludeSu
 func (m *SubGroupManager) RebuildSelectors(groups map[string]*models.Group) {
 	newSelectors := make(map[uint]*selector)
 
+	// Capture dynamic weight manager under lock before creating selectors
+	m.mu.RLock()
+	dwm := m.dynamicWeight
+	m.mu.RUnlock()
+
 	for _, group := range groups {
 		if group.GroupType == "aggregate" && len(group.SubGroups) > 0 {
-			if sel := m.createSelector(group); sel != nil {
+			if sel := m.createSelector(group, dwm); sel != nil {
 				newSelectors[group.ID] = sel
 			}
 		}
@@ -138,7 +143,9 @@ func (m *SubGroupManager) getSelector(group *models.Group) *selector {
 		return sel
 	}
 
-	sel := m.createSelector(group)
+	// Capture dynamic weight manager while holding lock
+	dwm := m.dynamicWeight
+	sel := m.createSelector(group, dwm)
 	if sel != nil {
 		m.selectors[group.ID] = sel
 		logrus.WithFields(logrus.Fields{
@@ -151,8 +158,9 @@ func (m *SubGroupManager) getSelector(group *models.Group) *selector {
 	return sel
 }
 
-// createSelector creates a new selector for an aggregate group
-func (m *SubGroupManager) createSelector(group *models.Group) *selector {
+// createSelector creates a new selector for an aggregate group.
+// The dynamicWeight parameter is passed in to avoid race conditions when accessing m.dynamicWeight.
+func (m *SubGroupManager) createSelector(group *models.Group, dynamicWeight *DynamicWeightManager) *selector {
 	if group.GroupType != "aggregate" || len(group.SubGroups) == 0 {
 		return nil
 	}
@@ -177,7 +185,7 @@ func (m *SubGroupManager) createSelector(group *models.Group) *selector {
 		groupName:     group.Name,
 		subGroups:     items,
 		store:         m.store,
-		dynamicWeight: m.dynamicWeight,
+		dynamicWeight: dynamicWeight,
 	}
 }
 

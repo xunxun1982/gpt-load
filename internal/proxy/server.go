@@ -2046,7 +2046,12 @@ func (ps *ProxyServer) logRequest(
 	}
 
 	// Record dynamic weight metrics for aggregate sub-groups
-	// Only record for final requests (not retries) to avoid double counting
+	// Only record for final requests (not retries) to avoid double counting.
+	// Design note: This "final-only" approach means intermediate failed sub-group attempts
+	// are not penalized in dynamic weights. This is intentional to avoid over-penalizing
+	// sub-groups in aggregate retry scenarios where the overall request succeeds.
+	// If more aggressive failure tracking is needed, consider recording each sub-group
+	// attempt separately (would require tracking failed sub-group IDs in retry context).
 	if ps.dynamicWeightManager != nil && requestType == models.RequestTypeFinal {
 		ps.recordDynamicWeightMetrics(c, originalGroup, group, logEntry.IsSuccess)
 	}
@@ -2054,6 +2059,11 @@ func (ps *ProxyServer) logRequest(
 
 // recordDynamicWeightMetrics records success/failure metrics for dynamic weight calculation.
 // This is called after each request to update the health scores for sub-groups and model redirects.
+//
+// Performance note: These metric writes run inline on the request goroutine. If Redis is slow
+// or unavailable, it can add tail latency or reduce throughput. The current implementation
+// prioritizes simplicity and correctness. For production deployments with strict latency SLAs,
+// consider async/buffering and ensure strict client timeouts in the store implementation.
 func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup, group *models.Group, isSuccess bool) {
 	if ps.dynamicWeightManager == nil {
 		return

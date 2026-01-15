@@ -4,29 +4,30 @@ import { settingsApi } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
 import type {
-  Group,
-  GroupConfigOption,
-  ModelRedirectDynamicWeight,
-  PathRedirectRule,
-  UpstreamInfo,
+    Group,
+    GroupConfigOption,
+    ModelRedirectDynamicWeight,
+    ModelRedirectTargetWeight,
+    PathRedirectRule,
+    UpstreamInfo,
 } from "@/types/models";
 import { Add, Close, CloudDownloadOutline, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
-  NButton,
-  NCard,
-  NCollapse,
-  NCollapseItem,
-  NForm,
-  NFormItem,
-  NIcon,
-  NInput,
-  NInputNumber,
-  NModal,
-  NSelect,
-  NSwitch,
-  NTooltip,
-  useMessage,
-  type FormRules,
+    NButton,
+    NCard,
+    NCollapse,
+    NCollapseItem,
+    NForm,
+    NFormItem,
+    NIcon,
+    NInput,
+    NInputNumber,
+    NModal,
+    NSelect,
+    NSwitch,
+    NTooltip,
+    useMessage,
+    type FormRules,
 } from "naive-ui";
 import { computed, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -630,15 +631,21 @@ async function fetchModelRedirectDynamicWeights(groupId: number) {
   }
 }
 
-// Get dynamic weight info for a specific target
-function getDynamicWeightInfo(sourceModel: string, targetIndex: number) {
-  const rule = modelRedirectDynamicWeights.value.find(
-    (r: ModelRedirectDynamicWeight) => r.source_model === sourceModel
-  );
-  if (!rule || targetIndex >= rule.targets.length) {
-    return null;
+// Computed map for efficient dynamic weight info lookup
+// Caches the result to avoid repeated .find() operations in template rendering
+const dynamicWeightInfoMap = computed(() => {
+  const map = new Map<string, Map<number, ModelRedirectTargetWeight>>();
+  for (const rule of modelRedirectDynamicWeights.value) {
+    const targetMap = new Map<number, ModelRedirectTargetWeight>();
+    rule.targets.forEach((target, idx) => targetMap.set(idx, target));
+    map.set(rule.source_model, targetMap);
   }
-  return rule.targets[targetIndex];
+  return map;
+});
+
+// Get dynamic weight info for a specific target (optimized with computed map)
+function getDynamicWeightInfo(sourceModel: string, targetIndex: number) {
+  return dynamicWeightInfoMap.value.get(sourceModel)?.get(targetIndex) ?? null;
 }
 
 // Get health score class for styling
@@ -1704,14 +1711,14 @@ async function handleSubmit() {
                                   class="dynamic-weight-indicator"
                                   :class="
                                     getHealthScoreClass(
-                                      getDynamicWeightInfo(rule.from, targetIndex)?.health_score ||
+                                      getDynamicWeightInfo(rule.from, targetIndex)?.health_score ??
                                         1
                                     )
                                   "
                                 >
                                   {{
                                     Math.round(
-                                      (getDynamicWeightInfo(rule.from, targetIndex)?.health_score ||
+                                      (getDynamicWeightInfo(rule.from, targetIndex)?.health_score ??
                                         1) * 100
                                     )
                                   }}%
@@ -1733,14 +1740,14 @@ async function handleSubmit() {
                                     :class="
                                       getHealthScoreClass(
                                         getDynamicWeightInfo(rule.from, targetIndex)
-                                          ?.health_score || 1
+                                          ?.health_score ?? 1
                                       )
                                     "
                                   >
                                     {{
                                       Math.round(
                                         (getDynamicWeightInfo(rule.from, targetIndex)
-                                          ?.health_score || 1) * 100
+                                          ?.health_score ?? 1) * 100
                                       )
                                     }}%
                                   </span>
@@ -1751,7 +1758,7 @@ async function handleSubmit() {
                                     {{
                                       (
                                         getDynamicWeightInfo(rule.from, targetIndex)
-                                          ?.success_rate || 0
+                                          ?.success_rate ?? 0
                                       ).toFixed(1)
                                     }}%
                                   </span>
@@ -1760,7 +1767,9 @@ async function handleSubmit() {
                                   <span>{{ t("keys.requestCount") }}:</span>
                                   <span>
                                     {{
-                                      getDynamicWeightInfo(rule.from, targetIndex)?.request_count ||
+                                      getDynamicWeightInfo(rule.from, targetIndex)?.request_count ??
+                                      0
+                                    }}</span>
                                       0
                                     }}
                                   </span>

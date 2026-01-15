@@ -4,6 +4,7 @@ package handler
 import (
 	"encoding/json"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -757,6 +758,11 @@ func (s *Server) GetModelRedirectDynamicWeights(c *gin.Context) {
 		response.Error(c, app_errors.ParseDBError(err))
 		return
 	}
+	// Defensive nil check to prevent panic if GetGroupByID returns nil group
+	if group == nil {
+		response.Error(c, app_errors.ErrResourceNotFound)
+		return
+	}
 
 	// Check if group has V2 model redirect rules
 	if len(group.ModelRedirectMapV2) == 0 {
@@ -765,9 +771,17 @@ func (s *Server) GetModelRedirectDynamicWeights(c *gin.Context) {
 	}
 
 	// Build response with dynamic weight info for each rule
+	// Sort source models for deterministic API output
+	sourceModels := make([]string, 0, len(group.ModelRedirectMapV2))
+	for sourceModel := range group.ModelRedirectMapV2 {
+		sourceModels = append(sourceModels, sourceModel)
+	}
+	sort.Strings(sourceModels)
+
 	result := make([]ModelRedirectDynamicWeightResponse, 0, len(group.ModelRedirectMapV2))
 
-	for sourceModel, rule := range group.ModelRedirectMapV2 {
+	for _, sourceModel := range sourceModels {
+		rule := group.ModelRedirectMapV2[sourceModel]
 		if rule == nil || len(rule.Targets) == 0 {
 			continue
 		}

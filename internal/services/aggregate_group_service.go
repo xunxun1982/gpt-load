@@ -239,17 +239,9 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 		dynamicWeightInfoMap = make(map[uint]*models.DynamicWeightInfo, len(subGroupModels))
 		for i, subGroup := range subGroupModels {
 			if i < len(dwInfos) {
-				// Convert services.DynamicWeightInfo to models.DynamicWeightInfo
-				info := &models.DynamicWeightInfo{
-					BaseWeight:      dwInfos[i].BaseWeight,
-					HealthScore:     dwInfos[i].HealthScore,
-					EffectiveWeight: dwInfos[i].EffectiveWeight,
-					SuccessRate:     dwInfos[i].SuccessRate,
-					RequestCount:    dwInfos[i].RequestCount,
-					LastFailureAt:   dwInfos[i].LastFailureAt,
-					LastSuccessAt:   dwInfos[i].LastSuccessAt,
-				}
-				dynamicWeightInfoMap[subGroup.ID] = info
+				// Store pointer to the dynamic weight info
+				info := dwInfos[i]
+				dynamicWeightInfoMap[subGroup.ID] = &info
 			}
 		}
 	}

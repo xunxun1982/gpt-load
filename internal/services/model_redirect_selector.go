@@ -3,9 +3,12 @@ package services
 
 import (
 	"errors"
+	"time"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
+
+	"github.com/sirupsen/logrus"
 )
 
 // DynamicModelRedirectSelector handles target selection for V2 redirect rules with dynamic weight support.
@@ -87,7 +90,15 @@ func (s *DynamicModelRedirectSelector) doWeightedSelectWithContext(
 		// Apply dynamic weight if manager is available
 		if s.dynamicWeight != nil {
 			originalIdx := originalIndices[i]
-			metrics, _ := s.dynamicWeight.GetModelRedirectMetrics(groupID, sourceModel, originalIdx)
+			metrics, err := s.dynamicWeight.GetModelRedirectMetrics(groupID, sourceModel, originalIdx)
+			if err != nil {
+				// Log at debug level - falling back to base weight is acceptable behavior
+				logrus.WithError(err).WithFields(logrus.Fields{
+					"group_id":     groupID,
+					"source_model": sourceModel,
+					"target_index": originalIdx,
+				}).Debug("Failed to get model redirect metrics, using base weight")
+			}
 			weights[i] = s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
 		} else {
 			weights[i] = baseWeight
@@ -105,7 +116,9 @@ func (s *DynamicModelRedirectSelector) doWeightedSelectWithContext(
 
 // ResolveTargetModelWithDynamicWeight finds the target model from V2 or V1 rules using dynamic weights.
 // Returns (targetModel, ruleVersion, targetCount, selectedIndex, error).
-// selectedIndex is the index of the selected target in the targets array (-1 for V1 rules).
+// selectedIndex is the index of the selected target in the targets array (0 for V1 rules since they have a single target, -1 for no match).
+// When no matching redirect rule is found, returns empty strings with nil error.
+// Callers should check if targetModel is empty to determine if a redirect occurred.
 func ResolveTargetModelWithDynamicWeight(
 	sourceModel string,
 	v1Map map[string]string,
@@ -139,12 +152,12 @@ func GetModelRedirectDynamicWeights(
 	groupID uint,
 	sourceModel string,
 	rule *models.ModelRedirectRuleV2,
-) []DynamicWeightInfo {
+) []models.DynamicWeightInfo {
 	if rule == nil || len(rule.Targets) == 0 {
 		return nil
 	}
 
-	result := make([]DynamicWeightInfo, len(rule.Targets))
+	result := make([]models.DynamicWeightInfo, len(rule.Targets))
 	for i, target := range rule.Targets {
 		baseWeight := target.GetWeight()
 		if !target.IsEnabled() {
@@ -161,7 +174,7 @@ func GetModelRedirectDynamicWeights(
 			effectiveWeight = dwm.GetEffectiveWeight(baseWeight, metrics)
 		}
 
-		info := DynamicWeightInfo{
+		info := models.DynamicWeightInfo{
 			BaseWeight:      baseWeight,
 			HealthScore:     healthScore,
 			EffectiveWeight: effectiveWeight,
@@ -173,11 +186,11 @@ func GetModelRedirectDynamicWeights(
 				info.SuccessRate = float64(metrics.SuccessCount) / float64(metrics.RequestCount) * 100
 			}
 			if !metrics.LastFailureAt.IsZero() {
-				ts := metrics.LastFailureAt.Format("2006-01-02T15:04:05Z07:00")
+				ts := metrics.LastFailureAt.Format(time.RFC3339)
 				info.LastFailureAt = &ts
 			}
 			if !metrics.LastSuccessAt.IsZero() {
-				ts := metrics.LastSuccessAt.Format("2006-01-02T15:04:05Z07:00")
+				ts := metrics.LastSuccessAt.Format(time.RFC3339)
 				info.LastSuccessAt = &ts
 			}
 		}

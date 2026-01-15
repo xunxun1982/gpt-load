@@ -4,9 +4,11 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
+	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 	"gpt-load/internal/utils"
 
@@ -22,18 +24,6 @@ type DynamicWeightMetrics struct {
 	RequestCount        int64     `json:"request_count"`        // Total request count
 	SuccessCount        int64     `json:"success_count"`        // Total success count
 	UpdatedAt           time.Time `json:"updated_at"`           // Last update timestamp
-}
-
-// DynamicWeightInfo represents the dynamic weight information for display.
-// This is returned by API endpoints for frontend display.
-type DynamicWeightInfo struct {
-	BaseWeight      int     `json:"base_weight"`      // Original configured weight
-	HealthScore     float64 `json:"health_score"`     // Health score (0.0 - 1.0)
-	EffectiveWeight int     `json:"effective_weight"` // Calculated effective weight
-	SuccessRate     float64 `json:"success_rate"`     // Success rate percentage (0-100)
-	RequestCount    int64   `json:"request_count"`    // Total request count
-	LastFailureAt   *string `json:"last_failure_at"`  // Last failure timestamp (ISO8601, nil if never failed)
-	LastSuccessAt   *string `json:"last_success_at"`  // Last success timestamp (ISO8601, nil if never succeeded)
 }
 
 // DynamicWeightConfig holds configuration for dynamic weight calculation.
@@ -55,6 +45,9 @@ type DynamicWeightConfig struct {
 	// MinHealthScore is the minimum health score to prevent complete disabling (default: 0.1)
 	MinHealthScore float64
 	// MetricsTTL is the TTL for metrics in Redis (default: 1 hour)
+	// Note: 1-hour TTL means metrics reset after inactivity, which may lose historical data
+	// for low-traffic endpoints. Consider longer TTL (e.g., 24 hours) for production use
+	// or make this configurable via environment variable for different deployment scenarios.
 	MetricsTTL time.Duration
 }
 
@@ -104,8 +97,13 @@ func subGroupMetricsKey(aggregateGroupID, subGroupID uint) string {
 }
 
 // modelRedirectMetricsKey returns the Redis key for model redirect metrics.
+// Uses URL encoding for sourceModel to prevent key collisions when model names contain colons.
+// Example: "anthropic:claude-3" becomes "anthropic%3Aclaude-3" in the key.
 func modelRedirectMetricsKey(groupID uint, sourceModel string, targetIndex int) string {
-	return fmt.Sprintf("dw:mr:%d:%s:%d", groupID, sourceModel, targetIndex)
+	// URL-encode the model name to handle special characters like colons
+	// This prevents ambiguity in Redis key parsing (e.g., "dw:mr:1:model:with:colons:0")
+	encodedModel := url.PathEscape(sourceModel)
+	return fmt.Sprintf("dw:mr:%d:%s:%d", groupID, encodedModel, targetIndex)
 }
 
 // GetSubGroupMetrics retrieves metrics for a sub-group.
@@ -172,6 +170,14 @@ func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceMo
 }
 
 // recordSuccess records a successful request.
+// Note: Uses global mutex for simplicity and correctness within a single instance.
+// For high-load scenarios with many sub-groups/redirects, consider per-key locking
+// (sync.Map or sharded locks) or Redis WATCH/MULTI/EXEC transactions for better scalability.
+//
+// Distributed deployment consideration: In multi-instance deployments sharing Redis,
+// concurrent updates can cause lost writes due to non-atomic read-modify-write pattern.
+// This is acceptable for approximate health tracking where perfect accuracy isn't critical.
+// For precise counting, consider using Redis INCR/HINCRBY operations or Lua scripts.
 func (m *DynamicWeightManager) recordSuccess(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -275,8 +281,8 @@ func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *Dynam
 }
 
 // GetSubGroupDynamicWeights returns dynamic weight info for all sub-groups of an aggregate group.
-func (m *DynamicWeightManager) GetSubGroupDynamicWeights(aggregateGroupID uint, subGroups []SubGroupWeightInput) []DynamicWeightInfo {
-	result := make([]DynamicWeightInfo, len(subGroups))
+func (m *DynamicWeightManager) GetSubGroupDynamicWeights(aggregateGroupID uint, subGroups []SubGroupWeightInput) []models.DynamicWeightInfo {
+	result := make([]models.DynamicWeightInfo, len(subGroups))
 
 	for i, sg := range subGroups {
 		metrics, err := m.GetSubGroupMetrics(aggregateGroupID, sg.SubGroupID)
@@ -291,7 +297,7 @@ func (m *DynamicWeightManager) GetSubGroupDynamicWeights(aggregateGroupID uint, 
 		healthScore := m.CalculateHealthScore(metrics)
 		effectiveWeight := m.GetEffectiveWeight(sg.Weight, metrics)
 
-		info := DynamicWeightInfo{
+		info := models.DynamicWeightInfo{
 			BaseWeight:      sg.Weight,
 			HealthScore:     healthScore,
 			EffectiveWeight: effectiveWeight,
