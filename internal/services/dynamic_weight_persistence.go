@@ -9,11 +9,15 @@ import (
 	"time"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/store"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// Re-export store.ErrNotFound for local use
+var errNotFound = store.ErrNotFound
 
 const (
 	// DefaultPersistenceInterval is the default interval for persisting metrics to database.
@@ -200,6 +204,7 @@ func (p *DynamicWeightPersistence) MarkDirtyByKey(key string) {
 }
 
 // syncDirtyKeys syncs all dirty keys to database.
+// Failed keys are re-queued for retry on the next sync cycle.
 func (p *DynamicWeightPersistence) syncDirtyKeys() {
 	p.dirtyMu.Lock()
 	if len(p.dirtyKeys) == 0 {
@@ -214,17 +219,23 @@ func (p *DynamicWeightPersistence) syncDirtyKeys() {
 	p.dirtyKeys = make(map[string]struct{})
 	p.dirtyMu.Unlock()
 
-	store := p.manager.GetStore()
+	kvStore := p.manager.GetStore()
 	var toUpsert []models.DynamicWeightMetric
+	var failedKeys []string
 
 	for _, key := range keys {
-		data, err := store.Get(key)
+		data, err := kvStore.Get(key)
 		if err != nil {
+			// Re-queue for retry on transient errors (not ErrNotFound)
+			if err != errNotFound {
+				failedKeys = append(failedKeys, key)
+			}
 			continue
 		}
 
 		var metrics DynamicWeightMetrics
 		if err := json.Unmarshal(data, &metrics); err != nil {
+			// JSON unmarshal errors are not transient, skip without retry
 			continue
 		}
 
@@ -236,6 +247,15 @@ func (p *DynamicWeightPersistence) syncDirtyKeys() {
 
 	if len(toUpsert) > 0 {
 		p.batchUpsert(toUpsert)
+	}
+
+	// Re-queue failed keys for retry on next sync cycle
+	if len(failedKeys) > 0 {
+		p.dirtyMu.Lock()
+		for _, k := range failedKeys {
+			p.dirtyKeys[k] = struct{}{}
+		}
+		p.dirtyMu.Unlock()
 	}
 }
 
@@ -351,7 +371,10 @@ func parseModelRedirectKeyParts(s string) (groupID uint, sourceModel string, tar
 	return groupID, sourceModel, targetIndex, true
 }
 
-// parseUintSimple parses a string to uint (assumes valid numeric input).
+// parseUintSimple parses a string to uint.
+// Non-digit characters are silently ignored for defensive parsing of store keys.
+// Returns 0 for empty or invalid input. This is acceptable since invalid keys
+// will be filtered out by the caller's validation logic.
 func parseUintSimple(s string) uint {
 	var n uint
 	for i := 0; i < len(s); i++ {
@@ -511,6 +534,12 @@ func (p *DynamicWeightPersistence) DeleteAllModelRedirectMetricsForGroup(groupID
 // RolloverTimeWindows performs daily rollover of time window statistics.
 // This should be called once per day to shift data between time windows.
 // Data older than 180 days is discarded. Only processes non-deleted records.
+//
+// NOTE: Current implementation loads all metrics into memory. For deployments
+// with very large numbers of groups (10000+), consider implementing batched
+// processing. In typical deployments, the number of metrics is bounded by
+// (aggregate_groups * sub_groups) + (groups * model_redirects), which is
+// usually manageable in memory.
 func (p *DynamicWeightPersistence) RolloverTimeWindows() {
 	var dbMetrics []models.DynamicWeightMetric
 	// Only process non-deleted records

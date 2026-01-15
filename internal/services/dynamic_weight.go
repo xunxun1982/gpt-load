@@ -185,6 +185,10 @@ func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceMo
 }
 
 // recordSuccess records a successful request.
+// NOTE: Uses mutex for single-instance protection. In distributed deployments
+// sharing the same store, concurrent updates may cause lost writes due to
+// non-atomic read-modify-write pattern. This is acceptable for approximate
+// health tracking where perfect accuracy isn't critical.
 func (m *DynamicWeightManager) recordSuccess(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
