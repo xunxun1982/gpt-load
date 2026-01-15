@@ -211,3 +211,87 @@ func MergeV1IntoV2Rules(v1Map map[string]string, v2Map map[string]*ModelRedirect
 
 	return result
 }
+
+// ResolveTargetModelWithIndex finds the target model from V2 or V1 rules using the provided selector.
+// Returns (targetModel, ruleVersion, targetCount, selectedIndex, error).
+// selectedIndex is the index of the selected target in the targets array (-1 for V1 rules or not found).
+// ruleVersion is "v2", "v1", or "" if not found.
+// Note: selector must not be nil when V2 rules exist, otherwise returns error.
+func ResolveTargetModelWithIndex(sourceModel string, v1Map map[string]string, v2Map map[string]*ModelRedirectRuleV2, selector *ModelRedirectSelector) (string, string, int, int, error) {
+	// Priority: V2 rules first
+	if rule, found := v2Map[sourceModel]; found {
+		if selector == nil {
+			return "", "", 0, -1, errors.New("selector required for V2 rules")
+		}
+		targetModel, selectedIdx, err := selector.SelectTargetWithIndex(rule)
+		if err != nil {
+			return "", "", 0, -1, err
+		}
+		return targetModel, "v2", len(rule.Targets), selectedIdx, nil
+	}
+
+	// Fallback to V1 rules
+	if targetModel, found := v1Map[sourceModel]; found {
+		return targetModel, "v1", 1, 0, nil
+	}
+
+	return "", "", 0, -1, nil
+}
+
+// SelectTargetWithIndex selects a target model from the rule using weighted random selection.
+// Returns (targetModel, selectedIndex, error).
+// selectedIndex is the index of the selected target in the original targets array.
+func (s *ModelRedirectSelector) SelectTargetWithIndex(rule *ModelRedirectRuleV2) (string, int, error) {
+	if rule == nil || len(rule.Targets) == 0 {
+		return "", -1, errors.New("no targets configured")
+	}
+
+	// Filter valid targets (enabled and positive weight)
+	validTargets, validIndices := s.filterValidTargetsWithIndices(rule.Targets)
+	if len(validTargets) == 0 {
+		return "", -1, errors.New("no enabled targets available")
+	}
+
+	// Fast path: single target, skip weight calculation
+	if len(validTargets) == 1 {
+		return validTargets[0].Model, validIndices[0], nil
+	}
+
+	// Multiple targets: weighted random selection
+	return s.doWeightedSelectWithIndex(validTargets, validIndices)
+}
+
+// filterValidTargetsWithIndices returns targets that are enabled and have positive effective weight.
+// Also returns the original indices for tracking.
+func (s *ModelRedirectSelector) filterValidTargetsWithIndices(targets []ModelRedirectTarget) ([]ModelRedirectTarget, []int) {
+	valid := make([]ModelRedirectTarget, 0, len(targets))
+	indices := make([]int, 0, len(targets))
+	for i, t := range targets {
+		if !t.IsEnabled() {
+			continue
+		}
+		// GetWeight returns default 100 for unset/zero weight
+		if t.GetWeight() > 0 {
+			valid = append(valid, t)
+			indices = append(indices, i)
+		}
+	}
+	return valid, indices
+}
+
+// doWeightedSelectWithIndex performs weighted random selection on valid targets.
+// Returns (targetModel, indexInValidTargets, error).
+func (s *ModelRedirectSelector) doWeightedSelectWithIndex(targets []ModelRedirectTarget, originalIndices []int) (string, int, error) {
+	weights := make([]int, len(targets))
+	for i, t := range targets {
+		weights[i] = t.GetWeight()
+	}
+
+	idx := s.weightedSelect(weights)
+	// Validate index bounds to prevent panic from invalid weighted selection result
+	if idx < 0 || idx >= len(targets) {
+		return "", -1, errors.New("weighted selection failed")
+	}
+
+	return targets[idx].Model, originalIndices[idx], nil
+}

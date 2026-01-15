@@ -31,8 +31,9 @@ type AggregateValidationResult struct {
 
 // AggregateGroupService encapsulates aggregate group specific behaviours.
 type AggregateGroupService struct {
-	db           *gorm.DB
-	groupManager *GroupManager
+	db                   *gorm.DB
+	groupManager         *GroupManager
+	dynamicWeightManager *DynamicWeightManager
 	// Cache for key statistics to reduce database queries
 	statsCache    map[string]keyStatsCacheEntry
 	statsCacheMu  sync.RWMutex
@@ -46,12 +47,13 @@ type keyStatsCacheEntry struct {
 }
 
 // NewAggregateGroupService constructs an AggregateGroupService instance.
-func NewAggregateGroupService(db *gorm.DB, groupManager *GroupManager) *AggregateGroupService {
+func NewAggregateGroupService(db *gorm.DB, groupManager *GroupManager, dynamicWeightManager *DynamicWeightManager) *AggregateGroupService {
 	return &AggregateGroupService{
-		db:            db,
-		groupManager:  groupManager,
-		statsCache:    make(map[string]keyStatsCacheEntry),
-		statsCacheTTL: 5 * time.Minute, // Cache for 5 minutes
+		db:                   db,
+		groupManager:         groupManager,
+		dynamicWeightManager: dynamicWeightManager,
+		statsCache:           make(map[string]keyStatsCacheEntry),
+		statsCacheTTL:        5 * time.Minute, // Cache for 5 minutes
 	}
 }
 
@@ -223,6 +225,35 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 
 	keyStatsMap := s.fetchSubGroupsKeyStats(ctx, subGroupIDs)
 
+	// Prepare dynamic weight inputs if manager is available
+	var dynamicWeightInfoMap map[uint]*models.DynamicWeightInfo
+	if s.dynamicWeightManager != nil {
+		inputs := make([]SubGroupWeightInput, 0, len(subGroupModels))
+		for _, subGroup := range subGroupModels {
+			inputs = append(inputs, SubGroupWeightInput{
+				SubGroupID: subGroup.ID,
+				Weight:     weightMap[subGroup.ID],
+			})
+		}
+		dwInfos := s.dynamicWeightManager.GetSubGroupDynamicWeights(groupID, inputs)
+		dynamicWeightInfoMap = make(map[uint]*models.DynamicWeightInfo, len(subGroupModels))
+		for i, subGroup := range subGroupModels {
+			if i < len(dwInfos) {
+				// Convert services.DynamicWeightInfo to models.DynamicWeightInfo
+				info := &models.DynamicWeightInfo{
+					BaseWeight:      dwInfos[i].BaseWeight,
+					HealthScore:     dwInfos[i].HealthScore,
+					EffectiveWeight: dwInfos[i].EffectiveWeight,
+					SuccessRate:     dwInfos[i].SuccessRate,
+					RequestCount:    dwInfos[i].RequestCount,
+					LastFailureAt:   dwInfos[i].LastFailureAt,
+					LastSuccessAt:   dwInfos[i].LastSuccessAt,
+				}
+				dynamicWeightInfoMap[subGroup.ID] = info
+			}
+		}
+	}
+
 	subGroups := make([]models.SubGroupInfo, 0, len(subGroupModels))
 	for _, subGroup := range subGroupModels {
 		stats := keyStatsMap[subGroup.ID]
@@ -233,13 +264,20 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 				Warn("failed to fetch key stats for sub-group, using zero values")
 		}
 
-		subGroups = append(subGroups, models.SubGroupInfo{
+		info := models.SubGroupInfo{
 			Group:       subGroup,
 			Weight:      weightMap[subGroup.ID],
 			TotalKeys:   stats.TotalKeys,
 			ActiveKeys:  stats.ActiveKeys,
 			InvalidKeys: stats.InvalidKeys,
-		})
+		}
+
+		// Add dynamic weight info if available
+		if dynamicWeightInfoMap != nil {
+			info.DynamicWeight = dynamicWeightInfoMap[subGroup.ID]
+		}
+
+		subGroups = append(subGroups, info)
 	}
 
 	return subGroups, nil

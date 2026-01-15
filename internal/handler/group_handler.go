@@ -720,3 +720,89 @@ func (s *Server) GetAllChildGroups(c *gin.Context) {
 
 	response.Success(c, childGroupsMap)
 }
+
+// ModelRedirectDynamicWeightResponse represents the dynamic weight info for a model redirect rule.
+type ModelRedirectDynamicWeightResponse struct {
+	SourceModel string                      `json:"source_model"`
+	Targets     []ModelRedirectTargetWeight `json:"targets"`
+}
+
+// ModelRedirectTargetWeight represents the dynamic weight info for a single target.
+type ModelRedirectTargetWeight struct {
+	Model           string  `json:"model"`
+	BaseWeight      int     `json:"base_weight"`
+	EffectiveWeight int     `json:"effective_weight"`
+	HealthScore     float64 `json:"health_score"`
+	SuccessRate     float64 `json:"success_rate"`
+	RequestCount    int64   `json:"request_count"`
+	LastFailureAt   *string `json:"last_failure_at,omitempty"`
+	LastSuccessAt   *string `json:"last_success_at,omitempty"`
+	Enabled         bool    `json:"enabled"`
+}
+
+// GetModelRedirectDynamicWeights handles getting dynamic weight info for model redirect rules.
+// GET /api/groups/:id/model-redirect-weights
+func (s *Server) GetModelRedirectDynamicWeights(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	groupID := uint(id)
+
+	// Get group to access model redirect rules
+	group, err := s.GroupManager.GetGroupByID(groupID)
+	if err != nil {
+		response.Error(c, app_errors.ParseDBError(err))
+		return
+	}
+
+	// Check if group has V2 model redirect rules
+	if len(group.ModelRedirectMapV2) == 0 {
+		response.Success(c, []ModelRedirectDynamicWeightResponse{})
+		return
+	}
+
+	// Build response with dynamic weight info for each rule
+	result := make([]ModelRedirectDynamicWeightResponse, 0, len(group.ModelRedirectMapV2))
+
+	for sourceModel, rule := range group.ModelRedirectMapV2 {
+		if rule == nil || len(rule.Targets) == 0 {
+			continue
+		}
+
+		// Get dynamic weight info for all targets
+		dwInfos := services.GetModelRedirectDynamicWeights(s.DynamicWeightManager, groupID, sourceModel, rule)
+
+		targets := make([]ModelRedirectTargetWeight, len(rule.Targets))
+		for i, target := range rule.Targets {
+			targets[i] = ModelRedirectTargetWeight{
+				Model:      target.Model,
+				BaseWeight: target.GetWeight(),
+				Enabled:    target.IsEnabled(),
+			}
+
+			// Add dynamic weight info if available
+			if i < len(dwInfos) {
+				targets[i].EffectiveWeight = dwInfos[i].EffectiveWeight
+				targets[i].HealthScore = dwInfos[i].HealthScore
+				targets[i].SuccessRate = dwInfos[i].SuccessRate
+				targets[i].RequestCount = dwInfos[i].RequestCount
+				targets[i].LastFailureAt = dwInfos[i].LastFailureAt
+				targets[i].LastSuccessAt = dwInfos[i].LastSuccessAt
+			} else {
+				// No dynamic weight data, use base weight
+				targets[i].EffectiveWeight = target.GetWeight()
+				targets[i].HealthScore = 1.0
+			}
+		}
+
+		result = append(result, ModelRedirectDynamicWeightResponse{
+			SourceModel: sourceModel,
+			Targets:     targets,
+		})
+	}
+
+	response.Success(c, result)
+}

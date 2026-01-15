@@ -40,6 +40,7 @@ type App struct {
 	cronChecker            *keypool.CronChecker
 	keyPoolProvider        *keypool.KeyProvider
 	proxyServer            *proxy.ProxyServer
+	dynamicWeightManager   *services.DynamicWeightManager
 	storage                store.Store
 	db                     *gorm.DB
 	httpServer             *http.Server
@@ -59,12 +60,16 @@ type AppParams struct {
 	CronChecker            *keypool.CronChecker
 	KeyPoolProvider        *keypool.KeyProvider
 	ProxyServer            *proxy.ProxyServer
+	DynamicWeightManager   *services.DynamicWeightManager
 	Storage                store.Store
 	DB                     *gorm.DB
 }
 
 // NewApp is the constructor for App, with dependencies injected by dig.
 func NewApp(params AppParams) *App {
+	// Set dynamic weight manager on proxy server for adaptive load balancing
+	params.ProxyServer.SetDynamicWeightManager(params.DynamicWeightManager)
+
 	return &App{
 		engine:                 params.Engine,
 		configManager:          params.ConfigManager,
@@ -77,6 +82,7 @@ func NewApp(params AppParams) *App {
 		cronChecker:            params.CronChecker,
 		keyPoolProvider:        params.KeyPoolProvider,
 		proxyServer:            params.ProxyServer,
+		dynamicWeightManager:   params.DynamicWeightManager,
 		storage:                params.Storage,
 		db:                     params.DB,
 	}

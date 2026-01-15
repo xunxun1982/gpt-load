@@ -274,38 +274,48 @@ var modelRedirectSelector = models.NewModelRedirectSelector(utils.WeightedRandom
 
 // ApplyModelRedirect applies model redirection based on the group's redirect rules.
 // V2 rules (one-to-many) take priority over V1 rules (one-to-one).
-// Returns the modified body bytes and the original model name (empty if no redirect occurred).
+// Returns the modified body bytes, the original model name (empty if no redirect occurred),
+// and the selected target index (-1 if no V2 redirect or not applicable).
 func (b *BaseChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error) {
+	modifiedBytes, originalModel, _, err := b.ApplyModelRedirectWithIndex(req, bodyBytes, group)
+	return modifiedBytes, originalModel, err
+}
+
+// ApplyModelRedirectWithIndex applies model redirection and returns the selected target index.
+// V2 rules (one-to-many) take priority over V1 rules (one-to-one).
+// Returns the modified body bytes, the original model name, the selected target index, and error.
+// The target index is -1 if no V2 redirect occurred or not applicable.
+func (b *BaseChannel) ApplyModelRedirectWithIndex(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, int, error) {
 	if len(bodyBytes) == 0 {
-		return bodyBytes, "", nil
+		return bodyBytes, "", -1, nil
 	}
 
 	// Check if any redirect rules exist
 	if len(group.ModelRedirectMap) == 0 && len(group.ModelRedirectMapV2) == 0 {
-		return bodyBytes, "", nil
+		return bodyBytes, "", -1, nil
 	}
 
 	var requestData map[string]any
 	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
-		return bodyBytes, "", nil
+		return bodyBytes, "", -1, nil
 	}
 
 	modelValue, exists := requestData["model"]
 	if !exists {
-		return bodyBytes, "", nil
+		return bodyBytes, "", -1, nil
 	}
 
 	model, ok := modelValue.(string)
 	if !ok {
-		return bodyBytes, "", nil
+		return bodyBytes, "", -1, nil
 	}
 
-	// Resolve target model (V2 first, then V1)
-	targetModel, ruleVersion, targetCount, err := models.ResolveTargetModel(
+	// Resolve target model (V2 first, then V1) with index tracking
+	targetModel, ruleVersion, targetCount, selectedIdx, err := models.ResolveTargetModelWithIndex(
 		model, group.ModelRedirectMap, group.ModelRedirectMapV2, modelRedirectSelector,
 	)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to select target model: %w", err)
+		return nil, "", -1, fmt.Errorf("failed to select target model: %w", err)
 	}
 
 	if targetModel != "" {
@@ -316,22 +326,23 @@ func (b *BaseChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, gr
 			"original_model": model,
 			"target_model":   targetModel,
 			"target_count":   targetCount,
+			"target_index":   selectedIdx,
 			"rule_version":   ruleVersion,
 		}).Debug("Model redirected")
 
 		modifiedBytes, err := json.Marshal(requestData)
 		if err != nil {
-			return bodyBytes, "", err
+			return bodyBytes, "", -1, err
 		}
-		return modifiedBytes, model, nil
+		return modifiedBytes, model, selectedIdx, nil
 	}
 
 	// Strict mode check
 	if group.ModelRedirectStrict {
-		return nil, "", fmt.Errorf("model '%s' is not configured in redirect rules", model)
+		return nil, "", -1, fmt.Errorf("model '%s' is not configured in redirect rules", model)
 	}
 
-	return bodyBytes, "", nil
+	return bodyBytes, "", -1, nil
 }
 
 // TransformModelList transforms the model list response based on redirect rules.

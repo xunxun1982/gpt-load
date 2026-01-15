@@ -149,23 +149,39 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 // Supports both V1 (one-to-one) and V2 (one-to-many) redirect rules.
 // Returns the modified body bytes, the original model name (empty if no redirect), and error.
 func (ch *GeminiChannel) ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error) {
+	modifiedBytes, originalModel, _, err := ch.ApplyModelRedirectWithIndex(req, bodyBytes, group)
+	return modifiedBytes, originalModel, err
+}
+
+// ApplyModelRedirectWithIndex overrides the default implementation for Gemini channel.
+// Supports both V1 (one-to-one) and V2 (one-to-many) redirect rules.
+// Returns the modified body bytes, the original model name, the selected target index, and error.
+func (ch *GeminiChannel) ApplyModelRedirectWithIndex(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, int, error) {
 	hasV1Rules := len(group.ModelRedirectMap) > 0
 	hasV2Rules := len(group.ModelRedirectMapV2) > 0
 	if !hasV1Rules && !hasV2Rules {
-		return bodyBytes, "", nil
+		return bodyBytes, "", -1, nil
 	}
 
 	if strings.Contains(req.URL.Path, "v1beta/openai") {
-		return ch.BaseChannel.ApplyModelRedirect(req, bodyBytes, group)
+		return ch.BaseChannel.ApplyModelRedirectWithIndex(req, bodyBytes, group)
 	}
 
-	return ch.applyNativeFormatRedirect(req, bodyBytes, group)
+	return ch.applyNativeFormatRedirectWithIndex(req, bodyBytes, group)
 }
 
 // applyNativeFormatRedirect handles model redirection for Gemini native format.
 // Supports both V1 and V2 redirect rules with V2 taking priority.
 // Returns the modified body bytes, the original model name (empty if no redirect), and error.
 func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error) {
+	modifiedBytes, originalModel, _, err := ch.applyNativeFormatRedirectWithIndex(req, bodyBytes, group)
+	return modifiedBytes, originalModel, err
+}
+
+// applyNativeFormatRedirectWithIndex handles model redirection for Gemini native format with index tracking.
+// Supports both V1 and V2 redirect rules with V2 taking priority.
+// Returns the modified body bytes, the original model name, the selected target index, and error.
+func (ch *GeminiChannel) applyNativeFormatRedirectWithIndex(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, int, error) {
 	path := req.URL.Path
 	parts := strings.Split(path, "/")
 
@@ -174,12 +190,12 @@ func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes 
 			modelPart := parts[i+1]
 			originalModel := strings.Split(modelPart, ":")[0]
 
-			// Resolve target model (V2 first, then V1)
-			targetModel, ruleVersion, targetCount, err := models.ResolveTargetModel(
+			// Resolve target model (V2 first, then V1) with index tracking
+			targetModel, ruleVersion, targetCount, selectedIdx, err := models.ResolveTargetModelWithIndex(
 				originalModel, group.ModelRedirectMap, group.ModelRedirectMapV2, modelRedirectSelector,
 			)
 			if err != nil {
-				return nil, "", fmt.Errorf("failed to select target model: %w", err)
+				return nil, "", -1, fmt.Errorf("failed to select target model: %w", err)
 			}
 
 			if targetModel != "" {
@@ -196,22 +212,23 @@ func (ch *GeminiChannel) applyNativeFormatRedirect(req *http.Request, bodyBytes 
 					"original_model": originalModel,
 					"target_model":   targetModel,
 					"target_count":   targetCount,
+					"target_index":   selectedIdx,
 					"channel":        "gemini_native",
 					"rule_version":   ruleVersion,
 				}).Debug("Model redirected")
 
-				return bodyBytes, originalModel, nil
+				return bodyBytes, originalModel, selectedIdx, nil
 			}
 
 			// No redirect rule found
 			if group.ModelRedirectStrict {
-				return nil, "", fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)
+				return nil, "", -1, fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)
 			}
-			return bodyBytes, "", nil
+			return bodyBytes, "", -1, nil
 		}
 	}
 
-	return bodyBytes, "", nil
+	return bodyBytes, "", -1, nil
 }
 
 // TransformModelList transforms the model list response based on redirect rules.

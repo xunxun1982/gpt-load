@@ -13,9 +13,10 @@ import (
 
 // SubGroupManager manages weighted round-robin selection for all aggregate groups
 type SubGroupManager struct {
-	store     store.Store
-	selectors map[uint]*selector
-	mu        sync.RWMutex
+	store         store.Store
+	selectors     map[uint]*selector
+	mu            sync.RWMutex
+	dynamicWeight *DynamicWeightManager // Optional dynamic weight manager
 }
 
 // subGroupItem represents a sub-group with its weight and current weight for round-robin
@@ -33,6 +34,21 @@ func NewSubGroupManager(store store.Store) *SubGroupManager {
 		store:     store,
 		selectors: make(map[uint]*selector),
 	}
+}
+
+// SetDynamicWeightManager sets the dynamic weight manager for adaptive load balancing.
+// This is optional - if not set, static weights will be used.
+func (m *SubGroupManager) SetDynamicWeightManager(dwm *DynamicWeightManager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dynamicWeight = dwm
+}
+
+// GetDynamicWeightManager returns the dynamic weight manager if set.
+func (m *SubGroupManager) GetDynamicWeightManager() *DynamicWeightManager {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.dynamicWeight
 }
 
 // SelectSubGroup selects an appropriate sub-group for the given aggregate group
@@ -157,20 +173,22 @@ func (m *SubGroupManager) createSelector(group *models.Group) *selector {
 	}
 
 	return &selector{
-		groupID:   group.ID,
-		groupName: group.Name,
-		subGroups: items,
-		store:     m.store,
+		groupID:       group.ID,
+		groupName:     group.Name,
+		subGroups:     items,
+		store:         m.store,
+		dynamicWeight: m.dynamicWeight,
 	}
 }
 
 // selector encapsulates the weighted round-robin algorithm for a single aggregate group
 type selector struct {
-	groupID   uint
-	groupName string
-	subGroups []subGroupItem
-	store     store.Store
-	mu        sync.Mutex
+	groupID       uint
+	groupName     string
+	subGroups     []subGroupItem
+	store         store.Store
+	mu            sync.Mutex
+	dynamicWeight *DynamicWeightManager // Optional dynamic weight manager
 }
 
 // selectNext uses weighted round-robin algorithm to select a sub-group with active keys
@@ -357,6 +375,7 @@ func (s *selector) selectNextWithExclusion(excludeIDs map[uint]bool) (string, ui
 
 // selectByWeight implements weighted random selection algorithm.
 // Disabled sub-groups are treated as having zero weight to exclude them from selection.
+// If dynamic weight manager is set, effective weights are calculated based on health scores.
 func (s *selector) selectByWeight() *subGroupItem {
 	if len(s.subGroups) == 0 {
 		return nil
@@ -366,7 +385,14 @@ func (s *selector) selectByWeight() *subGroupItem {
 	weights := make([]int, len(s.subGroups))
 	for i := range s.subGroups {
 		if s.subGroups[i].enabled {
-			weights[i] = s.subGroups[i].weight
+			baseWeight := s.subGroups[i].weight
+			// Apply dynamic weight if manager is available
+			if s.dynamicWeight != nil {
+				metrics, _ := s.dynamicWeight.GetSubGroupMetrics(s.groupID, s.subGroups[i].subGroupID)
+				weights[i] = s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
+			} else {
+				weights[i] = baseWeight
+			}
 		} else {
 			weights[i] = 0
 		}
@@ -384,6 +410,7 @@ func (s *selector) selectByWeight() *subGroupItem {
 // selectByWeightWithExclusion implements weighted random selection algorithm with exclusion list.
 // Only considers sub-groups not in the exclusion list.
 // Disabled sub-groups are treated as having zero weight to exclude them from selection.
+// If dynamic weight manager is set, effective weights are calculated based on health scores.
 func (s *selector) selectByWeightWithExclusion(excludeIDs map[uint]bool) *subGroupItem {
 	if len(s.subGroups) == 0 {
 		return nil
@@ -395,7 +422,14 @@ func (s *selector) selectByWeightWithExclusion(excludeIDs map[uint]bool) *subGro
 		if excludeIDs[s.subGroups[i].subGroupID] || !s.subGroups[i].enabled {
 			weights[i] = 0 // Exclude by setting weight to 0
 		} else {
-			weights[i] = s.subGroups[i].weight
+			baseWeight := s.subGroups[i].weight
+			// Apply dynamic weight if manager is available
+			if s.dynamicWeight != nil {
+				metrics, _ := s.dynamicWeight.GetSubGroupMetrics(s.groupID, s.subGroups[i].subGroupID)
+				weights[i] = s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
+			} else {
+				weights[i] = baseWeight
+			}
 		}
 	}
 

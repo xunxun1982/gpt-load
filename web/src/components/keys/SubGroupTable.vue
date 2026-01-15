@@ -218,6 +218,24 @@ function formatNumber(num: number): string {
   }
   return num.toString();
 }
+
+// Get health score CSS class based on score value
+function getHealthScoreClass(score: number): string {
+  if (score >= 0.8) return "health-good";
+  if (score >= 0.5) return "health-warning";
+  return "health-critical";
+}
+
+// Format ISO datetime string to localized format
+function formatDateTime(isoString: string | null | undefined): string {
+  if (!isoString) return "-";
+  try {
+    const date = new Date(isoString);
+    return date.toLocaleString();
+  } catch {
+    return isoString;
+  }
+}
 </script>
 
 <template>
@@ -295,6 +313,12 @@ function formatNumber(num: number): string {
                 <span class="weight-label">
                   {{ t("subGroups.weight") }}
                   <strong>{{ subGroup.weight }}</strong>
+                  <!-- Show effective weight if dynamic weight is available -->
+                  <template v-if="subGroup.dynamic_weight">
+                    <span class="effective-weight">
+                      → {{ subGroup.dynamic_weight.effective_weight }}
+                    </span>
+                  </template>
                 </span>
                 <div class="weight-bar">
                   <div
@@ -307,6 +331,23 @@ function formatNumber(num: number): string {
                   />
                 </div>
                 <span class="weight-text">{{ subGroup.percentage }}%</span>
+              </div>
+              <!-- Health score indicator -->
+              <div v-if="subGroup.dynamic_weight" class="health-score-row">
+                <span class="health-label">{{ t("subGroups.healthScore") }}</span>
+                <div class="health-bar">
+                  <div
+                    class="health-fill"
+                    :class="getHealthScoreClass(subGroup.dynamic_weight.health_score)"
+                    :style="{ width: `${subGroup.dynamic_weight.health_score * 100}%` }"
+                  />
+                </div>
+                <span
+                  class="health-text"
+                  :class="getHealthScoreClass(subGroup.dynamic_weight.health_score)"
+                >
+                  {{ Math.round(subGroup.dynamic_weight.health_score * 100) }}%
+                </span>
               </div>
             </div>
 
@@ -348,6 +389,52 @@ function formatNumber(num: number): string {
                       <n-tag :type="getSubGroupStatus(subGroup).type" size="small">
                         {{ getSubGroupStatus(subGroup).text }}
                       </n-tag>
+                    </div>
+
+                    <!-- Dynamic weight information -->
+                    <div v-if="subGroup.dynamic_weight" class="info-section">
+                      <div class="section-title">{{ t("subGroups.dynamicWeight") }}</div>
+                      <div class="info-row">
+                        <span class="info-label">{{ t("subGroups.baseWeight") }}:</span>
+                        <span class="info-value">{{ subGroup.dynamic_weight.base_weight }}</span>
+                      </div>
+                      <div class="info-row">
+                        <span class="info-label">{{ t("subGroups.effectiveWeight") }}:</span>
+                        <span class="info-value">
+                          {{ subGroup.dynamic_weight.effective_weight }}
+                        </span>
+                      </div>
+                      <div class="info-row">
+                        <span class="info-label">{{ t("subGroups.healthScore") }}:</span>
+                        <span
+                          class="info-value"
+                          :class="getHealthScoreClass(subGroup.dynamic_weight.health_score)"
+                        >
+                          {{ Math.round(subGroup.dynamic_weight.health_score * 100) }}%
+                        </span>
+                      </div>
+                      <div class="info-row">
+                        <span class="info-label">{{ t("subGroups.successRate") }}:</span>
+                        <span class="info-value">
+                          {{ subGroup.dynamic_weight.success_rate.toFixed(1) }}%
+                        </span>
+                      </div>
+                      <div class="info-row">
+                        <span class="info-label">{{ t("subGroups.requestCount") }}:</span>
+                        <span class="info-value">{{ subGroup.dynamic_weight.request_count }}</span>
+                      </div>
+                      <div v-if="subGroup.dynamic_weight.last_failure_at" class="info-row">
+                        <span class="info-label">{{ t("subGroups.lastFailure") }}:</span>
+                        <span class="info-value">
+                          {{ formatDateTime(subGroup.dynamic_weight.last_failure_at) }}
+                        </span>
+                      </div>
+                      <div v-if="subGroup.dynamic_weight.last_success_at" class="info-row">
+                        <span class="info-label">{{ t("subGroups.lastSuccess") }}:</span>
+                        <span class="info-value">
+                          {{ formatDateTime(subGroup.dynamic_weight.last_success_at) }}
+                        </span>
+                      </div>
                     </div>
 
                     <!-- Detailed group information -->
@@ -969,5 +1056,109 @@ function formatNumber(num: number): string {
   outline: none;
   overflow-x: auto;
   white-space: nowrap;
+}
+
+/* Effective weight indicator */
+.effective-weight {
+  font-size: 11px;
+  color: #2080f0;
+  margin-left: 4px;
+}
+
+:root.dark .effective-weight {
+  color: #4098fc;
+}
+
+/* Health score row styles */
+.health-score-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.health-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  min-width: 60px;
+}
+
+.health-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.health-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.health-fill.health-good {
+  background: linear-gradient(90deg, #18a058, #36ad6a);
+}
+
+.health-fill.health-warning {
+  background: linear-gradient(90deg, #f0a020, #fcb040);
+}
+
+.health-fill.health-critical {
+  background: linear-gradient(90deg, #d03050, #e88080);
+}
+
+.health-text {
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 35px;
+  text-align: right;
+}
+
+.health-text.health-good {
+  color: #18a058;
+}
+
+.health-text.health-warning {
+  color: #f0a020;
+}
+
+.health-text.health-critical {
+  color: #d03050;
+}
+
+:root.dark .health-text.health-good {
+  color: #63e2b7;
+}
+
+:root.dark .health-text.health-warning {
+  color: #fcb040;
+}
+
+:root.dark .health-text.health-critical {
+  color: #e88080;
+}
+
+/* Info section styles for tooltip */
+.info-section {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+:root:not(.dark) .info-section {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: inherit;
+  opacity: 0.8;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 </style>

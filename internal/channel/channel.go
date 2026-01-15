@@ -55,6 +55,12 @@ type ChannelProxy interface {
 	// Returns the modified body bytes, the original model name (empty if no redirect), and error.
 	ApplyModelRedirect(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, error)
 
+	// ApplyModelRedirectWithIndex applies model redirection and returns the selected target index.
+	// Returns the modified body bytes, the original model name, the selected target index, and error.
+	// The target index is -1 if no V2 redirect occurred or not applicable.
+	// This method is used for dynamic weight tracking.
+	ApplyModelRedirectWithIndex(req *http.Request, bodyBytes []byte, group *models.Group) ([]byte, string, int, error)
+
 	// TransformModelList transforms the model list response based on redirect rules.
 	TransformModelList(req *http.Request, bodyBytes []byte, group *models.Group) (map[string]any, error)
 }

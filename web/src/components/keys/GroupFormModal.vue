@@ -3,7 +3,13 @@ import { keysApi } from "@/api/keys";
 import { settingsApi } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
-import type { Group, GroupConfigOption, PathRedirectRule, UpstreamInfo } from "@/types/models";
+import type {
+  Group,
+  GroupConfigOption,
+  ModelRedirectDynamicWeight,
+  PathRedirectRule,
+  UpstreamInfo,
+} from "@/types/models";
 import { Add, Close, CloudDownloadOutline, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
   NButton,
@@ -143,6 +149,7 @@ const channelTypeOptions = ref<{ label: string; value: string }[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
+const modelRedirectDynamicWeights = ref<ModelRedirectDynamicWeight[]>([]);
 
 // Track whether fields were manually modified (used only in create mode)
 const userModifiedFields = ref({
@@ -379,6 +386,11 @@ function loadGroupData() {
     return;
   }
 
+  // Fetch dynamic weights for model redirect rules
+  if (props.group.id) {
+    fetchModelRedirectDynamicWeights(props.group.id);
+  }
+
   const rawConfig: Record<string, unknown> = props.group.config || {};
   const fcRaw = rawConfig["force_function_call"];
   const forceFunctionCall =
@@ -606,6 +618,34 @@ function calculateWeightPercentage(
     return "0%";
   }
   return `${((target.weight / totalWeight) * 100).toFixed(1)}%`;
+}
+
+// Fetch dynamic weights for model redirect rules
+async function fetchModelRedirectDynamicWeights(groupId: number) {
+  try {
+    modelRedirectDynamicWeights.value = await keysApi.getModelRedirectDynamicWeights(groupId);
+  } catch (error) {
+    console.error("Failed to fetch model redirect dynamic weights:", error);
+    modelRedirectDynamicWeights.value = [];
+  }
+}
+
+// Get dynamic weight info for a specific target
+function getDynamicWeightInfo(sourceModel: string, targetIndex: number) {
+  const rule = modelRedirectDynamicWeights.value.find(
+    (r: ModelRedirectDynamicWeight) => r.source_model === sourceModel
+  );
+  if (!rule || targetIndex >= rule.targets.length) {
+    return null;
+  }
+  return rule.targets[targetIndex];
+}
+
+// Get health score class for styling
+function getHealthScoreClass(score: number): string {
+  if (score >= 0.8) return "health-good";
+  if (score >= 0.5) return "health-warning";
+  return "health-critical";
 }
 
 // V2: Convert V2 items to JSON for submission
@@ -1654,6 +1694,79 @@ async function handleSubmit() {
                             <span class="weight-percentage">
                               {{ calculateWeightPercentage(rule.targets, targetIndex) }}
                             </span>
+                            <!-- Dynamic weight indicator -->
+                            <n-tooltip
+                              v-if="getDynamicWeightInfo(rule.from, targetIndex)"
+                              trigger="hover"
+                            >
+                              <template #trigger>
+                                <span
+                                  class="dynamic-weight-indicator"
+                                  :class="
+                                    getHealthScoreClass(
+                                      getDynamicWeightInfo(rule.from, targetIndex)?.health_score ||
+                                        1
+                                    )
+                                  "
+                                >
+                                  {{
+                                    Math.round(
+                                      (getDynamicWeightInfo(rule.from, targetIndex)?.health_score ||
+                                        1) * 100
+                                    )
+                                  }}%
+                                </span>
+                              </template>
+                              <div class="dynamic-weight-tooltip">
+                                <div class="tooltip-title">{{ t("keys.dynamicWeight") }}</div>
+                                <div class="tooltip-row">
+                                  <span>{{ t("keys.effectiveWeight") }}:</span>
+                                  <span>
+                                    {{
+                                      getDynamicWeightInfo(rule.from, targetIndex)?.effective_weight
+                                    }}
+                                  </span>
+                                </div>
+                                <div class="tooltip-row">
+                                  <span>{{ t("keys.healthScore") }}:</span>
+                                  <span
+                                    :class="
+                                      getHealthScoreClass(
+                                        getDynamicWeightInfo(rule.from, targetIndex)
+                                          ?.health_score || 1
+                                      )
+                                    "
+                                  >
+                                    {{
+                                      Math.round(
+                                        (getDynamicWeightInfo(rule.from, targetIndex)
+                                          ?.health_score || 1) * 100
+                                      )
+                                    }}%
+                                  </span>
+                                </div>
+                                <div class="tooltip-row">
+                                  <span>{{ t("keys.successRate") }}:</span>
+                                  <span>
+                                    {{
+                                      (
+                                        getDynamicWeightInfo(rule.from, targetIndex)
+                                          ?.success_rate || 0
+                                      ).toFixed(1)
+                                    }}%
+                                  </span>
+                                </div>
+                                <div class="tooltip-row">
+                                  <span>{{ t("keys.requestCount") }}:</span>
+                                  <span>
+                                    {{
+                                      getDynamicWeightInfo(rule.from, targetIndex)?.request_count ||
+                                      0
+                                    }}
+                                  </span>
+                                </div>
+                              </div>
+                            </n-tooltip>
                             <n-switch
                               v-model:value="target.enabled"
                               size="small"
@@ -2451,6 +2564,78 @@ async function handleSubmit() {
   color: #666;
   min-width: 45px;
   text-align: right;
+}
+
+/* Dynamic weight indicator styles */
+.dynamic-weight-indicator {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  min-width: 40px;
+  text-align: center;
+  cursor: help;
+}
+
+.dynamic-weight-indicator.health-good {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.dynamic-weight-indicator.health-warning {
+  background: #fff3e0;
+  color: #ef6c00;
+}
+
+.dynamic-weight-indicator.health-critical {
+  background: #ffebee;
+  color: #c62828;
+}
+
+:root.dark .dynamic-weight-indicator.health-good {
+  background: #1b3a1f;
+  color: #81c784;
+}
+
+:root.dark .dynamic-weight-indicator.health-warning {
+  background: #3d2e1a;
+  color: #ffb74d;
+}
+
+:root.dark .dynamic-weight-indicator.health-critical {
+  background: #3d1a1a;
+  color: #e57373;
+}
+
+/* Dynamic weight tooltip styles */
+.dynamic-weight-tooltip {
+  min-width: 180px;
+}
+
+.dynamic-weight-tooltip .tooltip-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.dynamic-weight-tooltip .tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.dynamic-weight-tooltip .health-good {
+  color: #81c784;
+}
+
+.dynamic-weight-tooltip .health-warning {
+  color: #ffb74d;
+}
+
+.dynamic-weight-tooltip .health-critical {
+  color: #e57373;
 }
 
 /* Unified arrow style (for model and path redirect) */
