@@ -130,6 +130,7 @@ func (m *DynamicWeightManager) getMetrics(key string) (*DynamicWeightMetrics, er
 
 	var metrics DynamicWeightMetrics
 	if err := json.Unmarshal(data, &metrics); err != nil {
+		logrus.WithError(err).WithField("key", key).Debug("Failed to unmarshal metrics from Redis")
 		return nil, err
 	}
 	return &metrics, nil
@@ -336,7 +337,13 @@ type SubGroupWeightInput struct {
 func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID uint, subGroups []SubGroupWeightInput) []int {
 	weights := make([]int, len(subGroups))
 	for i, sg := range subGroups {
-		metrics, _ := m.GetSubGroupMetrics(aggregateGroupID, sg.SubGroupID)
+		metrics, err := m.GetSubGroupMetrics(aggregateGroupID, sg.SubGroupID)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group_id": aggregateGroupID,
+				"sub_group_id":       sg.SubGroupID,
+			}).Debug("Failed to get sub-group metrics for selection, using base weight")
+		}
 		weights[i] = m.GetEffectiveWeight(sg.Weight, metrics)
 	}
 	return weights
@@ -347,7 +354,14 @@ func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID 
 func (m *DynamicWeightManager) GetModelRedirectEffectiveWeights(groupID uint, sourceModel string, targetWeights []int) []int {
 	weights := make([]int, len(targetWeights))
 	for i, baseWeight := range targetWeights {
-		metrics, _ := m.GetModelRedirectMetrics(groupID, sourceModel, i)
+		metrics, err := m.GetModelRedirectMetrics(groupID, sourceModel, i)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"group_id":     groupID,
+				"source_model": sourceModel,
+				"target_index": i,
+			}).Debug("Failed to get model redirect metrics for selection, using base weight")
+		}
 		weights[i] = m.GetEffectiveWeight(baseWeight, metrics)
 	}
 	return weights

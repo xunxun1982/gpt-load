@@ -4,30 +4,30 @@ import { settingsApi } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
 import type {
-    Group,
-    GroupConfigOption,
-    ModelRedirectDynamicWeight,
-    ModelRedirectTargetWeight,
-    PathRedirectRule,
-    UpstreamInfo,
+  Group,
+  GroupConfigOption,
+  ModelRedirectDynamicWeight,
+  ModelRedirectTargetWeight,
+  PathRedirectRule,
+  UpstreamInfo,
 } from "@/types/models";
 import { Add, Close, CloudDownloadOutline, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
-    NButton,
-    NCard,
-    NCollapse,
-    NCollapseItem,
-    NForm,
-    NFormItem,
-    NIcon,
-    NInput,
-    NInputNumber,
-    NModal,
-    NSelect,
-    NSwitch,
-    NTooltip,
-    useMessage,
-    type FormRules,
+  NButton,
+  NCard,
+  NCollapse,
+  NCollapseItem,
+  NForm,
+  NFormItem,
+  NIcon,
+  NInput,
+  NInputNumber,
+  NModal,
+  NSelect,
+  NSwitch,
+  NTooltip,
+  useMessage,
+  type FormRules,
 } from "naive-ui";
 import { computed, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -1768,8 +1768,6 @@ async function handleSubmit() {
                                   <span>
                                     {{
                                       getDynamicWeightInfo(rule.from, targetIndex)?.request_count ??
-                                      0
-                                    }}</span>
                                       0
                                     }}
                                   </span>
