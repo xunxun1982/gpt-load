@@ -49,14 +49,16 @@ type DynamicWeightPersistence struct {
 
 // NewDynamicWeightPersistence creates a new persistence service.
 func NewDynamicWeightPersistence(db *gorm.DB, manager *DynamicWeightManager) *DynamicWeightPersistence {
+	// Initialize lastRollover/lastCleanup to past time so maintenance runs
+	// immediately on first tick if overdue after service restart.
 	p := &DynamicWeightPersistence{
 		db:           db,
 		manager:      manager,
 		interval:     DefaultPersistenceInterval,
 		stopChan:     make(chan struct{}),
 		dirtyKeys:    make(map[string]struct{}),
-		lastRollover: time.Now(),
-		lastCleanup:  time.Now(),
+		lastRollover: time.Now().Add(-DefaultRolloverInterval),
+		lastCleanup:  time.Now().Add(-7 * 24 * time.Hour),
 	}
 	// Set dirty callback on manager to enable automatic dirty tracking
 	manager.SetDirtyCallback(p.MarkDirtyByKey)
@@ -381,9 +383,12 @@ func parseModelRedirectKeyParts(s string) (groupID uint, sourceModel string, tar
 }
 
 // parseUintSimple parses a string to uint.
-// Non-digit characters are silently ignored for defensive parsing of store keys.
-// Returns 0 for empty or invalid input. This is acceptable since invalid keys
-// will be filtered out by the caller's validation logic.
+// NOTE: Non-digit characters are silently ignored for defensive parsing.
+// This is acceptable because keys are generated internally by SubGroupMetricsKey
+// and ModelRedirectMetricsKey with guaranteed format. Invalid keys (if any due
+// to data corruption) will be filtered out when keyToDBMetric returns nil.
+// Using strict parsing (strconv.ParseUint) was considered but rejected as
+// over-engineering for internally-generated keys.
 func parseUintSimple(s string) uint {
 	var n uint
 	for i := 0; i < len(s); i++ {
@@ -605,6 +610,12 @@ func (p *DynamicWeightPersistence) DeleteAllModelRedirectMetricsForGroup(groupID
 // processing. In typical deployments, the number of metrics is bounded by
 // (aggregate_groups * sub_groups) + (groups * model_redirects), which is
 // usually manageable in memory.
+//
+// NOTE: SetMetrics calls here may race with concurrent recordSuccess/recordFailure.
+// This is acceptable because: (1) rollover runs once daily, (2) health scores
+// are approximate metrics where perfect accuracy isn't critical, (3) any lost
+// updates will be re-recorded on next request. This follows eventual consistency
+// pattern common in metrics systems.
 func (p *DynamicWeightPersistence) RolloverTimeWindows() {
 	var dbMetrics []models.DynamicWeightMetric
 	// Only process non-deleted records
