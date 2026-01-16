@@ -14,6 +14,7 @@ import {
   type AutoCheckinStatus,
   type CheckinLogDTO,
   type ManagedSiteAuthType,
+  type ManagedSiteBypassMethod,
   type ManagedSiteDTO,
   type ManagedSiteType,
   type SiteImportData,
@@ -119,6 +120,7 @@ const siteForm = reactive({
   custom_checkin_url: "",
   use_proxy: false,
   proxy_url: "",
+  bypass_method: "" as ManagedSiteBypassMethod,
   auth_type: "none" as ManagedSiteAuthType,
 });
 
@@ -141,6 +143,11 @@ const authTypeOptions = computed(() => [
   { label: t("siteManagement.authTypeNone"), value: "none" },
   { label: t("siteManagement.authTypeAccessToken"), value: "access_token" },
   { label: t("siteManagement.authTypeCookie"), value: "cookie" },
+]);
+
+const bypassMethodOptions = computed(() => [
+  { label: t("siteManagement.bypassMethodNone"), value: "" },
+  { label: t("siteManagement.bypassMethodStealth"), value: "stealth" },
 ]);
 
 // Filter options for enabled status (use string values for naive-ui select compatibility)
@@ -253,6 +260,7 @@ function resetSiteForm() {
     custom_checkin_url: "",
     use_proxy: false,
     proxy_url: "",
+    bypass_method: "",
     auth_type: "none",
   });
   authValueInput.value = "";
@@ -281,10 +289,54 @@ function openEditSite(site: ManagedSiteDTO) {
     custom_checkin_url: site.custom_checkin_url,
     use_proxy: site.use_proxy,
     proxy_url: site.proxy_url,
+    bypass_method: site.bypass_method,
     auth_type: site.auth_type,
   });
   authValueInput.value = "";
   showSiteModal.value = true;
+}
+
+// Known WAF/Cloudflare cookie names that indicate bypass capability
+const knownWAFCookieNames = [
+  "cf_clearance", // Cloudflare clearance cookie (most important)
+  "acw_tc", // Alibaba Cloud WAF cookie
+  "cdn_sec_tc", // CDN security cookie
+  "acw_sc__v2", // Alibaba Cloud WAF v2 cookie
+  "__cf_bm", // Cloudflare bot management
+  "_cfuvid", // Cloudflare unique visitor ID
+];
+
+// Parse cookie string into a map
+function parseCookieString(cookieStr: string): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const part of cookieStr.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf("=");
+    if (idx > 0) {
+      const key = trimmed.substring(0, idx).trim();
+      const val = trimmed.substring(idx + 1).trim();
+      result.set(key, val);
+    }
+  }
+  return result;
+}
+
+// Validate CF cookies for stealth bypass mode
+// Returns list of missing cookie names if validation fails
+function validateCFCookies(cookieStr: string): string[] {
+  if (!cookieStr) {
+    return [...knownWAFCookieNames];
+  }
+  const cookieMap = parseCookieString(cookieStr);
+  // Check if at least one WAF cookie is present
+  for (const name of knownWAFCookieNames) {
+    if (cookieMap.has(name)) {
+      return []; // Found at least one WAF cookie
+    }
+  }
+  // No WAF cookies found, return all as missing (user needs at least one)
+  return [...knownWAFCookieNames];
 }
 
 async function submitSite() {
@@ -296,6 +348,31 @@ async function submitSite() {
     message.warning(t("siteManagement.baseUrlRequired"));
     return;
   }
+
+  // Validate stealth bypass requirements
+  if (siteForm.bypass_method === "stealth") {
+    // Stealth bypass requires cookie auth type
+    if (siteForm.auth_type !== "cookie") {
+      message.error(t("siteManagement.stealthRequiresCookieAuth"));
+      return;
+    }
+
+    // For new site or when auth_value is being updated, validate CF cookies
+    const cookieValue = authValueInput.value.trim();
+    if (!editingSite.value || cookieValue) {
+      // New site must have cookie value, or editing site with new cookie value
+      if (!cookieValue) {
+        message.error(t("siteManagement.stealthRequiresCookieValue"));
+        return;
+      }
+      const missingCookies = validateCFCookies(cookieValue);
+      if (missingCookies.length > 0) {
+        message.error(t("siteManagement.missingCFCookies", { cookies: missingCookies.join(", ") }));
+        return;
+      }
+    }
+  }
+
   const payload = { ...siteForm };
   try {
     if (editingSite.value) {
@@ -457,13 +534,51 @@ function rowClassName(row: ManagedSiteDTO) {
   return row.enabled ? "" : "site-row-disabled";
 }
 
+// Backend message to i18n key mapping
+const backendMsgMap: Record<string, string> = {
+  "check-in failed": "siteManagement.backendMsg_checkInFailed",
+  "check-in disabled": "siteManagement.backendMsg_checkInDisabled",
+  "missing credentials": "siteManagement.backendMsg_missingCredentials",
+  "missing user_id": "siteManagement.backendMsg_missingUserId",
+  "unsupported auth type": "siteManagement.backendMsg_unsupportedAuthType",
+  "anyrouter requires cookie auth": "siteManagement.backendMsg_anyrouterRequiresCookie",
+  "cloudflare challenge, update cookies from browser":
+    "siteManagement.backendMsg_cloudflareChallenge",
+  "already checked in": "siteManagement.backendMsg_alreadyCheckedIn",
+  "stealth bypass requires cookie auth": "siteManagement.backendMsg_stealthRequiresCookie",
+};
+
+// Translate backend check-in messages to localized text
+function translateCheckinMessage(msg: string): string {
+  if (!msg) {
+    return "";
+  }
+  // Check for exact match first
+  const key = backendMsgMap[msg];
+  if (key) {
+    return t(key);
+  }
+  // Check for dynamic messages (e.g., "missing cf cookies, need one of: ...")
+  if (msg.startsWith("missing cf cookies")) {
+    return t("siteManagement.backendMsg_missingCfCookies");
+  }
+  if (key) {
+    return t(key);
+  }
+  return msg;
+}
+
 async function checkinSite(site: ManagedSiteDTO) {
   try {
     const res = await siteManagementApi.checkinSite(site.id);
     const statusText = statusTag(res.status).text;
-    // Build message: "SiteName: Status" or "SiteName: Status - Message" if message exists
-    const displayMsg = res.message?.trim()
-      ? `${site.name}: ${statusText} - ${res.message}`
+    // Translate backend message if possible
+    const translatedMsg = translateCheckinMessage(res.message?.trim() || "");
+    // Only show message if it's different from status (avoid "签到失败 - 签到失败")
+    // Also skip if message is empty
+    const showMsg = translatedMsg && translatedMsg !== statusText;
+    const displayMsg = showMsg
+      ? `${site.name}: ${statusText} - ${translatedMsg}`
       : `${site.name}: ${statusText}`;
     message.info(displayMsg);
 
@@ -919,6 +1034,7 @@ const logsColumns = computed<DataTableColumns<CheckinLogDTO>>(() => [
     key: "message",
     minWidth: 200,
     ellipsis: { tooltip: true },
+    render: row => translateCheckinMessage(row.message || ""),
   },
 ]);
 
@@ -1620,6 +1736,27 @@ onMounted(() => {
                 :placeholder="t('siteManagement.proxyUrlPlaceholder')"
               />
             </n-form-item>
+            <n-form-item :label="t('siteManagement.bypassMethod')">
+              <n-select
+                v-model:value="siteForm.bypass_method"
+                :options="bypassMethodOptions"
+                style="width: 200px"
+              />
+            </n-form-item>
+            <!-- Stealth bypass hint -->
+            <n-text
+              v-if="siteForm.bypass_method === 'stealth'"
+              depth="3"
+              style="
+                font-size: 12px;
+                display: block;
+                margin-top: -4px;
+                margin-bottom: 8px;
+                color: #f0a020;
+              "
+            >
+              {{ t("siteManagement.stealthBypassHint") }}
+            </n-text>
           </div>
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.authSettings") }}</h4>
@@ -1654,6 +1791,20 @@ onMounted(() => {
               style="font-size: 12px; display: block; margin-top: -4px; margin-bottom: 8px"
             >
               {{ t("siteManagement.authTypeCookieHint") }}
+            </n-text>
+            <!-- Stealth cookie requirement hint -->
+            <n-text
+              v-if="siteForm.bypass_method === 'stealth' && siteForm.auth_type === 'cookie'"
+              depth="3"
+              style="
+                font-size: 12px;
+                display: block;
+                margin-top: -4px;
+                margin-bottom: 8px;
+                color: #18a058;
+              "
+            >
+              {{ t("siteManagement.stealthCookieHint") }}
             </n-text>
           </div>
           <n-space justify="end" size="small" style="margin-top: 12px">

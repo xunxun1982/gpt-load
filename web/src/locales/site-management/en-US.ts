@@ -46,6 +46,17 @@ export default {
   proxyUrlPlaceholder: "http://127.0.0.1:7890",
   proxyUrlTooltip: "Proxy URL for check-in requests, supports HTTP/SOCKS5",
 
+  // Bypass settings
+  bypassMethod: "Bypass Method",
+  bypassMethodNone: "None",
+  bypassMethodStealth: "Stealth (TLS Fingerprint)",
+  stealthBypassHint: "⚠️ Stealth bypass requires Cookie auth type",
+  stealthCookieHint:
+    "💡 Include CF cookies (cf_clearance, acw_tc, etc.) from browser for Cloudflare bypass",
+  stealthRequiresCookieAuth: "Stealth bypass requires Cookie auth type",
+  stealthRequiresCookieValue: "Stealth bypass requires cookie value",
+  missingCFCookies: "Missing CF cookies for Cloudflare bypass. Need at least one of: {cookies}",
+
   // Auth related
   authType: "Auth Type",
   authValue: "Auth Value",
@@ -53,6 +64,10 @@ export default {
   authValueEditHint: "Leave empty to keep existing auth",
   authTypeNone: "None",
   authTypeAccessToken: "Access Token",
+  authTypeCookie: "Cookie",
+  authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
+  authTypeCookieHint:
+    "Capture Cookie from browser, including session/token fields. If site uses Cloudflare protection, also include cf_clearance.",
   hasAuth: "Auth Configured",
   noAuth: "No Auth",
 
@@ -137,6 +152,19 @@ export default {
   siteCreated: "Site created successfully",
   siteUpdated: "Site updated successfully",
   siteDeleted: "Site deleted successfully",
+
+  // Backend check-in messages (for translation mapping)
+  backendMsg_checkInFailed: "Check-in failed",
+  backendMsg_checkInDisabled: "Check-in disabled",
+  backendMsg_missingCredentials: "Missing credentials",
+  backendMsg_missingUserId: "Missing user ID",
+  backendMsg_unsupportedAuthType: "Unsupported auth type",
+  backendMsg_anyrouterRequiresCookie: "Anyrouter requires cookie auth",
+  backendMsg_cloudflareChallenge: "Cloudflare challenge, update cookies from browser",
+  backendMsg_alreadyCheckedIn: "Already checked in",
+  backendMsg_stealthRequiresCookie: "Stealth bypass requires cookie auth",
+  backendMsg_missingCfCookies:
+    "Missing CF cookies, need one of: cf_clearance, acw_tc, cdn_sec_tc, acw_sc__v2, __cf_bm, _cfuvid",
 
   // Import/Export
   exportEncrypted: "Export Encrypted",

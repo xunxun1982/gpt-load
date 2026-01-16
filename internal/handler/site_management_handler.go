@@ -29,6 +29,7 @@ type CreateManagedSiteRequest struct {
 	CustomCheckInURL string `json:"custom_checkin_url"`
 	UseProxy         bool   `json:"use_proxy"`
 	ProxyURL         string `json:"proxy_url"`
+	BypassMethod     string `json:"bypass_method"`
 
 	AuthType  string `json:"auth_type"`
 	AuthValue string `json:"auth_value"`
@@ -51,6 +52,7 @@ type UpdateManagedSiteRequest struct {
 	CustomCheckInURL *string `json:"custom_checkin_url"`
 	UseProxy         *bool   `json:"use_proxy"`
 	ProxyURL         *string `json:"proxy_url"`
+	BypassMethod     *string `json:"bypass_method"`
 
 	AuthType  *string `json:"auth_type"`
 	AuthValue *string `json:"auth_value"`
@@ -141,6 +143,7 @@ func (s *Server) CreateManagedSite(c *gin.Context) {
 		CustomCheckInURL: req.CustomCheckInURL,
 		UseProxy:         req.UseProxy,
 		ProxyURL:         req.ProxyURL,
+		BypassMethod:     req.BypassMethod,
 		AuthType:         req.AuthType,
 		AuthValue:        req.AuthValue,
 	})
@@ -178,6 +181,7 @@ func (s *Server) UpdateManagedSite(c *gin.Context) {
 		CustomCheckInURL: req.CustomCheckInURL,
 		UseProxy:         req.UseProxy,
 		ProxyURL:         req.ProxyURL,
+		BypassMethod:     req.BypassMethod,
 		AuthType:         req.AuthType,
 		AuthValue:        req.AuthValue,
 	})

@@ -409,11 +409,11 @@ func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSite
 	for _, site := range sites {
 		boundCount := countMap[site.ID]
 		result = append(result, ManagedSiteDTO{
-			ID:               site.ID,
-			Name:             site.Name,
-			Sort:             site.Sort,
-			Enabled:          site.Enabled,
-			BoundGroupCount:  boundCount,
+			ID:              site.ID,
+			Name:            site.Name,
+			Sort:            site.Sort,
+			Enabled:         site.Enabled,
+			BoundGroupCount: boundCount,
 		})
 	}
 

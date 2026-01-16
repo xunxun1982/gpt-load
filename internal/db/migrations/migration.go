@@ -95,7 +95,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.13.0 migration - Create Hub priority tables for priority-based routing
-	return V1_13_0_CreateHubPriorityTables(db)
+	if err := V1_13_0_CreateHubPriorityTables(db); err != nil {
+		return err
+	}
+	// Run v1.14.0 migration - Add bypass_method column for Cloudflare bypass support
+	return V1_14_0_AddBypassMethodColumn(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

@@ -9,7 +9,7 @@ const (
 	SiteTypeOneHub     = "one-hub"
 	SiteTypeDoneHub    = "done-hub"
 	SiteTypeAnyrouter  = "anyrouter"
-	SiteTypeBrand      = "brand"  // Label-only type, no special checkin logic
+	SiteTypeBrand      = "brand" // Label-only type, no special checkin logic
 	SiteTypeUnknown    = "unknown"
 )
 
@@ -52,6 +52,12 @@ type ManagedSite struct {
 	CustomCheckInURL   string `gorm:"column:custom_checkin_url;type:varchar(512);not null;default:''" json:"custom_checkin_url"`
 	UseProxy           bool   `gorm:"column:use_proxy;not null;default:false" json:"use_proxy"`
 	ProxyURL           string `gorm:"column:proxy_url;type:varchar(512);not null;default:''" json:"proxy_url"`
+
+	// BypassMethod specifies the method to bypass WAF/Cloudflare protection.
+	// Supported values: "none" (default), "stealth" (TLS fingerprint spoofing)
+	// Note: Stealth bypass requires Cookie auth type. CF cookies (cf_clearance, acw_tc, etc.)
+	// should be included in AuthValue along with user session cookies.
+	BypassMethod string `gorm:"column:bypass_method;type:varchar(32);not null;default:''" json:"bypass_method"`
 
 	AuthType  string `gorm:"type:varchar(32);not null;default:'none'" json:"auth_type"`
 	AuthValue string `gorm:"type:text;not null;default:''" json:"-"`

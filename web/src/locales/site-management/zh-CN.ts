@@ -46,6 +46,16 @@ export default {
   proxyUrlPlaceholder: "http://127.0.0.1:7890",
   proxyUrlTooltip: "签到请求使用的代理地址，支持HTTP/SOCKS5",
 
+  // Bypass settings
+  bypassMethod: "绕过方式",
+  bypassMethodNone: "无",
+  bypassMethodStealth: "隐身模式 (TLS指纹)",
+  stealthBypassHint: "⚠️ 隐身绕过需要使用 Cookie 认证方式",
+  stealthCookieHint: "💡 请在 Cookie 中包含 CF Cookies（cf_clearance、acw_tc 等）以绕过 Cloudflare",
+  stealthRequiresCookieAuth: "隐身绕过需要使用 Cookie 认证方式",
+  stealthRequiresCookieValue: "隐身绕过需要填写 Cookie 值",
+  missingCFCookies: "缺少 Cloudflare 绕过所需的 CF Cookies，需要以下至少一个：{cookies}",
+
   // Auth related
   authType: "认证方式",
   authValue: "认证信息",
@@ -53,6 +63,10 @@ export default {
   authValueEditHint: "留空表示不修改现有认证信息",
   authTypeNone: "无",
   authTypeAccessToken: "Access Token",
+  authTypeCookie: "Cookie",
+  authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
+  authTypeCookieHint:
+    "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了 Cloudflare 防护，还需包含 cf_clearance。",
   hasAuth: "已配置认证",
   noAuth: "未配置认证",
 
@@ -134,6 +148,19 @@ export default {
   siteCreated: "站点创建成功",
   siteUpdated: "站点更新成功",
   siteDeleted: "站点删除成功",
+
+  // Backend check-in messages (for translation mapping)
+  backendMsg_checkInFailed: "签到失败",
+  backendMsg_checkInDisabled: "签到已禁用",
+  backendMsg_missingCredentials: "缺少认证信息",
+  backendMsg_missingUserId: "缺少用户ID",
+  backendMsg_unsupportedAuthType: "不支持的认证类型",
+  backendMsg_anyrouterRequiresCookie: "Anyrouter 需要 Cookie 认证",
+  backendMsg_cloudflareChallenge: "Cloudflare 验证，请从浏览器更新 Cookie",
+  backendMsg_alreadyCheckedIn: "今日已签到",
+  backendMsg_stealthRequiresCookie: "隐身绕过需要使用 Cookie 认证",
+  backendMsg_missingCfCookies:
+    "缺少 CF Cookies，需要以下之一：cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2、__cf_bm、_cfuvid",
 
   // Import/Export
   exportEncrypted: "加密导出",

@@ -8,8 +8,10 @@ export type ManagedSiteType =
   | "wong-gongyi"
   | "one-hub"
   | "done-hub"
+  | "anyrouter"
   | "brand";
 export type ManagedSiteAuthType = "none" | "access_token" | "cookie";
+export type ManagedSiteBypassMethod = "" | "none" | "stealth";
 
 export type ManagedSiteCheckinStatus = "success" | "failed" | "skipped" | "already_checked" | "";
 
@@ -57,6 +59,7 @@ export interface ManagedSiteDTO {
   custom_checkin_url: string;
   use_proxy: boolean;
   proxy_url: string;
+  bypass_method: ManagedSiteBypassMethod;
 
   auth_type: ManagedSiteAuthType;
   has_auth: boolean;
@@ -115,6 +118,7 @@ export interface CreateManagedSiteRequest {
   custom_checkin_url: string;
   use_proxy: boolean;
   proxy_url: string;
+  bypass_method: ManagedSiteBypassMethod;
 
   auth_type: ManagedSiteAuthType;
   auth_value: string;
@@ -277,6 +281,7 @@ export interface SiteExportInfo {
   custom_checkin_url: string;
   use_proxy?: boolean;
   proxy_url?: string;
+  bypass_method?: ManagedSiteBypassMethod;
   auth_type: ManagedSiteAuthType;
   auth_value?: string;
 }
