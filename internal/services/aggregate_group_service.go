@@ -677,22 +677,30 @@ func (s *AggregateGroupService) InvalidateStatsCacheForGroup(groupID uint) {
 // containsGroupID checks if the cache key contains the specified group ID.
 // Cache key format is "id1,id2,id3,...". This function ensures exact ID matching
 // by checking boundaries (start of string, comma, or end of string).
+// It scans all occurrences to handle cases like "10,1,20" where searching for "1"
+// should match the middle token, not the "1" in "10".
 func containsGroupID(cacheKey, groupIDStr string) bool {
-	idx := strings.Index(cacheKey, groupIDStr)
-	if idx == -1 {
-		return false
-	}
+	offset := 0
+	for offset < len(cacheKey) {
+		idx := strings.Index(cacheKey[offset:], groupIDStr)
+		if idx == -1 {
+			return false
+		}
+		actualIdx := offset + idx
 
-	// Check left boundary: must be start of string or preceded by comma
-	if idx > 0 && cacheKey[idx-1] != ',' {
-		return false
-	}
+		// Check left boundary: must be start of string or preceded by comma
+		leftOK := actualIdx == 0 || cacheKey[actualIdx-1] == ','
 
-	// Check right boundary: must be end of string or followed by comma
-	endIdx := idx + len(groupIDStr)
-	if endIdx < len(cacheKey) && cacheKey[endIdx] != ',' {
-		return false
-	}
+		// Check right boundary: must be end of string or followed by comma
+		endIdx := actualIdx + len(groupIDStr)
+		rightOK := endIdx == len(cacheKey) || cacheKey[endIdx] == ','
 
-	return true
+		if leftOK && rightOK {
+			return true
+		}
+
+		// Move past this occurrence to find next
+		offset = actualIdx + 1
+	}
+	return false
 }
