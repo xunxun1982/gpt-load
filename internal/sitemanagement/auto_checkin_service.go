@@ -982,15 +982,18 @@ func shouldUseStealthRequest(site ManagedSite) bool {
 
 // isCFChallengeResponse checks if an HTTP response indicates a Cloudflare challenge.
 // Returns true if the response appears to be a CF challenge page (403 with CF markers).
+// Note: Per Cloudflare docs, the official way is to check cf-mitigated header,
+// but we also check body content as fallback for compatibility with various setups.
 func isCFChallengeResponse(statusCode int, responseBody []byte) bool {
 	if statusCode != 403 {
 		return false
 	}
-	respStr := string(responseBody)
-	return strings.Contains(respStr, "cloudflare") ||
-		strings.Contains(respStr, "cf-") ||
-		strings.Contains(respStr, "challenge") ||
-		strings.Contains(strings.ToLower(respStr), "ray id")
+	// Normalize to lowercase once for consistent case-insensitive matching
+	respLower := strings.ToLower(string(responseBody))
+	return strings.Contains(respLower, "cloudflare") ||
+		strings.Contains(respLower, "cf-") ||
+		strings.Contains(respLower, "challenge") ||
+		strings.Contains(respLower, "ray id")
 }
 
 func doJSONRequest(ctx context.Context, client *http.Client, method, fullURL string, headers map[string]string, body any) ([]byte, int, error) {

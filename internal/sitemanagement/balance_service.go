@@ -276,6 +276,12 @@ func (s *BalanceService) parseBalanceResponse(data []byte) *string {
 		return nil
 	}
 
+	// Treat unsuccessful responses as unavailable balance
+	// This prevents reporting $0.00 for failed API calls
+	if !resp.Success {
+		return nil
+	}
+
 	// Try to get quota from data wrapper first, then from root.
 	// Only fall back to root quota if Data.Quota is zero AND root Quota has a value.
 	// This preserves legitimate $0.00 balances when Data.Quota is explicitly set to 0.

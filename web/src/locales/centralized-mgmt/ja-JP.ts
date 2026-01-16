@@ -63,6 +63,8 @@ export default {
   accessKeyToggled: "アクセスキーのステータスを更新しました",
   noAccessKeys: "アクセスキーがありません",
   keyCreatedCopyHint: "キーをコピーして保存してください。このキーは一度だけ表示されます",
+  keyOnlyShownOnce:
+    "キーは作成時に一度だけ表示されます。閉じた後は再度表示できません。コピーしたことを確認してください。",
 
   // Access key form
   keyName: "キー名",

@@ -64,6 +64,8 @@ export default {
   accessKeyToggled: "Access key status updated",
   noAccessKeys: "No access keys",
   keyCreatedCopyHint: "Please copy and save the key, it will only be shown once",
+  keyOnlyShownOnce:
+    "The key is only shown once at creation. It cannot be viewed again after closing. Please make sure you have copied it.",
 
   // Access key form
   keyName: "Key Name",

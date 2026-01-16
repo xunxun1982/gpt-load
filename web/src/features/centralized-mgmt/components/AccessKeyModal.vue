@@ -54,6 +54,7 @@ const modelSearchText = ref("");
 
 // Created key value (only shown after creation)
 const createdKeyValue = ref<string | null>(null);
+const keyCopied = ref(false);
 
 // Form data
 const formData = reactive({
@@ -108,6 +109,7 @@ watch(
 function resetForm() {
   formRef.value?.restoreValidation();
   createdKeyValue.value = null;
+  keyCopied.value = false;
   Object.assign(formData, {
     name: "",
     key_value: "",
@@ -182,6 +184,7 @@ async function copyKeyValue() {
   }
   try {
     await navigator.clipboard.writeText(createdKeyValue.value);
+    keyCopied.value = true;
     message.success(t("common.copied"));
   } catch {
     message.error(t("keys.copyFailed"));
@@ -255,12 +258,16 @@ async function handleSubmit() {
         </n-alert>
         <div class="key-display">
           <code class="key-value">{{ createdKeyValue }}</code>
-          <n-button size="small" quaternary @click="copyKeyValue">
+          <n-button :type="keyCopied ? 'success' : 'primary'" size="small" @click="copyKeyValue">
             <template #icon>
               <n-icon :component="CopyOutline" />
             </template>
+            {{ keyCopied ? t("common.copied") : t("common.copy") }}
           </n-button>
         </div>
+        <n-alert type="warning" :bordered="false">
+          {{ t("hub.keyOnlyShownOnce") }}
+        </n-alert>
       </n-space>
     </template>
 
@@ -400,18 +407,20 @@ async function handleSubmit() {
 .key-display {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px;
+  gap: 12px;
+  padding: 16px;
   background: var(--n-color-modal);
   border: 1px solid var(--n-border-color);
-  border-radius: 4px;
+  border-radius: 8px;
 }
 
 .key-value {
   flex: 1;
   font-size: 14px;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Fira Mono", "Droid Sans Mono", monospace;
   word-break: break-all;
   background: transparent;
   padding: 0;
+  user-select: all;
 }
 </style>

@@ -63,6 +63,7 @@ export default {
   accessKeyToggled: "访问密钥状态已更新",
   noAccessKeys: "暂无访问密钥",
   keyCreatedCopyHint: "请复制并保存密钥，此密钥仅显示一次",
+  keyOnlyShownOnce: "密钥仅在创建时显示一次，关闭后无法再次查看。请确保已复制保存。",
 
   // Access key form
   keyName: "密钥名称",
