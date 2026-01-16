@@ -4,6 +4,7 @@
  * Create/Edit Hub access key form modal.
  */
 import { CopyOutline, Search } from "@vicons/ionicons5";
+import { useClipboard } from "@vueuse/core";
 import {
   NAlert,
   NButton,
@@ -27,6 +28,8 @@ import { computed, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { hubApi } from "../api/hub";
 import type { HubAccessKey, ModelPoolEntry } from "../types/hub";
+
+const { copy } = useClipboard();
 
 interface Props {
   show: boolean;
@@ -183,7 +186,7 @@ async function copyKeyValue() {
     return;
   }
   try {
-    await navigator.clipboard.writeText(createdKeyValue.value);
+    await copy(createdKeyValue.value);
     keyCopied.value = true;
     message.success(t("common.copied"));
   } catch {

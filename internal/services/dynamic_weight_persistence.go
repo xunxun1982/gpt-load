@@ -397,7 +397,30 @@ func (p *DynamicWeightPersistence) batchUpsert(metrics []models.DynamicWeightMet
 		return nil
 	}
 
-	err := p.db.Clauses(clause.OnConflict{
+	// Detect database type and use appropriate upsert strategy
+	dialect := p.db.Dialector.Name()
+
+	var err error
+	switch dialect {
+	case "sqlite":
+		err = p.batchUpsertSQLite(metrics)
+	default:
+		// PostgreSQL and MySQL support excluded.column syntax
+		err = p.batchUpsertDefault(metrics)
+	}
+
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to batch upsert dynamic weight metrics")
+		return err
+	}
+	logrus.WithField("count", len(metrics)).Debug("Dynamic weight metrics synced to database")
+	return nil
+}
+
+// batchUpsertDefault performs batch upsert for PostgreSQL and MySQL.
+// Uses GORM's AssignmentColumns which generates excluded.column syntax.
+func (p *DynamicWeightPersistence) batchUpsertDefault(metrics []models.DynamicWeightMetric) error {
+	return p.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{Name: "metric_type"},
 			{Name: "group_id"},
@@ -423,12 +446,39 @@ func (p *DynamicWeightPersistence) batchUpsert(metrics []models.DynamicWeightMet
 			"updated_at",
 		}),
 	}).CreateInBatches(metrics, 100).Error
+}
 
-	if err != nil {
-		logrus.WithError(err).Warn("Failed to batch upsert dynamic weight metrics")
-		return err
+// batchUpsertSQLite performs batch upsert for SQLite.
+// SQLite requires explicit column assignments without the excluded. prefix for older versions.
+// Uses smaller batch size for better performance with SQLite's single-writer model.
+func (p *DynamicWeightPersistence) batchUpsertSQLite(metrics []models.DynamicWeightMetric) error {
+	// SQLite performs better with smaller batches
+	batchSize := 50
+
+	for i := 0; i < len(metrics); i += batchSize {
+		end := i + batchSize
+		if end > len(metrics) {
+			end = len(metrics)
+		}
+		batch := metrics[i:end]
+
+		// For SQLite, use UpdateAll which generates simpler UPDATE SET column = value syntax
+		// This avoids the excluded.column syntax that requires SQLite 3.24.0+
+		err := p.db.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "metric_type"},
+				{Name: "group_id"},
+				{Name: "sub_group_id"},
+				{Name: "source_model"},
+				{Name: "target_index"},
+			},
+			UpdateAll: true,
+		}).Create(&batch).Error
+
+		if err != nil {
+			return err
+		}
 	}
-	logrus.WithField("count", len(metrics)).Debug("Dynamic weight metrics synced to database")
 	return nil
 }
 
