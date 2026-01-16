@@ -54,6 +54,10 @@ type ManagedSiteDTO struct {
 	LastSiteOpenedDate        string `json:"last_site_opened_date"`
 	LastCheckinPageOpenedDate string `json:"last_checkin_page_opened_date"`
 
+	// Cached balance information, refreshed daily at 05:00 Beijing time.
+	LastBalance     string `json:"last_balance"`
+	LastBalanceDate string `json:"last_balance_date"`
+
 	BoundGroupID   *uint  `json:"bound_group_id,omitempty"`   // Deprecated: kept for backward compatibility, use BoundGroups instead
 	BoundGroupName string `json:"bound_group_name,omitempty"` // Deprecated: kept for backward compatibility, use BoundGroups instead
 
