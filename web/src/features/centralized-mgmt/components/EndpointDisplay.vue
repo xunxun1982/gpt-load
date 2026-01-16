@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /**
  * EndpointDisplay Component
- * Displays Hub endpoint paths with copy functionality.
- * Supports collapsed mode for compact header display.
+ * Displays supported channel types with base URL copy functionality.
+ * Channels handle various API endpoints (chat, audio, image, video, etc.)
+ * Requests are forwarded to groups/aggregates for processing.
  */
 import { copy } from "@/utils/clipboard";
 import { ChevronDownOutline, CopyOutline } from "@vicons/ionicons5";
-import { NButton, NIcon, NPopover, NSpace, NText, NTooltip, useMessage } from "naive-ui";
+import { NButton, NIcon, NPopover, NText, NTooltip, useMessage } from "naive-ui";
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -19,23 +20,14 @@ const baseUrl = computed(() => {
   return `${protocol}//${host}`;
 });
 
-// Hub endpoint paths - compact format
-const endpoints = computed(() => [
-  { key: "chat", label: "Chat", path: "/hub/v1/chat/completions" },
-  { key: "models", label: "Models", path: "/hub/v1/models" },
-  { key: "claude", label: "Claude", path: "/hub/v1/messages" },
-  { key: "codex", label: "Codex", path: "/hub/v1/responses" },
+// Supported channel types - requests are forwarded to groups/aggregates for processing
+// Each channel handles its own endpoints (chat, audio, image, video, etc.)
+const channels = computed(() => [
+  { key: "openai", label: "OpenAI", type: "success" as const },
+  { key: "anthropic", label: "Anthropic", type: "warning" as const },
+  { key: "gemini", label: "Gemini", type: "default" as const },
+  { key: "codex", label: "Codex", type: "info" as const },
 ]);
-
-async function copyEndpoint(path: string) {
-  const fullUrl = `${baseUrl.value}${path}`;
-  const success = await copy(fullUrl);
-  if (success) {
-    message.success(t("hub.endpointCopied"));
-  } else {
-    message.error(t("keys.copyFailed"));
-  }
-}
 
 async function copyBaseUrl() {
   const hubBaseUrl = `${baseUrl.value}/hub/v1`;
@@ -60,7 +52,7 @@ async function copyBaseUrl() {
       </template>
       <div class="endpoint-popover">
         <div class="endpoint-popover-header">
-          <n-text strong>{{ t("hub.unifiedEndpoint") }}</n-text>
+          <n-text strong>{{ t("hub.supportedChannels") }}</n-text>
           <n-tooltip trigger="hover">
             <template #trigger>
               <n-button size="tiny" quaternary @click="copyBaseUrl">
@@ -73,18 +65,12 @@ async function copyBaseUrl() {
             {{ t("hub.copyBaseUrl") }}
           </n-tooltip>
         </div>
-        <n-space :size="6" wrap>
-          <div
-            v-for="endpoint in endpoints"
-            :key="endpoint.key"
-            class="endpoint-chip"
-            @click="copyEndpoint(endpoint.path)"
-          >
-            <span class="endpoint-label">{{ endpoint.label }}</span>
-            <code class="endpoint-path">{{ endpoint.path }}</code>
-            <n-icon :component="CopyOutline" :size="12" class="copy-icon" />
-          </div>
-        </n-space>
+        <div class="channel-hint">{{ t("hub.channelHint") }}</div>
+        <div class="channel-tags">
+          <n-tag v-for="channel in channels" :key="channel.key" :type="channel.type" size="small">
+            {{ channel.label }}
+          </n-tag>
+        </div>
       </div>
     </n-popover>
   </div>
@@ -110,7 +96,7 @@ async function copyBaseUrl() {
 }
 
 .endpoint-popover {
-  min-width: 320px;
+  min-width: 280px;
   padding: 4px;
 }
 
@@ -123,42 +109,15 @@ async function copyBaseUrl() {
   border-bottom: 1px solid var(--n-border-color);
 }
 
-.endpoint-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  background: var(--n-color-embedded);
-  border-radius: 4px;
-  border: 1px solid var(--n-border-color);
-  cursor: pointer;
-  transition: all 0.2s;
+.channel-hint {
   font-size: 12px;
-}
-
-.endpoint-chip:hover {
-  border-color: var(--n-primary-color);
-  background: var(--n-color-hover);
-}
-
-.endpoint-chip:hover .copy-icon {
-  opacity: 1;
-}
-
-.endpoint-label {
-  font-weight: 500;
-  color: var(--n-text-color);
-}
-
-.endpoint-path {
   color: var(--n-text-color-3);
-  background: transparent;
-  padding: 0;
-  font-size: 12px;
+  margin-bottom: 8px;
 }
 
-.copy-icon {
-  opacity: 0.4;
-  transition: opacity 0.2s;
+.channel-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 </style>

@@ -221,6 +221,7 @@ func (p *DynamicWeightPersistence) syncDirtyKeys() {
 
 	kvStore := p.manager.GetStore()
 	var toUpsert []models.DynamicWeightMetric
+	var upsertKeys []string // Track keys that will be upserted
 	var failedKeys []string
 
 	for _, key := range keys {
@@ -242,11 +243,15 @@ func (p *DynamicWeightPersistence) syncDirtyKeys() {
 		dbm := p.keyToDBMetric(key, &metrics)
 		if dbm != nil {
 			toUpsert = append(toUpsert, *dbm)
+			upsertKeys = append(upsertKeys, key)
 		}
 	}
 
 	if len(toUpsert) > 0 {
-		p.batchUpsert(toUpsert)
+		if err := p.batchUpsert(toUpsert); err != nil {
+			// Re-queue all attempted keys on upsert failure
+			failedKeys = append(failedKeys, upsertKeys...)
+		}
 	}
 
 	// Re-queue failed keys for retry on next sync cycle
@@ -386,9 +391,10 @@ func parseUintSimple(s string) uint {
 }
 
 // batchUpsert performs batch upsert of metrics to database.
-func (p *DynamicWeightPersistence) batchUpsert(metrics []models.DynamicWeightMetric) {
+// Returns error if the upsert fails, allowing caller to handle retry logic.
+func (p *DynamicWeightPersistence) batchUpsert(metrics []models.DynamicWeightMetric) error {
 	if len(metrics) == 0 {
-		return
+		return nil
 	}
 
 	err := p.db.Clauses(clause.OnConflict{
@@ -420,9 +426,10 @@ func (p *DynamicWeightPersistence) batchUpsert(metrics []models.DynamicWeightMet
 
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to batch upsert dynamic weight metrics")
-	} else {
-		logrus.WithField("count", len(metrics)).Debug("Dynamic weight metrics synced to database")
+		return err
 	}
+	logrus.WithField("count", len(metrics)).Debug("Dynamic weight metrics synced to database")
+	return nil
 }
 
 // DeleteSubGroupMetrics soft-deletes sub-group metrics from database.

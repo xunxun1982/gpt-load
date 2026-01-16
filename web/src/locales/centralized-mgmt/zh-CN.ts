@@ -6,18 +6,11 @@ export default {
   tabLabel: "集中管理",
 
   // Endpoint display
-  unifiedEndpoint: "统一端点",
+  supportedChannels: "支持渠道",
+  channelHint: "透传后由分组/聚合处理各类 API（聊天、音频、图片、视频等）",
   copyBaseUrl: "复制基础地址",
   baseUrlCopied: "基础地址已复制",
   endpointCopied: "端点地址已复制",
-  endpointChat: "Chat Completions",
-  endpointChatDesc: "OpenAI 格式聊天接口",
-  endpointModels: "Models",
-  endpointModelsDesc: "获取可用模型列表",
-  endpointClaude: "Messages",
-  endpointClaudeDesc: "Claude 格式消息接口",
-  endpointCodex: "Responses",
-  endpointCodexDesc: "Codex 格式响应接口",
 
   // Model pool
   modelPool: "模型池",

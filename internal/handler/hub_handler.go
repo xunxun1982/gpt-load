@@ -68,6 +68,12 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 		return
 	}
 
+	// Validate model is provided (empty model should return 400 early)
+	if modelName == "" {
+		h.returnHubError(c, http.StatusBadRequest, "hub_model_missing", "Model is required in request")
+		return
+	}
+
 	// Check if model is allowed by access key
 	if !h.accessKeyService.IsModelAllowed(accessKey, modelName) {
 		h.returnHubError(c, http.StatusForbidden, "hub_model_not_allowed", "Model not allowed by access key")

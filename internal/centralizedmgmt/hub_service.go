@@ -732,6 +732,8 @@ func (s *HubService) GetHubSettings(ctx context.Context) (*HubSettingsDTO, error
 }
 
 // UpdateHubSettings updates the Hub settings.
+// After successful DB update, also updates in-memory state and invalidates cache
+// to ensure routing uses fresh values immediately.
 func (s *HubService) UpdateHubSettings(ctx context.Context, dto *HubSettingsDTO) error {
 	var settings HubSettings
 	err := s.db.WithContext(ctx).First(&settings).Error
@@ -744,7 +746,13 @@ func (s *HubService) UpdateHubSettings(ctx context.Context, dto *HubSettingsDTO)
 			HealthThreshold: dto.HealthThreshold,
 			EnablePriority:  dto.EnablePriority,
 		}
-		return s.db.WithContext(ctx).Create(&settings).Error
+		if err := s.db.WithContext(ctx).Create(&settings).Error; err != nil {
+			return err
+		}
+		// Update in-memory state after successful DB write
+		s.SetHealthScoreThreshold(dto.HealthThreshold)
+		s.InvalidateModelPoolCache()
+		return nil
 	}
 
 	if err != nil {
@@ -752,12 +760,18 @@ func (s *HubService) UpdateHubSettings(ctx context.Context, dto *HubSettingsDTO)
 	}
 
 	// Update existing settings
-	return s.db.WithContext(ctx).Model(&settings).Updates(map[string]any{
+	if err := s.db.WithContext(ctx).Model(&settings).Updates(map[string]any{
 		"max_retries":      dto.MaxRetries,
 		"retry_delay":      dto.RetryDelay,
 		"health_threshold": dto.HealthThreshold,
 		"enable_priority":  dto.EnablePriority,
-	}).Error
+	}).Error; err != nil {
+		return err
+	}
+	// Update in-memory state after successful DB write
+	s.SetHealthScoreThreshold(dto.HealthThreshold)
+	s.InvalidateModelPoolCache()
+	return nil
 }
 
 // SelectGroupForModelWithPriority selects the best group for a model using priority-based routing.

@@ -6,18 +6,11 @@ export default {
   tabLabel: "集中管理",
 
   // Endpoint display
-  unifiedEndpoint: "統一エンドポイント",
+  supportedChannels: "対応チャネル",
+  channelHint: "リクエストはグループ/集約に転送され処理されます（チャット、音声、画像、動画など）",
   copyBaseUrl: "ベースURLをコピー",
   baseUrlCopied: "ベースURLをコピーしました",
   endpointCopied: "エンドポイントURLをコピーしました",
-  endpointChat: "Chat Completions",
-  endpointChatDesc: "OpenAI形式チャットAPI",
-  endpointModels: "Models",
-  endpointModelsDesc: "利用可能なモデル一覧",
-  endpointClaude: "Messages",
-  endpointClaudeDesc: "Claude形式メッセージAPI",
-  endpointCodex: "Responses",
-  endpointCodexDesc: "Codex形式レスポンスAPI",
 
   // Model pool
   modelPool: "モデルプール",

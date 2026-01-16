@@ -6,18 +6,12 @@ export default {
   tabLabel: "Centralized Management",
 
   // Endpoint display
-  unifiedEndpoint: "Unified Endpoint",
+  supportedChannels: "Supported Channels",
+  channelHint:
+    "Requests are forwarded to groups/aggregates for processing (chat, audio, image, video, etc.)",
   copyBaseUrl: "Copy Base URL",
   baseUrlCopied: "Base URL copied",
   endpointCopied: "Endpoint URL copied",
-  endpointChat: "Chat Completions",
-  endpointChatDesc: "OpenAI format chat API",
-  endpointModels: "Models",
-  endpointModelsDesc: "List available models",
-  endpointClaude: "Messages",
-  endpointClaudeDesc: "Claude format messages API",
-  endpointCodex: "Responses",
-  endpointCodexDesc: "Codex format responses API",
 
   // Model pool
   modelPool: "Model Pool",

@@ -214,7 +214,9 @@ func MergeV1IntoV2Rules(v1Map map[string]string, v2Map map[string]*ModelRedirect
 
 // ResolveTargetModelWithIndex finds the target model from V2 or V1 rules using the provided selector.
 // Returns (targetModel, ruleVersion, targetCount, selectedIndex, error).
-// selectedIndex is the index of the selected target in the targets array (-1 for V1 rules or not found).
+// selectedIndex is the index of the selected target in the original targets array.
+// For V1 rules, selectedIndex is -1 since V1 has no target array concept.
+// For not found, selectedIndex is -1.
 // ruleVersion is "v2", "v1", or "" if not found.
 // Note: selector must not be nil when V2 rules exist, otherwise returns error.
 func ResolveTargetModelWithIndex(sourceModel string, v1Map map[string]string, v2Map map[string]*ModelRedirectRuleV2, selector *ModelRedirectSelector) (string, string, int, int, error) {
@@ -230,9 +232,9 @@ func ResolveTargetModelWithIndex(sourceModel string, v1Map map[string]string, v2
 		return targetModel, "v2", len(rule.Targets), selectedIdx, nil
 	}
 
-	// Fallback to V1 rules
+	// Fallback to V1 rules (selectedIndex is -1 since V1 has no target array)
 	if targetModel, found := v1Map[sourceModel]; found {
-		return targetModel, "v1", 1, 0, nil
+		return targetModel, "v1", 1, -1, nil
 	}
 
 	return "", "", 0, -1, nil
@@ -280,7 +282,8 @@ func (s *ModelRedirectSelector) filterValidTargetsWithIndices(targets []ModelRed
 }
 
 // doWeightedSelectWithIndex performs weighted random selection on valid targets.
-// Returns (targetModel, indexInValidTargets, error).
+// Returns (targetModel, indexInOriginalTargets, error).
+// The returned index is from originalIndices, mapping back to the original targets array.
 func (s *ModelRedirectSelector) doWeightedSelectWithIndex(targets []ModelRedirectTarget, originalIndices []int) (string, int, error) {
 	weights := make([]int, len(targets))
 	for i, t := range targets {

@@ -63,8 +63,10 @@ const columns = computed<DataTableColumns<HubAccessKey>>(() => [
           t("hub.allModels")
         );
       }
+      // Guard against null/undefined allowed_models
+      const count = row.allowed_models?.length ?? 0;
       return h(NTag, { size: "small", type: "info", bordered: false }, () =>
-        t("hub.specificModels", { count: row.allowed_models.length })
+        t("hub.specificModels", { count })
       );
     },
   },

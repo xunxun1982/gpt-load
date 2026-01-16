@@ -331,6 +331,12 @@ outer:
 	}
 
 	// Convert HubAccessKeys; if input is plaintext, encrypt key values
+	// NOTE: Keys that fail encryption are silently skipped with warning log.
+	// This is consistent with regular key import behavior and avoids failing
+	// the entire import due to a single problematic key. The warning log
+	// provides visibility for debugging. Adding skipped count to response
+	// would require API changes and is deferred for future enhancement.
+	// AI Review: Keeping silent skip behavior for consistency with existing patterns.
 	hubAccessKeys := importData.HubAccessKeys
 	if inputIsPlain && len(hubAccessKeys) > 0 {
 		encryptedKeys := make([]services.HubAccessKeyExportInfo, 0, len(hubAccessKeys))

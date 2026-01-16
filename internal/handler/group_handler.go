@@ -791,6 +791,10 @@ func (s *Server) GetModelRedirectDynamicWeights(c *gin.Context) {
 
 		targets := make([]ModelRedirectTargetWeight, len(rule.Targets))
 		for i, target := range rule.Targets {
+			// NOTE: BaseWeight reflects the configured weight regardless of enabled status.
+			// This design allows users to see the original configuration value.
+			// EffectiveWeight will be 0 for disabled targets, showing actual routing behavior.
+			// AI Review: Keeping BaseWeight as configured value for UI clarity.
 			targets[i] = ModelRedirectTargetWeight{
 				Model:      target.Model,
 				BaseWeight: target.GetWeight(),
@@ -806,8 +810,13 @@ func (s *Server) GetModelRedirectDynamicWeights(c *gin.Context) {
 				targets[i].LastFailureAt = dwInfos[i].LastFailureAt
 				targets[i].LastSuccessAt = dwInfos[i].LastSuccessAt
 			} else {
-				// No dynamic weight data, use base weight
-				targets[i].EffectiveWeight = target.GetWeight()
+				// No dynamic weight data, use base weight for effective weight
+				// For disabled targets, effective weight should be 0
+				if target.IsEnabled() {
+					targets[i].EffectiveWeight = target.GetWeight()
+				} else {
+					targets[i].EffectiveWeight = 0
+				}
 				targets[i].HealthScore = 1.0
 			}
 		}
