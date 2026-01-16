@@ -85,7 +85,11 @@ func (p *DynamicWeightPersistence) Stop(ctx context.Context) {
 		p.syncDirtyKeys()
 		logrus.Info("Dynamic weight persistence service stopped")
 	case <-ctx.Done():
-		logrus.Warn("Dynamic weight persistence service stop timed out")
+		// Log abandoned dirty keys count for debugging
+		p.dirtyMu.Lock()
+		abandonedCount := len(p.dirtyKeys)
+		p.dirtyMu.Unlock()
+		logrus.WithField("abandoned_keys", abandonedCount).Warn("Dynamic weight persistence service stop timed out")
 	}
 }
 
@@ -505,6 +509,8 @@ func (p *DynamicWeightPersistence) DeleteModelRedirectMetrics(groupID uint, sour
 // RestoreSubGroupMetrics restores soft-deleted sub-group metrics.
 // Called when a sub-group is re-added to an aggregate group.
 // Returns true if a record was restored, false if no deleted record exists.
+// NOTE: Memory update failure is logged but not returned as error since DB restore
+// is the primary operation. Memory will be consistent after next service restart.
 func (p *DynamicWeightPersistence) RestoreSubGroupMetrics(aggregateGroupID, subGroupID uint) (bool, error) {
 	result := p.db.Model(&models.DynamicWeightMetric{}).
 		Where("metric_type = ? AND group_id = ? AND sub_group_id = ? AND deleted_at IS NOT NULL",
@@ -521,7 +527,7 @@ func (p *DynamicWeightPersistence) RestoreSubGroupMetrics(aggregateGroupID, subG
 			key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
 			metrics := dbMetricToMemory(&dbm)
 			if err := p.manager.SetMetrics(key, metrics); err != nil {
-				logrus.WithError(err).WithField("key", key).Debug("Failed to restore metrics to store")
+				logrus.WithError(err).WithField("key", key).Warn("Failed to restore metrics to store")
 			}
 		}
 		return true, nil
@@ -530,6 +536,8 @@ func (p *DynamicWeightPersistence) RestoreSubGroupMetrics(aggregateGroupID, subG
 }
 
 // RestoreModelRedirectMetrics restores soft-deleted model redirect metrics.
+// NOTE: Memory update failure is logged but not returned as error since DB restore
+// is the primary operation. Memory will be consistent after next service restart.
 func (p *DynamicWeightPersistence) RestoreModelRedirectMetrics(groupID uint, sourceModel string, targetIndex int) (bool, error) {
 	result := p.db.Model(&models.DynamicWeightMetric{}).
 		Where("metric_type = ? AND group_id = ? AND source_model = ? AND target_index = ? AND deleted_at IS NOT NULL",
@@ -545,7 +553,7 @@ func (p *DynamicWeightPersistence) RestoreModelRedirectMetrics(groupID uint, sou
 			key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
 			metrics := dbMetricToMemory(&dbm)
 			if err := p.manager.SetMetrics(key, metrics); err != nil {
-				logrus.WithError(err).WithField("key", key).Debug("Failed to restore metrics to store")
+				logrus.WithError(err).WithField("key", key).Warn("Failed to restore metrics to store")
 			}
 		}
 		return true, nil
