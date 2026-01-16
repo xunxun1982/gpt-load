@@ -269,7 +269,7 @@ function renderGroupTags(row: ModelPoolEntryV2) {
     },
     {
       trigger: () =>
-        h(NSpace, { size: 4, wrap: false, style: { cursor: "pointer" } }, () =>
+        h(NSpace, { size: 4, wrap: false, style: { cursor: "pointer", flexShrink: 0 } }, () =>
           visible.map(g => {
             const typeShort = getGroupTypeShort(g);
             return h(
@@ -334,7 +334,7 @@ function renderGroupTags(row: ModelPoolEntryV2) {
 
   // If there are hidden groups, show +N indicator
   if (hidden.length > 0) {
-    return h(NSpace, { size: 4, wrap: false, align: "center" }, () => [
+    return h(NSpace, { size: 4, wrap: false, align: "center", style: { flexShrink: 0 } }, () => [
       visibleTagsContent,
       h(
         NTag,
@@ -343,7 +343,7 @@ function renderGroupTags(row: ModelPoolEntryV2) {
           type: "default",
           bordered: false,
           round: true,
-          style: { opacity: 0.7 },
+          style: { opacity: 0.7, flexShrink: 0 },
         },
         () => `+${hidden.length}`
       ),
@@ -359,13 +359,15 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
     key: "model_name",
     width: 200,
     ellipsis: { tooltip: true },
+    titleAlign: "center",
     render: row => h("code", { class: "model-code" }, row.model_name),
   },
   {
     title: t("hub.channelType"),
     key: "channel_type",
-    width: 75,
+    width: 90,
     align: "center",
+    titleAlign: "center",
     render: row => {
       const type = row.groups[0]?.channel_type;
       return type
@@ -376,13 +378,16 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
   {
     title: t("hub.sourceGroups"),
     key: "groups",
-    render: row => renderGroupTags(row),
+    minWidth: 360,
+    titleAlign: "center",
+    render: row => h("div", { class: "groups-cell" }, [renderGroupTags(row)]),
   },
   {
     title: t("hub.healthScore"),
     key: "health_score",
     width: 60,
     align: "center",
+    titleAlign: "center",
     render: row => {
       const enabledGroups = row.groups.filter(g => g.enabled && g.priority > 0);
       if (!enabledGroups.length) {
@@ -395,8 +400,9 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
   {
     title: t("hub.groupCount"),
     key: "group_count",
-    width: 55,
+    width: 65,
     align: "center",
+    titleAlign: "center",
     render: row => {
       const enabled = row.groups.filter(g => g.enabled && g.priority > 0).length;
       return h(NText, null, () => `${enabled}/${row.groups.length}`);
@@ -683,6 +689,11 @@ onMounted(() => {
   overflow: hidden;
 }
 
+/* Ensure table header cells don't wrap */
+:deep(.n-data-table-th) {
+  white-space: nowrap;
+}
+
 .model-code {
   background: transparent;
   padding: 0;
@@ -700,6 +711,15 @@ onMounted(() => {
 }
 .text-muted {
   color: var(--n-text-color-3);
+}
+
+/* Groups cell - single line with overflow handling */
+.groups-cell {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  min-width: 0;
 }
 
 /* Edit modal styles */
