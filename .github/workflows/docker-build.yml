@@ -13,8 +13,6 @@ jobs:
     permissions:
       packages: write
       contents: read
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -63,15 +61,13 @@ jobs:
           cache-from: type=gha,scope=amd64
           cache-to: type=gha,mode=max,scope=amd64
 
-  # Build ARM64 image on native ARM64 runner (no QEMU needed!)
+  # Build ARM64 image on native ARM64 runner (no QEMU needed)
   build_arm64:
     name: Build ARM64 Image
-    runs-on: ubuntu-24.04-arm # Native ARM64 runner
+    runs-on: ubuntu-24.04-arm
     permissions:
       packages: write
       contents: read
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -142,44 +138,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create and push manifest for Docker Hub
+      # NOTE: Using tags instead of digests for simplicity.
+      # Docker official docs recommend digest-based approach for immutability,
+      # but it requires artifact upload/download between jobs which adds complexity.
+      # Tag-based approach is sufficient for this use case since builds are atomic.
+      - name: Create and push manifests
         run: |
+          set -euo pipefail
+
           TAG="${{ github.ref_name }}"
+          GHCR_REPO=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
 
-          # Create version tag manifest
-          docker buildx imagetools create -t xunxun1982/gpt-load:${TAG} \
-            xunxun1982/gpt-load:${TAG}-amd64 \
-            xunxun1982/gpt-load:${TAG}-arm64
+          for REPO in "xunxun1982/gpt-load" "${GHCR_REPO}"; do
+            # Create version tag manifest
+            docker buildx imagetools create -t "${REPO}:${TAG}" \
+              "${REPO}:${TAG}-amd64" \
+              "${REPO}:${TAG}-arm64"
 
-          # Create latest or beta manifest based on tag
-          if [[ "${TAG}" == *"-beta"* ]]; then
-            docker buildx imagetools create -t xunxun1982/gpt-load:beta \
-              xunxun1982/gpt-load:${TAG}-amd64 \
-              xunxun1982/gpt-load:${TAG}-arm64
-          elif [[ "${TAG}" != *"-"* ]]; then
-            docker buildx imagetools create -t xunxun1982/gpt-load:latest \
-              xunxun1982/gpt-load:${TAG}-amd64 \
-              xunxun1982/gpt-load:${TAG}-arm64
-          fi
-
-      - name: Create and push manifest for GHCR
-        run: |
-          TAG="${{ github.ref_name }}"
-          REPO="ghcr.io/${{ github.repository }}"
-          REPO_LOWER=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
-
-          # Create version tag manifest
-          docker buildx imagetools create -t ${REPO_LOWER}:${TAG} \
-            ${REPO_LOWER}:${TAG}-amd64 \
-            ${REPO_LOWER}:${TAG}-arm64
-
-          # Create latest or beta manifest based on tag
-          if [[ "${TAG}" == *"-beta"* ]]; then
-            docker buildx imagetools create -t ${REPO_LOWER}:beta \
-              ${REPO_LOWER}:${TAG}-amd64 \
-              ${REPO_LOWER}:${TAG}-arm64
-          elif [[ "${TAG}" != *"-"* ]]; then
-            docker buildx imagetools create -t ${REPO_LOWER}:latest \
-              ${REPO_LOWER}:${TAG}-amd64 \
-              ${REPO_LOWER}:${TAG}-arm64
-          fi
+            # Create beta or latest manifest based on tag pattern
+            if [[ "${TAG}" == *"-beta"* ]]; then
+              docker buildx imagetools create -t "${REPO}:beta" \
+                "${REPO}:${TAG}-amd64" \
+                "${REPO}:${TAG}-arm64"
+            elif [[ "${TAG}" != *"-"* ]]; then
+              docker buildx imagetools create -t "${REPO}:latest" \
+                "${REPO}:${TAG}-amd64" \
+                "${REPO}:${TAG}-arm64"
+            fi
+          done
