@@ -654,3 +654,53 @@ func (s *AggregateGroupService) cleanupExpiredCacheEntries() {
 		}
 	}
 }
+
+// InvalidateStatsCacheForGroup clears cached key statistics that include the specified group.
+// Uses string matching on cache keys which are formatted as "id1,id2,id3,...".
+// This approach avoids parsing overhead while maintaining correctness.
+func (s *AggregateGroupService) InvalidateStatsCacheForGroup(groupID uint) {
+	groupIDStr := strconv.FormatUint(uint64(groupID), 10)
+
+	s.statsCacheMu.Lock()
+	defer s.statsCacheMu.Unlock()
+
+	for key := range s.statsCache {
+		// Cache key format is "id1,id2,id3,..." - check if groupID is in the key.
+		// Use strings.Contains with boundary checks to avoid false positives
+		// (e.g., groupID "1" should not match "10,20,30").
+		if containsGroupID(key, groupIDStr) {
+			delete(s.statsCache, key)
+		}
+	}
+}
+
+// containsGroupID checks if the cache key contains the specified group ID.
+// Cache key format is "id1,id2,id3,...". This function ensures exact ID matching
+// by checking boundaries (start of string, comma, or end of string).
+// It scans all occurrences to handle cases like "10,1,20" where searching for "1"
+// should match the middle token, not the "1" in "10".
+func containsGroupID(cacheKey, groupIDStr string) bool {
+	offset := 0
+	for offset < len(cacheKey) {
+		idx := strings.Index(cacheKey[offset:], groupIDStr)
+		if idx == -1 {
+			return false
+		}
+		actualIdx := offset + idx
+
+		// Check left boundary: must be start of string or preceded by comma
+		leftOK := actualIdx == 0 || cacheKey[actualIdx-1] == ','
+
+		// Check right boundary: must be end of string or followed by comma
+		endIdx := actualIdx + len(groupIDStr)
+		rightOK := endIdx == len(cacheKey) || cacheKey[endIdx] == ','
+
+		if leftOK && rightOK {
+			return true
+		}
+
+		// Move past this occurrence to find next
+		offset = actualIdx + 1
+	}
+	return false
+}

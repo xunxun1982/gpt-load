@@ -601,6 +601,11 @@ func (p *KeyProvider) RestoreKeys(groupID uint) (int64, error) {
 		return nil
 	})
 
+	// Invalidate cache after restoring keys (status changed from invalid to active)
+	if err == nil && restoredCount > 0 && p.CacheInvalidationCallback != nil {
+		p.CacheInvalidationCallback(groupID)
+	}
+
 	return restoredCount, err
 }
 
@@ -657,6 +662,11 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 
 		return nil
 	})
+
+	// Invalidate cache after restoring keys (status changed from invalid to active)
+	if err == nil && restoredCount > 0 && p.CacheInvalidationCallback != nil {
+		p.CacheInvalidationCallback(groupID)
+	}
 
 	return restoredCount, err
 }

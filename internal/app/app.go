@@ -83,6 +83,13 @@ func NewApp(params AppParams) *App {
 		params.GroupService.InvalidateHubModelPoolCacheCallback = params.HubService.InvalidateModelPoolCache
 	}
 
+	// Set KeyProvider cache invalidation callback to invalidate GroupService key stats cache
+	// This ensures that when keys are added, removed, or status-changed (including restore),
+	// both GroupService and AggregateGroupService caches are invalidated
+	if params.KeyPoolProvider != nil && params.GroupService != nil {
+		params.KeyPoolProvider.CacheInvalidationCallback = params.GroupService.InvalidateKeyStatsCache
+	}
+
 	// Create persistence service for dynamic weight metrics
 	var dwPersistence *services.DynamicWeightPersistence
 	if params.DynamicWeightManager != nil {
