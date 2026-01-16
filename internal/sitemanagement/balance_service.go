@@ -276,9 +276,11 @@ func (s *BalanceService) parseBalanceResponse(data []byte) *string {
 		return nil
 	}
 
-	// Try to get quota from data wrapper first, then from root
+	// Try to get quota from data wrapper first, then from root.
+	// Only fall back to root quota if Data.Quota is zero AND root Quota has a value.
+	// This preserves legitimate $0.00 balances when Data.Quota is explicitly set to 0.
 	quota := resp.Data.Quota
-	if quota == 0 {
+	if quota == 0 && resp.Quota != 0 {
 		quota = resp.Quota
 	}
 

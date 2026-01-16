@@ -11,6 +11,7 @@ import (
 	"time"
 
 	utls "github.com/refraction-networking/utls"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -84,12 +85,17 @@ func (m *StealthClientManager) createStealthClient(proxyURL string) *http.Client
 		},
 	}
 
-	// Configure proxy if provided
+	// Configure proxy if provided.
 	// Note: When proxy is used, DialTLSContext is not invoked for HTTPS requests
 	// because the proxy handles the CONNECT tunnel. TLS fingerprint spoofing
 	// will not be effective in this case.
 	if proxyURL != "" {
-		if parsedProxy, err := url.Parse(proxyURL); err == nil {
+		parsedProxy, err := url.Parse(proxyURL)
+		if err != nil {
+			// Log warning: invalid proxy URL will result in direct connection
+			logrus.WithError(err).WithField("proxy_url", proxyURL).
+				Warn("Invalid proxy URL for stealth client, using direct connection")
+		} else {
 			transport.Proxy = http.ProxyURL(parsedProxy)
 		}
 	}

@@ -88,7 +88,10 @@ func NewApp(params AppParams) *App {
 	if params.DynamicWeightManager != nil {
 		dwPersistence = services.NewDynamicWeightPersistence(params.DB, params.DynamicWeightManager)
 
-		// Set callbacks for soft delete/restore operations on AggregateGroupService
+		// Set callbacks for soft delete/restore operations on AggregateGroupService.
+		// Note: AggregateGroupService and GroupService are required dependencies injected by dig.
+		// If they were nil, the application would fail at startup, which is the expected behavior.
+		// Adding nil guards here would hide configuration errors - fail-fast is preferred.
 		params.AggregateGroupService.OnSubGroupRemoved = func(aggregateGroupID, subGroupID uint) {
 			if err := dwPersistence.DeleteSubGroupMetrics(aggregateGroupID, subGroupID); err != nil {
 				logrus.WithError(err).WithFields(logrus.Fields{

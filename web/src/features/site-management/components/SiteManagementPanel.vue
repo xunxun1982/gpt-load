@@ -300,7 +300,9 @@ function openEditSite(site: ManagedSiteDTO) {
   showSiteModal.value = true;
 }
 
-// Known WAF/Cloudflare cookie names that indicate bypass capability
+// Known WAF/Cloudflare cookie names that indicate bypass capability.
+// IMPORTANT: This list is duplicated from backend (auto_checkin_service.go).
+// Keep both lists in sync when adding/removing cookie names.
 const knownWAFCookieNames = [
   "cf_clearance", // Cloudflare clearance cookie (most important)
   "acw_tc", // Alibaba Cloud WAF cookie

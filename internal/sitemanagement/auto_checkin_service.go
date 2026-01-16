@@ -925,6 +925,8 @@ func buildUserHeaders(userID string) map[string]string {
 
 // knownWAFCookieNames lists known Cloudflare/WAF cookie names that indicate bypass capability.
 // At least one of these cookies should be present for stealth bypass to work.
+// IMPORTANT: This list is duplicated in frontend (SiteManagementPanel.vue).
+// Keep both lists in sync when adding/removing cookie names.
 var knownWAFCookieNames = []string{
 	"cf_clearance", // Cloudflare clearance cookie (most important)
 	"acw_tc",       // Alibaba Cloud WAF cookie
@@ -976,6 +978,19 @@ func validateCFCookies(cookieStr string) []string {
 // shouldUseStealthRequest checks if stealth request should be used based on site config.
 func shouldUseStealthRequest(site ManagedSite) bool {
 	return isStealthBypassMethod(site.BypassMethod)
+}
+
+// isCFChallengeResponse checks if an HTTP response indicates a Cloudflare challenge.
+// Returns true if the response appears to be a CF challenge page (403 with CF markers).
+func isCFChallengeResponse(statusCode int, responseBody []byte) bool {
+	if statusCode != 403 {
+		return false
+	}
+	respStr := string(responseBody)
+	return strings.Contains(respStr, "cloudflare") ||
+		strings.Contains(respStr, "cf-") ||
+		strings.Contains(respStr, "challenge") ||
+		strings.Contains(strings.ToLower(respStr), "ray id")
 }
 
 func doJSONRequest(ctx context.Context, client *http.Client, method, fullURL string, headers map[string]string, body any) ([]byte, int, error) {
@@ -1162,12 +1177,8 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 		}).Debug("Veloera check-in HTTP error")
 
 		// Check for Cloudflare challenge response
-		if statusCode == 403 && useStealth {
-			respStr := string(data)
-			if strings.Contains(respStr, "cloudflare") || strings.Contains(respStr, "cf-") ||
-				strings.Contains(respStr, "challenge") || strings.Contains(strings.ToLower(respStr), "ray id") {
-				return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
-			}
+		if useStealth && isCFChallengeResponse(statusCode, data) {
+			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
 		}
 
 		// Check if response body contains "already checked" message
@@ -1327,13 +1338,9 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 			"response":    string(data),
 		}).Debug("Anyrouter check-in HTTP error")
 
-		// Check for Cloudflare challenge response (403 with specific patterns)
-		if statusCode == 403 {
-			respStr := string(data)
-			if strings.Contains(respStr, "cloudflare") || strings.Contains(respStr, "cf-") ||
-				strings.Contains(respStr, "challenge") || strings.Contains(strings.ToLower(respStr), "ray id") {
-				return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
-			}
+		// Check for Cloudflare challenge response
+		if isCFChallengeResponse(statusCode, data) {
+			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
 		}
 
 		if isAlreadyCheckedMessage(resp.Message) {
@@ -1349,6 +1356,7 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 	if resp.Message == "" && resp.Success {
 		return providerResult{Status: CheckinResultAlreadyChecked, Message: "already checked in"}, nil
 	}
+
 	if isAlreadyCheckedMessage(resp.Message) {
 		return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
 	}
@@ -1437,12 +1445,8 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 		}).Debug("NewAPI check-in HTTP error")
 
 		// Check for Cloudflare challenge response
-		if statusCode == 403 && useStealth {
-			respStr := string(data)
-			if strings.Contains(respStr, "cloudflare") || strings.Contains(respStr, "cf-") ||
-				strings.Contains(respStr, "challenge") || strings.Contains(strings.ToLower(respStr), "ray id") {
-				return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
-			}
+		if useStealth && isCFChallengeResponse(statusCode, data) {
+			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
 		}
 
 		// Check if response body contains "already checked" message
