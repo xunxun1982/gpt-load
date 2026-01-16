@@ -159,8 +159,22 @@ func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uin
 	}
 }
 
-// FetchSiteBalance fetches balance for a single site and updates cache
+// FetchSiteBalance fetches balance for a single site and updates cache in database.
+// This is the public API for single-site balance fetch (e.g., clicking balance cell).
 func (s *BalanceService) FetchSiteBalance(ctx context.Context, site *ManagedSite) *BalanceInfo {
+	result := s.fetchSiteBalanceInternal(ctx, site)
+
+	// Update database for single-site fetch
+	if result.Balance != nil {
+		s.updateSiteBalance(ctx, site.ID, *result.Balance)
+	}
+
+	return result
+}
+
+// fetchSiteBalanceInternal fetches balance for a single site without updating database.
+// Used internally by batch operations to avoid duplicate DB updates.
+func (s *BalanceService) fetchSiteBalanceInternal(ctx context.Context, site *ManagedSite) *BalanceInfo {
 	result := &BalanceInfo{SiteID: site.ID}
 
 	// Check if site type supports balance fetching
@@ -192,8 +206,6 @@ func (s *BalanceService) FetchSiteBalance(ctx context.Context, site *ManagedSite
 	balance := s.fetchBalanceFromAPI(ctx, site, authValue, userID)
 	if balance != nil {
 		result.Balance = balance
-		// Update cache in database
-		s.updateSiteBalance(ctx, site.ID, *balance)
 	}
 
 	return result
@@ -261,7 +273,7 @@ func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedS
 	}
 
 	if err != nil {
-		logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site")
+		logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site API")
 		return nil
 	}
 
@@ -344,6 +356,7 @@ func (s *BalanceService) getHTTPClient(site *ManagedSite) *http.Client {
 
 // FetchAllBalances fetches balances for multiple sites concurrently.
 // Uses worker pool pattern to limit concurrent requests and avoid overwhelming target sites.
+// Note: This method does NOT update database; caller should call updateBalancesInDB separately.
 func (s *BalanceService) FetchAllBalances(ctx context.Context, sites []ManagedSite) map[uint]*BalanceInfo {
 	results := make(map[uint]*BalanceInfo)
 	if len(sites) == 0 {
@@ -367,7 +380,8 @@ func (s *BalanceService) FetchAllBalances(ctx context.Context, sites []ManagedSi
 		go func() {
 			defer wg.Done()
 			for site := range jobs {
-				info := s.FetchSiteBalance(ctx, site)
+				// Use internal method to avoid duplicate DB updates
+				info := s.fetchSiteBalanceInternal(ctx, site)
 				mu.Lock()
 				results[site.ID] = info
 				mu.Unlock()
