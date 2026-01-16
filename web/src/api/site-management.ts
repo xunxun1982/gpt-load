@@ -8,8 +8,10 @@ export type ManagedSiteType =
   | "wong-gongyi"
   | "one-hub"
   | "done-hub"
+  | "anyrouter"
   | "brand";
 export type ManagedSiteAuthType = "none" | "access_token" | "cookie";
+export type ManagedSiteBypassMethod = "" | "none" | "stealth";
 
 export type ManagedSiteCheckinStatus = "success" | "failed" | "skipped" | "already_checked" | "";
 
@@ -57,6 +59,7 @@ export interface ManagedSiteDTO {
   custom_checkin_url: string;
   use_proxy: boolean;
   proxy_url: string;
+  bypass_method: ManagedSiteBypassMethod;
 
   auth_type: ManagedSiteAuthType;
   has_auth: boolean;
@@ -70,6 +73,10 @@ export interface ManagedSiteDTO {
   // Date format: YYYY-MM-DD in Beijing time (UTC+8), resets at 05:00 Beijing time.
   last_site_opened_date: string;
   last_checkin_page_opened_date: string;
+
+  // Cached balance information, refreshed daily at 05:00 Beijing time.
+  last_balance: string;
+  last_balance_date: string;
 
   // Deprecated: kept for backward compatibility, use bound_groups instead
   bound_group_id?: number;
@@ -115,6 +122,7 @@ export interface CreateManagedSiteRequest {
   custom_checkin_url: string;
   use_proxy: boolean;
   proxy_url: string;
+  bypass_method: ManagedSiteBypassMethod;
 
   auth_type: ManagedSiteAuthType;
   auth_value: string;
@@ -248,6 +256,18 @@ export const siteManagementApi = {
     return res.data || [];
   },
 
+  // Fetch balance for a single site
+  async fetchSiteBalance(siteId: number): Promise<{ site_id: number; balance: string | null }> {
+    const res = await http.get(`/site-management/sites/${siteId}/balance`, { hideMessage: true });
+    return res.data;
+  },
+
+  // Refresh balances for all enabled sites
+  async refreshAllBalances(): Promise<Record<number, { site_id: number; balance: string | null }>> {
+    const res = await http.post("/site-management/refresh-balances", {}, { hideMessage: true });
+    return res.data || {};
+  },
+
   // Get count of unbound sites
   async getUnboundCount(): Promise<number> {
     const res = await http.get("/site-management/unbound-count");
@@ -277,6 +297,7 @@ export interface SiteExportInfo {
   custom_checkin_url: string;
   use_proxy?: boolean;
   proxy_url?: string;
+  bypass_method?: ManagedSiteBypassMethod;
   auth_type: ManagedSiteAuthType;
   auth_value?: string;
 }

@@ -31,12 +31,17 @@ type AggregateValidationResult struct {
 
 // AggregateGroupService encapsulates aggregate group specific behaviours.
 type AggregateGroupService struct {
-	db           *gorm.DB
-	groupManager *GroupManager
+	db                   *gorm.DB
+	groupManager         *GroupManager
+	dynamicWeightManager *DynamicWeightManager
 	// Cache for key statistics to reduce database queries
 	statsCache    map[string]keyStatsCacheEntry
 	statsCacheMu  sync.RWMutex
 	statsCacheTTL time.Duration
+
+	// Callbacks for soft delete/restore operations (set by app layer)
+	OnSubGroupRemoved func(aggregateGroupID, subGroupID uint)
+	OnSubGroupAdded   func(aggregateGroupID, subGroupID uint)
 }
 
 // keyStatsCacheEntry stores cached key statistics with expiration time
@@ -46,12 +51,13 @@ type keyStatsCacheEntry struct {
 }
 
 // NewAggregateGroupService constructs an AggregateGroupService instance.
-func NewAggregateGroupService(db *gorm.DB, groupManager *GroupManager) *AggregateGroupService {
+func NewAggregateGroupService(db *gorm.DB, groupManager *GroupManager, dynamicWeightManager *DynamicWeightManager) *AggregateGroupService {
 	return &AggregateGroupService{
-		db:            db,
-		groupManager:  groupManager,
-		statsCache:    make(map[string]keyStatsCacheEntry),
-		statsCacheTTL: 5 * time.Minute, // Cache for 5 minutes
+		db:                   db,
+		groupManager:         groupManager,
+		dynamicWeightManager: dynamicWeightManager,
+		statsCache:           make(map[string]keyStatsCacheEntry),
+		statsCacheTTL:        5 * time.Minute, // Cache for 5 minutes
 	}
 }
 
@@ -223,6 +229,27 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 
 	keyStatsMap := s.fetchSubGroupsKeyStats(ctx, subGroupIDs)
 
+	// Prepare dynamic weight inputs if manager is available
+	var dynamicWeightInfoMap map[uint]*models.DynamicWeightInfo
+	if s.dynamicWeightManager != nil {
+		inputs := make([]SubGroupWeightInput, 0, len(subGroupModels))
+		for _, subGroup := range subGroupModels {
+			inputs = append(inputs, SubGroupWeightInput{
+				SubGroupID: subGroup.ID,
+				Weight:     weightMap[subGroup.ID],
+			})
+		}
+		dwInfos := s.dynamicWeightManager.GetSubGroupDynamicWeights(groupID, inputs)
+		dynamicWeightInfoMap = make(map[uint]*models.DynamicWeightInfo, len(subGroupModels))
+		for i, subGroup := range subGroupModels {
+			if i < len(dwInfos) {
+				// Store pointer to the dynamic weight info
+				info := dwInfos[i]
+				dynamicWeightInfoMap[subGroup.ID] = &info
+			}
+		}
+	}
+
 	subGroups := make([]models.SubGroupInfo, 0, len(subGroupModels))
 	for _, subGroup := range subGroupModels {
 		stats := keyStatsMap[subGroup.ID]
@@ -233,13 +260,20 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 				Warn("failed to fetch key stats for sub-group, using zero values")
 		}
 
-		subGroups = append(subGroups, models.SubGroupInfo{
+		info := models.SubGroupInfo{
 			Group:       subGroup,
 			Weight:      weightMap[subGroup.ID],
 			TotalKeys:   stats.TotalKeys,
 			ActiveKeys:  stats.ActiveKeys,
 			InvalidKeys: stats.InvalidKeys,
-		})
+		}
+
+		// Add dynamic weight info if available
+		if dynamicWeightInfoMap != nil {
+			info.DynamicWeight = dynamicWeightInfoMap[subGroup.ID]
+		}
+
+		subGroups = append(subGroups, info)
 	}
 
 	return subGroups, nil
@@ -306,6 +340,13 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 
 	if err != nil {
 		return err
+	}
+
+	// Restore soft-deleted health metrics for re-added sub-groups
+	if s.OnSubGroupAdded != nil {
+		for _, sg := range result.SubGroups {
+			s.OnSubGroupAdded(groupID, sg.SubGroupID)
+		}
 	}
 
 	// Trigger cache update
@@ -378,6 +419,11 @@ func (s *AggregateGroupService) DeleteSubGroup(ctx context.Context, groupID, sub
 
 	if result.RowsAffected == 0 {
 		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
+	}
+
+	// Soft-delete health metrics for this sub-group (preserves data for potential restoration)
+	if s.OnSubGroupRemoved != nil {
+		s.OnSubGroupRemoved(groupID, subGroupID)
 	}
 
 	// Trigger cache update

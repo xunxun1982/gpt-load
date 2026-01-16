@@ -29,6 +29,7 @@ type CreateManagedSiteRequest struct {
 	CustomCheckInURL string `json:"custom_checkin_url"`
 	UseProxy         bool   `json:"use_proxy"`
 	ProxyURL         string `json:"proxy_url"`
+	BypassMethod     string `json:"bypass_method"`
 
 	AuthType  string `json:"auth_type"`
 	AuthValue string `json:"auth_value"`
@@ -51,6 +52,7 @@ type UpdateManagedSiteRequest struct {
 	CustomCheckInURL *string `json:"custom_checkin_url"`
 	UseProxy         *bool   `json:"use_proxy"`
 	ProxyURL         *string `json:"proxy_url"`
+	BypassMethod     *string `json:"bypass_method"`
 
 	AuthType  *string `json:"auth_type"`
 	AuthValue *string `json:"auth_value"`
@@ -141,6 +143,7 @@ func (s *Server) CreateManagedSite(c *gin.Context) {
 		CustomCheckInURL: req.CustomCheckInURL,
 		UseProxy:         req.UseProxy,
 		ProxyURL:         req.ProxyURL,
+		BypassMethod:     req.BypassMethod,
 		AuthType:         req.AuthType,
 		AuthValue:        req.AuthValue,
 	})
@@ -178,6 +181,7 @@ func (s *Server) UpdateManagedSite(c *gin.Context) {
 		CustomCheckInURL: req.CustomCheckInURL,
 		UseProxy:         req.UseProxy,
 		ProxyURL:         req.ProxyURL,
+		BypassMethod:     req.BypassMethod,
 		AuthType:         req.AuthType,
 		AuthValue:        req.AuthValue,
 	})
@@ -467,4 +471,34 @@ func (s *Server) ImportManagedSites(c *gin.Context) {
 		"skipped":  skipped,
 		"total":    len(importData.Sites),
 	})
+}
+
+
+// FetchSiteBalance fetches balance for a single site
+func (s *Server) FetchSiteBalance(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	// Get site from database
+	var site sitemanagement.ManagedSite
+	if err := s.DB.WithContext(c.Request.Context()).First(&site, uint(id)).Error; err != nil {
+		HandleServiceError(c, err)
+		return
+	}
+
+	// Fetch balance
+	balanceInfo := s.BalanceService.FetchSiteBalance(c.Request.Context(), &site)
+	response.Success(c, balanceInfo)
+}
+
+// RefreshAllBalances fetches balances for all enabled sites that support balance fetching
+func (s *Server) RefreshAllBalances(c *gin.Context) {
+	results, err := s.BalanceService.RefreshAllBalancesManual(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, results)
 }

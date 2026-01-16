@@ -40,13 +40,14 @@ const (
 
 // ProxyServer represents the proxy server
 type ProxyServer struct {
-	keyProvider       *keypool.KeyProvider
-	groupManager      *services.GroupManager
-	subGroupManager   *services.SubGroupManager
-	settingsManager   *config.SystemSettingsManager
-	channelFactory    *channel.Factory
-	requestLogService *services.RequestLogService
-	encryptionSvc     encryption.Service
+	keyProvider          *keypool.KeyProvider
+	groupManager         *services.GroupManager
+	subGroupManager      *services.SubGroupManager
+	settingsManager      *config.SystemSettingsManager
+	channelFactory       *channel.Factory
+	requestLogService    *services.RequestLogService
+	encryptionSvc        encryption.Service
+	dynamicWeightManager *services.DynamicWeightManager // Optional dynamic weight manager for adaptive load balancing
 }
 
 // retryContext holds the retry state for a single request
@@ -535,14 +536,30 @@ func NewProxyServer(
 	encryptionSvc encryption.Service,
 ) (*ProxyServer, error) {
 	return &ProxyServer{
-		keyProvider:       keyProvider,
-		groupManager:      groupManager,
-		subGroupManager:   subGroupManager,
-		settingsManager:   settingsManager,
-		channelFactory:    channelFactory,
-		requestLogService: requestLogService,
-		encryptionSvc:     encryptionSvc,
+		keyProvider:          keyProvider,
+		groupManager:         groupManager,
+		subGroupManager:      subGroupManager,
+		settingsManager:      settingsManager,
+		channelFactory:       channelFactory,
+		requestLogService:    requestLogService,
+		encryptionSvc:        encryptionSvc,
+		dynamicWeightManager: nil, // Set via SetDynamicWeightManager if needed
 	}, nil
+}
+
+// SetDynamicWeightManager sets the dynamic weight manager for adaptive load balancing.
+// This is optional - if not set, static weights will be used.
+func (ps *ProxyServer) SetDynamicWeightManager(dwm *services.DynamicWeightManager) {
+	ps.dynamicWeightManager = dwm
+	// Also set it on the sub-group manager for consistent behavior
+	if ps.subGroupManager != nil {
+		ps.subGroupManager.SetDynamicWeightManager(dwm)
+	}
+}
+
+// GetDynamicWeightManager returns the dynamic weight manager if set.
+func (ps *ProxyServer) GetDynamicWeightManager() *services.DynamicWeightManager {
+	return ps.dynamicWeightManager
 }
 
 // HandleProxy is the main entry point for proxy requests, refactored based on the stable .bak logic.
@@ -883,17 +900,20 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		logrus.Debug("Removed Accept-Encoding header for /models endpoint to avoid gzip compression")
 	}
 
-	// Apply model redirection
-	finalBodyBytes, originalModel, err := channelHandler.ApplyModelRedirect(req, bodyBytes, group)
+	// Apply model redirection with index tracking for dynamic weight metrics
+	finalBodyBytes, originalModel, targetIdx, err := channelHandler.ApplyModelRedirectWithIndex(req, bodyBytes, group)
 	if err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
 		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 
-	// Store original model in context for logging if redirect occurred
+	// Store original model and target index in context for logging and dynamic weight metrics
 	if originalModel != "" {
 		c.Set("original_model", originalModel)
+		if targetIdx >= 0 {
+			c.Set("model_redirect_target_index", targetIdx)
+		}
 	}
 
 	// Update request body if it was modified by redirection
@@ -1485,17 +1505,20 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		logrus.Debug("Removed Accept-Encoding header for /models endpoint to avoid gzip compression")
 	}
 
-	// Apply model redirection for aggregate sub-group before modifying the request
-	redirectedBody, originalModel, err := subGroupChannelHandler.ApplyModelRedirect(req, finalBodyBytes, group)
+	// Apply model redirection for aggregate sub-group with index tracking for dynamic weight metrics
+	redirectedBody, originalModel, targetIdx, err := subGroupChannelHandler.ApplyModelRedirectWithIndex(req, finalBodyBytes, group)
 	if err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
 		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 		return
 	}
 
-	// Store original model in context for logging if redirect occurred
+	// Store original model and target index in context for logging and dynamic weight metrics
 	if originalModel != "" {
 		c.Set("original_model", originalModel)
+		if targetIdx >= 0 {
+			c.Set("model_redirect_target_index", targetIdx)
+		}
 	}
 
 	if !bytes.Equal(redirectedBody, finalBodyBytes) {
@@ -2020,5 +2043,68 @@ func (ps *ProxyServer) logRequest(
 
 	if err := ps.requestLogService.Record(logEntry); err != nil {
 		logrus.Errorf("Failed to record request log: %v", err)
+	}
+
+	// Record dynamic weight metrics for aggregate sub-groups
+	// Only record for final requests (not retries) to avoid double counting.
+	// Design note: This "final-only" approach means intermediate failed sub-group attempts
+	// are not penalized in dynamic weights. This is intentional to avoid over-penalizing
+	// sub-groups in aggregate retry scenarios where the overall request succeeds.
+	// If more aggressive failure tracking is needed, consider recording each sub-group
+	// attempt separately (would require tracking failed sub-group IDs in retry context).
+	if ps.dynamicWeightManager != nil && requestType == models.RequestTypeFinal {
+		ps.recordDynamicWeightMetrics(c, originalGroup, group, logEntry.IsSuccess)
+	}
+}
+
+// recordDynamicWeightMetrics records success/failure metrics for dynamic weight calculation.
+// This is called after each request to update the health scores for sub-groups and model redirects.
+//
+// Performance note: These metric writes run inline on the request goroutine. If Redis is slow
+// or unavailable, it can add tail latency or reduce throughput. The current implementation
+// prioritizes simplicity and correctness. For production deployments with strict latency SLAs,
+// consider async/buffering and ensure strict client timeouts in the store implementation.
+func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup, group *models.Group, isSuccess bool) {
+	if ps.dynamicWeightManager == nil {
+		return
+	}
+
+	// Record sub-group metrics for aggregate groups
+	if originalGroup != nil && originalGroup.GroupType == "aggregate" && originalGroup.ID != group.ID {
+		if isSuccess {
+			ps.dynamicWeightManager.RecordSubGroupSuccess(originalGroup.ID, group.ID)
+		} else {
+			ps.dynamicWeightManager.RecordSubGroupFailure(originalGroup.ID, group.ID)
+		}
+
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group_id": originalGroup.ID,
+			"sub_group_id":       group.ID,
+			"is_success":         isSuccess,
+		}).Debug("Recorded dynamic weight metrics for sub-group")
+	}
+
+	// Record model redirect metrics if a redirect occurred
+	// Check if original_model was set in context (indicates redirect happened)
+	if originalModel, exists := c.Get("original_model"); exists {
+		if originalModelStr, ok := originalModel.(string); ok && originalModelStr != "" {
+			// Get the selected target index from context if available
+			if targetIdx, exists := c.Get("model_redirect_target_index"); exists {
+				if targetIdxInt, ok := targetIdx.(int); ok && targetIdxInt >= 0 {
+					if isSuccess {
+						ps.dynamicWeightManager.RecordModelRedirectSuccess(group.ID, originalModelStr, targetIdxInt)
+					} else {
+						ps.dynamicWeightManager.RecordModelRedirectFailure(group.ID, originalModelStr, targetIdxInt)
+					}
+
+					logrus.WithFields(logrus.Fields{
+						"group_id":      group.ID,
+						"source_model":  originalModelStr,
+						"target_index":  targetIdxInt,
+						"is_success":    isSuccess,
+					}).Debug("Recorded dynamic weight metrics for model redirect")
+				}
+			}
+		}
 	}
 }

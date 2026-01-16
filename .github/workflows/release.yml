@@ -1,0 +1,145 @@
+name: Release Build
+
+# Workflow-level permissions: read-only by default
+# Individual jobs elevate permissions as needed (least privilege principle)
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - "*"
+
+env:
+  GO_VERSION: "1.25.6"
+  NODE_VERSION: "22.x"
+
+jobs:
+  # Build frontend once and share across all platform builds
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      # NOTE: Using version tags instead of commit SHAs for official GitHub Actions.
+      # While SHA pinning is more secure, version tags provide better maintainability
+      # for this project. Official actions are trusted and version tags are stable.
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: "web/package-lock.json"
+
+      - name: Build Frontend
+        run: npm ci && VITE_VERSION=${{ github.ref_name }} npm run build
+        working-directory: ./web
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: frontend-dist
+          path: web/dist
+          retention-days: 1
+
+  # Build all platform binaries
+  build-binaries:
+    needs: build-frontend
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            goamd64: v2
+            suffix: linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            goamd64: v2
+            suffix: macos-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            suffix: macos-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            goamd64: v2
+            suffix: windows-amd64
+            ext: .exe
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: frontend-dist
+          path: web/dist
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build binary
+        shell: bash
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOAMD64: ${{ matrix.goamd64 }}
+        run: |
+          go mod download
+          go build \
+            -tags go_json \
+            -trimpath \
+            -buildvcs=false \
+            -ldflags="-s -w -X gpt-load/internal/version.Version=${{ github.ref_name }}" \
+            -o gpt-load-${{ matrix.suffix }}${{ matrix.ext }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: gpt-load-${{ matrix.suffix }}
+          path: gpt-load-${{ matrix.suffix }}${{ matrix.ext }}
+          retention-days: 1
+
+  # Create release with all binaries
+  release:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: gpt-load-*
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find artifacts -type f -name "gpt-load-*" -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2.5.0
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release/*
+          draft: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

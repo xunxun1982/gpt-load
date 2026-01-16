@@ -46,6 +46,18 @@ export default {
   proxyUrlPlaceholder: "http://127.0.0.1:7890",
   proxyUrlTooltip: "チェックインリクエスト用のプロキシURL、HTTP/SOCKS5対応",
 
+  // Bypass settings
+  bypassMethod: "バイパス方式",
+  bypassMethodNone: "なし",
+  bypassMethodStealth: "ステルス (TLS指紋)",
+  stealthBypassHint: "⚠️ ステルスバイパスにはCookie認証が必要です",
+  stealthCookieHint:
+    "💡 Cloudflareバイパスのため、ブラウザからCF Cookies（cf_clearance、acw_tcなど）を含めてください",
+  stealthRequiresCookieAuth: "ステルスバイパスにはCookie認証が必要です",
+  stealthRequiresCookieValue: "ステルスバイパスにはCookie値が必要です",
+  missingCFCookies:
+    "Cloudflareバイパスに必要なCF Cookiesが不足しています。次のいずれかが必要：{cookies}",
+
   // Auth related
   authType: "認証方式",
   authValue: "認証情報",
@@ -53,6 +65,10 @@ export default {
   authValueEditHint: "空欄で既存の認証情報を維持",
   authTypeNone: "なし",
   authTypeAccessToken: "アクセストークン",
+  authTypeCookie: "Cookie",
+  authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
+  authTypeCookieHint:
+    "ブラウザからCookieを取得してください。session/tokenなどのフィールドを含めます。サイトがCloudflare保護を使用している場合は、cf_clearanceも含めてください。",
   hasAuth: "認証設定済み",
   noAuth: "認証なし",
 
@@ -138,6 +154,19 @@ export default {
   siteUpdated: "サイトを更新しました",
   siteDeleted: "サイトを削除しました",
 
+  // Backend check-in messages (for translation mapping)
+  backendMsg_checkInFailed: "チェックイン失敗",
+  backendMsg_checkInDisabled: "チェックイン無効",
+  backendMsg_missingCredentials: "認証情報がありません",
+  backendMsg_missingUserId: "ユーザーIDがありません",
+  backendMsg_unsupportedAuthType: "サポートされていない認証タイプ",
+  backendMsg_anyrouterRequiresCookie: "AnyrouterはCookie認証が必要です",
+  backendMsg_cloudflareChallenge: "Cloudflareチャレンジ、ブラウザからCookiesを更新してください",
+  backendMsg_alreadyCheckedIn: "本日チェックイン済み",
+  backendMsg_stealthRequiresCookie: "ステルスバイパスにはCookie認証が必要です",
+  backendMsg_missingCfCookies:
+    "CF Cookiesが不足しています。次のいずれかが必要: cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2、__cf_bm、_cfuvid",
+
   // Import/Export
   exportEncrypted: "暗号化エクスポート",
   exportPlain: "平文エクスポート",
@@ -162,4 +191,14 @@ export default {
   deleteAllUnboundPlaceholder: "DELETEと入力して確認",
   incorrectConfirmText: "確認テキストが正しくありません",
   noUnboundSites: "削除するバインドされていないサイトがありません",
+
+  // Balance
+  balance: "残高",
+  balanceTooltip: "クリックして残高を更新",
+  balanceNotSupported: "非対応",
+  refreshBalance: "残高更新",
+  refreshBalanceTooltip: "すべてのサイトの残高を更新",
+  refreshingBalance: "残高を更新中...",
+  balanceRefreshed: "残高更新完了",
+  balanceNotAvailable: "取得不可",
 };

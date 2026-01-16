@@ -68,6 +68,7 @@ type CreateSiteParams struct {
 	CustomCheckInURL string
 	UseProxy         bool
 	ProxyURL         string
+	BypassMethod     string
 
 	AuthType  string
 	AuthValue string
@@ -90,6 +91,7 @@ type UpdateSiteParams struct {
 	CustomCheckInURL *string
 	UseProxy         *bool
 	ProxyURL         *string
+	BypassMethod     *string
 
 	AuthType  *string
 	AuthValue *string
@@ -291,6 +293,7 @@ func (s *SiteService) siteToDTO(site *ManagedSite, boundGroupsMap map[uint][]Bou
 		CustomCheckInURL:          site.CustomCheckInURL,
 		UseProxy:                  site.UseProxy,
 		ProxyURL:                  site.ProxyURL,
+		BypassMethod:              site.BypassMethod,
 		AuthType:                  site.AuthType,
 		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
 		LastCheckInAt:             site.LastCheckInAt,
@@ -378,6 +381,7 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 		CustomCheckInURL: strings.TrimSpace(params.CustomCheckInURL),
 		UseProxy:         params.UseProxy,
 		ProxyURL:         strings.TrimSpace(params.ProxyURL),
+		BypassMethod:     normalizeBypassMethod(params.BypassMethod),
 		AuthType:         authType,
 		AuthValue:        encryptedAuth,
 	}
@@ -510,6 +514,9 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 	}
 	if params.ProxyURL != nil {
 		site.ProxyURL = strings.TrimSpace(*params.ProxyURL)
+	}
+	if params.BypassMethod != nil {
+		site.BypassMethod = normalizeBypassMethod(*params.BypassMethod)
 	}
 
 	if err := s.db.WithContext(ctx).Save(&site).Error; err != nil {
@@ -721,6 +728,7 @@ func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDT
 		CustomCheckInURL: source.CustomCheckInURL,
 		UseProxy:         source.UseProxy,
 		ProxyURL:         source.ProxyURL,
+		BypassMethod:     source.BypassMethod,
 		AuthType:         source.AuthType,
 		AuthValue:        source.AuthValue,
 		// BoundGroupID is intentionally not copied
@@ -931,6 +939,7 @@ func (s *SiteService) toDTO(ctx context.Context, site *ManagedSite) *ManagedSite
 		CustomCheckInURL:          site.CustomCheckInURL,
 		UseProxy:                  site.UseProxy,
 		ProxyURL:                  site.ProxyURL,
+		BypassMethod:              site.BypassMethod,
 		AuthType:                  site.AuthType,
 		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
 		LastCheckInAt:             site.LastCheckInAt,
@@ -958,6 +967,20 @@ func normalizeAuthType(raw string) string {
 		return AuthTypeCookie
 	case strings.ToLower(AuthTypeNone), "":
 		return AuthTypeNone
+	default:
+		return ""
+	}
+}
+
+// normalizeBypassMethod normalizes the bypass method string.
+// Returns empty string for "none" or invalid values.
+func normalizeBypassMethod(raw string) string {
+	s := strings.TrimSpace(strings.ToLower(raw))
+	switch s {
+	case BypassMethodStealth:
+		return BypassMethodStealth
+	case BypassMethodNone, "":
+		return ""
 	default:
 		return ""
 	}
@@ -1044,16 +1067,17 @@ type SiteExportInfo struct {
 	CustomCheckInURL   string `json:"custom_checkin_url"`
 	UseProxy           bool   `json:"use_proxy"`
 	ProxyURL           string `json:"proxy_url"`
+	BypassMethod       string `json:"bypass_method"`
 	AuthType           string `json:"auth_type"`
 	AuthValue          string `json:"auth_value,omitempty"` // Encrypted or plain based on export mode
 }
 
 // SiteExportData represents the complete export data structure
 type SiteExportData struct {
-	Version        string                `json:"version"`
-	ExportedAt     string                `json:"exported_at"`
-	AutoCheckin    *AutoCheckinConfig    `json:"auto_checkin,omitempty"`
-	Sites          []SiteExportInfo      `json:"sites"`
+	Version     string             `json:"version"`
+	ExportedAt  string             `json:"exported_at"`
+	AutoCheckin *AutoCheckinConfig `json:"auto_checkin,omitempty"`
+	Sites       []SiteExportInfo   `json:"sites"`
 }
 
 // ExportSites exports all managed sites with optional auto-checkin config
@@ -1097,6 +1121,7 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 			CustomCheckInURL:   site.CustomCheckInURL,
 			UseProxy:           site.UseProxy,
 			ProxyURL:           site.ProxyURL,
+			BypassMethod:       site.BypassMethod,
 			AuthType:           site.AuthType,
 		}
 
@@ -1260,6 +1285,7 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			CustomCheckInURL: strings.TrimSpace(siteInfo.CustomCheckInURL),
 			UseProxy:         siteInfo.UseProxy,
 			ProxyURL:         strings.TrimSpace(siteInfo.ProxyURL),
+			BypassMethod:     normalizeBypassMethod(siteInfo.BypassMethod),
 			AuthType:         authType,
 			AuthValue:        encryptedAuth,
 		}

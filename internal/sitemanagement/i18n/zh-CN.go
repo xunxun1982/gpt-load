@@ -13,4 +13,12 @@ var MessagesZhCN = map[string]string{
 	"site_management.validation.deterministic_time_required":   "确定性模式下需要设置固定时间",
 	"site_management.validation.duplicate_time":                "签到时间「{{.time}}」重复",
 	"site_management.validation.schedule_times_required":       "至少需要设置一个签到时间",
+
+	// Check-in messages
+	"site_management.checkin.failed":                    "签到失败",
+	"site_management.checkin.disabled":                  "签到已禁用",
+	"site_management.checkin.stealth_requires_cookie":   "隐身绕过需要使用Cookie认证",
+	"site_management.checkin.missing_cf_cookies":        "缺少CF Cookies，需要以下之一：{{.cookies}}",
+	"site_management.checkin.cloudflare_challenge":      "Cloudflare验证，请从浏览器更新Cookies",
+	"site_management.checkin.anyrouter_requires_cookie": "Anyrouter需要使用Cookie认证",
 }

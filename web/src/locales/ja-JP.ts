@@ -450,6 +450,8 @@ export default {
     modelRedirectWeight: "重み",
     modelRedirectWeightTooltip:
       "値が大きいほど選択確率が高くなり、重み比率でトラフィックを分配（デフォルト：100、0で無効化）",
+    modelRedirectWeightPercentageTooltip:
+      "現在有効なターゲットの重みに基づいて計算されたトラフィック分配率",
     modelRedirectTargets: "ターゲットモデル",
     modelRedirectAddTarget: "ターゲットを追加",
     strictMode: "厳格",
@@ -509,6 +511,11 @@ export default {
     modelRedirectInvalidFormat:
       "モデルリダイレクトルールのキーと値はすべて文字列である必要があります",
     modelRedirectEmptyModel: "モデル名を空にすることはできません",
+    dynamicWeight: "動的重み",
+    effectiveWeight: "有効重み",
+    healthScore: "健康度",
+    successRate: "成功率",
+    requestCount: "リクエスト数",
     never: "使用なし",
     daysAgo: "{days}日前",
     hoursAgo: "{hours}時間前",
@@ -588,6 +595,9 @@ export default {
     redirectSuffixPlaceholder: "サフィックス（例: -2025）",
     lowercaseRedirect: "リダイレクト先のモデル名を小文字に統一し、管理とマッチングをしやすくします",
     lowercaseRedirectShort: "小文字",
+    autoPrefix:
+      "モデル名に基づいてブランド/ベンダープレフィックスを自動追加（例: deepseek/、openai/、google/）",
+    autoPrefixShort: "自動プレフィックス",
     selectAll: "すべて選択",
     addToRedirectRules: "リダイレクトルールに追加",
     noRedirectRulesAdded: "リダイレクトルールが選択されていません",
@@ -631,6 +641,14 @@ export default {
     statusDisabled: "無効",
     statusUnavailable: "利用不可",
     statusGroupDisabled: "グループが無効",
+    dynamicWeight: "動的重み",
+    baseWeight: "基本重み",
+    effectiveWeight: "有効重み",
+    healthScore: "健康度",
+    successRate: "成功率",
+    requestCount: "リクエスト数",
+    lastFailure: "最後の失敗",
+    lastSuccess: "最後の成功",
   },
   logs: {
     title: "ログ",

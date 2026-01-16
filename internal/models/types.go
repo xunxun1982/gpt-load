@@ -94,11 +94,24 @@ type GroupSubGroup struct {
 
 // SubGroupInfo represents sub-group information for API responses.
 type SubGroupInfo struct {
-	Group       Group `json:"group"`
-	Weight      int   `json:"weight"`
-	TotalKeys   int64 `json:"total_keys"`
-	ActiveKeys  int64 `json:"active_keys"`
-	InvalidKeys int64 `json:"invalid_keys"`
+	Group             Group              `json:"group"`
+	Weight            int                `json:"weight"`
+	TotalKeys         int64              `json:"total_keys"`
+	ActiveKeys        int64              `json:"active_keys"`
+	InvalidKeys       int64              `json:"invalid_keys"`
+	DynamicWeight     *DynamicWeightInfo `json:"dynamic_weight,omitempty"` // Dynamic weight info (nil if not enabled)
+}
+
+// DynamicWeightInfo represents dynamic weight information for display.
+// This is returned by API endpoints for frontend display.
+type DynamicWeightInfo struct {
+	BaseWeight      int     `json:"base_weight"`      // Original configured weight
+	HealthScore     float64 `json:"health_score"`     // Health score (0.0 - 1.0)
+	EffectiveWeight int     `json:"effective_weight"` // Calculated effective weight
+	SuccessRate     float64 `json:"success_rate"`     // Success rate percentage (0-100)
+	RequestCount    int64   `json:"request_count"`    // Total request count
+	LastFailureAt   *string `json:"last_failure_at"`  // Last failure timestamp (ISO8601, nil if never failed)
+	LastSuccessAt   *string `json:"last_success_at"`  // Last success timestamp (ISO8601, nil if never succeeded)
 }
 
 // ParentAggregateGroupInfo represents parent aggregate group information for API responses.

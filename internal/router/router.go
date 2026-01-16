@@ -2,6 +2,7 @@ package router
 
 import (
 	"embed"
+	"gpt-load/internal/centralizedmgmt"
 	"gpt-load/internal/handler"
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/middleware"
@@ -44,6 +45,8 @@ func NewRouter(
 	configManager types.ConfigManager,
 	groupManager *services.GroupManager,
 	requestLogService *services.RequestLogService,
+	hubHandler *handler.HubHandler,
+	hubAccessKeyService *centralizedmgmt.HubAccessKeyService,
 	buildFS embed.FS,
 	indexPage []byte,
 ) *gin.Engine {
@@ -68,6 +71,7 @@ func NewRouter(
 	registerSystemRoutes(router, serverHandler)
 	registerAPIRoutes(router, serverHandler, configManager)
 	registerProxyRoutes(router, proxyServer, groupManager, serverHandler, requestLogService)
+	RegisterHubRoutes(router, hubHandler, hubAccessKeyService, configManager)
 	registerFrontendRoutes(router, buildFS, indexPage)
 
 	return router
@@ -108,6 +112,12 @@ func registerPublicAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Server
 func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Server, configManager types.ConfigManager) {
 	api.GET("/channel-types", serverHandler.CommonHandler.GetChannelTypes)
 
+	// Model utilities
+	models := api.Group("/models")
+	{
+		models.POST("/apply-brand-prefix", serverHandler.CommonHandler.ApplyBrandPrefix)
+	}
+
 	groups := api.Group("/groups")
 	{
 		groups.POST("", serverHandler.CreateGroup)
@@ -128,6 +138,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		groups.DELETE("/:id/sub-groups/:subGroupId", serverHandler.DeleteSubGroup)
 		groups.GET("/:id/parent-aggregate-groups", serverHandler.GetParentAggregateGroups)
 		groups.GET("/:id/models", serverHandler.GetGroupModels)
+		groups.GET("/:id/model-redirect-weights", serverHandler.GetModelRedirectDynamicWeights)
 
 		// Child group routes
 		groups.POST("/:id/child-groups", serverHandler.CreateChildGroup)
@@ -206,6 +217,8 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		siteMgmt.POST("/sites/:id/record-checkin-page-opened", serverHandler.RecordCheckinPageOpened)
 		siteMgmt.DELETE("/sites/:id/binding", serverHandler.UnbindSiteFromGroup)
 		siteMgmt.GET("/sites/:id/bound-group", serverHandler.GetBoundGroupInfo)
+		siteMgmt.GET("/sites/:id/balance", serverHandler.FetchSiteBalance)
+		siteMgmt.POST("/refresh-balances", serverHandler.RefreshAllBalances)
 
 		// Bulk operations
 		siteMgmt.GET("/unbound-count", serverHandler.CountUnboundSites)

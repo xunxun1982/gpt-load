@@ -107,6 +107,8 @@ type GroupService struct {
 	// Note: SyncGroupEnabledToSiteCallback removed - group disable does NOT cascade to site
 	SyncChildGroupsEnabledCallback       func(ctx context.Context, parentGroupID uint, enabled bool) error // Sync enabled status to child groups
 	InvalidateChildGroupsCacheCallback   func()                                                            // Invalidate child groups cache after updating a child group
+	OnGroupDeleted                       func(groupID uint, isAggregateGroup bool)                         // Soft-delete health metrics when group is deleted
+	InvalidateHubModelPoolCacheCallback  func()                                                            // Invalidate Hub model pool cache when groups change
 }
 
 // NewGroupService constructs a GroupService.
@@ -382,12 +384,17 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 	return &group, nil
 }
 
-// invalidateGroupListCache clears the group list cache
+// invalidateGroupListCache clears the group list cache and notifies Hub service
 func (s *GroupService) invalidateGroupListCache() {
 	s.groupListCacheMu.Lock()
 	s.groupListCache = nil
 	s.groupListCacheMu.Unlock()
 	logrus.Debug("Group list cache invalidated")
+
+	// Invalidate Hub model pool cache when groups change
+	if s.InvalidateHubModelPoolCacheCallback != nil {
+		s.InvalidateHubModelPoolCacheCallback()
+	}
 }
 
 // InvalidateGroupListCache exposes group list cache invalidation for other packages (e.g., handlers)
@@ -1155,6 +1162,14 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	// should immediately reflect in the UI without waiting for cache expiration.
 	if s.InvalidateChildGroupsCacheCallback != nil {
 		s.InvalidateChildGroupsCacheCallback()
+	}
+
+	// Soft-delete health metrics for the deleted group
+	// For aggregate groups, this deletes all sub-group metrics
+	// For standard groups, this deletes model redirect metrics
+	if s.OnGroupDeleted != nil {
+		isAggregateGroup := group.GroupType == "aggregate"
+		s.OnGroupDeleted(id, isAggregateGroup)
 	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{

@@ -87,7 +87,19 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.11.1 migration - Migrate V1 redirect rules to V2 format and clear V1
-	return V1_11_1_MigrateModelRedirectV1ToV2(db)
+	if err := V1_11_1_MigrateModelRedirectV1ToV2(db); err != nil {
+		return err
+	}
+	// Run v1.12.0 migration - Create hub_access_keys table for centralized API management
+	if err := V1_12_0_CreateHubAccessKeys(db); err != nil {
+		return err
+	}
+	// Run v1.13.0 migration - Create Hub priority tables for priority-based routing
+	if err := V1_13_0_CreateHubPriorityTables(db); err != nil {
+		return err
+	}
+	// Run v1.14.0 migration - Add bypass_method column for Cloudflare bypass support
+	return V1_14_0_AddBypassMethodColumn(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

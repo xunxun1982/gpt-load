@@ -450,6 +450,8 @@ export default {
     modelRedirectWeight: "Weight",
     modelRedirectWeightTooltip:
       "Higher value means higher selection probability, traffic distributed by weight ratio (default: 100, set to 0 to disable)",
+    modelRedirectWeightPercentageTooltip:
+      "Traffic distribution percentage calculated based on currently enabled targets",
     modelRedirectTargets: "Target Models",
     modelRedirectAddTarget: "Add Target",
     strictMode: "Strict",
@@ -510,6 +512,11 @@ export default {
     modelRedirectInvalidJson: "Invalid JSON format for model redirect rules",
     modelRedirectInvalidFormat: "Model redirect rule keys and values must all be strings",
     modelRedirectEmptyModel: "Model name cannot be empty",
+    dynamicWeight: "Dynamic Weight",
+    effectiveWeight: "Effective Weight",
+    healthScore: "Health Score",
+    successRate: "Success Rate",
+    requestCount: "Requests",
     never: "Never",
     daysAgo: "{days} days ago",
     hoursAgo: "{hours} hours ago",
@@ -590,6 +597,9 @@ export default {
     lowercaseRedirect:
       "Convert redirect target model names to lowercase for consistent naming and matching",
     lowercaseRedirectShort: "Lowercase",
+    autoPrefix:
+      "Automatically add brand/vendor prefix based on model name (e.g. deepseek/, openai/, google/)",
+    autoPrefixShort: "Auto Prefix",
     selectAll: "Select All",
     addToRedirectRules: "Add to Redirect Rules",
     noRedirectRulesAdded: "No redirect rules selected",
@@ -647,6 +657,14 @@ export default {
     statusDisabled: "Disabled",
     statusUnavailable: "Unavailable",
     statusGroupDisabled: "Group Disabled",
+    dynamicWeight: "Dynamic Weight",
+    baseWeight: "Base Weight",
+    effectiveWeight: "Effective Weight",
+    healthScore: "Health",
+    successRate: "Success Rate",
+    requestCount: "Requests",
+    lastFailure: "Last Failure",
+    lastSuccess: "Last Success",
   },
   logs: {
     title: "Logs",

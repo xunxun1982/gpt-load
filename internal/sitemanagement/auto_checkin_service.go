@@ -41,6 +41,9 @@ type AutoCheckinService struct {
 	// Using sync.Map for concurrent access without explicit locking.
 	proxyClients sync.Map
 
+	// Stealth client manager for TLS fingerprint spoofing to bypass Cloudflare
+	stealthClientMgr *StealthClientManager
+
 	stopCh       chan struct{}
 	rescheduleCh chan struct{}
 	runNowCh     chan struct{}
@@ -79,9 +82,10 @@ func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encrypt
 			Transport: transport,
 			Timeout:   20 * time.Second,
 		},
-		stopCh:       make(chan struct{}),
-		rescheduleCh: make(chan struct{}, 1),
-		runNowCh:     make(chan struct{}, 1),
+		stealthClientMgr: NewStealthClientManager(30 * time.Second),
+		stopCh:           make(chan struct{}),
+		rescheduleCh:     make(chan struct{}, 1),
+		runNowCh:         make(chan struct{}, 1),
 	}
 }
 
@@ -673,8 +677,8 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	}
 	site.UserID = userID
 
-	// Get HTTP client (with or without proxy based on site.UseProxy and site.ProxyURL)
-	client := s.getHTTPClient(site.UseProxy, site.ProxyURL)
+	// Get HTTP client based on bypass method and proxy settings
+	client := s.getCheckinHTTPClient(site)
 
 	res, err := provider.CheckIn(ctx, client, site, authValue)
 	if err != nil {
@@ -689,6 +693,23 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
 
 	return result
+}
+
+// getCheckinHTTPClient returns an HTTP client based on site's bypass method and proxy settings.
+// For stealth bypass method, uses TLS fingerprint spoofing client.
+// For normal requests, uses standard client with optional proxy.
+func (s *AutoCheckinService) getCheckinHTTPClient(site ManagedSite) *http.Client {
+	// Use stealth client for TLS fingerprint spoofing when explicitly enabled
+	if isStealthBypassMethod(site.BypassMethod) {
+		proxyURL := ""
+		if site.UseProxy {
+			proxyURL = strings.TrimSpace(site.ProxyURL)
+		}
+		return s.stealthClientMgr.GetClient(proxyURL)
+	}
+
+	// Use standard client with optional proxy
+	return s.getHTTPClient(site.UseProxy, site.ProxyURL)
 }
 
 // getHTTPClient returns an HTTP client, optionally configured with proxy from site settings.
@@ -902,6 +923,79 @@ func buildUserHeaders(userID string) map[string]string {
 	}
 }
 
+// knownWAFCookieNames lists known Cloudflare/WAF cookie names that indicate bypass capability.
+// At least one of these cookies should be present for stealth bypass to work.
+// IMPORTANT: This list is duplicated in frontend (SiteManagementPanel.vue).
+// Keep both lists in sync when adding/removing cookie names.
+var knownWAFCookieNames = []string{
+	"cf_clearance", // Cloudflare clearance cookie (most important)
+	"acw_tc",       // Alibaba Cloud WAF cookie
+	"cdn_sec_tc",   // CDN security cookie
+	"acw_sc__v2",   // Alibaba Cloud WAF v2 cookie
+	"__cf_bm",      // Cloudflare bot management
+	"_cfuvid",      // Cloudflare unique visitor ID
+}
+
+// parseCookieString parses a cookie string into a map.
+// Format: "key1=value1; key2=value2"
+func parseCookieString(cookieStr string) map[string]string {
+	result := make(map[string]string)
+	for _, part := range strings.Split(cookieStr, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(part, "=")
+		if idx > 0 {
+			key := strings.TrimSpace(part[:idx])
+			val := strings.TrimSpace(part[idx+1:])
+			result[key] = val
+		}
+	}
+	return result
+}
+
+// validateCFCookies checks if the cookie string contains required CF/WAF cookies for stealth bypass.
+// Returns list of missing cookie names if validation fails.
+func validateCFCookies(cookieStr string) []string {
+	if cookieStr == "" {
+		return knownWAFCookieNames
+	}
+
+	cookieMap := parseCookieString(cookieStr)
+
+	// Check if at least one WAF cookie is present
+	for _, name := range knownWAFCookieNames {
+		if _, ok := cookieMap[name]; ok {
+			return nil // Found at least one WAF cookie
+		}
+	}
+
+	// No WAF cookies found, return all as missing (user needs at least one)
+	return knownWAFCookieNames
+}
+
+// shouldUseStealthRequest checks if stealth request should be used based on site config.
+func shouldUseStealthRequest(site ManagedSite) bool {
+	return isStealthBypassMethod(site.BypassMethod)
+}
+
+// isCFChallengeResponse checks if an HTTP response indicates a Cloudflare challenge.
+// Returns true if the response appears to be a CF challenge page (403 with CF markers).
+// Note: Per Cloudflare docs, the official way is to check cf-mitigated header,
+// but we also check body content as fallback for compatibility with various setups.
+func isCFChallengeResponse(statusCode int, responseBody []byte) bool {
+	if statusCode != 403 {
+		return false
+	}
+	// Normalize to lowercase once for consistent case-insensitive matching
+	respLower := strings.ToLower(string(responseBody))
+	return strings.Contains(respLower, "cloudflare") ||
+		strings.Contains(respLower, "cf-") ||
+		strings.Contains(respLower, "challenge") ||
+		strings.Contains(respLower, "ray id")
+}
+
 func doJSONRequest(ctx context.Context, client *http.Client, method, fullURL string, headers map[string]string, body any) ([]byte, int, error) {
 	var bodyReader io.Reader
 	if body != nil {
@@ -943,6 +1037,55 @@ func doJSONRequest(ctx context.Context, client *http.Client, method, fullURL str
 	return data, resp.StatusCode, nil
 }
 
+// doStealthJSONRequest performs a JSON request with stealth headers for Cloudflare bypass.
+// It applies browser-like headers to help evade bot detection.
+func doStealthJSONRequest(ctx context.Context, client *http.Client, method, fullURL string, headers map[string]string, body any) ([]byte, int, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, 0, err
+		}
+		bodyReader = bytes.NewReader(b)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Extract base URL for Referer/Origin headers
+	baseURL := extractBaseURL(fullURL)
+
+	// Apply stealth headers first (browser-like fingerprint)
+	applyStealthHeaders(req, baseURL)
+
+	// Apply custom headers (may override stealth headers)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	// Set Content-Type for JSON body
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return data, resp.StatusCode, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	return data, resp.StatusCode, nil
+}
+
 func isAlreadyCheckedMessage(msg string) bool {
 	m := strings.ToLower(strings.TrimSpace(msg))
 	if m == "" {
@@ -976,21 +1119,43 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 		headers = make(map[string]string)
 	}
 
+	useStealth := shouldUseStealthRequest(site)
+
 	// Set auth header based on auth type
 	switch site.AuthType {
 	case AuthTypeAccessToken:
+		if useStealth {
+			return providerResult{Status: CheckinResultFailed, Message: "stealth bypass requires cookie auth"}, nil
+		}
 		if strings.TrimSpace(site.UserID) == "" {
 			return providerResult{Status: CheckinResultSkipped, Message: "missing user_id"}, nil
 		}
 		headers["Authorization"] = "Bearer " + authValue
 	case AuthTypeCookie:
+		if useStealth {
+			missingCookies := validateCFCookies(authValue)
+			if len(missingCookies) > 0 {
+				return providerResult{
+					Status:  CheckinResultFailed,
+					Message: fmt.Sprintf("missing cf cookies, need one of: %s", strings.Join(missingCookies, ", ")),
+				}, nil
+			}
+		}
 		headers["Cookie"] = authValue
 	default:
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
 	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/check_in")
-	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+
+	var data []byte
+	var statusCode int
+	var err error
+	if useStealth {
+		data, statusCode, err = doStealthJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+	} else {
+		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+	}
 
 	var resp struct {
 		Success bool        `json:"success"`
@@ -1013,6 +1178,11 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 			"response":    string(data),
 			"resp_msg":    resp.Message,
 		}).Debug("Veloera check-in HTTP error")
+
+		// Check for Cloudflare challenge response
+		if useStealth && isCFChallengeResponse(statusCode, data) {
+			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
+		}
 
 		// Check if response body contains "already checked" message
 		if isAlreadyCheckedMessage(resp.Message) {
@@ -1104,6 +1274,7 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 
 // anyrouterProvider handles check-in for Anyrouter sites.
 // Anyrouter uses POST /api/user/sign_in endpoint with cookie auth.
+// This provider uses stealth requests to bypass Cloudflare protection when enabled.
 type anyrouterProvider struct{}
 
 func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
@@ -1112,16 +1283,46 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
 	}
 	if site.AuthType != AuthTypeCookie {
-		return providerResult{Status: CheckinResultSkipped, Message: "anyrouter requires cookie auth"}, nil
+		return providerResult{Status: CheckinResultFailed, Message: "anyrouter requires cookie auth"}, nil
 	}
 
+	// Determine if stealth mode should be used
+	// Use stealth only when explicitly enabled via bypass_method setting
+	useStealth := isStealthBypassMethod(site.BypassMethod)
+
+	// Only validate CF cookies when stealth mode is explicitly enabled
+	if useStealth {
+		missingCookies := validateCFCookies(authValue)
+		if len(missingCookies) > 0 {
+			return providerResult{
+				Status:  CheckinResultFailed,
+				Message: fmt.Sprintf("missing cf cookies, need one of: %s", strings.Join(missingCookies, ", ")),
+			}, nil
+		}
+	}
+
+	// Use new-api-user header for anyrouter (required for API authentication)
 	headers := map[string]string{
 		"Cookie":           authValue,
 		"X-Requested-With": "XMLHttpRequest",
 	}
 
+	// Add user ID header if available (some anyrouter instances require this)
+	if uid := strings.TrimSpace(site.UserID); uid != "" {
+		headers["new-api-user"] = uid
+	}
+
 	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/sign_in")
-	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+
+	// Use stealth request for Cloudflare bypass when enabled
+	var data []byte
+	var statusCode int
+	var err error
+	if useStealth {
+		data, statusCode, err = doStealthJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+	} else {
+		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+	}
 
 	var resp struct {
 		Success bool   `json:"success"`
@@ -1140,6 +1341,11 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 			"response":    string(data),
 		}).Debug("Anyrouter check-in HTTP error")
 
+		// Check for Cloudflare challenge response
+		if isCFChallengeResponse(statusCode, data) {
+			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
+		}
+
 		if isAlreadyCheckedMessage(resp.Message) {
 			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
 		}
@@ -1153,6 +1359,7 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 	if resp.Message == "" && resp.Success {
 		return providerResult{Status: CheckinResultAlreadyChecked, Message: "already checked in"}, nil
 	}
+
 	if isAlreadyCheckedMessage(resp.Message) {
 		return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
 	}
@@ -1180,18 +1387,44 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 		headers = make(map[string]string)
 	}
 
+	useStealth := shouldUseStealthRequest(site)
+
 	// Set auth header based on auth type
 	switch site.AuthType {
 	case AuthTypeAccessToken:
+		// Stealth bypass requires cookie auth for CF cookies
+		if useStealth {
+			return providerResult{Status: CheckinResultFailed, Message: "stealth bypass requires cookie auth"}, nil
+		}
 		headers["Authorization"] = "Bearer " + authValue
 	case AuthTypeCookie:
+		// Validate CF cookies when stealth mode is enabled
+		if useStealth {
+			missingCookies := validateCFCookies(authValue)
+			if len(missingCookies) > 0 {
+				// Return detailed error message about missing CF cookies
+				return providerResult{
+					Status:  CheckinResultFailed,
+					Message: fmt.Sprintf("missing cf cookies, need one of: %s", strings.Join(missingCookies, ", ")),
+				}, nil
+			}
+		}
 		headers["Cookie"] = authValue
 	default:
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
 	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/checkin")
-	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+
+	// Use stealth request for Cloudflare bypass when bypass_method is "stealth"
+	var data []byte
+	var statusCode int
+	var err error
+	if useStealth {
+		data, statusCode, err = doStealthJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+	} else {
+		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+	}
 
 	var resp struct {
 		Success bool   `json:"success"`
@@ -1213,6 +1446,11 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 			"response":    string(data),
 			"resp_msg":    resp.Message,
 		}).Debug("NewAPI check-in HTTP error")
+
+		// Check for Cloudflare challenge response
+		if useStealth && isCFChallengeResponse(statusCode, data) {
+			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
+		}
 
 		// Check if response body contains "already checked" message
 		if isAlreadyCheckedMessage(resp.Message) {

@@ -1,7 +1,7 @@
 import vue from "@vitejs/plugin-vue";
-import { compression } from "vite-plugin-compression2";
 import path from "path";
 import { defineConfig, loadEnv } from "vite";
+import { compression } from "vite-plugin-compression2";
 
 /**
  * Vite Configuration
@@ -11,6 +11,7 @@ import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
   // Load environment variables
   const env = loadEnv(mode, path.resolve(__dirname, "../"), "");
+  const isProd = mode === "production";
 
   return {
     plugins: [
@@ -39,10 +40,28 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    // Production build: remove console and debugger statements
+    esbuild: isProd
+      ? {
+          drop: ["console", "debugger"],
+          legalComments: "none",
+        }
+      : undefined,
     // Build configuration
     build: {
+      // Target modern browsers for smaller bundle size
+      target: "esnext",
       outDir: "dist",
       assetsDir: "assets",
+      // Use esbuild for faster minification (default in Vite)
+      minify: "esbuild",
+      // Enable CSS minification and code splitting
+      cssMinify: true,
+      cssCodeSplit: true,
+      // Disable sourcemap in production for smaller output
+      sourcemap: false,
+      // Skip compressed size reporting for faster builds
+      reportCompressedSize: false,
       rollupOptions: {
         output: {
           /**
@@ -57,6 +76,15 @@ export default defineConfig(({ mode }) => {
             "naive-ui": ["naive-ui"],
             vendor: ["axios", "@vueuse/core", "@vicons/ionicons5"],
           },
+          // Optimize chunk file names for better caching
+          chunkFileNames: "assets/[name]-[hash].js",
+          entryFileNames: "assets/[name]-[hash].js",
+          assetFileNames: "assets/[name]-[hash].[ext]",
+        },
+        // Tree-shaking optimization
+        treeshake: {
+          moduleSideEffects: false,
+          propertyReadSideEffects: false,
         },
       },
       /**

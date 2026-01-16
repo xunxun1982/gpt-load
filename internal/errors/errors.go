@@ -58,6 +58,26 @@ func NewAPIErrorWithUpstream(statusCode int, code string, upstreamMessage string
 	}
 }
 
+// NewValidationError creates a validation error with a custom message.
+func NewValidationError(message string) *APIError {
+	return NewAPIError(ErrValidation, message)
+}
+
+// NewAuthenticationError creates an authentication error with a custom message.
+func NewAuthenticationError(message string) *APIError {
+	return NewAPIError(ErrUnauthorized, message)
+}
+
+// NewNotFoundError creates a not found error with a custom message.
+func NewNotFoundError(message string) *APIError {
+	return NewAPIError(ErrResourceNotFound, message)
+}
+
+// NewForbiddenError creates a forbidden error with a custom message.
+func NewForbiddenError(message string) *APIError {
+	return NewAPIError(ErrForbidden, message)
+}
+
 // ParseDBError intelligently converts a GORM error into a standard APIError.
 func ParseDBError(err error) *APIError {
 	if err == nil {

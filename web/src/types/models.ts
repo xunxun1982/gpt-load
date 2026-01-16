@@ -66,6 +66,36 @@ export interface SubGroupConfig {
   weight: number;
 }
 
+// Dynamic weight information for display
+export interface DynamicWeightInfo {
+  base_weight: number;
+  health_score: number;
+  effective_weight: number;
+  success_rate: number;
+  request_count: number;
+  last_failure_at?: string | null;
+  last_success_at?: string | null;
+}
+
+// Model redirect target with dynamic weight info
+export interface ModelRedirectTargetWeight {
+  model: string;
+  base_weight: number;
+  effective_weight: number;
+  health_score: number;
+  success_rate: number;
+  request_count: number;
+  last_failure_at?: string | null;
+  last_success_at?: string | null;
+  enabled: boolean;
+}
+
+// Model redirect dynamic weight response
+export interface ModelRedirectDynamicWeight {
+  source_model: string;
+  targets: ModelRedirectTargetWeight[];
+}
+
 // Sub-group information (used for display)
 export interface SubGroupInfo {
   group: Group;
@@ -73,6 +103,7 @@ export interface SubGroupInfo {
   total_keys: number;
   active_keys: number;
   invalid_keys: number;
+  dynamic_weight?: DynamicWeightInfo | null;
 }
 
 // Parent aggregate group information (used for display)

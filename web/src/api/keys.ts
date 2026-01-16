@@ -449,4 +449,14 @@ export const keysApi = {
     const res = await http.get(`/groups/${groupId}/bound-site`);
     return res.data;
   },
+
+  // Get model redirect dynamic weights for a group
+  async getModelRedirectDynamicWeights(
+    groupId: number
+  ): Promise<import("@/types/models").ModelRedirectDynamicWeight[]> {
+    const res = await http.get(`/groups/${groupId}/model-redirect-weights`, {
+      hideMessage: true,
+    });
+    return res.data || [];
+  },
 };

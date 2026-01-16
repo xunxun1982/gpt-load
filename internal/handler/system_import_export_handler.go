@@ -22,12 +22,14 @@ import (
 )
 
 // SystemExportData represents the data structure for system-wide export.
+// Note: This type mirrors services.SystemExportData for JSON binding in handlers.
 type SystemExportData struct {
-	Version        string                        `json:"version"`
-	ExportedAt     string                        `json:"exported_at"`
-	SystemSettings map[string]string             `json:"system_settings"`
-	Groups         []GroupExportData             `json:"groups"`
-	ManagedSites   *ManagedSitesExportData       `json:"managed_sites,omitempty"`
+	Version        string                           `json:"version"`
+	ExportedAt     string                           `json:"exported_at"`
+	SystemSettings map[string]string                `json:"system_settings"`
+	Groups         []GroupExportData                `json:"groups"`
+	ManagedSites   *ManagedSitesExportData          `json:"managed_sites,omitempty"`
+	HubAccessKeys  []services.HubAccessKeyExportInfo `json:"hub_access_keys,omitempty"`
 }
 
 // ManagedSitesExportData represents exported managed sites data for handler
@@ -157,11 +159,33 @@ func (s *Server) ExportAll(c *gin.Context) {
 	logrus.Debugf("System export via new service: Total %d keys exported across %d groups",
 		totalKeys, len(systemData.Groups))
 
+	// Convert HubAccessKeys; when plain mode, decrypt key values
+	hubAccessKeys := systemData.HubAccessKeys
+	if exportMode == "plain" && len(hubAccessKeys) > 0 {
+		decryptedKeys := make([]services.HubAccessKeyExportInfo, 0, len(hubAccessKeys))
+		for _, key := range hubAccessKeys {
+			kv := key.KeyValue
+			if dec, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
+				kv = dec
+			} else {
+				logrus.WithError(derr).Debugf("Failed to decrypt hub access key %s during plain export, keeping original value", key.Name)
+			}
+			decryptedKeys = append(decryptedKeys, services.HubAccessKeyExportInfo{
+				Name:          key.Name,
+				KeyValue:      kv,
+				AllowedModels: key.AllowedModels,
+				Enabled:       key.Enabled,
+			})
+		}
+		hubAccessKeys = decryptedKeys
+	}
+
 	exportData := SystemExportData{
 		Version:        systemData.Version,
 		ExportedAt:     systemData.ExportedAt,
 		SystemSettings: systemData.SystemSettings,
 		Groups:         groupExports,
+		HubAccessKeys:  hubAccessKeys,
 	}
 
 	// Convert managed sites if present
@@ -239,10 +263,11 @@ func (s *Server) ExportAll(c *gin.Context) {
 
 // SystemImportData represents the data structure for system-wide import.
 type SystemImportData struct {
-	Version        string                  `json:"version"`
-	SystemSettings map[string]string       `json:"system_settings"`
-	Groups         []GroupExportData       `json:"groups"`
-	ManagedSites   *ManagedSitesExportData `json:"managed_sites,omitempty"`
+	Version        string                           `json:"version"`
+	SystemSettings map[string]string                `json:"system_settings"`
+	Groups         []GroupExportData                `json:"groups"`
+	ManagedSites   *ManagedSitesExportData          `json:"managed_sites,omitempty"`
+	HubAccessKeys  []services.HubAccessKeyExportInfo `json:"hub_access_keys,omitempty"`
 }
 
 // ImportAll imports all system data (system settings and all groups).
@@ -305,12 +330,41 @@ outer:
 		}
 	}
 
+	// Convert HubAccessKeys; if input is plaintext, encrypt key values
+	// NOTE: Keys that fail encryption are silently skipped with warning log.
+	// This is consistent with regular key import behavior and avoids failing
+	// the entire import due to a single problematic key. The warning log
+	// provides visibility for debugging. Adding skipped count to response
+	// would require API changes and is deferred for future enhancement.
+	// AI Review: Keeping silent skip behavior for consistency with existing patterns.
+	hubAccessKeys := importData.HubAccessKeys
+	if inputIsPlain && len(hubAccessKeys) > 0 {
+		encryptedKeys := make([]services.HubAccessKeyExportInfo, 0, len(hubAccessKeys))
+		for _, key := range hubAccessKeys {
+			kv := key.KeyValue
+			if enc, e := s.EncryptionSvc.Encrypt(kv); e == nil {
+				kv = enc
+			} else {
+				logrus.WithError(e).Warnf("Failed to encrypt hub access key %s during import, skipping", key.Name)
+				continue
+			}
+			encryptedKeys = append(encryptedKeys, services.HubAccessKeyExportInfo{
+				Name:          key.Name,
+				KeyValue:      kv,
+				AllowedModels: key.AllowedModels,
+				Enabled:       key.Enabled,
+			})
+		}
+		hubAccessKeys = encryptedKeys
+	}
+
 	// Convert handler format to service format for unified import
 	serviceImportData := &services.SystemExportData{
 		Version:        importData.Version,
 		ExportedAt:     "", // Not needed for import
 		SystemSettings: importData.SystemSettings,
 		Groups:         make([]services.GroupExportData, 0, len(importData.Groups)),
+		HubAccessKeys:  hubAccessKeys,
 	}
 
 	// Convert groups to service format

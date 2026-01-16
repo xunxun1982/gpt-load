@@ -40,6 +40,8 @@ type Server struct {
 	SiteService                   *sitemanagement.SiteService
 	AutoCheckinService            *sitemanagement.AutoCheckinService
 	BindingService                *sitemanagement.BindingService
+	BalanceService                *sitemanagement.BalanceService // Balance fetching service
+	DynamicWeightManager          *services.DynamicWeightManager // Dynamic weight manager for adaptive load balancing
 }
 
 // NewServerParams defines the dependencies for the NewServer constructor.
@@ -65,6 +67,8 @@ type NewServerParams struct {
 	SiteService                *sitemanagement.SiteService
 	AutoCheckinService         *sitemanagement.AutoCheckinService
 	BindingService             *sitemanagement.BindingService
+	BalanceService             *sitemanagement.BalanceService // Balance fetching service
+	DynamicWeightManager       *services.DynamicWeightManager // Dynamic weight manager for adaptive load balancing
 }
 
 // NewServer creates a new handler instance with dependencies injected by dig.
@@ -90,6 +94,8 @@ func NewServer(params NewServerParams) *Server {
 		SiteService:                   params.SiteService,
 		AutoCheckinService:            params.AutoCheckinService,
 		BindingService:                params.BindingService,
+		BalanceService:                params.BalanceService,
+		DynamicWeightManager:          params.DynamicWeightManager,
 	}
 
 	// Set binding callbacks to avoid circular dependency between services and sitemanagement packages

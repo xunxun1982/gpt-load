@@ -65,7 +65,7 @@ build-darwin-arm64: ## Build for macOS ARM64
 .PHONY: run
 run: ## Build frontend and run server
 	@echo "--- Building frontend... ---"
-	cd web && npm install && npm run build
+	cd web && npm ci && npm run build
 	@echo "--- Preparing backend... ---"
 	@echo "--- Starting backend... ---"
 	# Equivalent to: go run -tags go_json ./main.go
@@ -76,6 +76,23 @@ dev: ## Run in development mode (with race detection)
 	@echo "🔧 Starting development mode..."
 	# Equivalent to: go run -tags go_json -race ./main.go
 	go run -tags $(GOTAGS) -race ./main.go
+
+# ==============================================================================
+# Testing & Quality
+# ==============================================================================
+.PHONY: test
+test: ## Run all tests
+	@echo "🧪 Running tests..."
+	go test -tags $(GOTAGS) ./... -v -count=1
+
+.PHONY: vet
+vet: ## Run go vet
+	@echo "🔍 Running go vet..."
+	go vet -tags $(GOTAGS) ./...
+
+.PHONY: check
+check: vet test ## Run all checks (vet + test)
+	@echo "✅ All checks passed"
 
 # ==============================================================================
 # Key Migration

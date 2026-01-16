@@ -14,6 +14,7 @@ import {
   type AutoCheckinStatus,
   type CheckinLogDTO,
   type ManagedSiteAuthType,
+  type ManagedSiteBypassMethod,
   type ManagedSiteDTO,
   type ManagedSiteType,
   type SiteImportData,
@@ -82,6 +83,10 @@ const deleteConfirmInput = ref("");
 const deleteAllConfirmInput = ref("");
 const deleteAllLoading = ref(false);
 
+// Balance state
+const balances = ref<Record<number, string | null>>({});
+const balanceLoading = ref(false);
+
 // Auto check-in configuration state
 const autoCheckinConfig = ref<AutoCheckinConfig | null>(null);
 const autoCheckinStatus = ref<AutoCheckinStatus | null>(null);
@@ -119,6 +124,7 @@ const siteForm = reactive({
   custom_checkin_url: "",
   use_proxy: false,
   proxy_url: "",
+  bypass_method: "" as ManagedSiteBypassMethod,
   auth_type: "none" as ManagedSiteAuthType,
 });
 
@@ -141,6 +147,11 @@ const authTypeOptions = computed(() => [
   { label: t("siteManagement.authTypeNone"), value: "none" },
   { label: t("siteManagement.authTypeAccessToken"), value: "access_token" },
   { label: t("siteManagement.authTypeCookie"), value: "cookie" },
+]);
+
+const bypassMethodOptions = computed(() => [
+  { label: t("siteManagement.bypassMethodNone"), value: "" },
+  { label: t("siteManagement.bypassMethodStealth"), value: "stealth" },
 ]);
 
 // Filter options for enabled status (use string values for naive-ui select compatibility)
@@ -253,6 +264,7 @@ function resetSiteForm() {
     custom_checkin_url: "",
     use_proxy: false,
     proxy_url: "",
+    bypass_method: "",
     auth_type: "none",
   });
   authValueInput.value = "";
@@ -281,10 +293,56 @@ function openEditSite(site: ManagedSiteDTO) {
     custom_checkin_url: site.custom_checkin_url,
     use_proxy: site.use_proxy,
     proxy_url: site.proxy_url,
+    bypass_method: site.bypass_method,
     auth_type: site.auth_type,
   });
   authValueInput.value = "";
   showSiteModal.value = true;
+}
+
+// Known WAF/Cloudflare cookie names that indicate bypass capability.
+// IMPORTANT: This list is duplicated from backend (auto_checkin_service.go).
+// Keep both lists in sync when adding/removing cookie names.
+const knownWAFCookieNames = [
+  "cf_clearance", // Cloudflare clearance cookie (most important)
+  "acw_tc", // Alibaba Cloud WAF cookie
+  "cdn_sec_tc", // CDN security cookie
+  "acw_sc__v2", // Alibaba Cloud WAF v2 cookie
+  "__cf_bm", // Cloudflare bot management
+  "_cfuvid", // Cloudflare unique visitor ID
+];
+
+// Parse cookie string into a map
+function parseCookieString(cookieStr: string): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const part of cookieStr.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf("=");
+    if (idx > 0) {
+      const key = trimmed.substring(0, idx).trim();
+      const val = trimmed.substring(idx + 1).trim();
+      result.set(key, val);
+    }
+  }
+  return result;
+}
+
+// Validate CF cookies for stealth bypass mode
+// Returns list of missing cookie names if validation fails
+function validateCFCookies(cookieStr: string): string[] {
+  if (!cookieStr) {
+    return [...knownWAFCookieNames];
+  }
+  const cookieMap = parseCookieString(cookieStr);
+  // Check if at least one WAF cookie is present
+  for (const name of knownWAFCookieNames) {
+    if (cookieMap.has(name)) {
+      return []; // Found at least one WAF cookie
+    }
+  }
+  // No WAF cookies found, return all as missing (user needs at least one)
+  return [...knownWAFCookieNames];
 }
 
 async function submitSite() {
@@ -296,6 +354,37 @@ async function submitSite() {
     message.warning(t("siteManagement.baseUrlRequired"));
     return;
   }
+
+  // Validate stealth bypass requirements
+  if (siteForm.bypass_method === "stealth") {
+    // Stealth bypass requires cookie auth type
+    if (siteForm.auth_type !== "cookie") {
+      message.error(t("siteManagement.stealthRequiresCookieAuth"));
+      return;
+    }
+
+    // Validate CF cookies for stealth mode
+    const cookieValue = authValueInput.value.trim();
+    const prev = editingSite.value;
+    // Need cookie validation when:
+    // 1. Creating new site (!prev)
+    // 2. User entered new cookie value (cookieValue is not empty)
+    // 3. Switching from non-cookie auth or non-stealth bypass to stealth/cookie
+    const needsCookie =
+      !prev || !!cookieValue || prev.auth_type !== "cookie" || prev.bypass_method !== "stealth";
+    if (needsCookie) {
+      if (!cookieValue) {
+        message.error(t("siteManagement.stealthRequiresCookieValue"));
+        return;
+      }
+      const missingCookies = validateCFCookies(cookieValue);
+      if (missingCookies.length > 0) {
+        message.error(t("siteManagement.missingCFCookies", { cookies: missingCookies.join(", ") }));
+        return;
+      }
+    }
+  }
+
   const payload = { ...siteForm };
   try {
     if (editingSite.value) {
@@ -457,13 +546,51 @@ function rowClassName(row: ManagedSiteDTO) {
   return row.enabled ? "" : "site-row-disabled";
 }
 
+// Backend message to i18n key mapping
+const backendMsgMap: Record<string, string> = {
+  "check-in failed": "siteManagement.backendMsg_checkInFailed",
+  "check-in disabled": "siteManagement.backendMsg_checkInDisabled",
+  "missing credentials": "siteManagement.backendMsg_missingCredentials",
+  "missing user_id": "siteManagement.backendMsg_missingUserId",
+  "unsupported auth type": "siteManagement.backendMsg_unsupportedAuthType",
+  "anyrouter requires cookie auth": "siteManagement.backendMsg_anyrouterRequiresCookie",
+  "cloudflare challenge, update cookies from browser":
+    "siteManagement.backendMsg_cloudflareChallenge",
+  "already checked in": "siteManagement.backendMsg_alreadyCheckedIn",
+  "stealth bypass requires cookie auth": "siteManagement.backendMsg_stealthRequiresCookie",
+};
+
+// Translate backend check-in messages to localized text
+function translateCheckinMessage(msg: string): string {
+  if (!msg) {
+    return "";
+  }
+  // Check for exact match first
+  const key = backendMsgMap[msg];
+  if (key) {
+    return t(key);
+  }
+  // Check for dynamic messages (e.g., "missing cf cookies, need one of: ...")
+  if (msg.startsWith("missing cf cookies")) {
+    // Preserve the cookie list detail for user reference
+    const detail = msg.replace(/^missing cf cookies[:,]?\s*/i, "");
+    const base = t("siteManagement.backendMsg_missingCfCookies");
+    return detail ? `${base}: ${detail}` : base;
+  }
+  return msg;
+}
+
 async function checkinSite(site: ManagedSiteDTO) {
   try {
     const res = await siteManagementApi.checkinSite(site.id);
     const statusText = statusTag(res.status).text;
-    // Build message: "SiteName: Status" or "SiteName: Status - Message" if message exists
-    const displayMsg = res.message?.trim()
-      ? `${site.name}: ${statusText} - ${res.message}`
+    // Translate backend message if possible
+    const translatedMsg = translateCheckinMessage(res.message?.trim() || "");
+    // Only show message if it's different from status (avoid "签到失败 - 签到失败")
+    // Also skip if message is empty
+    const showMsg = translatedMsg && translatedMsg !== statusText;
+    const displayMsg = showMsg
+      ? `${site.name}: ${statusText} - ${translatedMsg}`
       : `${site.name}: ${statusText}`;
     message.info(displayMsg);
 
@@ -760,6 +887,40 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
       h(NTag, { size: "small", bordered: false }, () => getSiteTypeLabel(row.site_type)),
   },
   {
+    title: t("siteManagement.balance"),
+    key: "balance",
+    width: 75,
+    align: "center",
+    titleAlign: "center",
+    render: row => {
+      // Show "-" for unsupported site types
+      if (!supportsBalance(row.site_type)) {
+        return h("span", { style: "color: #999" }, "-");
+      }
+      const balanceDisplay = getBalanceDisplay(row);
+      // Clickable balance cell with tooltip showing full balance and click hint
+      return h(
+        NTooltip,
+        { trigger: "hover" },
+        {
+          trigger: () =>
+            h(
+              "span",
+              {
+                class: "balance-cell",
+                onClick: () => fetchSiteBalance(row.id),
+              },
+              balanceDisplay
+            ),
+          default: () =>
+            balanceDisplay === "-"
+              ? t("siteManagement.balanceTooltip")
+              : `${balanceDisplay} (${t("siteManagement.balanceTooltip")})`,
+        }
+      );
+    },
+  },
+  {
     title: t("siteManagement.enabled"),
     key: "enabled",
     width: 60,
@@ -919,6 +1080,7 @@ const logsColumns = computed<DataTableColumns<CheckinLogDTO>>(() => [
     key: "message",
     minWidth: 200,
     ellipsis: { tooltip: true },
+    render: row => translateCheckinMessage(row.message || ""),
   },
 ]);
 
@@ -989,6 +1151,68 @@ async function handleFileChange(event: Event) {
 // Navigate to bound group
 function handleNavigateToGroup(groupId: number) {
   emit("navigate-to-group", groupId);
+}
+
+// Balance functions
+// Fetch balance for a single site
+async function fetchSiteBalance(siteId: number) {
+  try {
+    const result = await siteManagementApi.fetchSiteBalance(siteId);
+    balances.value[siteId] = result.balance;
+    // Also update the site in the list to reflect the new balance
+    const site = sites.value.find(s => s.id === siteId);
+    if (site && result.balance) {
+      site.last_balance = result.balance;
+    }
+  } catch (_) {
+    // Keep existing value or set to null on error
+  }
+}
+
+// Refresh balances for all enabled sites (manual trigger only)
+async function refreshAllBalances() {
+  balanceLoading.value = true;
+  message.info(t("siteManagement.refreshingBalance"));
+  try {
+    const results = await siteManagementApi.refreshAllBalances();
+    // Update balances map with results
+    for (const [siteIdStr, info] of Object.entries(results)) {
+      const siteId = parseInt(siteIdStr, 10);
+      if (!isNaN(siteId)) {
+        balances.value[siteId] = info.balance;
+        // Also update the site in the list
+        const site = sites.value.find(s => s.id === siteId);
+        if (site && info.balance) {
+          site.last_balance = info.balance;
+        }
+      }
+    }
+    message.success(t("siteManagement.balanceRefreshed"));
+  } catch (_) {
+    // Error handled by centralized error handler
+  } finally {
+    balanceLoading.value = false;
+  }
+}
+
+// Get display balance for a site
+// Priority: 1. Local state (from manual refresh) 2. Database cache (last_balance)
+function getBalanceDisplay(site: ManagedSiteDTO): string {
+  // Check local state first (updated by manual refresh)
+  const localBalance = balances.value[site.id];
+  if (localBalance !== undefined && localBalance !== null) {
+    return localBalance;
+  }
+  // Fall back to database cached balance
+  if (site.last_balance && site.last_balance !== "") {
+    return site.last_balance;
+  }
+  return "-";
+}
+
+// Check if site type supports balance fetching
+function supportsBalance(siteType: string): boolean {
+  return ["new-api", "Veloera", "one-hub", "done-hub", "wong-gongyi"].includes(siteType);
 }
 
 // Delete all unbound sites with confirmation
@@ -1187,6 +1411,8 @@ const lastRunDisplay = computed(() => {
 onMounted(() => {
   loadSites();
   loadAutoCheckinConfig();
+  // Balance is loaded from database cache (last_balance field) via loadSites()
+  // Manual refresh button is available for users to update balances on demand
 });
 </script>
 
@@ -1217,6 +1443,16 @@ onMounted(() => {
             </n-button>
           </template>
           {{ t("siteManagement.autoCheckinConfigTooltip") }}
+        </n-tooltip>
+        <!-- Refresh balance button -->
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" secondary :loading="balanceLoading" @click="refreshAllBalances">
+              <template #icon><n-icon :component="RefreshOutline" /></template>
+              {{ t("siteManagement.refreshBalance") }}
+            </n-button>
+          </template>
+          {{ t("siteManagement.refreshBalanceTooltip") }}
         </n-tooltip>
         <n-tooltip trigger="hover">
           <template #trigger>
@@ -1620,6 +1856,27 @@ onMounted(() => {
                 :placeholder="t('siteManagement.proxyUrlPlaceholder')"
               />
             </n-form-item>
+            <n-form-item :label="t('siteManagement.bypassMethod')">
+              <n-select
+                v-model:value="siteForm.bypass_method"
+                :options="bypassMethodOptions"
+                style="width: 200px"
+              />
+            </n-form-item>
+            <!-- Stealth bypass hint -->
+            <n-text
+              v-if="siteForm.bypass_method === 'stealth'"
+              depth="3"
+              style="
+                font-size: 12px;
+                display: block;
+                margin-top: -4px;
+                margin-bottom: 8px;
+                color: #f0a020;
+              "
+            >
+              {{ t("siteManagement.stealthBypassHint") }}
+            </n-text>
           </div>
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.authSettings") }}</h4>
@@ -1654,6 +1911,20 @@ onMounted(() => {
               style="font-size: 12px; display: block; margin-top: -4px; margin-bottom: 8px"
             >
               {{ t("siteManagement.authTypeCookieHint") }}
+            </n-text>
+            <!-- Stealth cookie requirement hint -->
+            <n-text
+              v-if="siteForm.bypass_method === 'stealth' && siteForm.auth_type === 'cookie'"
+              depth="3"
+              style="
+                font-size: 12px;
+                display: block;
+                margin-top: -4px;
+                margin-bottom: 8px;
+                color: #18a058;
+              "
+            >
+              {{ t("siteManagement.stealthCookieHint") }}
             </n-text>
           </div>
           <n-space justify="end" size="small" style="margin-top: 12px">
@@ -1869,6 +2140,15 @@ onMounted(() => {
   color: var(--primary-color);
   text-decoration: none;
 }
+.balance-cell {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--n-text-color);
+}
 
 /* Force single line display for table cells rendered via h() function */
 .site-management :deep(.site-name-row) {
@@ -1894,6 +2174,15 @@ onMounted(() => {
   white-space: nowrap;
   color: var(--primary-color);
   text-decoration: none;
+}
+.site-management :deep(.balance-cell) {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--n-text-color);
 }
 .site-form-modal,
 .logs-modal {

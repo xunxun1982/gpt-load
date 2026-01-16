@@ -123,6 +123,8 @@ var MessagesZhCN = map[string]string{
 	"success.group_unbound_from_site": "分组已解除与站点的绑定",
 	"success.site_unbound_from_group": "站点已解除与分组的绑定",
 	"success.unbound_sites_deleted":   "已删除 {{.count}} 个未绑定的站点",
+	"success.sites_imported":          "已导入 {{.imported}} 个站点，跳过 {{.skipped}} 个（共 {{.total}} 个）",
+	"success.sites_exported":          "已成功导出 {{.count}} 个站点",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}}长度不足（{{.length}}字符），建议至少16字符",

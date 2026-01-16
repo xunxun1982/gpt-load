@@ -3,6 +3,7 @@ package container
 
 import (
 	"gpt-load/internal/app"
+	"gpt-load/internal/centralizedmgmt"
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
 	"gpt-load/internal/db"
@@ -91,6 +92,9 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(services.NewSubGroupManager); err != nil {
 		return nil, err
 	}
+	if err := container.Provide(services.NewDynamicWeightManager); err != nil {
+		return nil, err
+	}
 	if err := container.Provide(services.NewGroupManager); err != nil {
 		return nil, err
 	}
@@ -121,12 +125,26 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(sitemanagement.NewBindingService); err != nil {
 		return nil, err
 	}
+	if err := container.Provide(sitemanagement.NewBalanceService); err != nil {
+		return nil, err
+	}
+
+	// Centralized Management Services (Hub)
+	if err := container.Provide(centralizedmgmt.NewHubAccessKeyService); err != nil {
+		return nil, err
+	}
+	if err := container.Provide(centralizedmgmt.NewHubService); err != nil {
+		return nil, err
+	}
 
 	// Handlers
 	if err := container.Provide(handler.NewServer); err != nil {
 		return nil, err
 	}
 	if err := container.Provide(handler.NewCommonHandler); err != nil {
+		return nil, err
+	}
+	if err := container.Provide(handler.NewHubHandler); err != nil {
 		return nil, err
 	}
 
