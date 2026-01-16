@@ -1,6 +1,9 @@
 name: Release Build
+
+# Workflow-level permissions: read-only by default
+# Individual jobs elevate permissions as needed (least privilege principle)
 permissions:
-  contents: write
+  contents: read
 
 on:
   push:
@@ -16,6 +19,9 @@ jobs:
   build-frontend:
     runs-on: ubuntu-latest
     steps:
+      # NOTE: Using version tags instead of commit SHAs for official GitHub Actions.
+      # While SHA pinning is more secure, version tags provide better maintainability
+      # for this project. Official actions are trusted and version tags are stable.
       - name: Checkout code
         uses: actions/checkout@v6
 
@@ -113,6 +119,8 @@ jobs:
   release:
     needs: build-binaries
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v7

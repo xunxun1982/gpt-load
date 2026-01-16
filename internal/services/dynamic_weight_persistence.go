@@ -640,7 +640,11 @@ func (p *DynamicWeightPersistence) RolloverTimeWindows() {
 	}
 
 	if len(toUpdate) > 0 {
-		p.batchUpsert(toUpdate)
+		if err := p.batchUpsert(toUpdate); err != nil {
+			// Skip in-memory update on DB failure to avoid inconsistency
+			logrus.WithError(err).WithField("count", len(toUpdate)).Warn("Failed to persist rolled over metrics")
+			return
+		}
 		logrus.WithField("count", len(toUpdate)).Info("Dynamic weight metrics rolled over")
 
 		// Also update in-memory store

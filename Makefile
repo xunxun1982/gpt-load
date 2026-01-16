@@ -83,12 +83,12 @@ dev: ## Run in development mode (with race detection)
 .PHONY: test
 test: ## Run all tests
 	@echo "🧪 Running tests..."
-	go test ./... -v -count=1
+	go test -tags $(GOTAGS) ./... -v -count=1
 
 .PHONY: vet
 vet: ## Run go vet
 	@echo "🔍 Running go vet..."
-	go vet ./...
+	go vet -tags $(GOTAGS) ./...
 
 .PHONY: check
 check: vet test ## Run all checks (vet + test)
