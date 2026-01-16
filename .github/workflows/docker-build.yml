@@ -4,19 +4,20 @@ on:
   push:
     tags:
       - "*"
+
 jobs:
-  build_docker_image:
-    name: Build Docker Image
+  # Build AMD64 image on x86 runner
+  build_amd64:
+    name: Build AMD64 Image
     runs-on: ubuntu-latest
     permissions:
       packages: write
       contents: read
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -44,18 +45,141 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=ref,event=tag
-            type=raw,value=beta,enable=${{ contains(github.ref, '-beta') }}
-            type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
+            type=ref,event=tag,suffix=-amd64
+            type=raw,value=beta-amd64,enable=${{ contains(github.ref, '-beta') }}
+            type=raw,value=latest-amd64,enable=${{ !contains(github.ref, '-') }}
 
-      - name: Build and push Docker image
+      - name: Build and push AMD64 image
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ github.ref_name }}
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,mode=max,scope=amd64
+
+  # Build ARM64 image on native ARM64 runner (no QEMU needed!)
+  build_arm64:
+    name: Build ARM64 Image
+    runs-on: ubuntu-24.04-arm # Native ARM64 runner
+    permissions:
+      packages: write
+      contents: read
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            xunxun1982/gpt-load
+            ghcr.io/${{ github.repository }}
+          flavor: |
+            latest=false
+          tags: |
+            type=ref,event=tag,suffix=-arm64
+            type=raw,value=beta-arm64,enable=${{ contains(github.ref, '-beta') }}
+            type=raw,value=latest-arm64,enable=${{ !contains(github.ref, '-') }}
+
+      - name: Build and push ARM64 image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=max,scope=arm64
+
+  # Create multi-arch manifest
+  create_manifest:
+    name: Create Multi-arch Manifest
+    runs-on: ubuntu-latest
+    needs: [build_amd64, build_arm64]
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest for Docker Hub
+        run: |
+          TAG="${{ github.ref_name }}"
+
+          # Create version tag manifest
+          docker buildx imagetools create -t xunxun1982/gpt-load:${TAG} \
+            xunxun1982/gpt-load:${TAG}-amd64 \
+            xunxun1982/gpt-load:${TAG}-arm64
+
+          # Create latest or beta manifest based on tag
+          if [[ "${TAG}" == *"-beta"* ]]; then
+            docker buildx imagetools create -t xunxun1982/gpt-load:beta \
+              xunxun1982/gpt-load:${TAG}-amd64 \
+              xunxun1982/gpt-load:${TAG}-arm64
+          elif [[ "${TAG}" != *"-"* ]]; then
+            docker buildx imagetools create -t xunxun1982/gpt-load:latest \
+              xunxun1982/gpt-load:${TAG}-amd64 \
+              xunxun1982/gpt-load:${TAG}-arm64
+          fi
+
+      - name: Create and push manifest for GHCR
+        run: |
+          TAG="${{ github.ref_name }}"
+          REPO="ghcr.io/${{ github.repository }}"
+          REPO_LOWER=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+
+          # Create version tag manifest
+          docker buildx imagetools create -t ${REPO_LOWER}:${TAG} \
+            ${REPO_LOWER}:${TAG}-amd64 \
+            ${REPO_LOWER}:${TAG}-arm64
+
+          # Create latest or beta manifest based on tag
+          if [[ "${TAG}" == *"-beta"* ]]; then
+            docker buildx imagetools create -t ${REPO_LOWER}:beta \
+              ${REPO_LOWER}:${TAG}-amd64 \
+              ${REPO_LOWER}:${TAG}-arm64
+          elif [[ "${TAG}" != *"-"* ]]; then
+            docker buildx imagetools create -t ${REPO_LOWER}:latest \
+              ${REPO_LOWER}:${TAG}-amd64 \
+              ${REPO_LOWER}:${TAG}-arm64
+          fi
