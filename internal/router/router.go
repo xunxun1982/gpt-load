@@ -217,6 +217,8 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		siteMgmt.POST("/sites/:id/record-checkin-page-opened", serverHandler.RecordCheckinPageOpened)
 		siteMgmt.DELETE("/sites/:id/binding", serverHandler.UnbindSiteFromGroup)
 		siteMgmt.GET("/sites/:id/bound-group", serverHandler.GetBoundGroupInfo)
+		siteMgmt.GET("/sites/:id/balance", serverHandler.FetchSiteBalance)
+		siteMgmt.POST("/refresh-balances", serverHandler.RefreshAllBalances)
 
 		// Bulk operations
 		siteMgmt.GET("/unbound-count", serverHandler.CountUnboundSites)

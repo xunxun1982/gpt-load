@@ -472,3 +472,33 @@ func (s *Server) ImportManagedSites(c *gin.Context) {
 		"total":    len(importData.Sites),
 	})
 }
+
+
+// FetchSiteBalance fetches balance for a single site
+func (s *Server) FetchSiteBalance(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, app_errors.ErrBadRequest)
+		return
+	}
+
+	// Get site from database
+	var site sitemanagement.ManagedSite
+	if err := s.DB.WithContext(c.Request.Context()).First(&site, uint(id)).Error; err != nil {
+		HandleServiceError(c, err)
+		return
+	}
+
+	// Fetch balance
+	balanceInfo := s.BalanceService.FetchSiteBalance(c.Request.Context(), &site)
+	response.Success(c, balanceInfo)
+}
+
+// RefreshAllBalances fetches balances for all enabled sites that support balance fetching
+func (s *Server) RefreshAllBalances(c *gin.Context) {
+	results, err := s.BalanceService.RefreshAllBalancesManual(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, results)
+}

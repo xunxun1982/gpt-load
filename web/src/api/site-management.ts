@@ -74,6 +74,10 @@ export interface ManagedSiteDTO {
   last_site_opened_date: string;
   last_checkin_page_opened_date: string;
 
+  // Cached balance information, refreshed daily at 05:00 Beijing time.
+  last_balance: string;
+  last_balance_date: string;
+
   // Deprecated: kept for backward compatibility, use bound_groups instead
   bound_group_id?: number;
   bound_group_name?: string;
@@ -250,6 +254,18 @@ export const siteManagementApi = {
   async getBoundGroupInfo(siteId: number): Promise<BoundGroupInfo[]> {
     const res = await http.get(`/site-management/sites/${siteId}/bound-group`);
     return res.data || [];
+  },
+
+  // Fetch balance for a single site
+  async fetchSiteBalance(siteId: number): Promise<{ site_id: number; balance: string | null }> {
+    const res = await http.get(`/site-management/sites/${siteId}/balance`, { hideMessage: true });
+    return res.data;
+  },
+
+  // Refresh balances for all enabled sites
+  async refreshAllBalances(): Promise<Record<number, { site_id: number; balance: string | null }>> {
+    const res = await http.post("/site-management/refresh-balances", {}, { hideMessage: true });
+    return res.data || {};
   },
 
   // Get count of unbound sites

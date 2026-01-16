@@ -125,6 +125,9 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(sitemanagement.NewBindingService); err != nil {
 		return nil, err
 	}
+	if err := container.Provide(sitemanagement.NewBalanceService); err != nil {
+		return nil, err
+	}
 
 	// Centralized Management Services (Hub)
 	if err := container.Provide(centralizedmgmt.NewHubAccessKeyService); err != nil {

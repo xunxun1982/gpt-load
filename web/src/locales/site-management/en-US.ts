@@ -84,6 +84,13 @@ export default {
   // Status
   lastStatus: "Last Status",
   status: "Status",
+  balance: "Balance",
+  balanceTooltip: "Click to refresh balance",
+  balanceNotSupported: "N/A",
+  refreshBalance: "Refresh Balance",
+  refreshBalanceTooltip: "Refresh balances for all sites",
+  refreshingBalance: "Refreshing balances...",
+  balanceRefreshed: "Balances refreshed",
   statusSuccess: "Check-in Success",
   statusAlreadyChecked: "Already Checked In",
   statusFailed: "Check-in Failed",

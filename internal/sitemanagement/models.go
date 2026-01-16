@@ -72,6 +72,11 @@ type ManagedSite struct {
 	LastSiteOpenedDate        string `gorm:"column:last_site_opened_date;type:char(10);not null;default:''" json:"last_site_opened_date"`
 	LastCheckinPageOpenedDate string `gorm:"column:last_checkin_page_opened_date;type:char(10);not null;default:''" json:"last_checkin_page_opened_date"`
 
+	// Cached balance information, refreshed daily at 05:00 Beijing time.
+	// Balance is stored as display string (e.g., "$10.50") or empty if not available.
+	LastBalance     string `gorm:"column:last_balance;type:varchar(32);not null;default:''" json:"last_balance"`
+	LastBalanceDate string `gorm:"column:last_balance_date;type:char(10);not null;default:''" json:"last_balance_date"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 

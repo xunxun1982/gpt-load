@@ -38,6 +38,7 @@ type App struct {
 	logCleanupService         *services.LogCleanupService
 	requestLogService         *services.RequestLogService
 	autoCheckinService        *sitemanagement.AutoCheckinService
+	balanceService            *sitemanagement.BalanceService
 	cronChecker               *keypool.CronChecker
 	keyPoolProvider           *keypool.KeyProvider
 	proxyServer               *proxy.ProxyServer
@@ -61,6 +62,7 @@ type AppParams struct {
 	LogCleanupService       *services.LogCleanupService
 	RequestLogService       *services.RequestLogService
 	AutoCheckinService      *sitemanagement.AutoCheckinService
+	BalanceService          *sitemanagement.BalanceService
 	CronChecker             *keypool.CronChecker
 	KeyPoolProvider         *keypool.KeyProvider
 	ProxyServer             *proxy.ProxyServer
@@ -132,6 +134,7 @@ func NewApp(params AppParams) *App {
 		logCleanupService:         params.LogCleanupService,
 		requestLogService:         params.RequestLogService,
 		autoCheckinService:        params.AutoCheckinService,
+		balanceService:            params.BalanceService,
 		cronChecker:               params.CronChecker,
 		keyPoolProvider:           params.KeyPoolProvider,
 		proxyServer:               params.ProxyServer,
@@ -220,6 +223,7 @@ func (a *App) Start() error {
 		// Services that only start on Master node
 		a.requestLogService.Start()
 		a.autoCheckinService.Start()
+		a.balanceService.Start()
 		a.logCleanupService.Start()
 		a.cronChecker.Start()
 	} else {
@@ -291,6 +295,7 @@ func (a *App) Stop(ctx context.Context) {
 		stoppableServices = append(stoppableServices,
 			a.cronChecker.Stop,
 			a.autoCheckinService.Stop,
+			a.balanceService.Stop,
 			a.logCleanupService.Stop,
 			a.requestLogService.Stop,
 		)

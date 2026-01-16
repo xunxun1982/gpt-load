@@ -1273,7 +1273,7 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 	}
 
 	// Determine if stealth mode should be used
-	// Use stealth if explicitly enabled OR if CF cookies are present in auth value
+	// Use stealth only when explicitly enabled via bypass_method setting
 	useStealth := isStealthBypassMethod(site.BypassMethod)
 
 	// Only validate CF cookies when stealth mode is explicitly enabled

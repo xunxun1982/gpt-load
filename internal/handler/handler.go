@@ -40,6 +40,7 @@ type Server struct {
 	SiteService                   *sitemanagement.SiteService
 	AutoCheckinService            *sitemanagement.AutoCheckinService
 	BindingService                *sitemanagement.BindingService
+	BalanceService                *sitemanagement.BalanceService // Balance fetching service
 	DynamicWeightManager          *services.DynamicWeightManager // Dynamic weight manager for adaptive load balancing
 }
 
@@ -66,6 +67,7 @@ type NewServerParams struct {
 	SiteService                *sitemanagement.SiteService
 	AutoCheckinService         *sitemanagement.AutoCheckinService
 	BindingService             *sitemanagement.BindingService
+	BalanceService             *sitemanagement.BalanceService // Balance fetching service
 	DynamicWeightManager       *services.DynamicWeightManager // Dynamic weight manager for adaptive load balancing
 }
 
@@ -92,6 +94,7 @@ func NewServer(params NewServerParams) *Server {
 		SiteService:                   params.SiteService,
 		AutoCheckinService:            params.AutoCheckinService,
 		BindingService:                params.BindingService,
+		BalanceService:                params.BalanceService,
 		DynamicWeightManager:          params.DynamicWeightManager,
 	}
 

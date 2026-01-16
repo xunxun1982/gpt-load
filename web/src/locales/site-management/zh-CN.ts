@@ -83,6 +83,13 @@ export default {
   // Status
   lastStatus: "最近状态",
   status: "状态",
+  balance: "余额",
+  balanceTooltip: "点击刷新余额",
+  balanceNotSupported: "不支持",
+  refreshBalance: "刷新余额",
+  refreshBalanceTooltip: "刷新所有站点余额",
+  refreshingBalance: "正在刷新余额...",
+  balanceRefreshed: "余额刷新完成",
   statusSuccess: "签到成功",
   statusAlreadyChecked: "今日已签到",
   statusFailed: "签到失败",

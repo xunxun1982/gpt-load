@@ -83,6 +83,10 @@ const deleteConfirmInput = ref("");
 const deleteAllConfirmInput = ref("");
 const deleteAllLoading = ref(false);
 
+// Balance state
+const balances = ref<Record<number, string | null>>({});
+const balanceLoading = ref(false);
+
 // Auto check-in configuration state
 const autoCheckinConfig = ref<AutoCheckinConfig | null>(null);
 const autoCheckinStatus = ref<AutoCheckinStatus | null>(null);
@@ -357,10 +361,16 @@ async function submitSite() {
       return;
     }
 
-    // For new site or when auth_value is being updated, validate CF cookies
+    // Validate CF cookies for stealth mode
     const cookieValue = authValueInput.value.trim();
-    if (!editingSite.value || cookieValue) {
-      // New site must have cookie value, or editing site with new cookie value
+    const prev = editingSite.value;
+    // Need cookie validation when:
+    // 1. Creating new site (!prev)
+    // 2. User entered new cookie value (cookieValue is not empty)
+    // 3. Switching from non-cookie auth or non-stealth bypass to stealth/cookie
+    const needsCookie =
+      !prev || !!cookieValue || prev.auth_type !== "cookie" || prev.bypass_method !== "stealth";
+    if (needsCookie) {
       if (!cookieValue) {
         message.error(t("siteManagement.stealthRequiresCookieValue"));
         return;
@@ -560,10 +570,10 @@ function translateCheckinMessage(msg: string): string {
   }
   // Check for dynamic messages (e.g., "missing cf cookies, need one of: ...")
   if (msg.startsWith("missing cf cookies")) {
-    return t("siteManagement.backendMsg_missingCfCookies");
-  }
-  if (key) {
-    return t(key);
+    // Preserve the cookie list detail for user reference
+    const detail = msg.replace(/^missing cf cookies[:,]?\s*/i, "");
+    const base = t("siteManagement.backendMsg_missingCfCookies");
+    return detail ? `${base}: ${detail}` : base;
   }
   return msg;
 }
@@ -875,6 +885,40 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
       h(NTag, { size: "small", bordered: false }, () => getSiteTypeLabel(row.site_type)),
   },
   {
+    title: t("siteManagement.balance"),
+    key: "balance",
+    width: 75,
+    align: "center",
+    titleAlign: "center",
+    render: row => {
+      // Show "-" for unsupported site types
+      if (!supportsBalance(row.site_type)) {
+        return h("span", { style: "color: #999" }, "-");
+      }
+      const balanceDisplay = getBalanceDisplay(row);
+      // Clickable balance cell with tooltip showing full balance and click hint
+      return h(
+        NTooltip,
+        { trigger: "hover" },
+        {
+          trigger: () =>
+            h(
+              "span",
+              {
+                class: "balance-cell",
+                onClick: () => fetchSiteBalance(row.id),
+              },
+              balanceDisplay
+            ),
+          default: () =>
+            balanceDisplay === "-"
+              ? t("siteManagement.balanceTooltip")
+              : `${balanceDisplay} (${t("siteManagement.balanceTooltip")})`,
+        }
+      );
+    },
+  },
+  {
     title: t("siteManagement.enabled"),
     key: "enabled",
     width: 60,
@@ -1107,6 +1151,68 @@ function handleNavigateToGroup(groupId: number) {
   emit("navigate-to-group", groupId);
 }
 
+// Balance functions
+// Fetch balance for a single site
+async function fetchSiteBalance(siteId: number) {
+  try {
+    const result = await siteManagementApi.fetchSiteBalance(siteId);
+    balances.value[siteId] = result.balance;
+    // Also update the site in the list to reflect the new balance
+    const site = sites.value.find(s => s.id === siteId);
+    if (site && result.balance) {
+      site.last_balance = result.balance;
+    }
+  } catch (_) {
+    // Keep existing value or set to null on error
+  }
+}
+
+// Refresh balances for all enabled sites (manual trigger only)
+async function refreshAllBalances() {
+  balanceLoading.value = true;
+  message.info(t("siteManagement.refreshingBalance"));
+  try {
+    const results = await siteManagementApi.refreshAllBalances();
+    // Update balances map with results
+    for (const [siteIdStr, info] of Object.entries(results)) {
+      const siteId = parseInt(siteIdStr, 10);
+      if (!isNaN(siteId)) {
+        balances.value[siteId] = info.balance;
+        // Also update the site in the list
+        const site = sites.value.find(s => s.id === siteId);
+        if (site && info.balance) {
+          site.last_balance = info.balance;
+        }
+      }
+    }
+    message.success(t("siteManagement.balanceRefreshed"));
+  } catch (_) {
+    // Error handled by centralized error handler
+  } finally {
+    balanceLoading.value = false;
+  }
+}
+
+// Get display balance for a site
+// Priority: 1. Local state (from manual refresh) 2. Database cache (last_balance)
+function getBalanceDisplay(site: ManagedSiteDTO): string {
+  // Check local state first (updated by manual refresh)
+  const localBalance = balances.value[site.id];
+  if (localBalance !== undefined && localBalance !== null) {
+    return localBalance;
+  }
+  // Fall back to database cached balance
+  if (site.last_balance && site.last_balance !== "") {
+    return site.last_balance;
+  }
+  return "-";
+}
+
+// Check if site type supports balance fetching
+function supportsBalance(siteType: string): boolean {
+  return ["new-api", "Veloera", "one-hub", "done-hub", "wong-gongyi"].includes(siteType);
+}
+
 // Delete all unbound sites with confirmation
 async function confirmDeleteAllUnbound() {
   // First get the count of unbound sites
@@ -1303,6 +1409,8 @@ const lastRunDisplay = computed(() => {
 onMounted(() => {
   loadSites();
   loadAutoCheckinConfig();
+  // Balance is loaded from database cache (last_balance field) via loadSites()
+  // Manual refresh button is available for users to update balances on demand
 });
 </script>
 
@@ -1333,6 +1441,16 @@ onMounted(() => {
             </n-button>
           </template>
           {{ t("siteManagement.autoCheckinConfigTooltip") }}
+        </n-tooltip>
+        <!-- Refresh balance button -->
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" secondary :loading="balanceLoading" @click="refreshAllBalances">
+              <template #icon><n-icon :component="RefreshOutline" /></template>
+              {{ t("siteManagement.refreshBalance") }}
+            </n-button>
+          </template>
+          {{ t("siteManagement.refreshBalanceTooltip") }}
         </n-tooltip>
         <n-tooltip trigger="hover">
           <template #trigger>
@@ -2020,6 +2138,15 @@ onMounted(() => {
   color: var(--primary-color);
   text-decoration: none;
 }
+.balance-cell {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--n-text-color);
+}
 
 /* Force single line display for table cells rendered via h() function */
 .site-management :deep(.site-name-row) {
@@ -2045,6 +2172,15 @@ onMounted(() => {
   white-space: nowrap;
   color: var(--primary-color);
   text-decoration: none;
+}
+.site-management :deep(.balance-cell) {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--n-text-color);
 }
 .site-form-modal,
 .logs-modal {

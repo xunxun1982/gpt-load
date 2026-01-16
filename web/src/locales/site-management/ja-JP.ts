@@ -191,4 +191,14 @@ export default {
   deleteAllUnboundPlaceholder: "DELETEと入力して確認",
   incorrectConfirmText: "確認テキストが正しくありません",
   noUnboundSites: "削除するバインドされていないサイトがありません",
+
+  // Balance
+  balance: "残高",
+  balanceTooltip: "クリックして残高を更新",
+  balanceNotSupported: "非対応",
+  refreshBalance: "残高更新",
+  refreshBalanceTooltip: "すべてのサイトの残高を更新",
+  refreshingBalance: "残高を更新中...",
+  balanceRefreshed: "残高更新完了",
+  balanceNotAvailable: "取得不可",
 };

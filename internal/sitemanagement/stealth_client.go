@@ -58,6 +58,12 @@ func (m *StealthClientManager) GetClient(proxyURL string) *http.Client {
 }
 
 // createStealthClient creates a new HTTP client with TLS fingerprint spoofing.
+// IMPORTANT: When an HTTP proxy is configured, the uTLS fingerprint spoofing is bypassed
+// because Go's http.Transport with HTTP CONNECT tunneling does not use DialTLSContext
+// after the CONNECT succeeds - the TLS handshake uses Go's standard crypto/tls instead.
+// This is a known limitation. For full TLS fingerprint spoofing through proxies,
+// a custom RoundTripper with explicit CONNECT+uTLS handling would be required.
+// For most use cases (direct connections), the fingerprint spoofing works correctly.
 func (m *StealthClientManager) createStealthClient(proxyURL string) *http.Client {
 	dialer := &net.Dialer{
 		Timeout:   10 * time.Second,
@@ -72,13 +78,16 @@ func (m *StealthClientManager) createStealthClient(proxyURL string) *http.Client
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
-		// Use custom DialTLS for TLS fingerprint spoofing
+		// Use custom DialTLS for TLS fingerprint spoofing (direct connections only)
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return m.dialTLSWithFingerprint(ctx, network, addr, dialer)
 		},
 	}
 
 	// Configure proxy if provided
+	// Note: When proxy is used, DialTLSContext is not invoked for HTTPS requests
+	// because the proxy handles the CONNECT tunnel. TLS fingerprint spoofing
+	// will not be effective in this case.
 	if proxyURL != "" {
 		if parsedProxy, err := url.Parse(proxyURL); err == nil {
 			transport.Proxy = http.ProxyURL(parsedProxy)
@@ -123,12 +132,14 @@ func (m *StealthClientManager) dialTLSWithFingerprint(ctx context.Context, netwo
 
 // stealthHeaders returns browser-like HTTP headers for stealth requests.
 // These headers help bypass basic bot detection.
+// Note: Accept-Encoding is intentionally omitted to let Go's http.Client handle
+// automatic gzip/deflate decompression. Setting it manually would disable
+// Go's transparent decompression, causing json.Unmarshal to fail on compressed responses.
 func stealthHeaders() map[string]string {
 	return map[string]string{
 		"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 		"Accept":                    "application/json, text/plain, */*",
 		"Accept-Language":           "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-		"Accept-Encoding":           "gzip, deflate, br",
 		"Sec-Ch-Ua":                 `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
 		"Sec-Ch-Ua-Mobile":          "?0",
 		"Sec-Ch-Ua-Platform":        `"Windows"`,
