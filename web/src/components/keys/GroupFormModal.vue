@@ -927,7 +927,8 @@ function handleModelSelectorConfirm(redirectRules: Record<string, string[]>) {
   let addedCount = 0;
 
   // Add to V2 items (one-to-many format)
-  // redirectRules format: { sourceModel: [targetModel1, targetModel2, ...] }
+  // redirectRules format: { virtualModel: [realModel1, realModel2, ...] }
+  // When user requests virtualModel (from), redirect to realModel (targets)
   Object.entries(redirectRules).forEach(([from, targets]) => {
     // Check if source model already exists
     const existingIndex = formData.model_redirect_items_v2.findIndex(item => item.from === from);
@@ -1838,6 +1839,7 @@ async function handleSubmit() {
                               v-for="(target, targetIndex) in rule.targets"
                               :key="targetIndex"
                               class="model-redirect-v2-target"
+                              :class="{ 'target-disabled': target.weight === 0 }"
                             >
                               <span class="redirect-arrow">→</span>
                               <n-input
@@ -1941,11 +1943,6 @@ async function handleSubmit() {
                                   </div>
                                 </div>
                               </n-tooltip>
-                              <n-switch
-                                v-model:value="target.enabled"
-                                size="small"
-                                style="margin-left: 4px"
-                              />
                               <n-button
                                 v-if="rule.targets.length > 1"
                                 text
@@ -2752,6 +2749,20 @@ async function handleSubmit() {
   margin-bottom: 6px;
 }
 
+/* Disabled state when weight is 0 */
+.model-redirect-v2-target.target-disabled {
+  opacity: 0.5;
+}
+
+.model-redirect-v2-target.target-disabled :deep(.n-input),
+.model-redirect-v2-target.target-disabled :deep(.n-input-number) {
+  cursor: not-allowed;
+}
+
+.model-redirect-v2-target.target-disabled .redirect-arrow {
+  color: var(--text-tertiary, #999);
+}
+
 .model-redirect-v2-target .redirect-arrow {
   flex: 0 0 20px;
   height: 28px;
@@ -2783,7 +2794,7 @@ async function handleSubmit() {
 
 .dynamic-weight-indicator.health-warning {
   background: #fff3e0;
-  color: #ef6c00;
+  color: #bf360c;
 }
 
 .dynamic-weight-indicator.health-critical {

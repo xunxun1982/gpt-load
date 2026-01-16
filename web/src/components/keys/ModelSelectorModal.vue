@@ -250,36 +250,34 @@ function handleClose() {
 }
 
 function handleConfirm() {
-  // Use Map to support one-to-many: redirectTarget -> [modelId1, modelId2, ...]
-  const redirectMap = new Map<string, string[]>();
+  // Build redirect rules in format: { virtualModel: [realModel1, realModel2, ...] }
+  // User requests virtualModel (e.g., "222"), system redirects to realModel (e.g., "aion-labs/aion-1.0-mini")
+  // The input field contains the virtual model name, modelId is the real upstream model
+  const redirectRules: Record<string, string[]> = {};
 
   for (const modelId of selectedModelIds.value) {
-    let redirectTarget = getDisplayRedirect(modelId).trim();
+    let virtualModel = getDisplayRedirect(modelId).trim();
 
-    if (!redirectTarget) {
+    if (!virtualModel) {
       modelRedirects[modelId] = buildRedirectTarget(modelId);
-      redirectTarget = getDisplayRedirect(modelId).trim();
+      virtualModel = getDisplayRedirect(modelId).trim();
     }
 
-    if (!redirectTarget) {
+    if (!virtualModel) {
       modelRedirects[modelId] = modelId;
-      redirectTarget = getDisplayRedirect(modelId).trim();
+      virtualModel = getDisplayRedirect(modelId).trim();
     }
 
-    // Collect all modelIds for the same redirectTarget
-    const existing = redirectMap.get(redirectTarget) || [];
-    if (!existing.includes(modelId)) {
-      existing.push(modelId);
+    // Map virtual model to real upstream model(s)
+    // Format: { "222": ["aion-labs/aion-1.0-mini"], "openai/gpt-4": ["gpt-4"] }
+    // When user requests "222", redirect to "aion-labs/aion-1.0-mini"
+    if (!redirectRules[virtualModel]) {
+      redirectRules[virtualModel] = [];
     }
-    redirectMap.set(redirectTarget, existing);
-  }
-
-  // Convert to the format expected by parent: { from: to[] }
-  // But current interface is Record<string, string>, so we emit multiple entries
-  // Actually we need to change the emit format to support one-to-many
-  const redirectRules: Record<string, string[]> = {};
-  for (const [target, models] of redirectMap) {
-    redirectRules[target] = models;
+    const targets = redirectRules[virtualModel];
+    if (targets && !targets.includes(modelId)) {
+      targets.push(modelId);
+    }
   }
 
   emit("confirm", redirectRules);

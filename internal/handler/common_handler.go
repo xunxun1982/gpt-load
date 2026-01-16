@@ -24,8 +24,9 @@ func (h *CommonHandler) GetChannelTypes(c *gin.Context) {
 }
 
 // ApplyBrandPrefixRequest defines the request payload for applying brand prefixes.
+// Models slice is limited to 1-1000 items to prevent resource exhaustion.
 type ApplyBrandPrefixRequest struct {
-	Models       []string `json:"models" binding:"required"`
+	Models       []string `json:"models" binding:"required,min=1,max=1000"`
 	UseLowercase bool     `json:"use_lowercase"`
 }
 
