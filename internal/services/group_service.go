@@ -1612,11 +1612,19 @@ func (s *GroupService) updateKeyStatsCacheHit(groupID uint) {
 	s.keyStatsCache[groupID] = entry
 }
 
-// InvalidateKeyStatsCache invalidates the key statistics cache for a specific group
+// InvalidateKeyStatsCache invalidates the key statistics cache for a specific group.
+// It also invalidates the aggregate group stats cache since sub-group key counts affect aggregate displays.
 func (s *GroupService) InvalidateKeyStatsCache(groupID uint) {
 	s.keyStatsCacheMu.Lock()
 	delete(s.keyStatsCache, groupID)
 	s.keyStatsCacheMu.Unlock()
+
+	// Also invalidate aggregate group stats cache for this group
+	// This ensures that when keys are added/removed/status-changed,
+	// the aggregate group view shows updated sub-group statistics
+	if s.aggregateGroupService != nil {
+		s.aggregateGroupService.InvalidateStatsCacheForGroup(groupID)
+	}
 }
 
 // WarmupCache preloads frequently accessed data into cache.
