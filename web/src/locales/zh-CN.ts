@@ -431,6 +431,7 @@ export default {
     modelRedirectWeight: "权重",
     modelRedirectWeightTooltip:
       "数值越大被选中概率越高，按权重比例分配流量（默认：100，设为 0 表示禁用）",
+    modelRedirectWeightPercentageTooltip: "基于当前已启用目标的权重计算的流量分配百分比",
     modelRedirectTargets: "目标模型",
     modelRedirectAddTarget: "添加目标",
     strictMode: "严格",
@@ -570,6 +571,8 @@ export default {
     redirectSuffixPlaceholder: "后缀，例如 -2025",
     lowercaseRedirect: "将重定向后的模型名称统一转换为小写，便于管理和匹配",
     lowercaseRedirectShort: "小写名称",
+    autoPrefix: "根据模型名称自动添加品牌/商家前缀（如 deepseek/、openai/、google/ 等）",
+    autoPrefixShort: "自动前缀",
     selectAll: "全选",
     addToRedirectRules: "添加到重定向规则",
     noRedirectRulesAdded: "未选择任何重定向规则",

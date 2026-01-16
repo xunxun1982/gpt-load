@@ -450,6 +450,8 @@ export default {
     modelRedirectWeight: "重み",
     modelRedirectWeightTooltip:
       "値が大きいほど選択確率が高くなり、重み比率でトラフィックを分配（デフォルト：100、0で無効化）",
+    modelRedirectWeightPercentageTooltip:
+      "現在有効なターゲットの重みに基づいて計算されたトラフィック分配率",
     modelRedirectTargets: "ターゲットモデル",
     modelRedirectAddTarget: "ターゲットを追加",
     strictMode: "厳格",
@@ -593,6 +595,9 @@ export default {
     redirectSuffixPlaceholder: "サフィックス（例: -2025）",
     lowercaseRedirect: "リダイレクト先のモデル名を小文字に統一し、管理とマッチングをしやすくします",
     lowercaseRedirectShort: "小文字",
+    autoPrefix:
+      "モデル名に基づいてブランド/ベンダープレフィックスを自動追加（例: deepseek/、openai/、google/）",
+    autoPrefixShort: "自動プレフィックス",
     selectAll: "すべて選択",
     addToRedirectRules: "リダイレクトルールに追加",
     noRedirectRulesAdded: "リダイレクトルールが選択されていません",

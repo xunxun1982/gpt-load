@@ -112,6 +112,12 @@ func registerPublicAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Server
 func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Server, configManager types.ConfigManager) {
 	api.GET("/channel-types", serverHandler.CommonHandler.GetChannelTypes)
 
+	// Model utilities
+	models := api.Group("/models")
+	{
+		models.POST("/apply-brand-prefix", serverHandler.CommonHandler.ApplyBrandPrefix)
+	}
+
 	groups := api.Group("/groups")
 	{
 		groups.POST("", serverHandler.CreateGroup)

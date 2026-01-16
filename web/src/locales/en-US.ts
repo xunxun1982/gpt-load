@@ -450,6 +450,8 @@ export default {
     modelRedirectWeight: "Weight",
     modelRedirectWeightTooltip:
       "Higher value means higher selection probability, traffic distributed by weight ratio (default: 100, set to 0 to disable)",
+    modelRedirectWeightPercentageTooltip:
+      "Traffic distribution percentage calculated based on currently enabled targets",
     modelRedirectTargets: "Target Models",
     modelRedirectAddTarget: "Add Target",
     strictMode: "Strict",
@@ -595,6 +597,9 @@ export default {
     lowercaseRedirect:
       "Convert redirect target model names to lowercase for consistent naming and matching",
     lowercaseRedirectShort: "Lowercase",
+    autoPrefix:
+      "Automatically add brand/vendor prefix based on model name (e.g. deepseek/, openai/, google/)",
+    autoPrefixShort: "Auto Prefix",
     selectAll: "Select All",
     addToRedirectRules: "Add to Redirect Rules",
     noRedirectRulesAdded: "No redirect rules selected",

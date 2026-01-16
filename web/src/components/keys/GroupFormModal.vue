@@ -70,6 +70,13 @@ const fetchingModels = ref(false);
 const showModelSelector = ref(false);
 const availableModels = ref<string[]>([]);
 
+// Model redirect edit mode: "gui" or "json"
+const modelRedirectEditMode = ref<"gui" | "json">("gui");
+// JSON string for raw editing mode
+const modelRedirectJsonStr = ref("");
+// JSON validation error message
+const modelRedirectJsonError = ref("");
+
 // Model redirect target type (V2: one-to-many with weight)
 interface ModelRedirectTargetItem {
   model: string;
@@ -339,6 +346,11 @@ function resetForm() {
 
   formRef.value?.restoreValidation();
 
+  // Reset model redirect edit mode
+  modelRedirectEditMode.value = "gui";
+  modelRedirectJsonStr.value = "";
+  modelRedirectJsonError.value = "";
+
   Object.assign(formData, {
     name: "",
     display_name: "",
@@ -386,6 +398,11 @@ function loadGroupData() {
   if (!props.group) {
     return;
   }
+
+  // Reset model redirect edit mode to GUI when loading group data
+  modelRedirectEditMode.value = "gui";
+  modelRedirectJsonStr.value = "";
+  modelRedirectJsonError.value = "";
 
   // Fetch dynamic weights for model redirect rules
   if (props.group.id) {
@@ -685,6 +702,101 @@ function modelRedirectItemsV2ToJson(items: ModelRedirectItemV2[]): string {
   return Object.keys(obj).length > 0 ? JSON.stringify(obj) : "";
 }
 
+// Convert V2 items to formatted JSON string for display
+function modelRedirectItemsV2ToFormattedJson(items: ModelRedirectItemV2[]): string {
+  if (!items || items.length === 0) {
+    return "{}";
+  }
+  const obj: Record<
+    string,
+    { targets: Array<{ model: string; weight?: number; enabled?: boolean }> }
+  > = {};
+  items.forEach(item => {
+    if (item.from.trim()) {
+      const validTargets = item.targets
+        .filter(t => t.model.trim())
+        .map(t => ({
+          model: t.model.trim(),
+          weight: t.weight !== 100 ? t.weight : undefined,
+          enabled: t.enabled === false ? false : undefined,
+        }));
+      if (validTargets.length > 0) {
+        obj[item.from.trim()] = { targets: validTargets };
+      }
+    }
+  });
+  return JSON.stringify(obj, null, 2);
+}
+
+// Parse JSON string to V2 items
+function parseJsonToModelRedirectItemsV2(jsonStr: string): ModelRedirectItemV2[] {
+  if (!jsonStr || jsonStr.trim() === "" || jsonStr.trim() === "{}") {
+    return [];
+  }
+  try {
+    const obj = JSON.parse(jsonStr);
+    const items: ModelRedirectItemV2[] = [];
+    for (const [from, rule] of Object.entries(obj)) {
+      const ruleObj = rule as {
+        targets?: Array<{ model: string; weight?: number; enabled?: boolean }>;
+      };
+      if (ruleObj.targets && Array.isArray(ruleObj.targets)) {
+        items.push({
+          from,
+          targets: ruleObj.targets.map(t => ({
+            model: t.model || "",
+            weight: t.weight ?? 100,
+            enabled: t.enabled !== false,
+          })),
+        });
+      }
+    }
+    return items;
+  } catch {
+    return [];
+  }
+}
+
+// Switch between GUI and JSON edit modes
+function switchModelRedirectEditMode(mode: "gui" | "json") {
+  if (mode === "json" && modelRedirectEditMode.value === "gui") {
+    // Switching from GUI to JSON: convert current items to JSON
+    modelRedirectJsonStr.value = modelRedirectItemsV2ToFormattedJson(
+      formData.model_redirect_items_v2
+    );
+    modelRedirectJsonError.value = "";
+  } else if (mode === "gui" && modelRedirectEditMode.value === "json") {
+    // Switching from JSON to GUI: validate and parse JSON to items
+    if (modelRedirectJsonStr.value.trim() && modelRedirectJsonStr.value.trim() !== "{}") {
+      try {
+        JSON.parse(modelRedirectJsonStr.value);
+        modelRedirectJsonError.value = "";
+      } catch {
+        message.error(t("keys.modelRedirectInvalidJson"));
+        return; // Don't switch mode if JSON is invalid
+      }
+    }
+    const parsed = parseJsonToModelRedirectItemsV2(modelRedirectJsonStr.value);
+    formData.model_redirect_items_v2 = parsed;
+    modelRedirectJsonError.value = "";
+  }
+  modelRedirectEditMode.value = mode;
+}
+
+// Validate JSON in real-time while editing
+function validateModelRedirectJson() {
+  if (!modelRedirectJsonStr.value.trim() || modelRedirectJsonStr.value.trim() === "{}") {
+    modelRedirectJsonError.value = "";
+    return;
+  }
+  try {
+    JSON.parse(modelRedirectJsonStr.value);
+    modelRedirectJsonError.value = "";
+  } catch {
+    modelRedirectJsonError.value = t("keys.modelRedirectInvalidJson");
+  }
+}
+
 // Remove header rule
 function removeHeaderRule(index: number) {
   formData.header_rules.splice(index, 1);
@@ -806,33 +918,41 @@ async function fetchUpstreamModels() {
 }
 
 // Handle model selector confirmation - add selected redirects to V2 rules
-function handleModelSelectorConfirm(redirectRules: Record<string, string>) {
+function handleModelSelectorConfirm(redirectRules: Record<string, string[]>) {
   if (Object.keys(redirectRules).length === 0) {
     message.warning(t("keys.noRedirectRulesAdded"));
     return;
   }
 
+  let addedCount = 0;
+
   // Add to V2 items (one-to-many format)
-  Object.entries(redirectRules).forEach(([from, to]) => {
+  // redirectRules format: { sourceModel: [targetModel1, targetModel2, ...] }
+  Object.entries(redirectRules).forEach(([from, targets]) => {
     // Check if source model already exists
     const existingIndex = formData.model_redirect_items_v2.findIndex(item => item.from === from);
     const existingItem = formData.model_redirect_items_v2[existingIndex];
+
     if (existingIndex >= 0 && existingItem) {
-      // Update existing: replace first target or add if different
-      const targetExists = existingItem.targets.some(t => t.model === to);
-      if (!targetExists) {
-        existingItem.targets.push({ model: to, weight: 100, enabled: true });
+      // Update existing: add missing targets
+      for (const to of targets) {
+        const targetExists = existingItem.targets.some(t => t.model === to);
+        if (!targetExists) {
+          existingItem.targets.push({ model: to, weight: 100, enabled: true });
+          addedCount++;
+        }
       }
     } else {
-      // Add new rule
+      // Add new rule with all targets
       formData.model_redirect_items_v2.push({
         from,
-        targets: [{ model: to, weight: 100, enabled: true }],
+        targets: targets.map(to => ({ model: to, weight: 100, enabled: true })),
       });
+      addedCount += targets.length;
     }
   });
 
-  message.success(t("keys.redirectRulesAdded", { count: Object.keys(redirectRules).length }));
+  message.success(t("keys.redirectRulesAdded", { count: addedCount }));
 }
 
 // Submit form
@@ -861,9 +981,30 @@ async function handleSubmit() {
     let modelRedirectRulesV2: Record<
       string,
       { targets: Array<{ model: string; weight?: number; enabled?: boolean }> }
-    > | null = null;
+    > = {};
 
-    const v2Json = modelRedirectItemsV2ToJson(formData.model_redirect_items_v2);
+    // Get V2 JSON based on edit mode
+    let v2Json: string;
+    if (modelRedirectEditMode.value === "json") {
+      // In JSON mode, use the raw JSON string directly
+      v2Json = modelRedirectJsonStr.value.trim();
+      if (v2Json && v2Json !== "{}") {
+        try {
+          // Validate JSON format
+          JSON.parse(v2Json);
+        } catch {
+          message.error(t("keys.modelRedirectInvalidJson"));
+          return;
+        }
+      } else {
+        // Empty or "{}" means clear all rules
+        v2Json = "";
+      }
+    } else {
+      // In GUI mode, convert items to JSON
+      v2Json = modelRedirectItemsV2ToJson(formData.model_redirect_items_v2);
+    }
+
     if (v2Json) {
       try {
         modelRedirectRulesV2 = JSON.parse(v2Json);
@@ -1012,7 +1153,7 @@ async function handleSubmit() {
       test_model: formData.test_model,
       validation_endpoint: formData.validation_endpoint,
       param_overrides: paramOverrides,
-      model_redirect_rules_v2: modelRedirectRulesV2 || undefined,
+      model_redirect_rules_v2: modelRedirectRulesV2,
       model_redirect_strict: formData.model_redirect_strict,
       config,
       header_rules: formData.header_rules
@@ -1623,7 +1764,7 @@ async function handleSubmit() {
                   </template>
 
                   <div class="model-redirect-wrapper">
-                    <!-- Header with description and fetch button -->
+                    <!-- Header with mode switch, description and fetch button -->
                     <div
                       style="
                         display: flex;
@@ -1632,10 +1773,22 @@ async function handleSubmit() {
                         margin-bottom: 12px;
                       "
                     >
-                      <div style="font-size: 12px; color: #999">
-                        {{ t("keys.modelRedirectWeightTooltip") }}
-                      </div>
+                      <n-button-group size="small">
+                        <n-button
+                          :type="modelRedirectEditMode === 'gui' ? 'primary' : 'default'"
+                          @click="switchModelRedirectEditMode('gui')"
+                        >
+                          {{ t("keys.visualEdit") }}
+                        </n-button>
+                        <n-button
+                          :type="modelRedirectEditMode === 'json' ? 'primary' : 'default'"
+                          @click="switchModelRedirectEditMode('json')"
+                        >
+                          {{ t("keys.jsonEdit") }}
+                        </n-button>
+                      </n-button-group>
                       <n-button
+                        v-if="modelRedirectEditMode === 'gui'"
                         size="small"
                         @click="fetchUpstreamModels"
                         :loading="fetchingModels"
@@ -1648,99 +1801,80 @@ async function handleSubmit() {
                       </n-button>
                     </div>
 
-                    <!-- V2 Rules List (one-to-many mapping with weights) -->
-                    <div class="model-redirect-v2-list">
-                      <div
-                        v-for="(rule, ruleIndex) in formData.model_redirect_items_v2"
-                        :key="ruleIndex"
-                        class="model-redirect-v2-rule"
-                      >
-                        <!-- Source model input -->
-                        <div class="model-redirect-v2-source">
-                          <n-input
-                            v-model:value="rule.from"
-                            :placeholder="t('keys.sourceModel')"
-                            size="small"
-                          />
-                          <n-button
-                            text
-                            type="error"
-                            size="small"
-                            @click="removeModelRedirectItemV2(ruleIndex)"
-                            style="margin-left: 8px"
-                          >
-                            <template #icon>
-                              <n-icon :component="Close" />
-                            </template>
-                          </n-button>
-                        </div>
-
-                        <!-- Target models with weights -->
-                        <div class="model-redirect-v2-targets">
-                          <div
-                            v-for="(target, targetIndex) in rule.targets"
-                            :key="targetIndex"
-                            class="model-redirect-v2-target"
-                          >
-                            <span class="redirect-arrow">→</span>
+                    <!-- GUI Mode: V2 Rules List (one-to-many mapping with weights) -->
+                    <template v-if="modelRedirectEditMode === 'gui'">
+                      <div style="font-size: 12px; color: #999; margin-bottom: 8px">
+                        {{ t("keys.modelRedirectWeightTooltip") }}
+                      </div>
+                      <div class="model-redirect-v2-list">
+                        <div
+                          v-for="(rule, ruleIndex) in formData.model_redirect_items_v2"
+                          :key="ruleIndex"
+                          class="model-redirect-v2-rule"
+                        >
+                          <!-- Source model input -->
+                          <div class="model-redirect-v2-source">
                             <n-input
-                              v-model:value="target.model"
-                              :placeholder="t('keys.targetModel')"
+                              v-model:value="rule.from"
+                              :placeholder="t('keys.sourceModel')"
                               size="small"
-                              style="flex: 2"
                             />
-                            <n-tooltip trigger="hover">
-                              <template #trigger>
-                                <n-input-number
-                                  v-model:value="target.weight"
-                                  :min="0"
-                                  :max="1000"
-                                  size="small"
-                                  style="width: 90px"
-                                  :placeholder="t('keys.modelRedirectWeight')"
-                                />
-                              </template>
-                              {{ t("keys.modelRedirectWeightTooltip") }}
-                            </n-tooltip>
-                            <span class="weight-percentage">
-                              {{ calculateWeightPercentage(rule.targets, targetIndex) }}
-                            </span>
-                            <!-- Dynamic weight indicator -->
-                            <n-tooltip
-                              v-if="getDynamicWeightInfo(rule.from, targetIndex)"
-                              trigger="hover"
+                            <n-button
+                              text
+                              type="error"
+                              size="small"
+                              @click="removeModelRedirectItemV2(ruleIndex)"
+                              style="margin-left: 8px"
                             >
-                              <template #trigger>
-                                <span
-                                  class="dynamic-weight-indicator"
-                                  :class="
-                                    getHealthScoreClass(
-                                      getDynamicWeightInfo(rule.from, targetIndex)?.health_score ??
-                                        1
-                                    )
-                                  "
-                                >
-                                  {{
-                                    Math.round(
-                                      (getDynamicWeightInfo(rule.from, targetIndex)?.health_score ??
-                                        1) * 100
-                                    )
-                                  }}%
-                                </span>
+                              <template #icon>
+                                <n-icon :component="Close" />
                               </template>
-                              <div class="dynamic-weight-tooltip">
-                                <div class="tooltip-title">{{ t("keys.dynamicWeight") }}</div>
-                                <div class="tooltip-row">
-                                  <span>{{ t("keys.effectiveWeight") }}:</span>
-                                  <span>
-                                    {{
-                                      getDynamicWeightInfo(rule.from, targetIndex)?.effective_weight
-                                    }}
+                            </n-button>
+                          </div>
+
+                          <!-- Target models with weights -->
+                          <div class="model-redirect-v2-targets">
+                            <div
+                              v-for="(target, targetIndex) in rule.targets"
+                              :key="targetIndex"
+                              class="model-redirect-v2-target"
+                            >
+                              <span class="redirect-arrow">→</span>
+                              <n-input
+                                v-model:value="target.model"
+                                :placeholder="t('keys.targetModel')"
+                                size="small"
+                                style="flex: 2"
+                              />
+                              <n-tooltip trigger="hover">
+                                <template #trigger>
+                                  <n-input-number
+                                    v-model:value="target.weight"
+                                    :min="0"
+                                    :max="1000"
+                                    size="small"
+                                    style="width: 90px"
+                                    :placeholder="t('keys.modelRedirectWeight')"
+                                  />
+                                </template>
+                                {{ t("keys.modelRedirectWeightTooltip") }}
+                              </n-tooltip>
+                              <n-tooltip trigger="hover">
+                                <template #trigger>
+                                  <span class="weight-percentage">
+                                    {{ calculateWeightPercentage(rule.targets, targetIndex) }}
                                   </span>
-                                </div>
-                                <div class="tooltip-row">
-                                  <span>{{ t("keys.healthScore") }}:</span>
+                                </template>
+                                {{ t("keys.modelRedirectWeightPercentageTooltip") }}
+                              </n-tooltip>
+                              <!-- Dynamic weight indicator -->
+                              <n-tooltip
+                                v-if="getDynamicWeightInfo(rule.from, targetIndex)"
+                                trigger="hover"
+                              >
+                                <template #trigger>
                                   <span
+                                    class="dynamic-weight-indicator"
                                     :class="
                                       getHealthScoreClass(
                                         getDynamicWeightInfo(rule.from, targetIndex)
@@ -1755,68 +1889,122 @@ async function handleSubmit() {
                                       )
                                     }}%
                                   </span>
-                                </div>
-                                <div class="tooltip-row">
-                                  <span>{{ t("keys.successRate") }}:</span>
-                                  <span>
-                                    {{
-                                      (
+                                </template>
+                                <div class="dynamic-weight-tooltip">
+                                  <div class="tooltip-title">{{ t("keys.dynamicWeight") }}</div>
+                                  <div class="tooltip-row">
+                                    <span>{{ t("keys.effectiveWeight") }}:</span>
+                                    <span>
+                                      {{
                                         getDynamicWeightInfo(rule.from, targetIndex)
-                                          ?.success_rate ?? 0
-                                      ).toFixed(1)
-                                    }}%
-                                  </span>
+                                          ?.effective_weight
+                                      }}
+                                    </span>
+                                  </div>
+                                  <div class="tooltip-row">
+                                    <span>{{ t("keys.healthScore") }}:</span>
+                                    <span
+                                      :class="
+                                        getHealthScoreClass(
+                                          getDynamicWeightInfo(rule.from, targetIndex)
+                                            ?.health_score ?? 1
+                                        )
+                                      "
+                                    >
+                                      {{
+                                        Math.round(
+                                          (getDynamicWeightInfo(rule.from, targetIndex)
+                                            ?.health_score ?? 1) * 100
+                                        )
+                                      }}%
+                                    </span>
+                                  </div>
+                                  <div class="tooltip-row">
+                                    <span>{{ t("keys.successRate") }}:</span>
+                                    <span>
+                                      {{
+                                        (
+                                          getDynamicWeightInfo(rule.from, targetIndex)
+                                            ?.success_rate ?? 0
+                                        ).toFixed(1)
+                                      }}%
+                                    </span>
+                                  </div>
+                                  <div class="tooltip-row">
+                                    <span>{{ t("keys.requestCount") }}:</span>
+                                    <span>
+                                      {{
+                                        getDynamicWeightInfo(rule.from, targetIndex)
+                                          ?.request_count ?? 0
+                                      }}
+                                    </span>
+                                  </div>
                                 </div>
-                                <div class="tooltip-row">
-                                  <span>{{ t("keys.requestCount") }}:</span>
-                                  <span>
-                                    {{
-                                      getDynamicWeightInfo(rule.from, targetIndex)?.request_count ??
-                                      0
-                                    }}
-                                  </span>
-                                </div>
-                              </div>
-                            </n-tooltip>
-                            <n-switch
-                              v-model:value="target.enabled"
-                              size="small"
-                              style="margin-left: 4px"
-                            />
+                              </n-tooltip>
+                              <n-switch
+                                v-model:value="target.enabled"
+                                size="small"
+                                style="margin-left: 4px"
+                              />
+                              <n-button
+                                v-if="rule.targets.length > 1"
+                                text
+                                type="error"
+                                size="small"
+                                @click="removeTargetFromRedirectRule(ruleIndex, targetIndex)"
+                                style="margin-left: 4px"
+                              >
+                                <template #icon>
+                                  <n-icon :component="Remove" />
+                                </template>
+                              </n-button>
+                            </div>
                             <n-button
-                              v-if="rule.targets.length > 1"
-                              text
-                              type="error"
+                              dashed
                               size="small"
-                              @click="removeTargetFromRedirectRule(ruleIndex, targetIndex)"
-                              style="margin-left: 4px"
+                              @click="addTargetToRedirectRule(ruleIndex)"
+                              style="margin-top: 4px; margin-left: 24px"
                             >
                               <template #icon>
-                                <n-icon :component="Remove" />
+                                <n-icon :component="Add" />
                               </template>
+                              {{ t("keys.modelRedirectAddTarget") }}
                             </n-button>
                           </div>
-                          <n-button
-                            dashed
-                            size="small"
-                            @click="addTargetToRedirectRule(ruleIndex)"
-                            style="margin-top: 4px; margin-left: 24px"
-                          >
-                            <template #icon>
-                              <n-icon :component="Add" />
-                            </template>
-                            {{ t("keys.modelRedirectAddTarget") }}
-                          </n-button>
                         </div>
                       </div>
-                    </div>
 
-                    <n-button dashed block @click="addModelRedirectItemV2" style="margin-top: 12px">
-                      <template #icon>
-                        <n-icon :component="Add" />
-                      </template>
-                      {{ t("keys.addModelRedirect") }}
-                    </n-button>
+                      <n-button
+                        dashed
+                        block
+                        @click="addModelRedirectItemV2"
+                        style="margin-top: 12px"
+                      >
+                        <template #icon>
+                          <n-icon :component="Add" />
+                        </template>
+                        {{ t("keys.addModelRedirect") }}
+                      </n-button>
+                    </template>
+
+                    <!-- JSON Mode: Raw JSON editor -->
+                    <template v-else>
+                      <n-input
+                        v-model:value="modelRedirectJsonStr"
+                        type="textarea"
+                        placeholder='{"gpt-4": {"targets": [{"model": "gpt-4-turbo", "weight": 100}]}}'
+                        :rows="12"
+                        :status="modelRedirectJsonError ? 'error' : undefined"
+                        @input="validateModelRedirectJson"
+                        style="font-family: monospace"
+                      />
+                      <div
+                        v-if="modelRedirectJsonError"
+                        style="color: #d03050; font-size: 12px; margin-top: 4px"
+                      >
+                        {{ modelRedirectJsonError }}
+                      </div>
+                    </template>
                   </div>
                 </n-form-item>
               </div>
