@@ -632,18 +632,27 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	if isCCSupportEnabled(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
-		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+
+		// Use channel-specific path rewriting
+		// Gemini uses /v1beta, others use /v1
+		if group.ChannelType == "gemini" {
+			c.Request.URL.Path = rewriteClaudePathToGemini(c.Request.URL.Path)
+		} else {
+			c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		}
+
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
 		sanitizeCCQueryParams(c.Request.URL)
 		c.Set("cc_was_claude_path", true)
 		logrus.WithFields(logrus.Fields{
 			"group":           group.Name,
+			"channel_type":    group.ChannelType,
 			"original_path":   originalPath,
 			"new_path":        c.Request.URL.Path,
 			"original_query":  originalQuery,
 			"sanitized_query": c.Request.URL.RawQuery,
-		}).Debug("CC support: rewritten Claude path to OpenAI path and sanitized query params")
+		}).Debug("CC support: rewritten Claude path for channel type and sanitized query params")
 	}
 
 	if c.Request.Method == "GET" || len(bodyBytes) == 0 {
@@ -1286,7 +1295,15 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if isCCSupportEnabled(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
-		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+
+		// Use channel-specific path rewriting
+		// Gemini uses /v1beta, others use /v1
+		if group.ChannelType == "gemini" {
+			c.Request.URL.Path = rewriteClaudePathToGemini(c.Request.URL.Path)
+		} else {
+			c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		}
+
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
 		sanitizeCCQueryParams(c.Request.URL)
@@ -1294,19 +1311,23 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		logrus.WithFields(logrus.Fields{
 			"aggregate_group": originalGroup.Name,
 			"sub_group":       group.Name,
+			"channel_type":    group.ChannelType,
 			"original_path":   originalPath,
 			"new_path":        c.Request.URL.Path,
 			"original_query":  originalQuery,
 			"sanitized_query": c.Request.URL.RawQuery,
-		}).Debug("CC support: rewritten Claude path for sub-group and sanitized query params")
+		}).Debug("CC support: rewritten Claude path for sub-group channel type and sanitized query params")
 	}
 
 	// Convert Claude messages request to target format (OpenAI, Codex, or Gemini)
-	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
+	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages (or /v1beta/messages for Gemini)
 	// Clear any stale Codex CC state from previous sub-group attempts
 	c.Set(ctxKeyCodexCC, false)
 	c.Set(ctxKeyGeminiCC, false)
-	if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+	// Check for both /v1/messages (OpenAI, Codex, Anthropic) and /v1beta/messages (Gemini)
+	isMessagesEndpoint := strings.HasSuffix(c.Request.URL.Path, "/v1/messages") ||
+		strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")
+	if isCCSupportEnabled(group) && isMessagesEndpoint {
 		// Handle Codex channel CC support (Claude -> Codex/Responses API)
 		if group.ChannelType == "codex" {
 			// Sanitize query parameters for Codex CC (remove Claude-specific params like beta=true)

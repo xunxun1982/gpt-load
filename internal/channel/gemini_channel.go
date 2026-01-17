@@ -37,13 +37,32 @@ func newGeminiChannel(f *Factory, group *models.Group) (ChannelProxy, error) {
 }
 
 // ModifyRequest adds the API key as a query parameter for Gemini requests.
+// Supports both native Gemini format (key parameter) and OpenAI-compatible format (Bearer token).
+// For native format, also sets x-goog-api-key header as fallback for proxies that don't support query params.
 func (ch *GeminiChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey, group *models.Group) {
 	if strings.Contains(req.URL.Path, "v1beta/openai") {
+		// OpenAI-compatible format: use Bearer token
 		req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
+		logrus.WithFields(logrus.Fields{
+			"path":    req.URL.Path,
+			"auth":    "Bearer",
+			"channel": "gemini",
+		}).Debug("Using Bearer authentication for OpenAI-compatible endpoint")
 	} else {
+		// Native Gemini format: use key query parameter (primary) and x-goog-api-key header (fallback)
 		q := req.URL.Query()
 		q.Set("key", apiKey.KeyValue)
 		req.URL.RawQuery = q.Encode()
+
+		// Also set x-goog-api-key header as fallback for proxies that strip query parameters
+		req.Header.Set("x-goog-api-key", apiKey.KeyValue)
+
+		logrus.WithFields(logrus.Fields{
+			"path":    req.URL.Path,
+			"auth":    "key+header",
+			"channel": "gemini",
+			"url":     req.URL.String(),
+		}).Debug("Using key parameter and x-goog-api-key header for native Gemini endpoint")
 	}
 }
 

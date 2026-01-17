@@ -33,6 +33,17 @@ func isGeminiCCMode(c *gin.Context) bool {
 	return false
 }
 
+// rewriteClaudePathToGemini removes the /claude segment and converts to Gemini v1beta path.
+// This is specific to Gemini CC support which uses /v1beta instead of /v1.
+// Examples:
+//   - /proxy/{group}/claude/v1/models -> /proxy/{group}/v1beta/models
+//   - /proxy/{group}/claude/v1/messages -> /proxy/{group}/v1beta/messages
+//   - /proxy/claude/claude/v1/models -> /proxy/claude/v1beta/models
+func rewriteClaudePathToGemini(path string) string {
+	// Replace /claude/v1 with /v1beta for Gemini API compatibility
+	return strings.Replace(path, "/claude/v1", "/v1beta", 1)
+}
+
 // Context key for Gemini CC mode
 const ctxKeyGeminiCC = "gemini_cc"
 
