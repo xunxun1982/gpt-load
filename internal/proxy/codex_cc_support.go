@@ -907,7 +907,8 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 	// Pass both V1 and V2 maps for backward compatibility with un-migrated groups
 	// This ensures the model name in the request body matches the redirect configuration
 	if originalModel != "" {
-		if len(group.ModelRedirectMapV2) > 0 {
+		// Check if either V1 or V2 redirect maps are configured to support both legacy and new formats
+		if len(group.ModelRedirectMapV2) > 0 || len(group.ModelRedirectMap) > 0 {
 			targetModel, _, _, _, err := models.ResolveTargetModelWithIndex(
 				originalModel,
 				group.ModelRedirectMap, // Pass V1 map for backward compatibility

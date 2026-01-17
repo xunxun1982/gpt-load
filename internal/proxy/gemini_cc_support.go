@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -560,7 +561,8 @@ func (ps *ProxyServer) applyGeminiCCRequestConversion(
 	// Pass both V1 and V2 maps for backward compatibility with un-migrated groups
 	// This ensures the model name in the URL path matches the redirect configuration
 	if originalModel != "" {
-		if len(group.ModelRedirectMapV2) > 0 {
+		// Check if either V1 or V2 redirect maps are configured to support both legacy and new formats
+		if len(group.ModelRedirectMapV2) > 0 || len(group.ModelRedirectMap) > 0 {
 			targetModel, _, _, _, err := models.ResolveTargetModelWithIndex(
 				originalModel,
 				group.ModelRedirectMap, // Pass V1 map for backward compatibility
@@ -692,6 +694,7 @@ func (ps *ProxyServer) handleGeminiCCNormalResponse(c *gin.Context, resp *http.R
 	// Track original encoding and decompression state
 	origEncoding := resp.Header.Get("Content-Encoding")
 	decompressed := false
+	originalBodyBytes := bodyBytes // Save original bytes to detect actual decompression
 
 	// Decompress response body if encoded
 	bodyBytes, err = utils.DecompressResponseWithLimit(origEncoding, bodyBytes, maxUpstreamResponseBodySize)
@@ -714,7 +717,14 @@ func (ps *ProxyServer) handleGeminiCCNormalResponse(c *gin.Context, resp *http.R
 		}
 		logrus.WithError(err).Warn("Gemini CC: Decompression failed, using original data")
 	} else if origEncoding != "" {
-		decompressed = true
+		// Only mark as decompressed if bytes actually changed (decompression succeeded)
+		// DecompressResponseWithLimit may return original bytes for unsupported encodings
+		if len(bodyBytes) != len(originalBodyBytes) {
+			decompressed = true
+		} else {
+			// Use bytes.Equal for accurate comparison when lengths match
+			decompressed = !bytes.Equal(bodyBytes, originalBodyBytes)
+		}
 	}
 
 	// Parse Gemini response
