@@ -190,10 +190,10 @@ func (ch *GeminiChannel) applyNativeFormatRedirectWithIndex(req *http.Request, b
 			modelPart := parts[i+1]
 			originalModel := strings.Split(modelPart, ":")[0]
 
-			// Resolve target model (V2 only) with index tracking
-			// V1 rules are migrated to V2 during group create/update, pass nil for V1
+			// Resolve target model with index tracking
+			// Pass both V1 and V2 maps for backward compatibility with un-migrated groups
 			targetModel, ruleVersion, targetCount, selectedIdx, err := models.ResolveTargetModelWithIndex(
-				originalModel, nil, group.ModelRedirectMapV2, modelRedirectSelector,
+				originalModel, group.ModelRedirectMap, group.ModelRedirectMapV2, modelRedirectSelector,
 			)
 			if err != nil {
 				return nil, "", -1, fmt.Errorf("failed to select target model: %w", err)

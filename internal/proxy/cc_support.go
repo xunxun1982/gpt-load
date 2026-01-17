@@ -1557,6 +1557,22 @@ func looksLikeWindowsPath(s string) bool {
 // This distinguishes Git Bash paths from real Unix paths like /home/, /usr/, /var/
 var reGitBashPath = regexp.MustCompile(`^/([a-zA-Z])/`)
 
+// reGitBashPathInCommand matches Git Bash paths embedded in command strings
+// Pattern matches /[a-z]/ followed by path components (non-whitespace, non-quote)
+var reGitBashPathInCommand = regexp.MustCompile(`/([a-zA-Z])/[^\s"']+`)
+
+// reWindowsPathNormal matches normal Windows paths with backslashes (C:\path\file.txt)
+var reWindowsPathNormal = regexp.MustCompile(`[A-Za-z]:\\[^\s\n\r"'<>|]+`)
+
+// reWindowsPathCorrupted matches Windows paths where backslashes may have been corrupted
+// This happens when JSON escape sequences like \t, \n are interpreted as tab, newline, etc.
+var reWindowsPathCorrupted = regexp.MustCompile(`[A-Za-z]:[^ \n\r"'<>|]+`)
+
+// reWindowsDrivePath matches Windows drive letter paths (e.g., "C:", "F:")
+// This pattern finds the start of a Windows path within a command string.
+// The path may contain control characters where backslashes were incorrectly interpreted.
+var reWindowsDrivePath = regexp.MustCompile(`[A-Za-z]:`)
+
 // isLikelyGitBashPath returns true if the path looks like a Git Bash/MSYS2 path
 // Git Bash paths have the pattern /[single-letter]/ (e.g., /c/, /f/, /d/)
 // This is distinct from Unix paths which typically start with /home/, /usr/, /var/, /etc/
@@ -1654,11 +1670,7 @@ func fixGitBashPathsInArgs(args map[string]interface{}) {
 // Example: "python /f/MyProjects/test/file.py" -> "python F:\MyProjects\test\file.py"
 // Only converts paths that match the Git Bash pattern to avoid breaking real Unix paths
 func convertGitBashPathsInCommand(cmd string) string {
-	// Use regex to find all potential Git Bash paths in the command
-	// Pattern matches /[a-z]/ followed by path components (non-whitespace, non-quote)
-	pathPattern := regexp.MustCompile(`/([a-zA-Z])/[^\s"']+`)
-
-	return pathPattern.ReplaceAllStringFunc(cmd, func(match string) string {
+	return reGitBashPathInCommand.ReplaceAllStringFunc(cmd, func(match string) string {
 		// Only convert if it looks like a Git Bash path
 		if isLikelyGitBashPath(match) {
 			return convertGitBashPathToWindows(match)
@@ -1743,19 +1755,12 @@ func convertWindowsPathsInToolResult(content string) string {
 	}
 
 	// Pattern 1: Normal Windows paths with backslashes (C:\path\file.txt)
-	// Pattern: drive letter followed by colon and backslash, then path components
-	pathPattern1 := regexp.MustCompile(`[A-Za-z]:\\[^\s\n\r"'<>|]+`)
-	content = pathPattern1.ReplaceAllStringFunc(content, func(match string) string {
+	content = reWindowsPathNormal.ReplaceAllStringFunc(content, func(match string) string {
 		return convertWindowsPathToUnixStyle(match)
 	})
 
 	// Pattern 2: Corrupted Windows paths where backslashes were interpreted as control characters
-	// This happens when JSON escape sequences like \t, \n are interpreted as tab, newline, etc.
-	// Example: "F:\MyProjects\test\..." becomes "F:MyProjects<tab>est..." where <tab> is a real tab character
-	// We need to match: drive letter + colon + any characters except space, newline, and certain delimiters
-	// Match all characters including tab (\t), but stop at space, newline (\n), and carriage return (\r)
-	pathPattern2 := regexp.MustCompile(`[A-Za-z]:[^ \n\r"'<>|]+`)
-	content = pathPattern2.ReplaceAllStringFunc(content, func(match string) string {
+	content = reWindowsPathCorrupted.ReplaceAllStringFunc(content, func(match string) string {
 		// Check if this looks like a corrupted path (no separator after colon)
 		if len(match) > 2 && match[2] != '/' && match[2] != '\\' {
 			// This is a corrupted path like "F:MyProjects..." or "F:MyProjects<tab>est..."
@@ -1791,7 +1796,7 @@ func convertWindowsPathsInToolResult(content string) string {
 // reWindowsDrivePath matches Windows drive letter paths (e.g., "C:", "F:")
 // This pattern finds the start of a Windows path within a command string.
 // The path may contain control characters where backslashes were incorrectly interpreted.
-var reWindowsDrivePath = regexp.MustCompile(`[A-Za-z]:`)
+// NOTE: This variable is declared at package level above for performance (avoid regex recompilation)
 
 // containsWindowsDrivePath returns true if the string contains a Windows drive letter pattern.
 // This is used to detect embedded Windows paths in any string value, regardless of key name.
