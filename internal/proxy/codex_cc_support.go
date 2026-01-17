@@ -1414,9 +1414,6 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				// Clean up WebSearch tool arguments for upstream compatibility
 				argsStr = cleanToolCallArguments(toolName, argsStr)
 
-				// Clean up WebSearch tool arguments for upstream compatibility
-				argsStr = cleanToolCallArguments(toolName, argsStr)
-
 				// NOTE: Do NOT call doubleEscapeWindowsPathsForBash here!
 				// This is response conversion (upstream→Claude), not request conversion (Claude→upstream).
 				// The upstream response already has correct path format, we should not modify it.

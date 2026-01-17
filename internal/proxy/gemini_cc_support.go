@@ -154,9 +154,25 @@ func convertClaudeToGemini(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	}
 
 	// Convert system message to systemInstruction
+	// Handle both string and array of content blocks formats
 	if len(claudeReq.System) > 0 {
 		var systemContent string
-		if err := json.Unmarshal(claudeReq.System, &systemContent); err == nil {
+		// Try to unmarshal as string first
+		if err := json.Unmarshal(claudeReq.System, &systemContent); err != nil {
+			// System might be an array of content blocks
+			var systemBlocks []ClaudeContentBlock
+			if err := json.Unmarshal(claudeReq.System, &systemBlocks); err == nil {
+				var sb strings.Builder
+				for _, block := range systemBlocks {
+					if block.Type == "text" {
+						sb.WriteString(block.Text)
+					}
+				}
+				systemContent = sb.String()
+			}
+		}
+		// Set systemInstruction only if we have content
+		if systemContent != "" {
 			geminiReq.SystemInstruction = &GeminiContent{
 				Role: "user",
 				Parts: []GeminiPart{
@@ -388,10 +404,17 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 
 // convertGeminiToClaudeResponse converts Gemini response to Claude format
 func convertGeminiToClaudeResponse(geminiResp *GeminiResponse, reverseToolNameMap map[string]string) *ClaudeResponse {
+	// Extract model from response, fallback to "gemini" if not available
+	model := geminiResp.ModelVersion
+	if model == "" {
+		model = "gemini"
+	}
+
 	claudeResp := &ClaudeResponse{
 		ID:      "msg_" + uuid.New().String()[:8],
 		Type:    "message",
 		Role:    "assistant",
+		Model:   model,
 		Content: make([]ClaudeContentBlock, 0),
 	}
 
