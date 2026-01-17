@@ -310,9 +310,10 @@ func (b *BaseChannel) ApplyModelRedirectWithIndex(req *http.Request, bodyBytes [
 		return bodyBytes, "", -1, nil
 	}
 
-	// Resolve target model (V2 first, then V1) with index tracking
+	// Resolve target model (V2 only) with index tracking
+	// V1 rules are migrated to V2 during group create/update, pass nil for V1
 	targetModel, ruleVersion, targetCount, selectedIdx, err := models.ResolveTargetModelWithIndex(
-		model, group.ModelRedirectMap, group.ModelRedirectMapV2, modelRedirectSelector,
+		model, nil, group.ModelRedirectMapV2, modelRedirectSelector,
 	)
 	if err != nil {
 		return nil, "", -1, fmt.Errorf("failed to select target model: %w", err)

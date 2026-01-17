@@ -49,6 +49,15 @@ const maxUpstreamResponseBodySize = 32 * 1024 * 1024
 
 var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum allowed size")
 
+// ccModelRedirectSelector is a shared selector instance for V2 rules in CC mode.
+// Stateless, safe for concurrent use.
+var ccModelRedirectSelector = models.NewModelRedirectSelector(utils.WeightedRandomSelect)
+
+// getModelRedirectSelector returns the shared model redirect selector for CC mode.
+func getModelRedirectSelector() *models.ModelRedirectSelector {
+	return ccModelRedirectSelector
+}
+
 // isValidToolCallArguments checks if tool call arguments are valid (not empty or just "{}").
 // Some upstream models (especially in thinking mode like deepseek-reasoner) may return
 // tool_calls with empty arguments as placeholders during reasoning. These should be
@@ -165,10 +174,10 @@ func getGroupConfigString(group *models.Group, key string) string {
 
 // isCCSupportEnabled checks whether the cc_support flag is enabled for the given group.
 // This flag is stored in the group-level JSON config.
-// Supports both OpenAI and Codex channel types.
+// Supports OpenAI, Codex, and Gemini channel types.
 func isCCSupportEnabled(group *models.Group) bool {
-	// Enable CC support for OpenAI and Codex channel groups.
-	if group == nil || (group.ChannelType != "openai" && group.ChannelType != "codex") {
+	// Enable CC support for OpenAI, Codex, and Gemini channel groups.
+	if group == nil || (group.ChannelType != "openai" && group.ChannelType != "codex" && group.ChannelType != "gemini") {
 		return false
 	}
 	return getGroupConfigBool(group, "cc_support")
@@ -905,6 +914,37 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	if originalModel != "" {
 		if _, exists := c.Get("original_model"); !exists {
 			c.Set("original_model", originalModel)
+		}
+	}
+
+	// Apply model redirect rules (V2) for OpenAI CC mode
+	// V1 rules are migrated to V2 during group create/update, runtime code checks both for backward compatibility
+	// This ensures the model name in the request body matches the redirect configuration
+	if originalModel != "" {
+		if len(group.ModelRedirectMapV2) > 0 {
+			targetModel, _, _, _, err := models.ResolveTargetModelWithIndex(
+				originalModel,
+				nil, // V1 rules are migrated to V2, pass nil
+				group.ModelRedirectMapV2,
+				getModelRedirectSelector(),
+			)
+			if err != nil {
+				return bodyBytes, false, fmt.Errorf("failed to resolve target model: %w", err)
+			}
+			if targetModel != "" && targetModel != originalModel {
+				claudeReq.Model = targetModel
+				logrus.WithFields(logrus.Fields{
+					"group":          group.Name,
+					"original_model": originalModel,
+					"target_model":   targetModel,
+				}).Debug("CC: Applied model redirect")
+			} else if targetModel == "" && group.ModelRedirectStrict {
+				// Strict mode: model not found in redirect rules
+				return bodyBytes, false, fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)
+			}
+		} else if group.ModelRedirectStrict {
+			// Strict mode with no redirect rules configured
+			return bodyBytes, false, fmt.Errorf("model '%s' is not configured in redirect rules (no rules defined)", originalModel)
 		}
 	}
 
@@ -2977,11 +3017,34 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		"trigger_signal": triggerSignal,
 	}).Debug("CC: Started streaming response")
 
+	// Handle gzip/deflate/br decompression for streaming response
+	// OpenAI API may return gzip-compressed streaming responses
+	bodyReader := resp.Body
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	if contentEncoding != "" {
+		var err error
+		bodyReader, err = utils.NewDecompressReader(contentEncoding, resp.Body)
+		if err != nil {
+			logrus.WithError(err).WithField("content_encoding", contentEncoding).
+				Warn("CC: Failed to create decompression reader, using original body")
+			bodyReader = resp.Body
+		} else {
+			logrus.WithField("content_encoding", contentEncoding).
+				Debug("CC: Created decompression reader for streaming response")
+			// Ensure decompression reader is closed
+			defer func() {
+				if closer, ok := bodyReader.(io.Closer); ok && closer != resp.Body {
+					closer.Close()
+				}
+			}()
+		}
+	}
+
 	// Use timeout-enabled SSE reader for CC support to prevent hanging when
 	// upstream models (e.g., deepseek-reasoner) are in thinking phase without sending data.
 	// Timeout values are derived from group/system config with preset upper bounds.
 	firstByteTimeout, subsequentTimeout := getEffectiveSSETimeouts(c)
-	reader := NewSSEReaderWithTimeout(resp.Body, firstByteTimeout, subsequentTimeout)
+	reader := NewSSEReaderWithTimeout(bodyReader, firstByteTimeout, subsequentTimeout)
 	contentBlockIndex := 0
 	var currentToolCall *OpenAIToolCall
 	var currentToolCallName string

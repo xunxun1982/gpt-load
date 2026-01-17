@@ -179,6 +179,90 @@ func (z *ZstdDecompressor) NewReader(data []byte) (io.Reader, func(), error) {
 // and avoids the overhead of fmt.Errorf when no formatting is needed.
 var ErrDecompressedTooLarge = errors.New("decompressed data exceeds maximum allowed size")
 
+// compositeReadCloser wraps a reader with multiple closers
+type compositeReadCloser struct {
+	io.Reader
+	closers []func() error
+}
+
+// Close calls all closers in order
+func (c *compositeReadCloser) Close() error {
+	var firstErr error
+	for _, closer := range c.closers {
+		if err := closer(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// NewDecompressReader creates a decompression reader for streaming responses.
+// It wraps the original reader with the appropriate decompression reader based on Content-Encoding.
+// The returned reader must be closed by the caller.
+// Supports: gzip, deflate, br (brotli), zstd
+func NewDecompressReader(contentEncoding string, body io.ReadCloser) (io.ReadCloser, error) {
+	if contentEncoding == "" || contentEncoding == "identity" {
+		return body, nil
+	}
+
+	switch contentEncoding {
+	case "gzip":
+		gzipReader, err := gzip.NewReader(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		return &compositeReadCloser{
+			Reader: gzipReader,
+			closers: []func() error{
+				gzipReader.Close,
+				body.Close,
+			},
+		}, nil
+
+	case "deflate":
+		deflateReader, err := zlib.NewReader(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create deflate reader: %w", err)
+		}
+		return &compositeReadCloser{
+			Reader: deflateReader,
+			closers: []func() error{
+				deflateReader.Close,
+				body.Close,
+			},
+		}, nil
+
+	case "br":
+		brotliReader := brotli.NewReader(body)
+		return &compositeReadCloser{
+			Reader: brotliReader,
+			closers: []func() error{
+				body.Close,
+			},
+		}, nil
+
+	case "zstd":
+		zstdReader, err := zstd.NewReader(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+		}
+		return &compositeReadCloser{
+			Reader: zstdReader,
+			closers: []func() error{
+				func() error {
+					zstdReader.Close()
+					return nil
+				},
+				body.Close,
+			},
+		}, nil
+
+	default:
+		logrus.Warnf("Unsupported content encoding '%s', returning original body", contentEncoding)
+		return body, nil
+	}
+}
+
 // DecompressResponseWithLimit decompresses response data with a size limit to prevent memory exhaustion.
 // This uses io.LimitReader to stop decompression early when the limit is reached, preventing zip bomb attacks.
 // Returns ErrDecompressedTooLarge if the decompressed size exceeds maxSize.

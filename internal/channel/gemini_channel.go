@@ -190,9 +190,10 @@ func (ch *GeminiChannel) applyNativeFormatRedirectWithIndex(req *http.Request, b
 			modelPart := parts[i+1]
 			originalModel := strings.Split(modelPart, ":")[0]
 
-			// Resolve target model (V2 first, then V1) with index tracking
+			// Resolve target model (V2 only) with index tracking
+			// V1 rules are migrated to V2 during group create/update, pass nil for V1
 			targetModel, ruleVersion, targetCount, selectedIdx, err := models.ResolveTargetModelWithIndex(
-				originalModel, group.ModelRedirectMap, group.ModelRedirectMapV2, modelRedirectSelector,
+				originalModel, nil, group.ModelRedirectMapV2, modelRedirectSelector,
 			)
 			if err != nil {
 				return nil, "", -1, fmt.Errorf("failed to select target model: %w", err)
@@ -320,24 +321,34 @@ func buildConfiguredGeminiModelsFromRules(v1Map map[string]string, v2Map map[str
 			modelName = "models/" + sourceModel
 		}
 
+		// Extract clean name without "models/" prefix for displayName and description
+		cleanName := strings.TrimPrefix(modelName, "models/")
+
 		result = append(result, map[string]any{
 			"name":                       modelName,
-			"displayName":                sourceModel,
+			"displayName":                cleanName,
+			"description":                cleanName,
 			"supportedGenerationMethods": []string{"generateContent"},
 		})
 	}
 	return result
 }
 
-// mergeGeminiModelLists merges upstream and configured model lists for Gemini format
+// mergeGeminiModelLists merges upstream and configured model lists for Gemini format.
+// Upstream models take priority to avoid duplicates.
 func mergeGeminiModelLists(upstream []any, configured []any) []any {
 	upstreamNames := make(map[string]bool)
 	for _, item := range upstream {
 		if modelObj, ok := item.(map[string]any); ok {
 			if modelName, ok := modelObj["name"].(string); ok {
+				// Store both full name and clean name for matching
 				upstreamNames[modelName] = true
 				cleanName := strings.TrimPrefix(modelName, "models/")
 				upstreamNames[cleanName] = true
+				// Also store with "models/" prefix if not already present
+				if !strings.HasPrefix(modelName, "models/") {
+					upstreamNames["models/"+modelName] = true
+				}
 			}
 		}
 	}
@@ -351,7 +362,13 @@ func mergeGeminiModelLists(upstream []any, configured []any) []any {
 		if modelObj, ok := item.(map[string]any); ok {
 			if modelName, ok := modelObj["name"].(string); ok {
 				cleanName := strings.TrimPrefix(modelName, "models/")
-				if !upstreamNames[modelName] && !upstreamNames[cleanName] {
+				prefixedName := modelName
+				if !strings.HasPrefix(modelName, "models/") {
+					prefixedName = "models/" + modelName
+				}
+
+				// Check all possible name variations to avoid duplicates
+				if !upstreamNames[modelName] && !upstreamNames[cleanName] && !upstreamNames[prefixedName] {
 					result = append(result, item)
 				}
 			}

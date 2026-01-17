@@ -890,6 +890,37 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 		}
 	}
 
+	// Apply model redirect rules (V2) for Codex CC mode
+	// V1 rules are migrated to V2 during group create/update, runtime code checks both for backward compatibility
+	// This ensures the model name in the request body matches the redirect configuration
+	if originalModel != "" {
+		if len(group.ModelRedirectMapV2) > 0 {
+			targetModel, _, _, _, err := models.ResolveTargetModelWithIndex(
+				originalModel,
+				nil, // V1 rules are migrated to V2, pass nil
+				group.ModelRedirectMapV2,
+				getModelRedirectSelector(),
+			)
+			if err != nil {
+				return bodyBytes, false, fmt.Errorf("failed to resolve target model: %w", err)
+			}
+			if targetModel != "" && targetModel != originalModel {
+				claudeReq.Model = targetModel
+				logrus.WithFields(logrus.Fields{
+					"group":          group.Name,
+					"original_model": originalModel,
+					"target_model":   targetModel,
+				}).Debug("Codex CC: Applied model redirect")
+			} else if targetModel == "" && group.ModelRedirectStrict {
+				// Strict mode: model not found in redirect rules
+				return bodyBytes, false, fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)
+			}
+		} else if group.ModelRedirectStrict {
+			// Strict mode with no redirect rules configured
+			return bodyBytes, false, fmt.Errorf("model '%s' is not configured in redirect rules (no rules defined)", originalModel)
+		}
+	}
+
 	// Auto-select thinking model when thinking mode is enabled.
 	// AI REVIEW NOTE: Suggestion to validate thinking model against a supported list was considered.
 	// This is intentionally NOT implemented because:
@@ -1615,10 +1646,10 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http.Response) {
 	// Log response headers for debugging
 	logrus.WithFields(logrus.Fields{
-		"content_type":     resp.Header.Get("Content-Type"),
-		"content_encoding": resp.Header.Get("Content-Encoding"),
+		"content_type":      resp.Header.Get("Content-Type"),
+		"content_encoding":  resp.Header.Get("Content-Encoding"),
 		"transfer_encoding": resp.Header.Get("Transfer-Encoding"),
-		"status_code":      resp.StatusCode,
+		"status_code":       resp.StatusCode,
 	}).Debug("Codex CC: Streaming response headers")
 
 	// Set streaming headers
@@ -1644,7 +1675,31 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	// Get tool name reverse map from context for restoring original tool names
 	reverseToolNameMap := getCodexToolNameReverseMap(c)
 	state := newCodexStreamState(reverseToolNameMap)
-	reader := bufio.NewReader(resp.Body)
+
+	// Handle gzip/deflate/br decompression for streaming response
+	// Codex API may return gzip-compressed streaming responses
+	reader := resp.Body
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	if contentEncoding != "" {
+		var err error
+		reader, err = utils.NewDecompressReader(contentEncoding, resp.Body)
+		if err != nil {
+			logrus.WithError(err).WithField("content_encoding", contentEncoding).
+				Warn("Codex CC: Failed to create decompression reader, using original body")
+			reader = resp.Body
+		} else {
+			logrus.WithField("content_encoding", contentEncoding).
+				Debug("Codex CC: Created decompression reader for streaming response")
+			// Ensure decompression reader is closed
+			defer func() {
+				if closer, ok := reader.(io.Closer); ok && closer != resp.Body {
+					closer.Close()
+				}
+			}()
+		}
+	}
+
+	bufReader := bufio.NewReader(reader)
 
 	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
 	// Timeout values are derived from group/system config with preset upper bounds.
@@ -1700,7 +1755,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		resultCh := make(chan readResult, 1)
 
 		go func() {
-			line, err := reader.ReadString('\n')
+			line, err := bufReader.ReadString('\n')
 			resultCh <- readResult{line: line, err: err}
 		}()
 

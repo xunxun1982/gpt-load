@@ -21,9 +21,13 @@ const props = withDefaults(defineProps<Props>(), {
 const { t } = useI18n();
 
 const trimmedLabel = computed(() => props.label.trim());
-// Show CC badge for both OpenAI and Codex channels when CC support is enabled
+// Show CC badge for OpenAI, Codex, and Gemini channels when CC support is enabled
 const showCCBadge = computed(
-  () => (props.channelType === "openai" || props.channelType === "codex") && props.ccSupport
+  () =>
+    (props.channelType === "openai" ||
+      props.channelType === "codex" ||
+      props.channelType === "gemini") &&
+    props.ccSupport
 );
 </script>
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"gpt-load/internal/channel"
 	"gpt-load/internal/models"
 	"io"
 	"net/http"
@@ -77,7 +78,9 @@ func writeEnhancedModelsResponse(c *gin.Context, resp *http.Response, body []byt
 }
 
 // handleModelsResponse handles /models endpoint responses by adding model mapping aliases
-func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response, group *models.Group) {
+// This handler is used when model_mapping is configured. It applies strict mode filtering
+// (if enabled) before adding aliases to ensure external applications respect the whitelist.
+func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response, group *models.Group, channelHandler channel.ChannelProxy) {
 	defer func() {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
@@ -87,6 +90,7 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	logrus.WithFields(logrus.Fields{
 		"group":                group.Name,
 		"model_mapping_count":  len(group.ModelMappingCache),
+		"strict_mode":          group.ModelRedirectStrict,
 		"content_encoding":     resp.Header.Get("Content-Encoding"),
 	}).Debug("Handling /models endpoint with model mapping")
 
@@ -110,31 +114,54 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 
 	// Upstream returns plain body (Accept-Encoding removed). No decompression needed.
 
-	// Try to parse and enhance the response
-	enhancedBody, err := ps.enhanceModelsResponse(bodyBytes, group)
+	// Apply strict mode filtering first (if enabled) via TransformModelList
+	// This ensures external applications respect the model whitelist
+	transformedResponse, err := channelHandler.TransformModelList(c.Request, bodyBytes, group)
 	if err != nil {
-		logrus.WithError(err).Debug("Failed to enhance models response, returning original")
-		// If enhancement fails, return original response
+		logrus.WithError(err).Debug("Failed to transform model list, returning original")
 		if writeErr := writePassthroughModelsResponse(c, resp, bodyBytes); writeErr != nil {
-			logUpstreamError("writing original models response", writeErr)
+			logUpstreamError("writing original models response after transform error", writeErr)
 		}
 		return
 	}
 
-	// If no change, forward original (avoid misleading "enhanced" log)
-	if len(enhancedBody) == len(bodyBytes) && bytes.Equal(enhancedBody, bodyBytes) {
-		logrus.Debug("No alias enhancement applied; forwarding upstream body")
-		if err := writePassthroughModelsResponse(c, resp, bodyBytes); err != nil {
-			logUpstreamError("writing passthrough models response", err)
+	// Marshal transformed response back to bytes for alias enhancement
+	transformedBytes, err := json.Marshal(transformedResponse)
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to marshal transformed model list")
+		if writeErr := writePassthroughModelsResponse(c, resp, bodyBytes); writeErr != nil {
+			logUpstreamError("writing original models response after marshal error", writeErr)
+		}
+		return
+	}
+
+	// Try to parse and enhance the response with model mapping aliases
+	enhancedBody, err := ps.enhanceModelsResponse(transformedBytes, group)
+	if err != nil {
+		logrus.WithError(err).Debug("Failed to enhance models response, returning transformed")
+		// If enhancement fails, return transformed response (with strict mode applied)
+		if writeErr := writeEnhancedModelsResponse(c, resp, transformedBytes, "application/json; charset=utf-8"); writeErr != nil {
+			logUpstreamError("writing transformed models response", writeErr)
+		}
+		return
+	}
+
+	// If no change from alias enhancement, forward transformed (avoid misleading "enhanced" log)
+	if len(enhancedBody) == len(transformedBytes) && bytes.Equal(enhancedBody, transformedBytes) {
+		logrus.Debug("No alias enhancement applied; forwarding transformed body")
+		if err := writeEnhancedModelsResponse(c, resp, transformedBytes, "application/json; charset=utf-8"); err != nil {
+			logUpstreamError("writing transformed models response", err)
 		}
 		return
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"group":         group.Name,
-		"original_size": len(bodyBytes),
-		"enhanced_size": len(enhancedBody),
-	}).Debug("Successfully enhanced /models response")
+		"group":            group.Name,
+		"original_size":    len(bodyBytes),
+		"transformed_size": len(transformedBytes),
+		"enhanced_size":    len(enhancedBody),
+		"strict_mode":      group.ModelRedirectStrict,
+	}).Debug("Successfully transformed and enhanced /models response")
 
 	// Write enhanced response with JSON content type
 	if err := writeEnhancedModelsResponse(c, resp, enhancedBody, "application/json; charset=utf-8"); err != nil {
