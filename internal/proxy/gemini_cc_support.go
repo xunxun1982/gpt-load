@@ -175,9 +175,12 @@ func convertClaudeToGemini(claudeReq *ClaudeRequest, toolNameShortMap map[string
 		})
 	}
 
+	// Create tool_use_id to tool name mapping for function responses
+	toolUseIDToName := make(map[string]string)
+
 	// Convert messages
 	for _, msg := range claudeReq.Messages {
-		geminiContent, err := convertClaudeMessageToGemini(msg, toolNameShortMap)
+		geminiContent, err := convertClaudeMessageToGemini(msg, toolNameShortMap, toolUseIDToName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
 		}
@@ -240,7 +243,8 @@ func convertClaudeToGemini(claudeReq *ClaudeRequest, toolNameShortMap map[string
 }
 
 // convertClaudeMessageToGemini converts a single Claude message to Gemini format
-func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string]string) ([]GeminiContent, error) {
+// toolUseIDToName maintains mapping from tool_use_id to tool name for function responses
+func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string]string, toolUseIDToName map[string]string) ([]GeminiContent, error) {
 	var result []GeminiContent
 
 	// Try to parse content as string first
@@ -286,6 +290,10 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 					toolName = short
 				}
 			}
+			// Store tool_use_id to tool name mapping for later function response conversion
+			if block.ID != "" {
+				toolUseIDToName[block.ID] = block.Name
+			}
 			var args map[string]interface{}
 			if err := json.Unmarshal(block.Input, &args); err == nil {
 				functionCalls = append(functionCalls, GeminiFunctionCall{
@@ -312,11 +320,21 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 					resultContent = string(block.Content)
 				}
 			}
-			// Gemini expects function response with the tool name, not tool_use_id
-			// We need to map tool_use_id back to tool name
-			// For now, use tool_use_id as name (will be fixed in context)
+			// Use tool_use_id to tool name mapping to get the correct function name
+			functionName := block.ToolUseID
+			if toolUseIDToName != nil {
+				if name, ok := toolUseIDToName[block.ToolUseID]; ok {
+					functionName = name
+					// Apply tool name shortening if needed
+					if toolNameShortMap != nil {
+						if short, ok := toolNameShortMap[name]; ok {
+							functionName = short
+						}
+					}
+				}
+			}
 			functionResponses = append(functionResponses, GeminiFunctionResponse{
-				Name: block.ToolUseID,
+				Name: functionName,
 				Response: map[string]interface{}{
 					"result": resultContent,
 				},
@@ -922,8 +940,11 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 	}
 
 	// Read the entire response body
-	// Gemini API returns a single JSON object (possibly pretty-printed across multiple lines)
-	// NOT JSON lines or SSE format
+	// NOTE: Gemini's streaming API (streamGenerateContent) returns a single complete JSON response
+	// (possibly pretty-printed across multiple lines), NOT JSON lines or SSE format.
+	// Therefore, we must read the full response before converting to Claude SSE events.
+	// This provides Claude-compatible SSE output format but not true incremental streaming benefits.
+	// The response is parsed as a single GeminiStreamChunk object.
 	bodyBytes, err := io.ReadAll(reader)
 	if err != nil {
 		logrus.WithError(err).Error("Gemini CC: Failed to read response body")
@@ -934,7 +955,8 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 	// Parse the complete JSON response
 	var chunk GeminiStreamChunk
 	if err := json.Unmarshal(bodyBytes, &chunk); err != nil {
-		logrus.WithError(err).WithField("body_preview", string(bodyBytes[:min(len(bodyBytes), 500)])).
+		safePreview := utils.TruncateString(utils.SanitizeErrorBody(string(bodyBytes)), 500)
+		logrus.WithError(err).WithField("body_preview", safePreview).
 			Error("Gemini CC: Failed to parse response JSON")
 		returnClaudeError(c, http.StatusBadGateway, "Failed to parse upstream response")
 		return

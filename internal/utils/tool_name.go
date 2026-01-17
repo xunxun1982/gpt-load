@@ -22,6 +22,11 @@ func BuildToolNameShortMap(names []string, limit int) map[string]string {
 		return nil
 	}
 
+	// Guard against non-positive limits to avoid panics
+	if limit <= 0 {
+		limit = 1
+	}
+
 	// Fast path: check if any name needs shortening
 	needsShortening := false
 	for _, n := range names {

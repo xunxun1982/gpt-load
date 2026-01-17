@@ -2,6 +2,8 @@ package utils
 
 import (
 	"bytes"
+	"compress/gzip"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -116,5 +118,32 @@ func TestDecompressResponseWithLimit_InvalidGzipData(t *testing.T) {
 	// Should return original data unchanged
 	if !bytes.Equal(result, invalidGzipData) {
 		t.Errorf("Expected original data to be returned unchanged")
+	}
+}
+
+// TestDecompressResponseWithLimit_ExceedsLimit verifies that ErrDecompressedTooLarge is returned
+// when decompressed data exceeds the specified size limit
+func TestDecompressResponseWithLimit_ExceedsLimit(t *testing.T) {
+	// Create valid gzip data that decompresses to more than the limit
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	// Write data larger than test limit
+	testData := bytes.Repeat([]byte("x"), 1000)
+	_, err := gw.Write(testData)
+	if err != nil {
+		t.Fatalf("Failed to write test data: %v", err)
+	}
+	err = gw.Close()
+	if err != nil {
+		t.Fatalf("Failed to close gzip writer: %v", err)
+	}
+
+	// Set limit smaller than decompressed size
+	result, err := DecompressResponseWithLimit("gzip", buf.Bytes(), 100)
+	if !errors.Is(err, ErrDecompressedTooLarge) {
+		t.Fatalf("Expected ErrDecompressedTooLarge, got: %v", err)
+	}
+	if result != nil {
+		t.Errorf("Expected nil result when limit exceeded")
 	}
 }

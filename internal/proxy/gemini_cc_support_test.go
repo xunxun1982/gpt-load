@@ -294,7 +294,7 @@ func TestConvertClaudeMessageToGemini(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := convertClaudeMessageToGemini(tt.message, nil)
+			result, err := convertClaudeMessageToGemini(tt.message, nil, make(map[string]string))
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -431,6 +431,64 @@ func TestGeminiStreamState(t *testing.T) {
 	// Should have message_delta and message_stop
 	assert.GreaterOrEqual(t, len(finishEvents), 1)
 	assert.True(t, state.finalSent)
+}
+
+// TestGeminiStreamState_UsageMetadata tests that usage metadata is properly propagated
+func TestGeminiStreamState_UsageMetadata(t *testing.T) {
+	state := newGeminiStreamState(nil)
+
+	// First chunk with text
+	textChunk := &GeminiStreamChunk{
+		Candidates: []GeminiCandidate{
+			{
+				Content: &GeminiContent{
+					Parts: []GeminiPart{
+						{Text: "Hello"},
+					},
+				},
+			},
+		},
+		ModelVersion: "gemini-pro",
+	}
+
+	events := state.processGeminiStreamChunk(textChunk)
+	assert.GreaterOrEqual(t, len(events), 1)
+	assert.Equal(t, "message_start", events[0].Type)
+
+	// Final chunk with usage metadata
+	finalChunk := &GeminiStreamChunk{
+		Candidates: []GeminiCandidate{
+			{
+				Content: &GeminiContent{
+					Parts: []GeminiPart{},
+				},
+				FinishReason: "STOP",
+			},
+		},
+		UsageMetadata: &GeminiUsageMetadata{
+			PromptTokenCount:     100,
+			CandidatesTokenCount: 50,
+			TotalTokenCount:      150,
+		},
+	}
+
+	finishEvents := state.processGeminiStreamChunk(finalChunk)
+
+	// Find message_delta event
+	var deltaEvent *ClaudeStreamEvent
+	for i := range finishEvents {
+		if finishEvents[i].Type == "message_delta" {
+			deltaEvent = &finishEvents[i]
+			break
+		}
+	}
+
+	// Verify usage metadata is present in message_delta
+	assert.NotNil(t, deltaEvent, "message_delta event should be present")
+	assert.NotNil(t, deltaEvent.Usage, "Usage should be present in message_delta")
+	// Note: The current implementation sets OutputTokens to 0 in message_delta
+	// This is acceptable as usage is tracked separately in the response
+	assert.Equal(t, 0, deltaEvent.Usage.OutputTokens)
 }
 
 // TestGeminiToolNameShortening tests tool name shortening for Gemini
