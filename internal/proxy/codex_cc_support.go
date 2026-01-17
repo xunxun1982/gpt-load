@@ -903,14 +903,14 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 		}
 	}
 
-	// Apply model redirect rules (V2) for Codex CC mode
-	// V1 rules are migrated to V2 during group create/update, runtime code checks both for backward compatibility
+	// Apply model redirect rules for Codex CC mode
+	// Pass both V1 and V2 maps for backward compatibility with un-migrated groups
 	// This ensures the model name in the request body matches the redirect configuration
 	if originalModel != "" {
 		if len(group.ModelRedirectMapV2) > 0 {
 			targetModel, _, _, _, err := models.ResolveTargetModelWithIndex(
 				originalModel,
-				nil, // V1 rules are migrated to V2, pass nil
+				group.ModelRedirectMap, // Pass V1 map for backward compatibility
 				group.ModelRedirectMapV2,
 				getModelRedirectSelector(),
 			)
