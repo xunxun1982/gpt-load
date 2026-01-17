@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -556,4 +558,437 @@ func TestWindowsPathEscaping(t *testing.T) {
 			assert.Equal(t, expectedObj, resultObj)
 		})
 	}
+}
+
+// TestGeminiCCWindowsPathPreservation tests that Windows paths are preserved correctly
+// in Gemini CC response conversion without corruption.
+func TestGeminiCCWindowsPathPreservation(t *testing.T) {
+	testPath := `F:\MyProjects\test\language\python\xx\hello.py`
+
+	t.Run("Response conversion preserves Windows paths", func(t *testing.T) {
+		// Simulate a Gemini response with a function_call containing a Windows path
+		geminiResp := &GeminiResponse{
+			Candidates: []GeminiCandidate{
+				{
+					Content: &GeminiContent{
+						Role: "model",
+						Parts: []GeminiPart{
+							{
+								FunctionCall: &GeminiFunctionCall{
+									Name: "Bash",
+									Args: map[string]interface{}{
+										"command": fmt.Sprintf("python %s", testPath),
+									},
+								},
+							},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+		}
+
+		// Convert to Claude format (this is response conversion, should NOT modify paths)
+		claudeResp := convertGeminiToClaudeResponse(geminiResp, nil)
+
+		// Verify the response has tool_use blocks
+		if len(claudeResp.Content) == 0 {
+			t.Fatal("Expected tool_use blocks in response")
+		}
+
+		// Find the Bash tool_use block
+		var bashBlock *ClaudeContentBlock
+		for i := range claudeResp.Content {
+			if claudeResp.Content[i].Type == "tool_use" && claudeResp.Content[i].Name == "Bash" {
+				bashBlock = &claudeResp.Content[i]
+				break
+			}
+		}
+
+		if bashBlock == nil {
+			t.Fatal("Expected Bash tool_use block not found")
+		}
+
+		// Parse the Input JSON
+		var args map[string]interface{}
+		if err := json.Unmarshal(bashBlock.Input, &args); err != nil {
+			t.Fatalf("Failed to parse tool_use Input: %v", err)
+		}
+
+		command, ok := args["command"].(string)
+		if !ok {
+			t.Fatal("Expected command field in tool_use Input")
+		}
+
+		// Verify the path is preserved correctly
+		if !strings.Contains(command, testPath) {
+			t.Errorf("Path not preserved in response conversion.\nExpected path: %q\nActual command: %q", testPath, command)
+		}
+
+		// Verify no corruption patterns
+		corruptedPattern := "MyProjectstestlanguagepythonxxhello.py"
+		if strings.Contains(command, corruptedPattern) {
+			t.Errorf("Command contains corrupted path pattern: %q", corruptedPattern)
+		}
+	})
+}
+
+// TestGeminiCCThinkingBlockSupport tests that Gemini CC properly handles thinking blocks
+func TestGeminiCCThinkingBlockSupport(t *testing.T) {
+	t.Run("Non-streaming response with thinking block", func(t *testing.T) {
+		geminiResp := &GeminiResponse{
+			Candidates: []GeminiCandidate{
+				{
+					Content: &GeminiContent{
+						Parts: []GeminiPart{
+							{
+								Text:    "Let me think about this problem step by step...",
+								Thought: true, // This is thinking content
+							},
+							{
+								Text:    "The answer is 42.",
+								Thought: false, // This is regular text
+							},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+		}
+
+		claudeResp := convertGeminiToClaudeResponse(geminiResp, nil)
+
+		// Should have 2 blocks: thinking + text
+		if len(claudeResp.Content) != 2 {
+			t.Fatalf("Expected 2 content blocks, got %d", len(claudeResp.Content))
+		}
+
+		// First block should be thinking
+		if claudeResp.Content[0].Type != "thinking" {
+			t.Errorf("Expected first block to be 'thinking', got '%s'", claudeResp.Content[0].Type)
+		}
+		if claudeResp.Content[0].Thinking != "Let me think about this problem step by step..." {
+			t.Errorf("Unexpected thinking content: %s", claudeResp.Content[0].Thinking)
+		}
+
+		// Second block should be text
+		if claudeResp.Content[1].Type != "text" {
+			t.Errorf("Expected second block to be 'text', got '%s'", claudeResp.Content[1].Type)
+		}
+		if claudeResp.Content[1].Text != "The answer is 42." {
+			t.Errorf("Unexpected text content: %s", claudeResp.Content[1].Text)
+		}
+	})
+
+	t.Run("Non-streaming response with Windows paths in thinking", func(t *testing.T) {
+		geminiResp := &GeminiResponse{
+			Candidates: []GeminiCandidate{
+				{
+					Content: &GeminiContent{
+						Parts: []GeminiPart{
+							{
+								Text:    "I need to check F:MyProjectstestlanguagepythonxxhello.py and C:Usersfile.txt",
+								Thought: true,
+							},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+		}
+
+		claudeResp := convertGeminiToClaudeResponse(geminiResp, nil)
+
+		if len(claudeResp.Content) != 1 {
+			t.Fatalf("Expected 1 content block, got %d", len(claudeResp.Content))
+		}
+
+		thinking := claudeResp.Content[0].Thinking
+		// Verify Windows paths are converted to Unix-style
+		if !strings.Contains(thinking, "F:/MyProjects") {
+			t.Errorf("Expected Unix-style path 'F:/MyProjects' in thinking, got: %s", thinking)
+		}
+		if !strings.Contains(thinking, "C:/Users") {
+			t.Errorf("Expected Unix-style path 'C:/Users' in thinking, got: %s", thinking)
+		}
+		// Verify no corrupted path patterns remain
+		if strings.Contains(thinking, "F:MyProjects") && !strings.Contains(thinking, "F:/MyProjects") {
+			t.Errorf("Thinking still contains corrupted path pattern: %s", thinking)
+		}
+	})
+
+	t.Run("Multiple consecutive thinking parts are merged", func(t *testing.T) {
+		geminiResp := &GeminiResponse{
+			Candidates: []GeminiCandidate{
+				{
+					Content: &GeminiContent{
+						Parts: []GeminiPart{
+							{Text: "First thought.", Thought: true},
+							{Text: " Second thought.", Thought: true},
+							{Text: " Third thought.", Thought: true},
+							{Text: "Final answer.", Thought: false},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+		}
+
+		claudeResp := convertGeminiToClaudeResponse(geminiResp, nil)
+
+		// Should have 2 blocks: merged thinking + text
+		if len(claudeResp.Content) != 2 {
+			t.Fatalf("Expected 2 content blocks, got %d", len(claudeResp.Content))
+		}
+
+		// First block should be merged thinking
+		if claudeResp.Content[0].Type != "thinking" {
+			t.Errorf("Expected first block to be 'thinking', got '%s'", claudeResp.Content[0].Type)
+		}
+		expectedThinking := "First thought. Second thought. Third thought."
+		if claudeResp.Content[0].Thinking != expectedThinking {
+			t.Errorf("Expected merged thinking '%s', got '%s'", expectedThinking, claudeResp.Content[0].Thinking)
+		}
+
+		// Second block should be text
+		if claudeResp.Content[1].Type != "text" {
+			t.Errorf("Expected second block to be 'text', got '%s'", claudeResp.Content[1].Type)
+		}
+	})
+
+	t.Run("Thinking with tool use", func(t *testing.T) {
+		geminiResp := &GeminiResponse{
+			Candidates: []GeminiCandidate{
+				{
+					Content: &GeminiContent{
+						Parts: []GeminiPart{
+							{Text: "Let me use a tool to help.", Thought: true},
+							{
+								FunctionCall: &GeminiFunctionCall{
+									Name: "get_weather",
+									Args: map[string]interface{}{"location": "Tokyo"},
+								},
+							},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+		}
+
+		claudeResp := convertGeminiToClaudeResponse(geminiResp, nil)
+
+		// Should have 2 blocks: thinking + tool_use
+		if len(claudeResp.Content) != 2 {
+			t.Fatalf("Expected 2 content blocks, got %d", len(claudeResp.Content))
+		}
+
+		// First block should be thinking
+		if claudeResp.Content[0].Type != "thinking" {
+			t.Errorf("Expected first block to be 'thinking', got '%s'", claudeResp.Content[0].Type)
+		}
+
+		// Second block should be tool_use
+		if claudeResp.Content[1].Type != "tool_use" {
+			t.Errorf("Expected second block to be 'tool_use', got '%s'", claudeResp.Content[1].Type)
+		}
+		if claudeResp.Content[1].Name != "get_weather" {
+			t.Errorf("Expected tool name 'get_weather', got '%s'", claudeResp.Content[1].Name)
+		}
+	})
+}
+
+// TestGeminiCCStreamingCorruptedWindowsPath tests that corrupted Windows paths (with control characters)
+// are properly converted in Gemini CC streaming responses.
+// This addresses the user-reported issue where paths like "F:MyProjectstestlanguagepythonxxhello.py"
+// (with backslashes converted to control characters) are not properly handled.
+func TestGeminiCCStreamingCorruptedWindowsPath(t *testing.T) {
+	t.Run("Streaming text with corrupted Windows path", func(t *testing.T) {
+		state := newGeminiStreamState(nil)
+
+		// Simulate corrupted path where \t became tab
+		corruptedPath := "F:MyProjects\testlanguagepythonxxhello.py"
+		expectedPath := "F:/MyProjectsestlanguagepythonxxhello.py"
+
+		chunk := &GeminiStreamChunk{
+			Candidates: []GeminiCandidate{
+				{
+					Content: &GeminiContent{
+						Parts: []GeminiPart{
+							{
+								Text:    corruptedPath,
+								Thought: false,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		events := state.processGeminiStreamChunk(chunk)
+
+		// Find the text delta event
+		var deltaEvent *ClaudeStreamEvent
+		for i := range events {
+			if events[i].Type == "content_block_delta" && events[i].Delta != nil && events[i].Delta.Type == "text_delta" {
+				deltaEvent = &events[i]
+				break
+			}
+		}
+
+		if deltaEvent == nil {
+			t.Fatal("Expected text_delta event not found")
+		}
+
+		// Verify corrupted path is fixed
+		if !strings.Contains(deltaEvent.Delta.Text, expectedPath) {
+			t.Errorf("Expected fixed path %q in delta, got: %s", expectedPath, deltaEvent.Delta.Text)
+		}
+	})
+
+	t.Run("Streaming thinking with corrupted Windows path", func(t *testing.T) {
+		state := newGeminiStreamState(nil)
+
+		// Simulate corrupted path where \t became tab
+		corruptedPath := "I need to check F:MyProjects\testlanguagepythonxxhello.py"
+		expectedPath := "F:/MyProjectsestlanguagepythonxxhello.py"
+
+		chunk := &GeminiStreamChunk{
+			Candidates: []GeminiCandidate{
+				{
+					Content: &GeminiContent{
+						Parts: []GeminiPart{
+							{
+								Text:    corruptedPath,
+								Thought: true,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		events := state.processGeminiStreamChunk(chunk)
+
+		// Find the thinking delta event
+		var deltaEvent *ClaudeStreamEvent
+		for i := range events {
+			if events[i].Type == "content_block_delta" && events[i].Delta != nil && events[i].Delta.Type == "thinking_delta" {
+				deltaEvent = &events[i]
+				break
+			}
+		}
+
+		if deltaEvent == nil {
+			t.Fatal("Expected thinking_delta event not found")
+		}
+
+		// Verify corrupted path is fixed
+		if !strings.Contains(deltaEvent.Delta.Thinking, expectedPath) {
+			t.Errorf("Expected fixed path %q in thinking delta, got: %s", expectedPath, deltaEvent.Delta.Thinking)
+		}
+	})
+}
+
+// TestGeminiCCStreamingWindowsPathConversion tests that Windows paths are converted in Gemini CC streaming responses
+func TestGeminiCCStreamingWindowsPathConversion(t *testing.T) {
+	t.Run("Streaming text with Windows paths", func(t *testing.T) {
+		state := &geminiStreamState{
+			messageID:       "msg_test",
+			model:           "gemini-pro",
+			nextClaudeIndex: 0,
+			openBlockType:   "",
+		}
+
+		// Simulate chunk with text containing Windows path
+		chunk := &GeminiStreamChunk{
+			Candidates: []GeminiCandidate{
+				{
+					Content: &GeminiContent{
+						Parts: []GeminiPart{
+							{
+								Text:    "● Bash(pwd && ls -F)⎿  /f/MyProjects/test/language/python/xxF:MyProjectstestlanguagepythonxxhello.py",
+								Thought: false,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		events := state.processGeminiStreamChunk(chunk)
+
+		// Should have 2 events: content_block_start + content_block_delta
+		if len(events) < 2 {
+			t.Fatalf("Expected at least 2 events, got %d", len(events))
+		}
+
+		// Find the delta event
+		var deltaEvent *ClaudeStreamEvent
+		for i := range events {
+			if events[i].Type == "content_block_delta" && events[i].Delta != nil && events[i].Delta.Type == "text_delta" {
+				deltaEvent = &events[i]
+				break
+			}
+		}
+
+		if deltaEvent == nil {
+			t.Fatal("Expected text_delta event not found")
+		}
+
+		// Verify Windows path is converted
+		if !strings.Contains(deltaEvent.Delta.Text, "F:/MyProjects") {
+			t.Errorf("Expected Unix-style path 'F:/MyProjects' in delta, got: %s", deltaEvent.Delta.Text)
+		}
+	})
+
+	t.Run("Streaming thinking with Windows paths", func(t *testing.T) {
+		state := &geminiStreamState{
+			messageID:       "msg_test",
+			model:           "gemini-pro",
+			nextClaudeIndex: 0,
+			openBlockType:   "",
+		}
+
+		// Simulate chunk with thinking containing Windows path
+		chunk := &GeminiStreamChunk{
+			Candidates: []GeminiCandidate{
+				{
+					Content: &GeminiContent{
+						Parts: []GeminiPart{
+							{
+								Text:    "I need to check F:MyProjectstestlanguagepythonxxhello.py",
+								Thought: true,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		events := state.processGeminiStreamChunk(chunk)
+
+		// Should have 2 events: content_block_start + content_block_delta
+		if len(events) < 2 {
+			t.Fatalf("Expected at least 2 events, got %d", len(events))
+		}
+
+		// Find the delta event
+		var deltaEvent *ClaudeStreamEvent
+		for i := range events {
+			if events[i].Type == "content_block_delta" && events[i].Delta != nil && events[i].Delta.Type == "thinking_delta" {
+				deltaEvent = &events[i]
+				break
+			}
+		}
+
+		if deltaEvent == nil {
+			t.Fatal("Expected thinking_delta event not found")
+		}
+
+		// Verify Windows path is converted
+		if !strings.Contains(deltaEvent.Delta.Thinking, "F:/MyProjects") {
+			t.Errorf("Expected Unix-style path 'F:/MyProjects' in thinking delta, got: %s", deltaEvent.Delta.Thinking)
+		}
+	})
 }

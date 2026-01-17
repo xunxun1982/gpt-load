@@ -41,6 +41,7 @@ const ctxKeyGeminiToolNameReverseMap = "gemini_tool_name_reverse_map"
 // GeminiPart represents a content part in Gemini API format
 type GeminiPart struct {
 	Text             string                  `json:"text,omitempty"`
+	Thought          bool                    `json:"thought,omitempty"` // Indicates if this text is thinking/reasoning content
 	FunctionCall     *GeminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *GeminiFunctionResponse `json:"functionResponse,omitempty"`
 }
@@ -321,6 +322,8 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 					resultContent = string(block.Content)
 				}
 			}
+			// Convert Windows paths to Unix-style for Claude Code compatibility
+			resultContent = convertWindowsPathsInToolResult(resultContent)
 			// Use tool_use_id to tool name mapping to get the correct function name
 			functionName := block.ToolUseID
 			if toolUseIDToName != nil {
@@ -402,14 +405,54 @@ func convertGeminiToClaudeResponse(geminiResp *GeminiResponse, reverseToolNameMa
 	}
 
 	// Convert parts to Claude content blocks
+	// Accumulate consecutive text/thinking parts to avoid fragmentation
+	var textBuilder strings.Builder
+	var thinkingBuilder strings.Builder
+
+	flushText := func() {
+		if textBuilder.Len() == 0 {
+			return
+		}
+		// Convert Windows paths to Unix-style for Claude Code compatibility
+		text := convertWindowsPathsInToolResult(textBuilder.String())
+		claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
+			Type: "text",
+			Text: text,
+		})
+		textBuilder.Reset()
+	}
+
+	flushThinking := func() {
+		if thinkingBuilder.Len() == 0 {
+			return
+		}
+		// Convert Windows paths to Unix-style for Claude Code compatibility
+		thinking := convertWindowsPathsInToolResult(thinkingBuilder.String())
+		claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
+			Type:     "thinking",
+			Thinking: thinking,
+		})
+		thinkingBuilder.Reset()
+	}
+
 	for _, part := range candidate.Content.Parts {
 		if part.Text != "" {
-			claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
-				Type: "text",
-				Text: part.Text,
-			})
+			// Check if this is thinking content (Gemini 2.5+ thinking mode)
+			if part.Thought {
+				flushText() // Flush any pending text before starting thinking
+				thinkingBuilder.WriteString(part.Text)
+				continue
+			}
+			// Regular text content
+			flushThinking() // Flush any pending thinking before starting text
+			textBuilder.WriteString(part.Text)
+			continue
 		}
 		if part.FunctionCall != nil {
+			// Flush any pending text or thinking before tool use
+			flushThinking()
+			flushText()
+
 			toolName := part.FunctionCall.Name
 			if reverseToolNameMap != nil {
 				if orig, ok := reverseToolNameMap[part.FunctionCall.Name]; ok {
@@ -417,16 +460,21 @@ func convertGeminiToClaudeResponse(geminiResp *GeminiResponse, reverseToolNameMa
 				}
 			}
 			argsJSON, _ := json.Marshal(part.FunctionCall.Args)
-			// Apply Windows path escape fix
-			argsStr := doubleEscapeWindowsPathsForBash(string(argsJSON))
+			// NOTE: Do NOT call doubleEscapeWindowsPathsForBash here!
+			// This is response conversion (upstream→Claude), not request conversion (Claude→upstream).
+			// The upstream response already has correct path format, we should not modify it.
 			claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 				Type:  "tool_use",
 				ID:    "toolu_" + uuid.New().String()[:8],
 				Name:  toolName,
-				Input: json.RawMessage(argsStr),
+				Input: argsJSON,
 			})
 		}
 	}
+
+	// Flush any remaining text or thinking
+	flushThinking()
+	flushText()
 
 	// Determine stop reason
 	hasToolUse := false
@@ -780,28 +828,59 @@ func (s *geminiStreamState) processGeminiStreamChunk(chunk *GeminiStreamChunk) [
 	// Process parts
 	for _, part := range candidate.Content.Parts {
 		if part.Text != "" {
-			// Auto-open text block if not present
-			if s.openBlockType != "text" {
-				closeOpenBlock()
-				s.openBlockType = "text"
+			// Check if this is thinking content (Gemini 2.5+ thinking mode)
+			if part.Thought {
+				// Auto-open thinking block if not present
+				if s.openBlockType != "thinking" {
+					closeOpenBlock()
+					s.openBlockType = "thinking"
+					events = append(events, ClaudeStreamEvent{
+						Type:  "content_block_start",
+						Index: s.nextClaudeIndex,
+						ContentBlock: &ClaudeContentBlock{
+							Type:     "thinking",
+							Thinking: "",
+						},
+					})
+				}
+				// Send thinking delta
+				// Convert Windows paths to Unix-style for Claude Code compatibility
+				thinkingText := convertWindowsPathsInToolResult(part.Text)
 				events = append(events, ClaudeStreamEvent{
-					Type:  "content_block_start",
+					Type:  "content_block_delta",
 					Index: s.nextClaudeIndex,
-					ContentBlock: &ClaudeContentBlock{
-						Type: "text",
-						Text: "",
+					Delta: &ClaudeStreamDelta{
+						Type:     "thinking_delta",
+						Thinking: thinkingText,
+					},
+				})
+			} else {
+				// Regular text content
+				// Auto-open text block if not present
+				if s.openBlockType != "text" {
+					closeOpenBlock()
+					s.openBlockType = "text"
+					events = append(events, ClaudeStreamEvent{
+						Type:  "content_block_start",
+						Index: s.nextClaudeIndex,
+						ContentBlock: &ClaudeContentBlock{
+							Type: "text",
+							Text: "",
+						},
+					})
+				}
+				// Send text delta
+				// Convert Windows paths to Unix-style for Claude Code compatibility
+				text := convertWindowsPathsInToolResult(part.Text)
+				events = append(events, ClaudeStreamEvent{
+					Type:  "content_block_delta",
+					Index: s.nextClaudeIndex,
+					Delta: &ClaudeStreamDelta{
+						Type: "text_delta",
+						Text: text,
 					},
 				})
 			}
-			// Send text delta
-			events = append(events, ClaudeStreamEvent{
-				Type:  "content_block_delta",
-				Index: s.nextClaudeIndex,
-				Delta: &ClaudeStreamDelta{
-					Type: "text_delta",
-					Text: part.Text,
-				},
-			})
 		}
 
 		if part.FunctionCall != nil {
@@ -845,8 +924,9 @@ func (s *geminiStreamState) processGeminiStreamChunk(chunk *GeminiStreamChunk) [
 			})
 
 			// Store completed tool use block
-			// Apply Windows path escape fix
-			argsStr = doubleEscapeWindowsPathsForBash(argsStr)
+			// NOTE: Do NOT call doubleEscapeWindowsPathsForBash here!
+			// This is response conversion (upstream→Claude), not request conversion (Claude→upstream).
+			// The upstream response already has correct path format, we should not modify it.
 			s.toolUseBlocks = append(s.toolUseBlocks, ClaudeContentBlock{
 				Type:  "tool_use",
 				ID:    toolUseID,

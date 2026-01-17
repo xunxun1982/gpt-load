@@ -4877,3 +4877,272 @@ func TestGetEffectiveSSETimeouts_NoGroup(t *testing.T) {
 		t.Errorf("expected subsequentTimeout %v without group, got %v", sseSubsequentTimeoutPreset, subsequent)
 	}
 }
+
+
+// TestConvertGitBashPathToWindows tests the conversion of Git Bash/MSYS2 Unix-style paths to Windows format
+func TestConvertGitBashPathToWindows(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "lowercase drive letter with forward slashes",
+			input:    "/f/MyProjects/test/language/python/xx/hello.py",
+			expected: `F:\MyProjects\test\language\python\xx\hello.py`,
+		},
+		{
+			name:     "uppercase drive letter",
+			input:    "/C/Users/name/file.txt",
+			expected: `C:\Users\name\file.txt`,
+		},
+		{
+			name:     "d drive",
+			input:    "/d/work/project",
+			expected: `D:\work\project`,
+		},
+		{
+			name:     "single level path",
+			input:    "/f/file.py",
+			expected: `F:\file.py`,
+		},
+		{
+			name:     "unix home path unchanged",
+			input:    "/home/user/file.txt",
+			expected: "/home/user/file.txt",
+		},
+		{
+			name:     "unix usr path unchanged",
+			input:    "/usr/local/bin/python",
+			expected: "/usr/local/bin/python",
+		},
+		{
+			name:     "unix var path unchanged",
+			input:    "/var/log/app.log",
+			expected: "/var/log/app.log",
+		},
+		{
+			name:     "unix etc path unchanged",
+			input:    "/etc/config.conf",
+			expected: "/etc/config.conf",
+		},
+		{
+			name:     "windows path unchanged",
+			input:    `C:\Users\file.txt`,
+			expected: `C:\Users\file.txt`,
+		},
+		{
+			name:     "relative path unchanged",
+			input:    "./relative/path",
+			expected: "./relative/path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := convertGitBashPathToWindows(tt.input)
+			if result != tt.expected {
+				t.Errorf("convertGitBashPathToWindows(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestFixGitBashPathsInArgs tests that fixGitBashPathsInArgs correctly converts Git Bash paths
+func TestFixGitBashPathsInArgs(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        map[string]interface{}
+		expectedKey string
+		expectedVal string
+	}{
+		{
+			name: "file_path with git bash path",
+			args: map[string]interface{}{
+				"file_path": "/f/MyProjects/test/language/python/xx/hello.py",
+			},
+			expectedKey: "file_path",
+			expectedVal: `F:\MyProjects\test\language\python\xx\hello.py`,
+		},
+		{
+			name: "path with git bash path",
+			args: map[string]interface{}{
+				"path": "/c/Users/name/Documents/file.txt",
+			},
+			expectedKey: "path",
+			expectedVal: `C:\Users\name\Documents\file.txt`,
+		},
+		{
+			name: "command with embedded git bash path",
+			args: map[string]interface{}{
+				"command": "python /f/MyProjects/test/file.py",
+			},
+			expectedKey: "command",
+			expectedVal: `python F:\MyProjects\test\file.py`,
+		},
+		{
+			name: "unix path unchanged",
+			args: map[string]interface{}{
+				"file_path": "/home/user/file.txt",
+			},
+			expectedKey: "file_path",
+			expectedVal: "/home/user/file.txt",
+		},
+		{
+			name: "windows path unchanged",
+			args: map[string]interface{}{
+				"file_path": `C:\Users\file.txt`,
+			},
+			expectedKey: "file_path",
+			expectedVal: `C:\Users\file.txt`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixGitBashPathsInArgs(tt.args)
+			result, ok := tt.args[tt.expectedKey].(string)
+			if !ok {
+				t.Fatalf("expected string value for key %q, got %T", tt.expectedKey, tt.args[tt.expectedKey])
+			}
+			if result != tt.expectedVal {
+				t.Errorf("fixGitBashPathsInArgs[%q] = %q, want %q", tt.expectedKey, result, tt.expectedVal)
+			}
+		})
+	}
+}
+
+// TestNormalizeArgsGenericInPlace_GitBashPath tests that normalizeArgsGenericInPlace
+// correctly converts Git Bash paths before other normalizations
+func TestNormalizeArgsGenericInPlace_GitBashPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		key         string
+		value       string
+		expectedVal string
+	}{
+		{
+			name:        "git bash path in file_path",
+			key:         "file_path",
+			value:       "/f/MyProjects/test/language/python/xx/hello.py",
+			expectedVal: `F:\MyProjects\test\language\python\xx\hello.py`,
+		},
+		{
+			name:        "git bash path in path",
+			key:         "path",
+			value:       "/c/Users/name/file.txt",
+			expectedVal: `C:\Users\name\file.txt`,
+		},
+		{
+			name:        "git bash path in directory",
+			key:         "directory",
+			value:       "/d/work/project",
+			expectedVal: `D:\work\project`,
+		},
+		{
+			name:        "git bash path in command",
+			key:         "command",
+			value:       "python /f/test/file.py",
+			expectedVal: `python F:\test\file.py`,
+		},
+		{
+			name:        "unix path unchanged",
+			key:         "file_path",
+			value:       "/home/user/file.txt",
+			expectedVal: "/home/user/file.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{tt.key: tt.value}
+			normalizeArgsGenericInPlace(args)
+			result, ok := args[tt.key].(string)
+			if !ok {
+				t.Fatalf("expected string value, got %T", args[tt.key])
+			}
+			if result != tt.expectedVal {
+				t.Errorf("normalizeArgsGenericInPlace[%q] = %q, want %q", tt.key, result, tt.expectedVal)
+			}
+		})
+	}
+}
+
+
+// TestWindowsPathCorruptionRegression tests the specific path corruption issue reported by users.
+// Issue: Path F:\MyProjects\test\language\python\xx\hello.py was being corrupted in CC response conversion.
+// Root cause: Response conversion functions were incorrectly calling path processing functions
+// that should only be used in request conversion.
+func TestWindowsPathCorruptionRegression(t *testing.T) {
+	testPath := `F:\MyProjects\test\language\python\xx\hello.py`
+
+	// Test case 1: Verify path is preserved in JSON round-trip
+	t.Run("JSON round-trip preserves Windows path", func(t *testing.T) {
+		command := fmt.Sprintf("python %s", testPath)
+		args := map[string]interface{}{"command": command}
+		jsonBytes, _ := json.Marshal(args)
+
+		var parsed map[string]interface{}
+		json.Unmarshal(jsonBytes, &parsed)
+		parsedCommand := parsed["command"].(string)
+
+		if !strings.Contains(parsedCommand, testPath) {
+			t.Errorf("Path not preserved in JSON round-trip.\nOriginal: %q\nParsed: %q", command, parsedCommand)
+		}
+	})
+
+	// Test case 2: Verify doubleEscapeWindowsPathsForBash is idempotent
+	t.Run("doubleEscapeWindowsPathsForBash idempotency", func(t *testing.T) {
+		command := fmt.Sprintf("python %s", testPath)
+		args := map[string]interface{}{"command": command}
+		jsonStr, _ := json.Marshal(args)
+
+		result1 := doubleEscapeWindowsPathsForBash(string(jsonStr))
+		result2 := doubleEscapeWindowsPathsForBash(result1)
+
+		if result1 != result2 {
+			t.Errorf("doubleEscapeWindowsPathsForBash is not idempotent.\nFirst:  %q\nSecond: %q", result1, result2)
+		}
+	})
+
+	// Test case 3: Verify normalizeOpenAIToolCallArguments preserves paths
+	t.Run("normalizeOpenAIToolCallArguments preserves paths", func(t *testing.T) {
+		testCases := []struct {
+			toolName string
+			key      string
+		}{
+			{"Bash", "command"},
+			{"Read", "file_path"},
+			{"Write", "file_path"},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.toolName, func(t *testing.T) {
+				var value string
+				if tc.key == "command" {
+					value = fmt.Sprintf("python %s", testPath)
+				} else {
+					value = testPath
+				}
+
+				args := map[string]interface{}{tc.key: value}
+				jsonStr, _ := json.Marshal(args)
+
+				result, ok := normalizeOpenAIToolCallArguments(tc.toolName, string(jsonStr))
+				if !ok {
+					t.Fatalf("normalizeOpenAIToolCallArguments returned false")
+				}
+
+				var parsed map[string]interface{}
+				json.Unmarshal([]byte(result), &parsed)
+				resultValue := parsed[tc.key].(string)
+
+				if !strings.Contains(resultValue, testPath) {
+					t.Errorf("Path not preserved.\nOriginal: %q\nResult: %q", value, resultValue)
+				}
+			})
+		}
+	})
+}
+
+

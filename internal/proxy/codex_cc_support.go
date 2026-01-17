@@ -717,10 +717,11 @@ func cleanToolCallArguments(toolName, argsStr string) string {
 }
 
 // extractToolResultContent extracts content from a tool_result block.
+// Converts Windows paths to Unix-style for Claude Code compatibility.
 func extractToolResultContent(block ClaudeContentBlock) string {
 	var resultContent string
 	if err := json.Unmarshal(block.Content, &resultContent); err == nil {
-		return resultContent
+		return convertWindowsPathsInToolResult(resultContent)
 	}
 	var contentBlocks []ClaudeContentBlock
 	if err := json.Unmarshal(block.Content, &contentBlocks); err == nil {
@@ -730,9 +731,9 @@ func extractToolResultContent(block ClaudeContentBlock) string {
 				sb.WriteString(cb.Text)
 			}
 		}
-		return sb.String()
+		return convertWindowsPathsInToolResult(sb.String())
 	}
-	return string(block.Content)
+	return convertWindowsPathsInToolResult(string(block.Content))
 }
 
 // convertCodexToClaudeResponse converts a Codex/Responses API response to Claude format.
@@ -753,16 +754,20 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 				switch content.Type {
 				case "output_text":
 					if content.Text != "" {
+						// Convert Windows paths to Unix-style for Claude Code compatibility
+						text := convertWindowsPathsInToolResult(content.Text)
 						claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 							Type: "text",
-							Text: content.Text,
+							Text: text,
 						})
 					}
 				case "refusal":
 					if content.Text != "" {
+						// Convert Windows paths to Unix-style for Claude Code compatibility
+						text := convertWindowsPathsInToolResult(content.Text)
 						claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 							Type: "text",
-							Text: content.Text,
+							Text: text,
 						})
 					}
 				}
@@ -783,10 +788,16 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 				}
 				inputJSON := json.RawMessage("{}")
 				if item.Arguments != "" {
+					argsStr := item.Arguments
+
 					// Clean up WebSearch tool arguments for upstream compatibility
-					argsStr := cleanToolCallArguments(toolName, item.Arguments)
-					// Apply Windows path escape fix for Bash commands
-					argsStr = doubleEscapeWindowsPathsForBash(argsStr)
+					argsStr = cleanToolCallArguments(toolName, argsStr)
+
+					// NOTE: Do NOT call doubleEscapeWindowsPathsForBash here!
+					// This is response conversion (upstream→Claude), not request conversion (Claude→upstream).
+					// The upstream response already has correct path format, we should not modify it.
+					// Calling doubleEscapeWindowsPathsForBash here causes path corruption.
+
 					inputJSON = json.RawMessage(argsStr)
 				}
 				// Extract tool use ID from call_id (remove "call_" prefix if present)
@@ -818,9 +829,11 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 			}
 			if thinkingText.Len() > 0 {
 				logrus.WithField("thinking_len", thinkingText.Len()).Debug("Codex CC: Converted reasoning to thinking block")
+				// Convert Windows paths to Unix-style for Claude Code compatibility
+				thinking := convertWindowsPathsInToolResult(thinkingText.String())
 				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 					Type:     "thinking",
-					Thinking: thinkingText.String(),
+					Thinking: thinking,
 				})
 			} else {
 				logrus.WithFields(logrus.Fields{
@@ -1162,12 +1175,14 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				"delta_len":    len(event.Delta),
 				"claude_index": s.nextClaudeIndex,
 			}).Debug("Codex CC: Thinking delta received")
+			// Convert Windows paths to Unix-style for Claude Code compatibility
+			thinkingDelta := convertWindowsPathsInToolResult(event.Delta)
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
 				Index: s.nextClaudeIndex,
 				Delta: &ClaudeStreamDelta{
 					Type:     "thinking_delta",
-					Thinking: event.Delta,
+					Thinking: thinkingDelta,
 				},
 			})
 		}
@@ -1306,12 +1321,14 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			})
 		}
 		if event.Delta != "" {
+			// Convert Windows paths to Unix-style for Claude Code compatibility
+			textDelta := convertWindowsPathsInToolResult(event.Delta)
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
 				Index: s.nextClaudeIndex,
 				Delta: &ClaudeStreamDelta{
 					Type: "text_delta",
-					Text: event.Delta,
+					Text: textDelta,
 				},
 			})
 		}
@@ -1393,10 +1410,18 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 						toolName = orig
 					}
 				}
+
 				// Clean up WebSearch tool arguments for upstream compatibility
 				argsStr = cleanToolCallArguments(toolName, argsStr)
-				// Apply Windows path escape fix
-				argsStr = doubleEscapeWindowsPathsForBash(argsStr)
+
+				// Clean up WebSearch tool arguments for upstream compatibility
+				argsStr = cleanToolCallArguments(toolName, argsStr)
+
+				// NOTE: Do NOT call doubleEscapeWindowsPathsForBash here!
+				// This is response conversion (upstream→Claude), not request conversion (Claude→upstream).
+				// The upstream response already has correct path format, we should not modify it.
+				// Calling doubleEscapeWindowsPathsForBash here causes path corruption.
+
 				s.toolUseBlocks = append(s.toolUseBlocks, ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    toolUseID,
