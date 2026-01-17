@@ -824,9 +824,12 @@ func (s *geminiStreamState) processGeminiStreamChunk(chunk *GeminiStreamChunk) [
 
 	// First chunk - send message_start
 	if s.nextClaudeIndex == 0 && !s.finalSent {
-		if chunk.ModelVersion != "" {
-			s.model = chunk.ModelVersion
+		// Set model from chunk or default to "gemini" to ensure message_start always has a model
+		model := chunk.ModelVersion
+		if model == "" {
+			model = "gemini"
 		}
+		s.model = model
 		events = append(events, ClaudeStreamEvent{
 			Type: "message_start",
 			Message: &ClaudeResponse{
