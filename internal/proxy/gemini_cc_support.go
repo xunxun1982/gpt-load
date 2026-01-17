@@ -269,19 +269,19 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 		return nil, fmt.Errorf("failed to parse content blocks: %w", err)
 	}
 
-	// Separate different block types
-	var textParts []string
-	var functionCalls []GeminiFunctionCall
+	// Preserve original block order for assistant parts to maintain interleaved content sequence
+	// Build GeminiParts in the original block order so Gemini receives the same sequence as Claude
+	var orderedParts []GeminiPart
 	var functionResponses []GeminiFunctionResponse
 
 	for _, block := range blocks {
 		switch block.Type {
 		case "text":
-			textParts = append(textParts, block.Text)
+			orderedParts = append(orderedParts, GeminiPart{Text: block.Text})
 		case "thinking":
 			// Gemini doesn't support thinking blocks in input, merge into text
 			if block.Thinking != "" {
-				textParts = append(textParts, block.Thinking)
+				orderedParts = append(orderedParts, GeminiPart{Text: block.Thinking})
 			}
 		case "tool_use":
 			toolName := block.Name
@@ -296,10 +296,11 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 			}
 			var args map[string]interface{}
 			if err := json.Unmarshal(block.Input, &args); err == nil {
-				functionCalls = append(functionCalls, GeminiFunctionCall{
+				fc := GeminiFunctionCall{
 					Name: toolName,
 					Args: args,
-				})
+				}
+				orderedParts = append(orderedParts, GeminiPart{FunctionCall: &fc})
 			}
 		case "tool_result":
 			// Extract tool result content
@@ -345,27 +346,27 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 	// Build result based on role
 	switch msg.Role {
 	case "assistant":
-		if len(textParts) > 0 || len(functionCalls) > 0 {
-			parts := make([]GeminiPart, 0)
-			if len(textParts) > 0 {
-				parts = append(parts, GeminiPart{Text: strings.Join(textParts, "")})
-			}
-			for _, fc := range functionCalls {
-				parts = append(parts, GeminiPart{FunctionCall: &fc})
-			}
+		if len(orderedParts) > 0 {
 			result = append(result, GeminiContent{
 				Role:  "model",
-				Parts: parts,
+				Parts: orderedParts,
 			})
 		}
 	case "user":
-		if len(textParts) > 0 {
-			result = append(result, GeminiContent{
-				Role: "user",
-				Parts: []GeminiPart{
-					{Text: strings.Join(textParts, "")},
-				},
-			})
+		// For user role, extract text parts while preserving order
+		if len(orderedParts) > 0 {
+			userParts := make([]GeminiPart, 0, len(orderedParts))
+			for _, p := range orderedParts {
+				if p.Text != "" {
+					userParts = append(userParts, GeminiPart{Text: p.Text})
+				}
+			}
+			if len(userParts) > 0 {
+				result = append(result, GeminiContent{
+					Role:  "user",
+					Parts: userParts,
+				})
+			}
 		}
 		if len(functionResponses) > 0 {
 			parts := make([]GeminiPart, 0, len(functionResponses))
@@ -939,14 +940,23 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 		}
 	}
 
-	// Read the entire response body
+	// Read the entire response body with size limit to prevent OOM
 	// NOTE: Gemini's streaming API (streamGenerateContent) returns a single complete JSON response
 	// (possibly pretty-printed across multiple lines), NOT JSON lines or SSE format.
 	// Therefore, we must read the full response before converting to Claude SSE events.
 	// This provides Claude-compatible SSE output format but not true incremental streaming benefits.
 	// The response is parsed as a single GeminiStreamChunk object.
-	bodyBytes, err := io.ReadAll(reader)
+	// Use bounded read to cap decompressed output and prevent memory exhaustion
+	bodyBytes, err := readAllWithLimit(reader, maxUpstreamResponseBodySize)
 	if err != nil {
+		if errors.Is(err, ErrBodyTooLarge) {
+			maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
+			message := fmt.Sprintf("Upstream streaming response exceeded maximum allowed size (%dMB) for Gemini CC conversion", maxMB)
+			logrus.WithField("limit_mb", maxMB).
+				Warn("Gemini CC: Upstream streaming response body too large for conversion")
+			returnClaudeError(c, http.StatusBadGateway, message)
+			return
+		}
 		logrus.WithError(err).Error("Gemini CC: Failed to read response body")
 		returnClaudeError(c, http.StatusBadGateway, "Failed to read upstream response")
 		return
