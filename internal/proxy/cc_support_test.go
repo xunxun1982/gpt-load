@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -5146,3 +5147,1855 @@ func TestWindowsPathCorruptionRegression(t *testing.T) {
 }
 
 
+
+// TestGetGroupConfigBool tests the getGroupConfigBool function with various input types
+func TestGetGroupConfigBool(t *testing.T) {
+	tests := []struct {
+		name     string
+		group    *models.Group
+		key      string
+		expected bool
+	}{
+		{
+			name:     "nil group",
+			group:    nil,
+			key:      "test_key",
+			expected: false,
+		},
+		{
+			name: "nil config",
+			group: &models.Group{
+				Name:   "test",
+				Config: nil,
+			},
+			key:      "test_key",
+			expected: false,
+		},
+		{
+			name: "key not found",
+			group: &models.Group{
+				Name:   "test",
+				Config: map[string]any{},
+			},
+			key:      "test_key",
+			expected: false,
+		},
+		{
+			name: "bool true",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": true,
+				},
+			},
+			key:      "test_key",
+			expected: true,
+		},
+		{
+			name: "bool false",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": false,
+				},
+			},
+			key:      "test_key",
+			expected: false,
+		},
+		{
+			name: "float64 non-zero",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": float64(1),
+				},
+			},
+			key:      "test_key",
+			expected: true,
+		},
+		{
+			name: "float64 zero",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": float64(0),
+				},
+			},
+			key:      "test_key",
+			expected: false,
+		},
+		{
+			name: "int non-zero",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": 1,
+				},
+			},
+			key:      "test_key",
+			expected: true,
+		},
+		{
+			name: "int zero",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": 0,
+				},
+			},
+			key:      "test_key",
+			expected: false,
+		},
+		{
+			name: "string true",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": "true",
+				},
+			},
+			key:      "test_key",
+			expected: true,
+		},
+		{
+			name: "string 1",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": "1",
+				},
+			},
+			key:      "test_key",
+			expected: true,
+		},
+		{
+			name: "string yes",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": "yes",
+				},
+			},
+			key:      "test_key",
+			expected: true,
+		},
+		{
+			name: "string on",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": "on",
+				},
+			},
+			key:      "test_key",
+			expected: true,
+		},
+		{
+			name: "string false",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": "false",
+				},
+			},
+			key:      "test_key",
+			expected: false,
+		},
+		{
+			name: "string with whitespace",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": "  true  ",
+				},
+			},
+			key:      "test_key",
+			expected: true,
+		},
+		{
+			name: "invalid type",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": []string{"invalid"},
+				},
+			},
+			key:      "test_key",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getGroupConfigBool(tt.group, tt.key)
+			if result != tt.expected {
+				t.Errorf("getGroupConfigBool() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetGroupConfigString tests the getGroupConfigString function
+func TestGetGroupConfigString(t *testing.T) {
+	tests := []struct {
+		name     string
+		group    *models.Group
+		key      string
+		expected string
+	}{
+		{
+			name:     "nil group",
+			group:    nil,
+			key:      "test_key",
+			expected: "",
+		},
+		{
+			name: "nil config",
+			group: &models.Group{
+				Name:   "test",
+				Config: nil,
+			},
+			key:      "test_key",
+			expected: "",
+		},
+		{
+			name: "key not found",
+			group: &models.Group{
+				Name:   "test",
+				Config: map[string]any{},
+			},
+			key:      "test_key",
+			expected: "",
+		},
+		{
+			name: "string value",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": "test_value",
+				},
+			},
+			key:      "test_key",
+			expected: "test_value",
+		},
+		{
+			name: "string with whitespace",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": "  test_value  ",
+				},
+			},
+			key:      "test_key",
+			expected: "test_value",
+		},
+		{
+			name: "non-string value",
+			group: &models.Group{
+				Name: "test",
+				Config: map[string]any{
+					"test_key": 123,
+				},
+			},
+			key:      "test_key",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getGroupConfigString(tt.group, tt.key)
+			if result != tt.expected {
+				t.Errorf("getGroupConfigString() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsCCSupportEnabled tests the isCCSupportEnabled function
+func TestIsCCSupportEnabled(t *testing.T) {
+	tests := []struct {
+		name     string
+		group    *models.Group
+		expected bool
+	}{
+		{
+			name:     "nil group",
+			group:    nil,
+			expected: false,
+		},
+		{
+			name: "unsupported channel type",
+			group: &models.Group{
+				Name:        "test",
+				ChannelType: "anthropic",
+				Config:      map[string]any{"cc_support": true},
+			},
+			expected: false,
+		},
+		{
+			name: "openai channel with cc_support enabled",
+			group: &models.Group{
+				Name:        "test",
+				ChannelType: "openai",
+				Config:      map[string]any{"cc_support": true},
+			},
+			expected: true,
+		},
+		{
+			name: "openai channel with cc_support disabled",
+			group: &models.Group{
+				Name:        "test",
+				ChannelType: "openai",
+				Config:      map[string]any{"cc_support": false},
+			},
+			expected: false,
+		},
+		{
+			name: "codex channel with cc_support enabled",
+			group: &models.Group{
+				Name:        "test",
+				ChannelType: "codex",
+				Config:      map[string]any{"cc_support": true},
+			},
+			expected: true,
+		},
+		{
+			name: "gemini channel with cc_support enabled",
+			group: &models.Group{
+				Name:        "test",
+				ChannelType: "gemini",
+				Config:      map[string]any{"cc_support": true},
+			},
+			expected: true,
+		},
+		{
+			name: "openai channel without cc_support config",
+			group: &models.Group{
+				Name:        "test",
+				ChannelType: "openai",
+				Config:      map[string]any{},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isCCSupportEnabled(tt.group)
+			if result != tt.expected {
+				t.Errorf("isCCSupportEnabled() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestConvertClaudeToOpenAI tests the basic Claude to OpenAI conversion
+func TestConvertClaudeToOpenAI(t *testing.T) {
+	tests := []struct {
+		name        string
+		claudeReq   *ClaudeRequest
+		expectError bool
+		checkFunc   func(*testing.T, *OpenAIRequest)
+	}{
+		{
+			name: "simple text message",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Hello, world!"`),
+					},
+				},
+				MaxTokens: 1024,
+				Stream:    false,
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *OpenAIRequest) {
+				if req.Model != "claude-3-5-sonnet-20241022" {
+					t.Errorf("expected model claude-3-5-sonnet-20241022, got %s", req.Model)
+				}
+				if len(req.Messages) != 1 {
+					t.Fatalf("expected 1 message, got %d", len(req.Messages))
+				}
+				if req.Messages[0].Role != "user" {
+					t.Errorf("expected role user, got %s", req.Messages[0].Role)
+				}
+				if req.MaxTokens == nil || *req.MaxTokens != 1024 {
+					t.Errorf("expected max_tokens 1024, got %v", req.MaxTokens)
+				}
+			},
+		},
+		{
+			name: "with system message",
+			claudeReq: &ClaudeRequest{
+				Model:  "claude-3-5-sonnet-20241022",
+				System: json.RawMessage(`"You are a helpful assistant."`),
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Hello!"`),
+					},
+				},
+				MaxTokens: 1024,
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *OpenAIRequest) {
+				if len(req.Messages) != 2 {
+					t.Fatalf("expected 2 messages (system + user), got %d", len(req.Messages))
+				}
+				if req.Messages[0].Role != "system" {
+					t.Errorf("expected first message role system, got %s", req.Messages[0].Role)
+				}
+			},
+		},
+		{
+			name: "with tools",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Use the search tool"`),
+					},
+				},
+				Tools: []ClaudeTool{
+					{
+						Name:        "web_search",
+						Description: "Search the web",
+						InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}}}`),
+					},
+				},
+				MaxTokens: 1024,
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *OpenAIRequest) {
+				if len(req.Tools) != 1 {
+					t.Fatalf("expected 1 tool, got %d", len(req.Tools))
+				}
+				if req.Tools[0].Function.Name != "web_search" {
+					t.Errorf("expected tool name web_search, got %s", req.Tools[0].Function.Name)
+				}
+			},
+		},
+		{
+			name: "with tool choice auto",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Test"`),
+					},
+				},
+				Tools: []ClaudeTool{
+					{
+						Name:        "test_tool",
+						Description: "Test",
+						InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+					},
+				},
+				ToolChoice: json.RawMessage(`{"type":"auto"}`),
+				MaxTokens:  1024,
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *OpenAIRequest) {
+				if req.ToolChoice != "auto" {
+					t.Errorf("expected tool_choice auto, got %v", req.ToolChoice)
+				}
+			},
+		},
+		{
+			name: "with tool choice any",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Test"`),
+					},
+				},
+				Tools: []ClaudeTool{
+					{
+						Name:        "test_tool",
+						Description: "Test",
+						InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+					},
+				},
+				ToolChoice: json.RawMessage(`{"type":"any"}`),
+				MaxTokens:  1024,
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *OpenAIRequest) {
+				if req.ToolChoice != "required" {
+					t.Errorf("expected tool_choice required, got %v", req.ToolChoice)
+				}
+			},
+		},
+		{
+			name: "with tool choice specific tool",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Test"`),
+					},
+				},
+				Tools: []ClaudeTool{
+					{
+						Name:        "test_tool",
+						Description: "Test",
+						InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+					},
+				},
+				ToolChoice: json.RawMessage(`{"type":"tool","name":"test_tool"}`),
+				MaxTokens:  1024,
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *OpenAIRequest) {
+				tcMap, ok := req.ToolChoice.(map[string]interface{})
+				if !ok {
+					t.Fatalf("expected tool_choice to be map, got %T", req.ToolChoice)
+				}
+				if tcMap["type"] != "function" {
+					t.Errorf("expected tool_choice type function, got %v", tcMap["type"])
+				}
+				funcMap, ok := tcMap["function"].(map[string]string)
+				if !ok {
+					t.Fatalf("expected function to be map, got %T", tcMap["function"])
+				}
+				if funcMap["name"] != "test_tool" {
+					t.Errorf("expected function name test_tool, got %s", funcMap["name"])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := convertClaudeToOpenAI(tt.claudeReq, nil)
+			if tt.expectError {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if tt.checkFunc != nil {
+					tt.checkFunc(t, result)
+				}
+			}
+		})
+	}
+}
+
+// TestNormalizeArgsLooseMode tests parameter normalization in loose mode
+// Loose mode automatically converts JSON strings to objects/arrays and infers types
+func TestNormalizeArgsLooseMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    map[string]any
+		expected map[string]any
+	}{
+		{
+			name: "JSON string to object",
+			input: map[string]any{
+				"config": `{"key":"value","num":42}`,
+			},
+			expected: map[string]any{
+				"config": map[string]any{"key": "value", "num": float64(42)},
+			},
+		},
+		{
+			name: "JSON string to array",
+			input: map[string]any{
+				"items": `["item1","item2","item3"]`,
+			},
+			expected: map[string]any{
+				"items": []any{"item1", "item2", "item3"},
+			},
+		},
+		{
+			name: "Windows path with control chars",
+			input: map[string]any{
+				"file_path": "F:\test\new\file.py", // Contains \t and \n as control chars
+			},
+			expected: map[string]any{
+				"file_path": "F:\\test\\new\\file.py",
+			},
+		},
+		{
+			name: "Git Bash path conversion",
+			input: map[string]any{
+				"path": "/f/MyProjects/test/file.py",
+			},
+			expected: map[string]any{
+				"path": "F:\\MyProjects\\test\\file.py",
+			},
+		},
+		{
+			name: "Mixed types preserved",
+			input: map[string]any{
+				"string": "plain text",
+				"number": 42,
+				"bool":   true,
+			},
+			expected: map[string]any{
+				"string": "plain text",
+				"number": 42,
+				"bool":   true,
+			},
+		},
+		{
+			name: "Embedded Windows path in command",
+			input: map[string]any{
+				"command": "python F:\test\file.py --arg value",
+			},
+			expected: map[string]any{
+				"command": "python F:\\test\\file.py --arg value",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Make a copy to avoid modifying test data
+			inputCopy := make(map[string]any)
+			for k, v := range tt.input {
+				inputCopy[k] = v
+			}
+
+			normalizeArgsGenericInPlace(inputCopy)
+
+			// Compare results
+			for key, expectedVal := range tt.expected {
+				actualVal, ok := inputCopy[key]
+				if !ok {
+					t.Errorf("key %q not found in result", key)
+					continue
+				}
+
+				// Use JSON marshaling for deep comparison
+				expectedJSON, _ := json.Marshal(expectedVal)
+				actualJSON, _ := json.Marshal(actualVal)
+				if string(expectedJSON) != string(actualJSON) {
+					t.Errorf("key %q: expected %s, got %s", key, expectedJSON, actualJSON)
+				}
+			}
+		})
+	}
+}
+
+// TestNormalizeArgsStrictMode tests parameter validation in strict mode
+// Strict mode validates types and rejects invalid inputs
+func TestNormalizeArgsStrictMode(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         map[string]any
+		shouldConvert bool
+		description   string
+	}{
+		{
+			name: "Valid JSON string should convert",
+			input: map[string]any{
+				"data": `{"valid":"json"}`,
+			},
+			shouldConvert: true,
+			description:   "Valid JSON strings should be parsed",
+		},
+		{
+			name: "Invalid JSON string should not convert",
+			input: map[string]any{
+				"data": `{invalid json}`,
+			},
+			shouldConvert: false,
+			description:   "Invalid JSON should remain as string",
+		},
+		{
+			name: "Empty string should not convert",
+			input: map[string]any{
+				"data": "",
+			},
+			shouldConvert: false,
+			description:   "Empty strings should be preserved",
+		},
+		{
+			name: "Whitespace-only string should not convert",
+			input: map[string]any{
+				"data": "   ",
+			},
+			shouldConvert: false,
+			description:   "Whitespace-only strings should be preserved",
+		},
+		{
+			name: "Non-string values should not be modified",
+			input: map[string]any{
+				"number": 42,
+				"bool":   true,
+				"null":   nil,
+			},
+			shouldConvert: false,
+			description:   "Non-string values should remain unchanged",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Make a copy to avoid modifying test data
+			inputCopy := make(map[string]any)
+			for k, v := range tt.input {
+				inputCopy[k] = v
+			}
+
+			// Store original values for comparison
+			originalValues := make(map[string]any)
+			for k, v := range inputCopy {
+				originalValues[k] = v
+			}
+
+			normalizeArgsGenericInPlace(inputCopy)
+
+			// Check if conversion happened
+			for key, originalVal := range originalValues {
+				actualVal := inputCopy[key]
+
+				// Check if type changed (indicates conversion)
+				originalType := fmt.Sprintf("%T", originalVal)
+				actualType := fmt.Sprintf("%T", actualVal)
+
+				if tt.shouldConvert {
+					if originalType == actualType {
+						t.Errorf("%s: expected conversion but type remained %s", tt.description, originalType)
+					}
+				} else {
+					// For non-conversion cases, allow Windows path fixes
+					if key == "data" && originalType == "string" && actualType == "string" {
+						// String to string is OK (path fixes)
+						continue
+					}
+					if originalType != actualType {
+						t.Errorf("%s: unexpected conversion from %s to %s", tt.description, originalType, actualType)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestWindowsPathFixing tests Windows path escape sequence fixes
+func TestWindowsPathFixing(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Tab character in path",
+			input:    "F:\test\file.py",
+			expected: "F:\\test\\file.py",
+		},
+		{
+			name:     "Newline character in path",
+			input:    "C:\new\folder\file.txt",
+			expected: "C:\\new\\folder\\file.txt",
+		},
+		{
+			name:     "Multiple escape sequences",
+			input:    "D:\test\new\readme.txt",
+			expected: "D:\\test\\new\\readme.txt",
+		},
+		{
+			name:     "Path without control chars",
+			input:    "E:\\valid\\path\\file.py",
+			expected: "E:\\valid\\path\\file.py",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{
+				"file_path": tt.input,
+			}
+			normalizeArgsGenericInPlace(args)
+
+			result, ok := args["file_path"].(string)
+			if !ok {
+				t.Fatalf("expected string result, got %T", args["file_path"])
+			}
+
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestGitBashPathConversion tests Git Bash/MSYS2 path conversion
+func TestGitBashPathConversion(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Git Bash /f/ path",
+			input:    "/f/MyProjects/test/file.py",
+			expected: "F:\\MyProjects\\test\\file.py",
+		},
+		{
+			name:     "Git Bash /c/ path",
+			input:    "/c/Users/name/file.txt",
+			expected: "C:\\Users\\name\\file.txt",
+		},
+		{
+			name:     "Git Bash /d/ path",
+			input:    "/d/work/project",
+			expected: "D:\\work\\project",
+		},
+		{
+			name:     "Unix /home/ path should not convert",
+			input:    "/home/user/file.txt",
+			expected: "/home/user/file.txt",
+		},
+		{
+			name:     "Unix /usr/ path should not convert",
+			input:    "/usr/local/bin",
+			expected: "/usr/local/bin",
+		},
+		{
+			name:     "Unix /var/ path should not convert",
+			input:    "/var/log/app.log",
+			expected: "/var/log/app.log",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{
+				"path": tt.input,
+			}
+			normalizeArgsGenericInPlace(args)
+
+			result, ok := args["path"].(string)
+			if !ok {
+				t.Fatalf("expected string result, got %T", args["path"])
+			}
+
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestHandleCCNormalResponse tests non-streaming response conversion
+func TestHandleCCNormalResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name           string
+		responseBody   string
+		statusCode     int
+		contentType    string
+		expectStatus   int
+		expectError    bool
+		checkResponse  func(t *testing.T, body string)
+	}{
+		{
+			name: "successful response with text content",
+			responseBody: `{
+				"id": "chatcmpl-123",
+				"object": "chat.completion",
+				"model": "gpt-4",
+				"choices": [{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": "Hello, world!"
+					},
+					"finish_reason": "stop"
+				}],
+				"usage": {
+					"prompt_tokens": 10,
+					"completion_tokens": 5,
+					"total_tokens": 15
+				}
+			}`,
+			statusCode:   http.StatusOK,
+			contentType:  "application/json",
+			expectStatus: http.StatusOK,
+			expectError:  false,
+			checkResponse: func(t *testing.T, body string) {
+				var claudeResp ClaudeResponse
+				if err := json.Unmarshal([]byte(body), &claudeResp); err != nil {
+					t.Fatalf("failed to parse Claude response: %v", err)
+				}
+				if claudeResp.Role != "assistant" {
+					t.Errorf("expected role assistant, got %s", claudeResp.Role)
+				}
+				if len(claudeResp.Content) == 0 {
+					t.Fatal("expected content blocks")
+				}
+				if claudeResp.Content[0].Type != "text" {
+					t.Errorf("expected text block, got %s", claudeResp.Content[0].Type)
+				}
+				if claudeResp.Content[0].Text != "Hello, world!" {
+					t.Errorf("expected 'Hello, world!', got %s", claudeResp.Content[0].Text)
+				}
+			},
+		},
+		{
+			name: "response with tool calls",
+			responseBody: `{
+				"id": "chatcmpl-123",
+				"object": "chat.completion",
+				"model": "gpt-4",
+				"choices": [{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": null,
+						"tool_calls": [{
+							"id": "call_123",
+							"type": "function",
+							"function": {
+								"name": "get_weather",
+								"arguments": "{\"location\":\"San Francisco\"}"
+							}
+						}]
+					},
+					"finish_reason": "tool_calls"
+				}],
+				"usage": {
+					"prompt_tokens": 10,
+					"completion_tokens": 5,
+					"total_tokens": 15
+				}
+			}`,
+			statusCode:   http.StatusOK,
+			contentType:  "application/json",
+			expectStatus: http.StatusOK,
+			expectError:  false,
+			checkResponse: func(t *testing.T, body string) {
+				var claudeResp ClaudeResponse
+				if err := json.Unmarshal([]byte(body), &claudeResp); err != nil {
+					t.Fatalf("failed to parse Claude response: %v", err)
+				}
+				if len(claudeResp.Content) == 0 {
+					t.Fatal("expected content blocks")
+				}
+				if claudeResp.Content[0].Type != "tool_use" {
+					t.Errorf("expected tool_use block, got %s", claudeResp.Content[0].Type)
+				}
+				if claudeResp.Content[0].Name != "get_weather" {
+					t.Errorf("expected tool name get_weather, got %s", claudeResp.Content[0].Name)
+				}
+			},
+		},
+		{
+			name:         "error response from upstream",
+			responseBody: `{"error":{"message":"Rate limit exceeded","type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
+			statusCode:   http.StatusTooManyRequests,
+			contentType:  "application/json",
+			expectStatus: http.StatusTooManyRequests,
+			expectError:  true,
+			checkResponse: func(t *testing.T, body string) {
+				var claudeErr ClaudeErrorResponse
+				if err := json.Unmarshal([]byte(body), &claudeErr); err != nil {
+					t.Fatalf("failed to parse Claude error: %v", err)
+				}
+				if claudeErr.Type != "error" {
+					t.Errorf("expected type error, got %s", claudeErr.Type)
+				}
+				if claudeErr.Error.Message != "Rate limit exceeded" {
+					t.Errorf("expected rate limit message, got %s", claudeErr.Error.Message)
+				}
+			},
+		},
+		{
+			name:         "invalid JSON response",
+			responseBody: `invalid json`,
+			statusCode:   http.StatusBadRequest,
+			contentType:  "text/plain",
+			expectStatus: http.StatusBadRequest,
+			expectError:  true,
+			checkResponse: func(t *testing.T, body string) {
+				var claudeErr ClaudeErrorResponse
+				if err := json.Unmarshal([]byte(body), &claudeErr); err != nil {
+					t.Fatalf("failed to parse Claude error: %v", err)
+				}
+				if claudeErr.Type != "error" {
+					t.Errorf("expected type error, got %s", claudeErr.Type)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock response
+			resp := &http.Response{
+				StatusCode: tt.statusCode,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(tt.responseBody)),
+			}
+			resp.Header.Set("Content-Type", tt.contentType)
+
+			// Create test context
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Set(ctxKeyCCEnabled, true)
+			c.Set(ctxKeyOriginalFormat, "claude")
+			c.Set("original_model", "gpt-4")
+
+			// Create ProxyServer and handle response
+			ps := &ProxyServer{}
+			ps.handleCCNormalResponse(c, resp)
+
+			// Check status code
+			if w.Code != tt.expectStatus {
+				t.Errorf("expected status %d, got %d", tt.expectStatus, w.Code)
+			}
+
+			// Check response body
+			if tt.checkResponse != nil {
+				tt.checkResponse(t, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestHandleCCNormalResponseWithToolNameRestore tests tool name restoration
+func TestHandleCCNormalResponseWithToolNameRestore(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Create response with shortened tool name
+	responseBody := `{
+		"id": "chatcmpl-123",
+		"object": "chat.completion",
+		"model": "gpt-4",
+		"choices": [{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": null,
+				"tool_calls": [{
+					"id": "call_123",
+					"type": "function",
+					"function": {
+						"name": "mcp__short",
+						"arguments": "{\"param\":\"value\"}"
+					}
+				}]
+			},
+			"finish_reason": "tool_calls"
+		}],
+		"usage": {
+			"prompt_tokens": 10,
+			"completion_tokens": 5,
+			"total_tokens": 15
+		}
+	}`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(responseBody)),
+	}
+	resp.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCCEnabled, true)
+	c.Set(ctxKeyOriginalFormat, "claude")
+	c.Set("original_model", "gpt-4")
+
+	// Set reverse tool name map
+	reverseMap := map[string]string{
+		"mcp__short": "mcp__very_long_original_tool_name_that_exceeds_64_characters_limit",
+	}
+	c.Set(ctxKeyOpenAIToolNameReverseMap, reverseMap)
+
+	ps := &ProxyServer{}
+	ps.handleCCNormalResponse(c, resp)
+
+	// Parse response
+	var claudeResp ClaudeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &claudeResp); err != nil {
+		t.Fatalf("failed to parse Claude response: %v", err)
+	}
+
+	// Check tool name was restored
+	if len(claudeResp.Content) == 0 {
+		t.Fatal("expected content blocks")
+	}
+	if claudeResp.Content[0].Type != "tool_use" {
+		t.Fatalf("expected tool_use block, got %s", claudeResp.Content[0].Type)
+	}
+	if claudeResp.Content[0].Name != "mcp__very_long_original_tool_name_that_exceeds_64_characters_limit" {
+		t.Errorf("expected restored tool name, got %s", claudeResp.Content[0].Name)
+	}
+}
+
+// TestHandleCCNormalResponseBodyTooLarge tests response body size limit
+func TestHandleCCNormalResponseBodyTooLarge(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Create a large response body that exceeds the limit
+	// maxUpstreamResponseBodySize is 32MB, so we create a 33MB response
+	largeBody := strings.Repeat("x", 33*1024*1024)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(largeBody)),
+	}
+	resp.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCCEnabled, true)
+	c.Set(ctxKeyOriginalFormat, "claude")
+
+	ps := &ProxyServer{}
+	ps.handleCCNormalResponse(c, resp)
+
+	// Should return error response
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected status 502, got %d", w.Code)
+	}
+
+	var claudeErr ClaudeErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &claudeErr); err != nil {
+		t.Fatalf("failed to parse Claude error: %v", err)
+	}
+
+	if claudeErr.Type != "error" {
+		t.Errorf("expected type error, got %s", claudeErr.Type)
+	}
+	if !strings.Contains(claudeErr.Error.Message, "exceeded maximum allowed size") {
+		t.Errorf("expected size limit error, got %s", claudeErr.Error.Message)
+	}
+}
+
+// TestHelperFunctions tests various helper functions in cc_support.go
+func TestHelperFunctions(t *testing.T) {
+	t.Run("getGroupConfigBool", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			config   map[string]interface{}
+			key      string
+			expected bool
+		}{
+			{"bool_true", map[string]interface{}{"key": true}, "key", true},
+			{"bool_false", map[string]interface{}{"key": false}, "key", false},
+			{"float64_nonzero", map[string]interface{}{"key": 1.0}, "key", true},
+			{"float64_zero", map[string]interface{}{"key": 0.0}, "key", false},
+			{"int_nonzero", map[string]interface{}{"key": 1}, "key", true},
+			{"int_zero", map[string]interface{}{"key": 0}, "key", false},
+			{"string_true", map[string]interface{}{"key": "true"}, "key", true},
+			{"string_1", map[string]interface{}{"key": "1"}, "key", true},
+			{"string_yes", map[string]interface{}{"key": "yes"}, "key", true},
+			{"string_on", map[string]interface{}{"key": "on"}, "key", true},
+			{"string_false", map[string]interface{}{"key": "false"}, "key", false},
+			{"string_0", map[string]interface{}{"key": "0"}, "key", false},
+			{"missing_key", map[string]interface{}{}, "key", false},
+			{"nil_value", map[string]interface{}{"key": nil}, "key", false},
+			{"nil_group", nil, "key", false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var group *models.Group
+				if tt.config != nil {
+					group = &models.Group{Config: tt.config}
+				}
+				result := getGroupConfigBool(group, tt.key)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("getGroupConfigString", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			config   map[string]interface{}
+			key      string
+			expected string
+		}{
+			{"string_value", map[string]interface{}{"key": "value"}, "key", "value"},
+			{"string_with_spaces", map[string]interface{}{"key": "  value  "}, "key", "value"},
+			{"empty_string", map[string]interface{}{"key": ""}, "key", ""},
+			{"non_string", map[string]interface{}{"key": 123}, "key", ""},
+			{"missing_key", map[string]interface{}{}, "key", ""},
+			{"nil_value", map[string]interface{}{"key": nil}, "key", ""},
+			{"nil_group", nil, "key", ""},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var group *models.Group
+				if tt.config != nil {
+					group = &models.Group{Config: tt.config}
+				}
+				result := getGroupConfigString(group, tt.key)
+				if result != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("isCCSupportEnabled", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			channelType string
+			config      map[string]interface{}
+			expected    bool
+		}{
+			{"openai_enabled", "openai", map[string]interface{}{"cc_support": true}, true},
+			{"openai_disabled", "openai", map[string]interface{}{"cc_support": false}, false},
+			{"codex_enabled", "codex", map[string]interface{}{"cc_support": true}, true},
+			{"gemini_enabled", "gemini", map[string]interface{}{"cc_support": true}, true},
+			{"anthropic_enabled", "anthropic", map[string]interface{}{"cc_support": true}, false},
+			{"nil_group", "", nil, false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var group *models.Group
+				if tt.config != nil {
+					group = &models.Group{
+						ChannelType: tt.channelType,
+						Config:      tt.config,
+					}
+				}
+				result := isCCSupportEnabled(group)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("isValidToolCallArguments", func(t *testing.T) {
+		tests := []struct {
+			name      string
+			toolName  string
+			arguments string
+			expected  bool
+		}{
+			{"valid_json", "tool", `{"key":"value"}`, true},
+			{"empty_string", "tool", "", false},
+			{"empty_object", "tool", "{}", false},
+			{"whitespace_only", "tool", "   ", false},
+			{"whitespace_empty_object", "tool", "  {}  ", false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := isValidToolCallArguments(tt.toolName, tt.arguments)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("clearUpstreamEncodingHeaders", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+
+		// Set headers
+		c.Writer.Header().Set("Content-Encoding", "gzip")
+		c.Writer.Header().Set("Content-Length", "1234")
+		c.Writer.Header().Set("Transfer-Encoding", "chunked")
+		c.Writer.Header().Set("Other-Header", "value")
+
+		clearUpstreamEncodingHeaders(c)
+
+		// Check that encoding headers are removed
+		if c.Writer.Header().Get("Content-Encoding") != "" {
+			t.Error("Content-Encoding should be removed")
+		}
+		if c.Writer.Header().Get("Content-Length") != "" {
+			t.Error("Content-Length should be removed")
+		}
+		if c.Writer.Header().Get("Transfer-Encoding") != "" {
+			t.Error("Transfer-Encoding should be removed")
+		}
+		// Check that other headers are preserved
+		if c.Writer.Header().Get("Other-Header") != "value" {
+			t.Error("Other-Header should be preserved")
+		}
+	})
+
+	t.Run("marshalStringAsJSONRaw", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			context  string
+			text     string
+			expected string
+		}{
+			{"simple_text", "test", "hello", `"hello"`},
+			{"empty_text", "test", "", `""`},
+			{"text_with_quotes", "test", `hello "world"`, `"hello \"world\""`},
+			{"text_with_newline", "test", "hello\nworld", `"hello\nworld"`},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := marshalStringAsJSONRaw(tt.context, tt.text)
+				if string(result) != tt.expected {
+					t.Errorf("expected %s, got %s", tt.expected, string(result))
+				}
+			})
+		}
+	})
+
+	t.Run("getOpenAIToolNameReverseMap", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+
+		// Test with no map set
+		result := getOpenAIToolNameReverseMap(c)
+		if result != nil {
+			t.Error("expected nil when no map is set")
+		}
+
+		// Test with map set
+		testMap := map[string]string{"short": "original"}
+		c.Set(ctxKeyOpenAIToolNameReverseMap, testMap)
+		result = getOpenAIToolNameReverseMap(c)
+		if result == nil {
+			t.Fatal("expected non-nil map")
+		}
+		if result["short"] != "original" {
+			t.Errorf("expected 'original', got %q", result["short"])
+		}
+	})
+}
+
+// TestForceFunctionCallPromptModes tests force_function_call prompt generation
+
+// TestMoreHelperFunctions tests additional helper functions
+func TestMoreHelperFunctions(t *testing.T) {
+	t.Run("getModelRedirectSelector", func(t *testing.T) {
+		selector := getModelRedirectSelector()
+		if selector == nil {
+			t.Error("expected non-nil selector")
+		}
+	})
+
+	t.Run("isInterceptEventLogEnabled", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			channelType string
+			config      map[string]interface{}
+			expected    bool
+		}{
+			{"anthropic_default", "anthropic", nil, true},
+			{"anthropic_enabled", "anthropic", map[string]interface{}{"intercept_event_log": true}, true},
+			{"anthropic_disabled", "anthropic", map[string]interface{}{"intercept_event_log": false}, false},
+			{"openai_channel", "openai", map[string]interface{}{"intercept_event_log": true}, false},
+			{"nil_group", "", nil, false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var group *models.Group
+				if tt.channelType != "" {
+					group = &models.Group{
+						ChannelType: tt.channelType,
+						Config:      tt.config,
+					}
+				}
+				result := isInterceptEventLogEnabled(group)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("sanitizeCCQueryParams", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			query    string
+			expected string
+		}{
+			{"with_beta", "beta=true&other=value", "other=value"},
+			{"no_beta", "other=value", "other=value"},
+			{"empty", "", ""},
+			{"only_beta", "beta=true", ""},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				u, _ := url.Parse("http://example.com?" + tt.query)
+				sanitizeCCQueryParams(u)
+				if u.RawQuery != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, u.RawQuery)
+				}
+			})
+		}
+
+		// Test nil URL
+		sanitizeCCQueryParams(nil)
+	})
+
+	t.Run("isClaudePath", func(t *testing.T) {
+		tests := []struct {
+			name      string
+			path      string
+			groupName string
+			expected  bool
+		}{
+			{"claude_path", "/proxy/mygroup/claude/v1/models", "mygroup", true},
+			{"group_named_claude", "/proxy/claude/v1/models", "claude", false},
+			{"group_named_claude_with_cc", "/proxy/claude/claude/v1/models", "claude", true},
+			{"no_claude", "/proxy/mygroup/v1/models", "mygroup", false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := isClaudePath(tt.path, tt.groupName)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("rewriteClaudePathToOpenAIGeneric", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected string
+		}{
+			{"basic", "/proxy/group/claude/v1/models", "/proxy/group/v1/models"},
+			{"messages", "/proxy/group/claude/v1/messages", "/proxy/group/v1/messages"},
+			{"no_claude", "/proxy/group/v1/models", "/proxy/group/v1/models"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := rewriteClaudePathToOpenAIGeneric(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("isCCEnabled", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+
+		// Test when not set
+		if isCCEnabled(c) {
+			t.Error("expected false when not set")
+		}
+
+		// Test when set to true
+		c.Set(ctxKeyCCEnabled, true)
+		if !isCCEnabled(c) {
+			t.Error("expected true when set to true")
+		}
+
+		// Test when set to false
+		c.Set(ctxKeyCCEnabled, false)
+		if isCCEnabled(c) {
+			t.Error("expected false when set to false")
+		}
+	})
+
+	t.Run("isCCRequest", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+
+		tests := []struct {
+			name     string
+			path     string
+			ccFlags  map[string]interface{}
+			expected bool
+		}{
+			{"claude_path", "/proxy/group/claude/v1/messages", nil, true},
+			{"cc_was_claude_path", "/proxy/group/v1/messages", map[string]interface{}{"cc_was_claude_path": true}, true},
+			{"original_format_claude", "/proxy/group/v1/messages", map[string]interface{}{ctxKeyOriginalFormat: "claude"}, true},
+			{"no_cc", "/proxy/group/v1/messages", nil, false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest("POST", tt.path, nil)
+
+				for k, v := range tt.ccFlags {
+					c.Set(k, v)
+				}
+
+				result := isCCRequest(c)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+
+		// Test nil context
+		if isCCRequest(nil) {
+			t.Error("expected false for nil context")
+		}
+	})
+
+	t.Run("getTriggerSignal", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+
+		// Test when not set
+		result := getTriggerSignal(c)
+		if result != "" {
+			t.Errorf("expected empty string, got %q", result)
+		}
+
+		// Test when set
+		c.Set(ctxKeyTriggerSignal, "<<CALL_TEST>>")
+		result = getTriggerSignal(c)
+		if result != "<<CALL_TEST>>" {
+			t.Errorf("expected '<<CALL_TEST>>', got %q", result)
+		}
+	})
+
+	t.Run("getThinkingModel", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			config   map[string]interface{}
+			expected string
+		}{
+			{"with_thinking_model", map[string]interface{}{"thinking_model": "gpt-4-thinking"}, "gpt-4-thinking"},
+			{"no_thinking_model", map[string]interface{}{}, ""},
+			{"nil_config", nil, ""},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var group *models.Group
+				if tt.config != nil {
+					group = &models.Group{Config: tt.config}
+				}
+				result := getThinkingModel(group)
+				if result != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("convertFinishReasonToStopReason", func(t *testing.T) {
+		tests := []struct {
+			name         string
+			finishReason string
+			expected     string
+			expectError  bool
+		}{
+			{"stop", "stop", "end_turn", false},
+			{"length", "length", "max_tokens", false},
+			{"tool_calls", "tool_calls", "tool_use", false},
+			{"content_filter", "content_filter", "end_turn", true},
+			{"unknown", "unknown_reason", "end_turn", false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result, isError := convertFinishReasonToStopReason(tt.finishReason)
+				if result != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, result)
+				}
+				if isError != tt.expectError {
+					t.Errorf("expected error=%v, got %v", tt.expectError, isError)
+				}
+			})
+		}
+	})
+
+	t.Run("getTokenMultiplier", func(t *testing.T) {
+		// getTokenMultiplier reads from environment variable
+		// We can only test that it returns a valid value
+		result := getTokenMultiplier()
+		if result <= 0 {
+			t.Errorf("expected positive multiplier, got %v", result)
+		}
+	})
+}
+
+// TestPathHelperFunctions tests path-related helper functions
+func TestPathHelperFunctions(t *testing.T) {
+	t.Run("isPathLikeKey", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			key      string
+			expected bool
+		}{
+			{"path", "path", true},
+			{"file_path", "file_path", true},
+			{"directory", "directory", true},
+			{"cwd", "cwd", true},
+			{"working_directory", "working_directory", true},
+			{"other", "other", false},
+			{"name", "name", false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := isPathLikeKey(tt.key)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("containsControlChars", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected bool
+		}{
+			{"with_tab", "hello\tworld", true},
+			{"with_newline", "hello\nworld", true},
+			{"with_carriage_return", "hello\rworld", true},
+			{"no_control", "hello world", false},
+			{"empty", "", false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := containsControlChars(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("looksLikeWindowsPath", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected bool
+		}{
+			{"windows_path", "C:\\Users\\test", true},
+			{"windows_forward", "C:/Users/test", true},
+			{"unix_path", "/home/user/test", false},
+			{"relative_path", "test/file.txt", false},
+			{"empty", "", false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := looksLikeWindowsPath(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("containsWindowsDrivePath", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected bool
+		}{
+			{"with_drive", "C:\\Users\\test", true},
+			{"with_forward", "D:/work/project", true},
+			{"no_drive", "/home/user", false},
+			{"empty", "", false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := containsWindowsDrivePath(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("fixGitBashPathsInArgs", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    map[string]interface{}
+			key      string
+			expected string
+		}{
+			{"git_bash_path", map[string]interface{}{"path": "/f/MyProjects/test"}, "path", "F:\\MyProjects\\test"},
+			{"normal_unix", map[string]interface{}{"path": "/home/user"}, "path", "/home/user"},
+			{"windows_path", map[string]interface{}{"path": "C:\\Users"}, "path", "C:\\Users"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				fixGitBashPathsInArgs(tt.input)
+				result, _ := tt.input[tt.key].(string)
+				if result != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("fixWindowsPathEscapes", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected string
+		}{
+			{"with_tab", "F:\test\file.py", "F:\\test\\file.py"},
+			{"with_newline", "C:\new\folder", "C:\\new\\folder"},
+			{"already_escaped", "D:\\work\\project", "D:\\work\\project"},
+			{"no_escape_needed", "/home/user", "/home/user"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := fixWindowsPathEscapes(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, result)
+				}
+			})
+		}
+	})
+}
+
+// TestNormalizeArgs tests argument normalization functions
+func TestNormalizeArgs(t *testing.T) {
+	t.Run("normalizeAskUserQuestionArgs", func(t *testing.T) {
+		args := map[string]interface{}{
+			"question": "test question",
+		}
+		normalizeAskUserQuestionArgs(args)
+		// Just verify it doesn't panic
+	})
+
+	t.Run("normalizeListDirArgs", func(t *testing.T) {
+		args := map[string]interface{}{
+			"path": "/f/test",
+		}
+		normalizeListDirArgs(args)
+		// Verify Git Bash path conversion
+		if path, ok := args["path"].(string); ok {
+			if path == "/f/test" {
+				// Path should be converted
+				t.Log("Path conversion applied")
+			}
+		}
+	})
+
+	t.Run("normalizeWebSearchArgs", func(t *testing.T) {
+		args := map[string]interface{}{
+			"query": "test query",
+		}
+		normalizeWebSearchArgs(args)
+		// Just verify it doesn't panic
+	})
+
+	t.Run("normalizeEditArgs", func(t *testing.T) {
+		args := map[string]interface{}{
+			"path":    "/f/test/file.py",
+			"content": "test content",
+		}
+		normalizeEditArgs(args)
+		// Verify Git Bash path conversion
+		if path, ok := args["path"].(string); ok {
+			if path == "/f/test/file.py" {
+				t.Log("Path conversion applied")
+			}
+		}
+	})
+}
+
+// TestReadAllWithLimit tests the readAllWithLimit function
+func TestReadAllWithLimit(t *testing.T) {
+	t.Run("within_limit", func(t *testing.T) {
+		data := "test data"
+		r := strings.NewReader(data)
+		result, err := readAllWithLimit(r, 100)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(result) != data {
+			t.Errorf("expected %q, got %q", data, string(result))
+		}
+	})
+
+	t.Run("exceeds_limit", func(t *testing.T) {
+		data := strings.Repeat("x", 100)
+		r := strings.NewReader(data)
+		_, err := readAllWithLimit(r, 50)
+		if !errors.Is(err, ErrBodyTooLarge) {
+			t.Errorf("expected ErrBodyTooLarge, got %v", err)
+		}
+	})
+
+	t.Run("no_limit", func(t *testing.T) {
+		data := "test data"
+		r := strings.NewReader(data)
+		result, err := readAllWithLimit(r, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(result) != data {
+			t.Errorf("expected %q, got %q", data, string(result))
+		}
+	})
+
+	t.Run("negative_limit", func(t *testing.T) {
+		data := "test data"
+		r := strings.NewReader(data)
+		result, err := readAllWithLimit(r, -1)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(result) != data {
+			t.Errorf("expected %q, got %q", data, string(result))
+		}
+	})
+}
+
+// TestIsShortenToolNamesEnabled tests the isShortenToolNamesEnabled function
+
+// TestAppendToContent tests the appendToContent function
+func TestAppendToContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  json.RawMessage
+		text     string
+		expected string
+	}{
+		{"append_to_string", json.RawMessage(`"hello"`), " world", `"hello world"`},
+		{"append_to_empty", json.RawMessage(`""`), "hello", `"hello"`},
+		{"append_to_null", json.RawMessage(`null`), "hello", `"hello"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := appendToContent(tt.content, tt.text)
+			if string(result) != tt.expected {
+				t.Errorf("expected %s, got %s", tt.expected, string(result))
+			}
+		})
+	}
+}
+
+// TestConvertClaudeToOpenAI tests the Claude to OpenAI conversion

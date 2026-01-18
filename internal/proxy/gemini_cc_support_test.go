@@ -3,9 +3,13 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -989,6 +993,732 @@ func TestGeminiCCStreamingWindowsPathConversion(t *testing.T) {
 		// Verify Windows path is converted
 		if !strings.Contains(deltaEvent.Delta.Thinking, "F:/MyProjects") {
 			t.Errorf("Expected Unix-style path 'F:/MyProjects' in thinking delta, got: %s", deltaEvent.Delta.Thinking)
+		}
+	})
+}
+
+// TestConvertClaudeToGemini_ToolChoice tests tool_choice conversion
+func TestConvertClaudeToGemini_ToolChoice(t *testing.T) {
+	tests := []struct {
+		name        string
+		claudeReq   *ClaudeRequest
+		expectError bool
+		checkFunc   func(*testing.T, *GeminiRequest)
+	}{
+		{
+			name: "tool_choice auto",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Test"`),
+					},
+				},
+				Tools: []ClaudeTool{
+					{
+						Name:        "test_tool",
+						Description: "Test",
+						InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+					},
+				},
+				ToolChoice: json.RawMessage(`{"type":"auto"}`),
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *GeminiRequest) {
+				if req.ToolConfig == nil {
+					t.Fatal("expected ToolConfig to be set")
+				}
+				if req.ToolConfig.FunctionCallingConfig == nil {
+					t.Fatal("expected FunctionCallingConfig to be set")
+				}
+				if req.ToolConfig.FunctionCallingConfig.Mode != "AUTO" {
+					t.Errorf("expected mode AUTO, got %s", req.ToolConfig.FunctionCallingConfig.Mode)
+				}
+			},
+		},
+		{
+			name: "tool_choice any",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Test"`),
+					},
+				},
+				Tools: []ClaudeTool{
+					{
+						Name:        "test_tool",
+						Description: "Test",
+						InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+					},
+				},
+				ToolChoice: json.RawMessage(`{"type":"any"}`),
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *GeminiRequest) {
+				if req.ToolConfig == nil {
+					t.Fatal("expected ToolConfig to be set")
+				}
+				if req.ToolConfig.FunctionCallingConfig == nil {
+					t.Fatal("expected FunctionCallingConfig to be set")
+				}
+				if req.ToolConfig.FunctionCallingConfig.Mode != "ANY" {
+					t.Errorf("expected mode ANY, got %s", req.ToolConfig.FunctionCallingConfig.Mode)
+				}
+			},
+		},
+		{
+			name: "tool_choice none",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Test"`),
+					},
+				},
+				Tools: []ClaudeTool{
+					{
+						Name:        "test_tool",
+						Description: "Test",
+						InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+					},
+				},
+				ToolChoice: json.RawMessage(`{"type":"none"}`),
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *GeminiRequest) {
+				if req.ToolConfig == nil {
+					t.Fatal("expected ToolConfig to be set")
+				}
+				if req.ToolConfig.FunctionCallingConfig == nil {
+					t.Fatal("expected FunctionCallingConfig to be set")
+				}
+				if req.ToolConfig.FunctionCallingConfig.Mode != "NONE" {
+					t.Errorf("expected mode NONE, got %s", req.ToolConfig.FunctionCallingConfig.Mode)
+				}
+			},
+		},
+		{
+			name: "tool_choice specific tool",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "user",
+						Content: json.RawMessage(`"Test"`),
+					},
+				},
+				Tools: []ClaudeTool{
+					{
+						Name:        "test_tool",
+						Description: "Test",
+						InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+					},
+				},
+				ToolChoice: json.RawMessage(`{"type":"tool","name":"test_tool"}`),
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, req *GeminiRequest) {
+				if req.ToolConfig == nil {
+					t.Fatal("expected ToolConfig to be set")
+				}
+				if req.ToolConfig.FunctionCallingConfig == nil {
+					t.Fatal("expected FunctionCallingConfig to be set")
+				}
+				if req.ToolConfig.FunctionCallingConfig.Mode != "ANY" {
+					t.Errorf("expected mode ANY, got %s", req.ToolConfig.FunctionCallingConfig.Mode)
+				}
+				if len(req.ToolConfig.FunctionCallingConfig.AllowedFunctionNames) != 1 {
+					t.Fatalf("expected 1 allowed function, got %d", len(req.ToolConfig.FunctionCallingConfig.AllowedFunctionNames))
+				}
+				if req.ToolConfig.FunctionCallingConfig.AllowedFunctionNames[0] != "test_tool" {
+					t.Errorf("expected allowed function test_tool, got %s", req.ToolConfig.FunctionCallingConfig.AllowedFunctionNames[0])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := convertClaudeToGemini(tt.claudeReq, nil)
+			if tt.expectError {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if tt.checkFunc != nil {
+					tt.checkFunc(t, result)
+				}
+			}
+		})
+	}
+}
+
+// TestConvertClaudeMessageToGemini_ToolUse tests tool_use block conversion
+func TestConvertClaudeMessageToGemini_ToolUse(t *testing.T) {
+	tests := []struct {
+		name        string
+		message     ClaudeMessage
+		expectError bool
+		checkFunc   func(*testing.T, []GeminiContent)
+	}{
+		{
+			name: "tool_use block",
+			message: ClaudeMessage{
+				Role: "assistant",
+				Content: json.RawMessage(`[
+					{"type":"text","text":"Let me search for that."},
+					{"type":"tool_use","id":"toolu_123","name":"search","input":{"query":"test"}}
+				]`),
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, result []GeminiContent) {
+				if len(result) != 1 {
+					t.Fatalf("expected 1 content, got %d", len(result))
+				}
+				if result[0].Role != "model" {
+					t.Errorf("expected role model, got %s", result[0].Role)
+				}
+				if len(result[0].Parts) != 2 {
+					t.Fatalf("expected 2 parts, got %d", len(result[0].Parts))
+				}
+				// First part should be text
+				if result[0].Parts[0].Text != "Let me search for that." {
+					t.Errorf("expected text part, got %v", result[0].Parts[0])
+				}
+				// Second part should be function call
+				if result[0].Parts[1].FunctionCall == nil {
+					t.Fatal("expected function call part")
+				}
+				if result[0].Parts[1].FunctionCall.Name != "search" {
+					t.Errorf("expected function name search, got %s", result[0].Parts[1].FunctionCall.Name)
+				}
+			},
+		},
+		{
+			name: "tool_result block",
+			message: ClaudeMessage{
+				Role: "user",
+				Content: json.RawMessage(`[
+					{"type":"tool_result","tool_use_id":"toolu_123","content":"Result text"}
+				]`),
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, result []GeminiContent) {
+				if len(result) != 1 {
+					t.Fatalf("expected 1 content, got %d", len(result))
+				}
+				if result[0].Role != "function" {
+					t.Errorf("expected role function, got %s", result[0].Role)
+				}
+				if len(result[0].Parts) != 1 {
+					t.Fatalf("expected 1 part, got %d", len(result[0].Parts))
+				}
+				if result[0].Parts[0].FunctionResponse == nil {
+					t.Fatal("expected function response part")
+				}
+			},
+		},
+		{
+			name: "thinking block merged into text",
+			message: ClaudeMessage{
+				Role: "assistant",
+				Content: json.RawMessage(`[
+					{"type":"thinking","thinking":"Let me think..."},
+					{"type":"text","text":"The answer is 42."}
+				]`),
+			},
+			expectError: false,
+			checkFunc: func(t *testing.T, result []GeminiContent) {
+				if len(result) != 1 {
+					t.Fatalf("expected 1 content, got %d", len(result))
+				}
+				if result[0].Role != "model" {
+					t.Errorf("expected role model, got %s", result[0].Role)
+				}
+				// Thinking should be merged into text parts
+				if len(result[0].Parts) != 2 {
+					t.Fatalf("expected 2 parts (thinking + text), got %d", len(result[0].Parts))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toolUseIDToName := make(map[string]string)
+			result, err := convertClaudeMessageToGemini(tt.message, nil, toolUseIDToName)
+			if tt.expectError {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if tt.checkFunc != nil {
+					tt.checkFunc(t, result)
+				}
+			}
+		})
+	}
+}
+
+// TestProcessJsonSchema_ComplexSchemas tests JSON schema processing with complex structures
+func TestProcessJsonSchema_ComplexSchemas(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		checkFunc func(*testing.T, json.RawMessage)
+	}{
+		{
+			name:  "schema with $schema field",
+			input: `{"type":"object","$schema":"http://json-schema.org/draft-07/schema#","properties":{"name":{"type":"string"}}}`,
+			checkFunc: func(t *testing.T, result json.RawMessage) {
+				var schema map[string]interface{}
+				if err := json.Unmarshal(result, &schema); err != nil {
+					t.Fatalf("failed to unmarshal result: %v", err)
+				}
+				// $schema should be removed
+				if _, ok := schema["$schema"]; ok {
+					t.Error("expected $schema to be removed")
+				}
+				// Type should be uppercase
+				if schema["type"] != "OBJECT" {
+					t.Errorf("expected type OBJECT, got %v", schema["type"])
+				}
+			},
+		},
+		{
+			name:  "schema with additionalProperties",
+			input: `{"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":false}`,
+			checkFunc: func(t *testing.T, result json.RawMessage) {
+				var schema map[string]interface{}
+				if err := json.Unmarshal(result, &schema); err != nil {
+					t.Fatalf("failed to unmarshal result: %v", err)
+				}
+				// additionalProperties should be removed
+				if _, ok := schema["additionalProperties"]; ok {
+					t.Error("expected additionalProperties to be removed")
+				}
+			},
+		},
+		{
+			name:  "schema with constraints",
+			input: `{"type":"string","minLength":1,"maxLength":100}`,
+			checkFunc: func(t *testing.T, result json.RawMessage) {
+				var schema map[string]interface{}
+				if err := json.Unmarshal(result, &schema); err != nil {
+					t.Fatalf("failed to unmarshal result: %v", err)
+				}
+				// Constraints should be moved to description
+				if desc, ok := schema["description"].(string); ok {
+					if !strings.Contains(desc, "minLength") {
+						t.Error("expected minLength in description")
+					}
+				} else {
+					t.Error("expected description field with constraints")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := processJsonSchema(json.RawMessage(tt.input))
+			if tt.checkFunc != nil {
+				tt.checkFunc(t, result)
+			}
+		})
+	}
+}
+
+// TestHandleGeminiCCNormalResponse tests non-streaming Gemini response conversion
+func TestHandleGeminiCCNormalResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name           string
+		responseBody   string
+		responseStatus int
+		checkFunc      func(*testing.T, *httptest.ResponseRecorder)
+	}{
+		{
+			name: "successful text response",
+			responseBody: `{
+				"candidates": [
+					{
+						"content": {
+							"role": "model",
+							"parts": [
+								{"text": "Hello from Gemini!"}
+							]
+						},
+						"finishReason": "STOP",
+						"index": 0
+					}
+				],
+				"usageMetadata": {
+					"promptTokenCount": 10,
+					"candidatesTokenCount": 5,
+					"totalTokenCount": 15
+				},
+				"modelVersion": "gemini-pro"
+			}`,
+			responseStatus: http.StatusOK,
+			checkFunc: func(t *testing.T, w *httptest.ResponseRecorder) {
+				if w.Code != http.StatusOK {
+					t.Errorf("expected status 200, got %d", w.Code)
+				}
+				var claudeResp ClaudeResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &claudeResp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if claudeResp.Type != "message" {
+					t.Errorf("expected type message, got %s", claudeResp.Type)
+				}
+				if len(claudeResp.Content) == 0 {
+					t.Fatal("expected at least one content block")
+				}
+				if claudeResp.Content[0].Type != "text" {
+					t.Errorf("expected text block, got %s", claudeResp.Content[0].Type)
+				}
+				if claudeResp.Content[0].Text != "Hello from Gemini!" {
+					t.Errorf("expected 'Hello from Gemini!', got %s", claudeResp.Content[0].Text)
+				}
+			},
+		},
+		{
+			name: "response with function call",
+			responseBody: `{
+				"candidates": [
+					{
+						"content": {
+							"role": "model",
+							"parts": [
+								{
+									"functionCall": {
+										"name": "get_weather",
+										"args": {"location": "Tokyo"}
+									}
+								}
+							]
+						},
+						"finishReason": "STOP",
+						"index": 0
+					}
+				]
+			}`,
+			responseStatus: http.StatusOK,
+			checkFunc: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var claudeResp ClaudeResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &claudeResp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if len(claudeResp.Content) == 0 {
+					t.Fatal("expected at least one content block")
+				}
+				if claudeResp.Content[0].Type != "tool_use" {
+					t.Errorf("expected tool_use block, got %s", claudeResp.Content[0].Type)
+				}
+				if claudeResp.Content[0].Name != "get_weather" {
+					t.Errorf("expected tool name get_weather, got %s", claudeResp.Content[0].Name)
+				}
+			},
+		},
+		{
+			name: "response with thinking (Gemini 2.5+)",
+			responseBody: `{
+				"candidates": [
+					{
+						"content": {
+							"role": "model",
+							"parts": [
+								{"text": "Let me analyze this...", "thought": true},
+								{"text": "The solution is X.", "thought": false}
+							]
+						},
+						"finishReason": "STOP",
+						"index": 0
+					}
+				]
+			}`,
+			responseStatus: http.StatusOK,
+			checkFunc: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var claudeResp ClaudeResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &claudeResp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				// Should have thinking + text blocks
+				if len(claudeResp.Content) < 2 {
+					t.Fatalf("expected at least 2 content blocks, got %d", len(claudeResp.Content))
+				}
+				if claudeResp.Content[0].Type != "thinking" {
+					t.Errorf("expected first block to be thinking, got %s", claudeResp.Content[0].Type)
+				}
+				if claudeResp.Content[1].Type != "text" {
+					t.Errorf("expected second block to be text, got %s", claudeResp.Content[1].Type)
+				}
+			},
+		},
+		{
+			name:           "error response from upstream",
+			responseBody:   `{"error":{"code":400,"message":"Invalid request","status":"INVALID_ARGUMENT"}}`,
+			responseStatus: http.StatusBadRequest,
+			checkFunc: func(t *testing.T, w *httptest.ResponseRecorder) {
+				if w.Code != http.StatusBadRequest {
+					t.Errorf("expected status 400, got %d", w.Code)
+				}
+				// Gemini error responses are converted to Claude format
+				// The handler should convert the error to Claude format
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock upstream response
+			upstreamResp := &http.Response{
+				StatusCode: tt.responseStatus,
+				Body:       io.NopCloser(strings.NewReader(tt.responseBody)),
+				Header:     make(http.Header),
+			}
+			upstreamResp.Header.Set("Content-Type", "application/json")
+
+			// Create test context
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/test", nil)
+
+			// Call the handler
+			ps := &ProxyServer{}
+			ps.handleGeminiCCNormalResponse(c, upstreamResp)
+
+			// Check results
+			if tt.checkFunc != nil {
+				tt.checkFunc(t, w)
+			}
+		})
+	}
+}
+
+// TestHandleGeminiCCStreamingResponse tests streaming Gemini response conversion
+// NOTE: Gemini's streaming API returns a single complete JSON response (not JSON lines),
+// so we test with single JSON objects representing the complete response.
+func TestHandleGeminiCCStreamingResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name         string
+		responseBody string
+		checkFunc    func(*testing.T, string)
+	}{
+		{
+			name: "basic text streaming",
+			// Gemini returns a single JSON response with all parts
+			responseBody: `{
+				"candidates": [{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"text": "Hello world"}
+						]
+					},
+					"finishReason": "STOP",
+					"index": 0
+				}],
+				"usageMetadata": {
+					"promptTokenCount": 10,
+					"candidatesTokenCount": 5,
+					"totalTokenCount": 15
+				},
+				"modelVersion": "gemini-pro"
+			}`,
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, "event: message_start") {
+					t.Error("expected message_start event")
+				}
+				if !strings.Contains(output, "event: content_block_start") {
+					t.Error("expected content_block_start event")
+				}
+				if !strings.Contains(output, "event: content_block_delta") {
+					t.Error("expected content_block_delta event")
+				}
+				if !strings.Contains(output, "event: message_stop") {
+					t.Error("expected message_stop event")
+				}
+			},
+		},
+		{
+			name: "streaming with function call",
+			responseBody: `{
+				"candidates": [{
+					"content": {
+						"role": "model",
+						"parts": [
+							{
+								"functionCall": {
+									"name": "search",
+									"args": {"query": "test"}
+								}
+							}
+						]
+					},
+					"finishReason": "STOP",
+					"index": 0
+				}],
+				"modelVersion": "gemini-pro"
+			}`,
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, `"type":"tool_use"`) {
+					t.Error("expected tool_use block")
+				}
+				if !strings.Contains(output, `"name":"search"`) {
+					t.Error("expected tool name search")
+				}
+			},
+		},
+		{
+			name: "streaming with thinking",
+			responseBody: `{
+				"candidates": [{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"text": "Analyzing...", "thought": true},
+							{"text": "The answer is 42.", "thought": false}
+						]
+					},
+					"finishReason": "STOP",
+					"index": 0
+				}],
+				"modelVersion": "gemini-2.5-pro"
+			}`,
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, `"type":"thinking"`) {
+					t.Error("expected thinking block")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock upstream response
+			upstreamResp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.responseBody)),
+				Header:     make(http.Header),
+			}
+			upstreamResp.Header.Set("Content-Type", "application/json")
+
+			// Create test context
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/test", nil)
+
+			// Call the handler
+			ps := &ProxyServer{}
+			ps.handleGeminiCCStreamingResponse(c, upstreamResp)
+
+			// Check results
+			output := w.Body.String()
+			if tt.checkFunc != nil {
+				tt.checkFunc(t, output)
+			}
+		})
+	}
+}
+
+// TestGeminiHelperFunctions tests various helper functions in gemini_cc_support.go
+func TestGeminiHelperFunctions(t *testing.T) {
+	t.Run("isGeminiCCMode", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+
+		// Test when not set
+		if isGeminiCCMode(c) {
+			t.Error("expected false when ctxKeyGeminiCC not set")
+		}
+
+		// Test when set to true
+		c.Set(ctxKeyGeminiCC, true)
+		if !isGeminiCCMode(c) {
+			t.Error("expected true when ctxKeyGeminiCC is true")
+		}
+
+		// Test when set to false
+		c.Set(ctxKeyGeminiCC, false)
+		if isGeminiCCMode(c) {
+			t.Error("expected false when ctxKeyGeminiCC is false")
+		}
+	})
+
+	t.Run("getGeminiToolNameReverseMap", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+
+		// Test with no map set
+		result := getGeminiToolNameReverseMap(c)
+		if result != nil {
+			t.Error("expected nil when no map is set")
+		}
+
+		// Test with map set
+		testMap := map[string]string{"short": "original"}
+		c.Set(ctxKeyGeminiToolNameReverseMap, testMap)
+		result = getGeminiToolNameReverseMap(c)
+		if result == nil {
+			t.Fatal("expected non-nil map")
+		}
+		if result["short"] != "original" {
+			t.Errorf("expected 'original', got %q", result["short"])
+		}
+	})
+
+	t.Run("rewriteClaudePathToGemini", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected string
+		}{
+			{
+				name:     "basic_path",
+				input:    "/proxy/group/claude/v1/models",
+				expected: "/proxy/group/v1beta/models",
+			},
+			{
+				name:     "messages_path",
+				input:    "/proxy/group/claude/v1/messages",
+				expected: "/proxy/group/v1beta/messages",
+			},
+			{
+				name:     "group_named_claude",
+				input:    "/proxy/claude/claude/v1/models",
+				expected: "/proxy/claude/v1beta/models",
+			},
+			{
+				name:     "no_claude_segment",
+				input:    "/proxy/group/v1/models",
+				expected: "/proxy/group/v1/models",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := rewriteClaudePathToGemini(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, result)
+				}
+			})
 		}
 	})
 }
