@@ -434,7 +434,8 @@ func (h *HubHandler) extractModelFromRequest(c *gin.Context, relayFormat types.R
 	// For multipart formats, try to extract from form data
 	// Parse from bodyBytes copy instead of consuming c.Request.Body
 	if relayFormat.RequiresMultipart() {
-		contentType := c.ContentType()
+		// Use GetHeader to preserve boundary parameter (ContentType() strips it)
+		contentType := c.GetHeader("Content-Type")
 		if strings.Contains(contentType, "multipart/form-data") {
 			// Extract boundary from content type
 			boundary := extractBoundary(contentType)

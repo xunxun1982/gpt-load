@@ -3,6 +3,7 @@ package middleware
 
 import (
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -460,8 +461,22 @@ func RequestBodySizeLimit(maxBytes int64) gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
+		// Early rejection: check Content-Length header before reading body
+		if c.Request.ContentLength > maxBytes && c.Request.ContentLength != -1 {
+			c.AbortWithStatus(http.StatusRequestEntityTooLarge)
+			return
+		}
+
 		// Wrap request body with size limiter
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
 		c.Next()
+
+		// Check if MaxBytesError occurred during request processing
+		if err := c.Errors.Last(); err != nil {
+			var mbErr *http.MaxBytesError
+			if errors.As(err.Err, &mbErr) {
+				c.AbortWithStatus(http.StatusRequestEntityTooLarge)
+			}
+		}
 	}
 }
