@@ -233,7 +233,8 @@ const columns = computed<DataTableColumns<HubAccessKey>>(() => [
     width: 120,
     render: row => {
       const relativeTime = formatRelativeTime(row.last_used_at);
-      if (!row.last_used_at) {
+      const date = row.last_used_at ? new Date(row.last_used_at) : null;
+      if (!date || Number.isNaN(date.getTime())) {
         return h(NText, { depth: 3, style: { fontSize: "12px" } }, () => relativeTime);
       }
       // Show relative time with tooltip showing exact time
@@ -243,7 +244,7 @@ const columns = computed<DataTableColumns<HubAccessKey>>(() => [
         {
           trigger: () =>
             h(NText, { depth: 2, style: { fontSize: "12px", cursor: "help" } }, () => relativeTime),
-          default: () => new Date(row.last_used_at || "").toLocaleString(),
+          default: () => date.toLocaleString(),
         }
       );
     },
@@ -346,6 +347,7 @@ function handleDelete(key: HubAccessKey) {
 
 // Batch delete
 function handleBatchDelete() {
+  if (batchOperating.value) return;
   if (!hasSelection.value) {
     message.warning(t("hub.selectAtLeastOne"));
     return;
@@ -376,6 +378,7 @@ function handleBatchDelete() {
 
 // Batch enable
 async function handleBatchEnable() {
+  if (batchOperating.value) return;
   if (!hasSelection.value) {
     message.warning(t("hub.selectAtLeastOne"));
     return;
@@ -398,6 +401,7 @@ async function handleBatchEnable() {
 
 // Batch disable
 async function handleBatchDisable() {
+  if (batchOperating.value) return;
   if (!hasSelection.value) {
     message.warning(t("hub.selectAtLeastOne"));
     return;

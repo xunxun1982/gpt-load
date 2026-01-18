@@ -450,3 +450,18 @@ func SecurityHeaders() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// RequestBodySizeLimit creates a middleware to limit request body size
+// Protects against memory exhaustion from large or malicious uploads
+// Default limit: 32MB (suitable for most API requests including file uploads)
+func RequestBodySizeLimit(maxBytes int64) gin.HandlerFunc {
+	if maxBytes <= 0 {
+		maxBytes = 32 << 20 // 32MB default
+	}
+
+	return func(c *gin.Context) {
+		// Wrap request body with size limiter
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		c.Next()
+	}
+}

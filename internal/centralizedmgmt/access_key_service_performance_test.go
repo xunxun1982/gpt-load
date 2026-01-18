@@ -223,8 +223,8 @@ func TestAccessKeyServicePerformance(t *testing.T) {
 	})
 }
 
-// TestAccessKeyServiceMemoryLeak tests for memory leaks in cache operations
-func TestAccessKeyServiceMemoryLeak(t *testing.T) {
+// TestAccessKeyServiceCacheBoundedness tests that cache size stays bounded to unique keys
+func TestAccessKeyServiceCacheBoundedness(t *testing.T) {
 	service, _ := setupTestServiceForPerformance(t)
 	service.keyCacheTTL = 100 * time.Millisecond
 
@@ -277,8 +277,8 @@ func TestAccessKeyServiceMemoryLeak(t *testing.T) {
 	assert.LessOrEqual(t, newCacheSize, 10, "Cache should not leak memory")
 }
 
-// TestAccessKeyServiceIndexUsage tests that queries use proper indexes
-func TestAccessKeyServiceIndexUsage(t *testing.T) {
+// TestAccessKeyServiceQueryOrdering tests that queries use proper indexes and return correct ordering
+func TestAccessKeyServiceQueryOrdering(t *testing.T) {
 	service, _ := setupTestServiceForPerformance(t)
 	ctx := context.Background()
 

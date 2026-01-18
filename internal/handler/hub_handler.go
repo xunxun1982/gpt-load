@@ -4,6 +4,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -631,23 +632,13 @@ func (b *bodyReader) Close() error {
 }
 
 // extractBoundary extracts the boundary from multipart/form-data content type
-// Handles additional parameters after boundary (e.g., "boundary=abc; charset=utf-8")
+// Uses mime.ParseMediaType for RFC-compliant parsing
 func extractBoundary(contentType string) string {
-	parts := strings.Split(contentType, "boundary=")
-	if len(parts) < 2 {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
 		return ""
 	}
-	boundary := strings.TrimSpace(parts[1])
-
-	// Handle additional parameters after boundary (e.g., "; charset=utf-8")
-	if idx := strings.Index(boundary, ";"); idx != -1 {
-		boundary = boundary[:idx]
-		boundary = strings.TrimSpace(boundary)
-	}
-
-	// Remove quotes if present
-	boundary = strings.Trim(boundary, "\"")
-	return boundary
+	return params["boundary"]
 }
 
 // extractModelFromMultipart extracts model field from multipart/form-data body.
