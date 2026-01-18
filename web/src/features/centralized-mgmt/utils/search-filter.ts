@@ -31,7 +31,8 @@ export function filterModelPool(models: ModelPoolEntry[], keyword: string): Mode
     }
 
     // Check source group names across all channel types
-    for (const sources of Object.values(model.sources_by_type)) {
+    // Guard against missing sources_by_type for defensive programming
+    for (const sources of Object.values(model.sources_by_type ?? {})) {
       if (sources.some(source => source.group_name.toLowerCase().includes(trimmedKeyword))) {
         return true;
       }
@@ -63,7 +64,8 @@ export function modelMatchesKeyword(model: ModelPoolEntry, keyword: string): boo
   }
 
   // Check source group names across all channel types
-  for (const sources of Object.values(model.sources_by_type)) {
+  // Guard against missing sources_by_type for defensive programming
+  for (const sources of Object.values(model.sources_by_type ?? {})) {
     if (sources.some(source => source.group_name.toLowerCase().includes(trimmedKeyword))) {
       return true;
     }

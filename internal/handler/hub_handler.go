@@ -381,11 +381,12 @@ func (h *HubHandler) detectRelayFormat(path, method string) types.RelayFormat {
 		return types.RelayFormatOpenAIAudioSpeech
 
 	// Embeddings
-	case strings.HasSuffix(path, "/embeddings"):
-		return types.RelayFormatOpenAIEmbedding
 	// Legacy OpenAI engine-style path: /engines/{engine_id}/embeddings
-	// Kept for backward compatibility, though modern API uses /embeddings
+	// Check this more specific pattern first before the general /embeddings suffix
 	case strings.Contains(path, "/engines/") && strings.HasSuffix(path, "/embeddings"):
+		return types.RelayFormatOpenAIEmbedding
+	// Modern embeddings path
+	case strings.HasSuffix(path, "/embeddings"):
 		return types.RelayFormatOpenAIEmbedding
 
 	// Moderations
@@ -630,12 +631,20 @@ func (b *bodyReader) Close() error {
 }
 
 // extractBoundary extracts the boundary from multipart/form-data content type
+// Handles additional parameters after boundary (e.g., "boundary=abc; charset=utf-8")
 func extractBoundary(contentType string) string {
 	parts := strings.Split(contentType, "boundary=")
 	if len(parts) < 2 {
 		return ""
 	}
 	boundary := strings.TrimSpace(parts[1])
+
+	// Handle additional parameters after boundary (e.g., "; charset=utf-8")
+	if idx := strings.Index(boundary, ";"); idx != -1 {
+		boundary = boundary[:idx]
+		boundary = strings.TrimSpace(boundary)
+	}
+
 	// Remove quotes if present
 	boundary = strings.Trim(boundary, "\"")
 	return boundary

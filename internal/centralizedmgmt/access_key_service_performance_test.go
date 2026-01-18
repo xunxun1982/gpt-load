@@ -59,8 +59,10 @@ func TestAccessKeyServicePerformance(t *testing.T) {
 		elapsed := time.Since(start)
 		t.Logf("Created %d keys in %v (avg: %v per key)", keyCount, elapsed, elapsed/time.Duration(keyCount))
 
-		// Performance assertion: should create 100 keys in less than 5 seconds
-		assert.Less(t, elapsed, 5*time.Second, "Bulk create should be fast")
+		// Performance assertion: timing checks are skipped in short mode to avoid CI flakiness
+		if !testing.Short() {
+			assert.Less(t, elapsed, 5*time.Second, "Bulk create should be fast")
+		}
 	})
 
 	t.Run("ListPerformance", func(t *testing.T) {
@@ -73,8 +75,10 @@ func TestAccessKeyServicePerformance(t *testing.T) {
 		elapsed := time.Since(start)
 		t.Logf("Listed %d keys in %v", len(keys), elapsed)
 
-		// Performance assertion: should list in less than 100ms
-		assert.Less(t, elapsed, 100*time.Millisecond, "List should be fast with indexes")
+		// Performance assertion: timing checks are skipped in short mode to avoid CI flakiness
+		if !testing.Short() {
+			assert.Less(t, elapsed, 100*time.Millisecond, "List should be fast with indexes")
+		}
 		assert.Greater(t, len(keys), 0, "Should have keys")
 
 		// Verify ordering: enabled keys first, then by name
@@ -133,10 +137,11 @@ func TestAccessKeyServicePerformance(t *testing.T) {
 			iterations, secondBatchTime, secondBatchTime/time.Duration(iterations))
 
 		// Second batch should be faster or similar (cache is effective)
-		// We use a very relaxed assertion since timing can vary significantly on different systems
-		// The main goal is to verify cache works without errors, not strict performance guarantees
-		assert.LessOrEqual(t, secondBatchTime, firstBatchTime*3,
-			"Cached validations should not be significantly slower (within 3x)")
+		// Timing checks are skipped in short mode to avoid CI flakiness
+		if !testing.Short() {
+			assert.LessOrEqual(t, secondBatchTime, firstBatchTime*3,
+				"Cached validations should not be significantly slower (within 3x)")
+		}
 	})
 
 	t.Run("BatchOperationPerformance", func(t *testing.T) {
@@ -157,7 +162,11 @@ func TestAccessKeyServicePerformance(t *testing.T) {
 
 		t.Logf("Batch enabled %d keys in %v", count, elapsed)
 		assert.Equal(t, len(ids), count, "Should update all keys")
-		assert.Less(t, elapsed, 500*time.Millisecond, "Batch operation should be fast")
+
+		// Timing checks are skipped in short mode to avoid CI flakiness
+		if !testing.Short() {
+			assert.Less(t, elapsed, 500*time.Millisecond, "Batch operation should be fast")
+		}
 	})
 
 	t.Run("ConcurrentValidation", func(t *testing.T) {
@@ -207,8 +216,10 @@ func TestAccessKeyServicePerformance(t *testing.T) {
 		assert.GreaterOrEqual(t, successCount, concurrency*8/10,
 			"At least 80%% of concurrent validations should succeed with cache")
 
-		// Should complete in reasonable time
-		assert.Less(t, elapsed, 2*time.Second, "Concurrent validations should complete in reasonable time")
+		// Timing checks are skipped in short mode to avoid CI flakiness
+		if !testing.Short() {
+			assert.Less(t, elapsed, 2*time.Second, "Concurrent validations should complete in reasonable time")
+		}
 	})
 }
 

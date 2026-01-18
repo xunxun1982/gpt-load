@@ -13,6 +13,7 @@ import (
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/utils"
 
+	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
@@ -651,6 +652,7 @@ func (s *HubAccessKeyService) GetAccessKeyUsageStatsBatch(ctx context.Context, i
 
 // GetAccessKeyPlaintext returns the plaintext (decrypted) key value for an access key.
 // This should only be called by authorized administrators.
+// Access to plaintext keys is logged for audit purposes.
 func (s *HubAccessKeyService) GetAccessKeyPlaintext(ctx context.Context, id uint) (string, error) {
 	var key HubAccessKey
 	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
@@ -665,6 +667,15 @@ func (s *HubAccessKeyService) GetAccessKeyPlaintext(ctx context.Context, id uint
 	if err != nil {
 		return "", fmt.Errorf("failed to decrypt key: %w", err)
 	}
+
+	// Audit log: record plaintext key access (best-effort, do not fail on log errors)
+	// Note: The actual plaintext is never logged, only metadata about the access
+	logrus.WithFields(logrus.Fields{
+		"action":         "access_key_plaintext_retrieved",
+		"access_key_id":  id,
+		"access_key_name": key.Name,
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+	}).Info("Admin accessed plaintext access key")
 
 	return plaintext, nil
 }

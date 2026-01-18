@@ -59,6 +59,9 @@ const totalPages = computed(() => {
   return Math.ceil(total.value / pageSize.value);
 });
 
+// Track visibility state for each key separately
+const keyVisibility = ref<Record<number, boolean>>({});
+
 // Display text for pagination info
 const totalRecordsText = computed(() => {
   if (total.value < 0) {
@@ -332,16 +335,23 @@ function formatDuration(ms: number): string {
   return result;
 }
 
+// Toggle key visibility using separate reactive state
 function toggleKeyVisibility(key: KeyRow) {
-  key.is_visible = !key.is_visible;
+  keyVisibility.value[key.id] = !keyVisibility.value[key.id];
+}
+
+// Check if a key is currently visible
+function isKeyVisible(key: KeyRow): boolean {
+  return !!keyVisibility.value[key.id];
 }
 
 // Get the display value (show notes only when key is hidden, otherwise show key)
 function getDisplayValue(key: KeyRow): string {
-  if (key.notes && !key.is_visible) {
+  const visible = isKeyVisible(key);
+  if (key.notes && !visible) {
     return key.notes;
   }
-  return key.is_visible ? key.key_value : maskKey(key.key_value);
+  return visible ? key.key_value : maskKey(key.key_value);
 }
 
 // Open notes editor for a key
