@@ -424,6 +424,33 @@ func (ps *ProxyServer) handleEventLoggingBatch(c *gin.Context, group *models.Gro
 	return true
 }
 
+// rewritePathForGeminiCC rewrites the request path for Gemini CC mode.
+// It constructs the Gemini API path format: /v1beta/models/{model}:{endpoint}
+// where endpoint is either "generateContent" or "streamGenerateContent".
+// The model name defaults to "gemini-2.5-pro" (current stable version) if not
+// specified in context via "gemini_cc_model" key.
+// Note: "gemini-pro" is deprecated and should not be used as fallback.
+func (ps *ProxyServer) rewritePathForGeminiCC(c *gin.Context) string {
+	// Default to gemini-2.5-pro (current stable version as of 2025)
+	// Previous default "gemini-pro" is deprecated per Google AI documentation
+	modelName := "gemini-2.5-pro"
+	if ccModel, exists := c.Get("gemini_cc_model"); exists {
+		if model, ok := ccModel.(string); ok && model != "" {
+			modelName = model
+		}
+	}
+
+	// Determine endpoint based on streaming mode
+	endpoint := "generateContent"
+	if streamMode, exists := c.Get("gemini_stream_mode"); exists {
+		if isStreamMode, ok := streamMode.(bool); ok && isStreamMode {
+			endpoint = "streamGenerateContent"
+		}
+	}
+
+	return fmt.Sprintf("/v1beta/models/%s:%s", modelName, endpoint)
+}
+
 func estimateTokensForClaudeCountTokens(bodyBytes []byte) int {
 	if len(bodyBytes) == 0 {
 		return 0
@@ -740,26 +767,10 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 							logrus.WithError(err).Warn("Failed to re-apply param overrides after Gemini CC conversion")
 						}
 						// Rewrite path from /v1/messages to Gemini generateContent endpoint
-						// Use the model name stored during CC conversion (already redirected)
-						modelName := "gemini-pro"
-						if model, exists := c.Get("gemini_cc_model"); exists {
-							if m, ok := model.(string); ok && m != "" {
-								modelName = m
-							}
-						}
-						// Gemini path format: /v1beta/models/{model}:generateContent or :streamGenerateContent
-						endpoint := "generateContent"
-						if streamMode, exists := c.Get("gemini_stream_mode"); exists {
-							if isStreamMode, ok := streamMode.(bool); ok && isStreamMode {
-								endpoint = "streamGenerateContent"
-							}
-						}
-						c.Request.URL.Path = fmt.Sprintf("/v1beta/models/%s:%s", modelName, endpoint)
+						c.Request.URL.Path = ps.rewritePathForGeminiCC(c)
 						logrus.WithFields(logrus.Fields{
 							"group":        group.Name,
 							"channel_type": group.ChannelType,
-							"model":        modelName,
-							"endpoint":     endpoint,
 							"new_path":     c.Request.URL.Path,
 						}).Debug("Gemini CC support: converted Claude request to Gemini format")
 					}
@@ -1415,27 +1426,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					logrus.WithError(err).Warn("Failed to re-apply param overrides after Gemini CC conversion for sub-group")
 				}
 				// Rewrite path from /v1/messages to Gemini generateContent endpoint
-				modelName := "gemini-pro"
-				// Use the redirected model stored during CC conversion
-				if ccModel, exists := c.Get("gemini_cc_model"); exists {
-					if model, ok := ccModel.(string); ok && model != "" {
-						modelName = model
-					}
-				}
-				// Determine endpoint based on streaming mode
-				endpoint := "generateContent"
-				if streamMode, exists := c.Get("gemini_stream_mode"); exists {
-					if isStreamMode, ok := streamMode.(bool); ok && isStreamMode {
-						endpoint = "streamGenerateContent"
-					}
-				}
-				c.Request.URL.Path = fmt.Sprintf("/v1beta/models/%s:%s", modelName, endpoint)
+				c.Request.URL.Path = ps.rewritePathForGeminiCC(c)
 				logrus.WithFields(logrus.Fields{
 					"aggregate_group": originalGroup.Name,
 					"sub_group":       group.Name,
 					"channel_type":    group.ChannelType,
-					"model":           modelName,
-					"endpoint":        endpoint,
 					"new_path":        c.Request.URL.Path,
 				}).Debug("Gemini CC support: converted Claude request for sub-group")
 			}
