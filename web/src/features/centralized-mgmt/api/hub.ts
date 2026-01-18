@@ -236,6 +236,14 @@ export const hubApi = {
   async getAccessKeyUsageStats(id: number): Promise<HubAccessKey> {
     return hubHttp.get<unknown, HubAccessKey>(`/access-keys/${id}/stats`);
   },
+
+  /**
+   * Get plaintext (decrypted) key value for an access key.
+   * This is used for copying the full key value.
+   */
+  async getAccessKeyPlaintext(id: number): Promise<{ key_value: string }> {
+    return hubHttp.get<unknown, { key_value: string }>(`/access-keys/${id}/plaintext`);
+  },
 };
 
 // Re-export types for convenience

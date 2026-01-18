@@ -383,6 +383,8 @@ func (h *HubHandler) detectRelayFormat(path, method string) types.RelayFormat {
 	// Embeddings
 	case strings.HasSuffix(path, "/embeddings"):
 		return types.RelayFormatOpenAIEmbedding
+	// Legacy OpenAI engine-style path: /engines/{engine_id}/embeddings
+	// Kept for backward compatibility, though modern API uses /embeddings
 	case strings.Contains(path, "/engines/") && strings.HasSuffix(path, "/embeddings"):
 		return types.RelayFormatOpenAIEmbedding
 
@@ -639,7 +641,13 @@ func extractBoundary(contentType string) string {
 	return boundary
 }
 
-// extractModelFromMultipart extracts model field from multipart/form-data body
+// extractModelFromMultipart extracts model field from multipart/form-data body.
+// Design decision: Uses simple byte parsing instead of mime/multipart package.
+// Rationale: This is a lightweight parser for a specific use case (extracting "model" field).
+// The mime/multipart package would be more robust for RFC 2046 compliance, but adds complexity
+// and overhead. Since this function has a graceful fallback (returns empty string on parse failure,
+// which triggers default model selection), the risk is acceptable. If edge cases arise (quoted
+// boundaries, Content-Transfer-Encoding), consider refactoring to use mime/multipart.
 func extractModelFromMultipart(bodyBytes []byte, boundary string) string {
 	// Simple multipart parser to extract "model" field
 	// Format: --boundary\r\nContent-Disposition: form-data; name="model"\r\n\r\nvalue\r\n
@@ -866,4 +874,26 @@ func (h *HubHandler) HandleGetAccessKeyUsageStats(c *gin.Context) {
 	}
 
 	response.Success(c, stats)
+}
+
+// HandleGetAccessKeyPlaintext handles GET /hub/admin/access-keys/:id/plaintext endpoint.
+// Returns the plaintext (decrypted) key value for copying.
+// This endpoint requires admin authentication (AUTH_KEY).
+func (h *HubHandler) HandleGetAccessKeyPlaintext(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "Invalid access key ID"))
+		return
+	}
+
+	plaintext, err := h.accessKeyService.GetAccessKeyPlaintext(ctx, uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	response.Success(c, map[string]any{
+		"key_value": plaintext,
+	})
 }

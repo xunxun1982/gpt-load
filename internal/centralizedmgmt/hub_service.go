@@ -119,8 +119,24 @@ func (s *HubService) GetModelPool(ctx context.Context) ([]ModelPoolEntry, error)
 	// Check cache first with adaptive TTL support
 	s.modelPoolCacheMu.RLock()
 	if s.modelPoolCache != nil && time.Now().Before(s.modelPoolCache.ExpiresAt) {
+		// Deep copy to prevent cache corruption
+		// Shallow copy would share map references, allowing callers to mutate cached data
 		pool := make([]ModelPoolEntry, len(s.modelPoolCache.Pool))
-		copy(pool, s.modelPoolCache.Pool)
+		for i, entry := range s.modelPoolCache.Pool {
+			// Deep copy the SourcesByType map
+			sourcesByType := make(map[string][]ModelSource, len(entry.SourcesByType))
+			for channelType, sources := range entry.SourcesByType {
+				// Deep copy the slice
+				sourcesCopy := make([]ModelSource, len(sources))
+				copy(sourcesCopy, sources)
+				sourcesByType[channelType] = sourcesCopy
+			}
+			pool[i] = ModelPoolEntry{
+				ModelName:     entry.ModelName,
+				SourcesByType: sourcesByType,
+				TotalSources:  entry.TotalSources,
+			}
+		}
 		s.modelPoolCacheMu.RUnlock()
 
 		// Update hit count asynchronously to avoid blocking the read path
@@ -556,6 +572,7 @@ func (s *HubService) GetAvailableModels(ctx context.Context) ([]string, error) {
 
 // GetModelSources returns the sources for a specific model, organized by channel type.
 // Returns nil if the model is not found.
+// Returns a deep copy to prevent cache corruption.
 func (s *HubService) GetModelSources(ctx context.Context, modelName string) (map[string][]ModelSource, error) {
 	pool, err := s.GetModelPool(ctx)
 	if err != nil {
@@ -564,6 +581,9 @@ func (s *HubService) GetModelSources(ctx context.Context, modelName string) (map
 
 	for _, entry := range pool {
 		if entry.ModelName == modelName {
+			// Return a deep copy to prevent cache corruption
+			// GetModelPool already returns deep copies, so entry.SourcesByType is safe to return
+			// However, we add this comment to clarify the safety guarantee
 			return entry.SourcesByType, nil
 		}
 	}

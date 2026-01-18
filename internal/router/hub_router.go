@@ -98,6 +98,7 @@ func RegisterHubRoutes(
 		admin.PUT("/access-keys/:id", hubHandler.HandleUpdateAccessKey)
 		admin.DELETE("/access-keys/:id", hubHandler.HandleDeleteAccessKey)
 		admin.GET("/access-keys/:id/stats", hubHandler.HandleGetAccessKeyUsageStats)
+		admin.GET("/access-keys/:id/plaintext", hubHandler.HandleGetAccessKeyPlaintext)
 
 		// Batch operations for access keys
 		admin.DELETE("/access-keys/batch", hubHandler.HandleBatchDeleteAccessKeys)

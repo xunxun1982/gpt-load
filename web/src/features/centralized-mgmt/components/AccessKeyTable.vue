@@ -99,21 +99,30 @@ function maskKeyValue(key: string): string {
 
 // Copy full key to clipboard with fallback
 async function copyFullKey(key: HubAccessKey) {
-  await copyWithFallback(key.masked_key, {
-    onSuccess: () => {
-      message.success(t("hub.keyCopied"));
-    },
-    onError: () => {
-      message.error(t("keys.copyFailed"));
-    },
-    showManualDialog: (text: string) => {
-      dialog.create({
-        title: t("common.copy"),
-        content: () => createManualCopyContent(h, text, t),
-        positiveText: t("common.close"),
-      });
-    },
-  });
+  try {
+    // Fetch plaintext key value from backend
+    const result = await hubApi.getAccessKeyPlaintext(key.id);
+    const plaintext = result.key_value;
+
+    await copyWithFallback(plaintext, {
+      onSuccess: () => {
+        message.success(t("hub.keyCopied"));
+      },
+      onError: () => {
+        message.error(t("keys.copyFailed"));
+      },
+      showManualDialog: (text: string) => {
+        dialog.create({
+          title: t("common.copy"),
+          content: () => createManualCopyContent(h, text, t),
+          positiveText: t("common.close"),
+        });
+      },
+    });
+  } catch (error) {
+    console.error("Failed to get plaintext key:", error);
+    message.error(t("keys.copyFailed"));
+  }
 }
 
 // Copy full key name for reference

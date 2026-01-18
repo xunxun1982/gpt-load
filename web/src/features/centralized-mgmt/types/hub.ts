@@ -18,9 +18,11 @@ export interface ModelSource {
 }
 
 // Model pool entry - represents a model with all its source groups
+// Sources are organized by channel type for better visualization
 export interface ModelPoolEntry {
   model_name: string;
-  sources: ModelSource[];
+  sources_by_type: Record<string, ModelSource[]>; // Grouped by channel type
+  total_sources: number;
 }
 
 // Model group priority DTO - represents a group with priority info

@@ -30,8 +30,14 @@ export function filterModelPool(models: ModelPoolEntry[], keyword: string): Mode
       return true;
     }
 
-    // Check source group names
-    return model.sources.some(source => source.group_name.toLowerCase().includes(trimmedKeyword));
+    // Check source group names across all channel types
+    for (const sources of Object.values(model.sources_by_type)) {
+      if (sources.some(source => source.group_name.toLowerCase().includes(trimmedKeyword))) {
+        return true;
+      }
+    }
+
+    return false;
   });
 }
 
@@ -56,6 +62,12 @@ export function modelMatchesKeyword(model: ModelPoolEntry, keyword: string): boo
     return true;
   }
 
-  // Check source group names
-  return model.sources.some(source => source.group_name.toLowerCase().includes(trimmedKeyword));
+  // Check source group names across all channel types
+  for (const sources of Object.values(model.sources_by_type)) {
+    if (sources.some(source => source.group_name.toLowerCase().includes(trimmedKeyword))) {
+      return true;
+    }
+  }
+
+  return false;
 }

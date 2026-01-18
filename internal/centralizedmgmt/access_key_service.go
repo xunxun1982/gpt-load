@@ -593,6 +593,10 @@ func (s *HubAccessKeyService) BatchUpdateAccessKeysEnabled(ctx context.Context, 
 // RecordKeyUsage records a usage event for an access key.
 // Updates usage count and last used timestamp.
 // This method is optimized for high-frequency calls and uses async cache updates.
+// Design decision: Does not return affected row count or error for non-existent keys.
+// Rationale: This is a fire-and-forget operation for performance. If the key doesn't exist,
+// it means the key was deleted after validation, which is acceptable. The validation cache
+// will be invalidated on the next miss, ensuring consistency.
 func (s *HubAccessKeyService) RecordKeyUsage(ctx context.Context, keyID uint) error {
 	now := time.Now()
 
@@ -643,4 +647,24 @@ func (s *HubAccessKeyService) GetAccessKeyUsageStatsBatch(ctx context.Context, i
 	}
 
 	return dtos, nil
+}
+
+// GetAccessKeyPlaintext returns the plaintext (decrypted) key value for an access key.
+// This should only be called by authorized administrators.
+func (s *HubAccessKeyService) GetAccessKeyPlaintext(ctx context.Context, id uint) (string, error) {
+	var key HubAccessKey
+	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", app_errors.NewNotFoundError("access key not found")
+		}
+		return "", app_errors.ParseDBError(err)
+	}
+
+	// Decrypt the key value
+	plaintext, err := s.encryptionSvc.Decrypt(key.KeyValue)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt key: %w", err)
+	}
+
+	return plaintext, nil
 }
