@@ -90,15 +90,13 @@ func (ps *ProxyServer) handleModelListResponse(c *gin.Context, resp *http.Respon
 					// Preserve non-map entries as-is (e.g., strings or other types)
 					cleanedModels = append(cleanedModels, model)
 				}
-				// Convert Gemini format to Claude format
-				response = map[string]any{
-					"data": cleanedModels,
-				}
+				// Convert Gemini format to Claude format by swapping key in-place
+				response["data"] = cleanedModels
+				delete(response, "models")
 			} else {
 				// Fallback: just convert the key name
-				response = map[string]any{
-					"data": models,
-				}
+				response["data"] = models
+				delete(response, "models")
 			}
 			logrus.WithFields(logrus.Fields{
 				"group":        group.Name,

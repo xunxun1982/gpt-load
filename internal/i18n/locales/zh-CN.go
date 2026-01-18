@@ -98,6 +98,28 @@ var MessagesZhCN = map[string]string{
 	"dashboard.encryption_key_missing":                           "未设置ENCRYPTION_KEY，敏感数据将明文存储",
 	"dashboard.encryption_key_recommended":                       "强烈建议设置ENCRYPTION_KEY以加密保护API密钥等敏感数据",
 	"dashboard.global_proxy_key":                                 "全局代理密钥",
+
+	// Channel types
+	"channel.openai":    "OpenAI",
+	"channel.anthropic": "Anthropic",
+	"channel.gemini":    "Gemini",
+	"channel.codex":     "Codex",
+	"channel.azure":     "Azure",
+	"channel.custom":    "自定义",
+
+	// Relay formats
+	"relay_format.openai_chat":                "OpenAI 对话",
+	"relay_format.openai_completion":          "OpenAI 补全",
+	"relay_format.claude":                     "Claude 消息",
+	"relay_format.codex":                      "Codex 响应",
+	"relay_format.openai_image":               "OpenAI 图片生成",
+	"relay_format.openai_image_edit":          "OpenAI 图片编辑",
+	"relay_format.openai_audio_transcription": "OpenAI 音频转录",
+	"relay_format.openai_audio_translation":   "OpenAI 音频翻译",
+	"relay_format.openai_audio_speech":        "OpenAI 语音合成",
+	"relay_format.openai_embedding":           "OpenAI 向量嵌入",
+	"relay_format.openai_moderation":          "OpenAI 内容审核",
+	"relay_format.gemini":                     "Gemini",
 	"dashboard.group_proxy_key":                                  "分组代理密钥",
 	"dashboard.encryption_key_configured_but_data_not_encrypted": "检测到您已配置 ENCRYPTION_KEY，但数据库中的密钥尚未加密。这会导致密钥无法正常读取（显示为 failed-to-decrypt）。",
 	"dashboard.encryption_key_migration_required":                "请停止服务，执行密钥迁移命令后重启",

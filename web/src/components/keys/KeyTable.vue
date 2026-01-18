@@ -2,7 +2,7 @@
 import { keysApi } from "@/api/keys";
 import type { APIKey, Group, KeyStatus } from "@/types/models";
 import { appState, triggerSyncOperationRefresh } from "@/utils/app-state";
-import { copy } from "@/utils/clipboard";
+import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
 import { getGroupDisplayName, maskKey } from "@/utils/display";
 import {
   AddCircleOutline,
@@ -253,12 +253,21 @@ async function handleBatchDeleteSuccess() {
 }
 
 async function copyKey(key: KeyRow) {
-  const success = await copy(key.key_value);
-  if (success) {
-    window.$message.success(t("keys.keyCopied"));
-  } else {
-    window.$message.error(t("keys.copyFailed"));
-  }
+  await copyWithFallback(key.key_value, {
+    onSuccess: () => {
+      window.$message.success(t("keys.keyCopied"));
+    },
+    onError: () => {
+      window.$message.error(t("keys.copyFailed"));
+    },
+    showManualDialog: (text: string) => {
+      dialog.create({
+        title: t("common.copy"),
+        content: () => createManualCopyContent(h, text, t),
+        positiveText: t("common.close"),
+      });
+    },
+  });
 }
 
 async function testKey(_key: KeyRow) {

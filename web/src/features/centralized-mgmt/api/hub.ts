@@ -13,6 +13,7 @@ import axios from "axios";
 import type {
   AccessKeyListParams,
   AccessKeyListResponse,
+  BatchOperationResponse,
   CreateAccessKeyParams,
   HubAccessKey,
   HubSettings,
@@ -206,6 +207,35 @@ export const hubApi = {
   async toggleAccessKey(id: number, enabled: boolean): Promise<HubAccessKey> {
     return hubHttp.put<unknown, HubAccessKey>(`/access-keys/${id}`, { enabled });
   },
+
+  /**
+   * Batch delete Hub access keys.
+   */
+  async batchDeleteAccessKeys(ids: number[]): Promise<BatchOperationResponse> {
+    return hubHttp.delete<unknown, BatchOperationResponse>("/access-keys/batch", {
+      data: { ids },
+    });
+  },
+
+  /**
+   * Batch enable or disable Hub access keys.
+   */
+  async batchUpdateAccessKeysEnabled(
+    ids: number[],
+    enabled: boolean
+  ): Promise<BatchOperationResponse> {
+    return hubHttp.put<unknown, BatchOperationResponse>("/access-keys/batch/enabled", {
+      ids,
+      enabled,
+    });
+  },
+
+  /**
+   * Get usage statistics for a Hub access key.
+   */
+  async getAccessKeyUsageStats(id: number): Promise<HubAccessKey> {
+    return hubHttp.get<unknown, HubAccessKey>(`/access-keys/${id}/stats`);
+  },
 };
 
 // Re-export types for convenience
@@ -213,6 +243,9 @@ export type {
   AccessKeyListParams,
   AccessKeyListResponse,
   AllowedModelsMode,
+  BatchAccessKeyOperationParams,
+  BatchEnableDisableParams,
+  BatchOperationResponse,
   CreateAccessKeyParams,
   HubAccessKey,
   HubEndpointInfo,

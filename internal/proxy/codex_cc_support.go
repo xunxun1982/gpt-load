@@ -1723,19 +1723,6 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		}
 	}
 
-	bufReader := bufio.NewReader(reader)
-
-	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
-	// Timeout values are derived from group/system config with preset upper bounds.
-	firstByteReceived := false
-	effectiveFirstByteTimeout, effectiveSubsequentTimeout := getEffectiveSSETimeouts(c)
-	getTimeout := func() time.Duration {
-		if !firstByteReceived {
-			return effectiveFirstByteTimeout
-		}
-		return effectiveSubsequentTimeout
-	}
-
 	// Helper function to write Claude SSE event
 	writeClaudeEvent := func(event ClaudeStreamEvent) error {
 		eventBytes, err := json.Marshal(event)
@@ -1761,6 +1748,19 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 			},
 		})
 		return
+	}
+
+	bufReader := bufio.NewReader(reader)
+
+	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
+	// Timeout values are derived from group/system config with preset upper bounds.
+	firstByteReceived := false
+	effectiveFirstByteTimeout, effectiveSubsequentTimeout := getEffectiveSSETimeouts(c)
+	getTimeout := func() time.Duration {
+		if !firstByteReceived {
+			return effectiveFirstByteTimeout
+		}
+		return effectiveSubsequentTimeout
 	}
 
 	var currentEventType string

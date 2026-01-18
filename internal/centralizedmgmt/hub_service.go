@@ -35,11 +35,13 @@ const (
 	cacheTTLMultiplier = 1.2
 )
 
-// ModelPoolEntry represents a model with its source groups.
+// ModelPoolEntry represents a model with its source groups, organized by channel type.
 // Used for displaying the aggregated model pool in the UI.
+// Groups are organized by channel type first for better visualization.
 type ModelPoolEntry struct {
-	ModelName string        `json:"model_name"`
-	Sources   []ModelSource `json:"sources"`
+	ModelName     string                   `json:"model_name"`
+	SourcesByType map[string][]ModelSource `json:"sources_by_type"` // Grouped by channel type
+	TotalSources  int                      `json:"total_sources"`
 }
 
 // ModelSource represents a group that provides a model.
@@ -47,9 +49,9 @@ type ModelPoolEntry struct {
 type ModelSource struct {
 	GroupID         uint    `json:"group_id"`
 	GroupName       string  `json:"group_name"`
-	GroupType       string  `json:"group_type"`    // "standard" or "aggregate"
+	GroupType       string  `json:"group_type"`     // "standard" or "aggregate"
 	IsChildGroup    bool    `json:"is_child_group"` // True if this is a child group of a standard group
-	ChannelType     string  `json:"channel_type"`  // Channel type (e.g., "openai", "claude", etc.)
+	ChannelType     string  `json:"channel_type"`   // Channel type (e.g., "openai", "claude", etc.)
 	Sort            int     `json:"sort"`
 	Weight          int     `json:"weight"`
 	HealthScore     float64 `json:"health_score"`
@@ -149,7 +151,7 @@ func (s *HubService) GetModelPool(ctx context.Context) ([]ModelPoolEntry, error)
 	return pool, nil
 }
 
-// buildModelPool aggregates models from all enabled groups.
+// buildModelPool aggregates models from all enabled groups, organized by channel type.
 func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, error) {
 	// Get all groups from database (only V2 rules needed, V1 has been migrated)
 	var groups []models.Group
@@ -165,7 +167,7 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 	healthThreshold := s.getHealthScoreThreshold()
 
 	// Map to aggregate models by name
-	modelMap := make(map[string][]ModelSource)
+	modelMap := make(map[string]map[string][]ModelSource) // model_name -> channel_type -> sources
 
 	for _, group := range groups {
 		// Get models for this group (from V2 redirect rules)
@@ -202,24 +204,38 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 		}
 
 		for _, modelName := range groupModels {
-			modelMap[modelName] = append(modelMap[modelName], source)
+			if modelMap[modelName] == nil {
+				modelMap[modelName] = make(map[string][]ModelSource)
+			}
+			modelMap[modelName][group.ChannelType] = append(modelMap[modelName][group.ChannelType], source)
 		}
 	}
 
 	// Convert map to sorted slice
 	pool := make([]ModelPoolEntry, 0, len(modelMap))
-	for modelName, sources := range modelMap {
-		// Sort sources by sort field (ascending)
-		sort.Slice(sources, func(i, j int) bool {
-			if sources[i].Sort != sources[j].Sort {
-				return sources[i].Sort < sources[j].Sort
-			}
-			return sources[i].GroupID < sources[j].GroupID
-		})
+	for modelName, sourcesByType := range modelMap {
+		// Sort sources within each channel type by sort field (ascending)
+		for channelType := range sourcesByType {
+			sources := sourcesByType[channelType]
+			sort.Slice(sources, func(i, j int) bool {
+				if sources[i].Sort != sources[j].Sort {
+					return sources[i].Sort < sources[j].Sort
+				}
+				return sources[i].GroupID < sources[j].GroupID
+			})
+			sourcesByType[channelType] = sources
+		}
+
+		// Count total sources
+		totalSources := 0
+		for _, sources := range sourcesByType {
+			totalSources += len(sources)
+		}
 
 		pool = append(pool, ModelPoolEntry{
-			ModelName: modelName,
-			Sources:   sources,
+			ModelName:     modelName,
+			SourcesByType: sourcesByType,
+			TotalSources:  totalSources,
 		})
 	}
 
@@ -395,15 +411,18 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string) 
 	}
 
 	// Find the model in the pool
-	var sources []ModelSource
+	var allSources []ModelSource
 	for _, entry := range pool {
 		if entry.ModelName == modelName {
-			sources = entry.Sources
+			// Flatten sources from all channel types
+			for _, sources := range entry.SourcesByType {
+				allSources = append(allSources, sources...)
+			}
 			break
 		}
 	}
 
-	if len(sources) == 0 {
+	if len(allSources) == 0 {
 		return nil, nil // Model not found
 	}
 
@@ -412,7 +431,7 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string) 
 
 	// Filter by enabled and health score threshold
 	var validSources []ModelSource
-	for _, source := range sources {
+	for _, source := range allSources {
 		if source.Enabled && source.HealthScore >= healthThreshold {
 			validSources = append(validSources, source)
 		}
@@ -511,9 +530,14 @@ func (s *HubService) GetAvailableModels(ctx context.Context) ([]string, error) {
 	for _, entry := range pool {
 		// Only include models that have at least one healthy source
 		hasHealthySource := false
-		for _, source := range entry.Sources {
-			if source.Enabled && source.HealthScore >= healthThreshold {
-				hasHealthySource = true
+		for _, sources := range entry.SourcesByType {
+			for _, source := range sources {
+				if source.Enabled && source.HealthScore >= healthThreshold {
+					hasHealthySource = true
+					break
+				}
+			}
+			if hasHealthySource {
 				break
 			}
 		}
@@ -525,9 +549,9 @@ func (s *HubService) GetAvailableModels(ctx context.Context) ([]string, error) {
 	return availableModels, nil
 }
 
-// GetModelSources returns the sources for a specific model.
+// GetModelSources returns the sources for a specific model, organized by channel type.
 // Returns nil if the model is not found.
-func (s *HubService) GetModelSources(ctx context.Context, modelName string) ([]ModelSource, error) {
+func (s *HubService) GetModelSources(ctx context.Context, modelName string) (map[string][]ModelSource, error) {
 	pool, err := s.GetModelPool(ctx)
 	if err != nil {
 		return nil, err
@@ -535,7 +559,7 @@ func (s *HubService) GetModelSources(ctx context.Context, modelName string) ([]M
 
 	for _, entry := range pool {
 		if entry.ModelName == modelName {
-			return entry.Sources, nil
+			return entry.SourcesByType, nil
 		}
 	}
 
@@ -544,12 +568,12 @@ func (s *HubService) GetModelSources(ctx context.Context, modelName string) ([]M
 
 // IsModelAvailable checks if a model is available in the hub.
 func (s *HubService) IsModelAvailable(ctx context.Context, modelName string) (bool, error) {
-	sources, err := s.GetModelSources(ctx, modelName)
+	sourcesByType, err := s.GetModelSources(ctx, modelName)
 	if err != nil {
 		return false, err
 	}
 
-	if sources == nil {
+	if sourcesByType == nil {
 		return false, nil
 	}
 
@@ -557,15 +581,16 @@ func (s *HubService) IsModelAvailable(ctx context.Context, modelName string) (bo
 	healthThreshold := s.getHealthScoreThreshold()
 
 	// Check if at least one source is healthy
-	for _, source := range sources {
-		if source.Enabled && source.HealthScore >= healthThreshold {
-			return true, nil
+	for _, sources := range sourcesByType {
+		for _, source := range sources {
+			if source.Enabled && source.HealthScore >= healthThreshold {
+				return true, nil
+			}
 		}
 	}
 
 	return false, nil
 }
-
 
 // GetModelPoolV2 returns the model pool with priority information.
 // This is used for the admin UI to display and edit model-group priorities.
@@ -594,8 +619,14 @@ func (s *HubService) GetModelPoolV2(ctx context.Context) ([]ModelPoolEntryV2, er
 	// Convert to V2 format with priority info
 	result := make([]ModelPoolEntryV2, 0, len(pool))
 	for _, entry := range pool {
-		groups := make([]ModelGroupPriorityDTO, 0, len(entry.Sources))
-		for _, source := range entry.Sources {
+		// Flatten all sources from all channel types
+		var allSources []ModelSource
+		for _, sources := range entry.SourcesByType {
+			allSources = append(allSources, sources...)
+		}
+
+		groups := make([]ModelGroupPriorityDTO, 0, len(allSources))
+		for _, source := range allSources {
 			// Get priority from map, default to 100 if not set
 			priority := 100
 			if modelPriorities, ok := priorityMap[entry.ModelName]; ok {

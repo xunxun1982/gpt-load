@@ -29,8 +29,9 @@ func RegisterHubRoutes(
 	hub := router.Group("/hub/v1")
 	hub.Use(HubAuthMiddleware(accessKeyService))
 	{
-		// OpenAI format
+		// Chat completions (OpenAI format)
 		hub.POST("/chat/completions", hubHandler.HandleHubProxy)
+		hub.POST("/completions", hubHandler.HandleHubProxy)
 
 		// Claude format
 		hub.POST("/messages", hubHandler.HandleHubProxy)
@@ -39,11 +40,37 @@ func RegisterHubRoutes(
 		// Codex format
 		hub.POST("/responses", hubHandler.HandleHubProxy)
 
+		// Image generation and editing
+		hub.POST("/images/generations", hubHandler.HandleHubProxy)
+		hub.POST("/images/edits", hubHandler.HandleHubProxy)
+		hub.POST("/images/variations", hubHandler.HandleHubProxy)
+
+		// Audio endpoints
+		hub.POST("/audio/transcriptions", hubHandler.HandleHubProxy)
+		hub.POST("/audio/translations", hubHandler.HandleHubProxy)
+		hub.POST("/audio/speech", hubHandler.HandleHubProxy)
+
+		// Embeddings
+		hub.POST("/embeddings", hubHandler.HandleHubProxy)
+
+		// Moderations
+		hub.POST("/moderations", hubHandler.HandleHubProxy)
+
 		// Model list (OpenAI format)
 		hub.GET("/models", hubHandler.HandleListModels)
+		hub.GET("/models/:model", hubHandler.HandleListModels)
 
 		// Gemini format - model in path
 		hub.POST("/models/:model", hubHandler.HandleHubProxy)
+	}
+
+	// Gemini beta endpoint
+	hubBeta := router.Group("/hub/v1beta")
+	hubBeta.Use(HubAuthMiddleware(accessKeyService))
+	{
+		// Gemini API format: /v1beta/models/{model}:{action}
+		hubBeta.POST("/models/*path", hubHandler.HandleHubProxy)
+		hubBeta.GET("/models", hubHandler.HandleListModels)
 	}
 
 	// Admin routes - require AUTH_KEY authentication
@@ -68,6 +95,11 @@ func RegisterHubRoutes(
 		admin.POST("/access-keys", hubHandler.HandleCreateAccessKey)
 		admin.PUT("/access-keys/:id", hubHandler.HandleUpdateAccessKey)
 		admin.DELETE("/access-keys/:id", hubHandler.HandleDeleteAccessKey)
+		admin.GET("/access-keys/:id/stats", hubHandler.HandleGetAccessKeyUsageStats)
+
+		// Batch operations for access keys
+		admin.DELETE("/access-keys/batch", hubHandler.HandleBatchDeleteAccessKeys)
+		admin.PUT("/access-keys/batch/enabled", hubHandler.HandleBatchUpdateAccessKeysEnabled)
 	}
 }
 
@@ -107,6 +139,15 @@ func HubAuthMiddleware(accessKeyService *centralizedmgmt.HubAccessKeyService) gi
 
 		// Store access key in context for downstream handlers
 		c.Set("hub_access_key", accessKey)
+
+		// Record key usage asynchronously (non-blocking)
+		// This avoids adding latency to the request path
+		go func() {
+			if err := accessKeyService.RecordKeyUsage(c.Request.Context(), accessKey.ID); err != nil {
+				logrus.WithError(err).WithField("key_id", accessKey.ID).Warn("Failed to record key usage")
+			}
+		}()
+
 		c.Next()
 	}
 }

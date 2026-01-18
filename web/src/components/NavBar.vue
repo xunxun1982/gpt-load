@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { type MenuOption } from "naive-ui";
 import { computed, h, watch } from "vue";
-import { RouterLink, useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
+import { RouterLink, useRoute } from "vue-router";
 
 const { t } = useI18n();
 
@@ -21,7 +21,11 @@ const menuOptions = computed<MenuOption[]>(() => {
     renderMenuItem("keys", t("nav.keys"), "🔑"),
     renderMenuItem("logs", t("nav.logs"), "📋"),
     renderMenuItem("settings", t("nav.settings"), "⚙️"),
-    renderMenuItem("more", t("nav.more"), "📦"),
+    renderMenuItemWithChildren("more", t("nav.more"), "📦", [
+      renderMenuItem("more-hub", t("hub.tabLabel"), "🏢", { tab: "hub" }),
+      renderMenuItem("more-site", t("more.siteManagement"), "🌐", { tab: "site" }),
+      renderMenuItem("more-agent", t("more.agent"), "🤖", { tab: "agent" }),
+    ]),
   ];
 
   return options;
@@ -36,14 +40,21 @@ watch(activeMenu, () => {
   }
 });
 
-function renderMenuItem(key: string, label: string, icon: string): MenuOption {
+// Render menu item with optional query parameters
+function renderMenuItem(
+  key: string,
+  label: string,
+  icon: string,
+  query?: Record<string, string>
+): MenuOption {
   return {
     label: () =>
       h(
         RouterLink,
         {
           to: {
-            name: key,
+            name: key.startsWith("more-") ? "more" : key,
+            query: query || undefined,
           },
           class: "nav-menu-item",
         },
@@ -55,6 +66,23 @@ function renderMenuItem(key: string, label: string, icon: string): MenuOption {
         }
       ),
     key,
+  };
+}
+
+// Render menu item with children (dropdown)
+function renderMenuItemWithChildren(
+  key: string,
+  label: string,
+  icon: string,
+  children: MenuOption[]
+): MenuOption {
+  return {
+    label: () => [
+      h("span", { class: "nav-item-icon" }, icon),
+      h("span", { class: "nav-item-text" }, label),
+    ],
+    key,
+    children,
   };
 }
 </script>

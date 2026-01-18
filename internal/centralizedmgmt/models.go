@@ -15,8 +15,11 @@ type HubAccessKey struct {
 	KeyValue      string         `gorm:"type:text;not null" json:"-"`                                                 // Encrypted, never exposed in JSON
 	AllowedModels datatypes.JSON `gorm:"type:json;not null" json:"allowed_models"`                                    // JSON array, empty array means all models
 	Enabled       bool           `gorm:"not null;default:true;index:idx_hub_access_keys_enabled" json:"enabled"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	// Usage statistics
+	UsageCount int64      `gorm:"not null;default:0" json:"usage_count"`                   // Total number of API calls
+	LastUsedAt *time.Time `gorm:"index:idx_hub_access_keys_last_used" json:"last_used_at"` // Last usage timestamp
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // TableName specifies the table name for HubAccessKey
@@ -27,14 +30,16 @@ func (HubAccessKey) TableName() string {
 // HubAccessKeyDTO is the API response format with masked key value.
 // Used for listing and displaying access keys without exposing actual key values.
 type HubAccessKeyDTO struct {
-	ID                uint      `json:"id"`
-	Name              string    `json:"name"`
-	MaskedKey         string    `json:"masked_key"`          // e.g., "sk-xxx...xxx"
-	AllowedModels     []string  `json:"allowed_models"`      // Parsed from JSON
-	AllowedModelsMode string    `json:"allowed_models_mode"` // "all" or "specific"
-	Enabled           bool      `json:"enabled"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                uint       `json:"id"`
+	Name              string     `json:"name"`
+	MaskedKey         string     `json:"masked_key"`          // e.g., "sk-xxx...xxx"
+	AllowedModels     []string   `json:"allowed_models"`      // Parsed from JSON
+	AllowedModelsMode string     `json:"allowed_models_mode"` // "all" or "specific"
+	Enabled           bool       `json:"enabled"`
+	UsageCount        int64      `json:"usage_count"`  // Total API calls
+	LastUsedAt        *time.Time `json:"last_used_at"` // Last usage timestamp
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // CreateAccessKeyParams defines parameters for creating a new Hub access key
@@ -71,6 +76,17 @@ type HubAccessKeyExportInfo struct {
 	Enabled       bool     `json:"enabled"`
 }
 
+// BatchAccessKeyOperationParams defines parameters for batch operations on access keys.
+type BatchAccessKeyOperationParams struct {
+	IDs []uint `json:"ids" binding:"required,min=1"`
+}
+
+// BatchEnableDisableParams defines parameters for batch enable/disable operations.
+type BatchEnableDisableParams struct {
+	IDs     []uint `json:"ids" binding:"required,min=1"`
+	Enabled bool   `json:"enabled"`
+}
+
 // HubModelGroupPriority stores priority configuration for a model in a specific group.
 // Priority 0 means disabled (skip this group for this model).
 // Lower priority values are tried first (1 is highest priority).
@@ -90,13 +106,13 @@ func (HubModelGroupPriority) TableName() string {
 
 // HubSettings stores global Hub configuration.
 type HubSettings struct {
-	ID                uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	MaxRetries        int       `gorm:"not null;default:3" json:"max_retries"`                // Max retries per priority level
-	RetryDelay        int       `gorm:"not null;default:100" json:"retry_delay"`              // Delay between retries in ms
-	HealthThreshold   float64   `gorm:"not null;default:0.5" json:"health_threshold"`         // Min health score for group selection
-	EnablePriority    bool      `gorm:"not null;default:true" json:"enable_priority"`         // Enable priority-based routing
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID              uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	MaxRetries      int       `gorm:"not null;default:3" json:"max_retries"`        // Max retries per priority level
+	RetryDelay      int       `gorm:"not null;default:100" json:"retry_delay"`      // Delay between retries in ms
+	HealthThreshold float64   `gorm:"not null;default:0.5" json:"health_threshold"` // Min health score for group selection
+	EnablePriority  bool      `gorm:"not null;default:true" json:"enable_priority"` // Enable priority-based routing
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // TableName specifies the table name for HubSettings

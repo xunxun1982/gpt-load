@@ -3255,8 +3255,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			logrus.WithError(err).WithField("content_encoding", contentEncoding).
 				Warn("CC: Failed to create decompression reader")
 
-			// Send error event to client
-			writer := NewSSEWriter(c.Writer, flusher)
+			// Send error event to client using existing writer
 			_ = writer.Send(ClaudeStreamEvent{
 				Type: "error",
 				Error: &ClaudeError{

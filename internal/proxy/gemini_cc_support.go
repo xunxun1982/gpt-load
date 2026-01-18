@@ -132,7 +132,8 @@ type GeminiResponse struct {
 // Converts OpenAI-style JSON schema to Gemini format using a multi-phase approach
 // Implements comprehensive schema transformation to ensure compatibility with Gemini API requirements
 func processJsonSchema(schema json.RawMessage) json.RawMessage {
-	if len(schema) == 0 {
+	// Handle empty or null schemas
+	if len(schema) == 0 || strings.TrimSpace(string(schema)) == "null" {
 		// Return empty object schema with placeholder for Gemini API requirement
 		return json.RawMessage(`{"type":"OBJECT","properties":{"reason":{"type":"STRING","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]}`)
 	}

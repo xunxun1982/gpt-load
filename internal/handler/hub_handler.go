@@ -14,6 +14,7 @@ import (
 	"gpt-load/internal/proxy"
 	"gpt-load/internal/response"
 	"gpt-load/internal/services"
+	"gpt-load/internal/types"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -44,8 +45,9 @@ func NewHubHandler(
 }
 
 // HandleHubProxy handles /hub/v1/* proxy requests.
-// It validates the access key, selects the best group for the requested model,
-// and forwards the request to the existing proxy server.
+// It validates the access key, detects the request format from path,
+// extracts the model, selects the best group, and forwards to proxy server.
+// Flow: Path → Format → Model → Group → Proxy
 func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 	ctx := c.Request.Context()
 
@@ -61,8 +63,12 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 		return
 	}
 
-	// Extract model from request body
-	modelName, err := h.extractModelFromRequest(c)
+	// Step 1: Detect relay format from request path
+	relayFormat := h.detectRelayFormat(c.Request.URL.Path, c.Request.Method)
+	c.Set("relay_format", relayFormat)
+
+	// Step 2: Extract model from request (format-aware)
+	modelName, err := h.extractModelFromRequest(c, relayFormat)
 	if err != nil {
 		h.returnHubError(c, http.StatusBadRequest, "hub_invalid_request", err.Error())
 		return
@@ -92,7 +98,7 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 		return
 	}
 
-	// Select the best group for the model
+	// Step 3: Select the best group for the model
 	group, err := h.hubService.SelectGroupForModel(ctx, modelName)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to select group for model")
@@ -115,11 +121,13 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 	logrus.WithFields(logrus.Fields{
 		"model":         modelName,
 		"group":         group.Name,
+		"channel_type":  group.ChannelType,
+		"relay_format":  relayFormat,
 		"original_path": originalPath,
 		"new_path":      newPath,
 	}).Debug("Hub routing request to group")
 
-	// Forward to proxy server
+	// Step 4: Forward to proxy server
 	h.proxyServer.HandleProxy(c)
 }
 
@@ -334,9 +342,174 @@ func (h *HubHandler) HandleDeleteAccessKey(c *gin.Context) {
 	response.Success(c, nil)
 }
 
+// detectRelayFormat detects the API format from the request path and method.
+// This determines how to parse the request and which default model to use.
+func (h *HubHandler) detectRelayFormat(path, method string) types.RelayFormat {
+	// Normalize path for comparison
+	path = strings.ToLower(path)
+
+	switch {
+	// Chat completions
+	case strings.HasSuffix(path, "/chat/completions"):
+		return types.RelayFormatOpenAIChat
+	case strings.HasSuffix(path, "/completions") && !strings.Contains(path, "/chat"):
+		return types.RelayFormatOpenAICompletion
+
+	// Claude messages
+	case strings.HasSuffix(path, "/messages") && !strings.Contains(path, "count_tokens"):
+		return types.RelayFormatClaude
+
+	// Codex responses
+	case strings.HasSuffix(path, "/responses"):
+		return types.RelayFormatCodex
+
+	// Image generation and editing
+	case strings.HasSuffix(path, "/images/generations"):
+		return types.RelayFormatOpenAIImage
+	case strings.HasSuffix(path, "/images/edits"):
+		return types.RelayFormatOpenAIImageEdit
+	case strings.HasSuffix(path, "/images/variations"):
+		return types.RelayFormatOpenAIImage
+
+	// Audio endpoints
+	case strings.HasSuffix(path, "/audio/transcriptions"):
+		return types.RelayFormatOpenAIAudioTranscription
+	case strings.HasSuffix(path, "/audio/translations"):
+		return types.RelayFormatOpenAIAudioTranslation
+	case strings.HasSuffix(path, "/audio/speech"):
+		return types.RelayFormatOpenAIAudioSpeech
+
+	// Embeddings
+	case strings.HasSuffix(path, "/embeddings"):
+		return types.RelayFormatOpenAIEmbedding
+	case strings.Contains(path, "/engines/") && strings.HasSuffix(path, "/embeddings"):
+		return types.RelayFormatOpenAIEmbedding
+
+	// Moderations
+	case strings.HasSuffix(path, "/moderations"):
+		return types.RelayFormatOpenAIModeration
+
+	// Gemini format: /v1beta/models/{model}:{action} or /v1/models/{model}:{action}
+	case (strings.Contains(path, "/v1beta/models/") || strings.Contains(path, "/v1/models/")) && strings.Contains(path, ":"):
+		return types.RelayFormatGemini
+
+	default:
+		return types.RelayFormatUnknown
+	}
+}
+
+// extractModelFromRequest extracts the model name from the request.
+// The extraction method depends on the relay format.
+// Returns the model name and any error encountered.
+func (h *HubHandler) extractModelFromRequest(c *gin.Context, relayFormat types.RelayFormat) (string, error) {
+	// For GET requests (like /models), no model extraction needed
+	if c.Request.Method == http.MethodGet {
+		return "", nil
+	}
+
+	// Get default model for this format
+	defaultModel := h.getDefaultModelForFormat(relayFormat)
+
+	// For Gemini format, extract model from path first
+	if relayFormat == types.RelayFormatGemini {
+		if model := h.extractModelFromGeminiPath(c.Request.URL.Path); model != "" {
+			return model, nil
+		}
+	}
+
+	// For multipart formats, try to extract from form data
+	if relayFormat.RequiresMultipart() {
+		contentType := c.ContentType()
+		if strings.Contains(contentType, "multipart/form-data") || strings.Contains(contentType, "application/x-www-form-urlencoded") {
+			if model := c.PostForm("model"); model != "" {
+				return model, nil
+			}
+			// Return default model for multipart requests without model field
+			return defaultModel, nil
+		}
+	}
+
+	// Read body without consuming it
+	bodyBytes, err := c.GetRawData()
+	if err != nil {
+		return "", err
+	}
+
+	// Restore body for downstream handlers
+	c.Request.Body = newBodyReader(bodyBytes)
+
+	if len(bodyBytes) == 0 {
+		return defaultModel, nil
+	}
+
+	// Parse JSON to extract model
+	var body map[string]any
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		// If JSON parsing fails, return default model
+		return defaultModel, nil
+	}
+
+	// Try different model field names
+	if model, ok := body["model"].(string); ok && model != "" {
+		return model, nil
+	}
+
+	return defaultModel, nil
+}
+
+// getDefaultModelForFormat returns the default model name for a given relay format.
+// This is used when the model is not explicitly specified in the request.
+func (h *HubHandler) getDefaultModelForFormat(format types.RelayFormat) string {
+	switch format {
+	case types.RelayFormatOpenAIImage, types.RelayFormatOpenAIImageEdit:
+		return "dall-e-3"
+	case types.RelayFormatOpenAIAudioTranscription, types.RelayFormatOpenAIAudioTranslation:
+		return "whisper-1"
+	case types.RelayFormatOpenAIAudioSpeech:
+		return "tts-1"
+	case types.RelayFormatOpenAIEmbedding:
+		return "text-embedding-ada-002"
+	case types.RelayFormatOpenAIModeration:
+		return "text-moderation-stable"
+	case types.RelayFormatGemini:
+		return "gemini-2.0-flash-exp"
+	default:
+		return ""
+	}
+}
+
+// extractModelFromGeminiPath extracts model name from Gemini API path.
+// Path format: /v1beta/models/gemini-2.0-flash:generateContent
+// Returns: gemini-2.0-flash
+func (h *HubHandler) extractModelFromGeminiPath(path string) string {
+	// Find "/models/" position
+	modelsPrefix := "/models/"
+	modelsIndex := strings.Index(path, modelsPrefix)
+	if modelsIndex == -1 {
+		return ""
+	}
+
+	// Extract from "/models/" onwards
+	startIndex := modelsIndex + len(modelsPrefix)
+	if startIndex >= len(path) {
+		return ""
+	}
+
+	// Find ":" position (model name is before ":")
+	colonIndex := strings.Index(path[startIndex:], ":")
+	if colonIndex == -1 {
+		// No ":" found, return everything after "/models/"
+		return path[startIndex:]
+	}
+
+	// Return model name part
+	return path[startIndex : startIndex+colonIndex]
+}
+
 // extractModelFromRequest extracts the model name from the request body.
 // Supports OpenAI, Claude, Codex, and Gemini formats.
-func (h *HubHandler) extractModelFromRequest(c *gin.Context) (string, error) {
+// Deprecated: Use extractModelFromRequest with relayFormat parameter instead.
+func (h *HubHandler) extractModelFromRequestLegacy(c *gin.Context) (string, error) {
 	// For GET requests (like /models), no model extraction needed
 	if c.Request.Method == http.MethodGet {
 		return "", nil
@@ -385,14 +558,21 @@ func (h *HubHandler) extractModelFromRequest(c *gin.Context) (string, error) {
 }
 
 // rewriteHubPath rewrites the hub path to proxy path.
-// /hub/v1/chat/completions -> /proxy/{group}/v1/chat/completions
-// /hub/v1/messages -> /proxy/{group}/v1/messages (Claude)
-// /hub/v1/responses -> /proxy/{group}/v1/responses (Codex)
+// Examples:
+//   /hub/v1/chat/completions -> /proxy/{group}/v1/chat/completions
+//   /hub/v1/messages -> /proxy/{group}/v1/messages (Claude)
+//   /hub/v1/responses -> /proxy/{group}/v1/responses (Codex)
+//   /hub/v1/images/generations -> /proxy/{group}/v1/images/generations
+//   /hub/v1beta/models/... -> /proxy/{group}/v1beta/models/...
 func (h *HubHandler) rewriteHubPath(path, groupName string) string {
 	// Remove /hub prefix and add /proxy/{group} prefix
+	if strings.HasPrefix(path, "/hub/v1beta") {
+		return "/proxy/" + groupName + strings.TrimPrefix(path, "/hub")
+	}
 	if strings.HasPrefix(path, "/hub/v1") {
 		return "/proxy/" + groupName + strings.TrimPrefix(path, "/hub")
 	}
+	// Fallback: just add proxy prefix
 	return "/proxy/" + groupName + path
 }
 
@@ -423,7 +603,6 @@ func (h *HubHandler) getErrorType(status int) string {
 	}
 }
 
-
 // bodyReader wraps a byte slice to implement io.ReadCloser.
 type bodyReader struct {
 	*bytes.Reader
@@ -436,7 +615,6 @@ func newBodyReader(data []byte) *bodyReader {
 func (b *bodyReader) Close() error {
 	return nil
 }
-
 
 // HandleGetModelPoolV2 handles GET /hub/admin/model-pool/v2 endpoint.
 // Returns the model pool with priority information for admin display.
@@ -566,4 +744,62 @@ func (h *HubHandler) HandleUpdateHubSettings(c *gin.Context) {
 	}
 
 	response.Success(c, nil)
+}
+
+// HandleBatchDeleteAccessKeys handles DELETE /hub/admin/access-keys/batch endpoint.
+func (h *HubHandler) HandleBatchDeleteAccessKeys(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	var req centralizedmgmt.BatchAccessKeyOperationParams
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	count, err := h.accessKeyService.BatchDeleteAccessKeys(ctx, req.IDs)
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	response.Success(c, map[string]any{
+		"deleted_count": count,
+	})
+}
+
+// HandleBatchUpdateAccessKeysEnabled handles PUT /hub/admin/access-keys/batch/enabled endpoint.
+func (h *HubHandler) HandleBatchUpdateAccessKeysEnabled(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	var req centralizedmgmt.BatchEnableDisableParams
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	count, err := h.accessKeyService.BatchUpdateAccessKeysEnabled(ctx, req.IDs, req.Enabled)
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	response.Success(c, map[string]any{
+		"updated_count": count,
+	})
+}
+
+// HandleGetAccessKeyUsageStats handles GET /hub/admin/access-keys/:id/stats endpoint.
+func (h *HubHandler) HandleGetAccessKeyUsageStats(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "Invalid access key ID"))
+		return
+	}
+
+	stats, err := h.accessKeyService.GetAccessKeyUsageStats(ctx, uint(id))
+	if HandleServiceError(c, err) {
+		return
+	}
+
+	response.Success(c, stats)
 }

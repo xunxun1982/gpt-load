@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { logApi } from "@/api/logs";
 import type { LogFilter, RequestLog } from "@/types/models";
-import { copy } from "@/utils/clipboard";
+import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
 import { maskKey } from "@/utils/display";
 import {
   CheckmarkDoneOutline,
@@ -33,6 +33,7 @@ import {
   NSpin,
   NTag,
   NTooltip,
+  useDialog,
   useMessage,
 } from "naive-ui";
 import { computed, h, onMounted, reactive, ref, watch, type VNodeChild } from "vue";
@@ -42,6 +43,7 @@ const { t } = useI18n();
 
 // Message instance
 const message = useMessage();
+const dialog = useDialog();
 
 interface LogRow extends RequestLog {
   is_key_visible: boolean;
@@ -206,14 +208,23 @@ const formatJsonString = (jsonStr: string) => {
   }
 };
 
-// Copy helper
+// Copy helper with fallback dialog
 const copyContent = async (content: string, type: string) => {
-  const success = await copy(content);
-  if (success) {
-    message.success(t("logs.copiedToClipboard", { type }));
-  } else {
-    message.error(t("logs.copyFailed", { type }));
-  }
+  await copyWithFallback(content, {
+    onSuccess: () => {
+      message.success(t("logs.copiedToClipboard", { type }));
+    },
+    onError: () => {
+      message.error(t("logs.copyFailed", { type }));
+    },
+    showManualDialog: (text: string) => {
+      dialog.create({
+        title: t("common.copy"),
+        content: () => createManualCopyContent(h, text, t),
+        positiveText: t("common.close"),
+      });
+    },
+  });
 };
 
 // Column visibility management

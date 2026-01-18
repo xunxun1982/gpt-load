@@ -3,8 +3,8 @@
  * AccessKeyModal Component
  * Create/Edit Hub access key form modal.
  */
-import { CopyOutline, Search } from "@vicons/ionicons5";
-import { useClipboard } from "@vueuse/core";
+import { copy } from "@/utils/clipboard";
+import { CheckmarkCircleOutline, CopyOutline, Search, WarningOutline } from "@vicons/ionicons5";
 import {
   NAlert,
   NButton,
@@ -20,16 +20,15 @@ import {
   NSpace,
   NSpin,
   NText,
+  useDialog,
   useMessage,
   type FormInst,
   type FormRules,
 } from "naive-ui";
-import { computed, reactive, ref, watch } from "vue";
+import { computed, h, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { hubApi } from "../api/hub";
 import type { HubAccessKey, ModelPoolEntry } from "../types/hub";
-
-const { copy } = useClipboard();
 
 interface Props {
   show: boolean;
@@ -49,6 +48,7 @@ const emit = defineEmits<Emits>();
 
 const { t } = useI18n();
 const message = useMessage();
+const dialog = useDialog();
 const formRef = ref<FormInst | null>(null);
 const loading = ref(false);
 const loadingModels = ref(false);
@@ -185,12 +185,33 @@ async function copyKeyValue() {
   if (!createdKeyValue.value) {
     return;
   }
-  try {
-    await copy(createdKeyValue.value);
+  const success = await copy(createdKeyValue.value);
+  if (success) {
     keyCopied.value = true;
     message.success(t("common.copied"));
-  } catch {
-    message.error(t("keys.copyFailed"));
+  } else {
+    // Show manual copy dialog as fallback
+    dialog.error({
+      title: t("keys.copyFailed"),
+      content: () =>
+        h("div", { style: "word-break: break-all; user-select: all;" }, [
+          h("p", t("keys.copyFailedManual")),
+          h(
+            "code",
+            {
+              style:
+                "display: block; margin-top: 12px; padding: 8px; background: var(--n-color-embedded); border-radius: 4px; user-select: all; font-family: monospace;",
+            },
+            { default: () => createdKeyValue.value }
+          ),
+          h(
+            "p",
+            { style: "margin-top: 12px; font-size: 12px; color: var(--n-text-color-3);" },
+            t("keys.manualCopyHint")
+          ),
+        ]),
+      positiveText: t("common.ok"),
+    });
   }
 }
 
@@ -255,20 +276,38 @@ async function handleSubmit() {
   >
     <!-- Show created key value -->
     <template v-if="createdKeyValue">
-      <n-space vertical :size="16">
-        <n-alert type="success" :title="t('hub.accessKeyCreated')">
+      <n-space vertical :size="20">
+        <n-alert type="success" :title="t('hub.accessKeyCreated')" :bordered="false">
+          <template #icon>
+            <n-icon :component="CheckmarkCircleOutline" size="20" />
+          </template>
           {{ t("hub.keyCreatedCopyHint") }}
         </n-alert>
-        <div class="key-display">
-          <code class="key-value">{{ createdKeyValue }}</code>
-          <n-button :type="keyCopied ? 'success' : 'primary'" size="small" @click="copyKeyValue">
-            <template #icon>
-              <n-icon :component="CopyOutline" />
-            </template>
-            {{ keyCopied ? t("common.copied") : t("common.copy") }}
-          </n-button>
+
+        <div class="key-display-container">
+          <n-text depth="3" style="font-size: 13px; margin-bottom: 8px; display: block">
+            {{ t("hub.keyValue") }}
+          </n-text>
+          <div class="key-display">
+            <code class="key-value">{{ createdKeyValue }}</code>
+            <n-button
+              :type="keyCopied ? 'success' : 'primary'"
+              size="medium"
+              strong
+              @click="copyKeyValue"
+            >
+              <template #icon>
+                <n-icon :component="keyCopied ? CheckmarkCircleOutline : CopyOutline" />
+              </template>
+              {{ keyCopied ? t("common.copied") : t("common.copy") }}
+            </n-button>
+          </div>
         </div>
+
         <n-alert type="warning" :bordered="false">
+          <template #icon>
+            <n-icon :component="WarningOutline" size="18" />
+          </template>
           {{ t("hub.keyOnlyShownOnce") }}
         </n-alert>
       </n-space>
@@ -407,14 +446,23 @@ async function handleSubmit() {
   padding: 0;
 }
 
+.key-display-container {
+  width: 100%;
+}
+
 .key-display {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 16px;
-  background: var(--n-color-modal);
-  border: 1px solid var(--n-border-color);
+  background: var(--n-color-embedded);
+  border: 2px solid var(--n-border-color);
   border-radius: 8px;
+  transition: border-color 0.3s;
+}
+
+.key-display:hover {
+  border-color: var(--n-color-target);
 }
 
 .key-value {
@@ -425,5 +473,7 @@ async function handleSubmit() {
   background: transparent;
   padding: 0;
   user-select: all;
+  color: var(--n-text-color);
+  font-weight: 500;
 }
 </style>

@@ -21,7 +21,7 @@ func init() {
 
 // ClaudeCodeUserAgent is the User-Agent header value for Claude Code CLI requests.
 // Format: claude-cli/VERSION (external, cli) - matches the official Claude Code CLI client.
-// NOTE: Version 2.1.12 is the latest stable release as of 2026-01-18.
+// NOTE: Version 2.1.12 is the latest stable release verified via GitHub releases.
 // Check: https://github.com/anthropics/claude-code/releases
 const ClaudeCodeUserAgent = "claude-cli/2.1.12 (external, cli)"
 

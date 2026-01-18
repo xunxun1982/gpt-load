@@ -257,28 +257,34 @@ func TestModelSourceSorting(t *testing.T) {
 		t.Fatal("shared-model not found in pool")
 	}
 
+	// Flatten all sources from all channel types for verification
+	var allSources []ModelSource
+	for _, sources := range sharedModelEntry.SourcesByType {
+		allSources = append(allSources, sources...)
+	}
+
 	// Verify sources are sorted by sort field
-	if len(sharedModelEntry.Sources) != 3 {
-		t.Fatalf("Expected 3 sources, got %d", len(sharedModelEntry.Sources))
+	if len(allSources) != 3 {
+		t.Fatalf("Expected 3 sources, got %d", len(allSources))
 	}
 
 	// Verify sort order
-	for i := 0; i < len(sharedModelEntry.Sources)-1; i++ {
-		if sharedModelEntry.Sources[i].Sort > sharedModelEntry.Sources[i+1].Sort {
+	for i := 0; i < len(allSources)-1; i++ {
+		if allSources[i].Sort > allSources[i+1].Sort {
 			t.Errorf("Sources not sorted correctly: sort[%d]=%d > sort[%d]=%d",
-				i, sharedModelEntry.Sources[i].Sort,
-				i+1, sharedModelEntry.Sources[i+1].Sort)
+				i, allSources[i].Sort,
+				i+1, allSources[i+1].Sort)
 		}
 	}
 
 	// Verify first source is high-priority
-	if sharedModelEntry.Sources[0].GroupName != "high-priority" {
-		t.Errorf("First source should be high-priority, got %s", sharedModelEntry.Sources[0].GroupName)
+	if allSources[0].GroupName != "high-priority" {
+		t.Errorf("First source should be high-priority, got %s", allSources[0].GroupName)
 	}
 
 	// Verify last source is low-priority
-	if sharedModelEntry.Sources[2].GroupName != "low-priority" {
-		t.Errorf("Last source should be low-priority, got %s", sharedModelEntry.Sources[2].GroupName)
+	if allSources[2].GroupName != "low-priority" {
+		t.Errorf("Last source should be low-priority, got %s", allSources[2].GroupName)
 	}
 }
 
@@ -544,13 +550,23 @@ func TestGetModelSources(t *testing.T) {
 		t.Fatalf("GetModelSources failed: %v", err)
 	}
 
-	if len(sources) != 2 {
-		t.Errorf("Expected 2 sources, got %d", len(sources))
+	if sources == nil {
+		t.Fatal("Expected sources map, got nil")
+	}
+
+	// Flatten all sources from all channel types
+	var allSources []ModelSource
+	for _, channelSources := range sources {
+		allSources = append(allSources, channelSources...)
+	}
+
+	if len(allSources) != 2 {
+		t.Errorf("Expected 2 sources, got %d", len(allSources))
 	}
 
 	// Verify sources are sorted by sort field
-	if sources[0].GroupName != "source-1" {
-		t.Errorf("First source should be source-1, got %s", sources[0].GroupName)
+	if len(allSources) > 0 && allSources[0].GroupName != "source-1" {
+		t.Errorf("First source should be source-1, got %s", allSources[0].GroupName)
 	}
 
 	// Test non-existent model
@@ -664,7 +680,6 @@ func TestHealthScoreThreshold(t *testing.T) {
 		t.Error("healthy-model should be available with default health score")
 	}
 }
-
 
 // TestCacheInvalidationCallback tests Property 9: Cache Invalidation
 // For any group create, update, or delete operation, the model pool cache

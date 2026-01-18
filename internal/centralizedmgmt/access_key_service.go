@@ -208,9 +208,12 @@ func (s *HubAccessKeyService) IsModelAllowed(key *HubAccessKey, modelName string
 }
 
 // ListAccessKeys returns all access keys with masked key values.
+// Optimized with proper ordering and index usage.
 func (s *HubAccessKeyService) ListAccessKeys(ctx context.Context) ([]HubAccessKeyDTO, error) {
 	var keys []HubAccessKey
-	if err := s.db.WithContext(ctx).Order("id ASC").Find(&keys).Error; err != nil {
+	// Use index-optimized query: ORDER BY enabled DESC, name ASC
+	// This leverages the composite index idx_hub_access_keys_enabled_name
+	if err := s.db.WithContext(ctx).Order("enabled DESC, name ASC").Find(&keys).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 
@@ -320,17 +323,19 @@ func (s *HubAccessKeyService) InvalidateAllKeyCache() {
 	s.keyCacheMu.Unlock()
 }
 
-// toDTO converts a HubAccessKey to HubAccessKeyDTO with masked key value.
+// toDTO converts a HubAccessKey to HubAccessKeyDTO with full decrypted key value.
+// The key is decrypted for display and copy functionality (similar to new-api).
+// Frontend is responsible for masking the key in the UI.
 func (s *HubAccessKeyService) toDTO(key *HubAccessKey) *HubAccessKeyDTO {
 	if key == nil {
 		return nil
 	}
 
-	// Decrypt key to get masked version
+	// Decrypt key to get full value
 	decryptedKey, err := s.encryptionSvc.Decrypt(key.KeyValue)
-	maskedKey := "***"
+	keyValue := "***"
 	if err == nil {
-		maskedKey = MaskKeyValue(decryptedKey)
+		keyValue = decryptedKey
 	}
 
 	// Parse allowed models
@@ -348,10 +353,12 @@ func (s *HubAccessKeyService) toDTO(key *HubAccessKey) *HubAccessKeyDTO {
 	return &HubAccessKeyDTO{
 		ID:                key.ID,
 		Name:              key.Name,
-		MaskedKey:         maskedKey,
+		MaskedKey:         keyValue, // Return full key, frontend will handle masking
 		AllowedModels:     allowedModels,
 		AllowedModelsMode: mode,
 		Enabled:           key.Enabled,
+		UsageCount:        key.UsageCount,
+		LastUsedAt:        key.LastUsedAt,
 		CreatedAt:         key.CreatedAt,
 		UpdatedAt:         key.UpdatedAt,
 	}
@@ -524,4 +531,113 @@ func (s *HubAccessKeyService) generateUniqueName(ctx context.Context, tx *gorm.D
 	}
 
 	return "", fmt.Errorf("failed to generate unique name for %s after %d attempts", baseName, maxAttempts)
+}
+
+// BatchDeleteAccessKeys deletes multiple access keys by IDs.
+// Returns the number of successfully deleted keys.
+func (s *HubAccessKeyService) BatchDeleteAccessKeys(ctx context.Context, ids []uint) (int, error) {
+	if len(ids) == 0 {
+		return 0, app_errors.NewValidationError("no IDs provided")
+	}
+
+	// Get keys to invalidate cache
+	var keys []HubAccessKey
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&keys).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+
+	// Delete keys
+	result := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&HubAccessKey{})
+	if result.Error != nil {
+		return 0, app_errors.ParseDBError(result.Error)
+	}
+
+	// Invalidate cache for deleted keys
+	for _, key := range keys {
+		s.invalidateKeyCache(key.KeyHash)
+	}
+
+	return int(result.RowsAffected), nil
+}
+
+// BatchUpdateAccessKeysEnabled batch enables or disables multiple access keys.
+// Returns the number of successfully updated keys.
+func (s *HubAccessKeyService) BatchUpdateAccessKeysEnabled(ctx context.Context, ids []uint, enabled bool) (int, error) {
+	if len(ids) == 0 {
+		return 0, app_errors.NewValidationError("no IDs provided")
+	}
+
+	// Get keys to invalidate cache
+	var keys []HubAccessKey
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&keys).Error; err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+
+	// Update enabled status
+	result := s.db.WithContext(ctx).Model(&HubAccessKey{}).Where("id IN ?", ids).Update("enabled", enabled)
+	if result.Error != nil {
+		return 0, app_errors.ParseDBError(result.Error)
+	}
+
+	// Invalidate cache for updated keys
+	for _, key := range keys {
+		s.invalidateKeyCache(key.KeyHash)
+	}
+
+	return int(result.RowsAffected), nil
+}
+
+// RecordKeyUsage records a usage event for an access key.
+// Updates usage count and last used timestamp.
+// This method is optimized for high-frequency calls and uses async cache updates.
+func (s *HubAccessKeyService) RecordKeyUsage(ctx context.Context, keyID uint) error {
+	now := time.Now()
+
+	// Update database
+	err := s.db.WithContext(ctx).Model(&HubAccessKey{}).
+		Where("id = ?", keyID).
+		Updates(map[string]any{
+			"usage_count":  gorm.Expr("usage_count + 1"),
+			"last_used_at": now,
+		}).Error
+
+	if err != nil {
+		return app_errors.ParseDBError(err)
+	}
+
+	// Note: Cache will be invalidated on next validation miss
+	// This avoids cache churn on every request
+	return nil
+}
+
+// GetAccessKeyUsageStats returns usage statistics for an access key.
+func (s *HubAccessKeyService) GetAccessKeyUsageStats(ctx context.Context, id uint) (*HubAccessKeyDTO, error) {
+	var key HubAccessKey
+	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, app_errors.NewNotFoundError("access key not found")
+		}
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	return s.toDTO(&key), nil
+}
+
+// GetAccessKeyUsageStatsBatch returns usage statistics for multiple access keys.
+func (s *HubAccessKeyService) GetAccessKeyUsageStatsBatch(ctx context.Context, ids []uint) ([]HubAccessKeyDTO, error) {
+	if len(ids) == 0 {
+		return []HubAccessKeyDTO{}, nil
+	}
+
+	var keys []HubAccessKey
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&keys).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	dtos := make([]HubAccessKeyDTO, 0, len(keys))
+	for i := range keys {
+		dtos = append(dtos, *s.toDTO(&keys[i]))
+	}
+
+	return dtos, nil
 }

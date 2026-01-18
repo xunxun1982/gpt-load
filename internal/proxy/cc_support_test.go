@@ -5662,12 +5662,20 @@ func TestConvertClaudeToOpenAI(t *testing.T) {
 				if tcMap["type"] != "function" {
 					t.Errorf("expected tool_choice type function, got %v", tcMap["type"])
 				}
-				funcMap, ok := tcMap["function"].(map[string]string)
+				// Handle both map[string]interface{} and map[string]string for function field
+				funcMap, ok := tcMap["function"].(map[string]interface{})
 				if !ok {
+					// Try map[string]string as fallback
+					if fm, ok := tcMap["function"].(map[string]string); ok {
+						if fm["name"] != "test_tool" {
+							t.Errorf("expected function name test_tool, got %s", fm["name"])
+						}
+						return
+					}
 					t.Fatalf("expected function to be map, got %T", tcMap["function"])
 				}
 				if funcMap["name"] != "test_tool" {
-					t.Errorf("expected function name test_tool, got %s", funcMap["name"])
+					t.Errorf("expected function name test_tool, got %v", funcMap["name"])
 				}
 			},
 		},
@@ -6242,6 +6250,9 @@ func TestHandleCCNormalResponseWithToolNameRestore(t *testing.T) {
 
 // TestHandleCCNormalResponseBodyTooLarge tests response body size limit
 func TestHandleCCNormalResponseBodyTooLarge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping large memory allocation test in short mode")
+	}
 	gin.SetMode(gin.TestMode)
 
 	// Create a large response body that exceeds the limit
