@@ -44,12 +44,12 @@ func TestProcessJsonSchema(t *testing.T) {
 		{
 			name:     "anyOf with null type - should set nullable",
 			input:    `{"anyOf":[{"type":"string"},{"type":"null"}]}`,
-			expected: `{"type":"STRING","description":"Accepts: string | null"}`,
+			expected: `{"type":"STRING","nullable":true,"description":"Accepts: string | null"}`,
 		},
 		{
 			name:     "anyOf with null as first element",
 			input:    `{"anyOf":[{"type":"null"},{"type":"object","properties":{"id":{"type":"integer"}}}]}`,
-			expected: `{"type":"OBJECT","properties":{"id":{"type":"INTEGER"}},"description":"Accepts: null | object"}`,
+			expected: `{"type":"OBJECT","nullable":true,"properties":{"id":{"type":"INTEGER"}},"description":"Accepts: null | object"}`,
 		},
 		{
 			name:     "with enum and required",
@@ -812,6 +812,9 @@ func TestGeminiCCStreamingCorruptedWindowsPath(t *testing.T) {
 
 		// Simulate corrupted path where \t became tab
 		corruptedPath := "F:MyProjects\testlanguagepythonxxhello.py"
+		// AI Review Note: Cannot recover "/test" from tab character - once \t is interpreted as tab,
+		// the original text is lost. We can only remove the control character, not restore the original path.
+		// Expected result is the path with tab character removed, not the full original path.
 		expectedPath := "F:/MyProjectsestlanguagepythonxxhello.py"
 
 		chunk := &GeminiStreamChunk{
@@ -855,6 +858,9 @@ func TestGeminiCCStreamingCorruptedWindowsPath(t *testing.T) {
 
 		// Simulate corrupted path where \t became tab
 		corruptedPath := "I need to check F:MyProjects\testlanguagepythonxxhello.py"
+		// AI Review Note: Cannot recover "/test" from tab character - once \t is interpreted as tab,
+		// the original text is lost. We can only remove the control character, not restore the original path.
+		// Expected result is the path with tab character removed, not the full original path.
 		expectedPath := "F:/MyProjectsestlanguagepythonxxhello.py"
 
 		chunk := &GeminiStreamChunk{

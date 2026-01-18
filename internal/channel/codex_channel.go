@@ -40,11 +40,11 @@ func newCodexChannel(f *Factory, group *models.Group) (ChannelProxy, error) {
 
 // CodexUserAgent is the User-Agent header value for Codex CLI requests.
 // Format: codex-cli/VERSION - matches the npm package @openai/codex client format.
-// NOTE: Version 0.87.0 is the latest stable release from GitHub.
+// NOTE: Version 0.77.0 is the latest stable release from GitHub (released December 21, 2025).
 // GitHub releases may show different versions than npm as they are not always in sync.
 // We use the latest stable version from GitHub releases.
 // Check: https://github.com/openai/codex/releases for latest versions
-const CodexUserAgent = "codex-cli/0.87.0"
+const CodexUserAgent = "codex-cli/0.77.0"
 
 // ModifyRequest sets the Authorization header for the Codex/Responses API.
 // Note: User-Agent is NOT set here to ensure passthrough behavior for non-CC requests.

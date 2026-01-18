@@ -6892,13 +6892,20 @@ func TestNormalizeArgs(t *testing.T) {
 		args := map[string]interface{}{
 			"path": "/f/test",
 		}
+		// Apply generic normalization first (as done in production code)
+		normalizeArgsGenericInPlace(args)
 		normalizeListDirArgs(args)
 		// Verify Git Bash path conversion
-		if path, ok := args["path"].(string); ok {
-			if path == "/f/test" {
-				// Path should be converted
-				t.Log("Path conversion applied")
-			}
+		path, ok := args["path"].(string)
+		if !ok {
+			t.Fatalf("expected path to be string, got %T", args["path"])
+		}
+		if path == "/f/test" {
+			t.Fatalf("expected Git Bash path to be converted, got %q", path)
+		}
+		// Verify path was converted to Windows-style (e.g., F:\test or F:/test)
+		if !strings.HasPrefix(path, "F:") && !strings.HasPrefix(path, "f:") {
+			t.Errorf("expected path to start with F: after conversion, got %q", path)
 		}
 	})
 
@@ -6915,12 +6922,20 @@ func TestNormalizeArgs(t *testing.T) {
 			"path":    "/f/test/file.py",
 			"content": "test content",
 		}
+		// Apply generic normalization first (as done in production code)
+		normalizeArgsGenericInPlace(args)
 		normalizeEditArgs(args)
 		// Verify Git Bash path conversion
-		if path, ok := args["path"].(string); ok {
-			if path == "/f/test/file.py" {
-				t.Log("Path conversion applied")
-			}
+		path, ok := args["path"].(string)
+		if !ok {
+			t.Fatalf("expected path to be string, got %T", args["path"])
+		}
+		if path == "/f/test/file.py" {
+			t.Fatalf("expected Git Bash path to be converted, got %q", path)
+		}
+		// Verify path was converted to Windows-style (e.g., F:\test\file.py or F:/test/file.py)
+		if !strings.HasPrefix(path, "F:") && !strings.HasPrefix(path, "f:") {
+			t.Errorf("expected path to start with F: after conversion, got %q", path)
 		}
 	})
 }

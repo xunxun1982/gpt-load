@@ -261,8 +261,12 @@ func convertClaudeToGemini(claudeReq *ClaudeRequest, toolNameShortMap map[string
 				case "none":
 					fcc.Mode = "NONE"
 				}
-				geminiReq.ToolConfig = &GeminiToolConfig{
-					FunctionCallingConfig: fcc,
+				// Only set ToolConfig if Mode was successfully populated
+				// Empty mode would default to AUTO in Gemini, but setting incomplete config may mask invalid input
+				if fcc.Mode != "" {
+					geminiReq.ToolConfig = &GeminiToolConfig{
+						FunctionCallingConfig: fcc,
+					}
 				}
 			}
 		}
@@ -1017,6 +1021,8 @@ func (s *geminiStreamState) processGeminiStreamChunk(chunk *GeminiStreamChunk) [
 			usage.InputTokens = chunk.UsageMetadata.PromptTokenCount
 			usage.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
 		}
+		// Apply token multiplier to match non-streaming behavior
+		applyTokenMultiplier(usage)
 		events = append(events, ClaudeStreamEvent{
 			Type: "message_delta",
 			Delta: &ClaudeStreamDelta{
@@ -1090,6 +1096,25 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 	// Flush headers
 	c.Writer.Flush()
 
+	// Helper function to send SSE error events after headers are sent
+	sendSSEError := func(message string) {
+		errorEvent := ClaudeStreamEvent{
+			Type: "error",
+			Error: &ClaudeError{
+				Type:    "api_error",
+				Message: message,
+			},
+		}
+		if payload, err := json.Marshal(errorEvent); err == nil {
+			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(payload))
+		}
+		stopEvent := ClaudeStreamEvent{Type: "message_stop"}
+		if payload, err := json.Marshal(stopEvent); err == nil {
+			fmt.Fprintf(c.Writer, "event: message_stop\ndata: %s\n\n", string(payload))
+		}
+		c.Writer.Flush()
+	}
+
 	// Handle gzip/deflate/br decompression for streaming response
 	// Gemini API may return gzip-compressed streaming responses
 	reader := resp.Body
@@ -1099,18 +1124,18 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 		reader, err = utils.NewDecompressReader(contentEncoding, resp.Body)
 		if err != nil {
 			logrus.WithError(err).WithField("content_encoding", contentEncoding).
-				Warn("Gemini CC: Failed to create decompression reader, using original body")
-			reader = resp.Body
-		} else {
-			logrus.WithField("content_encoding", contentEncoding).
-				Debug("Gemini CC: Created decompression reader for streaming response")
-			// Ensure decompression reader is closed
-			defer func() {
-				if closer, ok := reader.(io.Closer); ok && closer != resp.Body {
-					closer.Close()
-				}
-			}()
+				Warn("Gemini CC: Failed to create decompression reader")
+			sendSSEError("Failed to decompress upstream stream")
+			return
 		}
+		logrus.WithField("content_encoding", contentEncoding).
+			Debug("Gemini CC: Created decompression reader for streaming response")
+		// Ensure decompression reader is closed
+		defer func() {
+			if closer, ok := reader.(io.Closer); ok && closer != resp.Body {
+				closer.Close()
+			}
+		}()
 	}
 
 	// Read the entire response body with size limit to prevent OOM
@@ -1124,14 +1149,14 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 	if err != nil {
 		if errors.Is(err, ErrBodyTooLarge) {
 			maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
-			message := fmt.Sprintf("Upstream streaming response exceeded maximum allowed size (%dMB) for Gemini CC conversion", maxMB)
+			message := fmt.Sprintf("Upstream streaming response exceeded maximum allowed size (%dMB)", maxMB)
 			logrus.WithField("limit_mb", maxMB).
 				Warn("Gemini CC: Upstream streaming response body too large for conversion")
-			returnClaudeError(c, http.StatusBadGateway, message)
+			sendSSEError(message)
 			return
 		}
 		logrus.WithError(err).Error("Gemini CC: Failed to read response body")
-		returnClaudeError(c, http.StatusBadGateway, "Failed to read upstream response")
+		sendSSEError("Failed to read upstream response")
 		return
 	}
 
@@ -1141,7 +1166,7 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 		safePreview := utils.TruncateString(utils.SanitizeErrorBody(string(bodyBytes)), 500)
 		logrus.WithError(err).WithField("body_preview", safePreview).
 			Error("Gemini CC: Failed to parse response JSON")
-		returnClaudeError(c, http.StatusBadGateway, "Failed to parse upstream response")
+		sendSSEError("Failed to parse upstream response")
 		return
 	}
 
@@ -1522,6 +1547,20 @@ func flattenAnyOfOneOf(jsonStr string) string {
 
 			if parentDesc != "" {
 				selected = mergeDescriptionRaw(selected, parentDesc)
+			}
+
+			// Check if anyOf/oneOf contains null type
+			hasNull := false
+			for _, t := range allTypes {
+				if t == "null" {
+					hasNull = true
+					break
+				}
+			}
+
+			// Set nullable field if null type is present
+			if hasNull {
+				selected, _ = sjson.Set(selected, "nullable", true)
 			}
 
 			if len(allTypes) > 1 {

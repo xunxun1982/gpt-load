@@ -75,12 +75,18 @@ func BuildToolNameShortMap(names []string, limit int) map[string]string {
 	}
 
 	// Helper to make name unique by appending suffix.
-	// Ensure at least 1 character from base is preserved to avoid
-	// names like "_1" which may be rejected by API's tool name charset rules.
+	// Ensure candidate length never exceeds limit to prevent infinite loops and API rejections.
 	makeUnique := func(cand string) string {
 		// Guard against empty candidate to avoid invalid tool names like "_1"
 		if cand == "" {
 			cand = "tool"
+		}
+		// Short-circuit for tiny limits where suffix-based uniqueness is impossible
+		if limit < 3 {
+			if len(cand) > limit {
+				return cand[:limit]
+			}
+			return cand
 		}
 		if _, ok := used[cand]; !ok {
 			return cand
@@ -88,18 +94,26 @@ func BuildToolNameShortMap(names []string, limit int) map[string]string {
 		base := cand
 		for i := 1; i < 1000; i++ {
 			suffix := "_" + fmt.Sprintf("%d", i)
+			// Truncate suffix if it exceeds limit
+			if len(suffix) >= limit {
+				suffix = suffix[len(suffix)-(limit-1):]
+			}
 			allowed := limit - len(suffix)
-			// Ensure at least 1 character from base is preserved
-			if allowed < 1 {
-				allowed = 1
+			// Ensure allowed is non-negative
+			if allowed < 0 {
+				allowed = 0
 			}
 			tmp := base
 			if len(tmp) > allowed {
 				tmp = tmp[:allowed]
 			}
-			tmp = tmp + suffix
-			if _, ok := used[tmp]; !ok {
-				return tmp
+			candidate := tmp + suffix
+			// Ensure final candidate never exceeds limit
+			if len(candidate) > limit {
+				candidate = candidate[:limit]
+			}
+			if _, ok := used[candidate]; !ok {
+				return candidate
 			}
 		}
 		// Use UUID suffix if 1000 iterations exhausted to guarantee uniqueness.
@@ -107,15 +121,23 @@ func BuildToolNameShortMap(names []string, limit int) map[string]string {
 		// Loop until unique name found (UUID collision probability ~10^-18 per attempt).
 		for {
 			suffix := "_" + uuid.New().String()[:8]
+			// Truncate suffix if it exceeds limit
+			if len(suffix) >= limit {
+				suffix = suffix[len(suffix)-(limit-1):]
+			}
 			allowed := limit - len(suffix)
-			if allowed < 1 {
-				allowed = 1
+			if allowed < 0 {
+				allowed = 0
 			}
 			tmp := base
 			if len(tmp) > allowed {
 				tmp = tmp[:allowed]
 			}
 			candidate := tmp + suffix
+			// Ensure final candidate never exceeds limit
+			if len(candidate) > limit {
+				candidate = candidate[:limit]
+			}
 			if _, ok := used[candidate]; !ok {
 				return candidate
 			}
