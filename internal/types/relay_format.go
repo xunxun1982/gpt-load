@@ -51,8 +51,17 @@ func (r RelayFormat) String() string {
 }
 
 // IsValid checks if the relay format is valid (not unknown)
+// Uses explicit allowlist of known formats for security
 func (r RelayFormat) IsValid() bool {
-	return r != RelayFormatUnknown && r != ""
+	switch r {
+	case RelayFormatOpenAIChat, RelayFormatOpenAICompletion, RelayFormatClaude, RelayFormatCodex,
+		RelayFormatOpenAIImage, RelayFormatOpenAIImageEdit, RelayFormatOpenAIAudioTranscription,
+		RelayFormatOpenAIAudioTranslation, RelayFormatOpenAIAudioSpeech, RelayFormatOpenAIEmbedding,
+		RelayFormatOpenAIModeration, RelayFormatGemini:
+		return true
+	default:
+		return false
+	}
 }
 
 // SupportsStreaming returns true if the format supports streaming responses

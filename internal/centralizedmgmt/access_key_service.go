@@ -323,19 +323,22 @@ func (s *HubAccessKeyService) InvalidateAllKeyCache() {
 	s.keyCacheMu.Unlock()
 }
 
-// toDTO converts a HubAccessKey to HubAccessKeyDTO with full decrypted key value.
-// The key is decrypted for display and copy functionality (similar to new-api).
-// Frontend is responsible for masking the key in the UI.
+// toDTO converts a HubAccessKey to HubAccessKeyDTO with masked key value.
+// Full key should only be returned on creation.
 func (s *HubAccessKeyService) toDTO(key *HubAccessKey) *HubAccessKeyDTO {
 	if key == nil {
 		return nil
 	}
 
-	// Decrypt key to get full value
-	decryptedKey, err := s.encryptionSvc.Decrypt(key.KeyValue)
+	// Decrypt key and mask it (show first 4 and last 4 characters)
 	keyValue := "***"
-	if err == nil {
-		keyValue = decryptedKey
+	if decryptedKey, err := s.encryptionSvc.Decrypt(key.KeyValue); err == nil {
+		if len(decryptedKey) > 8 {
+			keyValue = decryptedKey[:4] + strings.Repeat("*", len(decryptedKey)-8) + decryptedKey[len(decryptedKey)-4:]
+		} else {
+			// For short keys, just show asterisks
+			keyValue = strings.Repeat("*", len(decryptedKey))
+		}
 	}
 
 	// Parse allowed models
@@ -353,7 +356,7 @@ func (s *HubAccessKeyService) toDTO(key *HubAccessKey) *HubAccessKeyDTO {
 	return &HubAccessKeyDTO{
 		ID:                key.ID,
 		Name:              key.Name,
-		MaskedKey:         keyValue, // Return full key, frontend will handle masking
+		MaskedKey:         keyValue, // Masked value only
 		AllowedModels:     allowedModels,
 		AllowedModelsMode: mode,
 		Enabled:           key.Enabled,

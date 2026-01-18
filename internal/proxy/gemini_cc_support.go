@@ -385,7 +385,7 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 		}
 	}
 
-	// Build result based on role
+	// Build result based on role, preserving interleaving of user text and function responses
 	switch msg.Role {
 	case "assistant":
 		if len(orderedParts) > 0 {
@@ -395,29 +395,38 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 			})
 		}
 	case "user":
-		// For user role, extract text parts while preserving order
-		if len(orderedParts) > 0 {
-			userParts := make([]GeminiPart, 0, len(orderedParts))
-			for _, p := range orderedParts {
-				if p.Text != "" {
-					userParts = append(userParts, GeminiPart{Text: p.Text})
+		// Iterate original blocks to preserve interleaving
+		// Flush accumulated user text before each function response
+		var userParts []GeminiPart
+		for _, block := range blocks {
+			if block.Type == "text" {
+				userParts = append(userParts, GeminiPart{Text: block.Text})
+			} else if block.Type == "tool_result" {
+				// Flush accumulated user text before function response
+				if len(userParts) > 0 {
+					result = append(result, GeminiContent{
+						Role:  "user",
+						Parts: userParts,
+					})
+					userParts = nil
+				}
+				// Find corresponding function response
+				for _, fr := range functionResponses {
+					// Match by tool name (already processed above)
+					// Append function response as separate GeminiContent
+					result = append(result, GeminiContent{
+						Role:  "function",
+						Parts: []GeminiPart{{FunctionResponse: &fr}},
+					})
+					break
 				}
 			}
-			if len(userParts) > 0 {
-				result = append(result, GeminiContent{
-					Role:  "user",
-					Parts: userParts,
-				})
-			}
 		}
-		if len(functionResponses) > 0 {
-			parts := make([]GeminiPart, 0, len(functionResponses))
-			for _, fr := range functionResponses {
-				parts = append(parts, GeminiPart{FunctionResponse: &fr})
-			}
+		// Flush any remaining user text
+		if len(userParts) > 0 {
 			result = append(result, GeminiContent{
-				Role:  "function",
-				Parts: parts,
+				Role:  "user",
+				Parts: userParts,
 			})
 		}
 	}

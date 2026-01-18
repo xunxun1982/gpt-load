@@ -2,9 +2,11 @@
 package router
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"strings"
+	"time"
 
 	"gpt-load/internal/centralizedmgmt"
 	app_errors "gpt-load/internal/errors"
@@ -141,9 +143,11 @@ func HubAuthMiddleware(accessKeyService *centralizedmgmt.HubAccessKeyService) gi
 		c.Set("hub_access_key", accessKey)
 
 		// Record key usage asynchronously (non-blocking)
-		// This avoids adding latency to the request path
+		// Use background context since request context may be cancelled after response
 		go func() {
-			if err := accessKeyService.RecordKeyUsage(c.Request.Context(), accessKey.ID); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := accessKeyService.RecordKeyUsage(ctx, accessKey.ID); err != nil {
 				logrus.WithError(err).WithField("key_id", accessKey.ID).Warn("Failed to record key usage")
 			}
 		}()

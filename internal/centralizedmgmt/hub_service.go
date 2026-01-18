@@ -441,9 +441,14 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string) 
 		return nil, nil // No healthy groups available
 	}
 
-	// Sources are already sorted by sort field
-	// Find the minimum sort value
+	// Find the minimum sort value across all channel types
+	// Map flattening makes order nondeterministic, so compute min explicitly
 	minSort := validSources[0].Sort
+	for i := 1; i < len(validSources); i++ {
+		if validSources[i].Sort < minSort {
+			minSort = validSources[i].Sort
+		}
+	}
 
 	// Get all sources with the minimum sort value
 	var topSources []ModelSource

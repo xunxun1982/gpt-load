@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -417,19 +418,7 @@ func (h *HubHandler) extractModelFromRequest(c *gin.Context, relayFormat types.R
 		}
 	}
 
-	// For multipart formats, try to extract from form data
-	if relayFormat.RequiresMultipart() {
-		contentType := c.ContentType()
-		if strings.Contains(contentType, "multipart/form-data") || strings.Contains(contentType, "application/x-www-form-urlencoded") {
-			if model := c.PostForm("model"); model != "" {
-				return model, nil
-			}
-			// Return default model for multipart requests without model field
-			return defaultModel, nil
-		}
-	}
-
-	// Read body without consuming it
+	// Read body first to avoid consumption issues
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
 		return "", err
@@ -437,6 +426,28 @@ func (h *HubHandler) extractModelFromRequest(c *gin.Context, relayFormat types.R
 
 	// Restore body for downstream handlers
 	c.Request.Body = newBodyReader(bodyBytes)
+
+	// For multipart formats, try to extract from form data
+	// Parse from bodyBytes copy instead of consuming c.Request.Body
+	if relayFormat.RequiresMultipart() {
+		contentType := c.ContentType()
+		if strings.Contains(contentType, "multipart/form-data") {
+			// Extract boundary from content type
+			boundary := extractBoundary(contentType)
+			if boundary != "" {
+				if model := extractModelFromMultipart(bodyBytes, boundary); model != "" {
+					return model, nil
+				}
+			}
+			// Return default model for multipart requests without model field
+			return defaultModel, nil
+		} else if strings.Contains(contentType, "application/x-www-form-urlencoded") {
+			if model := extractModelFromFormURLEncoded(bodyBytes); model != "" {
+				return model, nil
+			}
+			return defaultModel, nil
+		}
+	}
 
 	if len(bodyBytes) == 0 {
 		return defaultModel, nil
@@ -614,6 +625,59 @@ func newBodyReader(data []byte) *bodyReader {
 
 func (b *bodyReader) Close() error {
 	return nil
+}
+
+// extractBoundary extracts the boundary from multipart/form-data content type
+func extractBoundary(contentType string) string {
+	parts := strings.Split(contentType, "boundary=")
+	if len(parts) < 2 {
+		return ""
+	}
+	boundary := strings.TrimSpace(parts[1])
+	// Remove quotes if present
+	boundary = strings.Trim(boundary, "\"")
+	return boundary
+}
+
+// extractModelFromMultipart extracts model field from multipart/form-data body
+func extractModelFromMultipart(bodyBytes []byte, boundary string) string {
+	// Simple multipart parser to extract "model" field
+	// Format: --boundary\r\nContent-Disposition: form-data; name="model"\r\n\r\nvalue\r\n
+	boundaryBytes := []byte("--" + boundary)
+	parts := bytes.Split(bodyBytes, boundaryBytes)
+
+	for _, part := range parts {
+		// Look for Content-Disposition with name="model"
+		if bytes.Contains(part, []byte(`name="model"`)) {
+			// Find the value after the headers (after \r\n\r\n)
+			headerEnd := bytes.Index(part, []byte("\r\n\r\n"))
+			if headerEnd == -1 {
+				continue
+			}
+			valueStart := headerEnd + 4
+			if valueStart >= len(part) {
+				continue
+			}
+			// Extract value until \r\n
+			valueEnd := bytes.Index(part[valueStart:], []byte("\r\n"))
+			if valueEnd == -1 {
+				valueEnd = len(part[valueStart:])
+			}
+			model := string(part[valueStart : valueStart+valueEnd])
+			return strings.TrimSpace(model)
+		}
+	}
+	return ""
+}
+
+// extractModelFromFormURLEncoded extracts model field from application/x-www-form-urlencoded body
+func extractModelFromFormURLEncoded(bodyBytes []byte) string {
+	// Parse URL-encoded form data
+	values, err := url.ParseQuery(string(bodyBytes))
+	if err != nil {
+		return ""
+	}
+	return values.Get("model")
 }
 
 // HandleGetModelPoolV2 handles GET /hub/admin/model-pool/v2 endpoint.

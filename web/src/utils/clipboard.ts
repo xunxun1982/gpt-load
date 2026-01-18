@@ -69,7 +69,7 @@ export async function copy(text: string): Promise<boolean> {
 /**
  * Copy text to clipboard with manual fallback dialog.
  * If automatic copy fails, shows a dialog for manual copying.
- * This ensures 100% copy success rate.
+ * This provides a manual-copy fallback when automatic copy fails.
  */
 export async function copyWithFallback(
   text: string,
