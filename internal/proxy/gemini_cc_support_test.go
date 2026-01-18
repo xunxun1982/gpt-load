@@ -492,9 +492,9 @@ func TestGeminiStreamState_UsageMetadata(t *testing.T) {
 	// Verify usage metadata is present in message_delta
 	assert.NotNil(t, deltaEvent, "message_delta event should be present")
 	assert.NotNil(t, deltaEvent.Usage, "Usage should be present in message_delta")
-	// Note: The current implementation sets OutputTokens to 0 in message_delta
-	// This is acceptable as usage is tracked separately in the response
-	assert.Equal(t, 0, deltaEvent.Usage.OutputTokens)
+	// Usage metadata is now properly propagated from Gemini chunk
+	assert.Equal(t, 100, deltaEvent.Usage.InputTokens, "InputTokens should match PromptTokenCount")
+	assert.Equal(t, 50, deltaEvent.Usage.OutputTokens, "OutputTokens should match CandidatesTokenCount")
 }
 
 // TestGeminiToolNameShortening tests tool name shortening for Gemini

@@ -118,6 +118,12 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	// This ensures external applications respect the model whitelist
 	transformedResponse, err := channelHandler.TransformModelList(c.Request, bodyBytes, group)
 	if err != nil {
+		// Fail closed in strict mode: deny model list on transform error to enforce whitelist
+		if group.ModelRedirectStrict {
+			logrus.WithError(err).Warn("Strict mode transform failed; denying model list")
+			c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": "model list transform failed"})
+			return
+		}
 		logrus.WithError(err).Debug("Failed to transform model list, returning original")
 		if writeErr := writePassthroughModelsResponse(c, resp, bodyBytes); writeErr != nil {
 			logUpstreamError("writing original models response after transform error", writeErr)
@@ -128,6 +134,12 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	// Marshal transformed response back to bytes for alias enhancement
 	transformedBytes, err := json.Marshal(transformedResponse)
 	if err != nil {
+		// Fail closed in strict mode: deny model list on marshal error to enforce whitelist
+		if group.ModelRedirectStrict {
+			logrus.WithError(err).Warn("Strict mode marshal failed; denying model list")
+			c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": "model list transform failed"})
+			return
+		}
 		logrus.WithError(err).Warn("Failed to marshal transformed model list")
 		if writeErr := writePassthroughModelsResponse(c, resp, bodyBytes); writeErr != nil {
 			logUpstreamError("writing original models response after marshal error", writeErr)

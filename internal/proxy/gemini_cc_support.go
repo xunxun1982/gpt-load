@@ -1010,15 +1010,19 @@ func (s *geminiStreamState) processGeminiStreamChunk(chunk *GeminiStreamChunk) [
 			stopReason = "max_tokens"
 		}
 
-		// Send message_delta with stop_reason
+		// Send message_delta with stop_reason and usage metadata
+		// Propagate usage from Gemini chunk if available
+		usage := &ClaudeUsage{OutputTokens: 0}
+		if chunk.UsageMetadata != nil {
+			usage.InputTokens = chunk.UsageMetadata.PromptTokenCount
+			usage.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
+		}
 		events = append(events, ClaudeStreamEvent{
 			Type: "message_delta",
 			Delta: &ClaudeStreamDelta{
 				StopReason: stopReason,
 			},
-			Usage: &ClaudeUsage{
-				OutputTokens: 0,
-			},
+			Usage: usage,
 		})
 
 		// Send message_stop
@@ -1034,10 +1038,41 @@ func (s *geminiStreamState) processGeminiStreamChunk(chunk *GeminiStreamChunk) [
 func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *http.Response) {
 	// Log response headers for debugging
 	logrus.WithFields(logrus.Fields{
+		"status_code":       resp.StatusCode,
 		"content_type":      resp.Header.Get("Content-Type"),
 		"content_encoding":  resp.Header.Get("Content-Encoding"),
 		"transfer_encoding": resp.Header.Get("Transfer-Encoding"),
 	}).Debug("Gemini CC: Starting streaming response conversion")
+
+	// Handle upstream error status before setting SSE headers
+	// This preserves the real error status/message instead of converting to 502
+	if resp.StatusCode >= 400 {
+		// Read and decompress error body
+		reader := resp.Body
+		if enc := resp.Header.Get("Content-Encoding"); enc != "" {
+			if r, err := utils.NewDecompressReader(enc, resp.Body); err == nil {
+				reader = r
+				defer r.Close()
+			}
+		}
+		bodyBytes, err := readAllWithLimit(reader, maxUpstreamResponseBodySize)
+		if err != nil {
+			if errors.Is(err, ErrBodyTooLarge) {
+				maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
+				message := fmt.Sprintf("Upstream error response exceeded maximum allowed size (%dMB)", maxMB)
+				logrus.WithField("limit_mb", maxMB).
+					Warn("Gemini CC: Upstream error response body too large")
+				returnClaudeError(c, http.StatusBadGateway, message)
+				return
+			}
+			logrus.WithError(err).Error("Gemini CC: Failed to read upstream error response")
+			returnClaudeError(c, http.StatusBadGateway, "Failed to read upstream error response")
+			return
+		}
+		clearUpstreamEncodingHeaders(c)
+		returnClaudeError(c, resp.StatusCode, string(bodyBytes))
+		return
+	}
 
 	// Get tool name reverse map from context
 	reverseToolNameMap := getGeminiToolNameReverseMap(c)
@@ -1045,7 +1080,7 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 	// Create stream state
 	state := newGeminiStreamState(reverseToolNameMap)
 
-	// Set up SSE headers
+	// Set up SSE headers (only for successful responses)
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")

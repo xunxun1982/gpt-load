@@ -57,11 +57,11 @@ func (ch *GeminiChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey,
 		// Also set x-goog-api-key header as fallback for proxies that strip query parameters
 		req.Header.Set("x-goog-api-key", apiKey.KeyValue)
 
+		// Do not log URL to avoid exposing API key in query parameters
 		logrus.WithFields(logrus.Fields{
 			"path":    req.URL.Path,
 			"auth":    "key+header",
 			"channel": "gemini",
-			"url":     req.URL.String(),
 		}).Debug("Using key parameter and x-goog-api-key header for native Gemini endpoint")
 	}
 }

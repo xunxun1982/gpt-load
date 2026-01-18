@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -200,12 +201,15 @@ func (c *compositeReadCloser) Close() error {
 // It wraps the original reader with the appropriate decompression reader based on Content-Encoding.
 // The returned reader must be closed by the caller.
 // Supports: gzip, deflate, br (brotli), zstd
+// Content-Encoding is normalized (lowercase, trimmed) to handle case/whitespace variants
 func NewDecompressReader(contentEncoding string, body io.ReadCloser) (io.ReadCloser, error) {
-	if contentEncoding == "" || contentEncoding == "identity" {
+	// Normalize encoding to handle case/whitespace variants (e.g., "GZip", " gzip ")
+	encoding := strings.ToLower(strings.TrimSpace(contentEncoding))
+	if encoding == "" || encoding == "identity" {
 		return body, nil
 	}
 
-	switch contentEncoding {
+	switch encoding {
 	case "gzip":
 		gzipReader, err := gzip.NewReader(body)
 		if err != nil {

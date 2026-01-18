@@ -10997,6 +10997,33 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	// Helper to extract and decode SSE content from streaming output
+	// This avoids false negatives from JSON escaping (e.g., < becomes \u003c)
+	extractStreamingContent := func(output string) string {
+		var b strings.Builder
+		for _, line := range strings.Split(output, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			payload := strings.TrimPrefix(line, "data: ")
+			if payload == "" || payload == "[DONE]" {
+				continue
+			}
+			var evt struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal([]byte(payload), &evt) == nil && len(evt.Choices) > 0 {
+				b.WriteString(evt.Choices[0].Delta.Content)
+			}
+		}
+		return b.String()
+	}
+
 	tests := []struct {
 		name          string
 		events        []string
@@ -11007,19 +11034,21 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 			name: "streaming with function call",
 			events: []string{
 				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me search. "},"finish_reason":null}]}` + "\n",
-				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<<CALL_abc>>"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<<CALL_abcd>>"},"finish_reason":null}]}` + "\n",
 				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":null}]}` + "\n",
 				`data: [DONE]` + "\n",
 			},
-			triggerSignal: "<<CALL_abc>>",
+			triggerSignal: "<<CALL_abcd>>",
 			checkFunc: func(t *testing.T, output string) {
+				// Decode SSE content before assertions to avoid JSON escaping false negatives
+				decoded := extractStreamingContent(output)
 				// Check trigger signal is removed from output
-				if strings.Contains(output, "<<CALL_abc>>") {
+				if strings.Contains(decoded, "<<CALL_abcd>>") {
 					t.Error("trigger signal should be removed from streaming output")
 				}
 
 				// Check function_calls XML is removed
-				if strings.Contains(output, "<function_calls>") {
+				if strings.Contains(decoded, "<function_calls>") {
 					t.Error("function_calls XML should be removed from streaming output")
 				}
 
@@ -11059,21 +11088,23 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 			name: "streaming with partial XML tags",
 			events: []string{
 				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Searching... "},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<<CALL_xyzw>>"},"finish_reason":null}]}` + "\n",
 				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<"},"finish_reason":null}]}` + "\n",
 				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"function_calls>"},"finish_reason":null}]}` + "\n",
 				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<invoke name=\"test\"></invoke>"},"finish_reason":null}]}` + "\n",
 				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"</function_calls>"},"finish_reason":null}]}` + "\n",
 				`data: [DONE]` + "\n",
 			},
-			triggerSignal: "<<CALL_xyz>>",
+			triggerSignal: "<<CALL_xyzw>>",
 			checkFunc: func(t *testing.T, output string) {
+				decoded := extractStreamingContent(output)
 				// Partial XML tags should be suppressed
-				if strings.Contains(output, "<function_calls>") {
+				if strings.Contains(decoded, "<function_calls>") {
 					t.Error("partial XML tags should be suppressed in streaming")
 				}
 
 				// Prefix text should be preserved
-				if !strings.Contains(output, "Searching...") {
+				if !strings.Contains(decoded, "Searching...") {
 					t.Error("expected prefix text to be preserved")
 				}
 			},
@@ -11087,16 +11118,17 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 			},
 			triggerSignal: "<<CALL_test>>",
 			checkFunc: func(t *testing.T, output string) {
+				decoded := extractStreamingContent(output)
 				// Malformed CC tags should be removed
-				if strings.Contains(output, "<><parametername") {
+				if strings.Contains(decoded, "<><parametername") {
 					t.Error("malformed CC tags should be removed from streaming")
 				}
-				if strings.Contains(output, `"todos"`) {
+				if strings.Contains(decoded, `"todos"`) {
 					t.Error("JSON content from malformed tags should be removed")
 				}
 
 				// Prefix text should be preserved
-				if !strings.Contains(output, "Let me create tasks.") {
+				if !strings.Contains(decoded, "Let me create tasks.") {
 					t.Error("expected prefix text to be preserved")
 				}
 			},

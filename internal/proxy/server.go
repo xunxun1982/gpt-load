@@ -333,9 +333,11 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 
 	path := c.Request.URL.Path
 	// Path is already rewritten from /claude/v1/messages/count_tokens to /v1/messages/count_tokens
-	// by rewriteClaudePathToOpenAIGeneric() before this function is called.
-	// This works for both OpenAI CC mode and Codex CC mode (/claude entry point).
-	if !strings.HasSuffix(path, "/v1/messages/count_tokens") {
+	// or /v1beta/messages/count_tokens (for Gemini CC) by rewriteClaudePathToOpenAIGeneric()
+	// or rewriteClaudePathToGemini() before this function is called.
+	// This works for OpenAI CC mode, Codex CC mode, and Gemini CC mode (/claude entry point).
+	if !strings.HasSuffix(path, "/v1/messages/count_tokens") &&
+		!strings.HasSuffix(path, "/v1beta/messages/count_tokens") {
 		return false
 	}
 
