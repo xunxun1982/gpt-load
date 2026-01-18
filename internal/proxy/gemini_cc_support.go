@@ -324,13 +324,19 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 				toolUseIDToName[block.ID] = block.Name
 			}
 			var args map[string]interface{}
-			if err := json.Unmarshal(block.Input, &args); err == nil {
-				fc := GeminiFunctionCall{
-					Name: toolName,
-					Args: args,
-				}
-				orderedParts = append(orderedParts, GeminiPart{FunctionCall: &fc})
+			if err := json.Unmarshal(block.Input, &args); err != nil {
+				// Log unmarshal failure with context for debugging
+				logrus.WithError(err).WithFields(logrus.Fields{
+					"tool_name": block.Name,
+					"block_id":  block.ID,
+				}).Warn("Gemini CC: Failed to unmarshal tool_use input, skipping block")
+				continue
 			}
+			fc := GeminiFunctionCall{
+				Name: toolName,
+				Args: args,
+			}
+			orderedParts = append(orderedParts, GeminiPart{FunctionCall: &fc})
 		case "tool_result":
 			// Extract tool result content
 			var resultContent string
@@ -958,7 +964,12 @@ func (s *geminiStreamState) processGeminiStreamChunk(chunk *GeminiStreamChunk) [
 			})
 
 			// Send tool arguments as delta
-			argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+			argsJSON, err := json.Marshal(part.FunctionCall.Args)
+			if err != nil {
+				logrus.WithError(err).WithField("tool_name", s.currentToolName).
+					Warn("Gemini CC: Failed to marshal tool arguments")
+				argsJSON = []byte("{}")
+			}
 			argsStr := string(argsJSON)
 			s.currentToolArgs.WriteString(argsStr)
 			events = append(events, ClaudeStreamEvent{

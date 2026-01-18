@@ -1703,13 +1703,14 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	// Codex API may return gzip-compressed streaming responses
 	reader := resp.Body
 	contentEncoding := resp.Header.Get("Content-Encoding")
+	var decompressErr error
 	if contentEncoding != "" {
 		var err error
 		reader, err = utils.NewDecompressReader(contentEncoding, resp.Body)
 		if err != nil {
+			decompressErr = err
 			logrus.WithError(err).WithField("content_encoding", contentEncoding).
-				Warn("Codex CC: Failed to create decompression reader, using original body")
-			reader = resp.Body
+				Warn("Codex CC: Failed to create decompression reader")
 		} else {
 			logrus.WithField("content_encoding", contentEncoding).
 				Debug("Codex CC: Created decompression reader for streaming response")
@@ -1747,6 +1748,19 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		}
 		flusher.Flush()
 		return nil
+	}
+
+	// Fail fast if decompression failed - emit error event and return early
+	// Continuing with compressed body would break SSE parsing and hang the client
+	if decompressErr != nil {
+		_ = writeClaudeEvent(ClaudeStreamEvent{
+			Type: "error",
+			Error: &ClaudeError{
+				Type:    "api_error",
+				Message: "Failed to decompress upstream stream",
+			},
+		})
+		return
 	}
 
 	var currentEventType string

@@ -85,7 +85,10 @@ func (ps *ProxyServer) handleModelListResponse(c *gin.Context, resp *http.Respon
 							cleanedModel["name"] = strings.TrimPrefix(name, "models/")
 						}
 						cleanedModels = append(cleanedModels, cleanedModel)
+						continue
 					}
+					// Preserve non-map entries as-is (e.g., strings or other types)
+					cleanedModels = append(cleanedModels, model)
 				}
 				// Convert Gemini format to Claude format
 				response = map[string]any{

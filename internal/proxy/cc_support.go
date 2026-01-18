@@ -1786,7 +1786,9 @@ func convertWindowsPathsInToolResult(content string) string {
 			if len(cleaned) > 2 && cleaned[2] != '/' && cleaned[2] != '\\' {
 				cleaned = string(cleaned[0]) + ":/" + cleaned[2:]
 			}
-			return cleaned
+			// Normalize to Unix-style paths (convert any remaining backslashes to forward slashes)
+			// This ensures the corrupted-path branch returns Unix-style paths consistently
+			return convertWindowsPathToUnixStyle(cleaned)
 		}
 		return match
 	})
@@ -3248,19 +3250,30 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		var err error
 		bodyReader, err = utils.NewDecompressReader(contentEncoding, resp.Body)
 		if err != nil {
+			// Decompression failed - emit error event and return early
+			// Continuing with compressed body would break SSE parsing and hang the client
 			logrus.WithError(err).WithField("content_encoding", contentEncoding).
-				Warn("CC: Failed to create decompression reader, using original body")
-			bodyReader = resp.Body
-		} else {
-			logrus.WithField("content_encoding", contentEncoding).
-				Debug("CC: Created decompression reader for streaming response")
-			// Ensure decompression reader is closed
-			defer func() {
-				if closer, ok := bodyReader.(io.Closer); ok && closer != resp.Body {
-					closer.Close()
-				}
-			}()
+				Warn("CC: Failed to create decompression reader")
+
+			// Send error event to client
+			writer := NewSSEWriter(c.Writer, flusher)
+			_ = writer.Send(ClaudeStreamEvent{
+				Type: "error",
+				Error: &ClaudeError{
+					Type:    "api_error",
+					Message: "Failed to decompress upstream stream",
+				},
+			}, true)
+			return
 		}
+		logrus.WithField("content_encoding", contentEncoding).
+			Debug("CC: Created decompression reader for streaming response")
+		// Ensure decompression reader is closed
+		defer func() {
+			if closer, ok := bodyReader.(io.Closer); ok && closer != resp.Body {
+				closer.Close()
+			}
+		}()
 	}
 
 	// Use timeout-enabled SSE reader for CC support to prevent hanging when
