@@ -199,17 +199,17 @@ func TestAccessKeyServicePerformance(t *testing.T) {
 		}
 
 		// Wait for all goroutines and collect errors
-		var errors []error
+		var validationErrors []error
 		for i := 0; i < concurrency; i++ {
 			if err := <-done; err != nil {
-				errors = append(errors, err)
+				validationErrors = append(validationErrors, err)
 			}
 		}
 
 		elapsed := time.Since(start)
-		successCount := concurrency - len(errors)
+		successCount := concurrency - len(validationErrors)
 		t.Logf("Completed %d concurrent validations in %v (avg: %v per validation, %d succeeded, %d failed)",
-			concurrency, elapsed, elapsed/time.Duration(concurrency), successCount, len(errors))
+			concurrency, elapsed, elapsed/time.Duration(concurrency), successCount, len(validationErrors))
 
 		// With cache pre-warmed, most validations should succeed
 		// We allow some failures due to SQLite in-memory DB limitations

@@ -10,8 +10,6 @@ import {
   CheckmarkCircleOutline,
   CloseCircleOutline,
   CopyOutline,
-  EyeOffOutline,
-  EyeOutline,
   TrashOutline,
 } from "@vicons/ionicons5";
 import {
@@ -51,7 +49,6 @@ const accessKeys = ref<HubAccessKey[]>([]);
 const togglingIds = ref<Set<number>>(new Set());
 const selectedRowKeys = ref<DataTableRowKey[]>([]);
 const batchOperating = ref(false);
-const showKeys = ref<Record<number, boolean>>({});
 
 // Computed
 const hasSelection = computed(() => selectedRowKeys.value.length > 0);
@@ -72,7 +69,7 @@ function formatRelativeTime(dateStr: string | null): string {
     return dateStr;
   }
 
-  const diffMs = now.getTime() - date.getTime();
+  const diffMs = Math.max(0, now.getTime() - date.getTime()); // Clamp to zero for future timestamps
   const diffMinutes = Math.floor(diffMs / 60000);
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
@@ -96,11 +93,11 @@ function formatRelativeTime(dateStr: string | null): string {
 
 // Mask key value for display (similar to new-api)
 function maskKeyValue(key: string): string {
-  if (!key || key.length <= 8) {
+  if (!key || key.length <= 10) {
     return "***";
   }
   // Show first 6 chars and last 4 chars with asterisks in between
-  return key.slice(0, 6) + "**********" + key.slice(-4);
+  return `${key.slice(0, 6)}**********${key.slice(-4)}`;
 }
 
 // Copy full key to clipboard with fallback
@@ -183,26 +180,11 @@ const columns = computed<DataTableColumns<HubAccessKey>>(() => [
     key: "masked_key",
     width: 240,
     render: row => {
-      const revealed = !!showKeys.value[row.id];
-      const displayKey = revealed ? row.masked_key : maskKeyValue(row.masked_key);
+      // Always display masked key format for security
+      const displayKey = maskKeyValue(row.masked_key);
 
       return h(NSpace, { align: "center", size: 4, wrap: false }, () => [
         h("code", { class: "key-display" }, displayKey),
-        h(
-          NButton,
-          {
-            size: "tiny",
-            quaternary: true,
-            circle: true,
-            onClick: (e: Event) => {
-              e.stopPropagation();
-              showKeys.value[row.id] = !revealed;
-            },
-          },
-          {
-            icon: () => h(NIcon, { component: revealed ? EyeOffOutline : EyeOutline, size: 14 }),
-          }
-        ),
         h(
           NButton,
           {
@@ -261,7 +243,7 @@ const columns = computed<DataTableColumns<HubAccessKey>>(() => [
         {
           trigger: () =>
             h(NText, { depth: 2, style: { fontSize: "12px", cursor: "help" } }, () => relativeTime),
-          default: () => new Date(row.last_used_at!).toLocaleString(),
+          default: () => new Date(row.last_used_at || "").toLocaleString(),
         }
       );
     },

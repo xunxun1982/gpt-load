@@ -346,55 +346,55 @@ func (h *HubHandler) HandleDeleteAccessKey(c *gin.Context) {
 // detectRelayFormat detects the API format from the request path and method.
 // This determines how to parse the request and which default model to use.
 func (h *HubHandler) detectRelayFormat(path, method string) types.RelayFormat {
-	// Normalize path for comparison
-	path = strings.ToLower(path)
+	// Normalize path for comparison only, keep original for model extraction
+	lowerPath := strings.ToLower(path)
 
 	switch {
 	// Chat completions
-	case strings.HasSuffix(path, "/chat/completions"):
+	case strings.HasSuffix(lowerPath, "/chat/completions"):
 		return types.RelayFormatOpenAIChat
-	case strings.HasSuffix(path, "/completions") && !strings.Contains(path, "/chat"):
+	case strings.HasSuffix(lowerPath, "/completions") && !strings.Contains(lowerPath, "/chat"):
 		return types.RelayFormatOpenAICompletion
 
 	// Claude messages
-	case strings.HasSuffix(path, "/messages") && !strings.Contains(path, "count_tokens"):
+	case strings.HasSuffix(lowerPath, "/messages") && !strings.Contains(lowerPath, "count_tokens"):
 		return types.RelayFormatClaude
 
 	// Codex responses
-	case strings.HasSuffix(path, "/responses"):
+	case strings.HasSuffix(lowerPath, "/responses"):
 		return types.RelayFormatCodex
 
 	// Image generation and editing
-	case strings.HasSuffix(path, "/images/generations"):
+	case strings.HasSuffix(lowerPath, "/images/generations"):
 		return types.RelayFormatOpenAIImage
-	case strings.HasSuffix(path, "/images/edits"):
+	case strings.HasSuffix(lowerPath, "/images/edits"):
 		return types.RelayFormatOpenAIImageEdit
-	case strings.HasSuffix(path, "/images/variations"):
+	case strings.HasSuffix(lowerPath, "/images/variations"):
 		return types.RelayFormatOpenAIImage
 
 	// Audio endpoints
-	case strings.HasSuffix(path, "/audio/transcriptions"):
+	case strings.HasSuffix(lowerPath, "/audio/transcriptions"):
 		return types.RelayFormatOpenAIAudioTranscription
-	case strings.HasSuffix(path, "/audio/translations"):
+	case strings.HasSuffix(lowerPath, "/audio/translations"):
 		return types.RelayFormatOpenAIAudioTranslation
-	case strings.HasSuffix(path, "/audio/speech"):
+	case strings.HasSuffix(lowerPath, "/audio/speech"):
 		return types.RelayFormatOpenAIAudioSpeech
 
 	// Embeddings
 	// Legacy OpenAI engine-style path: /engines/{engine_id}/embeddings
 	// Check this more specific pattern first before the general /embeddings suffix
-	case strings.Contains(path, "/engines/") && strings.HasSuffix(path, "/embeddings"):
+	case strings.Contains(lowerPath, "/engines/") && strings.HasSuffix(lowerPath, "/embeddings"):
 		return types.RelayFormatOpenAIEmbedding
 	// Modern embeddings path
-	case strings.HasSuffix(path, "/embeddings"):
+	case strings.HasSuffix(lowerPath, "/embeddings"):
 		return types.RelayFormatOpenAIEmbedding
 
 	// Moderations
-	case strings.HasSuffix(path, "/moderations"):
+	case strings.HasSuffix(lowerPath, "/moderations"):
 		return types.RelayFormatOpenAIModeration
 
 	// Gemini format: /v1beta/models/{model}:{action} or /v1/models/{model}:{action}
-	case (strings.Contains(path, "/v1beta/models/") || strings.Contains(path, "/v1/models/")) && strings.Contains(path, ":"):
+	case (strings.Contains(lowerPath, "/v1beta/models/") || strings.Contains(lowerPath, "/v1/models/")) && strings.Contains(lowerPath, ":"):
 		return types.RelayFormatGemini
 
 	default:
@@ -664,8 +664,9 @@ func extractModelFromMultipart(bodyBytes []byte, boundary string) string {
 	parts := bytes.Split(bodyBytes, boundaryBytes)
 
 	for _, part := range parts {
-		// Look for Content-Disposition with name="model"
-		if bytes.Contains(part, []byte(`name="model"`)) {
+		// Look for Content-Disposition with name="model" (case-insensitive per RFC 2183)
+		lowerPart := bytes.ToLower(part)
+		if bytes.Contains(lowerPart, []byte(`name="model"`)) {
 			// Find the value after the headers (after \r\n\r\n)
 			headerEnd := bytes.Index(part, []byte("\r\n\r\n"))
 			if headerEnd == -1 {

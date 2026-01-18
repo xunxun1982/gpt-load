@@ -653,6 +653,11 @@ func (s *HubAccessKeyService) GetAccessKeyUsageStatsBatch(ctx context.Context, i
 // GetAccessKeyPlaintext returns the plaintext (decrypted) key value for an access key.
 // This should only be called by authorized administrators.
 // Access to plaintext keys is logged for audit purposes.
+//
+// Security limitation: Under the current shared AUTH_KEY authentication model,
+// individual admin identity cannot be tracked. The audit log records the access
+// event but cannot attribute it to a specific administrator. For per-user admin
+// accountability, consider implementing individual admin authentication.
 func (s *HubAccessKeyService) GetAccessKeyPlaintext(ctx context.Context, id uint) (string, error) {
 	var key HubAccessKey
 	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
@@ -669,7 +674,8 @@ func (s *HubAccessKeyService) GetAccessKeyPlaintext(ctx context.Context, id uint
 	}
 
 	// Audit log: record plaintext key access (best-effort, do not fail on log errors)
-	// Note: The actual plaintext is never logged, only metadata about the access
+	// Note: The actual plaintext is never logged, only metadata about the access.
+	// Admin identity is not included due to shared AUTH_KEY authentication model.
 	logrus.WithFields(logrus.Fields{
 		"action":         "access_key_plaintext_retrieved",
 		"access_key_id":  id,

@@ -1,3 +1,5 @@
+import type { VNode } from "vue";
+
 /**
  * Copy text to clipboard with best-effort cross-browser support.
  * Returns a promise that resolves to true if successful, false otherwise.
@@ -103,7 +105,8 @@ export async function copyWithFallback(
  * @param t - i18n translate function
  * @returns VNode for dialog content
  */
-export function createManualCopyContent(h: any, text: string, t: (key: string) => string) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createManualCopyContent(h: any, text: string, t: (key: string) => string): VNode {
   return h("div", { style: "word-break: break-all;" }, [
     h("p", { style: "margin-bottom: 12px;" }, t("keys.copyFailedManual")),
     h(
