@@ -693,7 +693,8 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			// Query params are already sanitized in the path rewriting block above (sanitizeCCQueryParams)
 			// when wasClaudePath is true. Non-Claude paths don't need sanitization as they are
 			// direct API calls that should preserve their original query parameters.
-			if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+			// Also check /v1beta/messages for Gemini CC conversion (path may be rewritten to /v1beta/messages)
+			if isCCSupportEnabled(group) && (strings.HasSuffix(c.Request.URL.Path, "/v1/messages") || strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")) {
 				// Handle Codex channel CC support (Claude -> Codex/Responses API)
 				if group.ChannelType == "codex" {
 					convertedBody, converted, ccErr := ps.applyCodexCCRequestConversion(c, group, finalBodyBytes)

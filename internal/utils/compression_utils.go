@@ -213,6 +213,8 @@ func NewDecompressReader(contentEncoding string, body io.ReadCloser) (io.ReadClo
 	case "gzip":
 		gzipReader, err := gzip.NewReader(body)
 		if err != nil {
+			// Close body on decoder creation failure to prevent resource leak
+			body.Close()
 			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 		}
 		return &compositeReadCloser{
@@ -226,6 +228,8 @@ func NewDecompressReader(contentEncoding string, body io.ReadCloser) (io.ReadClo
 	case "deflate":
 		deflateReader, err := zlib.NewReader(body)
 		if err != nil {
+			// Close body on decoder creation failure to prevent resource leak
+			body.Close()
 			return nil, fmt.Errorf("failed to create deflate reader: %w", err)
 		}
 		return &compositeReadCloser{
@@ -248,6 +252,8 @@ func NewDecompressReader(contentEncoding string, body io.ReadCloser) (io.ReadClo
 	case "zstd":
 		zstdReader, err := zstd.NewReader(body)
 		if err != nil {
+			// Close body on decoder creation failure to prevent resource leak
+			body.Close()
 			return nil, fmt.Errorf("failed to create zstd reader: %w", err)
 		}
 		return &compositeReadCloser{
