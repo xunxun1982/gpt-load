@@ -25,7 +25,10 @@ func skipIfNoSQLite(tb testing.TB) {
 	}
 	// Close the test connection
 	if db != nil {
-		sqlDB, _ := db.DB()
+		sqlDB, err := db.DB()
+		if err != nil {
+			return // Driver check passed, cleanup failure is acceptable
+		}
 		if sqlDB != nil {
 			sqlDB.Close()
 		}
@@ -267,6 +270,12 @@ func BenchmarkCloseDBConnectionWithCheckpoint(b *testing.B) {
 	}
 }
 
+// benchTestModel is used in benchmark tests to avoid redefining the struct in loops
+type benchTestModel struct {
+	ID   uint
+	Name string
+}
+
 func BenchmarkCloseDBConnectionWithPreparedStmts(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -278,15 +287,11 @@ func BenchmarkCloseDBConnectionWithPreparedStmts(b *testing.B) {
 		}
 
 		// Execute some queries
-		type TestModel struct {
-			ID   uint
-			Name string
-		}
-		err = db.AutoMigrate(&TestModel{})
+		err = db.AutoMigrate(&benchTestModel{})
 		if err != nil {
 			b.Fatal(err)
 		}
-		err = db.Create(&TestModel{Name: "test"}).Error
+		err = db.Create(&benchTestModel{Name: "test"}).Error
 		if err != nil {
 			b.Fatal(err)
 		}

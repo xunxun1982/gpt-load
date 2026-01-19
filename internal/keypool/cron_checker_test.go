@@ -295,7 +295,7 @@ func TestIsBusy_ImportRunning(t *testing.T) {
 	}
 	taskDataBytes, err := json.Marshal(taskData)
 	require.NoError(t, err)
-	cronChecker.Store.Set("global_task", taskDataBytes, 0)
+	require.NoError(t, cronChecker.Store.Set("global_task", taskDataBytes, 0))
 
 	// Should return true when import is running
 	assert.True(t, cronChecker.isBusy())
@@ -311,7 +311,7 @@ func TestIsBusy_DeleteRunning(t *testing.T) {
 	}
 	taskDataBytes, err := json.Marshal(taskData)
 	require.NoError(t, err)
-	cronChecker.Store.Set("global_task", taskDataBytes, 0)
+	require.NoError(t, cronChecker.Store.Set("global_task", taskDataBytes, 0))
 
 	// Should return true when delete is running
 	assert.True(t, cronChecker.isBusy())
@@ -327,7 +327,7 @@ func TestIsBusy_OtherTaskRunning(t *testing.T) {
 	}
 	taskDataBytes, err := json.Marshal(taskData)
 	require.NoError(t, err)
-	cronChecker.Store.Set("global_task", taskDataBytes, 0)
+	require.NoError(t, cronChecker.Store.Set("global_task", taskDataBytes, 0))
 
 	// Should return false for non-import/delete tasks
 	assert.False(t, cronChecker.isBusy())
@@ -343,7 +343,9 @@ func BenchmarkValidateGroupKeys(b *testing.B) {
 		ChannelType: "openai",
 		Enabled:     true,
 	}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
 	// Create invalid keys
 	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -357,7 +359,9 @@ func BenchmarkValidateGroupKeys(b *testing.B) {
 			KeyHash:  encSvc.Hash("sk-bench"),
 			Status:   models.KeyStatusInvalid,
 		}
-		db.Create(key)
+		if err := db.Create(key).Error; err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	groupsToUpdate := make(map[uint]struct{})
@@ -380,7 +384,9 @@ func BenchmarkBatchUpdateLastValidatedAt(b *testing.B) {
 			ChannelType: "openai",
 			Enabled:     true,
 		}
-		db.Create(group)
+		if err := db.Create(group).Error; err != nil {
+			b.Fatal(err)
+		}
 		groupIDs = append(groupIDs, group.ID)
 	}
 

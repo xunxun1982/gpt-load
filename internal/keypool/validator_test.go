@@ -177,7 +177,9 @@ func BenchmarkValidateSingleKey(b *testing.B) {
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
 	apiKey := &models.APIKey{
 		GroupID:  group.ID,
@@ -203,7 +205,9 @@ func BenchmarkTestMultipleKeys(b *testing.B) {
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
 	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
 	if err != nil {
@@ -216,7 +220,9 @@ func BenchmarkTestMultipleKeys(b *testing.B) {
 			KeyHash:  encSvc.Hash("sk-bench"),
 			Status:   models.KeyStatusActive,
 		}
-		db.Create(key)
+		if err := db.Create(key).Error; err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	keyValues := []string{"sk-bench"}
