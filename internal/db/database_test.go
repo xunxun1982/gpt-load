@@ -545,19 +545,20 @@ func TestNewDB_WithConcurrentReads(t *testing.T) {
 	db.Exec("INSERT INTO test (value) VALUES ('test1')")
 	db.Exec("INSERT INTO test (value) VALUES ('test2')")
 
-	// Concurrent reads
-	done := make(chan bool, 10)
+	// Concurrent reads - collect results via channel
+	results := make(chan int64, 10)
 	for i := 0; i < 10; i++ {
 		go func() {
 			var count int64
 			ReadDB.Raw("SELECT COUNT(*) FROM test").Scan(&count)
-			assert.Greater(t, count, int64(0))
-			done <- true
+			results <- count
 		}()
 	}
 
+	// Assert in main goroutine
 	for i := 0; i < 10; i++ {
-		<-done
+		count := <-results
+		assert.Greater(t, count, int64(0))
 	}
 
 	// Cleanup

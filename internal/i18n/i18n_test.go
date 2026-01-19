@@ -264,7 +264,9 @@ func TestGetMessages(t *testing.T) {
 
 // BenchmarkGetLocalizer benchmarks getting a localizer
 func BenchmarkGetLocalizer(b *testing.B) {
-	Init()
+	if err := Init(); err != nil {
+		b.Fatalf("Failed to initialize i18n: %v", err)
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = GetLocalizer("zh-CN")
@@ -289,7 +291,9 @@ func BenchmarkNormalizeLanguageCode(b *testing.B) {
 
 // BenchmarkT benchmarks message translation
 func BenchmarkT(b *testing.B) {
-	Init()
+	if err := Init(); err != nil {
+		b.Fatalf("Failed to initialize i18n: %v", err)
+	}
 	localizer := GetLocalizer("en-US")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

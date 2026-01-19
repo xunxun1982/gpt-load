@@ -73,19 +73,19 @@ func TestGetClient_Concurrent(t *testing.T) {
 		RequestTimeout: 30 * time.Second,
 	}
 
-	// Run concurrent requests
-	done := make(chan bool)
+	// Run concurrent requests and collect results via channel
+	results := make(chan *http.Client, 10)
 	for i := 0; i < 10; i++ {
 		go func() {
 			client := manager.GetClient(config)
-			assert.NotNil(t, client)
-			done <- true
+			results <- client
 		}()
 	}
 
-	// Wait for all goroutines
+	// Wait for all goroutines and assert in main goroutine
 	for i := 0; i < 10; i++ {
-		<-done
+		client := <-results
+		assert.NotNil(t, client)
 	}
 
 	// Should only have one client cached
@@ -410,18 +410,19 @@ func TestGetClient_ConcurrentSameConfig(t *testing.T) {
 	}
 
 	const goroutines = 100
-	clients := make([]*http.Client, goroutines)
-	done := make(chan bool, goroutines)
+	results := make(chan *http.Client, goroutines)
 
 	for i := 0; i < goroutines; i++ {
-		go func(idx int) {
-			clients[idx] = manager.GetClient(config)
-			done <- true
-		}(i)
+		go func() {
+			client := manager.GetClient(config)
+			results <- client
+		}()
 	}
 
+	// Collect all results in main goroutine
+	clients := make([]*http.Client, goroutines)
 	for i := 0; i < goroutines; i++ {
-		<-done
+		clients[i] = <-results
 	}
 
 	// All clients should be the same instance
@@ -435,8 +436,7 @@ func TestGetClient_ConcurrentDifferentConfigs(t *testing.T) {
 	manager := NewHTTPClientManager()
 
 	const goroutines = 10
-	clients := make([]*http.Client, goroutines)
-	done := make(chan bool, goroutines)
+	results := make(chan *http.Client, goroutines)
 
 	for i := 0; i < goroutines; i++ {
 		go func(idx int) {
@@ -445,13 +445,15 @@ func TestGetClient_ConcurrentDifferentConfigs(t *testing.T) {
 				RequestTimeout:  30 * time.Second,
 				IdleConnTimeout: 90 * time.Second,
 			}
-			clients[idx] = manager.GetClient(config)
-			done <- true
+			client := manager.GetClient(config)
+			results <- client
 		}(i)
 	}
 
+	// Collect all results in main goroutine
+	clients := make([]*http.Client, goroutines)
 	for i := 0; i < goroutines; i++ {
-		<-done
+		clients[i] = <-results
 	}
 
 	// All clients should be different

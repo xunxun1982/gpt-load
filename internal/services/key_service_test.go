@@ -35,6 +35,9 @@ func setupKeyServiceTest(tb testing.TB) (*gorm.DB, *KeyService) {
 	require.NoError(tb, err)
 	sqlDB.SetMaxOpenConns(1)
 	sqlDB.SetMaxIdleConns(1)
+	tb.Cleanup(func() {
+		_ = sqlDB.Close()
+	})
 
 	err = db.AutoMigrate(&models.APIKey{}, &models.Group{})
 	require.NoError(tb, err)
@@ -199,7 +202,8 @@ func TestDeleteMultipleKeys(t *testing.T) {
 
 	// Verify remaining keys
 	var count int64
-	db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&count)
+	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&count).Error
+	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 }
 
@@ -216,7 +220,8 @@ func TestRestoreMultipleKeys(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mark keys as invalid
-	db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Update("status", models.KeyStatusInvalid)
+	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Update("status", models.KeyStatusInvalid).Error
+	require.NoError(t, err)
 
 	// Restore keys
 	result, err := svc.RestoreMultipleKeys(group.ID, keysText)
@@ -225,7 +230,8 @@ func TestRestoreMultipleKeys(t *testing.T) {
 
 	// Verify keys are active
 	var count int64
-	db.Model(&models.APIKey{}).Where("group_id = ? AND status = ?", group.ID, models.KeyStatusActive).Count(&count)
+	err = db.Model(&models.APIKey{}).Where("group_id = ? AND status = ?", group.ID, models.KeyStatusActive).Count(&count).Error
+	require.NoError(t, err)
 	assert.Equal(t, int64(2), count)
 }
 
@@ -257,7 +263,8 @@ func TestRestoreAllInvalidKeys(t *testing.T) {
 
 	// Verify all keys are active
 	var activeCount int64
-	db.Model(&models.APIKey{}).Where("group_id = ? AND status = ?", group.ID, models.KeyStatusActive).Count(&activeCount)
+	err = db.Model(&models.APIKey{}).Where("group_id = ? AND status = ?", group.ID, models.KeyStatusActive).Count(&activeCount).Error
+	require.NoError(t, err)
 	assert.Equal(t, int64(3), activeCount)
 }
 
@@ -289,7 +296,8 @@ func TestClearAllInvalidKeys(t *testing.T) {
 
 	// Verify only active keys remain
 	var totalCount int64
-	db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&totalCount)
+	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&totalCount).Error
+	require.NoError(t, err)
 	assert.Equal(t, int64(1), totalCount)
 }
 
@@ -312,7 +320,8 @@ func TestClearAllKeys(t *testing.T) {
 
 	// Verify no keys remain
 	var totalCount int64
-	db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&totalCount)
+	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&totalCount).Error
+	require.NoError(t, err)
 	assert.Equal(t, int64(0), totalCount)
 }
 
@@ -400,7 +409,8 @@ func TestListKeysInGroupQuery(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			query := svc.ListKeysInGroupQuery(group.ID, tt.statusFilter, "")
 			var count int64
-			query.Count(&count)
+			err := query.Count(&count).Error
+			require.NoError(t, err)
 			assert.GreaterOrEqual(t, count, tt.expectedMin)
 		})
 	}

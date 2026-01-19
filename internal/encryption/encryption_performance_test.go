@@ -8,7 +8,10 @@ import (
 
 // BenchmarkEncrypt benchmarks encryption operation
 func BenchmarkEncrypt(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 
 	testCases := []struct {
 		name string
@@ -24,6 +27,10 @@ func BenchmarkEncrypt(b *testing.B) {
 
 	for _, tc := range testCases {
 		b.Run(tc.name, func(b *testing.B) {
+			// Validate encryption works before timing
+			if _, err := svc.Encrypt(tc.data); err != nil {
+				b.Fatalf("Encrypt setup: %v", err)
+			}
 			b.SetBytes(int64(len(tc.data)))
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -35,7 +42,10 @@ func BenchmarkEncrypt(b *testing.B) {
 
 // BenchmarkDecrypt benchmarks decryption operation
 func BenchmarkDecrypt(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 
 	testCases := []struct {
 		name string
@@ -52,7 +62,10 @@ func BenchmarkDecrypt(b *testing.B) {
 	for _, tc := range testCases {
 		b.Run(tc.name, func(b *testing.B) {
 			// Pre-encrypt data
-			ciphertext, _ := svc.Encrypt(tc.data)
+			ciphertext, err := svc.Encrypt(tc.data)
+			if err != nil {
+				b.Fatalf("Encrypt setup: %v", err)
+			}
 			b.SetBytes(int64(len(tc.data)))
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -64,7 +77,10 @@ func BenchmarkDecrypt(b *testing.B) {
 
 // BenchmarkHash benchmarks hash operation
 func BenchmarkHash(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 
 	testCases := []struct {
 		name string
@@ -91,7 +107,10 @@ func BenchmarkHash(b *testing.B) {
 
 // BenchmarkEncryptDecryptCycle benchmarks full encrypt-decrypt cycle
 func BenchmarkEncryptDecryptCycle(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 	data := "sk-1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
 
 	b.ResetTimer()

@@ -259,7 +259,7 @@ func BenchmarkChainDepth(b *testing.B) {
 	for _, depth := range depths {
 		b.Run(fmt.Sprintf("Depth%d", depth), func(b *testing.B) {
 			modelMap := generateChainedMapping(depth)
-
+			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				_, _, _ = ApplyModelMappingFromMap("model-0", modelMap)
 			}
@@ -275,7 +275,7 @@ func BenchmarkMappingSizes(b *testing.B) {
 		b.Run(fmt.Sprintf("Size%d", size), func(b *testing.B) {
 			mappingJSON := generateLargeMappingJSON(size)
 			modelMap, _ := ParseModelMapping(mappingJSON)
-
+			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				model := fmt.Sprintf("model-%d", i%size)
 				_, _, _ = ApplyModelMappingFromMap(model, modelMap)

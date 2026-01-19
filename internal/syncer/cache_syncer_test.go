@@ -3,6 +3,7 @@ package syncer
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -345,9 +346,9 @@ func TestConcurrentAccess(t *testing.T) {
 // TestReloadError tests handling of reload errors
 func TestReloadError(t *testing.T) {
 	store := newMockStore()
-	shouldFail := false
+	var shouldFail atomic.Bool
 	loader := func() (string, error) {
-		if shouldFail {
+		if shouldFail.Load() {
 			return "", errors.New("load error")
 		}
 		return "test data", nil
@@ -361,8 +362,8 @@ func TestReloadError(t *testing.T) {
 	// Initial value should be set
 	assert.Equal(t, "test data", syncer.Get())
 
-	// Make loader fail
-	shouldFail = true
+	// Make loader fail using atomic operation to avoid data race
+	shouldFail.Store(true)
 
 	// Reload should return error but cache should remain unchanged
 	err = syncer.Reload()
@@ -378,7 +379,10 @@ func BenchmarkGet(b *testing.B) {
 	}
 
 	logger := logrus.NewEntry(logrus.New())
-	syncer, _ := NewCacheSyncer(loader, store, "test-channel", logger, nil)
+	syncer, err := NewCacheSyncer(loader, store, "test-channel", logger, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer syncer.Stop()
 
 	b.ResetTimer()
@@ -395,7 +399,10 @@ func BenchmarkReload(b *testing.B) {
 	}
 
 	logger := logrus.NewEntry(logrus.New())
-	syncer, _ := NewCacheSyncer(loader, store, "test-channel", logger, nil)
+	syncer, err := NewCacheSyncer(loader, store, "test-channel", logger, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer syncer.Stop()
 
 	b.ResetTimer()
@@ -412,7 +419,10 @@ func BenchmarkConcurrentGet(b *testing.B) {
 	}
 
 	logger := logrus.NewEntry(logrus.New())
-	syncer, _ := NewCacheSyncer(loader, store, "test-channel", logger, nil)
+	syncer, err := NewCacheSyncer(loader, store, "test-channel", logger, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer syncer.Stop()
 
 	b.ResetTimer()

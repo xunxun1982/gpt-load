@@ -247,7 +247,9 @@ func TestMessage(t *testing.T) {
 
 // BenchmarkMiddleware benchmarks the middleware
 func BenchmarkMiddleware(b *testing.B) {
-	Init()
+	if err := Init(); err != nil {
+		b.Fatalf("Failed to initialize i18n: %v", err)
+	}
 	gin.SetMode(gin.TestMode)
 	middleware := Middleware()
 
@@ -264,7 +266,9 @@ func BenchmarkMiddleware(b *testing.B) {
 
 // BenchmarkGetLocalizerFromContext benchmarks getting localizer from context
 func BenchmarkGetLocalizerFromContext(b *testing.B) {
-	Init()
+	if err := Init(); err != nil {
+		b.Fatalf("Failed to initialize i18n: %v", err)
+	}
 	gin.SetMode(gin.TestMode)
 
 	w := httptest.NewRecorder()

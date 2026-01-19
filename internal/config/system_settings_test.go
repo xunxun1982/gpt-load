@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"testing"
 
 	"gpt-load/internal/utils"
@@ -54,13 +53,15 @@ func TestGetAppUrl(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Clear env vars first to ensure test isolation
+			t.Setenv("HOST", "")
+			t.Setenv("PORT", "")
+
 			if tt.host != "" {
-				os.Setenv("HOST", tt.host)
-				defer os.Unsetenv("HOST")
+				t.Setenv("HOST", tt.host)
 			}
 			if tt.port != "" {
-				os.Setenv("PORT", tt.port)
-				defer os.Unsetenv("PORT")
+				t.Setenv("PORT", tt.port)
 			}
 
 			manager := NewSystemSettingsManager()

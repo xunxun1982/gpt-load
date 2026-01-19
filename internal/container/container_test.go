@@ -170,7 +170,7 @@ func TestBuildContainer_ErrorHandling(t *testing.T) {
 // TestBuildContainer_WithEncryptionKey tests container with encryption key
 func TestBuildContainer_WithEncryptionKey(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
+	t.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
 
 
 	container, err := BuildContainer()
@@ -189,7 +189,7 @@ func TestBuildContainer_WithEncryptionKey(t *testing.T) {
 // TestBuildContainer_WithDebugMode tests container with debug mode enabled
 func TestBuildContainer_WithDebugMode(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("DEBUG_MODE", "true")
+	t.Setenv("DEBUG_MODE", "true")
 
 
 	container, err := BuildContainer()
@@ -335,14 +335,14 @@ func TestBuildContainer_WithSlaveMode(t *testing.T) {
 // TestBuildContainer_WithAllConfigs tests container with all configuration options
 func TestBuildContainer_WithAllConfigs(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
-	os.Setenv("DEBUG_MODE", "true")
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
-	os.Setenv("REDIS_DSN", "redis://localhost:6379")
-	os.Setenv("HOST", "127.0.0.1")
-	os.Setenv("MAX_CONCURRENT_REQUESTS", "200")
-	os.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
+	t.Setenv("DEBUG_MODE", "true")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
+	t.Setenv("REDIS_DSN", "redis://localhost:6379")
+	t.Setenv("HOST", "127.0.0.1")
+	t.Setenv("MAX_CONCURRENT_REQUESTS", "200")
+	t.Setenv("LOG_LEVEL", "debug")
 
 
 	container, err := BuildContainer()
@@ -619,7 +619,7 @@ func TestBuildContainer_RedisConfig(t *testing.T) {
 // TestBuildContainer_EncryptionConfig tests encryption configuration
 func TestBuildContainer_EncryptionConfig(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("ENCRYPTION_KEY", "my-secret-encryption-key-32b!!")
+	t.Setenv("ENCRYPTION_KEY", "my-secret-encryption-key-32b!!")
 
 
 	container, err := BuildContainer()

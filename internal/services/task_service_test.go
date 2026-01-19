@@ -365,10 +365,14 @@ func BenchmarkGetTaskStatus(b *testing.B) {
 	memStore := store.NewMemoryStore()
 	svc := NewTaskService(memStore)
 
-	_, _ = svc.StartTask(TaskTypeKeyImport, "test-group", 100)
+	if _, err := svc.StartTask(TaskTypeKeyImport, "test-group", 100); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = svc.GetTaskStatus()
+		if _, err := svc.GetTaskStatus(); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

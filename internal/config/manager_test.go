@@ -35,9 +35,9 @@ func TestManagerReloadConfig(t *testing.T) {
 	manager := &Manager{settingsManager: settingsManager}
 
 	// Set custom environment variables
-	os.Setenv("PORT", "8080")
-	os.Setenv("HOST", "127.0.0.1")
-	os.Setenv("MAX_CONCURRENT_REQUESTS", "200")
+	t.Setenv("PORT", "8080")
+	t.Setenv("HOST", "127.0.0.1")
+	t.Setenv("MAX_CONCURRENT_REQUESTS", "200")
 
 	err := manager.ReloadConfig()
 	require.NoError(t, err)
@@ -51,39 +51,39 @@ func TestManagerReloadConfig(t *testing.T) {
 func TestManagerValidation(t *testing.T) {
 	tests := []struct {
 		name        string
-		setupEnv    func()
+		setupEnv    func(*testing.T)
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name: "valid configuration",
-			setupEnv: func() {
-				setupTestEnv(nil)
+			setupEnv: func(t *testing.T) {
+				setupTestEnv(t)
 			},
 			expectError: false,
 		},
 		{
 			name: "invalid port - too low",
-			setupEnv: func() {
-				setupTestEnv(nil)
-				os.Setenv("PORT", "0")
+			setupEnv: func(t *testing.T) {
+				setupTestEnv(t)
+				t.Setenv("PORT", "0")
 			},
 			expectError: true,
 			errorMsg:    "port must be between",
 		},
 		{
 			name: "invalid port - too high",
-			setupEnv: func() {
-				setupTestEnv(nil)
-				os.Setenv("PORT", "70000")
+			setupEnv: func(t *testing.T) {
+				setupTestEnv(t)
+				t.Setenv("PORT", "70000")
 			},
 			expectError: true,
 			errorMsg:    "port must be between",
 		},
 		{
 			name: "missing auth key",
-			setupEnv: func() {
-				setupTestEnv(nil)
+			setupEnv: func(t *testing.T) {
+				setupTestEnv(t)
 				os.Unsetenv("AUTH_KEY")
 			},
 			expectError: true,
@@ -91,9 +91,9 @@ func TestManagerValidation(t *testing.T) {
 		},
 		{
 			name: "invalid max concurrent requests",
-			setupEnv: func() {
-				setupTestEnv(nil)
-				os.Setenv("MAX_CONCURRENT_REQUESTS", "0")
+			setupEnv: func(t *testing.T) {
+				setupTestEnv(t)
+				t.Setenv("MAX_CONCURRENT_REQUESTS", "0")
 			},
 			expectError: true,
 			errorMsg:    "max concurrent requests cannot be less than 1",
@@ -102,7 +102,7 @@ func TestManagerValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.setupEnv()
+			tt.setupEnv(t)
 			defer cleanupTestEnv(t)
 
 			settingsManager := &SystemSettingsManager{}

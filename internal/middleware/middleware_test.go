@@ -930,28 +930,30 @@ func TestRateLimiterConcurrent(t *testing.T) {
 
 	// Start 3 concurrent requests (limit is 2)
 	var wg sync.WaitGroup
-	results := make([]int, 3)
+	results := make(chan int, 3)
 
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
-		go func(idx int) {
+		go func() {
 			defer wg.Done()
 			w := httptest.NewRecorder()
 			req, _ := http.NewRequest("GET", "/test", nil)
 			router.ServeHTTP(w, req)
-			results[idx] = w.Code
-		}(i)
+			results <- w.Code
+		}()
 	}
 
 	wg.Wait()
+	close(results)
 
-	// At least one should be rejected (429 or 500)
+	// Collect results in main goroutine
 	rejectedCount := 0
-	for _, code := range results {
+	for code := range results {
 		if code != 200 {
 			rejectedCount++
 		}
 	}
+	// At least one should be rejected (429 or 500)
 	assert.Greater(t, rejectedCount, 0)
 }
 

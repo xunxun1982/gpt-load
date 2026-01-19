@@ -137,16 +137,37 @@ func TestGetChannelConcurrency(t *testing.T) {
 		},
 	}
 	var wg sync.WaitGroup
-	channels := make([]ChannelProxy, 10)
+	results := make(chan ChannelProxy, 10)
+	errCh := make(chan error, 10)
+
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
-		go func(index int) {
+		go func() {
 			defer wg.Done()
-			ch, _ := factory.GetChannel(group)
-			channels[index] = ch
-		}(i)
+			ch, err := factory.GetChannel(group)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			results <- ch
+		}()
 	}
 	wg.Wait()
+	close(results)
+	close(errCh)
+
+	// Check for errors
+	for err := range errCh {
+		t.Errorf("GetChannel failed: %v", err)
+	}
+
+	// Collect channels and verify they're the same
+	channels := make([]ChannelProxy, 0, 10)
+	for ch := range results {
+		channels = append(channels, ch)
+	}
+
+	require.Len(t, channels, 10, "Should have 10 successful channel creations")
 	for i := 1; i < len(channels); i++ {
 		assert.Equal(t, channels[0], channels[i])
 	}

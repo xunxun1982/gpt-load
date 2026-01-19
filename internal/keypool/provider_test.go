@@ -176,13 +176,14 @@ func TestUpdateStatus_Success(t *testing.T) {
 	// Update status to success
 	provider.UpdateStatus(apiKey, group, true, "")
 
-	// Wait for async processing
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify failure count reset
-	var updatedKey models.APIKey
-	require.NoError(t, db.First(&updatedKey, apiKey.ID).Error)
-	assert.Equal(t, int64(0), updatedKey.FailureCount)
+	// Wait for async processing with polling
+	require.Eventually(t, func() bool {
+		var updatedKey models.APIKey
+		if err := db.First(&updatedKey, apiKey.ID).Error; err != nil {
+			return false
+		}
+		return updatedKey.FailureCount == 0
+	}, 5*time.Second, 10*time.Millisecond, "failure count should be reset")
 }
 
 func TestAddKeys(t *testing.T) {
@@ -190,7 +191,7 @@ func TestAddKeys(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-group := createTestGroup(t, db, "test-group")
+	group := createTestGroup(t, db, "test-group")
 
 	// Prepare keys to add
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -224,7 +225,7 @@ func TestRemoveKeys(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-group := createTestGroup(t, db, "test-group")
+	group := createTestGroup(t, db, "test-group")
 
 	// Create test keys
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -340,9 +341,31 @@ group := createTestGroup(t, db, "test-group")
 	assert.Equal(t, 5, len(loadedKeys))
 }
 
+// setupBenchProvider creates a test KeyProvider for benchmarks
+func setupBenchProvider(b *testing.B) (*KeyProvider, *gorm.DB, store.Store) {
+	b.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		b.Fatalf("failed to connect to test database: %v", err)
+	}
+
+	if err := db.AutoMigrate(&models.APIKey{}, &models.Group{}); err != nil {
+		b.Fatalf("failed to migrate test database: %v", err)
+	}
+
+	memStore := store.NewMemoryStore()
+	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	settingsManager := config.NewSystemSettingsManager()
+
+	provider := NewProvider(db, memStore, settingsManager, encSvc)
+	return provider, db, memStore
+}
+
 // Benchmark tests for PGO optimization
 func BenchmarkSelectKey(b *testing.B) {
-	provider, db, memStore := setupTestProvider(&testing.T{})
+	provider, db, memStore := setupBenchProvider(b)
 	defer provider.Stop()
 
 	// Setup test data
