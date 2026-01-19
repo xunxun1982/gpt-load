@@ -179,15 +179,22 @@ func TestGenerateRandomSuffix(t *testing.T) {
 // TestGenerateTriggerSignal tests trigger signal generation
 func TestGenerateTriggerSignal(t *testing.T) {
 	signal := GenerateTriggerSignal()
-	if !strings.HasPrefix(signal, "<<CALL_") {
+	const prefix = "<<CALL_"
+	const suffixLen = 6
+	const trailer = ">>"
+	minLen := len(prefix) + suffixLen + len(trailer)
+	if len(signal) < minLen {
+		t.Fatalf("GenerateTriggerSignal() length = %d, want >= %d", len(signal), minLen)
+	}
+	if !strings.HasPrefix(signal, prefix) {
 		t.Errorf("GenerateTriggerSignal() = %q, want prefix <<CALL_", signal)
 	}
-	if !strings.HasSuffix(signal, ">>") {
+	if !strings.HasSuffix(signal, trailer) {
 		t.Errorf("GenerateTriggerSignal() = %q, want suffix >>", signal)
 	}
 	// Extract suffix and check length
-	suffix := signal[7 : len(signal)-2]
-	if len(suffix) != 6 {
+	suffix := signal[len(prefix) : len(signal)-len(trailer)]
+	if len(suffix) != suffixLen {
 		t.Errorf("GenerateTriggerSignal() suffix length = %d, want 6", len(suffix))
 	}
 }

@@ -2,23 +2,39 @@ package app
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-// skipIfNoCGO skips the test if CGO is not enabled
+// skipIfNoCGO skips the test if SQLite driver is not available
+// Note: glebarez/sqlite is a pure Go implementation and doesn't require CGO
 func skipIfNoCGO(t *testing.T) {
-	// Try to create a SQLite database to check if CGO is available
-	_, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	t.Helper()
+	// Try to create a SQLite database to check if driver is available
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	if err != nil && err.Error() == "Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub" {
-		t.Skip("Skipping test: CGO is not enabled (required for SQLite)")
+	if err != nil {
+		if strings.Contains(err.Error(), "CGO_ENABLED=0") ||
+		   strings.Contains(err.Error(), "requires cgo") ||
+		   strings.Contains(err.Error(), "stub") ||
+		   strings.Contains(err.Error(), "not available") {
+			t.Skip("Skipping test: SQLite driver is not available")
+		}
+		t.Fatalf("Failed to open in-memory SQLite database: %v", err)
+	}
+	// Close the test connection
+	if db != nil {
+		sqlDB, _ := db.DB()
+		if sqlDB != nil {
+			sqlDB.Close()
+		}
 	}
 }
 

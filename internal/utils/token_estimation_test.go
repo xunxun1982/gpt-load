@@ -12,7 +12,7 @@ func TestEstimateTokensFromString(t *testing.T) {
 		{"EmptyString", "", 0},
 		{"ShortString", "hello", 2},       // 5 runes / 4 = 1.25 -> 2
 		{"MediumString", "hello world", 3}, // 11 runes / 4 = 2.75 -> 3
-		{"LongString", "The quick brown fox jumps over the lazy dog", 11}, // 44 runes / 4 = 11
+		{"LongString", "The quick brown fox jumps over the lazy dog", 11}, // 43 runes -> (43+3)/4 = 11
 		{"ChineseText", "你好世界", 1},     // 4 runes / 4 = 1
 		{"MixedText", "Hello世界", 2},      // 7 runes / 4 = 1.75 -> 2
 		{"EmojiText", "Hello🌍World", 3},  // 11 runes / 4 = 2.75 -> 3

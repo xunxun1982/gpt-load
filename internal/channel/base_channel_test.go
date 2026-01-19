@@ -1,8 +1,20 @@
 package channel
 
 import (
+	"net/url"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
+
+// mustParseURL is a test helper that parses a URL or panics
+func mustParseURL(rawURL string) *url.URL {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		panic(err)
+	}
+	return u
+}
 
 // TestSelectUpstream tests upstream selection logic
 func TestSelectUpstream(t *testing.T) {
@@ -177,21 +189,24 @@ func TestSelectUpstreamConcurrency(t *testing.T) {
 	}
 
 	// Run concurrent selections
-	done := make(chan bool)
+	var wg sync.WaitGroup
+	var errCount int64
 	for i := 0; i < 10; i++ {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for j := 0; j < 100; j++ {
 				result := bc.SelectUpstream()
 				if result == nil {
-					t.Error("SelectUpstream() returned nil in concurrent test")
+					atomic.AddInt64(&errCount, 1)
 				}
 			}
-			done <- true
 		}()
 	}
 
 	// Wait for all goroutines to complete
-	for i := 0; i < 10; i++ {
-		<-done
+	wg.Wait()
+	if errCount > 0 {
+		t.Errorf("SelectUpstream() returned nil %d times in concurrent test", errCount)
 	}
 }

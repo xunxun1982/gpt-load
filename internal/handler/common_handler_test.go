@@ -17,7 +17,9 @@ import (
 func init() {
 	gin.SetMode(gin.TestMode)
 	// Initialize i18n for testing
-	i18n.Init()
+	if err := i18n.Init(); err != nil {
+		panic("failed to initialize i18n for tests: " + err.Error())
+	}
 }
 
 // TestCommonHandler_GetChannelTypes tests getting channel types
@@ -124,6 +126,7 @@ func TestCommonHandler_ApplyBrandPrefix_InvalidJSON(t *testing.T) {
 func BenchmarkCommonHandler_GetChannelTypes(b *testing.B) {
 	handler := NewCommonHandler()
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		w := httptest.NewRecorder()
@@ -142,6 +145,7 @@ func BenchmarkCommonHandler_ApplyBrandPrefix(b *testing.B) {
 	}
 	body, _ := json.Marshal(requestBody)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		w := httptest.NewRecorder()
@@ -152,4 +156,3 @@ func BenchmarkCommonHandler_ApplyBrandPrefix(b *testing.B) {
 		handler.ApplyBrandPrefix(c)
 	}
 }
-

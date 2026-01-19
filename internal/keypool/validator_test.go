@@ -9,29 +9,34 @@ import (
 	"gpt-load/internal/store"
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-func setupTestValidator(t *testing.T) (*KeyValidator, *gorm.DB, *KeyProvider) {
-	skipIfNoCGO(t)
+func setupTestValidator(tb testing.TB) (*KeyValidator, *gorm.DB, *KeyProvider) {
+	tb.Helper()
+	skipIfNoCGO(tb)
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	err = db.AutoMigrate(&models.APIKey{}, &models.Group{})
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	memStore := store.NewMemoryStore()
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
 	settingsManager := config.NewSystemSettingsManager()
 
 	provider := NewProvider(db, memStore, settingsManager, encSvc)
+	// Register cleanup to stop provider
+	tb.Cleanup(func() {
+		provider.Stop()
+	})
 
 	httpClientManager := httpclient.NewHTTPClientManager()
 	channelFactory := channel.NewFactory(settingsManager, httpClientManager)
@@ -63,6 +68,7 @@ func TestValidateSingleKey_InvalidChannel(t *testing.T) {
 		Name:        "test-group",
 		ChannelType: "invalid-channel",
 		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
 	require.NoError(t, db.Create(group).Error)
 
@@ -87,6 +93,7 @@ func TestTestMultipleKeys_NonExistentKeys(t *testing.T) {
 		Name:        "test-group",
 		ChannelType: "openai",
 		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
 	require.NoError(t, db.Create(group).Error)
 
@@ -111,6 +118,7 @@ func TestTestMultipleKeys_EmptyList(t *testing.T) {
 		Name:        "test-group",
 		ChannelType: "openai",
 		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
 	require.NoError(t, db.Create(group).Error)
 
@@ -128,6 +136,7 @@ func TestTestMultipleKeys_ExistingKeys(t *testing.T) {
 		Name:        "test-group",
 		ChannelType: "openai",
 		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
 	require.NoError(t, db.Create(group).Error)
 
@@ -151,12 +160,13 @@ func TestTestMultipleKeys_ExistingKeys(t *testing.T) {
 
 // Benchmark tests for PGO optimization
 func BenchmarkValidateSingleKey(b *testing.B) {
-	validator, db, _ := setupTestValidator(&testing.T{})
+	validator, db, _ := setupTestValidator(b)
 
 	group := &models.Group{
 		Name:        "bench-group",
 		ChannelType: "openai",
 		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
 	db.Create(group)
 
@@ -176,12 +186,13 @@ func BenchmarkValidateSingleKey(b *testing.B) {
 }
 
 func BenchmarkTestMultipleKeys(b *testing.B) {
-	validator, db, _ := setupTestValidator(&testing.T{})
+	validator, db, _ := setupTestValidator(b)
 
 	group := &models.Group{
 		Name:        "bench-group",
 		ChannelType: "openai",
 		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
 	db.Create(group)
 

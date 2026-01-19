@@ -283,12 +283,16 @@ func BenchmarkShouldRetryHTTPStatus(b *testing.B) {
 
 // TestRealNetError tests with real net.Error
 func TestRealNetError(t *testing.T) {
-	// Create a real timeout error
-	conn, err := net.DialTimeout("tcp", "192.0.2.1:80", 1*time.Nanosecond)
+	if testing.Short() {
+		t.Skip("Skipping real network test in short mode")
+	}
+	// Create a real timeout error using TEST-NET-1 (RFC 5737)
+	conn, err := net.DialTimeout("tcp", "192.0.2.1:80", 10*time.Millisecond)
 	if err != nil {
 		result := CategorizeError(err)
-		if result.Type != ErrorCategoryTimeout && result.Type != ErrorCategoryNetwork {
-			t.Logf("Real network error categorized as: %v (acceptable)", result.Type)
+		// 192.0.2.1 is TEST-NET-1, should produce timeout or network error
+		if result.Type != ErrorCategoryTimeout && result.Type != ErrorCategoryNetwork && result.Type != ErrorCategoryConnection {
+			t.Errorf("Unexpected categorization for network error: got %v", result.Type)
 		}
 	}
 	if conn != nil {

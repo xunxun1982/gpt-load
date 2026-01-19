@@ -30,6 +30,13 @@ func setupTestFactory(t *testing.T) *Factory {
 	return factory
 }
 
+// setupTestFactoryForBenchmark creates a test factory for benchmarks
+func setupTestFactoryForBenchmark() *Factory {
+	settingsManager := config.NewSystemSettingsManager()
+	clientManager := httpclient.NewHTTPClientManager()
+	return NewFactory(settingsManager, clientManager)
+}
+
 // TestNewFactory tests factory creation
 func TestNewFactory(t *testing.T) {
 	factory := setupTestFactory(t)
@@ -44,7 +51,8 @@ func TestGetChannelCaching(t *testing.T) {
 	upstreams := []map[string]interface{}{
 		{"url": "https://api.openai.com", "weight": 100},
 	}
-	upstreamsJSON, _ := json.Marshal(upstreams)
+	upstreamsJSON, err := json.Marshal(upstreams)
+	require.NoError(t, err)
 	group := &models.Group{
 		ID:          1,
 		Name:        "test-group",
@@ -73,7 +81,8 @@ func TestInvalidateCache(t *testing.T) {
 	upstreams := []map[string]interface{}{
 		{"url": "https://api.openai.com", "weight": 100},
 	}
-	upstreamsJSON, _ := json.Marshal(upstreams)
+	upstreamsJSON, err := json.Marshal(upstreams)
+	require.NoError(t, err)
 	group := &models.Group{
 		ID:          1,
 		Name:        "test-group",
@@ -111,7 +120,8 @@ func TestGetChannelConcurrency(t *testing.T) {
 	upstreams := []map[string]interface{}{
 		{"url": "https://api.openai.com", "weight": 100},
 	}
-	upstreamsJSON, _ := json.Marshal(upstreams)
+	upstreamsJSON, err := json.Marshal(upstreams)
+	require.NoError(t, err)
 	group := &models.Group{
 		ID:          1,
 		Name:        "test-group",
@@ -144,11 +154,14 @@ func TestGetChannelConcurrency(t *testing.T) {
 
 // BenchmarkGetChannel benchmarks channel retrieval
 func BenchmarkGetChannel(b *testing.B) {
-	factory := setupTestFactory(&testing.T{})
+	factory := setupTestFactoryForBenchmark()
 	upstreams := []map[string]interface{}{
 		{"url": "https://api.openai.com", "weight": 100},
 	}
-	upstreamsJSON, _ := json.Marshal(upstreams)
+	upstreamsJSON, err := json.Marshal(upstreams)
+	if err != nil {
+		b.Fatal(err)
+	}
 	group := &models.Group{
 		ID:          1,
 		Name:        "test-group",

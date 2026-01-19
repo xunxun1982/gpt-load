@@ -18,23 +18,29 @@ import (
 )
 
 // setupKeyServiceTest creates a test environment for KeyService
-func setupKeyServiceTest(t *testing.T) (*gorm.DB, *KeyService) {
-	// Use :memory: to avoid concurrent test conflicts
+func setupKeyServiceTest(tb testing.TB) (*gorm.DB, *KeyService) {
+	tb.Helper()
+	// Use :memory: for isolated testing (each test gets its own DB)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		// Disable prepared statement cache to avoid concurrency issues
 		PrepareStmt: false,
 	})
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	err = db.AutoMigrate(&models.APIKey{}, &models.Group{})
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	settingsManager := config.NewSystemSettingsManager()
 	memStore := store.NewMemoryStore()
 	encryptionSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	keyProvider := keypool.NewProvider(db, memStore, settingsManager, encryptionSvc)
+	// Register cleanup to stop provider
+	tb.Cleanup(func() {
+		keyProvider.Stop()
+	})
+
 	keyValidator := keypool.NewKeyValidator(keypool.KeyValidatorParams{
 		DB:              db,
 		SettingsManager: settingsManager,
@@ -45,7 +51,8 @@ func setupKeyServiceTest(t *testing.T) (*gorm.DB, *KeyService) {
 }
 
 // createTestGroup creates a minimal valid group for testing
-func createTestGroup(t *testing.T, db *gorm.DB, name string) models.Group {
+func createTestGroup(tb testing.TB, db *gorm.DB, name string) models.Group {
+	tb.Helper()
 	group := models.Group{
 		Name:        name,
 		ChannelType: "openai",
@@ -53,7 +60,7 @@ func createTestGroup(t *testing.T, db *gorm.DB, name string) models.Group {
 		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`), // Provide valid upstreams
 	}
 	err := db.Create(&group).Error
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	return group
 }
 
@@ -435,7 +442,7 @@ func TestGetSetCachedPage(t *testing.T) {
 
 // BenchmarkParseKeysFromText benchmarks key parsing
 func BenchmarkParseKeysFromText(b *testing.B) {
-	_, svc := setupKeyServiceTest(&testing.T{})
+	_, svc := setupKeyServiceTest(b)
 
 	keysText := strings.Repeat("sk-test\n", 100)
 
@@ -447,34 +454,31 @@ func BenchmarkParseKeysFromText(b *testing.B) {
 
 // BenchmarkAddMultipleKeys benchmarks adding keys
 func BenchmarkAddMultipleKeys(b *testing.B) {
-	db, svc := setupKeyServiceTest(&testing.T{})
+	db, svc := setupKeyServiceTest(b)
 
 	// Create a test group with valid upstreams
-	group := createTestGroup(&testing.T{}, db, "bench-group")
+	group := createTestGroup(b, db, "bench-group")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		keysText := "sk-bench-" + string(rune('a'+i%26))
+		keysText := "sk-bench-" + string(rune('a'+(i%26))) + string(rune('0'+(i/26)%10))
 		_, _ = svc.AddMultipleKeys(group.ID, keysText)
 	}
 }
 
 // BenchmarkDeleteMultipleKeys benchmarks deleting keys
 func BenchmarkDeleteMultipleKeys(b *testing.B) {
-	db, svc := setupKeyServiceTest(&testing.T{})
+	db, svc := setupKeyServiceTest(b)
 
 	// Create a test group with valid upstreams
-	group := createTestGroup(&testing.T{}, db, "bench-group")
-
-	// Add keys
-	for i := 0; i < 100; i++ {
-		keysText := "sk-bench-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
-		_, _ = svc.AddMultipleKeys(group.ID, keysText)
-	}
+	group := createTestGroup(b, db, "bench-group")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		keysText := "sk-bench-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+		b.StopTimer()
+		keysText := "sk-bench-" + string(rune('a'+(i%26))) + string(rune('0'+(i/26)%10))
+		_, _ = svc.AddMultipleKeys(group.ID, keysText)
+		b.StartTimer()
 		_, _ = svc.DeleteMultipleKeys(group.ID, keysText)
 	}
 }

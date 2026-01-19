@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -384,7 +385,7 @@ func TestRequestBodySizeLimit(t *testing.T) {
 
 			body := strings.Repeat("a", tt.bodySize)
 			c.Request = httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(body))
-			c.Request.Header.Set("Content-Length", string(rune(tt.bodySize)))
+			c.Request.Header.Set("Content-Length", strconv.Itoa(tt.bodySize))
 
 			middleware(c)
 
@@ -761,11 +762,10 @@ func BenchmarkLoggerWithKeyInfo(b *testing.B) {
 		c.String(200, "OK")
 	})
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/test", nil)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/test", nil)
 		router.ServeHTTP(w, req)
 	}
 }
@@ -779,12 +779,11 @@ func BenchmarkCORSPreflight(b *testing.B) {
 	}))
 	router.OPTIONS("/test", func(c *gin.Context) {})
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("OPTIONS", "/test", nil)
-	req.Header.Set("Origin", "http://localhost:3000")
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("OPTIONS", "/test", nil)
+		req.Header.Set("Origin", "http://localhost:3000")
 		router.ServeHTTP(w, req)
 	}
 }
@@ -1066,11 +1065,10 @@ func BenchmarkErrorHandler(b *testing.B) {
 		c.String(200, "OK")
 	})
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/test", nil)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/test", nil)
 		router.ServeHTTP(w, req)
 	}
 }
@@ -1083,11 +1081,10 @@ func BenchmarkStaticCache(b *testing.B) {
 		c.String(200, "css")
 	})
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/assets/style.css", nil)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/assets/style.css", nil)
 		router.ServeHTTP(w, req)
 	}
 }
@@ -1100,11 +1097,10 @@ func BenchmarkSecurityHeaders(b *testing.B) {
 		c.String(200, "OK")
 	})
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/test", nil)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/test", nil)
 		router.ServeHTTP(w, req)
 	}
 }
@@ -1117,11 +1113,10 @@ func BenchmarkRequestBodySizeLimit(b *testing.B) {
 		c.String(200, "OK")
 	})
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/test", strings.NewReader("test"))
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/test", strings.NewReader("test"))
 		router.ServeHTTP(w, req)
 	}
 }

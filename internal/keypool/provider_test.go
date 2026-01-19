@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -43,8 +43,22 @@ func setupTestProvider(t *testing.T) (*KeyProvider, *gorm.DB, store.Store) {
 	return provider, db, memStore
 }
 
+// createTestGroup creates a test group with required fields
+func createTestGroup(t *testing.T, db *gorm.DB, name string) *models.Group {
+	t.Helper()
+	group := &models.Group{
+		Name:        name,
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
+	}
+	require.NoError(t, db.Create(group).Error)
+	return group
+}
+
 func TestNewProvider(t *testing.T) {
 	provider, _, _ := setupTestProvider(t)
+	defer provider.Stop()
 	assert.NotNil(t, provider)
 	assert.NotNil(t, provider.db)
 	assert.NotNil(t, provider.store)
@@ -83,12 +97,7 @@ func TestSelectKey_Success(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-	group := &models.Group{
-		Name:        "test-group",
-		ChannelType: "openai",
-		Enabled:     true,
-	}
-	require.NoError(t, db.Create(group).Error)
+	group := createTestGroup(t, db, "test-group")
 
 	// Create test key
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -134,6 +143,7 @@ func TestUpdateStatus_Success(t *testing.T) {
 		Name:        "test-group",
 		ChannelType: "openai",
 		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
 	require.NoError(t, db.Create(group).Error)
 
@@ -180,12 +190,7 @@ func TestAddKeys(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-	group := &models.Group{
-		Name:        "test-group",
-		ChannelType: "openai",
-		Enabled:     true,
-	}
-	require.NoError(t, db.Create(group).Error)
+group := createTestGroup(t, db, "test-group")
 
 	// Prepare keys to add
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -219,12 +224,7 @@ func TestRemoveKeys(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-	group := &models.Group{
-		Name:        "test-group",
-		ChannelType: "openai",
-		Enabled:     true,
-	}
-	require.NoError(t, db.Create(group).Error)
+group := createTestGroup(t, db, "test-group")
 
 	// Create test keys
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -252,12 +252,7 @@ func TestRestoreKeys(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-	group := &models.Group{
-		Name:        "test-group",
-		ChannelType: "openai",
-		Enabled:     true,
-	}
-	require.NoError(t, db.Create(group).Error)
+group := createTestGroup(t, db, "test-group")
 
 	// Create invalid key
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -290,12 +285,7 @@ func TestRemoveAllKeys(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-	group := &models.Group{
-		Name:        "test-group",
-		ChannelType: "openai",
-		Enabled:     true,
-	}
-	require.NoError(t, db.Create(group).Error)
+group := createTestGroup(t, db, "test-group")
 
 	// Create multiple keys
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -326,12 +316,7 @@ func TestLoadKeysFromDB(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-	group := &models.Group{
-		Name:        "test-group",
-		ChannelType: "openai",
-		Enabled:     true,
-	}
-	require.NoError(t, db.Create(group).Error)
+group := createTestGroup(t, db, "test-group")
 
 	// Create test keys
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")

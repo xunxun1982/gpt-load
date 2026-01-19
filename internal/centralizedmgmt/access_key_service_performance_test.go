@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"gpt-load/internal/encryption"
-	"sync"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -445,16 +444,13 @@ func BenchmarkRealisticWorkload(b *testing.B) {
 
 	b.ResetTimer()
 
-	// Simulate realistic request distribution
-	var wg sync.WaitGroup
-	for i := 0; i < b.N; i++ {
-		wg.Add(1)
-		go func(iteration int) {
-			defer wg.Done()
-
+	// Simulate realistic request distribution using b.RunParallel
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
 			// 80% validation, 10% model check, 10% usage recording
-			op := iteration % 10
-			keyIdx := iteration % len(keyValues)
+			op := i % 10
+			keyIdx := i % len(keyValues)
 
 			if op < 8 {
 				// Validate key
@@ -472,9 +468,9 @@ func BenchmarkRealisticWorkload(b *testing.B) {
 					_ = svc.RecordKeyUsage(ctx, key.ID)
 				}
 			}
-		}(i)
-	}
-	wg.Wait()
+			i++
+		}
+	})
 }
 
 // BenchmarkMemoryAllocation benchmarks memory allocation patterns

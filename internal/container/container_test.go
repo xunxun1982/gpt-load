@@ -23,6 +23,18 @@ func cleanupTestEnv() {
 	os.Unsetenv("AUTH_KEY")
 	os.Unsetenv("DATABASE_DSN")
 	os.Unsetenv("PORT")
+	os.Unsetenv("ENCRYPTION_KEY")
+	os.Unsetenv("DEBUG_MODE")
+	os.Unsetenv("ENABLE_CORS")
+	os.Unsetenv("ALLOWED_ORIGINS")
+	os.Unsetenv("ALLOW_CREDENTIALS")
+	os.Unsetenv("REDIS_DSN")
+	os.Unsetenv("HOST")
+	os.Unsetenv("MAX_CONCURRENT_REQUESTS")
+	os.Unsetenv("LOG_LEVEL")
+	os.Unsetenv("LOG_FORMAT")
+	os.Unsetenv("LOG_ENABLE_FILE")
+	os.Unsetenv("IS_SLAVE")
 }
 
 // TestBuildContainer tests container creation

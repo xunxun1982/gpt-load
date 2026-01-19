@@ -107,11 +107,11 @@ const filteredModels = computed(() => {
       if (model.model_name.toLowerCase().includes(keyword)) {
         return true;
       }
-      // Match group name or channel type
+      // Match group name or channel type (with null safety)
       return model.groups.some(
         g =>
-          g.group_name.toLowerCase().includes(keyword) ||
-          g.channel_type.toLowerCase().includes(keyword)
+          (g.group_name ?? "").toLowerCase().includes(keyword) ||
+          (g.channel_type ?? "").toLowerCase().includes(keyword)
       );
     });
   }

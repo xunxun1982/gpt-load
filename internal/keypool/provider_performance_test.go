@@ -7,7 +7,6 @@ import (
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
-	"sync"
 	"testing"
 	"time"
 
@@ -410,9 +409,10 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
+		i := 0
 		for pb.Next() {
 			// Mix of operations: 70% select, 20% success update, 10% failure update
-			op := b.N % 10
+			op := i % 10
 			if op < 7 {
 				// Select key
 				_, _ = provider.SelectKey(group.ID)
@@ -425,6 +425,7 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 				apiKey := &models.APIKey{ID: 1, GroupID: group.ID}
 				provider.UpdateStatus(apiKey, group, false, "error")
 			}
+			i++
 		}
 	})
 }
@@ -479,17 +480,14 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 
 	b.ResetTimer()
 
-	// Simulate realistic request distribution
-	var wg sync.WaitGroup
-	for i := 0; i < b.N; i++ {
-		wg.Add(1)
-		go func(iteration int) {
-			defer wg.Done()
-
+	// Simulate realistic request distribution using b.RunParallel
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
 			// Select group based on realistic distribution
 			// 50% small, 30% medium, 20% large
 			groupID := uint(1)
-			dist := iteration % 10
+			dist := i % 10
 			if dist < 5 {
 				groupID = 1 // small
 			} else if dist < 8 {
@@ -499,9 +497,9 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 			}
 
 			_, _ = provider.SelectKey(groupID)
-		}(i)
-	}
-	wg.Wait()
+			i++
+		}
+	})
 }
 
 // BenchmarkMemoryAllocationPerformance benchmarks memory allocation patterns

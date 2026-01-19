@@ -47,7 +47,7 @@ func TestStartTaskWhenAlreadyRunning(t *testing.T) {
 	// Try to start second task
 	_, err = svc.StartTask(TaskTypeKeyValidation, "test-group-2", 50)
 	assert.Error(t, err)
-	assert.Equal(t, ErrTaskAlreadyRunning, err)
+	assert.ErrorIs(t, err, ErrTaskAlreadyRunning)
 }
 
 // TestGetTaskStatus tests getting task status
@@ -325,8 +325,12 @@ func BenchmarkStartTask(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = svc.StartTask(TaskTypeKeyImport, "test-group", 100)
-		_ = svc.EndTask(nil, nil)
+		if _, err := svc.StartTask(TaskTypeKeyImport, "test-group", 100); err != nil {
+			b.Fatal(err)
+		}
+		if err := svc.EndTask(nil, nil); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -335,11 +339,24 @@ func BenchmarkUpdateProgress(b *testing.B) {
 	memStore := store.NewMemoryStore()
 	svc := NewTaskService(memStore)
 
-	_, _ = svc.StartTask(TaskTypeKeyImport, "test-group", 100)
+	if _, err := svc.StartTask(TaskTypeKeyImport, "test-group", 100); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = svc.UpdateProgress(i % 100)
+		progress := i % 100
+		if progress == 0 && i != 0 {
+			if err := svc.EndTask(nil, nil); err != nil {
+				b.Fatal(err)
+			}
+			if _, err := svc.StartTask(TaskTypeKeyImport, "test-group", 100); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if err := svc.UpdateProgress(progress); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
