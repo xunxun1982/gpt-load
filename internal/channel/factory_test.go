@@ -102,17 +102,31 @@ func TestInvalidateCache(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, channel1)
 
+	// Verify cache entry exists
+	factory.cacheLock.Lock()
+	_, ok := factory.channelCache[group.ID]
+	factory.cacheLock.Unlock()
+	require.True(t, ok, "expected cache entry to exist")
+
 	// Invalidate cache
 	factory.InvalidateCache(group.ID)
+
+	// Verify cache entry is removed
+	factory.cacheLock.Lock()
+	_, ok = factory.channelCache[group.ID]
+	factory.cacheLock.Unlock()
+	require.False(t, ok, "expected cache entry to be removed")
 
 	// Get channel again - should create a new instance
 	channel2, err := factory.GetChannel(group)
 	require.NoError(t, err)
 	require.NotNil(t, channel2)
 
-	// Note: Due to connection pooling and caching optimizations,
-	// the channels may share underlying resources even after cache invalidation.
-	// The important thing is that InvalidateCache doesn't cause errors.
+	// Verify cache is repopulated
+	factory.cacheLock.Lock()
+	_, ok = factory.channelCache[group.ID]
+	factory.cacheLock.Unlock()
+	require.True(t, ok, "expected cache entry to be repopulated")
 }
 
 // TestGetChannelConcurrency tests concurrent channel creation
@@ -198,6 +212,12 @@ func BenchmarkGetChannel(b *testing.B) {
 			ResponseHeaderTimeout: 30,
 		},
 	}
+
+	// Warm cache to benchmark cached retrieval performance
+	if _, err := factory.GetChannel(group); err != nil {
+		b.Fatal(err)
+	}
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := factory.GetChannel(group)

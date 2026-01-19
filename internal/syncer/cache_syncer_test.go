@@ -141,6 +141,18 @@ func (m *mockStore) Clear() error {
 }
 
 func (m *mockStore) Close() error {
+	m.mu.Lock()
+	subs := make([]*mockSubscription, 0, len(m.subscriptions))
+	for _, sub := range m.subscriptions {
+		subs = append(subs, sub)
+	}
+	m.subscriptions = make(map[string]*mockSubscription)
+	m.mu.Unlock()
+
+	// Close all subscriptions to prevent goroutine leaks
+	for _, sub := range subs {
+		_ = sub.Close()
+	}
 	return nil
 }
 

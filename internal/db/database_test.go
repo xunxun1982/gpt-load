@@ -116,6 +116,12 @@ func TestNewDB_SQLiteMemory(t *testing.T) {
 	require.NoError(t, err)
 	defer sqlDB.Close()
 
+	// Close ReadDB if it was created to prevent resource leak
+	if ReadDB != nil && ReadDB != db {
+		readSQLDB, _ := ReadDB.DB()
+		defer readSQLDB.Close()
+	}
+
 	err = sqlDB.Ping()
 	require.NoError(t, err)
 }
@@ -231,19 +237,12 @@ func TestCreateSQLiteReadDB(t *testing.T) {
 
 // TestNewDB_WithEnvironmentVariables tests database with custom environment variables
 func TestNewDB_WithEnvironmentVariables(t *testing.T) {
-	// Set custom environment variables
-	os.Setenv("SQLITE_CACHE_SIZE", "20000")
-	os.Setenv("SQLITE_TEMP_STORE", "MEMORY")
-	os.Setenv("SQLITE_MMAP_SIZE", "40000000000")
-	os.Setenv("SQLITE_READ_MAX_IDLE_CONNS", "8")
-	os.Setenv("SQLITE_READ_MAX_OPEN_CONNS", "16")
-	defer func() {
-		os.Unsetenv("SQLITE_CACHE_SIZE")
-		os.Unsetenv("SQLITE_TEMP_STORE")
-		os.Unsetenv("SQLITE_MMAP_SIZE")
-		os.Unsetenv("SQLITE_READ_MAX_IDLE_CONNS")
-		os.Unsetenv("SQLITE_READ_MAX_OPEN_CONNS")
-	}()
+	// Set custom environment variables using t.Setenv for automatic cleanup
+	t.Setenv("SQLITE_CACHE_SIZE", "20000")
+	t.Setenv("SQLITE_TEMP_STORE", "MEMORY")
+	t.Setenv("SQLITE_MMAP_SIZE", "40000000000")
+	t.Setenv("SQLITE_READ_MAX_IDLE_CONNS", "8")
+	t.Setenv("SQLITE_READ_MAX_OPEN_CONNS", "16")
 
 	config := &mockConfigManager{
 		dsn:      ":memory:",
@@ -313,13 +312,19 @@ func BenchmarkDBQuery(b *testing.B) {
 	}()
 
 	// Create a test table
-	db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
-	db.Exec("INSERT INTO test (name) VALUES ('test')")
+	if err := db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)").Error; err != nil {
+		b.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO test (name) VALUES ('test')").Error; err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var count int64
-		db.Raw("SELECT COUNT(*) FROM test").Scan(&count)
+		if err := db.Raw("SELECT COUNT(*) FROM test").Scan(&count).Error; err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -340,26 +345,24 @@ func BenchmarkDBInsert(b *testing.B) {
 	}()
 
 	// Create a test table
-	db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+	if err := db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)").Error; err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db.Exec("INSERT INTO test (name) VALUES (?)", fmt.Sprintf("test-%d", i))
+		if err := db.Exec("INSERT INTO test (name) VALUES (?)", fmt.Sprintf("test-%d", i)).Error; err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
 // TestNewDB_WithPragmaSettings tests database with custom PRAGMA settings
 func TestNewDB_WithPragmaSettings(t *testing.T) {
-	os.Setenv("SQLITE_MMAP_SIZE", "20000000000")
-	os.Setenv("SQLITE_PAGE_SIZE", "4096")
-	os.Setenv("SQLITE_JOURNAL_SIZE_LIMIT", "50000000")
-	os.Setenv("SQLITE_WAL_AUTOCHECKPOINT", "500")
-	defer func() {
-		os.Unsetenv("SQLITE_MMAP_SIZE")
-		os.Unsetenv("SQLITE_PAGE_SIZE")
-		os.Unsetenv("SQLITE_JOURNAL_SIZE_LIMIT")
-		os.Unsetenv("SQLITE_WAL_AUTOCHECKPOINT")
-	}()
+	t.Setenv("SQLITE_MMAP_SIZE", "20000000000")
+	t.Setenv("SQLITE_PAGE_SIZE", "4096")
+	t.Setenv("SQLITE_JOURNAL_SIZE_LIMIT", "50000000")
+	t.Setenv("SQLITE_WAL_AUTOCHECKPOINT", "500")
 
 	config := &mockConfigManager{
 		dsn:      ":memory:",
@@ -654,7 +657,7 @@ func BenchmarkNewDB_WithReadPool(b *testing.B) {
 // BenchmarkConcurrentReads benchmarks concurrent read operations
 func BenchmarkConcurrentReads(b *testing.B) {
 	config := &mockConfigManager{
-		dsn:      ":memory:",
+		dsn:      "file::memory:?cache=shared",
 		logLevel: "info",
 	}
 
@@ -671,14 +674,20 @@ func BenchmarkConcurrentReads(b *testing.B) {
 		}
 	}()
 
-	db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)")
-	db.Exec("INSERT INTO test (value) VALUES ('test')")
+	if err := db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)").Error; err != nil {
+		b.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO test (value) VALUES ('test')").Error; err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			var count int64
-			ReadDB.Raw("SELECT COUNT(*) FROM test").Scan(&count)
+			if err := ReadDB.Raw("SELECT COUNT(*) FROM test").Scan(&count).Error; err != nil {
+				b.Fatal(err)
+			}
 		}
 	})
 }

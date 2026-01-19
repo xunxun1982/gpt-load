@@ -3,16 +3,10 @@ package keypool
 import (
 	"context"
 	"fmt"
-	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
-	"gpt-load/internal/store"
 	"testing"
 	"time"
-
-	"github.com/glebarez/sqlite"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 // BenchmarkSelectKeyPerformance benchmarks the hot path of key selection
@@ -539,25 +533,4 @@ func BenchmarkMemoryAllocationPerformance(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = provider.SelectKey(group.ID)
 	}
-}
-
-// setupBenchProvider creates a test provider for benchmarks
-func setupBenchProvider(b *testing.B) (*KeyProvider, *gorm.DB, store.Store) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
-	if err != nil {
-		b.Fatalf("failed to connect to test database: %v", err)
-	}
-
-	if err := db.AutoMigrate(&models.APIKey{}, &models.Group{}); err != nil {
-		b.Fatalf("failed to migrate test database: %v", err)
-	}
-
-	memStore := store.NewMemoryStore()
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
-	settingsManager := config.NewSystemSettingsManager()
-
-	provider := NewProvider(db, memStore, settingsManager, encSvc)
-	return provider, db, memStore
 }

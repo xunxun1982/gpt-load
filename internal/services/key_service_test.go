@@ -462,16 +462,15 @@ func TestGetSetCachedPage(t *testing.T) {
 	assert.Len(t, cached, 2)
 }
 
-// TestResetGroupActiveKeysFailureCount tests resetting failure counts
-// DISABLED: This test has type assertion issues that are difficult to fix in the test environment.
-// The functionality is covered by integration tests.
-// func TestResetGroupActiveKeysFailureCount(t *testing.T) { ... }
+// TestResetGroupActiveKeysFailureCount is disabled due to type assertion issues in test environment
+func TestResetGroupActiveKeysFailureCount(t *testing.T) {
+	t.Skip("Disabled: type assertion issues difficult to fix in test environment; covered by integration tests")
+}
 
-// TestResetAllActiveKeysFailureCount tests resetting all failure counts
-// DISABLED: This test has type assertion issues that are difficult to fix in the test environment.
-// The functionality is covered by integration tests.
-// func TestResetAllActiveKeysFailureCount(t *testing.T) { ... }
-
+// TestResetAllActiveKeysFailureCount is disabled due to type assertion issues in test environment
+func TestResetAllActiveKeysFailureCount(t *testing.T) {
+	t.Skip("Disabled: type assertion issues difficult to fix in test environment; covered by integration tests")
+}
 
 // BenchmarkParseKeysFromText benchmarks key parsing
 func BenchmarkParseKeysFromText(b *testing.B) {

@@ -2,6 +2,7 @@ package keypool
 
 import (
 	"context"
+	"fmt"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
@@ -20,7 +21,8 @@ import (
 func setupTestDB(t *testing.T) *gorm.DB {
 	skipIfNoSQLite(t)
 
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	// Use shared cache mode to allow multiple connections to access the same in-memory database
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
@@ -43,11 +45,13 @@ func setupTestProvider(t *testing.T) (*KeyProvider, *gorm.DB, store.Store) {
 	return provider, db, memStore
 }
 
-// createTestGroup creates a test group with required fields
+// createTestGroup creates a test group with required fields and unique name
 func createTestGroup(t *testing.T, db *gorm.DB, name string) *models.Group {
 	t.Helper()
+	// Add timestamp to ensure unique names in shared cache mode
+	uniqueName := fmt.Sprintf("%s-%d", name, time.Now().UnixNano())
 	group := &models.Group{
-		Name:        name,
+		Name:        uniqueName,
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
@@ -138,9 +142,9 @@ func TestUpdateStatus_Success(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	defer provider.Stop()
 
-	// Create test group with config
+	// Create test group with unique name to avoid conflicts in shared cache mode
 	group := &models.Group{
-		Name:        "test-group",
+		Name:        fmt.Sprintf("test-group-%d", time.Now().UnixNano()),
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
@@ -161,9 +165,9 @@ func TestUpdateStatus_Success(t *testing.T) {
 	}
 	require.NoError(t, db.Create(apiKey).Error)
 
-	// Setup store
-	keyHashKey := "key:1"
-	activeKeysListKey := "group:1:active_keys"
+	// Setup store with correct key ID
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	keyDetails := map[string]any{
 		"key_string":    encryptedKey,
 		"status":        models.KeyStatusActive,

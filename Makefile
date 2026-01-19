@@ -112,12 +112,6 @@ docker-build: ## Build Docker image
 	docker build -t $(BINARY_NAME):$(VERSION) .
 	@echo "✅ Docker image built: $(BINARY_NAME):$(VERSION)"
 
-.PHONY: docker-build-multiarch
-docker-build-multiarch: ## Build multi-architecture Docker images
-	@echo "🐳 Building multi-architecture Docker images..."
-	docker buildx build --platform linux/amd64,linux/arm64 -t $(BINARY_NAME):$(VERSION) --push .
-	@echo "✅ Multi-arch Docker images built"
-
 # ==============================================================================
 # Key Migration
 # ==============================================================================
