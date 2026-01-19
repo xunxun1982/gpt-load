@@ -25,11 +25,19 @@ func setupTestValidator(tb testing.TB) (*KeyValidator, *gorm.DB, *KeyProvider) {
 	})
 	require.NoError(tb, err)
 
+	// Limit SQLite connections to avoid separate in-memory databases
+	// NewProvider spawns background workers that need to share the same database
+	sqlDB, err := db.DB()
+	require.NoError(tb, err)
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+
 	err = db.AutoMigrate(&models.APIKey{}, &models.Group{})
 	require.NoError(tb, err)
 
 	memStore := store.NewMemoryStore()
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(tb, err)
 	settingsManager := config.NewSystemSettingsManager()
 
 	provider := NewProvider(db, memStore, settingsManager, encSvc)
@@ -140,8 +148,9 @@ func TestTestMultipleKeys_ExistingKeys(t *testing.T) {
 	}
 	require.NoError(t, db.Create(group).Error)
 
-	// Create test keys
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	// Create test keys - reuse encryption service from provider
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
 	key1 := &models.APIKey{
 		GroupID:  group.ID,
 		KeyValue: "sk-test1",
@@ -196,7 +205,10 @@ func BenchmarkTestMultipleKeys(b *testing.B) {
 	}
 	db.Create(group)
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
 	for i := 0; i < 10; i++ {
 		key := &models.APIKey{
 			GroupID:  group.ID,

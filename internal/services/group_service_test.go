@@ -91,6 +91,9 @@ func setupTestGroupService(tb testing.TB, db *gorm.DB) *GroupService {
 	require.NoError(tb, err)
 
 	keyProvider := keypool.NewProvider(db, memStore, settingsManager, encryptionSvc)
+	tb.Cleanup(func() {
+		keyProvider.Stop()
+	})
 	keyValidator := keypool.NewKeyValidator(keypool.KeyValidatorParams{
 		DB:              db,
 		SettingsManager: settingsManager,
@@ -738,7 +741,9 @@ func BenchmarkCreateGroup(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		params.Name = "bench-group-" + strconv.Itoa(i)
-		_, _ = svc.CreateGroup(context.Background(), params)
+		if _, err := svc.CreateGroup(context.Background(), params); err != nil {
+			b.Fatalf("Failed to create group: %v", err)
+		}
 	}
 }
 
@@ -790,6 +795,8 @@ func BenchmarkGetGroupStats(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = svc.GetGroupStats(context.Background(), group.ID)
+		if _, err := svc.GetGroupStats(context.Background(), group.ID); err != nil {
+			b.Fatalf("Failed to get group stats: %v", err)
+		}
 	}
 }

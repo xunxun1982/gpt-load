@@ -30,6 +30,13 @@ func setupTestCronChecker(tb testing.TB) (*CronChecker, *gorm.DB, *KeyValidator)
 	})
 	require.NoError(tb, err)
 
+	// Limit SQLite connections to avoid separate in-memory databases
+	// NewProvider spawns background workers that need to share the same database
+	sqlDB, err := db.DB()
+	require.NoError(tb, err)
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+
 	err = db.AutoMigrate(&models.APIKey{}, &models.Group{})
 	require.NoError(tb, err)
 
@@ -123,7 +130,8 @@ func TestValidateGroupKeys_NoInvalidKeys(t *testing.T) {
 	require.NoError(t, db.Create(group).Error)
 
 	// Create only active keys
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
 	key := &models.APIKey{
 		GroupID:  group.ID,
 		KeyValue: "sk-test",
@@ -155,7 +163,8 @@ func TestValidateGroupKeys_DisabledGroup(t *testing.T) {
 	require.NoError(t, db.Create(group).Error)
 
 	// Create invalid key
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
 	key := &models.APIKey{
 		GroupID:  group.ID,
 		KeyValue: "sk-test",
@@ -326,7 +335,7 @@ func TestIsBusy_OtherTaskRunning(t *testing.T) {
 
 // Benchmark tests for PGO optimization
 func BenchmarkValidateGroupKeys(b *testing.B) {
-	cronChecker, db, _ := setupTestCronChecker(&testing.T{})
+	cronChecker, db, _ := setupTestCronChecker(b)
 
 	// Create test group
 	group := &models.Group{
@@ -337,7 +346,10 @@ func BenchmarkValidateGroupKeys(b *testing.B) {
 	db.Create(group)
 
 	// Create invalid keys
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
 	for i := 0; i < 10; i++ {
 		key := &models.APIKey{
 			GroupID:  group.ID,
@@ -358,7 +370,7 @@ func BenchmarkValidateGroupKeys(b *testing.B) {
 }
 
 func BenchmarkBatchUpdateLastValidatedAt(b *testing.B) {
-	cronChecker, db, _ := setupTestCronChecker(&testing.T{})
+	cronChecker, db, _ := setupTestCronChecker(b)
 
 	// Create test groups
 	var groupIDs []uint

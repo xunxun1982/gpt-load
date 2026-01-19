@@ -68,7 +68,7 @@ func TestCloseDBConnectionWithOptions_SkipCheckpoint(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Close with skip checkpoint
 	done := make(chan struct{})
@@ -92,7 +92,7 @@ func TestCloseDBConnectionWithOptions_WithCheckpoint(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Close with checkpoint
 	done := make(chan struct{})
@@ -116,11 +116,11 @@ func TestCloseDBConnection_ConnectionPoolStats(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Get sql.DB to verify pool stats
 	sqlDB, err := db.DB()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Set pool configuration
 	sqlDB.SetMaxIdleConns(5)
@@ -143,7 +143,7 @@ func TestCloseDBConnection_PreparedStatements(t *testing.T) {
 		Logger:      logger.Default.LogMode(logger.Silent),
 		PrepareStmt: true,
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Execute some queries to populate prepared statement cache
 	type TestModel struct {
@@ -168,13 +168,13 @@ func TestCloseDBConnection_WALCheckpoint(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Enable WAL mode
 	sqlDB, err := db.DB()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	_, err = sqlDB.Exec("PRAGMA journal_mode=WAL")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Create some data to generate WAL entries
 	type TestModel struct {
@@ -199,7 +199,7 @@ func TestCloseDBConnection_Timeout(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Close should complete within timeout
 	done := make(chan struct{})
@@ -223,7 +223,7 @@ func TestCloseDBConnection_MultipleClose(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// First close
 	closeDBConnection(db, "test")
