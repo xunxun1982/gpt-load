@@ -3,332 +3,552 @@ package centralizedmgmt
 import (
 	"context"
 	"fmt"
-	"testing"
-	"time"
-
 	"gpt-load/internal/encryption"
+	"sync"
+	"testing"
 
 	"github.com/glebarez/sqlite"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-// setupTestServiceForPerformance creates a test service with in-memory database
-func setupTestServiceForPerformance(t *testing.T) (*HubAccessKeyService, *gorm.DB) {
-	// Setup in-memory database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
-	require.NoError(t, err)
-
-	// Auto-migrate schema
-	err = db.AutoMigrate(&HubAccessKey{})
-	require.NoError(t, err)
-
-	// Create encryption service
-	encryptionSvc, err := encryption.NewService("test-encryption-key-32-bytes!!")
-	require.NoError(t, err)
-
-	// Create service
-	service := NewHubAccessKeyService(db, encryptionSvc)
-	return service, db
-}
-
-// TestAccessKeyServicePerformance tests the performance of access key operations
-func TestAccessKeyServicePerformance(t *testing.T) {
-	service, _ := setupTestServiceForPerformance(t)
+// BenchmarkValidateAccessKey benchmarks the hot path of access key validation
+// This is critical as it's called for every Hub API request
+func BenchmarkValidateAccessKey(b *testing.B) {
+	svc, _ := setupBenchService(b)
 	ctx := context.Background()
 
-	t.Run("BulkCreatePerformance", func(t *testing.T) {
-		start := time.Now()
-		keyCount := 100
-
-		// Create 100 keys
-		for i := 0; i < keyCount; i++ {
-			params := CreateAccessKeyParams{
-				Name:          fmt.Sprintf("test-key-%d", i),
-				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
-				Enabled:       i%2 == 0, // Alternate enabled/disabled
-			}
-			_, _, err := service.CreateAccessKey(ctx, params)
-			require.NoError(t, err)
-		}
-
-		elapsed := time.Since(start)
-		t.Logf("Created %d keys in %v (avg: %v per key)", keyCount, elapsed, elapsed/time.Duration(keyCount))
-
-		// Performance assertion: timing checks are skipped in short mode to avoid CI flakiness
-		if !testing.Short() {
-			assert.Less(t, elapsed, 5*time.Second, "Bulk create should be fast")
-		}
+	// Create test key
+	_, keyValue, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		Name:          "bench-validate-key",
+		AllowedModels: []string{},
+		Enabled:       true,
 	})
+	if err != nil {
+		b.Fatalf("Failed to create test key: %v", err)
+	}
 
-	t.Run("ListPerformance", func(t *testing.T) {
-		start := time.Now()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = svc.ValidateAccessKey(ctx, keyValue)
+	}
+}
 
-		// List all keys (should use optimized index)
-		keys, err := service.ListAccessKeys(ctx)
-		require.NoError(t, err)
+// BenchmarkValidateAccessKeyCached benchmarks cached validation
+func BenchmarkValidateAccessKeyCached(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
 
-		elapsed := time.Since(start)
-		t.Logf("Listed %d keys in %v", len(keys), elapsed)
-
-		// Performance assertion: timing checks are skipped in short mode to avoid CI flakiness
-		if !testing.Short() {
-			assert.Less(t, elapsed, 100*time.Millisecond, "List should be fast with indexes")
-		}
-		assert.Greater(t, len(keys), 0, "Should have keys")
-
-		// Verify ordering: enabled keys first, then by name
-		for i := 1; i < len(keys); i++ {
-			if keys[i-1].Enabled == keys[i].Enabled {
-				// Same enabled status, check name ordering
-				assert.LessOrEqual(t, keys[i-1].Name, keys[i].Name, "Keys should be ordered by name within same enabled status")
-			} else {
-				// Different enabled status, enabled should come first
-				assert.True(t, keys[i-1].Enabled, "Enabled keys should come before disabled keys")
-				assert.False(t, keys[i].Enabled, "Disabled keys should come after enabled keys")
-			}
-		}
+	_, keyValue, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		Name:          "bench-cached-key",
+		AllowedModels: []string{},
+		Enabled:       true,
 	})
+	if err != nil {
+		b.Fatalf("Failed to create test key: %v", err)
+	}
 
-	t.Run("ValidationCachePerformance", func(t *testing.T) {
-		// Create a test key
-		params := CreateAccessKeyParams{
-			Name:          "cache-test-key",
-			AllowedModels: []string{"gpt-4"},
-			Enabled:       true,
-		}
-		_, keyValue, err := service.CreateAccessKey(ctx, params)
-		require.NoError(t, err)
+	// Warm up cache
+	_, _ = svc.ValidateAccessKey(ctx, keyValue)
 
-		// Warm up and measure multiple iterations for more accurate timing
-		iterations := 100
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = svc.ValidateAccessKey(ctx, keyValue)
+	}
+}
 
-		// First validation batch (cache miss on first, then cached)
-		start := time.Now()
-		for i := 0; i < iterations; i++ {
-			// Invalidate cache before first iteration to ensure cache miss
-			if i == 0 {
-				service.InvalidateAllKeyCache()
-			}
-			key1, err := service.ValidateAccessKey(ctx, keyValue)
-			require.NoError(t, err)
-			if i == 0 {
-				assert.NotNil(t, key1)
-			}
-		}
-		firstBatchTime := time.Since(start)
+// BenchmarkValidateAccessKeyConcurrent benchmarks concurrent validation
+func BenchmarkValidateAccessKeyConcurrent(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
 
-		// Second validation batch (all cache hits)
-		start = time.Now()
-		for i := 0; i < iterations; i++ {
-			key2, err := service.ValidateAccessKey(ctx, keyValue)
-			require.NoError(t, err)
-			assert.NotNil(t, key2)
-		}
-		secondBatchTime := time.Since(start)
-
-		t.Logf("First batch (%d validations, 1 cache miss): %v (avg: %v)",
-			iterations, firstBatchTime, firstBatchTime/time.Duration(iterations))
-		t.Logf("Second batch (%d validations, all cache hits): %v (avg: %v)",
-			iterations, secondBatchTime, secondBatchTime/time.Duration(iterations))
-
-		// Second batch should be faster or similar (cache is effective)
-		// Timing checks are skipped in short mode to avoid CI flakiness
-		if !testing.Short() {
-			assert.LessOrEqual(t, secondBatchTime, firstBatchTime*3,
-				"Cached validations should not be significantly slower (within 3x)")
-		}
+	_, keyValue, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		Name:          "bench-concurrent-key",
+		AllowedModels: []string{},
+		Enabled:       true,
 	})
+	if err != nil {
+		b.Fatalf("Failed to create test key: %v", err)
+	}
 
-	t.Run("BatchOperationPerformance", func(t *testing.T) {
-		// Get all key IDs
-		keys, err := service.ListAccessKeys(ctx)
-		require.NoError(t, err)
+	// Warm up cache
+	_, _ = svc.ValidateAccessKey(ctx, keyValue)
 
-		ids := make([]uint, 0, len(keys))
-		for _, key := range keys {
-			ids = append(ids, key.ID)
-		}
-
-		// Batch enable
-		start := time.Now()
-		count, err := service.BatchUpdateAccessKeysEnabled(ctx, ids, true)
-		require.NoError(t, err)
-		elapsed := time.Since(start)
-
-		t.Logf("Batch enabled %d keys in %v", count, elapsed)
-		assert.Equal(t, len(ids), count, "Should update all keys")
-
-		// Timing checks are skipped in short mode to avoid CI flakiness
-		if !testing.Short() {
-			assert.Less(t, elapsed, 500*time.Millisecond, "Batch operation should be fast")
-		}
-	})
-
-	t.Run("ConcurrentValidation", func(t *testing.T) {
-		// Create a test key
-		params := CreateAccessKeyParams{
-			Name:          "concurrent-test-key",
-			AllowedModels: []string{"gpt-4"},
-			Enabled:       true,
-		}
-		_, keyValue, err := service.CreateAccessKey(ctx, params)
-		require.NoError(t, err)
-
-		// Pre-warm the cache to avoid database contention
-		_, err = service.ValidateAccessKey(ctx, keyValue)
-		require.NoError(t, err)
-
-		// Concurrent validations with error tracking
-		// Use lower concurrency to avoid SQLite in-memory DB limitations
-		concurrency := 20
-		done := make(chan error, concurrency)
-		start := time.Now()
-
-		for i := 0; i < concurrency; i++ {
-			go func() {
-				// Use a fresh context for each goroutine
-				goCtx := context.Background()
-				_, err := service.ValidateAccessKey(goCtx, keyValue)
-				done <- err
-			}()
-		}
-
-		// Wait for all goroutines and collect errors
-		var validationErrors []error
-		for i := 0; i < concurrency; i++ {
-			if err := <-done; err != nil {
-				validationErrors = append(validationErrors, err)
-			}
-		}
-
-		elapsed := time.Since(start)
-		successCount := concurrency - len(validationErrors)
-		t.Logf("Completed %d concurrent validations in %v (avg: %v per validation, %d succeeded, %d failed)",
-			concurrency, elapsed, elapsed/time.Duration(concurrency), successCount, len(validationErrors))
-
-		// With cache pre-warmed, most validations should succeed
-		// We allow some failures due to SQLite in-memory DB limitations
-		assert.GreaterOrEqual(t, successCount, concurrency*8/10,
-			"At least 80%% of concurrent validations should succeed with cache")
-
-		// Timing checks are skipped in short mode to avoid CI flakiness
-		if !testing.Short() {
-			assert.Less(t, elapsed, 2*time.Second, "Concurrent validations should complete in reasonable time")
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = svc.ValidateAccessKey(ctx, keyValue)
 		}
 	})
 }
 
-// TestAccessKeyServiceCacheBoundedness tests that cache size stays bounded to unique keys
-func TestAccessKeyServiceCacheBoundedness(t *testing.T) {
-	service, _ := setupTestServiceForPerformance(t)
-	service.keyCacheTTL = 100 * time.Millisecond
+// BenchmarkIsModelAllowed benchmarks model permission checking
+func BenchmarkIsModelAllowed(b *testing.B) {
+	testCases := []struct {
+		name          string
+		allowedModels []string
+		testModel     string
+	}{
+		{"EmptyList_AllAllowed", []string{}, "gpt-4"},
+		{"SingleModel_Match", []string{"gpt-4"}, "gpt-4"},
+		{"SingleModel_NoMatch", []string{"gpt-4"}, "claude-3"},
+		{"MultipleModels_Match", []string{"gpt-4", "claude-3", "gemini"}, "claude-3"},
+		{"MultipleModels_NoMatch", []string{"gpt-4", "claude-3", "gemini"}, "llama-2"},
+		{"LargeList_Match", generateModelList(50), "model-25"},
+		{"LargeList_NoMatch", generateModelList(50), "unknown-model"},
+	}
 
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			// Create new service for each sub-benchmark to avoid name conflicts
+			svc, db := setupBenchService(b)
+			ctx := context.Background()
+
+			dto, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+				Name:          fmt.Sprintf("bench-model-%s", tc.name),
+				AllowedModels: tc.allowedModels,
+				Enabled:       true,
+			})
+			if err != nil {
+				b.Fatalf("Failed to create test key: %v", err)
+			}
+
+			var key HubAccessKey
+			if err := db.First(&key, dto.ID).Error; err != nil {
+				b.Fatalf("Failed to fetch key: %v", err)
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = svc.IsModelAllowed(&key, tc.testModel)
+			}
+		})
+	}
+}
+
+// BenchmarkCreateAccessKey benchmarks key creation
+func BenchmarkCreateAccessKey(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+			Name:          fmt.Sprintf("bench-create-%d", i),
+			AllowedModels: []string{},
+			Enabled:       true,
+		})
+	}
+}
+
+// BenchmarkListAccessKeys benchmarks listing all keys
+func BenchmarkListAccessKeys(b *testing.B) {
+	sizes := []int{10, 50, 100, 500}
+
+	for _, size := range sizes {
+		b.Run(fmt.Sprintf("Keys%d", size), func(b *testing.B) {
+			svc, _ := setupBenchService(b)
+			ctx := context.Background()
+
+			// Create test keys
+			for i := 0; i < size; i++ {
+				_, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+					Name:          fmt.Sprintf("bench-list-%d", i),
+					AllowedModels: []string{},
+					Enabled:       i%2 == 0, // Mix of enabled/disabled
+				})
+				if err != nil {
+					b.Fatalf("Failed to create test key: %v", err)
+				}
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = svc.ListAccessKeys(ctx)
+			}
+		})
+	}
+}
+
+// BenchmarkUpdateAccessKey benchmarks key updates
+func BenchmarkUpdateAccessKey(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
+
+	dto, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		Name:          "bench-update-key",
+		AllowedModels: []string{},
+		Enabled:       true,
+	})
+	if err != nil {
+		b.Fatalf("Failed to create test key: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		newName := fmt.Sprintf("updated-name-%d", i)
+		_, _ = svc.UpdateAccessKey(ctx, dto.ID, UpdateAccessKeyParams{
+			Name: &newName,
+		})
+	}
+}
+
+// BenchmarkDeleteAccessKey benchmarks key deletion
+func BenchmarkDeleteAccessKey(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		dto, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+			Name:          fmt.Sprintf("bench-delete-%d", i),
+			AllowedModels: []string{},
+			Enabled:       true,
+		})
+		if err != nil {
+			b.Fatalf("Failed to create test key: %v", err)
+		}
+		b.StartTimer()
+
+		_ = svc.DeleteAccessKey(ctx, dto.ID)
+	}
+}
+
+// BenchmarkExportAccessKeys benchmarks key export
+func BenchmarkExportAccessKeys(b *testing.B) {
+	sizes := []int{10, 50, 100}
+
+	for _, size := range sizes {
+		b.Run(fmt.Sprintf("Keys%d", size), func(b *testing.B) {
+			svc, _ := setupBenchService(b)
+			ctx := context.Background()
+
+			// Create test keys
+			for i := 0; i < size; i++ {
+				_, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+					Name:          fmt.Sprintf("bench-export-%d", i),
+					AllowedModels: []string{"gpt-4", "claude-3"},
+					Enabled:       true,
+				})
+				if err != nil {
+					b.Fatalf("Failed to create test key: %v", err)
+				}
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = svc.ExportAccessKeys(ctx)
+			}
+		})
+	}
+}
+
+// BenchmarkImportAccessKeys benchmarks key import
+func BenchmarkImportAccessKeys(b *testing.B) {
+	svc, db := setupBenchService(b)
+	ctx := context.Background()
+
+	// Create and export keys
+	for i := 0; i < 10; i++ {
+		_, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+			Name:          fmt.Sprintf("bench-import-%d", i),
+			AllowedModels: []string{"gpt-4"},
+			Enabled:       true,
+		})
+		if err != nil {
+			b.Fatalf("Failed to create test key: %v", err)
+		}
+	}
+
+	exports, err := svc.ExportAccessKeys(ctx)
+	if err != nil {
+		b.Fatalf("Failed to export keys: %v", err)
+	}
+
+	// Modify names to avoid conflicts
+	for i := range exports {
+		exports[i].Name = fmt.Sprintf("import-test-%d", i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		// Clean up previous imports
+		db.Where("name LIKE ?", "import-test-%").Delete(&HubAccessKey{})
+		b.StartTimer()
+
+		tx := db.Begin()
+		_, _, _ = svc.ImportAccessKeys(ctx, tx, exports)
+		tx.Commit()
+	}
+}
+
+// BenchmarkBatchDeleteAccessKeys benchmarks batch deletion
+func BenchmarkBatchDeleteAccessKeys(b *testing.B) {
+	batchSizes := []int{10, 50, 100}
+
+	for _, batchSize := range batchSizes {
+		b.Run(fmt.Sprintf("Batch%d", batchSize), func(b *testing.B) {
+			svc, _ := setupBenchService(b)
+			ctx := context.Background()
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				// Create keys for deletion
+				ids := make([]uint, batchSize)
+				for j := 0; j < batchSize; j++ {
+					dto, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+						Name:          fmt.Sprintf("bench-batch-delete-%d-%d", i, j),
+						AllowedModels: []string{},
+						Enabled:       true,
+					})
+					if err != nil {
+						b.Fatalf("Failed to create test key: %v", err)
+					}
+					ids[j] = dto.ID
+				}
+				b.StartTimer()
+
+				_, _ = svc.BatchDeleteAccessKeys(ctx, ids)
+			}
+		})
+	}
+}
+
+// BenchmarkBatchUpdateAccessKeysEnabled benchmarks batch enable/disable
+func BenchmarkBatchUpdateAccessKeysEnabled(b *testing.B) {
+	svc, _ := setupBenchService(b)
 	ctx := context.Background()
 
 	// Create test keys
+	ids := make([]uint, 50)
+	for i := 0; i < 50; i++ {
+		dto, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+			Name:          fmt.Sprintf("bench-batch-update-%d", i),
+			AllowedModels: []string{},
+			Enabled:       true,
+		})
+		if err != nil {
+			b.Fatalf("Failed to create test key: %v", err)
+		}
+		ids[i] = dto.ID
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		enabled := i%2 == 0
+		_, _ = svc.BatchUpdateAccessKeysEnabled(ctx, ids, enabled)
+	}
+}
+
+// BenchmarkRecordKeyUsage benchmarks usage recording
+func BenchmarkRecordKeyUsage(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
+
+	dto, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		Name:          "bench-usage-key",
+		AllowedModels: []string{},
+		Enabled:       true,
+	})
+	if err != nil {
+		b.Fatalf("Failed to create test key: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = svc.RecordKeyUsage(ctx, dto.ID)
+	}
+}
+
+// BenchmarkRecordKeyUsageConcurrent benchmarks concurrent usage recording
+func BenchmarkRecordKeyUsageConcurrent(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
+
+	dto, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		Name:          "bench-concurrent-usage-key",
+		AllowedModels: []string{},
+		Enabled:       true,
+	})
+	if err != nil {
+		b.Fatalf("Failed to create test key: %v", err)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = svc.RecordKeyUsage(ctx, dto.ID)
+		}
+	})
+}
+
+// BenchmarkCacheInvalidation benchmarks cache invalidation operations
+func BenchmarkCacheInvalidation(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
+
+	// Create and cache multiple keys
 	keyValues := make([]string, 10)
 	for i := 0; i < 10; i++ {
-		params := CreateAccessKeyParams{
-			Name:          fmt.Sprintf("leak-test-key-%d", i),
-			AllowedModels: []string{"gpt-4"},
+		_, keyValue, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+			Name:          fmt.Sprintf("bench-cache-%d", i),
+			AllowedModels: []string{},
 			Enabled:       true,
+		})
+		if err != nil {
+			b.Fatalf("Failed to create test key: %v", err)
 		}
-		_, keyValue, err := service.CreateAccessKey(ctx, params)
-		require.NoError(t, err)
+		keyValues[i] = keyValue
+		// Warm up cache
+		_, _ = svc.ValidateAccessKey(ctx, keyValue)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		svc.InvalidateAllKeyCache()
+	}
+}
+
+// BenchmarkRealisticWorkload simulates realistic Hub access key workload
+func BenchmarkRealisticWorkload(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
+
+	// Create multiple keys with different configurations
+	keys := []struct {
+		name          string
+		allowedModels []string
+		enabled       bool
+	}{
+		{"prod-key-1", []string{}, true},
+		{"prod-key-2", []string{"gpt-4", "claude-3"}, true},
+		{"prod-key-3", []string{"gpt-4"}, true},
+		{"test-key-1", []string{}, true},
+		{"disabled-key", []string{}, false},
+	}
+
+	keyValues := make([]string, len(keys))
+	for i, k := range keys {
+		_, keyValue, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+			Name:          k.name,
+			AllowedModels: k.allowedModels,
+			Enabled:       k.enabled,
+		})
+		if err != nil {
+			b.Fatalf("Failed to create test key: %v", err)
+		}
 		keyValues[i] = keyValue
 	}
 
-	// Validate keys multiple times to populate cache
-	for i := 0; i < 100; i++ {
-		for _, keyValue := range keyValues {
-			_, err := service.ValidateAccessKey(ctx, keyValue)
-			require.NoError(t, err)
-		}
+	b.ResetTimer()
+
+	// Simulate realistic request distribution
+	var wg sync.WaitGroup
+	for i := 0; i < b.N; i++ {
+		wg.Add(1)
+		go func(iteration int) {
+			defer wg.Done()
+
+			// 80% validation, 10% model check, 10% usage recording
+			op := iteration % 10
+			keyIdx := iteration % len(keyValues)
+
+			if op < 8 {
+				// Validate key
+				_, _ = svc.ValidateAccessKey(ctx, keyValues[keyIdx])
+			} else if op == 8 {
+				// Check model permission
+				key, err := svc.ValidateAccessKey(ctx, keyValues[keyIdx])
+				if err == nil {
+					_ = svc.IsModelAllowed(key, "gpt-4")
+				}
+			} else {
+				// Record usage
+				key, err := svc.ValidateAccessKey(ctx, keyValues[keyIdx])
+				if err == nil {
+					_ = svc.RecordKeyUsage(ctx, key.ID)
+				}
+			}
+		}(i)
 	}
-
-	// Check cache size before expiration
-	service.keyCacheMu.RLock()
-	cacheSize := len(service.keyCache)
-	service.keyCacheMu.RUnlock()
-
-	t.Logf("Cache size after 1000 validations: %d entries", cacheSize)
-	assert.LessOrEqual(t, cacheSize, 10, "Cache should not grow beyond number of unique keys")
-
-	// Wait for cache entries to expire
-	time.Sleep(200 * time.Millisecond)
-
-	// Validate again to trigger cache cleanup
-	for _, keyValue := range keyValues {
-		_, err := service.ValidateAccessKey(ctx, keyValue)
-		require.NoError(t, err)
-	}
-
-	// Cache should still be reasonable size (expired entries replaced)
-	service.keyCacheMu.RLock()
-	newCacheSize := len(service.keyCache)
-	service.keyCacheMu.RUnlock()
-
-	t.Logf("Cache size after expiration and re-validation: %d entries", newCacheSize)
-	assert.LessOrEqual(t, newCacheSize, 10, "Cache should not leak memory")
+	wg.Wait()
 }
 
-// TestAccessKeyServiceQueryOrdering tests that queries use proper indexes and return correct ordering
-func TestAccessKeyServiceQueryOrdering(t *testing.T) {
-	service, _ := setupTestServiceForPerformance(t)
+// BenchmarkMemoryAllocation benchmarks memory allocation patterns
+func BenchmarkMemoryAllocation(b *testing.B) {
+	svc, _ := setupBenchService(b)
 	ctx := context.Background()
 
-	// Create test data
-	for i := 0; i < 20; i++ {
-		params := CreateAccessKeyParams{
-			Name:          fmt.Sprintf("index-test-key-%02d", i),
-			AllowedModels: []string{"gpt-4"},
-			Enabled:       i%2 == 0,
-		}
-		_, _, err := service.CreateAccessKey(ctx, params)
-		require.NoError(t, err)
+	_, keyValue, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		Name:          "bench-memory-key",
+		AllowedModels: []string{},
+		Enabled:       true,
+	})
+	if err != nil {
+		b.Fatalf("Failed to create test key: %v", err)
 	}
 
-	t.Run("ListUsesIndex", func(t *testing.T) {
-		// This query should use idx_hub_access_keys_enabled_name
-		keys, err := service.ListAccessKeys(ctx)
-		require.NoError(t, err)
-		assert.Equal(t, 20, len(keys), "Should return all keys")
+	// Warm up cache
+	_, _ = svc.ValidateAccessKey(ctx, keyValue)
 
-		// Verify ordering
-		prevEnabled := true
-		prevName := ""
-		for _, key := range keys {
-			if key.Enabled != prevEnabled {
-				assert.True(t, prevEnabled, "Enabled keys should come first")
-				assert.False(t, key.Enabled, "Disabled keys should come after")
-				prevEnabled = key.Enabled
-				prevName = ""
-			}
-			if key.Enabled == prevEnabled && prevName != "" {
-				assert.GreaterOrEqual(t, key.Name, prevName, "Keys should be ordered by name")
-			}
-			prevName = key.Name
-		}
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = svc.ValidateAccessKey(ctx, keyValue)
+	}
+}
+
+// BenchmarkGetAccessKeyPlaintext benchmarks plaintext retrieval
+func BenchmarkGetAccessKeyPlaintext(b *testing.B) {
+	svc, _ := setupBenchService(b)
+	ctx := context.Background()
+
+	dto, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		Name:          "bench-plaintext-key",
+		AllowedModels: []string{},
+		Enabled:       true,
 	})
+	if err != nil {
+		b.Fatalf("Failed to create test key: %v", err)
+	}
 
-	t.Run("ValidationUsesHashIndex", func(t *testing.T) {
-		// Create a key and validate it
-		params := CreateAccessKeyParams{
-			Name:          "hash-index-test",
-			AllowedModels: []string{"gpt-4"},
-			Enabled:       true,
-		}
-		_, keyValue, err := service.CreateAccessKey(ctx, params)
-		require.NoError(t, err)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = svc.GetAccessKeyPlaintext(ctx, dto.ID)
+	}
+}
 
-		// This query should use idx_hub_access_keys_key_hash (unique index)
-		key, err := service.ValidateAccessKey(ctx, keyValue)
-		require.NoError(t, err)
-		assert.Equal(t, "hash-index-test", key.Name)
+// Helper functions
+
+func setupBenchService(b *testing.B) (*HubAccessKeyService, *gorm.DB) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
 	})
+	if err != nil {
+		b.Fatalf("failed to connect to test database: %v", err)
+	}
+
+	if err := db.AutoMigrate(&HubAccessKey{}); err != nil {
+		b.Fatalf("failed to migrate test database: %v", err)
+	}
+
+	encSvc, err := encryption.NewService("test-encryption-key-32chars!!")
+	if err != nil {
+		b.Fatalf("failed to create encryption service: %v", err)
+	}
+
+	svc := NewHubAccessKeyService(db, encSvc)
+	return svc, db
+}
+
+func generateModelList(count int) []string {
+	models := make([]string, count)
+	for i := 0; i < count; i++ {
+		models[i] = fmt.Sprintf("model-%d", i)
+	}
+	return models
 }

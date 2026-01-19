@@ -75,32 +75,56 @@ const channelTypeOptions = computed<SelectOption[]>(() => {
   return options;
 });
 
+/**
+ * Get the primary channel type for a model.
+ * Prioritizes enabled groups, falls back to first group's channel type.
+ */
+function getPrimaryChannelType(model: ModelPoolEntryV2): string {
+  // Try to find first enabled group with channel_type
+  const enabledGroup = model.groups.find(g => g.enabled && g.channel_type);
+  if (enabledGroup) {
+    return enabledGroup.channel_type;
+  }
+  // Fall back to first group's channel_type
+  return model.groups[0]?.channel_type || "";
+}
+
 const filteredModels = computed(() => {
   let result = models.value;
 
+  // Filter by channel type
   if (filters.value.channelType !== "all") {
     result = result.filter(model =>
       model.groups.some(g => g.channel_type === filters.value.channelType)
     );
   }
 
+  // Filter by search keyword (matches model name, group name, or channel type)
   if (searchText.value.trim()) {
     const keyword = searchText.value.toLowerCase().trim();
     result = result.filter(model => {
+      // Match model name
       if (model.model_name.toLowerCase().includes(keyword)) {
         return true;
       }
-      return model.groups.some(g => g.group_name.toLowerCase().includes(keyword));
+      // Match group name or channel type
+      return model.groups.some(
+        g =>
+          g.group_name.toLowerCase().includes(keyword) ||
+          g.channel_type.toLowerCase().includes(keyword)
+      );
     });
   }
 
-  // Sort by channel type, then model name
+  // Sort by channel type (alphabetically), then by model name (alphabetically)
   return result.slice().sort((a, b) => {
-    const aType = a.groups[0]?.channel_type || "";
-    const bType = b.groups[0]?.channel_type || "";
+    const aType = getPrimaryChannelType(a);
+    const bType = getPrimaryChannelType(b);
+    // Primary sort: channel type
     if (aType !== bType) {
       return aType.localeCompare(bType);
     }
+    // Secondary sort: model name
     return a.model_name.localeCompare(b.model_name);
   });
 });

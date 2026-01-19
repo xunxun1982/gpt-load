@@ -24,6 +24,7 @@ ARG TARGETARCH
 ARG TARGETOS=linux
 
 # CPU Architecture Level: v2 (SSE4.2, POPCNT) for better compatibility (amd64 only)
+# v2 is safe for most CPUs, v3 requires AVX2 which may not be available
 ARG GOAMD64=v2
 
 ENV GO111MODULE=on \
@@ -42,19 +43,22 @@ RUN go mod download && go mod verify
 COPY . .
 COPY --from=node-builder /build/dist ./web/dist
 
-# Optimized build:
+# Optimized build for smallest size and best performance:
 # - CGO_ENABLED=0: Static binary, no C dependencies
-# - -tags go_json: High-performance JSON (goccy/go-json)
-# - -trimpath: Remove file system paths from binary
+# - -tags go_json: High-performance JSON (goccy/go-json, 2-3x faster)
+# - -trimpath: Remove file system paths from binary (smaller size)
 # - -buildvcs=false: Skip VCS stamping for reproducible builds
-# - -ldflags="-s -w": Strip debug symbols and DWARF info
+# - -ldflags="-s -w": Strip debug symbols and DWARF info (~30% size reduction)
+# - GOAMD64=v2: Use SSE4.2/POPCNT instructions (safe for most CPUs)
 # Note: UPX compression NOT used to avoid antivirus false positives and startup latency
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=${GOAMD64} go build \
+RUN echo "🔨 Building optimized binary..." && \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=${GOAMD64} go build \
     -tags go_json \
     -trimpath \
     -buildvcs=false \
     -ldflags="-s -w -X gpt-load/internal/version.Version=${VERSION}" \
-    -o gpt-load
+    -o gpt-load && \
+    echo "✅ Build complete: $(ls -lh gpt-load | awk '{print $5}')"
 
 
 # =============================================================================
@@ -71,8 +75,18 @@ COPY --from=go-builder /usr/share/zoneinfo /usr/share/zoneinfo
 
 WORKDIR /app
 
-# Runtime optimization: limit memory to prevent OOM
-ENV GOMEMLIMIT=512MiB
+# Runtime optimization: Set memory limit to prevent OOM
+# GOMEMLIMIT is set to 1GiB based on project complexity:
+# - Multiple database drivers (SQLite, MySQL, PostgreSQL)
+# - Redis caching layer
+# - HTTP proxy with streaming support
+# - Concurrent request handling
+# - In-memory caching for access keys and model redirects
+# - JSON processing with high-performance libraries
+# Recommendation: Set to 90% of container memory limit in production
+# For 2GB container: GOMEMLIMIT=1800MiB
+# For 4GB container: GOMEMLIMIT=3600MiB
+ENV GOMEMLIMIT=1GiB
 
 COPY --from=go-builder /build/gpt-load .
 

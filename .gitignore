@@ -156,6 +156,10 @@ test-output/
 *.prof
 *.pprof
 
+# PGO (Profile-Guided Optimization) temporary files
+pgo-profiles/
+# Note: default.pgo should be committed for production builds
+
 # Air live reload tool
 tmp/
 
