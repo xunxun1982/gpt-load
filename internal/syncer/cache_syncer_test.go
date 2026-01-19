@@ -106,10 +106,14 @@ func (m *mockStore) Publish(channel string, message []byte) error {
 
 	// Notify all subscriptions
 	if sub, ok := m.subscriptions[channel]; ok {
-		select {
-		case sub.ch <- &store.Message{Channel: channel, Payload: message}:
-		default:
+		sub.mu.Lock()
+		if !sub.closed {
+			select {
+			case sub.ch <- &store.Message{Channel: channel, Payload: message}:
+			default:
+			}
 		}
+		sub.mu.Unlock()
 	}
 
 	return nil
@@ -332,15 +336,22 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 
 	// Concurrent reloads
+	errCh := make(chan error, 10)
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = syncer.Reload()
+			if err := syncer.Reload(); err != nil {
+				errCh <- err
+			}
 		}()
 	}
 
 	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
 }
 
 // TestReloadError tests handling of reload errors
@@ -407,7 +418,9 @@ func BenchmarkReload(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = syncer.Reload()
+		if err := syncer.Reload(); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

@@ -277,6 +277,14 @@ func BenchmarkNewDB_SQLite(b *testing.B) {
 		}
 		sqlDB, _ := db.DB()
 		sqlDB.Close()
+
+		// Close ReadDB to prevent resource leaks across iterations
+		if ReadDB != nil {
+			readSQLDB, _ := ReadDB.DB()
+			if readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
 	}
 }
 

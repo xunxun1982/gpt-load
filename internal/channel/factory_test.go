@@ -24,6 +24,7 @@ func TestGetChannels(t *testing.T) {
 
 // setupTestFactory creates a test factory
 func setupTestFactory(t *testing.T) *Factory {
+	t.Helper() // Mark as test helper for better stack traces
 	settingsManager := config.NewSystemSettingsManager()
 	clientManager := httpclient.NewHTTPClientManager()
 	factory := NewFactory(settingsManager, clientManager)
@@ -199,6 +200,9 @@ func BenchmarkGetChannel(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		factory.GetChannel(group)
+		_, err := factory.GetChannel(group)
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }

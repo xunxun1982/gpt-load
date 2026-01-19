@@ -134,12 +134,10 @@ func TestParseKeysFromText(t *testing.T) {
 func TestAddMultipleKeys(t *testing.T) {
 	db, svc := setupKeyServiceTest(t)
 
-	// Create a test group with valid upstreams
-	group := createTestGroup(t, db, "test-group")
-
 	tests := []struct {
 		name        string
 		keysText    string
+		seedKeys    string
 		expectError bool
 		expectedAdd int
 	}{
@@ -158,6 +156,7 @@ func TestAddMultipleKeys(t *testing.T) {
 		{
 			name:        "add duplicate keys",
 			keysText:    "sk-test1",
+			seedKeys:    "sk-test1", // Seed the key first to test duplicate detection
 			expectError: false,
 			expectedAdd: 0, // Already exists
 		},
@@ -168,8 +167,17 @@ func TestAddMultipleKeys(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create a separate group for each subtest to avoid dependencies
+			group := createTestGroup(t, db, "test-group-"+strconv.Itoa(i))
+
+			// Seed keys if specified
+			if tt.seedKeys != "" {
+				_, err := svc.AddMultipleKeys(group.ID, tt.seedKeys)
+				require.NoError(t, err)
+			}
+
 			result, err := svc.AddMultipleKeys(group.ID, tt.keysText)
 
 			if tt.expectError {

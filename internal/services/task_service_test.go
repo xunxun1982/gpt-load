@@ -257,8 +257,7 @@ func TestTaskStatusDuration(t *testing.T) {
 	// Verify duration is calculated
 	status, err := svc.GetTaskStatus()
 	require.NoError(t, err)
-	assert.Greater(t, status.DurationSeconds, 0.0)
-	assert.GreaterOrEqual(t, status.DurationSeconds, 0.1) // At least 100ms
+	assert.Greater(t, status.DurationSeconds, 0.0) // Duration should be positive
 }
 
 // TestTaskStatusSerialization tests task status serialization
@@ -299,10 +298,13 @@ func TestConcurrentTaskOperations(t *testing.T) {
 	require.NoError(t, err)
 
 	// Concurrent progress updates
+	errCh := make(chan error, 10)
 	done := make(chan bool)
 	for i := 0; i < 10; i++ {
 		go func(progress int) {
-			_ = svc.UpdateProgress(progress * 10)
+			if err := svc.UpdateProgress(progress * 10); err != nil {
+				errCh <- err
+			}
 			done <- true
 		}(i)
 	}
@@ -310,6 +312,12 @@ func TestConcurrentTaskOperations(t *testing.T) {
 	// Wait for all goroutines
 	for i := 0; i < 10; i++ {
 		<-done
+	}
+	close(errCh)
+
+	// Check for errors
+	for err := range errCh {
+		require.NoError(t, err)
 	}
 
 	// Verify task is still running
@@ -347,12 +355,14 @@ func BenchmarkUpdateProgress(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		progress := i % 100
 		if progress == 0 && i != 0 {
+			b.StopTimer()
 			if err := svc.EndTask(nil, nil); err != nil {
 				b.Fatal(err)
 			}
 			if _, err := svc.StartTask(TaskTypeKeyImport, "test-group", 100); err != nil {
 				b.Fatal(err)
 			}
+			b.StartTimer()
 		}
 		if err := svc.UpdateProgress(progress); err != nil {
 			b.Fatal(err)

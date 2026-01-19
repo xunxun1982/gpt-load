@@ -122,7 +122,10 @@ func BenchmarkEncryptDecryptCycle(b *testing.B) {
 
 // BenchmarkConcurrentEncrypt benchmarks concurrent encryption
 func BenchmarkConcurrentEncrypt(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 	data := "sk-1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
 
 	b.RunParallel(func(pb *testing.PB) {
@@ -134,7 +137,10 @@ func BenchmarkConcurrentEncrypt(b *testing.B) {
 
 // BenchmarkConcurrentDecrypt benchmarks concurrent decryption
 func BenchmarkConcurrentDecrypt(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 	data := "sk-1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
 	ciphertext, _ := svc.Encrypt(data)
 
@@ -147,7 +153,10 @@ func BenchmarkConcurrentDecrypt(b *testing.B) {
 
 // BenchmarkConcurrentHash benchmarks concurrent hashing
 func BenchmarkConcurrentHash(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 	data := "sk-1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
 
 	b.RunParallel(func(pb *testing.PB) {
@@ -159,7 +168,10 @@ func BenchmarkConcurrentHash(b *testing.B) {
 
 // BenchmarkNoopService benchmarks noop service (no encryption)
 func BenchmarkNoopService(b *testing.B) {
-	svc, _ := NewService("")
+	svc, err := NewService("")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 	data := "sk-1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
 
 	b.Run("Encrypt", func(b *testing.B) {
@@ -183,7 +195,10 @@ func BenchmarkNoopService(b *testing.B) {
 
 // BenchmarkRealisticWorkload simulates realistic encryption workload
 func BenchmarkRealisticWorkload(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 
 	// Realistic API key distribution
 	keys := []string{
@@ -219,7 +234,10 @@ func BenchmarkRealisticWorkload(b *testing.B) {
 
 // BenchmarkBatchOperations benchmarks batch encryption operations
 func BenchmarkBatchOperations(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 
 	// Generate batch of keys
 	keys := make([]string, 100)
@@ -254,7 +272,10 @@ func BenchmarkBatchOperations(b *testing.B) {
 
 // BenchmarkMemoryAllocation benchmarks memory allocation patterns
 func BenchmarkMemoryAllocation(b *testing.B) {
-	svc, _ := NewService("test-encryption-key-32-bytes!!")
+	svc, err := NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatalf("NewService: %v", err)
+	}
 	data := "sk-1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
 
 	b.Run("Encrypt", func(b *testing.B) {

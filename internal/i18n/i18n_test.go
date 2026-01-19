@@ -23,27 +23,22 @@ func TestGetLocalizer(t *testing.T) {
 	tests := []struct {
 		name       string
 		acceptLang string
-		expected   string
 	}{
 		{
 			name:       "Chinese",
 			acceptLang: "zh-CN",
-			expected:   "zh-CN",
 		},
 		{
 			name:       "English",
 			acceptLang: "en-US",
-			expected:   "en-US",
 		},
 		{
 			name:       "Japanese",
 			acceptLang: "ja-JP",
-			expected:   "ja-JP",
 		},
 		{
 			name:       "empty defaults to Chinese",
 			acceptLang: "",
-			expected:   "zh-CN",
 		},
 	}
 
