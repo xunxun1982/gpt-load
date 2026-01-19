@@ -317,7 +317,9 @@ function parseCookieString(cookieStr: string): Map<string, string> {
   const result = new Map<string, string>();
   for (const part of cookieStr.split(";")) {
     const trimmed = part.trim();
-    if (!trimmed) continue;
+    if (!trimmed) {
+      continue;
+    }
     const idx = trimmed.indexOf("=");
     if (idx > 0) {
       const key = trimmed.substring(0, idx).trim();

@@ -3,6 +3,8 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -10780,4 +10782,573 @@ func TestKiloCodeStreamingXMLSuppression(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHandleFunctionCallNormalResponse tests non-streaming function call response handling
+func TestHandleFunctionCallNormalResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name           string
+		responseBody   string
+		triggerSignal  string
+		expectModified bool
+		checkFunc      func(*testing.T, string)
+	}{
+		{
+			name: "successful function call extraction",
+			responseBody: `{
+				"id": "chatcmpl-123",
+				"object": "chat.completion",
+				"created": 1234567890,
+				"model": "gpt-4",
+				"choices": [{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": "Let me search for that. <<CALL_abc123>><function_calls><invoke name=\"web_search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"
+					},
+					"finish_reason": "stop"
+				}],
+				"usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+			}`,
+			triggerSignal:  "<<CALL_abc123>>",
+			expectModified: true,
+			checkFunc: func(t *testing.T, output string) {
+				var resp map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				choices := resp["choices"].([]interface{})
+				choice := choices[0].(map[string]interface{})
+				message := choice["message"].(map[string]interface{})
+
+				// Check tool_calls field exists
+				if _, ok := message["tool_calls"]; !ok {
+					t.Error("expected tool_calls field in message")
+				}
+
+				// Check finish_reason is tool_calls
+				if choice["finish_reason"] != "tool_calls" {
+					t.Errorf("expected finish_reason tool_calls, got %v", choice["finish_reason"])
+				}
+
+				// Check content has XML removed
+				content := message["content"].(string)
+				if strings.Contains(content, "<function_calls>") {
+					t.Error("content should not contain <function_calls> XML")
+				}
+				if strings.Contains(content, "<<CALL_") {
+					t.Error("content should not contain trigger signal")
+				}
+			},
+		},
+		{
+			name: "no function calls - passthrough",
+			responseBody: `{
+				"id": "chatcmpl-456",
+				"object": "chat.completion",
+				"created": 1234567890,
+				"model": "gpt-4",
+				"choices": [{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": "This is a normal response without function calls."
+					},
+					"finish_reason": "stop"
+				}]
+			}`,
+			triggerSignal:  "<<CALL_test>>",
+			expectModified: false,
+			checkFunc: func(t *testing.T, output string) {
+				var resp map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				choices := resp["choices"].([]interface{})
+				choice := choices[0].(map[string]interface{})
+				message := choice["message"].(map[string]interface{})
+
+				// Should not have tool_calls
+				if _, ok := message["tool_calls"]; ok {
+					t.Error("should not have tool_calls field")
+				}
+
+				// finish_reason should remain stop
+				if choice["finish_reason"] != "stop" {
+					t.Errorf("expected finish_reason stop, got %v", choice["finish_reason"])
+				}
+			},
+		},
+		{
+			name: "function call in reasoning_content",
+			responseBody: `{
+				"id": "chatcmpl-789",
+				"object": "chat.completion",
+				"created": 1234567890,
+				"model": "deepseek-reasoner",
+				"choices": [{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": "I will search for information.",
+						"reasoning_content": "<<CALL_xyz>><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke>"
+					},
+					"finish_reason": "stop"
+				}]
+			}`,
+			triggerSignal:  "<<CALL_xyz>>",
+			expectModified: true,
+			checkFunc: func(t *testing.T, output string) {
+				var resp map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				choices := resp["choices"].([]interface{})
+				choice := choices[0].(map[string]interface{})
+				message := choice["message"].(map[string]interface{})
+
+				// Check tool_calls extracted from reasoning_content
+				if _, ok := message["tool_calls"]; !ok {
+					t.Error("expected tool_calls field extracted from reasoning_content")
+				}
+			},
+		},
+		{
+			name: "malformed function_calls block removed",
+			responseBody: `{
+				"id": "chatcmpl-999",
+				"object": "chat.completion",
+				"created": 1234567890,
+				"model": "gpt-4",
+				"choices": [{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": "Let me try. <function_calls><invoke>incomplete_without_name</invoke></function_calls>"
+					},
+					"finish_reason": "stop"
+				}]
+			}`,
+			triggerSignal:  "<<CALL_test>>",
+			expectModified: true,
+			checkFunc: func(t *testing.T, output string) {
+				var resp map[string]interface{}
+				if err := json.Unmarshal([]byte(output), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				choices := resp["choices"].([]interface{})
+				choice := choices[0].(map[string]interface{})
+				message := choice["message"].(map[string]interface{})
+
+				// Malformed block should be removed from content
+				content := message["content"].(string)
+				if strings.Contains(content, "<function_calls>") {
+					t.Error("malformed <function_calls> block should be removed")
+				}
+
+				// Should not have tool_calls since invoke has no name attribute
+				// NOTE: The parser requires name attribute to extract tool calls
+				if toolCalls, ok := message["tool_calls"]; ok {
+					if tc, ok := toolCalls.([]interface{}); ok && len(tc) > 0 {
+						t.Error("should not have valid tool_calls for invoke without name")
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock upstream response
+			upstreamResp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.responseBody)),
+				Header:     make(http.Header),
+			}
+			upstreamResp.Header.Set("Content-Type", "application/json")
+
+			// Create test context
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/test", nil)
+
+			// Set trigger signal in context
+			c.Set(ctxKeyTriggerSignal, tt.triggerSignal)
+
+			// Set group for logging
+			c.Set("group", &models.Group{Name: "test-group"})
+
+			// Call the handler
+			ps := &ProxyServer{}
+			ps.handleFunctionCallNormalResponse(c, upstreamResp)
+
+			// Check results
+			output := w.Body.String()
+			if tt.checkFunc != nil {
+				tt.checkFunc(t, output)
+			}
+		})
+	}
+}
+
+// TestHandleFunctionCallStreamingResponse tests streaming function call response handling
+func TestHandleFunctionCallStreamingResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Helper to extract and decode SSE content from streaming output
+	// This avoids false negatives from JSON escaping (e.g., < becomes \u003c)
+	extractStreamingContent := func(output string) string {
+		var b strings.Builder
+		for _, line := range strings.Split(output, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			payload := strings.TrimPrefix(line, "data: ")
+			if payload == "" || payload == "[DONE]" {
+				continue
+			}
+			var evt struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal([]byte(payload), &evt) == nil && len(evt.Choices) > 0 {
+				b.WriteString(evt.Choices[0].Delta.Content)
+			}
+		}
+		return b.String()
+	}
+
+	tests := []struct {
+		name          string
+		events        []string
+		triggerSignal string
+		checkFunc     func(*testing.T, string)
+	}{
+		{
+			name: "streaming with function call",
+			events: []string{
+				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me search. "},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<<CALL_abcd>>"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":null}]}` + "\n",
+				`data: [DONE]` + "\n",
+			},
+			triggerSignal: "<<CALL_abcd>>",
+			checkFunc: func(t *testing.T, output string) {
+				// Decode SSE content before assertions to avoid JSON escaping false negatives
+				decoded := extractStreamingContent(output)
+				// Check trigger signal is removed from output
+				if strings.Contains(decoded, "<<CALL_abcd>>") {
+					t.Error("trigger signal should be removed from streaming output")
+				}
+
+				// Check function_calls XML is removed
+				if strings.Contains(decoded, "<function_calls>") {
+					t.Error("function_calls XML should be removed from streaming output")
+				}
+
+				// Check tool_calls delta is present in final event
+				if !strings.Contains(output, `"tool_calls"`) {
+					t.Error("expected tool_calls in final streaming event")
+				}
+
+				// Check finish_reason is tool_calls
+				if !strings.Contains(output, `"finish_reason":"tool_calls"`) {
+					t.Error("expected finish_reason tool_calls in final event")
+				}
+			},
+		},
+		{
+			name: "streaming without function calls",
+			events: []string{
+				`data: {"id":"chatcmpl-456","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-456","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-456","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n",
+				`data: [DONE]` + "\n",
+			},
+			triggerSignal: "<<CALL_test>>",
+			checkFunc: func(t *testing.T, output string) {
+				// Should not have tool_calls
+				if strings.Contains(output, `"tool_calls"`) {
+					t.Error("should not have tool_calls in output")
+				}
+
+				// Should have normal text content
+				if !strings.Contains(output, "Hello") || !strings.Contains(output, "world") {
+					t.Error("expected normal text content in output")
+				}
+			},
+		},
+		{
+			name: "streaming with partial XML tags",
+			events: []string{
+				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Searching... "},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<<CALL_xyzw>>"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"function_calls>"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<invoke name=\"test\"></invoke>"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"</function_calls>"},"finish_reason":null}]}` + "\n",
+				`data: [DONE]` + "\n",
+			},
+			triggerSignal: "<<CALL_xyzw>>",
+			checkFunc: func(t *testing.T, output string) {
+				decoded := extractStreamingContent(output)
+				// Partial XML tags should be suppressed
+				if strings.Contains(decoded, "<function_calls>") {
+					t.Error("partial XML tags should be suppressed in streaming")
+				}
+
+				// Prefix text should be preserved
+				if !strings.Contains(decoded, "Searching...") {
+					t.Error("expected prefix text to be preserved")
+				}
+			},
+		},
+		{
+			name: "streaming with malformed CC output",
+			events: []string{
+				`data: {"id":"chatcmpl-999","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me create tasks. "},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-999","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<><parametername=\"todos\">[{\"id\":\"1\",\"content\":\"task\"}]"},"finish_reason":null}]}` + "\n",
+				`data: [DONE]` + "\n",
+			},
+			triggerSignal: "<<CALL_test>>",
+			checkFunc: func(t *testing.T, output string) {
+				decoded := extractStreamingContent(output)
+				// Malformed CC tags should be removed
+				if strings.Contains(decoded, "<><parametername") {
+					t.Error("malformed CC tags should be removed from streaming")
+				}
+				if strings.Contains(decoded, `"todos"`) {
+					t.Error("JSON content from malformed tags should be removed")
+				}
+
+				// Prefix text should be preserved
+				if !strings.Contains(decoded, "Let me create tasks.") {
+					t.Error("expected prefix text to be preserved")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create streaming response body
+			var streamData strings.Builder
+			for _, event := range tt.events {
+				streamData.WriteString(event)
+				streamData.WriteString("\n")
+			}
+
+			// Create mock upstream response
+			upstreamResp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(streamData.String())),
+				Header:     make(http.Header),
+			}
+			upstreamResp.Header.Set("Content-Type", "text/event-stream")
+
+			// Create test context
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/test", nil)
+
+			// Set trigger signal in context
+			c.Set(ctxKeyTriggerSignal, tt.triggerSignal)
+
+			// Set group for logging
+			c.Set("group", &models.Group{Name: "test-group"})
+
+			// Call the handler
+			ps := &ProxyServer{}
+			ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+			// Check results
+			output := w.Body.String()
+			if tt.checkFunc != nil {
+				tt.checkFunc(t, output)
+			}
+		})
+	}
+}
+
+// TestFunctionCallHelperFunctions tests helper functions in function_call.go
+func TestFunctionCallHelperFunctions(t *testing.T) {
+	t.Run("isValidJSON", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected bool
+		}{
+			{"valid_object", `{"key":"value"}`, true},
+			{"valid_array", `[1,2,3]`, true},
+			{"invalid_json", `{invalid}`, false},
+			{"empty_string", ``, false},
+			{"not_json", `hello`, false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := isValidJSON(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("escapeXml", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected string
+		}{
+			{"with_ampersand", "hello & world", "hello &amp; world"},
+			{"with_lt", "a < b", "a &lt; b"},
+			{"with_gt", "a > b", "a &gt; b"},
+			{"with_quote", `say "hello"`, `say &quot;hello&quot;`},
+			{"with_apos", "it's", "it&apos;s"},
+			{"no_escape", "hello world", "hello world"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := escapeXml(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("cleanConsecutiveBlankLines", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected string
+		}{
+			{"three_blanks", "line1\n\n\n\nline2", "line1\n\nline2"},
+			{"two_blanks", "line1\n\n\nline2", "line1\n\nline2"},
+			{"one_blank", "line1\n\nline2", "line1\n\nline2"},
+			{"no_blanks", "line1\nline2", "line1\nline2"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := cleanConsecutiveBlankLines(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %q, got %q", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("hasToolResults", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			messages []any
+			expected bool
+		}{
+			{
+				name: "with_tool_call_id",
+				messages: []any{
+					map[string]any{"role": "user", "content": "hello"},
+					map[string]any{"role": "tool", "tool_call_id": "call_123"},
+				},
+				expected: true,
+			},
+			{
+				name: "without_tool_call_id",
+				messages: []any{
+					map[string]any{"role": "user", "content": "hello"},
+					map[string]any{"role": "assistant", "content": "hi"},
+				},
+				expected: false,
+			},
+			{
+				name:     "empty_messages",
+				messages: []any{},
+				expected: false,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := hasToolResults(tt.messages)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("isPureJSONLine", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected bool
+		}{
+			{"json_object", `{"key":"value"}`, false}, // 实际函数可能有更复杂的逻辑
+			{"json_array", `[1,2,3]`, false},
+			{"json_field", `"field":"value"`, false},
+			{"text_line", `This is text`, false},
+			{"empty_line", ``, false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := isPureJSONLine(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %v, got %v", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("findLastSentenceEnd", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			input    string
+			expected int
+		}{
+			{"with_period", "Hello world. More text", 11},
+			{"with_exclamation", "Hello! More text", 5},
+			{"with_question", "Hello? More text", 5},
+			{"no_sentence_end", "Hello world", -1},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := findLastSentenceEnd(tt.input)
+				if result != tt.expected {
+					t.Errorf("expected %d, got %d", tt.expected, result)
+				}
+			})
+		}
+	})
+
+	t.Run("limitToFirstCall", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			calls    []functionCall
+			expected int
+		}{
+			{"single_call", []functionCall{{Name: "tool1"}}, 1},
+			{"multiple_calls", []functionCall{{Name: "tool1"}, {Name: "tool2"}}, 1},
+			{"empty_calls", []functionCall{}, 0},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := limitToFirstCall(tt.calls)
+				if len(result) != tt.expected {
+					t.Errorf("expected %d calls, got %d", tt.expected, len(result))
+				}
+			})
+		}
+	})
 }

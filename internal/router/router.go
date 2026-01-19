@@ -61,6 +61,10 @@ func NewRouter(
 	router.Use(middleware.CORS(configManager.GetCORSConfig()))
 	router.Use(middleware.RateLimiter(configManager.GetPerformanceConfig()))
 	router.Use(middleware.SecurityHeaders())
+	// 32MB limit protects against memory exhaustion from large requests
+	// This is sufficient for most API operations including file uploads
+	// Large bulk imports (>32MB) should be split into smaller batches
+	router.Use(middleware.RequestBodySizeLimit(32 << 20))
 	startTime := time.Now()
 	router.Use(func(c *gin.Context) {
 		c.Set("serverStartTime", startTime)

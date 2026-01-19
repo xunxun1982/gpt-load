@@ -50,6 +50,8 @@ export default {
   accessKeys: "アクセスキー",
   accessKeyName: "名前",
   maskedKey: "キー",
+  keyCopied: "キーをコピーしました",
+  keyNameCopied: "名前をコピーしました",
   allowedModels: "許可モデル",
   allModels: "全モデル",
   specificModels: "{count} モデル",
@@ -84,4 +86,27 @@ export default {
   refreshModelPool: "モデルプールを更新",
   refreshing: "更新中...",
   totalAccessKeys: "合計 {total} キー",
+
+  // Usage statistics
+  usageCount: "使用回数",
+  lastUsedAt: "最終使用",
+  neverUsed: "未使用",
+  justNow: "たった今",
+  minutesAgo: "{n} 分前",
+  hoursAgo: "{n} 時間前",
+  daysAgo: "{n} 日前",
+  monthsAgo: "{n} ヶ月前",
+  yearsAgo: "{n} 年前",
+
+  // Batch operations
+  batchOperations: "一括操作",
+  batchDelete: "一括削除",
+  batchEnable: "一括有効化",
+  batchDisable: "一括無効化",
+  selectedKeys: "{count} キーを選択",
+  confirmBatchDelete: "選択した {count} 個のアクセスキーを削除してもよろしいですか？",
+  batchDeleteSuccess: "{count} 個のアクセスキーを削除しました",
+  batchEnableSuccess: "{count} 個のアクセスキーを有効化しました",
+  batchDisableSuccess: "{count} 個のアクセスキーを無効化しました",
+  selectAtLeastOne: "少なくとも1つのアクセスキーを選択してください",
 };

@@ -66,5 +66,45 @@ func (ps *ProxyServer) handleModelListResponse(c *gin.Context, resp *http.Respon
 		return
 	}
 
+	// Check if this is a CC request (Claude Code client)
+	// If so, convert Gemini format {"models": [...]} to Claude format {"data": [...]}
+	if isCCRequest(c) && group.ChannelType == "gemini" {
+		if models, hasModels := response["models"]; hasModels {
+			// Convert model list to remove "models/" prefix for Claude Code compatibility
+			if modelList, ok := models.([]any); ok {
+				cleanedModels := make([]any, 0, len(modelList))
+				for _, model := range modelList {
+					if modelMap, ok := model.(map[string]any); ok {
+						// Clone the model map to avoid modifying the original
+						cleanedModel := make(map[string]any)
+						for k, v := range modelMap {
+							cleanedModel[k] = v
+						}
+						// Remove "models/" prefix from name field
+						if name, ok := cleanedModel["name"].(string); ok {
+							cleanedModel["name"] = strings.TrimPrefix(name, "models/")
+						}
+						cleanedModels = append(cleanedModels, cleanedModel)
+						continue
+					}
+					// Preserve non-map entries as-is (e.g., strings or other types)
+					cleanedModels = append(cleanedModels, model)
+				}
+				// Convert Gemini format to Claude format by swapping key in-place
+				response["data"] = cleanedModels
+				delete(response, "models")
+			} else {
+				// Fallback: just convert the key name
+				response["data"] = models
+				delete(response, "models")
+			}
+			logrus.WithFields(logrus.Fields{
+				"group":        group.Name,
+				"channel_type": group.ChannelType,
+				"format":       "claude_cc",
+			}).Debug("Converted Gemini model list to Claude format for CC client")
+		}
+	}
+
 	c.JSON(http.StatusOK, response)
 }

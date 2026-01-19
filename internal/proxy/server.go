@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
@@ -334,15 +333,17 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 
 	path := c.Request.URL.Path
 	// Path is already rewritten from /claude/v1/messages/count_tokens to /v1/messages/count_tokens
-	// by rewriteClaudePathToOpenAIGeneric() before this function is called.
-	// This works for both OpenAI CC mode and Codex CC mode (/claude entry point).
-	if !strings.HasSuffix(path, "/v1/messages/count_tokens") {
+	// or /v1beta/messages/count_tokens (for Gemini CC) by rewriteClaudePathToOpenAIGeneric()
+	// or rewriteClaudePathToGemini() before this function is called.
+	// This works for OpenAI CC mode, Codex CC mode, and Gemini CC mode (/claude entry point).
+	if !strings.HasSuffix(path, "/v1/messages/count_tokens") &&
+		!strings.HasSuffix(path, "/v1beta/messages/count_tokens") {
 		return false
 	}
 
 	// Local heuristic estimation: count runes and assume ~4 runes per token.
 	// This endpoint is intercepted locally and not forwarded to upstream.
-	// Supports: OpenAI channel CC mode, Codex channel CC mode (/claude entry).
+	// Supports: OpenAI channel CC mode, Codex channel CC mode, Gemini channel CC mode (/claude entry).
 	estimatedTokens := estimateTokensForClaudeCountTokens(bodyBytes)
 
 	// Apply multiplier (billing adjustment).
@@ -382,8 +383,8 @@ func (ps *ProxyServer) handleEventLoggingBatch(c *gin.Context, group *models.Gro
 
 	path := c.Request.URL.Path
 
-	// Check if this is a CC support case (OpenAI or Codex channel with /claude/api/event_logging/batch)
-	// isCCSupportEnabled() returns true for both OpenAI and Codex channels when cc_support is enabled.
+	// Check if this is a CC support case (OpenAI, Codex, or Gemini channel with /claude/api/event_logging/batch)
+	// isCCSupportEnabled() returns true for OpenAI, Codex, and Gemini channels when cc_support is enabled.
 	isCCCase := isCCSupportEnabled(group) && strings.HasSuffix(path, "/claude/api/event_logging/batch")
 
 	// Check if this is an Anthropic intercept case (/api/event_logging/batch without /claude/ prefix)
@@ -423,6 +424,33 @@ func (ps *ProxyServer) handleEventLoggingBatch(c *gin.Context, group *models.Gro
 	return true
 }
 
+// rewritePathForGeminiCC rewrites the request path for Gemini CC mode.
+// It constructs the Gemini API path format: /v1beta/models/{model}:{endpoint}
+// where endpoint is either "generateContent" or "streamGenerateContent".
+// The model name defaults to "gemini-2.5-pro" (current stable version) if not
+// specified in context via "gemini_cc_model" key.
+// Note: "gemini-pro" is deprecated and should not be used as fallback.
+func (ps *ProxyServer) rewritePathForGeminiCC(c *gin.Context) string {
+	// Default to gemini-2.5-pro (current stable version as of 2025)
+	// Previous default "gemini-pro" is deprecated per Google AI documentation
+	modelName := "gemini-2.5-pro"
+	if ccModel, exists := c.Get("gemini_cc_model"); exists {
+		if model, ok := ccModel.(string); ok && model != "" {
+			modelName = model
+		}
+	}
+
+	// Determine endpoint based on streaming mode
+	endpoint := "generateContent"
+	if streamMode, exists := c.Get("gemini_stream_mode"); exists {
+		if isStreamMode, ok := streamMode.(bool); ok && isStreamMode {
+			endpoint = "streamGenerateContent"
+		}
+	}
+
+	return fmt.Sprintf("/v1beta/models/%s:%s", modelName, endpoint)
+}
+
 func estimateTokensForClaudeCountTokens(bodyBytes []byte) int {
 	if len(bodyBytes) == 0 {
 		return 0
@@ -430,7 +458,7 @@ func estimateTokensForClaudeCountTokens(bodyBytes []byte) int {
 
 	var req ClaudeRequest
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
-		return estimateTokensFromBytes(bodyBytes)
+		return utils.EstimateTokensFromBytes(bodyBytes)
 	}
 
 	var sb strings.Builder
@@ -455,7 +483,7 @@ func estimateTokensForClaudeCountTokens(bodyBytes []byte) int {
 		}
 	}
 
-	return estimateTokensFromString(sb.String())
+	return utils.EstimateTokensFromString(sb.String())
 }
 
 func extractTextFromClaudeRaw(raw json.RawMessage) string {
@@ -495,34 +523,6 @@ func extractTextFromClaudeRaw(raw json.RawMessage) string {
 	}
 
 	return string(raw)
-}
-
-func estimateTokensFromString(text string) int {
-	if text == "" {
-		return 0
-	}
-	count := utf8.RuneCountInString(text)
-	if count <= 0 {
-		return 0
-	}
-	// Heuristic: ~4 runes per token.
-	// NOTE: This is an approximation and may differ from actual tokenizers
-	// (language mix, code/JSON, and model-specific tokenization).
-	return (count + 3) / 4
-}
-
-func estimateTokensFromBytes(b []byte) int {
-	if len(b) == 0 {
-		return 0
-	}
-	count := utf8.RuneCount(b)
-	if count <= 0 {
-		return 0
-	}
-	// Heuristic: ~4 runes per token.
-	// NOTE: This is an approximation and may differ from actual tokenizers
-	// (language mix, code/JSON, and model-specific tokenization).
-	return (count + 3) / 4
 }
 
 // NewProxyServer creates a new proxy server
@@ -661,18 +661,27 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	if isCCSupportEnabled(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
-		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+
+		// Use channel-specific path rewriting
+		// Gemini uses /v1beta, others use /v1
+		if group.ChannelType == "gemini" {
+			c.Request.URL.Path = rewriteClaudePathToGemini(c.Request.URL.Path)
+		} else {
+			c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		}
+
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
 		sanitizeCCQueryParams(c.Request.URL)
 		c.Set("cc_was_claude_path", true)
 		logrus.WithFields(logrus.Fields{
 			"group":           group.Name,
+			"channel_type":    group.ChannelType,
 			"original_path":   originalPath,
 			"new_path":        c.Request.URL.Path,
 			"original_query":  originalQuery,
 			"sanitized_query": c.Request.URL.RawQuery,
-		}).Debug("CC support: rewritten Claude path to OpenAI path and sanitized query params")
+		}).Debug("CC support: rewritten Claude path for channel type and sanitized query params")
 	}
 
 	if c.Request.Method == "GET" || len(bodyBytes) == 0 {
@@ -711,7 +720,8 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			// Query params are already sanitized in the path rewriting block above (sanitizeCCQueryParams)
 			// when wasClaudePath is true. Non-Claude paths don't need sanitization as they are
 			// direct API calls that should preserve their original query parameters.
-			if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+			// Also check /v1beta/messages for Gemini CC conversion (path may be rewritten to /v1beta/messages)
+			if isCCSupportEnabled(group) && (strings.HasSuffix(c.Request.URL.Path, "/v1/messages") || strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")) {
 				// Handle Codex channel CC support (Claude -> Codex/Responses API)
 				if group.ChannelType == "codex" {
 					convertedBody, converted, ccErr := ps.applyCodexCCRequestConversion(c, group, finalBodyBytes)
@@ -738,6 +748,31 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 							"channel_type": group.ChannelType,
 							"new_path":     c.Request.URL.Path,
 						}).Debug("Codex CC support: converted Claude request to Codex format")
+					}
+				} else if group.ChannelType == "gemini" {
+					// Handle Gemini channel CC support (Claude -> Gemini API)
+					convertedBody, converted, ccErr := ps.applyGeminiCCRequestConversion(c, group, finalBodyBytes)
+					if ccErr != nil {
+						logrus.WithError(ccErr).WithFields(logrus.Fields{
+							"group": group.Name,
+							"path":  c.Request.URL.Path,
+						}).Error("Failed to convert Claude request to Gemini format")
+						response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Gemini CC conversion failed: %v", ccErr)))
+						return
+					} else if converted {
+						finalBodyBytes = convertedBody
+						// Re-apply param overrides after CC conversion
+						finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+						if err != nil {
+							logrus.WithError(err).Warn("Failed to re-apply param overrides after Gemini CC conversion")
+						}
+						// Rewrite path from /v1/messages to Gemini generateContent endpoint
+						c.Request.URL.Path = ps.rewritePathForGeminiCC(c)
+						logrus.WithFields(logrus.Fields{
+							"group":        group.Name,
+							"channel_type": group.ChannelType,
+							"new_path":     c.Request.URL.Path,
+						}).Debug("Gemini CC support: converted Claude request to Gemini format")
 					}
 				} else {
 					// Handle OpenAI channel CC support (Claude -> OpenAI Chat Completions)
@@ -901,29 +936,37 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	}
 
 	// Apply model redirection with index tracking for dynamic weight metrics
-	finalBodyBytes, originalModel, targetIdx, err := channelHandler.ApplyModelRedirectWithIndex(req, bodyBytes, group)
-	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
-		return
-	}
-
-	// Store original model and target index in context for logging and dynamic weight metrics
-	if originalModel != "" {
-		c.Set("original_model", originalModel)
-		if targetIdx >= 0 {
-			c.Set("model_redirect_target_index", targetIdx)
+	// Skip for CC mode as redirection is already handled in CC conversion
+	// This prevents strict mode errors when using Claude model names with CC
+	finalBodyBytes := bodyBytes
+	var originalModel string
+	var targetIdx int = -1
+	if !isCCEnabled(c) {
+		var err error
+		finalBodyBytes, originalModel, targetIdx, err = channelHandler.ApplyModelRedirectWithIndex(req, bodyBytes, group)
+		if err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, "", nil, channelHandler, bodyBytes, models.RequestTypeFinal)
+			return
 		}
-	}
 
-	// Update request body if it was modified by redirection
-	if !bytes.Equal(finalBodyBytes, bodyBytes) {
-		req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
-		req.ContentLength = int64(len(finalBodyBytes))
-		req.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(finalBodyBytes)), nil
+		// Store original model and target index in context for logging and dynamic weight metrics
+		if originalModel != "" {
+			c.Set("original_model", originalModel)
+			if targetIdx >= 0 {
+				c.Set("model_redirect_target_index", targetIdx)
+			}
 		}
-		bodyBytes = finalBodyBytes
+
+		// Update request body if it was modified by redirection
+		if !bytes.Equal(finalBodyBytes, bodyBytes) {
+			req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
+			req.ContentLength = int64(len(finalBodyBytes))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(finalBodyBytes)), nil
+			}
+			bodyBytes = finalBodyBytes
+		}
 	}
 
 	// Log request
@@ -1069,14 +1112,18 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// the existing behavior.
 			ccEnabled := isCCEnabled(c)
 			codexCCMode := isCodexCCMode(c)
+			geminiCCMode := isGeminiCCMode(c)
 			logrus.WithFields(logrus.Fields{
-				"cc_enabled":    ccEnabled,
-				"codex_cc_mode": codexCCMode,
-				"is_stream":     isStream,
+				"cc_enabled":     ccEnabled,
+				"codex_cc_mode":  codexCCMode,
+				"gemini_cc_mode": geminiCCMode,
+				"is_stream":      isStream,
 			}).Debug("Response handler selection")
 			if ccEnabled {
 				if codexCCMode {
 					ps.handleCodexCCStreamingResponse(c, resp)
+				} else if geminiCCMode {
+					ps.handleGeminiCCStreamingResponse(c, resp)
 				} else {
 					ps.handleCCStreamingResponse(c, resp)
 				}
@@ -1090,16 +1137,20 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// the function-call aware response handler.
 			ccEnabled := isCCEnabled(c)
 			codexCCMode := isCodexCCMode(c)
+			geminiCCMode := isGeminiCCMode(c)
 			codexForcedStream := isCodexForcedStream(c)
 			logrus.WithFields(logrus.Fields{
-				"cc_enabled":           ccEnabled,
-				"codex_cc_mode":        codexCCMode,
-				"codex_forced_stream":  codexForcedStream,
-				"is_stream":            isStream,
+				"cc_enabled":          ccEnabled,
+				"codex_cc_mode":       codexCCMode,
+				"gemini_cc_mode":      geminiCCMode,
+				"codex_forced_stream": codexForcedStream,
+				"is_stream":           isStream,
 			}).Debug("Response handler selection")
 			if ccEnabled {
 				if codexCCMode {
 					ps.handleCodexCCNormalResponse(c, resp)
+				} else if geminiCCMode {
+					ps.handleGeminiCCNormalResponse(c, resp)
 				} else {
 					ps.handleCCNormalResponse(c, resp)
 				}
@@ -1258,7 +1309,15 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if isCCSupportEnabled(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
-		c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+
+		// Use channel-specific path rewriting
+		// Gemini uses /v1beta, others use /v1
+		if group.ChannelType == "gemini" {
+			c.Request.URL.Path = rewriteClaudePathToGemini(c.Request.URL.Path)
+		} else {
+			c.Request.URL.Path = rewriteClaudePathToOpenAIGeneric(c.Request.URL.Path)
+		}
+
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
 		sanitizeCCQueryParams(c.Request.URL)
@@ -1266,18 +1325,23 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		logrus.WithFields(logrus.Fields{
 			"aggregate_group": originalGroup.Name,
 			"sub_group":       group.Name,
+			"channel_type":    group.ChannelType,
 			"original_path":   originalPath,
 			"new_path":        c.Request.URL.Path,
 			"original_query":  originalQuery,
 			"sanitized_query": c.Request.URL.RawQuery,
-		}).Debug("CC support: rewritten Claude path for sub-group and sanitized query params")
+		}).Debug("CC support: rewritten Claude path for sub-group channel type and sanitized query params")
 	}
 
-	// Convert Claude messages request to target format (OpenAI or Codex)
-	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages
+	// Convert Claude messages request to target format (OpenAI, Codex, or Gemini)
+	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages (or /v1beta/messages for Gemini)
 	// Clear any stale Codex CC state from previous sub-group attempts
 	c.Set(ctxKeyCodexCC, false)
-	if isCCSupportEnabled(group) && strings.HasSuffix(c.Request.URL.Path, "/v1/messages") {
+	c.Set(ctxKeyGeminiCC, false)
+	// Check for both /v1/messages (OpenAI, Codex, Anthropic) and /v1beta/messages (Gemini)
+	isMessagesEndpoint := strings.HasSuffix(c.Request.URL.Path, "/v1/messages") ||
+		strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")
+	if isCCSupportEnabled(group) && isMessagesEndpoint {
 		// Handle Codex channel CC support (Claude -> Codex/Responses API)
 		if group.ChannelType == "codex" {
 			// Sanitize query parameters for Codex CC (remove Claude-specific params like beta=true)
@@ -1340,6 +1404,35 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					"channel_type":    group.ChannelType,
 					"new_path":        c.Request.URL.Path,
 				}).Debug("Codex CC support: converted Claude request for sub-group")
+			}
+		} else if group.ChannelType == "gemini" {
+			// Handle Gemini channel CC support (Claude -> Gemini API)
+			sanitizeCCQueryParams(c.Request.URL)
+
+			convertedBody, converted, ccErr := ps.applyGeminiCCRequestConversion(c, group, finalBodyBytes)
+			if ccErr != nil {
+				logrus.WithError(ccErr).WithFields(logrus.Fields{
+					"aggregate_group": originalGroup.Name,
+					"sub_group":       group.Name,
+					"path":            c.Request.URL.Path,
+				}).Error("Failed to convert Claude request to Gemini format for sub-group")
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Gemini CC conversion failed: %v", ccErr)))
+				return
+			} else if converted {
+				finalBodyBytes = convertedBody
+				// Re-apply param overrides after CC conversion
+				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to re-apply param overrides after Gemini CC conversion for sub-group")
+				}
+				// Rewrite path from /v1/messages to Gemini generateContent endpoint
+				c.Request.URL.Path = ps.rewritePathForGeminiCC(c)
+				logrus.WithFields(logrus.Fields{
+					"aggregate_group": originalGroup.Name,
+					"sub_group":       group.Name,
+					"channel_type":    group.ChannelType,
+					"new_path":        c.Request.URL.Path,
+				}).Debug("Gemini CC support: converted Claude request for sub-group")
 			}
 		} else {
 			// Handle OpenAI channel CC support (Claude -> OpenAI Chat Completions)
@@ -1506,27 +1599,38 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 
 	// Apply model redirection for aggregate sub-group with index tracking for dynamic weight metrics
-	redirectedBody, originalModel, targetIdx, err := subGroupChannelHandler.ApplyModelRedirectWithIndex(req, finalBodyBytes, group)
-	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
-		return
-	}
-
-	// Store original model and target index in context for logging and dynamic weight metrics
-	if originalModel != "" {
-		c.Set("original_model", originalModel)
-		if targetIdx >= 0 {
-			c.Set("model_redirect_target_index", targetIdx)
+	// Skip for CC mode as redirection is already handled in CC conversion
+	// This prevents strict mode errors when using Claude model names with CC
+	redirectedBody := finalBodyBytes
+	var redirectOriginalModel string
+	var targetIdx int = -1
+	if !isCCEnabled(c) {
+		var err error
+		redirectedBody, redirectOriginalModel, targetIdx, err = subGroupChannelHandler.ApplyModelRedirectWithIndex(req, finalBodyBytes, group)
+		if err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+			return
 		}
-	}
 
-	if !bytes.Equal(redirectedBody, finalBodyBytes) {
-		finalBodyBytes = redirectedBody
-		req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
-		req.ContentLength = int64(len(finalBodyBytes))
-		req.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(finalBodyBytes)), nil
+		// Store original model and target index in context for logging and dynamic weight metrics
+		// Only update if not already set by model mapping
+		if redirectOriginalModel != "" {
+			if _, exists := c.Get("original_model"); !exists {
+				c.Set("original_model", redirectOriginalModel)
+			}
+			if targetIdx >= 0 {
+				c.Set("model_redirect_target_index", targetIdx)
+			}
+		}
+
+		if !bytes.Equal(redirectedBody, finalBodyBytes) {
+			finalBodyBytes = redirectedBody
+			req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
+			req.ContentLength = int64(len(finalBodyBytes))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(finalBodyBytes)), nil
+			}
 		}
 	}
 
@@ -1717,14 +1821,18 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		if isStream {
 			ccEnabled := isCCEnabled(c)
 			codexCCMode := isCodexCCMode(c)
+			geminiCCMode := isGeminiCCMode(c)
 			logrus.WithFields(logrus.Fields{
-				"cc_enabled":    ccEnabled,
-				"codex_cc_mode": codexCCMode,
-				"is_stream":     isStream,
+				"cc_enabled":     ccEnabled,
+				"codex_cc_mode":  codexCCMode,
+				"gemini_cc_mode": geminiCCMode,
+				"is_stream":      isStream,
 			}).Debug("Aggregate response handler selection")
 			if ccEnabled {
 				if codexCCMode {
 					ps.handleCodexCCStreamingResponse(c, resp)
+				} else if geminiCCMode {
+					ps.handleGeminiCCStreamingResponse(c, resp)
 				} else {
 					ps.handleCCStreamingResponse(c, resp)
 				}
@@ -1741,21 +1849,26 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"group":               group.Name,
 				"path":                c.Request.URL.Path,
 				"model_mapping_count": len(group.ModelMappingCache),
+				"strict_mode":         group.ModelRedirectStrict,
 			}).Debug("Detected /models endpoint with model mapping, applying enhancement")
-			ps.handleModelsResponse(c, resp, group)
+			ps.handleModelsResponse(c, resp, group, subGroupChannelHandler)
 		} else {
 			ccEnabled := isCCEnabled(c)
 			codexCCMode := isCodexCCMode(c)
+			geminiCCMode := isGeminiCCMode(c)
 			codexForcedStream := isCodexForcedStream(c)
 			logrus.WithFields(logrus.Fields{
-				"cc_enabled":           ccEnabled,
-				"codex_cc_mode":        codexCCMode,
-				"codex_forced_stream":  codexForcedStream,
-				"is_stream":            isStream,
+				"cc_enabled":          ccEnabled,
+				"codex_cc_mode":       codexCCMode,
+				"gemini_cc_mode":      geminiCCMode,
+				"codex_forced_stream": codexForcedStream,
+				"is_stream":           isStream,
 			}).Debug("Aggregate response handler selection")
 			if ccEnabled {
 				if codexCCMode {
 					ps.handleCodexCCNormalResponse(c, resp)
+				} else if geminiCCMode {
+					ps.handleGeminiCCNormalResponse(c, resp)
 				} else {
 					ps.handleCCNormalResponse(c, resp)
 				}
@@ -2098,10 +2211,10 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 					}
 
 					logrus.WithFields(logrus.Fields{
-						"group_id":      group.ID,
-						"source_model":  originalModelStr,
-						"target_index":  targetIdxInt,
-						"is_success":    isSuccess,
+						"group_id":     group.ID,
+						"source_model": originalModelStr,
+						"target_index": targetIdxInt,
+						"is_success":   isSuccess,
 					}).Debug("Recorded dynamic weight metrics for model redirect")
 				}
 			}

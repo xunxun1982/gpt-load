@@ -8,7 +8,7 @@ import type {
   SubGroupInfo,
 } from "@/types/models";
 import { appState } from "@/utils/app-state";
-import { copy } from "@/utils/clipboard";
+import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
 import { getGroupDisplayName, maskProxyKeys } from "@/utils/display";
 import { CopyOutline, EyeOffOutline, EyeOutline, Pencil, Trash } from "@vicons/ionicons5";
 import {
@@ -148,12 +148,21 @@ async function copyProxyKeys() {
     return;
   }
   const keysToCopy = props.group.proxy_keys.replace(/,/g, "\n");
-  const success = await copy(keysToCopy);
-  if (success) {
-    window.$message.success(t("keys.proxyKeysCopied"));
-  } else {
-    window.$message.error(t("keys.copyFailed"));
-  }
+  await copyWithFallback(keysToCopy, {
+    onSuccess: () => {
+      window.$message.success(t("keys.proxyKeysCopied"));
+    },
+    onError: () => {
+      window.$message.error(t("keys.copyFailed"));
+    },
+    showManualDialog: (text: string) => {
+      dialog.create({
+        title: t("common.copy"),
+        content: () => createManualCopyContent(h, text, t),
+        positiveText: t("common.close"),
+      });
+    },
+  });
 }
 
 onMounted(() => {
@@ -415,12 +424,21 @@ async function copyUrl(url: string) {
   if (!url) {
     return;
   }
-  const success = await copy(url);
-  if (success) {
-    window.$message.success(t("keys.urlCopied"));
-  } else {
-    window.$message.error(t("keys.copyFailed"));
-  }
+  await copyWithFallback(url, {
+    onSuccess: () => {
+      window.$message.success(t("keys.urlCopied"));
+    },
+    onError: () => {
+      window.$message.error(t("keys.copyFailed"));
+    },
+    showManualDialog: (text: string) => {
+      dialog.create({
+        title: t("common.copy"),
+        content: () => createManualCopyContent(h, text, t),
+        positiveText: t("common.close"),
+      });
+    },
+  });
 }
 
 function resetPage() {

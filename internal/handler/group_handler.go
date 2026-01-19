@@ -201,11 +201,11 @@ type GroupResponse struct {
 	ModelRedirectStrict  bool                      `json:"model_redirect_strict"`
 	PathRedirects        []models.PathRedirectRule `json:"path_redirects"`
 	ProxyKeys            string                    `json:"proxy_keys"`
-	ParentGroupID       *uint                     `json:"parent_group_id"`
-	BoundSiteID         *uint                     `json:"bound_site_id"`
-	LastValidatedAt     *time.Time                `json:"last_validated_at"`
-	CreatedAt           time.Time                 `json:"created_at"`
-	UpdatedAt           time.Time                 `json:"updated_at"`
+	ParentGroupID        *uint                     `json:"parent_group_id"`
+	BoundSiteID          *uint                     `json:"bound_site_id"`
+	LastValidatedAt      *time.Time                `json:"last_validated_at"`
+	CreatedAt            time.Time                 `json:"created_at"`
+	UpdatedAt            time.Time                 `json:"updated_at"`
 }
 
 // newGroupResponse creates a new GroupResponse from a models.Group.

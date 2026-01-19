@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -178,6 +179,99 @@ func (z *ZstdDecompressor) NewReader(data []byte) (io.Reader, func(), error) {
 // Using errors.New instead of fmt.Errorf for sentinel errors is more idiomatic
 // and avoids the overhead of fmt.Errorf when no formatting is needed.
 var ErrDecompressedTooLarge = errors.New("decompressed data exceeds maximum allowed size")
+
+// compositeReadCloser wraps a reader with multiple closers
+type compositeReadCloser struct {
+	io.Reader
+	closers []func() error
+}
+
+// Close calls all closers in order
+func (c *compositeReadCloser) Close() error {
+	var firstErr error
+	for _, closer := range c.closers {
+		if err := closer(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// NewDecompressReader creates a decompression reader for streaming responses.
+// It wraps the original reader with the appropriate decompression reader based on Content-Encoding.
+// The returned reader must be closed by the caller.
+// Supports: gzip, deflate, br (brotli), zstd
+// Content-Encoding is normalized (lowercase, trimmed) to handle case/whitespace variants
+func NewDecompressReader(contentEncoding string, body io.ReadCloser) (io.ReadCloser, error) {
+	// Normalize encoding to handle case/whitespace variants (e.g., "GZip", " gzip ")
+	encoding := strings.ToLower(strings.TrimSpace(contentEncoding))
+	if encoding == "" || encoding == "identity" {
+		return body, nil
+	}
+
+	switch encoding {
+	case "gzip":
+		gzipReader, err := gzip.NewReader(body)
+		if err != nil {
+			// Close body on decoder creation failure to prevent resource leak
+			body.Close()
+			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		return &compositeReadCloser{
+			Reader: gzipReader,
+			closers: []func() error{
+				gzipReader.Close,
+				body.Close,
+			},
+		}, nil
+
+	case "deflate":
+		deflateReader, err := zlib.NewReader(body)
+		if err != nil {
+			// Close body on decoder creation failure to prevent resource leak
+			body.Close()
+			return nil, fmt.Errorf("failed to create deflate reader: %w", err)
+		}
+		return &compositeReadCloser{
+			Reader: deflateReader,
+			closers: []func() error{
+				deflateReader.Close,
+				body.Close,
+			},
+		}, nil
+
+	case "br":
+		brotliReader := brotli.NewReader(body)
+		return &compositeReadCloser{
+			Reader: brotliReader,
+			closers: []func() error{
+				body.Close,
+			},
+		}, nil
+
+	case "zstd":
+		zstdReader, err := zstd.NewReader(body)
+		if err != nil {
+			// Close body on decoder creation failure to prevent resource leak
+			body.Close()
+			return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+		}
+		return &compositeReadCloser{
+			Reader: zstdReader,
+			closers: []func() error{
+				func() error {
+					zstdReader.Close()
+					return nil
+				},
+				body.Close,
+			},
+		}, nil
+
+	default:
+		logrus.Warnf("Unsupported content encoding '%s', returning original body", contentEncoding)
+		return body, nil
+	}
+}
 
 // DecompressResponseWithLimit decompresses response data with a size limit to prevent memory exhaustion.
 // This uses io.LimitReader to stop decompression early when the limit is reached, preventing zip bomb attacks.

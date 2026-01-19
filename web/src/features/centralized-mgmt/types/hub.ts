@@ -18,9 +18,11 @@ export interface ModelSource {
 }
 
 // Model pool entry - represents a model with all its source groups
+// Sources are organized by channel type for better visualization
 export interface ModelPoolEntry {
   model_name: string;
-  sources: ModelSource[];
+  sources_by_type: Record<string, ModelSource[]>; // Grouped by channel type
+  total_sources: number;
 }
 
 // Model group priority DTO - represents a group with priority info
@@ -60,6 +62,8 @@ export interface HubAccessKey {
   allowed_models: string[];
   allowed_models_mode: AllowedModelsMode;
   enabled: boolean;
+  usage_count: number; // Total API calls
+  last_used_at: string | null; // Last usage timestamp (ISO 8601)
   created_at: string;
   updated_at: string;
 }
@@ -135,4 +139,21 @@ export interface UpdateModelGroupPriorityParams {
   model_name: string;
   group_id: number;
   priority: number;
+}
+
+// Batch operation parameters
+export interface BatchAccessKeyOperationParams {
+  ids: number[];
+}
+
+// Batch enable/disable parameters
+export interface BatchEnableDisableParams {
+  ids: number[];
+  enabled: boolean;
+}
+
+// Batch operation response
+export interface BatchOperationResponse {
+  deleted_count?: number;
+  updated_count?: number;
 }

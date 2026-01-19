@@ -50,6 +50,8 @@ export default {
   accessKeys: "访问密钥",
   accessKeyName: "名称",
   maskedKey: "密钥",
+  keyCopied: "密钥已复制",
+  keyNameCopied: "名称已复制",
   allowedModels: "允许模型",
   allModels: "全部模型",
   specificModels: "{count} 个模型",
@@ -83,4 +85,27 @@ export default {
   refreshModelPool: "刷新模型池",
   refreshing: "刷新中...",
   totalAccessKeys: "共 {total} 个密钥",
+
+  // Usage statistics
+  usageCount: "使用次数",
+  lastUsedAt: "最后使用",
+  neverUsed: "从未使用",
+  justNow: "刚刚",
+  minutesAgo: "{n} 分钟前",
+  hoursAgo: "{n} 小时前",
+  daysAgo: "{n} 天前",
+  monthsAgo: "{n} 个月前",
+  yearsAgo: "{n} 年前",
+
+  // Batch operations
+  batchOperations: "批量操作",
+  batchDelete: "批量删除",
+  batchEnable: "批量启用",
+  batchDisable: "批量禁用",
+  selectedKeys: "已选择 {count} 个密钥",
+  confirmBatchDelete: "确定要删除选中的 {count} 个访问密钥吗？",
+  batchDeleteSuccess: "成功删除 {count} 个访问密钥",
+  batchEnableSuccess: "成功启用 {count} 个访问密钥",
+  batchDisableSuccess: "成功禁用 {count} 个访问密钥",
+  selectAtLeastOne: "请至少选择一个访问密钥",
 };

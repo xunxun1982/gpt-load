@@ -49,6 +49,15 @@ const maxUpstreamResponseBodySize = 32 * 1024 * 1024
 
 var ErrBodyTooLarge = errors.New("CC: upstream response body exceeded maximum allowed size")
 
+// ccModelRedirectSelector is a shared selector instance for V2 rules in CC mode.
+// Stateless, safe for concurrent use.
+var ccModelRedirectSelector = models.NewModelRedirectSelector(utils.WeightedRandomSelect)
+
+// getModelRedirectSelector returns the shared model redirect selector for CC mode.
+func getModelRedirectSelector() *models.ModelRedirectSelector {
+	return ccModelRedirectSelector
+}
+
 // isValidToolCallArguments checks if tool call arguments are valid (not empty or just "{}").
 // Some upstream models (especially in thinking mode like deepseek-reasoner) may return
 // tool_calls with empty arguments as placeholders during reasoning. These should be
@@ -165,10 +174,10 @@ func getGroupConfigString(group *models.Group, key string) string {
 
 // isCCSupportEnabled checks whether the cc_support flag is enabled for the given group.
 // This flag is stored in the group-level JSON config.
-// Supports both OpenAI and Codex channel types.
+// Supports OpenAI, Codex, and Gemini channel types.
 func isCCSupportEnabled(group *models.Group) bool {
-	// Enable CC support for OpenAI and Codex channel groups.
-	if group == nil || (group.ChannelType != "openai" && group.ChannelType != "codex") {
+	// Enable CC support for OpenAI, Codex, and Gemini channel groups.
+	if group == nil || (group.ChannelType != "openai" && group.ChannelType != "codex" && group.ChannelType != "gemini") {
 		return false
 	}
 	return getGroupConfigBool(group, "cc_support")
@@ -772,6 +781,8 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 					resultContent = string(block.Content)
 				}
 			}
+			// Convert Windows paths to Unix-style for Claude Code compatibility
+			resultContent = convertWindowsPathsInToolResult(resultContent)
 			contentJSON := marshalStringAsJSONRaw("tool_result", resultContent)
 			toolResults = append(toolResults, OpenAIMessage{
 				Role:       "tool",
@@ -905,6 +916,38 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	if originalModel != "" {
 		if _, exists := c.Get("original_model"); !exists {
 			c.Set("original_model", originalModel)
+		}
+	}
+
+	// Apply model redirect rules for OpenAI CC mode
+	// Pass both V1 and V2 maps for backward compatibility with un-migrated groups
+	// This ensures the model name in the request body matches the redirect configuration
+	if originalModel != "" {
+		// Check if either V1 or V2 redirect maps are configured to support both legacy and new formats
+		if len(group.ModelRedirectMapV2) > 0 || len(group.ModelRedirectMap) > 0 {
+			targetModel, _, _, _, err := models.ResolveTargetModelWithIndex(
+				originalModel,
+				group.ModelRedirectMap, // Pass V1 map for backward compatibility
+				group.ModelRedirectMapV2,
+				getModelRedirectSelector(),
+			)
+			if err != nil {
+				return bodyBytes, false, fmt.Errorf("failed to resolve target model: %w", err)
+			}
+			if targetModel != "" && targetModel != originalModel {
+				claudeReq.Model = targetModel
+				logrus.WithFields(logrus.Fields{
+					"group":          group.Name,
+					"original_model": originalModel,
+					"target_model":   targetModel,
+				}).Debug("CC: Applied model redirect")
+			} else if targetModel == "" && group.ModelRedirectStrict {
+				// Strict mode: model not found in redirect rules
+				return bodyBytes, false, fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)
+			}
+		} else if group.ModelRedirectStrict {
+			// Strict mode with no redirect rules configured
+			return bodyBytes, false, fmt.Errorf("model '%s' is not configured in redirect rules (no rules defined)", originalModel)
 		}
 	}
 
@@ -1294,6 +1337,8 @@ func splitThinkingContent(content string, cleanupMode functionCallCleanupMode) [
 			if thinking == "" {
 				continue
 			}
+			// Convert Windows paths to Unix-style for Claude Code compatibility
+			thinking = convertWindowsPathsInToolResult(thinking)
 			blocks = append(blocks, ClaudeContentBlock{Type: "thinking", Thinking: thinking})
 		case "text":
 			orig := evt.Content
@@ -1303,6 +1348,8 @@ func splitThinkingContent(content string, cleanupMode functionCallCleanupMode) [
 			if text == "" {
 				continue
 			}
+			// Convert Windows paths to Unix-style for Claude Code compatibility
+			text = convertWindowsPathsInToolResult(text)
 			blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: text})
 		}
 	}
@@ -1406,6 +1453,12 @@ func normalizeArgsGenericInPlace(args map[string]any) {
 	if args == nil {
 		return
 	}
+
+	// First, convert Git Bash/MSYS2 Unix-style paths to Windows format
+	// This must be done before other normalizations to ensure consistent path format
+	// Example: /f/MyProjects/test/file.py -> F:\MyProjects\test\file.py
+	fixGitBashPathsInArgs(args)
+
 	for key, val := range args {
 		strVal, ok := val.(string)
 		if !ok {
@@ -1499,6 +1552,134 @@ func looksLikeWindowsPath(s string) bool {
 	return strings.Contains(s, "\\")
 }
 
+// reGitBashPath matches Git Bash/MSYS2 Unix-style paths like /c/, /f/, /d/
+// These paths need to be converted to Windows format (C:\, F:\, D:\)
+// Pattern: starts with /, followed by single letter, followed by /
+// This distinguishes Git Bash paths from real Unix paths like /home/, /usr/, /var/
+var reGitBashPath = regexp.MustCompile(`^/([a-zA-Z])/`)
+
+// reGitBashPathInCommand matches Git Bash paths embedded in command strings
+// Pattern matches /[a-z]/ followed by path components (non-whitespace, non-quote)
+var reGitBashPathInCommand = regexp.MustCompile(`/([a-zA-Z])/[^\s"']+`)
+
+// reWindowsPathNormal matches normal Windows paths with backslashes (C:\path\file.txt)
+var reWindowsPathNormal = regexp.MustCompile(`[A-Za-z]:\\[^\s\n\r"'<>|]+`)
+
+// reWindowsPathCorrupted matches Windows paths where backslashes may have been corrupted
+// This happens when JSON escape sequences like \t, \n are interpreted as tab, newline, etc.
+var reWindowsPathCorrupted = regexp.MustCompile(`[A-Za-z]:[^ \n\r"'<>|]+`)
+
+// reWindowsDrivePath matches Windows drive letter paths (e.g., "C:", "F:")
+// This pattern finds the start of a Windows path within a command string.
+// The path may contain control characters where backslashes were incorrectly interpreted.
+var reWindowsDrivePath = regexp.MustCompile(`[A-Za-z]:`)
+
+// isLikelyGitBashPath returns true if the path looks like a Git Bash/MSYS2 path
+// Git Bash paths have the pattern /[single-letter]/ (e.g., /c/, /f/, /d/)
+// This is distinct from Unix paths which typically start with /home/, /usr/, /var/, /etc/
+func isLikelyGitBashPath(s string) bool {
+	if !strings.HasPrefix(s, "/") || len(s) < 3 {
+		return false
+	}
+
+	// Check for Git Bash pattern: /[letter]/
+	if !reGitBashPath.MatchString(s) {
+		return false
+	}
+
+	// Additional validation: exclude common Unix paths that might accidentally match
+	// Common Unix paths: /bin, /dev, /etc, /lib, /opt, /proc, /run, /sbin, /srv, /sys, /tmp, /usr, /var
+	// Also: /home, /root, /mnt, /media
+	secondPart := ""
+	if len(s) > 3 {
+		endIdx := strings.IndexByte(s[3:], '/')
+		if endIdx == -1 {
+			secondPart = s[3:]
+		} else {
+			secondPart = s[3 : 3+endIdx]
+		}
+	}
+
+	// If the second part is a common Unix directory name, it's likely a Unix path, not Git Bash
+	unixDirs := []string{"bin", "dev", "etc", "lib", "opt", "proc", "run", "sbin", "srv", "sys", "tmp", "usr", "var", "home", "root", "mnt", "media"}
+	for _, dir := range unixDirs {
+		if strings.EqualFold(secondPart, dir) {
+			return false
+		}
+	}
+
+	// If we get here, it's likely a Git Bash path (e.g., /c/Users, /f/MyProjects)
+	return true
+}
+
+// convertGitBashPathToWindows converts Git Bash/MSYS2 Unix-style paths to Windows format
+// Examples:
+//   - /f/MyProjects/test/file.py -> F:\MyProjects\test\file.py
+//   - /c/Users/name/file.txt -> C:\Users\name\file.txt
+//   - /d/work/project -> D:\work\project
+// Only converts paths that match the Git Bash pattern to avoid breaking real Unix paths
+func convertGitBashPathToWindows(s string) string {
+	if !isLikelyGitBashPath(s) {
+		return s
+	}
+
+	matches := reGitBashPath.FindStringSubmatch(s)
+	if len(matches) < 2 {
+		return s
+	}
+
+	// Extract drive letter and convert to uppercase
+	driveLetter := strings.ToUpper(matches[1])
+
+	// Replace /x/ with X:\ and convert forward slashes to backslashes
+	remainder := s[3:] // Skip /x/
+	windowsPath := driveLetter + ":\\" + strings.ReplaceAll(remainder, "/", "\\")
+
+	return windowsPath
+}
+
+// fixGitBashPathsInArgs converts Git Bash/MSYS2 paths in tool arguments to Windows format
+// This handles cases where Claude Code running in Git Bash generates Unix-style paths
+// that need to be converted for Windows tools
+// Only processes paths that match the Git Bash pattern to avoid breaking real Unix paths
+func fixGitBashPathsInArgs(args map[string]interface{}) {
+	for key, val := range args {
+		strVal, ok := val.(string)
+		if !ok || strVal == "" {
+			continue
+		}
+
+		// Convert path-like keys (path, file, dir, etc.) if they match Git Bash pattern
+		if isPathLikeKey(key) && isLikelyGitBashPath(strVal) {
+			args[key] = convertGitBashPathToWindows(strVal)
+			continue
+		}
+
+		// Also check for embedded Git Bash paths in command strings
+		if key == "command" && strings.Contains(strVal, " /") {
+			// Find and convert all Git Bash paths in the command
+			// Example: "python /f/MyProjects/test/file.py" -> "python F:\MyProjects\test\file.py"
+			converted := convertGitBashPathsInCommand(strVal)
+			if converted != strVal {
+				args[key] = converted
+			}
+		}
+	}
+}
+
+// convertGitBashPathsInCommand converts Git Bash paths embedded in command strings
+// Example: "python /f/MyProjects/test/file.py" -> "python F:\MyProjects\test\file.py"
+// Only converts paths that match the Git Bash pattern to avoid breaking real Unix paths
+func convertGitBashPathsInCommand(cmd string) string {
+	return reGitBashPathInCommand.ReplaceAllStringFunc(cmd, func(match string) string {
+		// Only convert if it looks like a Git Bash path
+		if isLikelyGitBashPath(match) {
+			return convertGitBashPathToWindows(match)
+		}
+		return match
+	})
+}
+
 // fixWindowsPathEscapes converts control characters back to their backslash-letter form.
 // This fixes paths where JSON escape sequences like \t, \n were incorrectly interpreted.
 // Example: "F:\MyProjects	est\file.py" -> "F:\MyProjects\test\file.py"
@@ -1535,10 +1716,90 @@ func fixWindowsPathEscapes(s string) string {
 	return result.String()
 }
 
+// convertWindowsPathToUnixStyle converts Windows-style paths to Unix-style paths for Claude Code compatibility.
+// Claude Code expects Unix-style paths (forward slashes) in tool results to avoid backslash escape sequence issues.
+// Reference: Claude Code docs state "Use forward slashes (Unix style) in all paths"
+// Reference: Claude Code v2.0.62 fixed "bash commands failing on Windows when temp directory paths contained
+// characters like `t` or `n` that were misinterpreted as escape sequences"
+//
+// Examples:
+//   - "F:\MyProjects\test\hello.py" -> "F:/MyProjects/test/hello.py"
+//   - "C:\Users\Admin\file.txt" -> "C:/Users/Admin/file.txt"
+//   - "/home/user/file.py" -> "/home/user/file.py" (unchanged)
+func convertWindowsPathToUnixStyle(path string) string {
+	// Only convert if it looks like a Windows path (has drive letter)
+	if !reWindowsDrivePath.MatchString(path) {
+		return path
+	}
+	// Replace all backslashes with forward slashes
+	return strings.ReplaceAll(path, `\`, `/`)
+}
+
+// convertWindowsPathsInToolResult converts Windows-style paths to Unix-style in tool result content.
+// This prevents Claude Code from misinterpreting backslashes as escape sequences.
+// Handles both normal Windows paths (C:\path) and corrupted paths where backslashes were stripped (C:path).
+//
+// CRITICAL: This function must handle paths where backslashes have already been interpreted as
+// JSON escape sequences (e.g., \t → tab, \n → newline). These control characters appear in the
+// string and must be matched and converted.
+//
+// Reference: Claude Code issue #15290 - backslash escape sequences in tool parameters are
+// interpreted as control characters during JSON transmission.
+func convertWindowsPathsInToolResult(content string) string {
+	if content == "" {
+		return content
+	}
+
+	// Quick check: if no drive letter pattern, no conversion needed
+	if !reWindowsDrivePath.MatchString(content) {
+		return content
+	}
+
+	// Pattern 1: Normal Windows paths with backslashes (C:\path\file.txt)
+	content = reWindowsPathNormal.ReplaceAllStringFunc(content, func(match string) string {
+		return convertWindowsPathToUnixStyle(match)
+	})
+
+	// Pattern 2: Corrupted Windows paths where backslashes were interpreted as control characters
+	content = reWindowsPathCorrupted.ReplaceAllStringFunc(content, func(match string) string {
+		// Check if this looks like a corrupted path (no separator after colon)
+		if len(match) > 2 && match[2] != '/' && match[2] != '\\' {
+			// This is a corrupted path like "F:MyProjects..." or "F:MyProjects<tab>est..."
+			// Remove all control characters (tab, newline, etc.), keep only printable chars
+			cleaned := strings.Map(func(r rune) rune {
+				// Keep drive letter and colon
+				if r == ':' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+					return r
+				}
+				// Keep alphanumeric, underscore, dash, dot, slash
+				if (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == '/' || r == '\\' {
+					return r
+				}
+				// Remove control characters (tab, newline, etc.) and other special chars
+				if r < 32 || r == 127 {
+					return -1 // Remove control characters
+				}
+				return r
+			}, match)
+
+			// Add slash after drive letter if missing
+			if len(cleaned) > 2 && cleaned[2] != '/' && cleaned[2] != '\\' {
+				cleaned = string(cleaned[0]) + ":/" + cleaned[2:]
+			}
+			// Normalize to Unix-style paths (convert any remaining backslashes to forward slashes)
+			// This ensures the corrupted-path branch returns Unix-style paths consistently
+			return convertWindowsPathToUnixStyle(cleaned)
+		}
+		return match
+	})
+
+	return content
+}
+
 // reWindowsDrivePath matches Windows drive letter paths (e.g., "C:", "F:")
 // This pattern finds the start of a Windows path within a command string.
 // The path may contain control characters where backslashes were incorrectly interpreted.
-var reWindowsDrivePath = regexp.MustCompile(`[A-Za-z]:`)
+// NOTE: This variable is declared at package level above for performance (avoid regex recompilation)
 
 // containsWindowsDrivePath returns true if the string contains a Windows drive letter pattern.
 // This is used to detect embedded Windows paths in any string value, regardless of key name.
@@ -2091,6 +2352,10 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 			continue
 		}
 
+		// Apply Windows path escape fix for Bash commands
+		// This must be done after marshaling to handle the final JSON string
+		inputJSONStr := doubleEscapeWindowsPathsForBash(string(inputJSON))
+
 		// Generate unique tool use ID
 		toolUseID := fmt.Sprintf("toolu_%s_%d", utils.GenerateRandomSuffix(), i)
 
@@ -2108,7 +2373,7 @@ func parseFunctionCallsFromContentForCC(c *gin.Context, content string) (string,
 			Type:  "tool_use",
 			ID:    toolUseID,
 			Name:  toolName,
-			Input: json.RawMessage(inputJSON),
+			Input: json.RawMessage(inputJSONStr),
 		})
 	}
 
@@ -2977,11 +3242,44 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		"trigger_signal": triggerSignal,
 	}).Debug("CC: Started streaming response")
 
+	// Handle gzip/deflate/br decompression for streaming response
+	// OpenAI API may return gzip-compressed streaming responses
+	bodyReader := resp.Body
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	if contentEncoding != "" {
+		var err error
+		bodyReader, err = utils.NewDecompressReader(contentEncoding, resp.Body)
+		if err != nil {
+			// Decompression failed - emit error event and return early
+			// Continuing with compressed body would break SSE parsing and hang the client
+			logrus.WithError(err).WithField("content_encoding", contentEncoding).
+				Warn("CC: Failed to create decompression reader")
+
+			// Send error event to client using existing writer
+			_ = writer.Send(ClaudeStreamEvent{
+				Type: "error",
+				Error: &ClaudeError{
+					Type:    "api_error",
+					Message: "Failed to decompress upstream stream",
+				},
+			}, true)
+			return
+		}
+		logrus.WithField("content_encoding", contentEncoding).
+			Debug("CC: Created decompression reader for streaming response")
+		// Ensure decompression reader is closed
+		defer func() {
+			if closer, ok := bodyReader.(io.Closer); ok && closer != resp.Body {
+				closer.Close()
+			}
+		}()
+	}
+
 	// Use timeout-enabled SSE reader for CC support to prevent hanging when
 	// upstream models (e.g., deepseek-reasoner) are in thinking phase without sending data.
 	// Timeout values are derived from group/system config with preset upper bounds.
 	firstByteTimeout, subsequentTimeout := getEffectiveSSETimeouts(c)
-	reader := NewSSEReaderWithTimeout(resp.Body, firstByteTimeout, subsequentTimeout)
+	reader := NewSSEReaderWithTimeout(bodyReader, firstByteTimeout, subsequentTimeout)
 	contentBlockIndex := 0
 	var currentToolCall *OpenAIToolCall
 	var currentToolCallName string
@@ -3014,6 +3312,8 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		// function call XML formats (function_calls, function_call, invoke,
 		// invocation, tool_call, and trigger signals)
 		text = removeFunctionCallsBlocks(text, cleanupMode)
+		// Convert Windows paths to Unix-style for Claude Code compatibility
+		text = convertWindowsPathsInToolResult(text)
 		return text
 	}
 

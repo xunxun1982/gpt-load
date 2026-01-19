@@ -748,13 +748,13 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			return nil, err
 		}
 
-		// Check if cc_support is being disabled for OpenAI groups before performing any database write.
+		// Check if cc_support is being disabled for OpenAI/Codex/Gemini groups before performing any database write.
 		// If so, verify that this group is not used as a sub-group in any Anthropic aggregate groups.
 		// NOTE: This guard is best-effort and not wrapped in an explicit transaction. There is a small
 		// time-of-check-to-time-of-use window where aggregate membership can change concurrently, but
 		// we intentionally keep lock time minimal (especially for SQLite). Any misconfiguration will
 		// surface quickly via failing aggregate requests and can be corrected via configuration.
-		if group.ChannelType == "openai" && group.GroupType != "aggregate" {
+		if (group.ChannelType == "openai" || group.ChannelType == "codex" || group.ChannelType == "gemini") && group.GroupType != "aggregate" {
 			// Note: models.Group.Config is stored as datatypes.JSONMap while validateAndCleanConfig
 			// returns a map[string]any. We intentionally convert cleanedConfig to JSONMap here to
 			// keep the helper signature strongly typed and avoid accidental misuse.

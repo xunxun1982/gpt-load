@@ -310,7 +310,8 @@ func (b *BaseChannel) ApplyModelRedirectWithIndex(req *http.Request, bodyBytes [
 		return bodyBytes, "", -1, nil
 	}
 
-	// Resolve target model (V2 first, then V1) with index tracking
+	// Resolve target model with index tracking
+	// Pass both V1 and V2 maps for backward compatibility with un-migrated groups
 	targetModel, ruleVersion, targetCount, selectedIdx, err := models.ResolveTargetModelWithIndex(
 		model, group.ModelRedirectMap, group.ModelRedirectMapV2, modelRedirectSelector,
 	)

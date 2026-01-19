@@ -2,7 +2,7 @@
 import { keysApi } from "@/api/keys";
 import type { APIKey, Group, KeyStatus } from "@/types/models";
 import { appState, triggerSyncOperationRefresh } from "@/utils/app-state";
-import { copy } from "@/utils/clipboard";
+import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
 import { getGroupDisplayName, maskKey } from "@/utils/display";
 import {
   AddCircleOutline,
@@ -58,6 +58,9 @@ const totalPages = computed(() => {
   }
   return Math.ceil(total.value / pageSize.value);
 });
+
+// Track visibility state for each key separately
+const keyVisibility = ref<Record<number, boolean>>({});
 
 // Display text for pagination info
 const totalRecordsText = computed(() => {
@@ -253,12 +256,21 @@ async function handleBatchDeleteSuccess() {
 }
 
 async function copyKey(key: KeyRow) {
-  const success = await copy(key.key_value);
-  if (success) {
-    window.$message.success(t("keys.keyCopied"));
-  } else {
-    window.$message.error(t("keys.copyFailed"));
-  }
+  await copyWithFallback(key.key_value, {
+    onSuccess: () => {
+      window.$message.success(t("keys.keyCopied"));
+    },
+    onError: () => {
+      window.$message.error(t("keys.copyFailed"));
+    },
+    showManualDialog: (text: string) => {
+      dialog.create({
+        title: t("common.copy"),
+        content: () => createManualCopyContent(h, text, t),
+        positiveText: t("common.close"),
+      });
+    },
+  });
 }
 
 async function testKey(_key: KeyRow) {
@@ -323,16 +335,23 @@ function formatDuration(ms: number): string {
   return result;
 }
 
+// Toggle key visibility using separate reactive state
 function toggleKeyVisibility(key: KeyRow) {
-  key.is_visible = !key.is_visible;
+  keyVisibility.value[key.id] = !keyVisibility.value[key.id];
+}
+
+// Check if a key is currently visible
+function isKeyVisible(key: KeyRow): boolean {
+  return !!keyVisibility.value[key.id];
 }
 
 // Get the display value (show notes only when key is hidden, otherwise show key)
 function getDisplayValue(key: KeyRow): string {
-  if (key.notes && !key.is_visible) {
+  const visible = isKeyVisible(key);
+  if (key.notes && !visible) {
     return key.notes;
   }
-  return key.is_visible ? key.key_value : maskKey(key.key_value);
+  return visible ? key.key_value : maskKey(key.key_value);
 }
 
 // Open notes editor for a key

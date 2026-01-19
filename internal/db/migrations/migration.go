@@ -99,7 +99,15 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.14.0 migration - Add bypass_method column for Cloudflare bypass support
-	return V1_14_0_AddBypassMethodColumn(db)
+	if err := V1_14_0_AddBypassMethodColumn(db); err != nil {
+		return err
+	}
+	// Run v1.15.0 migration - Add usage statistics columns to hub_access_keys
+	if err := V1_15_0_AddAccessKeyUsageStats(db); err != nil {
+		return err
+	}
+	// Run v1.16.0 migration - Optimize hub_access_keys indexes for better query performance
+	return V1_16_0_OptimizeAccessKeyIndexes(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

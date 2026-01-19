@@ -98,6 +98,28 @@ var MessagesEnUS = map[string]string{
 	"dashboard.encryption_key_missing":                           "ENCRYPTION_KEY is not set, sensitive data will be stored in plain text",
 	"dashboard.encryption_key_recommended":                       "It is strongly recommended to set ENCRYPTION_KEY to encrypt sensitive data like API keys",
 	"dashboard.global_proxy_key":                                 "Global Proxy Key",
+
+	// Channel types
+	"channel.openai":    "OpenAI",
+	"channel.anthropic": "Anthropic",
+	"channel.gemini":    "Gemini",
+	"channel.codex":     "Codex",
+	"channel.azure":     "Azure",
+	"channel.custom":    "Custom",
+
+	// Relay formats
+	"relay_format.openai_chat":                "OpenAI Chat",
+	"relay_format.openai_completion":          "OpenAI Completion",
+	"relay_format.claude":                     "Claude Messages",
+	"relay_format.codex":                      "Codex Responses",
+	"relay_format.openai_image":               "OpenAI Image Generation",
+	"relay_format.openai_image_edit":          "OpenAI Image Edit",
+	"relay_format.openai_audio_transcription": "OpenAI Audio Transcription",
+	"relay_format.openai_audio_translation":   "OpenAI Audio Translation",
+	"relay_format.openai_audio_speech":        "OpenAI Text-to-Speech",
+	"relay_format.openai_embedding":           "OpenAI Embeddings",
+	"relay_format.openai_moderation":          "OpenAI Moderation",
+	"relay_format.gemini":                     "Gemini",
 	"dashboard.group_proxy_key":                                  "Group Proxy Key",
 	"dashboard.encryption_key_configured_but_data_not_encrypted": "ENCRYPTION_KEY is configured but the keys in database are not encrypted. This will cause keys to be unreadable (shown as failed-to-decrypt).",
 	"dashboard.encryption_key_migration_required":                "Please stop the service, run the key migration command and restart",

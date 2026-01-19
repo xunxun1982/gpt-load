@@ -482,9 +482,9 @@ export default {
     ccSupportTooltip3:
       "上流が関数呼び出しをサポートしていない場合は、「関数呼び出し」スイッチも有効にする必要があります。",
     ccSupportTip:
-      "有効にすると、クライアントは /proxy/グループ名/claude/v1/messages エンドポイントを使用でき、リクエストは自動的に OpenAI 形式に変換されます。",
+      "有効にすると、クライアントは /proxy/グループ名/claude/v1/messages エンドポイントを使用でき、リクエストは自動的にターゲット形式に変換されます。",
     ccSupportCompatibilityTip:
-      "このスイッチは OpenAI チャンネルのグループにのみ有効で、他のチャンネルではこの設定は無視され、表示されません。",
+      "このスイッチは OpenAI、Codex、Gemini チャンネルのグループに有効で、他のチャンネルではこの設定は無視され、表示されません。",
     ccSupportRedirectTip:
       "Claude Code 互換性向けに、別名とフルモデル名の両方をリダイレクトに追加（opus/claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001 → 上流モデル。例：opus → deepseek-chat）。任意でクライアント側フォールバックとして、Claude Code の settings.json に env を設定（関連する環境変数には ANTHROPIC_MODEL、ANTHROPIC_DEFAULT_OPUS_MODEL、ANTHROPIC_DEFAULT_SONNET_MODEL、ANTHROPIC_DEFAULT_HAIKU_MODEL が含まれます）。",
     thinkingModel: "思考モデル",

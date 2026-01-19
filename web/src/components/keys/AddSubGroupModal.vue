@@ -91,7 +91,8 @@ const getAvailableOptions = computed(() => {
         const isAnthropic = group.channel_type === "anthropic";
         const isOpenAIWithCC = group.channel_type === "openai" && group.config?.cc_support === true;
         const isCodexWithCC = group.channel_type === "codex" && group.config?.cc_support === true;
-        if (!isAnthropic && !isOpenAIWithCC && !isCodexWithCC) {
+        const isGeminiWithCC = group.channel_type === "gemini" && group.config?.cc_support === true;
+        if (!isAnthropic && !isOpenAIWithCC && !isCodexWithCC && !isGeminiWithCC) {
           return false;
         }
       } else {

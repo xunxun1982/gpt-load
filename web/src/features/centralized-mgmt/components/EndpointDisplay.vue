@@ -5,14 +5,15 @@
  * Channels handle various API endpoints (chat, audio, image, video, etc.)
  * Requests are forwarded to groups/aggregates for processing.
  */
-import { copy } from "@/utils/clipboard";
+import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
 import { ChevronDownOutline, CopyOutline } from "@vicons/ionicons5";
-import { NButton, NIcon, NPopover, NText, NTooltip, useMessage } from "naive-ui";
-import { computed } from "vue";
+import { NButton, NIcon, NPopover, NText, NTooltip, useDialog, useMessage } from "naive-ui";
+import { computed, h } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
 const message = useMessage();
+const dialog = useDialog();
 
 // Get base URL for copy only (not displayed)
 const baseUrl = computed(() => {
@@ -31,12 +32,21 @@ const channels = computed(() => [
 
 async function copyBaseUrl() {
   const hubBaseUrl = `${baseUrl.value}/hub/v1`;
-  const success = await copy(hubBaseUrl);
-  if (success) {
-    message.success(t("hub.baseUrlCopied"));
-  } else {
-    message.error(t("keys.copyFailed"));
-  }
+  await copyWithFallback(hubBaseUrl, {
+    onSuccess: () => {
+      message.success(t("hub.baseUrlCopied"));
+    },
+    onError: () => {
+      message.error(t("keys.copyFailed"));
+    },
+    showManualDialog: (text: string) => {
+      dialog.create({
+        title: t("common.copy"),
+        content: () => createManualCopyContent(h, text, t),
+        positiveText: t("common.close"),
+      });
+    },
+  });
 }
 </script>
 

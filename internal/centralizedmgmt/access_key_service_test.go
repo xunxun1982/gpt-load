@@ -703,7 +703,6 @@ func TestInvalidateAllKeyCache(t *testing.T) {
 	}
 }
 
-
 // TestAccessKeyExportEncryption tests Property 11: Hub Access Key Export Encryption
 // For any Hub access key included in system export, the key_value field SHALL remain
 // encrypted using the same encryption as database storage.

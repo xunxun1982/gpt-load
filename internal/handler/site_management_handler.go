@@ -426,9 +426,9 @@ func (s *Server) ExportManagedSites(c *gin.Context) {
 
 // SiteImportRequest represents the import request structure
 type SiteImportRequest struct {
-	Version     string                          `json:"version"`
+	Version     string                            `json:"version"`
 	AutoCheckin *sitemanagement.AutoCheckinConfig `json:"auto_checkin,omitempty"`
-	Sites       []sitemanagement.SiteExportInfo `json:"sites"`
+	Sites       []sitemanagement.SiteExportInfo   `json:"sites"`
 }
 
 // ImportManagedSites imports managed sites from JSON data
@@ -472,7 +472,6 @@ func (s *Server) ImportManagedSites(c *gin.Context) {
 		"total":    len(importData.Sites),
 	})
 }
-
 
 // FetchSiteBalance fetches balance for a single site
 func (s *Server) FetchSiteBalance(c *gin.Context) {

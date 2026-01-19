@@ -305,11 +305,11 @@ watch(
     }
 
     // Force disable function call when channel is not OpenAI.
-    // CC support is available for both OpenAI and Codex channels.
+    // CC support is available for OpenAI, Codex, and Gemini channels.
     if (newChannelType !== "openai") {
       formData.force_function_call = false;
     }
-    if (newChannelType !== "openai" && newChannelType !== "codex") {
+    if (newChannelType !== "openai" && newChannelType !== "codex" && newChannelType !== "gemini") {
       formData.cc_support = false;
     }
     // Handle intercept_event_log based on channel type.
@@ -420,9 +420,11 @@ function loadGroupData() {
     parallelToolCalls = ptcRaw ? "true" : "false";
   }
   const ccRaw = rawConfig["cc_support"];
-  // CC support is available for both OpenAI and Codex channels
+  // CC support is available for OpenAI, Codex, and Gemini channels
   const ccSupport =
-    (props.group.channel_type === "openai" || props.group.channel_type === "codex") &&
+    (props.group.channel_type === "openai" ||
+      props.group.channel_type === "codex" ||
+      props.group.channel_type === "gemini") &&
     typeof ccRaw === "boolean"
       ? ccRaw
       : false;
@@ -2182,12 +2184,14 @@ async function handleSubmit() {
                 </n-form-item>
               </div>
 
-              <!-- CC Support toggle (OpenAI and Codex channels) -->
+              <!-- CC Support toggle (OpenAI, Codex, and Gemini channels) -->
               <div
                 class="config-section"
                 v-if="
                   formData.group_type !== 'aggregate' &&
-                  (formData.channel_type === 'openai' || formData.channel_type === 'codex')
+                  (formData.channel_type === 'openai' ||
+                    formData.channel_type === 'codex' ||
+                    formData.channel_type === 'gemini')
                 "
               >
                 <n-form-item path="cc_support">

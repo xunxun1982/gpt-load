@@ -51,6 +51,8 @@ export default {
   accessKeys: "Access Keys",
   accessKeyName: "Name",
   maskedKey: "Key",
+  keyCopied: "Key copied",
+  keyNameCopied: "Name copied",
   allowedModels: "Allowed Models",
   allModels: "All Models",
   specificModels: "{count} models",
@@ -85,4 +87,27 @@ export default {
   refreshModelPool: "Refresh Model Pool",
   refreshing: "Refreshing...",
   totalAccessKeys: "{total} keys",
+
+  // Usage statistics
+  usageCount: "Usage Count",
+  lastUsedAt: "Last Used",
+  neverUsed: "Never used",
+  justNow: "Just now",
+  minutesAgo: "{n} minutes ago",
+  hoursAgo: "{n} hours ago",
+  daysAgo: "{n} days ago",
+  monthsAgo: "{n} months ago",
+  yearsAgo: "{n} years ago",
+
+  // Batch operations
+  batchOperations: "Batch Operations",
+  batchDelete: "Batch Delete",
+  batchEnable: "Batch Enable",
+  batchDisable: "Batch Disable",
+  selectedKeys: "{count} keys selected",
+  confirmBatchDelete: "Are you sure you want to delete {count} selected access keys?",
+  batchDeleteSuccess: "Successfully deleted {count} access keys",
+  batchEnableSuccess: "Successfully enabled {count} access keys",
+  batchDisableSuccess: "Successfully disabled {count} access keys",
+  selectAtLeastOne: "Please select at least one access key",
 };

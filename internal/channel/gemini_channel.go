@@ -37,13 +37,32 @@ func newGeminiChannel(f *Factory, group *models.Group) (ChannelProxy, error) {
 }
 
 // ModifyRequest adds the API key as a query parameter for Gemini requests.
+// Supports both native Gemini format (key parameter) and OpenAI-compatible format (Bearer token).
+// For native format, also sets x-goog-api-key header as fallback for proxies that don't support query params.
 func (ch *GeminiChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey, group *models.Group) {
 	if strings.Contains(req.URL.Path, "v1beta/openai") {
+		// OpenAI-compatible format: use Bearer token
 		req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
+		logrus.WithFields(logrus.Fields{
+			"path":    req.URL.Path,
+			"auth":    "Bearer",
+			"channel": "gemini",
+		}).Debug("Using Bearer authentication for OpenAI-compatible endpoint")
 	} else {
+		// Native Gemini format: use key query parameter (primary) and x-goog-api-key header (fallback)
 		q := req.URL.Query()
 		q.Set("key", apiKey.KeyValue)
 		req.URL.RawQuery = q.Encode()
+
+		// Also set x-goog-api-key header as fallback for proxies that strip query parameters
+		req.Header.Set("x-goog-api-key", apiKey.KeyValue)
+
+		// Do not log URL to avoid exposing API key in query parameters
+		logrus.WithFields(logrus.Fields{
+			"path":    req.URL.Path,
+			"auth":    "key+header",
+			"channel": "gemini",
+		}).Debug("Using key parameter and x-goog-api-key header for native Gemini endpoint")
 	}
 }
 
@@ -190,7 +209,8 @@ func (ch *GeminiChannel) applyNativeFormatRedirectWithIndex(req *http.Request, b
 			modelPart := parts[i+1]
 			originalModel := strings.Split(modelPart, ":")[0]
 
-			// Resolve target model (V2 first, then V1) with index tracking
+			// Resolve target model with index tracking
+			// Pass both V1 and V2 maps for backward compatibility with un-migrated groups
 			targetModel, ruleVersion, targetCount, selectedIdx, err := models.ResolveTargetModelWithIndex(
 				originalModel, group.ModelRedirectMap, group.ModelRedirectMapV2, modelRedirectSelector,
 			)
@@ -320,24 +340,34 @@ func buildConfiguredGeminiModelsFromRules(v1Map map[string]string, v2Map map[str
 			modelName = "models/" + sourceModel
 		}
 
+		// Extract clean name without "models/" prefix for displayName and description
+		cleanName := strings.TrimPrefix(modelName, "models/")
+
 		result = append(result, map[string]any{
 			"name":                       modelName,
-			"displayName":                sourceModel,
+			"displayName":                cleanName,
+			"description":                cleanName,
 			"supportedGenerationMethods": []string{"generateContent"},
 		})
 	}
 	return result
 }
 
-// mergeGeminiModelLists merges upstream and configured model lists for Gemini format
+// mergeGeminiModelLists merges upstream and configured model lists for Gemini format.
+// Upstream models take priority to avoid duplicates.
 func mergeGeminiModelLists(upstream []any, configured []any) []any {
 	upstreamNames := make(map[string]bool)
 	for _, item := range upstream {
 		if modelObj, ok := item.(map[string]any); ok {
 			if modelName, ok := modelObj["name"].(string); ok {
+				// Store both full name and clean name for matching
 				upstreamNames[modelName] = true
 				cleanName := strings.TrimPrefix(modelName, "models/")
 				upstreamNames[cleanName] = true
+				// Also store with "models/" prefix if not already present
+				if !strings.HasPrefix(modelName, "models/") {
+					upstreamNames["models/"+modelName] = true
+				}
 			}
 		}
 	}
@@ -351,7 +381,13 @@ func mergeGeminiModelLists(upstream []any, configured []any) []any {
 		if modelObj, ok := item.(map[string]any); ok {
 			if modelName, ok := modelObj["name"].(string); ok {
 				cleanName := strings.TrimPrefix(modelName, "models/")
-				if !upstreamNames[modelName] && !upstreamNames[cleanName] {
+				prefixedName := modelName
+				if !strings.HasPrefix(modelName, "models/") {
+					prefixedName = "models/" + modelName
+				}
+
+				// Check all possible name variations to avoid duplicates
+				if !upstreamNames[modelName] && !upstreamNames[cleanName] && !upstreamNames[prefixedName] {
 					result = append(result, item)
 				}
 			}

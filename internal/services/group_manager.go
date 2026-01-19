@@ -192,7 +192,8 @@ func (gm *GroupManager) Initialize() error {
 			}
 
 			// Parse model redirect rules with error handling (V1: one-to-one mapping)
-			// NOTE: V1 rules are migrated to V2 at startup (v1.11.1), kept for backward compatibility
+			// NOTE: V1 rules are migrated to V2 during group create/update (v1.11.1)
+			// Runtime code checks both V1 and V2 for backward compatibility with existing groups
 			g.ModelRedirectMap = make(map[string]string)
 			if len(group.ModelRedirectRules) > 0 {
 				hasInvalidRules := false

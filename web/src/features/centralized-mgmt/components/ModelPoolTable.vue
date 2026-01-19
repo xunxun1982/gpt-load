@@ -355,14 +355,6 @@ function renderGroupTags(row: ModelPoolEntryV2) {
 
 const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
   {
-    title: t("hub.modelName"),
-    key: "model_name",
-    width: 200,
-    ellipsis: { tooltip: true },
-    titleAlign: "center",
-    render: row => h("code", { class: "model-code" }, row.model_name),
-  },
-  {
     title: t("hub.channelType"),
     key: "channel_type",
     width: 90,
@@ -374,6 +366,14 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
         ? h(NTag, { size: "tiny", type: "info", bordered: false }, () => type)
         : h(NText, { depth: 3 }, () => "-");
     },
+  },
+  {
+    title: t("hub.modelName"),
+    key: "model_name",
+    width: 200,
+    ellipsis: { tooltip: true },
+    titleAlign: "center",
+    render: row => h("code", { class: "model-code" }, row.model_name),
   },
   {
     title: t("hub.sourceGroups"),

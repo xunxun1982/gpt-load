@@ -21,11 +21,9 @@ func init() {
 
 // ClaudeCodeUserAgent is the User-Agent header value for Claude Code CLI requests.
 // Format: claude-cli/VERSION (external, cli) - matches the official Claude Code CLI client.
-// NOTE: Version 2.1.7 matches npm published version (@anthropic-ai/claude-code).
-// This version is obtained from actual Claude Code CLI `claude update` command output.
-// AI Review Note: Keeping 2.1.7 as it matches real CLI behavior.
-// Check: run `claude update` or `npm view @anthropic-ai/claude-code version`
-const ClaudeCodeUserAgent = "claude-cli/2.1.7 (external, cli)"
+// NOTE: Version 2.1.12 is the latest stable release verified via GitHub releases.
+// Check: https://github.com/anthropics/claude-code/releases
+const ClaudeCodeUserAgent = "claude-cli/2.1.12 (external, cli)"
 
 type AnthropicChannel struct {
 	*BaseChannel

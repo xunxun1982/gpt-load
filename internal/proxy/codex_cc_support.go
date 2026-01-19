@@ -717,10 +717,11 @@ func cleanToolCallArguments(toolName, argsStr string) string {
 }
 
 // extractToolResultContent extracts content from a tool_result block.
+// Converts Windows paths to Unix-style for Claude Code compatibility.
 func extractToolResultContent(block ClaudeContentBlock) string {
 	var resultContent string
 	if err := json.Unmarshal(block.Content, &resultContent); err == nil {
-		return resultContent
+		return convertWindowsPathsInToolResult(resultContent)
 	}
 	var contentBlocks []ClaudeContentBlock
 	if err := json.Unmarshal(block.Content, &contentBlocks); err == nil {
@@ -730,9 +731,9 @@ func extractToolResultContent(block ClaudeContentBlock) string {
 				sb.WriteString(cb.Text)
 			}
 		}
-		return sb.String()
+		return convertWindowsPathsInToolResult(sb.String())
 	}
-	return string(block.Content)
+	return convertWindowsPathsInToolResult(string(block.Content))
 }
 
 // convertCodexToClaudeResponse converts a Codex/Responses API response to Claude format.
@@ -753,16 +754,20 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 				switch content.Type {
 				case "output_text":
 					if content.Text != "" {
+						// Convert Windows paths to Unix-style for Claude Code compatibility
+						text := convertWindowsPathsInToolResult(content.Text)
 						claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 							Type: "text",
-							Text: content.Text,
+							Text: text,
 						})
 					}
 				case "refusal":
 					if content.Text != "" {
+						// Convert Windows paths to Unix-style for Claude Code compatibility
+						text := convertWindowsPathsInToolResult(content.Text)
 						claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 							Type: "text",
-							Text: content.Text,
+							Text: text,
 						})
 					}
 				}
@@ -783,10 +788,16 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 				}
 				inputJSON := json.RawMessage("{}")
 				if item.Arguments != "" {
+					argsStr := item.Arguments
+
 					// Clean up WebSearch tool arguments for upstream compatibility
-					argsStr := cleanToolCallArguments(toolName, item.Arguments)
-					// Apply Windows path escape fix for Bash commands
-					argsStr = doubleEscapeWindowsPathsForBash(argsStr)
+					argsStr = cleanToolCallArguments(toolName, argsStr)
+
+					// NOTE: Do NOT call doubleEscapeWindowsPathsForBash here!
+					// This is response conversion (upstream→Claude), not request conversion (Claude→upstream).
+					// The upstream response already has correct path format, we should not modify it.
+					// Calling doubleEscapeWindowsPathsForBash here causes path corruption.
+
 					inputJSON = json.RawMessage(argsStr)
 				}
 				// Extract tool use ID from call_id (remove "call_" prefix if present)
@@ -818,9 +829,11 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 			}
 			if thinkingText.Len() > 0 {
 				logrus.WithField("thinking_len", thinkingText.Len()).Debug("Codex CC: Converted reasoning to thinking block")
+				// Convert Windows paths to Unix-style for Claude Code compatibility
+				thinking := convertWindowsPathsInToolResult(thinkingText.String())
 				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 					Type:     "thinking",
-					Thinking: thinkingText.String(),
+					Thinking: thinking,
 				})
 			} else {
 				logrus.WithFields(logrus.Fields{
@@ -887,6 +900,38 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 	if originalModel != "" {
 		if _, exists := c.Get("original_model"); !exists {
 			c.Set("original_model", originalModel)
+		}
+	}
+
+	// Apply model redirect rules for Codex CC mode
+	// Pass both V1 and V2 maps for backward compatibility with un-migrated groups
+	// This ensures the model name in the request body matches the redirect configuration
+	if originalModel != "" {
+		// Check if either V1 or V2 redirect maps are configured to support both legacy and new formats
+		if len(group.ModelRedirectMapV2) > 0 || len(group.ModelRedirectMap) > 0 {
+			targetModel, _, _, _, err := models.ResolveTargetModelWithIndex(
+				originalModel,
+				group.ModelRedirectMap, // Pass V1 map for backward compatibility
+				group.ModelRedirectMapV2,
+				getModelRedirectSelector(),
+			)
+			if err != nil {
+				return bodyBytes, false, fmt.Errorf("failed to resolve target model: %w", err)
+			}
+			if targetModel != "" && targetModel != originalModel {
+				claudeReq.Model = targetModel
+				logrus.WithFields(logrus.Fields{
+					"group":          group.Name,
+					"original_model": originalModel,
+					"target_model":   targetModel,
+				}).Debug("Codex CC: Applied model redirect")
+			} else if targetModel == "" && group.ModelRedirectStrict {
+				// Strict mode: model not found in redirect rules
+				return bodyBytes, false, fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)
+			}
+		} else if group.ModelRedirectStrict {
+			// Strict mode with no redirect rules configured
+			return bodyBytes, false, fmt.Errorf("model '%s' is not configured in redirect rules (no rules defined)", originalModel)
 		}
 	}
 
@@ -1131,12 +1176,14 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				"delta_len":    len(event.Delta),
 				"claude_index": s.nextClaudeIndex,
 			}).Debug("Codex CC: Thinking delta received")
+			// Convert Windows paths to Unix-style for Claude Code compatibility
+			thinkingDelta := convertWindowsPathsInToolResult(event.Delta)
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
 				Index: s.nextClaudeIndex,
 				Delta: &ClaudeStreamDelta{
 					Type:     "thinking_delta",
-					Thinking: event.Delta,
+					Thinking: thinkingDelta,
 				},
 			})
 		}
@@ -1275,12 +1322,14 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			})
 		}
 		if event.Delta != "" {
+			// Convert Windows paths to Unix-style for Claude Code compatibility
+			textDelta := convertWindowsPathsInToolResult(event.Delta)
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
 				Index: s.nextClaudeIndex,
 				Delta: &ClaudeStreamDelta{
 					Type: "text_delta",
-					Text: event.Delta,
+					Text: textDelta,
 				},
 			})
 		}
@@ -1362,10 +1411,15 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 						toolName = orig
 					}
 				}
+
 				// Clean up WebSearch tool arguments for upstream compatibility
 				argsStr = cleanToolCallArguments(toolName, argsStr)
-				// Apply Windows path escape fix
-				argsStr = doubleEscapeWindowsPathsForBash(argsStr)
+
+				// NOTE: Do NOT call doubleEscapeWindowsPathsForBash here!
+				// This is response conversion (upstream→Claude), not request conversion (Claude→upstream).
+				// The upstream response already has correct path format, we should not modify it.
+				// Calling doubleEscapeWindowsPathsForBash here causes path corruption.
+
 				s.toolUseBlocks = append(s.toolUseBlocks, ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    toolUseID,
@@ -1615,10 +1669,10 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http.Response) {
 	// Log response headers for debugging
 	logrus.WithFields(logrus.Fields{
-		"content_type":     resp.Header.Get("Content-Type"),
-		"content_encoding": resp.Header.Get("Content-Encoding"),
+		"content_type":      resp.Header.Get("Content-Type"),
+		"content_encoding":  resp.Header.Get("Content-Encoding"),
 		"transfer_encoding": resp.Header.Get("Transfer-Encoding"),
-		"status_code":      resp.StatusCode,
+		"status_code":       resp.StatusCode,
 	}).Debug("Codex CC: Streaming response headers")
 
 	// Set streaming headers
@@ -1644,17 +1698,29 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	// Get tool name reverse map from context for restoring original tool names
 	reverseToolNameMap := getCodexToolNameReverseMap(c)
 	state := newCodexStreamState(reverseToolNameMap)
-	reader := bufio.NewReader(resp.Body)
 
-	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
-	// Timeout values are derived from group/system config with preset upper bounds.
-	firstByteReceived := false
-	effectiveFirstByteTimeout, effectiveSubsequentTimeout := getEffectiveSSETimeouts(c)
-	getTimeout := func() time.Duration {
-		if !firstByteReceived {
-			return effectiveFirstByteTimeout
+	// Handle gzip/deflate/br decompression for streaming response
+	// Codex API may return gzip-compressed streaming responses
+	reader := resp.Body
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	var decompressErr error
+	if contentEncoding != "" {
+		var err error
+		reader, err = utils.NewDecompressReader(contentEncoding, resp.Body)
+		if err != nil {
+			decompressErr = err
+			logrus.WithError(err).WithField("content_encoding", contentEncoding).
+				Warn("Codex CC: Failed to create decompression reader")
+		} else {
+			logrus.WithField("content_encoding", contentEncoding).
+				Debug("Codex CC: Created decompression reader for streaming response")
+			// Ensure decompression reader is closed
+			defer func() {
+				if closer, ok := reader.(io.Closer); ok && closer != resp.Body {
+					closer.Close()
+				}
+			}()
 		}
-		return effectiveSubsequentTimeout
 	}
 
 	// Helper function to write Claude SSE event
@@ -1669,6 +1735,32 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		}
 		flusher.Flush()
 		return nil
+	}
+
+	// Fail fast if decompression failed - emit error event and return early
+	// Continuing with compressed body would break SSE parsing and hang the client
+	if decompressErr != nil {
+		_ = writeClaudeEvent(ClaudeStreamEvent{
+			Type: "error",
+			Error: &ClaudeError{
+				Type:    "api_error",
+				Message: "Failed to decompress upstream stream",
+			},
+		})
+		return
+	}
+
+	bufReader := bufio.NewReader(reader)
+
+	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
+	// Timeout values are derived from group/system config with preset upper bounds.
+	firstByteReceived := false
+	effectiveFirstByteTimeout, effectiveSubsequentTimeout := getEffectiveSSETimeouts(c)
+	getTimeout := func() time.Duration {
+		if !firstByteReceived {
+			return effectiveFirstByteTimeout
+		}
+		return effectiveSubsequentTimeout
 	}
 
 	var currentEventType string
@@ -1700,7 +1792,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		resultCh := make(chan readResult, 1)
 
 		go func() {
-			line, err := reader.ReadString('\n')
+			line, err := bufReader.ReadString('\n')
 			resultCh <- readResult{line: line, err: err}
 		}()
 
