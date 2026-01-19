@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -26,6 +27,14 @@ func setupKeyServiceTest(tb testing.TB) (*gorm.DB, *KeyService) {
 		PrepareStmt: false,
 	})
 	require.NoError(tb, err)
+
+	// Limit SQLite connections to avoid separate in-memory databases
+	// SQLite :memory: creates a separate database per connection
+	// KeyProvider spawns background goroutines that need to share the same database
+	sqlDB, err := db.DB()
+	require.NoError(tb, err)
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 
 	err = db.AutoMigrate(&models.APIKey{}, &models.Group{})
 	require.NoError(tb, err)
@@ -234,9 +243,11 @@ func TestRestoreAllInvalidKeys(t *testing.T) {
 
 	// Mark some keys as invalid - need to query first then update
 	var keysToInvalidate []models.APIKey
-	db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Limit(2).Find(&keysToInvalidate)
+	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Limit(2).Find(&keysToInvalidate).Error
+	require.NoError(t, err)
 	for _, key := range keysToInvalidate {
-		db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("status", models.KeyStatusInvalid)
+		err = db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("status", models.KeyStatusInvalid).Error
+		require.NoError(t, err)
 	}
 
 	// Restore all invalid keys
@@ -264,9 +275,11 @@ func TestClearAllInvalidKeys(t *testing.T) {
 
 	// Mark some keys as invalid - need to query first then update
 	var keysToInvalidate []models.APIKey
-	db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Limit(2).Find(&keysToInvalidate)
+	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Limit(2).Find(&keysToInvalidate).Error
+	require.NoError(t, err)
 	for _, key := range keysToInvalidate {
-		db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("status", models.KeyStatusInvalid)
+		err = db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("status", models.KeyStatusInvalid).Error
+		require.NoError(t, err)
 	}
 
 	// Clear invalid keys
@@ -356,8 +369,10 @@ func TestListKeysInGroupQuery(t *testing.T) {
 
 	// Mark one key as invalid - need to query first then update
 	var keyToInvalidate models.APIKey
-	db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).First(&keyToInvalidate)
-	db.Model(&models.APIKey{}).Where("id = ?", keyToInvalidate.ID).Update("status", models.KeyStatusInvalid)
+	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).First(&keyToInvalidate).Error
+	require.NoError(t, err)
+	err = db.Model(&models.APIKey{}).Where("id = ?", keyToInvalidate.ID).Update("status", models.KeyStatusInvalid).Error
+	require.NoError(t, err)
 
 	tests := []struct {
 		name         string
@@ -461,8 +476,10 @@ func BenchmarkAddMultipleKeys(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		keysText := "sk-bench-" + string(rune('a'+(i%26))) + string(rune('0'+(i/26)%10))
-		_, _ = svc.AddMultipleKeys(group.ID, keysText)
+		keysText := "sk-bench-" + strconv.Itoa(i)
+		if _, err := svc.AddMultipleKeys(group.ID, keysText); err != nil {
+			b.Fatalf("Failed to add keys: %v", err)
+		}
 	}
 }
 
@@ -476,9 +493,13 @@ func BenchmarkDeleteMultipleKeys(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		keysText := "sk-bench-" + string(rune('a'+(i%26))) + string(rune('0'+(i/26)%10))
-		_, _ = svc.AddMultipleKeys(group.ID, keysText)
+		keysText := "sk-bench-" + strconv.Itoa(i)
+		if _, err := svc.AddMultipleKeys(group.ID, keysText); err != nil {
+			b.Fatalf("Failed to add keys: %v", err)
+		}
 		b.StartTimer()
-		_, _ = svc.DeleteMultipleKeys(group.ID, keysText)
+		if _, err := svc.DeleteMultipleKeys(group.ID, keysText); err != nil {
+			b.Fatalf("Failed to delete keys: %v", err)
+		}
 	}
 }

@@ -1,33 +1,27 @@
 package app
 
 import (
-	"runtime"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-// skipIfNoCGO skips the test if SQLite driver is not available
+// skipIfNoSQLite skips the test if SQLite driver is not available
 // Note: glebarez/sqlite is a pure Go implementation and doesn't require CGO
-func skipIfNoCGO(t *testing.T) {
-	t.Helper()
+func skipIfNoSQLite(tb testing.TB) {
+	tb.Helper()
 	// Try to create a SQLite database to check if driver is available
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "CGO_ENABLED=0") ||
-		   strings.Contains(err.Error(), "requires cgo") ||
-		   strings.Contains(err.Error(), "stub") ||
-		   strings.Contains(err.Error(), "not available") {
-			t.Skip("Skipping test: SQLite driver is not available")
-		}
-		t.Fatalf("Failed to open in-memory SQLite database: %v", err)
+		tb.Skipf("Skipping: SQLite driver unavailable: %v", err)
+		return
 	}
 	// Close the test connection
 	if db != nil {
@@ -44,13 +38,13 @@ func TestCloseDBConnection_NilDB(t *testing.T) {
 }
 
 func TestCloseDBConnection_ValidDB(t *testing.T) {
-	skipIfNoCGO(t)
+	skipIfNoSQLite(t)
 
 	// Create in-memory SQLite database
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Close should complete without error
 	done := make(chan struct{})
@@ -68,7 +62,7 @@ func TestCloseDBConnection_ValidDB(t *testing.T) {
 }
 
 func TestCloseDBConnectionWithOptions_SkipCheckpoint(t *testing.T) {
-	skipIfNoCGO(t)
+	skipIfNoSQLite(t)
 
 	// Create in-memory SQLite database
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -92,7 +86,7 @@ func TestCloseDBConnectionWithOptions_SkipCheckpoint(t *testing.T) {
 }
 
 func TestCloseDBConnectionWithOptions_WithCheckpoint(t *testing.T) {
-	skipIfNoCGO(t)
+	skipIfNoSQLite(t)
 
 	// Create in-memory SQLite database
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -116,7 +110,7 @@ func TestCloseDBConnectionWithOptions_WithCheckpoint(t *testing.T) {
 }
 
 func TestCloseDBConnection_ConnectionPoolStats(t *testing.T) {
-	skipIfNoCGO(t)
+	skipIfNoSQLite(t)
 
 	// Create in-memory SQLite database
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -142,7 +136,7 @@ func TestCloseDBConnection_ConnectionPoolStats(t *testing.T) {
 }
 
 func TestCloseDBConnection_PreparedStatements(t *testing.T) {
-	skipIfNoCGO(t)
+	skipIfNoSQLite(t)
 
 	// Create in-memory SQLite database with prepared statement cache
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -156,16 +150,19 @@ func TestCloseDBConnection_PreparedStatements(t *testing.T) {
 		ID   uint
 		Name string
 	}
-	db.AutoMigrate(&TestModel{})
-	db.Create(&TestModel{Name: "test"})
-	db.Find(&TestModel{})
+	err = db.AutoMigrate(&TestModel{})
+	require.NoError(t, err)
+	err = db.Create(&TestModel{Name: "test"}).Error
+	require.NoError(t, err)
+	err = db.Find(&TestModel{}).Error
+	require.NoError(t, err)
 
 	// Close connection (should close prepared statements)
 	closeDBConnection(db, "test")
 }
 
 func TestCloseDBConnection_WALCheckpoint(t *testing.T) {
-	skipIfNoCGO(t)
+	skipIfNoSQLite(t)
 
 	// Create temporary file-based SQLite database with WAL mode
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
@@ -184,9 +181,11 @@ func TestCloseDBConnection_WALCheckpoint(t *testing.T) {
 		ID   uint
 		Name string
 	}
-	db.AutoMigrate(&TestModel{})
+	err = db.AutoMigrate(&TestModel{})
+	require.NoError(t, err)
 	for i := 0; i < 100; i++ {
-		db.Create(&TestModel{Name: "test"})
+		err = db.Create(&TestModel{Name: "test"}).Error
+		require.NoError(t, err)
 	}
 
 	// Close connection (should execute WAL checkpoint)
@@ -194,7 +193,7 @@ func TestCloseDBConnection_WALCheckpoint(t *testing.T) {
 }
 
 func TestCloseDBConnection_Timeout(t *testing.T) {
-	skipIfNoCGO(t)
+	skipIfNoSQLite(t)
 
 	// Create in-memory SQLite database
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -218,7 +217,7 @@ func TestCloseDBConnection_Timeout(t *testing.T) {
 }
 
 func TestCloseDBConnection_MultipleClose(t *testing.T) {
-	skipIfNoCGO(t)
+	skipIfNoSQLite(t)
 
 	// Create in-memory SQLite database
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -235,72 +234,62 @@ func TestCloseDBConnection_MultipleClose(t *testing.T) {
 
 // Benchmark tests for PGO optimization
 func BenchmarkCloseDBConnection(b *testing.B) {
-	// Skip if CGO is not available
-	if runtime.Compiler == "gc" {
-		_, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	for i := 0; i < b.N; i++ {
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 			Logger: logger.Default.LogMode(logger.Silent),
 		})
 		if err != nil {
-			b.Skip("Skipping benchmark: CGO is not enabled")
+			b.Fatal(err)
 		}
-	}
-
-	for i := 0; i < b.N; i++ {
-		db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-			Logger: logger.Default.LogMode(logger.Silent),
-		})
 		closeDBConnection(db, "bench")
 	}
 }
 
 func BenchmarkCloseDBConnectionWithCheckpoint(b *testing.B) {
-	// Skip if CGO is not available
-	if runtime.Compiler == "gc" {
-		_, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	for i := 0; i < b.N; i++ {
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 			Logger: logger.Default.LogMode(logger.Silent),
 		})
 		if err != nil {
-			b.Skip("Skipping benchmark: CGO is not enabled")
+			b.Fatal(err)
 		}
-	}
-
-	for i := 0; i < b.N; i++ {
-		db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-			Logger: logger.Default.LogMode(logger.Silent),
-		})
 
 		// Enable WAL mode
-		sqlDB, _ := db.DB()
-		sqlDB.Exec("PRAGMA journal_mode=WAL")
+		sqlDB, err := db.DB()
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
+			b.Fatal(err)
+		}
 
 		closeDBConnectionWithOptions(db, "bench", true)
 	}
 }
 
 func BenchmarkCloseDBConnectionWithPreparedStmts(b *testing.B) {
-	// Skip if CGO is not available
-	if runtime.Compiler == "gc" {
-		_, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-			Logger: logger.Default.LogMode(logger.Silent),
-		})
-		if err != nil {
-			b.Skip("Skipping benchmark: CGO is not enabled")
-		}
-	}
-
 	for i := 0; i < b.N; i++ {
-		db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 			Logger:      logger.Default.LogMode(logger.Silent),
 			PrepareStmt: true,
 		})
+		if err != nil {
+			b.Fatal(err)
+		}
 
 		// Execute some queries
 		type TestModel struct {
 			ID   uint
 			Name string
 		}
-		db.AutoMigrate(&TestModel{})
-		db.Create(&TestModel{Name: "test"})
+		err = db.AutoMigrate(&TestModel{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		err = db.Create(&TestModel{Name: "test"}).Error
+		if err != nil {
+			b.Fatal(err)
+		}
 
 		closeDBConnection(db, "bench")
 	}

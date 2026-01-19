@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,15 @@ func setupTestDB(tb testing.TB) *gorm.DB {
 		PrepareStmt: false,
 	})
 	require.NoError(tb, err)
+
+	// Limit SQLite connections to avoid separate in-memory databases
+	// SQLite :memory: creates a separate database per connection
+	// Background goroutines need to share the same database
+	sqlDB, err := db.DB()
+	require.NoError(tb, err)
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	tb.Cleanup(func() { _ = sqlDB.Close() })
 
 	// Auto-migrate all models used by GroupService and its dependencies
 	// This includes tables checked in DeleteGroup and other operations
@@ -393,7 +403,7 @@ func TestIsValidGroupName(t *testing.T) {
 		{"invalid uppercase", "TestGroup", false},
 		{"invalid special chars", "test@group", false},
 		{"invalid empty", "", false},
-		{"invalid too long", string(make([]byte, 101)), false},
+		{"invalid too long", strings.Repeat("a", 101), false},
 	}
 
 	for _, tt := range tests {
@@ -747,12 +757,16 @@ func BenchmarkListGroups(b *testing.B) {
 			TestModel:          "gpt-3.5-turbo",
 			ValidationEndpoint: "/v1/chat/completions",
 		}
-		_, _ = svc.CreateGroup(context.Background(), params)
+		if _, err := svc.CreateGroup(context.Background(), params); err != nil {
+			b.Fatalf("Failed to create group: %v", err)
+		}
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = svc.ListGroups(context.Background())
+		if _, err := svc.ListGroups(context.Background()); err != nil {
+			b.Fatalf("Failed to list groups: %v", err)
+		}
 	}
 }
 

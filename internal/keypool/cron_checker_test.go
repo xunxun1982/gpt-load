@@ -21,24 +21,28 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func setupTestCronChecker(t *testing.T) (*CronChecker, *gorm.DB, *KeyValidator) {
-	skipIfNoCGO(t)
+func setupTestCronChecker(tb testing.TB) (*CronChecker, *gorm.DB, *KeyValidator) {
+	tb.Helper()
+	skipIfNoSQLite(tb)
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	err = db.AutoMigrate(&models.APIKey{}, &models.Group{})
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	memStore := store.NewMemoryStore()
 	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	settingsManager := config.NewSystemSettingsManager()
 
 	provider := NewProvider(db, memStore, settingsManager, encSvc)
+	tb.Cleanup(func() {
+		provider.Stop()
+	})
 
 	httpClientManager := httpclient.NewHTTPClientManager()
 	channelFactory := channel.NewFactory(settingsManager, httpClientManager)

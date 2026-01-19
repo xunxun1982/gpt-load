@@ -12,35 +12,16 @@ import (
 )
 
 // setupTestEnv sets up test environment variables
-func setupTestEnv() {
-	os.Setenv("AUTH_KEY", "test-auth-key-minimum-16-chars")
-	os.Setenv("DATABASE_DSN", ":memory:")
-	os.Setenv("PORT", "3001")
-}
-
-// cleanupTestEnv cleans up test environment variables
-func cleanupTestEnv() {
-	os.Unsetenv("AUTH_KEY")
-	os.Unsetenv("DATABASE_DSN")
-	os.Unsetenv("PORT")
-	os.Unsetenv("ENCRYPTION_KEY")
-	os.Unsetenv("DEBUG_MODE")
-	os.Unsetenv("ENABLE_CORS")
-	os.Unsetenv("ALLOWED_ORIGINS")
-	os.Unsetenv("ALLOW_CREDENTIALS")
-	os.Unsetenv("REDIS_DSN")
-	os.Unsetenv("HOST")
-	os.Unsetenv("MAX_CONCURRENT_REQUESTS")
-	os.Unsetenv("LOG_LEVEL")
-	os.Unsetenv("LOG_FORMAT")
-	os.Unsetenv("LOG_ENABLE_FILE")
-	os.Unsetenv("IS_SLAVE")
+func setupTestEnv(t testing.TB) {
+	t.Helper()
+	t.Setenv("AUTH_KEY", "test-auth-key-minimum-16-chars")
+	t.Setenv("DATABASE_DSN", ":memory:")
+	t.Setenv("PORT", "3001")
 }
 
 // TestBuildContainer tests container creation
 func TestBuildContainer(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -49,8 +30,7 @@ func TestBuildContainer(t *testing.T) {
 
 // TestBuildContainer_ConfigManager tests config manager resolution
 func TestBuildContainer_ConfigManager(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -67,8 +47,8 @@ func TestBuildContainer_ConfigManager(t *testing.T) {
 // Note: Full app testing requires embed.FS which can only be created via //go:embed
 // This test verifies the container can be built and basic services resolved
 func TestBuildContainer_App(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -83,8 +63,8 @@ func TestBuildContainer_App(t *testing.T) {
 
 // TestBuildContainer_SystemSettingsManager tests system settings manager resolution
 func TestBuildContainer_SystemSettingsManager(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -99,8 +79,8 @@ func TestBuildContainer_SystemSettingsManager(t *testing.T) {
 
 // TestBuildContainer_AllServices tests that all services can be resolved
 func TestBuildContainer_AllServices(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -114,8 +94,7 @@ func TestBuildContainer_AllServices(t *testing.T) {
 
 // BenchmarkBuildContainer benchmarks container creation
 func BenchmarkBuildContainer(b *testing.B) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(b)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -129,8 +108,7 @@ func BenchmarkBuildContainer(b *testing.B) {
 
 // BenchmarkContainerInvoke benchmarks dependency resolution
 func BenchmarkContainerInvoke(b *testing.B) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(b)
 
 	container, err := BuildContainer()
 	if err != nil {
@@ -150,8 +128,8 @@ func BenchmarkContainerInvoke(b *testing.B) {
 
 // TestBuildContainer_MultipleInvocations tests multiple container invocations
 func TestBuildContainer_MultipleInvocations(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -171,12 +149,13 @@ func TestBuildContainer_MultipleInvocations(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotNil(t, cm2)
+	assert.Same(t, cm1, cm2)
 }
 
 // TestBuildContainer_ErrorHandling tests error handling
 func TestBuildContainer_ErrorHandling(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -190,9 +169,9 @@ func TestBuildContainer_ErrorHandling(t *testing.T) {
 
 // TestBuildContainer_WithEncryptionKey tests container with encryption key
 func TestBuildContainer_WithEncryptionKey(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -209,9 +188,9 @@ func TestBuildContainer_WithEncryptionKey(t *testing.T) {
 
 // TestBuildContainer_WithDebugMode tests container with debug mode enabled
 func TestBuildContainer_WithDebugMode(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("DEBUG_MODE", "true")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -227,10 +206,10 @@ func TestBuildContainer_WithDebugMode(t *testing.T) {
 
 // TestBuildContainer_WithCORSEnabled tests container with CORS enabled
 func TestBuildContainer_WithCORSEnabled(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("ENABLE_CORS", "true")
 	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -247,9 +226,9 @@ func TestBuildContainer_WithCORSEnabled(t *testing.T) {
 
 // TestBuildContainer_WithRedis tests container with Redis DSN
 func TestBuildContainer_WithRedis(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("REDIS_DSN", "redis://localhost:6379")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -265,9 +244,9 @@ func TestBuildContainer_WithRedis(t *testing.T) {
 
 // TestBuildContainer_WithCustomPort tests container with custom port
 func TestBuildContainer_WithCustomPort(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("PORT", "8080")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -283,9 +262,9 @@ func TestBuildContainer_WithCustomPort(t *testing.T) {
 
 // TestBuildContainer_WithCustomHost tests container with custom host
 func TestBuildContainer_WithCustomHost(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("HOST", "127.0.0.1")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -301,9 +280,9 @@ func TestBuildContainer_WithCustomHost(t *testing.T) {
 
 // TestBuildContainer_WithMaxConcurrentRequests tests container with custom max concurrent requests
 func TestBuildContainer_WithMaxConcurrentRequests(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("MAX_CONCURRENT_REQUESTS", "200")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -319,9 +298,9 @@ func TestBuildContainer_WithMaxConcurrentRequests(t *testing.T) {
 
 // TestBuildContainer_WithLogLevel tests container with custom log level
 func TestBuildContainer_WithLogLevel(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("LOG_LEVEL", "debug")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -337,9 +316,9 @@ func TestBuildContainer_WithLogLevel(t *testing.T) {
 
 // TestBuildContainer_WithSlaveMode tests container with slave mode
 func TestBuildContainer_WithSlaveMode(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("IS_SLAVE", "true")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -355,7 +334,7 @@ func TestBuildContainer_WithSlaveMode(t *testing.T) {
 
 // TestBuildContainer_WithAllConfigs tests container with all configuration options
 func TestBuildContainer_WithAllConfigs(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
 	os.Setenv("DEBUG_MODE", "true")
 	os.Setenv("ENABLE_CORS", "true")
@@ -364,7 +343,7 @@ func TestBuildContainer_WithAllConfigs(t *testing.T) {
 	os.Setenv("HOST", "127.0.0.1")
 	os.Setenv("MAX_CONCURRENT_REQUESTS", "200")
 	os.Setenv("LOG_LEVEL", "debug")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -382,8 +361,8 @@ func TestBuildContainer_WithAllConfigs(t *testing.T) {
 
 // TestBuildContainer_MultipleServices tests resolving multiple services
 func TestBuildContainer_MultipleServices(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -401,8 +380,8 @@ func TestBuildContainer_MultipleServices(t *testing.T) {
 
 // TestBuildContainer_ServiceSingleton tests that services are singletons
 func TestBuildContainer_ServiceSingleton(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -421,17 +400,16 @@ func TestBuildContainer_ServiceSingleton(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should be same instance
-	assert.Equal(t, cm1, cm2)
+	assert.Same(t, cm1, cm2)
 }
 
 // BenchmarkBuildContainerWithConfigs benchmarks container creation with all configs
 func BenchmarkBuildContainerWithConfigs(b *testing.B) {
-	setupTestEnv()
-	os.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
-	os.Setenv("DEBUG_MODE", "true")
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
-	defer cleanupTestEnv()
+	setupTestEnv(b)
+	b.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
+	b.Setenv("DEBUG_MODE", "true")
+	b.Setenv("ENABLE_CORS", "true")
+	b.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -445,8 +423,7 @@ func BenchmarkBuildContainerWithConfigs(b *testing.B) {
 
 // BenchmarkContainerInvokeMultiple benchmarks multiple service resolutions
 func BenchmarkContainerInvokeMultiple(b *testing.B) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(b)
 
 	container, err := BuildContainer()
 	if err != nil {
@@ -470,8 +447,8 @@ func BenchmarkContainerInvokeMultiple(b *testing.B) {
 
 // TestBuildContainer_AllProviders tests that all providers are registered correctly
 func TestBuildContainer_AllProviders(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -497,9 +474,9 @@ func TestBuildContainer_AllProviders(t *testing.T) {
 
 // TestBuildContainer_InfrastructureServices tests infrastructure service resolution
 func TestBuildContainer_InfrastructureServices(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("IS_SLAVE", "false") // Explicitly set to master mode
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -518,10 +495,10 @@ func TestBuildContainer_InfrastructureServices(t *testing.T) {
 
 // TestBuildContainer_ConfigManagerProperties tests config manager properties
 func TestBuildContainer_ConfigManagerProperties(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("DEBUG_MODE", "true")
 	os.Setenv("LOG_LEVEL", "debug")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -536,9 +513,9 @@ func TestBuildContainer_ConfigManagerProperties(t *testing.T) {
 
 // TestBuildContainer_PerformanceConfig tests performance configuration
 func TestBuildContainer_PerformanceConfig(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("MAX_CONCURRENT_REQUESTS", "250")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -552,10 +529,10 @@ func TestBuildContainer_PerformanceConfig(t *testing.T) {
 
 // TestBuildContainer_ServerConfig tests server configuration
 func TestBuildContainer_ServerConfig(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("HOST", "localhost")
 	os.Setenv("PORT", "9090")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -570,11 +547,11 @@ func TestBuildContainer_ServerConfig(t *testing.T) {
 
 // TestBuildContainer_CORSConfig tests CORS configuration
 func TestBuildContainer_CORSConfig(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("ENABLE_CORS", "true")
 	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
 	os.Setenv("ALLOW_CREDENTIALS", "true")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -590,11 +567,11 @@ func TestBuildContainer_CORSConfig(t *testing.T) {
 
 // TestBuildContainer_LogConfig tests log configuration
 func TestBuildContainer_LogConfig(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("LOG_LEVEL", "warn")
 	os.Setenv("LOG_FORMAT", "json")
 	os.Setenv("LOG_ENABLE_FILE", "true")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -610,8 +587,8 @@ func TestBuildContainer_LogConfig(t *testing.T) {
 
 // TestBuildContainer_DatabaseConfig tests database configuration
 func TestBuildContainer_DatabaseConfig(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -625,9 +602,9 @@ func TestBuildContainer_DatabaseConfig(t *testing.T) {
 
 // TestBuildContainer_RedisConfig tests Redis configuration
 func TestBuildContainer_RedisConfig(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("REDIS_DSN", "redis://localhost:6379/0")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -641,9 +618,9 @@ func TestBuildContainer_RedisConfig(t *testing.T) {
 
 // TestBuildContainer_EncryptionConfig tests encryption configuration
 func TestBuildContainer_EncryptionConfig(t *testing.T) {
-	setupTestEnv()
+	setupTestEnv(t)
 	os.Setenv("ENCRYPTION_KEY", "my-secret-encryption-key-32b!!")
-	defer cleanupTestEnv()
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -668,9 +645,9 @@ func TestBuildContainer_MasterSlaveMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupTestEnv()
+			setupTestEnv(t)
 			os.Setenv("IS_SLAVE", tt.isSlave)
-			defer cleanupTestEnv()
+
 
 			container, err := BuildContainer()
 			require.NoError(t, err)
@@ -685,8 +662,8 @@ func TestBuildContainer_MasterSlaveMode(t *testing.T) {
 
 // TestBuildContainer_ValidationSuccess tests successful validation
 func TestBuildContainer_ValidationSuccess(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -700,8 +677,8 @@ func TestBuildContainer_ValidationSuccess(t *testing.T) {
 
 // TestBuildContainer_ReloadConfig tests config reloading
 func TestBuildContainer_ReloadConfig(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -715,8 +692,8 @@ func TestBuildContainer_ReloadConfig(t *testing.T) {
 
 // TestBuildContainer_DisplayConfig tests config display
 func TestBuildContainer_DisplayConfig(t *testing.T) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(t)
+
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -731,8 +708,7 @@ func TestBuildContainer_DisplayConfig(t *testing.T) {
 
 // BenchmarkBuildContainerComplete benchmarks complete container build
 func BenchmarkBuildContainerComplete(b *testing.B) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(b)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -752,8 +728,7 @@ func BenchmarkBuildContainerComplete(b *testing.B) {
 
 // BenchmarkContainerResolveConfigManager benchmarks config manager resolution
 func BenchmarkContainerResolveConfigManager(b *testing.B) {
-	setupTestEnv()
-	defer cleanupTestEnv()
+	setupTestEnv(b)
 
 	container, err := BuildContainer()
 	if err != nil {

@@ -18,7 +18,7 @@ import (
 
 func setupTestValidator(tb testing.TB) (*KeyValidator, *gorm.DB, *KeyProvider) {
 	tb.Helper()
-	skipIfNoCGO(tb)
+	skipIfNoSQLite(tb)
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
