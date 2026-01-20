@@ -431,7 +431,9 @@ func BenchmarkRemoveKeysPerformance(b *testing.B) {
 		}
 		b.StartTimer()
 
-		_, _ = provider.RemoveKeys(group.ID, keyValues)
+		if _, err := provider.RemoveKeys(group.ID, keyValues); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -481,7 +483,9 @@ func BenchmarkRestoreKeysPerformance(b *testing.B) {
 		}
 		b.StartTimer()
 
-		_, _ = provider.RestoreKeys(group.ID)
+		if _, err := provider.RestoreKeys(group.ID); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -527,7 +531,9 @@ func BenchmarkRemoveAllKeysPerformance(b *testing.B) {
 				b.StartTimer()
 
 				ctx := context.Background()
-				_, _ = provider.RemoveAllKeys(ctx, group.ID)
+				if _, err := provider.RemoveAllKeys(ctx, group.ID); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}
