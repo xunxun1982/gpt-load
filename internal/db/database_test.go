@@ -2,7 +2,6 @@ package db
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 	"testing"
 
@@ -418,12 +417,8 @@ func TestNewDB_WithReadPool(t *testing.T) {
 
 // TestNewDB_WithCustomReadPoolSize tests database with custom read pool sizes
 func TestNewDB_WithCustomReadPoolSize(t *testing.T) {
-	os.Setenv("SQLITE_READ_MAX_IDLE_CONNS", "4")
-	os.Setenv("SQLITE_READ_MAX_OPEN_CONNS", "8")
-	defer func() {
-		os.Unsetenv("SQLITE_READ_MAX_IDLE_CONNS")
-		os.Unsetenv("SQLITE_READ_MAX_OPEN_CONNS")
-	}()
+	t.Setenv("SQLITE_READ_MAX_IDLE_CONNS", "4")
+	t.Setenv("SQLITE_READ_MAX_OPEN_CONNS", "8")
 
 	tempFile := t.TempDir() + "/test.db"
 
@@ -559,19 +554,24 @@ func TestNewDB_WithConcurrentReads(t *testing.T) {
 	require.NoError(t, db.Exec("INSERT INTO test (value) VALUES ('test2')").Error)
 
 	// Concurrent reads - collect results via channel
-	results := make(chan int64, 10)
+	type readResult struct {
+		count int64
+		err   error
+	}
+	results := make(chan readResult, 10)
 	for i := 0; i < 10; i++ {
 		go func() {
 			var count int64
-			ReadDB.Raw("SELECT COUNT(*) FROM test").Scan(&count)
-			results <- count
+			err := ReadDB.Raw("SELECT COUNT(*) FROM test").Scan(&count).Error
+			results <- readResult{count: count, err: err}
 		}()
 	}
 
 	// Assert in main goroutine
 	for i := 0; i < 10; i++ {
-		count := <-results
-		assert.Greater(t, count, int64(0))
+		res := <-results
+		require.NoError(t, res.err)
+		assert.Greater(t, res.count, int64(0))
 	}
 
 	// Cleanup
@@ -673,8 +673,10 @@ func BenchmarkConcurrentReads(b *testing.B) {
 		sqlDB, _ := db.DB()
 		sqlDB.Close()
 		if ReadDB != nil {
-			readSQLDB, _ := ReadDB.DB()
-			readSQLDB.Close()
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
 		}
 	}()
 

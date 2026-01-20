@@ -109,7 +109,7 @@ check: vet test ## Run all checks (vet + test)
 .PHONY: docker-build
 docker-build: ## Build Docker image
 	@echo "🐳 Building Docker image..."
-	docker build -t $(BINARY_NAME):$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) -t $(BINARY_NAME):$(VERSION) .
 	@echo "✅ Docker image built: $(BINARY_NAME):$(VERSION)"
 
 # ==============================================================================

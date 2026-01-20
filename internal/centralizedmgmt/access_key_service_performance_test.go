@@ -521,7 +521,8 @@ func BenchmarkGetAccessKeyPlaintext(b *testing.B) {
 // Helper functions
 
 func setupBenchService(b *testing.B) (*HubAccessKeyService, *gorm.DB) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	// Use shared cache mode for parallel benchmarks to ensure all connections share the same in-memory database
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {

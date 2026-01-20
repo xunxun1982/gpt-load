@@ -1,6 +1,7 @@
 package app
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -169,7 +170,7 @@ func TestCloseDBConnection_WALCheckpoint(t *testing.T) {
 
 	// Create temporary file-based SQLite database with WAL mode
 	// Note: WAL mode requires a real file, not in-memory database
-	dbPath := t.TempDir() + "/test.db"
+	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})

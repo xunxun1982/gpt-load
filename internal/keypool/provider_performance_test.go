@@ -17,10 +17,18 @@ func BenchmarkSelectKeyPerformance(b *testing.B) {
 
 	// Create test group and keys
 	group := &models.Group{Name: "bench-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
-	encryptedKey, _ := encSvc.Encrypt("sk-bench-key")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
+	encryptedKey, err := encSvc.Encrypt("sk-bench-key")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	// Create multiple keys to simulate realistic pool
 	keyCount := 10
@@ -32,7 +40,9 @@ func BenchmarkSelectKeyPerformance(b *testing.B) {
 			Status:       models.KeyStatusActive,
 			FailureCount: 0,
 		}
-		db.Create(apiKey)
+		if err := db.Create(apiKey).Error; err != nil {
+			b.Fatal(err)
+		}
 
 		// Add to store
 		keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
@@ -65,10 +75,18 @@ func BenchmarkSelectKeyConcurrentPerformance(b *testing.B) {
 
 	// Setup test data
 	group := &models.Group{Name: "concurrent-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
-	encryptedKey, _ := encSvc.Encrypt("sk-concurrent-key")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
+	encryptedKey, err := encSvc.Encrypt("sk-concurrent-key")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	keyCount := 20
 	for i := 0; i < keyCount; i++ {
@@ -79,7 +97,9 @@ func BenchmarkSelectKeyConcurrentPerformance(b *testing.B) {
 			Status:       models.KeyStatusActive,
 			FailureCount: 0,
 		}
-		db.Create(apiKey)
+		if err := db.Create(apiKey).Error; err != nil {
+			b.Fatal(err)
+		}
 
 		keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
 		keyDetails := map[string]any{
@@ -110,10 +130,18 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{Name: "status-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
-	encryptedKey, _ := encSvc.Encrypt("sk-status-key")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
+	encryptedKey, err := encSvc.Encrypt("sk-status-key")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	apiKey := &models.APIKey{
 		GroupID:      group.ID,
@@ -122,7 +150,9 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 		Status:       models.KeyStatusActive,
 		FailureCount: 1,
 	}
-	db.Create(apiKey)
+	if err := db.Create(apiKey).Error; err != nil {
+		b.Fatal(err)
+	}
 
 	keyHashKey := "key:1"
 	activeKeysListKey := "group:1:active_keys"
@@ -151,10 +181,18 @@ func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 		ChannelType: "openai",
 		Enabled:     true,
 	}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
-	encryptedKey, _ := encSvc.Encrypt("sk-failure-key")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
+	encryptedKey, err := encSvc.Encrypt("sk-failure-key")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	apiKey := &models.APIKey{
 		GroupID:      group.ID,
@@ -163,7 +201,9 @@ func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 		Status:       models.KeyStatusActive,
 		FailureCount: 0,
 	}
-	db.Create(apiKey)
+	if err := db.Create(apiKey).Error; err != nil {
+		b.Fatal(err)
+	}
 
 	keyHashKey := "key:1"
 	activeKeysListKey := "group:1:active_keys"
@@ -193,10 +233,18 @@ func BenchmarkLoadKeysFromDBPerformance(b *testing.B) {
 
 			// Create test data
 			group := &models.Group{Name: "load-group", ChannelType: "openai", Enabled: true}
-			db.Create(group)
+			if err := db.Create(group).Error; err != nil {
+				b.Fatal(err)
+			}
 
-			encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
-			encryptedKey, _ := encSvc.Encrypt("sk-load-key")
+			encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+			if err != nil {
+				b.Fatal(err)
+			}
+			encryptedKey, err := encSvc.Encrypt("sk-load-key")
+			if err != nil {
+				b.Fatal(err)
+			}
 
 			for i := 0; i < size; i++ {
 				apiKey := &models.APIKey{
@@ -206,7 +254,9 @@ func BenchmarkLoadKeysFromDBPerformance(b *testing.B) {
 					Status:       models.KeyStatusActive,
 					FailureCount: 0,
 				}
-				db.Create(apiKey)
+				if err := db.Create(apiKey).Error; err != nil {
+					b.Fatal(err)
+				}
 			}
 
 			b.ResetTimer()
@@ -227,9 +277,14 @@ func BenchmarkAddKeysPerformance(b *testing.B) {
 			defer provider.Stop()
 
 			group := &models.Group{Name: "add-group", ChannelType: "openai", Enabled: true}
-			db.Create(group)
+			if err := db.Create(group).Error; err != nil {
+				b.Fatal(err)
+			}
 
-			encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+			encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+			if err != nil {
+				b.Fatal(err)
+			}
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -254,9 +309,14 @@ func BenchmarkRemoveKeysPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{Name: "remove-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	// Pre-create keys for removal
 	keyValues := make([]string, 10)
@@ -269,7 +329,9 @@ func BenchmarkRemoveKeysPerformance(b *testing.B) {
 			KeyHash:  encSvc.Hash(keyValue),
 			Status:   models.KeyStatusActive,
 		}
-		db.Create(apiKey)
+		if err := db.Create(apiKey).Error; err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	b.ResetTimer()
@@ -297,9 +359,14 @@ func BenchmarkRestoreKeysPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{Name: "restore-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	// Create invalid keys
 	for i := 0; i < 10; i++ {
@@ -310,7 +377,9 @@ func BenchmarkRestoreKeysPerformance(b *testing.B) {
 			Status:       models.KeyStatusInvalid,
 			FailureCount: 5,
 		}
-		db.Create(apiKey)
+		if err := db.Create(apiKey).Error; err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	b.ResetTimer()
@@ -337,9 +406,14 @@ func BenchmarkRemoveAllKeysPerformance(b *testing.B) {
 			defer provider.Stop()
 
 			group := &models.Group{Name: "removeall-group", ChannelType: "openai", Enabled: true}
-			db.Create(group)
+			if err := db.Create(group).Error; err != nil {
+				b.Fatal(err)
+			}
 
-			encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+			encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+			if err != nil {
+				b.Fatal(err)
+			}
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -352,7 +426,9 @@ func BenchmarkRemoveAllKeysPerformance(b *testing.B) {
 						KeyHash:  encSvc.Hash(fmt.Sprintf("sk-removeall-%d-%d", i, j)),
 						Status:   models.KeyStatusActive,
 					}
-					db.Create(apiKey)
+					if err := db.Create(apiKey).Error; err != nil {
+						b.Fatal(err)
+					}
 				}
 				b.StartTimer()
 
@@ -370,10 +446,18 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 
 	// Setup test data
 	group := &models.Group{Name: "concurrent-ops-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
-	encryptedKey, _ := encSvc.Encrypt("sk-concurrent-ops")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
+	encryptedKey, err := encSvc.Encrypt("sk-concurrent-ops")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	keyCount := 50
 	for i := 0; i < keyCount; i++ {
@@ -384,7 +468,9 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 			Status:       models.KeyStatusActive,
 			FailureCount: 0,
 		}
-		db.Create(apiKey)
+		if err := db.Create(apiKey).Error; err != nil {
+			b.Fatal(err)
+		}
 
 		keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
 		keyDetails := map[string]any{
@@ -439,12 +525,20 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 		{"large-group", 100},
 	}
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
-	encryptedKey, _ := encSvc.Encrypt("sk-realistic")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
+	encryptedKey, err := encSvc.Encrypt("sk-realistic")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	for _, g := range groups {
 		group := &models.Group{Name: g.name, ChannelType: "openai", Enabled: true}
-		db.Create(group)
+		if err := db.Create(group).Error; err != nil {
+			b.Fatal(err)
+		}
 
 		for i := 0; i < g.keyCount; i++ {
 			apiKey := &models.APIKey{
@@ -454,7 +548,9 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 				Status:       models.KeyStatusActive,
 				FailureCount: 0,
 			}
-			db.Create(apiKey)
+			if err := db.Create(apiKey).Error; err != nil {
+				b.Fatal(err)
+			}
 
 			keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
 			keyDetails := map[string]any{
@@ -502,10 +598,18 @@ func BenchmarkMemoryAllocationPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{Name: "memory-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatal(err)
+	}
 
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
-	encryptedKey, _ := encSvc.Encrypt("sk-memory")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
+	encryptedKey, err := encSvc.Encrypt("sk-memory")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	apiKey := &models.APIKey{
 		GroupID:      group.ID,
@@ -514,7 +618,9 @@ func BenchmarkMemoryAllocationPerformance(b *testing.B) {
 		Status:       models.KeyStatusActive,
 		FailureCount: 0,
 	}
-	db.Create(apiKey)
+	if err := db.Create(apiKey).Error; err != nil {
+		b.Fatal(err)
+	}
 
 	keyHashKey := "key:1"
 	activeKeysListKey := "group:1:active_keys"

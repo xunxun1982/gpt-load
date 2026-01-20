@@ -40,7 +40,8 @@ func setupTestProvider(t *testing.T) (*KeyProvider, *gorm.DB, store.Store) {
 	t.Helper() // Mark as test helper for better stack traces
 	db := setupTestDB(t)
 	memStore := store.NewMemoryStore()
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
 	settingsManager := config.NewSystemSettingsManager()
 
 	provider := NewProvider(db, memStore, settingsManager, encSvc)

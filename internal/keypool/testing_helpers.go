@@ -21,8 +21,8 @@ func skipIfNoSQLite(tb testing.TB) {
 	}
 	// Close the test connection
 	if db != nil {
-		sqlDB, _ := db.DB()
-		if sqlDB != nil {
+		sqlDB, err := db.DB()
+		if err == nil && sqlDB != nil {
 			sqlDB.Close()
 		}
 	}

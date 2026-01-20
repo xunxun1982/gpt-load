@@ -387,7 +387,7 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
     align: "center",
     titleAlign: "center",
     render: row => {
-      const type = row.groups[0]?.channel_type;
+      const type = getPrimaryChannelType(row);
       return type
         ? h(NTag, { size: "tiny", type: "info", bordered: false }, () => type)
         : h(NText, { depth: 3 }, () => "-");

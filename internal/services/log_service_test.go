@@ -95,7 +95,8 @@ func TestLogFiltersScope(t *testing.T) {
 	// Create test data
 	keyValue := "test-key-value"
 	keyHash := service.EncryptionSvc.Hash(keyValue)
-	encryptedKey, _ := service.EncryptionSvc.Encrypt(keyValue)
+	encryptedKey, err := service.EncryptionSvc.Encrypt(keyValue)
+	require.NoError(t, err)
 
 	testLogs := []models.RequestLog{
 		{
@@ -258,7 +259,8 @@ func TestStreamLogKeysToCSV(t *testing.T) {
 	// Create test data
 	keyValue := "test-key-value"
 	keyHash := service.EncryptionSvc.Hash(keyValue)
-	encryptedKey, _ := service.EncryptionSvc.Encrypt(keyValue)
+	encryptedKey, err := service.EncryptionSvc.Encrypt(keyValue)
+	require.NoError(t, err)
 
 	testLogs := []models.RequestLog{
 		{
@@ -289,7 +291,7 @@ func TestStreamLogKeysToCSV(t *testing.T) {
 	c.Request = httptest.NewRequest("GET", "/", nil)
 
 	var buf bytes.Buffer
-	err := service.StreamLogKeysToCSV(c, &buf)
+	err = service.StreamLogKeysToCSV(c, &buf)
 	require.NoError(t, err)
 
 	// Parse CSV
@@ -338,8 +340,10 @@ func TestStreamLogKeysToCSV_WithFilters(t *testing.T) {
 	key2 := "key2"
 	hash1 := service.EncryptionSvc.Hash(key1)
 	hash2 := service.EncryptionSvc.Hash(key2)
-	encrypted1, _ := service.EncryptionSvc.Encrypt(key1)
-	encrypted2, _ := service.EncryptionSvc.Encrypt(key2)
+	encrypted1, err := service.EncryptionSvc.Encrypt(key1)
+	require.NoError(t, err)
+	encrypted2, err := service.EncryptionSvc.Encrypt(key2)
+	require.NoError(t, err)
 
 	testLogs := []models.RequestLog{
 		{
@@ -370,7 +374,7 @@ func TestStreamLogKeysToCSV_WithFilters(t *testing.T) {
 	c.Request = httptest.NewRequest("GET", "/?group_name=group1", nil)
 
 	var buf bytes.Buffer
-	err := service.StreamLogKeysToCSV(c, &buf)
+	err = service.StreamLogKeysToCSV(c, &buf)
 	require.NoError(t, err)
 
 	// Parse CSV
@@ -482,10 +486,19 @@ func BenchmarkEscapeLike(b *testing.B) {
 
 // BenchmarkLogFiltersScope benchmarks log filtering
 func BenchmarkLogFiltersScope(b *testing.B) {
-	db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	db.AutoMigrate(&models.RequestLog{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	err = db.AutoMigrate(&models.RequestLog{})
+	if err != nil {
+		b.Fatal(err)
+	}
 
-	encryptionSvc, _ := encryption.NewService("test-encryption-key-32-bytes!!")
+	encryptionSvc, err := encryption.NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatal(err)
+	}
 	service := NewLogService(db, encryptionSvc)
 
 	gin.SetMode(gin.TestMode)
@@ -501,25 +514,39 @@ func BenchmarkLogFiltersScope(b *testing.B) {
 
 // BenchmarkStreamLogKeysToCSV benchmarks CSV export
 func BenchmarkStreamLogKeysToCSV(b *testing.B) {
-	db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	db.AutoMigrate(&models.RequestLog{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	err = db.AutoMigrate(&models.RequestLog{})
+	if err != nil {
+		b.Fatal(err)
+	}
 
-	encryptionSvc, _ := encryption.NewService("test-encryption-key-32-bytes!!")
+	encryptionSvc, err := encryption.NewService("test-encryption-key-32-bytes!!")
+	if err != nil {
+		b.Fatal(err)
+	}
 	service := NewLogService(db, encryptionSvc)
 
 	// Create test data
 	keyValue := "test-key"
 	keyHash := encryptionSvc.Hash(keyValue)
-	encryptedKey, _ := encryptionSvc.Encrypt(keyValue)
+	encryptedKey, err := encryptionSvc.Encrypt(keyValue)
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	for i := 0; i < 10; i++ {
-		db.Create(&models.RequestLog{
+		if err := db.Create(&models.RequestLog{
 			GroupName:  "group1",
 			KeyHash:    keyHash,
 			KeyValue:   encryptedKey,
 			StatusCode: 200,
 			Timestamp:  time.Now(),
-		})
+		}).Error; err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	gin.SetMode(gin.TestMode)
