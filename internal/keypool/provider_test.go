@@ -363,7 +363,10 @@ func setupBenchProvider(b *testing.B) (*KeyProvider, *gorm.DB, store.Store) {
 	}
 
 	memStore := store.NewMemoryStore()
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatalf("failed to create encryption service: %v", err)
+	}
 	settingsManager := config.NewSystemSettingsManager()
 
 	provider := NewProvider(db, memStore, settingsManager, encSvc)

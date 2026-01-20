@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gpt-load/internal/encryption"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -407,6 +408,13 @@ func BenchmarkCacheInvalidation(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		// Re-warm cache after invalidation to measure actual invalidation cost
+		b.StopTimer()
+		for _, keyValue := range keyValues {
+			_, _ = svc.ValidateAccessKey(ctx, keyValue)
+		}
+		b.StartTimer()
+
 		svc.InvalidateAllKeyCache()
 	}
 }
@@ -521,8 +529,10 @@ func BenchmarkGetAccessKeyPlaintext(b *testing.B) {
 // Helper functions
 
 func setupBenchService(b *testing.B) (*HubAccessKeyService, *gorm.DB) {
-	// Use shared cache mode for parallel benchmarks to ensure all connections share the same in-memory database
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	// Use unique in-memory database per benchmark to avoid cross-benchmark state leakage
+	// while maintaining shared cache semantics for parallel access within the same benchmark
+	dsn := fmt.Sprintf("file:bench_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {

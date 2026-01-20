@@ -14,6 +14,8 @@ import (
 
 // skipIfNoSQLite skips the test if SQLite driver is not available
 // Note: glebarez/sqlite is a pure Go implementation and doesn't require CGO
+// Note: This helper is duplicated in internal/keypool/testing_helpers.go to avoid
+// cross-package test dependencies (app package should not depend on keypool package)
 func skipIfNoSQLite(tb testing.TB) {
 	tb.Helper()
 	// Try to create a SQLite database to check if driver is available

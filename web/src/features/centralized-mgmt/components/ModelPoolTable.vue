@@ -78,12 +78,23 @@ const channelTypeOptions = computed<SelectOption[]>(() => {
 /**
  * Get the primary channel type for a model.
  * Prioritizes enabled groups with priority > 0 and lowest priority value, falls back to first group's channel type.
+ * Uses single-pass scan instead of filter+sort for better performance.
  */
 function getPrimaryChannelType(model: ModelPoolEntryV2): string {
-  // Try to find enabled groups with priority > 0 and channel_type, sorted by priority (lowest first)
-  const enabledGroup = model.groups
-    .filter(g => g.enabled && g.priority > 0 && g.channel_type)
-    .sort((a, b) => a.priority - b.priority)[0];
+  // Single-pass scan to find the enabled group with lowest priority
+  const enabledGroup = model.groups.reduce(
+    (best, g) => {
+      if (!g.enabled || g.priority <= 0 || !g.channel_type) {
+        return best;
+      }
+      if (!best || g.priority < best.priority) {
+        return g;
+      }
+      return best;
+    },
+    undefined as ModelGroupPriority | undefined
+  );
+
   if (enabledGroup) {
     return enabledGroup.channel_type;
   }

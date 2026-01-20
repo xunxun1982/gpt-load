@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"encoding/csv"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -19,7 +20,10 @@ import (
 
 // setupLogServiceTest creates a test database and log service
 func setupLogServiceTest(t *testing.T) (*LogService, *gorm.DB) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	// Use unique in-memory database per test to avoid cross-test state contamination
+	// while maintaining shared cache semantics for connections within the same test
+	dsn := fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 
 	err = db.AutoMigrate(&models.RequestLog{})
@@ -486,7 +490,9 @@ func BenchmarkEscapeLike(b *testing.B) {
 
 // BenchmarkLogFiltersScope benchmarks log filtering
 func BenchmarkLogFiltersScope(b *testing.B) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	// Use unique in-memory database per benchmark to avoid cross-benchmark state leakage
+	dsn := fmt.Sprintf("file:bench_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -514,7 +520,9 @@ func BenchmarkLogFiltersScope(b *testing.B) {
 
 // BenchmarkStreamLogKeysToCSV benchmarks CSV export
 func BenchmarkStreamLogKeysToCSV(b *testing.B) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	// Use unique in-memory database per benchmark to avoid cross-benchmark state leakage
+	dsn := fmt.Sprintf("file:bench_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -557,6 +565,8 @@ func BenchmarkStreamLogKeysToCSV(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var buf bytes.Buffer
-		_ = service.StreamLogKeysToCSV(c, &buf)
+		if err := service.StreamLogKeysToCSV(c, &buf); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
