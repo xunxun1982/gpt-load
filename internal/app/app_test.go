@@ -168,7 +168,9 @@ func TestCloseDBConnection_WALCheckpoint(t *testing.T) {
 	skipIfNoSQLite(t)
 
 	// Create temporary file-based SQLite database with WAL mode
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	// Note: WAL mode requires a real file, not in-memory database
+	dbPath := t.TempDir() + "/test.db"
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)

@@ -218,6 +218,7 @@ func TestSanitizeProxyString(t *testing.T) {
 // BenchmarkSanitizeURLForLog benchmarks URL sanitization
 func BenchmarkSanitizeURLForLog(b *testing.B) {
 	u, _ := url.Parse("https://user:pass@api.example.com/endpoint?api_key=secret&token=abc123&normal=value")
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = SanitizeURLForLog(u)
@@ -227,6 +228,7 @@ func BenchmarkSanitizeURLForLog(b *testing.B) {
 // BenchmarkSanitizeRequestURLForLog benchmarks request URL sanitization
 func BenchmarkSanitizeRequestURLForLog(b *testing.B) {
 	urlStr := "https://api.example.com/endpoint?api_key=secret&token=abc123"
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = SanitizeRequestURLForLog(urlStr)

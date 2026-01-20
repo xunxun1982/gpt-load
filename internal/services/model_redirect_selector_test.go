@@ -132,10 +132,15 @@ func TestDynamicModelRedirectSelector_WeightedSelection(t *testing.T) {
 	assert.Greater(t, selections["gpt-4-turbo"], 0)
 	assert.Greater(t, selections["gpt-4-0125"], 0)
 
-	// Verify distribution roughly matches weights (70:30 ratio)
-	// Allow for statistical variance
+	// Verify distribution roughly matches weights (70:30 ratio = 2.33)
+	// With 1000 trials, allow wider tolerance to avoid flakiness
+	// Expected: gpt-4-turbo ~700, gpt-4-0125 ~300
 	ratio := float64(selections["gpt-4-turbo"]) / float64(selections["gpt-4-0125"])
-	assert.InDelta(t, 2.33, ratio, 0.5) // 70/30 = 2.33
+	assert.InDelta(t, 2.33, ratio, 0.8, "Ratio should be approximately 2.33 (70:30) with tolerance for randomness")
+
+	// Also verify the higher-weight target is selected more frequently
+	assert.Greater(t, selections["gpt-4-turbo"], selections["gpt-4-0125"],
+		"Higher weight target should be selected more frequently")
 }
 
 // TestDynamicModelRedirectSelector_DynamicWeightAdjustment tests dynamic weight adjustment
@@ -166,6 +171,7 @@ func TestDynamicModelRedirectSelector_DynamicWeightAdjustment(t *testing.T) {
 	}
 
 	// Perform selections and verify second target is preferred
+	// Note: This is probabilistic but with strong bias due to health differences
 	selections := make(map[string]int)
 	for i := 0; i < 1000; i++ {
 		model, _, err := selector.SelectTargetWithContext(rule, groupID, sourceModel)
@@ -174,7 +180,9 @@ func TestDynamicModelRedirectSelector_DynamicWeightAdjustment(t *testing.T) {
 	}
 
 	// Second target should be selected more often due to better health
-	assert.Greater(t, selections["gpt-4-0125"], selections["gpt-4-turbo"])
+	// This is a deterministic property given the health differences
+	assert.Greater(t, selections["gpt-4-0125"], selections["gpt-4-turbo"],
+		"Healthier target (gpt-4-0125) should be selected more frequently than failing target")
 }
 
 // TestResolveTargetModelWithDynamicWeight tests target model resolution

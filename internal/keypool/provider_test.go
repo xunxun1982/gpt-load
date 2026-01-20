@@ -118,10 +118,10 @@ func TestSelectKey_Success(t *testing.T) {
 	require.NoError(t, db.Create(apiKey).Error)
 
 	// Add key to store
-	activeKeysListKey := "group:1:active_keys"
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	require.NoError(t, memStore.LPush(activeKeysListKey, apiKey.ID))
 
-	keyHashKey := "key:1"
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
 	keyDetails := map[string]any{
 		"key_string":    encryptedKey,
 		"status":        models.KeyStatusActive,
@@ -257,7 +257,7 @@ func TestRestoreKeys(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-group := createTestGroup(t, db, "test-group")
+	group := createTestGroup(t, db, "test-group")
 
 	// Create invalid key
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -290,7 +290,7 @@ func TestRemoveAllKeys(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-group := createTestGroup(t, db, "test-group")
+	group := createTestGroup(t, db, "test-group")
 
 	// Create multiple keys
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -321,7 +321,7 @@ func TestLoadKeysFromDB(t *testing.T) {
 	defer provider.Stop()
 
 	// Create test group
-group := createTestGroup(t, db, "test-group")
+	group := createTestGroup(t, db, "test-group")
 
 	// Create test keys
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -386,9 +386,9 @@ func BenchmarkSelectKey(b *testing.B) {
 	}
 	db.Create(apiKey)
 
-	activeKeysListKey := "group:1:active_keys"
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	memStore.LPush(activeKeysListKey, apiKey.ID)
-	keyHashKey := "key:1"
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
 	keyDetails := map[string]any{
 		"key_string":    encryptedKey,
 		"status":        models.KeyStatusActive,
@@ -404,7 +404,7 @@ func BenchmarkSelectKey(b *testing.B) {
 }
 
 func BenchmarkUpdateStatus(b *testing.B) {
-	provider, db, memStore := setupTestProvider(&testing.T{})
+	provider, db, memStore := setupBenchProvider(b)
 	defer provider.Stop()
 
 	// Setup test data
@@ -422,8 +422,8 @@ func BenchmarkUpdateStatus(b *testing.B) {
 	}
 	db.Create(apiKey)
 
-	keyHashKey := "key:1"
-	activeKeysListKey := "group:1:active_keys"
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	keyDetails := map[string]any{
 		"key_string":    encryptedKey,
 		"status":        models.KeyStatusActive,
@@ -440,7 +440,7 @@ func BenchmarkUpdateStatus(b *testing.B) {
 }
 
 func BenchmarkAddKeys(b *testing.B) {
-	provider, db, _ := setupTestProvider(&testing.T{})
+	provider, db, _ := setupBenchProvider(b)
 	defer provider.Stop()
 
 	group := &models.Group{Name: "bench-group", ChannelType: "openai", Enabled: true}

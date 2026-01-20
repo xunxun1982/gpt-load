@@ -230,6 +230,7 @@ func BenchmarkBuildToolNameShortMap(b *testing.B) {
 		"mcp__server__very_long_tool_name",
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = BuildToolNameShortMap(names, 64)
@@ -246,6 +247,7 @@ func BenchmarkBuildToolNameShortMapNoShortening(b *testing.B) {
 		"tool5",
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = BuildToolNameShortMap(names, 64)
@@ -262,6 +264,7 @@ func BenchmarkBuildReverseToolNameMap(b *testing.B) {
 		"original5": "short5",
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = BuildReverseToolNameMap(shortMap)

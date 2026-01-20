@@ -118,8 +118,10 @@ func TestNewDB_SQLiteMemory(t *testing.T) {
 
 	// Close ReadDB if it was created to prevent resource leak
 	if ReadDB != nil && ReadDB != db {
-		readSQLDB, _ := ReadDB.DB()
-		defer readSQLDB.Close()
+		readSQLDB, err := ReadDB.DB()
+		if err == nil && readSQLDB != nil {
+			defer readSQLDB.Close()
+		}
 	}
 
 	err = sqlDB.Ping()
@@ -552,9 +554,9 @@ func TestNewDB_WithConcurrentReads(t *testing.T) {
 	require.NotNil(t, db)
 
 	// Create test table
-	db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)")
-	db.Exec("INSERT INTO test (value) VALUES ('test1')")
-	db.Exec("INSERT INTO test (value) VALUES ('test2')")
+	require.NoError(t, db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)").Error)
+	require.NoError(t, db.Exec("INSERT INTO test (value) VALUES ('test1')").Error)
+	require.NoError(t, db.Exec("INSERT INTO test (value) VALUES ('test2')").Error)
 
 	// Concurrent reads - collect results via channel
 	results := make(chan int64, 10)
@@ -591,13 +593,13 @@ func TestNewDB_WithPrepareStmt(t *testing.T) {
 	require.NotNil(t, db)
 
 	// Create table and insert data
-	db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
-	db.Exec("INSERT INTO test (name) VALUES (?)", "test1")
-	db.Exec("INSERT INTO test (name) VALUES (?)", "test2")
+	require.NoError(t, db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)").Error)
+	require.NoError(t, db.Exec("INSERT INTO test (name) VALUES (?)", "test1").Error)
+	require.NoError(t, db.Exec("INSERT INTO test (name) VALUES (?)", "test2").Error)
 
 	// Query with prepared statement
 	var count int64
-	db.Raw("SELECT COUNT(*) FROM test").Scan(&count)
+	require.NoError(t, db.Raw("SELECT COUNT(*) FROM test").Scan(&count).Error)
 	assert.Equal(t, int64(2), count)
 
 	sqlDB, err := db.DB()
@@ -617,11 +619,11 @@ func TestNewDB_WithForeignKeys(t *testing.T) {
 	require.NotNil(t, db)
 
 	// Create tables with foreign key relationship
-	db.Exec("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
-	db.Exec("CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER, FOREIGN KEY(parent_id) REFERENCES parent(id))")
+	require.NoError(t, db.Exec("CREATE TABLE parent (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER, FOREIGN KEY(parent_id) REFERENCES parent(id))").Error)
 
 	// Insert parent
-	db.Exec("INSERT INTO parent (id) VALUES (1)")
+	require.NoError(t, db.Exec("INSERT INTO parent (id) VALUES (1)").Error)
 
 	// Insert child with valid parent
 	result := db.Exec("INSERT INTO child (parent_id) VALUES (1)")
@@ -648,8 +650,10 @@ func BenchmarkNewDB_WithReadPool(b *testing.B) {
 		sqlDB, _ := db.DB()
 		sqlDB.Close()
 		if ReadDB != nil {
-			readSQLDB, _ := ReadDB.DB()
-			readSQLDB.Close()
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
 		}
 	}
 }

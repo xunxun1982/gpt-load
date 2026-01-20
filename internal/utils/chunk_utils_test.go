@@ -245,6 +245,7 @@ func BenchmarkProcessInChunks(b *testing.B) {
 		items[i] = i
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = ProcessInChunks(items, 100, func(chunk []int) error {
@@ -260,6 +261,7 @@ func BenchmarkChunkSlice(b *testing.B) {
 		items[i] = i
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = ChunkSlice(items, 100)

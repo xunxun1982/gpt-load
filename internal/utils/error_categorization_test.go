@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"syscall"
 	"testing"
 	"time"
@@ -275,27 +276,36 @@ func BenchmarkCategorizeErrorNetError(b *testing.B) {
 
 // BenchmarkShouldRetryHTTPStatus benchmarks HTTP status retry check
 func BenchmarkShouldRetryHTTPStatus(b *testing.B) {
-	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = ShouldRetryHTTPStatus(http.StatusServiceUnavailable)
 	}
 }
 
 // TestRealNetError tests with real net.Error
+// This test is gated behind ENABLE_NETWORK_TESTS to avoid CI flakiness
 func TestRealNetError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping real network test in short mode")
 	}
-	// Create a real timeout error using TEST-NET-1 (RFC 5737)
-	conn, err := net.DialTimeout("tcp", "192.0.2.1:80", 10*time.Millisecond)
-	if err != nil {
-		result := CategorizeError(err)
-		// 192.0.2.1 is TEST-NET-1, should produce timeout or network error
-		if result.Type != ErrorCategoryTimeout && result.Type != ErrorCategoryNetwork && result.Type != ErrorCategoryConnection {
-			t.Errorf("Unexpected categorization for network error: got %v", result.Type)
-		}
+	if os.Getenv("ENABLE_NETWORK_TESTS") == "" {
+		t.Skip("Skipping real network test (set ENABLE_NETWORK_TESTS=1 to enable)")
 	}
+
+	// Create a real timeout error using TEST-NET-1 (RFC 5737)
+	// 192.0.2.1 is reserved for documentation and should not respond
+	conn, err := net.DialTimeout("tcp", "192.0.2.1:80", 10*time.Millisecond)
 	if conn != nil {
 		conn.Close()
+		t.Fatal("Unexpected successful connection to TEST-NET-1 address")
+	}
+
+	if err == nil {
+		t.Fatal("Expected dial error but got nil")
+	}
+
+	result := CategorizeError(err)
+	// 192.0.2.1 is TEST-NET-1, should produce timeout or network error
+	if result.Type != ErrorCategoryTimeout && result.Type != ErrorCategoryNetwork && result.Type != ErrorCategoryConnection {
+		t.Errorf("Unexpected categorization for network error: got %v, want timeout/network/connection", result.Type)
 	}
 }

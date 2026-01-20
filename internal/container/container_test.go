@@ -1,7 +1,6 @@
 package container
 
 import (
-	"os"
 	"testing"
 
 	"gpt-load/internal/config"
@@ -207,8 +206,8 @@ func TestBuildContainer_WithDebugMode(t *testing.T) {
 // TestBuildContainer_WithCORSEnabled tests container with CORS enabled
 func TestBuildContainer_WithCORSEnabled(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
 
 
 	container, err := BuildContainer()
@@ -227,7 +226,7 @@ func TestBuildContainer_WithCORSEnabled(t *testing.T) {
 // TestBuildContainer_WithRedis tests container with Redis DSN
 func TestBuildContainer_WithRedis(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("REDIS_DSN", "redis://localhost:6379")
+	t.Setenv("REDIS_DSN", "redis://localhost:6379")
 
 
 	container, err := BuildContainer()
@@ -245,7 +244,7 @@ func TestBuildContainer_WithRedis(t *testing.T) {
 // TestBuildContainer_WithCustomPort tests container with custom port
 func TestBuildContainer_WithCustomPort(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("PORT", "8080")
+	t.Setenv("PORT", "8080")
 
 
 	container, err := BuildContainer()
@@ -263,7 +262,7 @@ func TestBuildContainer_WithCustomPort(t *testing.T) {
 // TestBuildContainer_WithCustomHost tests container with custom host
 func TestBuildContainer_WithCustomHost(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("HOST", "127.0.0.1")
+	t.Setenv("HOST", "127.0.0.1")
 
 
 	container, err := BuildContainer()
@@ -281,7 +280,7 @@ func TestBuildContainer_WithCustomHost(t *testing.T) {
 // TestBuildContainer_WithMaxConcurrentRequests tests container with custom max concurrent requests
 func TestBuildContainer_WithMaxConcurrentRequests(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("MAX_CONCURRENT_REQUESTS", "200")
+	t.Setenv("MAX_CONCURRENT_REQUESTS", "200")
 
 
 	container, err := BuildContainer()
@@ -299,7 +298,7 @@ func TestBuildContainer_WithMaxConcurrentRequests(t *testing.T) {
 // TestBuildContainer_WithLogLevel tests container with custom log level
 func TestBuildContainer_WithLogLevel(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("LOG_LEVEL", "debug")
 
 
 	container, err := BuildContainer()
@@ -317,7 +316,7 @@ func TestBuildContainer_WithLogLevel(t *testing.T) {
 // TestBuildContainer_WithSlaveMode tests container with slave mode
 func TestBuildContainer_WithSlaveMode(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("IS_SLAVE", "true")
+	t.Setenv("IS_SLAVE", "true")
 
 
 	container, err := BuildContainer()
@@ -475,7 +474,7 @@ func TestBuildContainer_AllProviders(t *testing.T) {
 // TestBuildContainer_InfrastructureServices tests infrastructure service resolution
 func TestBuildContainer_InfrastructureServices(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("IS_SLAVE", "false") // Explicitly set to master mode
+	t.Setenv("IS_SLAVE", "false") // Explicitly set to master mode
 
 
 	container, err := BuildContainer()
@@ -496,8 +495,8 @@ func TestBuildContainer_InfrastructureServices(t *testing.T) {
 // TestBuildContainer_ConfigManagerProperties tests config manager properties
 func TestBuildContainer_ConfigManagerProperties(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("DEBUG_MODE", "true")
-	os.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("DEBUG_MODE", "true")
+	t.Setenv("LOG_LEVEL", "debug")
 
 
 	container, err := BuildContainer()
@@ -514,7 +513,7 @@ func TestBuildContainer_ConfigManagerProperties(t *testing.T) {
 // TestBuildContainer_PerformanceConfig tests performance configuration
 func TestBuildContainer_PerformanceConfig(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("MAX_CONCURRENT_REQUESTS", "250")
+	t.Setenv("MAX_CONCURRENT_REQUESTS", "250")
 
 
 	container, err := BuildContainer()
@@ -530,8 +529,8 @@ func TestBuildContainer_PerformanceConfig(t *testing.T) {
 // TestBuildContainer_ServerConfig tests server configuration
 func TestBuildContainer_ServerConfig(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("HOST", "localhost")
-	os.Setenv("PORT", "9090")
+	t.Setenv("HOST", "localhost")
+	t.Setenv("PORT", "9090")
 
 
 	container, err := BuildContainer()
@@ -548,9 +547,9 @@ func TestBuildContainer_ServerConfig(t *testing.T) {
 // TestBuildContainer_CORSConfig tests CORS configuration
 func TestBuildContainer_CORSConfig(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
-	os.Setenv("ALLOW_CREDENTIALS", "true")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
+	t.Setenv("ALLOW_CREDENTIALS", "true")
 
 
 	container, err := BuildContainer()
@@ -568,9 +567,9 @@ func TestBuildContainer_CORSConfig(t *testing.T) {
 // TestBuildContainer_LogConfig tests log configuration
 func TestBuildContainer_LogConfig(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("LOG_LEVEL", "warn")
-	os.Setenv("LOG_FORMAT", "json")
-	os.Setenv("LOG_ENABLE_FILE", "true")
+	t.Setenv("LOG_LEVEL", "warn")
+	t.Setenv("LOG_FORMAT", "json")
+	t.Setenv("LOG_ENABLE_FILE", "true")
 
 
 	container, err := BuildContainer()
@@ -603,7 +602,7 @@ func TestBuildContainer_DatabaseConfig(t *testing.T) {
 // TestBuildContainer_RedisConfig tests Redis configuration
 func TestBuildContainer_RedisConfig(t *testing.T) {
 	setupTestEnv(t)
-	os.Setenv("REDIS_DSN", "redis://localhost:6379/0")
+	t.Setenv("REDIS_DSN", "redis://localhost:6379/0")
 
 
 	container, err := BuildContainer()
@@ -646,7 +645,7 @@ func TestBuildContainer_MasterSlaveMode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			setupTestEnv(t)
-			os.Setenv("IS_SLAVE", tt.isSlave)
+			t.Setenv("IS_SLAVE", tt.isSlave)
 
 
 			container, err := BuildContainer()

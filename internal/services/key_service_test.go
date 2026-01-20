@@ -394,22 +394,22 @@ func TestListKeysInGroupQuery(t *testing.T) {
 	tests := []struct {
 		name         string
 		statusFilter string
-		expectedMin  int64
+		expected     int64
 	}{
 		{
 			name:         "all keys",
 			statusFilter: "",
-			expectedMin:  3,
+			expected:     3,
 		},
 		{
 			name:         "active keys only",
 			statusFilter: models.KeyStatusActive,
-			expectedMin:  2,
+			expected:     2,
 		},
 		{
 			name:         "invalid keys only",
 			statusFilter: models.KeyStatusInvalid,
-			expectedMin:  1,
+			expected:     1,
 		},
 	}
 
@@ -419,7 +419,7 @@ func TestListKeysInGroupQuery(t *testing.T) {
 			var count int64
 			err := query.Count(&count).Error
 			require.NoError(t, err)
-			assert.GreaterOrEqual(t, count, tt.expectedMin)
+			assert.Equal(t, tt.expected, count)
 		})
 	}
 }
@@ -463,11 +463,13 @@ func TestGetSetCachedPage(t *testing.T) {
 }
 
 // TestResetGroupActiveKeysFailureCount is disabled due to type assertion issues in test environment
+// TODO: Re-enable when test environment properly supports store interface type assertions
 func TestResetGroupActiveKeysFailureCount(t *testing.T) {
 	t.Skip("Disabled: type assertion issues difficult to fix in test environment; covered by integration tests")
 }
 
 // TestResetAllActiveKeysFailureCount is disabled due to type assertion issues in test environment
+// TODO: Re-enable when test environment properly supports store interface type assertions
 func TestResetAllActiveKeysFailureCount(t *testing.T) {
 	t.Skip("Disabled: type assertion issues difficult to fix in test environment; covered by integration tests")
 }

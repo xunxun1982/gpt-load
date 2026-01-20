@@ -73,7 +73,8 @@ func TestGetChannelCaching(t *testing.T) {
 	require.NotNil(t, channel1)
 	channel2, err := factory.GetChannel(group)
 	require.NoError(t, err)
-	assert.Equal(t, channel1, channel2)
+	// Use assert.Same to verify pointer identity (cache returns exact same instance)
+	assert.Same(t, channel1, channel2)
 }
 
 // TestInvalidateCache tests cache invalidation
@@ -218,6 +219,7 @@ func BenchmarkGetChannel(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := factory.GetChannel(group)

@@ -252,6 +252,14 @@ func TestManagerTimeoutValidation(t *testing.T) {
 
 // setupTestEnv sets up a test environment with required variables
 func setupTestEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("AUTH_KEY", "test-auth-key-minimum-16-chars")
+	t.Setenv("PORT", "3001")
+	t.Setenv("DATABASE_DSN", ":memory:")
+}
+
+// setupBenchEnv sets up environment for benchmarks (no testing.T required)
+func setupBenchEnv() {
 	os.Setenv("AUTH_KEY", "test-auth-key-minimum-16-chars")
 	os.Setenv("PORT", "3001")
 	os.Setenv("DATABASE_DSN", ":memory:")
@@ -273,10 +281,26 @@ func cleanupTestEnv(t *testing.T) {
 	os.Unsetenv("LOG_LEVEL")
 }
 
+// cleanupBenchEnv cleans up environment for benchmarks
+func cleanupBenchEnv() {
+	os.Unsetenv("AUTH_KEY")
+	os.Unsetenv("PORT")
+	os.Unsetenv("HOST")
+	os.Unsetenv("DATABASE_DSN")
+	os.Unsetenv("REDIS_DSN")
+	os.Unsetenv("ENCRYPTION_KEY")
+	os.Unsetenv("DEBUG_MODE")
+	os.Unsetenv("ENABLE_CORS")
+	os.Unsetenv("ALLOWED_ORIGINS")
+	os.Unsetenv("MAX_CONCURRENT_REQUESTS")
+	os.Unsetenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT")
+	os.Unsetenv("LOG_LEVEL")
+}
+
 // BenchmarkNewManager benchmarks configuration manager creation
 func BenchmarkNewManager(b *testing.B) {
-	setupTestEnv(nil)
-	defer cleanupTestEnv(nil)
+	setupBenchEnv()
+	defer cleanupBenchEnv()
 
 	settingsManager := &SystemSettingsManager{}
 
@@ -288,8 +312,8 @@ func BenchmarkNewManager(b *testing.B) {
 
 // BenchmarkReloadConfig benchmarks configuration reloading
 func BenchmarkReloadConfig(b *testing.B) {
-	setupTestEnv(nil)
-	defer cleanupTestEnv(nil)
+	setupBenchEnv()
+	defer cleanupBenchEnv()
 
 	settingsManager := &SystemSettingsManager{}
 	manager := &Manager{settingsManager: settingsManager}
@@ -302,8 +326,8 @@ func BenchmarkReloadConfig(b *testing.B) {
 
 // BenchmarkValidate benchmarks configuration validation
 func BenchmarkValidate(b *testing.B) {
-	setupTestEnv(nil)
-	defer cleanupTestEnv(nil)
+	setupBenchEnv()
+	defer cleanupBenchEnv()
 
 	settingsManager := &SystemSettingsManager{}
 	manager, _ := NewManager(settingsManager)
@@ -470,8 +494,8 @@ func TestManagerWithoutEncryption(t *testing.T) {
 
 // BenchmarkGetters benchmarks all getter methods
 func BenchmarkGetters(b *testing.B) {
-	setupTestEnv(nil)
-	defer cleanupTestEnv(nil)
+	setupBenchEnv()
+	defer cleanupBenchEnv()
 
 	settingsManager := &SystemSettingsManager{}
 	manager, _ := NewManager(settingsManager)
@@ -838,8 +862,8 @@ func TestManagerPortBoundaries(t *testing.T) {
 
 // BenchmarkReloadConfigMultiple benchmarks multiple config reloads
 func BenchmarkReloadConfigMultiple(b *testing.B) {
-	setupTestEnv(nil)
-	defer cleanupTestEnv(nil)
+	setupBenchEnv()
+	defer cleanupBenchEnv()
 
 	settingsManager := &SystemSettingsManager{}
 	manager := &Manager{settingsManager: settingsManager}
@@ -852,8 +876,8 @@ func BenchmarkReloadConfigMultiple(b *testing.B) {
 
 // BenchmarkDisplayServerConfig benchmarks config display
 func BenchmarkDisplayServerConfig(b *testing.B) {
-	setupTestEnv(nil)
-	defer cleanupTestEnv(nil)
+	setupBenchEnv()
+	defer cleanupBenchEnv()
 
 	settingsManager := &SystemSettingsManager{}
 	manager, _ := NewManager(settingsManager)
@@ -1158,8 +1182,8 @@ func TestManagerConstants(t *testing.T) {
 
 // BenchmarkGetAllConfigs benchmarks getting all configuration values
 func BenchmarkGetAllConfigs(b *testing.B) {
-	setupTestEnv(nil)
-	defer cleanupTestEnv(nil)
+	setupBenchEnv()
+	defer cleanupBenchEnv()
 
 	settingsManager := &SystemSettingsManager{}
 	manager, _ := NewManager(settingsManager)

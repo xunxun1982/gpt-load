@@ -164,10 +164,9 @@ func TestPaginate_InvalidParameters(t *testing.T) {
 			if err == nil {
 				assert.Equal(t, tt.expectedPage, resp.Pagination.Page)
 				assert.Equal(t, tt.expectedSize, resp.Pagination.PageSize)
-			} else {
-				// If error occurs, just verify the response is not nil
-				assert.NotNil(t, resp)
 			}
+			// Note: When Paginate returns an error, resp may be nil
+			// so we don't assert on resp in the error case
 		})
 	}
 }
