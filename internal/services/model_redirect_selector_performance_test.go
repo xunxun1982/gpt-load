@@ -203,6 +203,24 @@ func BenchmarkGetModelRedirectDynamicWeights(b *testing.B) {
 			_ = GetModelRedirectDynamicWeights(nil, 1, "gpt-4", rule)
 		}
 	})
+
+	b.Run("WithDWM", func(b *testing.B) {
+		memStore := store.NewMemoryStore()
+		dwm := NewDynamicWeightManager(memStore)
+
+		groupID := uint(1)
+		sourceModel := "gpt-4"
+
+		// Record some metrics to simulate realistic scenario
+		dwm.RecordModelRedirectSuccess(groupID, sourceModel, 0)
+		dwm.RecordModelRedirectSuccess(groupID, sourceModel, 1)
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, 2)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = GetModelRedirectDynamicWeights(dwm, groupID, sourceModel, rule)
+		}
+	})
 }
 
 // BenchmarkConcurrentSelection benchmarks concurrent target selection

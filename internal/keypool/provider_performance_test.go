@@ -182,8 +182,8 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	keyHashKey := "key:1"
-	activeKeysListKey := "group:1:active_keys"
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	keyDetails := map[string]any{
 		"key_string":    encryptedKey,
 		"status":        models.KeyStatusActive,
@@ -212,6 +212,7 @@ func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 		Name:        "failure-group",
 		ChannelType: "openai",
 		Enabled:     true,
+		Upstreams:   testGroupUpstreams,
 	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatal(err)
@@ -237,8 +238,8 @@ func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	keyHashKey := "key:1"
-	activeKeysListKey := "group:1:active_keys"
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	keyDetails := map[string]any{
 		"key_string":    encryptedKey,
 		"status":        models.KeyStatusActive,
@@ -610,6 +611,7 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	var groupIDs []uint
 	for _, g := range groups {
 		group := &models.Group{
 			Name:        g.name,
@@ -620,6 +622,7 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 		if err := db.Create(group).Error; err != nil {
 			b.Fatal(err)
 		}
+		groupIDs = append(groupIDs, group.ID)
 
 		for i := 0; i < g.keyCount; i++ {
 			apiKey := &models.APIKey{
@@ -661,14 +664,14 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 		for pb.Next() {
 			// Select group based on realistic distribution
 			// 50% small, 30% medium, 20% large
-			groupID := uint(1)
+			var groupID uint
 			dist := i % 10
 			if dist < 5 {
-				groupID = 1 // small
+				groupID = groupIDs[0] // small
 			} else if dist < 8 {
-				groupID = 2 // medium
+				groupID = groupIDs[1] // medium
 			} else {
-				groupID = 3 // large
+				groupID = groupIDs[2] // large
 			}
 
 			_, _ = provider.SelectKey(groupID)
@@ -712,8 +715,8 @@ func BenchmarkMemoryAllocationPerformance(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	keyHashKey := "key:1"
-	activeKeysListKey := "group:1:active_keys"
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	keyDetails := map[string]any{
 		"key_string":    encryptedKey,
 		"status":        models.KeyStatusActive,

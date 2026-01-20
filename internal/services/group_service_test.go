@@ -264,6 +264,10 @@ func TestCopyGroup(t *testing.T) {
 	assert.NotNil(t, copiedGroup)
 	assert.NotEqual(t, sourceGroup.ID, copiedGroup.ID)
 	assert.NotEqual(t, sourceGroup.Name, copiedGroup.Name)
+	// Verify key properties are preserved in the copy
+	assert.Equal(t, sourceGroup.ChannelType, copiedGroup.ChannelType)
+	assert.Equal(t, sourceGroup.TestModel, copiedGroup.TestModel)
+	assert.Equal(t, sourceGroup.GroupType, copiedGroup.GroupType)
 }
 
 // TestToggleGroupEnabled tests enabling/disabling groups

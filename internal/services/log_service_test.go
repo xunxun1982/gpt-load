@@ -256,6 +256,7 @@ func TestGetLogsQuery(t *testing.T) {
 
 	// Create test log
 	testLog := models.RequestLog{
+		ID:         "test-query-1",
 		GroupName:  "test-group",
 		Model:      "gpt-4",
 		IsSuccess:  true,
@@ -519,6 +520,14 @@ func BenchmarkLogFiltersScope(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		_ = sqlDB.Close()
+	})
+
 	err = db.AutoMigrate(&models.RequestLog{})
 	if err != nil {
 		b.Fatal(err)
@@ -565,6 +574,14 @@ func BenchmarkStreamLogKeysToCSV(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		_ = sqlDB.Close()
+	})
+
 	err = db.AutoMigrate(&models.RequestLog{})
 	if err != nil {
 		b.Fatal(err)
