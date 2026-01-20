@@ -166,7 +166,7 @@ func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) 
 		return modifiedBytes, originalModel
 	}
 
- 	return bodyBytes, originalModel
+	return bodyBytes, originalModel
 }
 
 // logUpstreamError provides a centralized way to log errors from upstream interactions.

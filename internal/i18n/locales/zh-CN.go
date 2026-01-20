@@ -90,14 +90,14 @@ var MessagesZhCN = map[string]string{
 	"task.get_status_failed":  "获取任务状态失败",
 
 	// Dashboard related
-	"dashboard.invalid_keys":                                     "无效密钥数量",
-	"dashboard.success_requests":                                 "成功请求",
-	"dashboard.failed_requests":                                  "失败请求",
-	"dashboard.auth_key_missing":                                 "AUTH_KEY未设置，系统无法正常工作",
-	"dashboard.auth_key_required":                                "必须设置AUTH_KEY以保护管理界面",
-	"dashboard.encryption_key_missing":                           "未设置ENCRYPTION_KEY，敏感数据将明文存储",
-	"dashboard.encryption_key_recommended":                       "强烈建议设置ENCRYPTION_KEY以加密保护API密钥等敏感数据",
-	"dashboard.global_proxy_key":                                 "全局代理密钥",
+	"dashboard.invalid_keys":               "无效密钥数量",
+	"dashboard.success_requests":           "成功请求",
+	"dashboard.failed_requests":            "失败请求",
+	"dashboard.auth_key_missing":           "AUTH_KEY未设置，系统无法正常工作",
+	"dashboard.auth_key_required":          "必须设置AUTH_KEY以保护管理界面",
+	"dashboard.encryption_key_missing":     "未设置ENCRYPTION_KEY，敏感数据将明文存储",
+	"dashboard.encryption_key_recommended": "强烈建议设置ENCRYPTION_KEY以加密保护API密钥等敏感数据",
+	"dashboard.global_proxy_key":           "全局代理密钥",
 
 	// Channel types
 	"channel.openai":    "OpenAI",
@@ -108,18 +108,18 @@ var MessagesZhCN = map[string]string{
 	"channel.custom":    "自定义",
 
 	// Relay formats
-	"relay_format.openai_chat":                "OpenAI 对话",
-	"relay_format.openai_completion":          "OpenAI 补全",
-	"relay_format.claude":                     "Claude 消息",
-	"relay_format.codex":                      "Codex 响应",
-	"relay_format.openai_image":               "OpenAI 图片生成",
-	"relay_format.openai_image_edit":          "OpenAI 图片编辑",
-	"relay_format.openai_audio_transcription": "OpenAI 音频转录",
-	"relay_format.openai_audio_translation":   "OpenAI 音频翻译",
-	"relay_format.openai_audio_speech":        "OpenAI 语音合成",
-	"relay_format.openai_embedding":           "OpenAI 向量嵌入",
-	"relay_format.openai_moderation":          "OpenAI 内容审核",
-	"relay_format.gemini":                     "Gemini",
+	"relay_format.openai_chat":                                   "OpenAI 对话",
+	"relay_format.openai_completion":                             "OpenAI 补全",
+	"relay_format.claude":                                        "Claude 消息",
+	"relay_format.codex":                                         "Codex 响应",
+	"relay_format.openai_image":                                  "OpenAI 图片生成",
+	"relay_format.openai_image_edit":                             "OpenAI 图片编辑",
+	"relay_format.openai_audio_transcription":                    "OpenAI 音频转录",
+	"relay_format.openai_audio_translation":                      "OpenAI 音频翻译",
+	"relay_format.openai_audio_speech":                           "OpenAI 语音合成",
+	"relay_format.openai_embedding":                              "OpenAI 向量嵌入",
+	"relay_format.openai_moderation":                             "OpenAI 内容审核",
+	"relay_format.gemini":                                        "Gemini",
 	"dashboard.group_proxy_key":                                  "分组代理密钥",
 	"dashboard.encryption_key_configured_but_data_not_encrypted": "检测到您已配置 ENCRYPTION_KEY，但数据库中的密钥尚未加密。这会导致密钥无法正常读取（显示为 failed-to-decrypt）。",
 	"dashboard.encryption_key_migration_required":                "请停止服务，执行密钥迁移命令后重启",
@@ -262,13 +262,13 @@ var MessagesZhCN = map[string]string{
 	"group.child_groups_deleted":                        "已同时删除 {{.count}} 个子分组",
 
 	// Binding related
-	"binding.group_not_found":                "分组不存在",
-	"binding.site_not_found":                 "站点不存在",
-	"binding.aggregate_cannot_bind":          "聚合分组不能绑定站点",
-	"binding.child_group_cannot_bind":        "子分组不能绑定站点",
-	"binding.group_already_bound":            "该分组已绑定其他站点",
+	"binding.group_not_found":                 "分组不存在",
+	"binding.site_not_found":                  "站点不存在",
+	"binding.aggregate_cannot_bind":           "聚合分组不能绑定站点",
+	"binding.child_group_cannot_bind":         "子分组不能绑定站点",
+	"binding.group_already_bound":             "该分组已绑定其他站点",
 	"binding.must_unbind_before_delete_group": "请先解除与站点的绑定后再删除分组",
-	"binding.must_unbind_before_delete_site": "请先解除所有分组（共{{.count}}个）的绑定后再删除站点",
+	"binding.must_unbind_before_delete_site":  "请先解除所有分组（共{{.count}}个）的绑定后再删除站点",
 }
 
 func init() {

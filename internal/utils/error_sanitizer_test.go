@@ -6,6 +6,7 @@ import (
 )
 
 func TestSanitizeErrorBody(t *testing.T) {
+	t.Parallel()
 	// Build key-like strings at runtime to avoid secret scanners flagging literals.
 	apiKey := "s" + "k-" + strings.Repeat("a", 24)
 	apiKeyJSON := `{"error": "invalid key", "key": "` + apiKey + `"}`
@@ -110,6 +111,7 @@ func TestSanitizeErrorBody(t *testing.T) {
 }
 
 func TestSanitizeErrorBody_PreservesNonSensitiveData(t *testing.T) {
+	t.Parallel()
 	input := `{"error": {"type": "invalid_request_error", "message": "The model does not exist"}}`
 	result := SanitizeErrorBody(input)
 

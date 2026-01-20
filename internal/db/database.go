@@ -172,10 +172,10 @@ func NewDB(configManager types.ConfigManager) (*gorm.DB, error) {
 			log.Printf("failed to acquire connection for SQLite PRAGMAs: %v", err)
 		} else {
 			// Get environment variables for PRAGMA settings
-			mmapSize := utils.GetEnvOrDefault("SQLITE_MMAP_SIZE", "30000000000") // 30GB memory mapping (virtual, not physical RAM)
-			pageSize := utils.GetEnvOrDefault("SQLITE_PAGE_SIZE", "4096")        // Optimal page size
+			mmapSize := utils.GetEnvOrDefault("SQLITE_MMAP_SIZE", "30000000000")               // 30GB memory mapping (virtual, not physical RAM)
+			pageSize := utils.GetEnvOrDefault("SQLITE_PAGE_SIZE", "4096")                      // Optimal page size
 			journalSizeLimit := utils.GetEnvOrDefault("SQLITE_JOURNAL_SIZE_LIMIT", "67108864") // 64MB WAL file limit
-			walAutocheckpoint := utils.GetEnvOrDefault("SQLITE_WAL_AUTOCHECKPOINT", "1000") // Checkpoint every 1000 pages
+			walAutocheckpoint := utils.GetEnvOrDefault("SQLITE_WAL_AUTOCHECKPOINT", "1000")    // Checkpoint every 1000 pages
 
 			// Set PRAGMA via raw SQL connection to avoid GORM slow SQL logging
 			// These are initialization commands, not actual slow queries

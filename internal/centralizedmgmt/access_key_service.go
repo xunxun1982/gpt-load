@@ -677,10 +677,10 @@ func (s *HubAccessKeyService) GetAccessKeyPlaintext(ctx context.Context, id uint
 	// Note: The actual plaintext is never logged, only metadata about the access.
 	// Admin identity is not included due to shared AUTH_KEY authentication model.
 	logrus.WithFields(logrus.Fields{
-		"action":         "access_key_plaintext_retrieved",
-		"access_key_id":  id,
+		"action":          "access_key_plaintext_retrieved",
+		"access_key_id":   id,
 		"access_key_name": key.Name,
-		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		"timestamp":       time.Now().UTC().Format(time.RFC3339),
 	}).Info("Admin accessed plaintext access key")
 
 	return plaintext, nil

@@ -75,32 +75,69 @@ const channelTypeOptions = computed<SelectOption[]>(() => {
   return options;
 });
 
+/**
+ * Get the primary channel type for a model.
+ * Prioritizes enabled groups with priority > 0 and lowest priority value, falls back to first group's channel type.
+ * Uses single-pass scan instead of filter+sort for better performance.
+ */
+function getPrimaryChannelType(model: ModelPoolEntryV2): string {
+  // Single-pass scan to find the enabled group with lowest priority
+  const enabledGroup = model.groups.reduce(
+    (best, g) => {
+      if (!g.enabled || g.priority <= 0 || !g.channel_type) {
+        return best;
+      }
+      if (!best || g.priority < best.priority) {
+        return g;
+      }
+      return best;
+    },
+    undefined as ModelGroupPriority | undefined
+  );
+
+  if (enabledGroup) {
+    return enabledGroup.channel_type;
+  }
+  // Fall back to first group's channel_type
+  return model.groups[0]?.channel_type || "";
+}
+
 const filteredModels = computed(() => {
   let result = models.value;
 
+  // Filter by channel type
   if (filters.value.channelType !== "all") {
     result = result.filter(model =>
       model.groups.some(g => g.channel_type === filters.value.channelType)
     );
   }
 
+  // Filter by search keyword (matches model name, group name, or channel type)
   if (searchText.value.trim()) {
     const keyword = searchText.value.toLowerCase().trim();
     result = result.filter(model => {
+      // Match model name
       if (model.model_name.toLowerCase().includes(keyword)) {
         return true;
       }
-      return model.groups.some(g => g.group_name.toLowerCase().includes(keyword));
+      // Match group name or channel type (with null safety)
+      return model.groups.some(
+        g =>
+          (g.group_name ?? "").toLowerCase().includes(keyword) ||
+          (g.channel_type ?? "").toLowerCase().includes(keyword)
+      );
     });
   }
 
-  // Sort by channel type, then model name
+  // Sort by channel type (alphabetically), then by model name (alphabetically)
   return result.slice().sort((a, b) => {
-    const aType = a.groups[0]?.channel_type || "";
-    const bType = b.groups[0]?.channel_type || "";
+    const aType = getPrimaryChannelType(a);
+    const bType = getPrimaryChannelType(b);
+    // Primary sort: channel type
     if (aType !== bType) {
       return aType.localeCompare(bType);
     }
+    // Secondary sort: model name
     return a.model_name.localeCompare(b.model_name);
   });
 });
@@ -361,7 +398,7 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
     align: "center",
     titleAlign: "center",
     render: row => {
-      const type = row.groups[0]?.channel_type;
+      const type = getPrimaryChannelType(row);
       return type
         ? h(NTag, { size: "tiny", type: "info", bordered: false }, () => type)
         : h(NText, { depth: 3 }, () => "-");

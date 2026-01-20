@@ -448,21 +448,21 @@ type OpenAIFunction struct {
 // z.ai chat-completion APIs. Advanced fields like metadata and Anthropic-style
 // tool_choice objects are intentionally not forwarded to avoid parameter errors.
 type OpenAIRequest struct {
-	Model           string          `json:"model"`
-	Messages        []OpenAIMessage `json:"messages"`
-	MaxTokens       *int            `json:"max_tokens,omitempty"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	TopP            *float64        `json:"top_p,omitempty"`
-	Stream          bool            `json:"stream"`
-	Tools           []OpenAITool    `json:"tools,omitempty"`
-	Stop            json.RawMessage `json:"stop,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []OpenAIMessage `json:"messages"`
+	MaxTokens   *int            `json:"max_tokens,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
+	Stream      bool            `json:"stream"`
+	Tools       []OpenAITool    `json:"tools,omitempty"`
+	Stop        json.RawMessage `json:"stop,omitempty"`
 	// NOTE: We intentionally keep interface{} here (instead of json.RawMessage).
 	// This field is only used for outbound serialization to upstream OpenAI-style APIs,
 	// not for inbound JSON parsing. Using json.RawMessage would require manual JSON
 	// quoting for string values (e.g. "auto") and increases the chance of producing
 	// invalid JSON. With interface{}, json.Marshal guarantees correct JSON encoding
 	// for both string and object forms while keeping the code simple (KISS).
-	ToolChoice      interface{} `json:"tool_choice,omitempty"`
+	ToolChoice interface{} `json:"tool_choice,omitempty"`
 	// ReasoningEffort enables reasoning for models that support it (e.g., o1, o3 series).
 	// Valid values: "low", "medium", "high". Only sent when thinking is enabled.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
@@ -3294,9 +3294,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	textBlockOpen := false
 	thinkingBlockOpen := false // Track if thinking block is open for content merging
 	var aggregator *TextAggregator
-	hasValidToolCalls := false    // Track if any valid tool_calls were processed
-	isErrorRecovery := false      // Track if error recovery was triggered (don't downgrade stop_reason)
-	toolBlockStartSent := false   // Track if content_block_start was sent for current tool block
+	hasValidToolCalls := false  // Track if any valid tool_calls were processed
+	isErrorRecovery := false    // Track if error recovery was triggered (don't downgrade stop_reason)
+	toolBlockStartSent := false // Track if content_block_start was sent for current tool block
 
 	// Get tool name reverse map from context for restoring original tool names
 	reverseToolNameMap := getOpenAIToolNameReverseMap(c)
@@ -3422,11 +3422,11 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		argsLen := currentToolCallArgs.Len()
 		argsStr := currentToolCallArgs.String()
 		logrus.WithFields(logrus.Fields{
-			"tool_id":           currentToolCall.ID,
-			"tool_name":         currentToolCallName,
-			"args_len":          argsLen,
-			"content_index":     contentBlockIndex,
-			"block_start_sent":  toolBlockStartSent,
+			"tool_id":          currentToolCall.ID,
+			"tool_name":        currentToolCallName,
+			"args_len":         argsLen,
+			"content_index":    contentBlockIndex,
+			"block_start_sent": toolBlockStartSent,
 		}).Debug("CC: closeToolBlock() called")
 
 		// Validate arguments before emitting - skip empty/placeholder tool_calls
@@ -3633,9 +3633,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	finalize := func(stopReason string, usage *OpenAIUsage) {
 		initialStopReason := stopReason
 		logrus.WithFields(logrus.Fields{
-			"msg_id":                 msgID,
-			"request_id":             reqID,
-			"trigger_signal":         triggerSignal,
+			"msg_id":                  msgID,
+			"request_id":              reqID,
+			"trigger_signal":          triggerSignal,
 			"initial_stop_reason":     initialStopReason,
 			"accumulated_content_len": accumulatedContent.Len(),
 			"function_call_enabled":   isFunctionCallEnabled(c),
@@ -3868,9 +3868,9 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 						// accumulate to "{}" which would fail validation in closeToolBlock.
 						currentToolCallArgs.WriteString(call.Function.Arguments)
 						logrus.WithFields(logrus.Fields{
-							"tool_id":         currentToolCall.ID,
-							"chunk_args_len":  len(call.Function.Arguments),
-							"total_args_len":  currentToolCallArgs.Len(),
+							"tool_id":        currentToolCall.ID,
+							"chunk_args_len": len(call.Function.Arguments),
+							"total_args_len": currentToolCallArgs.Len(),
 						}).Debug("CC: Accumulated tool call arguments (continuation chunk)")
 					}
 					continue
@@ -4156,10 +4156,10 @@ func (r *SSEReader) ReadEvent() (*SSEEvent, error) {
 // This is used when force_function_call + cc_support are both enabled to prevent
 // Claude Code from hanging indefinitely when upstream models are in thinking phase.
 type SSEReaderWithTimeout struct {
-	reader           *bufio.Reader
-	firstByteTimeout time.Duration
+	reader            *bufio.Reader
+	firstByteTimeout  time.Duration
 	subsequentTimeout time.Duration
-	receivedFirst    bool
+	receivedFirst     bool
 }
 
 // NewSSEReaderWithTimeout creates a new SSE reader with timeout support.

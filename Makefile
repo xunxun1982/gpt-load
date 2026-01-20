@@ -6,13 +6,22 @@
 # ==============================================================================
 VERSION ?= dev
 BINARY_NAME := gpt-load
+# Optimization flags for smallest size and best performance:
+# -s: Omit symbol table and debug info (~20% size reduction)
+# -w: Omit DWARF symbol table (~10% size reduction)
+# -X: Set version info at build time
 LDFLAGS := -s -w -X gpt-load/internal/version.Version=$(VERSION)
 # Use go_json tag to enable goccy/go-json for gin framework (2-3x faster than encoding/json)
 GOTAGS := go_json
+# Build flags:
+# -tags: Build tags for conditional compilation
+# -trimpath: Remove file system paths from binary (smaller size, reproducible builds)
+# -buildvcs=false: Skip VCS info for reproducible builds
 BUILD_FLAGS := -tags $(GOTAGS) -trimpath -buildvcs=false -ldflags="$(LDFLAGS)"
 # Allow extra go flags to be passed via environment
 GOFLAGS ?=
-# CPU Architecture Level: v2 (SSE4.2, POPCNT) is safe for user's CPU. v3 requires AVX/AVX2 which is missing.
+# CPU Architecture Level: v2 (SSE4.2, POPCNT) is safe for most CPUs
+# v3 requires AVX/AVX2 which may not be available on older CPUs
 export GOAMD64 ?= v2
 
 # ==============================================================================
@@ -93,6 +102,15 @@ vet: ## Run go vet
 .PHONY: check
 check: vet test ## Run all checks (vet + test)
 	@echo "✅ All checks passed"
+
+# ==============================================================================
+# Docker
+# ==============================================================================
+.PHONY: docker-build
+docker-build: ## Build Docker image
+	@echo "🐳 Building Docker image..."
+	docker build --build-arg VERSION=$(VERSION) -t $(BINARY_NAME):$(VERSION) .
+	@echo "✅ Docker image built: $(BINARY_NAME):$(VERSION)"
 
 # ==============================================================================
 # Key Migration

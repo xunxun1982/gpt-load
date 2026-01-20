@@ -342,7 +342,6 @@ var brandPrefixRules = []BrandPrefixRule{
 	{Patterns: compilePatterns(`teleai`, `telespeech`, `xingchen`), LowercaseSlug: "teleai/", OfficialName: "TeleAI/"},
 }
 
-
 // DetectBrandPrefix detects the brand prefix for a model name
 // Returns the lowercase prefix slug (e.g., "openai/") or empty string if no match
 // Detection is based on the model name itself, not the existing prefix

@@ -115,7 +115,6 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 	}
 }
 
-
 // handleCodexForcedStreamResponse handles Codex streaming response and converts to non-streaming format.
 // This is used when client requests non-streaming but Codex API requires streaming internally.
 // Per CLIProxyAPI implementation: collect stream events until response.completed, then return non-streaming response.
@@ -185,14 +184,14 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 
 // codexStreamResponse represents a Codex streaming response structure for collection.
 type codexStreamResponse struct {
-	ID        string                   `json:"id"`
-	Object    string                   `json:"object"`
-	CreatedAt int64                    `json:"created_at,omitempty"`
-	Status    string                   `json:"status"`
-	Model     string                   `json:"model"`
-	Output    []codexStreamOutputItem  `json:"output"`
-	Usage     *codexStreamUsage        `json:"usage,omitempty"`
-	Error     *codexStreamError        `json:"error,omitempty"`
+	ID        string                  `json:"id"`
+	Object    string                  `json:"object"`
+	CreatedAt int64                   `json:"created_at,omitempty"`
+	Status    string                  `json:"status"`
+	Model     string                  `json:"model"`
+	Output    []codexStreamOutputItem `json:"output"`
+	Usage     *codexStreamUsage       `json:"usage,omitempty"`
+	Error     *codexStreamError       `json:"error,omitempty"`
 }
 
 type codexStreamOutputItem struct {

@@ -304,10 +304,10 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 		// This prevents immediate blacklisting by CronChecker after import
 		keyModels = append(keyModels, models.APIKey{
 			GroupID:      groupID,
-			KeyValue:     keyInfo.KeyValue,           // Keep encrypted value
-			KeyHash:      keyHash,                    // Calculated hash
-			Status:       models.KeyStatusActive,     // Always start as active
-			FailureCount: 0,                          // Always reset to 0 for fresh start
+			KeyValue:     keyInfo.KeyValue,       // Keep encrypted value
+			KeyHash:      keyHash,                // Calculated hash
+			Status:       models.KeyStatusActive, // Always start as active
+			FailureCount: 0,                      // Always reset to 0 for fresh start
 		})
 	}
 
@@ -330,10 +330,10 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 
 // ExportGroupData exports a complete group with all its data
 type GroupExportData struct {
-	Group       models.Group         `json:"group"`
-	Keys        []KeyExportInfo      `json:"keys"`
-	SubGroups   []SubGroupInfo       `json:"sub_groups,omitempty"`
-	ChildGroups []ChildGroupExport   `json:"child_groups,omitempty"` // Child groups for standard groups
+	Group       models.Group       `json:"group"`
+	Keys        []KeyExportInfo    `json:"keys"`
+	SubGroups   []SubGroupInfo     `json:"sub_groups,omitempty"`
+	ChildGroups []ChildGroupExport `json:"child_groups,omitempty"` // Child groups for standard groups
 }
 
 // ChildGroupExport represents exported child group data
@@ -622,12 +622,12 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 
 // SystemExportData represents full system export
 type SystemExportData struct {
-	Version        string                    `json:"version"`
-	ExportedAt     string                    `json:"exported_at"`
-	SystemSettings map[string]string         `json:"system_settings"`
-	Groups         []GroupExportData         `json:"groups"`
-	ManagedSites   *ManagedSitesExportData   `json:"managed_sites,omitempty"`
-	HubAccessKeys  []HubAccessKeyExportInfo  `json:"hub_access_keys,omitempty"`
+	Version        string                   `json:"version"`
+	ExportedAt     string                   `json:"exported_at"`
+	SystemSettings map[string]string        `json:"system_settings"`
+	Groups         []GroupExportData        `json:"groups"`
+	ManagedSites   *ManagedSitesExportData  `json:"managed_sites,omitempty"`
+	HubAccessKeys  []HubAccessKeyExportInfo `json:"hub_access_keys,omitempty"`
 }
 
 // HubAccessKeyExportInfo represents exported Hub access key data.

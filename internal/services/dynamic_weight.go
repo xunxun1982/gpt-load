@@ -24,15 +24,15 @@ type DynamicWeightMetrics struct {
 	LastSuccessAt       time.Time `json:"last_success_at"`
 
 	// Time-windowed statistics (cumulative)
-	Requests7d   int64 `json:"requests_7d"`
-	Successes7d  int64 `json:"successes_7d"`
-	Requests14d  int64 `json:"requests_14d"`
-	Successes14d int64 `json:"successes_14d"`
-	Requests30d  int64 `json:"requests_30d"`
-	Successes30d int64 `json:"successes_30d"`
-	Requests90d  int64 `json:"requests_90d"`
-	Successes90d int64 `json:"successes_90d"`
-	Requests180d int64 `json:"requests_180d"`
+	Requests7d    int64 `json:"requests_7d"`
+	Successes7d   int64 `json:"successes_7d"`
+	Requests14d   int64 `json:"requests_14d"`
+	Successes14d  int64 `json:"successes_14d"`
+	Requests30d   int64 `json:"requests_30d"`
+	Successes30d  int64 `json:"successes_30d"`
+	Requests90d   int64 `json:"requests_90d"`
+	Successes90d  int64 `json:"successes_90d"`
+	Requests180d  int64 `json:"requests_180d"`
 	Successes180d int64 `json:"successes_180d"`
 
 	LastRolloverAt time.Time `json:"last_rollover_at"`

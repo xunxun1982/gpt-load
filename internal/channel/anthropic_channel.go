@@ -59,7 +59,6 @@ func (ch *AnthropicChannel) ModifyRequest(req *http.Request, apiKey *models.APIK
 	// to support beta features like extended thinking, computer use, etc.
 }
 
-
 // ValidateKey checks if the given API key is valid by making a messages request.
 // It now uses BaseChannel.SelectValidationUpstream so that upstream-specific proxy configuration
 // is honored consistently with normal traffic.

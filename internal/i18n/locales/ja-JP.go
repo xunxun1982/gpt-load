@@ -115,7 +115,7 @@ var MessagesJaJP = map[string]string{
 	"database.group_stats_failed":    "部分統計の取得に失敗しました",
 
 	// Success messages
-	"success.group_deleted":        "グループと関連キーが正常に削除されました",
+	"success.group_deleted":           "グループと関連キーが正常に削除されました",
 	"success.keys_restored":           "{{.count}}個のキーが復元されました",
 	"success.invalid_keys_cleared":    "{{.count}}個の無効なキーがクリアされました",
 	"success.all_keys_cleared":        "{{.count}}個のキーがクリアされました",
@@ -240,13 +240,13 @@ var MessagesJaJP = map[string]string{
 	"group.child_groups_deleted":                        "{{.count}} 個の子グループも削除されました",
 
 	// Binding related
-	"binding.group_not_found":                "グループが見つかりません",
-	"binding.site_not_found":                 "サイトが見つかりません",
-	"binding.aggregate_cannot_bind":          "集約グループはサイトにバインドできません",
-	"binding.child_group_cannot_bind":        "子グループはサイトにバインドできません",
-	"binding.group_already_bound":            "このグループは既に別のサイトにバインドされています",
+	"binding.group_not_found":                 "グループが見つかりません",
+	"binding.site_not_found":                  "サイトが見つかりません",
+	"binding.aggregate_cannot_bind":           "集約グループはサイトにバインドできません",
+	"binding.child_group_cannot_bind":         "子グループはサイトにバインドできません",
+	"binding.group_already_bound":             "このグループは既に別のサイトにバインドされています",
 	"binding.must_unbind_before_delete_group": "グループを削除する前にサイトとのバインドを解除してください",
-	"binding.must_unbind_before_delete_site": "サイトを削除する前にすべてのグループ（{{.count}}個）のバインドを解除してください",
+	"binding.must_unbind_before_delete_site":  "サイトを削除する前にすべてのグループ（{{.count}}個）のバインドを解除してください",
 }
 
 func init() {

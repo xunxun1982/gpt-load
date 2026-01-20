@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	DefaultPageSize    = 15
-	MaxPageSize        = 1000
-	CountQueryTimeout  = 5 * time.Second // Extended timeout for COUNT on large datasets with indexes
-	DataQueryTimeout   = 3 * time.Second // Data fetch timeout
+	DefaultPageSize   = 15
+	MaxPageSize       = 1000
+	CountQueryTimeout = 5 * time.Second // Extended timeout for COUNT on large datasets with indexes
+	DataQueryTimeout  = 3 * time.Second // Data fetch timeout
 )
 
 // Pagination represents the pagination details in a response.

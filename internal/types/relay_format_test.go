@@ -3,6 +3,7 @@ package types
 import "testing"
 
 func TestRelayFormat_String(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		format RelayFormat
@@ -27,6 +28,7 @@ func TestRelayFormat_String(t *testing.T) {
 }
 
 func TestRelayFormat_IsValid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		format RelayFormat
@@ -52,6 +54,7 @@ func TestRelayFormat_IsValid(t *testing.T) {
 }
 
 func TestRelayFormat_SupportsStreaming(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		format RelayFormat
@@ -80,6 +83,7 @@ func TestRelayFormat_SupportsStreaming(t *testing.T) {
 }
 
 func TestRelayFormat_RequiresMultipart(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		format RelayFormat
@@ -107,6 +111,7 @@ func TestRelayFormat_RequiresMultipart(t *testing.T) {
 
 // TestRelayFormatConstants verifies all format constants are defined correctly
 func TestRelayFormatConstants(t *testing.T) {
+	t.Parallel()
 	formats := []RelayFormat{
 		RelayFormatOpenAIChat,
 		RelayFormatOpenAICompletion,

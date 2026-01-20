@@ -11,6 +11,7 @@ import (
 
 // TestNewDecompressReader_NoEncoding verifies that non-compressed data is returned as-is
 func TestNewDecompressReader_NoEncoding(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		contentEncoding string
@@ -61,6 +62,7 @@ func TestNewDecompressReader_NoEncoding(t *testing.T) {
 
 // TestDecompressResponseWithLimit_NoEncoding verifies that non-compressed data is returned as-is
 func TestDecompressResponseWithLimit_NoEncoding(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		contentEncoding string
@@ -106,6 +108,7 @@ func TestDecompressResponseWithLimit_NoEncoding(t *testing.T) {
 
 // TestDecompressResponseWithLimit_InvalidGzipData verifies graceful handling of invalid gzip data
 func TestDecompressResponseWithLimit_InvalidGzipData(t *testing.T) {
+	t.Parallel()
 	// Non-gzip data with gzip Content-Encoding header (simulates misconfigured upstream)
 	invalidGzipData := []byte("This is not gzip data")
 
@@ -124,6 +127,7 @@ func TestDecompressResponseWithLimit_InvalidGzipData(t *testing.T) {
 // TestDecompressResponseWithLimit_ExceedsLimit verifies that ErrDecompressedTooLarge is returned
 // when decompressed data exceeds the specified size limit
 func TestDecompressResponseWithLimit_ExceedsLimit(t *testing.T) {
+	t.Parallel()
 	// Create valid gzip data that decompresses to more than the limit
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)

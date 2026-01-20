@@ -101,10 +101,10 @@ type GeminiFunctionCallingConfig struct {
 
 // GeminiRequest represents a Gemini API request
 type GeminiRequest struct {
-	Contents         []GeminiContent   `json:"contents"`
-	SystemInstruction *GeminiContent   `json:"systemInstruction,omitempty"`
-	Tools            []GeminiTool      `json:"tools,omitempty"`
-	ToolConfig       *GeminiToolConfig `json:"toolConfig,omitempty"`
+	Contents          []GeminiContent   `json:"contents"`
+	SystemInstruction *GeminiContent    `json:"systemInstruction,omitempty"`
+	Tools             []GeminiTool      `json:"tools,omitempty"`
+	ToolConfig        *GeminiToolConfig `json:"toolConfig,omitempty"`
 }
 
 // GeminiCandidate represents a candidate in Gemini response

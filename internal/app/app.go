@@ -30,46 +30,46 @@ import (
 
 // App holds all services and manages the application lifecycle.
 type App struct {
-	engine                    *gin.Engine
-	configManager             types.ConfigManager
-	settingsManager           *config.SystemSettingsManager
-	groupManager              *services.GroupManager
-	childGroupService         *services.ChildGroupService
-	logCleanupService         *services.LogCleanupService
-	requestLogService         *services.RequestLogService
-	autoCheckinService        *sitemanagement.AutoCheckinService
-	balanceService            *sitemanagement.BalanceService
-	cronChecker               *keypool.CronChecker
-	keyPoolProvider           *keypool.KeyProvider
-	proxyServer               *proxy.ProxyServer
-	dynamicWeightManager      *services.DynamicWeightManager
-	dynamicWeightPersistence  *services.DynamicWeightPersistence
-	storage                   store.Store
-	db                        *gorm.DB
-	httpServer                *http.Server
+	engine                   *gin.Engine
+	configManager            types.ConfigManager
+	settingsManager          *config.SystemSettingsManager
+	groupManager             *services.GroupManager
+	childGroupService        *services.ChildGroupService
+	logCleanupService        *services.LogCleanupService
+	requestLogService        *services.RequestLogService
+	autoCheckinService       *sitemanagement.AutoCheckinService
+	balanceService           *sitemanagement.BalanceService
+	cronChecker              *keypool.CronChecker
+	keyPoolProvider          *keypool.KeyProvider
+	proxyServer              *proxy.ProxyServer
+	dynamicWeightManager     *services.DynamicWeightManager
+	dynamicWeightPersistence *services.DynamicWeightPersistence
+	storage                  store.Store
+	db                       *gorm.DB
+	httpServer               *http.Server
 }
 
 // AppParams defines the dependencies for the App.
 type AppParams struct {
 	dig.In
-	Engine                  *gin.Engine
-	ConfigManager           types.ConfigManager
-	SettingsManager         *config.SystemSettingsManager
-	GroupManager            *services.GroupManager
-	GroupService            *services.GroupService
-	AggregateGroupService   *services.AggregateGroupService
-	ChildGroupService       *services.ChildGroupService
-	LogCleanupService       *services.LogCleanupService
-	RequestLogService       *services.RequestLogService
-	AutoCheckinService      *sitemanagement.AutoCheckinService
-	BalanceService          *sitemanagement.BalanceService
-	CronChecker             *keypool.CronChecker
-	KeyPoolProvider         *keypool.KeyProvider
-	ProxyServer             *proxy.ProxyServer
-	DynamicWeightManager    *services.DynamicWeightManager
-	Storage                 store.Store
-	DB                      *gorm.DB
-	HubService              *centralizedmgmt.HubService // Hub service for centralized management
+	Engine                *gin.Engine
+	ConfigManager         types.ConfigManager
+	SettingsManager       *config.SystemSettingsManager
+	GroupManager          *services.GroupManager
+	GroupService          *services.GroupService
+	AggregateGroupService *services.AggregateGroupService
+	ChildGroupService     *services.ChildGroupService
+	LogCleanupService     *services.LogCleanupService
+	RequestLogService     *services.RequestLogService
+	AutoCheckinService    *sitemanagement.AutoCheckinService
+	BalanceService        *sitemanagement.BalanceService
+	CronChecker           *keypool.CronChecker
+	KeyPoolProvider       *keypool.KeyProvider
+	ProxyServer           *proxy.ProxyServer
+	DynamicWeightManager  *services.DynamicWeightManager
+	Storage               store.Store
+	DB                    *gorm.DB
+	HubService            *centralizedmgmt.HubService // Hub service for centralized management
 }
 
 // NewApp is the constructor for App, with dependencies injected by dig.
@@ -136,22 +136,22 @@ func NewApp(params AppParams) *App {
 	}
 
 	return &App{
-		engine:                    params.Engine,
-		configManager:             params.ConfigManager,
-		settingsManager:           params.SettingsManager,
-		groupManager:              params.GroupManager,
-		childGroupService:         params.ChildGroupService,
-		logCleanupService:         params.LogCleanupService,
-		requestLogService:         params.RequestLogService,
-		autoCheckinService:        params.AutoCheckinService,
-		balanceService:            params.BalanceService,
-		cronChecker:               params.CronChecker,
-		keyPoolProvider:           params.KeyPoolProvider,
-		proxyServer:               params.ProxyServer,
-		dynamicWeightManager:      params.DynamicWeightManager,
-		dynamicWeightPersistence:  dwPersistence,
-		storage:                   params.Storage,
-		db:                        params.DB,
+		engine:                   params.Engine,
+		configManager:            params.ConfigManager,
+		settingsManager:          params.SettingsManager,
+		groupManager:             params.GroupManager,
+		childGroupService:        params.ChildGroupService,
+		logCleanupService:        params.LogCleanupService,
+		requestLogService:        params.RequestLogService,
+		autoCheckinService:       params.AutoCheckinService,
+		balanceService:           params.BalanceService,
+		cronChecker:              params.CronChecker,
+		keyPoolProvider:          params.KeyPoolProvider,
+		proxyServer:              params.ProxyServer,
+		dynamicWeightManager:     params.DynamicWeightManager,
+		dynamicWeightPersistence: dwPersistence,
+		storage:                  params.Storage,
+		db:                       params.DB,
 	}
 }
 

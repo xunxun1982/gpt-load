@@ -100,13 +100,23 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           GOAMD64: ${{ matrix.goamd64 }}
         run: |
+          echo "🔨 Building optimized binary for ${{ matrix.goos }}/${{ matrix.goarch }}..."
           go mod download
+
+          # Build with maximum optimization flags
+          # -tags go_json: Use high-performance JSON library (2-3x faster)
+          # -trimpath: Remove file system paths for smaller binary
+          # -buildvcs=false: Skip VCS info for reproducible builds
+          # -ldflags="-s -w": Strip debug symbols and DWARF info (reduces size by ~30%)
           go build \
             -tags go_json \
             -trimpath \
             -buildvcs=false \
             -ldflags="-s -w -X gpt-load/internal/version.Version=${{ github.ref_name }}" \
             -o gpt-load-${{ matrix.suffix }}${{ matrix.ext }}
+
+          SIZE=$(ls -lh gpt-load-${{ matrix.suffix }}${{ matrix.ext }} | awk '{print $5}')
+          echo "✅ Build complete: ${SIZE}"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v6

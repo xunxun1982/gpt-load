@@ -2,10 +2,10 @@ package services
 
 import (
 	"fmt"
-	"strconv"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 	"gpt-load/internal/utils"
+	"strconv"
 	"sync"
 
 	"github.com/sirupsen/logrus"

@@ -347,7 +347,9 @@ function handleDelete(key: HubAccessKey) {
 
 // Batch delete
 function handleBatchDelete() {
-  if (batchOperating.value) return;
+  if (batchOperating.value) {
+    return;
+  }
   if (!hasSelection.value) {
     message.warning(t("hub.selectAtLeastOne"));
     return;
@@ -378,7 +380,9 @@ function handleBatchDelete() {
 
 // Batch enable
 async function handleBatchEnable() {
-  if (batchOperating.value) return;
+  if (batchOperating.value) {
+    return;
+  }
   if (!hasSelection.value) {
     message.warning(t("hub.selectAtLeastOne"));
     return;
@@ -401,7 +405,9 @@ async function handleBatchEnable() {
 
 // Batch disable
 async function handleBatchDisable() {
-  if (batchOperating.value) return;
+  if (batchOperating.value) {
+    return;
+  }
   if (!hasSelection.value) {
     message.warning(t("hub.selectAtLeastOne"));
     return;
