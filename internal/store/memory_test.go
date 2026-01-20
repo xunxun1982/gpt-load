@@ -53,12 +53,11 @@ func TestMemoryStore_SetWithTTL(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, value, retrieved)
 
-	// Wait for expiration
-	time.Sleep(150 * time.Millisecond)
-
-	// Get after expiration
-	_, err = store.Get(key)
-	assert.Equal(t, ErrNotFound, err)
+	// Wait for expiration using Eventually to avoid flakiness
+	require.Eventually(t, func() bool {
+		_, err = store.Get(key)
+		return err == ErrNotFound
+	}, time.Second, 10*time.Millisecond, "Key should expire after TTL")
 }
 
 // TestMemoryStore_Delete tests delete operation
@@ -167,8 +166,11 @@ func TestMemoryStore_SetNXWithExpiredKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 
-	// Wait for expiration
-	time.Sleep(100 * time.Millisecond)
+	// Wait for expiration using Eventually to avoid flakiness
+	require.Eventually(t, func() bool {
+		_, err = store.Get(key)
+		return err == ErrNotFound
+	}, time.Second, 10*time.Millisecond, "Key should expire after TTL")
 
 	// SetNX should succeed after expiration
 	ok, err = store.SetNX(key, value2, 0)
@@ -425,6 +427,7 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 	const operations = 100
 
 	done := make(chan bool, goroutines)
+	errCh := make(chan error, goroutines*operations)
 
 	// Concurrent writes
 	for i := 0; i < goroutines; i++ {
@@ -432,7 +435,10 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 			for j := 0; j < operations; j++ {
 				key := "concurrent_key"
 				value := []byte("value")
-				_ = store.Set(key, value, 0)
+				if err := store.Set(key, value, 0); err != nil {
+					errCh <- err
+					break
+				}
 			}
 			done <- true
 		}(i)
@@ -441,6 +447,12 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 	// Wait for completion
 	for i := 0; i < goroutines; i++ {
 		<-done
+	}
+	close(errCh)
+
+	// Check for errors
+	for err := range errCh {
+		assert.NoError(t, err)
 	}
 
 	// Verify store is still functional

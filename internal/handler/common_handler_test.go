@@ -76,6 +76,15 @@ func TestCommonHandler_ApplyBrandPrefix(t *testing.T) {
 			expectedStatus: http.StatusOK,
 			expectError:    false,
 		},
+		{
+			name: "with lowercase option",
+			requestBody: ApplyBrandPrefixRequest{
+				Models:       []string{"gpt-4", "claude-3"},
+				UseLowercase: true,
+			},
+			expectedStatus: http.StatusOK,
+			expectError:    false,
+		},
 	}
 
 	for _, tt := range tests {

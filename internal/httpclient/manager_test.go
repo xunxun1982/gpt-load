@@ -242,7 +242,8 @@ func TestGetClient_WithAllConfigs(t *testing.T) {
 	assert.NotNil(t, client)
 	assert.Equal(t, 30*time.Second, client.Timeout)
 
-	transport := client.Transport.(*http.Transport)
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "Expected *http.Transport")
 	assert.Equal(t, 200, transport.MaxIdleConns)
 	assert.Equal(t, 100, transport.MaxIdleConnsPerHost)
 	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)

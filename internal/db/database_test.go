@@ -92,7 +92,10 @@ func TestNewDB_SQLite(t *testing.T) {
 
 	// Cleanup - close both main and read connections
 	if ReadDB != nil {
-		readSQLDB, _ := ReadDB.DB()
+		readSQLDB, err := ReadDB.DB()
+		if err != nil {
+			t.Logf("Warning: failed to get ReadDB connection: %v", err)
+		}
 		if readSQLDB != nil {
 			readSQLDB.Close()
 		}

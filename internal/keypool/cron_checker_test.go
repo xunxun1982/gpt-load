@@ -109,8 +109,8 @@ func TestCronCheckerStopTimeout(t *testing.T) {
 	// Start cron checker
 	cronChecker.Start()
 
-	// Stop with very short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	// Stop with very short timeout (1ms is more reliable than 1ns across different systems)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 	defer cancel()
 
 	// Should handle timeout gracefully

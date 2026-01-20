@@ -263,8 +263,13 @@ func TestTrimSliceToLen(t *testing.T) {
 
 // BenchmarkPaginate benchmarks pagination performance
 func BenchmarkPaginate(b *testing.B) {
-	db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	db.AutoMigrate(&testModel{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		b.Fatalf("failed to open database: %v", err)
+	}
+	if err := db.AutoMigrate(&testModel{}); err != nil {
+		b.Fatalf("failed to migrate: %v", err)
+	}
 
 	// Insert test data
 	for i := 1; i <= 100; i++ {

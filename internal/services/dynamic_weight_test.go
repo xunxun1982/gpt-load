@@ -320,8 +320,9 @@ func TestDynamicWeightManager_DynamicWeightedRandomSelect(t *testing.T) {
 	}
 
 	// Perform multiple selections to verify distribution
+	// Using 10000 iterations for better statistical confidence
 	selections := make(map[int]int)
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 10000; i++ {
 		idx := dwm.DynamicWeightedRandomSelect(aggregateGroupID, subGroups)
 		assert.GreaterOrEqual(t, idx, 0)
 		assert.Less(t, idx, len(subGroups))
@@ -330,9 +331,9 @@ func TestDynamicWeightManager_DynamicWeightedRandomSelect(t *testing.T) {
 
 	// With weights 100:50:25 (total 175), expected probabilities are:
 	// idx 0: 100/175 ≈ 57%, idx 1: 50/175 ≈ 29%, idx 2: 25/175 ≈ 14%
-	// In 1000 trials, all should be selected, but allow for rare probabilistic failures
+	// In 10000 trials, all should be selected, but allow for rare probabilistic failures
 	// Require at least 2 of 3 to be selected to avoid flakiness
-	assert.GreaterOrEqual(t, len(selections), 2, "At least 2 sub-groups should be selected in 1000 trials")
+	assert.GreaterOrEqual(t, len(selections), 2, "At least 2 sub-groups should be selected in 10000 trials")
 
 	// Verify the most frequently selected is idx 0 (highest weight)
 	// This is a deterministic property that should always hold with high probability
@@ -344,11 +345,11 @@ func TestDynamicWeightManager_DynamicWeightedRandomSelect(t *testing.T) {
 			maxIdx = idx
 		}
 	}
-	// Note: This test is probabilistic by nature. With 1000 trials and weight ratio 100:50:25,
-	// idx 0 should be selected most frequently with >99.9% confidence.
-	// However, extremely rare failures are theoretically possible due to randomness.
-	// This is acceptable as the test validates the weighted selection algorithm's correctness.
-	assert.Equal(t, 0, maxIdx, "Index 0 (weight 100) should be selected most frequently in 1000 trials")
+	// Note: This test is probabilistic by nature. With 10000 trials and weight ratio 100:50:25,
+	// idx 0 should be selected most frequently with >99.99% confidence.
+	// The increased iteration count (10000 vs 1000) significantly reduces the probability
+	// of false failures while keeping test execution time reasonable.
+	assert.Equal(t, 0, maxIdx, "Index 0 (weight 100) should be selected most frequently in 10000 trials")
 }
 
 // BenchmarkDynamicWeightManager_RecordSuccess benchmarks success recording

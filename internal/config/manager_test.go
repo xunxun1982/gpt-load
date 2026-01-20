@@ -787,7 +787,7 @@ func TestManagerReloadConfigMultipleTimes(t *testing.T) {
 	require.NoError(t, err)
 
 	// Change config
-	os.Setenv("PORT", "8080")
+	t.Setenv("PORT", "8080")
 
 	// Second reload
 	err = manager.ReloadConfig()
@@ -795,7 +795,7 @@ func TestManagerReloadConfigMultipleTimes(t *testing.T) {
 	assert.Equal(t, 8080, manager.GetEffectiveServerConfig().Port)
 
 	// Third reload
-	os.Setenv("PORT", "9090")
+	t.Setenv("PORT", "9090")
 	err = manager.ReloadConfig()
 	require.NoError(t, err)
 	assert.Equal(t, 9090, manager.GetEffectiveServerConfig().Port)

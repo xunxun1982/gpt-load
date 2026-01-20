@@ -98,8 +98,9 @@ func TestSelectUpstreamDistribution(t *testing.T) {
 	}
 
 	// Run selection many times and count results
+	// Using 10000 iterations for better statistical confidence
 	counts := make(map[string]int)
-	iterations := 1000
+	iterations := 10000
 
 	for i := 0; i < iterations; i++ {
 		result := bc.SelectUpstream()
@@ -114,7 +115,8 @@ func TestSelectUpstreamDistribution(t *testing.T) {
 	}
 
 	// Higher weight should generally get more selections
-	// This is probabilistic, so we use a loose check
+	// Note: This test is probabilistic by nature. With 10000 iterations and weights 100:200:300,
+	// the ordering should hold with high confidence, but rare failures are theoretically possible.
 	url1 := "https://api1.openai.com"
 	url2 := "https://api2.openai.com"
 	url3 := "https://api3.openai.com"

@@ -192,17 +192,14 @@ func TestCreateGroup(t *testing.T) {
 }
 
 // TestListGroups tests listing all groups
-// DISABLED: This test has issues with GroupManager's background syncer accessing
-// the test database from different goroutines, causing "no such table" errors.
-// The functionality is covered by integration tests.
-// TODO(issue): Re-enable after fixing background syncer isolation in tests
-// func TestListGroups(t *testing.T) { ... }
+func TestListGroups(t *testing.T) {
+	t.Skip("Disabled: background syncer causes 'no such table' errors. Covered by integration tests.")
+}
 
 // TestUpdateGroup tests group updates
-// DISABLED: This test has issues with GroupManager's background syncer.
-// The functionality is covered by integration tests.
-// TODO(issue): Re-enable after fixing background syncer isolation in tests
-// func TestUpdateGroup(t *testing.T) { ... }
+func TestUpdateGroup(t *testing.T) {
+	t.Skip("Disabled: background syncer causes 'no such table' errors. Covered by integration tests.")
+}
 
 // TestDeleteGroup tests group deletion
 func TestDeleteGroup(t *testing.T) {

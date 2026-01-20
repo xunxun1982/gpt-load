@@ -27,8 +27,8 @@ func TestBuildContainer(t *testing.T) {
 	require.NotNil(t, container)
 }
 
-// TestBuildContainer_ConfigManager tests config manager resolution
-func TestBuildContainer_ConfigManager(t *testing.T) {
+// TestBuildContainer_ConfigManagerResolution tests config manager resolution
+func TestBuildContainer_ConfigManagerResolution(t *testing.T) {
 	setupTestEnv(t)
 
 	container, err := BuildContainer()
@@ -427,8 +427,8 @@ func BenchmarkContainerInvokeMultiple(b *testing.B) {
 	}
 }
 
-// TestBuildContainer_AllProviders tests that all providers are registered correctly
-func TestBuildContainer_AllProviders(t *testing.T) {
+// TestBuildContainer_CoreProviders tests that core providers are registered correctly
+func TestBuildContainer_CoreProviders(t *testing.T) {
 	setupTestEnv(t)
 
 	container, err := BuildContainer()
@@ -639,8 +639,8 @@ func TestBuildContainer_ValidationSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	err = container.Invoke(func(cm types.ConfigManager) {
-		err := cm.Validate()
-		assert.NoError(t, err)
+		validateErr := cm.Validate()
+		assert.NoError(t, validateErr)
 	})
 	require.NoError(t, err)
 }
@@ -653,8 +653,8 @@ func TestBuildContainer_ReloadConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	err = container.Invoke(func(cm types.ConfigManager) {
-		err := cm.ReloadConfig()
-		assert.NoError(t, err)
+		reloadErr := cm.ReloadConfig()
+		assert.NoError(t, reloadErr)
 	})
 	require.NoError(t, err)
 }

@@ -53,15 +53,18 @@ func TestGetAppUrl(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clear env vars first to ensure test isolation
-			t.Setenv("HOST", "")
-			t.Setenv("PORT", "")
-
+			// Set environment variables for this test
 			if tt.host != "" {
 				t.Setenv("HOST", tt.host)
+			} else {
+				// Ensure HOST is not set or set to empty
+				t.Setenv("HOST", "")
 			}
 			if tt.port != "" {
 				t.Setenv("PORT", tt.port)
+			} else {
+				// Ensure PORT is not set or set to empty
+				t.Setenv("PORT", "")
 			}
 
 			manager := NewSystemSettingsManager()

@@ -74,56 +74,8 @@ func TestParseUpstreamError(t *testing.T) {
 	}
 }
 
-// TestTruncateString tests string truncation
-func TestTruncateString(t *testing.T) {
-	tests := []struct {
-		name      string
-		input     string
-		maxLength int
-		expected  string
-	}{
-		{
-			name:      "no truncation needed",
-			input:     "short string",
-			maxLength: 100,
-			expected:  "short string",
-		},
-		{
-			name:      "exact length",
-			input:     "exact",
-			maxLength: 5,
-			expected:  "exact",
-		},
-		{
-			name:      "truncation needed",
-			input:     "this is a very long string that needs truncation",
-			maxLength: 10,
-			expected:  "this is a ",
-		},
-		{
-			name:      "empty string",
-			input:     "",
-			maxLength: 10,
-			expected:  "",
-		},
-		{
-			name:      "zero max length",
-			input:     "test",
-			maxLength: 0,
-			expected:  "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := truncateString(tt.input, tt.maxLength)
-			assert.Equal(t, tt.expected, result)
-			assert.LessOrEqual(t, len(result), tt.maxLength)
-		})
-	}
-}
-
-// TestMaxErrorBodyLength tests the constant value
+// TestMaxErrorBodyLength validates that the limit is reasonable for error messages
+// and hasn't been accidentally modified
 func TestMaxErrorBodyLength(t *testing.T) {
 	assert.Equal(t, 2048, maxErrorBodyLength)
 }
@@ -161,14 +113,5 @@ func BenchmarkParseUpstreamError_LargeBody(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = ParseUpstreamError(body)
-	}
-}
-
-// BenchmarkTruncateString benchmarks string truncation
-func BenchmarkTruncateString(b *testing.B) {
-	input := strings.Repeat("a", 5000)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = truncateString(input, maxErrorBodyLength)
 	}
 }

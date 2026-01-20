@@ -14,6 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Compile-time interface assertions to ensure mocks implement the required interfaces
+var _ store.Store = (*mockStore)(nil)
+var _ store.Subscription = (*mockSubscription)(nil)
+
 // mockStore is a mock implementation of store.Store for testing
 type mockStore struct {
 	mu            sync.RWMutex

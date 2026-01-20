@@ -69,6 +69,7 @@ func TestNewLogService(t *testing.T) {
 
 // TestEscapeLike tests LIKE pattern escaping
 func TestEscapeLike(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string

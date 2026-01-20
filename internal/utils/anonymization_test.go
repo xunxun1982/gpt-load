@@ -226,11 +226,9 @@ func BenchmarkCleanAnonymizationHeaders(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Clone headers for each iteration
+		// Clone headers for each iteration to avoid shared slice aliasing
 		testReq, _ := http.NewRequest("GET", "http://example.com", nil)
-		for k, v := range req.Header {
-			testReq.Header[k] = v
-		}
+		testReq.Header = req.Header.Clone()
 		CleanAnonymizationHeaders(testReq)
 	}
 }
@@ -246,9 +244,7 @@ func BenchmarkCleanClientAuthHeaders(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		testReq, _ := http.NewRequest("GET", "http://example.com", nil)
-		for k, v := range req.Header {
-			testReq.Header[k] = v
-		}
+		testReq.Header = req.Header.Clone()
 		CleanClientAuthHeaders(testReq)
 	}
 }

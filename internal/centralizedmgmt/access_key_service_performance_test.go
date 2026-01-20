@@ -275,7 +275,9 @@ func BenchmarkImportAccessKeys(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		// Clean up previous imports
-		db.Where("name LIKE ?", "import-test-%").Delete(&HubAccessKey{})
+		if err := db.Where("name LIKE ?", "import-test-%").Delete(&HubAccessKey{}).Error; err != nil {
+			b.Fatalf("Failed to clean up import-test keys: %v", err)
+		}
 		b.StartTimer()
 
 		tx := db.Begin()
