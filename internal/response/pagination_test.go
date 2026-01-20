@@ -292,18 +292,25 @@ func BenchmarkPaginate(b *testing.B) {
 	}
 }
 
+// Sink variables to prevent compiler optimization
+var benchSliceLenResult int
+
 // BenchmarkGetSliceLen benchmarks slice length retrieval
 func BenchmarkGetSliceLen(b *testing.B) {
 	slice := []int{1, 2, 3, 4, 5}
+	var r int
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = getSliceLen(slice)
+		r = getSliceLen(slice)
 	}
+	benchSliceLenResult = r
 }
 
 // BenchmarkTrimSliceToLen benchmarks slice trimming
 func BenchmarkTrimSliceToLen(b *testing.B) {
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		slice := []int{1, 2, 3, 4, 5}

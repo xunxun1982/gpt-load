@@ -412,7 +412,9 @@ func BenchmarkSelectKey(b *testing.B) {
 	}
 
 	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
-	memStore.LPush(activeKeysListKey, apiKey.ID)
+	if err := memStore.LPush(activeKeysListKey, apiKey.ID); err != nil {
+		b.Fatal(err)
+	}
 	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
 	keyDetails := map[string]any{
 		"key_string":    encryptedKey,
@@ -420,7 +422,9 @@ func BenchmarkSelectKey(b *testing.B) {
 		"failure_count": "0",
 		"created_at":    time.Now().Unix(),
 	}
-	memStore.HSet(keyHashKey, keyDetails)
+	if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -464,8 +468,12 @@ func BenchmarkUpdateStatus(b *testing.B) {
 		"failure_count": "0",
 		"created_at":    time.Now().Unix(),
 	}
-	memStore.HSet(keyHashKey, keyDetails)
-	memStore.LPush(activeKeysListKey, apiKey.ID)
+	if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
+		b.Fatal(err)
+	}
+	if err := memStore.LPush(activeKeysListKey, apiKey.ID); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

@@ -75,12 +75,15 @@ func TestGetClient_Concurrent(t *testing.T) {
 
 	// Run concurrent requests and collect results via channel
 	results := make(chan *http.Client, 10)
+	start := make(chan struct{})
 	for i := 0; i < 10; i++ {
 		go func() {
+			<-start // Wait for signal
 			client := manager.GetClient(config)
 			results <- client
 		}()
 	}
+	close(start) // Release all goroutines simultaneously
 
 	// Wait for all goroutines and assert in main goroutine
 	for i := 0; i < 10; i++ {
@@ -171,6 +174,9 @@ func TestGetClient_WithCompression(t *testing.T) {
 	assert.NotEqual(t, client1, client2, "Different compression settings should create different clients")
 }
 
+// Sink variable to prevent compiler optimization
+var benchSink interface{}
+
 // BenchmarkGetClient benchmarks client retrieval
 func BenchmarkGetClient(b *testing.B) {
 	manager := NewHTTPClientManager()
@@ -182,7 +188,7 @@ func BenchmarkGetClient(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = manager.GetClient(config)
+		benchSink = manager.GetClient(config)
 	}
 }
 
@@ -198,7 +204,7 @@ func BenchmarkGetClient_Concurrent(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = manager.GetClient(config)
+			benchSink = manager.GetClient(config)
 		}
 	})
 }
@@ -218,7 +224,7 @@ func BenchmarkGetFingerprint(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = config.getFingerprint()
+		benchSink = config.getFingerprint()
 	}
 }
 
@@ -439,9 +445,11 @@ func TestGetClient_ConcurrentDifferentConfigs(t *testing.T) {
 
 	const goroutines = 10
 	results := make(chan *http.Client, goroutines)
+	start := make(chan struct{})
 
 	for i := 0; i < goroutines; i++ {
 		go func(idx int) {
+			<-start // Wait for signal
 			config := &Config{
 				ConnectTimeout:  time.Duration(idx+1) * time.Second,
 				RequestTimeout:  30 * time.Second,
@@ -451,6 +459,7 @@ func TestGetClient_ConcurrentDifferentConfigs(t *testing.T) {
 			results <- client
 		}(i)
 	}
+	close(start) // Release all goroutines simultaneously
 
 	// Collect all results in main goroutine
 	clients := make([]*http.Client, goroutines)
@@ -461,6 +470,9 @@ func TestGetClient_ConcurrentDifferentConfigs(t *testing.T) {
 	// All clients should be different
 	for i := 0; i < goroutines; i++ {
 		assert.NotNil(t, clients[i])
+		for j := i + 1; j < goroutines; j++ {
+			assert.NotEqual(t, clients[i], clients[j], "clients[%d] and clients[%d] should be different", i, j)
+		}
 	}
 }
 
@@ -477,7 +489,7 @@ func BenchmarkGetClientWithProxy(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = manager.GetClient(config)
+		benchSink = manager.GetClient(config)
 	}
 }
 
@@ -493,7 +505,7 @@ func BenchmarkGetClientWithCompression(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = manager.GetClient(config)
+		benchSink = manager.GetClient(config)
 	}
 }
 
@@ -512,6 +524,6 @@ func BenchmarkFingerprintGeneration(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = config.getFingerprint()
+		benchSink = config.getFingerprint()
 	}
 }

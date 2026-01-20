@@ -341,7 +341,14 @@ func BenchmarkAddKeysPerformance(b *testing.B) {
 						Status:   models.KeyStatusActive,
 					}
 				}
-				_ = provider.AddKeys(group.ID, keys)
+				if err := provider.AddKeys(group.ID, keys); err != nil {
+					b.Fatal(err)
+				}
+				b.StopTimer()
+				if _, err := provider.RemoveAllKeys(context.Background(), group.ID); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
 			}
 		})
 	}

@@ -313,6 +313,12 @@ func BenchmarkDBQuery(b *testing.B) {
 	defer func() {
 		sqlDB, _ := db.DB()
 		sqlDB.Close()
+		if ReadDB != nil && ReadDB != db {
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
 	}()
 
 	// Create a test table
@@ -346,6 +352,12 @@ func BenchmarkDBInsert(b *testing.B) {
 	defer func() {
 		sqlDB, _ := db.DB()
 		sqlDB.Close()
+		if ReadDB != nil && ReadDB != db {
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
 	}()
 
 	// Create a test table

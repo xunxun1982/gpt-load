@@ -469,7 +469,9 @@ func BenchmarkMemoryStore_Set(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = store.Set("key", value, 0)
+		if err := store.Set("key", value, 0); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -479,11 +481,15 @@ func BenchmarkMemoryStore_Get(b *testing.B) {
 	defer store.Close()
 
 	value := []byte("benchmark_value")
-	_ = store.Set("key", value, 0)
+	if err := store.Set("key", value, 0); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = store.Get("key")
+		if _, err := store.Get("key"); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -497,7 +503,9 @@ func BenchmarkMemoryStore_HIncrBy(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = store.HIncrBy(key, field, 1)
+		if _, err := store.HIncrBy(key, field, 1); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -525,6 +533,8 @@ func BenchmarkMemoryStore_Publish(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = store.Publish(channel, message)
+		if err := store.Publish(channel, message); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

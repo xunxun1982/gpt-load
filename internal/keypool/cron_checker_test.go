@@ -277,7 +277,8 @@ func TestBatchUpdateLastValidatedAt_LargeBatch(t *testing.T) {
 
 	// Verify all groups were updated
 	var count int64
-	db.Model(&models.Group{}).Where("last_validated_at IS NOT NULL").Count(&count)
+	err := db.Model(&models.Group{}).Where("last_validated_at IS NOT NULL").Count(&count).Error
+	require.NoError(t, err)
 	assert.Equal(t, int64(len(groupIDs)), count)
 }
 

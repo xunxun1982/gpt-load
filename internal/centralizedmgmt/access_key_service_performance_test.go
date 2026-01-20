@@ -133,11 +133,14 @@ func BenchmarkCreateAccessKey(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		_, _, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
 			Name:          fmt.Sprintf("bench-create-%d", i),
 			AllowedModels: []string{},
 			Enabled:       true,
 		})
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -560,6 +563,14 @@ func setupBenchService(b *testing.B) (*HubAccessKeyService, *gorm.DB) {
 	if err := db.AutoMigrate(&HubAccessKey{}); err != nil {
 		b.Fatalf("failed to migrate test database: %v", err)
 	}
+
+	// Configure SQLite connection pool for test consistency
+	sqlDB, err := db.DB()
+	if err != nil {
+		b.Fatalf("failed to get underlying db: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 
 	encSvc, err := encryption.NewService("test-encryption-key-32chars!!")
 	if err != nil {

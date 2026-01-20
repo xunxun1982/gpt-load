@@ -163,6 +163,7 @@ func TestAuth(t *testing.T) {
 
 			middleware(c)
 
+			assert.Equal(t, tt.expectedStatus, w.Code)
 			if tt.shouldAbort {
 				assert.True(t, c.IsAborted())
 			} else {
@@ -389,8 +390,11 @@ func TestRequestBodySizeLimit(t *testing.T) {
 
 			middleware(c)
 
+			assert.Equal(t, tt.expectedStatus, w.Code)
 			if tt.expectedStatus == http.StatusRequestEntityTooLarge {
 				assert.True(t, c.IsAborted())
+			} else {
+				assert.False(t, c.IsAborted())
 			}
 		})
 	}

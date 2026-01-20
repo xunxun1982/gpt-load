@@ -74,8 +74,8 @@ func TestBuildContainer_SystemSettingsManager(t *testing.T) {
 	assert.NotNil(t, settingsManager)
 }
 
-// TestBuildContainer_AllServices tests that all services can be resolved
-func TestBuildContainer_AllServices(t *testing.T) {
+// TestBuildContainer_ConfigManagerInvoke tests that config manager can be invoked
+func TestBuildContainer_ConfigManagerInvoke(t *testing.T) {
 	setupTestEnv(t)
 
 	container, err := BuildContainer()
@@ -92,6 +92,7 @@ func TestBuildContainer_AllServices(t *testing.T) {
 func BenchmarkBuildContainer(b *testing.B) {
 	setupTestEnv(b)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		container, err := BuildContainer()
@@ -111,6 +112,7 @@ func BenchmarkContainerInvoke(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		err = container.Invoke(func(cm types.ConfigManager) {
@@ -393,6 +395,7 @@ func BenchmarkBuildContainerWithConfigs(b *testing.B) {
 	b.Setenv("ENABLE_CORS", "true")
 	b.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		container, err := BuildContainer()
@@ -412,6 +415,7 @@ func BenchmarkContainerInvokeMultiple(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		err = container.Invoke(func(
@@ -435,8 +439,7 @@ func TestBuildContainer_CoreProviders(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, container)
 
-	// Test that container has all expected providers by invoking them
-	// This ensures all Provide() calls in BuildContainer succeeded
+	// Test that core configuration providers can be resolved
 	tests := []struct {
 		name string
 		fn   any
@@ -678,6 +681,7 @@ func TestBuildContainer_DisplayConfig(t *testing.T) {
 func BenchmarkBuildContainerComplete(b *testing.B) {
 	setupTestEnv(b)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		container, err := BuildContainer()
@@ -703,6 +707,7 @@ func BenchmarkContainerResolveConfigManager(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		err = container.Invoke(func(cm types.ConfigManager) {
