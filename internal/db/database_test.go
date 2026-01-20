@@ -185,7 +185,16 @@ func TestNewDB_DebugMode(t *testing.T) {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	defer sqlDB.Close()
+	defer func() {
+		// Close ReadDB if it was created as a separate connection to prevent resource leaks
+		if ReadDB != nil && ReadDB != db {
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
+		sqlDB.Close()
+	}()
 }
 
 // TestCalculateAdaptivePoolSize tests adaptive pool size calculation
@@ -498,7 +507,16 @@ func TestNewDB_WithDebugLogging(t *testing.T) {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	defer sqlDB.Close()
+	defer func() {
+		// Close ReadDB if it was created as a separate connection to prevent resource leaks
+		if ReadDB != nil && ReadDB != db {
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
+		sqlDB.Close()
+	}()
 
 	// Verify logger is configured
 	assert.NotNil(t, db.Logger)

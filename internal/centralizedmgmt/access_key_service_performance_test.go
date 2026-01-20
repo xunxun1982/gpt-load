@@ -324,7 +324,9 @@ func BenchmarkBatchDeleteAccessKeys(b *testing.B) {
 				}
 				b.StartTimer()
 
-				_, _ = svc.BatchDeleteAccessKeys(ctx, ids)
+				if _, err := svc.BatchDeleteAccessKeys(ctx, ids); err != nil {
+					b.Fatalf("Batch delete failed: %v", err)
+				}
 			}
 		})
 	}
@@ -352,7 +354,9 @@ func BenchmarkBatchUpdateAccessKeysEnabled(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		enabled := i%2 == 0
-		_, _ = svc.BatchUpdateAccessKeysEnabled(ctx, ids, enabled)
+		if _, err := svc.BatchUpdateAccessKeysEnabled(ctx, ids, enabled); err != nil {
+			b.Fatalf("Batch update failed: %v", err)
+		}
 	}
 }
 

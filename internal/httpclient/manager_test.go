@@ -203,9 +203,11 @@ func BenchmarkGetClient_Concurrent(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
+		var localSink interface{}
 		for pb.Next() {
-			benchSink = manager.GetClient(config)
+			localSink = manager.GetClient(config)
 		}
+		_ = localSink // Prevent unused variable warning
 	})
 }
 
@@ -419,13 +421,16 @@ func TestGetClient_ConcurrentSameConfig(t *testing.T) {
 
 	const goroutines = 100
 	results := make(chan *http.Client, goroutines)
+	start := make(chan struct{})
 
 	for i := 0; i < goroutines; i++ {
 		go func() {
+			<-start // Wait for signal
 			client := manager.GetClient(config)
 			results <- client
 		}()
 	}
+	close(start) // Release all goroutines simultaneously
 
 	// Collect all results in main goroutine
 	clients := make([]*http.Client, goroutines)

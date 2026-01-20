@@ -150,7 +150,7 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{
-		Name:        "status-group",
+		Name:        fmt.Sprintf("status-group-%d", time.Now().UnixNano()),
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   testGroupUpstreams,
@@ -196,6 +196,22 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		// Reset key state to measure consistent behavior
+		if err := db.Model(&models.APIKey{}).Where("id = ?", apiKey.ID).Updates(map[string]any{
+			"status":        models.KeyStatusActive,
+			"failure_count": 1,
+		}).Error; err != nil {
+			b.Fatal(err)
+		}
+		if err := memStore.HSet(keyHashKey, map[string]any{
+			"status":        models.KeyStatusActive,
+			"failure_count": "1",
+		}); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+
 		provider.UpdateStatus(apiKey, group, true, "")
 	}
 }
@@ -206,7 +222,7 @@ func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{
-		Name:        "failure-group",
+		Name:        fmt.Sprintf("failure-group-%d", time.Now().UnixNano()),
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   testGroupUpstreams,
@@ -252,6 +268,22 @@ func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		// Reset key state to measure consistent behavior
+		if err := db.Model(&models.APIKey{}).Where("id = ?", apiKey.ID).Updates(map[string]any{
+			"status":        models.KeyStatusActive,
+			"failure_count": 0,
+		}).Error; err != nil {
+			b.Fatal(err)
+		}
+		if err := memStore.HSet(keyHashKey, map[string]any{
+			"status":        models.KeyStatusActive,
+			"failure_count": "0",
+		}); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+
 		provider.UpdateStatus(apiKey, group, false, "API error")
 	}
 }
@@ -267,7 +299,7 @@ func BenchmarkLoadKeysFromDBPerformance(b *testing.B) {
 
 			// Create test data
 			group := &models.Group{
-				Name:        "load-group",
+				Name:        fmt.Sprintf("load-group-%d", time.Now().UnixNano()),
 				ChannelType: "openai",
 				Enabled:     true,
 				Upstreams:   testGroupUpstreams,
@@ -316,7 +348,7 @@ func BenchmarkAddKeysPerformance(b *testing.B) {
 			defer provider.Stop()
 
 			group := &models.Group{
-				Name:        "add-group",
+				Name:        fmt.Sprintf("add-group-%d", time.Now().UnixNano()),
 				ChannelType: "openai",
 				Enabled:     true,
 				Upstreams:   testGroupUpstreams,
@@ -360,7 +392,7 @@ func BenchmarkRemoveKeysPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{
-		Name:        "remove-group",
+		Name:        fmt.Sprintf("remove-group-%d", time.Now().UnixNano()),
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   testGroupUpstreams,
@@ -374,26 +406,16 @@ func BenchmarkRemoveKeysPerformance(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	// Pre-create keys for removal
 	keyValues := make([]string, 10)
 	for i := 0; i < 10; i++ {
 		keyValue := fmt.Sprintf("sk-remove-%d", i)
 		keyValues[i] = keyValue
-		apiKey := &models.APIKey{
-			GroupID:  group.ID,
-			KeyValue: keyValue,
-			KeyHash:  encSvc.Hash(keyValue),
-			Status:   models.KeyStatusActive,
-		}
-		if err := db.Create(apiKey).Error; err != nil {
-			b.Fatal(err)
-		}
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		// Re-create keys for next iteration
+		// Create keys for removal
 		for _, kv := range keyValues {
 			apiKey := &models.APIKey{
 				GroupID:  group.ID,
@@ -417,7 +439,7 @@ func BenchmarkRestoreKeysPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{
-		Name:        "restore-group",
+		Name:        fmt.Sprintf("restore-group-%d", time.Now().UnixNano()),
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   testGroupUpstreams,
@@ -471,7 +493,7 @@ func BenchmarkRemoveAllKeysPerformance(b *testing.B) {
 			defer provider.Stop()
 
 			group := &models.Group{
-				Name:        "removeall-group",
+				Name:        fmt.Sprintf("removeall-group-%d", time.Now().UnixNano()),
 				ChannelType: "openai",
 				Enabled:     true,
 				Upstreams:   testGroupUpstreams,
@@ -516,7 +538,7 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 
 	// Setup test data
 	group := &models.Group{
-		Name:        "concurrent-ops-group",
+		Name:        fmt.Sprintf("concurrent-ops-group-%d", time.Now().UnixNano()),
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   testGroupUpstreams,
@@ -603,9 +625,9 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 		name     string
 		keyCount int
 	}{
-		{"small-group", 5},
-		{"medium-group", 20},
-		{"large-group", 100},
+		{fmt.Sprintf("small-group-%d", time.Now().UnixNano()), 5},
+		{fmt.Sprintf("medium-group-%d", time.Now().UnixNano()), 20},
+		{fmt.Sprintf("large-group-%d", time.Now().UnixNano()), 100},
 	}
 
 	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -691,7 +713,7 @@ func BenchmarkMemoryAllocationPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{
-		Name:        "memory-group",
+		Name:        fmt.Sprintf("memory-group-%d", time.Now().UnixNano()),
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   testGroupUpstreams,
