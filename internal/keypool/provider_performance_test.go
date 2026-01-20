@@ -332,7 +332,9 @@ func BenchmarkLoadKeysFromDBPerformance(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = provider.LoadKeysFromDB()
+				if err := provider.LoadKeysFromDB(); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}

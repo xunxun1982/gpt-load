@@ -268,7 +268,15 @@ func TestNewDB_WithEnvironmentVariables(t *testing.T) {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	defer sqlDB.Close()
+	defer func() {
+		if ReadDB != nil && ReadDB != db {
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
+		sqlDB.Close()
+	}()
 
 	err = sqlDB.Ping()
 	require.NoError(t, err)
@@ -400,7 +408,15 @@ func TestNewDB_WithPragmaSettings(t *testing.T) {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	defer sqlDB.Close()
+	defer func() {
+		if ReadDB != nil && ReadDB != db {
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
+		sqlDB.Close()
+	}()
 
 	err = sqlDB.Ping()
 	require.NoError(t, err)
@@ -535,7 +551,15 @@ func TestNewDB_WithInfoLogging(t *testing.T) {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	defer sqlDB.Close()
+	defer func() {
+		if ReadDB != nil && ReadDB != db {
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
+		sqlDB.Close()
+	}()
 }
 
 // TestNewDB_WithDirectoryCreation tests database directory creation
@@ -638,7 +662,15 @@ func TestNewDB_WithPrepareStmt(t *testing.T) {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	defer sqlDB.Close()
+	defer func() {
+		if ReadDB != nil && ReadDB != db {
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
+		sqlDB.Close()
+	}()
 }
 
 // TestNewDB_WithForeignKeys tests database with foreign key constraints
@@ -665,7 +697,15 @@ func TestNewDB_WithForeignKeys(t *testing.T) {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	defer sqlDB.Close()
+	defer func() {
+		if ReadDB != nil && ReadDB != db {
+			readSQLDB, err := ReadDB.DB()
+			if err == nil && readSQLDB != nil {
+				readSQLDB.Close()
+			}
+		}
+		sqlDB.Close()
+	}()
 }
 
 // BenchmarkNewDB_WithReadPool benchmarks database creation with read pool
