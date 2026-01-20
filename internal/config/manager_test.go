@@ -124,11 +124,11 @@ func TestManagerGetters(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("REDIS_DSN", "redis://localhost:6379")
-	os.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
-	os.Setenv("DEBUG_MODE", "true")
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
+	t.Setenv("REDIS_DSN", "redis://localhost:6379")
+	t.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
+	t.Setenv("DEBUG_MODE", "true")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -214,10 +214,11 @@ func TestManagerCORSValidation(t *testing.T) {
 			setupTestEnv(t)
 			defer cleanupTestEnv(t)
 
-			os.Setenv("ENABLE_CORS", tt.enableCORS)
+			t.Setenv("ENABLE_CORS", tt.enableCORS)
 			if tt.origins != "" {
-				os.Setenv("ALLOWED_ORIGINS", tt.origins)
+				t.Setenv("ALLOWED_ORIGINS", tt.origins)
 			} else {
+				// Note: os.Unsetenv is necessary here as t.Setenv cannot unset variables
 				os.Unsetenv("ALLOWED_ORIGINS")
 			}
 
@@ -240,7 +241,7 @@ func TestManagerTimeoutValidation(t *testing.T) {
 	defer cleanupTestEnv(t)
 
 	// Test graceful shutdown timeout minimum
-	os.Setenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT", "5")
+	t.Setenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT", "5")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -343,10 +344,10 @@ func TestDisplayServerConfig(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("REDIS_DSN", "redis://localhost:6379")
-	os.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
-	os.Setenv("LOG_ENABLE_FILE", "true")
-	os.Setenv("LOG_FILE_PATH", "./test.log")
+	t.Setenv("REDIS_DSN", "redis://localhost:6379")
+	t.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
+	t.Setenv("LOG_ENABLE_FILE", "true")
+	t.Setenv("LOG_FILE_PATH", "./test.log")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -363,7 +364,7 @@ func TestManagerSlaveMode(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("IS_SLAVE", "true")
+	t.Setenv("IS_SLAVE", "true")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -403,16 +404,16 @@ func TestManagerLogConfig(t *testing.T) {
 			defer cleanupTestEnv(t)
 
 			if tt.logLevel != "" {
-				os.Setenv("LOG_LEVEL", tt.logLevel)
+				t.Setenv("LOG_LEVEL", tt.logLevel)
 			}
 			if tt.logFormat != "" {
-				os.Setenv("LOG_FORMAT", tt.logFormat)
+				t.Setenv("LOG_FORMAT", tt.logFormat)
 			}
 			if tt.enableFile != "" {
-				os.Setenv("LOG_ENABLE_FILE", tt.enableFile)
+				t.Setenv("LOG_ENABLE_FILE", tt.enableFile)
 			}
 			if tt.filePath != "" {
-				os.Setenv("LOG_FILE_PATH", tt.filePath)
+				t.Setenv("LOG_FILE_PATH", tt.filePath)
 			}
 
 			settingsManager := &SystemSettingsManager{}
@@ -439,9 +440,9 @@ func TestManagerServerTimeouts(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("SERVER_READ_TIMEOUT", "30")
-	os.Setenv("SERVER_WRITE_TIMEOUT", "300")
-	os.Setenv("SERVER_IDLE_TIMEOUT", "60")
+	t.Setenv("SERVER_READ_TIMEOUT", "30")
+	t.Setenv("SERVER_WRITE_TIMEOUT", "300")
+	t.Setenv("SERVER_IDLE_TIMEOUT", "60")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -458,11 +459,11 @@ func TestManagerCORSMethods(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
-	os.Setenv("ALLOWED_METHODS", "GET,POST,PUT")
-	os.Setenv("ALLOWED_HEADERS", "Content-Type,Authorization")
-	os.Setenv("ALLOW_CREDENTIALS", "true")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
+	t.Setenv("ALLOWED_METHODS", "GET,POST,PUT")
+	t.Setenv("ALLOWED_HEADERS", "Content-Type,Authorization")
+	t.Setenv("ALLOW_CREDENTIALS", "true")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -483,6 +484,7 @@ func TestManagerWithoutEncryption(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
+	// Note: os.Unsetenv is necessary here as t.Setenv cannot unset variables
 	os.Unsetenv("ENCRYPTION_KEY")
 
 	settingsManager := &SystemSettingsManager{}
@@ -542,7 +544,7 @@ func TestManagerDatabaseConfig(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("DATABASE_DSN", "./test.db")
+	t.Setenv("DATABASE_DSN", "./test.db")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -568,7 +570,7 @@ func TestManagerRedisDSN(t *testing.T) {
 			defer cleanupTestEnv(t)
 
 			if tt.redisDSN != "" {
-				os.Setenv("REDIS_DSN", tt.redisDSN)
+				t.Setenv("REDIS_DSN", tt.redisDSN)
 			}
 
 			settingsManager := &SystemSettingsManager{}
@@ -598,7 +600,7 @@ func TestManagerDebugMode(t *testing.T) {
 			defer cleanupTestEnv(t)
 
 			if tt.debugMode != "" {
-				os.Setenv("DEBUG_MODE", tt.debugMode)
+				t.Setenv("DEBUG_MODE", tt.debugMode)
 			}
 
 			settingsManager := &SystemSettingsManager{}
@@ -615,10 +617,10 @@ func TestManagerAllTimeouts(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("SERVER_READ_TIMEOUT", "45")
-	os.Setenv("SERVER_WRITE_TIMEOUT", "450")
-	os.Setenv("SERVER_IDLE_TIMEOUT", "90")
-	os.Setenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT", "15")
+	t.Setenv("SERVER_READ_TIMEOUT", "45")
+	t.Setenv("SERVER_WRITE_TIMEOUT", "450")
+	t.Setenv("SERVER_IDLE_TIMEOUT", "90")
+	t.Setenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT", "15")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -636,11 +638,11 @@ func TestManagerCORSAllOptions(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
-	os.Setenv("ALLOWED_METHODS", "GET,POST,PUT,DELETE,PATCH")
-	os.Setenv("ALLOWED_HEADERS", "Content-Type,Authorization,X-Custom-Header")
-	os.Setenv("ALLOW_CREDENTIALS", "true")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
+	t.Setenv("ALLOWED_METHODS", "GET,POST,PUT,DELETE,PATCH")
+	t.Setenv("ALLOWED_HEADERS", "Content-Type,Authorization,X-Custom-Header")
+	t.Setenv("ALLOW_CREDENTIALS", "true")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -674,11 +676,11 @@ func TestManagerLogConfigAllOptions(t *testing.T) {
 			setupTestEnv(t)
 			defer cleanupTestEnv(t)
 
-			os.Setenv("LOG_LEVEL", tt.level)
-			os.Setenv("LOG_FORMAT", tt.format)
-			os.Setenv("LOG_ENABLE_FILE", tt.enableFile)
+			t.Setenv("LOG_LEVEL", tt.level)
+			t.Setenv("LOG_FORMAT", tt.format)
+			t.Setenv("LOG_ENABLE_FILE", tt.enableFile)
 			if tt.filePath != "" {
-				os.Setenv("LOG_FILE_PATH", tt.filePath)
+				t.Setenv("LOG_FILE_PATH", tt.filePath)
 			}
 
 			settingsManager := &SystemSettingsManager{}
@@ -716,7 +718,7 @@ func TestManagerPerformanceConfig(t *testing.T) {
 			defer cleanupTestEnv(t)
 
 			if tt.maxConcurrent != "" {
-				os.Setenv("MAX_CONCURRENT_REQUESTS", tt.maxConcurrent)
+				t.Setenv("MAX_CONCURRENT_REQUESTS", tt.maxConcurrent)
 			}
 
 			settingsManager := &SystemSettingsManager{}
@@ -734,8 +736,9 @@ func TestManagerValidationMultipleErrors(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("PORT", "0")
-	os.Setenv("MAX_CONCURRENT_REQUESTS", "0")
+	t.Setenv("PORT", "0")
+	t.Setenv("MAX_CONCURRENT_REQUESTS", "0")
+	// Note: os.Unsetenv is necessary here as t.Setenv cannot unset variables
 	os.Unsetenv("AUTH_KEY")
 
 	settingsManager := &SystemSettingsManager{}
@@ -753,14 +756,14 @@ func TestManagerDisplayServerConfigWithAllOptions(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("HOST", "127.0.0.1")
-	os.Setenv("PORT", "8080")
-	os.Setenv("REDIS_DSN", "redis://localhost:6379")
-	os.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
-	os.Setenv("LOG_ENABLE_FILE", "true")
-	os.Setenv("LOG_FILE_PATH", "./test.log")
+	t.Setenv("HOST", "127.0.0.1")
+	t.Setenv("PORT", "8080")
+	t.Setenv("REDIS_DSN", "redis://localhost:6379")
+	t.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
+	t.Setenv("LOG_ENABLE_FILE", "true")
+	t.Setenv("LOG_FILE_PATH", "./test.log")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -815,7 +818,7 @@ func TestManagerHostVariants(t *testing.T) {
 			setupTestEnv(t)
 			defer cleanupTestEnv(t)
 
-			os.Setenv("HOST", tt.host)
+			t.Setenv("HOST", tt.host)
 
 			settingsManager := &SystemSettingsManager{}
 			manager, err := NewManager(settingsManager)
@@ -845,7 +848,7 @@ func TestManagerPortBoundaries(t *testing.T) {
 			setupTestEnv(t)
 			defer cleanupTestEnv(t)
 
-			os.Setenv("PORT", tt.port)
+			t.Setenv("PORT", tt.port)
 
 			settingsManager := &SystemSettingsManager{}
 			manager, err := NewManager(settingsManager)
@@ -894,7 +897,7 @@ func TestManagerValidationAuthKeyStrength(t *testing.T) {
 	defer cleanupTestEnv(t)
 
 	// Test with weak key (should still work but log warning)
-	os.Setenv("AUTH_KEY", "weak")
+	t.Setenv("AUTH_KEY", "weak")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -919,7 +922,7 @@ func TestManagerValidationGracefulShutdownTimeout(t *testing.T) {
 			setupTestEnv(t)
 			defer cleanupTestEnv(t)
 
-			os.Setenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT", tt.timeout)
+			t.Setenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT", tt.timeout)
 
 			settingsManager := &SystemSettingsManager{}
 			manager, err := NewManager(settingsManager)
@@ -935,8 +938,8 @@ func TestManagerCORSWildcardWarning(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "*")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "*")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -953,6 +956,7 @@ func TestManagerDisplayServerConfigWithoutEncryption(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
+	// Note: os.Unsetenv is necessary here as t.Setenv cannot unset variables
 	os.Unsetenv("ENCRYPTION_KEY")
 
 	settingsManager := &SystemSettingsManager{}
@@ -969,7 +973,7 @@ func TestManagerDisplayServerConfigWithoutDatabase(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("DATABASE_DSN", "")
+	t.Setenv("DATABASE_DSN", "")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -1001,8 +1005,8 @@ func TestManagerDisplayServerConfigWithFileLogging(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("LOG_ENABLE_FILE", "true")
-	os.Setenv("LOG_FILE_PATH", "/var/log/app.log")
+	t.Setenv("LOG_ENABLE_FILE", "true")
+	t.Setenv("LOG_FILE_PATH", "/var/log/app.log")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -1022,8 +1026,8 @@ func TestManagerDisplayServerConfigWithCORS(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -1039,22 +1043,22 @@ func TestManagerDisplayServerConfigComplete(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("HOST", "127.0.0.1")
-	os.Setenv("PORT", "8080")
-	os.Setenv("SERVER_READ_TIMEOUT", "45")
-	os.Setenv("SERVER_WRITE_TIMEOUT", "450")
-	os.Setenv("SERVER_IDLE_TIMEOUT", "90")
-	os.Setenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT", "15")
-	os.Setenv("MAX_CONCURRENT_REQUESTS", "200")
-	os.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
-	os.Setenv("LOG_LEVEL", "debug")
-	os.Setenv("LOG_FORMAT", "json")
-	os.Setenv("LOG_ENABLE_FILE", "true")
-	os.Setenv("LOG_FILE_PATH", "/var/log/app.log")
-	os.Setenv("DATABASE_DSN", "./test.db")
-	os.Setenv("REDIS_DSN", "redis://localhost:6379")
+	t.Setenv("HOST", "127.0.0.1")
+	t.Setenv("PORT", "8080")
+	t.Setenv("SERVER_READ_TIMEOUT", "45")
+	t.Setenv("SERVER_WRITE_TIMEOUT", "450")
+	t.Setenv("SERVER_IDLE_TIMEOUT", "90")
+	t.Setenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT", "15")
+	t.Setenv("MAX_CONCURRENT_REQUESTS", "200")
+	t.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
+	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("LOG_FORMAT", "json")
+	t.Setenv("LOG_ENABLE_FILE", "true")
+	t.Setenv("LOG_FILE_PATH", "/var/log/app.log")
+	t.Setenv("DATABASE_DSN", "./test.db")
+	t.Setenv("REDIS_DSN", "redis://localhost:6379")
 
 	settingsManager := &SystemSettingsManager{}
 	manager, err := NewManager(settingsManager)
@@ -1104,8 +1108,8 @@ func TestManagerCORSDefaultMethods(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
 	os.Unsetenv("ALLOWED_METHODS")
 
 	settingsManager := &SystemSettingsManager{}
@@ -1126,8 +1130,8 @@ func TestManagerCORSDefaultHeaders(t *testing.T) {
 	setupTestEnv(t)
 	defer cleanupTestEnv(t)
 
-	os.Setenv("ENABLE_CORS", "true")
-	os.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
+	t.Setenv("ENABLE_CORS", "true")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
 	os.Unsetenv("ALLOWED_HEADERS")
 
 	settingsManager := &SystemSettingsManager{}

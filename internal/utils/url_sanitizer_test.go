@@ -65,6 +65,11 @@ func TestSanitizeURLForLog(t *testing.T) {
 
 			result := SanitizeURLForLog(u)
 
+			// Verify nil input returns empty string
+			if tt.input == "" && result != "" {
+				t.Errorf("SanitizeURLForLog() with nil URL should return empty string, got %q", result)
+			}
+
 			for _, s := range tt.contains {
 				if !strings.Contains(result, s) {
 					t.Errorf("SanitizeURLForLog() result should contain %q, got %q", s, result)
@@ -86,32 +91,47 @@ func TestSanitizeRequestURLForLog(t *testing.T) {
 		name        string
 		input       string
 		notContains []string
+		expectSame  bool // Expect result to be same as input
 	}{
 		{
 			"EmptyString",
 			"",
 			[]string{},
+			true,
 		},
 		{
 			"InvalidURL",
 			"not a valid url",
 			[]string{},
+			false, // url.Parse may modify the string
 		},
 		{
 			"URLWithAPIKey",
 			"https://api.example.com?api_key=secret",
 			[]string{"secret"},
+			false,
 		},
 		{
 			"URLWithAccessToken",
 			"https://api.example.com?access_token=token123",
 			[]string{"token123"},
+			false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := SanitizeRequestURLForLog(tt.input)
+
+			// Verify empty input returns empty string
+			if tt.input == "" && result != "" {
+				t.Errorf("SanitizeRequestURLForLog(%q) should return empty string, got %q", tt.input, result)
+			}
+
+			// Verify exact match when expected
+			if tt.expectSame && result != tt.input {
+				t.Errorf("SanitizeRequestURLForLog(%q) should return original input, got %q", tt.input, result)
+			}
 
 			for _, s := range tt.notContains {
 				if strings.Contains(result, s) {

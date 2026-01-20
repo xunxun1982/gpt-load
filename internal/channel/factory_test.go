@@ -184,8 +184,9 @@ func TestGetChannelConcurrency(t *testing.T) {
 	}
 
 	require.Len(t, channels, 10, "Should have 10 successful channel creations")
+	// Use assert.Same to verify pointer identity (cache returns exact same instance)
 	for i := 1; i < len(channels); i++ {
-		assert.Equal(t, channels[0], channels[i])
+		assert.Same(t, channels[0], channels[i])
 	}
 }
 

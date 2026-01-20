@@ -180,7 +180,7 @@ func TestDynamicModelRedirectSelector_DynamicWeightAdjustment(t *testing.T) {
 	}
 
 	// Second target should be selected more often due to better health
-	// This is a deterministic property given the health differences
+	// Note: This is probabilistic but with strong bias due to significant health differences
 	assert.Greater(t, selections["gpt-4-0125"], selections["gpt-4-turbo"],
 		"Healthier target (gpt-4-0125) should be selected more frequently than failing target")
 }
@@ -221,7 +221,7 @@ func TestResolveTargetModelWithDynamicWeight(t *testing.T) {
 			sourceModel:   "gpt-4",
 			expectVersion: "v2",
 			expectCount:   2,
-			expectIndex:   0, // Can be 0 or 1
+			expectIndex:   -2, // Sentinel: any valid index (0 or 1) for V2 rules
 		},
 		{
 			name:          "V1 rule fallback",
@@ -256,7 +256,11 @@ func TestResolveTargetModelWithDynamicWeight(t *testing.T) {
 				}
 				assert.Equal(t, tt.expectVersion, version)
 				assert.Equal(t, tt.expectCount, count)
-				if tt.expectIndex >= 0 {
+				// Handle different expectIndex values
+				if tt.expectIndex == -2 {
+					// Sentinel value: any valid index (for V2 rules with multiple targets)
+					assert.GreaterOrEqual(t, idx, 0)
+				} else if tt.expectIndex >= 0 {
 					assert.GreaterOrEqual(t, idx, 0)
 				} else {
 					assert.Equal(t, tt.expectIndex, idx)

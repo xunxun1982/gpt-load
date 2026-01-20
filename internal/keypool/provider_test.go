@@ -19,6 +19,7 @@ import (
 
 // setupTestDB creates an in-memory SQLite database for testing
 func setupTestDB(t *testing.T) *gorm.DB {
+	t.Helper() // Mark as test helper for better stack traces
 	skipIfNoSQLite(t)
 
 	// Use shared cache mode to allow multiple connections to access the same in-memory database
@@ -36,6 +37,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 
 // setupTestProvider creates a test KeyProvider with in-memory store
 func setupTestProvider(t *testing.T) (*KeyProvider, *gorm.DB, store.Store) {
+	t.Helper() // Mark as test helper for better stack traces
 	db := setupTestDB(t)
 	memStore := store.NewMemoryStore()
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -374,7 +376,9 @@ func BenchmarkSelectKey(b *testing.B) {
 
 	// Setup test data
 	group := &models.Group{Name: "bench-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatalf("failed to create test group: %v", err)
+	}
 
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
 	encryptedKey, _ := encSvc.Encrypt("sk-bench")
@@ -384,7 +388,9 @@ func BenchmarkSelectKey(b *testing.B) {
 		KeyHash:  encSvc.Hash("sk-bench"),
 		Status:   models.KeyStatusActive,
 	}
-	db.Create(apiKey)
+	if err := db.Create(apiKey).Error; err != nil {
+		b.Fatalf("failed to create test key: %v", err)
+	}
 
 	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	memStore.LPush(activeKeysListKey, apiKey.ID)
@@ -409,7 +415,9 @@ func BenchmarkUpdateStatus(b *testing.B) {
 
 	// Setup test data
 	group := &models.Group{Name: "bench-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatalf("failed to create test group: %v", err)
+	}
 
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
 	encryptedKey, _ := encSvc.Encrypt("sk-bench")
@@ -420,7 +428,9 @@ func BenchmarkUpdateStatus(b *testing.B) {
 		Status:       models.KeyStatusActive,
 		FailureCount: 0,
 	}
-	db.Create(apiKey)
+	if err := db.Create(apiKey).Error; err != nil {
+		b.Fatalf("failed to create test key: %v", err)
+	}
 
 	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
 	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
@@ -444,7 +454,9 @@ func BenchmarkAddKeys(b *testing.B) {
 	defer provider.Stop()
 
 	group := &models.Group{Name: "bench-group", ChannelType: "openai", Enabled: true}
-	db.Create(group)
+	if err := db.Create(group).Error; err != nil {
+		b.Fatalf("failed to create test group: %v", err)
+	}
 
 	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
 

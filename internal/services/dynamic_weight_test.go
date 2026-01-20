@@ -99,6 +99,7 @@ func TestDynamicWeightManager_CalculateHealthScore(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			score := dwm.CalculateHealthScore(tt.metrics)
+			// Dual-condition pattern: exact match for expected > 0, range check for minScore > 0
 			if tt.expected > 0 {
 				assert.InDelta(t, tt.expected, score, 0.01)
 			}
@@ -301,6 +302,9 @@ func TestDynamicWeightManager_GetSubGroupDynamicWeights(t *testing.T) {
 	assert.Equal(t, 50, weights[1].BaseWeight)
 	assert.Greater(t, weights[0].EffectiveWeight, 0)
 	assert.Greater(t, weights[1].EffectiveWeight, 0)
+	// Verify health-based weight ordering: sub-group 1 (success) > sub-group 2 (failure)
+	assert.Greater(t, weights[0].EffectiveWeight, weights[1].EffectiveWeight,
+		"Sub-group with success should have higher effective weight than sub-group with failure")
 }
 
 // TestDynamicWeightManager_DynamicWeightedRandomSelect tests weighted random selection
@@ -403,4 +407,7 @@ func TestGetModelRedirectDynamicWeights(t *testing.T) {
 	assert.Equal(t, 30, weights[1].BaseWeight)
 	assert.Greater(t, weights[0].EffectiveWeight, 0)
 	assert.Greater(t, weights[1].EffectiveWeight, 0)
+	// Verify health-based weight ordering: target 0 (success) > target 1 (failure)
+	assert.Greater(t, weights[0].EffectiveWeight, weights[1].EffectiveWeight,
+		"Target with success should have higher effective weight than target with failure")
 }
