@@ -121,6 +121,7 @@ func setupTestGroupService(tb testing.TB, db *gorm.DB) *GroupService {
 
 // TestCreateGroup tests group creation
 func TestCreateGroup(t *testing.T) {
+	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
 
@@ -203,6 +204,7 @@ func TestCreateGroup(t *testing.T) {
 
 // TestDeleteGroup tests group deletion
 func TestDeleteGroup(t *testing.T) {
+	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
 
@@ -236,6 +238,7 @@ func TestDeleteGroup(t *testing.T) {
 
 // TestCopyGroup tests group copying
 func TestCopyGroup(t *testing.T) {
+	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
 
@@ -301,6 +304,7 @@ func TestToggleGroupEnabled(t *testing.T) {
 
 // TestValidateAndCleanUpstreams tests upstream validation
 func TestValidateAndCleanUpstreams(t *testing.T) {
+	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
 
@@ -350,6 +354,7 @@ func TestValidateAndCleanUpstreams(t *testing.T) {
 
 // TestValidateAndCleanConfig tests config validation
 func TestValidateAndCleanConfig(t *testing.T) {
+	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
 
@@ -394,6 +399,7 @@ func TestValidateAndCleanConfig(t *testing.T) {
 
 // TestIsValidGroupName tests group name validation
 func TestIsValidGroupName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -419,6 +425,7 @@ func TestIsValidGroupName(t *testing.T) {
 
 // TestIsValidValidationEndpoint tests validation endpoint validation
 func TestIsValidValidationEndpoint(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -440,6 +447,7 @@ func TestIsValidValidationEndpoint(t *testing.T) {
 
 // TestCalculateRequestStats tests request statistics calculation
 func TestCalculateRequestStats(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		total    int64
@@ -490,6 +498,7 @@ func TestCalculateRequestStats(t *testing.T) {
 
 // TestInvalidateKeyStatsCache tests cache invalidation
 func TestInvalidateKeyStatsCache(t *testing.T) {
+	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
 
@@ -513,6 +522,7 @@ func TestInvalidateKeyStatsCache(t *testing.T) {
 
 // TestNormalizeHeaderRules tests header rules normalization
 func TestNormalizeHeaderRules(t *testing.T) {
+	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
 
@@ -557,6 +567,7 @@ func TestNormalizeHeaderRules(t *testing.T) {
 
 // TestNormalizePathRedirects tests path redirect normalization
 func TestNormalizePathRedirects(t *testing.T) {
+	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
 
@@ -603,6 +614,7 @@ func TestNormalizePathRedirects(t *testing.T) {
 
 // TestValidateParamOverrides tests parameter override validation
 func TestValidateParamOverrides(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		overrides   map[string]any
@@ -664,6 +676,7 @@ func TestValidateParamOverrides(t *testing.T) {
 
 // TestIsConfigCCSupportEnabled tests CC support detection
 func TestIsConfigCCSupportEnabled(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		config   datatypes.JSONMap

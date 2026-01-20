@@ -52,13 +52,17 @@ func BenchmarkSelectKeyPerformance(b *testing.B) {
 			"failure_count": "0",
 			"created_at":    time.Now().Unix(),
 		}
-		memStore.HSet(keyHashKey, keyDetails)
+		if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	// Setup active keys list
 	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	for i := 1; i <= keyCount; i++ {
-		memStore.LPush(activeKeysListKey, uint(i))
+		if err := memStore.LPush(activeKeysListKey, uint(i)); err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	b.ResetTimer()
@@ -108,12 +112,16 @@ func BenchmarkSelectKeyConcurrentPerformance(b *testing.B) {
 			"failure_count": "0",
 			"created_at":    time.Now().Unix(),
 		}
-		memStore.HSet(keyHashKey, keyDetails)
+		if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	for i := 1; i <= keyCount; i++ {
-		memStore.LPush(activeKeysListKey, uint(i))
+		if err := memStore.LPush(activeKeysListKey, uint(i)); err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	b.ResetTimer()
@@ -162,8 +170,12 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 		"failure_count": "1",
 		"created_at":    time.Now().Unix(),
 	}
-	memStore.HSet(keyHashKey, keyDetails)
-	memStore.LPush(activeKeysListKey, apiKey.ID)
+	if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
+		b.Fatal(err)
+	}
+	if err := memStore.LPush(activeKeysListKey, apiKey.ID); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -213,8 +225,12 @@ func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 		"failure_count": "0",
 		"created_at":    time.Now().Unix(),
 	}
-	memStore.HSet(keyHashKey, keyDetails)
-	memStore.LPush(activeKeysListKey, apiKey.ID)
+	if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
+		b.Fatal(err)
+	}
+	if err := memStore.LPush(activeKeysListKey, apiKey.ID); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -479,12 +495,16 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 			"failure_count": "0",
 			"created_at":    time.Now().Unix(),
 		}
-		memStore.HSet(keyHashKey, keyDetails)
+		if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	for i := 1; i <= keyCount; i++ {
-		memStore.LPush(activeKeysListKey, uint(i))
+		if err := memStore.LPush(activeKeysListKey, uint(i)); err != nil {
+			b.Fatal(err)
+		}
 	}
 
 	b.ResetTimer()
@@ -559,12 +579,16 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 				"failure_count": "0",
 				"created_at":    time.Now().Unix(),
 			}
-			memStore.HSet(keyHashKey, keyDetails)
+			if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
+				b.Fatal(err)
+			}
 		}
 
 		activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 		for i := 1; i <= g.keyCount; i++ {
-			memStore.LPush(activeKeysListKey, uint(i))
+			if err := memStore.LPush(activeKeysListKey, uint(i)); err != nil {
+				b.Fatal(err)
+			}
 		}
 	}
 
@@ -630,8 +654,12 @@ func BenchmarkMemoryAllocationPerformance(b *testing.B) {
 		"failure_count": "0",
 		"created_at":    time.Now().Unix(),
 	}
-	memStore.HSet(keyHashKey, keyDetails)
-	memStore.LPush(activeKeysListKey, apiKey.ID)
+	if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
+		b.Fatal(err)
+	}
+	if err := memStore.LPush(activeKeysListKey, apiKey.ID); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()

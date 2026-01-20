@@ -3,11 +3,14 @@ package utils
 import (
 	"gpt-load/internal/models"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 )
 
 // TestResolveHeaderVariables tests header variable resolution
 func TestResolveHeaderVariables(t *testing.T) {
+	t.Parallel()
 	group := &models.Group{Name: "test-group"}
 	apiKey := &models.APIKey{KeyValue: "test-key-123"}
 	ctx := &HeaderVariableContext{
@@ -67,8 +70,12 @@ func TestResolveHeaderVariables(t *testing.T) {
 			"Time: ${TIMESTAMP_MS}",
 			ctx,
 			func(t *testing.T, result string) {
-				if len(result) < 15 {
-					t.Errorf("Timestamp too short: %q", result)
+				if strings.Contains(result, "${") {
+					t.Errorf("Timestamp placeholder not replaced: %q", result)
+				}
+				ts := strings.TrimPrefix(result, "Time: ")
+				if _, err := strconv.ParseInt(ts, 10, 64); err != nil {
+					t.Errorf("Timestamp not numeric: %q", result)
 				}
 			},
 		},
@@ -77,8 +84,12 @@ func TestResolveHeaderVariables(t *testing.T) {
 			"Time: ${TIMESTAMP_S}",
 			ctx,
 			func(t *testing.T, result string) {
-				if len(result) < 12 {
-					t.Errorf("Timestamp too short: %q", result)
+				if strings.Contains(result, "${") {
+					t.Errorf("Timestamp placeholder not replaced: %q", result)
+				}
+				ts := strings.TrimPrefix(result, "Time: ")
+				if _, err := strconv.ParseInt(ts, 10, 64); err != nil {
+					t.Errorf("Timestamp not numeric: %q", result)
 				}
 			},
 		},
@@ -113,6 +124,17 @@ func TestResolveHeaderVariables(t *testing.T) {
 				}
 			},
 		},
+		{
+			"NilAPIKey",
+			"${API_KEY}",
+			&HeaderVariableContext{ClientIP: "1.2.3.4", Group: &models.Group{Name: "test"}},
+			func(t *testing.T, result string) {
+				// When APIKey is nil, variable is not replaced
+				if result != "${API_KEY}" {
+					t.Errorf("Expected '${API_KEY}', got %q", result)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -125,6 +147,7 @@ func TestResolveHeaderVariables(t *testing.T) {
 
 // TestApplyHeaderRules tests header rule application
 func TestApplyHeaderRules(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		rules []models.HeaderRule
@@ -195,6 +218,7 @@ func TestApplyHeaderRules(t *testing.T) {
 
 // TestApplyHeaderRulesNilRequest tests nil request handling
 func TestApplyHeaderRulesNilRequest(t *testing.T) {
+	t.Parallel()
 	rules := []models.HeaderRule{
 		{Key: "X-Test", Action: "set", Value: "value"},
 	}
@@ -204,6 +228,7 @@ func TestApplyHeaderRulesNilRequest(t *testing.T) {
 
 // TestApplyHeaderRulesEmptyRules tests empty rules handling
 func TestApplyHeaderRulesEmptyRules(t *testing.T) {
+	t.Parallel()
 	req, _ := http.NewRequest("GET", "http://example.com", nil)
 	req.Header.Set("X-Test", "value")
 
@@ -217,6 +242,7 @@ func TestApplyHeaderRulesEmptyRules(t *testing.T) {
 
 // TestNewHeaderVariableContext tests context creation
 func TestNewHeaderVariableContext(t *testing.T) {
+	t.Parallel()
 	group := &models.Group{Name: "test"}
 	apiKey := &models.APIKey{KeyValue: "key"}
 
@@ -241,6 +267,7 @@ func TestNewHeaderVariableContext(t *testing.T) {
 
 // BenchmarkResolveHeaderVariables benchmarks variable resolution
 func BenchmarkResolveHeaderVariables(b *testing.B) {
+	b.ReportAllocs()
 	ctx := &HeaderVariableContext{
 		ClientIP: "192.168.1.1",
 		Group:    &models.Group{Name: "test-group"},
@@ -264,6 +291,7 @@ func BenchmarkApplyHeaderRules(b *testing.B) {
 	}
 	ctx := &HeaderVariableContext{ClientIP: "192.168.1.1"}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req, _ := http.NewRequest("GET", "http://example.com", nil)

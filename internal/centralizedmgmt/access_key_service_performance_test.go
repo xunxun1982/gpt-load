@@ -279,8 +279,14 @@ func BenchmarkImportAccessKeys(b *testing.B) {
 		b.StartTimer()
 
 		tx := db.Begin()
-		_, _, _ = svc.ImportAccessKeys(ctx, tx, exports)
-		tx.Commit()
+		_, _, err := svc.ImportAccessKeys(ctx, tx, exports)
+		if err != nil {
+			tx.Rollback()
+			b.Fatalf("Failed to import keys: %v", err)
+		}
+		if err := tx.Commit().Error; err != nil {
+			b.Fatalf("Failed to commit transaction: %v", err)
+		}
 	}
 }
 
@@ -538,6 +544,14 @@ func setupBenchService(b *testing.B) (*HubAccessKeyService, *gorm.DB) {
 	if err != nil {
 		b.Fatalf("failed to connect to test database: %v", err)
 	}
+
+	// Cleanup database connection when benchmark completes
+	b.Cleanup(func() {
+		sqlDB, _ := db.DB()
+		if sqlDB != nil {
+			sqlDB.Close()
+		}
+	})
 
 	if err := db.AutoMigrate(&HubAccessKey{}); err != nil {
 		b.Fatalf("failed to migrate test database: %v", err)

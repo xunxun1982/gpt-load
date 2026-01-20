@@ -7,6 +7,7 @@ import (
 
 // TestProcessInChunks tests chunk processing
 func TestProcessInChunks(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		items     []int
@@ -79,6 +80,7 @@ func TestProcessInChunks(t *testing.T) {
 
 // TestProcessInChunksError tests error handling
 func TestProcessInChunksError(t *testing.T) {
+	t.Parallel()
 	items := []int{1, 2, 3, 4, 5}
 	expectedErr := errors.New("processing error")
 
@@ -102,6 +104,7 @@ func TestProcessInChunksError(t *testing.T) {
 
 // TestChunkSlice tests slice chunking
 func TestChunkSlice(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		items      []int
@@ -182,6 +185,7 @@ func TestChunkSlice(t *testing.T) {
 
 // TestChunkSliceContent tests chunk content correctness
 func TestChunkSliceContent(t *testing.T) {
+	t.Parallel()
 	items := []int{1, 2, 3, 4, 5, 6, 7}
 	chunks, err := ChunkSlice(items, 3)
 
@@ -214,6 +218,7 @@ func TestChunkSliceContent(t *testing.T) {
 
 // TestChunkSliceStrings tests chunking with strings
 func TestChunkSliceStrings(t *testing.T) {
+	t.Parallel()
 	items := []string{"a", "b", "c", "d", "e"}
 	chunks, err := ChunkSlice(items, 2)
 
@@ -234,12 +239,19 @@ func TestChunkSliceStrings(t *testing.T) {
 	for i, chunk := range chunks {
 		if len(chunk) != len(expected[i]) {
 			t.Errorf("Chunk %d length = %d, want %d", i, len(chunk), len(expected[i]))
+			continue
+		}
+		for j, item := range chunk {
+			if item != expected[i][j] {
+				t.Errorf("Chunk %d item %d = %s, want %s", i, j, item, expected[i][j])
+			}
 		}
 	}
 }
 
 // BenchmarkProcessInChunks benchmarks chunk processing
 func BenchmarkProcessInChunks(b *testing.B) {
+	b.ReportAllocs()
 	items := make([]int, 1000)
 	for i := range items {
 		items[i] = i
@@ -256,6 +268,7 @@ func BenchmarkProcessInChunks(b *testing.B) {
 
 // BenchmarkChunkSlice benchmarks slice chunking
 func BenchmarkChunkSlice(b *testing.B) {
+	b.ReportAllocs()
 	items := make([]int, 1000)
 	for i := range items {
 		items[i] = i

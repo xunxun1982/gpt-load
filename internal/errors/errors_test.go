@@ -13,6 +13,7 @@ import (
 
 // TestAPIError_Error tests the Error method implementation
 func TestAPIError_Error(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		apiError *APIError
@@ -39,6 +40,7 @@ func TestAPIError_Error(t *testing.T) {
 
 // TestPredefinedErrors tests all predefined error constants
 func TestPredefinedErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		err        *APIError
@@ -72,6 +74,7 @@ func TestPredefinedErrors(t *testing.T) {
 
 // TestNewAPIError tests creating a new API error with custom message
 func TestNewAPIError(t *testing.T) {
+	t.Parallel()
 	customMsg := "Custom error message"
 	err := NewAPIError(ErrBadRequest, customMsg)
 
@@ -82,6 +85,7 @@ func TestNewAPIError(t *testing.T) {
 
 // TestNewAPIErrorWithUpstream tests creating an error from upstream response
 func TestNewAPIErrorWithUpstream(t *testing.T) {
+	t.Parallel()
 	statusCode := http.StatusBadGateway
 	code := "UPSTREAM_ERROR"
 	message := "Upstream service returned an error"
@@ -95,6 +99,7 @@ func TestNewAPIErrorWithUpstream(t *testing.T) {
 
 // TestNewValidationError tests creating a validation error
 func TestNewValidationError(t *testing.T) {
+	t.Parallel()
 	message := "Field 'email' is required"
 	err := NewValidationError(message)
 
@@ -105,6 +110,7 @@ func TestNewValidationError(t *testing.T) {
 
 // TestNewAuthenticationError tests creating an authentication error
 func TestNewAuthenticationError(t *testing.T) {
+	t.Parallel()
 	message := "Invalid credentials"
 	err := NewAuthenticationError(message)
 
@@ -115,6 +121,7 @@ func TestNewAuthenticationError(t *testing.T) {
 
 // TestNewNotFoundError tests creating a not found error
 func TestNewNotFoundError(t *testing.T) {
+	t.Parallel()
 	message := "User not found"
 	err := NewNotFoundError(message)
 
@@ -125,6 +132,7 @@ func TestNewNotFoundError(t *testing.T) {
 
 // TestNewForbiddenError tests creating a forbidden error
 func TestNewForbiddenError(t *testing.T) {
+	t.Parallel()
 	message := "Access denied"
 	err := NewForbiddenError(message)
 
@@ -135,6 +143,7 @@ func TestNewForbiddenError(t *testing.T) {
 
 // TestParseDBError tests database error parsing
 func TestParseDBError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		err      error
@@ -187,6 +196,7 @@ func TestParseDBError(t *testing.T) {
 
 // BenchmarkNewAPIError benchmarks creating new API errors
 func BenchmarkNewAPIError(b *testing.B) {
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = NewAPIError(ErrBadRequest, "test message")
 	}
@@ -194,6 +204,7 @@ func BenchmarkNewAPIError(b *testing.B) {
 
 // BenchmarkParseDBError benchmarks database error parsing
 func BenchmarkParseDBError(b *testing.B) {
+	b.ReportAllocs()
 	err := gorm.ErrRecordNotFound
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -203,6 +214,7 @@ func BenchmarkParseDBError(b *testing.B) {
 
 // BenchmarkParseDBError_PostgreSQL benchmarks PostgreSQL error parsing
 func BenchmarkParseDBError_PostgreSQL(b *testing.B) {
+	b.ReportAllocs()
 	err := &pgconn.PgError{Code: "23505"}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -212,6 +224,7 @@ func BenchmarkParseDBError_PostgreSQL(b *testing.B) {
 
 // BenchmarkParseDBError_MySQL benchmarks MySQL error parsing
 func BenchmarkParseDBError_MySQL(b *testing.B) {
+	b.ReportAllocs()
 	err := &mysql.MySQLError{Number: 1062}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

@@ -8,6 +8,7 @@ import (
 
 // TestSanitizeURLForLog tests URL sanitization for logging
 func TestSanitizeURLForLog(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		input       string
@@ -87,6 +88,7 @@ func TestSanitizeURLForLog(t *testing.T) {
 
 // TestSanitizeRequestURLForLog tests request URL sanitization
 func TestSanitizeRequestURLForLog(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		input       string
@@ -144,6 +146,7 @@ func TestSanitizeRequestURLForLog(t *testing.T) {
 
 // TestSanitizeProxyURLForLog tests proxy URL sanitization
 func TestSanitizeProxyURLForLog(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		input       string
@@ -190,6 +193,7 @@ func TestSanitizeProxyURLForLog(t *testing.T) {
 
 // TestSanitizeProxyString tests proxy string sanitization
 func TestSanitizeProxyString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		input       string

@@ -165,12 +165,12 @@ func TestConfig_FingerprintWithAllSettings(t *testing.T) {
 // BenchmarkConfigFingerprint benchmarks fingerprint generation with various configs
 func BenchmarkConfigFingerprint(b *testing.B) {
 	configs := []*Config{
-		{},
-		{
+		&Config{},
+		&Config{
 			ConnectTimeout: 10 * time.Second,
 			RequestTimeout: 30 * time.Second,
 		},
-		{
+		&Config{
 			ConnectTimeout:        10 * time.Second,
 			RequestTimeout:        30 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
@@ -187,6 +187,7 @@ func BenchmarkConfigFingerprint(b *testing.B) {
 		},
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = configs[i%len(configs)].getFingerprint()

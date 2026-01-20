@@ -8,6 +8,7 @@ import (
 
 // TestMaskAPIKey tests API key masking functionality
 func TestMaskAPIKey(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		key      string
@@ -32,6 +33,7 @@ func TestMaskAPIKey(t *testing.T) {
 
 // TestTruncateString tests string truncation with UTF-8 awareness
 func TestTruncateString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		input     string
@@ -61,6 +63,7 @@ func TestTruncateString(t *testing.T) {
 
 // TestSplitAndTrim tests string splitting and trimming
 func TestSplitAndTrim(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -94,6 +97,7 @@ func TestSplitAndTrim(t *testing.T) {
 
 // TestStringToSet tests string to set conversion
 func TestStringToSet(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -131,6 +135,7 @@ func TestStringToSet(t *testing.T) {
 
 // TestWeightedRandomSelect tests weighted random selection
 func TestWeightedRandomSelect(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		weights []int
@@ -164,6 +169,7 @@ func TestWeightedRandomSelect(t *testing.T) {
 
 // TestGenerateRandomSuffix tests random suffix generation
 func TestGenerateRandomSuffix(t *testing.T) {
+	t.Parallel()
 	suffix := GenerateRandomSuffix()
 	if len(suffix) != 4 {
 		t.Errorf("GenerateRandomSuffix() length = %d, want 4", len(suffix))
@@ -178,6 +184,7 @@ func TestGenerateRandomSuffix(t *testing.T) {
 
 // TestGenerateTriggerSignal tests trigger signal generation
 func TestGenerateTriggerSignal(t *testing.T) {
+	t.Parallel()
 	signal := GenerateTriggerSignal()
 	const prefix = "<<CALL_"
 	const suffixLen = 6
@@ -201,6 +208,7 @@ func TestGenerateTriggerSignal(t *testing.T) {
 
 // TestGenerateSecureRandomString tests secure random string generation
 func TestGenerateSecureRandomString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		length int
@@ -234,6 +242,7 @@ func TestGenerateSecureRandomString(t *testing.T) {
 
 // TestValidatePasswordStrength tests password strength validation
 func TestValidatePasswordStrength(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		password  string
@@ -255,6 +264,7 @@ func TestValidatePasswordStrength(t *testing.T) {
 
 // TestDeriveAESKey tests AES key derivation
 func TestDeriveAESKey(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		password string
@@ -410,6 +420,7 @@ func TestStringBuilderPool(t *testing.T) {
 
 // TestMarshalJSON tests pooled JSON marshaling
 func TestMarshalJSON(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    interface{}

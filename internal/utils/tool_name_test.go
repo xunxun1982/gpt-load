@@ -6,6 +6,7 @@ import (
 
 // TestBuildToolNameShortMap tests tool name shortening
 func TestBuildToolNameShortMap(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		names    []string
@@ -160,6 +161,7 @@ func TestBuildToolNameShortMap(t *testing.T) {
 
 // TestBuildReverseToolNameMap tests reverse mapping
 func TestBuildReverseToolNameMap(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		shortMap map[string]string

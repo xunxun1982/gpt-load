@@ -4,6 +4,7 @@ import "testing"
 
 // TestEstimateTokensFromString tests token estimation from strings
 func TestEstimateTokensFromString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -34,6 +35,7 @@ func TestEstimateTokensFromString(t *testing.T) {
 
 // TestEstimateTokensFromBytes tests token estimation from byte slices
 func TestEstimateTokensFromBytes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    []byte
@@ -58,6 +60,7 @@ func TestEstimateTokensFromBytes(t *testing.T) {
 
 // BenchmarkEstimateTokensFromString benchmarks token estimation
 func BenchmarkEstimateTokensFromString(b *testing.B) {
+	b.ReportAllocs()
 	text := "The quick brown fox jumps over the lazy dog. This is a test sentence for benchmarking token estimation."
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -67,6 +70,7 @@ func BenchmarkEstimateTokensFromString(b *testing.B) {
 
 // BenchmarkEstimateTokensFromBytes benchmarks token estimation from bytes
 func BenchmarkEstimateTokensFromBytes(b *testing.B) {
+	b.ReportAllocs()
 	text := []byte("The quick brown fox jumps over the lazy dog. This is a test sentence for benchmarking token estimation.")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

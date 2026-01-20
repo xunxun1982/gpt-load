@@ -78,6 +78,7 @@ func createTestGroup(tb testing.TB, db *gorm.DB, name string) models.Group {
 
 // TestParseKeysFromText tests key parsing from various formats
 func TestParseKeysFromText(t *testing.T) {
+	t.Parallel()
 	_, svc := setupKeyServiceTest(t)
 
 	tests := []struct {
@@ -132,6 +133,7 @@ func TestParseKeysFromText(t *testing.T) {
 
 // TestAddMultipleKeys tests adding multiple keys
 func TestAddMultipleKeys(t *testing.T) {
+	t.Parallel()
 	db, svc := setupKeyServiceTest(t)
 
 	tests := []struct {
@@ -192,6 +194,7 @@ func TestAddMultipleKeys(t *testing.T) {
 
 // TestDeleteMultipleKeys tests deleting multiple keys
 func TestDeleteMultipleKeys(t *testing.T) {
+	t.Parallel()
 	db, svc := setupKeyServiceTest(t)
 
 	// Create a test group with valid upstreams
@@ -217,6 +220,7 @@ func TestDeleteMultipleKeys(t *testing.T) {
 
 // TestRestoreMultipleKeys tests restoring keys
 func TestRestoreMultipleKeys(t *testing.T) {
+	t.Parallel()
 	db, svc := setupKeyServiceTest(t)
 
 	// Create a test group with valid upstreams
@@ -245,6 +249,7 @@ func TestRestoreMultipleKeys(t *testing.T) {
 
 // TestRestoreAllInvalidKeys tests restoring all invalid keys
 func TestRestoreAllInvalidKeys(t *testing.T) {
+	t.Parallel()
 	db, svc := setupKeyServiceTest(t)
 
 	// Create a test group with valid upstreams
@@ -278,6 +283,7 @@ func TestRestoreAllInvalidKeys(t *testing.T) {
 
 // TestClearAllInvalidKeys tests clearing all invalid keys
 func TestClearAllInvalidKeys(t *testing.T) {
+	t.Parallel()
 	db, svc := setupKeyServiceTest(t)
 
 	// Create a test group with valid upstreams
@@ -311,6 +317,7 @@ func TestClearAllInvalidKeys(t *testing.T) {
 
 // TestClearAllKeys tests clearing all keys
 func TestClearAllKeys(t *testing.T) {
+	t.Parallel()
 	db, svc := setupKeyServiceTest(t)
 
 	// Create a test group with valid upstreams
@@ -335,6 +342,7 @@ func TestClearAllKeys(t *testing.T) {
 
 // TestIsValidKeyFormat tests key format validation
 func TestIsValidKeyFormat(t *testing.T) {
+	t.Parallel()
 	_, svc := setupKeyServiceTest(t)
 
 	tests := []struct {
@@ -374,6 +382,7 @@ func TestIsValidKeyFormat(t *testing.T) {
 
 // TestListKeysInGroupQuery tests query building for listing keys
 func TestListKeysInGroupQuery(t *testing.T) {
+	t.Parallel()
 	db, svc := setupKeyServiceTest(t)
 
 	// Create a test group with valid upstreams
@@ -426,6 +435,7 @@ func TestListKeysInGroupQuery(t *testing.T) {
 
 // TestBuildPageCacheKey tests cache key generation
 func TestBuildPageCacheKey(t *testing.T) {
+	t.Parallel()
 	_, svc := setupKeyServiceTest(t)
 
 	key1 := svc.BuildPageCacheKey(1, "active", "", 1, 10)
@@ -441,6 +451,7 @@ func TestBuildPageCacheKey(t *testing.T) {
 
 // TestGetSetCachedPage tests page caching
 func TestGetSetCachedPage(t *testing.T) {
+	t.Parallel()
 	_, svc := setupKeyServiceTest(t)
 
 	cacheKey := "test-cache-key"
@@ -476,6 +487,7 @@ func TestResetAllActiveKeysFailureCount(t *testing.T) {
 
 // BenchmarkParseKeysFromText benchmarks key parsing
 func BenchmarkParseKeysFromText(b *testing.B) {
+	b.ReportAllocs()
 	_, svc := setupKeyServiceTest(b)
 
 	keysText := strings.Repeat("sk-test\n", 100)
@@ -488,6 +500,7 @@ func BenchmarkParseKeysFromText(b *testing.B) {
 
 // BenchmarkAddMultipleKeys benchmarks adding keys
 func BenchmarkAddMultipleKeys(b *testing.B) {
+	b.ReportAllocs()
 	db, svc := setupKeyServiceTest(b)
 
 	// Create a test group with valid upstreams
@@ -504,6 +517,7 @@ func BenchmarkAddMultipleKeys(b *testing.B) {
 
 // BenchmarkDeleteMultipleKeys benchmarks deleting keys
 func BenchmarkDeleteMultipleKeys(b *testing.B) {
+	b.ReportAllocs()
 	db, svc := setupKeyServiceTest(b)
 
 	// Create a test group with valid upstreams

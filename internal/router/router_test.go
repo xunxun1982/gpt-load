@@ -15,18 +15,24 @@ import (
 var testFS embed.FS
 
 func TestEmbedFolder(t *testing.T) {
-	// Test with valid path
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("EmbedFolder panicked: %v", r)
-		}
-	}()
+	t.Parallel()
 
-	// Create a test embed.FS (will panic if path doesn't exist, which is expected)
-	// This test verifies the function doesn't crash with valid input
+	// Test with valid embedded path
+	fs := EmbedFolder(testFS, "testdata")
+	assert.NotNil(t, fs)
+
+	// Verify the filesystem can be used
+	exists := fs.Exists("", "test.txt")
+	assert.True(t, exists, "test.txt should exist in testdata")
+
+	// Note: fs.Sub does not return error for non-existent paths in embed.FS
+	// It only fails when trying to open files, so we cannot test panic behavior here
+	// This is expected behavior of Go's embed.FS implementation
 }
 
 func TestEmbedFileSystemExists(t *testing.T) {
+	t.Parallel()
+
 	// Create a mock file system
 	efs := embedFileSystem{
 		FileSystem: http.Dir("."),
@@ -42,6 +48,8 @@ func TestEmbedFileSystemExists(t *testing.T) {
 }
 
 func TestRegisterSystemRoutes(t *testing.T) {
+	t.Parallel()
+
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
@@ -65,6 +73,8 @@ func TestRegisterPublicAPIRoutes(t *testing.T) {
 }
 
 func TestRegisterFrontendRoutes(t *testing.T) {
+	t.Parallel()
+
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
@@ -81,6 +91,8 @@ func TestRegisterFrontendRoutes(t *testing.T) {
 }
 
 func TestRegisterFrontendRoutes_APINotFound(t *testing.T) {
+	t.Parallel()
+
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
@@ -97,6 +109,8 @@ func TestRegisterFrontendRoutes_APINotFound(t *testing.T) {
 }
 
 func TestRegisterFrontendRoutes_ProxyNotFound(t *testing.T) {
+	t.Parallel()
+
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
@@ -113,23 +127,30 @@ func TestRegisterFrontendRoutes_ProxyNotFound(t *testing.T) {
 }
 
 func TestRegisterFrontendRoutes_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
+
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
 	indexPage := []byte("<html><body>Test</body></html>")
 	registerFrontendRoutes(router, testFS, indexPage)
 
-	// Test method not allowed - use a valid HTTP method that's not registered
+	// Test POST to root path
+	// Note: POST to "/" is handled by NoRoute (not NoMethod) because no POST route is registered
+	// The NoRoute handler serves the index page for non-API/proxy paths, so it returns 200
+	// This is the expected behavior - frontend SPA should handle all non-API routes
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/", nil)
 	router.ServeHTTP(w, req)
 
-	// Frontend routes typically only handle GET, so POST should return 405 or be handled
-	// The actual behavior depends on the router configuration
-	assert.True(t, w.Code == http.StatusMethodNotAllowed || w.Code == http.StatusOK)
+	// Frontend fallback serves index page for all non-API/proxy routes regardless of method
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
 }
 
 func TestRegisterFrontendRoutes_CacheHeaders(t *testing.T) {
+	t.Parallel()
+
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
@@ -148,6 +169,8 @@ func TestRegisterFrontendRoutes_CacheHeaders(t *testing.T) {
 
 // Benchmark tests for PGO optimization
 func BenchmarkRegisterSystemRoutes(b *testing.B) {
+	b.ReportAllocs()
+
 	gin.SetMode(gin.TestMode)
 	mockHandler := &handler.Server{}
 
@@ -159,6 +182,8 @@ func BenchmarkRegisterSystemRoutes(b *testing.B) {
 }
 
 func BenchmarkHealthEndpoint(b *testing.B) {
+	b.ReportAllocs()
+
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	mockHandler := &handler.Server{}
@@ -173,6 +198,8 @@ func BenchmarkHealthEndpoint(b *testing.B) {
 }
 
 func BenchmarkFrontendRouting(b *testing.B) {
+	b.ReportAllocs()
+
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	indexPage := []byte("<html><body>Test</body></html>")

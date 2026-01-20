@@ -10,6 +10,7 @@ import (
 )
 
 func TestNewService(t *testing.T) {
+	t.Parallel()
 	t.Run("WithEncryptionKey", func(t *testing.T) {
 		svc, err := NewService("test-encryption-key-32-bytes!!")
 		require.NoError(t, err)
@@ -32,6 +33,7 @@ func TestNewService(t *testing.T) {
 }
 
 func TestAESServiceEncryptDecrypt(t *testing.T) {
+	t.Parallel()
 	svc, err := NewService("test-encryption-key-32-bytes!!")
 	require.NoError(t, err)
 
@@ -72,6 +74,7 @@ func TestAESServiceEncryptDecrypt(t *testing.T) {
 }
 
 func TestAESServiceEncryptUniqueness(t *testing.T) {
+	t.Parallel()
 	svc, err := NewService("test-encryption-key-32-bytes!!")
 	require.NoError(t, err)
 
@@ -90,6 +93,7 @@ func TestAESServiceEncryptUniqueness(t *testing.T) {
 }
 
 func TestAESServiceDecryptErrors(t *testing.T) {
+	t.Parallel()
 	svc, err := NewService("test-encryption-key-32-bytes!!")
 	require.NoError(t, err)
 
@@ -131,6 +135,7 @@ func TestAESServiceDecryptErrors(t *testing.T) {
 }
 
 func TestAESServiceHash(t *testing.T) {
+	t.Parallel()
 	svc, err := NewService("test-encryption-key-32-bytes!!")
 	require.NoError(t, err)
 
@@ -166,6 +171,7 @@ func TestAESServiceHash(t *testing.T) {
 }
 
 func TestNoopService(t *testing.T) {
+	t.Parallel()
 	svc, err := NewService("")
 	require.NoError(t, err)
 
@@ -202,6 +208,7 @@ func TestNoopService(t *testing.T) {
 }
 
 func TestDifferentKeys(t *testing.T) {
+	t.Parallel()
 	svc1, err := NewService("key-1-must-be-32-bytes-long!!")
 	require.NoError(t, err)
 

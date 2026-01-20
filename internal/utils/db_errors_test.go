@@ -8,6 +8,7 @@ import (
 
 // TestIsDBLockError tests database lock error detection
 func TestIsDBLockError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -40,6 +41,7 @@ func TestIsDBLockError(t *testing.T) {
 
 // TestIsTransientDBError tests transient error detection
 func TestIsTransientDBError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -67,6 +69,7 @@ func TestIsTransientDBError(t *testing.T) {
 
 // TestIsDBLockErrorCaseInsensitive tests case-insensitive matching
 func TestIsDBLockErrorCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -93,6 +96,7 @@ func TestIsDBLockErrorCaseInsensitive(t *testing.T) {
 
 // TestIsTransientDBErrorWithWrappedErrors tests wrapped error detection
 func TestIsTransientDBErrorWithWrappedErrors(t *testing.T) {
+	t.Parallel()
 	baseErr := context.DeadlineExceeded
 	wrappedErr := errors.New("operation failed: " + baseErr.Error())
 
@@ -101,16 +105,18 @@ func TestIsTransientDBErrorWithWrappedErrors(t *testing.T) {
 		t.Error("IsTransientDBError() should detect context.DeadlineExceeded")
 	}
 
-	// Wrapped error with context error message should be detected
-	// Note: This tests the string matching fallback
+	// Wrapped error created via errors.New() won't match via errors.Is
+	// Note: This tests the string matching fallback limitation
 	if IsTransientDBError(wrappedErr) {
-		// This is expected to fail because errors.Is won't match wrapped string
+		t.Error("Wrapped error unexpectedly detected")
+	} else {
 		t.Log("Wrapped error not detected (expected behavior)")
 	}
 }
 
 // BenchmarkIsDBLockError benchmarks lock error detection
 func BenchmarkIsDBLockError(b *testing.B) {
+	b.ReportAllocs()
 	err := errors.New("database is locked")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -120,6 +126,7 @@ func BenchmarkIsDBLockError(b *testing.B) {
 
 // BenchmarkIsTransientDBError benchmarks transient error detection
 func BenchmarkIsTransientDBError(b *testing.B) {
+	b.ReportAllocs()
 	err := context.DeadlineExceeded
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

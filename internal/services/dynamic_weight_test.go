@@ -335,7 +335,7 @@ func TestDynamicWeightManager_DynamicWeightedRandomSelect(t *testing.T) {
 	assert.GreaterOrEqual(t, len(selections), 2, "At least 2 sub-groups should be selected in 1000 trials")
 
 	// Verify the most frequently selected is idx 0 (highest weight)
-	// This is a deterministic property that should always hold
+	// This is a deterministic property that should always hold with high probability
 	maxCount := 0
 	maxIdx := -1
 	for idx, count := range selections {
@@ -344,7 +344,9 @@ func TestDynamicWeightManager_DynamicWeightedRandomSelect(t *testing.T) {
 			maxIdx = idx
 		}
 	}
-	assert.Equal(t, 0, maxIdx, "Index 0 (weight 100) should be selected most frequently")
+	// Note: While probabilistic, with 1000 trials and weight ratio 100:50:25,
+	// idx 0 should be selected most frequently with >99.9% confidence
+	assert.Equal(t, 0, maxIdx, "Index 0 (weight 100) should be selected most frequently in 1000 trials")
 }
 
 // BenchmarkDynamicWeightManager_RecordSuccess benchmarks success recording

@@ -6,6 +6,7 @@ import (
 
 // TestMigrateModelMappingToRedirectRules tests model mapping migration
 func TestMigrateModelMappingToRedirectRules(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		input   string
@@ -116,6 +117,7 @@ func TestMigrateModelMappingToRedirectRules(t *testing.T) {
 
 // TestMigrateModelMappingToRedirectRulesJSONPriority tests JSON format priority
 func TestMigrateModelMappingToRedirectRulesJSONPriority(t *testing.T) {
+	t.Parallel()
 	// If input is valid JSON, it should be parsed as JSON even if it looks like old format
 	input := `{"gpt-4":"gpt-4-turbo"}`
 	got, err := MigrateModelMappingToRedirectRules(input)
@@ -135,6 +137,7 @@ func TestMigrateModelMappingToRedirectRulesJSONPriority(t *testing.T) {
 
 // BenchmarkMigrateModelMappingOldFormat benchmarks old format migration
 func BenchmarkMigrateModelMappingOldFormat(b *testing.B) {
+	b.ReportAllocs()
 	input := "gpt-3.5-turbo:gpt-3.5-turbo-0301 gpt-4:gpt-4-0314 claude-3:claude-3-opus"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -144,6 +147,7 @@ func BenchmarkMigrateModelMappingOldFormat(b *testing.B) {
 
 // BenchmarkMigrateModelMappingJSONFormat benchmarks JSON format migration
 func BenchmarkMigrateModelMappingJSONFormat(b *testing.B) {
+	b.ReportAllocs()
 	input := `{"gpt-3.5-turbo":"gpt-3.5-turbo-0301","gpt-4":"gpt-4-0314","claude-3":"claude-3-opus"}`
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

@@ -5,11 +5,12 @@ import (
 	"testing"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/store"
 )
 
 // BenchmarkSelectTargetWithContext benchmarks target selection with dynamic weights
 func BenchmarkSelectTargetWithContext(b *testing.B) {
-	selector := NewDynamicModelRedirectSelector(nil) // No dynamic weight manager
+	selector := NewDynamicModelRedirectSelector(nil) // Benchmark with nil DWM for baseline performance
 
 	testCases := []struct {
 		name string
@@ -69,6 +70,32 @@ func BenchmarkSelectTargetWithContext(b *testing.B) {
 				_, _, _ = selector.SelectTargetWithContext(tc.rule, 1, "gpt-4")
 			}
 		})
+	}
+}
+
+// BenchmarkSelectTargetWithDynamicWeight benchmarks target selection with real DynamicWeightManager
+func BenchmarkSelectTargetWithDynamicWeight(b *testing.B) {
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+	selector := NewDynamicModelRedirectSelector(dwm)
+
+	rule := &models.ModelRedirectRuleV2{
+		Targets: []models.ModelRedirectTarget{
+			{Model: "gpt-4-turbo", Weight: 70},
+			{Model: "gpt-4-0125", Weight: 30},
+		},
+	}
+
+	groupID := uint(1)
+	sourceModel := "gpt-4"
+
+	// Record some health metrics to simulate realistic scenario
+	dwm.RecordModelRedirectSuccess(groupID, sourceModel, 0)
+	dwm.RecordModelRedirectSuccess(groupID, sourceModel, 1)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = selector.SelectTargetWithContext(rule, groupID, sourceModel)
 	}
 }
 
@@ -240,7 +267,7 @@ func BenchmarkRealisticWorkload(b *testing.B) {
 	}
 
 	// Realistic model distribution
-	models := []string{
+	modelNames := []string{
 		"gpt-4", "gpt-4", "gpt-4", "gpt-4", "gpt-4", // 25% gpt-4
 		"gpt-3.5", "gpt-3.5", "gpt-3.5", // 15% gpt-3.5
 		"claude-3", "claude-3", "claude-3", // 15% claude-3
@@ -253,7 +280,7 @@ func BenchmarkRealisticWorkload(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		model := models[i%len(models)]
+		model := modelNames[i%len(modelNames)]
 		_, _, _, _, _ = ResolveTargetModelWithDynamicWeight(
 			model, v1Map, v2Map, selector, 1,
 		)

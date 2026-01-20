@@ -5,6 +5,7 @@ import (
 )
 
 func TestApplyModelMapping(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		originalModel string
@@ -97,6 +98,7 @@ func TestApplyModelMapping(t *testing.T) {
 }
 
 func TestValidateModelMapping(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		mappingJSON string
@@ -140,6 +142,7 @@ func TestValidateModelMapping(t *testing.T) {
 }
 
 func TestParseModelMapping(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		mappingJSON string

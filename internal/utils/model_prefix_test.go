@@ -5,6 +5,7 @@ import (
 )
 
 func TestDetectBrandPrefix(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		modelName  string
@@ -1272,6 +1273,7 @@ func TestDetectBrandPrefix(t *testing.T) {
 }
 
 func TestStripExistingPrefix(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		modelName string
@@ -1369,6 +1371,7 @@ func TestStripExistingPrefix(t *testing.T) {
 }
 
 func TestApplyBrandPrefix(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		modelName    string
@@ -1521,6 +1524,7 @@ func TestApplyBrandPrefix(t *testing.T) {
 }
 
 func TestApplyBrandPrefixBatch(t *testing.T) {
+	t.Parallel()
 	models := []string{
 		"deepseek-chat",
 		"gpt-4",
@@ -1570,6 +1574,7 @@ func TestApplyBrandPrefixBatch(t *testing.T) {
 
 // TestDetectBrandPrefixCaseInsensitive verifies case-insensitive matching
 func TestDetectBrandPrefixCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		modelName  string
@@ -1599,6 +1604,7 @@ func TestDetectBrandPrefixCaseInsensitive(t *testing.T) {
 
 // TestApplyBrandPrefixWithSearchModels tests models with search suffix
 func TestApplyBrandPrefixWithSearchModels(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		modelName    string
@@ -1624,6 +1630,7 @@ func TestApplyBrandPrefixWithSearchModels(t *testing.T) {
 
 // TestOpenAIOSeriesModels specifically tests OpenAI o-series models
 func TestOpenAIOSeriesModels(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		modelName  string
 		wantPrefix string

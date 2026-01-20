@@ -23,6 +23,7 @@ func (e *mockNetError) Temporary() bool { return e.temporary }
 
 // TestCategorizeError tests error categorization
 func TestCategorizeError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		err            error
@@ -180,6 +181,7 @@ func TestCategorizeError(t *testing.T) {
 
 // TestShouldRetryHTTPStatus tests HTTP status retry logic
 func TestShouldRetryHTTPStatus(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		statusCode int
@@ -210,6 +212,7 @@ func TestShouldRetryHTTPStatus(t *testing.T) {
 
 // TestIsRetryableError tests retryable error detection
 func TestIsRetryableError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -234,6 +237,7 @@ func TestIsRetryableError(t *testing.T) {
 
 // TestCategorizeErrorCaseInsensitive tests case-insensitive error matching
 func TestCategorizeErrorCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		err      error
@@ -258,6 +262,7 @@ func TestCategorizeErrorCaseInsensitive(t *testing.T) {
 
 // BenchmarkCategorizeError benchmarks error categorization
 func BenchmarkCategorizeError(b *testing.B) {
+	b.ReportAllocs()
 	err := errors.New("connection timeout")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -267,6 +272,7 @@ func BenchmarkCategorizeError(b *testing.B) {
 
 // BenchmarkCategorizeErrorNetError benchmarks net.Error categorization
 func BenchmarkCategorizeErrorNetError(b *testing.B) {
+	b.ReportAllocs()
 	err := &mockNetError{timeout: true, msg: "timeout"}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -276,6 +282,7 @@ func BenchmarkCategorizeErrorNetError(b *testing.B) {
 
 // BenchmarkShouldRetryHTTPStatus benchmarks HTTP status retry check
 func BenchmarkShouldRetryHTTPStatus(b *testing.B) {
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = ShouldRetryHTTPStatus(http.StatusServiceUnavailable)
 	}

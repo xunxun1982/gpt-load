@@ -7,6 +7,7 @@ import (
 
 // TestCleanAnonymizationHeaders tests header anonymization
 func TestCleanAnonymizationHeaders(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		headers         map[string]string
@@ -116,6 +117,7 @@ func TestCleanAnonymizationHeaders(t *testing.T) {
 
 // TestCleanClientAuthHeaders tests client authentication header removal
 func TestCleanClientAuthHeaders(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		headers         map[string]string
@@ -190,28 +192,26 @@ func TestCleanClientAuthHeaders(t *testing.T) {
 }
 
 // TestCleanAnonymizationHeadersCaseInsensitive tests case-insensitive header matching
+// Note: http.Header.Set canonicalizes keys, so we test each variant separately
 func TestCleanAnonymizationHeadersCaseInsensitive(t *testing.T) {
-	req, _ := http.NewRequest("GET", "http://example.com", nil)
-	req.Header.Set("x-forwarded-for", "1.2.3.4")
-	req.Header.Set("X-FORWARDED-FOR", "5.6.7.8")
-	req.Header.Set("X-Forwarded-For", "9.10.11.12")
+	variants := []string{"x-forwarded-for", "X-FORWARDED-FOR", "X-Forwarded-For"}
+	for _, header := range variants {
+		t.Run(header, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", "http://example.com", nil)
+			req.Header.Set(header, "1.2.3.4")
 
-	CleanAnonymizationHeaders(req)
+			CleanAnonymizationHeaders(req)
 
-	// All variations should be removed
-	if req.Header.Get("x-forwarded-for") != "" {
-		t.Error("Lowercase x-forwarded-for should be removed")
-	}
-	if req.Header.Get("X-FORWARDED-FOR") != "" {
-		t.Error("Uppercase X-FORWARDED-FOR should be removed")
-	}
-	if req.Header.Get("X-Forwarded-For") != "" {
-		t.Error("Mixed case X-Forwarded-For should be removed")
+			if req.Header.Get(header) != "" {
+				t.Errorf("Header %q should be removed", header)
+			}
+		})
 	}
 }
 
 // BenchmarkCleanAnonymizationHeaders benchmarks header cleaning
 func BenchmarkCleanAnonymizationHeaders(b *testing.B) {
+	b.ReportAllocs()
 	req, _ := http.NewRequest("GET", "http://example.com", nil)
 	req.Header.Set("CF-Connecting-IP", "1.2.3.4")
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
@@ -233,6 +233,7 @@ func BenchmarkCleanAnonymizationHeaders(b *testing.B) {
 
 // BenchmarkCleanClientAuthHeaders benchmarks auth header cleaning
 func BenchmarkCleanClientAuthHeaders(b *testing.B) {
+	b.ReportAllocs()
 	req, _ := http.NewRequest("GET", "http://example.com", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	req.Header.Set("X-Api-Key", "key123")
