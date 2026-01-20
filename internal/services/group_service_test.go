@@ -134,7 +134,7 @@ func TestCreateGroup(t *testing.T) {
 		{
 			name: "valid standard group",
 			params: GroupCreateParams{
-				Name:               "test-group",
+				Name:               "test-group-valid",
 				DisplayName:        "Test Group",
 				Description:        "Test Description",
 				GroupType:          "standard",
@@ -157,7 +157,7 @@ func TestCreateGroup(t *testing.T) {
 		{
 			name: "missing test model",
 			params: GroupCreateParams{
-				Name:        "test-group",
+				Name:        "missing-test-model",
 				GroupType:   "standard",
 				Upstreams:   json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
 				ChannelType: "openai",
@@ -167,7 +167,7 @@ func TestCreateGroup(t *testing.T) {
 		{
 			name: "invalid channel type",
 			params: GroupCreateParams{
-				Name:        "test-group",
+				Name:        "invalid-channel",
 				GroupType:   "standard",
 				ChannelType: "invalid-channel",
 			},
@@ -195,11 +195,13 @@ func TestCreateGroup(t *testing.T) {
 // DISABLED: This test has issues with GroupManager's background syncer accessing
 // the test database from different goroutines, causing "no such table" errors.
 // The functionality is covered by integration tests.
+// TODO(issue): Re-enable after fixing background syncer isolation in tests
 // func TestListGroups(t *testing.T) { ... }
 
 // TestUpdateGroup tests group updates
 // DISABLED: This test has issues with GroupManager's background syncer.
 // The functionality is covered by integration tests.
+// TODO(issue): Re-enable after fixing background syncer isolation in tests
 // func TestUpdateGroup(t *testing.T) { ... }
 
 // TestDeleteGroup tests group deletion
@@ -234,6 +236,7 @@ func TestDeleteGroup(t *testing.T) {
 // TestGetGroupStats tests statistics retrieval
 // DISABLED: This test has issues with GroupManager's background syncer.
 // The functionality is covered by integration tests.
+// TODO(issue): Re-enable after fixing background syncer isolation in tests
 // func TestGetGroupStats(t *testing.T) { ... }
 
 // TestCopyGroup tests group copying

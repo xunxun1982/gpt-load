@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,20 +19,32 @@ import (
 	"gorm.io/gorm"
 )
 
+func init() {
+	// Set Gin mode once for all tests to avoid global state mutation in parallel tests
+	gin.SetMode(gin.TestMode)
+}
+
 // setupLogServiceTest creates a test database and log service
 func setupLogServiceTest(t *testing.T) (*LogService, *gorm.DB) {
 	t.Helper()
-	// Use :memory: for isolated testing - each test gets its own DB
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	// Use unique in-memory database per test to avoid cross-test contamination
+	// Combine test name with timestamp for uniqueness
+	testName := strings.ReplaceAll(t.Name(), "/", "_")
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", testName, time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		PrepareStmt: false, // Disable prepared statement cache for parallel tests
 	})
 	require.NoError(t, err)
 
+	// Limit to 1 connection to prevent schema loss with pooled connections
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+
 	// Cleanup
 	t.Cleanup(func() {
-		sqlDB, _ := db.DB()
 		if sqlDB != nil {
-			sqlDB.Close()
+			_ = sqlDB.Close()
 		}
 	})
 
@@ -105,7 +118,6 @@ func TestEscapeLike(t *testing.T) {
 func TestLogFiltersScope(t *testing.T) {
 	t.Parallel()
 	service, db := setupLogServiceTest(t)
-	gin.SetMode(gin.TestMode)
 
 	// Create test data
 	keyValue := "test-key-value"
@@ -241,7 +253,6 @@ func TestLogFiltersScope(t *testing.T) {
 func TestGetLogsQuery(t *testing.T) {
 	t.Parallel()
 	service, db := setupLogServiceTest(t)
-	gin.SetMode(gin.TestMode)
 
 	// Create test log
 	testLog := models.RequestLog{
@@ -271,7 +282,6 @@ func TestGetLogsQuery(t *testing.T) {
 func TestStreamLogKeysToCSV(t *testing.T) {
 	t.Parallel()
 	service, db := setupLogServiceTest(t)
-	gin.SetMode(gin.TestMode)
 
 	// Create test data
 	keyValue := "test-key-value"
@@ -328,7 +338,6 @@ func TestStreamLogKeysToCSV(t *testing.T) {
 func TestStreamLogKeysToCSV_EmptyResult(t *testing.T) {
 	t.Parallel()
 	service, _ := setupLogServiceTest(t)
-	gin.SetMode(gin.TestMode)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -352,7 +361,6 @@ func TestStreamLogKeysToCSV_EmptyResult(t *testing.T) {
 func TestStreamLogKeysToCSV_WithFilters(t *testing.T) {
 	t.Parallel()
 	service, db := setupLogServiceTest(t)
-	gin.SetMode(gin.TestMode)
 
 	// Create test data with different groups
 	key1 := "key1"
@@ -411,7 +419,6 @@ func TestStreamLogKeysToCSV_WithFilters(t *testing.T) {
 func TestLogFiltersScope_TimeRange(t *testing.T) {
 	t.Parallel()
 	service, db := setupLogServiceTest(t)
-	gin.SetMode(gin.TestMode)
 
 	now := time.Now()
 	testLogs := []models.RequestLog{
@@ -537,7 +544,6 @@ func BenchmarkLogFiltersScope(b *testing.B) {
 		}
 	}
 
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/?group_name=test&is_success=true", nil)
@@ -590,7 +596,6 @@ func BenchmarkStreamLogKeysToCSV(b *testing.B) {
 		}
 	}
 
-	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/", nil)

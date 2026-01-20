@@ -60,7 +60,9 @@ func TestProcessInChunks(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			callCount := 0
 			err := ProcessInChunks(tt.items, tt.chunkSize, func(chunk []int) error {
 				callCount++
@@ -157,7 +159,9 @@ func TestChunkSlice(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			chunks, err := ChunkSlice(tt.items, tt.chunkSize)
 
 			if (err != nil) != tt.wantErr {
@@ -251,7 +255,6 @@ func TestChunkSliceStrings(t *testing.T) {
 
 // BenchmarkProcessInChunks benchmarks chunk processing
 func BenchmarkProcessInChunks(b *testing.B) {
-	b.ReportAllocs()
 	items := make([]int, 1000)
 	for i := range items {
 		items[i] = i
@@ -268,7 +271,6 @@ func BenchmarkProcessInChunks(b *testing.B) {
 
 // BenchmarkChunkSlice benchmarks slice chunking
 func BenchmarkChunkSlice(b *testing.B) {
-	b.ReportAllocs()
 	items := make([]int, 1000)
 	for i := range items {
 		items[i] = i

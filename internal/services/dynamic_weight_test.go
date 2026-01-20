@@ -344,8 +344,10 @@ func TestDynamicWeightManager_DynamicWeightedRandomSelect(t *testing.T) {
 			maxIdx = idx
 		}
 	}
-	// Note: While probabilistic, with 1000 trials and weight ratio 100:50:25,
-	// idx 0 should be selected most frequently with >99.9% confidence
+	// Note: This test is probabilistic by nature. With 1000 trials and weight ratio 100:50:25,
+	// idx 0 should be selected most frequently with >99.9% confidence.
+	// However, extremely rare failures are theoretically possible due to randomness.
+	// This is acceptable as the test validates the weighted selection algorithm's correctness.
 	assert.Equal(t, 0, maxIdx, "Index 0 (weight 100) should be selected most frequently in 1000 trials")
 }
 

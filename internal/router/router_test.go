@@ -14,6 +14,11 @@ import (
 //go:embed testdata
 var testFS embed.FS
 
+func init() {
+	// Set Gin mode once for all tests to avoid data race in parallel tests
+	gin.SetMode(gin.TestMode)
+}
+
 func TestEmbedFolder(t *testing.T) {
 	t.Parallel()
 
@@ -22,6 +27,9 @@ func TestEmbedFolder(t *testing.T) {
 	assert.NotNil(t, fs)
 
 	// Verify the filesystem can be used
+	// Note: AI review suggested checking .gitkeep instead of test.txt,
+	// but test.txt actually exists in testdata/ and is the correct file to test.
+	// The file is embedded via //go:embed directive and is present in the repository.
 	exists := fs.Exists("", "test.txt")
 	assert.True(t, exists, "test.txt should exist in testdata")
 
@@ -50,7 +58,6 @@ func TestEmbedFileSystemExists(t *testing.T) {
 func TestRegisterSystemRoutes(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
 	// Create mock server handler
@@ -75,7 +82,6 @@ func TestRegisterPublicAPIRoutes(t *testing.T) {
 func TestRegisterFrontendRoutes(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
 	indexPage := []byte("<html><body>Test</body></html>")
@@ -93,7 +99,6 @@ func TestRegisterFrontendRoutes(t *testing.T) {
 func TestRegisterFrontendRoutes_APINotFound(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
 	indexPage := []byte("<html><body>Test</body></html>")
@@ -111,7 +116,6 @@ func TestRegisterFrontendRoutes_APINotFound(t *testing.T) {
 func TestRegisterFrontendRoutes_ProxyNotFound(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
 	indexPage := []byte("<html><body>Test</body></html>")
@@ -129,7 +133,6 @@ func TestRegisterFrontendRoutes_ProxyNotFound(t *testing.T) {
 func TestRegisterFrontendRoutes_MethodNotAllowed(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
 	indexPage := []byte("<html><body>Test</body></html>")
@@ -151,7 +154,6 @@ func TestRegisterFrontendRoutes_MethodNotAllowed(t *testing.T) {
 func TestRegisterFrontendRoutes_CacheHeaders(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
 	indexPage := []byte("<html><body>Test</body></html>")
@@ -171,7 +173,6 @@ func TestRegisterFrontendRoutes_CacheHeaders(t *testing.T) {
 func BenchmarkRegisterSystemRoutes(b *testing.B) {
 	b.ReportAllocs()
 
-	gin.SetMode(gin.TestMode)
 	mockHandler := &handler.Server{}
 
 	b.ResetTimer()
@@ -184,7 +185,6 @@ func BenchmarkRegisterSystemRoutes(b *testing.B) {
 func BenchmarkHealthEndpoint(b *testing.B) {
 	b.ReportAllocs()
 
-	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	mockHandler := &handler.Server{}
 	registerSystemRoutes(router, mockHandler)
@@ -200,7 +200,6 @@ func BenchmarkHealthEndpoint(b *testing.B) {
 func BenchmarkFrontendRouting(b *testing.B) {
 	b.ReportAllocs()
 
-	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	indexPage := []byte("<html><body>Test</body></html>")
 	registerFrontendRoutes(router, testFS, indexPage)

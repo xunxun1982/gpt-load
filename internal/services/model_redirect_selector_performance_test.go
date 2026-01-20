@@ -296,7 +296,7 @@ func BenchmarkLargeTargetList(b *testing.B) {
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("Targets%d", size), func(b *testing.B) {
 			rule := generateTargets(size)
-
+			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				_, _, _ = selector.SelectTargetWithContext(rule, 1, "test-model")
 			}

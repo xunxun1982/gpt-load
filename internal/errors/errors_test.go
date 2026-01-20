@@ -175,6 +175,11 @@ func TestParseDBError(t *testing.T) {
 			expected: ErrDuplicateResource,
 		},
 		{
+			name:     "sqlite unique constraint lowercase",
+			err:      errors.New("unique constraint failed: users.name"),
+			expected: ErrDuplicateResource,
+		},
+		{
 			name:     "generic database error",
 			err:      errors.New("database connection failed"),
 			expected: ErrDatabase,
@@ -226,6 +231,16 @@ func BenchmarkParseDBError_PostgreSQL(b *testing.B) {
 func BenchmarkParseDBError_MySQL(b *testing.B) {
 	b.ReportAllocs()
 	err := &mysql.MySQLError{Number: 1062}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ParseDBError(err)
+	}
+}
+
+// BenchmarkParseDBError_SQLite benchmarks SQLite error parsing
+func BenchmarkParseDBError_SQLite(b *testing.B) {
+	b.ReportAllocs()
+	err := errors.New("UNIQUE constraint failed: users.email")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = ParseDBError(err)

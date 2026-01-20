@@ -133,3 +133,32 @@ func BenchmarkIsTransientDBError(b *testing.B) {
 		_ = IsTransientDBError(err)
 	}
 }
+
+// BenchmarkIsDBLockError_NonMatching benchmarks non-matching error detection
+func BenchmarkIsDBLockError_NonMatching(b *testing.B) {
+	b.ReportAllocs()
+	err := errors.New("some other error")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = IsDBLockError(err)
+	}
+}
+
+// BenchmarkIsTransientDBError_NonMatching benchmarks non-matching transient error detection
+func BenchmarkIsTransientDBError_NonMatching(b *testing.B) {
+	b.ReportAllocs()
+	err := errors.New("regular error")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = IsTransientDBError(err)
+	}
+}
+
+// BenchmarkIsDBLockError_Nil benchmarks nil error handling
+func BenchmarkIsDBLockError_Nil(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = IsDBLockError(nil)
+	}
+}

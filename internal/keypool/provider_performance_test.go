@@ -7,7 +7,12 @@ import (
 	"gpt-load/internal/models"
 	"testing"
 	"time"
+
+	"gorm.io/datatypes"
 )
+
+// testGroupUpstreams is the default upstreams configuration for test groups
+var testGroupUpstreams = datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":100}]`))
 
 // BenchmarkSelectKeyPerformance benchmarks the hot path of key selection
 // This is the most critical operation as it's called for every API request
@@ -16,7 +21,12 @@ func BenchmarkSelectKeyPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	// Create test group and keys
-	group := &models.Group{Name: "bench-group", ChannelType: "openai", Enabled: true}
+	group := &models.Group{
+		Name:        "bench-group",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   testGroupUpstreams,
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatal(err)
 	}
@@ -78,7 +88,12 @@ func BenchmarkSelectKeyConcurrentPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	// Setup test data
-	group := &models.Group{Name: "concurrent-group", ChannelType: "openai", Enabled: true}
+	group := &models.Group{
+		Name:        "concurrent-group",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   testGroupUpstreams,
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatal(err)
 	}
@@ -137,7 +152,12 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 	provider, db, memStore := setupBenchProvider(b)
 	defer provider.Stop()
 
-	group := &models.Group{Name: "status-group", ChannelType: "openai", Enabled: true}
+	group := &models.Group{
+		Name:        "status-group",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   testGroupUpstreams,
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatal(err)
 	}
@@ -248,7 +268,12 @@ func BenchmarkLoadKeysFromDBPerformance(b *testing.B) {
 			defer provider.Stop()
 
 			// Create test data
-			group := &models.Group{Name: "load-group", ChannelType: "openai", Enabled: true}
+			group := &models.Group{
+				Name:        "load-group",
+				ChannelType: "openai",
+				Enabled:     true,
+				Upstreams:   testGroupUpstreams,
+			}
 			if err := db.Create(group).Error; err != nil {
 				b.Fatal(err)
 			}
@@ -292,7 +317,12 @@ func BenchmarkAddKeysPerformance(b *testing.B) {
 			provider, db, _ := setupBenchProvider(b)
 			defer provider.Stop()
 
-			group := &models.Group{Name: "add-group", ChannelType: "openai", Enabled: true}
+			group := &models.Group{
+				Name:        "add-group",
+				ChannelType: "openai",
+				Enabled:     true,
+				Upstreams:   testGroupUpstreams,
+			}
 			if err := db.Create(group).Error; err != nil {
 				b.Fatal(err)
 			}
@@ -324,7 +354,12 @@ func BenchmarkRemoveKeysPerformance(b *testing.B) {
 	provider, db, _ := setupBenchProvider(b)
 	defer provider.Stop()
 
-	group := &models.Group{Name: "remove-group", ChannelType: "openai", Enabled: true}
+	group := &models.Group{
+		Name:        "remove-group",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   testGroupUpstreams,
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatal(err)
 	}
@@ -361,7 +396,9 @@ func BenchmarkRemoveKeysPerformance(b *testing.B) {
 				KeyHash:  encSvc.Hash(kv),
 				Status:   models.KeyStatusActive,
 			}
-			db.Create(apiKey)
+			if err := db.Create(apiKey).Error; err != nil {
+				b.Fatal(err)
+			}
 		}
 		b.StartTimer()
 
@@ -374,7 +411,12 @@ func BenchmarkRestoreKeysPerformance(b *testing.B) {
 	provider, db, _ := setupBenchProvider(b)
 	defer provider.Stop()
 
-	group := &models.Group{Name: "restore-group", ChannelType: "openai", Enabled: true}
+	group := &models.Group{
+		Name:        "restore-group",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   testGroupUpstreams,
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatal(err)
 	}
@@ -402,10 +444,12 @@ func BenchmarkRestoreKeysPerformance(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		// Reset keys to invalid for next iteration
-		db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Updates(map[string]any{
+		if err := db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Updates(map[string]any{
 			"status":        models.KeyStatusInvalid,
 			"failure_count": 5,
-		})
+		}).Error; err != nil {
+			b.Fatal(err)
+		}
 		b.StartTimer()
 
 		_, _ = provider.RestoreKeys(group.ID)
@@ -421,7 +465,12 @@ func BenchmarkRemoveAllKeysPerformance(b *testing.B) {
 			provider, db, _ := setupBenchProvider(b)
 			defer provider.Stop()
 
-			group := &models.Group{Name: "removeall-group", ChannelType: "openai", Enabled: true}
+			group := &models.Group{
+				Name:        "removeall-group",
+				ChannelType: "openai",
+				Enabled:     true,
+				Upstreams:   testGroupUpstreams,
+			}
 			if err := db.Create(group).Error; err != nil {
 				b.Fatal(err)
 			}
@@ -461,7 +510,12 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 	defer provider.Stop()
 
 	// Setup test data
-	group := &models.Group{Name: "concurrent-ops-group", ChannelType: "openai", Enabled: true}
+	group := &models.Group{
+		Name:        "concurrent-ops-group",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   testGroupUpstreams,
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatal(err)
 	}
@@ -517,12 +571,14 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 				// Select key
 				_, _ = provider.SelectKey(group.ID)
 			} else if op < 9 {
-				// Success update
-				apiKey := &models.APIKey{ID: 1, GroupID: group.ID}
+				// Success update - distribute across available keys
+				keyID := uint((i % keyCount) + 1)
+				apiKey := &models.APIKey{ID: keyID, GroupID: group.ID}
 				provider.UpdateStatus(apiKey, group, true, "")
 			} else {
-				// Failure update
-				apiKey := &models.APIKey{ID: 1, GroupID: group.ID}
+				// Failure update - distribute across available keys
+				keyID := uint((i % keyCount) + 1)
+				apiKey := &models.APIKey{ID: keyID, GroupID: group.ID}
 				provider.UpdateStatus(apiKey, group, false, "error")
 			}
 			i++
@@ -555,7 +611,12 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 	}
 
 	for _, g := range groups {
-		group := &models.Group{Name: g.name, ChannelType: "openai", Enabled: true}
+		group := &models.Group{
+			Name:        g.name,
+			ChannelType: "openai",
+			Enabled:     true,
+			Upstreams:   testGroupUpstreams,
+		}
 		if err := db.Create(group).Error; err != nil {
 			b.Fatal(err)
 		}
@@ -621,7 +682,12 @@ func BenchmarkMemoryAllocationPerformance(b *testing.B) {
 	provider, db, memStore := setupBenchProvider(b)
 	defer provider.Stop()
 
-	group := &models.Group{Name: "memory-group", ChannelType: "openai", Enabled: true}
+	group := &models.Group{
+		Name:        "memory-group",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   testGroupUpstreams,
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatal(err)
 	}
