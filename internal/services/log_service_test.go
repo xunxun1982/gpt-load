@@ -603,6 +603,7 @@ func BenchmarkStreamLogKeysToCSV(b *testing.B) {
 
 	for i := 0; i < 10; i++ {
 		if err := db.Create(&models.RequestLog{
+			ID:         fmt.Sprintf("bench-csv-%d", i),
 			GroupName:  "group1",
 			KeyHash:    keyHash,
 			KeyValue:   encryptedKey,

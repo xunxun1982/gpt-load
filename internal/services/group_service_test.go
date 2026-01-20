@@ -748,6 +748,7 @@ func TestIsConfigCCSupportEnabled(t *testing.T) {
 func BenchmarkCreateGroup(b *testing.B) {
 	db := setupTestDB(b)
 	svc := setupTestGroupService(b, db)
+	b.ReportAllocs()
 
 	params := GroupCreateParams{
 		Name:               "bench-group",
@@ -771,6 +772,7 @@ func BenchmarkCreateGroup(b *testing.B) {
 func BenchmarkListGroups(b *testing.B) {
 	db := setupTestDB(b)
 	svc := setupTestGroupService(b, db)
+	b.ReportAllocs()
 
 	// Create some groups
 	for i := 0; i < 10; i++ {
@@ -799,6 +801,7 @@ func BenchmarkListGroups(b *testing.B) {
 func BenchmarkGetGroupStats(b *testing.B) {
 	db := setupTestDB(b)
 	svc := setupTestGroupService(b, db)
+	b.ReportAllocs()
 
 	params := GroupCreateParams{
 		Name:               "bench-group",

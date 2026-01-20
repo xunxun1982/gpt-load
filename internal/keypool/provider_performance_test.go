@@ -42,6 +42,7 @@ func BenchmarkSelectKeyPerformance(b *testing.B) {
 
 	// Create multiple keys to simulate realistic pool
 	keyCount := 10
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	for i := 0; i < keyCount; i++ {
 		apiKey := &models.APIKey{
 			GroupID:      group.ID,
@@ -65,12 +66,9 @@ func BenchmarkSelectKeyPerformance(b *testing.B) {
 		if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
 			b.Fatal(err)
 		}
-	}
 
-	// Setup active keys list
-	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
-	for i := 1; i <= keyCount; i++ {
-		if err := memStore.LPush(activeKeysListKey, uint(i)); err != nil {
+		// Use actual DB-assigned ID instead of sequential assumption
+		if err := memStore.LPush(activeKeysListKey, apiKey.ID); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -108,6 +106,7 @@ func BenchmarkSelectKeyConcurrentPerformance(b *testing.B) {
 	}
 
 	keyCount := 20
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	for i := 0; i < keyCount; i++ {
 		apiKey := &models.APIKey{
 			GroupID:      group.ID,
@@ -130,11 +129,9 @@ func BenchmarkSelectKeyConcurrentPerformance(b *testing.B) {
 		if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
 			b.Fatal(err)
 		}
-	}
 
-	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
-	for i := 1; i <= keyCount; i++ {
-		if err := memStore.LPush(activeKeysListKey, uint(i)); err != nil {
+		// Use actual DB-assigned ID instead of sequential assumption
+		if err := memStore.LPush(activeKeysListKey, apiKey.ID); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -531,6 +528,7 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 	}
 
 	keyCount := 50
+	keyIDs := make([]uint, 0, keyCount)
 	for i := 0; i < keyCount; i++ {
 		apiKey := &models.APIKey{
 			GroupID:      group.ID,
@@ -542,6 +540,7 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 		if err := db.Create(apiKey).Error; err != nil {
 			b.Fatal(err)
 		}
+		keyIDs = append(keyIDs, apiKey.ID)
 
 		keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
 		keyDetails := map[string]any{
@@ -556,8 +555,8 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 	}
 
 	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
-	for i := 1; i <= keyCount; i++ {
-		if err := memStore.LPush(activeKeysListKey, uint(i)); err != nil {
+	for _, id := range keyIDs {
+		if err := memStore.LPush(activeKeysListKey, id); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -572,13 +571,13 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 				// Select key
 				_, _ = provider.SelectKey(group.ID)
 			} else if op < 9 {
-				// Success update - distribute across available keys
-				keyID := uint((i % keyCount) + 1)
+				// Success update - use actual key IDs
+				keyID := keyIDs[i%len(keyIDs)]
 				apiKey := &models.APIKey{ID: keyID, GroupID: group.ID}
 				provider.UpdateStatus(apiKey, group, true, "")
 			} else {
-				// Failure update - distribute across available keys
-				keyID := uint((i % keyCount) + 1)
+				// Failure update - use actual key IDs
+				keyID := keyIDs[i%len(keyIDs)]
 				apiKey := &models.APIKey{ID: keyID, GroupID: group.ID}
 				provider.UpdateStatus(apiKey, group, false, "error")
 			}
@@ -624,6 +623,7 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 		}
 		groupIDs = append(groupIDs, group.ID)
 
+		activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 		for i := 0; i < g.keyCount; i++ {
 			apiKey := &models.APIKey{
 				GroupID:      group.ID,
@@ -646,11 +646,9 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 			if err := memStore.HSet(keyHashKey, keyDetails); err != nil {
 				b.Fatal(err)
 			}
-		}
 
-		activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
-		for i := 1; i <= g.keyCount; i++ {
-			if err := memStore.LPush(activeKeysListKey, uint(i)); err != nil {
+			// Use actual DB-assigned ID instead of sequential assumption
+			if err := memStore.LPush(activeKeysListKey, apiKey.ID); err != nil {
 				b.Fatal(err)
 			}
 		}
