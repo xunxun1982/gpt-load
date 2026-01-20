@@ -75,7 +75,9 @@ func BenchmarkSelectKeyPerformance(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = provider.SelectKey(group.ID)
+		if _, err := provider.SelectKey(group.ID); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -139,7 +141,9 @@ func BenchmarkSelectKeyConcurrentPerformance(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, _ = provider.SelectKey(group.ID)
+			if _, err := provider.SelectKey(group.ID); err != nil {
+				b.Fatal(err)
+			}
 		}
 	})
 }
@@ -198,6 +202,8 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		// Reset key state to measure consistent behavior
+		apiKey.Status = models.KeyStatusActive
+		apiKey.FailureCount = 1
 		if err := db.Model(&models.APIKey{}).Where("id = ?", apiKey.ID).Updates(map[string]any{
 			"status":        models.KeyStatusActive,
 			"failure_count": 1,
@@ -270,6 +276,8 @@ func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		// Reset key state to measure consistent behavior
+		apiKey.Status = models.KeyStatusActive
+		apiKey.FailureCount = 0
 		if err := db.Model(&models.APIKey{}).Where("id = ?", apiKey.ID).Updates(map[string]any{
 			"status":        models.KeyStatusActive,
 			"failure_count": 0,
@@ -606,7 +614,9 @@ func BenchmarkConcurrentOperationsPerformance(b *testing.B) {
 			op := i % 10
 			if op < 7 {
 				// Select key
-				_, _ = provider.SelectKey(group.ID)
+				if _, err := provider.SelectKey(group.ID); err != nil {
+					b.Fatal(err)
+				}
 			} else if op < 9 {
 				// Success update - use actual key IDs
 				keyID := keyIDs[i%len(keyIDs)]
@@ -709,7 +719,9 @@ func BenchmarkRealisticWorkloadPerformance(b *testing.B) {
 				groupID = groupIDs[2] // large
 			}
 
-			_, _ = provider.SelectKey(groupID)
+			if _, err := provider.SelectKey(groupID); err != nil {
+				b.Fatal(err)
+			}
 			i++
 		}
 	})
@@ -769,6 +781,8 @@ func BenchmarkMemoryAllocationPerformance(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_, _ = provider.SelectKey(group.ID)
+		if _, err := provider.SelectKey(group.ID); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
