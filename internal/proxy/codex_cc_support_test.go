@@ -1022,9 +1022,9 @@ func TestHandleCodexCCStreamingResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name        string
-		events      []string
-		checkFunc   func(*testing.T, string)
+		name      string
+		events    []string
+		checkFunc func(*testing.T, string)
 	}{
 		{
 			name: "basic text streaming",

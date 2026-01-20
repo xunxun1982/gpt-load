@@ -10,16 +10,16 @@ func TestEstimateTokensFromString(t *testing.T) {
 		expected int
 	}{
 		{"EmptyString", "", 0},
-		{"ShortString", "hello", 2},       // 5 runes / 4 = 1.25 -> 2
-		{"MediumString", "hello world", 3}, // 11 runes / 4 = 2.75 -> 3
+		{"ShortString", "hello", 2},                                       // 5 runes / 4 = 1.25 -> 2
+		{"MediumString", "hello world", 3},                                // 11 runes / 4 = 2.75 -> 3
 		{"LongString", "The quick brown fox jumps over the lazy dog", 11}, // 43 runes -> (43+3)/4 = 11
-		{"ChineseText", "你好世界", 1},     // 4 runes / 4 = 1
-		{"MixedText", "Hello世界", 2},      // 7 runes / 4 = 1.75 -> 2
-		{"EmojiText", "Hello🌍World", 3},  // 11 runes / 4 = 2.75 -> 3
-		{"SingleChar", "a", 1},            // 1 rune / 4 = 0.25 -> 1
-		{"ThreeChars", "abc", 1},          // 3 runes / 4 = 0.75 -> 1
-		{"FourChars", "abcd", 1},          // 4 runes / 4 = 1
-		{"FiveChars", "abcde", 2},         // 5 runes / 4 = 1.25 -> 2
+		{"ChineseText", "你好世界", 1},                                        // 4 runes / 4 = 1
+		{"MixedText", "Hello世界", 2},                                       // 7 runes / 4 = 1.75 -> 2
+		{"EmojiText", "Hello🌍World", 3},                                   // 11 runes / 4 = 2.75 -> 3
+		{"SingleChar", "a", 1},                                            // 1 rune / 4 = 0.25 -> 1
+		{"ThreeChars", "abc", 1},                                          // 3 runes / 4 = 0.75 -> 1
+		{"FourChars", "abcd", 1},                                          // 4 runes / 4 = 1
+		{"FiveChars", "abcde", 2},                                         // 5 runes / 4 = 1.25 -> 2
 	}
 
 	for _, tt := range tests {

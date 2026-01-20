@@ -90,14 +90,14 @@ var MessagesEnUS = map[string]string{
 	"task.get_status_failed":  "Failed to get task status",
 
 	// Dashboard related
-	"dashboard.invalid_keys":                                     "Invalid Keys",
-	"dashboard.success_requests":                                 "Success",
-	"dashboard.failed_requests":                                  "Failed",
-	"dashboard.auth_key_missing":                                 "AUTH_KEY is not set, system cannot function properly",
-	"dashboard.auth_key_required":                                "AUTH_KEY must be set to protect the admin interface",
-	"dashboard.encryption_key_missing":                           "ENCRYPTION_KEY is not set, sensitive data will be stored in plain text",
-	"dashboard.encryption_key_recommended":                       "It is strongly recommended to set ENCRYPTION_KEY to encrypt sensitive data like API keys",
-	"dashboard.global_proxy_key":                                 "Global Proxy Key",
+	"dashboard.invalid_keys":               "Invalid Keys",
+	"dashboard.success_requests":           "Success",
+	"dashboard.failed_requests":            "Failed",
+	"dashboard.auth_key_missing":           "AUTH_KEY is not set, system cannot function properly",
+	"dashboard.auth_key_required":          "AUTH_KEY must be set to protect the admin interface",
+	"dashboard.encryption_key_missing":     "ENCRYPTION_KEY is not set, sensitive data will be stored in plain text",
+	"dashboard.encryption_key_recommended": "It is strongly recommended to set ENCRYPTION_KEY to encrypt sensitive data like API keys",
+	"dashboard.global_proxy_key":           "Global Proxy Key",
 
 	// Channel types
 	"channel.openai":    "OpenAI",
@@ -108,18 +108,18 @@ var MessagesEnUS = map[string]string{
 	"channel.custom":    "Custom",
 
 	// Relay formats
-	"relay_format.openai_chat":                "OpenAI Chat",
-	"relay_format.openai_completion":          "OpenAI Completion",
-	"relay_format.claude":                     "Claude Messages",
-	"relay_format.codex":                      "Codex Responses",
-	"relay_format.openai_image":               "OpenAI Image Generation",
-	"relay_format.openai_image_edit":          "OpenAI Image Edit",
-	"relay_format.openai_audio_transcription": "OpenAI Audio Transcription",
-	"relay_format.openai_audio_translation":   "OpenAI Audio Translation",
-	"relay_format.openai_audio_speech":        "OpenAI Text-to-Speech",
-	"relay_format.openai_embedding":           "OpenAI Embeddings",
-	"relay_format.openai_moderation":          "OpenAI Moderation",
-	"relay_format.gemini":                     "Gemini",
+	"relay_format.openai_chat":                                   "OpenAI Chat",
+	"relay_format.openai_completion":                             "OpenAI Completion",
+	"relay_format.claude":                                        "Claude Messages",
+	"relay_format.codex":                                         "Codex Responses",
+	"relay_format.openai_image":                                  "OpenAI Image Generation",
+	"relay_format.openai_image_edit":                             "OpenAI Image Edit",
+	"relay_format.openai_audio_transcription":                    "OpenAI Audio Transcription",
+	"relay_format.openai_audio_translation":                      "OpenAI Audio Translation",
+	"relay_format.openai_audio_speech":                           "OpenAI Text-to-Speech",
+	"relay_format.openai_embedding":                              "OpenAI Embeddings",
+	"relay_format.openai_moderation":                             "OpenAI Moderation",
+	"relay_format.gemini":                                        "Gemini",
 	"dashboard.group_proxy_key":                                  "Group Proxy Key",
 	"dashboard.encryption_key_configured_but_data_not_encrypted": "ENCRYPTION_KEY is configured but the keys in database are not encrypted. This will cause keys to be unreadable (shown as failed-to-decrypt).",
 	"dashboard.encryption_key_migration_required":                "Please stop the service, run the key migration command and restart",
@@ -262,13 +262,13 @@ var MessagesEnUS = map[string]string{
 	"group.child_groups_deleted":                        "{{.count}} child group(s) also deleted",
 
 	// Binding related
-	"binding.group_not_found":                "Group not found",
-	"binding.site_not_found":                 "Site not found",
-	"binding.aggregate_cannot_bind":          "Aggregate groups cannot be bound to sites",
-	"binding.child_group_cannot_bind":        "Child groups cannot be bound to sites",
-	"binding.group_already_bound":            "This group is already bound to another site",
+	"binding.group_not_found":                 "Group not found",
+	"binding.site_not_found":                  "Site not found",
+	"binding.aggregate_cannot_bind":           "Aggregate groups cannot be bound to sites",
+	"binding.child_group_cannot_bind":         "Child groups cannot be bound to sites",
+	"binding.group_already_bound":             "This group is already bound to another site",
 	"binding.must_unbind_before_delete_group": "Please unbind from the site before deleting the group",
-	"binding.must_unbind_before_delete_site": "Please unbind all groups ({{.count}} bound) from the site before deleting",
+	"binding.must_unbind_before_delete_site":  "Please unbind all groups ({{.count}} bound) from the site before deleting",
 }
 
 func init() {

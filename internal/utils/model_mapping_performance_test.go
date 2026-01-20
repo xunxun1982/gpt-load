@@ -75,7 +75,7 @@ func BenchmarkApplyModelMappingFromMap(b *testing.B) {
 			"ChainedMapping",
 			"gpt-4",
 			map[string]string{
-				"gpt-4":        "gpt-4-turbo",
+				"gpt-4":       "gpt-4-turbo",
 				"gpt-4-turbo": "gpt-4-turbo-preview",
 			},
 		},
@@ -228,13 +228,13 @@ func BenchmarkRealisticWorkloadMapping(b *testing.B) {
 
 	// Realistic model distribution
 	models := []string{
-		"gpt-4", "gpt-4", "gpt-4", "gpt-4", "gpt-4",           // 25% gpt-4
-		"gpt-3.5", "gpt-3.5", "gpt-3.5",                       // 15% gpt-3.5
-		"claude-2", "claude-2", "claude-3",                    // 15% claude
-		"gemini", "gemini-pro",                                // 10% gemini
-		"llama-2", "mistral",                                  // 10% others
-		"unknown-1", "unknown-2", "unknown-3", "unknown-4",    // 20% unknown
-		"custom-model",                                        // 5% custom
+		"gpt-4", "gpt-4", "gpt-4", "gpt-4", "gpt-4", // 25% gpt-4
+		"gpt-3.5", "gpt-3.5", "gpt-3.5", // 15% gpt-3.5
+		"claude-2", "claude-2", "claude-3", // 15% claude
+		"gemini", "gemini-pro", // 10% gemini
+		"llama-2", "mistral", // 10% others
+		"unknown-1", "unknown-2", "unknown-3", "unknown-4", // 20% unknown
+		"custom-model", // 5% custom
 	}
 
 	b.Run("WithJSONParsing", func(b *testing.B) {

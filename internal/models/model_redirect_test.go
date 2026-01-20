@@ -332,9 +332,9 @@ func TestMigrateV1ToV2Rules(t *testing.T) {
 		{
 			name: "multiple rules",
 			v1Map: map[string]string{
-				"gpt-4":        "gpt-4-turbo",
-				"gpt-3.5":      "gpt-3.5-turbo",
-				"claude-3":     "claude-3-opus",
+				"gpt-4":    "gpt-4-turbo",
+				"gpt-3.5":  "gpt-3.5-turbo",
+				"claude-3": "claude-3-opus",
 			},
 		},
 	}
@@ -499,9 +499,9 @@ func BenchmarkSelectTarget(b *testing.B) {
 // BenchmarkCollectSourceModels benchmarks source model collection
 func BenchmarkCollectSourceModels(b *testing.B) {
 	v2Map := map[string]*ModelRedirectRuleV2{
-		"gpt-4":        {Targets: []ModelRedirectTarget{{Model: "gpt-4-turbo"}}},
-		"gpt-3.5":      {Targets: []ModelRedirectTarget{{Model: "gpt-3.5-turbo"}}},
-		"claude-3":     {Targets: []ModelRedirectTarget{{Model: "claude-3-opus"}}},
+		"gpt-4":    {Targets: []ModelRedirectTarget{{Model: "gpt-4-turbo"}}},
+		"gpt-3.5":  {Targets: []ModelRedirectTarget{{Model: "gpt-3.5-turbo"}}},
+		"claude-3": {Targets: []ModelRedirectTarget{{Model: "claude-3-opus"}}},
 	}
 
 	b.ResetTimer()

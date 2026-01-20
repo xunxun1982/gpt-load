@@ -34,7 +34,6 @@ const codexDefaultInstructions = `You are Codex, a coding agent. Be precise, saf
 ## Output
 - Be concise. Present work naturally, like a teammate update.`
 
-
 // CodexOfficialInstructions is the full official Codex CLI instructions.
 // This is the complete version extracted from Codex CLI, including Planning, Tool Guidelines,
 // apply_patch documentation, and detailed formatting rules.

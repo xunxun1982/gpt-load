@@ -219,8 +219,6 @@ func BenchmarkGetFingerprint(b *testing.B) {
 	}
 }
 
-
-
 // TestGetClient_WithAllConfigs tests client with all configuration options
 func TestGetClient_WithAllConfigs(t *testing.T) {
 	manager := NewHTTPClientManager()

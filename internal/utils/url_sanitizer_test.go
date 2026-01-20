@@ -9,9 +9,9 @@ import (
 // TestSanitizeURLForLog tests URL sanitization for logging
 func TestSanitizeURLForLog(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		contains []string
+		name        string
+		input       string
+		contains    []string
 		notContains []string
 	}{
 		{

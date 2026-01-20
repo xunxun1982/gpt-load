@@ -39,7 +39,6 @@ func (ch *OpenAIChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey,
 	req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
 }
 
-
 // ValidateKey checks if the given API key is valid by making a chat completion request.
 func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
 	// Parse validation endpoint to extract path and query parameters

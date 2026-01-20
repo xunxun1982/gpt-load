@@ -542,7 +542,7 @@ func TestParseFunctionCallsFromContentForCC_ProductionLogSeverePatterns(t *testi
 		{
 			name: "severely_malformed_todos_with_missing_field_names",
 			// Pattern from production log: multiple todos with various malformations
-			content: `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"id":"1",": "调查现有hello.py代码","activeForm":"正在调查","status":"in_progress"},{"id":"2",": "设计美观GUI方案","Form":"正在设计","state":"pending"}]</parameter></invoke>`,
+			content:       `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"id":"1",": "调查现有hello.py代码","activeForm":"正在调查","status":"in_progress"},{"id":"2",": "设计美观GUI方案","Form":"正在设计","state":"pending"}]</parameter></invoke>`,
 			trigger:       "<<CALL_TEST>>",
 			expectToolUse: true,
 			expectTodoLen: 2,
@@ -773,32 +773,32 @@ func TestParseFunctionCallsFromContentForCC_ProductionLogTodoWrite(t *testing.T)
 		expectStatus  string
 	}{
 		{
-			name: "TodoWrite with state field instead of status",
-			content: `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"state":"in_progress","content":"WebSearch搜索最简洁的Tkinter示例"}]</parameter></invoke>`,
+			name:          "TodoWrite with state field instead of status",
+			content:       `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"state":"in_progress","content":"WebSearch搜索最简洁的Tkinter示例"}]</parameter></invoke>`,
 			trigger:       "<<CALL_TEST>>",
 			expectToolUse: true,
 			expectTodoLen: 1,
 			expectStatus:  "in_progress",
 		},
 		{
-			name: "TodoWrite with activeForm field",
-			content: `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"content":"创建hello.py文件","activeForm":"正在创建文件","status":"pending"}]</parameter></invoke>`,
+			name:          "TodoWrite with activeForm field",
+			content:       `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"content":"创建hello.py文件","activeForm":"正在创建文件","status":"pending"}]</parameter></invoke>`,
 			trigger:       "<<CALL_TEST>>",
 			expectToolUse: true,
 			expectTodoLen: 1,
 			expectStatus:  "pending",
 		},
 		{
-			name: "TodoWrite with numeric id",
-			content: `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"id":1,"content":"研究Python GUI框架","status":"in_progress"}]</parameter></invoke>`,
+			name:          "TodoWrite with numeric id",
+			content:       `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"id":1,"content":"研究Python GUI框架","status":"in_progress"}]</parameter></invoke>`,
 			trigger:       "<<CALL_TEST>>",
 			expectToolUse: true,
 			expectTodoLen: 1,
 			expectStatus:  "in_progress",
 		},
 		{
-			name: "TodoWrite with multiple todos",
-			content: `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"id":"1","content":"搜索最佳实践","status":"completed"},{"id":"2","content":"编写代码","status":"pending"}]</parameter></invoke>`,
+			name:          "TodoWrite with multiple todos",
+			content:       `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"id":"1","content":"搜索最佳实践","status":"completed"},{"id":"2","content":"编写代码","status":"pending"}]</parameter></invoke>`,
 			trigger:       "<<CALL_TEST>>",
 			expectToolUse: true,
 			expectTodoLen: 2,
@@ -870,53 +870,53 @@ func TestParseFunctionCallsFromContentForCC_ProductionLogScenario(t *testing.T) 
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name                           string
-		content                        string
-		trigger                        string
-		expectToolUse                  bool
-		expectTodoLen                  int
+		name                            string
+		content                         string
+		trigger                         string
+		expectToolUse                   bool
+		expectTodoLen                   int
 		expectActiveFormEqualsContentAt int
-		description                    string
+		description                     string
 	}{
 		{
 			name: "malformed_invokename_with_missing_content_field",
 			// Pattern from production log: <><invokename="TodoWrite"><parametername="todos">[{"id":"1",": "探索..."}]
-			content:       `<<CALL_TEST>><><invokename="TodoWrite"><parametername="todos">[{"id":"1",": "探索最佳实践","activeForm":"正在探索","status":"pending"}]`,
-			trigger:       "<<CALL_TEST>>",
-			expectToolUse: true,
-			expectTodoLen: 1,
+			content:                         `<<CALL_TEST>><><invokename="TodoWrite"><parametername="todos">[{"id":"1",": "探索最佳实践","activeForm":"正在探索","status":"pending"}]`,
+			trigger:                         "<<CALL_TEST>>",
+			expectToolUse:                   true,
+			expectTodoLen:                   1,
 			expectActiveFormEqualsContentAt: -1,
-			description:   "Malformed invokename with missing content field name in JSON",
+			description:                     "Malformed invokename with missing content field name in JSON",
 		},
 		{
 			name: "malformed_invokename_multiple_todos",
 			// Multiple todos with various malformations
-			content:       `<<CALL_TEST>><><invokename="TodoWrite"><parametername="todos">[{"id":"1",": "搜索最佳实践","state":"pending"},{"id":"2",": "编写代码","Form":"正在编写","status":"pending"}]`,
-			trigger:       "<<CALL_TEST>>",
-			expectToolUse: true,
-			expectTodoLen: 2,
+			content:                         `<<CALL_TEST>><><invokename="TodoWrite"><parametername="todos">[{"id":"1",": "搜索最佳实践","state":"pending"},{"id":"2",": "编写代码","Form":"正在编写","status":"pending"}]`,
+			trigger:                         "<<CALL_TEST>>",
+			expectToolUse:                   true,
+			expectTodoLen:                   2,
 			expectActiveFormEqualsContentAt: 0,
-			description:   "Multiple todos with missing content field names",
+			description:                     "Multiple todos with missing content field names",
 		},
 		{
 			name: "malformed_invokename_with_numeric_id",
 			// Numeric id instead of string
-			content:       `<<CALL_TEST>><><invokename="TodoWrite"><parametername="todos">[{"id":1,": "研究Python GUI框架","activeForm":"正在研究","status":"in_progress"}]`,
-			trigger:       "<<CALL_TEST>>",
-			expectToolUse: true,
-			expectTodoLen: 1,
+			content:                         `<<CALL_TEST>><><invokename="TodoWrite"><parametername="todos">[{"id":1,": "研究Python GUI框架","activeForm":"正在研究","status":"in_progress"}]`,
+			trigger:                         "<<CALL_TEST>>",
+			expectToolUse:                   true,
+			expectTodoLen:                   1,
 			expectActiveFormEqualsContentAt: -1,
-			description:   "Numeric id with missing content field name",
+			description:                     "Numeric id with missing content field name",
 		},
 		{
 			name: "standard_invoke_with_malformed_json",
 			// Standard invoke format but with malformed JSON
-			content:       `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"id":"1",": "调研联网搜索最佳实践","activeForm":"正在调研","status":"pending"}]</parameter></invoke>`,
-			trigger:       "<<CALL_TEST>>",
-			expectToolUse: true,
-			expectTodoLen: 1,
+			content:                         `<<CALL_TEST>><invoke name="TodoWrite"><parameter name="todos">[{"id":"1",": "调研联网搜索最佳实践","activeForm":"正在调研","status":"pending"}]</parameter></invoke>`,
+			trigger:                         "<<CALL_TEST>>",
+			expectToolUse:                   true,
+			expectTodoLen:                   1,
 			expectActiveFormEqualsContentAt: -1,
-			description:   "Standard invoke format with malformed JSON content field",
+			description:                     "Standard invoke format with malformed JSON content field",
 		},
 	}
 
@@ -1923,18 +1923,18 @@ func TestRemoveClaudeCodePreamble(t *testing.T) {
 代码结构如下：主窗口、标签、按钮。`,
 		},
 		{
-			name: "preserve long natural text with keywords",
-			input: `这个项目我需要仔细考虑，因为它涉及到多个方面的技术选型。我将使用Python作为主要开发语言，选择tkinter作为GUI框架，并确保代码简洁易读。`,
+			name:     "preserve long natural text with keywords",
+			input:    `这个项目我需要仔细考虑，因为它涉及到多个方面的技术选型。我将使用Python作为主要开发语言，选择tkinter作为GUI框架，并确保代码简洁易读。`,
 			expected: `这个项目我需要仔细考虑，因为它涉及到多个方面的技术选型。我将使用Python作为主要开发语言，选择tkinter作为GUI框架，并确保代码简洁易读。`,
 		},
 		{
-			name: "JSON leak without natural text",
-			input: `{"id": "1", "content": "task"}`,
+			name:     "JSON leak without natural text",
+			input:    `{"id": "1", "content": "task"}`,
 			expected: "",
 		},
 		{
-			name: "JSON leak with bullet - on same line",
-			input: `● [{"id": "1", "content": "task", "status": "pending"}]`,
+			name:     "JSON leak with bullet - on same line",
+			input:    `● [{"id": "1", "content": "task", "status": "pending"}]`,
 			expected: ``,
 		},
 		{
@@ -1990,9 +1990,9 @@ func TestRemoveClaudeCodePreamble_ProductionLogIssues(t *testing.T) {
 			notContains: []string{`"id"`, `"content"`, `"status"`},
 		},
 		{
-			name:        "preserve_normal_text",
-			input:       "我来帮你创建一个程序",
-			contains:    []string{"我来帮你创建一个程序"},
+			name:     "preserve_normal_text",
+			input:    "我来帮你创建一个程序",
+			contains: []string{"我来帮你创建一个程序"},
 		},
 		{
 			name:        "filter_malformed_XML",
@@ -2709,7 +2709,7 @@ Done.`,
 		{
 			name: "no_tool_call_in_json",
 			// JSON without known tool name
-			input: `Some data: {"name":"UnknownTool","param":"value"}`,
+			input:             `Some data: {"name":"UnknownTool","param":"value"}`,
 			trigger:           "<<CALL_none>>",
 			expectedToolCount: 0,
 			expectedToolName:  "",
@@ -2777,7 +2777,6 @@ Second tool: {"name":"Write","file_path":"/b.txt","content":"hello"}`,
 		})
 	}
 }
-
 
 // TestParseFunctionCallsFromContentForCC_GLMBlockRemoval tests that <glm_block> tags
 // containing tool call results are properly removed and not extracted as new tool calls.
@@ -2850,7 +2849,7 @@ func TestParseFunctionCallsFromContentForCC_GLMBlockRemoval(t *testing.T) {
 			name: "orphaned_glm_block_closer_production_log",
 			// Production log pattern: orphaned </glm_block> without opening tag
 			// This happens when the opening tag is truncated in streaming
-			input: `用户要求我读取文件。让我先读取hello.py文件。{"id":"call_aa03fe9628b24c59af840c45","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"tool call failed: Read","status":"error"}</glm_block>两个工具都失败了。`,
+			input:             `用户要求我读取文件。让我先读取hello.py文件。{"id":"call_aa03fe9628b24c59af840c45","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"tool call failed: Read","status":"error"}</glm_block>两个工具都失败了。`,
 			trigger:           "<<CALL_sq89xv>>",
 			expectedToolCount: 0,
 			description:       "Orphaned </glm_block> closer with tool result JSON should be removed",
@@ -3098,7 +3097,7 @@ func TestExtractToolCallsFromJSONContent_SkipsToolResults(t *testing.T) {
 			description:   "Tool with is_error=false but has non-empty result field should be skipped",
 		},
 		{
-			name:          "tool_request_with_empty_result",
+			name: "tool_request_with_empty_result",
 			// Tool with status:"completed" is a result, not a request - should be skipped
 			content:       `{"name":"Read","file_path":"/test.py","result":"","status":"completed"}`,
 			expectedCount: 0,
@@ -3261,14 +3260,14 @@ file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_
 			// This tests the new reInlineToolResultJSON cleanup logic
 			// UPDATED: The cleanTruncatedToolResultJSON should remove the entire JSON fragment
 			// including the mcp_server field
-			name: "inline_tool_result_json_mcp_tool",
-			input: `让我先读取文件，然后进行搜索。我先读取当前的 hello.py 文件，然后搜索 Python GUI 最佳实践。 GUI hello world tkinter minimal beautiful short code best practice\"}","display_result":"","duration":"0s","id":"call_3da10d39ea7d4d35910530bd","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed"}},"type`,
+			name:     "inline_tool_result_json_mcp_tool",
+			input:    `让我先读取文件，然后进行搜索。我先读取当前的 hello.py 文件，然后搜索 Python GUI 最佳实践。 GUI hello world tkinter minimal beautiful short code best practice\"}","display_result":"","duration":"0s","id":"call_3da10d39ea7d4d35910530bd","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed"}},"type`,
 			expected: `让我先读取文件，然后进行搜索。我先读取当前的 hello.py 文件，然后搜索 Python GUI 最佳实践。 GUI hello world tkinter minimal beautiful short code best practice`,
 		},
 		{
 			// Production log pattern: inline tool result with is_error:true
-			name: "inline_tool_result_json_error",
-			input: `尝试读取文件。\"}","is_error":true,"result":"file not found","status":"error"}}继续尝试其他方法。`,
+			name:     "inline_tool_result_json_error",
+			input:    `尝试读取文件。\"}","is_error":true,"result":"file not found","status":"error"}}继续尝试其他方法。`,
 			expected: `尝试读取文件。继续尝试其他方法。`,
 		},
 		{
@@ -3309,20 +3308,20 @@ file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_
 		},
 		{
 			// Production log pattern: MCP tool result with status:error
-			name: "mcp_tool_result_status_error",
-			input: `让我搜索信息。{"id":"call_abc123","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__web_search_exa","result":"tool call failed: mcp__exa__web_search_exa","status":"error"}</glm_block>搜索失败了。`,
+			name:     "mcp_tool_result_status_error",
+			input:    `让我搜索信息。{"id":"call_abc123","is_error":true,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__web_search_exa","result":"tool call failed: mcp__exa__web_search_exa","status":"error"}</glm_block>搜索失败了。`,
 			expected: `让我搜索信息。搜索失败了。`,
 		},
 		{
 			// Production log pattern: MCP tool result with status:completed
-			name: "mcp_tool_result_status_completed",
-			input: `让我获取代码上下文。{"display_result":"","duration":"0s","id":"call_xyz789","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed"}</glm_block>获取成功。`,
+			name:     "mcp_tool_result_status_completed",
+			input:    `让我获取代码上下文。{"display_result":"","duration":"0s","id":"call_xyz789","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed"}</glm_block>获取成功。`,
 			expected: `让我获取代码上下文。获取成功。`,
 		},
 		{
 			// Normal text without tool result JSON should be preserved
-			name: "normal_text_with_quotes",
-			input: `这是一个包含"引号"的正常文本，不应该被移除。`,
+			name:     "normal_text_with_quotes",
+			input:    `这是一个包含"引号"的正常文本，不应该被移除。`,
 			expected: `这是一个包含"引号"的正常文本，不应该被移除。`,
 		},
 	}
@@ -3339,7 +3338,6 @@ file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_
 		})
 	}
 }
-
 
 // TestParseFunctionCallsFromContentForCC_ArgKeyValueFormat tests parsing of tool calls
 // with <arg_key>/<arg_value> format from thinking model output.
@@ -3468,7 +3466,6 @@ func TestParseFunctionCallsFromContentForCC_ArgKeyValueFormat(t *testing.T) {
 	}
 }
 
-
 // TestParseFunctionCallsFromContentForCC_ProductionLogGLMThinkingToolResult tests the scenario
 // from production log where GLM-4.7-thinking model outputs tool call results in orphaned
 // </glm_block> closers. The tool call results should be removed, but any valid tool calls
@@ -3479,12 +3476,12 @@ func TestParseFunctionCallsFromContentForCC_ProductionLogGLMThinkingToolResult(t
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name              string
-		content           string
-		trigger           string
-		expectToolUse     bool
-		expectToolName    string
-		description       string
+		name           string
+		content        string
+		trigger        string
+		expectToolUse  bool
+		expectToolName string
+		description    string
 	}{
 		{
 			name: "orphaned_closer_with_tool_result_only",
@@ -3494,10 +3491,10 @@ func TestParseFunctionCallsFromContentForCC_ProductionLogGLMThinkingToolResult(t
 让我先读取hello.py文件。
 file_path":"F:\\MyProjects\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_c7e63823fbc0460bb9cafaab","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"","status":"completed"}</glm_block>
 工具出现了问题。`,
-			trigger:       "<<CALL_TEST>>",
-			expectToolUse: false,
+			trigger:        "<<CALL_TEST>>",
+			expectToolUse:  false,
 			expectToolName: "",
-			description:   "Tool call result in orphaned closer should be removed, no tool_use extracted",
+			description:    "Tool call result in orphaned closer should be removed, no tool_use extracted",
 		},
 		{
 			name: "orphaned_closer_with_truncated_status",
@@ -3505,10 +3502,10 @@ file_path":"F:\\MyProjects\\test\\hello.py"},"display_result":"","duration":"0s"
 			content: `让我读取文件。
 file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_abc123","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"Read","result":"","status":"c</glm_block>
 继续处理。`,
-			trigger:       "<<CALL_TEST>>",
-			expectToolUse: false,
+			trigger:        "<<CALL_TEST>>",
+			expectToolUse:  false,
 			expectToolName: "",
-			description:   "Tool call result with truncated status should be removed",
+			description:    "Tool call result with truncated status should be removed",
 		},
 		{
 			name: "orphaned_closer_with_tool_request_mixed",
@@ -3517,10 +3514,10 @@ file_path":"F:\\test\\hello.py"},"display_result":"","duration":"0s","id":"call_
 <<CALL_TEST>><invoke name="Read"><parameter name="file_path">test.py</parameter></invoke>
 然后结果是：{"is_error":false,"status":"completed","result":"file content"}</glm_block>
 完成。`,
-			trigger:       "<<CALL_TEST>>",
-			expectToolUse: true,
+			trigger:        "<<CALL_TEST>>",
+			expectToolUse:  true,
 			expectToolName: "Read",
-			description:   "Tool call request before result should be extracted",
+			description:    "Tool call request before result should be extracted",
 		},
 		{
 			name: "multiple_orphaned_closers_with_results",
@@ -3532,10 +3529,10 @@ file_path":"F:\\test\\hello.py"},"is_error":false,"name":"Read","status":"comple
 然后联网搜索。
 query":"Python GUI best practices"},"is_error":true,"name":"WebSearch","status":"error"}</glm_block>
 工具都失败了。`,
-			trigger:       "<<CALL_TEST>>",
-			expectToolUse: false,
+			trigger:        "<<CALL_TEST>>",
+			expectToolUse:  false,
 			expectToolName: "",
-			description:   "Multiple tool call results should all be removed",
+			description:    "Multiple tool call results should all be removed",
 		},
 	}
 
@@ -4399,8 +4396,8 @@ func TestConvertOpenAIToClaudeResponse_WithToolNameRestoration(t *testing.T) {
 
 	content := "test response"
 	openaiResp := &OpenAIResponse{
-		ID:      "test-id",
-		Model:   "gpt-4",
+		ID:    "test-id",
+		Model: "gpt-4",
 		Choices: []OpenAIChoice{
 			{
 				Message: &OpenAIRespMessage{
@@ -4545,11 +4542,11 @@ func TestToolNameShortening_WithForceFunctionCall(t *testing.T) {
 		Messages: []ClaudeMessage{
 			{Role: "user", Content: json.RawMessage(`"Please use the tool"`)},
 			{
-				Role: "assistant",
+				Role:    "assistant",
 				Content: json.RawMessage(`[{"type":"tool_use","id":"toolu_123","name":"` + longToolName + `","input":{"path":"/test"}}]`),
 			},
 			{
-				Role: "user",
+				Role:    "user",
 				Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"toolu_123","content":"success"}]`),
 			},
 		},
@@ -4635,7 +4632,6 @@ func TestToolNameRestoration_StreamingWithForceFunctionCall(t *testing.T) {
 		t.Errorf("reverse map[%q] = %q, want %q", shortName, orig, originalName)
 	}
 }
-
 
 // TestSSEReaderWithTimeout_FirstByteTimeout tests that SSEReaderWithTimeout
 // correctly times out when no data is received within the first-byte timeout.
@@ -4879,7 +4875,6 @@ func TestGetEffectiveSSETimeouts_NoGroup(t *testing.T) {
 	}
 }
 
-
 // TestConvertGitBashPathToWindows tests the conversion of Git Bash/MSYS2 Unix-style paths to Windows format
 func TestConvertGitBashPathToWindows(t *testing.T) {
 	tests := []struct {
@@ -5069,7 +5064,6 @@ func TestNormalizeArgsGenericInPlace_GitBashPath(t *testing.T) {
 	}
 }
 
-
 // TestWindowsPathCorruptionRegression tests the specific path corruption issue reported by users.
 // Issue: Path F:\MyProjects\test\language\python\xx\hello.py was being corrupted in CC response conversion.
 // Root cause: Response conversion functions were incorrectly calling path processing functions
@@ -5145,8 +5139,6 @@ func TestWindowsPathCorruptionRegression(t *testing.T) {
 		}
 	})
 }
-
-
 
 // TestGetGroupConfigBool tests the getGroupConfigBool function with various input types
 func TestGetGroupConfigBool(t *testing.T) {
@@ -6004,13 +5996,13 @@ func TestHandleCCNormalResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name           string
-		responseBody   string
-		statusCode     int
-		contentType    string
-		expectStatus   int
-		expectError    bool
-		checkResponse  func(t *testing.T, body string)
+		name          string
+		responseBody  string
+		statusCode    int
+		contentType   string
+		expectStatus  int
+		expectError   bool
+		checkResponse func(t *testing.T, body string)
 	}{
 		{
 			name: "successful response with text content",

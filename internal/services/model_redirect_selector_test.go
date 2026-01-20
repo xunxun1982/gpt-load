@@ -208,13 +208,13 @@ func TestResolveTargetModelWithDynamicWeight(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		sourceModel     string
-		expectTarget    string
-		expectVersion   string
-		expectCount     int
-		expectIndex     int
-		expectError     bool
+		name          string
+		sourceModel   string
+		expectTarget  string
+		expectVersion string
+		expectCount   int
+		expectIndex   int
+		expectError   bool
 	}{
 		{
 			name:          "V2 rule takes priority",

@@ -51,19 +51,19 @@ type CodexTool struct {
 
 // CodexRequest represents a Codex/Responses API request.
 type CodexRequest struct {
-	Model             string            `json:"model"`
-	Input             json.RawMessage   `json:"input"`
-	Instructions      string            `json:"instructions,omitempty"`
-	MaxOutputTokens   *int              `json:"max_output_tokens,omitempty"`
-	Temperature       *float64          `json:"temperature,omitempty"`
-	TopP              *float64          `json:"top_p,omitempty"`
-	Stream            bool              `json:"stream"`
-	Tools             []CodexTool       `json:"tools,omitempty"`
-	ToolChoice        interface{}       `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
-	Reasoning         *CodexReasoning   `json:"reasoning,omitempty"`
-	Store             *bool             `json:"store,omitempty"`
-	Include           []string          `json:"include,omitempty"`
+	Model             string          `json:"model"`
+	Input             json.RawMessage `json:"input"`
+	Instructions      string          `json:"instructions,omitempty"`
+	MaxOutputTokens   *int            `json:"max_output_tokens,omitempty"`
+	Temperature       *float64        `json:"temperature,omitempty"`
+	TopP              *float64        `json:"top_p,omitempty"`
+	Stream            bool            `json:"stream"`
+	Tools             []CodexTool     `json:"tools,omitempty"`
+	ToolChoice        interface{}     `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	Reasoning         *CodexReasoning `json:"reasoning,omitempty"`
+	Store             *bool           `json:"store,omitempty"`
+	Include           []string        `json:"include,omitempty"`
 }
 
 // CodexReasoning represents reasoning configuration for Codex API.
@@ -77,17 +77,17 @@ type CodexReasoning struct {
 
 // CodexOutputItem represents an output item in Codex/Responses API format.
 type CodexOutputItem struct {
-	Type      string              `json:"type"`
-	ID        string              `json:"id,omitempty"`
-	Status    string              `json:"status,omitempty"`
-	Role      string              `json:"role,omitempty"`
-	Content   []CodexContentBlock `json:"content,omitempty"`
+	Type    string              `json:"type"`
+	ID      string              `json:"id,omitempty"`
+	Status  string              `json:"status,omitempty"`
+	Role    string              `json:"role,omitempty"`
+	Content []CodexContentBlock `json:"content,omitempty"`
 	// Summary is used for reasoning output items to contain the thinking summary.
 	// Each summary item has type "summary_text" and text field.
-	Summary   []CodexSummaryItem  `json:"summary,omitempty"`
-	CallID    string              `json:"call_id,omitempty"`
-	Name      string              `json:"name,omitempty"`
-	Arguments string              `json:"arguments,omitempty"`
+	Summary   []CodexSummaryItem `json:"summary,omitempty"`
+	CallID    string             `json:"call_id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Arguments string             `json:"arguments,omitempty"`
 }
 
 // CodexSummaryItem represents a summary item in reasoning output.
@@ -837,8 +837,8 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 				})
 			} else {
 				logrus.WithFields(logrus.Fields{
-					"summary_count":  len(item.Summary),
-					"content_count":  len(item.Content),
+					"summary_count": len(item.Summary),
+					"content_count": len(item.Content),
 				}).Debug("Codex CC: Reasoning item has no text content")
 			}
 		}
@@ -1043,49 +1043,49 @@ func getCodexToolNameReverseMap(c *gin.Context) map[string]string {
 
 // CodexStreamEvent represents a Codex streaming event.
 type CodexStreamEvent struct {
-	Type         string           `json:"type"`
-	ResponseID   string           `json:"response_id,omitempty"`
-	ItemID       string           `json:"item_id,omitempty"`
-	OutputIdx    int              `json:"output_index,omitempty"`
-	ContentIdx   int              `json:"content_index,omitempty"`
-	Item         *CodexOutputItem `json:"item,omitempty"`
-	Part         *CodexContentBlock `json:"part,omitempty"`
-	Delta        string           `json:"delta,omitempty"`
-	Text         string           `json:"text,omitempty"`
-	Response     *CodexResponse   `json:"response,omitempty"`
-	SequenceNum  int              `json:"sequence_number,omitempty"`
+	Type        string             `json:"type"`
+	ResponseID  string             `json:"response_id,omitempty"`
+	ItemID      string             `json:"item_id,omitempty"`
+	OutputIdx   int                `json:"output_index,omitempty"`
+	ContentIdx  int                `json:"content_index,omitempty"`
+	Item        *CodexOutputItem   `json:"item,omitempty"`
+	Part        *CodexContentBlock `json:"part,omitempty"`
+	Delta       string             `json:"delta,omitempty"`
+	Text        string             `json:"text,omitempty"`
+	Response    *CodexResponse     `json:"response,omitempty"`
+	SequenceNum int                `json:"sequence_number,omitempty"`
 }
 
 // codexStreamState tracks state during Codex streaming response conversion.
 // AI REVIEW NOTE: Added openBlockType field per AI review to track block start/stop pairing.
 // This prevents orphaned stops and ensures proper SSE contract compliance.
 type codexStreamState struct {
-	messageID         string
-	currentToolID     string
-	currentToolName   string
-	currentToolArgs   strings.Builder
-	toolUseBlocks     []ClaudeContentBlock
-	model             string
+	messageID       string
+	currentToolID   string
+	currentToolName string
+	currentToolArgs strings.Builder
+	toolUseBlocks   []ClaudeContentBlock
+	model           string
 	// nextClaudeIndex tracks the next content_block index for Claude events.
 	// This is independent of Codex's output_index/content_index to ensure
 	// Claude clients receive sequential, non-conflicting indices.
 	// Index is incremented only after content_block_stop events to maintain
 	// correct ordering for Claude clients.
-	nextClaudeIndex   int
+	nextClaudeIndex int
 	// openBlockType tracks the type of currently open block at nextClaudeIndex.
 	// Values: "", "text", "thinking", "tool". Empty means no block is open.
 	// Used to prevent orphaned stops and ensure proper block pairing.
-	openBlockType     string
+	openBlockType string
 	// finalSent tracks whether the final message_delta/message_stop events have been sent.
 	// This prevents duplicate final events when response.completed is received multiple times
 	// or when [DONE] is processed after response.completed.
-	finalSent         bool
+	finalSent bool
 	// reverseToolNameMap maps shortened tool names back to original names.
 	// Used to restore original tool names in streaming responses.
 	reverseToolNameMap map[string]string
 	// inThinkingBlock tracks whether we are currently inside a thinking/reasoning block.
 	// Used to properly handle reasoning summary events.
-	inThinkingBlock   bool
+	inThinkingBlock bool
 }
 
 // newCodexStreamState creates a new stream state for Codex CC conversion.
@@ -1246,11 +1246,11 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 	case "response.output_item.added":
 		if event.Item != nil {
 			logrus.WithFields(logrus.Fields{
-				"item_type":   event.Item.Type,
-				"item_id":     event.Item.ID,
+				"item_type":    event.Item.Type,
+				"item_id":      event.Item.ID,
 				"item_call_id": event.Item.CallID,
-				"item_name":   event.Item.Name,
-				"output_idx":  event.OutputIdx,
+				"item_name":    event.Item.Name,
+				"output_idx":   event.OutputIdx,
 			}).Debug("Codex CC: Output item added")
 			switch event.Item.Type {
 			case "message":
@@ -1479,7 +1479,6 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 	return events
 }
 
-
 // handleCodexCCNormalResponse handles non-streaming Codex response conversion to Claude format.
 func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Response) {
 	bodyBytes, err := readAllWithLimit(resp.Body, maxUpstreamResponseBodySize)
@@ -1631,11 +1630,11 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 	// Debug: log output items
 	for i, item := range codexResp.Output {
 		logrus.WithFields(logrus.Fields{
-			"index":     i,
-			"type":      item.Type,
-			"call_id":   item.CallID,
-			"name":      item.Name,
-			"args_len":  len(item.Arguments),
+			"index":    i,
+			"type":     item.Type,
+			"call_id":  item.CallID,
+			"name":     item.Name,
+			"args_len": len(item.Arguments),
 		}).Debug("Codex CC: Output item in non-streaming response")
 	}
 

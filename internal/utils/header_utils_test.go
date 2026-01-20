@@ -126,9 +126,9 @@ func TestResolveHeaderVariables(t *testing.T) {
 // TestApplyHeaderRules tests header rule application
 func TestApplyHeaderRules(t *testing.T) {
 	tests := []struct {
-		name   string
-		rules  []models.HeaderRule
-		check  func(t *testing.T, req *http.Request)
+		name  string
+		rules []models.HeaderRule
+		check func(t *testing.T, req *http.Request)
 	}{
 		{
 			"RemoveHeader",

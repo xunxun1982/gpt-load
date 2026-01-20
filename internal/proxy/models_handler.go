@@ -88,10 +88,10 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 	}()
 
 	logrus.WithFields(logrus.Fields{
-		"group":                group.Name,
-		"model_mapping_count":  len(group.ModelMappingCache),
-		"strict_mode":          group.ModelRedirectStrict,
-		"content_encoding":     resp.Header.Get("Content-Encoding"),
+		"group":               group.Name,
+		"model_mapping_count": len(group.ModelMappingCache),
+		"strict_mode":         group.ModelRedirectStrict,
+		"content_encoding":    resp.Header.Get("Content-Encoding"),
 	}).Debug("Handling /models endpoint with model mapping")
 
 	// Read response body
@@ -185,8 +185,8 @@ func (ps *ProxyServer) handleModelsResponse(c *gin.Context, resp *http.Response,
 func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Group) ([]byte, error) {
 	// Log the raw response for debugging
 	logrus.WithFields(logrus.Fields{
-		"group":         group.Name,
-		"response_size": len(bodyBytes),
+		"group":            group.Name,
+		"response_size":    len(bodyBytes),
 		"response_preview": string(bodyBytes[:min(200, len(bodyBytes))]),
 	}).Debug("Raw models response from upstream")
 
@@ -194,7 +194,7 @@ func (ps *ProxyServer) enhanceModelsResponse(bodyBytes []byte, group *models.Gro
 	var responseData map[string]any
 	if err := json.Unmarshal(bodyBytes, &responseData); err != nil {
 		logrus.WithFields(logrus.Fields{
-			"error": err.Error(),
+			"error":            err.Error(),
 			"response_preview": string(bodyBytes[:min(500, len(bodyBytes))]),
 		}).Warn("Failed to parse models response as JSON; returning original")
 		return nil, err

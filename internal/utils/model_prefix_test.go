@@ -795,11 +795,11 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"magnum-v4-72b", "magnum-v4-72b", "anthracite/"},
 
 		// Arcee AI models (detection based on model name patterns)
-		{"arcee-ai/coder-large", "arcee-ai/coder-large", ""},           // "coder-large" doesn't match arcee patterns
+		{"arcee-ai/coder-large", "arcee-ai/coder-large", ""},                   // "coder-large" doesn't match arcee patterns
 		{"arcee-ai/maestro-reasoning", "arcee-ai/maestro-reasoning", "arcee/"}, // "maestro" matches
-		{"arcee-ai/trinity-mini", "arcee-ai/trinity-mini", "arcee/"},   // "trinity" matches
-		{"arcee-ai/virtuoso-large", "arcee-ai/virtuoso-large", "arcee/"}, // "virtuoso" matches
-		{"arcee-ai/spotlight", "arcee-ai/spotlight", "arcee/"},         // "spotlight" matches
+		{"arcee-ai/trinity-mini", "arcee-ai/trinity-mini", "arcee/"},           // "trinity" matches
+		{"arcee-ai/virtuoso-large", "arcee-ai/virtuoso-large", "arcee/"},       // "virtuoso" matches
+		{"arcee-ai/spotlight", "arcee-ai/spotlight", "arcee/"},                 // "spotlight" matches
 		{"trinity-mini", "trinity-mini", "arcee/"},
 		{"maestro-reasoning", "maestro-reasoning", "arcee/"},
 
@@ -811,7 +811,7 @@ func TestDetectBrandPrefix(t *testing.T) {
 		// ByteDance Seed models (detection based on model name patterns)
 		{"bytedance-seed/seed-1.6", "bytedance-seed/seed-1.6", "bytedance/"}, // "seed-1" matches seed-\d pattern
 		{"bytedance-seed/seed-1.6-flash", "bytedance-seed/seed-1.6-flash", "bytedance/"},
-		{"bytedance/ui-tars-1.5-7b", "bytedance/ui-tars-1.5-7b", ""},   // "ui-tars" doesn't match any pattern
+		{"bytedance/ui-tars-1.5-7b", "bytedance/ui-tars-1.5-7b", ""}, // "ui-tars" doesn't match any pattern
 
 		// Cohere models
 		{"cohere/command-a", "cohere/command-a", "cohere/"},
@@ -860,7 +860,7 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"inflection-3-pi", "inflection-3-pi", "inflection/"},
 
 		// Kuaishou/Kwaipilot models (detection based on model name patterns)
-		{"kwaipilot/kat-coder-pro", "kwaipilot/kat-coder-pro", ""},     // "kat-coder-pro" doesn't match kat-dev or kat-v\d
+		{"kwaipilot/kat-coder-pro", "kwaipilot/kat-coder-pro", ""}, // "kat-coder-pro" doesn't match kat-dev or kat-v\d
 
 		// Liquid AI models
 		{"liquid/lfm-2.2-6b", "liquid/lfm-2.2-6b", "liquid/"},
@@ -882,7 +882,7 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"meta-llama/llama-guard-4-12b", "meta-llama/llama-guard-4-12b", "meta/"},
 
 		// Microsoft models (detection based on model name patterns)
-		{"microsoft/phi-4", "microsoft/phi-4", "microsoft/"},          // "phi-4" matches phi- pattern
+		{"microsoft/phi-4", "microsoft/phi-4", "microsoft/"},                      // "phi-4" matches phi- pattern
 		{"microsoft/wizardlm-2-8x22b", "microsoft/wizardlm-2-8x22b", "wizardlm/"}, // "wizardlm" matches wizardlm pattern
 
 		// MiniMax models (OpenRouter format)
@@ -918,8 +918,8 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"nex-agi/deepseek-v3.1-nex-n1", "nex-agi/deepseek-v3.1-nex-n1", "deepseek/"}, // "deepseek" matches first
 
 		// Nous Research models (OpenRouter format, detection based on model name patterns)
-		{"nousresearch/hermes-3-llama-3.1-405b", "nousresearch/hermes-3-llama-3.1-405b", "nous/"}, // "hermes" matches
-		{"nousresearch/hermes-4-405b", "nousresearch/hermes-4-405b", "nous/"},                     // "hermes" matches
+		{"nousresearch/hermes-3-llama-3.1-405b", "nousresearch/hermes-3-llama-3.1-405b", "nous/"},                   // "hermes" matches
+		{"nousresearch/hermes-4-405b", "nousresearch/hermes-4-405b", "nous/"},                                       // "hermes" matches
 		{"nousresearch/deephermes-3-mistral-24b-preview", "nousresearch/deephermes-3-mistral-24b-preview", "nous/"}, // "hermes" in deephermes matches
 
 		// NVIDIA models (OpenRouter format, detection based on model name patterns)
@@ -970,7 +970,7 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"stepfun-ai/step3", "stepfun-ai/step3", "stepfun/"},
 
 		// SwitchPoint models (detection based on model name patterns)
-		{"switchpoint/router", "switchpoint/router", ""},              // "router" doesn't match any pattern
+		{"switchpoint/router", "switchpoint/router", ""}, // "router" doesn't match any pattern
 
 		// Tencent models (OpenRouter format)
 		{"tencent/hunyuan-a13b-instruct", "tencent/hunyuan-a13b-instruct", "tencent/"},
@@ -984,7 +984,7 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"rocinante-12b", "rocinante-12b", "thedrummer/"},
 
 		// TNG Technology models (detection based on model name patterns)
-		{"tngtech/deepseek-r1t-chimera", "tngtech/deepseek-r1t-chimera", "deepseek/"}, // "deepseek" matches first
+		{"tngtech/deepseek-r1t-chimera", "tngtech/deepseek-r1t-chimera", "deepseek/"},   // "deepseek" matches first
 		{"tngtech/deepseek-r1t2-chimera", "tngtech/deepseek-r1t2-chimera", "deepseek/"}, // "deepseek" matches first
 		{"tngtech/tng-r1t-chimera", "tngtech/tng-r1t-chimera", "tng/"},                  // "chimera" matches tng
 
@@ -1128,7 +1128,7 @@ func TestDetectBrandPrefix(t *testing.T) {
 
 		// ==================== Additional models from merged_models.txt ====================
 		// AkashChat hosted models (additional)
-		{"AkashChat/AkashGen", "AkashChat/AkashGen", ""},                                   // AkashGen is not a known brand
+		{"AkashChat/AkashGen", "AkashChat/AkashGen", ""}, // AkashGen is not a known brand
 		{"AkashChat/Qwen3-Next-80B-A3B-Instruct", "AkashChat/Qwen3-Next-80B-A3B-Instruct", "tongyi/"},
 		{"AkashChat/meta-llama-Llama-4-Maverick-17B-128E-Instruct-FP8", "AkashChat/meta-llama-Llama-4-Maverick-17B-128E-Instruct-FP8", "meta/"},
 		{"AkashChat/openai-gpt-oss-120b", "AkashChat/openai-gpt-oss-120b", "openai/"},
@@ -1184,9 +1184,9 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"Grok/grok-4-reasoning", "Grok/grok-4-reasoning", "xai/"},
 
 		// Groq hosted models (additional)
-		{"Groq/allam-2-7b", "Groq/allam-2-7b", ""},                                         // allam is not a known brand
-		{"Groq/compound-beta", "Groq/compound-beta", ""},                                   // compound is not a known brand
-		{"Groq/compound-beta-mini", "Groq/compound-beta-mini", ""},                         // compound is not a known brand
+		{"Groq/allam-2-7b", "Groq/allam-2-7b", ""},                 // allam is not a known brand
+		{"Groq/compound-beta", "Groq/compound-beta", ""},           // compound is not a known brand
+		{"Groq/compound-beta-mini", "Groq/compound-beta-mini", ""}, // compound is not a known brand
 		{"Groq/meta-llama/llama-guard-4-12b", "Groq/meta-llama/llama-guard-4-12b", "meta/"},
 		{"Groq/meta-llama/llama-prompt-guard-2-22m", "Groq/meta-llama/llama-prompt-guard-2-22m", "meta/"},
 
@@ -1204,14 +1204,14 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"Modelscope/LLM-Research/c4ai-command-r-plus-08-2024", "Modelscope/LLM-Research/c4ai-command-r-plus-08-2024", "cohere/"},
 		{"Modelscope/MusePublic/Qwen-Image-Edit", "Modelscope/MusePublic/Qwen-Image-Edit", "tongyi/"},
 		{"Modelscope/XGenerationLab/XiYanSQL-QwenCoder-32B-2412", "Modelscope/XGenerationLab/XiYanSQL-QwenCoder-32B-2412", "tongyi/"},
-		{"Modelscope/wuhoutest5015/resume_ner", "Modelscope/wuhoutest5015/resume_ner", ""},  // resume_ner is not a known brand
+		{"Modelscope/wuhoutest5015/resume_ner", "Modelscope/wuhoutest5015/resume_ner", ""}, // resume_ner is not a known brand
 
 		// OpenRouter hosted models (additional)
-		{"Openrouter/agentica-org/deepcoder-14b-preview", "Openrouter/agentica-org/deepcoder-14b-preview", ""},  // deepcoder is not a known brand
+		{"Openrouter/agentica-org/deepcoder-14b-preview", "Openrouter/agentica-org/deepcoder-14b-preview", ""}, // deepcoder is not a known brand
 		{"Openrouter/arliai/qwq-32b-arliai-rpr-v1", "Openrouter/arliai/qwq-32b-arliai-rpr-v1", "tongyi/"},
-		{"Openrouter/microsoft/mai-ds-r1", "Openrouter/microsoft/mai-ds-r1", ""},            // mai-ds-r1 doesn't match phi- pattern
+		{"Openrouter/microsoft/mai-ds-r1", "Openrouter/microsoft/mai-ds-r1", ""}, // mai-ds-r1 doesn't match phi- pattern
 		{"Openrouter/rekaai/reka-flash-3", "Openrouter/rekaai/reka-flash-3", "reka/"},
-		{"Openrouter/sarvamai/sarvam-m", "Openrouter/sarvamai/sarvam-m", ""},                // sarvam is not a known brand
+		{"Openrouter/sarvamai/sarvam-m", "Openrouter/sarvamai/sarvam-m", ""}, // sarvam is not a known brand
 		{"Openrouter/shisa-ai/shisa-v2-llama3.3-70b", "Openrouter/shisa-ai/shisa-v2-llama3.3-70b", "meta/"},
 
 		// Qwen hosted models (additional)
@@ -1234,7 +1234,7 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"Warp/claude-4.1-opus", "Warp/claude-4.1-opus", "anthropic/"},
 		{"Warp/gpt-4.1", "Warp/gpt-4.1", "openai/"},
 		{"Warp/gpt-4o", "Warp/gpt-4o", "openai/"},
-		{"Warp/warp-basic (lite)", "Warp/warp-basic (lite)", ""},                           // warp-basic is not a known brand
+		{"Warp/warp-basic (lite)", "Warp/warp-basic (lite)", ""}, // warp-basic is not a known brand
 
 		// Z.ai/Zai hosted models
 		{"Zai/GLM-4.5", "Zai/GLM-4.5", "glm/"},
@@ -1248,7 +1248,7 @@ func TestDetectBrandPrefix(t *testing.T) {
 		{"nousresearch/hermes-4-70b-instruct", "nousresearch/hermes-4-70b-instruct", "nous/"},
 
 		// OpenRouter models (additional)
-		{"openrouter/bodybuilder", "openrouter/bodybuilder", ""},                           // bodybuilder is not a known brand
+		{"openrouter/bodybuilder", "openrouter/bodybuilder", ""}, // bodybuilder is not a known brand
 
 		// TNG models with :free suffix
 		{"tng/tng-r1t-chimera:free", "tng/tng-r1t-chimera:free", "tng/"},
@@ -1534,13 +1534,13 @@ func TestApplyBrandPrefixBatch(t *testing.T) {
 	// Test lowercase
 	resultLower := ApplyBrandPrefixBatch(models, true)
 	expectedLower := map[string]string{
-		"deepseek-chat":  "deepseek/deepseek-chat",
-		"gpt-4":          "openai/gpt-4",
-		"o3":             "openai/o3",
-		"o3-pro":         "openai/o3-pro",
-		"gemini-pro":     "google/gemini-pro",
-		"claude-3-opus":  "anthropic/claude-3-opus",
-		"unknown-model":  "unknown-model",
+		"deepseek-chat": "deepseek/deepseek-chat",
+		"gpt-4":         "openai/gpt-4",
+		"o3":            "openai/o3",
+		"o3-pro":        "openai/o3-pro",
+		"gemini-pro":    "google/gemini-pro",
+		"claude-3-opus": "anthropic/claude-3-opus",
+		"unknown-model": "unknown-model",
 	}
 
 	for model, expected := range expectedLower {
@@ -1552,13 +1552,13 @@ func TestApplyBrandPrefixBatch(t *testing.T) {
 	// Test capitalized (official brand names)
 	resultUpper := ApplyBrandPrefixBatch(models, false)
 	expectedUpper := map[string]string{
-		"deepseek-chat":  "DeepSeek/deepseek-chat",
-		"gpt-4":          "OpenAI/gpt-4",
-		"o3":             "OpenAI/o3",
-		"o3-pro":         "OpenAI/o3-pro",
-		"gemini-pro":     "Google/gemini-pro",
-		"claude-3-opus":  "Anthropic/claude-3-opus",
-		"unknown-model":  "unknown-model",
+		"deepseek-chat": "DeepSeek/deepseek-chat",
+		"gpt-4":         "OpenAI/gpt-4",
+		"o3":            "OpenAI/o3",
+		"o3-pro":        "OpenAI/o3-pro",
+		"gemini-pro":    "Google/gemini-pro",
+		"claude-3-opus": "Anthropic/claude-3-opus",
+		"unknown-model": "unknown-model",
 	}
 
 	for model, expected := range expectedUpper {
@@ -1652,4 +1652,4 @@ func TestOpenAIOSeriesModels(t *testing.T) {
 			}
 		})
 	}
-}
+}

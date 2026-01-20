@@ -26,10 +26,10 @@ func TestCleanAnonymizationHeaders(t *testing.T) {
 		{
 			"ProxyHeaders",
 			map[string]string{
-				"X-Forwarded-For":  "1.2.3.4",
-				"X-Real-IP":        "1.2.3.4",
-				"X-Client-IP":      "1.2.3.4",
-				"User-Agent":       "Mozilla/5.0",
+				"X-Forwarded-For": "1.2.3.4",
+				"X-Real-IP":       "1.2.3.4",
+				"X-Client-IP":     "1.2.3.4",
+				"User-Agent":      "Mozilla/5.0",
 			},
 			[]string{"X-Forwarded-For", "X-Real-IP", "X-Client-IP"},
 			[]string{"User-Agent"},

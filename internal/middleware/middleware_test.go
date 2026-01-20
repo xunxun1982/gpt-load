@@ -38,12 +38,12 @@ func TestLogger(t *testing.T) {
 // TestCORS tests CORS middleware
 func TestCORS(t *testing.T) {
 	tests := []struct {
-		name             string
-		config           types.CORSConfig
-		origin           string
-		method           string
-		expectedStatus   int
-		expectHeaders    bool
+		name           string
+		config         types.CORSConfig
+		origin         string
+		method         string
+		expectedStatus int
+		expectHeaders  bool
 	}{
 		{
 			name: "CORS disabled",
@@ -441,8 +441,6 @@ func BenchmarkExtractAuthKey(b *testing.B) {
 	}
 }
 
-
-
 // TestLoggerWithKeyInfo tests logger with key information
 func TestLoggerWithKeyInfo(t *testing.T) {
 	router := gin.New()
@@ -787,8 +785,6 @@ func BenchmarkCORSPreflight(b *testing.B) {
 		router.ServeHTTP(w, req)
 	}
 }
-
-
 
 // TestErrorHandler tests error handling middleware
 func TestErrorHandler(t *testing.T) {

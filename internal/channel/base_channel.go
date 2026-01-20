@@ -39,13 +39,13 @@ type BaseChannel struct {
 	upstreamLock       sync.Mutex
 
 	// Cached fields from the group for stale check
-	channelType          string
-	groupUpstreams       datatypes.JSON
-	effectiveConfig      *types.SystemSettings
-	pathRedirectsRaw     datatypes.JSON
-	pathRedirectRules    []models.PathRedirectRule // Applied only for OpenAI channel
-	modelRedirectRules   datatypes.JSONMap
-	modelRedirectStrict  bool
+	channelType         string
+	groupUpstreams      datatypes.JSON
+	effectiveConfig     *types.SystemSettings
+	pathRedirectsRaw    datatypes.JSON
+	pathRedirectRules   []models.PathRedirectRule // Applied only for OpenAI channel
+	modelRedirectRules  datatypes.JSONMap
+	modelRedirectStrict bool
 }
 
 // SelectUpstream selects an upstream using weighted random selection algorithm.

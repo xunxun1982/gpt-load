@@ -1279,8 +1279,8 @@ func TestConvertClaudeMessageToGemini_ToolUse(t *testing.T) {
 // TestProcessJsonSchema_ComplexSchemas tests JSON schema processing with complex structures
 func TestProcessJsonSchema_ComplexSchemas(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
+		name      string
+		input     string
 		checkFunc func(*testing.T, json.RawMessage)
 	}{
 		{

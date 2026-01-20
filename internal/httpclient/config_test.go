@@ -17,7 +17,7 @@ func TestConfig_FingerprintEmpty(t *testing.T) {
 // TestConfig_FingerprintWithTimeouts tests fingerprint with various timeouts
 func TestConfig_FingerprintWithTimeouts(t *testing.T) {
 	tests := []struct {
-		name string
+		name   string
 		config *Config
 	}{
 		{
@@ -32,14 +32,14 @@ func TestConfig_FingerprintWithTimeouts(t *testing.T) {
 			},
 		},
 		{
-			name: "no timeouts",
+			name:   "no timeouts",
 			config: &Config{},
 		},
 		{
 			name: "partial timeouts",
 			config: &Config{
-				ConnectTimeout:  5 * time.Second,
-				RequestTimeout:  30 * time.Second,
+				ConnectTimeout: 5 * time.Second,
+				RequestTimeout: 30 * time.Second,
 			},
 		},
 	}
@@ -167,8 +167,8 @@ func BenchmarkConfigFingerprint(b *testing.B) {
 	configs := []*Config{
 		{},
 		{
-			ConnectTimeout:  10 * time.Second,
-			RequestTimeout:  30 * time.Second,
+			ConnectTimeout: 10 * time.Second,
+			RequestTimeout: 30 * time.Second,
 		},
 		{
 			ConnectTimeout:        10 * time.Second,

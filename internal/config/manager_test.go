@@ -173,11 +173,11 @@ func TestManagerGetters(t *testing.T) {
 // TestManagerCORSValidation tests CORS configuration validation
 func TestManagerCORSValidation(t *testing.T) {
 	tests := []struct {
-		name         string
-		enableCORS   string
-		origins      string
-		expectError  bool
-		expectWarn   bool
+		name        string
+		enableCORS  string
+		origins     string
+		expectError bool
+		expectWarn  bool
 	}{
 		{
 			name:        "CORS disabled",
@@ -703,9 +703,9 @@ func TestManagerLogConfigAllOptions(t *testing.T) {
 // TestManagerPerformanceConfig tests performance configuration
 func TestManagerPerformanceConfig(t *testing.T) {
 	tests := []struct {
-		name           string
-		maxConcurrent  string
-		expectedValue  int
+		name          string
+		maxConcurrent string
+		expectedValue int
 	}{
 		{"default", "", 100},
 		{"custom low", "50", 50},

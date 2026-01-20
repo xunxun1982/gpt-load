@@ -87,11 +87,11 @@ func (s *BulkImportService) initializeSQLiteOptimizations() {
 	// Apply only safe, global SQLite PRAGMA optimizations
 	// Do NOT disable foreign_keys, synchronous, or other safety features globally
 	// Use environment variables with reasonable defaults for bulk import operations
-	cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "20000")        // Increase cache to 20000 pages (~80MB with 4KB pages)
-	tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")       // Use memory for temporary tables
-	mmapSize := utils.GetEnvOrDefault("SQLITE_MMAP_SIZE", "30000000000")    // 30GB memory mapping (virtual, not physical RAM)
-	pageSize := utils.GetEnvOrDefault("SQLITE_PAGE_SIZE", "4096")          // Optimal page size
-	busyTimeout := utils.GetEnvOrDefault("SQLITE_BUSY_TIMEOUT", "30000")   // 30 second busy timeout
+	cacheSize := utils.GetEnvOrDefault("SQLITE_CACHE_SIZE", "20000")                 // Increase cache to 20000 pages (~80MB with 4KB pages)
+	tempStore := utils.GetEnvOrDefault("SQLITE_TEMP_STORE", "MEMORY")                // Use memory for temporary tables
+	mmapSize := utils.GetEnvOrDefault("SQLITE_MMAP_SIZE", "30000000000")             // 30GB memory mapping (virtual, not physical RAM)
+	pageSize := utils.GetEnvOrDefault("SQLITE_PAGE_SIZE", "4096")                    // Optimal page size
+	busyTimeout := utils.GetEnvOrDefault("SQLITE_BUSY_TIMEOUT", "30000")             // 30 second busy timeout
 	walAutocheckpoint := utils.GetEnvOrDefault("SQLITE_WAL_AUTOCHECKPOINT", "10000") // Less frequent WAL checkpoints
 
 	pragmas := []string{
@@ -142,9 +142,9 @@ func (s *BulkImportService) setDefaultBatchSizes() {
 	case "sqlite":
 		// SQLite: Conservative batch sizes due to 1MB SQL statement limit
 		// Reduced sizes for encrypted keys which are ~200+ chars each
-		s.batchSizes["small"] = 25   // For records with large text fields
-		s.batchSizes["medium"] = 50  // For normal records
-		s.batchSizes["large"] = 100  // For records with minimal data
+		s.batchSizes["small"] = 25  // For records with large text fields
+		s.batchSizes["medium"] = 50 // For normal records
+		s.batchSizes["large"] = 100 // For records with minimal data
 
 	case "mysql":
 		// MySQL: Larger batches, limited by max_allowed_packet
@@ -268,8 +268,8 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 
 	// Create a session with optimized settings using the provided transaction
 	session := tx.Session(&gorm.Session{
-		PrepareStmt:            true,  // Use prepared statements
-		SkipDefaultTransaction: true,  // We're using the provided transaction
+		PrepareStmt:            true, // Use prepared statements
+		SkipDefaultTransaction: true, // We're using the provided transaction
 		CreateBatchSize:        batchSize,
 	})
 

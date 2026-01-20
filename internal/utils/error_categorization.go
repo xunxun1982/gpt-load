@@ -142,12 +142,12 @@ func CategorizeError(err error) *CategorizedError {
 func ShouldRetryHTTPStatus(statusCode int) bool {
 	// Retry on server errors (5xx) and specific client errors
 	switch statusCode {
-	case http.StatusTooManyRequests,        // 429
-		http.StatusRequestTimeout,          // 408
-		http.StatusInternalServerError,     // 500
-		http.StatusBadGateway,              // 502
-		http.StatusServiceUnavailable,      // 503
-		http.StatusGatewayTimeout:          // 504
+	case http.StatusTooManyRequests, // 429
+		http.StatusRequestTimeout,      // 408
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout:      // 504
 		return true
 	default:
 		return false

@@ -308,7 +308,7 @@ func DecompressResponseWithLimit(contentEncoding string, data []byte, maxSize in
 	// This stops decompression early, preventing zip bomb memory exhaustion.
 	// Guard against overflow when maxSize is very large (close to MaxInt64)
 	limit := maxSize + 1
-	if maxSize > (1<<62) { // Avoid overflow for very large maxSize values
+	if maxSize > (1 << 62) { // Avoid overflow for very large maxSize values
 		limit = maxSize
 	}
 	limitedReader := io.LimitReader(reader, limit)

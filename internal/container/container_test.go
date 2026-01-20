@@ -48,7 +48,6 @@ func TestBuildContainer_ConfigManager(t *testing.T) {
 func TestBuildContainer_App(t *testing.T) {
 	setupTestEnv(t)
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 	assert.NotNil(t, container)
@@ -64,7 +63,6 @@ func TestBuildContainer_App(t *testing.T) {
 func TestBuildContainer_SystemSettingsManager(t *testing.T) {
 	setupTestEnv(t)
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -79,7 +77,6 @@ func TestBuildContainer_SystemSettingsManager(t *testing.T) {
 // TestBuildContainer_AllServices tests that all services can be resolved
 func TestBuildContainer_AllServices(t *testing.T) {
 	setupTestEnv(t)
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -129,7 +126,6 @@ func BenchmarkContainerInvoke(b *testing.B) {
 func TestBuildContainer_MultipleInvocations(t *testing.T) {
 	setupTestEnv(t)
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -155,7 +151,6 @@ func TestBuildContainer_MultipleInvocations(t *testing.T) {
 func TestBuildContainer_ErrorHandling(t *testing.T) {
 	setupTestEnv(t)
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -170,7 +165,6 @@ func TestBuildContainer_ErrorHandling(t *testing.T) {
 func TestBuildContainer_WithEncryptionKey(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("ENCRYPTION_KEY", "test-encryption-key-32-bytes!!")
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -190,7 +184,6 @@ func TestBuildContainer_WithDebugMode(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("DEBUG_MODE", "true")
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 	require.NotNil(t, container)
@@ -208,7 +201,6 @@ func TestBuildContainer_WithCORSEnabled(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("ENABLE_CORS", "true")
 	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -228,7 +220,6 @@ func TestBuildContainer_WithRedis(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("REDIS_DSN", "redis://localhost:6379")
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 	require.NotNil(t, container)
@@ -245,7 +236,6 @@ func TestBuildContainer_WithRedis(t *testing.T) {
 func TestBuildContainer_WithCustomPort(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("PORT", "8080")
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -264,7 +254,6 @@ func TestBuildContainer_WithCustomHost(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("HOST", "127.0.0.1")
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 	require.NotNil(t, container)
@@ -281,7 +270,6 @@ func TestBuildContainer_WithCustomHost(t *testing.T) {
 func TestBuildContainer_WithMaxConcurrentRequests(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("MAX_CONCURRENT_REQUESTS", "200")
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -300,7 +288,6 @@ func TestBuildContainer_WithLogLevel(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("LOG_LEVEL", "debug")
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 	require.NotNil(t, container)
@@ -317,7 +304,6 @@ func TestBuildContainer_WithLogLevel(t *testing.T) {
 func TestBuildContainer_WithSlaveMode(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("IS_SLAVE", "true")
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -343,7 +329,6 @@ func TestBuildContainer_WithAllConfigs(t *testing.T) {
 	t.Setenv("MAX_CONCURRENT_REQUESTS", "200")
 	t.Setenv("LOG_LEVEL", "debug")
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 	require.NotNil(t, container)
@@ -362,7 +347,6 @@ func TestBuildContainer_WithAllConfigs(t *testing.T) {
 func TestBuildContainer_MultipleServices(t *testing.T) {
 	setupTestEnv(t)
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -380,7 +364,6 @@ func TestBuildContainer_MultipleServices(t *testing.T) {
 // TestBuildContainer_ServiceSingleton tests that services are singletons
 func TestBuildContainer_ServiceSingleton(t *testing.T) {
 	setupTestEnv(t)
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -448,7 +431,6 @@ func BenchmarkContainerInvokeMultiple(b *testing.B) {
 func TestBuildContainer_AllProviders(t *testing.T) {
 	setupTestEnv(t)
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 	require.NotNil(t, container)
@@ -476,7 +458,6 @@ func TestBuildContainer_InfrastructureServices(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("IS_SLAVE", "false") // Explicitly set to master mode
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -498,7 +479,6 @@ func TestBuildContainer_ConfigManagerProperties(t *testing.T) {
 	t.Setenv("DEBUG_MODE", "true")
 	t.Setenv("LOG_LEVEL", "debug")
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -515,7 +495,6 @@ func TestBuildContainer_PerformanceConfig(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("MAX_CONCURRENT_REQUESTS", "250")
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -531,7 +510,6 @@ func TestBuildContainer_ServerConfig(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("HOST", "localhost")
 	t.Setenv("PORT", "9090")
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -550,7 +528,6 @@ func TestBuildContainer_CORSConfig(t *testing.T) {
 	t.Setenv("ENABLE_CORS", "true")
 	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
 	t.Setenv("ALLOW_CREDENTIALS", "true")
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -571,7 +548,6 @@ func TestBuildContainer_LogConfig(t *testing.T) {
 	t.Setenv("LOG_FORMAT", "json")
 	t.Setenv("LOG_ENABLE_FILE", "true")
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -588,7 +564,6 @@ func TestBuildContainer_LogConfig(t *testing.T) {
 func TestBuildContainer_DatabaseConfig(t *testing.T) {
 	setupTestEnv(t)
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -604,7 +579,6 @@ func TestBuildContainer_RedisConfig(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("REDIS_DSN", "redis://localhost:6379/0")
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -619,7 +593,6 @@ func TestBuildContainer_RedisConfig(t *testing.T) {
 func TestBuildContainer_EncryptionConfig(t *testing.T) {
 	setupTestEnv(t)
 	t.Setenv("ENCRYPTION_KEY", "my-secret-encryption-key-32b!!")
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)
@@ -647,7 +620,6 @@ func TestBuildContainer_MasterSlaveMode(t *testing.T) {
 			setupTestEnv(t)
 			t.Setenv("IS_SLAVE", tt.isSlave)
 
-
 			container, err := BuildContainer()
 			require.NoError(t, err)
 
@@ -663,7 +635,6 @@ func TestBuildContainer_MasterSlaveMode(t *testing.T) {
 func TestBuildContainer_ValidationSuccess(t *testing.T) {
 	setupTestEnv(t)
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -678,7 +649,6 @@ func TestBuildContainer_ValidationSuccess(t *testing.T) {
 func TestBuildContainer_ReloadConfig(t *testing.T) {
 	setupTestEnv(t)
 
-
 	container, err := BuildContainer()
 	require.NoError(t, err)
 
@@ -692,7 +662,6 @@ func TestBuildContainer_ReloadConfig(t *testing.T) {
 // TestBuildContainer_DisplayConfig tests config display
 func TestBuildContainer_DisplayConfig(t *testing.T) {
 	setupTestEnv(t)
-
 
 	container, err := BuildContainer()
 	require.NoError(t, err)

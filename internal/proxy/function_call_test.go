@@ -218,10 +218,10 @@ func TestRemoveFunctionCallsBlocks_AutoPauseSnippetsFromProductionLog(t *testing
 // TestApplyFunctionCallRequestRewrite_CCRequestRemovesTools verifies that when
 // force_function_call is enabled, native tools are removed from the request
 // even for CC requests. This is the correct behavior because:
-// 1. Force function call injects tools via system prompt
-// 2. Native tools should NOT be sent to upstream to avoid format conflicts
-// 3. CC tools use Claude format (input_schema) but after conversion they become
-//    OpenAI format (parameters), which can cause "input_schema: Field required" errors
+//  1. Force function call injects tools via system prompt
+//  2. Native tools should NOT be sent to upstream to avoid format conflicts
+//  3. CC tools use Claude format (input_schema) but after conversion they become
+//     OpenAI format (parameters), which can cause "input_schema: Field required" errors
 func TestApplyFunctionCallRequestRewrite_CCRequestRemovesTools(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -646,8 +646,8 @@ func TestRemoveFunctionCallsBlocks_ChainedMalformedTags(t *testing.T) {
 			expected: "",
 		},
 		{
-			name:     "chained with surrounding text single line",
-			input:    "Hello <><invokename=\"Read\"><parametername=\"path\">test.py world",
+			name:  "chained with surrounding text single line",
+			input: "Hello <><invokename=\"Read\"><parametername=\"path\">test.py world",
 			// NOTE: The entire line content after malformed tag is removed because we cannot
 			// distinguish "parameter value" from "trailing text" on the same line
 			expected: "Hello",
@@ -673,8 +673,8 @@ func TestRemoveFunctionCallsBlocks_ChainedMalformedTags(t *testing.T) {
 			expected: `● Read(hello.py)`,
 		},
 		{
-			name:     "mixed malformed and valid content multiline",
-			input:    "Hello <><invokename=\"Test\">value\n● Search(pattern: \"*\")\nWorld",
+			name:  "mixed malformed and valid content multiline",
+			input: "Hello <><invokename=\"Test\">value\n● Search(pattern: \"*\")\nWorld",
 			// The malformed tag content is removed, but tool result descriptions like "● Search(...)" are preserved
 			expected: "Hello\n● Search(pattern: \"*\")\nWorld",
 		},
@@ -953,11 +953,11 @@ func TestReMalformedParamTag(t *testing.T) {
 // TestReMcpParam tests the reMcpParam regex pattern for MCP-style parameters
 func TestReMcpParam(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		matches    bool
-		wantName   string
-		wantValue  string
+		name      string
+		input     string
+		matches   bool
+		wantName  string
+		wantValue string
 	}{
 		{
 			name:      "match parameter with name attribute",
@@ -1167,21 +1167,21 @@ func TestRemoveFunctionCallsBlocks_CCRetryPhrases(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "remove malformed tag but keep description",
-			input:    "我需要修正TodoWrite的参数格式<><invokename=\"TodoWrite\">[{\"id\":\"1\"}]",
+			name:  "remove malformed tag but keep description",
+			input: "我需要修正TodoWrite的参数格式<><invokename=\"TodoWrite\">[{\"id\":\"1\"}]",
 			// Malformed tag is removed, but the descriptive text is kept to avoid over-filtering
 			// In streaming mode, this will be filtered earlier when detected
 			expected: "我需要修正TodoWrite的参数格式",
 		},
 		{
-			name:     "remove malformed tag preserve recreate phrase",
-			input:    "让我重新创建任务清单：<><parametername=\"todos\">[...]",
+			name:  "remove malformed tag preserve recreate phrase",
+			input: "让我重新创建任务清单：<><parametername=\"todos\">[...]",
 			// Retry phrases are preserved to avoid over-filtering in streaming mode
 			expected: "让我重新创建任务清单：",
 		},
 		{
-			name:     "remove malformed tag from repetition",
-			input:    "根据用户的要求，我需要...<><invokename=\"Tool\">",
+			name:  "remove malformed tag from repetition",
+			input: "根据用户的要求，我需要...<><invokename=\"Tool\">",
 			// Malformed tag is removed, descriptive text is filtered by plan header removal
 			expected: "根据用户的要求，我需要...",
 		},
@@ -1351,8 +1351,8 @@ func TestRemoveFunctionCallsBlocks_CCOutputFromProductionLog(t *testing.T) {
 			expected: "Hello",
 		},
 		{
-			name:     "ANTML backslash-b tools tag",
-			input:    `Content <antml\b:tools>tool list</antml\b:tools> more`,
+			name:  "ANTML backslash-b tools tag",
+			input: `Content <antml\b:tools>tool list</antml\b:tools> more`,
 			// NOTE: ANTML blocks contain internal format examples that should NOT be visible to users.
 			// The entire block (including content) should be removed, not just the tags.
 			// This is consistent with the behavior for <antml\b:format> and <antml\b:role> blocks.
@@ -1462,30 +1462,30 @@ func TestParseFunctionCallsXML_MalformedOutputFromProductionLog(t *testing.T) {
 		expectedArgKey string
 	}{
 		{
-			name:          "malformed invokename with parametername",
-			input:         `<<CALL_test>><><invokename="TodoWrite"><parametername="todos">[{"id":"1","content":"task"}]`,
-			triggerSignal: "<<CALL_test>>",
-			expectedCount: 1,
-			expectedNames: []string{"TodoWrite"},
-			checkArgs:     true,
+			name:           "malformed invokename with parametername",
+			input:          `<<CALL_test>><><invokename="TodoWrite"><parametername="todos">[{"id":"1","content":"task"}]`,
+			triggerSignal:  "<<CALL_test>>",
+			expectedCount:  1,
+			expectedNames:  []string{"TodoWrite"},
+			checkArgs:      true,
 			expectedArgKey: "todos",
 		},
 		{
-			name:          "malformed glob pattern",
-			input:         `<<CALL_test>><><invokename="Glob"><parametername="pattern">*</parameter>`,
-			triggerSignal: "<<CALL_test>>",
-			expectedCount: 1,
-			expectedNames: []string{"Glob"},
-			checkArgs:     true,
+			name:           "malformed glob pattern",
+			input:          `<<CALL_test>><><invokename="Glob"><parametername="pattern">*</parameter>`,
+			triggerSignal:  "<<CALL_test>>",
+			expectedCount:  1,
+			expectedNames:  []string{"Glob"},
+			checkArgs:      true,
 			expectedArgKey: "pattern",
 		},
 		{
-			name:          "malformed read with file path",
-			input:         `<<CALL_test>><><invokename="Read"><parametername="file_path">F:/test/file.py`,
-			triggerSignal: "<<CALL_test>>",
-			expectedCount: 1,
-			expectedNames: []string{"Read"},
-			checkArgs:     true,
+			name:           "malformed read with file path",
+			input:          `<<CALL_test>><><invokename="Read"><parametername="file_path">F:/test/file.py`,
+			triggerSignal:  "<<CALL_test>>",
+			expectedCount:  1,
+			expectedNames:  []string{"Read"},
+			checkArgs:      true,
 			expectedArgKey: "file_path",
 		},
 		{
@@ -1505,21 +1505,21 @@ func TestParseFunctionCallsXML_MalformedOutputFromProductionLog(t *testing.T) {
 			checkArgs:     false,
 		},
 		{
-			name:          "multiple malformed calls (FIXED: only first call is parsed)",
-			input:         `<<CALL_test>><><invokename="A"><parametername="x">1<><invokename="B"><parametername="y">2`,
-			triggerSignal: "<<CALL_test>>",
-			expectedCount: 1, // FIXED: Only the first call is parsed in this format
-			expectedNames: []string{"A"},
-			checkArgs:     true,
+			name:           "multiple malformed calls (FIXED: only first call is parsed)",
+			input:          `<<CALL_test>><><invokename="A"><parametername="x">1<><invokename="B"><parametername="y">2`,
+			triggerSignal:  "<<CALL_test>>",
+			expectedCount:  1, // FIXED: Only the first call is parsed in this format
+			expectedNames:  []string{"A"},
+			checkArgs:      true,
 			expectedArgKey: "x",
 		},
 		{
-			name:          "malformed with bullet prefix",
-			input:         `<<CALL_test>>● <><invokename="TodoWrite"><parametername="todos">[{"id":"1"}]`,
-			triggerSignal: "<<CALL_test>>",
-			expectedCount: 1,
-			expectedNames: []string{"TodoWrite"},
-			checkArgs:     true,
+			name:           "malformed with bullet prefix",
+			input:          `<<CALL_test>>● <><invokename="TodoWrite"><parametername="todos">[{"id":"1"}]`,
+			triggerSignal:  "<<CALL_test>>",
+			expectedCount:  1,
+			expectedNames:  []string{"TodoWrite"},
+			checkArgs:      true,
 			expectedArgKey: "todos",
 		},
 	}
@@ -1713,7 +1713,9 @@ func TestSanitizeModelTokens(t *testing.T) {
 // fragments that appear directly after normal text (without <> prefix).
 // This is a common pattern when TodoWrite tool output leaks into visible content.
 // Issue: User reported malformed output like:
-//   "正在读取hello.py文件", "status": "pending"},2", "content": "联网搜索..."
+//
+//	"正在读取hello.py文件", "status": "pending"},2", "content": "联网搜索..."
+//
 // Expected: "正在读取hello.py文件"
 func TestRemoveFunctionCallsBlocks_TruncatedJSONAfterText(t *testing.T) {
 	tests := []struct {
@@ -1945,27 +1947,27 @@ func TestReMalformedMergedTag(t *testing.T) {
 			expected: "",
 		},
 		{
-			name:     "remove invokename with <> - only removes invokename part",
-			input:    `<><invokename="Glob">*`,
+			name:  "remove invokename with <> - only removes invokename part",
+			input: `<><invokename="Glob">*`,
 			// NOTE: reMalformedMergedTag only matches <invokename=...>, not <> prefix
 			// The <> is removed by other patterns in removeFunctionCallsBlocks
 			expected: "<>",
 		},
 		{
-			name:     "remove parametername with <> - only removes parametername part",
-			input:    `<><parametername="pattern">*`,
+			name:  "remove parametername with <> - only removes parametername part",
+			input: `<><parametername="pattern">*`,
 			// NOTE: reMalformedMergedTag only matches <parametername=...>, not <> prefix
 			expected: "<>",
 		},
 		{
-			name:     "remove invokename with <> and newline - only removes invokename part",
-			input:    "<>\n<invokename=\"Read\">file.py",
+			name:  "remove invokename with <> and newline - only removes invokename part",
+			input: "<>\n<invokename=\"Read\">file.py",
 			// NOTE: reMalformedMergedTag only matches <invokename=...>, not <> prefix
 			expected: "<>\n",
 		},
 		{
-			name:     "remove parametername with <> and newline - only removes parametername part",
-			input:    "<>\n<parametername=\"path\">test.py",
+			name:  "remove parametername with <> and newline - only removes parametername part",
+			input: "<>\n<parametername=\"path\">test.py",
 			// NOTE: reMalformedMergedTag only matches <parametername=...>, not <> prefix
 			expected: "<>\n",
 		},
@@ -1985,14 +1987,14 @@ func TestReMalformedMergedTag(t *testing.T) {
 			expected: `normal text without markers`,
 		},
 		{
-			name:     "remove with surrounding text multiline",
-			input:    "Hello <invokename=\"Test\">value\nworld",
+			name:  "remove with surrounding text multiline",
+			input: "Hello <invokename=\"Test\">value\nworld",
 			// The newline is preserved after removing the malformed tag
 			expected: "Hello\nworld",
 		},
 		{
-			name:     "preserve text before and after newline",
-			input:    "Hello <invokename=\"Test\">value\nWorld",
+			name:  "preserve text before and after newline",
+			input: "Hello <invokename=\"Test\">value\nWorld",
 			// The newline is preserved after removing the malformed tag
 			expected: "Hello\nWorld",
 		},
@@ -2016,8 +2018,8 @@ func TestRemoveFunctionCallsBlocks_MalformedMergedTags(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "preserve text before and after newline",
-			input:    "Hello <invokename=\"Test\">value\nWorld",
+			name:  "preserve text before and after newline",
+			input: "Hello <invokename=\"Test\">value\nWorld",
 			// The newline is preserved after removing the malformed tag
 			expected: "Hello\nWorld",
 		},
@@ -2184,7 +2186,7 @@ func TestRemoveFunctionCallsBlocks_UserReportedIssueProductionLog(t *testing.T) 
 		{
 			name:     "text description followed by malformed tag",
 			input:    "首先，让我创建一个任务清单来规划这个工作：<><invokename=\"TodoWrite\">[{\"id\":\"1\",\"content\":\"分析现有hello.py文件，设计更精简的GUI版本\"}]",
-			expected: "首先，让我创建一个任务清单来规划这个工作：",  // Per user requirement: tool description preambles should be removed
+			expected: "首先，让我创建一个任务清单来规划这个工作：", // Per user requirement: tool description preambles should be removed
 		},
 		// Case 6: Multiple malformed tags in sequence
 		// Note: The regex removes the malformed tag content including newlines, preserving space after bullet
@@ -2451,7 +2453,7 @@ func TestRemoveFunctionCallsBlocks_ParameterNameTextLeak(t *testing.T) {
 		{
 			name:     "parametername with plain text",
 			input:    `● 我来帮你创建一个简洁的GUI程序显示"HelloWorld"。首先，我需要了解当前的项目结构，然后制定计划。<><parametername="information_request">了解当前Python项目的结构，查找现有的hello.py文件或相关的Python文件】`,
-			expected: `● 我来帮你创建一个简洁的GUI程序显示"HelloWorld"。首先，我需要了解当前的项目结构，然后制定计划。`,  // Normal work description
+			expected: `● 我来帮你创建一个简洁的GUI程序显示"HelloWorld"。首先，我需要了解当前的项目结构，然后制定计划。`, // Normal work description
 		},
 		{
 			name:     "parametername with Chinese text and punctuation",
@@ -2514,8 +2516,8 @@ func TestRemoveFunctionCallsBlocks_ClaudeCodePreamble(t *testing.T) {
 			expected: `根据用户的要求，我需要创建一个GUI程序来显示"Hello World"。首先我需要制定一个计划，然后逐步实施。`,
 		},
 		{
-			name:     "preserve Chinese preamble - 我需要修正 TodoWrite",
-			input:    `我需要修正TodoWrite的参数格式。让我重新创建任务清单。`,
+			name:  "preserve Chinese preamble - 我需要修正 TodoWrite",
+			input: `我需要修正TodoWrite的参数格式。让我重新创建任务清单。`,
 			// Retry phrases are preserved to avoid over-filtering in streaming mode
 			expected: `我需要修正TodoWrite的参数格式。让我重新创建任务清单。`,
 		},
@@ -2532,7 +2534,7 @@ func TestRemoveFunctionCallsBlocks_ClaudeCodePreamble(t *testing.T) {
 		{
 			name:     "preserve Chinese work description - 我来帮你 - preserve all",
 			input:    `● 我来帮你创建一个漂亮的GUI程序来显示 "Hello World"。首先我需要制定一个计划，然后逐步实施。`,
-			expected: `● 我来帮你创建一个漂亮的GUI程序来显示 "Hello World"。首先我需要制定一个计划，然后逐步实施。`,  // Normal work description
+			expected: `● 我来帮你创建一个漂亮的GUI程序来显示 "Hello World"。首先我需要制定一个计划，然后逐步实施。`, // Normal work description
 		},
 
 		// Preamble indicators - English (only retry/fix patterns, not normal work)
@@ -2559,8 +2561,8 @@ func TestRemoveFunctionCallsBlocks_ClaudeCodePreamble(t *testing.T) {
 			expected: `我需要创建任务清单来规划这个工作。`,
 		},
 		{
-			name:     "remove tool description - 修正TodoWrite",
-			input:    `我需要修正TodoWrite的参数格式`,
+			name:  "remove tool description - 修正TodoWrite",
+			input: `我需要修正TodoWrite的参数格式`,
 			// This is borderline - it's a tool description but also valid natural language
 			// Current logic preserves it to avoid over-filtering
 			expected: `我需要修正TodoWrite的参数格式`,
@@ -2605,8 +2607,8 @@ func TestRemoveFunctionCallsBlocks_ClaudeCodePreamble(t *testing.T) {
 			expected: `● 让我重新尝试创建待办事项列表：`,
 		},
 		{
-			name:     "real-world production log case 3 - need to fix format",
-			input:    `我需要修正TodoWrite的参数格式。让我重新创建任务清单。`,
+			name:  "real-world production log case 3 - need to fix format",
+			input: `我需要修正TodoWrite的参数格式。让我重新创建任务清单。`,
 			// Retry phrases are preserved to avoid over-filtering in streaming mode
 			expected: `我需要修正TodoWrite的参数格式。让我重新创建任务清单。`,
 		},
@@ -2630,8 +2632,8 @@ func TestRemoveFunctionCallsBlocks_ClaudeCodePreamble(t *testing.T) {
 			expected: "根据用户的要求，我需要创建GUI程序。",
 		},
 		{
-			name:     "text + tool description + text (multiline)",
-			input:    `开始执行任务。
+			name: "text + tool description + text (multiline)",
+			input: `开始执行任务。
 我需要建立计划来完成这个工作。
 任务已完成。`,
 			expected: `开始执行任务。
@@ -2689,25 +2691,25 @@ func TestRemoveFunctionCallsBlocks_RealWorldCases(t *testing.T) {
 			expected: `● 根据用户的要求，我需要创建一个漂亮的GUI程序来显示"Hello World"。首先，我需要了解当前的项目结构，然后制定计划。`,
 		},
 		{
-			name: "real-world production log retry case - fix TodoWrite format",
+			name:  "real-world production log retry case - fix TodoWrite format",
 			input: `● 我需要修正TodoWrite的参数格式。让我用正确格式创建任务清单。<><parameter name="todos">[{"content": "制定GUI程序的实现计划","activeForm": "正在制定GUI程序的实现计划","state": "pending"},{"content": "使用Exa工具搜索Python GUI最佳实践","activeForm": "正在使用Exa工具搜索Python GUI最佳实践","state": "pending"}]`,
 			// Retry phrases are preserved to avoid over-filtering in streaming mode
 			// Only malformed tags and JSON are removed
 			expected: "● 我需要修正TodoWrite的参数格式。让我用正确格式创建任务清单。",
 		},
 		{
-			name: "real-world production log JSON leak case - bare array with Form fields",
-			input: `[{"content": "制定GUI程序的实现计划", "activeForm": "正在制定GUI程序的实现计划", "state": "pending"}, {"content": "使用Exa工具搜索PythonGUI最佳实践", "activeForm": "正在使用Exa工具搜索PythonGUI最佳实践", "state": "pending"}]`,
+			name:     "real-world production log JSON leak case - bare array with Form fields",
+			input:    `[{"content": "制定GUI程序的实现计划", "activeForm": "正在制定GUI程序的实现计划", "state": "pending"}, {"content": "使用Exa工具搜索PythonGUI最佳实践", "activeForm": "正在使用Exa工具搜索PythonGUI最佳实践", "state": "pending"}]`,
 			expected: "",
 		},
 		{
-			name: "real-world production log mixed case - explanation + invokename + JSON",
+			name:  "real-world production log mixed case - explanation + invokename + JSON",
 			input: `● 所以我需要创建包含正确格式的数组。让我用正确格式创建任务清单。<><invoke name="TodoWrite"><parameter name="todos">[{"content": "制定GUI程序的实现计划","activeForm": "正在制定GUI程序的实现计划","state": "in_progress"},{"content": "使用Exa工具搜索Python GUI最佳实践", "activeForm": "正在使用Exa工具搜索PythonGUI最佳实践","state": "pending"}]</parameter></invoke>`,
 			// Keep the full natural-language explanation, only strip invoke/parameter tags and JSON
 			expected: "● 所以我需要创建包含正确格式的数组。让我用正确格式创建任务清单。",
 		},
 		{
-			name: "real-world production log pure explanation case",
+			name:  "real-world production log pure explanation case",
 			input: `现在我开始处理这个任务。首先，我将任务标记为进行中，并开始制定GUI程序的实现计划。`,
 			// Pure explanation without tags/JSON should be preserved as normal text
 			expected: `现在我开始处理这个任务。首先，我将任务标记为进行中，并开始制定GUI程序的实现计划。`,
@@ -2926,9 +2928,9 @@ func TestRepairMalformedJSON(t *testing.T) {
 // TestRepairMalformedJSON_UnderscoreProgressConversion tests that _progress is converted to in_progress
 func TestRepairMalformedJSON_UnderscoreProgressConversion(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		contains string
+		name        string
+		input       string
+		contains    string
 		notContains string
 	}{
 		{
@@ -3089,9 +3091,9 @@ func TestRemoveFunctionCallsBlocks_SeverelyMalformedJSON(t *testing.T) {
 // with severely malformed JSON from user's real-world production log
 func TestRepairMalformedJSON_SeverelyMalformed(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantErr  bool
+		name    string
+		input   string
+		wantErr bool
 	}{
 		{
 			name:    "severely malformed JSON starting with colon",
@@ -3219,31 +3221,31 @@ func TestRemoveFunctionCallsBlocks_ProductionLogMalformedTodoList(t *testing.T) 
 	}{
 		{
 			// NOTE: "任务清单" is a plan header that should be removed along with malformed JSON
-			name: "malformed todo list with state field",
-			input: `任务清单<>[{"state":"in_progress", "content":WebSearch搜索最简洁的Tkinter HelloWorld示例", "activeForm":"正在搜索最简洁的Tkinter示例"}]`,
+			name:     "malformed todo list with state field",
+			input:    `任务清单<>[{"state":"in_progress", "content":WebSearch搜索最简洁的Tkinter HelloWorld示例", "activeForm":"正在搜索最简洁的Tkinter示例"}]`,
 			expected: "",
 		},
 		{
 			// NOTE: "任务清单" is a plan header that should be removed along with malformed JSON
-			name: "malformed todo list with truncated Form field",
-			input: `任务清单<>[{"state":", "content":hello.py文件并编写最短的GUI代码", "activeForm":"正在创建hello.py文件并编写代码"}, {"state":", "content":运行GUI程序",Form":测试运行GUI程序"}]`,
+			name:     "malformed todo list with truncated Form field",
+			input:    `任务清单<>[{"state":", "content":hello.py文件并编写最短的GUI代码", "activeForm":"正在创建hello.py文件并编写代码"}, {"state":", "content":运行GUI程序",Form":测试运行GUI程序"}]`,
 			expected: "",
 		},
 		{
-			name: "malformed todo list with unquoted values",
-			input: `<>[{"state":"in_progress", "content":WebSearch搜索}]`,
+			name:     "malformed todo list with unquoted values",
+			input:    `<>[{"state":"in_progress", "content":WebSearch搜索}]`,
 			expected: "",
 		},
 		{
 			// NOTE: "实施方案构思" is on a separate line without <>, so it's preserved
 			// Only malformed JSON is removed, standalone CJK text is kept
-			name: "preserve normal text before malformed JSON",
-			input: "实施方案构思\n1.使用Tkinter创建最简单的GUI程序\n<>[{\"state\":\"pending\"}]",
+			name:     "preserve normal text before malformed JSON",
+			input:    "实施方案构思\n1.使用Tkinter创建最简单的GUI程序\n<>[{\"state\":\"pending\"}]",
 			expected: "实施方案构思\n1.使用Tkinter创建最简单的GUI程序",
 		},
 		{
-			name: "malformed JSON with missing quotes around content value",
-			input: `[{"id":"1","content":WebSearch搜索最简洁的Tkinter示例,"status":"pending"}]`,
+			name:     "malformed JSON with missing quotes around content value",
+			input:    `[{"id":"1","content":WebSearch搜索最简洁的Tkinter示例,"status":"pending"}]`,
 			expected: "",
 		},
 	}
@@ -3484,15 +3486,15 @@ func TestRemoveFunctionCallsBlocks_ProductionLogPatterns(t *testing.T) {
 // 3. List format being parsed as code blocks
 func TestRemoveFunctionCallsBlocks_ProductionLogIssues(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		expected string
-		contains []string // strings that should be in the result
+		name        string
+		input       string
+		expected    string
+		contains    []string // strings that should be in the result
 		notContains []string // strings that should NOT be in the result
 	}{
 		{
-			name: "filter_ImplementationPlan_marker",
-			input: "ImplementationPlan, TaskList and ThoughtinChinese\n现在开始制定实现计划。",
+			name:        "filter_ImplementationPlan_marker",
+			input:       "ImplementationPlan, TaskList and ThoughtinChinese\n现在开始制定实现计划。",
 			notContains: []string{"ImplementationPlan", "TaskList", "ThoughtinChinese"},
 		},
 		{
@@ -3508,53 +3510,53 @@ func TestRemoveFunctionCallsBlocks_ProductionLogIssues(t *testing.T) {
 			notContains: []string{"Task List", "Thought in Chinese"},
 		},
 		{
-			name: "filter_leaked_activeForm_field",
-			input: `"activeForm": "正在制定GUI程序实现计划"`,
+			name:     "filter_leaked_activeForm_field",
+			input:    `"activeForm": "正在制定GUI程序实现计划"`,
 			expected: "",
 		},
 		{
-			name: "filter_leaked_status_field",
-			input: `"status": "pending"`,
+			name:     "filter_leaked_status_field",
+			input:    `"status": "pending"`,
 			expected: "",
 		},
 		{
-			name: "filter_malformed_invokename_tag",
-			input: `<><invokename="TodoWrite"><parametername="todos">[{"id":"1"}]`,
+			name:     "filter_malformed_invokename_tag",
+			input:    `<><invokename="TodoWrite"><parametername="todos">[{"id":"1"}]`,
 			expected: "",
 		},
 		{
-			name: "filter_malformed_parametername_tag",
-			input: `<><parametername="todos">[{"id":"1","content":"task"}]`,
+			name:     "filter_malformed_parametername_tag",
+			input:    `<><parametername="todos">[{"id":"1","content":"task"}]`,
 			expected: "",
 		},
 		{
-			name: "preserve_normal_chinese_text",
-			input: "我来帮你创建一个漂亮的GUI程序来显示 Hello World。",
+			name:     "preserve_normal_chinese_text",
+			input:    "我来帮你创建一个漂亮的GUI程序来显示 Hello World。",
 			expected: "我来帮你创建一个漂亮的GUI程序来显示 Hello World。",
 		},
 		{
-			name: "preserve_code_block_markers",
-			input: "```python\nimport tkinter as tk\n```",
+			name:     "preserve_code_block_markers",
+			input:    "```python\nimport tkinter as tk\n```",
 			contains: []string{"```python", "import tkinter", "```"},
 		},
 		{
-			name: "filter_JSON_with_id_content_status",
-			input: `[{"id":"1","content":"搜索Python最短GUI实现最佳实践","status":"pending"}]`,
+			name:     "filter_JSON_with_id_content_status",
+			input:    `[{"id":"1","content":"搜索Python最短GUI实现最佳实践","status":"pending"}]`,
 			expected: "",
 		},
 		{
-			name: "filter_JSON_with_activeForm",
-			input: `[{"id":"1","content":"task","activeForm":"正在执行","status":"pending"}]`,
+			name:     "filter_JSON_with_activeForm",
+			input:    `[{"id":"1","content":"task","activeForm":"正在执行","status":"pending"}]`,
 			expected: "",
 		},
 		{
-			name: "filter_malformed_XML_fragments",
-			input: "Hello <><invokename=\"Test\">value world",
+			name:        "filter_malformed_XML_fragments",
+			input:       "Hello <><invokename=\"Test\">value world",
 			notContains: []string{"<><", "<invokename"},
 		},
 		{
-			name: "preserve_tool_result_description",
-			input: "● Read(hello.py)\n⎿ 文件内容如下",
+			name:     "preserve_tool_result_description",
+			input:    "● Read(hello.py)\n⎿ 文件内容如下",
 			contains: []string{"● Read(hello.py)", "⎿ 文件内容如下"},
 		},
 	}
@@ -3746,10 +3748,10 @@ func TestRepairMalformedJSON_ProductionLogMalformedPatterns(t *testing.T) {
 // from malformed <parametername="todos"> tags
 func TestExtractMalformedParameters_TodoWriteJSON(t *testing.T) {
 	tests := []struct {
-		name           string
-		content        string
-		expectTodos    bool
-		expectTodoLen  int
+		name          string
+		content       string
+		expectTodos   bool
+		expectTodoLen int
 	}{
 		{
 			name:          "valid_todos_array",
@@ -3946,9 +3948,9 @@ func TestRemoveFunctionCallsBlocks_ProductionLogMalformedJSON(t *testing.T) {
 			notContains: []string{`"Form":`},
 		},
 		{
-			name:        "preserve_normal_text_with_quotes",
-			input:       `我需要创建一个"漂亮的"GUI程序`,
-			contains:    []string{`我需要创建一个"漂亮的"GUI程序`},
+			name:     "preserve_normal_text_with_quotes",
+			input:    `我需要创建一个"漂亮的"GUI程序`,
+			contains: []string{`我需要创建一个"漂亮的"GUI程序`},
 		},
 		{
 			name:        "filter_malformed_invokename_with_JSON",
@@ -3981,14 +3983,13 @@ func TestRemoveFunctionCallsBlocks_ProductionLogMalformedJSON(t *testing.T) {
 	}
 }
 
-
 // TestRepairMalformedJSON_ProductionLog tests JSON repair for patterns from real production log
 func TestRepairMalformedJSON_ProductionLog(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantKey  string
-		wantVal  any
+		name    string
+		input   string
+		wantKey string
+		wantVal any
 	}{
 		{
 			name:    "malformed_id_content_pattern",
@@ -4052,37 +4053,37 @@ func TestRemoveFunctionCallsBlocks_ProductionLogPatternsExtended(t *testing.T) {
 		contains    []string
 	}{
 		{
-			name: "production_log_todowrite_malformed_json",
-			input: `我需要创建任务清单：<><invokename="TodoWrite"><parametername="todos">[{"id": "1",": "探索最佳实践", "activeForm": "正在探索", "status": "pending"}]`,
+			name:        "production_log_todowrite_malformed_json",
+			input:       `我需要创建任务清单：<><invokename="TodoWrite"><parametername="todos">[{"id": "1",": "探索最佳实践", "activeForm": "正在探索", "status": "pending"}]`,
 			notContains: []string{`<invokename`, `<parametername`, `"id":`, `"activeForm":`},
 			contains:    []string{`我需要创建任务清单：`},
 		},
 		{
-			name: "production_log_glob_pattern",
-			input: `● 让我查看当前目录结构：<><invokename="Glob"><parametername="pattern">*`,
+			name:        "production_log_glob_pattern",
+			input:       `● 让我查看当前目录结构：<><invokename="Glob"><parametername="pattern">*`,
 			notContains: []string{`<invokename`, `<parametername`},
 			contains:    []string{`●`, `让我查看当前目录结构：`},
 		},
 		{
-			name: "production_log_read_file_path",
-			input: `让我先查看hello.py的内容：<><invokename="Read">F:/MyProjects/test/language/python/xx/hello.py`,
+			name:        "production_log_read_file_path",
+			input:       `让我先查看hello.py的内容：<><invokename="Read">F:/MyProjects/test/language/python/xx/hello.py`,
 			notContains: []string{`<invokename`, `F:/MyProjects`},
 			contains:    []string{`让我先查看hello.py的内容：`},
 		},
 		{
-			name: "production_log_multiple_malformed_tags",
-			input: "● <><parametername=\"todos\">[{\"id\":\"1\",\"content\":\"分析现有hello.py文件\"}]\n\n● <><invokename=\"TodoWrite\">[{\"content\":\"分析现有hello.py文件\"}]",
+			name:        "production_log_multiple_malformed_tags",
+			input:       "● <><parametername=\"todos\">[{\"id\":\"1\",\"content\":\"分析现有hello.py文件\"}]\n\n● <><invokename=\"TodoWrite\">[{\"content\":\"分析现有hello.py文件\"}]",
 			notContains: []string{`<parametername`, `<invokename`, `"id":`, `"content":`},
 			contains:    []string{},
 		},
 		{
-			name: "production_log_preserve_tool_result_description",
-			input: `● Search(pattern: "*")`,
+			name:     "production_log_preserve_tool_result_description",
+			input:    `● Search(pattern: "*")`,
 			contains: []string{`● Search(pattern: "*")`},
 		},
 		{
-			name: "production_log_preserve_natural_language",
-			input: `我看到hello.py已经是一个使用tkinter的GUI程序了。不过用户要求"输出Hello World即可，需要代码短小精悍，越短越好"。`,
+			name:     "production_log_preserve_natural_language",
+			input:    `我看到hello.py已经是一个使用tkinter的GUI程序了。不过用户要求"输出Hello World即可，需要代码短小精悍，越短越好"。`,
 			contains: []string{`我看到hello.py已经是一个使用tkinter的GUI程序了`},
 		},
 	}
@@ -4195,14 +4196,14 @@ func TestRemoveFunctionCallsBlocks_CCRetryPhrasesFromProductionLog(t *testing.T)
 			contains: []string{`让我重新创建`},
 		},
 		{
-			name:        "preserve_normal_work_description",
-			input:       "我来帮你创建一个漂亮的GUI程序来显示 Hello World。",
-			contains:    []string{`我来帮你创建一个漂亮的GUI程序来显示 Hello World。`},
+			name:     "preserve_normal_work_description",
+			input:    "我来帮你创建一个漂亮的GUI程序来显示 Hello World。",
+			contains: []string{`我来帮你创建一个漂亮的GUI程序来显示 Hello World。`},
 		},
 		{
-			name:        "preserve_plan_description",
-			input:       "首先我需要制定一个计划，然后逐步实施。",
-			contains:    []string{`首先我需要制定一个计划，然后逐步实施。`},
+			name:     "preserve_plan_description",
+			input:    "首先我需要制定一个计划，然后逐步实施。",
+			contains: []string{`首先我需要制定一个计划，然后逐步实施。`},
 		},
 		// Test cases for bullet point preservation with malformed tags
 		// Issue: When malformed XML tags appear after bullet points, the bullet should be preserved
@@ -4285,6 +4286,7 @@ func TestRemoveFunctionCallsBlocks_ANTMLRoleTags(t *testing.T) {
 		})
 	}
 }
+
 // TestIsRetryPhrase tests the isRetryPhrase helper function
 func TestIsRetryPhrase(t *testing.T) {
 	tests := []struct {
@@ -4366,7 +4368,7 @@ func TestRepairMalformedJSON_ProductionLogMissingQuotes(t *testing.T) {
 			wantKey:     "status",
 			// NOTE: Empty status values are converted to "pending" by repairMalformedJSON
 			// This is intentional to ensure TodoWrite always has a valid status
-			wantVal:     "pending",
+			wantVal: "pending",
 		},
 	}
 
@@ -4403,22 +4405,22 @@ func TestRemoveFunctionCallsBlocks_ProductionLogCCOutput(t *testing.T) {
 	}{
 		{
 			// Real production log pattern: malformed TodoWrite with missing quotes
-			name: "cc_todowrite_missing_quotes",
-			input: `● 根据用户的需求，我需要按照以下步骤完成任务：1.使用联网搜索工具（exa）查找最佳实践<><invokename="TodoWrite"><parametername="todos">[{"content": "使用exa工具搜索PythonGUI最佳实践","activeForm":使用exa工具搜索PythonGUI最佳实践","status":"pending"}]`,
+			name:        "cc_todowrite_missing_quotes",
+			input:       `● 根据用户的需求，我需要按照以下步骤完成任务：1.使用联网搜索工具（exa）查找最佳实践<><invokename="TodoWrite"><parametername="todos">[{"content": "使用exa工具搜索PythonGUI最佳实践","activeForm":使用exa工具搜索PythonGUI最佳实践","status":"pending"}]`,
 			notContains: []string{`<invokename`, `<parametername`, `"activeForm":`, `"status":`},
 			contains:    []string{`●`},
 		},
 		{
 			// Real production log pattern: retry message with malformed JSON
-			name: "cc_retry_malformed_json",
-			input: `● 我需要先正确创建任务列表。让我修正这个问题，然后开始执行任务。<><parametername="todos">[{"content":a工具搜索PythonGUI最佳实践",Form":使用exa工具搜索PythonGUI最佳实践", "status": "pending"}]`,
+			name:        "cc_retry_malformed_json",
+			input:       `● 我需要先正确创建任务列表。让我修正这个问题，然后开始执行任务。<><parametername="todos">[{"content":a工具搜索PythonGUI最佳实践",Form":使用exa工具搜索PythonGUI最佳实践", "status": "pending"}]`,
 			notContains: []string{`<parametername`, `"content":`, `Form":`},
 			contains:    []string{`●`},
 		},
 		{
 			// Real production log pattern: multiple retry attempts
-			name: "cc_multiple_retries",
-			input: `● 我需要先正确创建任务列表。让我修正格式问题，开始执行任务。<><invokename="TodoWrite">[{"content":exa工具搜索Python GUI最佳实践", "activeForm": "使用exa工具搜索PythonGUI最佳实践",":"pending"}]`,
+			name:        "cc_multiple_retries",
+			input:       `● 我需要先正确创建任务列表。让我修正格式问题，开始执行任务。<><invokename="TodoWrite">[{"content":exa工具搜索Python GUI最佳实践", "activeForm": "使用exa工具搜索PythonGUI最佳实践",":"pending"}]`,
 			notContains: []string{`<invokename`, `"content":`, `"activeForm":`},
 			contains:    []string{`●`},
 		},
@@ -4964,25 +4966,25 @@ func TestRemoveFunctionCallsBlocks_ProductionLogOutput(t *testing.T) {
 		notContains []string
 	}{
 		{
-			name: "clean_malformed_invokename_with_json",
-			input: "我明白你的要求：使用联网搜索最佳实践，创建一个漂亮的GUI程序来显示\"HelloWorld\"，代码要短小精悍，并自动运行它。首先我需要建立计划。<><invokename=\"TodoWrite\"><parametername=\"todos\">[{\"id\":\"1\",\": \"探索最佳实践\"}]",
-			expected: "我明白你的要求：使用联网搜索最佳实践，创建一个漂亮的GUI程序来显示\"HelloWorld\"，代码要短小精悍，并自动运行它。首先我需要建立计划。",
+			name:        "clean_malformed_invokename_with_json",
+			input:       "我明白你的要求：使用联网搜索最佳实践，创建一个漂亮的GUI程序来显示\"HelloWorld\"，代码要短小精悍，并自动运行它。首先我需要建立计划。<><invokename=\"TodoWrite\"><parametername=\"todos\">[{\"id\":\"1\",\": \"探索最佳实践\"}]",
+			expected:    "我明白你的要求：使用联网搜索最佳实践，创建一个漂亮的GUI程序来显示\"HelloWorld\"，代码要短小精悍，并自动运行它。首先我需要建立计划。",
 			notContains: []string{"<invokename", "<parametername", "探索最佳实践", `"id":`},
 		},
 		{
-			name: "clean_multiple_malformed_tags",
-			input: "● 我需要先了解当前目录结构<><invokename=\"Glob\"><parametername=\"pattern\">*\n\n● Search(pattern: \"*\")\n\n● 让我查看文件<><invokename=\"Read\">F:/path/file.py",
-			expected: "● 我需要先了解当前目录结构\n\n● Search(pattern: \"*\")\n\n● 让我查看文件",
+			name:        "clean_multiple_malformed_tags",
+			input:       "● 我需要先了解当前目录结构<><invokename=\"Glob\"><parametername=\"pattern\">*\n\n● Search(pattern: \"*\")\n\n● 让我查看文件<><invokename=\"Read\">F:/path/file.py",
+			expected:    "● 我需要先了解当前目录结构\n\n● Search(pattern: \"*\")\n\n● 让我查看文件",
 			notContains: []string{"<invokename", "<parametername", "F:/path/file.py"},
 		},
 		{
-			name: "preserve_natural_language_description",
-			input: "我来帮你创建一个漂亮的GUI程序来显示 Hello World。首先我需要制定一个计划，然后逐步实施。",
+			name:     "preserve_natural_language_description",
+			input:    "我来帮你创建一个漂亮的GUI程序来显示 Hello World。首先我需要制定一个计划，然后逐步实施。",
 			expected: "我来帮你创建一个漂亮的GUI程序来显示 Hello World。首先我需要制定一个计划，然后逐步实施。",
 		},
 		{
-			name: "clean_leaked_json_fields",
-			input: `"activeForm": "正在制定GUI程序实现计划"`,
+			name:     "clean_leaked_json_fields",
+			input:    `"activeForm": "正在制定GUI程序实现计划"`,
 			expected: "",
 		},
 	}
@@ -5003,7 +5005,6 @@ func TestRemoveFunctionCallsBlocks_ProductionLogOutput(t *testing.T) {
 		})
 	}
 }
-
 
 // TestRepairMalformedJSON_ProductionLogSeverePatterns tests the severely malformed JSON patterns
 // found in production logs that caused repeated TodoWrite retries and auto-pause.
@@ -5109,49 +5110,49 @@ func TestRemoveFunctionCallsBlocks_ProductionLogScenario(t *testing.T) {
 		expected string
 	}{
 		{
-			name: "cc_plan_description_with_malformed_tags",
+			name:  "cc_plan_description_with_malformed_tags",
 			input: "我来帮您创建一个漂亮的GUI程序来输出\"HelloWorld\"。首先我需要了解当前目录的情况，然后制定计划。让我先探索一下当前目录的结构。<><invokename=\"Glob\"><parametername=\"pattern\">*",
 			// Malformed tags are removed, natural language is preserved
 			expected: "我来帮您创建一个漂亮的GUI程序来输出\"HelloWorld\"。首先我需要了解当前目录的情况，然后制定计划。让我先探索一下当前目录的结构。",
 		},
 		{
-			name: "cc_retry_with_malformed_todowrite",
+			name:  "cc_retry_with_malformed_todowrite",
 			input: "● 我需要修正TodoWrite工具需要每个任务都包含\"activeForm\"字段。让我修正这个问题：<><invokename=\"TodoWrite\"><parametername=\"todos\">[{\"content\":\"分析现有hello.py的GUI实现\",\"activeForm\":\"分析现有hello.py的GUI实现\",\"status\":\"in_progress\"}]",
 			// Malformed tags are removed, retry description is preserved
 			expected: "● 我需要修正TodoWrite工具需要每个任务都包含\"activeForm\"字段。让我修正这个问题：",
 		},
 		{
-			name: "cc_analysis_result_header",
+			name:  "cc_analysis_result_header",
 			input: "## 分析现有代码\n现有代码特点：\n1. 使用tkinter库创建GUI\n2. 窗口尺寸400x200",
 			// Analysis headers are preserved as they are part of the response
 			expected: "## 分析现有代码\n现有代码特点：\n1. 使用tkinter库创建GUI\n2. 窗口尺寸400x200",
 		},
 		{
-			name: "cc_leaked_json_todos",
+			name:  "cc_leaked_json_todos",
 			input: "[{\"id\":1,\"content\":\"研究Python GUI框架的最佳实践和选择\",\"activeForm\":\"正在研究Python GUI框架的最佳实践和选择\",\"status\":\"in_progress\"}]",
 			// Pure JSON structures are removed
 			expected: "",
 		},
 		{
-			name: "cc_malformed_property_tags",
+			name:  "cc_malformed_property_tags",
 			input: "<><invokename=\"TodoWrite\"><propertyname=\"activeForm\"value=\"正在分析\"><propertyname=\"status\"value=\"pending\">",
 			// Malformed property tags are removed
 			expected: "",
 		},
 		{
-			name: "cc_tool_result_description_preserved",
+			name:  "cc_tool_result_description_preserved",
 			input: "● Search(pattern: \"*\")\n⎿  Found 1 file",
 			// Tool result descriptions with bullets are preserved
 			expected: "● Search(pattern: \"*\")\n⎿  Found 1 file",
 		},
 		{
-			name: "cc_code_update_description",
+			name:  "cc_code_update_description",
 			input: "● Update(hello.py)\n⎿  Updated hello.py with 14 additions and 19 removals",
 			// Code update descriptions are preserved
 			expected: "● Update(hello.py)\n⎿  Updated hello.py with 14 additions and 19 removals",
 		},
 		{
-			name: "cc_bash_command_description",
+			name:  "cc_bash_command_description",
 			input: "● Bash(python \"F:\\MyProjects\\test\\hello.py\") timeout: 10s\n⎿  Running in the background",
 			// Bash command descriptions are preserved
 			expected: "● Bash(python \"F:\\MyProjects\\test\\hello.py\") timeout: 10s\n⎿  Running in the background",
@@ -5623,7 +5624,6 @@ func TestRemoveFunctionCallsBlocks_ANTMLTagsRemoval(t *testing.T) {
 	}
 }
 
-
 // TestRemoveFunctionCallsBlocks_UserMessageProductionLog tests the exact malformed patterns
 // from user's production log message (force_function_call + cc_support mode).
 // Key issues from user's log:
@@ -5640,15 +5640,15 @@ func TestRemoveFunctionCallsBlocks_UserMessageProductionLog(t *testing.T) {
 	}{
 		{
 			// Exact pattern from user's message: malformed TodoWrite with missing quotes
-			name: "user_log_todowrite_missing_quotes",
-			input: `● 我将按照您的要求，创建一个GUI版本的HelloWorld程序，代码尽可能短小精悍。首先让我理解您的需求并制定计划。##理解需求1.联网搜索最佳实践（用exa工具）2.修改或创建hello.py文件3.将其改为漂亮的GUI程序4. 输出"Hello World"5.代码要短小精悍6.自动运行程序##实施计划由于这是一个多步骤任务，我先创建一个todo列表来跟踪进度。<><invokename="TodoWrite"><parametername="todos">[GUI库最佳实践并进行选择",activeForm":Python GUI库最佳实践并进行选择",state":"hello.py为GUI版本",activeForm":"正在创建或修改hello.py为GUI版本",state":": "正在确保代码短小精悍并输出Hellostate":"":"自动运行GUI程序",Form":自动运行GUI程序",": "pending"]</antml\b:role>`,
+			name:        "user_log_todowrite_missing_quotes",
+			input:       `● 我将按照您的要求，创建一个GUI版本的HelloWorld程序，代码尽可能短小精悍。首先让我理解您的需求并制定计划。##理解需求1.联网搜索最佳实践（用exa工具）2.修改或创建hello.py文件3.将其改为漂亮的GUI程序4. 输出"Hello World"5.代码要短小精悍6.自动运行程序##实施计划由于这是一个多步骤任务，我先创建一个todo列表来跟踪进度。<><invokename="TodoWrite"><parametername="todos">[GUI库最佳实践并进行选择",activeForm":Python GUI库最佳实践并进行选择",state":"hello.py为GUI版本",activeForm":"正在创建或修改hello.py为GUI版本",state":": "正在确保代码短小精悍并输出Hellostate":"":"自动运行GUI程序",Form":自动运行GUI程序",": "pending"]</antml\b:role>`,
 			notContains: []string{`<invokename`, `<parametername`, `</antml`, `"activeForm":`, `"state":`},
 			contains:    []string{`●`},
 		},
 		{
 			// Pattern: retry message with malformed JSON
-			name: "user_log_retry_malformed_json",
-			input: `● 我需要纠正TodoWrite工具的格式。现在让我先制定计划，然后开始执行任务。首先，我需要了解当前的目录结构和是否已有hello.py文件。<><invokename="TodoWrite">[{"content": "检查当前目录结构和hello.py文件","activeForm":检查当前目录结构和hello.py文件", "id": "task-1", "status":GUI库最佳实践并进行选择",Form":"正在搜索Python GUI库最佳实践并进行选择", "id": "task-2", "status": "pending"},{"content":或修改hello.py为GUI版本",Form":创建或修改hello.py为GUI版本", "id":-3", "status":"},{"content":运行GUI程序",Form":自动运行GUI程序", "id":-4", "status":"}]`,
+			name:        "user_log_retry_malformed_json",
+			input:       `● 我需要纠正TodoWrite工具的格式。现在让我先制定计划，然后开始执行任务。首先，我需要了解当前的目录结构和是否已有hello.py文件。<><invokename="TodoWrite">[{"content": "检查当前目录结构和hello.py文件","activeForm":检查当前目录结构和hello.py文件", "id": "task-1", "status":GUI库最佳实践并进行选择",Form":"正在搜索Python GUI库最佳实践并进行选择", "id": "task-2", "status": "pending"},{"content":或修改hello.py为GUI版本",Form":创建或修改hello.py为GUI版本", "id":-3", "status":"},{"content":运行GUI程序",Form":自动运行GUI程序", "id":-4", "status":"}]`,
 			notContains: []string{`<invokename`, `"activeForm":`, `"Form":`, `"status":`},
 			contains:    []string{`●`},
 		},
@@ -5668,8 +5668,8 @@ func TestRemoveFunctionCallsBlocks_UserMessageProductionLog(t *testing.T) {
 		},
 		{
 			// Pattern: Edit tool output with malformed JSON
-			name: "user_log_edit_tool_malformed",
-			input: `● Update(hello.py)⎿  Updated hello.py with 3 additions and 37 removals<><invokename="Edit">F:\MyProjects\test\language\python\xx\hello.py<parametername="old_string">import tkinter as tk</antml\b:role>`,
+			name:        "user_log_edit_tool_malformed",
+			input:       `● Update(hello.py)⎿  Updated hello.py with 3 additions and 37 removals<><invokename="Edit">F:\MyProjects\test\language\python\xx\hello.py<parametername="old_string">import tkinter as tk</antml\b:role>`,
 			notContains: []string{`<invokename`, `<parametername`, `</antml`},
 			contains:    []string{`● Update(hello.py)`, `⎿`},
 		},
@@ -6179,15 +6179,15 @@ func TestRemoveFunctionCallsBlocks_UserLogDecember2025(t *testing.T) {
 		},
 		{
 			// Pattern from user log: preserve normal Chinese work description
-			name:        "preserve_chinese_work_description",
-			input:       "我来帮您完成这个任务。首先，我需要创建一个计划，然后逐步执行。",
-			contains:    []string{"我来帮您完成这个任务", "首先", "计划", "逐步执行"},
+			name:     "preserve_chinese_work_description",
+			input:    "我来帮您完成这个任务。首先，我需要创建一个计划，然后逐步执行。",
+			contains: []string{"我来帮您完成这个任务", "首先", "计划", "逐步执行"},
 		},
 		{
 			// Pattern from user log: preserve tool result with file path
-			name:        "preserve_tool_result_with_path",
-			input:       "● Read(F:/MyProjects/test/hello.py)\n⎿ 文件内容如下",
-			contains:    []string{"● Read", "F:/MyProjects", "⎿ 文件内容如下"},
+			name:     "preserve_tool_result_with_path",
+			input:    "● Read(F:/MyProjects/test/hello.py)\n⎿ 文件内容如下",
+			contains: []string{"● Read", "F:/MyProjects", "⎿ 文件内容如下"},
 		},
 	}
 
@@ -6370,9 +6370,9 @@ func TestRemoveFunctionCallsBlocks_ProductionLogThinkingFragments(t *testing.T) 
 		},
 		{
 			// Pattern from user log: preserve bullet points with tool results
-			name:        "preserve_bullet_tool_results",
-			input:       "● Read(hello.py)\n⎿ 文件内容",
-			contains:    []string{"● Read", "⎿ 文件内容"},
+			name:     "preserve_bullet_tool_results",
+			input:    "● Read(hello.py)\n⎿ 文件内容",
+			contains: []string{"● Read", "⎿ 文件内容"},
 		},
 	}
 
@@ -6634,7 +6634,6 @@ func TestRemoveFunctionCallsBlocks_ProductionLogUserOutput(t *testing.T) {
 	}
 }
 
-
 // TestRemoveFunctionCallsBlocks_ProductionLogANTMLLeak tests removal of ANTML tags
 // that leak to output in production logs.
 // Issue: User reported seeing </antml\b:role>, </antml>, </antml\b:format> in CC output.
@@ -6878,7 +6877,6 @@ func TestParseMalformedInvokes_ProductionLogPatterns(t *testing.T) {
 	}
 }
 
-
 // TestRemoveFunctionCallsBlocks_PreserveNormalText tests that normal text is preserved
 // and not over-filtered by removeFunctionCallsBlocks.
 // Issue: User reported "不走了，也不思考，啥输出都没有" (no output at all).
@@ -7093,9 +7091,9 @@ func TestRemoveFunctionCallsBlocks_ThinkingModeDecember2025(t *testing.T) {
 // from December 2025 production log
 func TestRepairMalformedJSON_EmptyIdValue(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantID   bool // whether result should have non-empty id
+		name   string
+		input  string
+		wantID bool // whether result should have non-empty id
 	}{
 		{
 			name:   "empty id value",
@@ -7503,7 +7501,6 @@ func TestRemoveFunctionCallsBlocks_ANTMLThinkingWithToolCall(t *testing.T) {
 	}
 }
 
-
 // TestRemoveFunctionCallsBlocks_IncompleteANTMLTags tests removal of incomplete/truncated
 // ANTML tags that occur when streaming is interrupted or model outputs partial tags.
 // These patterns were observed in real-world production logs.
@@ -7746,77 +7743,77 @@ func TestRemoveFunctionCallsBlocks_RealWorldMalformedLog(t *testing.T) {
 // - Tool call RESULTS without "name" field = IS a result
 func TestIsToolCallResultJSON_ThinkingModelWithResultFields(t *testing.T) {
 	tests := []struct {
-		name              string
-		input             string
-		expectedIsResult  bool
-		description       string
+		name             string
+		input            string
+		expectedIsResult bool
+		description      string
 	}{
 		{
-			name:              "tool_request_with_is_error_true",
-			input:             `{"name":"Read","file_path":"test.py","is_error":true,"result":"tool call failed: Read","status":"error"}`,
-			expectedIsResult:  true,
-			description:       "Tool call with is_error:true IS a result (strong indicator)",
+			name:             "tool_request_with_is_error_true",
+			input:            `{"name":"Read","file_path":"test.py","is_error":true,"result":"tool call failed: Read","status":"error"}`,
+			expectedIsResult: true,
+			description:      "Tool call with is_error:true IS a result (strong indicator)",
 		},
 		{
-			name:              "tool_request_with_is_error_false",
-			input:             `{"name":"Read","file_path":"test.py","is_error":false,"result":"","status":""}`,
-			expectedIsResult:  false,
-			description:       "Tool call REQUEST with is_error:false and empty result is NOT a result",
+			name:             "tool_request_with_is_error_false",
+			input:            `{"name":"Read","file_path":"test.py","is_error":false,"result":"","status":""}`,
+			expectedIsResult: false,
+			description:      "Tool call REQUEST with is_error:false and empty result is NOT a result",
 		},
 		{
-			name:              "tool_request_with_status_error",
-			input:             `{"name":"Bash","command":"ls -la","status":"error","result":"command failed"}`,
-			expectedIsResult:  true,
-			description:       "Tool call with status:error IS a result (strong indicator)",
+			name:             "tool_request_with_status_error",
+			input:            `{"name":"Bash","command":"ls -la","status":"error","result":"command failed"}`,
+			expectedIsResult: true,
+			description:      "Tool call with status:error IS a result (strong indicator)",
 		},
 		{
-			name:              "tool_request_with_all_result_fields",
-			input:             `{"name":"TodoWrite","todos":[],"is_error":false,"result":"","status":"","duration":"0s","display_result":"","mcp_server":{"name":"mcp-server"}}`,
-			expectedIsResult:  true,
-			description:       "Tool call with multiple result fields (is_error, result, duration, display_result, mcp_server) IS a result",
+			name:             "tool_request_with_all_result_fields",
+			input:            `{"name":"TodoWrite","todos":[],"is_error":false,"result":"","status":"","duration":"0s","display_result":"","mcp_server":{"name":"mcp-server"}}`,
+			expectedIsResult: true,
+			description:      "Tool call with multiple result fields (is_error, result, duration, display_result, mcp_server) IS a result",
 		},
 		{
-			name:              "tool_result_without_name",
-			input:             `{"is_error":true,"result":"tool call failed","status":"error","duration":"1s"}`,
-			expectedIsResult:  true,
-			description:       "Tool call RESULT without name field IS a result",
+			name:             "tool_result_without_name",
+			input:            `{"is_error":true,"result":"tool call failed","status":"error","duration":"1s"}`,
+			expectedIsResult: true,
+			description:      "Tool call RESULT without name field IS a result",
 		},
 		{
-			name:              "tool_result_with_name_not_first",
-			input:             `{"result":"file content","is_error":false,"status":"completed","name":"Read"}`,
-			expectedIsResult:  true,
-			description:       "Tool call RESULT with name not as first field IS a result",
+			name:             "tool_result_with_name_not_first",
+			input:            `{"result":"file content","is_error":false,"status":"completed","name":"Read"}`,
+			expectedIsResult: true,
+			description:      "Tool call RESULT with name not as first field IS a result",
 		},
 		{
-			name:              "tool_result_with_non_empty_result",
-			input:             `{"result":"actual output","status":"completed","duration":"0s"}`,
-			expectedIsResult:  true,
-			description:       "Tool call RESULT with non-empty result IS a result",
+			name:             "tool_result_with_non_empty_result",
+			input:            `{"result":"actual output","status":"completed","duration":"0s"}`,
+			expectedIsResult: true,
+			description:      "Tool call RESULT with non-empty result IS a result",
 		},
 		// MCP tool test cases from production log (2026-01-02)
 		{
-			name:              "mcp_tool_result_completed",
-			input:             `{"name":"mcp__exa__get_code_context_exa","result":"","status":"completed","is_error":false,"mcp_server":{"name":"mcp-server"}}`,
-			expectedIsResult:  true,
-			description:       "MCP tool call RESULT with status:completed IS a result",
+			name:             "mcp_tool_result_completed",
+			input:            `{"name":"mcp__exa__get_code_context_exa","result":"","status":"completed","is_error":false,"mcp_server":{"name":"mcp-server"}}`,
+			expectedIsResult: true,
+			description:      "MCP tool call RESULT with status:completed IS a result",
 		},
 		{
-			name:              "mcp_tool_result_with_display_result",
-			input:             `{"display_result":"","duration":"0s","id":"call_3da10d39ea7d4d35910530bd","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed"}`,
-			expectedIsResult:  true,
-			description:       "MCP tool call RESULT with all result fields IS a result",
+			name:             "mcp_tool_result_with_display_result",
+			input:            `{"display_result":"","duration":"0s","id":"call_3da10d39ea7d4d35910530bd","is_error":false,"mcp_server":{"name":"mcp-server"},"name":"mcp__exa__get_code_context_exa","result":"","status":"completed"}`,
+			expectedIsResult: true,
+			description:      "MCP tool call RESULT with all result fields IS a result",
 		},
 		{
-			name:              "mcp_tool_request_no_result_fields",
-			input:             `{"name":"mcp__exa__web_search_exa","query":"Python GUI best practices"}`,
-			expectedIsResult:  false,
-			description:       "MCP tool call REQUEST without result fields is NOT a result",
+			name:             "mcp_tool_request_no_result_fields",
+			input:            `{"name":"mcp__exa__web_search_exa","query":"Python GUI best practices"}`,
+			expectedIsResult: false,
+			description:      "MCP tool call REQUEST without result fields is NOT a result",
 		},
 		{
-			name:              "mcp_tool_single_underscore_result",
-			input:             `{"name":"mcp_context7_query_docs","result":"documentation content","status":"completed","is_error":false}`,
-			expectedIsResult:  true,
-			description:       "MCP tool (single underscore) call RESULT IS a result",
+			name:             "mcp_tool_single_underscore_result",
+			input:            `{"name":"mcp_context7_query_docs","result":"documentation content","status":"completed","is_error":false}`,
+			expectedIsResult: true,
+			description:      "MCP tool (single underscore) call RESULT IS a result",
 		},
 	}
 
@@ -7898,7 +7895,7 @@ func TestSanitizeToolNameForPrompt(t *testing.T) {
 			// - Input: "工具名称_" (5 runes) + "测试"*40 (80 runes) = 85 runes
 			// - Expected: "工具名称_" (5 runes) + "测试"*37 (74 runes) + "测" (1 rune) = 80 runes
 			name:               "long_tool_name_with_unicode",
-			input:              "工具名称_" + strings.Repeat("测试", 40), // 5 + 80 = 85 runes
+			input:              "工具名称_" + strings.Repeat("测试", 40),       // 5 + 80 = 85 runes
 			expected:           "工具名称_" + strings.Repeat("测试", 37) + "测", // 5 + 74 + 1 = 80 runes (truncated at 80)
 			expectExactRuneLen: MaxToolNameRunes,
 		},
@@ -8266,11 +8263,11 @@ func TestDiagnoseFCParseError(t *testing.T) {
 	triggerSignal := "<Function_test_Start/>"
 
 	tests := []struct {
-		name           string
-		content        string
-		triggerSignal  string
-		expectedCode   string
-		expectedInMsg  string // Substring expected in Message or Details
+		name          string
+		content       string
+		triggerSignal string
+		expectedCode  string
+		expectedInMsg string // Substring expected in Message or Details
 	}{
 		// Empty content
 		{
@@ -8779,8 +8776,8 @@ func TestExtractThinkingContent(t *testing.T) {
 			expected: "FirstSecond",
 		},
 		{
-			name:     "mixed_think_and_thinking",
-			content:  "<think>Short</think> and <thinking>Long thinking</thinking>",
+			name:    "mixed_think_and_thinking",
+			content: "<think>Short</think> and <thinking>Long thinking</thinking>",
 			// NOTE: The extraction order is intentional by design:
 			// <thinking> blocks are processed first, then <think>, then ANTML variants.
 			// All extracted content is concatenated in this order. This is not a bug.
@@ -8989,7 +8986,6 @@ func TestRemoveThinkBlocks_PreservesThinkingModelToolCalls(t *testing.T) {
 	}
 }
 
-
 // TestCleanTruncatedToolResultJSON_ProductionLog tests the cleanTruncatedToolResultJSON function
 // with the exact pattern from production log (2026-01-02).
 // These tests were consolidated from test_truncated_json_test.go
@@ -9182,7 +9178,6 @@ func TestIsToolCallResultJSON_TruncatedJSON(t *testing.T) {
 		},
 	}
 
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			isResult := isToolCallResultJSON(tt.input)
@@ -9329,32 +9324,32 @@ func TestParseFunctionCallsXML_Unclosed(t *testing.T) {
 		wantArgs      map[string]any
 	}{
 		{
-			name:  "unclosed invoke at end",
-			input: `<invoke name="Read"><parameter name="path">hello.py</parameter>`,
+			name:     "unclosed invoke at end",
+			input:    `<invoke name="Read"><parameter name="path">hello.py</parameter>`,
 			wantName: "Read",
 			wantArgs: map[string]any{"path": "hello.py"},
 		},
 		{
-			name:  "unclosed invoke and unclosed parameter",
-			input: `<invoke name="Write"><parameter name="file">test.txt"><parameter name="content">hello world`,
+			name:     "unclosed invoke and unclosed parameter",
+			input:    `<invoke name="Write"><parameter name="file">test.txt"><parameter name="content">hello world`,
 			wantName: "Write",
 			wantArgs: map[string]any{"file": "test.txt", "content": "hello world"},
 		},
 		{
-			name:  "unclosed thinking and unclosed invoke",
-			input: `<think>I will read the file. <invoke name="Read"><parameter name="path">test.py`,
+			name:     "unclosed thinking and unclosed invoke",
+			input:    `<think>I will read the file. <invoke name="Read"><parameter name="path">test.py`,
 			wantName: "Read",
 			wantArgs: map[string]any{"path": "test.py"},
 		},
 		{
-			name:  "multiple unclosed parameters with mix of quotes",
-			input: `<invoke name="Complex"><parameter name="p1">val1 <parameter name='p2'>val2 <parameter name="p3">val3`,
+			name:     "multiple unclosed parameters with mix of quotes",
+			input:    `<invoke name="Complex"><parameter name="p1">val1 <parameter name='p2'>val2 <parameter name="p3">val3`,
 			wantName: "Complex",
 			wantArgs: map[string]any{"p1": "val1", "p2": "val2", "p3": "val3"},
 		},
 		{
-			name: "unclosed generic tag parameters",
-			input: `<invoke name="Generic"><param1>value1 <param2>value2`,
+			name:     "unclosed generic tag parameters",
+			input:    `<invoke name="Generic"><param1>value1 <param2>value2`,
 			wantName: "Generic",
 			wantArgs: map[string]any{"param1": "value1", "param2": "value2"},
 		},
@@ -9656,13 +9651,13 @@ func TestDetectToolIntentInReasoning(t *testing.T) {
 // This format is used by some models (e.g., DeepSeek reasoner) when force_function_call is enabled.
 func TestParseFunctionCallsXML_FunctionCallToolArgsFormat(t *testing.T) {
 	tests := []struct {
-		name           string
-		input          string
-		triggerSignal  string
-		wantCallCount  int
-		wantToolName   string
-		wantArgKey     string
-		wantArgValue   any
+		name          string
+		input         string
+		triggerSignal string
+		wantCallCount int
+		wantToolName  string
+		wantArgKey    string
+		wantArgValue  any
 	}{
 		{
 			name: "basic_function_call_tool_args",
@@ -9810,13 +9805,13 @@ func TestParseFunctionCallsXML_TruncatedFunctionCall(t *testing.T) {
 // that may output tool calls without the trigger signal.
 func TestParseFunctionCallsXML_TriggerSignalNotInContent(t *testing.T) {
 	tests := []struct {
-		name           string
-		input          string
-		triggerSignal  string
-		wantCallCount  int
-		wantToolName   string
-		wantArgKey     string
-		wantArgValue   any
+		name          string
+		input         string
+		triggerSignal string
+		wantCallCount int
+		wantToolName  string
+		wantArgKey    string
+		wantArgValue  any
 	}{
 		{
 			name: "trigger_signal_provided_but_not_in_content",
@@ -9891,7 +9886,6 @@ func TestParseFunctionCallsXML_TriggerSignalNotInContent(t *testing.T) {
 	}
 }
 
-
 // TestParseFunctionCallsXML_ProductionLogExactFormat tests parsing of the exact format
 // from production logs where DeepSeek reasoner outputs tool calls in content field.
 func TestParseFunctionCallsXML_ProductionLogExactFormat(t *testing.T) {
@@ -9935,7 +9929,6 @@ func TestParseFunctionCallsXML_ProductionLogExactFormat(t *testing.T) {
 		t.Errorf("Expected 1 call without trigger signal, got %d", len(calls2))
 	}
 }
-
 
 // TestParseFunctionCallsXML_StreamingAccumulation tests that content accumulated
 // from streaming chunks can be correctly parsed. This simulates the exact scenario
@@ -9992,7 +9985,6 @@ func TestParseFunctionCallsXML_StreamingAccumulation(t *testing.T) {
 	}
 }
 
-
 // TestParseFunctionCallsXML_MissingFunctionCallCloseTag tests parsing when
 // the </function_call> closing tag is missing. This is a real scenario from
 // production where DeepSeek reasoner outputs incomplete XML.
@@ -10030,7 +10022,6 @@ func TestParseFunctionCallsXML_MissingFunctionCallCloseTag(t *testing.T) {
 		t.Errorf("Expected at least 1 call to be parsed, got 0")
 	}
 }
-
 
 // TestParseFunctionCallsXML_InvokeWithToolTag tests parsing of <invoke> blocks
 // that contain <tool> tag for tool name instead of name attribute.
@@ -10218,9 +10209,9 @@ func TestRemoveFunctionCallsBlocks_January2026SevereMalformedPattern(t *testing.
 // This function uses heuristic scanning instead of hardcoded patterns.
 func TestFindSmartJSONLeakPosition(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantPos  int // -1 means no leak detected
+		name    string
+		input   string
+		wantPos int // -1 means no leak detected
 	}{
 		// Pattern A: quote followed by digit and comma
 		{
@@ -10317,7 +10308,6 @@ func TestFindSmartJSONLeakPosition(t *testing.T) {
 		})
 	}
 }
-
 
 // TestRemoveFunctionCallsBlocks_StatusQuotePattern tests the pattern where
 // status value (pending/completed/in_progress) is directly followed by quote and content.
@@ -10477,12 +10467,12 @@ func TestParseFunctionCallsXML_ANTMLInvoke(t *testing.T) {
 // KiloCode uses ANTML-style format: <invoke name="..."><parameter name="...">...</parameter></invoke>
 func TestParseFunctionCallsXML_KiloCodeNativeFormat(t *testing.T) {
 	tests := []struct {
-		name           string
-		input          string
-		triggerSignal  string
-		expectedCount  int
-		expectedName   string
-		expectedArgs   map[string]string
+		name          string
+		input         string
+		triggerSignal string
+		expectedCount int
+		expectedName  string
+		expectedArgs  map[string]string
 	}{
 		{
 			name: "kilocode_read_file_with_trigger",
@@ -10696,7 +10686,6 @@ func TestKiloCodeLoopScenario(t *testing.T) {
 		t.Errorf("cleaned result = %q, want %q", cleaned, expected)
 	}
 }
-
 
 // TestKiloCodeStreamingXMLSuppression tests that <invoke> and <parameter> tags
 // are properly detected and suppressed in streaming responses.

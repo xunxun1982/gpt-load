@@ -2,15 +2,15 @@ package models
 
 // SystemSettingInfo represents detailed system configuration information (for API responses).
 type SystemSettingInfo struct {
-	Key          string   `json:"key"`
-	Name         string   `json:"name"`
-	Value        any      `json:"value"`
-	Type         string   `json:"type"` // "int", "bool", "string"
-	DefaultValue any      `json:"default_value"`
-	Description  string   `json:"description"`
-	Category     string   `json:"category"`
-	MinValue     *int     `json:"min_value,omitempty"`
-	Required     bool     `json:"required"`
+	Key          string `json:"key"`
+	Name         string `json:"name"`
+	Value        any    `json:"value"`
+	Type         string `json:"type"` // "int", "bool", "string"
+	DefaultValue any    `json:"default_value"`
+	Description  string `json:"description"`
+	Category     string `json:"category"`
+	MinValue     *int   `json:"min_value,omitempty"`
+	Required     bool   `json:"required"`
 }
 
 // CategorizedSettings a list of settings grouped by category

@@ -103,12 +103,12 @@ type GroupService struct {
 	groupListCacheMaxTTL  time.Duration // Maximum TTL for adaptive extension
 
 	// Callbacks for binding operations (set by handler layer to avoid circular dependency)
-	CheckGroupCanDeleteCallback          func(ctx context.Context, groupID uint) error
+	CheckGroupCanDeleteCallback func(ctx context.Context, groupID uint) error
 	// Note: SyncGroupEnabledToSiteCallback removed - group disable does NOT cascade to site
-	SyncChildGroupsEnabledCallback       func(ctx context.Context, parentGroupID uint, enabled bool) error // Sync enabled status to child groups
-	InvalidateChildGroupsCacheCallback   func()                                                            // Invalidate child groups cache after updating a child group
-	OnGroupDeleted                       func(groupID uint, isAggregateGroup bool)                         // Soft-delete health metrics when group is deleted
-	InvalidateHubModelPoolCacheCallback  func()                                                            // Invalidate Hub model pool cache when groups change
+	SyncChildGroupsEnabledCallback      func(ctx context.Context, parentGroupID uint, enabled bool) error // Sync enabled status to child groups
+	InvalidateChildGroupsCacheCallback  func()                                                            // Invalidate child groups cache after updating a child group
+	OnGroupDeleted                      func(groupID uint, isAggregateGroup bool)                         // Soft-delete health metrics when group is deleted
+	InvalidateHubModelPoolCacheCallback func()                                                            // Invalidate Hub model pool cache when groups change
 }
 
 // NewGroupService constructs a GroupService.
@@ -145,10 +145,10 @@ func NewGroupService(
 		encryptionSvc:         encryptionSvc,
 		aggregateGroupService: aggregateGroupService,
 		keyStatsCache:         make(map[uint]groupKeyStatsCacheEntry),
-		keyStatsCacheTTL:      30 * time.Second,  // Base TTL for key stats cache
-		keyStatsCacheMaxTTL:   2 * time.Minute,   // Max TTL after adaptive extension
-		groupListCacheTTL:     30 * time.Second,  // Base TTL for group list cache
-		groupListCacheMaxTTL:  2 * time.Minute,   // Max TTL after adaptive extension
+		keyStatsCacheTTL:      30 * time.Second, // Base TTL for key stats cache
+		keyStatsCacheMaxTTL:   2 * time.Minute,  // Max TTL after adaptive extension
+		groupListCacheTTL:     30 * time.Second, // Base TTL for group list cache
+		groupListCacheMaxTTL:  2 * time.Minute,  // Max TTL after adaptive extension
 		channelRegistry:       channel.GetChannels(),
 	}
 	if svc.keyService != nil {

@@ -49,12 +49,12 @@ var (
 	reArgsBlock          = regexp.MustCompile(`(?s)<args>(.*?)</args>`)
 	reParamsBlock        = regexp.MustCompile(`(?s)<parameters>(.*?)</parameters>`)
 	// Support both <parameter name="..."> and <parametername="..."> (missing space) formats
-	reMcpParam           = regexp.MustCompile(`(?s)<(?:parameter|param)\s*name="([^"]+)"[^>]*>(.*?)</(?:parameter|param)>`)
+	reMcpParam = regexp.MustCompile(`(?s)<(?:parameter|param)\s*name="([^"]+)"[^>]*>(.*?)</(?:parameter|param)>`)
 	// Support malformed <parametername="..."> format (no space, tag name includes "name")
-	reMcpParamNoSpace    = regexp.MustCompile(`(?s)<(?:parametername|paramname)="([^"]+)"[^>]*>(.*?)</(?:parametername|paramname|parameter|param)>`)
-	reGenericParam       = regexp.MustCompile(`(?s)<([^\s>/]+)(?:\s+[^>]*)?>(.*?)</([^\s>/]+)>`) // Note: Go RE2 doesn't support backreferences
-	reToolCallBlock      = regexp.MustCompile(`(?s)<tool_call\s+name="([^"]+)"[^>]*>(.*?)</tool_call>`)
-	reInvokeFlat         = regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"[^>]*>(.*?)</invoke>`)
+	reMcpParamNoSpace = regexp.MustCompile(`(?s)<(?:parametername|paramname)="([^"]+)"[^>]*>(.*?)</(?:parametername|paramname|parameter|param)>`)
+	reGenericParam    = regexp.MustCompile(`(?s)<([^\s>/]+)(?:\s+[^>]*)?>(.*?)</([^\s>/]+)>`) // Note: Go RE2 doesn't support backreferences
+	reToolCallBlock   = regexp.MustCompile(`(?s)<tool_call\s+name="([^"]+)"[^>]*>(.*?)</tool_call>`)
+	reInvokeFlat      = regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"[^>]*>(.*?)</invoke>`)
 
 	// Trigger signal pattern - no (?s) needed, single line match
 	// Optimized: Use character class [a-zA-Z0-9] instead of \w for explicit ASCII matching
@@ -348,7 +348,7 @@ var (
 	// These occur when models output partial XML without closing tags
 	// NOTE: This pattern is applied only when no closing tag exists (checked in removeFunctionCallsBlocks)
 	// Matches content until newline or end of string
-	reUnclosedInvokeParam = regexp.MustCompile(`<(?:invoke|parameter)\s+name="[^"]*">[^\n]*(?:\n|$)`)
+	reUnclosedInvokeParam      = regexp.MustCompile(`<(?:invoke|parameter)\s+name="[^"]*">[^\n]*(?:\n|$)`)
 	reUnclosedMalformedNameTag = regexp.MustCompile(`(?m)<(?:invoke|parameter|property)name[^>\r\n]*$`)
 
 	// Pattern for parsing unclosed <invoke name="..."> tags (truncated output)
@@ -443,11 +443,11 @@ var (
 	// Precompiled patterns for repairMalformedJSON function.
 	// These are compiled once at init to avoid repeated compilation in hot path.
 	// Performance: Precompilation reduces regex overhead by ~10x per call.
-	reJSONMissingComma   = regexp.MustCompile(`\}[ \t\n]*\{`)
-	reJSONExtraQuote     = regexp.MustCompile(`\\",`)
-	reJSONTrailingComma  = regexp.MustCompile(`,\s*[\]\}]`)
-	reJSONMalformedTodo  = regexp.MustCompile(`\{"id":\s*"(\d+)",\s*:\s*`)
-	reJSONMissingQuotes  = regexp.MustCompile(`:\s*([a-zA-Z][a-zA-Z0-9_]*)([,}\]])`)
+	reJSONMissingComma  = regexp.MustCompile(`\}[ \t\n]*\{`)
+	reJSONExtraQuote    = regexp.MustCompile(`\\",`)
+	reJSONTrailingComma = regexp.MustCompile(`,\s*[\]\}]`)
+	reJSONMalformedTodo = regexp.MustCompile(`\{"id":\s*"(\d+)",\s*:\s*`)
+	reJSONMissingQuotes = regexp.MustCompile(`:\s*([a-zA-Z][a-zA-Z0-9_]*)([,}\]])`)
 	// Pattern to fix malformed field patterns from real-world production log (real production log)
 	// Matches: {"id": "1",": " or {"id":"1",":"  (id field followed by malformed field separator)
 	// This handles cases where the model outputs: {"id": "1",": "content value"
@@ -780,7 +780,6 @@ var (
 	//   - '4",label":运行GUI程序' -> '' (entire line is JSON fragment)
 	// Pattern: digit(s) followed by quote-comma and field name
 	reTruncatedJSONNumericIdThenField = regexp.MustCompile(`\d+"\s*,\s*(?:label|title|content|status|priority|activeForm|description|id|state|Form)"?\s*:`)
-
 
 	// Pattern to fix status field ending with bracket
 	// Matches: "status":] -> "status": "pending"]
@@ -2371,7 +2370,6 @@ func processGLMBlockContent(content string) string {
 	return preserved.String()
 }
 
-
 // removeThinkBlocks removes all thinking blocks from input text, but FIRST extracts
 // any <function_calls>, <invoke>, or trigger signal blocks inside them.
 // This is critical for reasoning models (DeepSeek-R1, GLM-thinking, etc.) that may
@@ -3448,26 +3446,26 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 		for i := 0; i < maxIterations; i++ {
 			before := text
 			// Phase 1: Remove malformed tags with JSON content (highest priority)
-			text = reMalformedInvokeJSON.ReplaceAllString(text, "")             // <><invokename=...>[JSON]
-			text = reMalformedEmptyTagPrefixJSON.ReplaceAllString(text, "")     // <><tagname=...>[JSON]
-			text = reMalformedParamJSONName.ReplaceAllString(text, "")          // <><parameter name="field":"value"...
+			text = reMalformedInvokeJSON.ReplaceAllString(text, "")         // <><invokename=...>[JSON]
+			text = reMalformedEmptyTagPrefixJSON.ReplaceAllString(text, "") // <><tagname=...>[JSON]
+			text = reMalformedParamJSONName.ReplaceAllString(text, "")      // <><parameter name="field":"value"...
 			// Phase 2: Remove chained malformed tags
-			text = reMalformedEmptyTagPrefixChained.ReplaceAllString(text, "")  // <><tag1=...>val<tag2=...>
+			text = reMalformedEmptyTagPrefixChained.ReplaceAllString(text, "") // <><tag1=...>val<tag2=...>
 			// Phase 3: Remove malformed tags with proper closing (with context)
-			text = reMalformedParamTagClosed.ReplaceAllString(text, "")         // <><parameter ...>value</parameter>
+			text = reMalformedParamTagClosed.ReplaceAllString(text, "") // <><parameter ...>value</parameter>
 			// Phase 4: Remove malformed tags without closing
-			text = reMalformedParamTag.ReplaceAllString(text, "")               // <><parameter ...>
-			text = reMalformedMergedTag.ReplaceAllString(text, "")              // <parametername=...>
-			text = reMalformedPropertyTag.ReplaceAllString(text, "")            // <propertyname=...value=...>
+			text = reMalformedParamTag.ReplaceAllString(text, "")    // <><parameter ...>
+			text = reMalformedMergedTag.ReplaceAllString(text, "")   // <parametername=...>
+			text = reMalformedPropertyTag.ReplaceAllString(text, "") // <propertyname=...value=...>
 			// Phase 5: Remove general malformed prefixes
-			text = reMalformedEmptyTagPrefix.ReplaceAllString(text, "")         // <><tagname=...>value
+			text = reMalformedEmptyTagPrefix.ReplaceAllString(text, "") // <><tagname=...>value
 			// Phase 6: Remove short CJK header followed by malformed JSON (entire segment)
 			// MUST be before reTextBeforeMalformedJSON to catch "任务清单<>[...]" pattern
-			text = reShortCJKHeaderWithJSON.ReplaceAllString(text, "")          // 任务清单<>[...]
+			text = reShortCJKHeaderWithJSON.ReplaceAllString(text, "") // 任务清单<>[...]
 			// Phase 7: Remove <> followed by JSON (preserves longer text before <>)
-			text = reTextBeforeMalformedJSON.ReplaceAllString(text, "")         // <>[...]
-			text = reTruncatedJSONField.ReplaceAllString(text, "")              // <>id":"1",...
-			text = reBareJSONAfterEmpty.ReplaceAllString(text, "")              // <>[...] or <>{...}
+			text = reTextBeforeMalformedJSON.ReplaceAllString(text, "") // <>[...]
+			text = reTruncatedJSONField.ReplaceAllString(text, "")      // <>id":"1",...
+			text = reBareJSONAfterEmpty.ReplaceAllString(text, "")      // <>[...] or <>{...}
 			// If no change after replacement, all malformed tags are removed
 			if text == before {
 				break
@@ -3598,6 +3596,7 @@ func removeOrphanedThinkingBlocks(text string) string {
 
 	return sb.String()
 }
+
 // Returns true if the line contains malformed JSON/XML patterns that should be removed.
 //
 // Structural patterns detected:
@@ -5416,7 +5415,7 @@ func convertToolChoiceToPrompt(toolChoice any, toolDefs []functionToolDefinition
 						logrus.WithField("tool_name", sanitizeToolNameForPrompt(requiredToolName)).
 							Warn("convertToolChoiceToPrompt: specified tool not found in available tools")
 					}
-				// NOTE: Explicitly mention trigger signal
+					// NOTE: Explicitly mention trigger signal
 					// for clarity, as it's injected in the system prompt earlier.
 					// NOTE: Changed wording from "MUST use ONLY" to
 					// "MUST call ... at least once" to explicitly require at least one call,
@@ -5831,8 +5830,6 @@ func isValidJSON(s string) bool {
 	return json.Valid([]byte(s))
 }
 
-
-
 type functionToolDefinition struct {
 	Name        string
 	Description string
@@ -6026,12 +6023,12 @@ func escapeXml(s string) string {
 // It supports both <function_calls> blocks and flat <invoke> tags.
 //
 // Parsing Strategy:
-// 1. We process the RAW text, including <thinking> blocks. This is CRITICAL for
-//    reasoning models (like DeepSeek-R1, GLM-Thinking) which may embed tool calls
-//    within or interleaved with thinking content. Previous versions removed thinking
-//    blocks first, which caused tool calls inside them (especially unclosed ones) to be lost.
-// 2. We look for a trigger signal if provided, as it anchors the parsing.
-// 3. We fallback to scanning for <function_calls> or <invoke>.
+//  1. We process the RAW text, including <thinking> blocks. This is CRITICAL for
+//     reasoning models (like DeepSeek-R1, GLM-Thinking) which may embed tool calls
+//     within or interleaved with thinking content. Previous versions removed thinking
+//     blocks first, which caused tool calls inside them (especially unclosed ones) to be lost.
+//  2. We look for a trigger signal if provided, as it anchors the parsing.
+//  3. We fallback to scanning for <function_calls> or <invoke>.
 func parseFunctionCallsXML(text, triggerSignal string) []functionCall {
 	if text == "" {
 		return nil
@@ -6900,7 +6897,7 @@ func extractMalformedParameters(content string) map[string]any {
 		trimmed := strings.TrimSpace(content)
 		if trimmed != "" {
 			// Try JSON parsing for the entire content
-			if (strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")) {
+			if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
 				if jsonVal, ok := tryParseJSON(trimmed); ok {
 					args["value"] = jsonVal
 				}
@@ -7410,7 +7407,7 @@ func fixUnquotedFieldValues(s string) string {
 	for i < len(s) {
 		// Look for pattern: ": followed by unquoted value
 		if i+2 < len(s) && s[i] == '"' && s[i+1] == ':' {
-			result.WriteByte(s[i]) // Write the closing quote
+			result.WriteByte(s[i])   // Write the closing quote
 			result.WriteByte(s[i+1]) // Write the colon
 			i += 2
 

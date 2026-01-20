@@ -43,7 +43,7 @@ type RestoreKeysResult struct {
 }
 
 // KeyService provides services related to API keys.
- type KeyService struct {
+type KeyService struct {
 	DB                        *gorm.DB
 	KeyProvider               *keypool.KeyProvider
 	KeyValidator              *keypool.KeyValidator
@@ -54,22 +54,22 @@ type RestoreKeysResult struct {
 	pageCache    map[string]keyPageCacheEntry
 	pageCacheMu  sync.RWMutex
 	pageCacheTTL time.Duration
- }
+}
 
- type keyPageCacheEntry struct {
+type keyPageCacheEntry struct {
 	Items     []models.APIKey
 	ExpiresAt time.Time
- }
+}
 
 // insertChunkSize returns an insert/list chunk size tuned by database dialect
 func (s *KeyService) insertChunkSize() int {
 	switch s.DB.Dialector.Name() {
 	case "sqlite":
-		return 100  // Reduced from 200 for smoother operation
+		return 100 // Reduced from 200 for smoother operation
 	case "mysql", "postgres":
-		return 300  // Reduced from 500 for better concurrency
+		return 300 // Reduced from 500 for better concurrency
 	default:
-		return 200  // Reduced from 300
+		return 200 // Reduced from 300
 	}
 }
 
@@ -196,8 +196,8 @@ func (s *KeyService) processAndCreateKeys(
 		return 0, len(keys), nil
 	}
 
-// 3. Use KeyProvider to add keys in chunks (dialect-aware chunk size)
-err = utils.ProcessInChunks(newKeysToCreate, s.insertChunkSize(), func(chunk []models.APIKey) error {
+	// 3. Use KeyProvider to add keys in chunks (dialect-aware chunk size)
+	err = utils.ProcessInChunks(newKeysToCreate, s.insertChunkSize(), func(chunk []models.APIKey) error {
 		if err := s.KeyProvider.AddKeys(groupID, chunk); err != nil {
 			return err
 		}
@@ -275,7 +275,7 @@ func (s *KeyService) RestoreMultipleKeys(groupID uint, keysText string) (*Restor
 	}
 
 	var totalRestoredCount int64
-err := utils.ProcessInChunks(keysToRestore, s.insertChunkSize(), func(chunk []string) error {
+	err := utils.ProcessInChunks(keysToRestore, s.insertChunkSize(), func(chunk []string) error {
 		restoredCount, err := s.KeyProvider.RestoreMultipleKeys(groupID, chunk)
 		if err != nil {
 			return err
@@ -340,7 +340,7 @@ func (s *KeyService) DeleteMultipleKeys(groupID uint, keysText string) (*DeleteK
 	}
 
 	var totalDeletedCount int64
-err := utils.ProcessInChunks(keysToDelete, s.insertChunkSize(), func(chunk []string) error {
+	err := utils.ProcessInChunks(keysToDelete, s.insertChunkSize(), func(chunk []string) error {
 		deletedCount, err := s.KeyProvider.RemoveKeys(groupID, chunk)
 		if err != nil {
 			return err
@@ -380,7 +380,7 @@ func (s *KeyService) ListKeysInGroupQuery(groupID uint, statusFilter string, sea
 
 	query = query.Order("last_used_at desc, updated_at desc")
 
-return query
+	return query
 }
 
 // BuildPageCacheKey composes a cache key for a keys list request
@@ -438,7 +438,7 @@ func (s *KeyService) TestMultipleKeys(group *models.Group, keysText string) ([]k
 	}
 
 	allResults := make([]keypool.KeyTestResult, 0, len(keysToTest))
-err := utils.ProcessInChunks(keysToTest, s.insertChunkSize(), func(chunk []string) error {
+	err := utils.ProcessInChunks(keysToTest, s.insertChunkSize(), func(chunk []string) error {
 		results, err := s.KeyValidator.TestMultipleKeys(group, chunk)
 		if err != nil {
 			return err
@@ -466,7 +466,7 @@ func (s *KeyService) StreamKeysToWriter(groupID uint, statusFilter string, write
 	}
 
 	var keys []models.APIKey
-err := query.FindInBatches(&keys, s.insertChunkSize(), func(tx *gorm.DB, batch int) error {
+	err := query.FindInBatches(&keys, s.insertChunkSize(), func(tx *gorm.DB, batch int) error {
 		for _, key := range keys {
 			decryptedKey, err := s.EncryptionSvc.Decrypt(key.KeyValue)
 			if err != nil {
@@ -489,8 +489,8 @@ err := query.FindInBatches(&keys, s.insertChunkSize(), func(tx *gorm.DB, batch i
 func (s *KeyService) getTotalKeysInGroup(groupID uint) (int64, error) {
 	var totalInGroup int64
 	if err := s.DB.Model(&models.APIKey{}).
-			Where("group_id = ?", groupID).
-			Count(&totalInGroup).Error; err != nil {
+		Where("group_id = ?", groupID).
+		Count(&totalInGroup).Error; err != nil {
 		return 0, err
 	}
 	return totalInGroup, nil

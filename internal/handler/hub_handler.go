@@ -575,11 +575,12 @@ func (h *HubHandler) extractModelFromRequestLegacy(c *gin.Context) (string, erro
 
 // rewriteHubPath rewrites the hub path to proxy path.
 // Examples:
-//   /hub/v1/chat/completions -> /proxy/{group}/v1/chat/completions
-//   /hub/v1/messages -> /proxy/{group}/v1/messages (Claude)
-//   /hub/v1/responses -> /proxy/{group}/v1/responses (Codex)
-//   /hub/v1/images/generations -> /proxy/{group}/v1/images/generations
-//   /hub/v1beta/models/... -> /proxy/{group}/v1beta/models/...
+//
+//	/hub/v1/chat/completions -> /proxy/{group}/v1/chat/completions
+//	/hub/v1/messages -> /proxy/{group}/v1/messages (Claude)
+//	/hub/v1/responses -> /proxy/{group}/v1/responses (Codex)
+//	/hub/v1/images/generations -> /proxy/{group}/v1/images/generations
+//	/hub/v1beta/models/... -> /proxy/{group}/v1beta/models/...
 func (h *HubHandler) rewriteHubPath(path, groupName string) string {
 	// Remove /hub prefix and add /proxy/{group} prefix
 	if strings.HasPrefix(path, "/hub/v1beta") {

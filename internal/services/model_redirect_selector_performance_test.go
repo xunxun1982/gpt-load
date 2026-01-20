@@ -241,13 +241,13 @@ func BenchmarkRealisticWorkload(b *testing.B) {
 
 	// Realistic model distribution
 	models := []string{
-		"gpt-4", "gpt-4", "gpt-4", "gpt-4", "gpt-4",     // 25% gpt-4
-		"gpt-3.5", "gpt-3.5", "gpt-3.5",                 // 15% gpt-3.5
-		"claude-3", "claude-3", "claude-3",              // 15% claude-3
-		"gemini", "gemini",                              // 10% gemini
-		"llama", "llama",                                // 10% llama
-		"unknown-1", "unknown-2", "unknown-3",           // 15% unknown
-		"custom-1", "custom-2",                          // 10% custom
+		"gpt-4", "gpt-4", "gpt-4", "gpt-4", "gpt-4", // 25% gpt-4
+		"gpt-3.5", "gpt-3.5", "gpt-3.5", // 15% gpt-3.5
+		"claude-3", "claude-3", "claude-3", // 15% claude-3
+		"gemini", "gemini", // 10% gemini
+		"llama", "llama", // 10% llama
+		"unknown-1", "unknown-2", "unknown-3", // 15% unknown
+		"custom-1", "custom-2", // 10% custom
 	}
 
 	b.ResetTimer()
