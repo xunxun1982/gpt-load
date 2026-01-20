@@ -510,7 +510,10 @@ func BenchmarkMemoryStore_Publish(b *testing.B) {
 	message := []byte("bench_message")
 
 	// Subscribe to avoid dropped message warnings
-	sub, _ := store.Subscribe(channel)
+	sub, err := store.Subscribe(channel)
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer sub.Close()
 
 	// Drain messages in background
@@ -519,6 +522,7 @@ func BenchmarkMemoryStore_Publish(b *testing.B) {
 		}
 	}()
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = store.Publish(channel, message)

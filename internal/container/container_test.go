@@ -147,8 +147,8 @@ func TestBuildContainer_MultipleInvocations(t *testing.T) {
 	assert.Same(t, cm1, cm2)
 }
 
-// TestBuildContainer_ErrorHandling tests error handling
-func TestBuildContainer_ErrorHandling(t *testing.T) {
+// TestBuildContainer_EmptyInvoke tests invoking with empty function
+func TestBuildContainer_EmptyInvoke(t *testing.T) {
 	setupTestEnv(t)
 
 	container, err := BuildContainer()
@@ -439,7 +439,7 @@ func TestBuildContainer_CoreProviders(t *testing.T) {
 	// This ensures all Provide() calls in BuildContainer succeeded
 	tests := []struct {
 		name string
-		fn   interface{}
+		fn   any
 	}{
 		{"ConfigManager", func(cm types.ConfigManager) { assert.NotNil(t, cm) }},
 		{"SystemSettingsManager", func(sm *config.SystemSettingsManager) { assert.NotNil(t, sm) }},

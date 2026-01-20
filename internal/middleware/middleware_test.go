@@ -927,11 +927,13 @@ func TestRateLimiterConcurrent(t *testing.T) {
 	// Start 3 concurrent requests (limit is 2)
 	var wg sync.WaitGroup
 	results := make(chan int, 3)
+	start := make(chan struct{})
 
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start // Wait for start signal to ensure concurrent execution
 			w := httptest.NewRecorder()
 			req, _ := http.NewRequest("GET", "/test", nil)
 			router.ServeHTTP(w, req)
@@ -939,6 +941,7 @@ func TestRateLimiterConcurrent(t *testing.T) {
 		}()
 	}
 
+	close(start) // Release all goroutines simultaneously
 	wg.Wait()
 	close(results)
 

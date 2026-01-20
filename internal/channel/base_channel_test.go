@@ -121,6 +121,18 @@ func TestSelectUpstreamDistribution(t *testing.T) {
 	url2 := "https://api2.openai.com"
 	url3 := "https://api3.openai.com"
 
+	// Add tolerance-based assertion for better bug detection
+	// Expected ratios: ~16.7%, ~33.3%, ~50% for weights 100:200:300
+	totalWeight := float64(100 + 200 + 300)
+	for urlStr, weight := range map[string]float64{url1: 100, url2: 200, url3: 300} {
+		expected := float64(iterations) * (weight / totalWeight)
+		actual := float64(counts[urlStr])
+		deviation := (actual - expected) / expected
+		if deviation < -0.5 || deviation > 0.5 {
+			t.Errorf("Extreme deviation for %s: got %d, expected ~%.0f (%.1f%% off)", urlStr, counts[urlStr], expected, deviation*100)
+		}
+	}
+
 	if counts[url1] > counts[url2] {
 		t.Logf("Warning: Lower weight upstream selected more often (url1: %d, url2: %d)", counts[url1], counts[url2])
 	}

@@ -504,12 +504,15 @@ func TestLogFiltersScope_TimeRange(t *testing.T) {
 	}
 }
 
+var benchSink string
+
 // BenchmarkEscapeLike benchmarks LIKE pattern escaping
 func BenchmarkEscapeLike(b *testing.B) {
 	input := "test%_!value"
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = escapeLike(input)
+		benchSink = escapeLike(input)
 	}
 }
 
@@ -558,6 +561,7 @@ func BenchmarkLogFiltersScope(b *testing.B) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/?group_name=test&is_success=true", nil)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	var count int64
 	for i := 0; i < b.N; i++ {
@@ -619,6 +623,7 @@ func BenchmarkStreamLogKeysToCSV(b *testing.B) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/", nil)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var buf bytes.Buffer

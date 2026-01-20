@@ -351,7 +351,8 @@ func TestLoadKeysFromDB(t *testing.T) {
 // setupBenchProvider creates a test KeyProvider for benchmarks
 func setupBenchProvider(b *testing.B) (*KeyProvider, *gorm.DB, store.Store) {
 	b.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	// Use shared cache mode to allow background workers to access the same in-memory database
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
@@ -361,6 +362,15 @@ func setupBenchProvider(b *testing.B) (*KeyProvider, *gorm.DB, store.Store) {
 	if err := db.AutoMigrate(&models.APIKey{}, &models.Group{}); err != nil {
 		b.Fatalf("failed to migrate test database: %v", err)
 	}
+
+	// Limit connections to prevent separate in-memory databases
+	// KeyProvider spawns background workers that need to share the same database
+	sqlDB, err := db.DB()
+	if err != nil {
+		b.Fatalf("failed to get sql DB: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 
 	memStore := store.NewMemoryStore()
 	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
@@ -378,8 +388,13 @@ func BenchmarkSelectKey(b *testing.B) {
 	provider, db, memStore := setupBenchProvider(b)
 	defer provider.Stop()
 
-	// Setup test data
-	group := &models.Group{Name: "bench-group", ChannelType: "openai", Enabled: true}
+	// Setup test data with unique name to avoid conflicts in shared cache
+	group := &models.Group{
+		Name:        fmt.Sprintf("bench-group-%d", time.Now().UnixNano()),
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatalf("failed to create test group: %v", err)
 	}
@@ -417,8 +432,13 @@ func BenchmarkUpdateStatus(b *testing.B) {
 	provider, db, memStore := setupBenchProvider(b)
 	defer provider.Stop()
 
-	// Setup test data
-	group := &models.Group{Name: "bench-group", ChannelType: "openai", Enabled: true}
+	// Setup test data with unique name to avoid conflicts in shared cache
+	group := &models.Group{
+		Name:        fmt.Sprintf("bench-update-%d", time.Now().UnixNano()),
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatalf("failed to create test group: %v", err)
 	}
@@ -457,7 +477,13 @@ func BenchmarkAddKeys(b *testing.B) {
 	provider, db, _ := setupBenchProvider(b)
 	defer provider.Stop()
 
-	group := &models.Group{Name: "bench-group", ChannelType: "openai", Enabled: true}
+	// Use unique name to avoid conflicts in shared cache
+	group := &models.Group{
+		Name:        fmt.Sprintf("bench-addkeys-%d", time.Now().UnixNano()),
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
+	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatalf("failed to create test group: %v", err)
 	}

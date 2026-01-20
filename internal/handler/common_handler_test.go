@@ -91,7 +91,8 @@ func TestCommonHandler_ApplyBrandPrefix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			handler := NewCommonHandler()
 
-			body, _ := json.Marshal(tt.requestBody)
+			body, err := json.Marshal(tt.requestBody)
+			require.NoError(t, err)
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodPost, "/api/models/apply-brand-prefix", bytes.NewBuffer(body))
@@ -102,7 +103,7 @@ func TestCommonHandler_ApplyBrandPrefix(t *testing.T) {
 			assert.Equal(t, tt.expectedStatus, w.Code)
 
 			var response map[string]interface{}
-			err := json.Unmarshal(w.Body.Bytes(), &response)
+			err = json.Unmarshal(w.Body.Bytes(), &response)
 			require.NoError(t, err)
 
 			if !tt.expectError {
@@ -152,7 +153,10 @@ func BenchmarkCommonHandler_ApplyBrandPrefix(b *testing.B) {
 	requestBody := ApplyBrandPrefixRequest{
 		Models: []string{"gpt-4", "gpt-3.5-turbo", "claude-3", "gemini-pro"},
 	}
-	body, _ := json.Marshal(requestBody)
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		b.Fatalf("failed to marshal request body: %v", err)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()

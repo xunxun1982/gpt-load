@@ -550,6 +550,7 @@ func TestNewDB_WithConcurrentReads(t *testing.T) {
 	db, err := NewDB(config)
 	require.NoError(t, err)
 	require.NotNil(t, db)
+	require.NotNil(t, ReadDB)
 
 	// Create test table
 	require.NoError(t, db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)").Error)
@@ -671,6 +672,9 @@ func BenchmarkConcurrentReads(b *testing.B) {
 	db, err := NewDB(config)
 	if err != nil {
 		b.Fatal(err)
+	}
+	if ReadDB == nil {
+		b.Fatal("ReadDB was not initialized")
 	}
 	defer func() {
 		sqlDB, _ := db.DB()

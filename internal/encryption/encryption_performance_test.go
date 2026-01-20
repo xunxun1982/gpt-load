@@ -2,7 +2,6 @@ package encryption
 
 import (
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -255,18 +254,15 @@ func BenchmarkBatchOperations(b *testing.B) {
 	})
 
 	b.Run("ParallelEncrypt", func(b *testing.B) {
+		b.ReportAllocs()
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			var wg sync.WaitGroup
-			for _, key := range keys {
-				wg.Add(1)
-				go func(k string) {
-					defer wg.Done()
-					_, _ = svc.Encrypt(k)
-				}(key)
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				for _, key := range keys {
+					_, _ = svc.Encrypt(key)
+				}
 			}
-			wg.Wait()
-		}
+		})
 	})
 }
 

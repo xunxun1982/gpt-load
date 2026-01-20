@@ -211,7 +211,9 @@ func BenchmarkDeleteAccessKey(b *testing.B) {
 		}
 		b.StartTimer()
 
-		_ = svc.DeleteAccessKey(ctx, dto.ID)
+		if err := svc.DeleteAccessKey(ctx, dto.ID); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

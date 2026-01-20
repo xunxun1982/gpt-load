@@ -179,6 +179,7 @@ func BenchmarkGetClient(b *testing.B) {
 		RequestTimeout: 30 * time.Second,
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = manager.GetClient(config)
@@ -193,6 +194,7 @@ func BenchmarkGetClient_Concurrent(b *testing.B) {
 		RequestTimeout: 30 * time.Second,
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -213,6 +215,7 @@ func BenchmarkGetFingerprint(b *testing.B) {
 		ProxyURL:              "http://proxy.example.com:8080",
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = config.getFingerprint()
@@ -471,6 +474,7 @@ func BenchmarkGetClientWithProxy(b *testing.B) {
 		ProxyURL:        "http://proxy.example.com:8080",
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = manager.GetClient(config)
@@ -486,6 +490,7 @@ func BenchmarkGetClientWithCompression(b *testing.B) {
 		DisableCompression: true,
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = manager.GetClient(config)
@@ -504,6 +509,7 @@ func BenchmarkFingerprintGeneration(b *testing.B) {
 		ProxyURL:              "http://proxy.example.com:8080",
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = config.getFingerprint()

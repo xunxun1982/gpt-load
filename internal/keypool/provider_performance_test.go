@@ -20,9 +20,9 @@ func BenchmarkSelectKeyPerformance(b *testing.B) {
 	provider, db, memStore := setupBenchProvider(b)
 	defer provider.Stop()
 
-	// Create test group and keys
+	// Create test group and keys with unique name to avoid conflicts in shared cache
 	group := &models.Group{
-		Name:        "bench-group",
+		Name:        fmt.Sprintf("bench-select-key-%d", time.Now().UnixNano()),
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   testGroupUpstreams,
@@ -85,9 +85,9 @@ func BenchmarkSelectKeyConcurrentPerformance(b *testing.B) {
 	provider, db, memStore := setupBenchProvider(b)
 	defer provider.Stop()
 
-	// Setup test data
+	// Setup test data with unique name to avoid conflicts in shared cache
 	group := &models.Group{
-		Name:        "concurrent-group",
+		Name:        fmt.Sprintf("concurrent-group-%d", time.Now().UnixNano()),
 		ChannelType: "openai",
 		Enabled:     true,
 		Upstreams:   testGroupUpstreams,

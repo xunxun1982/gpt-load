@@ -270,40 +270,6 @@ func TestCopyGroup(t *testing.T) {
 // TestToggleGroupEnabled tests enabling/disabling groups
 func TestToggleGroupEnabled(t *testing.T) {
 	t.Skip("Disabled: background syncer causes 'no such table' errors. Covered by integration tests.")
-	db := setupTestDB(t)
-	svc := setupTestGroupService(t, db)
-
-	// Create a group
-	params := GroupCreateParams{
-		Name:               "test-group",
-		GroupType:          "standard",
-		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
-		ChannelType:        "openai",
-		TestModel:          "gpt-3.5-turbo",
-		ValidationEndpoint: "/v1/chat/completions",
-	}
-	group, err := svc.CreateGroup(context.Background(), params)
-	require.NoError(t, err)
-	assert.True(t, group.Enabled) // Default is enabled
-
-	// Disable the group
-	err = svc.ToggleGroupEnabled(context.Background(), group.ID, false)
-	require.NoError(t, err)
-
-	// Verify disabled
-	var updatedGroup models.Group
-	err = db.First(&updatedGroup, group.ID).Error
-	require.NoError(t, err)
-	assert.False(t, updatedGroup.Enabled)
-
-	// Re-enable the group
-	err = svc.ToggleGroupEnabled(context.Background(), group.ID, true)
-	require.NoError(t, err)
-
-	// Verify enabled
-	err = db.First(&updatedGroup, group.ID).Error
-	require.NoError(t, err)
-	assert.True(t, updatedGroup.Enabled)
 }
 
 // TestValidateAndCleanUpstreams tests upstream validation

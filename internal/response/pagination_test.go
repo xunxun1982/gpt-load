@@ -57,7 +57,7 @@ func TestPaginate_SinglePage(t *testing.T) {
 
 	// Insert test data
 	for i := 1; i <= 5; i++ {
-		db.Create(&testModel{Name: "test"})
+		require.NoError(t, db.Create(&testModel{Name: "test"}).Error)
 	}
 
 	w := httptest.NewRecorder()
@@ -80,7 +80,7 @@ func TestPaginate_MultiplePages(t *testing.T) {
 
 	// Insert test data
 	for i := 1; i <= 25; i++ {
-		db.Create(&testModel{Name: "test"})
+		require.NoError(t, db.Create(&testModel{Name: "test"}).Error)
 	}
 
 	// Test first page
@@ -273,9 +273,12 @@ func BenchmarkPaginate(b *testing.B) {
 
 	// Insert test data
 	for i := 1; i <= 100; i++ {
-		db.Create(&testModel{Name: "test"})
+		if err := db.Create(&testModel{Name: "test"}).Error; err != nil {
+			b.Fatalf("insert failed: %v", err)
+		}
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		w := httptest.NewRecorder()
@@ -283,7 +286,9 @@ func BenchmarkPaginate(b *testing.B) {
 		c.Request = httptest.NewRequest("GET", "/?page=1&page_size=10", nil)
 
 		var results []testModel
-		_, _ = Paginate(c, db.Model(&testModel{}), &results)
+		if _, err := Paginate(c, db.Model(&testModel{}), &results); err != nil {
+			b.Fatalf("paginate failed: %v", err)
+		}
 	}
 }
 

@@ -36,6 +36,9 @@ func setupTestCronChecker(tb testing.TB) (*CronChecker, *gorm.DB, *KeyValidator)
 	require.NoError(tb, err)
 	sqlDB.SetMaxOpenConns(1)
 	sqlDB.SetMaxIdleConns(1)
+	tb.Cleanup(func() {
+		_ = sqlDB.Close()
+	})
 
 	err = db.AutoMigrate(&models.APIKey{}, &models.Group{})
 	require.NoError(tb, err)
