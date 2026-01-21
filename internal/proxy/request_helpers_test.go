@@ -36,7 +36,8 @@ func TestApplyParamOverrides(t *testing.T) {
 		assert.NoError(t, err)
 
 		var resultData map[string]any
-		json.Unmarshal(result, &resultData)
+		err = json.Unmarshal(result, &resultData)
+		assert.NoError(t, err)
 		assert.Equal(t, 0.5, resultData["temperature"])
 	})
 
@@ -53,7 +54,8 @@ func TestApplyParamOverrides(t *testing.T) {
 		assert.NoError(t, err)
 
 		var resultData map[string]any
-		json.Unmarshal(result, &resultData)
+		err = json.Unmarshal(result, &resultData)
+		assert.NoError(t, err)
 		assert.Equal(t, 0.5, resultData["temperature"])
 		assert.Equal(t, float64(100), resultData["max_tokens"])
 	})
@@ -110,7 +112,8 @@ func TestApplyModelMapping(t *testing.T) {
 		assert.Equal(t, "alias-model", originalModel)
 
 		var resultData map[string]any
-		json.Unmarshal(result, &resultData)
+		err := json.Unmarshal(result, &resultData)
+		assert.NoError(t, err)
 		assert.Equal(t, "real-model", resultData["model"])
 	})
 
@@ -187,7 +190,8 @@ func TestApplyParallelToolCallsConfig(t *testing.T) {
 		assert.NoError(t, err)
 
 		var resultData map[string]any
-		json.Unmarshal(result, &resultData)
+		err = json.Unmarshal(result, &resultData)
+		assert.NoError(t, err)
 		assert.Equal(t, false, resultData["parallel_tool_calls"])
 	})
 

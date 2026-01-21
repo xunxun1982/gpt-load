@@ -62,6 +62,7 @@ func TestAnthropicChannel_ModifyRequest(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel subtests
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a mock channel
 			ch := &AnthropicChannel{
@@ -93,7 +94,8 @@ func TestAnthropicChannel_ModifyRequest(t *testing.T) {
 			}
 
 			if tt.shouldPreserveBeta {
-				assert.NotEmpty(t, req.Header.Get("anthropic-beta"))
+				// Assert exact header value instead of just NotEmpty
+				assert.Equal(t, tt.existingHeaders["anthropic-beta"], req.Header.Get("anthropic-beta"))
 			}
 		})
 	}

@@ -51,6 +51,7 @@ func TestValidateGroupIDFromQuery(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel subtests
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
@@ -95,6 +96,7 @@ func TestValidateKeysText(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel subtests
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
@@ -139,15 +141,17 @@ func TestKeyTextRequest_Validation(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel subtests
 		t.Run(tt.name, func(t *testing.T) {
-			body, _ := json.Marshal(tt.request)
+			body, err := json.Marshal(tt.request)
+			assert.NoError(t, err)
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodPost, "/test", bytes.NewBuffer(body))
 			c.Request.Header.Set("Content-Type", "application/json")
 
 			var req KeyTextRequest
-			err := c.ShouldBindJSON(&req)
+			err = c.ShouldBindJSON(&req)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -183,15 +187,17 @@ func TestGroupIDRequest_Validation(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel subtests
 		t.Run(tt.name, func(t *testing.T) {
-			body, _ := json.Marshal(tt.request)
+			body, err := json.Marshal(tt.request)
+			assert.NoError(t, err)
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodPost, "/test", bytes.NewBuffer(body))
 			c.Request.Header.Set("Content-Type", "application/json")
 
 			var req GroupIDRequest
-			err := c.ShouldBindJSON(&req)
+			err = c.ShouldBindJSON(&req)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -235,15 +241,17 @@ func TestValidateGroupKeysRequest_Validation(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel subtests
 		t.Run(tt.name, func(t *testing.T) {
-			body, _ := json.Marshal(tt.request)
+			body, err := json.Marshal(tt.request)
+			assert.NoError(t, err)
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodPost, "/test", bytes.NewBuffer(body))
 			c.Request.Header.Set("Content-Type", "application/json")
 
 			var req ValidateGroupKeysRequest
-			err := c.ShouldBindJSON(&req)
+			err = c.ShouldBindJSON(&req)
 
 			if tt.wantErr {
 				assert.Error(t, err)

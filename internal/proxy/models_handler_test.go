@@ -22,6 +22,7 @@ func TestMin(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel subtests
 		t.Run(tt.name, func(t *testing.T) {
 			result := min(tt.a, tt.b)
 			assert.Equal(t, tt.expected, result)
@@ -48,6 +49,7 @@ func TestIsModelsEndpoint(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel subtests
 		t.Run(tt.name, func(t *testing.T) {
 			result := ps.isModelsEndpoint(tt.path)
 			assert.Equal(t, tt.expected, result)

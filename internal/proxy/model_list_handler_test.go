@@ -23,6 +23,7 @@ func TestShouldInterceptModelList(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel subtests
 		t.Run(tt.name, func(t *testing.T) {
 			result := shouldInterceptModelList(tt.path, tt.method)
 			assert.Equal(t, tt.expected, result)

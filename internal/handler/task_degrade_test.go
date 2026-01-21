@@ -55,9 +55,9 @@ func TestShouldDegradeReadDuringTask_NoRunningTask(t *testing.T) {
 	require.NoError(t, err)
 
 	memStore := store.NewMemoryStore()
-	mockTaskService := services.NewTaskService(memStore)
+	taskService := services.NewTaskService(memStore)
 	s := &Server{
-		TaskService: mockTaskService,
+		TaskService: taskService,
 		DB:          db,
 	}
 
@@ -65,7 +65,7 @@ func TestShouldDegradeReadDuringTask_NoRunningTask(t *testing.T) {
 	assert.False(t, result)
 }
 
-func TestShouldDegradeReadDuringTask_SQLiteWithKeyImport(t *testing.T) {
+func TestShouldDegradeReadDuringTask_SQLiteDatabase(t *testing.T) {
 	t.Parallel()
 
 	if testing.Short() {
@@ -77,11 +77,11 @@ func TestShouldDegradeReadDuringTask_SQLiteWithKeyImport(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create a mock task service with running key import task
+	// Create a task service with running key import task
 	memStore := store.NewMemoryStore()
-	mockTaskService := services.NewTaskService(memStore)
+	taskService := services.NewTaskService(memStore)
 	s := &Server{
-		TaskService: mockTaskService,
+		TaskService: taskService,
 		DB:          db,
 	}
 
@@ -94,7 +94,7 @@ func TestShouldDegradeReadDuringTask_SQLiteWithKeyImport(t *testing.T) {
 	assert.False(t, result)
 }
 
-func TestShouldDegradeReadDuringTask_NonSQLiteDatabase(t *testing.T) {
+func TestShouldDegradeReadDuringTask_EmptyGroupWithSQLite(t *testing.T) {
 	t.Parallel()
 
 	if testing.Short() {
@@ -107,9 +107,9 @@ func TestShouldDegradeReadDuringTask_NonSQLiteDatabase(t *testing.T) {
 	require.NoError(t, err)
 
 	memStore := store.NewMemoryStore()
-	mockTaskService := services.NewTaskService(memStore)
+	taskService := services.NewTaskService(memStore)
 	s := &Server{
-		TaskService: mockTaskService,
+		TaskService: taskService,
 		DB:          db,
 	}
 
@@ -131,9 +131,9 @@ func TestShouldDegradeReadDuringTask_DifferentTaskTypes(t *testing.T) {
 	require.NoError(t, err)
 
 	memStore := store.NewMemoryStore()
-	mockTaskService := services.NewTaskService(memStore)
+	taskService := services.NewTaskService(memStore)
 	s := &Server{
-		TaskService: mockTaskService,
+		TaskService: taskService,
 		DB:          db,
 	}
 
@@ -161,9 +161,9 @@ func TestShouldDegradeReadDuringTask_EmptyGroupName(t *testing.T) {
 	require.NoError(t, err)
 
 	memStore := store.NewMemoryStore()
-	mockTaskService := services.NewTaskService(memStore)
+	taskService := services.NewTaskService(memStore)
 	s := &Server{
-		TaskService: mockTaskService,
+		TaskService: taskService,
 		DB:          db,
 	}
 
@@ -182,9 +182,9 @@ func BenchmarkShouldDegradeReadDuringTask(b *testing.B) {
 	}
 
 	memStore := store.NewMemoryStore()
-	mockTaskService := services.NewTaskService(memStore)
+	taskService := services.NewTaskService(memStore)
 	s := &Server{
-		TaskService: mockTaskService,
+		TaskService: taskService,
 		DB:          db,
 	}
 

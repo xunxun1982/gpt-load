@@ -26,8 +26,8 @@ func setupTestServerWithDB(t *testing.T, db *gorm.DB) *Server {
 	t.Helper()
 
 	mockConfig := &config.MockConfig{
-		AuthKeyValue:       "test-auth-key-12345678",
-		EncryptionKeyValue: "test-encryption-key-12345678",
+		AuthKeyValue:       "test-auth-not-real",
+		EncryptionKeyValue: "test-encrypt-not-real",
 	}
 
 	// Using real SystemSettingsManager instead of mock because:

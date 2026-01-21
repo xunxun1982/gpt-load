@@ -279,7 +279,7 @@ func TestIsTransientDBError_Integration(t *testing.T) {
 func BenchmarkFindGroupByID(b *testing.B) {
 	b.ReportAllocs()
 
-	db := setupTestDB(&testing.T{})
+	db := setupTestDB(b)
 	ctx := context.Background()
 
 	testGroup := &models.Group{
@@ -287,7 +287,9 @@ func BenchmarkFindGroupByID(b *testing.B) {
 		DisplayName: "Benchmark Group",
 		ChannelType: "openai",
 	}
-	_ = db.Create(testGroup).Error
+	if err := db.Create(testGroup).Error; err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -298,7 +300,7 @@ func BenchmarkFindGroupByID(b *testing.B) {
 func BenchmarkFindGroupByIDWithType(b *testing.B) {
 	b.ReportAllocs()
 
-	db := setupTestDB(&testing.T{})
+	db := setupTestDB(b)
 	ctx := context.Background()
 
 	testGroup := &models.Group{
@@ -307,7 +309,9 @@ func BenchmarkFindGroupByIDWithType(b *testing.B) {
 		ChannelType: "openai",
 		GroupType:   "standard",
 	}
-	_ = db.Create(testGroup).Error
+	if err := db.Create(testGroup).Error; err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

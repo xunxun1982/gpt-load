@@ -25,7 +25,7 @@ func TestGetLogs_NilService(t *testing.T) {
 	})
 }
 
-func TestExportLogs_ValidRequest(t *testing.T) {
+func TestExportLogs_NilService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	server := &Server{LogService: nil}
