@@ -346,6 +346,7 @@ func BenchmarkValidateGroupKeys(b *testing.B) {
 		Name:        "bench-group",
 		ChannelType: "openai",
 		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 	}
 	if err := db.Create(group).Error; err != nil {
 		b.Fatal(err)
@@ -384,9 +385,10 @@ func BenchmarkBatchUpdateLastValidatedAt(b *testing.B) {
 	var groupIDs []uint
 	for i := 0; i < 100; i++ {
 		group := &models.Group{
-			Name:        "bench-group",
+			Name:        fmt.Sprintf("bench-group-%d", i),
 			ChannelType: "openai",
 			Enabled:     true,
+			Upstreams:   []byte(`[{"url":"https://api.openai.com","weight":100}]`),
 		}
 		if err := db.Create(group).Error; err != nil {
 			b.Fatal(err)
