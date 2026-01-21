@@ -2,7 +2,10 @@
 # Script to collect PGO (Profile-Guided Optimization) profiles for Go builds
 # This script runs unit tests to generate CPU profiles for PGO optimization
 
-set -euo pipefail
+# Note: GitHub Actions runs bash with -e -o pipefail by default
+# We need to be very careful with error handling
+
+set -uo pipefail
 
 PROFILE_DIR="${PROFILE_DIR:-profiles}"
 MERGED_PROFILE="${MERGED_PROFILE:-default.pgo}"
@@ -16,19 +19,46 @@ echo "Merged profile: ${MERGED_PROFILE}"
 mkdir -p "${PROFILE_DIR}"
 
 # Clean old profiles
-rm -f "${PROFILE_DIR}"/*.prof
+rm -f "${PROFILE_DIR}"/*.prof 2>/dev/null || true
 
 # Collect profile from unit tests
 echo "📊 Running unit tests with CPU profiling..."
 
 # Clean test cache to ensure tests actually run
 echo "Cleaning test cache..."
-go clean -testcache
+set +e
+go clean -testcache 2>&1 >/dev/null
+CLEAN_EXIT=$?
+set -e
+if [ ${CLEAN_EXIT} -ne 0 ]; then
+    echo "⚠️  Failed to clean test cache, continuing..."
+fi
 
 # Get all packages with tests (including main package if it has tests)
-PACKAGES=$(go list ./... 2>/dev/null | grep -v '/vendor/')
+echo "Listing packages..."
 
-PACKAGE_COUNT=$(echo "${PACKAGES}" | wc -l)
+# Use a temporary file to avoid pipefail issues
+TEMP_PACKAGES=$(mktemp)
+set +e
+go list ./... 2>&1 > "${TEMP_PACKAGES}"
+LIST_EXIT=$?
+set -e
+
+if [ ${LIST_EXIT} -eq 0 ]; then
+    PACKAGES=$(grep -v '/vendor/' "${TEMP_PACKAGES}" 2>/dev/null || echo "")
+else
+    echo "⚠️  go list failed, trying to continue..."
+    PACKAGES=""
+fi
+rm -f "${TEMP_PACKAGES}"
+
+if [ -z "${PACKAGES}" ]; then
+    echo "⚠️  No packages found, creating minimal profile..."
+    echo "PGO profile placeholder" > "${MERGED_PROFILE}"
+    exit 0
+fi
+
+PACKAGE_COUNT=$(echo "${PACKAGES}" | wc -l | tr -d ' ')
 echo "Found ${PACKAGE_COUNT} packages"
 
 # Run tests for each package individually (required for -cpuprofile)
@@ -44,21 +74,29 @@ for pkg in ${PACKAGES}; do
     echo "  Profile: ${PROFILE_PATH}"
 
     # Use -tags to match build environment (go_json for high-performance JSON)
+    # Capture both stdout and stderr, but don't fail on test failures
+    set +e  # Temporarily disable exit on error
     go test \
         -tags "${GO_TAGS}" \
         -cpuprofile="${PROFILE_PATH}" \
         -count=1 \
-        "${pkg}" 2>/dev/null || true
+        "${pkg}" >/dev/null 2>&1
+    TEST_EXIT_CODE=$?
+    set -e  # Re-enable exit on error
+
+    if [ ${TEST_EXIT_CODE} -eq 0 ]; then
+        echo "  ✓ Tests passed"
+    else
+        echo "  ⚠️  Tests failed or no tests found (exit code: ${TEST_EXIT_CODE}), but profile may still be generated"
+    fi
 
     # Check if profile was created
     if [ -f "${PROFILE_PATH}" ]; then
         # Get file size (Linux uses -c, macOS uses -f)
-        if SIZE=$(stat -c%s "${PROFILE_PATH}" 2>/dev/null); then
-            : # Linux stat succeeded
-        elif SIZE=$(stat -f%z "${PROFILE_PATH}" 2>/dev/null); then
-            : # macOS stat succeeded
-        else
-            SIZE=0
+        SIZE=0
+        if command -v stat >/dev/null 2>&1; then
+            # Try Linux stat first (GitHub Actions uses Linux)
+            SIZE=$(stat -c%s "${PROFILE_PATH}" 2>/dev/null || stat -f%z "${PROFILE_PATH}" 2>/dev/null || echo "0")
         fi
 
         if [ "${SIZE}" -gt 0 ]; then
@@ -81,7 +119,10 @@ echo "  Packages with tests: ${PACKAGES_WITH_TESTS}"
 echo "  Packages without tests: ${PACKAGES_WITHOUT_TESTS}"
 
 # Count collected profiles
-PROFILE_COUNT=$(find "${PROFILE_DIR}" -name "*.prof" -type f -size +0 2>/dev/null | wc -l)
+PROFILE_COUNT=0
+if [ -d "${PROFILE_DIR}" ]; then
+    PROFILE_COUNT=$(find "${PROFILE_DIR}" -name "*.prof" -type f -size +0 2>/dev/null | wc -l | tr -d ' ')
+fi
 echo "✅ Collected ${PROFILE_COUNT} profile(s)"
 
 if [ "${PROFILE_COUNT}" -eq 0 ]; then
@@ -95,26 +136,33 @@ fi
 echo "🔄 Merging profiles into ${MERGED_PROFILE}..."
 
 # Use go tool pprof to merge profiles - redirect output to file directly
-go tool pprof -proto -output "${MERGED_PROFILE}" "${PROFILE_DIR}"/*.prof 2>/dev/null || {
+set +e  # Temporarily disable exit on error
+go tool pprof -proto -output "${MERGED_PROFILE}" "${PROFILE_DIR}"/*.prof 2>/dev/null
+MERGE_EXIT_CODE=$?
+set -e  # Re-enable exit on error
+
+if [ ${MERGE_EXIT_CODE} -ne 0 ]; then
     echo "⚠️  Profile merge failed, using first available profile as fallback"
-    FIRST_PROFILE=$(find "${PROFILE_DIR}" -name "*.prof" -type f -size +0 | head -n 1)
-    if [ -n "${FIRST_PROFILE}" ]; then
+    FIRST_PROFILE=$(find "${PROFILE_DIR}" -name "*.prof" -type f -size +0 2>/dev/null | head -n 1 || echo "")
+    if [ -n "${FIRST_PROFILE}" ] && [ -f "${FIRST_PROFILE}" ]; then
         cp "${FIRST_PROFILE}" "${MERGED_PROFILE}"
     else
         echo "Creating minimal profile for build compatibility..."
         echo "PGO profile placeholder" > "${MERGED_PROFILE}"
         exit 0
     fi
-}
+fi
 
 # Verify the merged profile
 if [ -f "${MERGED_PROFILE}" ] && [ -s "${MERGED_PROFILE}" ]; then
-    PROFILE_SIZE=$(du -h "${MERGED_PROFILE}" | cut -f1)
+    PROFILE_SIZE=$(du -h "${MERGED_PROFILE}" 2>/dev/null | cut -f1 || echo "unknown")
     echo "✅ PGO profile ready: ${MERGED_PROFILE} (${PROFILE_SIZE})"
 
     # Show profile statistics
     echo "📈 Profile statistics:"
-    go tool pprof -top -nodecount=5 "${MERGED_PROFILE}" 2>/dev/null || true
+    set +e  # Temporarily disable exit on error
+    go tool pprof -top -nodecount=5 "${MERGED_PROFILE}" 2>/dev/null
+    set -e  # Re-enable exit on error
 else
     echo "Creating minimal profile for build compatibility..."
     echo "PGO profile placeholder" > "${MERGED_PROFILE}"
@@ -146,15 +194,22 @@ fi
 
 # Remove individual profile files (keep only merged profile)
 if [ -d "${PROFILE_DIR}" ]; then
-    PROFILE_FILES=$(find "${PROFILE_DIR}" -name "*.prof" -type f 2>/dev/null)
-    for prof_file in ${PROFILE_FILES}; do
-        rm -f "${prof_file}"
-        CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
-    done
+    PROFILE_FILES=$(find "${PROFILE_DIR}" -name "*.prof" -type f 2>/dev/null || echo "")
+    if [ -n "${PROFILE_FILES}" ]; then
+        for prof_file in ${PROFILE_FILES}; do
+            if [ -f "${prof_file}" ]; then
+                rm -f "${prof_file}"
+                CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
+            fi
+        done
+    fi
 
     # Remove profile directory if empty
-    if [ -z "$(ls -A "${PROFILE_DIR}" 2>/dev/null)" ]; then
-        rmdir "${PROFILE_DIR}" 2>/dev/null || true
+    if [ -d "${PROFILE_DIR}" ]; then
+        REMAINING=$(ls -A "${PROFILE_DIR}" 2>/dev/null || echo "")
+        if [ -z "${REMAINING}" ]; then
+            rmdir "${PROFILE_DIR}" 2>/dev/null || true
+        fi
     fi
 fi
 
