@@ -57,7 +57,7 @@ func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceSe
 	transport := &http.Transport{
 		MaxIdleConns:        50,
 		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     60 * time.Second,
+		IdleConnTimeout:     10 * time.Second, // Short timeout for batch operations
 	}
 
 	return &BalanceService{
@@ -79,6 +79,21 @@ func (s *BalanceService) Start() {
 // Stop gracefully stops the background scheduler
 func (s *BalanceService) Stop(_ context.Context) {
 	close(s.stopCh)
+
+	// Clean up proxy client cache
+	s.proxyClients.Range(func(key, value interface{}) bool {
+		if client, ok := value.(*http.Client); ok {
+			if transport, ok := client.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
+		s.proxyClients.Delete(key)
+		return true
+	})
+
+	// Clean up stealth client cache
+	s.stealthClientMgr.Cleanup()
+
 	s.wg.Wait()
 	logrus.Info("Balance refresh scheduler stopped")
 }
@@ -132,6 +147,9 @@ func (s *BalanceService) refreshAllBalancesBackground() {
 
 	results := s.FetchAllBalances(ctx, sites)
 	s.updateBalancesInDB(ctx, results)
+
+	// Close idle connections after batch refresh to free resources immediately
+	s.closeIdleConnections()
 
 	logrus.WithField("count", len(results)).Info("Daily balance refresh completed")
 }
@@ -346,7 +364,7 @@ func (s *BalanceService) getHTTPClient(site *ManagedSite) *http.Client {
 		Proxy:               http.ProxyURL(parsedURL),
 		MaxIdleConns:        50,
 		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     60 * time.Second,
+		IdleConnTimeout:     10 * time.Second, // Short timeout for batch operations
 	}
 
 	client := &http.Client{Transport: transport, Timeout: balanceRequestTimeout}
@@ -399,6 +417,28 @@ func (s *BalanceService) FetchAllBalances(ctx context.Context, sites []ManagedSi
 	return results
 }
 
+// closeIdleConnections closes idle connections for all HTTP clients to free resources.
+// This should be called after batch operations (balance refresh) complete.
+func (s *BalanceService) closeIdleConnections() {
+	// Close idle connections for default client
+	if transport, ok := s.client.Transport.(*http.Transport); ok {
+		transport.CloseIdleConnections()
+	}
+
+	// Close idle connections for all cached proxy clients
+	s.proxyClients.Range(func(key, value interface{}) bool {
+		if client, ok := value.(*http.Client); ok {
+			if transport, ok := client.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
+		return true
+	})
+
+	// Close idle connections for stealth client manager
+	s.stealthClientMgr.CloseIdleConnections()
+}
+
 // RefreshAllBalancesManual is called by the manual refresh button.
 // It fetches balances for all enabled sites and updates the cache.
 func (s *BalanceService) RefreshAllBalancesManual(ctx context.Context) (map[uint]*BalanceInfo, error) {
@@ -409,6 +449,9 @@ func (s *BalanceService) RefreshAllBalancesManual(ctx context.Context) (map[uint
 
 	results := s.FetchAllBalances(ctx, sites)
 	s.updateBalancesInDB(ctx, results)
+
+	// Close idle connections after manual refresh to free resources immediately
+	s.closeIdleConnections()
 
 	return results, nil
 }

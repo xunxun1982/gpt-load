@@ -92,6 +92,13 @@ func DiagnoseProxy(proxyURLStr string, testTargetURL string) *ProxyDiagnostics {
 	resp, err := client.Do(req)
 	diag.ResponseTime = time.Since(startTime)
 
+	// Close idle connections after diagnostic test to free resources immediately
+	defer func() {
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}()
+
 	if err != nil {
 		diag.HTTPConnectable = false
 		diag.HTTPError = err

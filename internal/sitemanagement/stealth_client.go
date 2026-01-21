@@ -75,7 +75,7 @@ func (m *StealthClientManager) createStealthClient(proxyURL string) *http.Client
 		DialContext:           dialer.DialContext,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
+		IdleConnTimeout:       10 * time.Second, // Short timeout for batch operations
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
@@ -185,4 +185,31 @@ func applyStealthHeaders(req *http.Request, baseURL string) {
 // isStealthBypassMethod checks if the bypass method requires stealth client.
 func isStealthBypassMethod(method string) bool {
 	return method == BypassMethodStealth
+}
+
+// CloseIdleConnections closes idle connections for all cached stealth clients.
+// This should be called after batch operations complete to free resources.
+func (m *StealthClientManager) CloseIdleConnections() {
+	m.clients.Range(func(key, value interface{}) bool {
+		if client, ok := value.(*http.Client); ok {
+			if transport, ok := client.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
+		return true
+	})
+}
+
+// Cleanup closes all idle connections and clears the client cache.
+// This should be called during service shutdown.
+func (m *StealthClientManager) Cleanup() {
+	m.clients.Range(func(key, value interface{}) bool {
+		if client, ok := value.(*http.Client); ok {
+			if transport, ok := client.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
+		m.clients.Delete(key)
+		return true
+	})
 }
