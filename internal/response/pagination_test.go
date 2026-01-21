@@ -17,10 +17,30 @@ type testModel struct {
 	Name string `gorm:"type:varchar(255)"`
 }
 
+// TableName specifies the table name for testModel
+func (testModel) TableName() string {
+	return "test_models"
+}
+
 // setupTestDB creates an in-memory SQLite database for testing
 func setupTestDB(t *testing.T) *gorm.DB {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	t.Helper()
+
+	// Use a unique in-memory database for each test to ensure isolation
+	// Format: file:testname?mode=memory&cache=shared
+	dbName := "file:" + t.Name() + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dbName), &gorm.Config{})
 	require.NoError(t, err)
+
+	// Limit connections to avoid database locking issues
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+
+	// Close database when test completes
+	t.Cleanup(func() {
+		_ = sqlDB.Close()
+	})
 
 	// Create table
 	err = db.AutoMigrate(&testModel{})
