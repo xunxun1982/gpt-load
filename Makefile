@@ -74,6 +74,8 @@ build-darwin-arm64: ## Build for macOS ARM64
 .PHONY: run
 run: ## Build frontend and run server
 	@echo "--- Building frontend... ---"
+	# NOTE: npm ci uses package-lock.json for reproducible builds (does not auto-update)
+	# To update dependencies: npm update --prefix web
 	cd web && npm ci && npm run build
 	@echo "--- Preparing backend... ---"
 	@echo "--- Starting backend... ---"
