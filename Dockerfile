@@ -15,7 +15,7 @@ RUN VITE_VERSION=${VERSION} npm run build
 
 
 # =============================================================================
-# Go build stage
+# Go build stage with PGO optimization
 # =============================================================================
 FROM golang:1.25.6-alpine AS go-builder
 
@@ -43,15 +43,26 @@ RUN go mod download && go mod verify
 COPY . .
 COPY --from=node-builder /build/dist ./web/dist
 
-# Optimized build for smallest size and best performance:
+# Copy PGO profile if available (will be provided by GitHub Actions)
+# The profile is optional - build will work without it but won't be PGO-optimized
+COPY default.pgo* ./
+
+# Optimized build with PGO for best performance:
 # - CGO_ENABLED=0: Static binary, no C dependencies
 # - -tags go_json: High-performance JSON (goccy/go-json, 2-3x faster)
 # - -trimpath: Remove file system paths from binary (smaller size)
 # - -buildvcs=false: Skip VCS stamping for reproducible builds
 # - -ldflags="-s -w": Strip debug symbols and DWARF info (~30% size reduction)
 # - GOAMD64=v2: Use SSE4.2/POPCNT instructions (safe for most CPUs)
+# - PGO: Go compiler automatically detects default.pgo and applies profile-guided optimizations
+#   providing 3-7% additional performance improvement through better inlining decisions
 # Note: UPX compression NOT used to avoid antivirus false positives and startup latency
-RUN echo "🔨 Building optimized binary..." && \
+RUN echo "🔨 Building PGO-optimized binary..." && \
+    if [ -f "default.pgo" ]; then \
+        echo "✅ Using PGO profile: $(du -h default.pgo | cut -f1)"; \
+    else \
+        echo "⚠️  No PGO profile found, building without PGO optimization"; \
+    fi && \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=${GOAMD64} go build \
     -tags go_json \
     -trimpath \

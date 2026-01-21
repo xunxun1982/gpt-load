@@ -18,6 +18,8 @@ GOTAGS := go_json
 # -trimpath: Remove file system paths from binary (smaller size, reproducible builds)
 # -buildvcs=false: Skip VCS info for reproducible builds
 BUILD_FLAGS := -tags $(GOTAGS) -trimpath -buildvcs=false -ldflags="$(LDFLAGS)"
+# PGO profile file (Go compiler automatically detects this file)
+PGO_PROFILE := default.pgo
 # Allow extra go flags to be passed via environment
 GOFLAGS ?=
 # CPU Architecture Level: v2 (SSE4.2, POPCNT) is safe for most CPUs
@@ -25,11 +27,43 @@ GOFLAGS ?=
 export GOAMD64 ?= v2
 
 # ==============================================================================
+# PGO (Profile-Guided Optimization) Targets
+# ==============================================================================
+.PHONY: pgo-profile
+pgo-profile: ## Collect PGO profile from tests and benchmarks
+	@echo "🔍 Collecting PGO profile..."
+	@if [ -f "$(PGO_PROFILE)" ]; then \
+		echo "⚠️  Removing existing profile: $(PGO_PROFILE)"; \
+		rm -f "$(PGO_PROFILE)"; \
+	fi
+	@chmod +x scripts/collect-pgo-profile.sh
+	@./scripts/collect-pgo-profile.sh
+	@echo "✅ PGO profile ready: $(PGO_PROFILE)"
+
+.PHONY: pgo-build
+pgo-build: pgo-profile ## Build with PGO optimization (collect profile + build)
+	@echo "🔨 Building with PGO optimization..."
+	@$(MAKE) build
+	@echo "✅ PGO-optimized build complete"
+
+.PHONY: pgo-clean
+pgo-clean: ## Remove PGO profile and profile directory
+	@echo "🧹 Cleaning PGO artifacts..."
+	@rm -f "$(PGO_PROFILE)"
+	@rm -rf profiles/
+	@echo "✅ PGO artifacts cleaned"
+
+# ==============================================================================
 # Build Targets
 # ==============================================================================
 .PHONY: build
 build: ## Build production binary (optimized)
 	@echo "🔨 Building production binary..."
+	@if [ -f "$(PGO_PROFILE)" ]; then \
+		echo "✅ Using PGO profile for optimization"; \
+	else \
+		echo "ℹ️  Building without PGO (run 'make pgo-profile' to enable PGO)"; \
+	fi
 	CGO_ENABLED=0 go build $(GOFLAGS) $(BUILD_FLAGS) -o $(BINARY_NAME)
 	@echo "✅ Build complete: $(BINARY_NAME)"
 
@@ -135,3 +169,7 @@ migrate-keys: ## Execute key migration (usage: make migrate-keys ARGS="--from ol
 .PHONY: help
 help: ## Display this help message
 	@awk 'BEGIN {FS = ":.*?## "; printf "Usage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*?## / { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@echo ""
+	@echo "PGO (Profile-Guided Optimization):"
+	@echo "  PGO improves performance by 3-7% through better compiler optimizations"
+	@echo "  Run 'make pgo-build' to build with PGO, or 'make pgo-profile' then 'make build'"
