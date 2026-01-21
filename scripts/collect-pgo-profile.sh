@@ -52,7 +52,15 @@ for pkg in ${PACKAGES}; do
 
     # Check if profile was created
     if [ -f "${PROFILE_PATH}" ]; then
-        SIZE=$(stat -f%z "${PROFILE_PATH}" 2>/dev/null || stat -c%s "${PROFILE_PATH}" 2>/dev/null)
+        # Get file size (Linux uses -c, macOS uses -f)
+        if SIZE=$(stat -c%s "${PROFILE_PATH}" 2>/dev/null); then
+            : # Linux stat succeeded
+        elif SIZE=$(stat -f%z "${PROFILE_PATH}" 2>/dev/null); then
+            : # macOS stat succeeded
+        else
+            SIZE=0
+        fi
+
         if [ "${SIZE}" -gt 0 ]; then
             echo "  ✓ Profile created: ${SIZE} bytes"
             PACKAGES_WITH_TESTS=$((PACKAGES_WITH_TESTS + 1))
