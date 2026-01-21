@@ -24,8 +24,8 @@ Write-Host "📊 Running unit tests with CPU profiling..." -ForegroundColor Cyan
 Write-Host "Cleaning test cache..." -ForegroundColor Gray
 go clean -testcache
 
-# Get all packages with tests
-$packages = go list ./internal/...
+# Get all packages with tests (including main package if it has tests)
+$packages = go list ./...
 
 Write-Host "Found $($packages.Count) packages" -ForegroundColor Gray
 
@@ -133,6 +133,16 @@ $cleanupCount = 0
 # Remove test binaries (both .test and .test.exe)
 Get-ChildItem -Path . -File | Where-Object { $_.Name -match '\.test(\.exe)?$' } | ForEach-Object {
     Remove-Item $_.FullName -Force
+    $cleanupCount++
+}
+
+# Remove coverage files
+if (Test-Path "coverage") {
+    Remove-Item "coverage" -Force -ErrorAction SilentlyContinue
+    $cleanupCount++
+}
+if (Test-Path "coverage.out") {
+    Remove-Item "coverage.out" -Force -ErrorAction SilentlyContinue
     $cleanupCount++
 }
 

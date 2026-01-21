@@ -25,8 +25,8 @@ echo "📊 Running unit tests with CPU profiling..."
 echo "Cleaning test cache..."
 go clean -testcache
 
-# Get all packages with tests
-PACKAGES=$(go list ./internal/... 2>/dev/null | grep -v '/vendor/')
+# Get all packages with tests (including main package if it has tests)
+PACKAGES=$(go list ./... 2>/dev/null | grep -v '/vendor/')
 
 PACKAGE_COUNT=$(echo "${PACKAGES}" | wc -l)
 echo "Found ${PACKAGE_COUNT} packages"
@@ -125,6 +125,16 @@ for test_binary in *.test *.test.exe; do
         CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
     fi
 done
+
+# Remove coverage files
+if [ -f "coverage" ]; then
+    rm -f "coverage"
+    CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
+fi
+if [ -f "coverage.out" ]; then
+    rm -f "coverage.out"
+    CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
+fi
 
 # Remove individual profile files (keep only merged profile)
 if [ -d "${PROFILE_DIR}" ]; then
