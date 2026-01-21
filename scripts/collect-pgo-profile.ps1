@@ -1,7 +1,7 @@
 # PowerShell script to collect PGO profiles for Windows builds
 # This script runs unit tests to generate CPU profiles for PGO optimization
 
-$ErrorActionPreference = "Continue"  # Changed to Continue to see errors
+$ErrorActionPreference = "Continue"  # Continue on errors to collect as many profiles as possible
 
 $PROFILE_DIR = if ($env:PROFILE_DIR) { $env:PROFILE_DIR } else { "profiles" }
 $MERGED_PROFILE = if ($env:MERGED_PROFILE) { $env:MERGED_PROFILE } else { "default.pgo" }
@@ -15,17 +15,39 @@ Write-Host "Merged profile: $MERGED_PROFILE"
 New-Item -ItemType Directory -Force -Path $PROFILE_DIR | Out-Null
 
 # Clean old profiles
-Get-ChildItem -Path $PROFILE_DIR -Filter "*.prof" -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path $PROFILE_DIR -Filter "*.prof" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
 # Collect profile from unit tests
 Write-Host "📊 Running unit tests with CPU profiling..." -ForegroundColor Cyan
 
 # Clean test cache to ensure tests actually run
 Write-Host "Cleaning test cache..." -ForegroundColor Gray
-go clean -testcache
+try {
+    go clean -testcache 2>&1 | Out-Null
+} catch {
+    Write-Host "⚠️  Failed to clean test cache, continuing..." -ForegroundColor Yellow
+}
 
 # Get all packages with tests (including main package if it has tests)
-$packages = go list ./...
+Write-Host "Listing packages..." -ForegroundColor Gray
+try {
+    $packagesRaw = go list ./... 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "⚠️  go list failed, trying to continue..." -ForegroundColor Yellow
+        $packages = @()
+    } else {
+        $packages = $packagesRaw | Where-Object { $_ -notmatch '/vendor/' }
+    }
+} catch {
+    Write-Host "⚠️  go list failed: $_" -ForegroundColor Yellow
+    $packages = @()
+}
+
+if ($packages.Count -eq 0) {
+    Write-Host "⚠️  No packages found, creating minimal profile..." -ForegroundColor Yellow
+    "PGO profile placeholder" | Set-Content -Path $MERGED_PROFILE
+    exit 0
+}
 
 Write-Host "Found $($packages.Count) packages" -ForegroundColor Gray
 
@@ -44,7 +66,18 @@ foreach ($pkg in $packages) {
 
     # Run test with -count=1 to avoid caching
     # Use -tags to match build environment (go_json for high-performance JSON)
-    $result = go test -tags $GO_TAGS -cpuprofile="$testProfile" -count=1 $pkg 2>&1
+    try {
+        $result = go test -tags $GO_TAGS -cpuprofile="$testProfile" -count=1 $pkg 2>&1
+        $testExitCode = $LASTEXITCODE
+
+        if ($testExitCode -eq 0) {
+            Write-Host "  ✓ Tests passed" -ForegroundColor Green
+        } else {
+            Write-Host "  ⚠️  Tests failed or no tests found (exit code: $testExitCode), but profile may still be generated" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "  ⚠️  Test execution failed: $_" -ForegroundColor Yellow
+    }
 
     # Check if profile was created
     if (Test-Path $testProfile) {
@@ -54,7 +87,7 @@ foreach ($pkg in $packages) {
             $packagesWithTests++
         } else {
             Write-Host "  ✗ Empty profile, removing" -ForegroundColor Yellow
-            Remove-Item $testProfile -Force
+            Remove-Item $testProfile -Force -ErrorAction SilentlyContinue
             $packagesWithoutTests++
         }
     } else {
@@ -69,7 +102,7 @@ Write-Host "  Packages without tests: $packagesWithoutTests" -ForegroundColor Gr
 
 # Count collected profiles
 $profiles = Get-ChildItem -Path $PROFILE_DIR -Filter "*.prof" -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 }
-$profileCount = $profiles.Count
+$profileCount = if ($profiles) { $profiles.Count } else { 0 }
 Write-Host "✅ Collected $profileCount profile(s)" -ForegroundColor Green
 
 if ($profileCount -eq 0) {
@@ -88,9 +121,10 @@ try {
     # Use go tool pprof to merge profiles - redirect output to file directly
     $profileArgs = @("-proto", "-output", $MERGED_PROFILE) + $profilePaths
     $mergeOutput = & go tool pprof $profileArgs 2>&1
+    $mergeExitCode = $LASTEXITCODE
 
-    if (-not (Test-Path $MERGED_PROFILE) -or (Get-Item $MERGED_PROFILE).Length -eq 0) {
-        throw "Merge produced empty file. Output: $mergeOutput"
+    if ($mergeExitCode -ne 0 -or -not (Test-Path $MERGED_PROFILE) -or (Get-Item $MERGED_PROFILE).Length -eq 0) {
+        throw "Merge failed with exit code $mergeExitCode. Output: $mergeOutput"
     }
 } catch {
     Write-Host "⚠️  Profile merge failed: $_" -ForegroundColor Yellow
@@ -131,8 +165,8 @@ Write-Host "🧹 Cleaning up temporary files..." -ForegroundColor Cyan
 $cleanupCount = 0
 
 # Remove test binaries (both .test and .test.exe)
-Get-ChildItem -Path . -File | Where-Object { $_.Name -match '\.test(\.exe)?$' } | ForEach-Object {
-    Remove-Item $_.FullName -Force
+Get-ChildItem -Path . -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.test(\.exe)?$' } | ForEach-Object {
+    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
     $cleanupCount++
 }
 
@@ -149,13 +183,16 @@ if (Test-Path "coverage.out") {
 # Remove individual profile files (keep only merged profile)
 if (Test-Path $PROFILE_DIR) {
     $profileFiles = Get-ChildItem -Path $PROFILE_DIR -Filter "*.prof" -ErrorAction SilentlyContinue
-    $profileFiles | ForEach-Object {
-        Remove-Item $_.FullName -Force
-        $cleanupCount++
+    if ($profileFiles) {
+        $profileFiles | ForEach-Object {
+            Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+            $cleanupCount++
+        }
     }
 
     # Remove profile directory if empty
-    if ((Get-ChildItem -Path $PROFILE_DIR -ErrorAction SilentlyContinue).Count -eq 0) {
+    $remainingFiles = Get-ChildItem -Path $PROFILE_DIR -ErrorAction SilentlyContinue
+    if (-not $remainingFiles -or $remainingFiles.Count -eq 0) {
         Remove-Item $PROFILE_DIR -Force -ErrorAction SilentlyContinue
     }
 }
