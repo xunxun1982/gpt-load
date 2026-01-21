@@ -21,28 +21,8 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// setupTestDB creates an in-memory SQLite database for testing (pure Go, no CGO)
-func setupTestDB(t *testing.T) *gorm.DB {
-	t.Helper()
-
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
-	require.NoError(t, err)
-
-	err = db.AutoMigrate(
-		&models.APIKey{},
-		&models.Group{},
-		&models.RequestLog{},
-		&models.GroupHourlyStat{},
-	)
-	require.NoError(t, err)
-
-	return db
-}
-
-// setupTestServer creates a test server with minimal dependencies
-func setupTestServer(t *testing.T, db *gorm.DB) *Server {
+// setupTestServerWithDB creates a test server with a provided database
+func setupTestServerWithDB(t *testing.T, db *gorm.DB) *Server {
 	t.Helper()
 
 	mockConfig := &config.MockConfig{
@@ -50,6 +30,10 @@ func setupTestServer(t *testing.T, db *gorm.DB) *Server {
 		EncryptionKeyValue: "test-encryption-key-12345678",
 	}
 
+	// Using real SystemSettingsManager instead of mock because:
+	// 1. It's a simple in-memory settings manager without external dependencies
+	// 2. Tests need actual settings behavior for realistic scenarios
+	// 3. No performance or isolation concerns in this context
 	settingsManager := config.NewSystemSettingsManager()
 	encSvc, err := encryption.NewService("")
 	require.NoError(t, err)
@@ -116,7 +100,7 @@ func TestStats(t *testing.T) {
 
 			db := setupTestDB(t)
 			tt.setupData(db)
-			server := setupTestServer(t, db)
+			server := setupTestServerWithDB(t, db)
 
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
@@ -175,7 +159,7 @@ func TestChart(t *testing.T) {
 
 			db := setupTestDB(t)
 			tt.setupData(db)
-			server := setupTestServer(t, db)
+			server := setupTestServerWithDB(t, db)
 
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
@@ -193,7 +177,7 @@ func TestEncryptionStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	db := setupTestDB(t)
-	server := setupTestServer(t, db)
+	server := setupTestServerWithDB(t, db)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -218,7 +202,9 @@ func BenchmarkStats(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	db.AutoMigrate(&models.APIKey{}, &models.Group{}, &models.RequestLog{}, &models.GroupHourlyStat{})
+	if err := db.AutoMigrate(&models.APIKey{}, &models.Group{}, &models.RequestLog{}, &models.GroupHourlyStat{}); err != nil {
+		b.Fatal(err)
+	}
 
 	// Setup test data
 	now := time.Now()
@@ -249,7 +235,10 @@ func BenchmarkStats(b *testing.B) {
 		EncryptionKeyValue: "bench-encryption-key",
 	}
 	settingsManager := config.NewSystemSettingsManager()
-	encSvc, _ := encryption.NewService("")
+	encSvc, err := encryption.NewService("")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	server := &Server{
 		DB:              db,
@@ -279,7 +268,9 @@ func BenchmarkChart(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	db.AutoMigrate(&models.GroupHourlyStat{})
+	if err := db.AutoMigrate(&models.GroupHourlyStat{}); err != nil {
+		b.Fatal(err)
+	}
 
 	now := time.Now().Truncate(time.Hour)
 	for groupID := 1; groupID <= 5; groupID++ {
@@ -298,7 +289,10 @@ func BenchmarkChart(b *testing.B) {
 		EncryptionKeyValue: "bench-encryption-key",
 	}
 	settingsManager := config.NewSystemSettingsManager()
-	encSvc, _ := encryption.NewService("")
+	encSvc, err := encryption.NewService("")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	server := &Server{
 		DB:              db,

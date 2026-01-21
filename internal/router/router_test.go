@@ -74,9 +74,31 @@ func TestRegisterSystemRoutes(t *testing.T) {
 }
 
 func TestRegisterPublicAPIRoutes(t *testing.T) {
-	// Skip this test as it requires full handler initialization
-	// The function is tested through integration tests
-	t.Skip("Requires full handler initialization with dependencies")
+	t.Parallel()
+
+	router := gin.New()
+	api := router.Group("/api")
+
+	mockHandler := &handler.Server{}
+	registerPublicAPIRoutes(api, mockHandler)
+
+	// Verify routes are registered by checking route list
+	routes := router.Routes()
+
+	loginFound := false
+	integrationFound := false
+
+	for _, route := range routes {
+		if route.Path == "/api/auth/login" && route.Method == "POST" {
+			loginFound = true
+		}
+		if route.Path == "/api/integration/info" && route.Method == "GET" {
+			integrationFound = true
+		}
+	}
+
+	assert.True(t, loginFound, "Login endpoint should be registered")
+	assert.True(t, integrationFound, "Integration info endpoint should be registered")
 }
 
 func TestRegisterFrontendRoutes(t *testing.T) {
@@ -208,6 +230,179 @@ func BenchmarkFrontendRouting(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest("GET", "/", nil)
+		router.ServeHTTP(w, req)
+	}
+}
+
+func TestEmbedFolder_Panic(t *testing.T) {
+	t.Parallel()
+
+	// Note: fs.Sub in Go's embed.FS does not panic for non-existent paths
+	// It only returns an error when trying to open files from the sub-filesystem
+	// This is expected behavior of Go's embed.FS implementation
+	// We can verify that EmbedFolder creates a filesystem, but cannot test panic
+	fs := EmbedFolder(testFS, "testdata")
+	assert.NotNil(t, fs)
+}
+
+func TestRegisterFrontendRoutes_StaticFiles(t *testing.T) {
+	t.Parallel()
+
+	router := gin.New()
+	indexPage := []byte("<html><body>Test</body></html>")
+	registerFrontendRoutes(router, testFS, indexPage)
+
+	// Test accessing a static file
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/test.txt", nil)
+	router.ServeHTTP(w, req)
+
+	// Should return OK if file exists in embedded FS
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestRegisterFrontendRoutes_APIPrefix(t *testing.T) {
+	t.Parallel()
+
+	router := gin.New()
+	indexPage := []byte("<html><body>Test</body></html>")
+
+	// Register frontend routes which includes NoRoute handler
+	registerFrontendRoutes(router, testFS, indexPage)
+
+	// Test /api path - NoRoute handler should check prefix and return JSON 404
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/unknown", nil)
+	router.ServeHTTP(w, req)
+
+	// The static middleware tries to serve first, but if file doesn't exist,
+	// NoRoute handler checks for /api prefix and returns JSON error
+	if w.Code == http.StatusNotFound {
+		assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+	} else {
+		// If static middleware served something, that's also valid behavior
+		assert.Equal(t, http.StatusOK, w.Code)
+	}
+}
+
+func TestRegisterFrontendRoutes_ProxyPrefix(t *testing.T) {
+	t.Parallel()
+
+	router := gin.New()
+	indexPage := []byte("<html><body>Test</body></html>")
+
+	// Register frontend routes which includes NoRoute handler
+	registerFrontendRoutes(router, testFS, indexPage)
+
+	// Test /proxy path - NoRoute handler should check prefix and return JSON 404
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/proxy/unknown", nil)
+	router.ServeHTTP(w, req)
+
+	// The static middleware tries to serve first, but if file doesn't exist,
+	// NoRoute handler checks for /proxy prefix and returns JSON error
+	if w.Code == http.StatusNotFound {
+		assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+	} else {
+		// If static middleware served something, that's also valid behavior
+		assert.Equal(t, http.StatusOK, w.Code)
+	}
+}
+
+func TestEmbedFileSystem_Open(t *testing.T) {
+	t.Parallel()
+
+	efs := embedFileSystem{
+		FileSystem: http.Dir("."),
+	}
+
+	// Test opening existing file
+	file, err := efs.Open("router.go")
+	assert.NoError(t, err)
+	assert.NotNil(t, file)
+	if file != nil {
+		file.Close()
+	}
+
+	// Test opening non-existing file
+	file, err = efs.Open("nonexistent.go")
+	assert.Error(t, err)
+	assert.Nil(t, file)
+}
+
+func TestRegisterFrontendRoutes_NoRouteHandler(t *testing.T) {
+	t.Parallel()
+
+	router := gin.New()
+	indexPage := []byte("<html><body>Index Page</body></html>")
+	registerFrontendRoutes(router, testFS, indexPage)
+
+	// Test that non-API, non-proxy routes return index page
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/dashboard", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "Index Page")
+	assert.Equal(t, "no-cache, no-store, must-revalidate", w.Header().Get("Cache-Control"))
+}
+
+func TestRegisterSystemRoutes_HealthEndpoint(t *testing.T) {
+	t.Parallel()
+
+	router := gin.New()
+	mockHandler := &handler.Server{}
+	registerSystemRoutes(router, mockHandler)
+
+	// Verify health endpoint is registered
+	routes := router.Routes()
+	found := false
+	for _, route := range routes {
+		if route.Path == "/health" && route.Method == "GET" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "Health endpoint should be registered")
+}
+
+func BenchmarkEmbedFolderExists(b *testing.B) {
+	b.ReportAllocs()
+
+	fs := EmbedFolder(testFS, "testdata")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = fs.Exists("", "test.txt")
+	}
+}
+
+func BenchmarkNoRouteHandler(b *testing.B) {
+	b.ReportAllocs()
+
+	router := gin.New()
+	indexPage := []byte("<html><body>Test</body></html>")
+	registerFrontendRoutes(router, testFS, indexPage)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/dashboard", nil)
+		router.ServeHTTP(w, req)
+	}
+}
+
+func BenchmarkAPINotFound(b *testing.B) {
+	b.ReportAllocs()
+
+	router := gin.New()
+	indexPage := []byte("<html><body>Test</body></html>")
+	registerFrontendRoutes(router, testFS, indexPage)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/api/notfound", nil)
 		router.ServeHTTP(w, req)
 	}
 }

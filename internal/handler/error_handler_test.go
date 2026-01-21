@@ -17,7 +17,9 @@ import (
 
 func init() {
 	// Initialize i18n for tests
-	_ = i18n.Init()
+	if err := i18n.Init(); err != nil {
+		panic("failed to initialize i18n for tests: " + err.Error())
+	}
 }
 
 func TestHandleServiceError(t *testing.T) {

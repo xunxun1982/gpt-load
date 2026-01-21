@@ -631,10 +631,16 @@ func BenchmarkCountAvailableSubGroups(b *testing.B) {
 	excludedIDs := map[uint]bool{1: true}
 
 	// Create a minimal proxy server for the benchmark
-	db, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		b.Fatal(err)
+	}
 	settingsManager := config.NewSystemSettingsManager()
 	memStore := store.NewMemoryStore()
-	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	if err != nil {
+		b.Fatal(err)
+	}
 	keyProvider := keypool.NewProvider(db, memStore, settingsManager, encSvc)
 	defer keyProvider.Stop()
 
@@ -644,7 +650,10 @@ func BenchmarkCountAvailableSubGroups(b *testing.B) {
 	clientManager := httpclient.NewHTTPClientManager()
 	channelFactory := channel.NewFactory(settingsManager, clientManager)
 	requestLogService := services.NewRequestLogService(db, memStore, settingsManager)
-	ps, _ := NewProxyServer(keyProvider, groupManager, subGroupManager, settingsManager, channelFactory, requestLogService, encSvc)
+	ps, err := NewProxyServer(keyProvider, groupManager, subGroupManager, settingsManager, channelFactory, requestLogService, encSvc)
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	b.ReportAllocs()
