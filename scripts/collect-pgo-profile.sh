@@ -38,9 +38,10 @@ fi
 echo "Listing packages..."
 
 # Use a temporary file to avoid pipefail issues
+# Exclude main package to avoid web/dist dependency
 TEMP_PACKAGES=$(mktemp)
 set +e
-go list ./... 2>&1 > "${TEMP_PACKAGES}"
+go list ./internal/... 2>&1 > "${TEMP_PACKAGES}"
 LIST_EXIT=$?
 set -e
 

@@ -28,10 +28,10 @@ try {
     Write-Host "⚠️  Failed to clean test cache, continuing..." -ForegroundColor Yellow
 }
 
-# Get all packages with tests (including main package if it has tests)
+# Get all packages with tests (excluding main package to avoid web/dist dependency)
 Write-Host "Listing packages..." -ForegroundColor Gray
 try {
-    $packagesRaw = go list ./... 2>&1
+    $packagesRaw = go list ./internal/... 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "⚠️  go list failed, trying to continue..." -ForegroundColor Yellow
         $packages = @()
