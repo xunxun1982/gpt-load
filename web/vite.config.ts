@@ -60,8 +60,8 @@ export default defineConfig(({ mode }) => {
       cssCodeSplit: true,
       // Disable sourcemap in production for smaller output
       sourcemap: false,
-      // Skip compressed size reporting for faster builds
-      reportCompressedSize: false,
+      // Report compressed size for better size visibility (set to false for faster builds)
+      reportCompressedSize: true,
       rollupOptions: {
         output: {
           /**
