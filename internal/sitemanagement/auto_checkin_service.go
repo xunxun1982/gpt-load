@@ -64,13 +64,13 @@ func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encrypt
 		transport = t.Clone()
 		transport.MaxIdleConns = 100
 		transport.MaxIdleConnsPerHost = 20
-		transport.IdleConnTimeout = 90 * time.Second
+		transport.IdleConnTimeout = 10 * time.Second // Short timeout for batch operations
 	} else {
 		// Fallback if DefaultTransport was replaced with a different type
 		transport = &http.Transport{
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 20,
-			IdleConnTimeout:     90 * time.Second,
+			IdleConnTimeout:     10 * time.Second, // Short timeout for batch operations
 		}
 	}
 
@@ -117,6 +117,20 @@ func (s *AutoCheckinService) Start() {
 
 func (s *AutoCheckinService) Stop(ctx context.Context) {
 	close(s.stopCh)
+
+	// Clean up proxy client cache
+	s.proxyClients.Range(func(key, value interface{}) bool {
+		if client, ok := value.(*http.Client); ok {
+			if transport, ok := client.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
+		s.proxyClients.Delete(key)
+		return true
+	})
+
+	// Clean up stealth client cache
+	s.stealthClientMgr.Cleanup()
 
 	if s.subConfig != nil {
 		_ = s.subConfig.Close()
@@ -553,6 +567,9 @@ func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {
 	result := s.runSitesCheckin(ctx, sites)
 	s.persistRunStatus(config, result)
 
+	// Close idle connections after batch check-in to free resources immediately
+	s.closeIdleConnections()
+
 	logrus.WithFields(logrus.Fields{
 		"total":       len(sites),
 		"success":     result.SuccessCount,
@@ -744,7 +761,7 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 		Proxy:               http.ProxyURL(parsedProxyURL),
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
+		IdleConnTimeout:     10 * time.Second, // Short timeout for batch operations
 	}
 
 	client := &http.Client{
@@ -847,6 +864,28 @@ func (s *AutoCheckinService) isBusy() bool {
 		return false
 	}
 	return st.TaskType == "KEY_IMPORT" || st.TaskType == "KEY_DELETE"
+}
+
+// closeIdleConnections closes idle connections for all HTTP clients to free resources.
+// This should be called after batch operations (check-in, balance refresh) complete.
+func (s *AutoCheckinService) closeIdleConnections() {
+	// Close idle connections for default client
+	if transport, ok := s.client.Transport.(*http.Transport); ok {
+		transport.CloseIdleConnections()
+	}
+
+	// Close idle connections for all cached proxy clients
+	s.proxyClients.Range(func(key, value interface{}) bool {
+		if client, ok := value.(*http.Client); ok {
+			if transport, ok := client.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
+		return true
+	})
+
+	// Close idle connections for stealth client manager
+	s.stealthClientMgr.CloseIdleConnections()
 }
 
 type providerResult struct {

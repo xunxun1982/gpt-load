@@ -12,6 +12,7 @@ import (
 	"gpt-load/internal/config"
 	"gpt-load/internal/db"
 	dbmigrations "gpt-load/internal/db/migrations"
+	"gpt-load/internal/httpclient"
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
@@ -44,6 +45,7 @@ type App struct {
 	proxyServer              *proxy.ProxyServer
 	dynamicWeightManager     *services.DynamicWeightManager
 	dynamicWeightPersistence *services.DynamicWeightPersistence
+	httpClientManager        *httpclient.HTTPClientManager
 	storage                  store.Store
 	db                       *gorm.DB
 	httpServer               *http.Server
@@ -67,6 +69,7 @@ type AppParams struct {
 	KeyPoolProvider       *keypool.KeyProvider
 	ProxyServer           *proxy.ProxyServer
 	DynamicWeightManager  *services.DynamicWeightManager
+	HTTPClientManager     *httpclient.HTTPClientManager // HTTP client manager for connection pool management
 	Storage               store.Store
 	DB                    *gorm.DB
 	HubService            *centralizedmgmt.HubService // Hub service for centralized management
@@ -150,6 +153,7 @@ func NewApp(params AppParams) *App {
 		proxyServer:              params.ProxyServer,
 		dynamicWeightManager:     params.DynamicWeightManager,
 		dynamicWeightPersistence: dwPersistence,
+		httpClientManager:        params.HTTPClientManager,
 		storage:                  params.Storage,
 		db:                       params.DB,
 	}
@@ -343,6 +347,14 @@ func (a *App) Stop(ctx context.Context) {
 		logrus.Infof("All background services stopped. (took %v)", time.Since(bgServicesStart))
 	case <-ctx.Done():
 		logrus.Warnf("Shutdown timed out after %v, some services may not have stopped gracefully.", time.Since(bgServicesStart))
+	}
+
+	// Close idle HTTP connections for all managed clients to free resources
+	if a.httpClientManager != nil {
+		logrus.Debug("Closing idle HTTP connections...")
+		httpCloseStart := time.Now()
+		a.httpClientManager.CloseIdleConnections()
+		logrus.Debugf("Idle HTTP connections closed. (took %v)", time.Since(httpCloseStart))
 	}
 
 	// Close storage and database connections in parallel for faster shutdown

@@ -11,6 +11,8 @@ import (
 
 // TestNewHTTPClientManager tests client manager creation
 func TestNewHTTPClientManager(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 	assert.NotNil(t, manager)
 	assert.NotNil(t, manager.clients)
@@ -18,6 +20,8 @@ func TestNewHTTPClientManager(t *testing.T) {
 
 // TestGetClient tests client retrieval and caching
 func TestGetClient(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -51,6 +55,8 @@ func TestGetClient(t *testing.T) {
 
 // TestGetClient_WithProxy tests client with proxy configuration
 func TestGetClient_WithProxy(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -66,6 +72,8 @@ func TestGetClient_WithProxy(t *testing.T) {
 
 // TestGetClient_Concurrent tests concurrent client access
 func TestGetClient_Concurrent(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -100,6 +108,8 @@ func TestGetClient_Concurrent(t *testing.T) {
 
 // TestConfig_Fingerprint tests configuration fingerprinting
 func TestConfig_Fingerprint(t *testing.T) {
+	t.Parallel()
+
 	config1 := &Config{
 		ConnectTimeout: 10 * time.Second,
 		RequestTimeout: 30 * time.Second,
@@ -128,6 +138,8 @@ func TestConfig_Fingerprint(t *testing.T) {
 
 // TestGetClient_DifferentConfigs tests multiple different configurations
 func TestGetClient_DifferentConfigs(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	configs := []*Config{
@@ -155,6 +167,8 @@ func TestGetClient_DifferentConfigs(t *testing.T) {
 
 // TestGetClient_WithCompression tests client with compression settings
 func TestGetClient_WithCompression(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config1 := &Config{
@@ -231,6 +245,8 @@ func BenchmarkGetFingerprint(b *testing.B) {
 
 // TestGetClient_WithAllConfigs tests client with all configuration options
 func TestGetClient_WithAllConfigs(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -266,6 +282,8 @@ func TestGetClient_WithAllConfigs(t *testing.T) {
 
 // TestGetClient_WithInvalidProxy tests client with invalid proxy URL
 func TestGetClient_WithInvalidProxy(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -281,6 +299,8 @@ func TestGetClient_WithInvalidProxy(t *testing.T) {
 
 // TestGetClient_WithUnsupportedProxyScheme tests client with unsupported proxy scheme
 func TestGetClient_WithUnsupportedProxyScheme(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -296,6 +316,8 @@ func TestGetClient_WithUnsupportedProxyScheme(t *testing.T) {
 
 // TestGetClient_WithWhitespaceProxy tests client with proxy URL containing whitespace
 func TestGetClient_WithWhitespaceProxy(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -311,6 +333,8 @@ func TestGetClient_WithWhitespaceProxy(t *testing.T) {
 
 // TestGetClient_MaxConnsPerHost tests MaxConnsPerHost calculation
 func TestGetClient_MaxConnsPerHost(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name                string
 		maxIdleConnsPerHost int
@@ -323,6 +347,7 @@ func TestGetClient_MaxConnsPerHost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			manager := NewHTTPClientManager()
 			config := &Config{
 				ConnectTimeout:      10 * time.Second,
@@ -339,6 +364,8 @@ func TestGetClient_MaxConnsPerHost(t *testing.T) {
 
 // TestGetClient_DisableCompression tests client with compression disabled
 func TestGetClient_DisableCompression(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -354,6 +381,8 @@ func TestGetClient_DisableCompression(t *testing.T) {
 
 // TestGetClient_CustomBufferSizes tests client with custom buffer sizes
 func TestGetClient_CustomBufferSizes(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -371,6 +400,8 @@ func TestGetClient_CustomBufferSizes(t *testing.T) {
 
 // TestGetClient_HTTP2 tests client with HTTP/2 enabled
 func TestGetClient_HTTP2(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	config := &Config{
@@ -386,6 +417,8 @@ func TestGetClient_HTTP2(t *testing.T) {
 
 // TestConfig_FingerprintWithAllFields tests fingerprint with all fields
 func TestConfig_FingerprintWithAllFields(t *testing.T) {
+	t.Parallel()
+
 	config := &Config{
 		ConnectTimeout:        10 * time.Second,
 		RequestTimeout:        30 * time.Second,
@@ -411,6 +444,8 @@ func TestConfig_FingerprintWithAllFields(t *testing.T) {
 
 // TestGetClient_ConcurrentSameConfig tests concurrent access with same config
 func TestGetClient_ConcurrentSameConfig(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 	config := &Config{
 		ConnectTimeout:  10 * time.Second,
@@ -445,6 +480,8 @@ func TestGetClient_ConcurrentSameConfig(t *testing.T) {
 
 // TestGetClient_ConcurrentDifferentConfigs tests concurrent access with different configs
 func TestGetClient_ConcurrentDifferentConfigs(t *testing.T) {
+	t.Parallel()
+
 	manager := NewHTTPClientManager()
 
 	const goroutines = 10
