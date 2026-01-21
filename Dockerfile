@@ -60,10 +60,13 @@ COPY default.pgo* ./
 RUN echo "🔨 Building PGO-optimized binary..." && \
     if [ -f "default.pgo" ]; then \
         echo "✅ Using PGO profile: $(du -h default.pgo | cut -f1)"; \
+        PGO_FLAG="-pgo=default.pgo"; \
     else \
         echo "⚠️  No PGO profile found, building without PGO optimization"; \
+        PGO_FLAG="-pgo=off"; \
     fi && \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=${GOAMD64} go build \
+    ${PGO_FLAG} \
     -tags go_json \
     -trimpath \
     -buildvcs=false \
