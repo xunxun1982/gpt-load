@@ -3,6 +3,7 @@ package sitemanagement
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -160,6 +161,7 @@ func TestBalanceService_ParseBalanceResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := service.parseBalanceResponse([]byte(tt.response))
 			if tt.expected == nil {
 				assert.Nil(t, result)
@@ -379,7 +381,7 @@ func BenchmarkBalanceService_FetchAllBalances(b *testing.B) {
 	for i := 0; i < 50; i++ {
 		authValue, _ := encSvc.Encrypt("test-token")
 		site := ManagedSite{
-			Name:      "Site " + string(rune(i)),
+			Name:      fmt.Sprintf("Site %d", i),
 			BaseURL:   server.URL,
 			SiteType:  SiteTypeNewAPI,
 			AuthType:  AuthTypeAccessToken,

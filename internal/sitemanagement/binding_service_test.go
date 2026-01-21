@@ -2,6 +2,7 @@ package sitemanagement
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"gpt-load/internal/models"
@@ -14,7 +15,8 @@ import (
 )
 
 // createTestGroup creates a test group with required fields
-func createTestGroup(db *gorm.DB, name string, opts ...func(*models.Group)) *models.Group {
+func createTestGroup(tb testing.TB, db *gorm.DB, name string, opts ...func(*models.Group)) *models.Group {
+	tb.Helper()
 	group := &models.Group{
 		Name:      name,
 		Upstreams: []byte("[]"), // Required JSON field
@@ -22,7 +24,7 @@ func createTestGroup(db *gorm.DB, name string, opts ...func(*models.Group)) *mod
 	for _, opt := range opts {
 		opt(group)
 	}
-	db.Create(group)
+	require.NoError(tb, db.Create(group).Error)
 	return group
 }
 
@@ -46,7 +48,7 @@ func TestBindingService_BindGroupToSite(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create group
-	group := createTestGroup(db, "Test Group")
+	group := createTestGroup(t, db, "Test Group")
 	require.NotZero(t, group.ID)
 
 	// Bind group to site
@@ -81,7 +83,7 @@ func TestBindingService_BindGroupToSite_AggregateGroup(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create aggregate group
-	group := createTestGroup(db, "Aggregate Group", func(g *models.Group) {
+	group := createTestGroup(t, db, "Aggregate Group", func(g *models.Group) {
 		g.GroupType = "aggregate"
 	})
 	require.NotZero(t, group.ID)
@@ -111,11 +113,11 @@ func TestBindingService_BindGroupToSite_ChildGroup(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create parent group
-	parent := createTestGroup(db, "Parent Group")
+	parent := createTestGroup(t, db, "Parent Group")
 	require.NotZero(t, parent.ID)
 
 	// Create child group
-	child := createTestGroup(db, "Child Group", func(g *models.Group) {
+	child := createTestGroup(t, db, "Child Group", func(g *models.Group) {
 		g.ParentGroupID = &parent.ID
 	})
 	require.NotZero(t, child.ID)
@@ -145,7 +147,7 @@ func TestBindingService_UnbindGroupFromSite(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create bound group
-	group := createTestGroup(db, "Test Group", func(g *models.Group) {
+	group := createTestGroup(t, db, "Test Group", func(g *models.Group) {
 		g.BoundSiteID = &site.ID
 	})
 	require.NotZero(t, group.ID)
@@ -182,7 +184,7 @@ func TestBindingService_UnbindSiteFromGroup(t *testing.T) {
 
 	// Create multiple bound groups
 	for i := 0; i < 3; i++ {
-		createTestGroup(db, "Group "+string(rune('A'+i)), func(g *models.Group) {
+		createTestGroup(t, db, fmt.Sprintf("Group %c", 'A'+i), func(g *models.Group) {
 			g.BoundSiteID = &site.ID
 		})
 	}
@@ -221,7 +223,7 @@ func TestBindingService_SyncSiteEnabledToGroup(t *testing.T) {
 	// Create bound groups
 	var groupIDs []uint
 	for i := 0; i < 3; i++ {
-		group := createTestGroup(db, "Group "+string(rune('A'+i)), func(g *models.Group) {
+		group := createTestGroup(t, db, fmt.Sprintf("Group %c", 'A'+i), func(g *models.Group) {
 			g.BoundSiteID = &site.ID
 			g.Enabled = true
 		})
@@ -262,8 +264,8 @@ func TestBindingService_GetBoundGroupInfo(t *testing.T) {
 
 	// Create bound groups
 	for i := 0; i < 3; i++ {
-		createTestGroup(db, "Group "+string(rune('A'+i)), func(g *models.Group) {
-			g.DisplayName = "Display " + string(rune('A'+i))
+		createTestGroup(t, db, fmt.Sprintf("Group %c", 'A'+i), func(g *models.Group) {
+			g.DisplayName = fmt.Sprintf("Display %c", 'A'+i)
 			g.BoundSiteID = &site.ID
 			g.Enabled = true
 		})
@@ -305,7 +307,7 @@ func TestBindingService_ListSitesForBinding(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create group bound to site1
-	group := createTestGroup(db, "Test Group", func(g *models.Group) {
+	group := createTestGroup(t, db, "Test Group", func(g *models.Group) {
 		g.BoundSiteID = &site1.ID
 	})
 	require.NotZero(t, group.ID)
@@ -338,13 +340,13 @@ func TestBindingService_CheckGroupCanDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create bound group
-	boundGroup := createTestGroup(db, "Bound Group", func(g *models.Group) {
+	boundGroup := createTestGroup(t, db, "Bound Group", func(g *models.Group) {
 		g.BoundSiteID = &site.ID
 	})
 	require.NotZero(t, boundGroup.ID)
 
 	// Create unbound group
-	unboundGroup := createTestGroup(db, "Unbound Group")
+	unboundGroup := createTestGroup(t, db, "Unbound Group")
 	require.NotZero(t, unboundGroup.ID)
 
 	// Check bound group (should fail)
@@ -383,7 +385,7 @@ func TestBindingService_CheckSiteCanDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create group bound to site
-	group := createTestGroup(db, "Test Group", func(g *models.Group) {
+	group := createTestGroup(t, db, "Test Group", func(g *models.Group) {
 		g.BoundSiteID = &boundSite.ID
 	})
 	require.NotZero(t, group.ID)
@@ -422,7 +424,7 @@ func TestBindingService_CacheInvalidation(t *testing.T) {
 	err = db.Create(&site).Error
 	require.NoError(t, err)
 
-	group := createTestGroup(db, "Test Group")
+	group := createTestGroup(t, db, "Test Group")
 	require.NotZero(t, group.ID)
 
 	// Bind group (should trigger callback)
@@ -460,7 +462,7 @@ func TestBindingService_ManyToOne(t *testing.T) {
 
 	// Bind multiple groups to the same site
 	for i := 0; i < 5; i++ {
-		group := createTestGroup(db, "Group "+string(rune('A'+i)))
+		group := createTestGroup(t, db, fmt.Sprintf("Group %c", 'A'+i))
 		require.NotZero(t, group.ID)
 
 		err = service.BindGroupToSite(context.Background(), group.ID, site.ID)
@@ -491,7 +493,7 @@ func BenchmarkBindingService_BindGroupToSite(b *testing.B) {
 	// Create groups
 	var groupIDs []uint
 	for i := 0; i < 100; i++ {
-		group := createTestGroup(db, "Group "+string(rune(i)))
+		group := createTestGroup(b, db, fmt.Sprintf("Group %d", i))
 		groupIDs = append(groupIDs, group.ID)
 	}
 
@@ -512,7 +514,7 @@ func BenchmarkBindingService_ListSitesForBinding(b *testing.B) {
 	// Create 100 sites
 	for i := 0; i < 100; i++ {
 		site := ManagedSite{
-			Name:    "Site " + string(rune(i)),
+			Name:    fmt.Sprintf("Site %d", i),
 			BaseURL: "https://example.com",
 			Sort:    i,
 		}

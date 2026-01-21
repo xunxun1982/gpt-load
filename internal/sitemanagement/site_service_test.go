@@ -2,6 +2,7 @@ package sitemanagement
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"gpt-load/internal/encryption"
@@ -463,7 +464,8 @@ func TestSiteService_ListSitesPaginated(t *testing.T) {
 
 	// Debug: check database state
 	var dbCount int64
-	db.Model(&ManagedSite{}).Where("enabled = ?", true).Count(&dbCount)
+	err = db.Model(&ManagedSite{}).Where("enabled = ?", true).Count(&dbCount).Error
+	require.NoError(t, err)
 	t.Logf("DB count of enabled sites: %d", dbCount)
 
 	result, err = service.ListSitesPaginated(context.Background(), SiteListParams{
@@ -493,7 +495,7 @@ func BenchmarkSiteService_ListSites(b *testing.B) {
 	// Create 100 sites
 	for i := 0; i < 100; i++ {
 		params := CreateSiteParams{
-			Name:     "Site " + string(rune(i)),
+			Name:     fmt.Sprintf("Site %d", i),
 			BaseURL:  "https://example.com",
 			AuthType: AuthTypeNone,
 		}
@@ -519,7 +521,7 @@ func BenchmarkSiteService_CreateSite(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		params := CreateSiteParams{
-			Name:     "Site " + string(rune(i)),
+			Name:     fmt.Sprintf("Site %d", i),
 			BaseURL:  "https://example.com",
 			AuthType: AuthTypeNone,
 		}
@@ -540,7 +542,7 @@ func BenchmarkSiteService_CacheHit(b *testing.B) {
 	// Create sites
 	for i := 0; i < 50; i++ {
 		params := CreateSiteParams{
-			Name:     "Site " + string(rune(i)),
+			Name:     fmt.Sprintf("Site %d", i),
 			BaseURL:  "https://example.com",
 			AuthType: AuthTypeNone,
 		}

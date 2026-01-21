@@ -2,6 +2,7 @@ package sitemanagement
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -215,6 +216,7 @@ func TestIdleConnTimeout_Configuration(t *testing.T) {
 	encSvc := setupTestEncryption(t)
 
 	t.Run("AutoCheckinService", func(t *testing.T) {
+		t.Parallel()
 		service := NewAutoCheckinService(db, nil, encSvc)
 		transport, ok := service.client.Transport.(*http.Transport)
 		assert.True(t, ok)
@@ -222,6 +224,7 @@ func TestIdleConnTimeout_Configuration(t *testing.T) {
 	})
 
 	t.Run("BalanceService", func(t *testing.T) {
+		t.Parallel()
 		service := NewBalanceService(db, encSvc)
 		transport, ok := service.client.Transport.(*http.Transport)
 		assert.True(t, ok)
@@ -229,6 +232,7 @@ func TestIdleConnTimeout_Configuration(t *testing.T) {
 	})
 
 	t.Run("StealthClientManager", func(t *testing.T) {
+		t.Parallel()
 		manager := NewStealthClientManager(10 * time.Second)
 		client := manager.GetClient("")
 		transport, ok := client.Transport.(*http.Transport)
@@ -254,7 +258,7 @@ func TestConcurrentCloseIdleConnections(t *testing.T) {
 				IdleConnTimeout: 10 * time.Second,
 			},
 		}
-		service.proxyClients.Store("http://proxy"+string(rune(i))+":8080", proxyClient)
+		service.proxyClients.Store(fmt.Sprintf("http://proxy%d:8080", i), proxyClient)
 	}
 
 	// Call closeIdleConnections concurrently
@@ -303,7 +307,7 @@ func BenchmarkCloseIdleConnections(b *testing.B) {
 				IdleConnTimeout: 10 * time.Second,
 			},
 		}
-		service.proxyClients.Store("http://proxy"+string(rune(i))+":8080", proxyClient)
+		service.proxyClients.Store(fmt.Sprintf("http://proxy%d:8080", i), proxyClient)
 	}
 
 	b.ResetTimer()
@@ -319,7 +323,7 @@ func BenchmarkStealthClientManagerCleanup(b *testing.B) {
 		manager := NewStealthClientManager(10 * time.Second)
 		// Populate cache
 		for j := 0; j < 100; j++ {
-			manager.GetClient("http://proxy" + string(rune(j)) + ":8080")
+			manager.GetClient(fmt.Sprintf("http://proxy%d:8080", j))
 		}
 		b.StartTimer()
 

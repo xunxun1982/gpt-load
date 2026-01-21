@@ -347,6 +347,7 @@ func TestGetClient_MaxConnsPerHost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			manager := NewHTTPClientManager()
 			config := &Config{
 				ConnectTimeout:      10 * time.Second,
