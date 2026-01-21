@@ -22,33 +22,45 @@ rm -f "${PROFILE_DIR}"/*.prof
 # Collect profile from unit tests with coverage
 # Run tests with CPU profiling enabled
 echo "📊 Running unit tests with CPU profiling..."
-go test -tags "${GO_TAGS}" \
-    -cpuprofile="${PROFILE_DIR}/cpu_test.prof" \
-    -run=. \
-    -count=1 \
-    ./internal/... || {
-    echo "⚠️  Some tests failed, but continuing with profile collection"
-}
+
+# Get all packages with tests
+PACKAGES=$(go list -tags "${GO_TAGS}" ./internal/... 2>/dev/null | grep -v '/vendor/')
+
+# Run tests for each package individually (required for -cpuprofile)
+PROFILE_INDEX=0
+for pkg in ${PACKAGES}; do
+    PROFILE_INDEX=$((PROFILE_INDEX + 1))
+    go test -tags "${GO_TAGS}" \
+        -cpuprofile="${PROFILE_DIR}/cpu_test_${PROFILE_INDEX}.prof" \
+        -run=. \
+        -count=1 \
+        "${pkg}" 2>/dev/null || true
+done
 
 # Collect profiles from performance benchmarks
 # Run key benchmarks that represent real-world usage patterns
 echo "📊 Running performance benchmarks with CPU profiling..."
 
 # Run benchmarks for critical paths (limit time to avoid excessive duration)
-go test -tags "${GO_TAGS}" \
-    -bench=. \
-    -benchtime=2s \
-    -cpuprofile="${PROFILE_DIR}/cpu_bench.prof" \
-    -run=^$ \
-    ./internal/keypool \
-    ./internal/services \
-    ./internal/utils \
-    ./internal/channel \
-    ./internal/proxy \
-    ./internal/encryption \
-    2>/dev/null || {
-    echo "⚠️  Some benchmarks failed, but continuing with profile collection"
-}
+BENCH_PACKAGES=(
+    "./internal/keypool"
+    "./internal/services"
+    "./internal/utils"
+    "./internal/channel"
+    "./internal/proxy"
+    "./internal/encryption"
+)
+
+BENCH_INDEX=0
+for pkg in "${BENCH_PACKAGES[@]}"; do
+    BENCH_INDEX=$((BENCH_INDEX + 1))
+    go test -tags "${GO_TAGS}" \
+        -bench=. \
+        -benchtime=2s \
+        -cpuprofile="${PROFILE_DIR}/cpu_bench_${BENCH_INDEX}.prof" \
+        -run=^$ \
+        "${pkg}" 2>/dev/null || true
+done
 
 # Count collected profiles
 PROFILE_COUNT=$(find "${PROFILE_DIR}" -name "*.prof" -type f | wc -l)
@@ -66,13 +78,14 @@ echo "🔄 Merging profiles into ${MERGED_PROFILE}..."
 # Use go tool pprof to merge profiles
 # The -proto flag outputs in protobuf format which is what Go compiler expects
 go tool pprof -proto "${PROFILE_DIR}"/*.prof > "${MERGED_PROFILE}" 2>/dev/null || {
-    echo "⚠️  Profile merge failed, using first profile as fallback"
-    cp "${PROFILE_DIR}/cpu_test.prof" "${MERGED_PROFILE}" 2>/dev/null || {
-        cp "${PROFILE_DIR}/cpu_bench.prof" "${MERGED_PROFILE}" 2>/dev/null || {
-            echo "❌ Failed to create merged profile"
-            exit 1
-        }
-    }
+    echo "⚠️  Profile merge failed, using first available profile as fallback"
+    FIRST_PROFILE=$(find "${PROFILE_DIR}" -name "*.prof" -type f | head -n 1)
+    if [ -n "${FIRST_PROFILE}" ]; then
+        cp "${FIRST_PROFILE}" "${MERGED_PROFILE}"
+    else
+        echo "❌ Failed to create merged profile"
+        exit 1
+    fi
 }
 
 # Verify the merged profile

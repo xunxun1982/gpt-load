@@ -19,35 +19,52 @@ Get-ChildItem -Path $PROFILE_DIR -Filter "*.prof" -ErrorAction SilentlyContinue 
 
 # Collect profile from unit tests
 Write-Host "📊 Running unit tests with CPU profiling..." -ForegroundColor Cyan
-$testProfile = Join-Path $PROFILE_DIR "cpu_test.prof"
-try {
-    go test -tags $GO_TAGS `
-        -cpuprofile=$testProfile `
-        -run=. `
-        -count=1 `
-        ./internal/...
-} catch {
-    Write-Host "⚠️  Some tests failed, but continuing with profile collection" -ForegroundColor Yellow
+
+# Get all packages with tests
+$packages = go list -tags $GO_TAGS ./internal/... 2>$null | Where-Object { $_ -notmatch '/vendor/' }
+
+# Run tests for each package individually (required for -cpuprofile)
+$profileIndex = 0
+foreach ($pkg in $packages) {
+    $profileIndex++
+    $testProfile = Join-Path $PROFILE_DIR "cpu_test_$profileIndex.prof"
+    try {
+        go test -tags $GO_TAGS `
+            -cpuprofile=$testProfile `
+            -run=. `
+            -count=1 `
+            $pkg 2>$null
+    } catch {
+        # Continue on error
+    }
 }
 
 # Collect profiles from performance benchmarks
 Write-Host "📊 Running performance benchmarks with CPU profiling..." -ForegroundColor Cyan
-$benchProfile = Join-Path $PROFILE_DIR "cpu_bench.prof"
-try {
-    go test -tags $GO_TAGS `
-        -bench=. `
-        -benchtime=2s `
-        -cpuprofile=$benchProfile `
-        -run='^$' `
-        ./internal/keypool `
-        ./internal/services `
-        ./internal/utils `
-        ./internal/channel `
-        ./internal/proxy `
-        ./internal/encryption `
-        2>$null
-} catch {
-    Write-Host "⚠️  Some benchmarks failed, but continuing with profile collection" -ForegroundColor Yellow
+
+$benchPackages = @(
+    "./internal/keypool",
+    "./internal/services",
+    "./internal/utils",
+    "./internal/channel",
+    "./internal/proxy",
+    "./internal/encryption"
+)
+
+$benchIndex = 0
+foreach ($pkg in $benchPackages) {
+    $benchIndex++
+    $benchProfile = Join-Path $PROFILE_DIR "cpu_bench_$benchIndex.prof"
+    try {
+        go test -tags $GO_TAGS `
+            -bench=. `
+            -benchtime=2s `
+            -cpuprofile=$benchProfile `
+            -run='^$' `
+            $pkg 2>$null
+    } catch {
+        # Continue on error
+    }
 }
 
 # Count collected profiles
@@ -69,11 +86,10 @@ try {
     $profileArgs = @("-proto") + $profilePaths
     & go tool pprof $profileArgs 2>$null | Set-Content -Path $MERGED_PROFILE -Encoding Byte
 } catch {
-    Write-Host "⚠️  Profile merge failed, using first profile as fallback" -ForegroundColor Yellow
-    if (Test-Path $testProfile) {
-        Copy-Item $testProfile $MERGED_PROFILE
-    } elseif (Test-Path $benchProfile) {
-        Copy-Item $benchProfile $MERGED_PROFILE
+    Write-Host "⚠️  Profile merge failed, using first available profile as fallback" -ForegroundColor Yellow
+    $firstProfile = $profiles | Select-Object -First 1
+    if ($firstProfile) {
+        Copy-Item $firstProfile.FullName $MERGED_PROFILE
     } else {
         Write-Host "❌ Failed to create merged profile" -ForegroundColor Red
         exit 1
