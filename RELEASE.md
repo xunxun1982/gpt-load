@@ -61,7 +61,7 @@ Release notes should follow this structure:
 
 ## Full Changelog
 
-**Full Changelog**: https://github.com/owner/repo/compare/v1.0.0...v1.1.0
+**Full Changelog**: https://github.com/xunxun1982/gpt-load/compare/v1.0.0...v1.1.0
 ```
 
 ## Version Numbering
