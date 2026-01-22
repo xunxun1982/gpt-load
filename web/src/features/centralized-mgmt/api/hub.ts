@@ -13,6 +13,7 @@ import axios from "axios";
 import type {
   AccessKeyListParams,
   AccessKeyListResponse,
+  AggregateGroupCustomModels,
   BatchOperationResponse,
   CreateAccessKeyParams,
   HubAccessKey,
@@ -22,6 +23,7 @@ import type {
   ModelPoolResponse,
   ModelPoolV2Response,
   UpdateAccessKeyParams,
+  UpdateCustomModelsParams,
   UpdateModelGroupPriorityParams,
 } from "../types/hub";
 
@@ -244,12 +246,27 @@ export const hubApi = {
   async getAccessKeyPlaintext(id: number): Promise<{ key_value: string }> {
     return hubHttp.get<unknown, { key_value: string }>(`/access-keys/${id}/plaintext`);
   },
+
+  /**
+   * Get custom model names for all aggregate groups.
+   */
+  async getAggregateGroupsCustomModels(): Promise<AggregateGroupCustomModels[]> {
+    return hubHttp.get<unknown, AggregateGroupCustomModels[]>("/custom-models");
+  },
+
+  /**
+   * Update custom model names for an aggregate group.
+   */
+  async updateAggregateGroupCustomModels(params: UpdateCustomModelsParams): Promise<void> {
+    await hubHttp.put("/custom-models", params);
+  },
 };
 
 // Re-export types for convenience
 export type {
   AccessKeyListParams,
   AccessKeyListResponse,
+  AggregateGroupCustomModels,
   AllowedModelsMode,
   BatchAccessKeyOperationParams,
   BatchEnableDisableParams,
@@ -266,5 +283,6 @@ export type {
   ModelPoolV2Response,
   ModelSource,
   UpdateAccessKeyParams,
+  UpdateCustomModelsParams,
   UpdateModelGroupPriorityParams,
 } from "../types/hub";

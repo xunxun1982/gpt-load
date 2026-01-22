@@ -4,7 +4,7 @@
  * Displays aggregated model pool with priority-based group management.
  * Compact single-line layout for each model.
  */
-import { CreateOutline, RefreshOutline, Search } from "@vicons/ionicons5";
+import { CreateOutline, LayersOutline, RefreshOutline, Search } from "@vicons/ionicons5";
 import {
   NButton,
   NDataTable,
@@ -44,6 +44,7 @@ const models = ref<ModelPoolEntryV2[]>([]);
 const searchText = ref("");
 const currentPage = ref(1);
 const pageSize = ref(50);
+const onlyAggregateGroups = ref(false);
 
 // Filter state
 const filters = ref({
@@ -410,7 +411,23 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
     width: 200,
     ellipsis: { tooltip: true },
     titleAlign: "center",
-    render: row => h("code", { class: "model-code" }, row.model_name),
+    render: row =>
+      h("div", { class: "model-name-cell" }, [
+        h("code", { class: "model-code" }, row.model_name),
+        row.is_custom
+          ? h(
+              NTag,
+              {
+                size: "tiny",
+                type: "warning",
+                bordered: false,
+                round: true,
+                style: { marginLeft: "6px", fontSize: "10px" },
+              },
+              () => t("hub.customModelBadge")
+            )
+          : null,
+      ]),
   },
   {
     title: t("hub.sourceGroups"),
@@ -518,10 +535,15 @@ function resetFilters() {
 async function loadModelPool() {
   loading.value = true;
   try {
-    const res = await hubApi.getModelPoolV2();
-    models.value = res.models || [];
+    const [poolRes, settingsRes] = await Promise.all([
+      hubApi.getModelPoolV2(),
+      hubApi.getSettings(),
+    ]);
+    models.value = poolRes.models || [];
+    onlyAggregateGroups.value = settingsRes.only_aggregate_groups ?? false;
   } catch (_) {
     models.value = [];
+    onlyAggregateGroups.value = false;
   } finally {
     loading.value = false;
   }
@@ -540,6 +562,14 @@ onMounted(() => {
 
 <template>
   <div class="model-pool-container">
+    <!-- Only Aggregate Groups Indicator -->
+    <div v-if="onlyAggregateGroups" class="aggregate-only-banner">
+      <n-icon :component="LayersOutline" size="14" style="flex-shrink: 0" />
+      <n-text style="font-size: 12px; font-weight: 500">
+        {{ t("hub.onlyAggregateGroupsActive") }}
+      </n-text>
+    </div>
+
     <!-- Filter row -->
     <div class="filter-row">
       <n-space align="center" :size="6" class="filter-left">
@@ -690,6 +720,23 @@ onMounted(() => {
   min-height: 0;
 }
 
+.aggregate-only-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  background: linear-gradient(
+    135deg,
+    var(--n-color-embedded) 0%,
+    var(--n-color-embedded-modal) 100%
+  );
+  border: 1px solid var(--n-border-color);
+  border-radius: 6px;
+  color: var(--n-text-color-1);
+  flex-shrink: 0;
+}
+
 .filter-row {
   display: flex;
   align-items: center;
@@ -735,6 +782,12 @@ onMounted(() => {
   background: transparent;
   padding: 0;
   font-size: 12px;
+}
+
+.model-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .health-good {

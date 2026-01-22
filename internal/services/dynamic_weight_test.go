@@ -416,3 +416,326 @@ func TestGetModelRedirectDynamicWeights(t *testing.T) {
 	assert.Greater(t, weights[0].EffectiveWeight, weights[1].EffectiveWeight,
 		"Target with success should have higher effective weight than target with failure")
 }
+
+// TestDynamicWeightManager_RecordRetryAndFinalRequests tests that both retry and final requests are recorded
+func TestDynamicWeightManager_RecordRetryAndFinalRequests(t *testing.T) {
+	t.Parallel() // Enable parallel execution
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(1)
+	subGroupID := uint(2)
+
+	// Record a retry request failure
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
+
+	// Verify retry failure is recorded
+	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), metrics.ConsecutiveFailures)
+	assert.Equal(t, int64(1), metrics.Requests7d)
+	assert.Equal(t, int64(0), metrics.Successes7d)
+	assert.False(t, metrics.LastFailureAt.IsZero())
+
+	// Record a final request success
+	dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupID)
+
+	// Verify final success is also recorded
+	metrics, err = dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), metrics.ConsecutiveFailures, "Consecutive failures should reset after success")
+	assert.Equal(t, int64(2), metrics.Requests7d, "Both retry and final requests should be counted")
+	assert.Equal(t, int64(1), metrics.Successes7d)
+	assert.False(t, metrics.LastSuccessAt.IsZero())
+}
+
+// TestDynamicWeightManager_AggregateRetryScenario tests health tracking in aggregate retry scenario
+func TestDynamicWeightManager_AggregateRetryScenario(t *testing.T) {
+	t.Parallel() // Enable parallel execution
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(1)
+	subGroupA := uint(2)
+	subGroupB := uint(3)
+
+	// Simulate aggregate retry scenario:
+	// 1. Sub-group A fails (retry request)
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupA)
+
+	// 2. Sub-group B succeeds (final request)
+	dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupB)
+
+	// Verify sub-group A health is affected by the failure
+	metricsA, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupA)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), metricsA.ConsecutiveFailures)
+	assert.Equal(t, int64(1), metricsA.Requests7d)
+	assert.Equal(t, int64(0), metricsA.Successes7d)
+
+	healthScoreA := dwm.CalculateHealthScore(metricsA)
+	assert.Less(t, healthScoreA, 1.0, "Sub-group A health should be less than 100% after failure")
+
+	// Verify sub-group B health is normal
+	metricsB, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupB)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), metricsB.ConsecutiveFailures)
+	assert.Equal(t, int64(1), metricsB.Requests7d)
+	assert.Equal(t, int64(1), metricsB.Successes7d)
+
+	healthScoreB := dwm.CalculateHealthScore(metricsB)
+	assert.Equal(t, 1.0, healthScoreB, "Sub-group B health should be 100% after success")
+
+	// Verify effective weights reflect health difference
+	subGroups := []SubGroupWeightInput{
+		{SubGroupID: subGroupA, Weight: 100},
+		{SubGroupID: subGroupB, Weight: 100},
+	}
+	weights := dwm.GetSubGroupDynamicWeights(aggregateGroupID, subGroups)
+
+	require.Len(t, weights, 2)
+	assert.Less(t, weights[0].EffectiveWeight, weights[1].EffectiveWeight,
+		"Failed sub-group should have lower effective weight than successful sub-group")
+}
+
+// TestDynamicWeightManager_ModelRedirectRetryScenario tests health tracking in model redirect retry scenario
+func TestDynamicWeightManager_ModelRedirectRetryScenario(t *testing.T) {
+	t.Parallel() // Enable parallel execution
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	groupID := uint(1)
+	sourceModel := "gpt-4"
+	targetIndexA := 0
+	targetIndexB := 1
+
+	// Simulate model redirect retry scenario:
+	// 1. Target A fails (retry request)
+	dwm.RecordModelRedirectFailure(groupID, sourceModel, targetIndexA)
+
+	// 2. Target B succeeds (final request)
+	dwm.RecordModelRedirectSuccess(groupID, sourceModel, targetIndexB)
+
+	// Verify target A health is affected by the failure
+	metricsA, err := dwm.GetModelRedirectMetrics(groupID, sourceModel, targetIndexA)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), metricsA.ConsecutiveFailures)
+	assert.Equal(t, int64(1), metricsA.Requests7d)
+	assert.Equal(t, int64(0), metricsA.Successes7d)
+
+	healthScoreA := dwm.CalculateHealthScore(metricsA)
+	assert.Less(t, healthScoreA, 1.0, "Target A health should be less than 100% after failure")
+
+	// Verify target B health is normal
+	metricsB, err := dwm.GetModelRedirectMetrics(groupID, sourceModel, targetIndexB)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), metricsB.ConsecutiveFailures)
+	assert.Equal(t, int64(1), metricsB.Requests7d)
+	assert.Equal(t, int64(1), metricsB.Successes7d)
+
+	healthScoreB := dwm.CalculateHealthScore(metricsB)
+	assert.Equal(t, 1.0, healthScoreB, "Target B health should be 100% after success")
+
+	// Verify effective weights reflect health difference
+	targetWeights := []int{100, 100}
+	effectiveWeights := dwm.GetModelRedirectEffectiveWeights(groupID, sourceModel, targetWeights)
+
+	require.Len(t, effectiveWeights, 2)
+	assert.Less(t, effectiveWeights[0], effectiveWeights[1],
+		"Failed target should have lower effective weight than successful target")
+}
+
+// TestDynamicWeightManager_MultipleRetriesHealthDecay tests health decay with multiple retry failures
+func TestDynamicWeightManager_MultipleRetriesHealthDecay(t *testing.T) {
+	t.Parallel() // Enable parallel execution
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(1)
+	subGroupID := uint(2)
+
+	// Record multiple retry failures
+	for i := 0; i < 5; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
+	}
+
+	// Verify health degrades with multiple failures
+	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), metrics.ConsecutiveFailures)
+	assert.Equal(t, int64(5), metrics.Requests7d)
+	assert.Equal(t, int64(0), metrics.Successes7d)
+
+	healthScore := dwm.CalculateHealthScore(metrics)
+	assert.LessOrEqual(t, healthScore, 0.5, "Health should be significantly degraded after 5 consecutive failures")
+	assert.GreaterOrEqual(t, healthScore, dwm.config.MinHealthScore, "Health should not go below minimum")
+
+	// Verify effective weight is reduced
+	effectiveWeight := dwm.GetEffectiveWeight(100, metrics)
+	assert.LessOrEqual(t, effectiveWeight, 50, "Effective weight should be significantly reduced")
+}
+
+// TestDynamicWeightManager_HealthRecoveryAfterRetryFailures tests health recovery after retry failures
+func TestDynamicWeightManager_HealthRecoveryAfterRetryFailures(t *testing.T) {
+	t.Parallel() // Enable parallel execution
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(1)
+	subGroupID := uint(2)
+
+	// Record retry failures
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
+
+	// Verify health is degraded
+	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	healthBefore := dwm.CalculateHealthScore(metrics)
+	assert.Less(t, healthBefore, 1.0, "Health should be degraded after failures")
+
+	// Record successful requests to recover
+	for i := 0; i < 10; i++ {
+		dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupID)
+	}
+
+	// Verify health recovers
+	metrics, err = dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	healthAfter := dwm.CalculateHealthScore(metrics)
+	assert.Greater(t, healthAfter, healthBefore, "Health should improve after successful requests")
+	// Health may not fully recover to 1.0 immediately due to weighted success rate calculation
+	// With 2 failures and 10 successes (83.3% success rate), health should be high but may have small penalty
+	assert.GreaterOrEqual(t, healthAfter, 0.8, "Health should be mostly recovered with good success rate")
+}
+
+// TestDynamicWeightManager_HubHealthScoreCalculation tests that Hub health scores are calculated correctly
+// Hub uses the same dynamic weight system as aggregate groups and model redirects
+func TestDynamicWeightManager_HubHealthScoreCalculation(t *testing.T) {
+	t.Parallel() // Enable parallel execution
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	// Simulate Hub routing scenario where a group is selected and used
+	// Hub doesn't directly record metrics, but the proxy server does
+	// This test verifies the health calculation logic works for Hub use cases
+
+	groupID := uint(100)
+	subGroupID := uint(101)
+
+	// Simulate multiple requests through Hub to a group
+	// Some fail (retry), some succeed (final)
+	dwm.RecordSubGroupFailure(groupID, subGroupID) // Retry failure
+	dwm.RecordSubGroupSuccess(groupID, subGroupID) // Final success
+	dwm.RecordSubGroupFailure(groupID, subGroupID) // Retry failure
+	dwm.RecordSubGroupSuccess(groupID, subGroupID) // Final success
+
+	// Verify health score reflects both retry and final requests
+	metrics, err := dwm.GetSubGroupMetrics(groupID, subGroupID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), metrics.Requests7d, "All requests (retry + final) should be counted")
+	assert.Equal(t, int64(2), metrics.Successes7d, "Only successful requests should be counted")
+
+	healthScore := dwm.CalculateHealthScore(metrics)
+	// With 50% success rate and interleaved pattern (no consecutive failures at end),
+	// health should be moderate but not severely degraded
+	assert.Greater(t, healthScore, 0.0, "Health score should be positive")
+	assert.LessOrEqual(t, healthScore, 1.0, "Health score should not exceed 1.0")
+	assert.GreaterOrEqual(t, healthScore, 0.5, "Health should not be too low for 50% success rate")
+	assert.Less(t, healthScore, 1.0, "Health should reflect failures in history")
+}
+
+// TestDynamicWeightManager_HubGroupSelectionWithHealth tests Hub group selection based on health
+func TestDynamicWeightManager_HubGroupSelectionWithHealth(t *testing.T) {
+	t.Parallel() // Enable parallel execution
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	// Simulate Hub scenario with multiple groups providing the same model
+	// Group A has poor health, Group B has good health
+	aggregateGroupID := uint(200)
+	groupA := uint(201)
+	groupB := uint(202)
+
+	// Group A: Multiple failures
+	for i := 0; i < 5; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, groupA)
+	}
+	dwm.RecordSubGroupSuccess(aggregateGroupID, groupA)
+
+	// Group B: Mostly successes
+	for i := 0; i < 10; i++ {
+		dwm.RecordSubGroupSuccess(aggregateGroupID, groupB)
+	}
+	dwm.RecordSubGroupFailure(aggregateGroupID, groupB)
+
+	// Calculate health scores
+	metricsA, err := dwm.GetSubGroupMetrics(aggregateGroupID, groupA)
+	require.NoError(t, err)
+	healthA := dwm.CalculateHealthScore(metricsA)
+
+	metricsB, err := dwm.GetSubGroupMetrics(aggregateGroupID, groupB)
+	require.NoError(t, err)
+	healthB := dwm.CalculateHealthScore(metricsB)
+
+	// Verify Group B has significantly better health than Group A
+	assert.Greater(t, healthB, healthA, "Group B should have better health than Group A")
+	assert.Less(t, healthA, 0.7, "Group A should have degraded health due to failures")
+	assert.GreaterOrEqual(t, healthB, 0.7, "Group B should have good health")
+
+	// Verify effective weights reflect health difference
+	subGroups := []SubGroupWeightInput{
+		{SubGroupID: groupA, Weight: 100},
+		{SubGroupID: groupB, Weight: 100},
+	}
+	weights := dwm.GetSubGroupDynamicWeights(aggregateGroupID, subGroups)
+
+	require.Len(t, weights, 2)
+	// Group B should have much higher effective weight due to better health
+	// weights[0] corresponds to groupA, weights[1] corresponds to groupB (same order as input)
+	effectiveWeightA := weights[0].EffectiveWeight
+	effectiveWeightB := weights[1].EffectiveWeight
+	assert.Greater(t, effectiveWeightB, effectiveWeightA,
+		"Group B effective weight should be higher than Group A")
+}
+
+// TestDynamicWeightManager_HubRetryFailureImpact tests that Hub retry failures impact health
+func TestDynamicWeightManager_HubRetryFailureImpact(t *testing.T) {
+	t.Parallel() // Enable parallel execution
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	// Simulate Hub scenario where first group fails (retry), second succeeds (final)
+	aggregateGroupID := uint(300)
+	firstGroup := uint(301)
+	secondGroup := uint(302)
+
+	// First group fails on retry
+	dwm.RecordSubGroupFailure(aggregateGroupID, firstGroup)
+
+	// Second group succeeds on final request
+	dwm.RecordSubGroupSuccess(aggregateGroupID, secondGroup)
+
+	// Verify first group health is impacted
+	metricsFirst, err := dwm.GetSubGroupMetrics(aggregateGroupID, firstGroup)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), metricsFirst.Requests7d, "Retry failure should be recorded")
+	assert.Equal(t, int64(0), metricsFirst.Successes7d, "No successes for first group")
+	assert.Equal(t, int64(1), metricsFirst.ConsecutiveFailures, "Consecutive failures should be tracked")
+
+	healthFirst := dwm.CalculateHealthScore(metricsFirst)
+	assert.Less(t, healthFirst, 1.0, "First group health should be degraded after retry failure")
+
+	// Verify second group health is normal
+	metricsSecond, err := dwm.GetSubGroupMetrics(aggregateGroupID, secondGroup)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), metricsSecond.Requests7d, "Final success should be recorded")
+	assert.Equal(t, int64(1), metricsSecond.Successes7d, "Success should be counted")
+	assert.Equal(t, int64(0), metricsSecond.ConsecutiveFailures, "No failures for second group")
+
+	healthSecond := dwm.CalculateHealthScore(metricsSecond)
+	assert.Equal(t, 1.0, healthSecond, "Second group health should be perfect after success")
+
+	// This test verifies that Hub routing correctly reflects group health
+	// even when the overall request succeeds via retry to another group
+}

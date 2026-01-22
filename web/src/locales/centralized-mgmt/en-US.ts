@@ -46,6 +46,9 @@ export default {
   healthThreshold: "Health Threshold",
   healthThresholdHint: "Groups below this threshold will be skipped",
   enablePriority: "Enable Priority Routing",
+  onlyAggregateGroups: "Only Aggregate Groups",
+  onlyAggregateGroupsHint:
+    "When enabled, Hub only routes to aggregate groups, ignoring standard groups",
 
   // Access keys
   accessKeys: "Access Keys",
@@ -84,6 +87,7 @@ export default {
 
   // Panel
   centralizedManagement: "Centralized Management",
+  onlyAggregateGroupsActive: "🔒 Only Aggregate Groups Mode Enabled",
   refreshModelPool: "Refresh Model Pool",
   refreshing: "Refreshing...",
   totalAccessKeys: "{total} keys",
@@ -110,4 +114,17 @@ export default {
   batchEnableSuccess: "Successfully enabled {count} access keys",
   batchDisableSuccess: "Successfully disabled {count} access keys",
   selectAtLeastOne: "Please select at least one access key",
+
+  // Custom models
+  customModels: "Custom Models",
+  customModelNames: "Custom Model Names",
+  customModelNamesHint: "Add custom model names for aggregate groups, one per line",
+  addCustomModel: "Add Model",
+  editCustomModels: "Edit Custom Models",
+  noCustomModels: "No custom models",
+  customModelsUpdated: "Custom models updated",
+  aggregateGroupName: "Aggregate Group",
+  modelCount: "{count} models",
+  customModelBadge: "Custom",
+  customModelTooltip: "This is a user-defined custom model name",
 };

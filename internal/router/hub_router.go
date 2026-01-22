@@ -88,6 +88,10 @@ func RegisterHubRoutes(
 		admin.PUT("/model-pool/priority", hubHandler.HandleUpdateModelGroupPriority)
 		admin.PUT("/model-pool/priorities", hubHandler.HandleBatchUpdatePriorities)
 
+		// Custom models management for aggregate groups
+		admin.GET("/custom-models", hubHandler.HandleGetAggregateGroupsCustomModels)
+		admin.PUT("/custom-models", hubHandler.HandleUpdateAggregateGroupCustomModels)
+
 		// Hub settings
 		admin.GET("/settings", hubHandler.HandleGetHubSettings)
 		admin.PUT("/settings", hubHandler.HandleUpdateHubSettings)

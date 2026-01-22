@@ -133,6 +133,7 @@ export interface Group {
   model_redirect_rules: Record<string, string>; // V1: one-to-one mapping
   model_redirect_rules_v2?: ModelRedirectRulesV2; // V2: one-to-many mapping
   model_redirect_strict: boolean;
+  custom_model_names?: string[]; // Custom model names for aggregate groups
   header_rules?: HeaderRule[];
   path_redirects?: PathRedirectRule[];
   proxy_keys: string;

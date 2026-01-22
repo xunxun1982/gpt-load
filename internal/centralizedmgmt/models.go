@@ -106,13 +106,14 @@ func (HubModelGroupPriority) TableName() string {
 
 // HubSettings stores global Hub configuration.
 type HubSettings struct {
-	ID              uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	MaxRetries      int       `gorm:"not null;default:3" json:"max_retries"`        // Max retries per priority level
-	RetryDelay      int       `gorm:"not null;default:100" json:"retry_delay"`      // Delay between retries in ms
-	HealthThreshold float64   `gorm:"not null;default:0.5" json:"health_threshold"` // Min health score for group selection
-	EnablePriority  bool      `gorm:"not null;default:true" json:"enable_priority"` // Enable priority-based routing
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                   uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	MaxRetries           int       `gorm:"not null;default:3" json:"max_retries"`                // Max retries per priority level
+	RetryDelay           int       `gorm:"not null;default:100" json:"retry_delay"`              // Delay between retries in ms
+	HealthThreshold      float64   `gorm:"not null;default:0.5" json:"health_threshold"`         // Min health score for group selection
+	EnablePriority       bool      `gorm:"not null;default:true" json:"enable_priority"`         // Enable priority-based routing
+	OnlyAggregateGroups  bool      `gorm:"not null;default:true" json:"only_aggregate_groups"`   // Only accept aggregate groups for routing
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // TableName specifies the table name for HubSettings
@@ -122,10 +123,11 @@ func (HubSettings) TableName() string {
 
 // HubSettingsDTO is the API response format for Hub settings.
 type HubSettingsDTO struct {
-	MaxRetries      int     `json:"max_retries"`
-	RetryDelay      int     `json:"retry_delay"`
-	HealthThreshold float64 `json:"health_threshold"`
-	EnablePriority  bool    `json:"enable_priority"`
+	MaxRetries          int     `json:"max_retries"`
+	RetryDelay          int     `json:"retry_delay"`
+	HealthThreshold     float64 `json:"health_threshold"`
+	EnablePriority      bool    `json:"enable_priority"`
+	OnlyAggregateGroups bool    `json:"only_aggregate_groups"`
 }
 
 // ModelGroupPriorityDTO is the API response format for model-group priority.
@@ -144,6 +146,7 @@ type ModelGroupPriorityDTO struct {
 type ModelPoolEntryV2 struct {
 	ModelName string                  `json:"model_name"`
 	Groups    []ModelGroupPriorityDTO `json:"groups"`
+	IsCustom  bool                    `json:"is_custom"` // True if this is a custom model defined by user
 }
 
 // UpdateModelGroupPriorityParams defines parameters for updating model-group priority.
@@ -151,4 +154,18 @@ type UpdateModelGroupPriorityParams struct {
 	ModelName string `json:"model_name" binding:"required"`
 	GroupID   uint   `json:"group_id" binding:"required"`
 	Priority  int    `json:"priority"` // 0=disabled, 1-999=priority
+}
+
+// AggregateGroupCustomModels represents custom model names for an aggregate group.
+// This is used for managing custom models in the Hub centralized management UI.
+type AggregateGroupCustomModels struct {
+	GroupID          uint     `json:"group_id"`
+	GroupName        string   `json:"group_name"`
+	CustomModelNames []string `json:"custom_model_names"`
+}
+
+// UpdateCustomModelsParams defines parameters for updating custom model names.
+type UpdateCustomModelsParams struct {
+	GroupID          uint     `json:"group_id" binding:"required"`
+	CustomModelNames []string `json:"custom_model_names"` // Empty array to clear
 }

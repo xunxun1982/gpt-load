@@ -45,6 +45,8 @@ export default {
   healthThreshold: "健康阈值",
   healthThresholdHint: "低于此阈值的分组将被跳过",
   enablePriority: "启用优先级路由",
+  onlyAggregateGroups: "仅接受聚合分组",
+  onlyAggregateGroupsHint: "启用后，Hub 仅路由到聚合分组，忽略标准分组",
 
   // Access keys
   accessKeys: "访问密钥",
@@ -82,6 +84,7 @@ export default {
 
   // Panel
   centralizedManagement: "集中管理",
+  onlyAggregateGroupsActive: "🔒 仅聚合分组模式已启用",
   refreshModelPool: "刷新模型池",
   refreshing: "刷新中...",
   totalAccessKeys: "共 {total} 个密钥",
@@ -108,4 +111,17 @@ export default {
   batchEnableSuccess: "成功启用 {count} 个访问密钥",
   batchDisableSuccess: "成功禁用 {count} 个访问密钥",
   selectAtLeastOne: "请至少选择一个访问密钥",
+
+  // Custom models
+  customModels: "自定义模型",
+  customModelNames: "自定义模型名称",
+  customModelNamesHint: "为聚合分组添加自定义模型名称，每行一个",
+  addCustomModel: "添加模型",
+  editCustomModels: "编辑自定义模型",
+  noCustomModels: "暂无自定义模型",
+  customModelsUpdated: "自定义模型已更新",
+  aggregateGroupName: "聚合分组",
+  modelCount: "{count} 个模型",
+  customModelBadge: "自定义",
+  customModelTooltip: "这是用户自定义的模型名称",
 };

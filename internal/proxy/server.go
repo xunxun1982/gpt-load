@@ -2159,13 +2159,10 @@ func (ps *ProxyServer) logRequest(
 	}
 
 	// Record dynamic weight metrics for aggregate sub-groups
-	// Only record for final requests (not retries) to avoid double counting.
-	// Design note: This "final-only" approach means intermediate failed sub-group attempts
-	// are not penalized in dynamic weights. This is intentional to avoid over-penalizing
-	// sub-groups in aggregate retry scenarios where the overall request succeeds.
-	// If more aggressive failure tracking is needed, consider recording each sub-group
-	// attempt separately (would require tracking failed sub-group IDs in retry context).
-	if ps.dynamicWeightManager != nil && requestType == models.RequestTypeFinal {
+	// Record both final and retry requests to accurately track sub-group health.
+	// This ensures that failed sub-group attempts are reflected in health scores,
+	// even when the overall aggregate request succeeds via retry to another sub-group.
+	if ps.dynamicWeightManager != nil {
 		ps.recordDynamicWeightMetrics(c, originalGroup, group, logEntry.IsSuccess)
 	}
 }
