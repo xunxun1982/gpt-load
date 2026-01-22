@@ -1017,6 +1017,11 @@ func (s *HubService) selectFromPriorityGroups(groups []ModelGroupPriorityDTO) (*
 		return nil, nil
 	}
 
+	// Guard against nil GroupManager
+	if s.groupManager == nil {
+		return nil, fmt.Errorf("groupManager is not initialized")
+	}
+
 	// Find the minimum priority value (highest priority)
 	minPriority := groups[0].Priority
 	for i := 1; i < len(groups); i++ {

@@ -320,13 +320,26 @@ func TestGroupSelectionPriority(t *testing.T) {
 	db := setupHubTestDB(t)
 	ctx := context.Background()
 
+	redirects := map[string]*models.ModelRedirectRuleV2{
+		"test-model": {Targets: []models.ModelRedirectTarget{{Model: "target-model", Weight: 100}}},
+	}
+
 	// Create groups with different priorities for the same model BEFORE setting up service
-	createTestGroup(t, db, "priority-1", "standard", "openai", 1, true, "test-model")
-	createTestGroup(t, db, "priority-5", "standard", "openai", 5, true, "test-model")
-	createTestGroup(t, db, "priority-10", "standard", "openai", 10, true, "test-model")
+	group1 := createTestGroupWithRedirects(t, db, "priority-1", 1, true, "test-model", redirects)
+	group1.ChannelType = "openai"
+	db.Save(group1)
+
+	group5 := createTestGroupWithRedirects(t, db, "priority-5", 5, true, "test-model", redirects)
+	group5.ChannelType = "openai"
+	db.Save(group5)
+
+	group10 := createTestGroupWithRedirects(t, db, "priority-10", 10, true, "test-model", redirects)
+	group10.ChannelType = "openai"
+	db.Save(group10)
 
 	// Set up service with GroupManager
-	svc := setupHubServiceWithGroupManager(t, db)
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(false)
 
 	// Select group for model - should always select highest priority (lowest sort)
 	// Run multiple times to verify consistency
@@ -334,7 +347,7 @@ func TestGroupSelectionPriority(t *testing.T) {
 		// Invalidate cache to force fresh selection
 		svc.InvalidateModelPoolCache()
 
-		group, err := svc.SelectGroupForModel(ctx, "test-model", "openai_chat")
+		group, err := svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatOpenAIChat)
 		if err != nil {
 			t.Fatalf("SelectGroupForModel failed: %v", err)
 		}
@@ -358,12 +371,25 @@ func TestWeightedRandomSelection(t *testing.T) {
 	ctx := context.Background()
 
 	// Create groups with the same sort value BEFORE setting up service
-	createTestGroup(t, db, "equal-1", "standard", "openai", 1, true, "weighted-model")
-	createTestGroup(t, db, "equal-2", "standard", "openai", 1, true, "weighted-model")
-	createTestGroup(t, db, "equal-3", "standard", "openai", 1, true, "weighted-model")
+	redirects := map[string]*models.ModelRedirectRuleV2{
+		"weighted-model": {Targets: []models.ModelRedirectTarget{{Model: "target-model", Weight: 100}}},
+	}
+
+	group1 := createTestGroupWithRedirects(t, db, "equal-1", 1, true, "weighted-model", redirects)
+	group1.ChannelType = "openai"
+	db.Save(group1)
+
+	group2 := createTestGroupWithRedirects(t, db, "equal-2", 1, true, "weighted-model", redirects)
+	group2.ChannelType = "openai"
+	db.Save(group2)
+
+	group3 := createTestGroupWithRedirects(t, db, "equal-3", 1, true, "weighted-model", redirects)
+	group3.ChannelType = "openai"
+	db.Save(group3)
 
 	// Set up service with GroupManager
-	svc := setupHubServiceWithGroupManager(t, db)
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(false)
 
 	// Run selection multiple times and count distribution
 	selectionCounts := make(map[string]int)
@@ -373,7 +399,7 @@ func TestWeightedRandomSelection(t *testing.T) {
 		// Invalidate cache to force fresh selection
 		svc.InvalidateModelPoolCache()
 
-		group, err := svc.SelectGroupForModel(ctx, "weighted-model", "openai_chat")
+		group, err := svc.SelectGroupForModel(ctx, "weighted-model", types.RelayFormatOpenAIChat)
 		if err != nil {
 			t.Fatalf("SelectGroupForModel failed: %v", err)
 		}
@@ -626,10 +652,11 @@ func TestSelectGroupForModelNotFound(t *testing.T) {
 	}
 	createTestGroupWithRedirects(t, db, "other-group", 1, true, "test-model", redirects)
 
-	svc := setupHubServiceWithGroupManager(t, db)
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(false)
 
 	// Try to select a non-existent model
-	group, err := svc.SelectGroupForModel(ctx, "non-existent-model", "openai_chat")
+	group, err := svc.SelectGroupForModel(ctx, "non-existent-model", types.RelayFormatOpenAIChat)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel should not error for non-existent model: %v", err)
 	}
@@ -1018,7 +1045,8 @@ func TestSelectGroupForModelWithChannelCompatibility(t *testing.T) {
 	geminiGroup.ChannelType = "gemini"
 	db.Save(geminiGroup)
 
-	svc := setupHubServiceWithGroupManager(t, db)
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(false)
 
 	// Test 1: OpenAI Embedding format should select OpenAI or Azure, not Anthropic/Gemini
 	group, err := svc.SelectGroupForModel(ctx, "test-embedding", types.RelayFormatOpenAIEmbedding)
@@ -1080,7 +1108,8 @@ func TestSelectGroupForModelNativeChannelPriority(t *testing.T) {
 	anthropicGroup.ChannelType = "anthropic"
 	db.Save(anthropicGroup)
 
-	svc := setupHubServiceWithGroupManager(t, db)
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(false)
 
 	// For OpenAI Chat format, should prefer OpenAI (native) over Anthropic (compatible)
 	group, err := svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatOpenAIChat)
@@ -1116,7 +1145,8 @@ func TestSelectGroupForModelClaudeFormat(t *testing.T) {
 	openaiGroup.ChannelType = "openai"
 	db.Save(openaiGroup)
 
-	svc := setupHubServiceWithGroupManager(t, db)
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(false)
 
 	// For Claude format, should prefer Anthropic (native)
 	group, err := svc.SelectGroupForModel(ctx, "claude-model", types.RelayFormatClaude)
@@ -1151,7 +1181,8 @@ func TestSelectGroupForModelGeminiFormat(t *testing.T) {
 	openaiGroup.ChannelType = "openai"
 	db.Save(openaiGroup)
 
-	svc := setupHubServiceWithGroupManager(t, db)
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(false)
 
 	// For Gemini format, should only select Gemini channel
 	group, err := svc.SelectGroupForModel(ctx, "gemini-model", types.RelayFormatGemini)
@@ -1181,7 +1212,7 @@ func TestSelectGroupForModelNoCompatibleChannel(t *testing.T) {
 	anthropicGroup.ChannelType = "anthropic"
 	db.Save(anthropicGroup)
 
-	svc := setupHubServiceWithGroupManager(t, db)
+	_, svc := setupHubTestServices(t, db)
 
 	// For OpenAI Embedding format, Anthropic is not compatible
 	group, err := svc.SelectGroupForModel(ctx, "test-embedding", types.RelayFormatOpenAIEmbedding)
@@ -1195,7 +1226,19 @@ func TestSelectGroupForModelNoCompatibleChannel(t *testing.T) {
 
 // Benchmark for SelectGroupForModel with channel compatibility
 func BenchmarkSelectGroupForModelWithCompatibility(b *testing.B) {
-	db := setupHubTestDB(&testing.T{})
+	// Create a minimal test setup for benchmarking
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		b.Fatalf("failed to connect to test database: %v", err)
+	}
+
+	// Auto-migrate the models
+	if err := db.AutoMigrate(&models.Group{}, &models.GroupSubGroup{}, &models.SystemSetting{}); err != nil {
+		b.Fatalf("failed to migrate test database: %v", err)
+	}
+
 	ctx := context.Background()
 
 	redirects := map[string]*models.ModelRedirectRuleV2{
@@ -1204,13 +1247,30 @@ func BenchmarkSelectGroupForModelWithCompatibility(b *testing.B) {
 
 	// Create multiple groups with different channel types
 	for i := 0; i < 10; i++ {
-		group := createTestGroupWithRedirects(&testing.T{}, db, "group-"+strconv.Itoa(i), i, true, "test-model", redirects)
+		redirectsJSON, _ := json.Marshal(redirects)
+		group := &models.Group{
+			Name:                 "group-" + strconv.Itoa(i),
+			GroupType:            "child",
+			Sort:                 i,
+			Enabled:              true,
+			TestModel:            "test-model",
+			ModelRedirectRulesV2: datatypes.JSON(redirectsJSON),
+			Upstreams:            datatypes.JSON("[]"),
+		}
 		channelTypes := []string{"openai", "azure", "anthropic", "gemini", "codex"}
 		group.ChannelType = channelTypes[i%len(channelTypes)]
-		db.Save(group)
+		db.Create(group)
 	}
 
-	svc := setupHubServiceWithGroupManager(&testing.T{}, db)
+	// Setup services
+	memStore := store.NewMemoryStore()
+	settingsManager := config.NewSystemSettingsManager()
+	subGroupManager := services.NewSubGroupManager(memStore)
+	groupManager := services.NewGroupManager(db, memStore, settingsManager, subGroupManager)
+	if err := groupManager.Initialize(); err != nil {
+		b.Fatalf("failed to initialize group manager: %v", err)
+	}
+	svc := NewHubService(db, groupManager, nil)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
