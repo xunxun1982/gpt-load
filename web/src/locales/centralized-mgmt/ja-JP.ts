@@ -45,6 +45,9 @@ export default {
   healthThreshold: "健康閾値",
   healthThresholdHint: "この閾値を下回るグループはスキップされます",
   enablePriority: "優先度ルーティングを有効化",
+  onlyAggregateGroups: "集約グループのみ",
+  onlyAggregateGroupsHint:
+    "有効にすると、Hubは集約グループのみにルーティングし、標準グループを無視します",
 
   // Access keys
   accessKeys: "アクセスキー",
@@ -83,6 +86,7 @@ export default {
 
   // Panel
   centralizedManagement: "集中管理",
+  onlyAggregateGroupsActive: "🔒 集約グループのみモードが有効",
   refreshModelPool: "モデルプールを更新",
   refreshing: "更新中...",
   totalAccessKeys: "合計 {total} キー",
@@ -109,4 +113,17 @@ export default {
   batchEnableSuccess: "{count} 個のアクセスキーを有効化しました",
   batchDisableSuccess: "{count} 個のアクセスキーを無効化しました",
   selectAtLeastOne: "少なくとも1つのアクセスキーを選択してください",
+
+  // Custom models
+  customModels: "カスタムモデル",
+  customModelNames: "カスタムモデル名",
+  customModelNamesHint: "集約グループのカスタムモデル名を追加、1行に1つ",
+  addCustomModel: "モデルを追加",
+  editCustomModels: "カスタムモデルを編集",
+  noCustomModels: "カスタムモデルなし",
+  customModelsUpdated: "カスタムモデルを更新しました",
+  aggregateGroupName: "集約グループ",
+  modelCount: "{count} モデル",
+  customModelBadge: "カスタム",
+  customModelTooltip: "これはユーザー定義のカスタムモデル名です",
 };

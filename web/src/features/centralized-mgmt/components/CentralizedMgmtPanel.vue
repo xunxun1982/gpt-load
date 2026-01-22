@@ -1,10 +1,16 @@
 <script setup lang="ts">
 /**
  * CentralizedMgmtPanel Component
- * Main panel with tab-based navigation for Model Pool and Access Keys.
+ * Main panel with tab-based navigation for Model Pool, Custom Models, and Access Keys.
  * Uses maximized layout for better space utilization.
  */
-import { KeyOutline, LayersOutline, RefreshOutline, SettingsOutline } from "@vicons/ionicons5";
+import {
+  AppsOutline,
+  KeyOutline,
+  LayersOutline,
+  RefreshOutline,
+  SettingsOutline,
+} from "@vicons/ionicons5";
 import {
   NButton,
   NIcon,
@@ -24,6 +30,7 @@ import { hubApi } from "../api/hub";
 import type { HubAccessKey, HubSettings } from "../types/hub";
 import AccessKeyModal from "./AccessKeyModal.vue";
 import AccessKeyTable from "./AccessKeyTable.vue";
+import CustomModelsTable from "./CustomModelsTable.vue";
 import EndpointDisplay from "./EndpointDisplay.vue";
 import ModelPoolTable from "./ModelPoolTable.vue";
 
@@ -35,6 +42,7 @@ const activeTab = ref("model-pool");
 
 // Refs to child components
 const modelPoolTableRef = ref<InstanceType<typeof ModelPoolTable> | null>(null);
+const customModelsTableRef = ref<InstanceType<typeof CustomModelsTable> | null>(null);
 const accessKeyTableRef = ref<InstanceType<typeof AccessKeyTable> | null>(null);
 
 // Modal state
@@ -50,6 +58,7 @@ const hubSettings = ref<HubSettings>({
   retry_delay: 100,
   health_threshold: 0.5,
   enable_priority: true,
+  only_aggregate_groups: true,
 });
 
 // Tab render functions
@@ -57,6 +66,12 @@ const renderModelPoolTab = () =>
   h(NSpace, { align: "center", size: 6 }, () => [
     h(NIcon, { component: LayersOutline, size: 16 }),
     t("hub.modelPool"),
+  ]);
+
+const renderCustomModelsTab = () =>
+  h(NSpace, { align: "center", size: 6 }, () => [
+    h(NIcon, { component: AppsOutline, size: 16 }),
+    t("hub.customModels"),
   ]);
 
 const renderAccessKeysTab = () =>
@@ -84,6 +99,8 @@ async function handleRefresh() {
   try {
     if (activeTab.value === "model-pool") {
       await modelPoolTableRef.value?.refresh();
+    } else if (activeTab.value === "custom-models") {
+      await customModelsTableRef.value?.refresh();
     } else {
       await accessKeyTableRef.value?.refresh();
     }
@@ -116,6 +133,8 @@ async function saveSettings() {
     await hubApi.updateSettings(hubSettings.value);
     showSettingsModal.value = false;
     message.success(t("common.operationSuccess"));
+    // Refresh model pool after settings change
+    await modelPoolTableRef.value?.refresh();
   } catch (e) {
     console.error("Failed to save settings:", e);
     // Explicit error feedback for settings operations (not handled by global interceptor)
@@ -161,6 +180,9 @@ async function openSettings() {
     <n-tabs v-model:value="activeTab" type="line" animated class="main-tabs">
       <n-tab-pane name="model-pool" :tab="renderModelPoolTab">
         <model-pool-table ref="modelPoolTableRef" :compact="true" />
+      </n-tab-pane>
+      <n-tab-pane name="custom-models" :tab="renderCustomModelsTab">
+        <custom-models-table ref="customModelsTableRef" />
       </n-tab-pane>
       <n-tab-pane name="access-keys" :tab="renderAccessKeysTab">
         <access-key-table
@@ -234,6 +256,14 @@ async function openSettings() {
             <span class="setting-label">{{ t("hub.enablePriority") }}</span>
             <n-switch v-model:value="hubSettings.enable_priority" />
           </div>
+
+          <div class="setting-row">
+            <span class="setting-label">{{ t("hub.onlyAggregateGroups") }}</span>
+            <n-switch v-model:value="hubSettings.only_aggregate_groups" />
+          </div>
+          <n-text depth="3" style="font-size: 12px; margin-top: -8px">
+            {{ t("hub.onlyAggregateGroupsHint") }}
+          </n-text>
         </n-space>
       </n-spin>
       <template #footer>

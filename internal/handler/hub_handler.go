@@ -100,8 +100,8 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 		return
 	}
 
-	// Step 3: Select the best group for the model
-	group, err := h.hubService.SelectGroupForModel(ctx, modelName)
+	// Step 3: Select the best group for the model with relay format awareness
+	group, err := h.hubService.SelectGroupForModel(ctx, modelName, relayFormat)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to select group for model")
 		h.returnHubError(c, http.StatusInternalServerError, "hub_group_selection_failed", "Failed to select group")
@@ -783,10 +783,11 @@ func (h *HubHandler) HandleGetHubSettings(c *gin.Context) {
 
 // UpdateHubSettingsRequest defines the request body for updating Hub settings.
 type UpdateHubSettingsRequest struct {
-	MaxRetries      int     `json:"max_retries" binding:"min=0"`
-	RetryDelay      int     `json:"retry_delay" binding:"min=0"`
-	HealthThreshold float64 `json:"health_threshold" binding:"min=0,max=1"`
-	EnablePriority  bool    `json:"enable_priority"`
+	MaxRetries          int     `json:"max_retries" binding:"min=0"`
+	RetryDelay          int     `json:"retry_delay" binding:"min=0"`
+	HealthThreshold     float64 `json:"health_threshold" binding:"min=0,max=1"`
+	EnablePriority      bool    `json:"enable_priority"`
+	OnlyAggregateGroups bool    `json:"only_aggregate_groups"`
 }
 
 // HandleUpdateHubSettings handles PUT /hub/admin/settings endpoint.
@@ -806,10 +807,11 @@ func (h *HubHandler) HandleUpdateHubSettings(c *gin.Context) {
 	}
 
 	dto := &centralizedmgmt.HubSettingsDTO{
-		MaxRetries:      req.MaxRetries,
-		RetryDelay:      req.RetryDelay,
-		HealthThreshold: req.HealthThreshold,
-		EnablePriority:  req.EnablePriority,
+		MaxRetries:          req.MaxRetries,
+		RetryDelay:          req.RetryDelay,
+		HealthThreshold:     req.HealthThreshold,
+		EnablePriority:      req.EnablePriority,
+		OnlyAggregateGroups: req.OnlyAggregateGroups,
 	}
 
 	if err := h.hubService.UpdateHubSettings(ctx, dto); err != nil {
@@ -899,4 +901,54 @@ func (h *HubHandler) HandleGetAccessKeyPlaintext(c *gin.Context) {
 	response.Success(c, map[string]any{
 		"key_value": plaintext,
 	})
+}
+
+// HandleGetAggregateGroupsCustomModels handles GET /hub/admin/custom-models endpoint.
+// Returns custom model names for all aggregate groups.
+func (h *HubHandler) HandleGetAggregateGroupsCustomModels(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	customModels, err := h.hubService.GetAggregateGroupsCustomModels(ctx)
+	if err != nil {
+		logrus.WithError(err).Error("Failed to get aggregate groups custom models")
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to get custom models"))
+		return
+	}
+
+	response.Success(c, customModels)
+}
+
+// UpdateCustomModelsRequest defines the request body for updating custom models.
+type UpdateCustomModelsRequest struct {
+	GroupID          uint     `json:"group_id" binding:"required"`
+	CustomModelNames []string `json:"custom_model_names"`
+}
+
+// HandleUpdateAggregateGroupCustomModels handles PUT /hub/admin/custom-models endpoint.
+// Updates custom model names for an aggregate group.
+func (h *HubHandler) HandleUpdateAggregateGroupCustomModels(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	var req UpdateCustomModelsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	params := centralizedmgmt.UpdateCustomModelsParams{
+		GroupID:          req.GroupID,
+		CustomModelNames: req.CustomModelNames,
+	}
+
+	if err := h.hubService.UpdateAggregateGroupCustomModels(ctx, params); err != nil {
+		if _, ok := err.(*centralizedmgmt.InvalidGroupTypeError); ok {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
+			return
+		}
+		logrus.WithError(err).Error("Failed to update custom models")
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to update custom models"))
+		return
+	}
+
+	response.Success(c, nil)
 }

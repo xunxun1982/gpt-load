@@ -107,7 +107,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.16.0 migration - Optimize hub_access_keys indexes for better query performance
-	return V1_16_0_OptimizeAccessKeyIndexes(db)
+	if err := V1_16_0_OptimizeAccessKeyIndexes(db); err != nil {
+		return err
+	}
+	// Run v1.17.0 migration - Add Hub aggregate group support and custom model names
+	return V1_17_0_AddHubAggregateGroupSupport(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

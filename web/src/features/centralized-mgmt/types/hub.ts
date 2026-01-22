@@ -41,6 +41,7 @@ export interface ModelGroupPriority {
 export interface ModelPoolEntryV2 {
   model_name: string;
   groups: ModelGroupPriority[];
+  is_custom: boolean; // True if this is a custom model defined by user
 }
 
 // Hub settings DTO
@@ -49,6 +50,7 @@ export interface HubSettings {
   retry_delay: number;
   health_threshold: number;
   enable_priority: boolean;
+  only_aggregate_groups: boolean;
 }
 
 // Hub access key modes
@@ -156,4 +158,17 @@ export interface BatchEnableDisableParams {
 export interface BatchOperationResponse {
   deleted_count?: number;
   updated_count?: number;
+}
+
+// Aggregate group custom models
+export interface AggregateGroupCustomModels {
+  group_id: number;
+  group_name: string;
+  custom_model_names: string[];
+}
+
+// Update custom models parameters
+export interface UpdateCustomModelsParams {
+  group_id: number;
+  custom_model_names: string[];
 }

@@ -154,6 +154,7 @@ type Group struct {
 	ModelRedirectRules   datatypes.JSONMap    `gorm:"type:json" json:"model_redirect_rules"`      // Model redirect rules (one-to-one)
 	ModelRedirectRulesV2 datatypes.JSON       `gorm:"type:json" json:"model_redirect_rules_v2"`   // Enhanced redirect rules (one-to-many)
 	ModelRedirectStrict  bool                 `gorm:"default:false" json:"model_redirect_strict"` // Strict mode for model redirect
+	CustomModelNames     datatypes.JSON       `gorm:"type:json" json:"custom_model_names"`        // Custom model names for aggregate groups (JSON array)
 	PathRedirects        datatypes.JSON       `gorm:"type:json" json:"path_redirects"`            // JSON array of {from,to} rules (OpenAI only)
 	ParentGroupID        *uint                `gorm:"index" json:"parent_group_id"`               // Parent group ID for child groups
 	BoundSiteID          *uint                `gorm:"index" json:"bound_site_id"`                 // Bound managed site ID for standard groups

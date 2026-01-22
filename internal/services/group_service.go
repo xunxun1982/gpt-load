@@ -356,6 +356,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		ModelRedirectRules:   finalV1Rules,
 		ModelRedirectRulesV2: finalV2Rules,
 		ModelRedirectStrict:  params.ModelRedirectStrict,
+		CustomModelNames:     datatypes.JSON("[]"), // Initialize to empty array
 		PathRedirects:        pathRedirectsJSON,
 		ProxyKeys:            strings.TrimSpace(params.ProxyKeys),
 	}

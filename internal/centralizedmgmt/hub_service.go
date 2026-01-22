@@ -5,16 +5,20 @@ package centralizedmgmt
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/services"
+	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
 
 	"github.com/sirupsen/logrus"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -82,6 +86,9 @@ type HubService struct {
 
 	// Health score threshold for group selection (use atomic for thread-safe access)
 	healthScoreThreshold atomic.Value // stores float64
+
+	// Only aggregate groups setting (use atomic for thread-safe access)
+	onlyAggregateGroups atomic.Value // stores bool
 }
 
 // NewHubService creates a new HubService instance.
@@ -98,6 +105,7 @@ func NewHubService(
 		modelPoolMaxTTL:      defaultModelPoolCacheMaxTTL,
 	}
 	svc.healthScoreThreshold.Store(defaultHealthScoreThreshold)
+	svc.onlyAggregateGroups.Store(true) // Default: only accept aggregate groups
 	return svc
 }
 
@@ -111,6 +119,18 @@ func (s *HubService) SetHealthScoreThreshold(threshold float64) {
 // Thread-safe using atomic operations.
 func (s *HubService) getHealthScoreThreshold() float64 {
 	return s.healthScoreThreshold.Load().(float64)
+}
+
+// SetOnlyAggregateGroups sets whether to only accept aggregate groups.
+// Thread-safe using atomic operations.
+func (s *HubService) SetOnlyAggregateGroups(only bool) {
+	s.onlyAggregateGroups.Store(only)
+}
+
+// getOnlyAggregateGroups returns the current only aggregate groups setting.
+// Thread-safe using atomic operations.
+func (s *HubService) getOnlyAggregateGroups() bool {
+	return s.onlyAggregateGroups.Load().(bool)
 }
 
 // GetModelPool returns the aggregated model pool from all enabled groups.
@@ -172,21 +192,27 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 	// Get all groups from database (only V2 rules needed, V1 has been migrated)
 	var groups []models.Group
 	if err := s.db.WithContext(ctx).
-		Select("id, name, display_name, group_type, channel_type, enabled, sort, model_redirect_rules_v2, config, parent_group_id").
+		Select("id, name, display_name, group_type, channel_type, enabled, sort, model_redirect_rules_v2, config, parent_group_id, custom_model_names").
 		Where("enabled = ?", true).
 		Order("sort ASC, id ASC").
 		Find(&groups).Error; err != nil {
 		return nil, err
 	}
 
-	// Get health score threshold once for this build
+	// Get health score threshold and only aggregate groups setting once for this build
 	healthThreshold := s.getHealthScoreThreshold()
+	onlyAggregateGroups := s.getOnlyAggregateGroups()
 
 	// Map to aggregate models by name
 	modelMap := make(map[string]map[string][]ModelSource) // model_name -> channel_type -> sources
 
 	for _, group := range groups {
-		// Get models for this group (from V2 redirect rules)
+		// Skip non-aggregate groups if only_aggregate_groups is enabled
+		if onlyAggregateGroups && group.GroupType != "aggregate" {
+			continue
+		}
+
+		// Get models for this group (from V2 redirect rules and custom model names)
 		groupModels := s.getGroupModels(&group)
 
 		// Calculate health score and effective weight
@@ -283,7 +309,30 @@ func (s *HubService) getGroupModelsWithVisited(group *models.Group, visited map[
 
 	if group.GroupType == "aggregate" {
 		// For aggregate groups, get intersection of models from all sub-groups
-		return s.getAggregateGroupModelsWithVisited(group.ID, visited)
+		// Plus any custom model names defined for this aggregate group
+		models := s.getAggregateGroupModelsWithVisited(group.ID, visited)
+
+		// Add custom model names if defined
+		customModels := s.parseCustomModelNames(group.CustomModelNames)
+		if len(customModels) > 0 {
+			// Combine intersection models with custom models
+			modelSet := make(map[string]struct{})
+			for _, m := range models {
+				modelSet[m] = struct{}{}
+			}
+			for _, m := range customModels {
+				modelSet[m] = struct{}{}
+			}
+
+			result := make([]string, 0, len(modelSet))
+			for m := range modelSet {
+				result = append(result, m)
+			}
+			sort.Strings(result)
+			return result
+		}
+
+		return models
 	}
 
 	// For standard groups, only use V2 redirect rules (V1 has been migrated)
@@ -418,9 +467,14 @@ func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
 	return 1.0
 }
 
-// SelectGroupForModel selects the best group for a given model.
-// Selection is based on: enabled status, health score >= threshold, sort order (priority), and weight.
-func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string) (*models.Group, error) {
+// SelectGroupForModel selects the best group for a given model with relay format awareness.
+// Selection algorithm:
+// 1. Filter by model availability
+// 2. Filter by channel compatibility with relay format
+// 3. Prioritize native channel type for the format
+// 4. Filter by enabled status and health score
+// 5. Select by sort order (priority) and weight
+func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, relayFormat types.RelayFormat) (*models.Group, error) {
 	pool, err := s.GetModelPool(ctx)
 	if err != nil {
 		return nil, err
@@ -445,30 +499,62 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string) 
 	// Get health score threshold once
 	healthThreshold := s.getHealthScoreThreshold()
 
-	// Filter by enabled and health score threshold
-	var validSources []ModelSource
+	// Filter by channel compatibility and health
+	// Separate native and compatible channels for priority handling
+	var nativeSources []ModelSource
+	var compatibleSources []ModelSource
+	nativeChannel := GetNativeChannel(relayFormat)
+
 	for _, source := range allSources {
-		if source.Enabled && source.HealthScore >= healthThreshold {
-			validSources = append(validSources, source)
+		// Skip disabled or unhealthy sources
+		if !source.Enabled || source.HealthScore < healthThreshold {
+			continue
+		}
+
+		// Check channel compatibility
+		if !IsChannelCompatible(source.ChannelType, relayFormat) {
+			continue
+		}
+
+		// Separate native and compatible channels
+		if source.ChannelType == nativeChannel {
+			nativeSources = append(nativeSources, source)
+		} else {
+			compatibleSources = append(compatibleSources, source)
 		}
 	}
 
-	if len(validSources) == 0 {
-		return nil, nil // No healthy groups available
+	// Try native channels first (highest priority)
+	if len(nativeSources) > 0 {
+		return s.selectFromSources(nativeSources)
 	}
 
-	// Find the minimum sort value across all channel types
-	// Map flattening makes order nondeterministic, so compute min explicitly
-	minSort := validSources[0].Sort
-	for i := 1; i < len(validSources); i++ {
-		if validSources[i].Sort < minSort {
-			minSort = validSources[i].Sort
+	// Fallback to compatible channels
+	if len(compatibleSources) > 0 {
+		return s.selectFromSources(compatibleSources)
+	}
+
+	return nil, nil // No compatible healthy groups available
+}
+
+// selectFromSources selects the best source from a list based on sort order and weight.
+// This is a helper method extracted from SelectGroupForModel for reusability.
+func (s *HubService) selectFromSources(sources []ModelSource) (*models.Group, error) {
+	if len(sources) == 0 {
+		return nil, nil
+	}
+
+	// Find the minimum sort value
+	minSort := sources[0].Sort
+	for i := 1; i < len(sources); i++ {
+		if sources[i].Sort < minSort {
+			minSort = sources[i].Sort
 		}
 	}
 
 	// Get all sources with the minimum sort value
 	var topSources []ModelSource
-	for _, source := range validSources {
+	for _, source := range sources {
 		if source.Sort == minSort {
 			topSources = append(topSources, source)
 		}
@@ -495,12 +581,7 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string) 
 	}
 
 	// Get the full group from GroupManager
-	group, err := s.groupManager.GetGroupByID(selectedSource.GroupID)
-	if err != nil {
-		return nil, err
-	}
-
-	return group, nil
+	return s.groupManager.GetGroupByID(selectedSource.GroupID)
 }
 
 // InvalidateModelPoolCache invalidates the model pool cache.
@@ -625,6 +706,24 @@ func (s *HubService) GetModelPoolV2(ctx context.Context) ([]ModelPoolEntryV2, er
 		return nil, err
 	}
 
+	// Load all groups to check for custom models
+	var groups []models.Group
+	if err := s.db.WithContext(ctx).
+		Select("id, custom_model_names").
+		Where("enabled = ?", true).
+		Find(&groups).Error; err != nil {
+		logrus.WithError(err).Warn("Failed to load groups for custom model check")
+	}
+
+	// Build custom model set
+	customModelSet := make(map[string]bool)
+	for _, group := range groups {
+		customModels := s.parseCustomModelNames(group.CustomModelNames)
+		for _, modelName := range customModels {
+			customModelSet[modelName] = true
+		}
+	}
+
 	// Load all priority configurations
 	var priorities []HubModelGroupPriority
 	if err := s.db.WithContext(ctx).Find(&priorities).Error; err != nil {
@@ -680,9 +779,13 @@ func (s *HubService) GetModelPoolV2(ctx context.Context) ([]ModelPoolEntryV2, er
 			return groups[i].GroupName < groups[j].GroupName
 		})
 
+		// Check if this model is custom
+		isCustom := customModelSet[entry.ModelName]
+
 		result = append(result, ModelPoolEntryV2{
 			ModelName: entry.ModelName,
 			Groups:    groups,
+			IsCustom:  isCustom,
 		})
 	}
 
@@ -770,20 +873,22 @@ func (s *HubService) GetHubSettings(ctx context.Context) (*HubSettingsDTO, error
 		if err == gorm.ErrRecordNotFound {
 			// Return default settings
 			return &HubSettingsDTO{
-				MaxRetries:      3,
-				RetryDelay:      100,
-				HealthThreshold: 0.5,
-				EnablePriority:  true,
+				MaxRetries:          3,
+				RetryDelay:          100,
+				HealthThreshold:     0.5,
+				EnablePriority:      true,
+				OnlyAggregateGroups: true,
 			}, nil
 		}
 		return nil, err
 	}
 
 	return &HubSettingsDTO{
-		MaxRetries:      settings.MaxRetries,
-		RetryDelay:      settings.RetryDelay,
-		HealthThreshold: settings.HealthThreshold,
-		EnablePriority:  settings.EnablePriority,
+		MaxRetries:          settings.MaxRetries,
+		RetryDelay:          settings.RetryDelay,
+		HealthThreshold:     settings.HealthThreshold,
+		EnablePriority:      settings.EnablePriority,
+		OnlyAggregateGroups: settings.OnlyAggregateGroups,
 	}, nil
 }
 
@@ -797,16 +902,18 @@ func (s *HubService) UpdateHubSettings(ctx context.Context, dto *HubSettingsDTO)
 	if err == gorm.ErrRecordNotFound {
 		// Create new settings
 		settings = HubSettings{
-			MaxRetries:      dto.MaxRetries,
-			RetryDelay:      dto.RetryDelay,
-			HealthThreshold: dto.HealthThreshold,
-			EnablePriority:  dto.EnablePriority,
+			MaxRetries:          dto.MaxRetries,
+			RetryDelay:          dto.RetryDelay,
+			HealthThreshold:     dto.HealthThreshold,
+			EnablePriority:      dto.EnablePriority,
+			OnlyAggregateGroups: dto.OnlyAggregateGroups,
 		}
 		if err := s.db.WithContext(ctx).Create(&settings).Error; err != nil {
 			return err
 		}
 		// Update in-memory state after successful DB write
 		s.SetHealthScoreThreshold(dto.HealthThreshold)
+		s.SetOnlyAggregateGroups(dto.OnlyAggregateGroups)
 		s.InvalidateModelPoolCache()
 		return nil
 	}
@@ -817,23 +924,26 @@ func (s *HubService) UpdateHubSettings(ctx context.Context, dto *HubSettingsDTO)
 
 	// Update existing settings
 	if err := s.db.WithContext(ctx).Model(&settings).Updates(map[string]any{
-		"max_retries":      dto.MaxRetries,
-		"retry_delay":      dto.RetryDelay,
-		"health_threshold": dto.HealthThreshold,
-		"enable_priority":  dto.EnablePriority,
+		"max_retries":           dto.MaxRetries,
+		"retry_delay":           dto.RetryDelay,
+		"health_threshold":      dto.HealthThreshold,
+		"enable_priority":       dto.EnablePriority,
+		"only_aggregate_groups": dto.OnlyAggregateGroups,
 	}).Error; err != nil {
 		return err
 	}
 	// Update in-memory state after successful DB write
 	s.SetHealthScoreThreshold(dto.HealthThreshold)
+	s.SetOnlyAggregateGroups(dto.OnlyAggregateGroups)
 	s.InvalidateModelPoolCache()
 	return nil
 }
 
-// SelectGroupForModelWithPriority selects the best group for a model using priority-based routing.
+// SelectGroupForModelWithPriority selects the best group for a model using priority-based routing with relay format awareness.
 // Groups are tried in priority order (lower priority value = higher priority).
 // Within the same priority level, weighted random selection is used.
-func (s *HubService) SelectGroupForModelWithPriority(ctx context.Context, modelName string) (*models.Group, error) {
+// Native channels for the relay format are preferred over compatible channels.
+func (s *HubService) SelectGroupForModelWithPriority(ctx context.Context, modelName string, relayFormat types.RelayFormat) (*models.Group, error) {
 	poolV2, err := s.GetModelPoolV2(ctx)
 	if err != nil {
 		return nil, err
@@ -855,25 +965,62 @@ func (s *HubService) SelectGroupForModelWithPriority(ctx context.Context, modelN
 	// Get health score threshold once
 	healthThreshold := s.getHealthScoreThreshold()
 
-	// Filter by enabled, non-zero priority, and health score threshold
-	var validGroups []ModelGroupPriorityDTO
+	// Filter by channel compatibility, enabled, non-zero priority, and health score
+	// Separate native and compatible channels for priority handling
+	var nativeGroups []ModelGroupPriorityDTO
+	var compatibleGroups []ModelGroupPriorityDTO
+	nativeChannel := GetNativeChannel(relayFormat)
+
 	for _, g := range groups {
-		if g.Enabled && g.Priority > 0 && g.HealthScore >= healthThreshold {
-			validGroups = append(validGroups, g)
+		// Skip disabled, zero-priority, or unhealthy groups
+		if !g.Enabled || g.Priority == 0 || g.HealthScore < healthThreshold {
+			continue
+		}
+
+		// Check channel compatibility
+		if !IsChannelCompatible(g.ChannelType, relayFormat) {
+			continue
+		}
+
+		// Separate native and compatible channels
+		if g.ChannelType == nativeChannel {
+			nativeGroups = append(nativeGroups, g)
+		} else {
+			compatibleGroups = append(compatibleGroups, g)
 		}
 	}
 
-	if len(validGroups) == 0 {
-		return nil, nil // No healthy groups available
+	// Try native channels first (highest priority)
+	if len(nativeGroups) > 0 {
+		return s.selectFromPriorityGroups(nativeGroups)
 	}
 
-	// Groups are already sorted by priority
+	// Fallback to compatible channels
+	if len(compatibleGroups) > 0 {
+		return s.selectFromPriorityGroups(compatibleGroups)
+	}
+
+	return nil, nil // No compatible healthy groups available
+}
+
+// selectFromPriorityGroups selects the best group from a list based on priority and health score.
+// This is a helper method extracted for reusability.
+func (s *HubService) selectFromPriorityGroups(groups []ModelGroupPriorityDTO) (*models.Group, error) {
+	if len(groups) == 0 {
+		return nil, nil
+	}
+
 	// Find the minimum priority value (highest priority)
-	minPriority := validGroups[0].Priority
+	minPriority := groups[0].Priority
+	for i := 1; i < len(groups); i++ {
+		if groups[i].Priority < minPriority {
+			minPriority = groups[i].Priority
+		}
+	}
 
 	// Get all groups with the minimum priority
 	var topGroups []ModelGroupPriorityDTO
-	for _, g := range validGroups {
+	for _, g := range groups {
 		if g.Priority == minPriority {
 			topGroups = append(topGroups, g)
 		}
@@ -905,6 +1052,28 @@ func (s *HubService) SelectGroupForModelWithPriority(ctx context.Context, modelN
 	return s.groupManager.GetGroupByID(selectedGroupID)
 }
 
+// parseCustomModelNames parses custom model names from JSON array.
+// Returns empty slice if parsing fails or JSON is empty.
+func (s *HubService) parseCustomModelNames(customModelNamesJSON []byte) []string {
+	if len(customModelNamesJSON) == 0 {
+		return nil
+	}
+
+	// Skip empty JSON arrays
+	trimmed := string(customModelNamesJSON)
+	if trimmed == "[]" || trimmed == "null" {
+		return nil
+	}
+
+	var modelNames []string
+	if err := json.Unmarshal(customModelNamesJSON, &modelNames); err != nil {
+		logrus.WithError(err).Warn("Failed to parse custom model names")
+		return nil
+	}
+
+	return modelNames
+}
+
 // ErrInvalidPriority is returned when priority value is out of range.
 var ErrInvalidPriority = &InvalidPriorityError{}
 
@@ -913,4 +1082,96 @@ type InvalidPriorityError struct{}
 
 func (e *InvalidPriorityError) Error() string {
 	return "priority must be between 0 and 999"
+}
+
+// InvalidGroupTypeError represents an error when trying to set custom models on a non-aggregate group.
+type InvalidGroupTypeError struct {
+	GroupID   uint
+	GroupType string
+}
+
+func (e *InvalidGroupTypeError) Error() string {
+	return fmt.Sprintf("group %d is not an aggregate group (type: %s)", e.GroupID, e.GroupType)
+}
+
+// GetAggregateGroupsCustomModels returns custom model names for all aggregate groups.
+// This is used in the Hub centralized management UI to display and edit custom models.
+func (s *HubService) GetAggregateGroupsCustomModels(ctx context.Context) ([]AggregateGroupCustomModels, error) {
+	var groups []models.Group
+	if err := s.db.WithContext(ctx).
+		Select("id, name, custom_model_names").
+		Where("group_type = ? AND enabled = ?", "aggregate", true).
+		Order("sort ASC, name ASC").
+		Find(&groups).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]AggregateGroupCustomModels, 0, len(groups))
+	for _, group := range groups {
+		customModels := s.parseCustomModelNames(group.CustomModelNames)
+		result = append(result, AggregateGroupCustomModels{
+			GroupID:          group.ID,
+			GroupName:        group.Name,
+			CustomModelNames: customModels,
+		})
+	}
+
+	return result, nil
+}
+
+// UpdateAggregateGroupCustomModels updates custom model names for an aggregate group.
+// This invalidates the model pool cache to reflect changes immediately.
+func (s *HubService) UpdateAggregateGroupCustomModels(ctx context.Context, params UpdateCustomModelsParams) error {
+	// Verify group exists and is an aggregate group
+	var group models.Group
+	if err := s.db.WithContext(ctx).
+		Select("id, group_type").
+		Where("id = ?", params.GroupID).
+		First(&group).Error; err != nil {
+		return err
+	}
+
+	if group.GroupType != "aggregate" {
+		return &InvalidGroupTypeError{GroupID: params.GroupID, GroupType: group.GroupType}
+	}
+
+	// Filter out empty strings and duplicates
+	uniqueModels := make(map[string]struct{})
+	for _, model := range params.CustomModelNames {
+		trimmed := strings.TrimSpace(model)
+		if trimmed != "" {
+			uniqueModels[trimmed] = struct{}{}
+		}
+	}
+
+	// Convert to sorted slice for consistent ordering
+	cleanedModels := make([]string, 0, len(uniqueModels))
+	for model := range uniqueModels {
+		cleanedModels = append(cleanedModels, model)
+	}
+	sort.Strings(cleanedModels)
+
+	// Serialize to JSON
+	customModelsJSON, err := json.Marshal(cleanedModels)
+	if err != nil {
+		return err
+	}
+
+	// Update database
+	if err := s.db.WithContext(ctx).
+		Model(&models.Group{}).
+		Where("id = ?", params.GroupID).
+		Update("custom_model_names", datatypes.JSON(customModelsJSON)).Error; err != nil {
+		return err
+	}
+
+	// Invalidate model pool cache
+	s.InvalidateModelPoolCache()
+
+	logrus.WithFields(logrus.Fields{
+		"group_id":      params.GroupID,
+		"model_count":   len(cleanedModels),
+	}).Info("Updated aggregate group custom models")
+
+	return nil
 }
