@@ -637,11 +637,12 @@ func TestDynamicWeightManager_HubHealthScoreCalculation(t *testing.T) {
 	assert.Equal(t, int64(2), metrics.Successes7d, "Only successful requests should be counted")
 
 	healthScore := dwm.CalculateHealthScore(metrics)
-	// With 50% success rate, health calculation uses weighted formula
-	// The actual health score depends on the algorithm which considers consecutive failures
+	// With 50% success rate and interleaved pattern (no consecutive failures at end),
+	// health should be moderate but not severely degraded
 	assert.Greater(t, healthScore, 0.0, "Health score should be positive")
 	assert.LessOrEqual(t, healthScore, 1.0, "Health score should not exceed 1.0")
-	assert.InDelta(t, 0.8, healthScore, 0.3, "Health score should reflect mixed success/failure pattern")
+	assert.GreaterOrEqual(t, healthScore, 0.5, "Health should not be too low for 50% success rate")
+	assert.Less(t, healthScore, 1.0, "Health should reflect failures in history")
 }
 
 // TestDynamicWeightManager_HubGroupSelectionWithHealth tests Hub group selection based on health

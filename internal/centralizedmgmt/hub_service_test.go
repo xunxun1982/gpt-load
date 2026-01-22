@@ -3,6 +3,7 @@ package centralizedmgmt
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	"gpt-load/internal/config"
@@ -1203,7 +1204,7 @@ func BenchmarkSelectGroupForModelWithCompatibility(b *testing.B) {
 
 	// Create multiple groups with different channel types
 	for i := 0; i < 10; i++ {
-		group := createTestGroupWithRedirects(&testing.T{}, db, "group-"+string(rune(i)), i, true, "test-model", redirects)
+		group := createTestGroupWithRedirects(&testing.T{}, db, "group-"+strconv.Itoa(i), i, true, "test-model", redirects)
 		channelTypes := []string{"openai", "azure", "anthropic", "gemini", "codex"}
 		group.ChannelType = channelTypes[i%len(channelTypes)]
 		db.Save(group)

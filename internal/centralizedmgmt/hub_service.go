@@ -123,6 +123,8 @@ func (s *HubService) getHealthScoreThreshold() float64 {
 
 // SetOnlyAggregateGroups sets whether to only accept aggregate groups.
 // Thread-safe using atomic operations.
+// Note: When called via UpdateHubSettings, cache invalidation is handled there.
+// Direct callers should manually call InvalidateModelPoolCache() if needed.
 func (s *HubService) SetOnlyAggregateGroups(only bool) {
 	s.onlyAggregateGroups.Store(only)
 }
@@ -542,6 +544,11 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 func (s *HubService) selectFromSources(sources []ModelSource) (*models.Group, error) {
 	if len(sources) == 0 {
 		return nil, nil
+	}
+
+	// Guard against nil GroupManager
+	if s.groupManager == nil {
+		return nil, fmt.Errorf("groupManager is not initialized")
 	}
 
 	// Find the minimum sort value

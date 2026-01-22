@@ -6,6 +6,7 @@ import (
 )
 
 func TestGetCompatibleChannels(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		format         types.RelayFormat
@@ -89,6 +90,7 @@ func TestGetCompatibleChannels(t *testing.T) {
 }
 
 func TestGetNativeChannel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		format types.RelayFormat
@@ -113,6 +115,7 @@ func TestGetNativeChannel(t *testing.T) {
 }
 
 func TestIsChannelCompatible(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		channelType string
@@ -164,6 +167,7 @@ func TestIsChannelCompatible(t *testing.T) {
 }
 
 func TestGetChannelPriority(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		channelType string
