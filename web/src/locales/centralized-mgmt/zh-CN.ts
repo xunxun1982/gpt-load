@@ -84,7 +84,7 @@ export default {
 
   // Panel
   centralizedManagement: "集中管理",
-  onlyAggregateGroupsActive: "🔒 仅聚合分组模式已启用",
+  onlyAggregateGroupsActive: "🔒 仅聚合分组模式已启用（可在 Hub 设置中修改）",
   refreshModelPool: "刷新模型池",
   refreshing: "刷新中...",
   totalAccessKeys: "共 {total} 个密钥",

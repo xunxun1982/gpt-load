@@ -87,7 +87,8 @@ export default {
 
   // Panel
   centralizedManagement: "Centralized Management",
-  onlyAggregateGroupsActive: "🔒 Only Aggregate Groups Mode Enabled",
+  onlyAggregateGroupsActive:
+    "🔒 Only Aggregate Groups Mode Enabled (Can be changed in Hub Settings)",
   refreshModelPool: "Refresh Model Pool",
   refreshing: "Refreshing...",
   totalAccessKeys: "{total} keys",

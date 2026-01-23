@@ -86,7 +86,7 @@ export default {
 
   // Panel
   centralizedManagement: "集中管理",
-  onlyAggregateGroupsActive: "🔒 集約グループのみモードが有効",
+  onlyAggregateGroupsActive: "🔒 集約グループのみモードが有効（Hub設定で変更可能）",
   refreshModelPool: "モデルプールを更新",
   refreshing: "更新中...",
   totalAccessKeys: "合計 {total} キー",
