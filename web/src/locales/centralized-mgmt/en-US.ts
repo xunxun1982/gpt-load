@@ -128,4 +128,14 @@ export default {
   modelCount: "{count} models",
   customModelBadge: "Custom",
   customModelTooltip: "This is a user-defined custom model name",
+
+  // Routing logic
+  routingLogic: "Routing Logic (Sequential)",
+  routingStep1: "① Path → Format (Chat/Claude/Gemini/Image/Audio)",
+  routingStep2: "② Extract model name",
+  routingStep3: "③ Filter: Model availability + Key permissions",
+  routingStep4: "④ Filter: Channel compatibility + Health threshold + Enabled status",
+  routingStep5: "⑤ Priority: Native channel > Compatible channel",
+  routingStep6: "⑥ Select: Min priority → Weighted random",
+  routingStep7: "⑦ Forward: /hub/v1/* → /proxy/group-name/v1/*",
 };
