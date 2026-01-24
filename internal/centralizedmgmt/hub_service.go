@@ -115,9 +115,9 @@ func (s *HubService) SetHealthScoreThreshold(threshold float64) {
 	s.healthScoreThreshold.Store(threshold)
 }
 
-// getHealthScoreThreshold returns the current health score threshold.
+// GetHealthScoreThreshold returns the current health score threshold.
 // Thread-safe using atomic operations.
-func (s *HubService) getHealthScoreThreshold() float64 {
+func (s *HubService) GetHealthScoreThreshold() float64 {
 	return s.healthScoreThreshold.Load().(float64)
 }
 
@@ -202,7 +202,7 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 	}
 
 	// Get health score threshold and only aggregate groups setting once for this build
-	healthThreshold := s.getHealthScoreThreshold()
+	healthThreshold := s.GetHealthScoreThreshold()
 	onlyAggregateGroups := s.getOnlyAggregateGroups()
 
 	// Map to aggregate models by name
@@ -499,7 +499,7 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 	}
 
 	// Get health score threshold once
-	healthThreshold := s.getHealthScoreThreshold()
+	healthThreshold := s.GetHealthScoreThreshold()
 
 	// Filter by channel compatibility and health
 	// Separate native and compatible channels for priority handling
@@ -633,7 +633,7 @@ func (s *HubService) GetAvailableModels(ctx context.Context) ([]string, error) {
 	}
 
 	// Get health score threshold once
-	healthThreshold := s.getHealthScoreThreshold()
+	healthThreshold := s.GetHealthScoreThreshold()
 
 	availableModels := make([]string, 0, len(pool))
 	for _, entry := range pool {
@@ -691,7 +691,7 @@ func (s *HubService) IsModelAvailable(ctx context.Context, modelName string) (bo
 	}
 
 	// Get health score threshold once
-	healthThreshold := s.getHealthScoreThreshold()
+	healthThreshold := s.GetHealthScoreThreshold()
 
 	// Check if at least one source is healthy
 	for _, sources := range sourcesByType {
@@ -970,7 +970,7 @@ func (s *HubService) SelectGroupForModelWithPriority(ctx context.Context, modelN
 	}
 
 	// Get health score threshold once
-	healthThreshold := s.getHealthScoreThreshold()
+	healthThreshold := s.GetHealthScoreThreshold()
 
 	// Filter by channel compatibility, enabled, non-zero priority, and health score
 	// Separate native and compatible channels for priority handling
