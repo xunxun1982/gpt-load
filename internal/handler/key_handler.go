@@ -245,6 +245,8 @@ func (s *Server) AddMultipleKeysAsyncStream(c *gin.Context) {
 			err := c.Request.ParseMultipartForm(1 << 20) // 1MB limit for form fields only
 			if err != nil {
 				logrus.WithError(err).Warn("AddMultipleKeysAsyncStream: Failed to parse multipart form")
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to parse multipart form"))
+				return
 			}
 		}
 		if c.Request.MultipartForm != nil && c.Request.MultipartForm.Value != nil {

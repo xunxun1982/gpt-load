@@ -248,6 +248,16 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 // 2. The decryption phase already provides meaningful progress (the slow part with DB I/O)
 // 3. Removing encryption progress avoids the backwards jump issue without adding complexity
 // 4. Users see progress reach 100% after decryption, then task completes shortly after
+//
+// Memory usage note:
+// This method loads all existing key hashes into memory (existingHashMap) for deduplication.
+// Memory scales with existing key count: ~100 bytes per key, so 100k keys ≈ 10MB.
+// This is acceptable because:
+// 1. The api_keys table has no unique constraint on key_hash (only a regular index)
+// 2. Without DB-level uniqueness, application-level deduplication is required
+// 3. Alternative approaches (Bloom filter, batched DB queries) add complexity
+// 4. Memory usage is predictable and bounded by existing key count
+// 5. This runs asynchronously, not blocking HTTP responses
 func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
 	// Note: defer with nil assignment to parameters has no GC effect
 	// Go's GC automatically reclaims memory when function returns
@@ -405,6 +415,16 @@ func (s *KeyImportService) runImport(group *models.Group, keys []string) {
 }
 
 // runBulkImport performs optimized bulk import using BulkImportService
+//
+// Memory usage note:
+// This method loads all existing key hashes into memory (existingHashMap) for deduplication.
+// Memory scales with existing key count: ~100 bytes per key, so 100k keys ≈ 10MB.
+// This is acceptable because:
+// 1. The api_keys table has no unique constraint on key_hash (only a regular index)
+// 2. Without DB-level uniqueness, application-level deduplication is required
+// 3. Alternative approaches (Bloom filter, batched DB queries) add complexity
+// 4. Memory usage is predictable and bounded by existing key count
+// 5. This runs asynchronously, not blocking HTTP responses
 func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	startTime := time.Now()
 
@@ -543,6 +563,17 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 // runStreamingImport performs streaming import that processes keys in batches while reading.
 // This method uses constant memory regardless of file size by processing keys incrementally.
 // Memory usage scales with batchSize: ~200 bytes per key, so 10000 keys = ~2MB.
+//
+// Memory usage note for existingHashMap:
+// This method loads all existing key hashes into memory (existingHashMap) for deduplication.
+// Memory scales with existing key count: ~100 bytes per key, so 100k keys ≈ 10MB.
+// Total memory = batch memory (~2MB) + existing hashes memory (~10MB for 100k keys) ≈ 12MB.
+// This is acceptable because:
+// 1. The api_keys table has no unique constraint on key_hash (only a regular index)
+// 2. Without DB-level uniqueness, application-level deduplication is required
+// 3. Alternative approaches (Bloom filter, batched DB queries) add complexity
+// 4. Memory usage is predictable and bounded by existing key count + batch size
+// 5. This runs asynchronously, not blocking HTTP responses
 func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Reader, batchSize int) {
 	startTime := time.Now()
 
