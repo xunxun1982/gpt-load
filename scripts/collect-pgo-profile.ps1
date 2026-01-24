@@ -28,6 +28,52 @@ try {
     Write-Host "⚠️  Failed to clean test cache, continuing..." -ForegroundColor Yellow
 }
 
+# Collect benchmark profiles for hot paths
+Write-Host "🔥 Running benchmarks for hot paths..." -ForegroundColor Cyan
+
+# Run benchmarks for each package separately (cpuprofile requires single package)
+# Focus on proxy/forwarding hot paths: keypool selection, encryption, buffer pool, JSON processing
+$benchPackages = @(
+    @{Path="./internal/keypool"; Pattern="^Benchmark(SelectKey|RealisticWorkload)"},
+    @{Path="./internal/encryption"; Pattern="^Benchmark(Encrypt|Decrypt|Hash)"},
+    @{Path="./internal/utils"; Pattern="^Benchmark(BufferPool|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"}
+)
+$benchIndex = 0
+
+foreach ($pkg in $benchPackages) {
+    $benchIndex++
+    $benchmarkProfile = Join-Path (Get-Location) (Join-Path $PROFILE_DIR "cpu_bench_$benchIndex.prof")
+
+    Write-Host "  Running benchmarks for $($pkg.Path)..." -ForegroundColor Gray
+
+    try {
+        $benchResult = go test `
+            -tags $GO_TAGS `
+            -bench="$($pkg.Pattern)" `
+            -benchtime=2s `
+            -cpuprofile="$benchmarkProfile" `
+            -run='^$' `
+            $pkg.Path 2>&1 | Out-Null
+        $benchExitCode = $LASTEXITCODE
+
+        if ($benchExitCode -eq 0 -and (Test-Path $benchmarkProfile)) {
+            $size = (Get-Item $benchmarkProfile).Length
+            if ($size -gt 0) {
+                Write-Host "    ✓ Benchmark profile created: $size bytes" -ForegroundColor Green
+            } else {
+                Write-Host "    ✗ Empty benchmark profile, removing" -ForegroundColor Yellow
+                Remove-Item $benchmarkProfile -Force -ErrorAction SilentlyContinue
+            }
+        } else {
+            Write-Host "    ⚠️  No benchmarks found or profiling failed" -ForegroundColor Yellow
+            Remove-Item $benchmarkProfile -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Host "    ⚠️  Benchmark execution failed: $_" -ForegroundColor Yellow
+        Remove-Item $benchmarkProfile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Get all packages with tests (excluding main package to avoid web/dist dependency)
 Write-Host "Listing packages..." -ForegroundColor Gray
 try {
