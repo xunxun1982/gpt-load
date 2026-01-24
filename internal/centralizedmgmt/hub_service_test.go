@@ -1813,3 +1813,299 @@ func TestCustomModelsInModelPool(t *testing.T) {
 		t.Error("custom-model-beta should be in model pool")
 	}
 }
+
+// TestIsGroupCCSupportEnabled tests the isGroupCCSupportEnabled helper method
+func TestIsGroupCCSupportEnabled(t *testing.T) {
+	t.Parallel()
+
+	db := setupHubTestDB(t)
+	svc := setupHubService(t, db)
+
+	tests := []struct {
+		name        string
+		group       *models.Group
+		want        bool
+		description string
+	}{
+		{
+			name: "OpenAI with cc_support enabled (bool)",
+			group: &models.Group{
+				ChannelType: "openai",
+				Config: datatypes.JSONMap{
+					"cc_support": true,
+				},
+			},
+			want:        true,
+			description: "OpenAI channel with cc_support=true should return true",
+		},
+		{
+			name: "OpenAI with cc_support disabled (bool)",
+			group: &models.Group{
+				ChannelType: "openai",
+				Config: datatypes.JSONMap{
+					"cc_support": false,
+				},
+			},
+			want:        false,
+			description: "OpenAI channel with cc_support=false should return false",
+		},
+		{
+			name: "OpenAI without cc_support config",
+			group: &models.Group{
+				ChannelType: "openai",
+				Config:      datatypes.JSONMap{},
+			},
+			want:        false,
+			description: "OpenAI channel without cc_support config should return false",
+		},
+		{
+			name: "Gemini with cc_support enabled",
+			group: &models.Group{
+				ChannelType: "gemini",
+				Config: datatypes.JSONMap{
+					"cc_support": true,
+				},
+			},
+			want:        true,
+			description: "Gemini channel with cc_support=true should return true",
+		},
+		{
+			name: "Codex with cc_support enabled",
+			group: &models.Group{
+				ChannelType: "codex",
+				Config: datatypes.JSONMap{
+					"cc_support": true,
+				},
+			},
+			want:        true,
+			description: "Codex channel with cc_support=true should return true",
+		},
+		{
+			name: "Anthropic with cc_support enabled",
+			group: &models.Group{
+				ChannelType: "anthropic",
+				Config: datatypes.JSONMap{
+					"cc_support": true,
+				},
+			},
+			want:        false,
+			description: "Anthropic channel should always return false (native Claude format)",
+		},
+		{
+			name: "OpenAI with cc_support as string 'true'",
+			group: &models.Group{
+				ChannelType: "openai",
+				Config: datatypes.JSONMap{
+					"cc_support": "true",
+				},
+			},
+			want:        true,
+			description: "OpenAI channel with cc_support='true' (string) should return true",
+		},
+		{
+			name: "OpenAI with cc_support as float64 1.0",
+			group: &models.Group{
+				ChannelType: "openai",
+				Config: datatypes.JSONMap{
+					"cc_support": 1.0,
+				},
+			},
+			want:        true,
+			description: "OpenAI channel with cc_support=1.0 (float64) should return true",
+		},
+		{
+			name: "OpenAI with cc_support as int 1",
+			group: &models.Group{
+				ChannelType: "openai",
+				Config: datatypes.JSONMap{
+					"cc_support": 1,
+				},
+			},
+			want:        true,
+			description: "OpenAI channel with cc_support=1 (int) should return true",
+		},
+		{
+			name:        "Nil group",
+			group:       nil,
+			want:        false,
+			description: "Nil group should return false",
+		},
+		{
+			name: "Group with nil config",
+			group: &models.Group{
+				ChannelType: "openai",
+				Config:      nil,
+			},
+			want:        false,
+			description: "Group with nil config should return false",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := svc.isGroupCCSupportEnabled(tt.group)
+			if got != tt.want {
+				t.Errorf("isGroupCCSupportEnabled() = %v, want %v: %s", got, tt.want, tt.description)
+			}
+		})
+	}
+}
+
+// TestSelectGroupForModelWithCCSupport tests that Claude format requests
+// only route to channels with cc_support enabled
+func TestSelectGroupForModelWithCCSupport(t *testing.T) {
+	db := setupHubTestDB(t)
+	ctx := context.Background()
+
+	// Create OpenAI group WITHOUT cc_support
+	openaiGroupNoCC := &models.Group{
+		Name:        "openai-no-cc",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		Enabled:     true,
+		Sort:        1,
+		Upstreams:   datatypes.JSON(`[{"url":"https://api.openai.com"}]`),
+		ModelRedirectRulesV2: datatypes.JSON(`{
+			"gpt-4": {"targets": [{"model": "gpt-4", "weight": 100}]}
+		}`),
+		Config: datatypes.JSONMap{
+			"cc_support": false,
+		},
+	}
+	if err := db.Create(openaiGroupNoCC).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Create OpenAI group WITH cc_support
+	openaiGroupWithCC := &models.Group{
+		Name:        "openai-with-cc",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		Enabled:     true,
+		Sort:        2,
+		Upstreams:   datatypes.JSON(`[{"url":"https://api.openai.com"}]`),
+		ModelRedirectRulesV2: datatypes.JSON(`{
+			"gpt-4": {"targets": [{"model": "gpt-4", "weight": 100}]}
+		}`),
+		Config: datatypes.JSONMap{
+			"cc_support": true,
+		},
+	}
+	if err := db.Create(openaiGroupWithCC).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Create Anthropic group (native Claude format)
+	anthropicGroup := &models.Group{
+		Name:        "anthropic-native",
+		GroupType:   "standard",
+		ChannelType: "anthropic",
+		Enabled:     true,
+		Sort:        3,
+		Upstreams:   datatypes.JSON(`[{"url":"https://api.anthropic.com"}]`),
+		ModelRedirectRulesV2: datatypes.JSON(`{
+			"claude-3-opus": {"targets": [{"model": "claude-3-opus-20240229", "weight": 100}]}
+		}`),
+	}
+	if err := db.Create(anthropicGroup).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up service with GroupManager AFTER creating groups
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(false) // Allow all groups for this test
+
+	// Test 1: Claude format request for gpt-4 should select openai-with-cc (not openai-no-cc)
+	selectedGroup, err := svc.SelectGroupForModel(ctx, "gpt-4", types.RelayFormatClaude)
+	if err != nil {
+		t.Fatalf("SelectGroupForModel failed: %v", err)
+	}
+	if selectedGroup == nil {
+		t.Fatal("Expected to select a group, got nil")
+	}
+	if selectedGroup.Name != "openai-with-cc" {
+		t.Errorf("Expected to select openai-with-cc for Claude format, got %s", selectedGroup.Name)
+	}
+
+	// Test 2: OpenAI Chat format request for gpt-4 should select openai-no-cc (higher priority, sort=1)
+	selectedGroup, err = svc.SelectGroupForModel(ctx, "gpt-4", types.RelayFormatOpenAIChat)
+	if err != nil {
+		t.Fatalf("SelectGroupForModel failed: %v", err)
+	}
+	if selectedGroup == nil {
+		t.Fatal("Expected to select a group, got nil")
+	}
+	if selectedGroup.Name != "openai-no-cc" {
+		t.Errorf("Expected to select openai-no-cc for OpenAI Chat format, got %s", selectedGroup.Name)
+	}
+
+	// Test 3: Claude format request for claude-3-opus should select anthropic-native (native channel)
+	selectedGroup, err = svc.SelectGroupForModel(ctx, "claude-3-opus", types.RelayFormatClaude)
+	if err != nil {
+		t.Fatalf("SelectGroupForModel failed: %v", err)
+	}
+	if selectedGroup == nil {
+		t.Fatal("Expected to select a group, got nil")
+	}
+	if selectedGroup.Name != "anthropic-native" {
+		t.Errorf("Expected to select anthropic-native for Claude format, got %s", selectedGroup.Name)
+	}
+}
+
+// TestSelectGroupForModelClaudeFormatNoCCSupport tests that Claude format requests
+// return nil when no compatible channel has cc_support enabled
+func TestSelectGroupForModelClaudeFormatNoCCSupport(t *testing.T) {
+	db := setupHubTestDB(t)
+	ctx := context.Background()
+
+	// Create OpenAI group WITHOUT cc_support
+	openaiGroupNoCC := &models.Group{
+		Name:        "openai-no-cc",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		Enabled:     true,
+		Sort:        1,
+		Upstreams:   datatypes.JSON(`[{"url":"https://api.openai.com"}]`),
+		ModelRedirectRulesV2: datatypes.JSON(`{
+			"gpt-4": {"targets": [{"model": "gpt-4", "weight": 100}]}
+		}`),
+		Config: datatypes.JSONMap{
+			"cc_support": false,
+		},
+	}
+	if err := db.Create(openaiGroupNoCC).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Create Gemini group WITHOUT cc_support
+	geminiGroupNoCC := &models.Group{
+		Name:        "gemini-no-cc",
+		GroupType:   "standard",
+		ChannelType: "gemini",
+		Enabled:     true,
+		Sort:        2,
+		Upstreams:   datatypes.JSON(`[{"url":"https://api.gemini.com"}]`),
+		ModelRedirectRulesV2: datatypes.JSON(`{
+			"gpt-4": {"targets": [{"model": "gemini-pro", "weight": 100}]}
+		}`),
+		Config: datatypes.JSONMap{
+			"cc_support": false,
+		},
+	}
+	if err := db.Create(geminiGroupNoCC).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up service with GroupManager AFTER creating groups
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(false)
+
+	// Test: Claude format request for gpt-4 should return nil (no cc_support enabled)
+	selectedGroup, err := svc.SelectGroupForModel(ctx, "gpt-4", types.RelayFormatClaude)
+	if err != nil {
+		t.Fatalf("SelectGroupForModel failed: %v", err)
+	}
+	if selectedGroup != nil {
+		t.Errorf("Expected nil (no compatible channel with cc_support), got %s", selectedGroup.Name)
+	}
+}

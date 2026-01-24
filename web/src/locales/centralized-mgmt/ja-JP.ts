@@ -126,4 +126,15 @@ export default {
   modelCount: "{count} モデル",
   customModelBadge: "カスタム",
   customModelTooltip: "これはユーザー定義のカスタムモデル名です",
+
+  // Routing logic
+  routingLogic: "ルーティングロジック（順次実行）",
+  routingStep1: "① パス → フォーマット（Chat/Claude/Gemini/Image/Audio）",
+  routingStep2: "② モデル名を抽出",
+  routingStep3: "③ フィルタ：モデル可用性 + キー権限",
+  routingStep4:
+    "④ フィルタ：チャネル互換性 + 健康閾値 + 有効状態（Claude形式はCCサポート検証が必要）",
+  routingStep5: "⑤ 優先：ネイティブチャネル > 互換チャネル",
+  routingStep6: "⑥ 選択：最小優先度 → 重み付きランダム",
+  routingStep7: "⑦ 転送：/hub/v1/* → /proxy/グループ名/v1/*",
 };

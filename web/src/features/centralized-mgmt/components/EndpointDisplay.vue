@@ -81,6 +81,36 @@ async function copyBaseUrl() {
             {{ channel.label }}
           </n-tag>
         </div>
+
+        <!-- Routing Logic -->
+        <div class="routing-logic">
+          <n-text strong style="font-size: 12px; margin-bottom: 6px; display: block">
+            {{ t("hub.routingLogic") }}
+          </n-text>
+          <div class="logic-steps">
+            <div class="logic-step">
+              <span class="step-text">{{ t("hub.routingStep1") }}</span>
+            </div>
+            <div class="logic-step">
+              <span class="step-text">{{ t("hub.routingStep2") }}</span>
+            </div>
+            <div class="logic-step">
+              <span class="step-text">{{ t("hub.routingStep3") }}</span>
+            </div>
+            <div class="logic-step">
+              <span class="step-text">{{ t("hub.routingStep4") }}</span>
+            </div>
+            <div class="logic-step">
+              <span class="step-text">{{ t("hub.routingStep5") }}</span>
+            </div>
+            <div class="logic-step">
+              <span class="step-text">{{ t("hub.routingStep6") }}</span>
+            </div>
+            <div class="logic-step">
+              <span class="step-text">{{ t("hub.routingStep7") }}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </n-popover>
   </div>
@@ -129,5 +159,32 @@ async function copyBaseUrl() {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  margin-bottom: 12px;
+}
+
+.routing-logic {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--n-border-color);
+}
+
+.logic-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.logic-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.step-text {
+  color: var(--n-text-color-2);
+  flex: 1;
 }
 </style>

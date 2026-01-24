@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -135,6 +136,7 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 
 // HandleListModels handles /hub/v1/models endpoint.
 // Returns a list of available models in OpenAI format.
+// The owned_by field includes channel type information (e.g., "hub_openai", "hub_anthropic").
 func (h *HubHandler) HandleListModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
@@ -150,41 +152,90 @@ func (h *HubHandler) HandleListModels(c *gin.Context) {
 		return
 	}
 
-	// Get all available models
-	models, err := h.hubService.GetAvailableModels(ctx)
+	// Get model pool to access channel type information (uses cache)
+	pool, err := h.hubService.GetModelPool(ctx)
 	if err != nil {
-		logrus.WithError(err).Error("Failed to get available models")
+		logrus.WithError(err).Error("Failed to get model pool")
 		h.returnHubError(c, http.StatusInternalServerError, "hub_internal_error", "Failed to get models")
 		return
+	}
+
+	// Get health threshold from service
+	healthThreshold := h.hubService.GetHealthScoreThreshold()
+
+	// Build model-to-channel-types mapping
+	// Pre-allocate with estimated capacity to reduce allocations
+	modelChannelMap := make(map[string][]string, len(pool))
+
+	for _, entry := range pool {
+		var channelTypes []string
+		channelTypeSet := make(map[string]bool)
+
+		// Collect unique channel types from healthy sources
+		for channelType, sources := range entry.SourcesByType {
+			for _, source := range sources {
+				if source.Enabled && source.HealthScore >= healthThreshold {
+					if !channelTypeSet[channelType] {
+						channelTypes = append(channelTypes, channelType)
+						channelTypeSet[channelType] = true
+					}
+					break // Found at least one healthy source for this channel type
+				}
+			}
+		}
+
+		if len(channelTypes) > 0 {
+			// Sort channel types for consistent output
+			sort.Strings(channelTypes)
+			modelChannelMap[entry.ModelName] = channelTypes
+		}
 	}
 
 	// Filter models by access key permissions
 	allowedModels := h.accessKeyService.GetAllowedModels(accessKey)
 	var filteredModels []string
+
 	if allowedModels == nil {
-		// All models allowed
-		filteredModels = models
+		// All models allowed - collect from map
+		filteredModels = make([]string, 0, len(modelChannelMap))
+		for modelName := range modelChannelMap {
+			filteredModels = append(filteredModels, modelName)
+		}
 	} else {
 		// Filter to only allowed models
 		allowedSet := make(map[string]bool, len(allowedModels))
 		for _, m := range allowedModels {
 			allowedSet[m] = true
 		}
-		for _, m := range models {
-			if allowedSet[m] {
-				filteredModels = append(filteredModels, m)
+		filteredModels = make([]string, 0, len(allowedModels))
+		for modelName := range modelChannelMap {
+			if allowedSet[modelName] {
+				filteredModels = append(filteredModels, modelName)
 			}
 		}
 	}
 
-	// Return in OpenAI format
+	// Sort models for consistent output order
+	sort.Strings(filteredModels)
+
+	// Build response in OpenAI format with channel type in owned_by field
 	modelList := make([]map[string]any, 0, len(filteredModels))
-	for _, m := range filteredModels {
+	currentTime := time.Now().Unix()
+
+	for _, modelName := range filteredModels {
+		channelTypes := modelChannelMap[modelName]
+
+		// Format owned_by: "hub_<channel_type>" or "hub_<type1>_<type2>" for multiple
+		ownedBy := "hub"
+		if len(channelTypes) > 0 {
+			ownedBy = "hub_" + strings.Join(channelTypes, "_")
+		}
+
 		modelList = append(modelList, map[string]any{
-			"id":       m,
+			"id":       modelName,
 			"object":   "model",
-			"created":  time.Now().Unix(),
-			"owned_by": "hub",
+			"created":  currentTime,
+			"owned_by": ownedBy,
 		})
 	}
 
