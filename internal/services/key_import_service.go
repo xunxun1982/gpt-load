@@ -243,10 +243,9 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 // 3. Removing encryption progress avoids the backwards jump issue without adding complexity
 // 4. Users see progress reach 100% after decryption, then task completes shortly after
 func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
-	// Defer memory cleanup to ensure large objects are released
-	defer func() {
-		keys = nil
-	}()
+	// Note: defer with nil assignment to parameters has no GC effect
+	// Go's GC automatically reclaims memory when function returns
+	// The keys parameter is a slice header copy; nil-ing it doesn't affect caller's reference
 
 	// Get existing key hashes for deduplication
 	var existingHashes []string
@@ -261,7 +260,8 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
-	// Release existingHashes slice after building map
+	// Note: Setting local variable to nil has no GC effect
+	// Kept for code clarity but Go's GC handles this automatically
 	existingHashes = nil
 
 	// Prepare keys for bulk import
@@ -300,7 +300,8 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 		// Encryption is fast (in-memory), and decryption phase already provides meaningful progress.
 	}
 
-	// Release maps after processing
+	// Note: Setting local variables to nil has no GC effect
+	// Go's GC automatically reclaims memory when variables go out of scope
 	existingHashMap = nil
 	uniqueNewKeys = nil
 
@@ -328,7 +329,7 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 	// Store counts before releasing memory
 	addedCount := len(newKeysToCreate)
 
-	// Release newKeysToCreate after insertion
+	// Note: Setting local variable to nil has no GC effect`n// Go's GC automatically reclaims memory when function returns
 	newKeysToCreate = nil
 
 	// Load keys to memory store after successful import
@@ -418,7 +419,7 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
-	// Release existingHashes slice after building map
+	// Note: Setting local variable to nil has no GC effect`n// Kept for code clarity but Go's GC handles this automatically
 	existingHashes = nil
 
 	// Prepare keys for bulk import
@@ -462,7 +463,7 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 		}
 	}
 
-	// Release maps after processing
+	// Note: Setting local variables to nil has no GC effect`n// Go's GC automatically reclaims memory when variables go out of scope
 	existingHashMap = nil
 	uniqueNewKeys = nil
 
@@ -493,7 +494,7 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	// Store counts before releasing memory
 	addedCount := len(newKeysToCreate)
 
-	// Release newKeysToCreate after insertion
+	// Note: Setting local variable to nil has no GC effect`n// Go's GC automatically reclaims memory when function returns
 	newKeysToCreate = nil
 
 	// Load keys to memory store after successful import
@@ -569,7 +570,9 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
-	existingHashes = nil // Release memory
+	// Note: Setting local variable to nil has no GC effect
+	// Go's GC automatically reclaims memory when variables go out of scope
+	existingHashes = nil
 
 	// Initialize counters
 	totalProcessed := 0
@@ -585,7 +588,6 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 
 	// Batch processing
 	currentBatch := make([]string, 0, batchSize)
-	batchDedupeMap := make(map[string]bool, batchSize)
 
 	logrus.WithFields(logrus.Fields{
 		"groupId":        group.ID,
@@ -613,7 +615,9 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 
 		// Process batch when it reaches batchSize
 		if len(currentBatch) >= batchSize {
-			added, ignored := s.processBatch(group, currentBatch, existingHashMap, batchDedupeMap)
+			// Note: batchDedupeMap removed to maintain constant memory usage
+			// existingHashMap is updated in processBatch and provides cross-batch deduplication
+			added, ignored := s.processBatch(group, currentBatch, existingHashMap)
 			totalAdded += added
 			totalIgnored += ignored
 			totalProcessed += len(currentBatch)
@@ -634,7 +638,6 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 
 			// Clear batch for next iteration
 			currentBatch = currentBatch[:0]
-			// Keep batchDedupeMap for cross-batch deduplication
 		}
 	}
 
@@ -658,7 +661,7 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 
 	// Process remaining keys in the last batch
 	if len(currentBatch) > 0 {
-		added, ignored := s.processBatch(group, currentBatch, existingHashMap, batchDedupeMap)
+		added, ignored := s.processBatch(group, currentBatch, existingHashMap)
 		totalAdded += added
 		totalIgnored += ignored
 		totalProcessed += len(currentBatch)
@@ -669,10 +672,9 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 		}
 	}
 
-	// Release maps
-	existingHashMap = nil
-	batchDedupeMap = nil
-	currentBatch = nil
+	// Note: No need to explicitly set maps to nil for GC
+	// Go's GC automatically reclaims memory when variables go out of scope
+	// These assignments are kept for code clarity but have no GC effect
 
 	// Load keys to memory store after successful import
 	if s.KeyService.KeyProvider != nil {
@@ -712,11 +714,13 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 
 // processBatch processes a batch of keys and returns added and ignored counts.
 // This method handles encryption, deduplication, and bulk insertion.
+// Note: Removed batchDedupeMap parameter to maintain constant memory usage.
+// Within-batch deduplication is handled by a local map that's cleared after each batch.
+// Cross-batch deduplication is handled by existingHashMap which stores key hashes.
 func (s *KeyImportService) processBatch(
 	group *models.Group,
 	keys []string,
 	existingHashMap map[string]bool,
-	batchDedupeMap map[string]bool,
 ) (added int, ignored int) {
 	if len(keys) == 0 {
 		return 0, 0
@@ -725,6 +729,10 @@ func (s *KeyImportService) processBatch(
 	// Prepare keys for bulk import
 	newKeysToCreate := make([]models.APIKey, 0, len(keys))
 
+	// Local deduplication map for current batch only (cleared after batch processing)
+	// This prevents duplicate keys within the same batch
+	localDedupeMap := make(map[string]bool, len(keys))
+
 	for _, keyVal := range keys {
 		trimmedKey := strings.TrimSpace(keyVal)
 		if trimmedKey == "" {
@@ -732,15 +740,15 @@ func (s *KeyImportService) processBatch(
 			continue
 		}
 
-		// Check if already processed in this session
-		if batchDedupeMap[trimmedKey] {
+		// Check if already processed in current batch
+		if localDedupeMap[trimmedKey] {
 			ignored++
 			continue
 		}
 
 		keyHash := s.KeyService.EncryptionSvc.Hash(trimmedKey)
 
-		// Check if exists in database
+		// Check if exists in database or previous batches
 		if existingHashMap[keyHash] {
 			ignored++
 			continue
@@ -753,9 +761,10 @@ func (s *KeyImportService) processBatch(
 			continue
 		}
 
-		// Mark as processed
-		batchDedupeMap[trimmedKey] = true
-		existingHashMap[keyHash] = true // Prevent duplicates in subsequent batches
+		// Mark as processed in current batch
+		localDedupeMap[trimmedKey] = true
+		// Update global hash map to prevent duplicates in subsequent batches
+		existingHashMap[keyHash] = true
 
 		newKeysToCreate = append(newKeysToCreate, models.APIKey{
 			GroupID:  group.ID,
@@ -764,6 +773,7 @@ func (s *KeyImportService) processBatch(
 			Status:   models.KeyStatusActive,
 		})
 	}
+	// localDedupeMap goes out of scope here and is garbage collected
 
 	if len(newKeysToCreate) == 0 {
 		return 0, ignored

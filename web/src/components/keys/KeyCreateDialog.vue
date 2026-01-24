@@ -29,18 +29,26 @@ const inputMode = ref<"text" | "file">("text");
 const selectedFile = ref<File | null>(null);
 const fileContent = ref("");
 const fileInputRef = ref<HTMLInputElement | null>(null);
+const estimatedKeyCount = ref(0); // For large files, estimate without reading entire file
 
 // Computed property to check if submit is enabled
 const canSubmit = computed(() => {
   if (inputMode.value === "text") {
     return keysText.value.trim().length > 0;
   } else {
-    return fileContent.value.trim().length > 0;
+    // For file mode, check if file is selected (not fileContent)
+    // Large files don't load content into memory
+    return selectedFile.value !== null;
   }
 });
 
 // Computed property for key count to avoid recalculation on re-renders
 const keyCount = computed(() => {
+  // For large files, use estimated count
+  if (estimatedKeyCount.value > 0) {
+    return estimatedKeyCount.value;
+  }
+  // For small files, calculate from content
   if (!fileContent.value) return 0;
   return fileContent.value.split("\n").filter(line => line.trim()).length;
 });
@@ -61,6 +69,7 @@ function resetForm() {
   inputMode.value = "text";
   selectedFile.value = null;
   fileContent.value = "";
+  estimatedKeyCount.value = 0;
   if (fileInputRef.value) {
     fileInputRef.value.value = "";
   }
@@ -101,11 +110,28 @@ async function handleFileChange(event: Event) {
   }
 
   try {
-    const text = await file.text();
     selectedFile.value = file;
-    fileContent.value = text;
+    const fileSizeMB = file.size / (1024 * 1024);
+
+    // For large files (>10MB), estimate key count without reading entire file
+    // This prevents loading 150MB into browser memory
+    if (fileSizeMB > 10) {
+      // Estimate ~170 bytes per key (same as server-side calculation)
+      estimatedKeyCount.value = Math.floor(file.size / 170);
+      fileContent.value = ""; // Don't store content for large files
+      window.$message.success(
+        t("keys.fileLoadedSuccess", { name: file.name }) +
+          ` (${fileSizeMB.toFixed(2)}MB, ~${estimatedKeyCount.value.toLocaleString()} keys)`
+      );
+    } else {
+      // For small files, read content for accurate key count
+      const text = await file.text();
+      fileContent.value = text;
+      estimatedKeyCount.value = 0;
+      window.$message.success(t("keys.fileLoadedSuccess", { name: file.name }));
+    }
+
     inputMode.value = "file";
-    window.$message.success(t("keys.fileLoadedSuccess", { name: file.name }));
   } catch (_error) {
     window.$message.error(t("keys.fileReadError"));
     target.value = "";
@@ -116,6 +142,7 @@ async function handleFileChange(event: Event) {
 function handleClearFile() {
   selectedFile.value = null;
   fileContent.value = "";
+  estimatedKeyCount.value = 0;
   inputMode.value = "text";
   if (fileInputRef.value) {
     fileInputRef.value.value = "";

@@ -247,6 +247,8 @@ func (s *Server) AddMultipleKeysAsyncStream(c *gin.Context) {
 	// Start streaming import task
 	taskStatus, err := s.KeyImportService.StartStreamingImportTask(group, file, header.Size)
 	if err != nil {
+		// Close file if task start fails to prevent file descriptor leak
+		_ = file.Close()
 		logrus.WithFields(logrus.Fields{
 			"group_id": groupID,
 			"error":    err,
