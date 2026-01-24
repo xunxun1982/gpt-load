@@ -27,12 +27,57 @@ echo "📊 Running unit tests with CPU profiling..."
 # Clean test cache to ensure tests actually run
 echo "Cleaning test cache..."
 set +e
-go clean -testcache 2>&1 >/dev/null
+go clean -testcache >/dev/null 2>&1
 CLEAN_EXIT=$?
 set -e
 if [ ${CLEAN_EXIT} -ne 0 ]; then
     echo "⚠️  Failed to clean test cache, continuing..."
 fi
+
+# Collect benchmark profiles for hot paths
+echo "🔥 Running benchmarks for hot paths..."
+
+# Run benchmarks for each package separately (cpuprofile requires single package)
+# Focus on proxy/forwarding hot paths: keypool selection, encryption, buffer pool, JSON processing
+declare -a BENCH_PACKAGES=(
+    "./internal/keypool:^Benchmark(SelectKey|RealisticWorkload)"
+    "./internal/encryption:^Benchmark(Encrypt|Decrypt|Hash)"
+    "./internal/utils:^Benchmark(BufferPool|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"
+)
+BENCH_INDEX=0
+
+for pkg_pattern in "${BENCH_PACKAGES[@]}"; do
+    BENCH_INDEX=$((BENCH_INDEX + 1))
+    PKG="${pkg_pattern%%:*}"
+    PATTERN="${pkg_pattern##*:}"
+    BENCHMARK_PROFILE="${PROFILE_DIR}/cpu_bench_${BENCH_INDEX}.prof"
+
+    echo "  Running benchmarks for ${PKG}..."
+
+    set +e
+    go test \
+        -tags "${GO_TAGS}" \
+        -bench="${PATTERN}" \
+        -benchtime=2s \
+        -cpuprofile="${BENCHMARK_PROFILE}" \
+        -run=^$ \
+        "${PKG}" >/dev/null 2>&1
+    BENCH_EXIT=$?
+    set -e
+
+    if [ ${BENCH_EXIT} -eq 0 ] && [ -f "${BENCHMARK_PROFILE}" ]; then
+        SIZE=$(stat -c%s "${BENCHMARK_PROFILE}" 2>/dev/null || stat -f%z "${BENCHMARK_PROFILE}" 2>/dev/null || echo "0")
+        if [ "${SIZE}" -gt 0 ]; then
+            echo "    ✓ Benchmark profile created: ${SIZE} bytes"
+        else
+            echo "    ✗ Empty benchmark profile, removing"
+            rm -f "${BENCHMARK_PROFILE}"
+        fi
+    else
+        echo "    ⚠️  No benchmarks found or profiling failed"
+        rm -f "${BENCHMARK_PROFILE}" 2>/dev/null || true
+    fi
+done
 
 # Get all packages with tests (including main package if it has tests)
 echo "Listing packages..."
@@ -41,7 +86,7 @@ echo "Listing packages..."
 # Exclude main package to avoid web/dist dependency
 TEMP_PACKAGES=$(mktemp)
 set +e
-go list ./internal/... 2>&1 > "${TEMP_PACKAGES}"
+go list ./internal/... > "${TEMP_PACKAGES}" 2>&1
 LIST_EXIT=$?
 set -e
 
