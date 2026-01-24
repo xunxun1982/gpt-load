@@ -47,7 +47,7 @@ foreach ($pkg in $benchPackages) {
     Write-Host "  Running benchmarks for $($pkg.Path)..." -ForegroundColor Gray
 
     try {
-        $benchResult = go test `
+        go test `
             -tags $GO_TAGS `
             -bench="$($pkg.Pattern)" `
             -benchtime=2s `

@@ -27,7 +27,7 @@ echo "📊 Running unit tests with CPU profiling..."
 # Clean test cache to ensure tests actually run
 echo "Cleaning test cache..."
 set +e
-go clean -testcache 2>&1 >/dev/null
+go clean -testcache >/dev/null 2>&1
 CLEAN_EXIT=$?
 set -e
 if [ ${CLEAN_EXIT} -ne 0 ]; then
@@ -61,7 +61,7 @@ for pkg_pattern in "${BENCH_PACKAGES[@]}"; do
         -benchtime=2s \
         -cpuprofile="${BENCHMARK_PROFILE}" \
         -run=^$ \
-        "${PKG}" 2>&1 >/dev/null
+        "${PKG}" >/dev/null 2>&1
     BENCH_EXIT=$?
     set -e
 
@@ -86,7 +86,7 @@ echo "Listing packages..."
 # Exclude main package to avoid web/dist dependency
 TEMP_PACKAGES=$(mktemp)
 set +e
-go list ./internal/... 2>&1 > "${TEMP_PACKAGES}"
+go list ./internal/... > "${TEMP_PACKAGES}" 2>&1
 LIST_EXIT=$?
 set -e
 
