@@ -154,12 +154,15 @@ export const keysApi = {
     formData.append("group_id", group_id.toString());
     formData.append("file", file);
 
-    // Note: Do NOT set Content-Type header manually for FormData
-    // Axios automatically sets the correct Content-Type with boundary parameter
-    // Setting it manually will omit the boundary and cause server parsing failure
+    // Note: Must explicitly set Content-Type to undefined for FormData
+    // The default axios instance has "Content-Type: application/json" which overrides FormData's automatic header
+    // Setting to undefined allows axios to set the correct multipart/form-data with boundary
     const res = await http.post("/keys/add-async-stream", formData, {
       hideMessage: true,
       timeout: 300000, // 5 minutes timeout
+      headers: {
+        "Content-Type": undefined, // Let axios set multipart/form-data with boundary
+      },
     });
     return res.data;
   },

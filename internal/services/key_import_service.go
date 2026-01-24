@@ -71,6 +71,12 @@ func (s *KeyImportService) StartImportTask(group *models.Group, keysText string)
 // StartStreamingImportTask initiates a streaming import task that processes keys in batches.
 // This method is optimized for large files and uses constant memory regardless of file size.
 func (s *KeyImportService) StartStreamingImportTask(group *models.Group, reader io.Reader, fileSize int64) (*TaskStatus, error) {
+	// Guard against nil BulkImportSvc (defensive programming)
+	// This can happen in minimal deployments or test environments
+	if s.BulkImportSvc == nil {
+		return nil, fmt.Errorf("bulk import service is not configured")
+	}
+
 	// Estimate total keys based on file size (average ~170 bytes per key)
 	estimatedKeys := int(fileSize / 170)
 	if estimatedKeys < 100 {
@@ -717,6 +723,11 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 // Note: Removed batchDedupeMap parameter to maintain constant memory usage.
 // Within-batch deduplication is handled by a local map that's cleared after each batch.
 // Cross-batch deduplication is handled by existingHashMap which stores key hashes.
+//
+// Error handling strategy:
+// - Encryption errors: Skip individual keys, continue processing
+// - Bulk insert errors: Log error, mark batch as ignored, continue with next batch
+// - This "best effort" approach maximizes successful imports even with partial failures
 func (s *KeyImportService) processBatch(
 	group *models.Group,
 	keys []string,
@@ -728,6 +739,10 @@ func (s *KeyImportService) processBatch(
 
 	// Prepare keys for bulk import
 	newKeysToCreate := make([]models.APIKey, 0, len(keys))
+
+	// Track hashes for this batch to update existingHashMap only after successful insert
+	// This prevents failed batches from polluting the deduplication map
+	batchHashes := make([]string, 0, len(keys))
 
 	// Local deduplication map for current batch only (cleared after batch processing)
 	// This prevents duplicate keys within the same batch
@@ -763,8 +778,8 @@ func (s *KeyImportService) processBatch(
 
 		// Mark as processed in current batch
 		localDedupeMap[trimmedKey] = true
-		// Update global hash map to prevent duplicates in subsequent batches
-		existingHashMap[keyHash] = true
+		// Defer updating global hash map until after successful insert
+		batchHashes = append(batchHashes, keyHash)
 
 		newKeysToCreate = append(newKeysToCreate, models.APIKey{
 			GroupID:  group.ID,
@@ -786,9 +801,17 @@ func (s *KeyImportService) processBatch(
 			"keyCount": len(newKeysToCreate),
 			"error":    err,
 		}).Error("Failed to bulk insert batch")
-		// Count failed insertions as ignored
+		// Note: Do NOT update existingHashMap on failure
+		// This allows retry of these keys in subsequent imports
+		// Count failed insertions as ignored for this task
 		ignored += len(newKeysToCreate)
 		return 0, ignored
+	}
+
+	// Only update existingHashMap after successful insert
+	// This ensures failed batches can be retried in future imports
+	for _, hash := range batchHashes {
+		existingHashMap[hash] = true
 	}
 
 	added = len(newKeysToCreate)

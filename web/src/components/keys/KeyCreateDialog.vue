@@ -95,6 +95,8 @@ async function handleFileChange(event: Event) {
   }
 
   // Check file size (limit to 150MB to support large key files)
+  // Note: This limit should ideally match the backend MAX_REQUEST_BODY_SIZE_MB configuration
+  // TODO: Consider fetching this limit from backend API to avoid configuration drift
   const maxSize = 150 * 1024 * 1024; // 150MB
   if (file.size > maxSize) {
     window.$message.error(t("keys.fileSizeExceeded"));

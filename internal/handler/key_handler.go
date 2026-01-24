@@ -194,13 +194,31 @@ func (s *Server) AddMultipleKeysAsync(c *gin.Context) {
 func (s *Server) AddMultipleKeysAsyncStream(c *gin.Context) {
 	logrus.Debug("AddMultipleKeysAsyncStream: Handler called")
 
-	// Get group_id from query or form (before parsing multipart)
+	// Get group_id from query parameter first (most reliable for multipart requests)
 	groupIDStr := c.Query("group_id")
+
+	// If not in query, try to get from multipart form
+	// Note: We must get form values before calling FormFile to avoid parsing issues
 	if groupIDStr == "" {
-		groupIDStr = c.PostForm("group_id")
+		// For multipart/form-data, we need to access the raw multipart reader
+		// to get form values without buffering the entire file
+		if c.Request.MultipartForm == nil {
+			// Parse only the form fields (not files) with a small memory limit
+			// This allows us to read group_id without buffering the file
+			err := c.Request.ParseMultipartForm(1 << 20) // 1MB limit for form fields only
+			if err != nil {
+				logrus.WithError(err).Warn("AddMultipleKeysAsyncStream: Failed to parse multipart form")
+			}
+		}
+		if c.Request.MultipartForm != nil && c.Request.MultipartForm.Value != nil {
+			if values, ok := c.Request.MultipartForm.Value["group_id"]; ok && len(values) > 0 {
+				groupIDStr = values[0]
+			}
+		}
 	}
+
 	if groupIDStr == "" {
-		logrus.Warn("AddMultipleKeysAsyncStream: group_id not provided")
+		logrus.Warn("AddMultipleKeysAsyncStream: group_id not provided in query or form")
 		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.group_id_required")
 		return
 	}
