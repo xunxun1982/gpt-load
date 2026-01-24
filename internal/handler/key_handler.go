@@ -101,7 +101,8 @@ func (s *Server) findGroupByID(c *gin.Context, groupID uint) (*models.Group, boo
 		}).Warn("findGroupByID: Database query failed, trying cache fallback")
 
 		// DB busy - try cache fallback again, otherwise return error
-		if cached, err2 := s.GroupManager.GetGroupByID(groupID); err2 == nil {
+		// Guard against nil to avoid returning a nil group
+		if cached, err2 := s.GroupManager.GetGroupByID(groupID); err2 == nil && cached != nil {
 			logrus.WithField("group_id", groupID).Info("findGroupByID: Using cache fallback after DB error")
 			return cached, true
 		}
@@ -587,12 +588,12 @@ func (s *Server) RestoreMultipleKeys(c *gin.Context) {
 	// For async tier, we would start background task here
 	// TODO: Implement async restore task service
 	if tier == services.TierAsync {
-		// For now, fall back to sync processing with extended timeout
-		// This is a temporary solution until async restore is implemented
+		// For now, fall back to sync processing
+		// Note: Large batches may approach HTTP timeout limits
 		logrus.WithFields(logrus.Fields{
 			"groupId":  req.GroupID,
 			"keyCount": keyCount,
-		}).Warn("Large restore batch detected, using sync processing with extended timeout")
+		}).Warn("Large restore batch detected, using sync processing (async restore not yet implemented)")
 	}
 
 	// For all tiers, use synchronous processing
@@ -733,16 +734,9 @@ func (s *Server) RestoreAllInvalidKeys(c *gin.Context) {
 	// Use BulkSyncThreshold for consistency with ClearAllInvalidKeys
 	if invalidCount < services.BulkSyncThreshold {
 		// Synchronous restore for small batches - immediate feedback
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
-		defer cancel()
-
+		// Note: No timeout enforcement as underlying method doesn't accept context
 		rowsAffected, err := s.KeyService.RestoreAllInvalidKeys(req.GroupID)
 		if err != nil {
-			// Check if context was cancelled
-			if ctx.Err() != nil {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "restore operation timed out"))
-				return
-			}
 			response.Error(c, app_errors.ParseDBError(err))
 			return
 		}
@@ -761,8 +755,7 @@ func (s *Server) RestoreAllInvalidKeys(c *gin.Context) {
 	response.Success(c, taskStatus)
 }
 
-// ClearAllInvalidKeys deletes all 'inactive' keys from a group.
-// ClearAllInvalidKeys deletes all 'invalid' keys from a group.
+// ClearAllInvalidKeys deletes all invalid keys from a group.
 // Multi-threshold strategy (same as ClearAllKeys for consistency):
 // - <5000 keys: Synchronous deletion for immediate feedback
 // - ≥5000 keys: Asynchronous deletion with progress tracking
@@ -797,17 +790,9 @@ func (s *Server) ClearAllInvalidKeys(c *gin.Context) {
 	// because invalid keys are typically a smaller subset
 	if invalidCount < services.BulkSyncThreshold {
 		// Synchronous deletion for small batches - immediate feedback
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
-		defer cancel()
-
-		// Use RemoveInvalidKeys which internally calls removeKeysByStatus
+		// Note: No timeout enforcement as underlying method doesn't accept context
 		deleted, err := s.KeyService.KeyProvider.RemoveInvalidKeys(req.GroupID)
 		if err != nil {
-			// Check if context was cancelled
-			if ctx.Err() != nil {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "deletion operation timed out"))
-				return
-			}
 			response.Error(c, app_errors.ParseDBError(err))
 			return
 		}

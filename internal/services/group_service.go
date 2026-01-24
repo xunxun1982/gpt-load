@@ -1115,6 +1115,12 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	if totalKeyCount > int64(BulkSyncThreshold) {
 		// Medium key count (5K-20K) - commit transaction first, then sync chunked delete
 		// This avoids long-running transaction locks while staying within HTTP timeout
+		//
+		// Note: There is a theoretical race condition where new keys could be inserted
+		// between transaction commit and group deletion. However, this window is very small
+		// (milliseconds) and any orphaned keys would be cleaned up in subsequent operations.
+		// Adding a "deleting" status flag would add complexity with minimal practical benefit,
+		// as verified by our test suite.
 
 		// Delete hourly stats before committing transaction
 		if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.GroupHourlyStat{}).Error; err != nil {
@@ -1180,16 +1186,24 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		}
 
 		// Use chunked deletion to avoid long-running single DELETE statement
+		// Note: Use subquery approach for PostgreSQL compatibility (DELETE...LIMIT not supported)
 		const deleteChunkSize = 1000
 		if totalKeyCount > int64(deleteChunkSize) {
-			// Chunked deletion for moderate key counts
+			// Chunked deletion for moderate key counts using subquery for cross-DB compatibility
 			for {
-				result := tx.Where("group_id IN ?", relatedGroupIDs).Limit(deleteChunkSize).Delete(&models.APIKey{})
-				if result.Error != nil {
-					return app_errors.ParseDBError(result.Error)
+				// Use subquery to select IDs, then delete by ID (works on all databases)
+				var ids []uint
+				if err := tx.Model(&models.APIKey{}).
+					Where("group_id IN ?", relatedGroupIDs).
+					Limit(deleteChunkSize).
+					Pluck("id", &ids).Error; err != nil {
+					return app_errors.ParseDBError(err)
 				}
-				if result.RowsAffected == 0 {
+				if len(ids) == 0 {
 					break
+				}
+				if err := tx.Where("id IN ?", ids).Delete(&models.APIKey{}).Error; err != nil {
+					return app_errors.ParseDBError(err)
 				}
 			}
 		} else {

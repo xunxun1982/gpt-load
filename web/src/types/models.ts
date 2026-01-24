@@ -208,6 +208,12 @@ export interface KeyDeleteResult {
   ignored_count: number;
 }
 
+export interface KeyRestoreResult {
+  restored_count: number;
+  ignored_count: number;
+  total_in_group: number;
+}
+
 export interface TaskInfo {
   task_type: TaskType;
   is_running: boolean;
@@ -216,7 +222,7 @@ export interface TaskInfo {
   total?: number;
   started_at?: string;
   finished_at?: string;
-  result?: KeyValidationResult | KeyImportResult | KeyDeleteResult;
+  result?: KeyValidationResult | KeyImportResult | KeyDeleteResult | KeyRestoreResult;
   error?: string;
 }
 

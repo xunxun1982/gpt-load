@@ -101,6 +101,8 @@ func TestStartDeleteTask(t *testing.T) {
 	assert.Equal(t, 3, taskStatus.Total)
 
 	// Wait for task to complete
+	// Note: Fixed sleep is appropriate for async task testing. The task runs in a goroutine
+	// with known execution time. Polling would add complexity without improving reliability.
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify keys were deleted

@@ -834,9 +834,13 @@ var deleteSem = make(chan struct{}, 1)
 func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressCallback func(deleted int64)) (int64, error) {
 	const maxRetries = 3
 
-	// serialize deletions
-	deleteSem <- struct{}{}
-	defer func() { <-deleteSem }()
+	// Serialize deletions, but honor ctx cancellation
+	select {
+	case deleteSem <- struct{}{}:
+		defer func() { <-deleteSem }()
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 
 	totalDeleted := int64(0)
 	dial := p.db.Dialector.Name()
