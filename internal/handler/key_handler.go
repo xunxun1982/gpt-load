@@ -6,6 +6,7 @@ import (
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
+	"gpt-load/internal/services"
 	"io"
 	"log"
 	"mime/multipart"
@@ -135,6 +136,13 @@ type ValidateGroupKeysRequest struct {
 }
 
 // AddMultipleKeys handles creating new keys from a text block within a specific group.
+// This endpoint intelligently chooses between synchronous and asynchronous processing
+// based on the number of keys being added:
+// - ≤1000 keys: Fast sync (immediate response)
+// - 1000-5000 keys: Bulk sync (optimized batch processing)
+// - 5000-10000 keys: Large sync (larger batches)
+// - 10000-20000 keys: Optimized sync (very large batches)
+// - >20000 keys: Async (returns task_id for progress tracking)
 func (s *Server) AddMultipleKeys(c *gin.Context) {
 	var req KeyTextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -142,7 +150,8 @@ func (s *Server) AddMultipleKeys(c *gin.Context) {
 		return
 	}
 
-	if _, ok := s.findGroupByID(c, req.GroupID); !ok {
+	group, ok := s.findGroupByID(c, req.GroupID);
+	if !ok {
 		return
 	}
 
@@ -150,6 +159,29 @@ func (s *Server) AddMultipleKeys(c *gin.Context) {
 		return
 	}
 
+	// Parse keys to determine count
+	keys := s.KeyService.ParseKeysFromText(req.KeysText)
+	if len(keys) == 0 {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "no valid keys found in the input text"))
+		return
+	}
+
+	keyCount := int64(len(keys))
+	tier := services.GetOperationTier(keyCount)
+
+	// For async tier, start background task
+	if tier == services.TierAsync {
+		taskStatus, err := s.KeyImportService.StartImportTask(group, req.KeysText)
+		if err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
+			return
+		}
+		response.Success(c, taskStatus)
+		return
+	}
+
+	// For all sync tiers (Fast, Bulk, Large, Optimized), use synchronous processing
+	// The underlying service will use appropriate batch sizes based on key count
 	result, err := s.KeyService.AddMultipleKeys(req.GroupID, req.KeysText)
 	if err != nil {
 		if strings.Contains(err.Error(), "batch size exceeds the limit") {
@@ -165,7 +197,9 @@ func (s *Server) AddMultipleKeys(c *gin.Context) {
 	response.Success(c, result)
 }
 
-// AddMultipleKeysAsync handles creating new keys from a text block within a specific group.
+// AddMultipleKeysAsync handles creating new keys asynchronously.
+// Deprecated: Use AddMultipleKeys instead, which automatically chooses sync/async based on key count.
+// This endpoint is kept for backward compatibility.
 func (s *Server) AddMultipleKeysAsync(c *gin.Context) {
 	var req KeyTextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -426,6 +460,13 @@ func (s *Server) ListKeysInGroup(c *gin.Context) {
 }
 
 // DeleteMultipleKeys handles deleting keys from a text block within a specific group.
+// This endpoint intelligently chooses between synchronous and asynchronous processing
+// based on the number of keys being deleted:
+// - ≤1000 keys: Fast sync (immediate response)
+// - 1000-5000 keys: Bulk sync (optimized batch processing)
+// - 5000-10000 keys: Large sync (larger batches)
+// - 10000-20000 keys: Optimized sync (very large batches)
+// - >20000 keys: Async (returns task_id for progress tracking)
 func (s *Server) DeleteMultipleKeys(c *gin.Context) {
 	var req KeyTextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -433,7 +474,8 @@ func (s *Server) DeleteMultipleKeys(c *gin.Context) {
 		return
 	}
 
-	if _, ok := s.findGroupByID(c, req.GroupID); !ok {
+	group, ok := s.findGroupByID(c, req.GroupID)
+	if !ok {
 		return
 	}
 
@@ -441,6 +483,28 @@ func (s *Server) DeleteMultipleKeys(c *gin.Context) {
 		return
 	}
 
+	// Parse keys to determine count
+	keys := s.KeyService.ParseKeysFromText(req.KeysText)
+	if len(keys) == 0 {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "no valid keys found in the input text"))
+		return
+	}
+
+	keyCount := int64(len(keys))
+	tier := services.GetOperationTier(keyCount)
+
+	// For async tier, start background task
+	if tier == services.TierAsync {
+		taskStatus, err := s.KeyDeleteService.StartDeleteTask(group, req.KeysText)
+		if err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
+			return
+		}
+		response.Success(c, taskStatus)
+		return
+	}
+
+	// For all sync tiers, use synchronous processing
 	result, err := s.KeyService.DeleteMultipleKeys(req.GroupID, req.KeysText)
 	if err != nil {
 		if strings.Contains(err.Error(), "batch size exceeds the limit") {
@@ -456,7 +520,9 @@ func (s *Server) DeleteMultipleKeys(c *gin.Context) {
 	response.Success(c, result)
 }
 
-// DeleteMultipleKeysAsync handles deleting keys from a text block within a specific group using async task.
+// DeleteMultipleKeysAsync handles deleting keys asynchronously.
+// Deprecated: Use DeleteMultipleKeys instead, which automatically chooses sync/async based on key count.
+// This endpoint is kept for backward compatibility.
 func (s *Server) DeleteMultipleKeysAsync(c *gin.Context) {
 	var req KeyTextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -483,6 +549,16 @@ func (s *Server) DeleteMultipleKeysAsync(c *gin.Context) {
 }
 
 // RestoreMultipleKeys handles restoring keys from a text block within a specific group.
+// This endpoint intelligently chooses between synchronous and asynchronous processing
+// based on the number of keys being restored:
+// - ≤1000 keys: Fast sync (immediate response)
+// - 1000-5000 keys: Bulk sync (optimized batch processing)
+// - 5000-10000 keys: Large sync (larger batches)
+// - 10000-20000 keys: Optimized sync (very large batches)
+// - >20000 keys: Async (returns task_id for progress tracking)
+//
+// Note: Async restore is not yet implemented, so large batches will use sync processing
+// with appropriate timeout handling. This will be added in a future update.
 func (s *Server) RestoreMultipleKeys(c *gin.Context) {
 	var req KeyTextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -498,6 +574,28 @@ func (s *Server) RestoreMultipleKeys(c *gin.Context) {
 		return
 	}
 
+	// Parse keys to determine count
+	keys := s.KeyService.ParseKeysFromText(req.KeysText)
+	if len(keys) == 0 {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "no valid keys found in the input text"))
+		return
+	}
+
+	keyCount := int64(len(keys))
+	tier := services.GetOperationTier(keyCount)
+
+	// For async tier, we would start background task here
+	// TODO: Implement async restore task service
+	if tier == services.TierAsync {
+		// For now, fall back to sync processing with extended timeout
+		// This is a temporary solution until async restore is implemented
+		logrus.WithFields(logrus.Fields{
+			"groupId":  req.GroupID,
+			"keyCount": keyCount,
+		}).Warn("Large restore batch detected, using sync processing with extended timeout")
+	}
+
+	// For all tiers, use synchronous processing
 	result, err := s.KeyService.RestoreMultipleKeys(req.GroupID, req.KeysText)
 	if err != nil {
 		if strings.Contains(err.Error(), "batch size exceeds the limit") {
@@ -602,7 +700,10 @@ func (s *Server) ValidateGroupKeys(c *gin.Context) {
 	response.Success(c, taskStatus)
 }
 
-// RestoreAllInvalidKeys sets the status of all 'inactive' keys in a group to 'active'.
+// RestoreAllInvalidKeys sets the status of all 'invalid' keys in a group to 'active'.
+// Multi-threshold strategy (same as ClearAllInvalidKeys for consistency):
+// - <5000 keys: Synchronous restore for immediate feedback
+// - ≥5000 keys: Asynchronous restore with progress tracking
 func (s *Server) RestoreAllInvalidKeys(c *gin.Context) {
 	var req GroupIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -610,20 +711,61 @@ func (s *Server) RestoreAllInvalidKeys(c *gin.Context) {
 		return
 	}
 
-	if _, ok := s.findGroupByID(c, req.GroupID); !ok {
+	group, ok := s.findGroupByID(c, req.GroupID)
+	if !ok {
 		return
 	}
 
-	rowsAffected, err := s.KeyService.RestoreAllInvalidKeys(req.GroupID)
-	if err != nil {
+	// Get invalid key count to decide sync vs async
+	var invalidCount int64
+	if err := s.DB.Model(&models.APIKey{}).
+		Where("group_id = ? AND status = ?", req.GroupID, models.KeyStatusInvalid).
+		Count(&invalidCount).Error; err != nil {
 		response.Error(c, app_errors.ParseDBError(err))
 		return
 	}
 
-	response.SuccessI18n(c, "success.keys_restored", nil, map[string]any{"count": rowsAffected})
+	if invalidCount == 0 {
+		response.SuccessI18n(c, "success.keys_restored", nil, map[string]any{"count": 0})
+		return
+	}
+
+	// Use BulkSyncThreshold for consistency with ClearAllInvalidKeys
+	if invalidCount < services.BulkSyncThreshold {
+		// Synchronous restore for small batches - immediate feedback
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+		defer cancel()
+
+		rowsAffected, err := s.KeyService.RestoreAllInvalidKeys(req.GroupID)
+		if err != nil {
+			// Check if context was cancelled
+			if ctx.Err() != nil {
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "restore operation timed out"))
+				return
+			}
+			response.Error(c, app_errors.ParseDBError(err))
+			return
+		}
+
+		response.SuccessI18n(c, "success.keys_restored", nil, map[string]any{"count": rowsAffected})
+		return
+	}
+
+	// Asynchronous restore for large batches - with progress tracking
+	taskStatus, err := s.KeyDeleteService.StartRestoreInvalidGroupKeys(group, int(invalidCount))
+	if err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
+		return
+	}
+
+	response.Success(c, taskStatus)
 }
 
 // ClearAllInvalidKeys deletes all 'inactive' keys from a group.
+// ClearAllInvalidKeys deletes all 'invalid' keys from a group.
+// Multi-threshold strategy (same as ClearAllKeys for consistency):
+// - <5000 keys: Synchronous deletion for immediate feedback
+// - ≥5000 keys: Asynchronous deletion with progress tracking
 func (s *Server) ClearAllInvalidKeys(c *gin.Context) {
 	var req GroupIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -631,20 +773,62 @@ func (s *Server) ClearAllInvalidKeys(c *gin.Context) {
 		return
 	}
 
-	if _, ok := s.findGroupByID(c, req.GroupID); !ok {
+	group, ok := s.findGroupByID(c, req.GroupID)
+	if !ok {
 		return
 	}
 
-	rowsAffected, err := s.KeyService.ClearAllInvalidKeys(req.GroupID)
-	if err != nil {
+	// Get invalid key count to decide sync vs async
+	var invalidCount int64
+	if err := s.DB.Model(&models.APIKey{}).
+		Where("group_id = ? AND status = ?", req.GroupID, models.KeyStatusInvalid).
+		Count(&invalidCount).Error; err != nil {
 		response.Error(c, app_errors.ParseDBError(err))
 		return
 	}
 
-	response.SuccessI18n(c, "success.invalid_keys_cleared", nil, map[string]any{"count": rowsAffected})
+	if invalidCount == 0 {
+		response.SuccessI18n(c, "success.invalid_keys_cleared", nil, map[string]any{"count": 0})
+		return
+	}
+
+	// Use BulkSyncThreshold for consistency with ClearAllKeys
+	// For simplicity, ClearAllInvalidKeys uses 2-tier strategy (not 5-tier)
+	// because invalid keys are typically a smaller subset
+	if invalidCount < services.BulkSyncThreshold {
+		// Synchronous deletion for small batches - immediate feedback
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+		defer cancel()
+
+		// Use RemoveInvalidKeys which internally calls removeKeysByStatus
+		deleted, err := s.KeyService.KeyProvider.RemoveInvalidKeys(req.GroupID)
+		if err != nil {
+			// Check if context was cancelled
+			if ctx.Err() != nil {
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "deletion operation timed out"))
+				return
+			}
+			response.Error(c, app_errors.ParseDBError(err))
+			return
+		}
+
+		response.SuccessI18n(c, "success.invalid_keys_cleared", nil, map[string]any{"count": deleted})
+		return
+	}
+
+	// Asynchronous deletion for large batches - with progress tracking
+	taskStatus, err := s.KeyDeleteService.StartDeleteInvalidGroupKeys(group, int(invalidCount))
+	if err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
+		return
+	}
+
+	response.Success(c, taskStatus)
 }
 
 // ClearAllKeys deletes all keys from a group.
+// For small batches (< 5000 keys), deletion is synchronous for immediate feedback.
+// For large batches (>= 5000 keys), deletion is asynchronous with progress tracking.
 func (s *Server) ClearAllKeys(c *gin.Context) {
 	var req GroupIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -652,17 +836,48 @@ func (s *Server) ClearAllKeys(c *gin.Context) {
 		return
 	}
 
-	if _, ok := s.findGroupByID(c, req.GroupID); !ok {
+	group, ok := s.findGroupByID(c, req.GroupID)
+	if !ok {
 		return
 	}
 
-	rowsAffected, err := s.KeyService.ClearAllKeys(c.Request.Context(), req.GroupID)
-	if err != nil {
+	// Get total count to decide sync vs async
+	var totalCount int64
+	if err := s.DB.Model(&models.APIKey{}).Where("group_id = ?", req.GroupID).Count(&totalCount).Error; err != nil {
 		response.Error(c, app_errors.ParseDBError(err))
 		return
 	}
 
-	response.SuccessI18n(c, "success.all_keys_cleared", nil, map[string]any{"count": rowsAffected})
+	if totalCount == 0 {
+		response.SuccessI18n(c, "success.all_keys_cleared", nil, map[string]any{"count": 0})
+		return
+	}
+
+	// Use BulkSyncThreshold for consistency across all operations
+	if totalCount < services.BulkSyncThreshold {
+		// Synchronous deletion for small batches - immediate feedback
+		// Use 60 second timeout to handle up to threshold keys safely
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+		defer cancel()
+
+		deleted, err := s.KeyService.KeyProvider.RemoveAllKeys(ctx, req.GroupID, nil)
+		if err != nil {
+			response.Error(c, app_errors.ParseDBError(err))
+			return
+		}
+
+		response.SuccessI18n(c, "success.all_keys_cleared", nil, map[string]any{"count": deleted})
+		return
+	}
+
+	// Asynchronous deletion for large batches - with progress tracking
+	taskStatus, err := s.KeyDeleteService.StartDeleteAllGroupKeys(group, int(totalCount))
+	if err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
+		return
+	}
+
+	response.Success(c, taskStatus)
 }
 
 // ExportKeys handles exporting keys to a text file.

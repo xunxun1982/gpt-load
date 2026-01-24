@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"gpt-load/internal/encryption"
@@ -309,11 +308,6 @@ func (s *KeyService) RestoreAllInvalidKeys(groupID uint) (int64, error) {
 // ClearAllInvalidKeys deletes all 'inactive' keys from a group.
 func (s *KeyService) ClearAllInvalidKeys(groupID uint) (int64, error) {
 	return s.KeyProvider.RemoveInvalidKeys(groupID)
-}
-
-// ClearAllKeys deletes all keys from a group.
-func (s *KeyService) ClearAllKeys(ctx context.Context, groupID uint) (int64, error) {
-	return s.KeyProvider.RemoveAllKeys(ctx, groupID)
 }
 
 // ResetGroupActiveKeysFailureCount resets failure_count to 0 for all active keys in a specific group.

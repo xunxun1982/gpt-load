@@ -994,27 +994,8 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		}
 	}
 
-	// Best-effort: mark a global delete task as running so background cron jobs can
-	// skip heavy DB work and avoid contention during large deletes.
-	var taskService *TaskService
-	// Defensive nil checks: TaskService can exist without a configured store (e.g., store disabled or in tests).
-	// StartTask would dereference s.store, so we avoid calling it when store is nil.
-	if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil && s.keyDeleteSvc.TaskService.store != nil {
-		taskService = s.keyDeleteSvc.TaskService
-		groupName := ""
-		if s.groupManager != nil {
-			if g, err := s.groupManager.GetGroupByID(id); err == nil && g != nil {
-				groupName = g.Name
-			}
-		}
-		if _, err := taskService.StartTask(TaskTypeKeyDelete, groupName, 0); err == nil {
-			defer func() {
-				if endErr := taskService.EndTask(nil, retErr); endErr != nil {
-					logrus.WithContext(ctx).WithError(endErr).Debug("failed to end global task for group delete")
-				}
-			}()
-		}
-	}
+	// Note: We do NOT start a global task here for sync deletion to avoid degrading
+	// reads for other groups. Global task is only started for async deletion (>20K keys).
 
 	// Start transaction
 	tx := s.db.WithContext(ctx).Begin()
@@ -1045,6 +1026,7 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		return app_errors.ParseDBError(err)
 	}
 
+	childGroupCount := int64(len(childGroupIDs))
 	relatedGroupIDs := make([]uint, 0, len(childGroupIDs)+1)
 	relatedGroupIDs = append(relatedGroupIDs, id)
 	if len(childGroupIDs) > 0 {
@@ -1096,28 +1078,128 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		// Continue anyway - stats cleanup is best-effort
 	}
 
-	// Delete API keys synchronously within the transaction to avoid foreign key constraint violations.
-	// For large key counts, use chunked deletion to avoid long-running transactions and lock contention.
-	const deleteChunkSize = 5000
-	if totalKeyCount > int64(deleteChunkSize) {
-		// Chunked deletion for large key counts
-		for {
-			result := tx.Where("group_id IN ?", relatedGroupIDs).Limit(deleteChunkSize).Delete(&models.APIKey{})
-			if result.Error != nil {
-				return app_errors.ParseDBError(result.Error)
-			}
-			if result.RowsAffected == 0 {
-				break
+	// Multi-threshold strategy for key deletion based on best practices:
+	// - 0-5,000 keys: Fast sync delete in transaction (<10s)
+	// - 5,000-20,000 keys: Sync chunked delete using RemoveAllKeys (10-60s)
+	// - >20,000 keys: Async task (return task_id, delete keys then group in background)
+
+	if totalKeyCount > int64(OptimizedSyncThreshold) {
+		// Large key count - use async task to avoid HTTP timeout
+		// Rollback transaction and start async deletion
+		tx.Rollback()
+		tx = nil
+
+		// Start async group deletion task
+		if s.keyDeleteSvc == nil || s.keyDeleteSvc.TaskService == nil {
+			return &app_errors.APIError{
+				HTTPStatus: http.StatusServiceUnavailable,
+				Code:       "TASK_SERVICE_UNAVAILABLE",
+				Message:    "Cannot delete group with large key count: task service unavailable",
 			}
 		}
-	} else {
-		// Direct deletion for small key counts
-		if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
-			return app_errors.ParseDBError(err)
+
+		// Start async task - will delete keys first, then group
+		_, err := s.StartDeleteGroupTask(ctx, id, relatedGroupIDs, int(totalKeyCount))
+		if err != nil {
+			return err
+		}
+
+		// Return special error with task_id for handler to convert to 202 Accepted
+		return &app_errors.APIError{
+			HTTPStatus: http.StatusAccepted,
+			Code:       "GROUP_DELETE_ASYNC",
+			Message:    fmt.Sprintf("Group deletion started in background. %d keys will be deleted first. Note: This group's keys may not be visible during deletion. You can check progress in the task status.", totalKeyCount),
 		}
 	}
 
-	childGroupCount := int64(len(childGroupIDs))
+	if totalKeyCount > int64(BulkSyncThreshold) {
+		// Medium key count (5K-20K) - commit transaction first, then sync chunked delete
+		// This avoids long-running transaction locks while staying within HTTP timeout
+
+		// Delete hourly stats before committing transaction
+		if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.GroupHourlyStat{}).Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to delete group hourly stats")
+			// Continue anyway - stats cleanup is best-effort
+		}
+
+		if err := tx.Commit().Error; err != nil {
+			return app_errors.ErrDatabase
+		}
+		tx = nil
+
+		// Use RemoveAllKeys for efficient chunked deletion with progress tracking
+		// This reuses the optimized batch deletion logic (1000 per batch, 5ms delay)
+		for _, groupID := range relatedGroupIDs {
+			deleted, err := s.keyProvider.RemoveAllKeys(ctx, groupID, nil)
+			if err != nil {
+				logrus.WithContext(ctx).WithError(err).WithField("groupID", groupID).Error("Failed to delete keys for group")
+				return &app_errors.APIError{
+					HTTPStatus: http.StatusInternalServerError,
+					Code:       "KEY_DELETE_FAILED",
+					Message:    fmt.Sprintf("Failed to delete keys for group %d: %v", groupID, err),
+				}
+			}
+			logrus.WithContext(ctx).WithFields(logrus.Fields{
+				"groupID": groupID,
+				"deleted": deleted,
+			}).Info("Deleted keys for group")
+		}
+
+		// Start new transaction to delete groups
+		tx = s.db.WithContext(ctx).Begin()
+		if err := tx.Error; err != nil {
+			return app_errors.ErrDatabase
+		}
+		defer func() {
+			if tx != nil {
+				tx.Rollback()
+			}
+		}()
+
+		// Re-fetch group for logging (may have been modified)
+		if err := tx.First(&group, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				tx.Rollback()
+				tx = nil
+				return nil
+			}
+			return app_errors.ParseDBError(err)
+		}
+
+		// Delete sub-group relationships again (in case they were added during key deletion)
+		if err := tx.Where("group_id IN ? OR sub_group_id IN ?", relatedGroupIDs, relatedGroupIDs).
+			Delete(&models.GroupSubGroup{}).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
+	} else {
+		// Small key count (<5K) - fast sync delete within transaction
+		// Delete hourly stats first
+		if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.GroupHourlyStat{}).Error; err != nil {
+			logrus.WithContext(ctx).WithError(err).Warn("Failed to delete group hourly stats")
+			// Continue anyway - stats cleanup is best-effort
+		}
+
+		// Use chunked deletion to avoid long-running single DELETE statement
+		const deleteChunkSize = 1000
+		if totalKeyCount > int64(deleteChunkSize) {
+			// Chunked deletion for moderate key counts
+			for {
+				result := tx.Where("group_id IN ?", relatedGroupIDs).Limit(deleteChunkSize).Delete(&models.APIKey{})
+				if result.Error != nil {
+					return app_errors.ParseDBError(result.Error)
+				}
+				if result.RowsAffected == 0 {
+					break
+				}
+			}
+		} else {
+			// Direct deletion for small key counts
+			if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.APIKey{}).Error; err != nil {
+				return app_errors.ParseDBError(err)
+			}
+		}
+	}
+
 	if childGroupCount > 0 {
 		// Delete child groups
 		if err := tx.Where("parent_group_id = ?", id).Delete(&models.Group{}).Error; err != nil {
@@ -1181,6 +1263,199 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	}).Info("Successfully deleted group")
 
 	return nil
+}
+
+// StartDeleteGroupTask initiates an asynchronous group deletion task for groups with large key counts.
+// This method is called when the key count exceeds the sync threshold (>20,000 keys).
+// The task will:
+// 1. Delete all keys for the group and its child groups
+// 2. Delete sub-group relationships
+// 3. Delete child groups
+// 4. Delete the parent group
+// 5. Invalidate caches
+//
+// Returns the task status with task_id for client polling.
+func (s *GroupService) StartDeleteGroupTask(ctx context.Context, groupID uint, relatedGroupIDs []uint, totalKeys int) (*TaskStatus, error) {
+	if s.keyDeleteSvc == nil || s.keyDeleteSvc.TaskService == nil {
+		return nil, &app_errors.APIError{
+			HTTPStatus: http.StatusServiceUnavailable,
+			Code:       "TASK_SERVICE_UNAVAILABLE",
+			Message:    "Task service is not available",
+		}
+	}
+
+	// Get group name for task tracking
+	groupName := ""
+	if s.groupManager != nil {
+		if g, err := s.groupManager.GetGroupByID(groupID); err == nil && g != nil {
+			groupName = g.Name
+		}
+	}
+
+	// Start task
+	status, err := s.keyDeleteSvc.TaskService.StartTask(TaskTypeKeyDelete, groupName, totalKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	// Run deletion in background
+	go s.runAsyncGroupDeletion(groupID, relatedGroupIDs, totalKeys)
+
+	return status, nil
+}
+
+// runAsyncGroupDeletion performs the actual group deletion in background.
+// This is called by StartDeleteGroupTask and runs in a separate goroutine.
+func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uint, totalKeys int) {
+	// Use background context with no timeout for large deletions
+	ctx := context.Background()
+
+	// Progress callback to update task status
+	progressCallback := func(deleted int64) {
+		if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
+			if err := s.keyDeleteSvc.TaskService.UpdateProgress(int(deleted)); err != nil {
+				logrus.Warnf("Failed to update async group delete progress: %v", err)
+			}
+		}
+	}
+
+	// Step 1: Delete all keys for related groups
+	var totalDeleted int64
+	for _, gid := range relatedGroupIDs {
+		deleted, err := s.keyProvider.RemoveAllKeys(ctx, gid, progressCallback)
+		if err != nil {
+			logrus.WithContext(ctx).WithError(err).WithField("groupID", gid).Error("Failed to delete keys in async group deletion")
+			if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
+				_ = s.keyDeleteSvc.TaskService.EndTask(nil, err)
+			}
+			return
+		}
+		totalDeleted += deleted
+	}
+
+	// Step 2: Delete groups in transaction
+	tx := s.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to start transaction for async group deletion")
+		if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
+			_ = s.keyDeleteSvc.TaskService.EndTask(nil, err)
+		}
+		return
+	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Get group for logging
+	var group models.Group
+	if err := tx.First(&group, groupID).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			logrus.WithContext(ctx).WithError(err).Error("Failed to fetch group in async deletion")
+		}
+		// Continue anyway - group may have been deleted by another process
+	}
+
+	// Delete sub-group relationships
+	if err := tx.Where("group_id IN ? OR sub_group_id IN ?", relatedGroupIDs, relatedGroupIDs).
+		Delete(&models.GroupSubGroup{}).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to delete sub-group relationships in async deletion")
+		if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
+			_ = s.keyDeleteSvc.TaskService.EndTask(nil, err)
+		}
+		return
+	}
+
+	// Delete hourly stats
+	if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.GroupHourlyStat{}).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Warn("Failed to delete group hourly stats in async deletion")
+		// Continue anyway - stats cleanup is best-effort
+	}
+
+	// Delete child groups if any
+	if len(relatedGroupIDs) > 1 {
+		childGroupIDs := make([]uint, 0, len(relatedGroupIDs)-1)
+		for _, gid := range relatedGroupIDs {
+			if gid != groupID {
+				childGroupIDs = append(childGroupIDs, gid)
+			}
+		}
+		if len(childGroupIDs) > 0 {
+			if err := tx.Where("id IN ?", childGroupIDs).Delete(&models.Group{}).Error; err != nil {
+				logrus.WithContext(ctx).WithError(err).Error("Failed to delete child groups in async deletion")
+				if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
+					_ = s.keyDeleteSvc.TaskService.EndTask(nil, err)
+				}
+				return
+			}
+		}
+	}
+
+	// Delete the parent group
+	if err := tx.Delete(&models.Group{}, groupID).Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to delete parent group in async deletion")
+		if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
+			_ = s.keyDeleteSvc.TaskService.EndTask(nil, err)
+		}
+		return
+	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to commit async group deletion")
+		if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
+			_ = s.keyDeleteSvc.TaskService.EndTask(nil, err)
+		}
+		return
+	}
+	tx = nil
+
+	// Post-commit cleanup: clear store cache asynchronously
+	go func(keyService *KeyService, groupIDs []uint) {
+		if keyService == nil || keyService.KeyProvider == nil {
+			return
+		}
+		for _, gid := range groupIDs {
+			_ = keyService.KeyProvider.RemoveOrphanedKeysFromStore(gid)
+		}
+	}(s.keyService, relatedGroupIDs)
+
+	// Invalidate caches
+	if err := s.groupManager.Invalidate(); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("Failed to invalidate group cache in async deletion")
+	}
+	s.invalidateGroupListCache()
+	for _, gid := range relatedGroupIDs {
+		s.InvalidateKeyStatsCache(gid)
+	}
+	if s.InvalidateChildGroupsCacheCallback != nil {
+		s.InvalidateChildGroupsCacheCallback()
+	}
+
+	// Soft-delete health metrics
+	if s.OnGroupDeleted != nil {
+		isAggregateGroup := group.GroupType == "aggregate"
+		s.OnGroupDeleted(groupID, isAggregateGroup)
+	}
+
+	// End task with success
+	result := KeyDeleteResult{
+		DeletedCount: int(totalDeleted),
+		IgnoredCount: 0,
+	}
+	if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
+		if err := s.keyDeleteSvc.TaskService.EndTask(result, nil); err != nil {
+			logrus.WithContext(ctx).WithError(err).Error("Failed to end async group deletion task")
+		}
+	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"groupID":      groupID,
+		"groupName":    group.Name,
+		"keysDeleted":  totalDeleted,
+		"childGroups":  len(relatedGroupIDs) - 1,
+	}).Info("Successfully completed async group deletion")
 }
 
 // DeleteAllGroups removes all groups and their associated resources.
@@ -1358,8 +1633,7 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	// Get key count for async task (fast query, no decryption)
-	// Use Model() instead of Table() for type safety and consistency with project style
+	// Get key count for sync/async decision (fast query, no decryption)
 	var keyCount int64
 	if option != "none" {
 		query := tx.Model(&models.APIKey{}).Where("group_id = ?", sourceGroupID)
@@ -1386,20 +1660,78 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
 
-	// Start async copy task if we have keys to copy
-	// Key fetching and decryption are now done asynchronously for faster response
+	// Multi-threshold strategy for key copying (5 tiers based on best practices):
+	// - 0-1,000 keys: Fast sync copy using AddMultipleKeys (<5s, simple and fast)
+	// - 1,000-5,000 keys: Bulk sync copy using BulkImportSvc (5-15s, optimized for medium batches)
+	// - 5,000-10,000 keys: Large sync copy using BulkImportSvc (15-30s, large batches)
+	// - 10,000-20,000 keys: Optimized sync copy (30-60s, very large batches, stays within HTTP timeout)
+	// - >20,000 keys: Async copy (return immediately, process in background to avoid timeout)
+
 	if keyCount > 0 {
-		if _, err := s.keyImportSvc.StartCopyTask(&newGroup, sourceGroupID, option, int(keyCount)); err != nil {
+		tier := GetOperationTier(keyCount)
+
+		switch tier {
+		case TierFastSync:
+			// Tier 1: Small group - fast sync copy using AddMultipleKeys
 			logrus.WithContext(ctx).WithFields(logrus.Fields{
 				"groupId":  newGroup.ID,
 				"keyCount": keyCount,
-			}).WithError(err).Error("failed to start async copy task for group copy")
-			// Don't fail the copy - group is already created
-		} else {
+				"tier":     tier.String(),
+			}).Info("Starting fast sync copy for small group")
+
+			addedCount, ignoredCount, err := s.syncCopyKeys(ctx, &newGroup, sourceGroupID, option)
+			if err != nil {
+				logrus.WithContext(ctx).WithFields(logrus.Fields{
+					"groupId":  newGroup.ID,
+					"keyCount": keyCount,
+				}).WithError(err).Error("failed to sync copy keys")
+				// Don't fail the copy - group is already created
+			} else {
+				logrus.WithContext(ctx).WithFields(logrus.Fields{
+					"groupId":      newGroup.ID,
+					"addedCount":   addedCount,
+					"ignoredCount": ignoredCount,
+				}).Info("Completed fast sync copy for small group")
+			}
+
+		case TierBulkSync, TierLargeSync, TierOptimizedSync:
+			// Tier 2-4: Medium to large groups - sync bulk copy using BulkImportSvc
 			logrus.WithContext(ctx).WithFields(logrus.Fields{
 				"groupId":  newGroup.ID,
 				"keyCount": keyCount,
-			}).Info("Started async copy task for group copy")
+				"tier":     tier.String(),
+			}).Info("Starting bulk sync copy")
+
+			addedCount, ignoredCount, err := s.syncBulkCopyKeys(ctx, &newGroup, sourceGroupID, option)
+			if err != nil {
+				logrus.WithContext(ctx).WithFields(logrus.Fields{
+					"groupId":  newGroup.ID,
+					"keyCount": keyCount,
+				}).WithError(err).Error("failed to bulk sync copy keys")
+				// Don't fail the copy - group is already created
+			} else {
+				logrus.WithContext(ctx).WithFields(logrus.Fields{
+					"groupId":      newGroup.ID,
+					"addedCount":   addedCount,
+					"ignoredCount": ignoredCount,
+				}).Info("Completed bulk sync copy")
+			}
+
+		case TierAsync:
+			// Tier 5: Very large group - async copy to avoid HTTP timeout
+			if _, err := s.keyImportSvc.StartCopyTask(&newGroup, sourceGroupID, option, int(keyCount)); err != nil {
+				logrus.WithContext(ctx).WithFields(logrus.Fields{
+					"groupId":  newGroup.ID,
+					"keyCount": keyCount,
+				}).WithError(err).Error("failed to start async copy task for group copy")
+				// Don't fail the copy - group is already created
+			} else {
+				logrus.WithContext(ctx).WithFields(logrus.Fields{
+					"groupId":  newGroup.ID,
+					"keyCount": keyCount,
+					"tier":     tier.String(),
+				}).Info("Started async copy task for very large group")
+			}
 		}
 	} else {
 		// Log when no keys to copy - helps debug empty source groups or valid_only filter results
@@ -1407,11 +1739,180 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 			"groupId":       newGroup.ID,
 			"sourceGroupId": sourceGroupID,
 			"copyOption":    option,
-		}).Debug("Skipped async copy task - no keys to copy")
+		}).Debug("Skipped copy task - no keys to copy")
 	}
 
 	return &newGroup, nil
 }
+
+// syncCopyKeys performs synchronous key copying for small groups (Tier 1: ≤1000 keys).
+// This provides immediate results for better user experience using simple AddKeys method.
+func (s *GroupService) syncCopyKeys(ctx context.Context, targetGroup *models.Group, sourceGroupID uint, copyOption string) (addedCount, ignoredCount int, err error) {
+	// Fetch source keys from database
+	var sourceKeyData []struct {
+		KeyValue string
+	}
+	query := s.db.WithContext(ctx).Model(&models.APIKey{}).Select("key_value").Where("group_id = ?", sourceGroupID)
+	if copyOption == "valid_only" {
+		query = query.Where("status = ?", models.KeyStatusActive)
+	}
+	if err := query.Scan(&sourceKeyData).Error; err != nil {
+		return 0, 0, fmt.Errorf("failed to fetch source keys: %w", err)
+	}
+
+	if len(sourceKeyData) == 0 {
+		return 0, 0, nil
+	}
+
+	// Decrypt keys
+	decryptedKeys := make([]string, 0, len(sourceKeyData))
+	for _, keyData := range sourceKeyData {
+		decryptedKey, err := s.encryptionSvc.Decrypt(keyData.KeyValue)
+		if err != nil {
+			ignoredCount++
+			continue
+		}
+		decryptedKeys = append(decryptedKeys, decryptedKey)
+	}
+
+	if len(decryptedKeys) == 0 {
+		return 0, ignoredCount, nil
+	}
+
+	// Import keys to target group using AddMultipleKeys method (fast for small batches)
+	keysText := strings.Join(decryptedKeys, "\n")
+	result, err := s.keyService.AddMultipleKeys(targetGroup.ID, keysText)
+	if err != nil {
+		return 0, ignoredCount, fmt.Errorf("failed to import keys: %w", err)
+	}
+
+	return result.AddedCount, result.IgnoredCount + ignoredCount, nil
+}
+
+// syncBulkCopyKeys performs synchronous bulk key copying for medium/large groups (Tier 2-3: 1K-20K keys).
+// This uses BulkImportService for optimized batch insertion with better performance than AddKeys.
+func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models.Group, sourceGroupID uint, copyOption string) (addedCount, ignoredCount int, err error) {
+	// Guard against nil BulkImportSvc
+	if s.bulkImportSvc == nil {
+		// Fallback to simple sync copy if BulkImportSvc is not available
+		return s.syncCopyKeys(ctx, targetGroup, sourceGroupID, copyOption)
+	}
+
+	// Fetch source keys from database
+	var sourceKeyData []struct {
+		KeyValue string
+	}
+	query := s.db.WithContext(ctx).Model(&models.APIKey{}).Select("key_value").Where("group_id = ?", sourceGroupID)
+	if copyOption == "valid_only" {
+		query = query.Where("status = ?", models.KeyStatusActive)
+	}
+	if err := query.Scan(&sourceKeyData).Error; err != nil {
+		return 0, 0, fmt.Errorf("failed to fetch source keys: %w", err)
+	}
+
+	if len(sourceKeyData) == 0 {
+		return 0, 0, nil
+	}
+
+	// Decrypt keys
+	decryptedKeys := make([]string, 0, len(sourceKeyData))
+	decryptErrors := 0
+	for _, keyData := range sourceKeyData {
+		decryptedKey, err := s.encryptionSvc.Decrypt(keyData.KeyValue)
+		if err != nil {
+			decryptErrors++
+			continue
+		}
+		decryptedKeys = append(decryptedKeys, decryptedKey)
+	}
+
+	if len(decryptedKeys) == 0 {
+		return 0, decryptErrors, nil
+	}
+
+	// Get existing key hashes for deduplication
+	var existingHashes []string
+	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).Where("group_id = ?", targetGroup.ID).Pluck("key_hash", &existingHashes).Error; err != nil {
+		return 0, decryptErrors, fmt.Errorf("failed to check existing keys: %w", err)
+	}
+
+	existingHashMap := make(map[string]bool, len(existingHashes))
+	for _, h := range existingHashes {
+		existingHashMap[h] = true
+	}
+
+	// Prepare keys for bulk import
+	newKeysToCreate := make([]models.APIKey, 0, len(decryptedKeys))
+	uniqueNewKeys := make(map[string]bool, len(decryptedKeys))
+	duplicateCount := 0
+
+	for _, keyVal := range decryptedKeys {
+		trimmedKey := strings.TrimSpace(keyVal)
+		if trimmedKey == "" || uniqueNewKeys[trimmedKey] {
+			duplicateCount++
+			continue
+		}
+
+		keyHash := s.encryptionSvc.Hash(trimmedKey)
+		if existingHashMap[keyHash] {
+			duplicateCount++
+			continue
+		}
+
+		encryptedKey, err := s.encryptionSvc.Encrypt(trimmedKey)
+		if err != nil {
+			logrus.WithError(err).Debug("Failed to encrypt key, skipping")
+			duplicateCount++
+			continue
+		}
+
+		uniqueNewKeys[trimmedKey] = true
+		newKeysToCreate = append(newKeysToCreate, models.APIKey{
+			GroupID:  targetGroup.ID,
+			KeyValue: encryptedKey,
+			KeyHash:  keyHash,
+			Status:   models.KeyStatusActive,
+		})
+	}
+
+	if len(newKeysToCreate) == 0 {
+		return 0, decryptErrors + duplicateCount, nil
+	}
+
+	// Use bulk import service for fast insertion
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"groupId":  targetGroup.ID,
+		"keyCount": len(newKeysToCreate),
+	}).Info("Starting bulk import for copied keys")
+
+	if err := s.bulkImportSvc.BulkInsertAPIKeys(newKeysToCreate); err != nil {
+		return 0, decryptErrors + duplicateCount, fmt.Errorf("bulk import failed: %w", err)
+	}
+
+	// Load keys to memory store after successful import
+	if s.keyProvider != nil {
+		if err := s.keyProvider.LoadGroupKeysToStore(targetGroup.ID); err != nil {
+			logrus.WithContext(ctx).WithFields(logrus.Fields{
+				"groupId": targetGroup.ID,
+				"error":   err,
+			}).Error("Failed to load keys to store after bulk import")
+		}
+	}
+
+	// Invalidate cache after adding keys
+	if s.keyService != nil && s.keyService.CacheInvalidationCallback != nil {
+		s.keyService.CacheInvalidationCallback(targetGroup.ID)
+	}
+
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"groupId":      targetGroup.ID,
+		"addedCount":   len(newKeysToCreate),
+		"ignoredCount": decryptErrors + duplicateCount,
+	}).Info("Completed bulk import for copied keys")
+
+	return len(newKeysToCreate), decryptErrors + duplicateCount, nil
+}
+
 
 func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupStats, error) {
 	var group models.Group

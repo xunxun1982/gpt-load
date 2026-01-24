@@ -415,5 +415,5 @@ func (s *CronChecker) isBusy() bool {
 	if !st.IsRunning {
 		return false
 	}
-	return st.TaskType == "KEY_IMPORT" || st.TaskType == "KEY_DELETE"
+	return st.TaskType == "KEY_IMPORT" || st.TaskType == "KEY_DELETE" || st.TaskType == "KEY_RESTORE"
 }

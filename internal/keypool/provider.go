@@ -827,12 +827,12 @@ func (p *KeyProvider) RemoveInvalidKeys(groupID uint) (int64, error) {
 
 // RemoveAllKeys removes all keys in the group using chunked deletion with dialect-specific SQL.
 // This minimizes lock holding time and works across SQLite, MySQL, and PostgreSQL.
+// Optimized for large-scale deletions (500K+ records) with progress tracking.
 // global deletion semaphore to serialize heavy group deletions (especially for SQLite)
 var deleteSem = make(chan struct{}, 1)
 
-func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint) (int64, error) {
-	const chunkSize = 500
-	const maxRetries = 5
+func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressCallback func(deleted int64)) (int64, error) {
+	const maxRetries = 3
 
 	// serialize deletions
 	deleteSem <- struct{}{}
@@ -841,15 +841,55 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint) (int64, e
 	totalDeleted := int64(0)
 	dial := p.db.Dialector.Name()
 	retries := 0
+	lastLoggedPercent := 0
+
+	// Get total count for progress reporting and dynamic batch sizing (with timeout to avoid blocking)
+	var totalCount int64
+	countCtx, countCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := p.db.WithContext(countCtx).Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalCount).Error; err != nil {
+		logrus.WithError(err).Warn("Failed to get total count for progress tracking, continuing without progress")
+		totalCount = 0
+	}
+	countCancel()
+
+	// Dynamic batch size and timeout based on total count for optimal performance
+	// Strategy: Larger batches for large datasets to minimize round trips
+	// - Small datasets (≤5K): 1000/batch for quick completion
+	// - Medium datasets (≤20K): 2000/batch for balance
+	// - Large datasets (≤50K): 5000/batch to reduce round trips
+	// - Very large datasets (>50K): 10000/batch to minimize round trips
+	//   Example: 500K keys = 50 batches instead of 500 batches with 1000/batch
+	var chunkSize int
+	var batchTimeout time.Duration
+	if totalCount <= 5000 {
+		chunkSize = 1000
+		batchTimeout = 1000 * time.Millisecond
+	} else if totalCount <= 20000 {
+		chunkSize = 2000
+		batchTimeout = 2000 * time.Millisecond
+	} else if totalCount <= 50000 {
+		chunkSize = 5000
+		batchTimeout = 3000 * time.Millisecond
+	} else {
+		// >50K: Use large batches to significantly reduce total time
+		chunkSize = 10000
+		batchTimeout = 5000 * time.Millisecond
+	}
+
+	if totalCount > 0 {
+		estimatedBatches := (totalCount + int64(chunkSize) - 1) / int64(chunkSize)
+		logrus.Infof("Starting deletion of %d keys in group %d (batch size: %d, estimated batches: %d)", totalCount, groupID, chunkSize, estimatedBatches)
+	}
 
 	for {
 		// Check if context is canceled before each batch
 		if err := ctx.Err(); err != nil {
+			logrus.Infof("Deletion canceled after deleting %d keys", totalDeleted)
 			return totalDeleted, err
 		}
 
 		var res *gorm.DB
-		batchCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
 		switch dial {
 		case "sqlite":
 			res = p.db.WithContext(batchCtx).Exec("DELETE FROM api_keys WHERE rowid IN (SELECT rowid FROM api_keys WHERE group_id = ? LIMIT ?)", groupID, chunkSize)
@@ -866,35 +906,53 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint) (int64, e
 			// Retry with exponential backoff on transient/timeout errors
 			if utils.IsTransientDBError(res.Error) {
 				if retries >= maxRetries {
+					logrus.WithError(res.Error).Errorf("Max retries reached after deleting %d keys", totalDeleted)
 					return totalDeleted, res.Error
 				}
-				delay := time.Duration(25<<retries) * time.Millisecond
-				if delay > 500*time.Millisecond {
-					delay = 500 * time.Millisecond
+				delay := time.Duration(50<<retries) * time.Millisecond
+				if delay > 1000*time.Millisecond {
+					delay = 1000 * time.Millisecond
 				}
 				logrus.WithError(res.Error).Debugf("Transient delete failure; retrying in %v (attempt %d/%d)", delay, retries+1, maxRetries)
 				time.Sleep(delay)
 				retries++
 				continue
 			}
+			logrus.WithError(res.Error).Errorf("Deletion failed after deleting %d keys", totalDeleted)
 			return totalDeleted, res.Error
 		}
 		retries = 0
 
 		affected := res.RowsAffected
 		totalDeleted += affected
-		if affected == 0 || affected < chunkSize {
+
+		// Progress callback for task tracking
+		if progressCallback != nil {
+			progressCallback(totalDeleted)
+		}
+
+		// Log progress at 10% intervals
+		if totalCount > 0 {
+			currentPercent := int((totalDeleted * 100) / totalCount)
+			if currentPercent >= lastLoggedPercent+10 && currentPercent < 100 {
+				logrus.Infof("Deletion progress: %d%% (%d/%d keys)", currentPercent, totalDeleted, totalCount)
+				lastLoggedPercent = currentPercent
+			}
+		}
+
+		if affected == 0 || affected < int64(chunkSize) {
 			break
 		}
 
-		// Short yield to let other operations proceed
-		time.Sleep(10 * time.Millisecond)
+		// Reduced delay for faster processing
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	// Clear active key list for the group to prevent stale usage
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 	_ = p.store.Delete(activeKeysListKey)
 
+	logrus.Infof("Completed deletion of %d keys in group %d", totalDeleted, groupID)
 	return totalDeleted, nil
 }
 

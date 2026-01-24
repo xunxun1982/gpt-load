@@ -328,8 +328,8 @@ func TestClearAllKeys(t *testing.T) {
 	_, err := svc.AddMultipleKeys(group.ID, keysText)
 	require.NoError(t, err)
 
-	// Clear all keys
-	count, err := svc.ClearAllKeys(context.Background(), group.ID)
+	// Clear all keys using KeyProvider directly
+	count, err := svc.KeyProvider.RemoveAllKeys(context.Background(), group.ID, nil)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), count)
 

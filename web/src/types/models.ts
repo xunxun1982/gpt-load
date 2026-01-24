@@ -190,7 +190,7 @@ export interface RequestStats {
   failure_rate: number;
 }
 
-export type TaskType = "KEY_VALIDATION" | "KEY_IMPORT" | "KEY_DELETE";
+export type TaskType = "KEY_VALIDATION" | "KEY_IMPORT" | "KEY_DELETE" | "KEY_RESTORE";
 
 export interface KeyValidationResult {
   invalid_keys: number;

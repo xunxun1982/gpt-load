@@ -309,7 +309,7 @@ func TestRemoveAllKeys(t *testing.T) {
 
 	// Remove all keys
 	ctx := context.Background()
-	deletedCount, err := provider.RemoveAllKeys(ctx, group.ID)
+	deletedCount, err := provider.RemoveAllKeys(ctx, group.ID, nil)
 	require.NoError(t, err)
 	assert.Equal(t, int64(10), deletedCount)
 

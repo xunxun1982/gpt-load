@@ -863,7 +863,7 @@ func (s *AutoCheckinService) isBusy() bool {
 	if !st.IsRunning {
 		return false
 	}
-	return st.TaskType == "KEY_IMPORT" || st.TaskType == "KEY_DELETE"
+	return st.TaskType == "KEY_IMPORT" || st.TaskType == "KEY_DELETE" || st.TaskType == "KEY_RESTORE"
 }
 
 // closeIdleConnections closes idle connections for all HTTP clients to free resources.

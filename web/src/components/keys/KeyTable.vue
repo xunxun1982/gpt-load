@@ -172,7 +172,8 @@ watch(
       const shouldRefresh =
         appState.lastCompletedTask.taskType === "KEY_VALIDATION" ||
         appState.lastCompletedTask.taskType === "KEY_IMPORT" ||
-        appState.lastCompletedTask.taskType === "KEY_DELETE";
+        appState.lastCompletedTask.taskType === "KEY_DELETE" ||
+        appState.lastCompletedTask.taskType === "KEY_RESTORE";
 
       if (isCurrentGroup && shouldRefresh) {
         // Refresh key list for current group

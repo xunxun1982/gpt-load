@@ -12,13 +12,11 @@ func (s *Server) shouldDegradeReadDuringTask(groupName string) bool {
 		return false
 	}
 
-	if status.TaskType != services.TaskTypeKeyImport && status.TaskType != services.TaskTypeKeyDelete {
+	if status.TaskType != services.TaskTypeKeyImport && status.TaskType != services.TaskTypeKeyDelete && status.TaskType != services.TaskTypeKeyRestore {
 		return false
 	}
 
-	if s.DB.Dialector.Name() == "sqlite" {
-		return true
-	}
-
+	// Only degrade reads for the group being operated on, not all groups
+	// This prevents affecting other groups during large delete/import operations
 	return groupName != "" && status.GroupName == groupName
 }

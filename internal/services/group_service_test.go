@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -228,6 +229,67 @@ func TestDeleteGroup(t *testing.T) {
 	err = db.Model(&models.Group{}).Where("id = ?", group.ID).Count(&count).Error
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
+}
+
+// TestDeleteGroupWithKeys tests group deletion with different key counts (multi-threshold strategy)
+func TestDeleteGroupWithKeys(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	t.Run("SmallKeyCount_SyncDelete", func(t *testing.T) {
+		// Create a group with small key count (<5000)
+		params := GroupCreateParams{
+			Name:               "small-keys-group",
+			GroupType:          "standard",
+			Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+			ChannelType:        "openai",
+			TestModel:          "gpt-3.5-turbo",
+			ValidationEndpoint: "/v1/chat/completions",
+		}
+		group, err := svc.CreateGroup(context.Background(), params)
+		require.NoError(t, err)
+
+		// Add 100 keys
+		for i := 0; i < 100; i++ {
+			key := models.APIKey{
+				GroupID:  group.ID,
+				KeyHash:  fmt.Sprintf("hash-%d", i),
+				KeyValue: fmt.Sprintf("sk-test-key-%d", i),
+				Notes:    fmt.Sprintf("Test key %d", i),
+			}
+			err := db.Create(&key).Error
+			require.NoError(t, err)
+		}
+
+		// Delete should succeed synchronously
+		err = svc.DeleteGroup(context.Background(), group.ID)
+		require.NoError(t, err)
+
+		// Verify group is deleted
+		var count int64
+		err = db.Model(&models.Group{}).Where("id = ?", group.ID).Count(&count).Error
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), count)
+
+		// Verify keys are deleted
+		var keyCount int64
+		err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&keyCount).Error
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), keyCount)
+	})
+
+	t.Run("MediumKeyCount_SyncChunkedDelete", func(t *testing.T) {
+		// This test would require 5000-20000 keys which is too slow for unit tests
+		// The logic is covered by the implementation and can be tested in integration tests
+		t.Skip("Skipped: requires 5000+ keys, too slow for unit tests")
+	})
+
+	t.Run("LargeKeyCount_AsyncDelete", func(t *testing.T) {
+		// This test would require 20000+ keys which is too slow for unit tests
+		// The async logic is covered by the implementation and can be tested in integration tests
+		t.Skip("Skipped: requires 20000+ keys, too slow for unit tests")
+	})
 }
 
 // TestGetGroupStats tests statistics retrieval

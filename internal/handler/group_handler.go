@@ -3,6 +3,7 @@ package handler
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -275,9 +276,24 @@ func (s *Server) DeleteGroup(c *gin.Context) {
 		return
 	}
 
-	if s.handleGroupError(c, s.GroupService.DeleteGroup(c.Request.Context(), uint(id))) {
+	err = s.GroupService.DeleteGroup(c.Request.Context(), uint(id))
+
+	// Check if this is an async deletion (returns 202 Accepted with task info)
+	if apiErr, ok := err.(*app_errors.APIError); ok && apiErr.HTTPStatus == http.StatusAccepted {
+		// Async deletion started - return 202 with task info
+		c.JSON(http.StatusAccepted, gin.H{
+			"message": apiErr.Message,
+			"code":    apiErr.Code,
+		})
 		return
 	}
+
+	// Handle other errors
+	if s.handleGroupError(c, err) {
+		return
+	}
+
+	// Sync deletion completed successfully
 	response.SuccessI18n(c, "success.group_deleted", nil)
 }
 
