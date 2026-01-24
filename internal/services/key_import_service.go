@@ -335,7 +335,8 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 	// Store counts before releasing memory
 	addedCount := len(newKeysToCreate)
 
-	// Note: Setting local variable to nil has no GC effect`n// Go's GC automatically reclaims memory when function returns
+	// Note: Setting local variable to nil has no GC effect
+	// Go's GC automatically reclaims memory when function returns
 	newKeysToCreate = nil
 
 	// Load keys to memory store after successful import
@@ -425,7 +426,8 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
-	// Note: Setting local variable to nil has no GC effect`n// Kept for code clarity but Go's GC handles this automatically
+	// Note: Setting local variable to nil has no GC effect
+	// Kept for code clarity but Go's GC handles this automatically
 	existingHashes = nil
 
 	// Prepare keys for bulk import
@@ -469,7 +471,8 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 		}
 	}
 
-	// Note: Setting local variables to nil has no GC effect`n// Go's GC automatically reclaims memory when variables go out of scope
+	// Note: Setting local variables to nil has no GC effect
+	// Go's GC automatically reclaims memory when variables go out of scope
 	existingHashMap = nil
 	uniqueNewKeys = nil
 
@@ -500,7 +503,8 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	// Store counts before releasing memory
 	addedCount := len(newKeysToCreate)
 
-	// Note: Setting local variable to nil has no GC effect`n// Go's GC automatically reclaims memory when function returns
+	// Note: Setting local variable to nil has no GC effect
+	// Go's GC automatically reclaims memory when function returns
 	newKeysToCreate = nil
 
 	// Load keys to memory store after successful import

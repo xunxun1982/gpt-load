@@ -6,7 +6,9 @@ import (
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
+	"io"
 	"log"
+	"mime/multipart"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +19,25 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
+
+// multipartCleanupReader wraps a multipart.File and ensures temporary files
+// are cleaned up only after the file is closed by the async goroutine.
+// This prevents premature deletion of temp files by net/http's automatic cleanup.
+type multipartCleanupReader struct {
+	multipart.File
+	cleanup func() error
+}
+
+// Close closes the underlying file and then removes multipart temporary files.
+func (r *multipartCleanupReader) Close() error {
+	err := r.File.Close()
+	if r.cleanup != nil {
+		if cerr := r.cleanup(); err == nil {
+			err = cerr
+		}
+	}
+	return err
+}
 
 // validateGroupIDFromQuery validates and parses group ID from a query parameter.
 // Returns 0 and false if validation fails (error is already sent to client)
@@ -283,11 +304,24 @@ func (s *Server) AddMultipleKeysAsyncStream(c *gin.Context) {
 		"file_size": header.Size,
 	}).Info("AddMultipleKeysAsyncStream: File received, starting streaming import")
 
+	// Wrap file with cleanup reader to defer multipart temp file removal
+	// until the async goroutine finishes processing.
+	// Without this wrapper, net/http would automatically call MultipartForm.RemoveAll()
+	// when the handler returns, deleting temp files while the goroutine is still reading.
+	reader := io.Reader(file)
+	if mf := c.Request.MultipartForm; mf != nil {
+		reader = &multipartCleanupReader{File: file, cleanup: mf.RemoveAll}
+		// Prevent net/http from auto-cleaning temp files on handler return
+		c.Request.MultipartForm = nil
+	}
+
 	// Start streaming import task
-	taskStatus, err := s.KeyImportService.StartStreamingImportTask(group, file, header.Size)
+	taskStatus, err := s.KeyImportService.StartStreamingImportTask(group, reader, header.Size)
 	if err != nil {
-		// Close file if task start fails to prevent file descriptor leak
-		_ = file.Close()
+		// Close reader (and cleanup temp files) if task start fails
+		if rc, ok := reader.(io.Closer); ok {
+			_ = rc.Close()
+		}
 		logrus.WithFields(logrus.Fields{
 			"group_id": groupID,
 			"error":    err,
