@@ -130,7 +130,7 @@ export default {
   routingStep1: "① 路径识别格式（Chat/Claude/Gemini/Image/Audio）",
   routingStep2: "② 提取模型名称",
   routingStep3: "③ 过滤：模型可用性 + 密钥权限",
-  routingStep4: "④ 过滤：渠道兼容性 + 健康阈值 + 启用状态",
+  routingStep4: "④ 过滤：渠道兼容性 + 健康阈值 + 启用状态（Claude格式需验证目标渠道的CC支持）",
   routingStep5: "⑤ 优先：原生渠道 > 兼容渠道",
   routingStep6: "⑥ 选择：最小优先级 → 权重随机",
   routingStep7: "⑦ 转发：/hub/v1/* → /proxy/分组名/v1/*",

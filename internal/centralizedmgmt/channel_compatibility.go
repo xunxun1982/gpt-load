@@ -14,61 +14,66 @@ type ChannelCompatibility struct {
 
 // channelCompatibilityMap maps relay formats to their compatible channel types.
 // Priority order: Native channel first, then compatible channels.
+// Note: CC (Claude Code) support only converts Claude format to other formats (one-way conversion).
 var channelCompatibilityMap = map[types.RelayFormat]ChannelCompatibility{
-	// OpenAI formats - native to OpenAI, compatible with Azure and other OpenAI-compatible providers
+	// OpenAI formats - native to OpenAI only (no Azure in this project)
 	types.RelayFormatOpenAIChat: {
 		Native:     "openai",
-		Compatible: []string{"azure", "anthropic", "gemini", "codex"}, // CC support enables cross-channel
+		Compatible: []string{},
 	},
 	types.RelayFormatOpenAICompletion: {
 		Native:     "openai",
-		Compatible: []string{"azure"},
+		Compatible: []string{},
 	},
 	types.RelayFormatOpenAIEmbedding: {
 		Native:     "openai",
-		Compatible: []string{"azure"}, // Only OpenAI-compatible channels support embeddings
+		Compatible: []string{},
 	},
 	types.RelayFormatOpenAIImage: {
 		Native:     "openai",
-		Compatible: []string{"azure"},
+		Compatible: []string{},
 	},
 	types.RelayFormatOpenAIImageEdit: {
 		Native:     "openai",
-		Compatible: []string{"azure"},
+		Compatible: []string{},
 	},
 	types.RelayFormatOpenAIAudioTranscription: {
 		Native:     "openai",
-		Compatible: []string{"azure"},
+		Compatible: []string{},
 	},
 	types.RelayFormatOpenAIAudioTranslation: {
 		Native:     "openai",
-		Compatible: []string{"azure"},
+		Compatible: []string{},
 	},
 	types.RelayFormatOpenAIAudioSpeech: {
 		Native:     "openai",
-		Compatible: []string{"azure"},
+		Compatible: []string{},
 	},
 	types.RelayFormatOpenAIModeration: {
 		Native:     "openai",
-		Compatible: []string{"azure"},
+		Compatible: []string{},
 	},
 
 	// Claude format - native to Anthropic, compatible with OpenAI/Gemini/Codex via CC support
+	// CC support converts Claude Messages format to target channel format (one-way conversion)
+	// IMPORTANT: Compatible channels must have cc_support enabled in their group config.
+	// This static map only defines potential compatibility; actual routing requires runtime
+	// validation of the cc_support flag in SelectGroupForModel.
 	types.RelayFormatClaude: {
 		Native:     "anthropic",
-		Compatible: []string{"openai", "azure", "gemini", "codex"}, // CC support enables conversion
+		Compatible: []string{"openai", "gemini", "codex"}, // Requires cc_support enabled
 	},
 
 	// Codex format - native to Codex
 	types.RelayFormatCodex: {
 		Native:     "codex",
-		Compatible: []string{}, // Codex format is specific to Codex channel
+		Compatible: []string{},
 	},
 
 	// Gemini format - native to Gemini
 	types.RelayFormatGemini: {
 		Native:     "gemini",
-		Compatible: []string{}, // Gemini format is specific to Gemini channel
+		Compatible: []string{},
 	},
 }
 

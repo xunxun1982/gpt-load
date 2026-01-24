@@ -473,9 +473,10 @@ func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
 // Selection algorithm:
 // 1. Filter by model availability
 // 2. Filter by channel compatibility with relay format
-// 3. Prioritize native channel type for the format
-// 4. Filter by enabled status and health score
-// 5. Select by sort order (priority) and weight
+// 3. For Claude format, verify target channel has cc_support enabled
+// 4. Prioritize native channel type for the format
+// 5. Filter by enabled status and health score
+// 6. Select by sort order (priority) and weight
 func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, relayFormat types.RelayFormat) (*models.Group, error) {
 	pool, err := s.GetModelPool(ctx)
 	if err != nil {
@@ -501,6 +502,35 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 	// Get health score threshold once
 	healthThreshold := s.GetHealthScoreThreshold()
 
+	// For Claude format requests, we need to check cc_support config
+	// Load group configs if this is a Claude format request to non-Anthropic channels
+	needCCSupport := relayFormat == types.RelayFormatClaude
+	var groupConfigs map[uint]*models.Group
+	if needCCSupport {
+		groupConfigs = make(map[uint]*models.Group)
+		// Collect group IDs that need config check (non-Anthropic channels)
+		var groupIDs []uint
+		for _, source := range allSources {
+			if source.ChannelType != "anthropic" {
+				groupIDs = append(groupIDs, source.GroupID)
+			}
+		}
+		// Load configs in batch for performance
+		if len(groupIDs) > 0 {
+			var groups []models.Group
+			if err := s.db.WithContext(ctx).
+				Select("id, channel_type, config").
+				Where("id IN ?", groupIDs).
+				Find(&groups).Error; err != nil {
+				logrus.WithError(err).Warn("Failed to load group configs for CC support check")
+			} else {
+				for i := range groups {
+					groupConfigs[groups[i].ID] = &groups[i]
+				}
+			}
+		}
+	}
+
 	// Filter by channel compatibility and health
 	// Separate native and compatible channels for priority handling
 	var nativeSources []ModelSource
@@ -516,6 +546,28 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 		// Check channel compatibility
 		if !IsChannelCompatible(source.ChannelType, relayFormat) {
 			continue
+		}
+
+		// For Claude format requests to non-Anthropic channels, verify cc_support is enabled
+		if needCCSupport && source.ChannelType != "anthropic" {
+			group, ok := groupConfigs[source.GroupID]
+			if !ok {
+				// Config not loaded, skip this source for safety
+				logrus.WithFields(logrus.Fields{
+					"group_id":     source.GroupID,
+					"channel_type": source.ChannelType,
+				}).Debug("Skipping source: config not loaded for CC support check")
+				continue
+			}
+			// Check if cc_support is enabled
+			if !s.isGroupCCSupportEnabled(group) {
+				logrus.WithFields(logrus.Fields{
+					"group_id":     source.GroupID,
+					"group_name":   source.GroupName,
+					"channel_type": source.ChannelType,
+				}).Debug("Skipping source: cc_support not enabled for Claude format request")
+				continue
+			}
 		}
 
 		// Separate native and compatible channels
@@ -1084,6 +1136,41 @@ func (s *HubService) parseCustomModelNames(customModelNamesJSON []byte) []string
 	}
 
 	return modelNames
+}
+
+// isGroupCCSupportEnabled checks if cc_support is enabled for the given group.
+// CC support allows Claude format requests to be converted to the target channel format.
+// Only applicable to openai, gemini, and codex channel types.
+func (s *HubService) isGroupCCSupportEnabled(group *models.Group) bool {
+	if group == nil {
+		return false
+	}
+	// Only openai, gemini, and codex channels support CC mode
+	if group.ChannelType != "openai" && group.ChannelType != "gemini" && group.ChannelType != "codex" {
+		return false
+	}
+	// Check cc_support flag in config
+	if group.Config == nil {
+		return false
+	}
+	raw, ok := group.Config["cc_support"]
+	if !ok || raw == nil {
+		return false
+	}
+	// Handle multiple types for flexibility
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
+	default:
+		return false
+	}
 }
 
 // ErrInvalidPriority is returned when priority value is out of range.
