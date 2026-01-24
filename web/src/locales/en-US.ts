@@ -642,7 +642,7 @@ export default {
     fileSelected: "File Selected",
     fileName: "File Name",
     fileSize: "File Size",
-    fileSizeExceeded: "File size exceeds limit (max 50MB)",
+    fileSizeExceeded: "File size exceeds limit (max 150MB)",
     invalidFileType: "Invalid file type, only .txt files are supported",
     fileLoadedSuccess: "File {name} loaded successfully",
     fileReadError: "Failed to read file",

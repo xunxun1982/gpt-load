@@ -625,7 +625,7 @@ export default {
     fileSelected: "ファイルが選択されました",
     fileName: "ファイル名",
     fileSize: "ファイルサイズ",
-    fileSizeExceeded: "ファイルサイズが制限を超えています（最大50MB）",
+    fileSizeExceeded: "ファイルサイズが制限を超えています（最大150MB）",
     invalidFileType: "無効なファイルタイプです。.txtファイルのみサポートされています",
     fileLoadedSuccess: "ファイル {name} を読み込みました",
     fileReadError: "ファイルの読み込みに失敗しました",

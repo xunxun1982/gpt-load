@@ -39,6 +39,12 @@ const canSubmit = computed(() => {
   }
 });
 
+// Computed property for key count to avoid recalculation on re-renders
+const keyCount = computed(() => {
+  if (!fileContent.value) return 0;
+  return fileContent.value.split("\n").filter(line => line.trim()).length;
+});
+
 // Watch dialog show state
 watch(
   () => props.show,
@@ -79,16 +85,16 @@ async function handleFileChange(event: Event) {
     return;
   }
 
-  // Check file size (limit to 50MB to support large key files)
-  const maxSize = 50 * 1024 * 1024; // 50MB
+  // Check file size (limit to 150MB to support large key files)
+  const maxSize = 150 * 1024 * 1024; // 150MB
   if (file.size > maxSize) {
     window.$message.error(t("keys.fileSizeExceeded"));
     target.value = "";
     return;
   }
 
-  // Check file type (only .txt files)
-  if (!file.name.endsWith(".txt")) {
+  // Check file type (only .txt files, case-insensitive)
+  if (!file.name.toLowerCase().endsWith(".txt")) {
     window.$message.error(t("keys.invalidFileType"));
     target.value = "";
     return;
@@ -186,10 +192,7 @@ async function handleSubmit() {
         <div>
           <div>{{ t("keys.fileName") }}: {{ selectedFile.name }}</div>
           <div>{{ t("keys.fileSize") }}: {{ (selectedFile.size / 1024).toFixed(2) }} KB</div>
-          <div>
-            {{ t("keys.keyCount") }}:
-            {{ fileContent.split("\n").filter(line => line.trim()).length }}
-          </div>
+          <div>{{ t("keys.keyCount") }}: {{ keyCount }}</div>
         </div>
       </n-alert>
 

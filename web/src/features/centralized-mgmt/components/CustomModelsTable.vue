@@ -108,9 +108,11 @@ async function saveCustomModels() {
     });
 
     // Update local data
-    const group = groups.value.find(g => g.group_id === editingGroup.value!.group_id);
-    if (group) {
-      group.custom_model_names = editingModels.value.filter(m => m.trim() !== "");
+    if (editingGroup.value) {
+      const group = groups.value.find(g => g.group_id === editingGroup.value?.group_id);
+      if (group) {
+        group.custom_model_names = editingModels.value.filter(m => m.trim() !== "");
+      }
     }
 
     showEditModal.value = false;

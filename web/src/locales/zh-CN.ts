@@ -614,7 +614,7 @@ export default {
     fileSelected: "已选择文件",
     fileName: "文件名",
     fileSize: "文件大小",
-    fileSizeExceeded: "文件大小超过限制（最大50MB）",
+    fileSizeExceeded: "文件大小超过限制（最大150MB）",
     invalidFileType: "无效的文件类型，仅支持.txt文件",
     fileLoadedSuccess: "文件 {name} 加载成功",
     fileReadError: "文件读取失败",

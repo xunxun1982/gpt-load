@@ -227,12 +227,9 @@ TaskCompleted:
 // TestKeyImportService_EmptyInput tests handling of empty input
 func TestKeyImportService_EmptyInput(t *testing.T) {
 	t.Parallel()
-	_, importSvc, _, _ := setupKeyImportServiceTest(t)
+	db, importSvc, _, _ := setupKeyImportServiceTest(t)
 
-	group := models.Group{
-		ID:   1,
-		Name: "test-group-empty",
-	}
+	group := createTestGroupForImport(t, db, "test-group-empty")
 
 	// Test with empty string
 	_, err := importSvc.StartImportTask(&group, "")
@@ -248,7 +245,7 @@ func TestKeyImportService_EmptyInput(t *testing.T) {
 // TestKeyImportService_ConcurrentImport tests that only one import can run at a time
 func TestKeyImportService_ConcurrentImport(t *testing.T) {
 	t.Parallel()
-	db, importSvc, _, _ := setupKeyImportServiceTest(t)
+	db, importSvc, taskSvc, _ := setupKeyImportServiceTest(t)
 
 	group := createTestGroupForImport(t, db, "test-group-concurrent")
 
@@ -263,6 +260,23 @@ func TestKeyImportService_ConcurrentImport(t *testing.T) {
 	_, err = importSvc.StartImportTask(&group, keysText2)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "task is already running")
+
+	// Wait for the first task to finish to avoid race with cleanup
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-timeout:
+			t.Fatal("Task did not complete within timeout")
+		case <-ticker.C:
+			status, err := taskSvc.GetTaskStatus()
+			require.NoError(t, err)
+			if !status.IsRunning {
+				return
+			}
+		}
+	}
 }
 
 // TestKeyImportService_MixedFormat tests importing keys with mixed formats
