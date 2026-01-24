@@ -60,10 +60,9 @@ func TestGetTaskStatus_Caching(t *testing.T) {
 	// Both responses should be identical
 	assert.Equal(t, w1.Body.String(), w2.Body.String())
 
-	// Wait for cache to expire (500ms TTL + buffer)
-	// Note: Fixed sleep is intentional for cache TTL testing. Polling would add complexity
-	// without benefit since we're testing time-based cache expiration, not async completion.
-	time.Sleep(600 * time.Millisecond)
+	// Wait for cache to expire (TTL + buffer for reliability)
+	// Use cache TTL instead of magic number to ensure test reliability
+	time.Sleep(globalTaskStatusCache.cacheTTL + 150*time.Millisecond)
 
 	// Update task progress
 	err = taskService.UpdateProgress(500)

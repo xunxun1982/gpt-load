@@ -276,9 +276,6 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
-	// Note: Setting local variable to nil has no GC effect
-	// Kept for code clarity but Go's GC handles this automatically
-	existingHashes = nil
 
 	// Prepare keys for bulk import
 	newKeysToCreate := make([]models.APIKey, 0, len(keys))
@@ -428,11 +425,6 @@ func (s *KeyImportService) runImport(group *models.Group, keys []string) {
 func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	startTime := time.Now()
 
-	// Defer memory cleanup to ensure large objects are released
-	defer func() {
-		keys = nil
-	}()
-
 	// Get existing key hashes for deduplication
 	var existingHashes []string
 	if err := s.KeyService.DB.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Pluck("key_hash", &existingHashes).Error; err != nil {
@@ -446,9 +438,6 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
-	// Note: Setting local variable to nil has no GC effect
-	// Kept for code clarity but Go's GC handles this automatically
-	existingHashes = nil
 
 	// Prepare keys for bulk import
 	newKeysToCreate := make([]models.APIKey, 0, len(keys))
@@ -611,9 +600,6 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
-	// Note: Setting local variable to nil has no GC effect
-	// Go's GC automatically reclaims memory when variables go out of scope
-	existingHashes = nil
 
 	// Initialize counters
 	totalProcessed := 0

@@ -1325,16 +1325,20 @@ func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uin
 	ctx := context.Background()
 
 	// Progress callback to update task status
+	// Offset by totalDeleted to ensure monotonic progress across multiple groups
+	// Each RemoveAllKeys reports cumulative progress for its group (0, 100, 200...),
+	// so we add the accumulated total from previous groups to get overall progress
+	var totalDeleted int64
 	progressCallback := func(deleted int64) {
 		if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
-			if err := s.keyDeleteSvc.TaskService.UpdateProgress(int(deleted)); err != nil {
+			// Add totalDeleted to current group's progress for monotonic overall progress
+			if err := s.keyDeleteSvc.TaskService.UpdateProgress(int(totalDeleted + deleted)); err != nil {
 				logrus.Warnf("Failed to update async group delete progress: %v", err)
 			}
 		}
 	}
 
 	// Step 1: Delete all keys for related groups
-	var totalDeleted int64
 	for _, gid := range relatedGroupIDs {
 		deleted, err := s.keyProvider.RemoveAllKeys(ctx, gid, progressCallback)
 		if err != nil {
@@ -1344,6 +1348,7 @@ func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uin
 			}
 			return
 		}
+		// Update totalDeleted after each group completes for next group's offset
 		totalDeleted += deleted
 	}
 

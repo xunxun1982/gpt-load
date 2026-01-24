@@ -6,9 +6,9 @@ package services
 //
 // Threshold design rationale:
 // - Tier 1 (Fast Sync): ≤1000 keys - Simple operations, immediate feedback (<5s)
-// - Tier 2 (Bulk Sync): 1000-5000 keys - Optimized batch operations (5-15s)
-// - Tier 3 (Large Sync): 5000-10000 keys - Large batches, moderate wait time (15-30s)
-// - Tier 4 (Optimized Sync): 10000-20000 keys - Very large batches, stays within HTTP timeout (30-60s)
+// - Tier 2 (Bulk Sync): 1001-5000 keys - Optimized batch operations (5-15s)
+// - Tier 3 (Large Sync): 5001-10000 keys - Large batches, moderate wait time (15-30s)
+// - Tier 4 (Optimized Sync): 10001-20000 keys - Very large batches, stays within HTTP timeout (30-60s)
 // - Tier 5 (Async): >20000 keys - Background processing to avoid HTTP timeout
 //
 // These thresholds are based on:

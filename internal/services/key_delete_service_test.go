@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -64,8 +65,9 @@ func createTestGroupWithKeys(t *testing.T, db *gorm.DB, encSvc encryption.Servic
 	}
 	require.NoError(t, db.Create(group).Error)
 
+	// Use numeric suffix for key generation to support any number of keys
 	for i := 0; i < keyCount; i++ {
-		keyValue := "sk-test-key-" + groupName + "-" + string(rune('a'+i))
+		keyValue := fmt.Sprintf("sk-test-key-%s-%d", groupName, i)
 		encrypted, err := encSvc.Encrypt(keyValue)
 		require.NoError(t, err)
 
@@ -91,7 +93,7 @@ func TestStartDeleteTask(t *testing.T) {
 
 	group := createTestGroupWithKeys(t, db, encSvc, "test-group", 5, models.KeyStatusActive)
 
-	keysText := "sk-test-key-test-group-a\nsk-test-key-test-group-b\nsk-test-key-test-group-c"
+	keysText := "sk-test-key-test-group-0\nsk-test-key-test-group-1\nsk-test-key-test-group-2"
 
 	taskStatus, err := svc.StartDeleteTask(group, keysText)
 	require.NoError(t, err)
@@ -100,12 +102,14 @@ func TestStartDeleteTask(t *testing.T) {
 	assert.True(t, taskStatus.IsRunning)
 	assert.Equal(t, 3, taskStatus.Total)
 
-	// Wait for task to complete
-	// Note: Fixed sleep is appropriate for async task testing. The task runs in a goroutine
-	// with known execution time. Polling would add complexity without improving reliability.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for task to complete using Eventually for more robust synchronization
+	require.Eventually(t, func() bool {
+		var count int64
+		err := db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&count).Error
+		return err == nil && count == 2 // 5 - 3 = 2 remaining
+	}, 2*time.Second, 10*time.Millisecond, "keys should be deleted")
 
-	// Verify keys were deleted
+	// Verify final count
 	var count int64
 	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&count).Error
 	require.NoError(t, err)
@@ -282,9 +286,9 @@ func TestProcessAndDeleteKeys(t *testing.T) {
 	group := createTestGroupWithKeys(t, db, encSvc, "test-group", 5, models.KeyStatusActive)
 
 	keys := []string{
-		"sk-test-key-test-group-a",
-		"sk-test-key-test-group-b",
-		"sk-test-key-test-group-c",
+		"sk-test-key-test-group-0",
+		"sk-test-key-test-group-1",
+		"sk-test-key-test-group-2",
 		"sk-nonexistent-key", // This key doesn't exist
 	}
 
@@ -317,7 +321,7 @@ func TestDeleteService_CacheInvalidation(t *testing.T) {
 		assert.Equal(t, group.ID, groupID)
 	}
 
-	keys := []string{"sk-test-key-test-group-a"}
+	keys := []string{"sk-test-key-test-group-0"}
 
 	_, _, err = svc.processAndDeleteKeys(group.ID, keys, nil)
 	require.NoError(t, err)
@@ -366,7 +370,7 @@ func TestRunDeleteAllGroupKeys(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run delete in goroutine
-	go svc.runDeleteAllGroupKeys(group, 10)
+	go svc.runDeleteAllGroupKeys(group)
 
 	// Wait for completion
 	time.Sleep(200 * time.Millisecond)
@@ -395,7 +399,7 @@ func TestRunRestoreInvalidGroupKeys(t *testing.T) {
 	group := createTestGroupWithKeys(t, db, encSvc, "test-group-run-restore", 5, models.KeyStatusActive)
 	// Create invalid keys in the same group
 	for i := 0; i < 3; i++ {
-		keyValue := "sk-test-key-test-group-run-restore-invalid-" + string(rune('a'+i))
+		keyValue := fmt.Sprintf("sk-test-key-test-group-run-restore-invalid-%d", i)
 		encrypted, err := encSvc.Encrypt(keyValue)
 		require.NoError(t, err)
 
@@ -413,7 +417,7 @@ func TestRunRestoreInvalidGroupKeys(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run restore in goroutine
-	go svc.runRestoreInvalidGroupKeys(group, 3)
+	go svc.runRestoreInvalidGroupKeys(group)
 
 	// Wait for completion
 	time.Sleep(200 * time.Millisecond)

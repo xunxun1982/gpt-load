@@ -57,7 +57,7 @@ func (s *KeyDeleteService) StartDeleteAllGroupKeys(group *models.Group, total in
 	if err != nil {
 		return nil, err
 	}
-	go s.runDeleteAllGroupKeys(group, total)
+	go s.runDeleteAllGroupKeys(group)
 	return status, nil
 }
 
@@ -68,7 +68,7 @@ func (s *KeyDeleteService) StartDeleteInvalidGroupKeys(group *models.Group, tota
 	if err != nil {
 		return nil, err
 	}
-	go s.runDeleteInvalidGroupKeys(group, total)
+	go s.runDeleteInvalidGroupKeys(group)
 	return status, nil
 }
 
@@ -79,7 +79,7 @@ func (s *KeyDeleteService) StartRestoreInvalidGroupKeys(group *models.Group, tot
 	if err != nil {
 		return nil, err
 	}
-	go s.runRestoreInvalidGroupKeys(group, total)
+	go s.runRestoreInvalidGroupKeys(group)
 	return status, nil
 }
 
@@ -109,7 +109,7 @@ func (s *KeyDeleteService) runDelete(group *models.Group, keys []string) {
 }
 
 // runDeleteAllGroupKeys performs the full-group deletion using the provider's chunked delete.
-func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group, total int) {
+func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group) {
 	// Use background context with no timeout for large deletions
 	// The deletion itself has internal chunking and progress tracking
 	ctx := context.Background()
@@ -141,7 +141,7 @@ func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group, total int)
 }
 
 // runDeleteInvalidGroupKeys performs deletion of all invalid keys using the provider's chunked delete.
-func (s *KeyDeleteService) runDeleteInvalidGroupKeys(group *models.Group, total int) {
+func (s *KeyDeleteService) runDeleteInvalidGroupKeys(group *models.Group) {
 	// RemoveInvalidKeys internally uses removeKeysByStatus with chunking
 	// Note: RemoveInvalidKeys doesn't support progress callback yet, but the operation
 	// is still chunked internally for memory efficiency
@@ -165,7 +165,7 @@ func (s *KeyDeleteService) runDeleteInvalidGroupKeys(group *models.Group, total 
 }
 
 // runRestoreInvalidGroupKeys performs restoration of all invalid keys using the provider's restore method.
-func (s *KeyDeleteService) runRestoreInvalidGroupKeys(group *models.Group, total int) {
+func (s *KeyDeleteService) runRestoreInvalidGroupKeys(group *models.Group) {
 	// RestoreKeys internally updates status from invalid to active
 	// Note: RestoreKeys doesn't support progress callback yet, but the operation
 	// is still chunked internally for memory efficiency
