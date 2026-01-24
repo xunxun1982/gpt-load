@@ -84,6 +84,7 @@ func (s *LogCleanupService) run() {
 
 // cleanupExpiredLogs cleans up expired request logs using direct time-based batch deletion for better performance
 // This approach uses timestamp index directly instead of querying IDs first, which is much faster
+// Optimized with increased timeout and better batch sizing for large datasets
 func (s *LogCleanupService) cleanupExpiredLogs() {
 	// Get log retention days configuration
 	settings := s.settingsManager.GetSettings()
@@ -97,13 +98,22 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 	// Calculate cutoff time
 	cutoffTime := time.Now().AddDate(0, 0, -retentionDays).UTC()
 
-	// Batch size optimized for performance (typically 1000-5000 rows per batch).
-	const batchSize = 2000
+	// Batch size optimized for performance to minimize lock contention and timeout risk
+	// Uses LogCleanupBatchSize from thresholds.go for consistency
+	const batchSize = LogCleanupBatchSize
 	totalDeleted := int64(0)
 	dialect := s.db.Dialector.Name()
 
+	logrus.WithFields(logrus.Fields{
+		"cutoff_time":    cutoffTime.Format(time.RFC3339),
+		"retention_days": retentionDays,
+		"dialect":        dialect,
+	}).Debug("Starting log cleanup")
+
 	for {
-		batchCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Increased timeout from 30s to 60s to handle large batches more reliably
+		// This prevents context deadline exceeded errors on slower systems
+		batchCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		var result *gorm.DB
 		switch dialect {
 		case "postgres":
@@ -134,7 +144,8 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 			// 3. Using rowid would require additional index and complexity
 			// 4. Current approach is simpler and performs well in production
 			var maxTS time.Time
-			subCtx, subCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Reduced timeout for SELECT query to 10s (from 5s) for better reliability
+			subCtx, subCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			err := s.db.WithContext(subCtx).Raw(
 				"SELECT timestamp FROM request_logs WHERE timestamp < ? ORDER BY timestamp LIMIT 1 OFFSET ?",
 				cutoffTime, batchSize-1,
@@ -193,13 +204,20 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 		deletedCount := result.RowsAffected
 		totalDeleted += deletedCount
 
+		// Log progress for large cleanup operations
+		// Uses LargeCleanupThreshold for consistency with other batch operations
+		if totalDeleted > 0 && totalDeleted%LargeCleanupThreshold == 0 {
+			logrus.WithField("deleted_so_far", totalDeleted).Debug("Log cleanup progress")
+		}
+
 		// If deleted count is less than batch size, we're done
 		if deletedCount < int64(batchSize) {
 			break
 		}
 
 		// Small delay between batches to reduce lock contention
-		time.Sleep(50 * time.Millisecond)
+		// Increased from 50ms to 100ms for better concurrency with other operations
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if totalDeleted > 0 {

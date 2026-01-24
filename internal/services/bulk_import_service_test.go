@@ -211,7 +211,7 @@ func TestBulkImportService_WithTransaction(t *testing.T) {
 	}
 
 	// Bulk insert within transaction
-	err = svc.BulkInsertAPIKeysWithTx(tx, keys)
+	err = svc.BulkInsertAPIKeysWithTx(tx, keys, nil)
 	require.NoError(t, err)
 
 	// Commit transaction
@@ -256,7 +256,7 @@ func TestBulkImportService_TransactionRollback(t *testing.T) {
 	}
 
 	// Bulk insert within transaction
-	err = svc.BulkInsertAPIKeysWithTx(tx, keys)
+	err = svc.BulkInsertAPIKeysWithTx(tx, keys, nil)
 	require.NoError(t, err)
 
 	// Rollback transaction

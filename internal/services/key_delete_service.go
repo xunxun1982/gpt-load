@@ -10,7 +10,9 @@ import (
 )
 
 const (
-	deleteChunkSize = 1000
+	// deleteChunkSize defines the batch size for key deletion operations.
+	// Uses DefaultDeleteChunkSize from thresholds.go for consistency with other batch operations.
+	deleteChunkSize = DefaultDeleteChunkSize
 )
 
 // KeyDeleteResult holds the result of a delete task.

@@ -799,7 +799,18 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		// Import all groups using the unified ImportExportService
 		importedCount := 0
 		for _, groupData := range serviceGroups {
-			groupID, err := s.ImportExportService.ImportGroup(tx, &groupData)
+			// Create progress callback for this group's import
+			progressCallback := func(processed int) {
+				if taskStarted {
+					// Update progress with cumulative count across all groups
+					totalProcessed := processedKeys + processed
+					if updateErr := s.TaskService.UpdateProgress(totalProcessed); updateErr != nil {
+						logrus.WithError(updateErr).Debug("Failed to update task progress during batch import")
+					}
+				}
+			}
+
+			groupID, err := s.ImportExportService.ImportGroup(tx, &groupData, progressCallback)
 			if err != nil {
 				// Log error but continue with other groups
 				logrus.WithError(err).Warnf("Failed to import group %s, skipping", groupData.Group.Name)
@@ -816,6 +827,7 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 			importedGroups = append(importedGroups, createdGroup)
 			importedCount++
 			processedKeys += len(groupData.Keys)
+			// Final progress update after this group is complete
 			if taskStarted {
 				if updateErr := s.TaskService.UpdateProgress(processedKeys); updateErr != nil {
 					logrus.WithError(updateErr).Debug("Failed to update task progress for batch group import")

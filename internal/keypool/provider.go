@@ -857,26 +857,25 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 	countCancel()
 
 	// Dynamic batch size and timeout based on total count for optimal performance
+	// Note: These thresholds align with services.thresholds.go for consistency:
+	// - BulkSyncThreshold = 5000
+	// - OptimizedSyncThreshold = 20000
 	// Strategy: Larger batches for large datasets to minimize round trips
-	// - Small datasets (≤5K): 1000/batch for quick completion
-	// - Medium datasets (≤20K): 2000/batch for balance
-	// - Large datasets (≤50K): 5000/batch to reduce round trips
-	// - Very large datasets (>50K): 10000/batch to minimize round trips
-	//   Example: 500K keys = 50 batches instead of 500 batches with 1000/batch
+	// - Tier 1-2 (≤5K): 1000/batch for quick completion
+	// - Tier 3-4 (≤20K): 2000/batch for balance
+	// - Tier 5 (>20K): 5000/batch to minimize round trips
+	//   Example: 500K keys = 100 batches instead of 500 batches with 1000/batch
 	var chunkSize int
 	var batchTimeout time.Duration
-	if totalCount <= 5000 {
+	if totalCount <= 5000 { // BulkSyncThreshold
 		chunkSize = 1000
 		batchTimeout = 1000 * time.Millisecond
-	} else if totalCount <= 20000 {
+	} else if totalCount <= 20000 { // OptimizedSyncThreshold
 		chunkSize = 2000
 		batchTimeout = 2000 * time.Millisecond
-	} else if totalCount <= 50000 {
-		chunkSize = 5000
-		batchTimeout = 3000 * time.Millisecond
 	} else {
-		// >50K: Use large batches to significantly reduce total time
-		chunkSize = 10000
+		// >20K: Use large batches to significantly reduce total time
+		chunkSize = 5000
 		batchTimeout = 5000 * time.Millisecond
 	}
 

@@ -6,6 +6,9 @@ interface AppState {
   groupDataRefreshTrigger: number;
   syncOperationTrigger: number;
   siteBindingTrigger: number;
+  // Direct control for progress bar visibility
+  forceShowProgressBar: boolean;
+  progressBarGroupName?: string;
   lastCompletedTask?: {
     groupName: string;
     taskType: string;
@@ -24,7 +27,21 @@ export const appState = reactive<AppState>({
   groupDataRefreshTrigger: 0,
   syncOperationTrigger: 0,
   siteBindingTrigger: 0,
+  forceShowProgressBar: false,
 });
+
+// Show progress bar immediately for import/delete operations
+export function showProgressBar(groupName?: string) {
+  appState.forceShowProgressBar = true;
+  appState.progressBarGroupName = groupName;
+  appState.taskPollingTrigger++;
+}
+
+// Hide progress bar
+export function hideProgressBar() {
+  appState.forceShowProgressBar = false;
+  appState.progressBarGroupName = undefined;
+}
 
 // Trigger data refresh after a sync operation completes
 export function triggerSyncOperationRefresh(groupName: string, operationType: string) {

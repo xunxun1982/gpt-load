@@ -379,8 +379,9 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
 
-	// Invalidate group list cache after creating a new group
-	s.invalidateGroupListCache()
+	// Update group list cache with the new group instead of invalidating
+	// This ensures ListGroups can return cached data immediately without DB query
+	s.AddGroupToListCache(&group)
 
 	return &group, nil
 }
@@ -403,13 +404,13 @@ func (s *GroupService) InvalidateGroupListCache() {
 	s.invalidateGroupListCache()
 }
 
-// addGroupToListCache adds a new group to the cache without invalidating it.
+// AddGroupToListCache adds a new group to the cache without invalidating it.
 // This is used after creating a new group to keep the cache valid during async operations.
 // If cache is empty, it tries to load all groups from DB first using readDB.
 //
 // Lock contention optimization: The mutex is released before DB queries to avoid blocking
 // other goroutines during potentially slow operations (up to 2 seconds timeout).
-func (s *GroupService) addGroupToListCache(group *models.Group) {
+func (s *GroupService) AddGroupToListCache(group *models.Group) {
 	s.groupListCacheMu.Lock()
 	needsDBLoad := s.groupListCache == nil || len(s.groupListCache.Groups) == 0
 	if !needsDBLoad {
@@ -1079,11 +1080,12 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	}
 
 	// Multi-threshold strategy for key deletion based on best practices:
-	// - 0-5,000 keys: Fast sync delete in transaction (<10s)
-	// - 5,000-20,000 keys: Sync chunked delete using RemoveAllKeys (10-60s)
-	// - >20,000 keys: Async task (return task_id, delete keys then group in background)
+	// Uses unified thresholds from thresholds.go for consistency across all batch operations
+	// - Tier 1-2 (≤5K keys): Fast sync delete in transaction (<10s)
+	// - Tier 3-4 (5K-20K keys): Sync chunked delete using RemoveAllKeys (10-60s)
+	// - Tier 5 (>20K keys): Async task (return task_id, delete keys then group in background)
 
-	if totalKeyCount > int64(OptimizedSyncThreshold) {
+	if totalKeyCount > int64(AsyncThreshold) {
 		// Large key count - use async task to avoid HTTP timeout
 		// Rollback transaction and start async deletion
 		tx.Rollback()
@@ -1187,7 +1189,8 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 
 		// Use chunked deletion to avoid long-running single DELETE statement
 		// Note: Use subquery approach for PostgreSQL compatibility (DELETE...LIMIT not supported)
-		const deleteChunkSize = 1000
+		// Chunk size uses DefaultDeleteChunkSize for consistency
+		const deleteChunkSize = DefaultDeleteChunkSize
 		if totalKeyCount > int64(deleteChunkSize) {
 			// Chunked deletion for moderate key counts using subquery for cross-DB compatibility
 			for {
@@ -1672,7 +1675,7 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 
 	// Update group list cache with the new group before invalidating GroupManager cache
 	// This ensures ListGroups can return cached data even if DB is busy with async import
-	s.addGroupToListCache(&newGroup)
+	s.AddGroupToListCache(&newGroup)
 
 	// Invalidate GroupManager cache (for GetGroupByID/GetGroupByName lookups)
 	if err := s.groupManager.Invalidate(); err != nil {
@@ -2032,9 +2035,9 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 	}
 	s.keyStatsCacheMu.RUnlock()
 
-	// Cache miss - query database with timeout to avoid blocking during bulk inserts
-	// Key stats queries may need more time during bulk imports
-	queryCtx, cancel := context.WithTimeout(ctx, 2*getDBLookupTimeout())
+	// Cache miss - query database with extended timeout to handle bulk imports
+	// During imports, COUNT queries may take longer due to table locks (SQLite) or high load
+	queryCtx, cancel := context.WithTimeout(ctx, 3*getDBLookupTimeout())
 	defer cancel()
 
 	// Use parallel queries for better performance - both COUNT queries can run concurrently
@@ -2047,7 +2050,7 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 	// Query total keys count
 	go func() {
 		defer wg.Done()
-		if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).
+		if err := s.readDB.WithContext(queryCtx).Model(&models.APIKey{}).
 			Where("group_id = ?", groupID).Count(&totalKeys).Error; err != nil {
 			totalErr = err
 		}
@@ -2056,7 +2059,7 @@ func (s *GroupService) fetchKeyStats(ctx context.Context, groupID uint) (KeyStat
 	// Query active keys count
 	go func() {
 		defer wg.Done()
-		if err := s.db.WithContext(queryCtx).Model(&models.APIKey{}).
+		if err := s.readDB.WithContext(queryCtx).Model(&models.APIKey{}).
 			Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).
 			Count(&activeKeys).Error; err != nil {
 			activeErr = err

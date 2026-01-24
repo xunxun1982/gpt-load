@@ -34,7 +34,7 @@ declare module "axios" {
  */
 const http = axios.create({
   baseURL: "/api",
-  timeout: 60000,
+  timeout: 120000, // Increased to 120s for large import operations
   headers: { "Content-Type": "application/json" },
 });
 
@@ -73,15 +73,27 @@ http.interceptors.response.use(
           window.location.href = "/login";
         }
       }
-      window.$message.error(
-        error.response.data?.message ||
-          i18n.global.t("common.requestFailed", { status: error.response.status }),
-        {
-          keepAliveOnHover: true,
-          duration: 5000,
-          closable: true,
-        }
-      );
+      // Check if error message contains timeout keywords and use i18n
+      const errorMsg = error.response.data?.message || "";
+      let displayMsg = errorMsg;
+
+      // Detect timeout errors and use i18n translations with friendly messages
+      if (
+        errorMsg.includes("timeout") ||
+        errorMsg.includes("deadline exceeded") ||
+        errorMsg.includes("context deadline exceeded")
+      ) {
+        // Show database busy message for better UX
+        displayMsg = i18n.global.t("common.databaseBusy");
+      } else if (!errorMsg) {
+        displayMsg = i18n.global.t("common.requestFailed", { status: error.response.status });
+      }
+
+      window.$message.error(displayMsg, {
+        keepAliveOnHover: true,
+        duration: 8000, // Longer duration for timeout messages
+        closable: true,
+      });
     } else if (error.request) {
       window.$message.error(i18n.global.t("common.networkError"));
     } else {

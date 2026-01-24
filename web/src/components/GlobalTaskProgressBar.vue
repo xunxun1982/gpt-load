@@ -11,22 +11,46 @@ const { t } = useI18n();
 const taskInfo = ref<TaskInfo>({ is_running: false, task_type: "KEY_VALIDATION" });
 const visible = ref(false);
 let pollTimer: number | null = null;
-let isPolling = false; // Flag to indicate polling status
+let startPollingTimer: number | null = null;
+let isPolling = false;
 const message = useMessage();
 
 onMounted(() => {
+  // Check if there's an existing task running on mount
   startPolling();
 });
 
 watch(
   () => appState.taskPollingTrigger,
   () => {
-    startPolling();
-  }
+    // User triggered a new task - show progress bar immediately
+    visible.value = true;
+
+    // Clear previous timer to avoid duplicate polling
+    if (startPollingTimer) {
+      clearTimeout(startPollingTimer);
+    }
+
+    // Start polling immediately if forceShowProgressBar is true
+    // Otherwise delay to give backend time to start the task
+    if (appState.forceShowProgressBar) {
+      startPolling();
+    } else {
+      startPollingTimer = setTimeout(() => {
+        startPolling();
+        startPollingTimer = null;
+      }, 300);
+    }
+  },
+  { flush: "sync" } // Trigger synchronously for immediate UI feedback
 );
 
 onBeforeUnmount(() => {
   stopPolling();
+  if (startPollingTimer) {
+    clearTimeout(startPollingTimer);
+    startPollingTimer = null;
+  }
 });
 
 function startPolling() {
@@ -43,60 +67,80 @@ async function pollOnce() {
   try {
     const task = await keysApi.getTaskStatus();
     taskInfo.value = task;
-    visible.value = task.is_running;
-    if (!task.is_running) {
-      stopPolling();
-      if (task.result) {
-        const lastTask = localStorage.getItem("last_closed_task");
-        if (lastTask !== task.finished_at) {
-          let msg = t("task.completed");
-          if (task.task_type === "KEY_VALIDATION") {
-            const result = task.result as import("@/types/models").KeyValidationResult;
-            msg = t("task.validationCompleted", {
-              total: result.total_keys,
-              valid: result.valid_keys,
-              invalid: result.invalid_keys,
-            });
-          } else if (task.task_type === "KEY_IMPORT") {
-            const result = task.result as import("@/types/models").KeyImportResult;
-            msg = t("task.importCompleted", {
-              added: result.added_count,
-              ignored: result.ignored_count,
-            });
-          } else if (task.task_type === "KEY_DELETE") {
-            const result = task.result as import("@/types/models").KeyDeleteResult;
-            msg = t("task.deleteCompleted", {
-              deleted: result.deleted_count,
-              ignored: result.ignored_count,
-            });
-          }
 
-          message.info(msg, {
-            closable: true,
-            duration: 0,
-            onClose: () => {
-              localStorage.setItem("last_closed_task", task.finished_at || "");
-            },
-          });
+    // Update visibility based on task status
+    if (task.is_running) {
+      visible.value = true;
+      // Clear forceShowProgressBar once we detect the task is actually running
+      if (appState.forceShowProgressBar) {
+        appState.forceShowProgressBar = false;
+      }
+    } else {
+      // If forceShowProgressBar is true, keep polling for a bit longer
+      // This handles the case where backend hasn't started the task yet
+      if (appState.forceShowProgressBar) {
+        // Continue polling, don't hide yet
+      } else {
+        // Task finished - hide progress bar and show completion message
+        visible.value = false;
+        stopPolling();
 
-          // Trigger group data refresh
-          if (task.group_name && task.finished_at) {
-            appState.lastCompletedTask = {
-              groupName: task.group_name,
-              taskType: task.task_type,
-              finishedAt: task.finished_at,
-            };
-            appState.groupDataRefreshTrigger++;
+        if (task.result) {
+          const lastTask = localStorage.getItem("last_closed_task");
+          if (lastTask !== task.finished_at) {
+            let msg = t("task.completed");
+            if (task.task_type === "KEY_VALIDATION") {
+              const result = task.result as import("@/types/models").KeyValidationResult;
+              msg = t("task.validationCompleted", {
+                total: result.total_keys,
+                valid: result.valid_keys,
+                invalid: result.invalid_keys,
+              });
+            } else if (task.task_type === "KEY_IMPORT") {
+              const result = task.result as import("@/types/models").KeyImportResult;
+              msg = t("task.importCompleted", {
+                added: result.added_count,
+                ignored: result.ignored_count,
+              });
+            } else if (task.task_type === "KEY_DELETE") {
+              const result = task.result as import("@/types/models").KeyDeleteResult;
+              msg = t("task.deleteCompleted", {
+                deleted: result.deleted_count,
+                ignored: result.ignored_count,
+              });
+            }
+
+            message.info(msg, {
+              closable: true,
+              duration: 0,
+              onClose: () => {
+                localStorage.setItem("last_closed_task", task.finished_at || "");
+              },
+            });
+
+            // Trigger group data refresh
+            if (task.group_name && task.finished_at) {
+              appState.lastCompletedTask = {
+                groupName: task.group_name,
+                taskType: task.task_type,
+                finishedAt: task.finished_at,
+              };
+              appState.groupDataRefreshTrigger++;
+            }
           }
         }
+        return;
       }
-      return;
     }
   } catch (_error) {
-    // Error already logged elsewhere
+    // On error, hide progress bar and stop polling to avoid showing stale state
+    visible.value = false;
+    stopPolling();
+    appState.forceShowProgressBar = false;
+    return;
   }
 
-  // If still polling, schedule the next request after 1 second
+  // Continue polling if task is still running
   if (isPolling) {
     pollTimer = setTimeout(pollOnce, 1000);
   }
@@ -105,7 +149,7 @@ async function pollOnce() {
 function stopPolling() {
   isPolling = false;
   if (pollTimer) {
-    clearInterval(pollTimer);
+    clearTimeout(pollTimer);
     pollTimer = null;
   }
 }

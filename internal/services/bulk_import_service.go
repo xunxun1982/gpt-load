@@ -178,8 +178,8 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 		const maxSQLSize = 900000 // 900KB safety margin
 		maxBatchSize = maxSQLSize / recordSize
 		// Reduced max batch size for SQLite due to performance issues with large batches
-		if maxBatchSize > 50 {
-			maxBatchSize = 50 // Cap at 50 for SQLite (reduced from 200)
+		if maxBatchSize > MaxSQLiteBatchSize {
+			maxBatchSize = MaxSQLiteBatchSize
 		}
 
 	case "mysql":
@@ -190,8 +190,8 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 		// Use 80% of max_allowed_packet for safety
 		safePacketSize := int(maxPacket) * 8 / 10
 		maxBatchSize = safePacketSize / recordSize
-		if maxBatchSize > 5000 {
-			maxBatchSize = 5000 // Cap at 5000 for MySQL
+		if maxBatchSize > MaxMySQLBatchSize {
+			maxBatchSize = MaxMySQLBatchSize
 		}
 
 	case "postgres":
@@ -200,8 +200,8 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 		// Each record has numFields parameters + some overhead
 		paramsPerRecord := numFields + 2 // +2 for safety
 		maxBatchSize = maxParams / paramsPerRecord
-		if maxBatchSize > 3000 {
-			maxBatchSize = 3000 // Cap at 3000 for PostgreSQL
+		if maxBatchSize > MaxPostgresBatchSize {
+			maxBatchSize = MaxPostgresBatchSize
 		}
 	}
 
@@ -229,7 +229,7 @@ func (s *BulkImportService) BulkInsertAPIKeys(keys []models.APIKey) error {
 	}()
 
 	// Use the transactional version
-	if err := s.BulkInsertAPIKeysWithTx(tx, keys); err != nil {
+	if err := s.BulkInsertAPIKeysWithTx(tx, keys, nil); err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -244,7 +244,8 @@ func (s *BulkImportService) BulkInsertAPIKeys(keys []models.APIKey) error {
 
 // BulkInsertAPIKeysWithTx performs optimized bulk insert using an existing transaction
 // This method should be used when you're already in a transaction context
-func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.APIKey) error {
+// progressCallback is an optional callback to report progress during insertion
+func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.APIKey, progressCallback func(processed int)) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -277,6 +278,7 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 	totalProcessed := 0
 	startTime := time.Now()
 	lastLoggedPercent := 0
+	lastProgressLog := startTime
 
 	// For SQLite, apply additional optimizations before bulk insert
 	if s.dbType == "sqlite" {
@@ -312,10 +314,15 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 
 		totalProcessed += len(batch)
 
+		// Report progress via callback if provided
+		if progressCallback != nil {
+			progressCallback(totalProcessed)
+		}
+
 		// For SQLite, yield to other queries periodically to prevent long lock times.
 		// Release and recreate savepoint every few batches to allow other reads.
 		// Savepoint errors are logged but not fatal - the import continues with degraded performance.
-		if s.dbType == "sqlite" && totalProcessed%500 == 0 && totalProcessed < totalKeys {
+		if s.dbType == "sqlite" && totalProcessed%ImportProgressReportInterval == 0 && totalProcessed < totalKeys {
 			if err := tx.Exec("RELEASE SAVEPOINT bulk_insert").Error; err != nil {
 				logrus.WithError(err).Warn("Failed to release savepoint during bulk import, continuing without yield")
 			}
@@ -326,8 +333,9 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 			}
 		}
 
-		// Log progress at 25%, 50%, 75% intervals for large imports (>5000 keys)
-		if totalKeys > 5000 {
+		// Log progress at 25%, 50%, 75% intervals for large imports
+		// Reduced logging frequency to minimize overhead
+		if totalKeys > LargeImportThreshold {
 			currentPercent := (totalProcessed * 100) / totalKeys
 			if currentPercent >= lastLoggedPercent+25 {
 				elapsed := time.Since(startTime)
@@ -338,12 +346,14 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 			}
 		}
 
-		// Debug logging for detailed progress
+		// Debug logging for detailed progress - throttled to once per second
 		if logrus.GetLevel() >= logrus.DebugLevel {
-			if totalProcessed%500 == 0 || totalProcessed == totalKeys {
+			now := time.Now()
+			if now.Sub(lastProgressLog) >= time.Second || totalProcessed == totalKeys {
 				elapsed := time.Since(startTime)
 				rate := float64(totalProcessed) / elapsed.Seconds()
 				logrus.Debugf("Processed %d/%d keys (%.0f keys/sec)", totalProcessed, totalKeys, rate)
+				lastProgressLog = now
 			}
 		}
 	}

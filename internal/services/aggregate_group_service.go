@@ -331,8 +331,7 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 		}
 		// Use CreateInBatches with fixed batch size for better performance and robustness
 		// Fixed batch size ensures consistent behavior even with large sub-group counts
-		const batchSize = 100
-		if err := tx.CreateInBatches(result.SubGroups, batchSize).Error; err != nil {
+		if err := tx.CreateInBatches(result.SubGroups, SubGroupBatchSize).Error; err != nil {
 			return app_errors.ParseDBError(err)
 		}
 		return nil

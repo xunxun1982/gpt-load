@@ -405,10 +405,9 @@ func (s *RequestLogService) batchUpsertHourlyStats(tx *gorm.DB, hourlyStats map[
 func (s *RequestLogService) batchUpsertHourlyStatsPostgres(tx *gorm.DB, stats []models.GroupHourlyStat) error {
 	// PostgreSQL supports batch upsert with ON CONFLICT
 	// Process in batches to avoid parameter limit (65535)
-	const batchSize = 500
 
-	for i := 0; i < len(stats); i += batchSize {
-		end := i + batchSize
+	for i := 0; i < len(stats); i += HourlyStatsBatchSize {
+		end := i + HourlyStatsBatchSize
 		if end > len(stats) {
 			end = len(stats)
 		}
@@ -441,10 +440,9 @@ func (s *RequestLogService) batchUpsertHourlyStatsPostgres(tx *gorm.DB, stats []
 func (s *RequestLogService) batchUpsertHourlyStatsMySQL(tx *gorm.DB, stats []models.GroupHourlyStat) error {
 	// MySQL supports batch upsert with ON DUPLICATE KEY UPDATE
 	// Process in batches to stay within max_allowed_packet
-	const batchSize = 500
 
-	for i := 0; i < len(stats); i += batchSize {
-		end := i + batchSize
+	for i := 0; i < len(stats); i += HourlyStatsBatchSize {
+		end := i + HourlyStatsBatchSize
 		if end > len(stats) {
 			end = len(stats)
 		}
@@ -468,10 +466,9 @@ func (s *RequestLogService) batchUpsertHourlyStatsMySQL(tx *gorm.DB, stats []mod
 // SQLite has limited batch capabilities, so we use smaller batches with GORM's OnConflict.
 func (s *RequestLogService) batchUpsertHourlyStatsSQLite(tx *gorm.DB, stats []models.GroupHourlyStat) error {
 	// SQLite performs better with smaller batches due to its single-writer model
-	const batchSize = 50
 
-	for i := 0; i < len(stats); i += batchSize {
-		end := i + batchSize
+	for i := 0; i < len(stats); i += HourlyStatsBatchSizeSQLite {
+		end := i + HourlyStatsBatchSizeSQLite
 		if end > len(stats) {
 			end = len(stats)
 		}

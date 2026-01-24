@@ -84,15 +84,16 @@ func (s *KeyImportService) StartStreamingImportTask(group *models.Group, reader 
 	}
 
 	// Determine optimal batch size based on estimated key count
+	// Uses unified thresholds from thresholds.go for consistency across all batch operations
 	// Larger batches reduce overhead for large imports
 	var batchSize int
 	switch {
-	case estimatedKeys < 10000:
-		batchSize = 1000 // Small files: 1000 keys/batch
-	case estimatedKeys < 100000:
-		batchSize = 5000 // Medium files: 5000 keys/batch
+	case estimatedKeys < LargeSyncThreshold:
+		batchSize = 1000 // Tier 1-2: Small files, 1000 keys/batch
+	case estimatedKeys < AsyncThreshold:
+		batchSize = 2000 // Tier 3-4: Medium files, 2000 keys/batch
 	default:
-		batchSize = 10000 // Large files: 10000 keys/batch for maximum performance
+		batchSize = 5000 // Tier 5: Large files, 5000 keys/batch for maximum performance
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -196,9 +197,9 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 		}
 		decryptedKeys = append(decryptedKeys, decryptedKey)
 
-		// Update progress during decryption (every 500 keys)
+		// Update progress during decryption (every ImportProgressReportInterval keys)
 		// Progress is based on source keys processed, not decrypted keys count
-		if (i+1)%500 == 0 {
+		if (i+1)%ImportProgressReportInterval == 0 {
 			if err := s.TaskService.UpdateProgress(i + 1); err != nil {
 				logrus.Warnf("Failed to update task progress: %v", err)
 			}

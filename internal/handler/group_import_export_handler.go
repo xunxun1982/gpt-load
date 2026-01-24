@@ -391,8 +391,16 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	var createdGroupID uint
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		// Use the centralized ImportGroup service method
-		createdGroupID, err = s.ImportExportService.ImportGroup(tx, &serviceGroupData)
+		// Create progress callback that updates task progress
+		progressCallback := func(processed int) {
+			if s.TaskService != nil {
+				if updateErr := s.TaskService.UpdateProgress(processed); updateErr != nil {
+					logrus.WithError(updateErr).Debug("Failed to update task progress during import")
+				}
+			}
+		}
+		// Use the centralized ImportGroup service method with progress callback
+		createdGroupID, err = s.ImportExportService.ImportGroup(tx, &serviceGroupData, progressCallback)
 		if err != nil {
 			return err
 		}
@@ -421,9 +429,14 @@ func (s *Server) ImportGroup(c *gin.Context) {
 			logrus.Debug("Group manager cache invalidated successfully after import")
 		}
 	}
-	// Also invalidate the group list cache so /api/groups immediately reflects new data
+
+	// Update group list cache with the new group before returning response
+	// This ensures ListGroups can return cached data immediately without DB query
+	// Similar to CopyGroup optimization - add to cache instead of invalidating
 	if s.GroupService != nil {
-		s.GroupService.InvalidateGroupListCache()
+		// Use a private method through a helper to add group to list cache
+		// This avoids cache miss when frontend immediately requests /api/groups
+		s.GroupService.AddGroupToListCache(&createdGroup)
 	}
 
 	// Load keys to Redis store and reset failure_count asynchronously
@@ -460,6 +473,24 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		} else if resetCount > 0 {
 			entry.Infof("Reset failure_count for %d active keys in imported group %d", resetCount, groupID)
 		}
+
+		// Pre-warm the key stats cache after import to avoid slow first query
+		// This helps the UI load faster when users navigate to the imported group
+		if s.GroupService != nil {
+			if _, err := s.GroupService.GetGroupStats(ctx, groupID); err != nil {
+				entry.WithError(err).Debug("Failed to pre-warm stats cache for imported group")
+			} else {
+				entry.Debugf("Successfully pre-warmed stats cache for imported group %d", groupID)
+			}
+		}
+
+		// Optimize database after large import to improve query performance
+		// This is especially important for SQLite after bulk inserts
+		if err := optimizeDatabaseAfterImport(ctx, s.DB); err != nil {
+			entry.WithError(err).Debug("Failed to optimize database after import")
+		} else {
+			entry.Debug("Successfully optimized database after import")
+		}
 	}(createdGroupID, parentCtx, reqID)
 
 	response.SuccessI18n(c, "success.group_imported", s.newGroupResponse(&createdGroup))
@@ -490,4 +521,45 @@ func sanitizeFilename(name string) string {
 		b = b[:100]
 	}
 	return string(b)
+}
+
+// optimizeDatabaseAfterImport runs database optimization commands after bulk import
+// This is especially important for SQLite to rebuild statistics and checkpoint WAL
+func optimizeDatabaseAfterImport(ctx context.Context, db *gorm.DB) error {
+	// Get the underlying sql.DB to check driver type
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+
+	// Get driver name to determine database type
+	driverName := db.Dialector.Name()
+
+	if driverName == "sqlite" {
+		// For SQLite, run PRAGMA optimize to update query planner statistics
+		// This is crucial after bulk inserts to ensure efficient query plans
+		if err := db.WithContext(ctx).Exec("PRAGMA optimize").Error; err != nil {
+			logrus.WithError(err).Warn("Failed to run PRAGMA optimize after import")
+		}
+
+		// Checkpoint WAL to merge changes into main database file
+		// This reduces WAL file size and improves subsequent query performance
+		// Use PASSIVE mode to avoid blocking other operations
+		if err := db.WithContext(ctx).Exec("PRAGMA wal_checkpoint(PASSIVE)").Error; err != nil {
+			logrus.WithError(err).Warn("Failed to checkpoint WAL after import")
+		}
+	} else if driverName == "mysql" {
+		// For MySQL, analyze the api_keys table to update statistics
+		if err := db.WithContext(ctx).Exec("ANALYZE TABLE api_keys").Error; err != nil {
+			logrus.WithError(err).Warn("Failed to analyze table after import")
+		}
+	} else if driverName == "postgres" {
+		// For PostgreSQL, analyze the api_keys table
+		if err := db.WithContext(ctx).Exec("ANALYZE api_keys").Error; err != nil {
+			logrus.WithError(err).Warn("Failed to analyze table after import")
+		}
+	}
+
+	// Ping to ensure connection is still alive after optimization
+	return sqlDB.PingContext(ctx)
 }

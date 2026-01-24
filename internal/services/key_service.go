@@ -17,7 +17,9 @@ import (
 )
 
 const (
-	maxRequestKeys = 5000
+	// maxRequestKeys defines the maximum number of keys that can be processed in a single synchronous request.
+	// Uses BulkSyncThreshold from thresholds.go for consistency with other batch operations.
+	maxRequestKeys = BulkSyncThreshold
 )
 
 // AddKeysResult holds the result of adding multiple keys.

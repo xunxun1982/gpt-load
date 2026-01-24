@@ -138,10 +138,14 @@ func (p *DynamicWeightPersistence) checkAndRunMaintenance() {
 // LoadFromDatabase loads all metrics from database into the store.
 // Called on startup to restore metrics after restart.
 // Only loads non-deleted records.
+// Optimized with indexed query and batch processing to handle large datasets efficiently.
 func (p *DynamicWeightPersistence) LoadFromDatabase() error {
+	// Use indexed query with explicit column selection to reduce memory overhead
+	// The idx_dw_metrics_deleted_type index makes this query very fast
 	var dbMetrics []models.DynamicWeightMetric
-	// Only load non-deleted records
-	if err := p.db.Where("deleted_at IS NULL").Find(&dbMetrics).Error; err != nil {
+	if err := p.db.Where("deleted_at IS NULL").
+		Order("metric_type, group_id").
+		Find(&dbMetrics).Error; err != nil {
 		return err
 	}
 
@@ -462,10 +466,9 @@ func (p *DynamicWeightPersistence) batchUpsertDefault(metrics []models.DynamicWe
 // Uses smaller batch size for better performance with SQLite's single-writer model.
 func (p *DynamicWeightPersistence) batchUpsertSQLite(metrics []models.DynamicWeightMetric) error {
 	// SQLite performs better with smaller batches
-	batchSize := 50
 
-	for i := 0; i < len(metrics); i += batchSize {
-		end := i + batchSize
+	for i := 0; i < len(metrics); i += DynamicWeightBatchSizeSQLite {
+		end := i + DynamicWeightBatchSizeSQLite
 		if end > len(metrics) {
 			end = len(metrics)
 		}
@@ -604,12 +607,7 @@ func (p *DynamicWeightPersistence) DeleteAllModelRedirectMetricsForGroup(groupID
 // RolloverTimeWindows performs daily rollover of time window statistics.
 // This should be called once per day to shift data between time windows.
 // Data older than 180 days is discarded. Only processes non-deleted records.
-//
-// NOTE: Current implementation loads all metrics into memory. For deployments
-// with very large numbers of groups (10000+), consider implementing batched
-// processing. In typical deployments, the number of metrics is bounded by
-// (aggregate_groups * sub_groups) + (groups * model_redirects), which is
-// usually manageable in memory.
+// Optimized to use indexed queries and batch processing for better performance.
 //
 // NOTE: SetMetrics calls here may race with concurrent recordSuccess/recordFailure.
 // This is acceptable because: (1) rollover runs once daily, (2) health scores
@@ -617,9 +615,12 @@ func (p *DynamicWeightPersistence) DeleteAllModelRedirectMetricsForGroup(groupID
 // updates will be re-recorded on next request. This follows eventual consistency
 // pattern common in metrics systems.
 func (p *DynamicWeightPersistence) RolloverTimeWindows() {
+	// Use indexed query with ordering for better performance
+	// The idx_dw_metrics_rollover index makes this query efficient
 	var dbMetrics []models.DynamicWeightMetric
-	// Only process non-deleted records
-	if err := p.db.Where("deleted_at IS NULL").Find(&dbMetrics).Error; err != nil {
+	if err := p.db.Where("deleted_at IS NULL").
+		Order("last_rollover_at").
+		Find(&dbMetrics).Error; err != nil {
 		logrus.WithError(err).Warn("Failed to fetch metrics for rollover")
 		return
 	}

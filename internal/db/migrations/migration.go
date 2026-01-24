@@ -111,7 +111,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.17.0 migration - Add Hub aggregate group support and custom model names
-	return V1_17_0_AddHubAggregateGroupSupport(db)
+	if err := V1_17_0_AddHubAggregateGroupSupport(db); err != nil {
+		return err
+	}
+	// Run v1.18.0 migration - Optimize dynamic weight metrics queries
+	return V1_18_0_OptimizeDynamicWeightQueries(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

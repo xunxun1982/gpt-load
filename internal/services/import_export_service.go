@@ -100,7 +100,6 @@ type ExportKeysResult struct {
 func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResult, error) {
 	var allKeys []KeyExportInfo
 	offset := 0
-	const batchSize = 2000
 	totalExported := 0
 
 	// Get total count for progress tracking
@@ -130,7 +129,7 @@ func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResul
 		err := s.db.Model(&models.APIKey{}).
 			Select("key_value, status").
 			Where("group_id = ?", groupID).
-			Limit(batchSize).
+			Limit(ExportBatchSize).
 			Offset(offset).
 			Find(&batchKeys).Error
 
@@ -154,7 +153,7 @@ func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResul
 		totalExported += len(batchKeys)
 
 		// Only log progress at 25%, 50%, 75% intervals for large exports
-		if totalCount > 10000 && totalExported > 0 {
+		if totalCount > LargeExportThreshold && totalExported > 0 {
 			currentPercent := (totalExported * 100) / int(totalCount)
 			if currentPercent >= lastLoggedPercent+25 {
 				logrus.Infof("Export progress: %d%% (%d/%d keys)", currentPercent, totalExported, totalCount)
@@ -167,11 +166,11 @@ func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResul
 			len(batchKeys), offset, totalExported)
 
 		// If we got less than batchSize, we've reached the end
-		if len(batchKeys) < batchSize {
+		if len(batchKeys) < ExportBatchSize {
 			break
 		}
 
-		offset += batchSize
+		offset += ExportBatchSize
 	}
 
 	// Final summary log
@@ -202,7 +201,6 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 
 	// Process all groups' keys in batches
 	offset := 0
-	const batchSize = 5000 // Larger batch for multiple groups
 
 	// Log start with expected count
 	if totalCount > 0 {
@@ -224,7 +222,7 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 		err := s.db.Model(&models.APIKey{}).
 			Select("group_id, key_value, status").
 			Where("group_id IN ?", groupIDs).
-			Limit(batchSize).
+			Limit(ExportMultiGroupBatchSize).
 			Offset(offset).
 			Find(&batchKeys).Error
 
@@ -252,7 +250,7 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 		mu.Unlock()
 
 		// Only log progress at 25%, 50%, 75% intervals for large exports
-		if totalCount > 10000 && totalExported > 0 {
+		if totalCount > LargeExportThreshold && totalExported > 0 {
 			currentPercent := (totalExported * 100) / int(totalCount)
 			if currentPercent >= lastLoggedPercent+25 {
 				logrus.Infof("System export progress: %d%% (%d/%d keys)", currentPercent, totalExported, totalCount)
@@ -265,11 +263,11 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 			len(batchKeys), offset, totalExported)
 
 		// If we got less than batchSize, we've reached the end
-		if len(batchKeys) < batchSize {
+		if len(batchKeys) < ExportMultiGroupBatchSize {
 			break
 		}
 
-		offset += batchSize
+		offset += ExportMultiGroupBatchSize
 	}
 
 	logrus.Infof("System export completed: %d keys from %d groups", totalExported, len(groupIDs))
@@ -278,51 +276,105 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 }
 
 // ImportKeys imports keys for a group using the bulk import service
-func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyExportInfo) error {
+// progressCallback is an optional callback function to report progress during import
+// Keys are processed in batches: decrypt -> insert -> report progress
+// This provides real-time feedback and avoids memory issues with large imports
+func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyExportInfo, progressCallback func(processed int)) error {
 	if len(keys) == 0 {
 		return nil
 	}
 
-	keyModels := make([]models.APIKey, 0, len(keys))
-	skippedKeys := 0
+	totalKeys := len(keys)
+	totalProcessed := 0
+	totalSkipped := 0
 
-	for _, keyInfo := range keys {
-		// Decrypt key_value to calculate key_hash
-		decryptedKey, err := s.encryptionService.Decrypt(keyInfo.KeyValue)
-		if err != nil {
-			logrus.WithError(err).Debug("Failed to decrypt key during import, skipping")
-			skippedKeys++
-			continue
-		}
-
-		keyHash := s.encryptionService.Hash(decryptedKey)
-
-		// Import keys with clean state:
-		// - Always set status to "active" for fresh start (ignore exported status)
-		// - Always set FailureCount to 0 for fresh start (ignore exported failure_count)
-		// This ensures imported keys start fresh without carrying over failure history
-		// This prevents immediate blacklisting by CronChecker after import
-		keyModels = append(keyModels, models.APIKey{
-			GroupID:      groupID,
-			KeyValue:     keyInfo.KeyValue,       // Keep encrypted value
-			KeyHash:      keyHash,                // Calculated hash
-			Status:       models.KeyStatusActive, // Always start as active
-			FailureCount: 0,                      // Always reset to 0 for fresh start
-		})
+	// Report initial progress
+	if progressCallback != nil {
+		progressCallback(0)
 	}
 
-	if len(keyModels) > 0 {
-		logrus.Infof("Importing %d keys for group ID: %d", len(keyModels), groupID)
-		if skippedKeys > 0 {
-			logrus.Warnf("Skipped %d keys due to decryption errors", skippedKeys)
+	logrus.Infof("Importing %d keys for group ID: %d (batch size: %d)", totalKeys, groupID, ImportDecryptBatchSize)
+
+	// Process keys in batches: decrypt batch -> insert batch -> report progress
+	// This provides real-time progress feedback during both decrypt and insert phases
+	for batchStart := 0; batchStart < totalKeys; batchStart += ImportDecryptBatchSize {
+		batchEnd := batchStart + ImportDecryptBatchSize
+		if batchEnd > totalKeys {
+			batchEnd = totalKeys
 		}
 
-		// Use the bulk import service with the provided transaction
-		if err := s.bulkImportService.BulkInsertAPIKeysWithTx(tx, keyModels); err != nil {
-			return fmt.Errorf("bulk import failed: %w", err)
+		batchKeys := keys[batchStart:batchEnd]
+		keyModels := make([]models.APIKey, 0, len(batchKeys))
+		batchSkipped := 0
+
+		// Decrypt and prepare keys for this batch
+		for i, keyInfo := range batchKeys {
+			// Decrypt key_value to calculate key_hash
+			decryptedKey, err := s.encryptionService.Decrypt(keyInfo.KeyValue)
+			if err != nil {
+				logrus.WithError(err).Debug("Failed to decrypt key during import, skipping")
+				batchSkipped++
+				totalSkipped++
+				continue
+			}
+
+			keyHash := s.encryptionService.Hash(decryptedKey)
+
+			// Import keys with clean state:
+			// - Always set status to "active" for fresh start (ignore exported status)
+			// - Always set FailureCount to 0 for fresh start (ignore exported failure_count)
+			// This ensures imported keys start fresh without carrying over failure history
+			// This prevents immediate blacklisting by CronChecker after import
+			keyModels = append(keyModels, models.APIKey{
+				GroupID:      groupID,
+				KeyValue:     keyInfo.KeyValue,       // Keep encrypted value
+				KeyHash:      keyHash,                // Calculated hash
+				Status:       models.KeyStatusActive, // Always start as active
+				FailureCount: 0,                      // Always reset to 0 for fresh start
+			})
+
+			// Report progress during decryption phase (within batch)
+			// Report every ImportProgressReportInterval keys to provide feedback during CPU-intensive decryption
+			currentProcessed := batchStart + i + 1
+			if progressCallback != nil && currentProcessed%ImportProgressReportInterval == 0 {
+				progressCallback(currentProcessed)
+			}
 		}
-	} else if skippedKeys > 0 {
-		logrus.Warnf("All %d keys were skipped due to decryption errors", skippedKeys)
+
+		// Insert this batch into database
+		if len(keyModels) > 0 {
+			// Create a callback for bulk insert progress
+			// Map insert progress to overall progress (decrypt phase already reported)
+			insertCallback := func(inserted int) {
+				if progressCallback != nil {
+					// Calculate overall progress: batchStart (already decrypted) + inserted
+					progressCallback(batchStart + inserted)
+				}
+			}
+
+			if err := s.bulkImportService.BulkInsertAPIKeysWithTx(tx, keyModels, insertCallback); err != nil {
+				return fmt.Errorf("bulk import failed at batch %d-%d: %w", batchStart, batchEnd, err)
+			}
+			totalProcessed += len(keyModels)
+		}
+
+		// Report progress after each batch is inserted
+		// This ensures progress reflects both decryption AND insertion completion
+		// Use batchEnd instead of batchStart + len(batchKeys) for accuracy
+		if progressCallback != nil {
+			progressCallback(batchEnd)
+		}
+
+		logrus.Debugf("Imported batch %d-%d: %d keys inserted, %d skipped (total: %d/%d)",
+			batchStart, batchEnd, len(keyModels), batchSkipped, totalProcessed, totalKeys)
+	}
+
+	// Final summary
+	if totalSkipped > 0 {
+		logrus.Warnf("Import completed with %d keys skipped due to decryption errors (total: %d/%d)",
+			totalSkipped, totalProcessed, totalKeys)
+	} else {
+		logrus.Infof("Import completed successfully: %d keys imported", totalProcessed)
 	}
 
 	return nil
@@ -453,7 +505,8 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 }
 
 // ImportGroup imports a complete group with keys and sub-groups
-func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (uint, error) {
+// progressCallback is an optional callback function to report progress during import
+func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData, progressCallback func(processed int)) (uint, error) {
 	// Child groups cannot be imported individually - they are imported with their parent
 	if data.Group.ParentGroupID != nil {
 		return 0, ErrChildGroupCannotImportIndividually
@@ -512,7 +565,7 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData) (u
 
 	// Import keys
 	if len(data.Keys) > 0 {
-		if err := s.ImportKeys(tx, newGroup.ID, data.Keys); err != nil {
+		if err := s.ImportKeys(tx, newGroup.ID, data.Keys, progressCallback); err != nil {
 			return 0, fmt.Errorf("failed to import keys: %w", err)
 		}
 	}
@@ -609,7 +662,7 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 
 		// Import keys for child group
 		if len(childData.Keys) > 0 {
-			if err := s.ImportKeys(tx, childGroup.ID, childData.Keys); err != nil {
+			if err := s.ImportKeys(tx, childGroup.ID, childData.Keys, nil); err != nil {
 				logrus.WithError(err).Warnf("Failed to import keys for child group %s", childName)
 			}
 		}
@@ -965,7 +1018,7 @@ func (s *ImportExportService) ImportSystem(tx *gorm.DB, data *SystemExportData) 
 	// Import all groups with unique name handling
 	importedGroups := 0
 	for _, groupData := range data.Groups {
-		groupID, err := s.ImportGroup(tx, &groupData)
+		groupID, err := s.ImportGroup(tx, &groupData, nil)
 		if err != nil {
 			// Log error but continue with other groups
 			logrus.WithError(err).Warnf("Failed to import group %s, skipping", groupData.Group.Name)

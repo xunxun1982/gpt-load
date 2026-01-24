@@ -16,8 +16,8 @@ import (
 const (
 	DefaultPageSize   = 15
 	MaxPageSize       = 1000
-	CountQueryTimeout = 5 * time.Second // Extended timeout for COUNT on large datasets with indexes
-	DataQueryTimeout  = 3 * time.Second // Data fetch timeout
+	CountQueryTimeout = 10 * time.Second // Extended timeout for COUNT on large datasets with indexes
+	DataQueryTimeout  = 20 * time.Second // Data fetch timeout - increased to handle lock contention during batch operations
 )
 
 // Pagination represents the pagination details in a response.
@@ -37,6 +37,7 @@ type PaginatedResponse struct {
 // Paginate performs optimized pagination on a GORM query and returns a standardized response.
 // Strategy: Execute data fetch and COUNT in true parallel, use Limit+1 to detect end and avoid COUNT when possible.
 // For indexed queries (e.g., WHERE group_id = ?), COUNT should be fast using index scans.
+// During bulk imports, queries may timeout - we return stale/partial data to keep UI responsive.
 func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, error) {
 	// 1. Parse pagination parameters from query string
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))

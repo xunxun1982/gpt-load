@@ -211,14 +211,6 @@ function goToGroupInfo(groupId: number) {
   emit("group-select", groupId);
 }
 
-// Format number with K suffix
-function formatNumber(num: number): string {
-  if (num >= 1000) {
-    return `${(num / 1000).toFixed(1)}K`;
-  }
-  return num.toString();
-}
-
 // Get health score CSS class based on score value
 function getHealthScoreClass(score: number): string {
   if (score >= 0.8) {
@@ -362,15 +354,15 @@ function formatDateTime(isoString: string | null | undefined): string {
             <div class="key-stats-row">
               <div class="stats-left">
                 <span class="stat-item">
-                  <span class="stat-value">{{ formatNumber(subGroup.total_keys) }}</span>
+                  <span class="stat-value">{{ subGroup.total_keys }}</span>
                 </span>
                 <n-divider vertical />
                 <span class="stat-item stat-success">
-                  {{ formatNumber(subGroup.active_keys) }}
+                  {{ subGroup.active_keys }}
                 </span>
                 <n-divider vertical />
                 <span class="stat-item stat-error">
-                  {{ formatNumber(subGroup.invalid_keys) }}
+                  {{ subGroup.invalid_keys }}
                 </span>
               </div>
               <n-tag :type="getSubGroupStatus(subGroup).type" size="small">

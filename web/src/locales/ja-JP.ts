@@ -22,6 +22,8 @@ export default {
     requestFailed: "リクエスト失敗: {status}",
     networkError: "ネットワークエラー、接続を確認してください",
     requestSetupError: "リクエスト設定エラー",
+    databaseBusy: "データベースが大量のデータを処理中です。しばらくしてから再試行してください",
+    databaseBusyRetry: "データベースが処理中です。{seconds}秒後に自動再試行します...",
     info: "情報",
     yes: "はい",
     no: "いいえ",
@@ -233,6 +235,8 @@ export default {
     confirmClearAllKeys:
       "このグループのすべてのキーを永久に削除します。元に戻せません！続行しますか？",
     clearSuccess: "クリア成功",
+    clearingInBackground: "バックグラウンドでキーをクリア中です。進行状況バーを確認してください",
+    restoringInBackground: "バックグラウンドでキーを復元中です。進行状況バーを確認してください",
     selectGroup: "グループを選択してください",
     clickToCopy: "クリックしてコピー",
     urlCopied: "URLをクリップボードにコピーしました",
@@ -578,8 +582,12 @@ export default {
     exportFailed: "エクスポート失敗",
     importFailed: "インポート失敗",
     invalidImportFile: "無効なインポートファイル",
-    importing: "グループをインポート中、お待ちください...",
+    importing: "グループをインポート中...",
     importInProgress: "インポートが進行中です。重複操作しないでください",
+    importingPleaseWait:
+      "グループをインポート中です。お待ちください。他の機能を引き続き使用できます。",
+    importTimeoutHint:
+      "インポートリクエストがタイムアウトしましたが、データは正常にインポートされた可能性があります。ページを更新して結果を確認してください。インポートに失敗した場合は、後でもう一度お試しください。",
     fetchModels: "モデルを取得",
     saveGroupFirst: "モデルを取得する前にグループを保存してください",
     noModelsFound: "利用可能なモデルが見つかりません",
@@ -989,5 +997,36 @@ export default {
     hasBoundSite: "バインドサイトあり",
     hasBoundGroup: "バインドグループあり",
     mustUnbindBeforeDelete: "グループを削除する前にサイトとのバインドを解除してください",
+  },
+  database: {
+    group_not_found: "グループが見つかりません",
+    cannot_get_group: "グループ情報を取得できません",
+    cannot_get_groups: "グループリストを取得できません",
+    group_stats_failed: "グループ統計情報の取得に失敗しました",
+    import_failed: "インポートに失敗しました",
+    export_failed: "エクスポートに失敗しました",
+    rpm_stats_failed: "RPM統計情報の取得に失敗しました",
+    current_stats_failed: "現在の統計情報の取得に失敗しました",
+    previous_stats_failed: "過去の統計情報の取得に失敗しました",
+    chart_data_failed: "チャートデータの取得に失敗しました",
+  },
+  validation: {
+    invalid_group_id: "無効なグループID",
+    invalid_group_name: "無効なグループ名",
+    invalid_channel_type: "サポートされていないチャネルタイプ: {types}",
+    invalid_group_type: "無効なグループタイプ",
+    test_model_required: "テストモデルは必須です",
+    test_model_empty: "テストモデルを空にすることはできません",
+    invalid_test_path: "無効な検証エンドポイントパス",
+    invalid_model_mapping: "無効なモデルマッピング形式: {error}",
+    invalid_model_redirect: "無効なモデルリダイレクトルール: {error}",
+    aggregate_no_model_redirect: "集約グループはモデルリダイレクトをサポートしていません",
+    sub_group_referenced_cannot_modify:
+      "このグループは {count} 個の集約グループによって参照されているため、チャネルタイプまたは検証エンドポイントを変更できません",
+    cc_support_cannot_disable_used_by_anthropic:
+      "このグループは以下のAnthropic集約グループで使用されているため、CCサポートを無効にできません: {groups}",
+    invalid_copy_keys_value: "無効なキーコピーオプション",
+    child_group_cannot_export_individually:
+      "子グループは個別にエクスポートできません。親グループをエクスポートしてください",
   },
 };

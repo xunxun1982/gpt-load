@@ -49,7 +49,9 @@ const keyCount = computed(() => {
     return estimatedKeyCount.value;
   }
   // For small files, calculate from content
-  if (!fileContent.value) return 0;
+  if (!fileContent.value) {
+    return 0;
+  }
   return fileContent.value.split("\n").filter(line => line.trim()).length;
 });
 
@@ -122,8 +124,9 @@ async function handleFileChange(event: Event) {
       estimatedKeyCount.value = Math.floor(file.size / 170);
       fileContent.value = ""; // Don't store content for large files
       window.$message.success(
-        t("keys.fileLoadedSuccess", { name: file.name }) +
-          ` (${fileSizeMB.toFixed(2)}MB, ~${estimatedKeyCount.value.toLocaleString()} keys)`
+        `${t("keys.fileLoadedSuccess", {
+          name: file.name,
+        })} (${fileSizeMB.toFixed(2)}MB, ~${estimatedKeyCount.value.toLocaleString()} keys)`
       );
     } else {
       // For small files, read content for accurate key count

@@ -241,6 +241,28 @@ async function loadKeys() {
     });
     keys.value = result.items as KeyRow[];
     total.value = result.pagination.total_items;
+  } catch (error: any) {
+    // Check if it's a timeout error
+    const errorMsg = error?.response?.data?.message || error?.message || "";
+    if (
+      errorMsg.includes("timeout") ||
+      errorMsg.includes("deadline exceeded") ||
+      errorMsg.includes("context deadline exceeded")
+    ) {
+      // Show friendly message and auto-retry after 3 seconds
+      const retrySeconds = 3;
+      window.$message.warning(t("common.databaseBusyRetry", { seconds: retrySeconds }), {
+        duration: retrySeconds * 1000,
+      });
+
+      // Auto-retry after delay
+      setTimeout(() => {
+        if (props.selectedGroup?.id) {
+          loadKeys();
+        }
+      }, retrySeconds * 1000);
+    }
+    // Error is already handled by http interceptor, no need to show again
   } finally {
     loading.value = false;
   }
@@ -525,12 +547,25 @@ async function restoreAllInvalid() {
     onPositiveClick: async () => {
       isRestoring.value = true;
       d.loading = true;
+
+      // Trigger task polling immediately before API call for instant UI feedback
+      localStorage.removeItem("last_closed_task");
+      appState.taskPollingTrigger++;
+
       try {
-        await keysApi.restoreAllInvalidKeys(groupId);
-        await loadKeys();
-        // Trigger sync operation refresh
-        if (groupName) {
-          triggerSyncOperationRefresh(groupName, "RESTORE_ALL_INVALID");
+        const response = await keysApi.restoreAllInvalidKeys(groupId);
+
+        // Check if response is a task (async operation for large batches)
+        if (response && typeof response === "object" && "is_running" in response) {
+          // Async task started - progress bar already showing
+          window.$message.info(t("keys.restoringInBackground"));
+        } else {
+          // Sync operation completed
+          await loadKeys();
+          // Trigger sync operation refresh
+          if (groupName) {
+            triggerSyncOperationRefresh(groupName, "RESTORE_ALL_INVALID");
+          }
         }
       } catch (_error) {
         console.error("Restore failed");
@@ -560,6 +595,8 @@ async function validateKeys(status: "all" | "active" | "invalid") {
 
   try {
     await keysApi.validateGroupKeys(props.selectedGroup.id, status === "all" ? undefined : status);
+
+    // Trigger task polling immediately after API call succeeds
     localStorage.removeItem("last_closed_task");
     appState.taskPollingTrigger++;
   } catch (_error) {
@@ -586,13 +623,27 @@ async function clearAllInvalid() {
     onPositiveClick: async () => {
       isDeling.value = true;
       d.loading = true;
+
+      // Trigger task polling immediately before API call for instant UI feedback
+      localStorage.removeItem("last_closed_task");
+      appState.taskPollingTrigger++;
+
       try {
-        const { data } = await keysApi.clearAllInvalidKeys(groupId);
-        window.$message.success(data?.message || t("keys.clearSuccess"));
-        await loadKeys();
-        // Trigger sync operation refresh
-        if (groupName) {
-          triggerSyncOperationRefresh(groupName, "CLEAR_ALL_INVALID");
+        const response = await keysApi.clearAllInvalidKeys(groupId);
+
+        // Check if response is a task (async operation for large batches)
+        if (response && typeof response === "object" && "is_running" in response) {
+          // Async task started - progress bar already showing
+          window.$message.info(t("keys.clearingInBackground"));
+        } else {
+          // Sync operation completed
+          const message = (response as { message?: string })?.message || t("keys.clearSuccess");
+          window.$message.success(message);
+          await loadKeys();
+          // Trigger sync operation refresh
+          if (groupName) {
+            triggerSyncOperationRefresh(groupName, "CLEAR_ALL_INVALID");
+          }
         }
       } catch (_error) {
         console.error("Delete failed");
@@ -647,12 +698,25 @@ async function clearAll() {
           }
 
           isDeling.value = true;
+
+          // Trigger task polling immediately before API call for instant UI feedback
+          localStorage.removeItem("last_closed_task");
+          appState.taskPollingTrigger++;
+
           try {
-            await keysApi.clearAllKeys(groupId);
-            window.$message.success(t("keys.clearAllKeysSuccess"));
-            await loadKeys();
-            // Trigger sync operation refresh
-            triggerSyncOperationRefresh(groupName, "CLEAR_ALL");
+            const response = await keysApi.clearAllKeys(groupId);
+
+            // Check if response is a task (async operation for large batches)
+            if (response && typeof response === "object" && "is_running" in response) {
+              // Async task started - progress bar already showing
+              window.$message.info(t("keys.clearingInBackground"));
+            } else {
+              // Sync operation completed - no task was created, hide progress bar
+              window.$message.success(t("keys.clearAllKeysSuccess"));
+              await loadKeys();
+              // Trigger sync operation refresh
+              triggerSyncOperationRefresh(groupName, "CLEAR_ALL");
+            }
           } catch (_error) {
             console.error("Clear all failed", _error);
           } finally {
