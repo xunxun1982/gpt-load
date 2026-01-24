@@ -623,7 +623,11 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 		if len(currentBatch) >= batchSize {
 			// Note: batchDedupeMap removed to maintain constant memory usage
 			// existingHashMap is updated in processBatch and provides cross-batch deduplication
-			added, ignored := s.processBatch(group, currentBatch, existingHashMap)
+			added, ignored, err := s.processBatch(group, currentBatch, existingHashMap)
+			if err != nil {
+				_ = s.TaskService.EndTask(nil, err)
+				return
+			}
 			totalAdded += added
 			totalIgnored += ignored
 			totalProcessed += len(currentBatch)
@@ -667,7 +671,11 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 
 	// Process remaining keys in the last batch
 	if len(currentBatch) > 0 {
-		added, ignored := s.processBatch(group, currentBatch, existingHashMap)
+		added, ignored, err := s.processBatch(group, currentBatch, existingHashMap)
+		if err != nil {
+			_ = s.TaskService.EndTask(nil, err)
+			return
+		}
 		totalAdded += added
 		totalIgnored += ignored
 		totalProcessed += len(currentBatch)
@@ -725,16 +733,16 @@ func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Rea
 // Cross-batch deduplication is handled by existingHashMap which stores key hashes.
 //
 // Error handling strategy:
-// - Encryption errors: Skip individual keys, continue processing
-// - Bulk insert errors: Log error, mark batch as ignored, continue with next batch
-// - This "best effort" approach maximizes successful imports even with partial failures
+// - Encryption errors: Skip individual keys, continue processing (counted as ignored)
+// - Bulk insert errors: Return error immediately to abort the task and prevent silent data loss
+// - This ensures callers can distinguish between duplicate keys (ignored) and insertion failures (error)
 func (s *KeyImportService) processBatch(
 	group *models.Group,
 	keys []string,
 	existingHashMap map[string]bool,
-) (added int, ignored int) {
+) (added int, ignored int, err error) {
 	if len(keys) == 0 {
-		return 0, 0
+		return 0, 0, nil
 	}
 
 	// Prepare keys for bulk import
@@ -791,7 +799,7 @@ func (s *KeyImportService) processBatch(
 	// localDedupeMap goes out of scope here and is garbage collected
 
 	if len(newKeysToCreate) == 0 {
-		return 0, ignored
+		return 0, ignored, nil
 	}
 
 	// Use bulk import service for fast insertion
@@ -801,11 +809,9 @@ func (s *KeyImportService) processBatch(
 			"keyCount": len(newKeysToCreate),
 			"error":    err,
 		}).Error("Failed to bulk insert batch")
-		// Note: Do NOT update existingHashMap on failure
-		// This allows retry of these keys in subsequent imports
-		// Count failed insertions as ignored for this task
-		ignored += len(newKeysToCreate)
-		return 0, ignored
+		// Return error to abort task and prevent silent data loss
+		// Do NOT update existingHashMap on failure to allow retry in future imports
+		return 0, ignored, fmt.Errorf("bulk insert failed: %w", err)
 	}
 
 	// Only update existingHashMap after successful insert
@@ -815,5 +821,5 @@ func (s *KeyImportService) processBatch(
 	}
 
 	added = len(newKeysToCreate)
-	return added, ignored
+	return added, ignored, nil
 }

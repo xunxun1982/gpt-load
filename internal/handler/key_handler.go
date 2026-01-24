@@ -191,6 +191,22 @@ func (s *Server) AddMultipleKeysAsync(c *gin.Context) {
 // AddMultipleKeysAsyncStream handles creating new keys from a file upload using streaming.
 // This method is optimized for large files (>10MB) and processes keys in batches while reading.
 // Memory usage is constant regardless of file size.
+//
+// Note on streaming behavior:
+// The current implementation uses c.Request.FormFile() which internally calls ParseMultipartForm.
+// According to Go's net/http implementation (as of Go 1.25.6):
+// - ParseMultipartForm reads and parses the entire multipart stream before returning
+// - Files larger than ~32MB are spilled to temporary files on disk
+// - However, the multipart structure itself must be fully parsed first
+// This means true concurrent upload/processing is not possible with FormFile.
+//
+// For true streaming (concurrent upload and processing), consider:
+// 1. Require group_id in query parameter (not form data)
+// 2. Use c.Request.MultipartReader() to read parts on-demand
+// 3. Process file content as it arrives without waiting for full upload
+//
+// Current implementation is kept for backward compatibility and simplicity.
+// The "streaming" refers to batch processing of the file content, not the upload itself.
 func (s *Server) AddMultipleKeysAsyncStream(c *gin.Context) {
 	logrus.Debug("AddMultipleKeysAsyncStream: Handler called")
 
@@ -246,9 +262,14 @@ func (s *Server) AddMultipleKeysAsyncStream(c *gin.Context) {
 		"group_name": group.Name,
 	}).Debug("AddMultipleKeysAsyncStream: Group found, getting uploaded file")
 
-	// Get uploaded file directly without ParseMultipartForm to avoid buffering
-	// Note: Do NOT defer file.Close() here because the file is passed to a goroutine
-	// The goroutine will be responsible for closing the file
+	// Get uploaded file
+	// Note: FormFile internally calls ParseMultipartForm, which reads and parses
+	// the entire multipart stream before returning. While files >32MB are spilled
+	// to temp files, the multipart structure must be fully parsed first.
+	// This prevents true concurrent upload/processing but simplifies implementation.
+	//
+	// Do NOT defer file.Close() here because the file is passed to a goroutine.
+	// The goroutine (via runStreamingImport) will be responsible for closing the file.
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		logrus.WithError(err).Error("AddMultipleKeysAsyncStream: Failed to get uploaded file")
