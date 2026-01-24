@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import { appState } from "@/utils/app-state";
-import { Close } from "@vicons/ionicons5";
-import { NButton, NCard, NInput, NModal } from "naive-ui";
-import { ref, watch } from "vue";
+import { Close, DocumentText } from "@vicons/ionicons5";
+import { NAlert, NButton, NCard, NIcon, NInput, NModal } from "naive-ui";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 interface Props {
@@ -25,6 +25,19 @@ const { t } = useI18n();
 
 const loading = ref(false);
 const keysText = ref("");
+const inputMode = ref<"text" | "file">("text");
+const selectedFile = ref<File | null>(null);
+const fileContent = ref("");
+const fileInputRef = ref<HTMLInputElement | null>(null);
+
+// Computed property to check if submit is enabled
+const canSubmit = computed(() => {
+  if (inputMode.value === "text") {
+    return keysText.value.trim().length > 0;
+  } else {
+    return fileContent.value.trim().length > 0;
+  }
+});
 
 // Watch dialog show state
 watch(
@@ -39,6 +52,12 @@ watch(
 // Reset form
 function resetForm() {
   keysText.value = "";
+  inputMode.value = "text";
+  selectedFile.value = null;
+  fileContent.value = "";
+  if (fileInputRef.value) {
+    fileInputRef.value.value = "";
+  }
 }
 
 // Close dialog
@@ -46,19 +65,71 @@ function handleClose() {
   emit("update:show", false);
 }
 
+// Trigger file selection
+function handleSelectFile() {
+  fileInputRef.value?.click();
+}
+
+// Handle file selection
+async function handleFileChange(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+
+  if (!file) {
+    return;
+  }
+
+  // Check file size (limit to 50MB to support large key files)
+  const maxSize = 50 * 1024 * 1024; // 50MB
+  if (file.size > maxSize) {
+    window.$message.error(t("keys.fileSizeExceeded"));
+    target.value = "";
+    return;
+  }
+
+  // Check file type (only .txt files)
+  if (!file.name.endsWith(".txt")) {
+    window.$message.error(t("keys.invalidFileType"));
+    target.value = "";
+    return;
+  }
+
+  try {
+    const text = await file.text();
+    selectedFile.value = file;
+    fileContent.value = text;
+    inputMode.value = "file";
+    window.$message.success(t("keys.fileLoadedSuccess", { name: file.name }));
+  } catch (_error) {
+    window.$message.error(t("keys.fileReadError"));
+    target.value = "";
+  }
+}
+
+// Clear selected file
+function handleClearFile() {
+  selectedFile.value = null;
+  fileContent.value = "";
+  inputMode.value = "text";
+  if (fileInputRef.value) {
+    fileInputRef.value.value = "";
+  }
+}
+
 // Submit form
 async function handleSubmit() {
-  if (loading.value || !keysText.value.trim()) {
+  if (loading.value || !canSubmit.value) {
     return;
   }
 
   try {
     loading.value = true;
 
-    await keysApi.addKeysAsync(props.groupId, keysText.value);
+    const content = inputMode.value === "file" ? fileContent.value : keysText.value;
+    await keysApi.addKeysAsync(props.groupId, content);
     resetForm();
     handleClose();
-    window.$message.success(t("keys.importTaskStarted"));
+    window.$message.success(t("common.operationSuccess"));
     appState.taskPollingTrigger++;
   } finally {
     loading.value = false;
@@ -84,18 +155,57 @@ async function handleSubmit() {
         </n-button>
       </template>
 
+      <!-- Hidden file input -->
+      <input
+        ref="fileInputRef"
+        type="file"
+        accept=".txt"
+        style="display: none"
+        @change="handleFileChange"
+      />
+
+      <!-- File import button -->
+      <div style="margin-top: 20px; margin-bottom: 12px">
+        <n-button @click="handleSelectFile" :disabled="loading">
+          <template #icon>
+            <n-icon :component="DocumentText" />
+          </template>
+          {{ t("keys.importFromFile") }}
+        </n-button>
+      </div>
+
+      <!-- File info display (when file is selected) -->
+      <n-alert
+        v-if="inputMode === 'file' && selectedFile"
+        type="info"
+        style="margin-bottom: 12px"
+        closable
+        @close="handleClearFile"
+      >
+        <template #header>{{ t("keys.fileSelected") }}</template>
+        <div>
+          <div>{{ t("keys.fileName") }}: {{ selectedFile.name }}</div>
+          <div>{{ t("keys.fileSize") }}: {{ (selectedFile.size / 1024).toFixed(2) }} KB</div>
+          <div>
+            {{ t("keys.keyCount") }}:
+            {{ fileContent.split("\n").filter(line => line.trim()).length }}
+          </div>
+        </div>
+      </n-alert>
+
+      <!-- Text input (only show when in text mode) -->
       <n-input
+        v-if="inputMode === 'text'"
         v-model:value="keysText"
         type="textarea"
         :placeholder="t('keys.enterKeysPlaceholder')"
         :rows="8"
-        style="margin-top: 20px"
       />
 
       <template #footer>
         <div style="display: flex; justify-content: flex-end; gap: 12px">
           <n-button @click="handleClose">{{ t("common.cancel") }}</n-button>
-          <n-button type="primary" @click="handleSubmit" :loading="loading" :disabled="!keysText">
+          <n-button type="primary" @click="handleSubmit" :loading="loading" :disabled="!canSubmit">
             {{ t("common.create") }}
           </n-button>
         </div>
