@@ -1091,7 +1091,7 @@ func TestManagerDefaultValues(t *testing.T) {
 	serverConfig := manager.GetEffectiveServerConfig()
 	assert.Equal(t, "0.0.0.0", serverConfig.Host)
 	assert.Equal(t, 3001, serverConfig.Port)
-	assert.Equal(t, 60, serverConfig.ReadTimeout)
+	assert.Equal(t, 300, serverConfig.ReadTimeout) // Updated to 300s to support large file uploads
 	assert.Equal(t, 600, serverConfig.WriteTimeout)
 	assert.Equal(t, 120, serverConfig.IdleTimeout)
 

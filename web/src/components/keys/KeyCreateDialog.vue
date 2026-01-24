@@ -131,12 +131,36 @@ async function handleSubmit() {
   try {
     loading.value = true;
 
-    const content = inputMode.value === "file" ? fileContent.value : keysText.value;
-    await keysApi.addKeysAsync(props.groupId, content);
+    // Determine which API to use based on input mode and file size
+    if (inputMode.value === "file" && selectedFile.value) {
+      const fileSizeMB = selectedFile.value.size / (1024 * 1024);
+
+      // Show appropriate message based on file size
+      if (fileSizeMB > 10) {
+        // Large file - show info about streaming import
+        window.$message.info(t("keys.largeFileImportStarting", { size: fileSizeMB.toFixed(2) }), {
+          duration: 3000,
+        });
+        await keysApi.addKeysAsyncStream(props.groupId, selectedFile.value);
+      } else {
+        // Small file - use regular JSON API
+        await keysApi.addKeysAsync(props.groupId, fileContent.value);
+      }
+    } else {
+      // Text input always uses JSON API
+      await keysApi.addKeysAsync(props.groupId, keysText.value);
+    }
+
+    // Show task started message and trigger polling
+    window.$message.info(t("keys.importTaskStarted"), { duration: 5000 });
+    appState.taskPollingTrigger++;
+
+    // Close dialog and reset form
     resetForm();
     handleClose();
-    window.$message.success(t("common.operationSuccess"));
-    appState.taskPollingTrigger++;
+  } catch (error) {
+    // Error is already handled by http interceptor
+    console.error("Import failed:", error);
   } finally {
     loading.value = false;
   }

@@ -555,6 +555,7 @@ export default {
     pageInfo: "{current} / {total} ページ",
     pageInfoUnknown: "{current} ページ目",
     importTaskStarted: "キーインポートタスクが開始されました。下部で進捗を確認してください。",
+    largeFileImportStarting: "大きなファイル（{size}MB）をアップロード中です。お待ちください...",
     deleteTaskStarted: "キー削除タスクが開始されました。下部で進捗を確認してください。",
     addKeysToGroup: "{group} にキーを追加",
     deleteKeysFromGroup: "{group} からキーを削除",

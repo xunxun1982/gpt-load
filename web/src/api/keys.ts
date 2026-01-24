@@ -140,8 +140,27 @@ export const keysApi = {
       },
       {
         hideMessage: true,
+        timeout: 300000, // 5 minutes timeout to support large files over slow networks
       }
     );
+    return res.data;
+  },
+
+  // Add keys asynchronously using streaming (for large files > 10MB)
+  // This method uploads the file using multipart/form-data and processes it in batches on the server
+  // Memory usage is constant regardless of file size
+  async addKeysAsyncStream(group_id: number, file: File): Promise<TaskInfo> {
+    const formData = new FormData();
+    formData.append("group_id", group_id.toString());
+    formData.append("file", file);
+
+    const res = await http.post("/keys/add-async-stream", formData, {
+      hideMessage: true,
+      timeout: 300000, // 5 minutes timeout
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+    });
     return res.data;
   },
 
@@ -197,6 +216,7 @@ export const keysApi = {
       },
       {
         hideMessage: true,
+        timeout: 300000, // 5 minutes timeout to support large files over slow networks
       }
     );
     return res.data;

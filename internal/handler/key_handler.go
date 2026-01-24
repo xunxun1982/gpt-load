@@ -51,32 +51,48 @@ func validateKeysText(c *gin.Context, keysText string) bool {
 func (s *Server) findGroupByID(c *gin.Context, groupID uint) (*models.Group, bool) {
 	// 1) Try cache first (fast path, avoids DB during heavy writes)
 	if cached, err := s.GroupManager.GetGroupByID(groupID); err == nil && cached != nil {
+		logrus.WithField("group_id", groupID).Debug("findGroupByID: Found in cache")
 		return cached, true
 	}
 
 	// 2) Short DB lookup with small timeout, then fallback to cache again if needed
 	var group models.Group
-	// Make timeout configurable with sane lower bound, default to 300ms
-	timeoutMs := utils.ParseInteger(utils.GetEnvOrDefault("DB_LOOKUP_TIMEOUT_MS", "1200"), 1200)
+	// Make timeout configurable with sane lower bound, default to 5000ms (increased from 1200ms)
+	timeoutMs := utils.ParseInteger(utils.GetEnvOrDefault("DB_LOOKUP_TIMEOUT_MS", "5000"), 5000)
 	if timeoutMs < 50 {
 		timeoutMs = 50
-	} else if timeoutMs > 5000 {
-		timeoutMs = 5000
+	} else if timeoutMs > 10000 {
+		timeoutMs = 10000
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
+
+	logrus.WithFields(logrus.Fields{
+		"group_id":   groupID,
+		"timeout_ms": timeoutMs,
+	}).Debug("findGroupByID: Querying database")
+
 	if err := s.DB.WithContext(ctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
+		logrus.WithFields(logrus.Fields{
+			"group_id": groupID,
+			"error":    err,
+		}).Warn("findGroupByID: Database query failed, trying cache fallback")
+
 		// DB busy - try cache fallback again, otherwise return error
 		if cached, err2 := s.GroupManager.GetGroupByID(groupID); err2 == nil {
+			logrus.WithField("group_id", groupID).Info("findGroupByID: Using cache fallback after DB error")
 			return cached, true
 		}
 		response.Error(c, app_errors.ParseDBError(err))
 		return nil, false
 	}
 	if group.ID == 0 {
+		logrus.WithField("group_id", groupID).Warn("findGroupByID: Group not found in database")
 		response.Error(c, app_errors.ErrResourceNotFound)
 		return nil, false
 	}
+
+	logrus.WithField("group_id", groupID).Debug("findGroupByID: Found in database")
 	return &group, true
 }
 
@@ -132,24 +148,119 @@ func (s *Server) AddMultipleKeys(c *gin.Context) {
 func (s *Server) AddMultipleKeysAsync(c *gin.Context) {
 	var req KeyTextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		logrus.WithError(err).Error("AddMultipleKeysAsync: Failed to bind JSON")
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
 		return
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"group_id":      req.GroupID,
+		"keys_text_len": len(req.KeysText),
+	}).Info("AddMultipleKeysAsync: Starting async key import")
+
 	group, ok := s.findGroupByID(c, req.GroupID)
 	if !ok {
+		logrus.WithField("group_id", req.GroupID).Error("AddMultipleKeysAsync: Group not found")
 		return
 	}
 
 	if !validateKeysText(c, req.KeysText) {
+		logrus.WithField("group_id", req.GroupID).Error("AddMultipleKeysAsync: Invalid keys text")
 		return
 	}
 
 	taskStatus, err := s.KeyImportService.StartImportTask(group, req.KeysText)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"group_id": req.GroupID,
+			"error":    err,
+		}).Error("AddMultipleKeysAsync: Failed to start import task")
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
 		return
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"group_id":   req.GroupID,
+		"group_name": group.Name,
+		"total_keys": taskStatus.Total,
+	}).Info("AddMultipleKeysAsync: Task started successfully")
+
+	response.Success(c, taskStatus)
+}
+
+// AddMultipleKeysAsyncStream handles creating new keys from a file upload using streaming.
+// This method is optimized for large files (>10MB) and processes keys in batches while reading.
+// Memory usage is constant regardless of file size.
+func (s *Server) AddMultipleKeysAsyncStream(c *gin.Context) {
+	logrus.Debug("AddMultipleKeysAsyncStream: Handler called")
+
+	// Get group_id from query or form (before parsing multipart)
+	groupIDStr := c.Query("group_id")
+	if groupIDStr == "" {
+		groupIDStr = c.PostForm("group_id")
+	}
+	if groupIDStr == "" {
+		logrus.Warn("AddMultipleKeysAsyncStream: group_id not provided")
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.group_id_required")
+		return
+	}
+
+	groupID, err := strconv.Atoi(groupIDStr)
+	if err != nil || groupID <= 0 {
+		logrus.WithFields(logrus.Fields{
+			"group_id_str": groupIDStr,
+			"error":        err,
+		}).Warn("AddMultipleKeysAsyncStream: Invalid group_id format")
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id_format")
+		return
+	}
+
+	logrus.WithField("group_id", groupID).Debug("AddMultipleKeysAsyncStream: Parsed group_id")
+
+	group, ok := s.findGroupByID(c, uint(groupID))
+	if !ok {
+		logrus.WithField("group_id", groupID).Warn("AddMultipleKeysAsyncStream: Group not found")
+		return
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"group_id":   groupID,
+		"group_name": group.Name,
+	}).Debug("AddMultipleKeysAsyncStream: Group found, getting uploaded file")
+
+	// Get uploaded file directly without ParseMultipartForm to avoid buffering
+	// Note: Do NOT defer file.Close() here because the file is passed to a goroutine
+	// The goroutine will be responsible for closing the file
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		logrus.WithError(err).Error("AddMultipleKeysAsyncStream: Failed to get uploaded file")
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "failed to get uploaded file"))
+		return
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"group_id":  groupID,
+		"filename":  header.Filename,
+		"file_size": header.Size,
+	}).Info("AddMultipleKeysAsyncStream: File received, starting streaming import")
+
+	// Start streaming import task
+	taskStatus, err := s.KeyImportService.StartStreamingImportTask(group, file, header.Size)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"group_id": groupID,
+			"error":    err,
+		}).Error("AddMultipleKeysAsyncStream: Failed to start streaming import task")
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
+		return
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"group_id":       groupID,
+		"group_name":     group.Name,
+		"file_size":      header.Size,
+		"estimated_keys": taskStatus.Total,
+	}).Info("AddMultipleKeysAsyncStream: Streaming task started successfully")
 
 	response.Success(c, taskStatus)
 }

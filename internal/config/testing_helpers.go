@@ -16,7 +16,7 @@ func (m *MockConfig) GetServerConfig() types.ServerConfig {
 		IsMaster:                true,
 		Port:                    3001,
 		Host:                    "0.0.0.0",
-		ReadTimeout:             60,
+		ReadTimeout:             300,
 		WriteTimeout:            600,
 		IdleTimeout:             120,
 		GracefulShutdownTimeout: 10,

@@ -556,6 +556,7 @@ export default {
     pageInfo: "Page {current} of {total}",
     pageInfoUnknown: "Page {current}",
     importTaskStarted: "Key import task has started, please check the progress below later.",
+    largeFileImportStarting: "Uploading large file ({size}MB), please wait...",
     deleteTaskStarted: "Key delete task has started, please check the progress below later.",
     addKeysToGroup: "Add keys to {group}",
     deleteKeysFromGroup: "Delete keys from {group}",

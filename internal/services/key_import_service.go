@@ -1,8 +1,10 @@
 package services
 
 import (
+	"bufio"
 	"fmt"
 	"gpt-load/internal/models"
+	"io"
 	"strings"
 	"time"
 
@@ -61,6 +63,55 @@ func (s *KeyImportService) StartImportTask(group *models.Group, keysText string)
 			}
 		}()
 		s.runImport(group, keys)
+	}()
+
+	return initialStatus, nil
+}
+
+// StartStreamingImportTask initiates a streaming import task that processes keys in batches.
+// This method is optimized for large files and uses constant memory regardless of file size.
+func (s *KeyImportService) StartStreamingImportTask(group *models.Group, reader io.Reader, fileSize int64) (*TaskStatus, error) {
+	// Estimate total keys based on file size (average ~170 bytes per key)
+	estimatedKeys := int(fileSize / 170)
+	if estimatedKeys < 100 {
+		estimatedKeys = 100
+	}
+
+	// Determine optimal batch size based on estimated key count
+	// Larger batches reduce overhead for large imports
+	var batchSize int
+	switch {
+	case estimatedKeys < 10000:
+		batchSize = 1000 // Small files: 1000 keys/batch
+	case estimatedKeys < 100000:
+		batchSize = 5000 // Medium files: 5000 keys/batch
+	default:
+		batchSize = 10000 // Large files: 10000 keys/batch for maximum performance
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"estimatedKeys": estimatedKeys,
+		"batchSize":     batchSize,
+		"fileSize":      fileSize,
+	}).Info("Calculated optimal batch size for streaming import")
+
+	initialStatus, err := s.TaskService.StartTask(TaskTypeKeyImport, group.Name, estimatedKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.WithFields(logrus.Fields{
+					"groupId":   group.ID,
+					"groupName": group.Name,
+					"panic":     r,
+				}).Error("Panic recovered in runStreamingImport")
+				_ = s.TaskService.EndTask(nil, fmt.Errorf("internal error: streaming import task panicked"))
+			}
+		}()
+		s.runStreamingImport(group, reader, batchSize)
 	}()
 
 	return initialStatus, nil
@@ -192,6 +243,11 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 // 3. Removing encryption progress avoids the backwards jump issue without adding complexity
 // 4. Users see progress reach 100% after decryption, then task completes shortly after
 func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []string, priorIgnored int, startTime time.Time) {
+	// Defer memory cleanup to ensure large objects are released
+	defer func() {
+		keys = nil
+	}()
+
 	// Get existing key hashes for deduplication
 	var existingHashes []string
 	if err := s.KeyService.DB.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Pluck("key_hash", &existingHashes).Error; err != nil {
@@ -205,6 +261,8 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
+	// Release existingHashes slice after building map
+	existingHashes = nil
 
 	// Prepare keys for bulk import
 	newKeysToCreate := make([]models.APIKey, 0, len(keys))
@@ -242,6 +300,10 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 		// Encryption is fast (in-memory), and decryption phase already provides meaningful progress.
 	}
 
+	// Release maps after processing
+	existingHashMap = nil
+	uniqueNewKeys = nil
+
 	if len(newKeysToCreate) == 0 {
 		result := KeyImportResult{AddedCount: 0, IgnoredCount: ignoredCount}
 		if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
@@ -263,6 +325,12 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 		return
 	}
 
+	// Store counts before releasing memory
+	addedCount := len(newKeysToCreate)
+
+	// Release newKeysToCreate after insertion
+	newKeysToCreate = nil
+
 	// Load keys to memory store after successful import
 	if s.KeyService.KeyProvider != nil {
 		if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
@@ -274,20 +342,20 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 	}
 
 	// Invalidate cache after adding keys
-	if s.KeyService.CacheInvalidationCallback != nil && len(newKeysToCreate) > 0 {
+	if s.KeyService.CacheInvalidationCallback != nil {
 		s.KeyService.CacheInvalidationCallback(group.ID)
 	}
 
 	duration := time.Since(startTime)
 	logrus.WithFields(logrus.Fields{
 		"groupId":      group.ID,
-		"addedCount":   len(newKeysToCreate),
+		"addedCount":   addedCount,
 		"ignoredCount": ignoredCount,
 		"duration":     duration,
 	}).Info("Completed bulk import for copy")
 
 	result := KeyImportResult{
-		AddedCount:   len(newKeysToCreate),
+		AddedCount:   addedCount,
 		IgnoredCount: ignoredCount,
 	}
 
@@ -332,6 +400,11 @@ func (s *KeyImportService) runImport(group *models.Group, keys []string) {
 func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	startTime := time.Now()
 
+	// Defer memory cleanup to ensure large objects are released
+	defer func() {
+		keys = nil
+	}()
+
 	// Get existing key hashes for deduplication
 	var existingHashes []string
 	if err := s.KeyService.DB.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Pluck("key_hash", &existingHashes).Error; err != nil {
@@ -345,6 +418,8 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	for _, h := range existingHashes {
 		existingHashMap[h] = true
 	}
+	// Release existingHashes slice after building map
+	existingHashes = nil
 
 	// Prepare keys for bulk import
 	newKeysToCreate := make([]models.APIKey, 0, len(keys))
@@ -387,6 +462,10 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 		}
 	}
 
+	// Release maps after processing
+	existingHashMap = nil
+	uniqueNewKeys = nil
+
 	if len(newKeysToCreate) == 0 {
 		result := KeyImportResult{
 			AddedCount:   0,
@@ -411,6 +490,12 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 		return
 	}
 
+	// Store counts before releasing memory
+	addedCount := len(newKeysToCreate)
+
+	// Release newKeysToCreate after insertion
+	newKeysToCreate = nil
+
 	// Load keys to memory store after successful import
 	if s.KeyService.KeyProvider != nil {
 		if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
@@ -422,24 +507,280 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 	}
 
 	// Invalidate cache after adding keys
-	if s.KeyService.CacheInvalidationCallback != nil && len(newKeysToCreate) > 0 {
+	if s.KeyService.CacheInvalidationCallback != nil {
 		s.KeyService.CacheInvalidationCallback(group.ID)
 	}
 
 	duration := time.Since(startTime)
 	logrus.WithFields(logrus.Fields{
 		"groupId":      group.ID,
-		"addedCount":   len(newKeysToCreate),
+		"addedCount":   addedCount,
 		"ignoredCount": ignoredCount,
 		"duration":     duration,
 	}).Info("Completed bulk import")
 
 	result := KeyImportResult{
-		AddedCount:   len(newKeysToCreate),
+		AddedCount:   addedCount,
 		IgnoredCount: ignoredCount,
 	}
 
 	if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
 		logrus.Errorf("Failed to end task with success result for group %d: %v", group.ID, endErr)
 	}
+}
+
+// runStreamingImport performs streaming import that processes keys in batches while reading.
+// This method uses constant memory regardless of file size by processing keys incrementally.
+// Memory usage scales with batchSize: ~200 bytes per key, so 10000 keys = ~2MB.
+func (s *KeyImportService) runStreamingImport(group *models.Group, reader io.Reader, batchSize int) {
+	startTime := time.Now()
+
+	logrus.WithFields(logrus.Fields{
+		"groupId":   group.ID,
+		"groupName": group.Name,
+		"batchSize": batchSize,
+	}).Info("Starting runStreamingImport")
+
+	// Defer memory cleanup and file closing
+	defer func() {
+		// Ensure reader is closed if it implements io.Closer
+		if closer, ok := reader.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"groupId": group.ID,
+					"error":   err,
+				}).Warn("Failed to close file reader")
+			} else {
+				logrus.WithField("groupId", group.ID).Debug("File reader closed successfully")
+			}
+		}
+	}()
+
+	// Get existing key hashes for deduplication
+	var existingHashes []string
+	if err := s.KeyService.DB.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Pluck("key_hash", &existingHashes).Error; err != nil {
+		if endErr := s.TaskService.EndTask(nil, fmt.Errorf("failed to check existing keys: %w", err)); endErr != nil {
+			logrus.Errorf("Failed to end task with error for group %d: %v", group.ID, endErr)
+		}
+		return
+	}
+
+	existingHashMap := make(map[string]bool, len(existingHashes))
+	for _, h := range existingHashes {
+		existingHashMap[h] = true
+	}
+	existingHashes = nil // Release memory
+
+	// Initialize counters
+	totalProcessed := 0
+	totalAdded := 0
+	totalIgnored := 0
+
+	// Create scanner for line-by-line reading
+	scanner := bufio.NewScanner(reader)
+	// Increase buffer size to handle long lines (up to 1MB per line)
+	const maxScanTokenSize = 1024 * 1024 // 1MB
+	buf := make([]byte, maxScanTokenSize)
+	scanner.Buffer(buf, maxScanTokenSize)
+
+	// Batch processing
+	currentBatch := make([]string, 0, batchSize)
+	batchDedupeMap := make(map[string]bool, batchSize)
+
+	logrus.WithFields(logrus.Fields{
+		"groupId":        group.ID,
+		"existingHashes": len(existingHashMap),
+	}).Info("Starting to scan file line by line")
+
+	// Process file line by line
+	lineCount := 0
+	for scanner.Scan() {
+		lineCount++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		currentBatch = append(currentBatch, line)
+
+		// Log first few lines for debugging
+		if lineCount <= 3 {
+			logrus.WithFields(logrus.Fields{
+				"lineNumber": lineCount,
+				"lineLength": len(line),
+			}).Debug("Read line from file")
+		}
+
+		// Process batch when it reaches batchSize
+		if len(currentBatch) >= batchSize {
+			added, ignored := s.processBatch(group, currentBatch, existingHashMap, batchDedupeMap)
+			totalAdded += added
+			totalIgnored += ignored
+			totalProcessed += len(currentBatch)
+
+			// Update progress
+			if err := s.TaskService.UpdateProgress(totalProcessed); err != nil {
+				logrus.Warnf("Failed to update task progress: %v", err)
+			}
+
+			// Log progress every 10 batches (adaptive based on batch size)
+			batchCount := totalProcessed / batchSize
+			if batchCount%10 == 0 {
+				elapsed := time.Since(startTime)
+				rate := float64(totalProcessed) / elapsed.Seconds()
+				logrus.Infof("Streaming import progress: %d keys processed (%.0f keys/sec, %d added, %d ignored)",
+					totalProcessed, rate, totalAdded, totalIgnored)
+			}
+
+			// Clear batch for next iteration
+			currentBatch = currentBatch[:0]
+			// Keep batchDedupeMap for cross-batch deduplication
+		}
+	}
+
+	// Check for scanner errors
+	if err := scanner.Err(); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"groupId": group.ID,
+			"error":   err,
+		}).Error("Scanner error while reading file")
+		if endErr := s.TaskService.EndTask(nil, fmt.Errorf("error reading file: %w", err)); endErr != nil {
+			logrus.Errorf("Failed to end task with error for group %d: %v", group.ID, endErr)
+		}
+		return
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"groupId":        group.ID,
+		"totalLines":     lineCount,
+		"remainingBatch": len(currentBatch),
+	}).Info("Finished scanning file, processing remaining batch")
+
+	// Process remaining keys in the last batch
+	if len(currentBatch) > 0 {
+		added, ignored := s.processBatch(group, currentBatch, existingHashMap, batchDedupeMap)
+		totalAdded += added
+		totalIgnored += ignored
+		totalProcessed += len(currentBatch)
+
+		// Final progress update
+		if err := s.TaskService.UpdateProgress(totalProcessed); err != nil {
+			logrus.Warnf("Failed to update task progress: %v", err)
+		}
+	}
+
+	// Release maps
+	existingHashMap = nil
+	batchDedupeMap = nil
+	currentBatch = nil
+
+	// Load keys to memory store after successful import
+	if s.KeyService.KeyProvider != nil {
+		if err := s.KeyService.KeyProvider.LoadGroupKeysToStore(group.ID); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"groupId": group.ID,
+				"error":   err,
+			}).Error("Failed to load keys to store after streaming import")
+		}
+	}
+
+	// Invalidate cache after adding keys
+	if s.KeyService.CacheInvalidationCallback != nil {
+		s.KeyService.CacheInvalidationCallback(group.ID)
+	}
+
+	duration := time.Since(startTime)
+	rate := float64(totalProcessed) / duration.Seconds()
+	logrus.WithFields(logrus.Fields{
+		"groupId":      group.ID,
+		"processed":    totalProcessed,
+		"addedCount":   totalAdded,
+		"ignoredCount": totalIgnored,
+		"duration":     duration,
+		"rate":         fmt.Sprintf("%.0f keys/sec", rate),
+	}).Info("Completed streaming import")
+
+	result := KeyImportResult{
+		AddedCount:   totalAdded,
+		IgnoredCount: totalIgnored,
+	}
+
+	if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
+		logrus.Errorf("Failed to end task with success result for group %d: %v", group.ID, endErr)
+	}
+}
+
+// processBatch processes a batch of keys and returns added and ignored counts.
+// This method handles encryption, deduplication, and bulk insertion.
+func (s *KeyImportService) processBatch(
+	group *models.Group,
+	keys []string,
+	existingHashMap map[string]bool,
+	batchDedupeMap map[string]bool,
+) (added int, ignored int) {
+	if len(keys) == 0 {
+		return 0, 0
+	}
+
+	// Prepare keys for bulk import
+	newKeysToCreate := make([]models.APIKey, 0, len(keys))
+
+	for _, keyVal := range keys {
+		trimmedKey := strings.TrimSpace(keyVal)
+		if trimmedKey == "" {
+			ignored++
+			continue
+		}
+
+		// Check if already processed in this session
+		if batchDedupeMap[trimmedKey] {
+			ignored++
+			continue
+		}
+
+		keyHash := s.KeyService.EncryptionSvc.Hash(trimmedKey)
+
+		// Check if exists in database
+		if existingHashMap[keyHash] {
+			ignored++
+			continue
+		}
+
+		encryptedKey, err := s.KeyService.EncryptionSvc.Encrypt(trimmedKey)
+		if err != nil {
+			logrus.WithError(err).Debug("Failed to encrypt key, skipping")
+			ignored++
+			continue
+		}
+
+		// Mark as processed
+		batchDedupeMap[trimmedKey] = true
+		existingHashMap[keyHash] = true // Prevent duplicates in subsequent batches
+
+		newKeysToCreate = append(newKeysToCreate, models.APIKey{
+			GroupID:  group.ID,
+			KeyValue: encryptedKey,
+			KeyHash:  keyHash,
+			Status:   models.KeyStatusActive,
+		})
+	}
+
+	if len(newKeysToCreate) == 0 {
+		return 0, ignored
+	}
+
+	// Use bulk import service for fast insertion
+	if err := s.BulkImportSvc.BulkInsertAPIKeys(newKeysToCreate); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"groupId":  group.ID,
+			"keyCount": len(newKeysToCreate),
+			"error":    err,
+		}).Error("Failed to bulk insert batch")
+		// Count failed insertions as ignored
+		ignored += len(newKeysToCreate)
+		return 0, ignored
+	}
+
+	added = len(newKeysToCreate)
+	return added, ignored
 }

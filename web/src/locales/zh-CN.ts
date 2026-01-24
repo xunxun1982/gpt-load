@@ -531,6 +531,7 @@ export default {
     pageInfo: "第 {current} 页，共 {total} 页",
     pageInfoUnknown: "第 {current} 页",
     importTaskStarted: "密钥导入任务已开始，请稍后在下方查看进度。",
+    largeFileImportStarting: "正在上传大文件（{size}MB），请稍候...",
     deleteTaskStarted: "密钥删除任务已开始，请稍后在下方查看进度。",
     addKeysToGroup: "为 {group} 添加密钥",
     deleteKeysFromGroup: "删除 {group} 的密钥",
