@@ -145,6 +145,10 @@ async function handleFileChange(event: Event) {
     inputMode.value = "file";
   } catch (_error) {
     window.$message.error(t("keys.fileReadError"));
+    selectedFile.value = null;
+    fileContent.value = "";
+    estimatedKeyCount.value = 0;
+    inputMode.value = "text";
     target.value = "";
   }
 }

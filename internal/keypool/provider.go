@@ -902,6 +902,7 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		}
 
 		var res *gorm.DB
+		noMoreRows := false
 		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
 		switch dial {
 		case "sqlite":
@@ -933,6 +934,7 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			}
 			if len(ids) == 0 {
 				cancel()
+				noMoreRows = true
 				break
 			}
 			// Delete by ID list using primary key index (much faster)
@@ -945,6 +947,10 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			res = p.db.WithContext(batchCtx).Where("group_id = ?", groupID).Delete(&models.APIKey{})
 		}
 		cancel()
+
+		if noMoreRows {
+			break
+		}
 
 		if res.Error != nil {
 			// Retry with exponential backoff on transient/timeout errors

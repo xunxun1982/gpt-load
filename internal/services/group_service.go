@@ -414,7 +414,14 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 	s.groupListCacheMu.Lock()
 	needsDBLoad := s.groupListCache == nil || len(s.groupListCache.Groups) == 0
 	if !needsDBLoad {
-		// Fast path: cache exists, just append and return
+		// Fast path: cache exists, append only if not already present
+		for _, g := range s.groupListCache.Groups {
+			if g.ID == group.ID {
+				s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCache.CurrentTTL)
+				s.groupListCacheMu.Unlock()
+				return
+			}
+		}
 		s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
 		s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCache.CurrentTTL)
 		s.groupListCacheMu.Unlock()

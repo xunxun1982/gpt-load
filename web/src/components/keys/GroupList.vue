@@ -431,6 +431,7 @@ function handleImportClick() {
 async function handleFileChange(event: Event) {
   const target = event.target as HTMLInputElement;
   const file = target.files?.[0];
+  let progressShown = false;
 
   if (!file) {
     return;
@@ -454,6 +455,7 @@ async function handleFileChange(event: Event) {
     // Show progress bar immediately for instant UI feedback
     localStorage.removeItem("last_closed_task");
     showProgressBar(data.group?.name || "Unknown");
+    progressShown = true;
 
     const loadingMessage = message.loading(t("keys.importing"), { duration: 0 });
 
@@ -478,7 +480,9 @@ async function handleFileChange(event: Event) {
       loadingMessage.destroy();
 
       // Hide progress bar on error to prevent it from showing indefinitely
-      hideProgressBar();
+      if (progressShown) {
+        hideProgressBar();
+      }
 
       let errorMessage = t("keys.importFailed");
 
@@ -502,7 +506,9 @@ async function handleFileChange(event: Event) {
   } catch (_error) {
     // JSON parse error or other early errors
     // Hide progress bar on early validation errors
-    hideProgressBar();
+    if (progressShown) {
+      hideProgressBar();
+    }
 
     let errorDetail = "";
     if (_error instanceof Error) {
