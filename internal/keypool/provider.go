@@ -987,6 +987,8 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 	const maxRetries = 3
 
 	// Batch operation thresholds (aligned with services/thresholds.go)
+	// Note: Cannot import services package due to circular dependency
+	// (services imports keypool, keypool would import services)
 	const (
 		BulkSyncThreshold         = 5000
 		OptimizedSyncThreshold    = 20000

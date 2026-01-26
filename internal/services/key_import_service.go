@@ -255,9 +255,8 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 
 		totalProcessedKeys += int64(len(sourceKeyData))
 
-		// Update progress during decryption (map to 0-40% of total progress)
-		decryptProgress := int(float64(totalProcessedKeys) / float64(totalSourceKeys) * 40)
-		if err := s.TaskService.UpdateProgress(decryptProgress); err != nil {
+		// Update progress with actual count (not percentage)
+		if err := s.TaskService.UpdateProgress(int(totalProcessedKeys)); err != nil {
 			logrus.Warnf("Failed to update task progress: %v", err)
 		}
 
@@ -284,8 +283,8 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 		}
 	}
 
-	// Final progress update (100%)
-	if err := s.TaskService.UpdateProgress(100); err != nil {
+	// Final progress update with total count
+	if err := s.TaskService.UpdateProgress(int(totalSourceKeys)); err != nil {
 		logrus.Warnf("Failed to update task progress: %v", err)
 	}
 
@@ -331,10 +330,18 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 	// Encrypt and prepare keys for insertion
 	keysToInsert := make([]models.APIKey, 0, len(decryptedKeys))
 	batchHashes := make([]string, 0, len(decryptedKeys)) // Collect hashes to update after successful commit
+	localDedupe := make(map[string]bool, len(decryptedKeys)) // Prevent duplicates within this batch
 	ignoredCount := 0
 
 	for _, plainKey := range decryptedKeys {
-		// Check for duplicates
+		// Check for duplicates within this batch
+		if localDedupe[plainKey] {
+			ignoredCount++
+			continue
+		}
+		localDedupe[plainKey] = true
+
+		// Check for duplicates against existing keys
 		keyHash := s.KeyService.EncryptionSvc.Hash(plainKey)
 		if existingHashes[keyHash] {
 			ignoredCount++
@@ -373,16 +380,8 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 			return KeyImportResult{}, fmt.Errorf("failed to begin transaction: %w", tx.Error)
 		}
 
-		// Progress callback for this batch (map to 40-100% of total progress)
-		progressCallback := func(processed int) {
-			// Calculate overall progress: 40% (decryption done) + 60% * (batch progress / total keys)
-			overallProgress := 40 + int(float64(processedSoFar-int64(len(decryptedKeys))+int64(processed))/float64(totalKeys)*60)
-			if err := s.TaskService.UpdateProgress(overallProgress); err != nil {
-				logrus.Warnf("Failed to update task progress: %v", err)
-			}
-		}
-
-		if err := bulkImportSvc.BulkInsertAPIKeysWithTx(tx, keysToInsert, progressCallback); err != nil {
+		// No progress callback needed here - outer loop handles progress updates
+		if err := bulkImportSvc.BulkInsertAPIKeysWithTx(tx, keysToInsert, nil); err != nil {
 			tx.Rollback()
 			return KeyImportResult{}, fmt.Errorf("bulk insert failed: %w", err)
 		}
@@ -502,8 +501,6 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 		"keyCount": len(newKeysToCreate),
 	}).Info("Starting bulk import for copied keys")
 
-	totalKeysToInsert := len(newKeysToCreate)
-
 	// Create transaction for bulk insert with progress tracking
 	tx := s.KeyService.DB.Begin()
 	if err := tx.Error; err != nil {
@@ -513,16 +510,9 @@ func (s *KeyImportService) runBulkImportForCopy(group *models.Group, keys []stri
 		return
 	}
 
-	// Progress callback for bulk insert phase (40-100%)
-	progressCallback := func(processed int) {
-		// Map processed keys to 40-100% range
-		insertProgress := 40 + int(float64(processed)/float64(totalKeysToInsert)*60)
-		if err := s.TaskService.UpdateProgress(insertProgress); err != nil {
-			logrus.Warnf("Failed to update task progress: %v", err)
-		}
-	}
-
-	if err := s.BulkImportSvc.BulkInsertAPIKeysWithTx(tx, newKeysToCreate, progressCallback); err != nil {
+	// No progress callback needed - this function is not actively used
+	// If reactivated, progress should be tracked with actual counts, not percentages
+	if err := s.BulkImportSvc.BulkInsertAPIKeysWithTx(tx, newKeysToCreate, nil); err != nil {
 		tx.Rollback()
 		if endErr := s.TaskService.EndTask(nil, fmt.Errorf("bulk import failed: %w", err)); endErr != nil {
 			logrus.Errorf("Failed to end task with error for group %d: %v", group.ID, endErr)
@@ -707,10 +697,9 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 
 		totalIgnoredCount += batchIgnoredCount
 
-		// Update progress
+		// Update progress with actual count (not percentage)
 		processedSoFar := end
-		progress := int(float64(processedSoFar) / float64(totalKeys) * 100)
-		if err := s.TaskService.UpdateProgress(progress); err != nil {
+		if err := s.TaskService.UpdateProgress(processedSoFar); err != nil {
 			logrus.Warnf("Failed to update task progress: %v", err)
 		}
 
