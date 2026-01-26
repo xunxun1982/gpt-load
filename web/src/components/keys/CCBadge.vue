@@ -17,18 +17,54 @@ const props = withDefaults(defineProps<Props>(), {
 
 const { t } = useI18n();
 
-// For accuracy, use config as the single source of truth:
-// show badge ONLY when channelType is OpenAI or Codex and ccSupport is explicitly true.
-// We do NOT infer from name/displayName to avoid false positives.
+// Show badge when channelType is OpenAI, Codex, or Gemini and ccSupport is explicitly true
 const showBadge = computed(() => {
   const { channelType, ccSupport } = props;
-  return (channelType === "openai" || channelType === "codex") && ccSupport === true;
+  return (
+    (channelType === "openai" || channelType === "codex" || channelType === "gemini") &&
+    ccSupport === true
+  );
+});
+
+// Get badge text based on channel type
+const badgeText = computed(() => {
+  switch (props.channelType) {
+    case "openai":
+      return t("keys.openaiCCBadge");
+    case "codex":
+      return t("keys.codexCCBadge");
+    case "gemini":
+      return t("keys.geminiCCBadge");
+    default:
+      return t("keys.ccSupportBadge");
+  }
+});
+
+// Get badge type (color) based on channel type
+const badgeType = computed(() => {
+  switch (props.channelType) {
+    case "openai":
+      return "warning"; // Orange/Yellow
+    case "codex":
+      return "info"; // Blue
+    case "gemini":
+      return "success"; // Green
+    default:
+      return "warning";
+  }
 });
 </script>
 
 <template>
-  <n-tag v-if="showBadge" type="warning" :size="size" :bordered="false" round class="cc-badge">
-    {{ t("keys.ccSupportBadge") }}
+  <n-tag
+    v-if="showBadge"
+    :type="badgeType"
+    :size="size"
+    :bordered="false"
+    round
+    class="cc-badge"
+  >
+    {{ badgeText }}
   </n-tag>
 </template>
 

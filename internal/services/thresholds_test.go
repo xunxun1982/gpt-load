@@ -134,4 +134,7 @@ func TestGetOperationTierBoundaries(t *testing.T) {
 
 	assert.Equal(t, TierOptimizedSync, GetOperationTier(OptimizedSyncThreshold), "At OptimizedSyncThreshold boundary")
 	assert.Equal(t, TierAsync, GetOperationTier(OptimizedSyncThreshold+1), "Just above OptimizedSyncThreshold")
+
+	assert.Equal(t, TierAsync, GetOperationTier(MassiveAsyncThreshold), "At MassiveAsyncThreshold boundary")
+	assert.Equal(t, TierMassiveAsync, GetOperationTier(MassiveAsyncThreshold+1), "Just above MassiveAsyncThreshold")
 }

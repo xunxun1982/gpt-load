@@ -174,8 +174,8 @@ func (s *Server) AddMultipleKeys(c *gin.Context) {
 	keyCount := int64(len(keys))
 	tier := services.GetOperationTier(keyCount)
 
-	// For async tier, start background task
-	if tier == services.TierAsync {
+	// For async tiers (Async and MassiveAsync), start background task
+	if tier == services.TierAsync || tier == services.TierMassiveAsync {
 		taskStatus, err := s.KeyImportService.StartImportTask(group, req.KeysText)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
@@ -502,8 +502,8 @@ func (s *Server) DeleteMultipleKeys(c *gin.Context) {
 	keyCount := int64(len(keys))
 	tier := services.GetOperationTier(keyCount)
 
-	// For async tier, start background task
-	if tier == services.TierAsync {
+	// For async tiers (Async and MassiveAsync), start background task
+	if tier == services.TierAsync || tier == services.TierMassiveAsync {
 		taskStatus, err := s.KeyDeleteService.StartDeleteTask(group, req.KeysText)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrTaskInProgress, err.Error()))
@@ -597,12 +597,12 @@ func (s *Server) RestoreMultipleKeys(c *gin.Context) {
 	keyCount := int64(len(keys))
 	tier := services.GetOperationTier(keyCount)
 
-	// For async tier, we would start background task here
+	// For async tiers (Async and MassiveAsync), we would start background task here
 	// TODO: Implement async restore task service
 	// AI Review Note: Suggested tracking this TODO with an issue.
 	// Decision: This is a known limitation documented in code. The sync fallback works for current
 	// use cases. Will create issue when user demand justifies the implementation effort.
-	if tier == services.TierAsync {
+	if tier == services.TierAsync || tier == services.TierMassiveAsync {
 		// For now, fall back to sync processing
 		// Note: Large batches may approach HTTP timeout limits
 		logrus.WithFields(logrus.Fields{

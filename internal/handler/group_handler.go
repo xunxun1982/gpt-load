@@ -285,10 +285,11 @@ func (s *Server) DeleteGroup(c *gin.Context) {
 		return
 	}
 	if apiErr, ok := err.(*app_errors.APIError); ok && apiErr.HTTPStatus == http.StatusAccepted {
-		// Fallback for non-i18n async deletion
-		c.JSON(http.StatusAccepted, gin.H{
-			"message": apiErr.Message,
-			"code":    apiErr.Code,
+		// Fallback for non-i18n async deletion - use standard response format
+		c.JSON(http.StatusAccepted, response.SuccessResponse{
+			Code:    0,
+			Message: apiErr.Message,
+			Data:    nil,
 		})
 		return
 	}

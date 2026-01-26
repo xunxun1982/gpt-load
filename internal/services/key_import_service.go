@@ -329,7 +329,7 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 ) (KeyImportResult, error) {
 	// Encrypt and prepare keys for insertion
 	keysToInsert := make([]models.APIKey, 0, len(decryptedKeys))
-	batchHashes := make([]string, 0, len(decryptedKeys)) // Collect hashes to update after successful commit
+	batchHashes := make([]string, 0, len(decryptedKeys))     // Collect hashes to update after successful commit
 	localDedupe := make(map[string]bool, len(decryptedKeys)) // Prevent duplicates within this batch
 	ignoredCount := 0
 

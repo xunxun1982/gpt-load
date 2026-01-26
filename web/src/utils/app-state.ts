@@ -28,6 +28,7 @@ export const appState = reactive<AppState>({
   syncOperationTrigger: 0,
   siteBindingTrigger: 0,
   forceShowProgressBar: false,
+  progressBarGroupName: undefined,
 });
 
 // Show progress bar immediately for import/delete operations

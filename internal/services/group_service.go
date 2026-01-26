@@ -1816,9 +1816,9 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 // This provides immediate results for better user experience using simple AddKeys method.
 //
 // Copy behavior:
-// - "valid_only": Only copies active keys, all inserted as active
-// - "all": Copies all keys (including invalid ones), but all inserted as active (reactivation)
-//   This treats copying as a "fresh start" rather than exact duplication.
+//   - "valid_only": Only copies active keys, all inserted as active
+//   - "all": Copies all keys (including invalid ones), but all inserted as active (reactivation)
+//     This treats copying as a "fresh start" rather than exact duplication.
 //
 // AI Review Note: Suggested preserving invalid status when copying with "all" option.
 // Decision: Current behavior is intentional. Copying is designed as a "fresh start" operation,
@@ -1870,9 +1870,9 @@ func (s *GroupService) syncCopyKeys(ctx context.Context, targetGroup *models.Gro
 // This uses BulkImportService for optimized batch insertion with better performance than AddKeys.
 //
 // Copy behavior:
-// - "valid_only": Only copies active keys, all inserted as active
-// - "all": Copies all keys (including invalid ones), but all inserted as active (reactivation)
-//   This treats copying as a "fresh start" rather than exact duplication.
+//   - "valid_only": Only copies active keys, all inserted as active
+//   - "all": Copies all keys (including invalid ones), but all inserted as active (reactivation)
+//     This treats copying as a "fresh start" rather than exact duplication.
 //
 // AI Review Note: Suggested preserving invalid status when copying with "all" option.
 // Decision: Same as syncCopyKeys - intentional "fresh start" design for better user experience.

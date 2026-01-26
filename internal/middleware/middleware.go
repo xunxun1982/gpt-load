@@ -494,7 +494,8 @@ func RequestBodySizeLimit(maxBytes int64) gin.HandlerFunc {
 		c.Next()
 
 		// Check if MaxBytesError occurred during request processing
-		if err := c.Errors.Last(); err != nil {
+		// Iterate all errors to ensure we don't miss MaxBytesError if other errors are appended
+		for _, err := range c.Errors {
 			var mbErr *http.MaxBytesError
 			if errors.As(err.Err, &mbErr) {
 				logrus.WithFields(logrus.Fields{
@@ -503,6 +504,7 @@ func RequestBodySizeLimit(maxBytes int64) gin.HandlerFunc {
 					"max_bytes":      maxBytes,
 				}).Warn("Request body exceeded limit during processing")
 				c.AbortWithStatus(http.StatusRequestEntityTooLarge)
+				break
 			}
 		}
 	}

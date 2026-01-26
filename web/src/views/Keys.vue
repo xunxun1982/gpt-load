@@ -112,6 +112,10 @@ watch(
   async () => {
     // Refresh group list when a task completes
     await loadGroups();
+    // Also refresh sub-groups if current selection is an aggregate group
+    if (selectedGroup.value?.group_type === "aggregate") {
+      await loadSubGroups();
+    }
   }
 );
 

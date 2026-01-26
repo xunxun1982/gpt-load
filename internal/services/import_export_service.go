@@ -126,9 +126,11 @@ func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResul
 
 		// Use Limit and Offset instead of FindInBatches to avoid its limitations
 		// FindInBatches has known issues with primary key pagination
+		// Order by id to ensure stable pagination (prevents skips/duplicates if data changes)
 		err := s.db.Model(&models.APIKey{}).
 			Select("key_value, status").
 			Where("group_id = ?", groupID).
+			Order("id ASC").
 			Limit(ExportBatchSize).
 			Offset(offset).
 			Find(&batchKeys).Error
@@ -219,9 +221,11 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 		}
 
 		// Query keys for all groups
+		// Order by group_id and id to ensure stable pagination across groups
 		err := s.db.Model(&models.APIKey{}).
 			Select("group_id, key_value, status").
 			Where("group_id IN ?", groupIDs).
+			Order("group_id ASC, id ASC").
 			Limit(ExportMultiGroupBatchSize).
 			Offset(offset).
 			Find(&batchKeys).Error

@@ -146,7 +146,8 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 			// 4. Current approach is simpler and performs well in production
 			var maxTS time.Time
 			// Increased timeout for SELECT query to 10s (from 5s) for better reliability
-			subCtx, subCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// Derive from batchCtx to respect parent cancellation
+			subCtx, subCancel := context.WithTimeout(batchCtx, 10*time.Second)
 			err := s.db.WithContext(subCtx).Raw(
 				"SELECT timestamp FROM request_logs WHERE timestamp < ? ORDER BY timestamp LIMIT 1 OFFSET ?",
 				cutoffTime, batchSize-1,
