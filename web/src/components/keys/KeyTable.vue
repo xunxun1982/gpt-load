@@ -28,7 +28,7 @@ import {
   useDialog,
   type MessageReactive,
 } from "naive-ui";
-import { computed, h, ref, watch } from "vue";
+import { computed, h, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import KeyCreateDialog from "./KeyCreateDialog.vue";
 import KeyDeleteDialog from "./KeyDeleteDialog.vue";
@@ -91,6 +91,7 @@ const dialog = useDialog();
 const confirmInput = ref("");
 const loadKeysRetryCount = ref(0); // Track retry attempts to prevent infinite loops
 const MAX_LOAD_KEYS_RETRIES = 3; // Maximum retry attempts for timeout errors
+let loadKeysRetryTimer: number | null = null; // Track retry timer for cleanup
 
 // Status filter options
 const statusOptions = [
@@ -185,6 +186,14 @@ watch(
   }
 );
 
+// Cleanup retry timer on unmount to prevent memory leaks
+onBeforeUnmount(() => {
+  if (loadKeysRetryTimer) {
+    clearTimeout(loadKeysRetryTimer);
+    loadKeysRetryTimer = null;
+  }
+});
+
 // Handle debounced search input
 function handleSearchInput() {
   if (currentPage.value !== 1) {
@@ -228,6 +237,12 @@ function handleMoreAction(key: string) {
 }
 
 async function loadKeys() {
+  // Clear any pending retry timer to avoid stale retries
+  if (loadKeysRetryTimer) {
+    clearTimeout(loadKeysRetryTimer);
+    loadKeysRetryTimer = null;
+  }
+
   if (!props.selectedGroup?.id) {
     return;
   }
@@ -273,7 +288,7 @@ async function loadKeys() {
       });
 
       // Auto-retry after delay
-      setTimeout(() => {
+      loadKeysRetryTimer = window.setTimeout(() => {
         if (props.selectedGroup?.id) {
           loadKeys();
         }

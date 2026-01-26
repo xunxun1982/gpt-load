@@ -145,7 +145,7 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 			// 3. Using rowid would require additional index and complexity
 			// 4. Current approach is simpler and performs well in production
 			var maxTS time.Time
-			// Reduced timeout for SELECT query to 10s (from 5s) for better reliability
+			// Increased timeout for SELECT query to 10s (from 5s) for better reliability
 			subCtx, subCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			err := s.db.WithContext(subCtx).Raw(
 				"SELECT timestamp FROM request_logs WHERE timestamp < ? ORDER BY timestamp LIMIT 1 OFFSET ?",

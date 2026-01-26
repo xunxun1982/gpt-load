@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,8 +173,14 @@ func TestStartDeleteInvalidGroupKeys(t *testing.T) {
 	assert.True(t, taskStatus.IsRunning)
 	assert.Equal(t, 3, taskStatus.Total)
 
-	// Wait for task to complete
-	time.Sleep(200 * time.Millisecond)
+	// Wait for task to complete using Eventually for more robust synchronization
+	require.Eventually(t, func() bool {
+		var count int64
+		err := db.Model(&models.APIKey{}).
+			Where("group_id = ? AND status = ?", group.ID, models.KeyStatusInvalid).
+			Count(&count).Error
+		return err == nil && count == 0
+	}, 2*time.Second, 10*time.Millisecond, "invalid keys should be deleted")
 
 	// Verify only invalid keys were deleted
 	var activeCount, invalidCount int64
@@ -197,7 +204,7 @@ func TestStartRestoreInvalidGroupKeys(t *testing.T) {
 	group := createTestGroupWithKeys(t, db, encSvc, "test-group-restore", 5, models.KeyStatusActive)
 	// Create invalid keys in the same group (don't create a new group)
 	for i := 0; i < 3; i++ {
-		keyValue := "sk-test-key-test-group-restore-invalid-" + string(rune('a'+i))
+		keyValue := fmt.Sprintf("sk-test-key-test-group-restore-invalid-%d", i)
 		encrypted, err := encSvc.Encrypt(keyValue)
 		require.NoError(t, err)
 
@@ -217,8 +224,14 @@ func TestStartRestoreInvalidGroupKeys(t *testing.T) {
 	assert.True(t, taskStatus.IsRunning)
 	assert.Equal(t, 3, taskStatus.Total)
 
-	// Wait for task to complete
-	time.Sleep(200 * time.Millisecond)
+	// Wait for task to complete using Eventually for more robust synchronization
+	require.Eventually(t, func() bool {
+		var count int64
+		err := db.Model(&models.APIKey{}).
+			Where("group_id = ? AND status = ?", group.ID, models.KeyStatusInvalid).
+			Count(&count).Error
+		return err == nil && count == 0
+	}, 2*time.Second, 10*time.Millisecond, "invalid keys should be restored to active")
 
 	// Verify invalid keys were restored to active
 	var activeCount, invalidCount int64
@@ -258,7 +271,8 @@ func TestStartDeleteTask_TaskAlreadyRunning(t *testing.T) {
 
 	group := createTestGroupWithKeys(t, db, encSvc, "test-group", 10, models.KeyStatusActive)
 
-	keysText := "sk-test-key-test-group-a\nsk-test-key-test-group-b"
+	// Use actual key names created by createTestGroupWithKeys
+	keysText := "sk-test-key-test-group-0\nsk-test-key-test-group-1"
 
 	// Start first task
 	_, err = svc.StartDeleteTask(group, keysText)
@@ -269,8 +283,12 @@ func TestStartDeleteTask_TaskAlreadyRunning(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already running")
 
-	// Wait for first task to complete
-	time.Sleep(200 * time.Millisecond)
+	// Wait for first task to complete using Eventually
+	require.Eventually(t, func() bool {
+		// Try to start a new task - if it succeeds, the previous task has completed
+		_, err := svc.StartDeleteTask(group, "sk-test-key-test-group-2")
+		return err == nil || !strings.Contains(err.Error(), "already running")
+	}, 2*time.Second, 10*time.Millisecond, "first task should complete")
 }
 
 // TestProcessAndDeleteKeys tests the core delete logic
@@ -371,20 +389,18 @@ func TestRunDeleteAllGroupKeys(t *testing.T) {
 	// Run delete in goroutine
 	go svc.runDeleteAllGroupKeys(group)
 
-	// Wait for completion
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify all keys deleted
-	var count int64
-	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&count).Error
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), count)
+	// Wait for completion using Eventually for more robust synchronization
+	require.Eventually(t, func() bool {
+		var count int64
+		err := db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&count).Error
+		return err == nil && count == 0
+	}, 2*time.Second, 10*time.Millisecond, "all keys should be deleted")
 
 	// Verify task completed
-	status, err := svc.TaskService.GetTaskStatus()
-	require.NoError(t, err)
-	assert.False(t, status.IsRunning)
-	assert.NotNil(t, status.FinishedAt)
+	require.Eventually(t, func() bool {
+		status, err := svc.TaskService.GetTaskStatus()
+		return err == nil && !status.IsRunning && status.FinishedAt != nil
+	}, 2*time.Second, 10*time.Millisecond, "task should complete")
 }
 
 // TestRunRestoreInvalidGroupKeys tests the async restore invalid keys method
@@ -418,18 +434,18 @@ func TestRunRestoreInvalidGroupKeys(t *testing.T) {
 	// Run restore in goroutine
 	go svc.runRestoreInvalidGroupKeys(group)
 
-	// Wait for completion
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify keys restored
-	var activeCount int64
-	err = db.Model(&models.APIKey{}).Where("group_id = ? AND status = ?", group.ID, models.KeyStatusActive).Count(&activeCount).Error
-	require.NoError(t, err)
-	assert.Equal(t, int64(8), activeCount)
+	// Wait for completion using Eventually for more robust synchronization
+	require.Eventually(t, func() bool {
+		var activeCount int64
+		err := db.Model(&models.APIKey{}).
+			Where("group_id = ? AND status = ?", group.ID, models.KeyStatusActive).
+			Count(&activeCount).Error
+		return err == nil && activeCount == 8 // 5 original + 3 restored
+	}, 2*time.Second, 10*time.Millisecond, "invalid keys should be restored to active")
 
 	// Verify task completed
-	status, err := svc.TaskService.GetTaskStatus()
-	require.NoError(t, err)
-	assert.False(t, status.IsRunning)
-	assert.NotNil(t, status.FinishedAt)
+	require.Eventually(t, func() bool {
+		status, err := svc.TaskService.GetTaskStatus()
+		return err == nil && !status.IsRunning && status.FinishedAt != nil
+	}, 2*time.Second, 10*time.Millisecond, "task should complete")
 }

@@ -54,6 +54,14 @@ http.interceptors.request.use(config => {
   return config;
 });
 
+// Helper to detect timeout errors (client-side or server-side)
+function isTimeoutError(error: { code?: string; message?: string }): boolean {
+  return (
+    error.code === "ECONNABORTED" ||
+    /timeout|deadline exceeded|context deadline exceeded/i.test(String(error.message || ""))
+  );
+}
+
 // Response interceptor
 http.interceptors.response.use(
   response => {
@@ -79,12 +87,13 @@ http.interceptors.response.use(
       let displayMsg = errorMsg;
 
       // Detect timeout errors: check error code and message patterns
-      const isTimeout =
-        error.code === "ECONNABORTED" ||
-        /timeout|deadline exceeded|context deadline exceeded/i.test(errorMsg);
+      // Note: In error.response branch, ECONNABORTED is rare (server responded),
+      // but we check message patterns for server-side database timeouts
+      const isTimeout = isTimeoutError({ code: error.code, message: errorMsg });
 
       if (isTimeout) {
         // Show database busy message for better UX
+        // This covers both client timeouts and server-reported database timeouts
         displayMsg = i18n.global.t("common.databaseBusy");
       } else if (!errorMsg) {
         displayMsg = i18n.global.t("common.requestFailed", { status: error.response.status });
@@ -97,9 +106,7 @@ http.interceptors.response.use(
       });
     } else if (error.request) {
       // Network errors or timeouts without response
-      const isTimeout =
-        error.code === "ECONNABORTED" ||
-        /timeout|deadline exceeded|context deadline exceeded/i.test(String(error.message || ""));
+      const isTimeout = isTimeoutError({ code: error.code, message: error.message });
 
       window.$message.error(
         isTimeout ? i18n.global.t("common.databaseBusy") : i18n.global.t("common.networkError")
