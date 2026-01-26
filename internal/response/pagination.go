@@ -37,7 +37,7 @@ type PaginatedResponse struct {
 // Paginate performs optimized pagination on a GORM query and returns a standardized response.
 // Strategy: Execute data fetch and COUNT in true parallel, use Limit+1 to detect end and avoid COUNT when possible.
 // For indexed queries (e.g., WHERE group_id = ?), COUNT should be fast using index scans.
-// During bulk imports, queries may timeout - we return stale/partial data to keep UI responsive.
+// During bulk imports, queries may timeout - data query returns error, COUNT query gracefully degrades to -1.
 func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, error) {
 	// 1. Parse pagination parameters from query string
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))

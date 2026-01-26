@@ -138,13 +138,14 @@ func (p *DynamicWeightPersistence) checkAndRunMaintenance() {
 // LoadFromDatabase loads all metrics from database into the store.
 // Called on startup to restore metrics after restart.
 // Only loads non-deleted records.
-// Optimized with indexed query and batch processing to handle large datasets efficiently.
+// Optimized with indexed query to handle large datasets efficiently.
+// Note: Loads all records at once; for truly large datasets, consider cursor-based iteration.
 func (p *DynamicWeightPersistence) LoadFromDatabase() error {
 	// Use indexed query with explicit column selection to reduce memory overhead
 	// The idx_dw_metrics_deleted_type index makes this query very fast
+	// Note: No ORDER BY needed since we iterate all records regardless of order
 	var dbMetrics []models.DynamicWeightMetric
 	if err := p.db.Where("deleted_at IS NULL").
-		Order("metric_type, group_id").
 		Find(&dbMetrics).Error; err != nil {
 		return err
 	}
@@ -615,11 +616,11 @@ func (p *DynamicWeightPersistence) DeleteAllModelRedirectMetricsForGroup(groupID
 // updates will be re-recorded on next request. This follows eventual consistency
 // pattern common in metrics systems.
 func (p *DynamicWeightPersistence) RolloverTimeWindows() {
-	// Use indexed query with ordering for better performance
-	// The idx_dw_metrics_rollover index makes this query efficient
+	// Use indexed query for better performance
+	// The idx_dw_metrics_deleted_type index makes this query efficient
+	// Note: No ORDER BY needed since we iterate all records regardless of order
 	var dbMetrics []models.DynamicWeightMetric
 	if err := p.db.Where("deleted_at IS NULL").
-		Order("last_rollover_at").
 		Find(&dbMetrics).Error; err != nil {
 		logrus.WithError(err).Warn("Failed to fetch metrics for rollover")
 		return

@@ -22,8 +22,6 @@ const GroupUpdateChannel = "groups:updated"
 const (
 	defaultDBLookupTimeoutMs = 1200
 	minDBLookupTimeoutMs     = 50
-	// Import operation timeout multiplier - during imports, queries may take longer
-	importOperationTimeoutMultiplier = 3
 )
 
 // getDBLookupTimeout returns the timeout for group-related DB lookups.

@@ -873,10 +873,12 @@ export default {
     validatingKeys: "Validating keys for group [{groupName}]",
     importingKeys: "Importing keys to group [{groupName}]",
     deletingKeys: "Deleting keys from group [{groupName}]",
+    restoringKeys: "Restoring keys for group [{groupName}]",
     validationCompleted:
       "Key validation completed, processed {total} keys, {valid} successful, {invalid} failed. Note: Failed validations do not immediately blacklist keys - failure count must reach threshold to blacklist.",
     importCompleted: "Key import completed, added {added} keys, ignored {ignored}.",
     deleteCompleted: "Key deletion completed, deleted {deleted} keys, ignored {ignored}.",
+    restoreCompleted: "Key restoration completed, restored {restored} keys, ignored {ignored}.",
   },
   more: {
     siteManagement: "Site Management",

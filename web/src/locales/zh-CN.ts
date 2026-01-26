@@ -836,10 +836,12 @@ export default {
     validatingKeys: "正在验证分组 [{groupName}] 的密钥",
     importingKeys: "正在向分组 [{groupName}] 导入密钥",
     deletingKeys: "正在删除分组 [{groupName}] 的密钥",
+    restoringKeys: "正在恢复分组 [{groupName}] 的密钥",
     validationCompleted:
       "密钥验证完成，处理了 {total} 个密钥，其中 {valid} 个成功，{invalid} 个失败。请注意：验证失败并不一定拉黑该密钥，需要失败次数达到阈值才会拉黑。",
     importCompleted: "密钥导入完成，成功添加 {added} 个密钥，忽略了 {ignored} 个。",
     deleteCompleted: "密钥删除完成，成功删除 {deleted} 个密钥，忽略了 {ignored} 个。",
+    restoreCompleted: "密钥恢复完成，成功恢复 {restored} 个密钥，忽略了 {ignored} 个。",
   },
   more: {
     siteManagement: "站点管理",

@@ -14,8 +14,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// resetTaskStatusCache resets the global task status cache to ensure test isolation
+func resetTaskStatusCache() {
+	globalTaskStatusCache.mu.Lock()
+	globalTaskStatusCache.status = nil
+	globalTaskStatusCache.cachedAt = time.Time{}
+	globalTaskStatusCache.mu.Unlock()
+}
+
 func TestGetTaskStatus_NilService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	resetTaskStatusCache()
 
 	server := &Server{TaskService: nil}
 	router := gin.New()
@@ -32,6 +41,8 @@ func TestGetTaskStatus_NilService(t *testing.T) {
 
 func TestGetTaskStatus_Caching(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	resetTaskStatusCache()
+	t.Cleanup(resetTaskStatusCache)
 
 	// Create in-memory store and task service
 	memStore := store.NewMemoryStore()

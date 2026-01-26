@@ -860,10 +860,12 @@ export default {
     validatingKeys: "グループ [{groupName}] のキーを検証中",
     importingKeys: "グループ [{groupName}] にキーをインポート中",
     deletingKeys: "グループ [{groupName}] からキーを削除中",
+    restoringKeys: "グループ [{groupName}] のキーを復元中",
     validationCompleted:
       "キー検証完了、{total}個のキーを処理、{valid}個成功、{invalid}個失敗。注意：検証失敗でもすぐにブラックリストに追加されるわけではありません。失敗回数が閾値に達する必要があります。",
     importCompleted: "キーインポート完了、{added}個追加、{ignored}個無視。",
     deleteCompleted: "キー削除完了、{deleted}個削除、{ignored}個無視。",
+    restoreCompleted: "キー復元完了、{restored}個復元、{ignored}個無視。",
   },
   more: {
     siteManagement: "サイト管理",

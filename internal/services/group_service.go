@@ -1324,6 +1324,19 @@ func (s *GroupService) StartDeleteGroupTask(ctx context.Context, groupID uint, r
 // runAsyncGroupDeletion performs the actual group deletion in background.
 // This is called by StartDeleteGroupTask and runs in a separate goroutine.
 func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uint, totalKeys int) {
+	// Recover from panics to prevent task from being stuck in "running" state
+	defer func() {
+		if r := recover(); r != nil {
+			logrus.WithFields(logrus.Fields{
+				"groupID": groupID,
+				"panic":   r,
+			}).Error("Panic recovered in runAsyncGroupDeletion")
+			if s.keyDeleteSvc != nil && s.keyDeleteSvc.TaskService != nil {
+				_ = s.keyDeleteSvc.TaskService.EndTask(nil, fmt.Errorf("internal error: async group deletion panicked"))
+			}
+		}
+	}()
+
 	// Use background context with no timeout for large deletions
 	ctx := context.Background()
 

@@ -17,6 +17,14 @@ import (
 	"gorm.io/gorm"
 )
 
+// Task type constants - must match services.TaskType* constants
+// Defined here to avoid circular dependency with services package
+const (
+	taskTypeKeyImport  = "KEY_IMPORT"
+	taskTypeKeyDelete  = "KEY_DELETE"
+	taskTypeKeyRestore = "KEY_RESTORE"
+)
+
 // NewCronChecker is responsible for periodically validating invalid keys.
 type CronChecker struct {
 	DB              *gorm.DB
@@ -415,5 +423,6 @@ func (s *CronChecker) isBusy() bool {
 	if !st.IsRunning {
 		return false
 	}
-	return st.TaskType == "KEY_IMPORT" || st.TaskType == "KEY_DELETE" || st.TaskType == "KEY_RESTORE"
+	// Use local constants to avoid circular dependency with services package
+	return st.TaskType == taskTypeKeyImport || st.TaskType == taskTypeKeyDelete || st.TaskType == taskTypeKeyRestore
 }

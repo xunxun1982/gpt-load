@@ -108,6 +108,12 @@ async function pollOnce() {
                 deleted: result.deleted_count,
                 ignored: result.ignored_count,
               });
+            } else if (task.task_type === "KEY_RESTORE") {
+              const result = task.result as import("@/types/models").KeyRestoreResult;
+              msg = t("task.restoreCompleted", {
+                restored: result.restored_count,
+                ignored: result.ignored_count,
+              });
             }
 
             message.info(msg, {
@@ -181,6 +187,8 @@ function getTaskTitle(): string {
       return t("task.importingKeys", { groupName: taskInfo.value.group_name });
     case "KEY_DELETE":
       return t("task.deletingKeys", { groupName: taskInfo.value.group_name });
+    case "KEY_RESTORE":
+      return t("task.restoringKeys", { groupName: taskInfo.value.group_name });
     default:
       return t("task.processing");
   }
