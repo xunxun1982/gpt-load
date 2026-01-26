@@ -435,16 +435,10 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := s.readDB.WithContext(ctx).Order(GroupListOrderClause).Find(&groups).Error; err != nil {
-		// DB query failed, create cache with just this group
-		logrus.WithError(err).Debug("Failed to load groups for cache, using single group")
-		s.groupListCacheMu.Lock()
-		s.groupListCache = &groupListCacheEntry{
-			Groups:     []models.Group{*group},
-			ExpiresAt:  time.Now().Add(s.groupListCacheTTL),
-			HitCount:   0,
-			CurrentTTL: s.groupListCacheTTL,
-		}
-		s.groupListCacheMu.Unlock()
+		// DB query failed; keep cache empty to avoid returning partial data
+		// This ensures ListGroups will retry or surface a transient error
+		// instead of masking data loss with an incomplete list
+		logrus.WithError(err).Debug("Failed to load groups for cache; leaving cache empty")
 		return
 	}
 
@@ -1504,10 +1498,10 @@ func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uin
 	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"groupID":      groupID,
-		"groupName":    group.Name,
-		"keysDeleted":  totalDeleted,
-		"childGroups":  len(relatedGroupIDs) - 1,
+		"groupID":     groupID,
+		"groupName":   group.Name,
+		"keysDeleted": totalDeleted,
+		"childGroups": len(relatedGroupIDs) - 1,
 	}).Info("Successfully completed async group deletion")
 }
 
@@ -1772,6 +1766,14 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 
 		case TierAsync:
 			// Tier 5: Very large group - async copy to avoid HTTP timeout
+			// Guard against nil keyImportSvc to prevent panic
+			if s.keyImportSvc == nil {
+				logrus.WithContext(ctx).WithFields(logrus.Fields{
+					"groupId":  newGroup.ID,
+					"keyCount": keyCount,
+				}).Error("keyImportSvc is nil; skipping async copy")
+				break
+			}
 			if _, err := s.keyImportSvc.StartCopyTask(&newGroup, sourceGroupID, option, int(keyCount)); err != nil {
 				logrus.WithContext(ctx).WithFields(logrus.Fields{
 					"groupId":  newGroup.ID,
@@ -1966,7 +1968,6 @@ func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models
 
 	return len(newKeysToCreate), decryptErrors + duplicateCount + encryptErrors, nil
 }
-
 
 func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupStats, error) {
 	var group models.Group

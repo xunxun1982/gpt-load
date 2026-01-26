@@ -23,8 +23,8 @@ func TestPutBuffer(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		setupBuf  func() *bytes.Buffer
+		name       string
+		setupBuf   func() *bytes.Buffer
 		shouldPool bool
 	}{
 		{
@@ -84,7 +84,7 @@ func TestPutByteSlice(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
+		name       string
 		setupSlice func() *[]byte
 		shouldPool bool
 	}{

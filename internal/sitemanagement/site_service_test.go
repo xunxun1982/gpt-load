@@ -202,9 +202,9 @@ func TestSiteService_CopySite(t *testing.T) {
 
 	// Create original site
 	params := CreateSiteParams{
-		Name:     "Original",
-		BaseURL:  "https://example.com",
-		AuthType: AuthTypeAccessToken,
+		Name:      "Original",
+		BaseURL:   "https://example.com",
+		AuthType:  AuthTypeAccessToken,
 		AuthValue: "test-token",
 	}
 	original, err := service.CreateSite(context.Background(), params)

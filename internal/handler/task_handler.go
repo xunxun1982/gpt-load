@@ -15,10 +15,10 @@ import (
 // This is especially important during heavy DB operations (e.g., deleting 50K keys) where
 // frequent polling (every 2s) can cause timeouts for other queries.
 type taskStatusCache struct {
-	mu         sync.RWMutex
-	status     *services.TaskStatus
-	cachedAt   time.Time
-	cacheTTL   time.Duration // Short TTL (500ms) to balance freshness and DB load
+	mu       sync.RWMutex
+	status   *services.TaskStatus
+	cachedAt time.Time
+	cacheTTL time.Duration // Short TTL (500ms) to balance freshness and DB load
 }
 
 var (
@@ -42,11 +42,18 @@ func (c *taskStatusCache) get() *services.TaskStatus {
 }
 
 // set updates the cache with new status
+// Stores a copy to prevent caller from mutating cached data
 func (c *taskStatusCache) set(status *services.TaskStatus) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.status = status
+	// Store a copy to prevent caller from mutating cached data
+	if status != nil {
+		copy := *status
+		c.status = &copy
+	} else {
+		c.status = nil
+	}
 	c.cachedAt = time.Now()
 }
 

@@ -354,15 +354,15 @@ function formatDateTime(isoString: string | null | undefined): string {
             <div class="key-stats-row">
               <div class="stats-left">
                 <span class="stat-item">
-                  <span class="stat-value">{{ subGroup.total_keys }}</span>
+                  <span class="stat-value">{{ subGroup.total_keys.toLocaleString() }}</span>
                 </span>
                 <n-divider vertical />
                 <span class="stat-item stat-success">
-                  {{ subGroup.active_keys }}
+                  {{ subGroup.active_keys.toLocaleString() }}
                 </span>
                 <n-divider vertical />
                 <span class="stat-item stat-error">
-                  {{ subGroup.invalid_keys }}
+                  {{ subGroup.invalid_keys.toLocaleString() }}
                 </span>
               </div>
               <n-tag :type="getSubGroupStatus(subGroup).type" size="small">

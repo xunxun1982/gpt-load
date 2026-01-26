@@ -1268,8 +1268,8 @@ func (s *HubService) UpdateAggregateGroupCustomModels(ctx context.Context, param
 	s.InvalidateModelPoolCache()
 
 	logrus.WithFields(logrus.Fields{
-		"group_id":      params.GroupID,
-		"model_count":   len(cleanedModels),
+		"group_id":    params.GroupID,
+		"model_count": len(cleanedModels),
 	}).Info("Updated aggregate group custom models")
 
 	return nil

@@ -151,7 +151,7 @@ func (s *Server) AddMultipleKeys(c *gin.Context) {
 		return
 	}
 
-	group, ok := s.findGroupByID(c, req.GroupID);
+	group, ok := s.findGroupByID(c, req.GroupID)
 	if !ok {
 		return
 	}

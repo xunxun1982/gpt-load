@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -352,9 +353,9 @@ func TestDeleteService_CacheInvalidation(t *testing.T) {
 	group := createTestGroupWithKeys(t, db, encSvc, "test-group", 5, models.KeyStatusActive)
 
 	// Set up cache invalidation callback
-	cacheInvalidated := false
+	var cacheInvalidated atomic.Bool
 	svc.KeyService.CacheInvalidationCallback = func(groupID uint) {
-		cacheInvalidated = true
+		cacheInvalidated.Store(true)
 		assert.Equal(t, group.ID, groupID)
 	}
 
@@ -362,7 +363,7 @@ func TestDeleteService_CacheInvalidation(t *testing.T) {
 
 	_, _, err = svc.processAndDeleteKeys(group.ID, keys, nil)
 	require.NoError(t, err)
-	assert.True(t, cacheInvalidated, "Cache should be invalidated after deletion")
+	assert.True(t, cacheInvalidated.Load(), "Cache should be invalidated after deletion")
 }
 
 // TestDeleteService_ProgressCallback tests progress tracking during deletion

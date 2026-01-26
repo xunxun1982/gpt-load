@@ -23,13 +23,13 @@ func TestAnthropicChannel_ModifyRequest(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                    string
-		existingHeaders         map[string]string
-		expectedAuthHeader      string
-		expectedXApiKeyHeader   string
-		expectedVersionHeader   string
-		shouldPreserveVersion   bool
-		shouldPreserveBeta      bool
+		name                  string
+		existingHeaders       map[string]string
+		expectedAuthHeader    string
+		expectedXApiKeyHeader string
+		expectedVersionHeader string
+		shouldPreserveVersion bool
+		shouldPreserveBeta    bool
 	}{
 		{
 			name:                  "Sets default headers",

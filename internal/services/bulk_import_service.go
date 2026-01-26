@@ -160,8 +160,9 @@ func (s *BulkImportService) setDefaultBatchSizes() {
 	}
 }
 
-// CalculateOptimalBatchSize calculates the optimal batch size based on record characteristics
-func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numFields int) int {
+// CalculateOptimalBatchSize calculates the optimal batch size based on record characteristics and total key count.
+// It uses adaptive batch sizing based on operation tier to optimize performance for different data volumes.
+func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numFields int, totalKeys int) int {
 	// Estimate record size in bytes
 	recordSize := avgFieldSize * numFields
 	if recordSize <= 0 {
@@ -170,16 +171,17 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 		return 10
 	}
 
-	var maxBatchSize int
+	// Get base batch size based on database type and record size
+	var baseBatchSize int
 
 	switch s.dbType {
 	case "sqlite":
 		// SQLite: 1MB SQL statement limit
 		const maxSQLSize = 900000 // 900KB safety margin
-		maxBatchSize = maxSQLSize / recordSize
+		baseBatchSize = maxSQLSize / recordSize
 		// Reduced max batch size for SQLite due to performance issues with large batches
-		if maxBatchSize > MaxSQLiteBatchSize {
-			maxBatchSize = MaxSQLiteBatchSize
+		if baseBatchSize > MaxSQLiteBatchSize {
+			baseBatchSize = MaxSQLiteBatchSize
 		}
 
 	case "mysql":
@@ -189,9 +191,9 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 
 		// Use 80% of max_allowed_packet for safety
 		safePacketSize := int(maxPacket) * 8 / 10
-		maxBatchSize = safePacketSize / recordSize
-		if maxBatchSize > MaxMySQLBatchSize {
-			maxBatchSize = MaxMySQLBatchSize
+		baseBatchSize = safePacketSize / recordSize
+		if baseBatchSize > MaxMySQLBatchSize {
+			baseBatchSize = MaxMySQLBatchSize
 		}
 
 	case "postgres":
@@ -199,18 +201,76 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 		const maxParams = 65535
 		// Each record has numFields parameters + some overhead
 		paramsPerRecord := numFields + 2 // +2 for safety
-		maxBatchSize = maxParams / paramsPerRecord
-		if maxBatchSize > MaxPostgresBatchSize {
-			maxBatchSize = MaxPostgresBatchSize
+		baseBatchSize = maxParams / paramsPerRecord
+		if baseBatchSize > MaxPostgresBatchSize {
+			baseBatchSize = MaxPostgresBatchSize
 		}
 	}
 
 	// Ensure minimum batch size
-	if maxBatchSize < 10 {
-		maxBatchSize = 10
+	if baseBatchSize < 10 {
+		baseBatchSize = 10
 	}
 
-	return maxBatchSize
+	// Adaptive batch sizing based on operation tier
+	// Larger operations benefit from larger batches to reduce transaction overhead
+	tier := GetOperationTier(int64(totalKeys))
+	var multiplier int
+	switch tier {
+	case TierFastSync: // ≤1000 keys
+		multiplier = 1 // Use base batch size
+	case TierBulkSync: // 1001-5000 keys
+		multiplier = 2 // 2x base batch size for better throughput
+	case TierLargeSync: // 5001-10000 keys
+		multiplier = 3 // 3x base batch size for large operations
+	case TierOptimizedSync: // 10001-20000 keys
+		multiplier = 4 // 4x base batch size for very large operations
+	case TierAsync: // 20001-100000 keys
+		multiplier = 10 // 10x base batch size for async operations
+	case TierMassiveAsync: // >100000 keys
+		multiplier = 20 // 20x base batch size for massive async operations (500K+ keys)
+	default:
+		multiplier = 1
+	}
+
+	adaptiveBatchSize := baseBatchSize * multiplier
+
+	// Ensure we don't exceed database-specific limits
+	switch s.dbType {
+	case "sqlite":
+		// For very large operations, allow larger batches since they don't block the UI
+		maxSQLiteBatch := MaxSQLiteBatchSize * 5 // Default cap at 250
+		if tier == TierAsync {
+			// Async operations (20K-100K keys): use larger batches
+			// For 30K keys: 30000/5000 = 6 batches
+			maxSQLiteBatch = MaxSQLiteBatchSizeAsync // 5000
+		} else if tier == TierMassiveAsync {
+			// Massive async operations (>100K keys): use even larger batches
+			// For 500K keys: 500000/10000 = 50 batches (vs 100 batches with 5000)
+			maxSQLiteBatch = MaxSQLiteBatchSizeMassive // 10000
+		}
+		if adaptiveBatchSize > maxSQLiteBatch {
+			adaptiveBatchSize = maxSQLiteBatch
+		}
+	case "mysql":
+		if adaptiveBatchSize > MaxMySQLBatchSize {
+			adaptiveBatchSize = MaxMySQLBatchSize // Cap at 10000 for MySQL
+		}
+	case "postgres":
+		if adaptiveBatchSize > MaxPostgresBatchSize {
+			adaptiveBatchSize = MaxPostgresBatchSize // Cap at 10000 for PostgreSQL
+		}
+	}
+
+	// Ensure minimum batch size
+	if adaptiveBatchSize < 10 {
+		adaptiveBatchSize = 10
+	}
+
+	logrus.Debugf("Adaptive batch size: base=%d, tier=%s, multiplier=%d, final=%d (totalKeys=%d)",
+		baseBatchSize, tier.String(), multiplier, adaptiveBatchSize, totalKeys)
+
+	return adaptiveBatchSize
 }
 
 // BulkInsertAPIKeys performs optimized bulk insert of API keys
@@ -250,7 +310,7 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 		return nil
 	}
 
-	// Calculate optimal batch size based on key characteristics
+	// Calculate optimal batch size based on key characteristics and total count
 	avgKeySize := 0
 	for _, key := range keys {
 		avgKeySize += len(key.KeyValue) + len(key.KeyHash) + len(key.Notes)
@@ -260,8 +320,8 @@ func (s *BulkImportService) BulkInsertAPIKeysWithTx(tx *gorm.DB, keys []models.A
 	}
 
 	// APIKey has approximately 8 fields
-	batchSize := s.CalculateOptimalBatchSize(avgKeySize/8, 8)
 	totalKeys := len(keys)
+	batchSize := s.CalculateOptimalBatchSize(avgKeySize/8, 8, totalKeys)
 
 	// Initial summary log
 	logrus.Infof("Bulk importing %d keys (batch size: %d)", totalKeys, batchSize)
@@ -397,7 +457,7 @@ func (s *BulkImportService) BulkInsertGeneric(records interface{}, recordCount i
 		estimatedFields = 15
 	}
 
-	batchSize := s.CalculateOptimalBatchSize(avgRecordSize/estimatedFields, estimatedFields)
+	batchSize := s.CalculateOptimalBatchSize(avgRecordSize/estimatedFields, estimatedFields, recordCount)
 
 	logrus.Infof("Bulk inserting %d records with batch size %d for %s database",
 		recordCount, batchSize, s.dbType)

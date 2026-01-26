@@ -29,7 +29,6 @@ func TestTaskTypeConstantsSync(t *testing.T) {
 	assert.Equal(t, "KEY_RESTORE", taskTypeKeyRestore, "taskTypeKeyRestore must match services.TaskTypeKeyRestore")
 }
 
-
 func setupTestCronChecker(tb testing.TB) (*CronChecker, *gorm.DB, *KeyValidator) {
 	tb.Helper()
 	skipIfNoSQLite(tb)
