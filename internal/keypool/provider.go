@@ -380,7 +380,8 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	// Use cursor-based pagination instead of FindInBatches to reduce lock time
 	// This allows other operations to proceed between batches
 	allActiveKeyIDs := make(map[uint][]any)
-	batchSize := 1000
+	// Increased batch size from 1000 to 10000 for better performance with massive keys
+	batchSize := 10000
 	var lastID uint = 0
 	processedKeys := 0
 	lastLoggedPercent := 0
@@ -498,11 +499,9 @@ func (p *KeyProvider) AddKeys(groupID uint, keys []models.APIKey) error {
 			return err
 		}
 
-		// Step 2: Update in-memory store outside the transaction (best-effort)
-		for j := range batch {
-			if err := p.addKeyToStore(&batch[j]); err != nil {
-				logrus.WithFields(logrus.Fields{"keyID": batch[j].ID, "error": err}).Warn("Failed to add key to store; will be refreshed on next reload")
-			}
+		// Step 2: Update in-memory store outside the transaction using batch method
+		if err := p.addKeysToCacheBatch(groupID, batch); err != nil {
+			logrus.WithFields(logrus.Fields{"batchSize": len(batch), "error": err}).Warn("Failed to add batch to store; will be refreshed on next reload")
 		}
 
 		// Short delay between batches to avoid monopolizing the DB
@@ -1120,6 +1119,53 @@ func (p *KeyProvider) addKeyToStore(key *models.APIKey) error {
 			return fmt.Errorf("failed to LPush key %d to group %d: %w", key.ID, key.GroupID, err)
 		}
 	}
+	return nil
+}
+
+// addKeysToCacheBatch batch adds keys to cache (optimized for bulk import scenarios).
+// Uses Redis Pipeline for efficient batch operations when available.
+func (p *KeyProvider) addKeysToCacheBatch(groupID uint, keys []models.APIKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// 1. Batch HSet key details
+	if pipeliner, ok := p.store.(store.RedisPipeliner); ok {
+		// Redis: Use Pipeline for batch operations
+		pipe := pipeliner.Pipeline()
+		for i := range keys {
+			keyHashKey := "key:" + strconv.FormatUint(uint64(keys[i].ID), 10)
+			pipe.HSet(keyHashKey, p.apiKeyToMap(&keys[i]))
+		}
+		if err := pipe.Exec(); err != nil {
+			return fmt.Errorf("failed to batch HSet keys: %w", err)
+		}
+	} else {
+		// MemoryStore: Fallback to individual HSet operations
+		for i := range keys {
+			keyHashKey := "key:" + strconv.FormatUint(uint64(keys[i].ID), 10)
+			if err := p.store.HSet(keyHashKey, p.apiKeyToMap(&keys[i])); err != nil {
+				return fmt.Errorf("failed to HSet key %d: %w", keys[i].ID, err)
+			}
+		}
+	}
+
+	// 2. Collect active key IDs
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+	activeKeyIDs := make([]any, 0, len(keys))
+	for i := range keys {
+		if keys[i].Status == models.KeyStatusActive {
+			activeKeyIDs = append(activeKeyIDs, keys[i].ID)
+		}
+	}
+
+	// 3. Batch LPush active keys
+	if len(activeKeyIDs) > 0 {
+		if err := p.store.LPush(activeKeysListKey, activeKeyIDs...); err != nil {
+			return fmt.Errorf("failed to batch LPush keys to group %d: %w", groupID, err)
+		}
+	}
+
 	return nil
 }
 

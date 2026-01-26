@@ -180,7 +180,7 @@ type APIKey struct {
 	KeyValue     string     `gorm:"type:text;not null" json:"key_value"`
 	KeyHash      string     `gorm:"type:varchar(128);index" json:"key_hash"`
 	GroupID      uint       `gorm:"not null;index:idx_api_keys_group_status" json:"group_id"`
-	Status       string     `gorm:"type:varchar(50);not null;default:'active';index:idx_api_keys_group_status" json:"status"`
+	Status       string     `gorm:"type:varchar(50);not null;default:'active';index:idx_api_keys_status;index:idx_api_keys_group_status" json:"status"`
 	Notes        string     `gorm:"type:varchar(255);default:''" json:"notes"`
 	RequestCount int64      `gorm:"not null;default:0" json:"request_count"`
 	FailureCount int64      `gorm:"not null;default:0" json:"failure_count"`

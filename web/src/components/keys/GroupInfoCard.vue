@@ -46,7 +46,7 @@ interface Props {
 
 interface Emits {
   (e: "refresh", value: Group): void;
-  (e: "delete", value: Group, parentGroupId?: number): void;
+  (e: "delete", value: Group, parentGroupId?: number, isAsyncDeletion?: boolean): void;
   (e: "copy-success", group: Group): void;
   (e: "navigate-to-group", groupId: number): void;
   (e: "navigate-to-site", siteId: number): void;
@@ -395,9 +395,16 @@ async function handleDelete() {
 
           try {
             if (props.group?.id) {
-              await keysApi.deleteGroup(props.group.id);
+              const response = await keysApi.deleteGroup(props.group.id);
+              // Check if this is an async deletion (GROUP_DELETE_ASYNC code)
+              const isAsyncDeletion = response?.code === "GROUP_DELETE_ASYNC";
               // If deleting a child group, pass parent group ID so parent component can select it
-              emit("delete", props.group, props.group.parent_group_id ?? undefined);
+              emit(
+                "delete",
+                props.group,
+                props.group.parent_group_id ?? undefined,
+                isAsyncDeletion
+              );
             }
           } catch (_) {
             // Error is handled by http interceptor, prevent dialog from closing

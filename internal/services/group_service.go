@@ -1106,12 +1106,16 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 			return err
 		}
 
-		// Return special error with task_id for handler to convert to 202 Accepted
-		return &app_errors.APIError{
-			HTTPStatus: http.StatusAccepted,
-			Code:       "GROUP_DELETE_ASYNC",
-			Message:    fmt.Sprintf("Group deletion started in background. %d keys will be deleted first. Note: This group's keys may not be visible during deletion. You can check progress in the task status.", totalKeyCount),
-		}
+		// Return special I18n error with task_id for handler to convert to 202 Accepted
+		return NewI18nError(
+			&app_errors.APIError{
+				HTTPStatus: http.StatusAccepted,
+				Code:       "GROUP_DELETE_ASYNC",
+				Message:    "", // Will be filled by i18n
+			},
+			"group.delete_async_started",
+			map[string]any{"keyCount": totalKeyCount},
+		)
 	}
 
 	if totalKeyCount > int64(BulkSyncThreshold) {

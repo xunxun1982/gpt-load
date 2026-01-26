@@ -25,11 +25,12 @@ var MessagesZhCN = map[string]string{
 	"auth.logout_success": "退出成功",
 
 	// Group related
-	"group.created":     "分组创建成功",
-	"group.updated":     "分组更新成功",
-	"group.deleted":     "分组删除成功",
-	"group.not_found":   "分组不存在",
-	"group.name_exists": "分组名称已存在",
+	"group.created":                  "分组创建成功",
+	"group.updated":                  "分组更新成功",
+	"group.deleted":                  "分组删除成功",
+	"group.not_found":                "分组不存在",
+	"group.name_exists":              "分组名称已存在",
+	"group.delete_async_started":     "分组删除已在后台启动。将先删除 {{.keyCount}} 个密钥。注意：删除期间该分组的密钥可能不可见。您可以在任务状态中查看进度。",
 
 	// Key related
 	"key.created":         "密钥创建成功",

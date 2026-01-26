@@ -279,8 +279,13 @@ func (s *Server) DeleteGroup(c *gin.Context) {
 	err = s.GroupService.DeleteGroup(c.Request.Context(), uint(id))
 
 	// Check if this is an async deletion (returns 202 Accepted with task info)
+	if svcErr, ok := err.(*services.I18nError); ok && svcErr.APIError != nil && svcErr.APIError.HTTPStatus == http.StatusAccepted {
+		// Async deletion started - return 202 with i18n message
+		response.SuccessI18nWithStatus(c, http.StatusAccepted, svcErr.MessageID, nil, svcErr.Template)
+		return
+	}
 	if apiErr, ok := err.(*app_errors.APIError); ok && apiErr.HTTPStatus == http.StatusAccepted {
-		// Async deletion started - return 202 with task info
+		// Fallback for non-i18n async deletion
 		c.JSON(http.StatusAccepted, gin.H{
 			"message": apiErr.Message,
 			"code":    apiErr.Code,

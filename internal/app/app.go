@@ -409,6 +409,7 @@ func closeDBConnection(gormDB *gorm.DB, name string) {
 	closeDBConnectionWithOptions(gormDB, name, true)
 }
 
+// closeDBConnectionWithTimeout closes a database connection with a timeout.
 // closeDBConnectionWithOptions closes a database connection with configurable WAL checkpoint.
 // skipCheckpoint should be true for read-only connections that don't need WAL checkpoint.
 func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, doCheckpoint bool) {
@@ -484,9 +485,12 @@ func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, doCheckpoint boo
 		} else {
 			logrus.Debugf("[%s] Connection closed successfully. (took %v)", name, time.Since(closeStart))
 		}
+		logrus.Debugf("[%s] Total close time: %v", name, time.Since(totalStart))
 	case <-time.After(1 * time.Second):
-		logrus.Warnf("[%s] Connection close timed out after 1s, proceeding anyway", name)
+		logrus.Warnf("[%s] Connection close timed out after 1s, proceeding anyway (background close will continue)", name)
+		logrus.Debugf("[%s] Total close time (with timeout): %v", name, time.Since(totalStart))
+		// Note: The goroutine will continue running in background, but we return immediately
+		// This allows the program to exit quickly while SQLite finishes cleanup
+		// The deferred dbWg.Done() in the caller will be called, allowing main to exit
 	}
-
-	logrus.Debugf("[%s] Total close time: %v", name, time.Since(totalStart))
 }

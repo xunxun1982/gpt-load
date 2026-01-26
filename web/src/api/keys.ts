@@ -49,7 +49,8 @@ export const keysApi = {
   },
 
   // Delete a group
-  deleteGroup(groupId: number): Promise<void> {
+  // Returns response data which may contain status information for async deletions
+  deleteGroup(groupId: number): Promise<{ message?: string; code?: string }> {
     return http.delete(`/groups/${groupId}`);
   },
 
