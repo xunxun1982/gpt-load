@@ -12,6 +12,7 @@ import (
 func V1_18_0_OptimizeDynamicWeightQueries(db *gorm.DB) error {
 	logrus.Info("Running migration v1.18.0: Optimizing dynamic weight metrics queries")
 
+	hadError := false // Track if any index creation failed
 	dialect := db.Dialector.Name()
 
 	// 1. Composite index for deleted_at filtering (most critical optimization)
@@ -19,6 +20,7 @@ func V1_18_0_OptimizeDynamicWeightQueries(db *gorm.DB) error {
 	// This query was taking 47+ seconds without proper indexing
 	// The composite index allows efficient filtering of non-deleted records
 	if err := createIndexIfNotExists(db, "dynamic_weight_metrics", "idx_dw_metrics_deleted_type", "deleted_at, metric_type"); err != nil {
+		hadError = true
 		logrus.WithError(err).Warn("Failed to create idx_dw_metrics_deleted_type")
 	}
 
@@ -26,6 +28,7 @@ func V1_18_0_OptimizeDynamicWeightQueries(db *gorm.DB) error {
 	// Optimizes: SELECT * FROM dynamic_weight_metrics WHERE metric_type = ? AND group_id = ?
 	// Used during metric updates and queries
 	if err := createIndexIfNotExists(db, "dynamic_weight_metrics", "idx_dw_metrics_type_group", "metric_type, group_id"); err != nil {
+		hadError = true
 		logrus.WithError(err).Warn("Failed to create idx_dw_metrics_type_group")
 	}
 
@@ -33,6 +36,7 @@ func V1_18_0_OptimizeDynamicWeightQueries(db *gorm.DB) error {
 	// Optimizes: SELECT * FROM dynamic_weight_metrics WHERE deleted_at IS NULL AND last_rollover_at < ?
 	// Used during daily rollover maintenance
 	if err := createIndexIfNotExists(db, "dynamic_weight_metrics", "idx_dw_metrics_rollover", "deleted_at, last_rollover_at"); err != nil {
+		hadError = true
 		logrus.WithError(err).Warn("Failed to create idx_dw_metrics_rollover")
 	}
 
@@ -44,6 +48,7 @@ func V1_18_0_OptimizeDynamicWeightQueries(db *gorm.DB) error {
 			ON dynamic_weight_metrics (metric_type, group_id, updated_at)
 			WHERE deleted_at IS NULL
 		`).Error; err != nil {
+			hadError = true
 			logrus.WithError(err).Warn("Failed to create partial index idx_dw_metrics_active")
 		} else {
 			logrus.Info("Created partial index idx_dw_metrics_active for PostgreSQL")
@@ -54,9 +59,14 @@ func V1_18_0_OptimizeDynamicWeightQueries(db *gorm.DB) error {
 	// This is critical for log cleanup operations to avoid timeouts
 	// Optimizes: DELETE FROM request_logs WHERE timestamp < ?
 	if err := createIndexIfNotExists(db, "request_logs", "idx_request_logs_timestamp", "timestamp"); err != nil {
+		hadError = true
 		logrus.WithError(err).Warn("Failed to create idx_request_logs_timestamp (may already exist)")
 	}
 
-	logrus.Info("Migration v1.18.0 completed successfully")
+	if hadError {
+		logrus.Warn("Migration v1.18.0 completed with warnings; some indexes may be missing")
+	} else {
+		logrus.Info("Migration v1.18.0 completed successfully")
+	}
 	return nil
 }

@@ -187,6 +187,9 @@ async function handleSubmit() {
     window.$message.info(t("keys.importTaskStarted"), { duration: 5000 });
     appState.taskPollingTrigger++;
 
+    // Emit success event to notify parent component
+    emit("success");
+
     // Close dialog and reset form
     resetForm();
     handleClose();

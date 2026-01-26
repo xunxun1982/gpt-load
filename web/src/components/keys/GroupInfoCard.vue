@@ -388,6 +388,11 @@ async function handleDelete() {
           }
 
           delLoading.value = true;
+
+          // Trigger task polling immediately before API call for instant UI feedback
+          localStorage.removeItem("last_closed_task");
+          appState.taskPollingTrigger++;
+
           try {
             if (props.group?.id) {
               await keysApi.deleteGroup(props.group.id);

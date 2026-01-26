@@ -13,6 +13,7 @@ const visible = ref(false);
 let pollTimer: number | null = null;
 let startPollingTimer: number | null = null;
 let isPolling = false;
+let forceShowStartTime: number | null = null; // Track when force show started
 const message = useMessage();
 
 onMounted(() => {
@@ -74,11 +75,24 @@ async function pollOnce() {
       // Clear forceShowProgressBar once we detect the task is actually running
       if (appState.forceShowProgressBar) {
         appState.forceShowProgressBar = false;
+        forceShowStartTime = null; // Reset timeout tracker
       }
     } else {
       // If forceShowProgressBar is true, keep polling for a bit longer
       // This handles the case where backend hasn't started the task yet
       if (appState.forceShowProgressBar) {
+        // Track timeout to prevent infinite polling
+        if (!forceShowStartTime) {
+          forceShowStartTime = Date.now();
+        }
+        // Timeout after 30 seconds of waiting for task to start
+        if (Date.now() - forceShowStartTime > 30000) {
+          visible.value = false;
+          stopPolling();
+          appState.forceShowProgressBar = false;
+          forceShowStartTime = null;
+          return;
+        }
         // Continue polling, don't hide yet
       } else {
         // Task finished - hide progress bar and show completion message
@@ -143,6 +157,7 @@ async function pollOnce() {
     visible.value = false;
     stopPolling();
     appState.forceShowProgressBar = false;
+    forceShowStartTime = null; // Reset timeout tracker
     return;
   }
 

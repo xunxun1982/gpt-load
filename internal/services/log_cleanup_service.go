@@ -102,6 +102,7 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 	// Uses LogCleanupBatchSize from thresholds.go for consistency
 	const batchSize = LogCleanupBatchSize
 	totalDeleted := int64(0)
+	nextLogAt := int64(LargeCleanupThreshold) // Track next threshold for progress logging
 	dialect := s.db.Dialector.Name()
 
 	logrus.WithFields(logrus.Fields{
@@ -206,8 +207,10 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 
 		// Log progress for large cleanup operations
 		// Uses LargeCleanupThreshold for consistency with other batch operations
-		if totalDeleted > 0 && totalDeleted%LargeCleanupThreshold == 0 {
+		// Track next threshold to ensure logging even when batch sizes don't divide evenly
+		if totalDeleted >= nextLogAt {
 			logrus.WithField("deleted_so_far", totalDeleted).Debug("Log cleanup progress")
+			nextLogAt += int64(LargeCleanupThreshold)
 		}
 
 		// If deleted count is less than batch size, we're done

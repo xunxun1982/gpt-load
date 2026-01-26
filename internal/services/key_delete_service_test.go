@@ -133,14 +133,12 @@ func TestStartDeleteAllGroupKeys(t *testing.T) {
 	assert.True(t, taskStatus.IsRunning)
 	assert.Equal(t, 10, taskStatus.Total)
 
-	// Wait for task to complete
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify all keys were deleted
-	var count int64
-	err = db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&count).Error
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), count)
+	// Wait for task to complete using Eventually for more robust synchronization
+	require.Eventually(t, func() bool {
+		var count int64
+		err := db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&count).Error
+		return err == nil && count == 0
+	}, 2*time.Second, 10*time.Millisecond, "all keys should be deleted")
 }
 
 // TestStartDeleteInvalidGroupKeys tests deleting invalid keys in a group
@@ -154,7 +152,7 @@ func TestStartDeleteInvalidGroupKeys(t *testing.T) {
 	group := createTestGroupWithKeys(t, db, encSvc, "test-group-delete-invalid", 5, models.KeyStatusActive)
 	// Create invalid keys in the same group
 	for i := 0; i < 3; i++ {
-		keyValue := "sk-test-key-test-group-delete-invalid-invalid-" + string(rune('a'+i))
+		keyValue := fmt.Sprintf("sk-test-key-test-group-delete-invalid-invalid-%d", i)
 		encrypted, err := encSvc.Encrypt(keyValue)
 		require.NoError(t, err)
 
@@ -338,10 +336,11 @@ func TestDeleteService_ProgressCallback(t *testing.T) {
 
 	group := createTestGroupWithKeys(t, db, encSvc, "test-group", 5, models.KeyStatusActive)
 
+	// Use actual key names created by createTestGroupWithKeys
 	keys := []string{
-		"sk-test-key-test-group-a",
-		"sk-test-key-test-group-b",
-		"sk-test-key-test-group-c",
+		"sk-test-key-test-group-0",
+		"sk-test-key-test-group-1",
+		"sk-test-key-test-group-2",
 	}
 
 	progressCalled := false

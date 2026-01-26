@@ -89,6 +89,8 @@ const isNextPageDisabled = computed(() => {
 });
 const dialog = useDialog();
 const confirmInput = ref("");
+const loadKeysRetryCount = ref(0); // Track retry attempts to prevent infinite loops
+const MAX_LOAD_KEYS_RETRIES = 3; // Maximum retry attempts for timeout errors
 
 // Status filter options
 const statusOptions = [
@@ -241,14 +243,29 @@ async function loadKeys() {
     });
     keys.value = result.items as KeyRow[];
     total.value = result.pagination.total_items;
-  } catch (error: any) {
+    // Reset retry count on successful load
+    loadKeysRetryCount.value = 0;
+  } catch (error: unknown) {
     // Check if it's a timeout error
-    const errorMsg = error?.response?.data?.message || error?.message || "";
+    const errorMsg =
+      (error as { response?: { data?: { message?: string } }; message?: string })?.response?.data
+        ?.message ||
+      (error as { message?: string })?.message ||
+      "";
     if (
       errorMsg.includes("timeout") ||
       errorMsg.includes("deadline exceeded") ||
       errorMsg.includes("context deadline exceeded")
     ) {
+      // Check if we've exceeded max retries
+      if (loadKeysRetryCount.value >= MAX_LOAD_KEYS_RETRIES) {
+        window.$message.error(t("common.databaseBusyMaxRetries"));
+        loadKeysRetryCount.value = 0; // Reset for next attempt
+        return;
+      }
+
+      loadKeysRetryCount.value++;
+
       // Show friendly message and auto-retry after 3 seconds
       const retrySeconds = 3;
       window.$message.warning(t("common.databaseBusyRetry", { seconds: retrySeconds }), {

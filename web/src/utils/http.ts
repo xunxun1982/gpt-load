@@ -73,16 +73,17 @@ http.interceptors.response.use(
           window.location.href = "/login";
         }
       }
-      // Check if error message contains timeout keywords and use i18n
-      const errorMsg = error.response.data?.message || "";
+      // Normalize error message to string (can be object/array/blob from server)
+      const rawMsg = error.response?.data?.message ?? error.message ?? "";
+      const errorMsg = typeof rawMsg === "string" ? rawMsg : String(rawMsg);
       let displayMsg = errorMsg;
 
-      // Detect timeout errors and use i18n translations with friendly messages
-      if (
-        errorMsg.includes("timeout") ||
-        errorMsg.includes("deadline exceeded") ||
-        errorMsg.includes("context deadline exceeded")
-      ) {
+      // Detect timeout errors: check error code and message patterns
+      const isTimeout =
+        error.code === "ECONNABORTED" ||
+        /timeout|deadline exceeded|context deadline exceeded/i.test(errorMsg);
+
+      if (isTimeout) {
         // Show database busy message for better UX
         displayMsg = i18n.global.t("common.databaseBusy");
       } else if (!errorMsg) {
@@ -95,7 +96,14 @@ http.interceptors.response.use(
         closable: true,
       });
     } else if (error.request) {
-      window.$message.error(i18n.global.t("common.networkError"));
+      // Network errors or timeouts without response
+      const isTimeout =
+        error.code === "ECONNABORTED" ||
+        /timeout|deadline exceeded|context deadline exceeded/i.test(String(error.message || ""));
+
+      window.$message.error(
+        isTimeout ? i18n.global.t("common.databaseBusy") : i18n.global.t("common.networkError")
+      );
     } else {
       window.$message.error(i18n.global.t("common.requestSetupError"));
     }

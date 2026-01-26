@@ -288,10 +288,20 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 	totalProcessed := 0
 	totalSkipped := 0
 
-	// Report initial progress
-	if progressCallback != nil {
-		progressCallback(0)
+	// Track last reported progress to avoid regressions (monotonic progress)
+	lastReported := 0
+	reportProgress := func(v int) {
+		if progressCallback == nil {
+			return
+		}
+		if v > lastReported {
+			lastReported = v
+			progressCallback(v)
+		}
 	}
+
+	// Report initial progress
+	reportProgress(0)
 
 	logrus.Infof("Importing %d keys for group ID: %d (batch size: %d)", totalKeys, groupID, ImportDecryptBatchSize)
 
@@ -336,8 +346,8 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 			// Report progress during decryption phase (within batch)
 			// Report every ImportProgressReportInterval keys to provide feedback during CPU-intensive decryption
 			currentProcessed := batchStart + i + 1
-			if progressCallback != nil && currentProcessed%ImportProgressReportInterval == 0 {
-				progressCallback(currentProcessed)
+			if currentProcessed%ImportProgressReportInterval == 0 {
+				reportProgress(currentProcessed)
 			}
 		}
 
@@ -346,10 +356,8 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 			// Create a callback for bulk insert progress
 			// Map insert progress to overall progress (decrypt phase already reported)
 			insertCallback := func(inserted int) {
-				if progressCallback != nil {
-					// Calculate overall progress: batchStart (already decrypted) + inserted
-					progressCallback(batchStart + inserted)
-				}
+				// Calculate overall progress: batchStart (already decrypted) + inserted
+				reportProgress(batchStart + inserted)
 			}
 
 			if err := s.bulkImportService.BulkInsertAPIKeysWithTx(tx, keyModels, insertCallback); err != nil {
@@ -361,9 +369,7 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 		// Report progress after each batch is inserted
 		// This ensures progress reflects both decryption AND insertion completion
 		// Use batchEnd instead of batchStart + len(batchKeys) for accuracy
-		if progressCallback != nil {
-			progressCallback(batchEnd)
-		}
+		reportProgress(batchEnd)
 
 		logrus.Debugf("Imported batch %d-%d: %d keys inserted, %d skipped (total: %d/%d)",
 			batchStart, batchEnd, len(keyModels), batchSkipped, totalProcessed, totalKeys)

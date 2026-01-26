@@ -526,12 +526,6 @@ func sanitizeFilename(name string) string {
 // optimizeDatabaseAfterImport runs database optimization commands after bulk import
 // This is especially important for SQLite to rebuild statistics and checkpoint WAL
 func optimizeDatabaseAfterImport(ctx context.Context, db *gorm.DB) error {
-	// Get the underlying sql.DB to check driver type
-	sqlDB, err := db.DB()
-	if err != nil {
-		return err
-	}
-
 	// Get driver name to determine database type
 	driverName := db.Dialector.Name()
 
@@ -560,6 +554,15 @@ func optimizeDatabaseAfterImport(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 
-	// Ping to ensure connection is still alive after optimization
-	return sqlDB.PingContext(ctx)
+	// Verify connection is still alive after optimization
+	sqlDB, err := db.DB()
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to get underlying DB connection for ping")
+		return err
+	}
+	if err := sqlDB.PingContext(ctx); err != nil {
+		logrus.WithError(err).Warn("Failed to ping database after optimization")
+		return err
+	}
+	return nil
 }
