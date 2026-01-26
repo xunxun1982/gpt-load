@@ -263,7 +263,11 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 
 		// Import this batch of decrypted keys immediately (don't accumulate in memory)
 		if len(decryptedKeys) > 0 {
-			batchResult := s.importDecryptedKeysBatch(targetGroup, decryptedKeys, existingHashMap, totalProcessedKeys, totalSourceKeys)
+			batchResult, err := s.importDecryptedKeysBatch(targetGroup, decryptedKeys, existingHashMap, totalProcessedKeys, totalSourceKeys)
+			if err != nil {
+				_ = s.TaskService.EndTask(nil, err)
+				return
+			}
 			totalAddedKeys += batchResult.AddedCount
 			totalIgnoredKeys += batchResult.IgnoredCount
 		}
@@ -323,9 +327,10 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 	existingHashes map[string]bool,
 	processedSoFar int64,
 	totalKeys int64,
-) KeyImportResult {
+) (KeyImportResult, error) {
 	// Encrypt and prepare keys for insertion
 	keysToInsert := make([]models.APIKey, 0, len(decryptedKeys))
+	batchHashes := make([]string, 0, len(decryptedKeys)) // Collect hashes to update after successful commit
 	ignoredCount := 0
 
 	for _, plainKey := range decryptedKeys {
@@ -351,7 +356,7 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 			Status:   models.KeyStatusActive,
 		}
 		keysToInsert = append(keysToInsert, apiKey)
-		existingHashes[keyHash] = true // Update hash map to prevent duplicates within batches
+		batchHashes = append(batchHashes, keyHash) // Defer hash update until commit succeeds
 	}
 
 	// Bulk insert this batch
@@ -362,8 +367,7 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 		// Create a transaction for this batch
 		tx := s.KeyService.DB.Begin()
 		if tx.Error != nil {
-			logrus.Errorf("Failed to begin transaction for batch import: %v", tx.Error)
-			return KeyImportResult{AddedCount: 0, IgnoredCount: len(decryptedKeys)}
+			return KeyImportResult{}, fmt.Errorf("failed to begin transaction: %w", tx.Error)
 		}
 
 		// Progress callback for this batch (map to 40-100% of total progress)
@@ -377,20 +381,23 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 
 		if err := bulkImportSvc.BulkInsertAPIKeysWithTx(tx, keysToInsert, progressCallback); err != nil {
 			tx.Rollback()
-			logrus.Errorf("Failed to bulk insert keys batch: %v", err)
-			return KeyImportResult{AddedCount: 0, IgnoredCount: len(decryptedKeys)}
+			return KeyImportResult{}, fmt.Errorf("bulk insert failed: %w", err)
 		}
 
 		if err := tx.Commit().Error; err != nil {
-			logrus.Errorf("Failed to commit transaction for batch import: %v", err)
-			return KeyImportResult{AddedCount: 0, IgnoredCount: len(decryptedKeys)}
+			return KeyImportResult{}, fmt.Errorf("commit failed: %w", err)
+		}
+
+		// Only update hash map after successful commit to prevent silent key loss
+		for _, h := range batchHashes {
+			existingHashes[h] = true
 		}
 	}
 
 	return KeyImportResult{
 		AddedCount:   len(keysToInsert),
 		IgnoredCount: ignoredCount,
-	}
+	}, nil
 }
 
 // runBulkImportForCopy performs bulk import for copied keys.

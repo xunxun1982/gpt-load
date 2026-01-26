@@ -279,6 +279,10 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 // progressCallback is an optional callback function to report progress during import
 // Keys are processed in batches: decrypt -> insert -> report progress
 // This provides real-time feedback and avoids memory issues with large imports
+//
+// IMPORTANT: This function assumes key_value is already encrypted.
+// For plaintext imports, the handler layer must encrypt keys before calling this function.
+// See system_import_export_handler.go:409-415 for plaintext handling example.
 func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyExportInfo, progressCallback func(processed int)) error {
 	if len(keys) == 0 {
 		return nil
@@ -289,7 +293,8 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 	totalSkipped := 0
 
 	// Track last reported progress to avoid regressions (monotonic progress)
-	lastReported := 0
+	// Initialize to -1 to allow reporting 0% progress
+	lastReported := -1
 	reportProgress := func(v int) {
 		if progressCallback == nil {
 			return

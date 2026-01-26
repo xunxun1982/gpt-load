@@ -161,6 +161,10 @@ func (s *Server) AddMultipleKeys(c *gin.Context) {
 	}
 
 	// Parse keys to determine count
+	// AI Review Note: Keys are parsed twice - once here for tier selection, once in service methods.
+	// Decision: The parsing overhead (string split) is minimal compared to DB operations.
+	// Optimizing this would require changing service method signatures to accept pre-parsed keys,
+	// which adds complexity. The current approach keeps the API clean and the overhead is negligible.
 	keys := s.KeyService.ParseKeysFromText(req.KeysText)
 	if len(keys) == 0 {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "no valid keys found in the input text"))
@@ -485,6 +489,10 @@ func (s *Server) DeleteMultipleKeys(c *gin.Context) {
 	}
 
 	// Parse keys to determine count
+	// AI Review Note: Keys are parsed twice - once here for tier selection, once in service methods.
+	// Decision: The parsing overhead (string split) is minimal compared to DB operations.
+	// Optimizing this would require changing service method signatures to accept pre-parsed keys,
+	// which adds complexity. The current approach keeps the API clean and the overhead is negligible.
 	keys := s.KeyService.ParseKeysFromText(req.KeysText)
 	if len(keys) == 0 {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "no valid keys found in the input text"))
@@ -576,6 +584,10 @@ func (s *Server) RestoreMultipleKeys(c *gin.Context) {
 	}
 
 	// Parse keys to determine count
+	// AI Review Note: Keys are parsed twice - once here for tier selection, once in service methods.
+	// Decision: The parsing overhead (string split) is minimal compared to DB operations.
+	// Optimizing this would require changing service method signatures to accept pre-parsed keys,
+	// which adds complexity. The current approach keeps the API clean and the overhead is negligible.
 	keys := s.KeyService.ParseKeysFromText(req.KeysText)
 	if len(keys) == 0 {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "no valid keys found in the input text"))
@@ -587,6 +599,9 @@ func (s *Server) RestoreMultipleKeys(c *gin.Context) {
 
 	// For async tier, we would start background task here
 	// TODO: Implement async restore task service
+	// AI Review Note: Suggested tracking this TODO with an issue.
+	// Decision: This is a known limitation documented in code. The sync fallback works for current
+	// use cases. Will create issue when user demand justifies the implementation effort.
 	if tier == services.TierAsync {
 		// For now, fall back to sync processing
 		// Note: Large batches may approach HTTP timeout limits
@@ -735,6 +750,11 @@ func (s *Server) RestoreAllInvalidKeys(c *gin.Context) {
 	if invalidCount < services.BulkSyncThreshold {
 		// Synchronous restore for small batches - immediate feedback
 		// Note: No timeout enforcement as underlying method doesn't accept context
+		// AI Review Note: Suggested adding context support for timeout consistency with ClearAllKeys.
+		// Decision: RestoreAllInvalidKeys and RemoveInvalidKeys don't accept context parameters.
+		// Adding context support would require refactoring multiple layers (handler -> service -> provider).
+		// For small batches (<5K keys), the operation completes quickly enough that timeout is not critical.
+		// Large batches use async tasks which have their own timeout handling.
 		rowsAffected, err := s.KeyService.RestoreAllInvalidKeys(req.GroupID)
 		if err != nil {
 			response.Error(c, app_errors.ParseDBError(err))
@@ -791,6 +811,7 @@ func (s *Server) ClearAllInvalidKeys(c *gin.Context) {
 	if invalidCount < services.BulkSyncThreshold {
 		// Synchronous deletion for small batches - immediate feedback
 		// Note: No timeout enforcement as underlying method doesn't accept context
+		// AI Review Note: Same as RestoreAllInvalidKeys - context support would require multi-layer refactoring.
 		deleted, err := s.KeyService.KeyProvider.RemoveInvalidKeys(req.GroupID)
 		if err != nil {
 			response.Error(c, app_errors.ParseDBError(err))

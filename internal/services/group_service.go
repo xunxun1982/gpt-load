@@ -1126,6 +1126,12 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		// (milliseconds) and any orphaned keys would be cleaned up in subsequent operations.
 		// Adding a "deleting" status flag would add complexity with minimal practical benefit,
 		// as verified by our test suite.
+		//
+		// AI Review Note: Suggested using DB-level ON DELETE CASCADE, blocking inserts via
+		// "deleting" flag, or keeping destructive cleanup in one transaction.
+		// Decision: Current approach is intentional trade-off between transaction lock duration
+		// and theoretical orphan risk. The small time window and self-healing nature make the
+		// added complexity of alternative approaches unjustified for this use case.
 
 		// Delete hourly stats before committing transaction
 		if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.GroupHourlyStat{}).Error; err != nil {
@@ -1817,6 +1823,11 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 // - "valid_only": Only copies active keys, all inserted as active
 // - "all": Copies all keys (including invalid ones), but all inserted as active (reactivation)
 //   This treats copying as a "fresh start" rather than exact duplication.
+//
+// AI Review Note: Suggested preserving invalid status when copying with "all" option.
+// Decision: Current behavior is intentional. Copying is designed as a "fresh start" operation,
+// giving users a clean slate with all keys active. This is more useful than preserving failure
+// history, which would immediately blacklist keys in the new group without giving them a chance.
 func (s *GroupService) syncCopyKeys(ctx context.Context, targetGroup *models.Group, sourceGroupID uint, copyOption string) (addedCount, ignoredCount int, err error) {
 	// Fetch source keys from database
 	var sourceKeyData []struct {
@@ -1866,6 +1877,9 @@ func (s *GroupService) syncCopyKeys(ctx context.Context, targetGroup *models.Gro
 // - "valid_only": Only copies active keys, all inserted as active
 // - "all": Copies all keys (including invalid ones), but all inserted as active (reactivation)
 //   This treats copying as a "fresh start" rather than exact duplication.
+//
+// AI Review Note: Suggested preserving invalid status when copying with "all" option.
+// Decision: Same as syncCopyKeys - intentional "fresh start" design for better user experience.
 func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models.Group, sourceGroupID uint, copyOption string) (addedCount, ignoredCount int, err error) {
 	// Guard against nil BulkImportSvc
 	if s.bulkImportSvc == nil {

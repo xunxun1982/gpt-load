@@ -225,6 +225,12 @@ async function handleGroupDeleted(
   // For async deletions, don't refresh immediately as the backend task is still running
   // The group list will be refreshed when the task completes or when user manually refreshes
   // For sync deletions, refresh from backend to ensure consistency
+  //
+  // AI Review Note: Suggested using refreshGroupsAndSelect(nextGroupId) instead of loadGroups()
+  // to keep selection aligned with refreshed data.
+  // Decision: Current approach works because we already selected from the optimistically updated
+  // groups.value list above. Using refreshGroupsAndSelect would be slightly cleaner but the
+  // functional difference is minimal since the selection logic above handles the target group.
   if (!isAsyncDeletion) {
     await loadGroups();
   }

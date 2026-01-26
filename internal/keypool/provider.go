@@ -472,7 +472,11 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 				tasksProcessed++
 				logrus.Debugf("Worker %d: processing task %d (ID range %d-%d)", workerID, tasksProcessed, t.startID, t.endID)
 
-				lastID := t.startID - 1
+				// Guard against uint underflow when startID is 0
+				lastID := t.startID
+				if lastID > 0 {
+					lastID--
+				}
 				firstQuery := true
 
 				for {
@@ -1168,7 +1172,9 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			}
 		}
 
-		if affected == 0 || affected < int64(chunkSize) {
+		// Stop when no more keys to fetch (use fetched ID count, not RowsAffected)
+		// This prevents early termination under concurrent deletes
+		if len(ids) < chunkSize {
 			break
 		}
 

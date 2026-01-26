@@ -108,6 +108,7 @@ async function handleFileChange(event: Event) {
   const maxSize = 150 * 1024 * 1024; // 150MB
   if (file.size > maxSize) {
     window.$message.error(t("keys.fileSizeExceeded"));
+    handleClearFile(); // Clear stale file state
     target.value = "";
     return;
   }
@@ -115,6 +116,7 @@ async function handleFileChange(event: Event) {
   // Check file type (only .txt files, case-insensitive)
   if (!file.name.toLowerCase().endsWith(".txt")) {
     window.$message.error(t("keys.invalidFileType"));
+    handleClearFile(); // Clear stale file state
     target.value = "";
     return;
   }
