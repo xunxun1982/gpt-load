@@ -436,6 +436,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	if s.GroupService != nil {
 		// Use a private method through a helper to add group to list cache
 		// This avoids cache miss when frontend immediately requests /api/groups
+		// Note: AddGroupToListCache does not return an error; it logs internally if needed
 		s.GroupService.AddGroupToListCache(&createdGroup)
 	}
 

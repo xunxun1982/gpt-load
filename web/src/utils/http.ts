@@ -82,7 +82,12 @@ http.interceptors.response.use(
         }
       }
       // Normalize error message to string (can be object/array/blob from server)
-      const rawMsg = error.response?.data?.message ?? error.message ?? "";
+      // Handle both plain string responses and object responses with .message property
+      const responseData = error.response?.data;
+      const rawMsg =
+        (typeof responseData === "string" ? responseData : responseData?.message) ??
+        error.message ??
+        "";
       const errorMsg =
         typeof rawMsg === "string"
           ? rawMsg

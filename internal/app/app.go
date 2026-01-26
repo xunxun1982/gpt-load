@@ -409,9 +409,8 @@ func closeDBConnection(gormDB *gorm.DB, name string) {
 	closeDBConnectionWithOptions(gormDB, name, true)
 }
 
-// closeDBConnectionWithTimeout closes a database connection with a timeout.
 // closeDBConnectionWithOptions closes a database connection with configurable WAL checkpoint.
-// skipCheckpoint should be true for read-only connections that don't need WAL checkpoint.
+// doCheckpoint should be true for connections that need WAL checkpoint (write connections).
 func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, doCheckpoint bool) {
 	if gormDB == nil {
 		return

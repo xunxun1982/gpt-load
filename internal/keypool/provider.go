@@ -856,26 +856,37 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 	countCancel()
 
 	// Dynamic batch size and timeout based on total count for optimal performance
-	// Note: These thresholds align with services.thresholds.go for consistency:
-	// - BulkSyncThreshold = 5000
-	// - OptimizedSyncThreshold = 20000
-	// Strategy: Larger batches for large datasets to minimize round trips
-	// - Tier 1-2 (≤5K): 1000/batch for quick completion
-	// - Tier 3-4 (≤20K): 2000/batch for balance
-	// - Tier 5 (>20K): 5000/batch to minimize round trips
-	//   Example: 500K keys = 100 batches instead of 500 batches with 1000/batch
+	// Strategy: Balance total deletion time with concurrent operation responsiveness
+	// - Small datasets (≤5K): Small batches for quick completion and good responsiveness
+	// - Medium datasets (≤20K): Medium batches for balanced performance
+	// - Large datasets (>20K): Large batches to minimize total time for async operations
+	//
+	// Note: After SQL optimization (query IDs first, then delete by primary key),
+	// large batches no longer cause severe performance degradation.
+	// The main concern is now lock contention, addressed by inter-batch delays.
 	var chunkSize int
 	var batchTimeout time.Duration
-	if totalCount <= 5000 { // BulkSyncThreshold
+	var batchDelay time.Duration
+
+	if totalCount <= int64(BulkSyncThreshold) {
+		// Tier 1-2: Small batches for fast sync operations
+		// Target: Quick completion (<15s) with minimal lock contention
 		chunkSize = 1000
-		batchTimeout = 1000 * time.Millisecond
-	} else if totalCount <= 20000 { // OptimizedSyncThreshold
-		chunkSize = 2000
 		batchTimeout = 2000 * time.Millisecond
+		batchDelay = 20 * time.Millisecond
+	} else if totalCount <= int64(OptimizedSyncThreshold) {
+		// Tier 3-4: Medium batches for large sync operations
+		// Target: Reasonable completion time (15-60s) with acceptable lock contention
+		chunkSize = 2000
+		batchTimeout = 3000 * time.Millisecond
+		batchDelay = 30 * time.Millisecond
 	} else {
-		// >20K: Use large batches to significantly reduce total time
+		// Tier 5: Large batches for async operations
+		// Target: Minimize total time for background tasks
+		// Example: 39414 keys = 8 batches instead of 40 batches with 1000/batch
 		chunkSize = 5000
 		batchTimeout = 5000 * time.Millisecond
+		batchDelay = 50 * time.Millisecond
 	}
 
 	if totalCount > 0 {
@@ -894,7 +905,38 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
 		switch dial {
 		case "sqlite":
-			res = p.db.WithContext(batchCtx).Exec("DELETE FROM api_keys WHERE rowid IN (SELECT rowid FROM api_keys WHERE group_id = ? LIMIT ?)", groupID, chunkSize)
+			// Optimized DELETE for SQLite: Query IDs first, then delete by ID list
+			// This avoids the slow subquery pattern and uses the primary key index
+			var ids []uint
+			if err := p.db.WithContext(batchCtx).Model(&models.APIKey{}).
+				Select("id").
+				Where("group_id = ?", groupID).
+				Limit(chunkSize).
+				Pluck("id", &ids).Error; err != nil {
+				cancel()
+				if utils.IsTransientDBError(err) {
+					if retries >= maxRetries {
+						logrus.WithError(err).Errorf("Max retries reached after deleting %d keys", totalDeleted)
+						return totalDeleted, err
+					}
+					delay := time.Duration(50<<retries) * time.Millisecond
+					if delay > 1000*time.Millisecond {
+						delay = 1000 * time.Millisecond
+					}
+					logrus.WithError(err).Debugf("Transient query failure; retrying in %v (attempt %d/%d)", delay, retries+1, maxRetries)
+					time.Sleep(delay)
+					retries++
+					continue
+				}
+				logrus.WithError(err).Errorf("Failed to query IDs after deleting %d keys", totalDeleted)
+				return totalDeleted, err
+			}
+			if len(ids) == 0 {
+				cancel()
+				break
+			}
+			// Delete by ID list using primary key index (much faster)
+			res = p.db.WithContext(batchCtx).Where("id IN ?", ids).Delete(&models.APIKey{})
 		case "mysql":
 			res = p.db.WithContext(batchCtx).Exec("DELETE FROM api_keys WHERE group_id = ? ORDER BY id LIMIT ?", groupID, chunkSize)
 		case "postgres":
@@ -946,8 +988,9 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			break
 		}
 
-		// Reduced delay for faster processing
-		time.Sleep(5 * time.Millisecond)
+		// Increased delay between batches to allow other operations to execute
+		// This is critical for SQLite to prevent monopolizing the database lock
+		time.Sleep(batchDelay)
 	}
 
 	// Clear active key list for the group to prevent stale usage

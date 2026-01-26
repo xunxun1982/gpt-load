@@ -139,6 +139,13 @@ watch(
   () => props.selectedGroup,
   async newGroup => {
     if (newGroup) {
+      // Reset retry state when switching groups to avoid stale counts
+      if (loadKeysRetryTimer) {
+        clearTimeout(loadKeysRetryTimer);
+        loadKeysRetryTimer = null;
+      }
+      loadKeysRetryCount.value = 0;
+
       // Check whether resetting the page will trigger the pagination watcher
       const willWatcherTrigger = currentPage.value !== 1 || statusFilter.value !== "all";
       resetPage();
@@ -262,6 +269,9 @@ async function loadKeys() {
     loadKeysRetryCount.value = 0;
   } catch (error: unknown) {
     // Check if it's a timeout error
+    // Note: Uses string matching for timeout detection as a pragmatic approach
+    // This works for current error formats but could be made more robust with
+    // specific error types or status codes if available from the HTTP client
     const errorMsg =
       (error as { response?: { data?: { message?: string } }; message?: string })?.response?.data
         ?.message ||

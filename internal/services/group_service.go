@@ -1072,13 +1072,6 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		return app_errors.ParseDBError(err)
 	}
 
-	// Delete hourly stats for this group and its child groups.
-	// GroupHourlyStat.GroupID may have implicit foreign key constraint via GORM naming convention.
-	if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.GroupHourlyStat{}).Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Warn("failed to delete group hourly stats")
-		// Continue anyway - stats cleanup is best-effort
-	}
-
 	// Multi-threshold strategy for key deletion based on best practices:
 	// Uses unified thresholds from thresholds.go for consistency across all batch operations
 	// - Tier 1-2 (≤5K keys): Fast sync delete in transaction (<10s)
@@ -1252,6 +1245,9 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 	tx = nil
 
 	// Post-commit cleanup: clear store cache asynchronously
+	// Note: This goroutine is not tracked for graceful shutdown as the operation is
+	// idempotent and safe to run during shutdown. If shutdown occurs mid-execution,
+	// the cleanup will simply be skipped without adverse effects.
 	go func(keyService *KeyService, groupIDs []uint) {
 		if keyService == nil || keyService.KeyProvider == nil {
 			return
@@ -1459,6 +1455,9 @@ func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uin
 	tx = nil
 
 	// Post-commit cleanup: clear store cache asynchronously
+	// Note: This goroutine is not tracked for graceful shutdown as the operation is
+	// idempotent and safe to run during shutdown. If shutdown occurs mid-execution,
+	// the cleanup will simply be skipped without adverse effects.
 	go func(keyService *KeyService, groupIDs []uint) {
 		if keyService == nil || keyService.KeyProvider == nil {
 			return
@@ -1892,6 +1891,7 @@ func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models
 	newKeysToCreate := make([]models.APIKey, 0, len(decryptedKeys))
 	uniqueNewKeys := make(map[string]bool, len(decryptedKeys))
 	duplicateCount := 0
+	encryptErrors := 0 // Track encryption failures separately from duplicates
 
 	for _, keyVal := range decryptedKeys {
 		trimmedKey := strings.TrimSpace(keyVal)
@@ -1909,7 +1909,7 @@ func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models
 		encryptedKey, err := s.encryptionSvc.Encrypt(trimmedKey)
 		if err != nil {
 			logrus.WithError(err).Debug("Failed to encrypt key, skipping")
-			duplicateCount++
+			encryptErrors++ // Track encryption errors separately
 			continue
 		}
 
@@ -1923,7 +1923,7 @@ func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models
 	}
 
 	if len(newKeysToCreate) == 0 {
-		return 0, decryptErrors + duplicateCount, nil
+		return 0, decryptErrors + duplicateCount + encryptErrors, nil
 	}
 
 	// Use bulk import service for fast insertion
@@ -1933,7 +1933,7 @@ func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models
 	}).Info("Starting bulk import for copied keys")
 
 	if err := s.bulkImportSvc.BulkInsertAPIKeys(newKeysToCreate); err != nil {
-		return 0, decryptErrors + duplicateCount, fmt.Errorf("bulk import failed: %w", err)
+		return 0, decryptErrors + duplicateCount + encryptErrors, fmt.Errorf("bulk import failed: %w", err)
 	}
 
 	// Load keys to memory store after successful import
@@ -1954,10 +1954,10 @@ func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
 		"groupId":      targetGroup.ID,
 		"addedCount":   len(newKeysToCreate),
-		"ignoredCount": decryptErrors + duplicateCount,
+		"ignoredCount": decryptErrors + duplicateCount + encryptErrors,
 	}).Info("Completed bulk import for copied keys")
 
-	return len(newKeysToCreate), decryptErrors + duplicateCount, nil
+	return len(newKeysToCreate), decryptErrors + duplicateCount + encryptErrors, nil
 }
 
 

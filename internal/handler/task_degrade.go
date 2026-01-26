@@ -2,6 +2,13 @@ package handler
 
 import "gpt-load/internal/services"
 
+// degradableTaskTypes defines task types that trigger read degradation during execution
+var degradableTaskTypes = map[string]struct{}{
+	services.TaskTypeKeyImport:  {},
+	services.TaskTypeKeyDelete:  {},
+	services.TaskTypeKeyRestore: {},
+}
+
 func (s *Server) shouldDegradeReadDuringTask(groupName string) bool {
 	if s == nil || s.TaskService == nil || s.DB == nil {
 		return false
@@ -12,7 +19,7 @@ func (s *Server) shouldDegradeReadDuringTask(groupName string) bool {
 		return false
 	}
 
-	if status.TaskType != services.TaskTypeKeyImport && status.TaskType != services.TaskTypeKeyDelete && status.TaskType != services.TaskTypeKeyRestore {
+	if _, ok := degradableTaskTypes[status.TaskType]; !ok {
 		return false
 	}
 

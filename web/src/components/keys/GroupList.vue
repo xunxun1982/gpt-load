@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import type { ChildGroupInfo, Group } from "@/types/models";
-import { showProgressBar } from "@/utils/app-state";
+import { showProgressBar, hideProgressBar } from "@/utils/app-state";
 import { getGroupDisplayName } from "@/utils/display";
 import {
   groupByChannelType,
@@ -463,6 +463,9 @@ async function handleFileChange(event: Event) {
       loadingMessage.destroy();
       message.success(t("keys.importSuccess"));
 
+      // Hide progress bar on success (polling will show it again if task is still running)
+      hideProgressBar();
+
       // Wait a bit before refreshing to allow backend cache warming
       await new Promise(resolve => setTimeout(resolve, 500));
 
@@ -473,6 +476,9 @@ async function handleFileChange(event: Event) {
       }
     } catch (_error: unknown) {
       loadingMessage.destroy();
+
+      // Hide progress bar on error to prevent it from showing indefinitely
+      hideProgressBar();
 
       let errorMessage = t("keys.importFailed");
 
@@ -495,6 +501,9 @@ async function handleFileChange(event: Event) {
     }
   } catch (_error) {
     // JSON parse error or other early errors
+    // Hide progress bar on early validation errors
+    hideProgressBar();
+
     let errorDetail = "";
     if (_error instanceof Error) {
       errorDetail = _error.message;

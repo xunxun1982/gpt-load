@@ -461,8 +461,12 @@ func RequestBodySizeLimit(maxBytes int64) gin.HandlerFunc {
 		maxBytes = 150 << 20 // 150MB default
 	}
 
-	// Log threshold: warn when request body exceeds 50MB
-	warnThreshold := int64(50 << 20)
+	// Log threshold: warn when request body exceeds 33% of max or 50MB, whichever is smaller
+	// This scales with maxBytes configuration while avoiding excessive logging
+	warnThreshold := maxBytes / 3
+	if warnThreshold > 50<<20 {
+		warnThreshold = 50 << 20
+	}
 
 	return func(c *gin.Context) {
 		// Early rejection: check Content-Length header before reading body
@@ -476,13 +480,13 @@ func RequestBodySizeLimit(maxBytes int64) gin.HandlerFunc {
 			return
 		}
 
-		// Log large requests for monitoring
+		// Log large requests for monitoring (debug level to reduce noise during normal bulk operations)
 		if c.Request.ContentLength > warnThreshold && c.Request.ContentLength != -1 {
 			logrus.WithFields(logrus.Fields{
 				"path":           c.Request.URL.Path,
 				"content_length": c.Request.ContentLength,
 				"max_bytes":      maxBytes,
-			}).Info("Processing large request body")
+			}).Debug("Processing large request body")
 		}
 
 		// Wrap request body with size limiter
@@ -494,8 +498,9 @@ func RequestBodySizeLimit(maxBytes int64) gin.HandlerFunc {
 			var mbErr *http.MaxBytesError
 			if errors.As(err.Err, &mbErr) {
 				logrus.WithFields(logrus.Fields{
-					"path":      c.Request.URL.Path,
-					"max_bytes": maxBytes,
+					"path":           c.Request.URL.Path,
+					"content_length": c.Request.ContentLength,
+					"max_bytes":      maxBytes,
 				}).Warn("Request body exceeded limit during processing")
 				c.AbortWithStatus(http.StatusRequestEntityTooLarge)
 			}

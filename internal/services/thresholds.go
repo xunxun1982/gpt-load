@@ -55,7 +55,8 @@ const (
 	MaxPostgresBatchSize = 3000
 
 	// MaxSQLiteBatchSize is the maximum batch size for SQLite bulk inserts
-	// Limited by 1MB SQL statement size and performance considerations
+	// Limited primarily by performance constraints due to SQLite's single-writer model
+	// Larger batches can cause performance issues with concurrent operations
 	MaxSQLiteBatchSize = 50
 )
 

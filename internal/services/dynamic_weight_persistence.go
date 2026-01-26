@@ -705,6 +705,7 @@ func (p *DynamicWeightPersistence) RolloverTimeWindows() {
 }
 
 // applyDecay applies decay to a count based on window size and days passed.
+// Uses integer arithmetic to avoid float rounding errors and improve performance.
 func applyDecay(count int64, windowDays int, daysPassed int) int64 {
 	if count <= 0 || daysPassed <= 0 {
 		return count
@@ -716,10 +717,10 @@ func applyDecay(count int64, windowDays int, daysPassed int) int64 {
 		return 0
 	}
 
-	// Proportional decay: remove (daysPassed/windowDays) of the data
-	remaining := float64(count) * (1.0 - float64(daysPassed)/float64(windowDays))
+	// Proportional decay using integer math: remaining = count * (windowDays - daysPassed) / windowDays
+	remaining := count * int64(windowDays-daysPassed) / int64(windowDays)
 	if remaining < 0 {
 		return 0
 	}
-	return int64(remaining)
+	return remaining
 }

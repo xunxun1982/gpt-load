@@ -6,6 +6,7 @@ import GroupList from "@/components/keys/GroupList.vue";
 import KeyTable from "@/components/keys/KeyTable.vue";
 import SubGroupTable from "@/components/keys/SubGroupTable.vue";
 import type { Group, SubGroupInfo } from "@/types/models";
+import { appState } from "@/utils/app-state";
 import { getNearestGroupIdAfterDeletion, getSidebarOrderedGroupIds } from "@/utils/group-sidebar";
 import { onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -104,6 +105,16 @@ watch(selectedGroup, async newGroup => {
   }
 });
 
+// Watch for task completion to refresh group list
+// This handles async group deletion completion
+watch(
+  () => appState.groupDataRefreshTrigger,
+  async () => {
+    // Refresh group list when a task completes
+    await loadGroups();
+  }
+);
+
 function handleGroupSelect(group: Group | null) {
   selectedGroup.value = group || null;
   setLastSelectedGroupId(group?.id ?? null);
@@ -178,9 +189,11 @@ async function handleGroupDeleted(
   const deletedId = deletedGroup.id;
   let nextGroupId: number | undefined;
 
+  // Calculate removal set once and reuse
+  const removedIds = getGroupRemovalSet(deletedGroup);
+
   if (typeof deletedId === "number") {
     const orderedIds = getSidebarOrderedGroupIds(groups.value);
-    const removedIds = getGroupRemovalSet(deletedGroup);
     nextGroupId = getNearestGroupIdAfterDeletion(orderedIds, deletedId, removedIds);
   }
 
@@ -191,7 +204,6 @@ async function handleGroupDeleted(
 
   // Optimistically remove the deleted group from the local list immediately
   // This provides instant UI feedback, especially for async deletions
-  const removedIds = getGroupRemovalSet(deletedGroup);
   groups.value = groups.value.filter(g => g.id !== undefined && !removedIds.has(g.id));
 
   // Select the next group

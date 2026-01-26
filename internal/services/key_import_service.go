@@ -71,9 +71,17 @@ func (s *KeyImportService) StartImportTask(group *models.Group, keysText string)
 // StartStreamingImportTask initiates a streaming import task that processes keys in batches.
 // This method is optimized for large files and uses constant memory regardless of file size.
 func (s *KeyImportService) StartStreamingImportTask(group *models.Group, reader io.Reader, fileSize int64) (*TaskStatus, error) {
+	// Helper to close reader if it implements io.Closer
+	closeReader := func() {
+		if closer, ok := reader.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	}
+
 	// Guard against nil BulkImportSvc (defensive programming)
 	// This can happen in minimal deployments or test environments
 	if s.BulkImportSvc == nil {
+		closeReader()
 		return nil, fmt.Errorf("bulk import service is not configured")
 	}
 
@@ -104,6 +112,7 @@ func (s *KeyImportService) StartStreamingImportTask(group *models.Group, reader 
 
 	initialStatus, err := s.TaskService.StartTask(TaskTypeKeyImport, group.Name, estimatedKeys)
 	if err != nil {
+		closeReader()
 		return nil, err
 	}
 

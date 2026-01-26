@@ -6,6 +6,12 @@ import { NAlert, NButton, NCard, NIcon, NInput, NModal } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
+// Constants for file size thresholds and key estimation
+// Threshold for switching to streaming import (MB)
+const LARGE_FILE_THRESHOLD_MB = 10;
+// Average bytes per key line (matches server-side estimation in key_import_service.go)
+const ESTIMATED_BYTES_PER_KEY = 170;
+
 interface Props {
   show: boolean;
   groupId: number;
@@ -117,11 +123,11 @@ async function handleFileChange(event: Event) {
     selectedFile.value = file;
     const fileSizeMB = file.size / (1024 * 1024);
 
-    // For large files (>10MB), estimate key count without reading entire file
+    // For large files (>LARGE_FILE_THRESHOLD_MB), estimate key count without reading entire file
     // This prevents loading 150MB into browser memory
-    if (fileSizeMB > 10) {
-      // Estimate ~170 bytes per key (same as server-side calculation)
-      estimatedKeyCount.value = Math.floor(file.size / 170);
+    if (fileSizeMB > LARGE_FILE_THRESHOLD_MB) {
+      // Estimate using ESTIMATED_BYTES_PER_KEY (same as server-side calculation)
+      estimatedKeyCount.value = Math.floor(file.size / ESTIMATED_BYTES_PER_KEY);
       fileContent.value = ""; // Don't store content for large files
       window.$message.success(
         `${t("keys.fileLoadedSuccess", {
@@ -168,7 +174,7 @@ async function handleSubmit() {
       const fileSizeMB = selectedFile.value.size / (1024 * 1024);
 
       // Show appropriate message based on file size
-      if (fileSizeMB > 10) {
+      if (fileSizeMB > LARGE_FILE_THRESHOLD_MB) {
         // Large file - show info about streaming import
         window.$message.info(t("keys.largeFileImportStarting", { size: fileSizeMB.toFixed(2) }), {
           duration: 3000,

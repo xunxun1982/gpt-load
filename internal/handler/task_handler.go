@@ -28,12 +28,15 @@ var (
 )
 
 // get returns cached status if valid, otherwise returns nil
+// Returns a copy to prevent callers from mutating cached data
 func (c *taskStatusCache) get() *services.TaskStatus {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	if c.status != nil && time.Since(c.cachedAt) < c.cacheTTL {
-		return c.status
+		// Return a copy to prevent external mutation
+		copy := *c.status
+		return &copy
 	}
 	return nil
 }
