@@ -361,8 +361,11 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 
 	// Bulk insert this batch
 	if len(keysToInsert) > 0 {
-		// Use BulkImportService for efficient insertion
-		bulkImportSvc := NewBulkImportService(s.KeyService.DB)
+		// Use existing BulkImportService if available, otherwise create one
+		bulkImportSvc := s.BulkImportSvc
+		if bulkImportSvc == nil {
+			bulkImportSvc = NewBulkImportService(s.KeyService.DB)
+		}
 
 		// Create a transaction for this batch
 		tx := s.KeyService.DB.Begin()
@@ -676,7 +679,7 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 			}
 
 			uniqueNewKeys[trimmedKey] = true
-			existingHashMap[keyHash] = true // Prevent duplicates across batches
+			// Defer hash update until after successful insert to prevent key loss on failure
 			newKeysToCreate = append(newKeysToCreate, models.APIKey{
 				GroupID:  group.ID,
 				KeyValue: encryptedKey,
@@ -692,6 +695,11 @@ func (s *KeyImportService) runBulkImport(group *models.Group, keys []string) {
 					logrus.Errorf("Failed to end task with error for group %d: %v", group.ID, endErr)
 				}
 				return
+			}
+
+			// Update existingHashMap only after successful insert
+			for _, key := range newKeysToCreate {
+				existingHashMap[key.KeyHash] = true
 			}
 
 			totalAddedCount += len(newKeysToCreate)

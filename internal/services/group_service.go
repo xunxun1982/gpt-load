@@ -1206,12 +1206,8 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 
 		// Use chunked deletion to avoid long-running single DELETE statement
 		// Note: Use subquery approach for PostgreSQL compatibility (DELETE...LIMIT not supported)
-		// Dynamic chunk size based on key count for optimal performance
-		deleteChunkSize := DefaultDeleteChunkSize // 1000
-		if totalKeyCount > int64(BulkSyncThreshold) {
-			// For larger key counts (>5K), use larger chunks to reduce transaction overhead
-			deleteChunkSize = 2000
-		}
+		// Use DefaultDeleteChunkSize (1000) for this <=5K path
+		deleteChunkSize := DefaultDeleteChunkSize
 
 		if totalKeyCount > int64(deleteChunkSize) {
 			// Chunked deletion for moderate key counts using subquery for cross-DB compatibility

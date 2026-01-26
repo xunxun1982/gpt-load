@@ -433,16 +433,24 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	}
 	taskQueue := make(chan task, 100) // Buffered channel to avoid blocking
 
+	// Create context for canceling workers on first error
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Generate tasks
 	go func() {
+		defer close(taskQueue)
 		for start := minID; start <= maxID; start += taskChunkSize {
 			end := start + taskChunkSize - 1
 			if end > maxID {
 				end = maxID
 			}
-			taskQueue <- task{startID: start, endID: end}
+			select {
+			case <-ctx.Done():
+				return
+			case taskQueue <- task{startID: start, endID: end}:
+			}
 		}
-		close(taskQueue)
 	}()
 
 	// Shared data structures with mutex protection
@@ -492,6 +500,7 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 
 					if err := query.Find(&batchKeys).Error; err != nil {
 						errChan <- fmt.Errorf("worker %d failed to load keys batch: %w", workerID, err)
+						cancel() // Cancel other workers on error
 						return
 					}
 
@@ -541,6 +550,7 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 					if pipeline != nil {
 						if err := pipeline.Exec(); err != nil {
 							errChan <- fmt.Errorf("worker %d failed to execute pipeline: %w", workerID, err)
+							cancel() // Cancel other workers on error
 							return
 						}
 					}
@@ -999,12 +1009,12 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 
 	// Get total count for progress reporting and dynamic batch sizing (with timeout to avoid blocking)
 	var totalCount int64
-	countCtx, countCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	countCtx, countCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer countCancel()
 	if err := p.db.WithContext(countCtx).Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalCount).Error; err != nil {
 		logrus.WithError(err).Warn("Failed to get total count for progress tracking, continuing without progress")
 		totalCount = 0
 	}
-	countCancel()
 
 	// Dynamic batch size and timeout based on total count for optimal performance
 	// Strategy: Balance total deletion time with concurrent operation responsiveness
