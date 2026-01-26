@@ -293,6 +293,9 @@ async function loadKeys() {
           loadKeys();
         }
       }, retrySeconds * 1000);
+    } else {
+      // Reset retry count for non-timeout errors to ensure fresh retry attempts
+      loadKeysRetryCount.value = 0;
     }
     // Error is already handled by http interceptor, no need to show again
   } finally {
@@ -581,6 +584,10 @@ async function restoreAllInvalid() {
       d.loading = true;
 
       // Trigger task polling immediately before API call for instant UI feedback
+      // Note: This pattern is repeated across multiple batch operations but not extracted
+      // to a helper function because each operation has slightly different context
+      // (different loading states, group name handling, etc.) and keeping it inline
+      // makes the flow more explicit and easier to understand.
       localStorage.removeItem("last_closed_task");
       appState.taskPollingTrigger++;
 
@@ -588,7 +595,12 @@ async function restoreAllInvalid() {
         const response = await keysApi.restoreAllInvalidKeys(groupId);
 
         // Check if response is a task (async operation for large batches)
-        if (response && typeof response === "object" && "is_running" in response) {
+        if (
+          response &&
+          typeof response === "object" &&
+          "is_running" in response &&
+          (response as { is_running: boolean }).is_running
+        ) {
           // Async task started - progress bar already showing
           window.$message.info(t("keys.restoringInBackground"));
         } else {
@@ -664,7 +676,12 @@ async function clearAllInvalid() {
         const response = await keysApi.clearAllInvalidKeys(groupId);
 
         // Check if response is a task (async operation for large batches)
-        if (response && typeof response === "object" && "is_running" in response) {
+        if (
+          response &&
+          typeof response === "object" &&
+          "is_running" in response &&
+          (response as { is_running: boolean }).is_running
+        ) {
           // Async task started - progress bar already showing
           window.$message.info(t("keys.clearingInBackground"));
         } else {
@@ -739,7 +756,12 @@ async function clearAll() {
             const response = await keysApi.clearAllKeys(groupId);
 
             // Check if response is a task (async operation for large batches)
-            if (response && typeof response === "object" && "is_running" in response) {
+            if (
+              response &&
+              typeof response === "object" &&
+              "is_running" in response &&
+              (response as { is_running: boolean }).is_running
+            ) {
               // Async task started - progress bar already showing
               window.$message.info(t("keys.clearingInBackground"));
             } else {

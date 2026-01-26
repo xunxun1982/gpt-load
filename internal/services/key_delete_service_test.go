@@ -2,7 +2,6 @@ package services
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -285,10 +284,19 @@ func TestStartDeleteTask_TaskAlreadyRunning(t *testing.T) {
 
 	// Wait for first task to complete using Eventually
 	require.Eventually(t, func() bool {
-		// Try to start a new task - if it succeeds, the previous task has completed
-		_, err := svc.StartDeleteTask(group, "sk-test-key-test-group-2")
-		return err == nil || !strings.Contains(err.Error(), "already running")
+		status, err := svc.TaskService.GetTaskStatus()
+		return err == nil && !status.IsRunning
 	}, 2*time.Second, 10*time.Millisecond, "first task should complete")
+
+	// Start a new task after the previous one completes
+	_, err = svc.StartDeleteTask(group, "sk-test-key-test-group-2")
+	require.NoError(t, err)
+
+	// Ensure the second task finishes before test cleanup closes the DB
+	require.Eventually(t, func() bool {
+		status, err := svc.TaskService.GetTaskStatus()
+		return err == nil && !status.IsRunning
+	}, 2*time.Second, 10*time.Millisecond, "second task should complete")
 }
 
 // TestProcessAndDeleteKeys tests the core delete logic

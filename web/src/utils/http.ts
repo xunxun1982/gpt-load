@@ -101,13 +101,16 @@ http.interceptors.response.use(
 
       window.$message.error(displayMsg, {
         keepAliveOnHover: true,
-        duration: 8000, // Longer duration for timeout messages
+        duration: 8000, // Longer duration for important error messages
         closable: true,
       });
     } else if (error.request) {
       // Network errors or timeouts without response
       const isTimeout = isTimeoutError({ code: error.code, message: error.message });
 
+      // Note: Using "databaseBusy" for timeouts is intentional - most timeouts in this app
+      // occur during backend operations (imports, validations) rather than pure network issues.
+      // This provides more accurate context to users about what's happening.
       window.$message.error(
         isTimeout ? i18n.global.t("common.databaseBusy") : i18n.global.t("common.networkError")
       );
