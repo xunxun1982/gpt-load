@@ -83,13 +83,27 @@ http.interceptors.response.use(
       }
       // Normalize error message to string (can be object/array/blob from server)
       const rawMsg = error.response?.data?.message ?? error.message ?? "";
-      const errorMsg = typeof rawMsg === "string" ? rawMsg : String(rawMsg);
+      const errorMsg =
+        typeof rawMsg === "string"
+          ? rawMsg
+          : rawMsg != null
+            ? (() => {
+                try {
+                  return JSON.stringify(rawMsg);
+                } catch {
+                  return String(rawMsg);
+                }
+              })()
+            : "";
       let displayMsg = errorMsg;
 
-      // Detect timeout errors: check error code and message patterns
+      // Detect timeout errors: check error code, message patterns, and HTTP status codes
       // Note: In error.response branch, ECONNABORTED is rare (server responded),
       // but we check message patterns for server-side database timeouts
-      const isTimeout = isTimeoutError({ code: error.code, message: errorMsg });
+      // HTTP 408 (Request Timeout) and 504 (Gateway Timeout) are also treated as timeouts
+      const status = error.response?.status;
+      const isTimeout =
+        isTimeoutError({ code: error.code, message: errorMsg }) || status === 408 || status === 504;
 
       if (isTimeout) {
         // Show database busy message for better UX

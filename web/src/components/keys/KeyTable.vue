@@ -299,6 +299,10 @@ async function loadKeys() {
     }
     // Error is already handled by http interceptor, no need to show again
   } finally {
+    // Note: loading is set to false here even during retry wait period.
+    // This is intentional UX design - it allows users to interact with the UI
+    // (e.g., change filters, navigate away) which will cancel the pending retry.
+    // The retry message provides sufficient feedback about the upcoming retry.
     loading.value = false;
   }
 }

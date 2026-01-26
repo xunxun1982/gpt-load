@@ -44,6 +44,12 @@ func setupKeyDeleteServiceTest(t *testing.T) (*gorm.DB, *KeyDeleteService) {
 	require.NoError(t, err)
 
 	keyProvider := keypool.NewProvider(db, memStore, settingsManager, encSvc)
+	// Stop the provider's worker pool in cleanup to prevent goroutine leaks
+	// This is important because all tests use t.Parallel()
+	t.Cleanup(func() {
+		keyProvider.Stop()
+	})
+
 	keyValidator := keypool.NewKeyValidator(keypool.KeyValidatorParams{})
 	keyService := NewKeyService(db, keyProvider, keyValidator, encSvc)
 
@@ -277,7 +283,14 @@ func TestStartDeleteTask_TaskAlreadyRunning(t *testing.T) {
 	_, err = svc.StartDeleteTask(group, keysText)
 	require.NoError(t, err)
 
-	// Try to start second task immediately
+	// Ensure task is running before asserting "already running"
+	// This prevents flakiness if the task completes very quickly
+	require.Eventually(t, func() bool {
+		status, err := svc.TaskService.GetTaskStatus()
+		return err == nil && status.IsRunning
+	}, 1*time.Second, 10*time.Millisecond, "task should be running")
+
+	// Try to start second task while first is still running
 	_, err = svc.StartDeleteTask(group, keysText)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already running")
