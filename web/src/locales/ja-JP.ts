@@ -1015,7 +1015,7 @@ export default {
   validation: {
     invalid_group_id: "無効なグループID",
     invalid_group_name: "無効なグループ名",
-    invalid_channel_type: "サポートされていないチャネルタイプ: {types}",
+    invalid_channel_type: "サポートされていないチャンネルタイプ: {types}",
     invalid_group_type: "無効なグループタイプ",
     test_model_required: "テストモデルは必須です",
     test_model_empty: "テストモデルを空にすることはできません",
@@ -1024,7 +1024,7 @@ export default {
     invalid_model_redirect: "無効なモデルリダイレクトルール: {error}",
     aggregate_no_model_redirect: "集約グループはモデルリダイレクトをサポートしていません",
     sub_group_referenced_cannot_modify:
-      "このグループは {count} 個の集約グループによって参照されているため、チャネルタイプまたは検証エンドポイントを変更できません",
+      "このグループは {count} 個の集約グループによって参照されているため、チャンネルタイプまたは検証エンドポイントを変更できません",
     cc_support_cannot_disable_used_by_anthropic:
       "このグループは以下のAnthropic集約グループで使用されているため、CCサポートを無効にできません: {groups}",
     invalid_copy_keys_value: "無効なキーコピーオプション",

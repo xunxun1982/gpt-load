@@ -138,37 +138,44 @@ func (p *DynamicWeightPersistence) checkAndRunMaintenance() {
 // LoadFromDatabase loads all metrics from database into the store.
 // Called on startup to restore metrics after restart.
 // Only loads non-deleted records.
-// Optimized with indexed query to handle large datasets efficiently.
-// Note: Loads all records at once; for truly large datasets, consider cursor-based iteration.
+// Optimized with indexed query and batch processing to handle large datasets efficiently.
+// Uses FindInBatches to keep memory usage bounded even for very large datasets.
 func (p *DynamicWeightPersistence) LoadFromDatabase() error {
-	// Use indexed query with explicit column selection to reduce memory overhead
+	// Use indexed query with batch processing to keep memory usage flat
 	// The idx_dw_metrics_deleted_type index makes this query very fast
 	// Note: No ORDER BY needed since we iterate all records regardless of order
-	var dbMetrics []models.DynamicWeightMetric
-	if err := p.db.Where("deleted_at IS NULL").
-		Find(&dbMetrics).Error; err != nil {
-		return err
-	}
-
 	loaded := 0
-	for _, dbm := range dbMetrics {
-		metrics := dbMetricToMemory(&dbm)
+	err := p.db.Where("deleted_at IS NULL").
+		FindInBatches(&[]models.DynamicWeightMetric{}, 1000, func(tx *gorm.DB, batch int) error {
+			var dbMetrics []models.DynamicWeightMetric
+			if err := tx.Find(&dbMetrics).Error; err != nil {
+				return err
+			}
 
-		var key string
-		switch dbm.MetricType {
-		case models.MetricTypeSubGroup:
-			key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
-		case models.MetricTypeModelRedirect:
-			key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
-		default:
-			continue
-		}
+			for _, dbm := range dbMetrics {
+				metrics := dbMetricToMemory(&dbm)
 
-		if err := p.manager.SetMetrics(key, metrics); err != nil {
-			logrus.WithError(err).WithField("key", key).Debug("Failed to load metric into store")
-			continue
-		}
-		loaded++
+				var key string
+				switch dbm.MetricType {
+				case models.MetricTypeSubGroup:
+					key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
+				case models.MetricTypeModelRedirect:
+					key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
+				default:
+					continue
+				}
+
+				if err := p.manager.SetMetrics(key, metrics); err != nil {
+					logrus.WithError(err).WithField("key", key).Debug("Failed to load metric into store")
+					continue
+				}
+				loaded++
+			}
+			return nil
+		}).Error
+
+	if err != nil {
+		return err
 	}
 
 	if loaded > 0 {
@@ -609,6 +616,7 @@ func (p *DynamicWeightPersistence) DeleteAllModelRedirectMetricsForGroup(groupID
 // This should be called once per day to shift data between time windows.
 // Data older than 180 days is discarded. Only processes non-deleted records.
 // Optimized to use indexed queries and batch processing for better performance.
+// Uses FindInBatches to keep memory usage bounded even for very large datasets.
 //
 // NOTE: SetMetrics calls here may race with concurrent recordSuccess/recordFailure.
 // This is acceptable because: (1) rollover runs once daily, (2) health scores
@@ -616,74 +624,89 @@ func (p *DynamicWeightPersistence) DeleteAllModelRedirectMetricsForGroup(groupID
 // updates will be re-recorded on next request. This follows eventual consistency
 // pattern common in metrics systems.
 func (p *DynamicWeightPersistence) RolloverTimeWindows() {
-	// Use indexed query for better performance
+	now := time.Now()
+	totalUpdated := 0
+
+	// Use indexed query with batch processing to keep memory usage flat
 	// The idx_dw_metrics_deleted_type index makes this query efficient
 	// Note: No ORDER BY needed since we iterate all records regardless of order
-	var dbMetrics []models.DynamicWeightMetric
-	if err := p.db.Where("deleted_at IS NULL").
-		Find(&dbMetrics).Error; err != nil {
+	err := p.db.Where("deleted_at IS NULL").
+		FindInBatches(&[]models.DynamicWeightMetric{}, 1000, func(tx *gorm.DB, batch int) error {
+			var dbMetrics []models.DynamicWeightMetric
+			if err := tx.Find(&dbMetrics).Error; err != nil {
+				return err
+			}
+
+			var toUpdate []models.DynamicWeightMetric
+			for _, dbm := range dbMetrics {
+				// Check if rollover is needed (more than 24 hours since last rollover)
+				if dbm.LastRolloverAt != nil && now.Sub(*dbm.LastRolloverAt) < DefaultRolloverInterval {
+					continue
+				}
+
+				// Calculate days since last rollover
+				daysSinceRollover := 1
+				if dbm.LastRolloverAt != nil {
+					daysSinceRollover = int(now.Sub(*dbm.LastRolloverAt).Hours() / 24)
+					if daysSinceRollover < 1 {
+						continue
+					}
+				}
+
+				// Apply decay to each time window
+				dbm.Requests7d = applyDecay(dbm.Requests7d, 7, daysSinceRollover)
+				dbm.Successes7d = applyDecay(dbm.Successes7d, 7, daysSinceRollover)
+				dbm.Requests14d = applyDecay(dbm.Requests14d, 14, daysSinceRollover)
+				dbm.Successes14d = applyDecay(dbm.Successes14d, 14, daysSinceRollover)
+				dbm.Requests30d = applyDecay(dbm.Requests30d, 30, daysSinceRollover)
+				dbm.Successes30d = applyDecay(dbm.Successes30d, 30, daysSinceRollover)
+				dbm.Requests90d = applyDecay(dbm.Requests90d, 90, daysSinceRollover)
+				dbm.Successes90d = applyDecay(dbm.Successes90d, 90, daysSinceRollover)
+				dbm.Requests180d = applyDecay(dbm.Requests180d, 180, daysSinceRollover)
+				dbm.Successes180d = applyDecay(dbm.Successes180d, 180, daysSinceRollover)
+
+				dbm.LastRolloverAt = &now
+				toUpdate = append(toUpdate, dbm)
+			}
+
+			if len(toUpdate) == 0 {
+				return nil
+			}
+
+			// Persist batch to database
+			if err := p.batchUpsert(toUpdate); err != nil {
+				logrus.WithError(err).WithField("count", len(toUpdate)).Warn("Failed to persist rolled over metrics batch")
+				return err
+			}
+
+			// Update in-memory store for this batch
+			for _, dbm := range toUpdate {
+				var key string
+				switch dbm.MetricType {
+				case models.MetricTypeSubGroup:
+					key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
+				case models.MetricTypeModelRedirect:
+					key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
+				default:
+					continue
+				}
+				metrics := dbMetricToMemory(&dbm)
+				if err := p.manager.SetMetrics(key, metrics); err != nil {
+					logrus.WithError(err).WithField("key", key).Debug("Failed to update store after rollover")
+				}
+			}
+
+			totalUpdated += len(toUpdate)
+			return nil
+		}).Error
+
+	if err != nil {
 		logrus.WithError(err).Warn("Failed to fetch metrics for rollover")
 		return
 	}
 
-	now := time.Now()
-	var toUpdate []models.DynamicWeightMetric
-
-	for _, dbm := range dbMetrics {
-		// Check if rollover is needed (more than 24 hours since last rollover)
-		if dbm.LastRolloverAt != nil && now.Sub(*dbm.LastRolloverAt) < DefaultRolloverInterval {
-			continue
-		}
-
-		// Calculate days since last rollover
-		daysSinceRollover := 1
-		if dbm.LastRolloverAt != nil {
-			daysSinceRollover = int(now.Sub(*dbm.LastRolloverAt).Hours() / 24)
-			if daysSinceRollover < 1 {
-				continue
-			}
-		}
-
-		// Apply decay to each time window
-		dbm.Requests7d = applyDecay(dbm.Requests7d, 7, daysSinceRollover)
-		dbm.Successes7d = applyDecay(dbm.Successes7d, 7, daysSinceRollover)
-		dbm.Requests14d = applyDecay(dbm.Requests14d, 14, daysSinceRollover)
-		dbm.Successes14d = applyDecay(dbm.Successes14d, 14, daysSinceRollover)
-		dbm.Requests30d = applyDecay(dbm.Requests30d, 30, daysSinceRollover)
-		dbm.Successes30d = applyDecay(dbm.Successes30d, 30, daysSinceRollover)
-		dbm.Requests90d = applyDecay(dbm.Requests90d, 90, daysSinceRollover)
-		dbm.Successes90d = applyDecay(dbm.Successes90d, 90, daysSinceRollover)
-		dbm.Requests180d = applyDecay(dbm.Requests180d, 180, daysSinceRollover)
-		dbm.Successes180d = applyDecay(dbm.Successes180d, 180, daysSinceRollover)
-
-		dbm.LastRolloverAt = &now
-		toUpdate = append(toUpdate, dbm)
-	}
-
-	if len(toUpdate) > 0 {
-		if err := p.batchUpsert(toUpdate); err != nil {
-			// Skip in-memory update on DB failure to avoid inconsistency
-			logrus.WithError(err).WithField("count", len(toUpdate)).Warn("Failed to persist rolled over metrics")
-			return
-		}
-		logrus.WithField("count", len(toUpdate)).Info("Dynamic weight metrics rolled over")
-
-		// Also update in-memory store
-		for _, dbm := range toUpdate {
-			var key string
-			switch dbm.MetricType {
-			case models.MetricTypeSubGroup:
-				key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
-			case models.MetricTypeModelRedirect:
-				key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
-			default:
-				continue
-			}
-			metrics := dbMetricToMemory(&dbm)
-			if err := p.manager.SetMetrics(key, metrics); err != nil {
-				logrus.WithError(err).WithField("key", key).Debug("Failed to update store after rollover")
-			}
-		}
+	if totalUpdated > 0 {
+		logrus.WithField("count", totalUpdated).Info("Dynamic weight metrics rolled over")
 	}
 }
 

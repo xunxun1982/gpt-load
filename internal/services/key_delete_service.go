@@ -86,6 +86,20 @@ func (s *KeyDeleteService) StartRestoreInvalidGroupKeys(group *models.Group, tot
 }
 
 func (s *KeyDeleteService) runDelete(group *models.Group, keys []string) {
+	// Recover from panics to prevent task from being stuck in "running" state
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic in runDelete for group %d: %v", group.ID, r)
+			logrus.WithFields(logrus.Fields{
+				"groupID": group.ID,
+				"panic":   r,
+			}).Error("Panic recovered in runDelete")
+			if s.TaskService != nil {
+				_ = s.TaskService.EndTask(nil, err)
+			}
+		}
+	}()
+
 	progressCallback := func(processed int) {
 		if err := s.TaskService.UpdateProgress(processed); err != nil {
 			logrus.Warnf("Failed to update task progress for group %d: %v", group.ID, err)
@@ -112,6 +126,20 @@ func (s *KeyDeleteService) runDelete(group *models.Group, keys []string) {
 
 // runDeleteAllGroupKeys performs the full-group deletion using the provider's chunked delete.
 func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group) {
+	// Recover from panics to prevent task from being stuck in "running" state
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic in runDeleteAllGroupKeys for group %d: %v", group.ID, r)
+			logrus.WithFields(logrus.Fields{
+				"groupID": group.ID,
+				"panic":   r,
+			}).Error("Panic recovered in runDeleteAllGroupKeys")
+			if s.TaskService != nil {
+				_ = s.TaskService.EndTask(nil, err)
+			}
+		}
+	}()
+
 	// Use background context with no timeout for large deletions
 	// The deletion itself has internal chunking and progress tracking
 	ctx := context.Background()
@@ -144,6 +172,20 @@ func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group) {
 
 // runDeleteInvalidGroupKeys performs deletion of all invalid keys using the provider's chunked delete.
 func (s *KeyDeleteService) runDeleteInvalidGroupKeys(group *models.Group) {
+	// Recover from panics to prevent task from being stuck in "running" state
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic in runDeleteInvalidGroupKeys for group %d: %v", group.ID, r)
+			logrus.WithFields(logrus.Fields{
+				"groupID": group.ID,
+				"panic":   r,
+			}).Error("Panic recovered in runDeleteInvalidGroupKeys")
+			if s.TaskService != nil {
+				_ = s.TaskService.EndTask(nil, err)
+			}
+		}
+	}()
+
 	// RemoveInvalidKeys internally uses removeKeysByStatus with chunking
 	// Note: RemoveInvalidKeys doesn't support progress callback yet, but the operation
 	// is still chunked internally for memory efficiency
@@ -168,6 +210,20 @@ func (s *KeyDeleteService) runDeleteInvalidGroupKeys(group *models.Group) {
 
 // runRestoreInvalidGroupKeys performs restoration of all invalid keys using the provider's restore method.
 func (s *KeyDeleteService) runRestoreInvalidGroupKeys(group *models.Group) {
+	// Recover from panics to prevent task from being stuck in "running" state
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic in runRestoreInvalidGroupKeys for group %d: %v", group.ID, r)
+			logrus.WithFields(logrus.Fields{
+				"groupID": group.ID,
+				"panic":   r,
+			}).Error("Panic recovered in runRestoreInvalidGroupKeys")
+			if s.TaskService != nil {
+				_ = s.TaskService.EndTask(nil, err)
+			}
+		}
+	}()
+
 	// RestoreKeys internally updates status from invalid to active
 	// Note: RestoreKeys doesn't support progress callback yet, but the operation
 	// is still chunked internally for memory efficiency

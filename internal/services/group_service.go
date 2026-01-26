@@ -1137,6 +1137,14 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 
 		// Use RemoveAllKeys for efficient chunked deletion with progress tracking
 		// This reuses the optimized batch deletion logic (1000 per batch, 5ms delay)
+		// Note: If RemoveAllKeys fails after transaction commit, we return an error
+		// and leave the group in a partially deleted state (relationships/stats deleted,
+		// but group and keys remain). This is acceptable because:
+		// 1. The failure is logged and returned to the caller for retry
+		// 2. The group is still functional (keys are intact)
+		// 3. A retry will complete the deletion successfully
+		// 4. Alternative approaches (e.g., two-phase commit, status flags) add significant
+		//    complexity for a rare edge case that self-heals on retry
 		for _, groupID := range relatedGroupIDs {
 			deleted, err := s.keyProvider.RemoveAllKeys(ctx, groupID, nil)
 			if err != nil {
