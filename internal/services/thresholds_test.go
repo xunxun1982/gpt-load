@@ -67,7 +67,7 @@ func TestGetOperationTier(t *testing.T) {
 		{
 			name:     "Massive batch - 1000000 keys",
 			keyCount: 1000000,
-			expected: TierAsync,
+			expected: TierMassiveAsync,
 		},
 	}
 
@@ -91,6 +91,7 @@ func TestOperationTierString(t *testing.T) {
 		{TierLargeSync, "large_sync"},
 		{TierOptimizedSync, "optimized_sync"},
 		{TierAsync, "async"},
+		{TierMassiveAsync, "massive_async"},
 		{OperationTier(999), "unknown"}, // Invalid tier
 	}
 

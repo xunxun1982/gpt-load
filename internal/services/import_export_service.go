@@ -303,12 +303,30 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 	// Report initial progress
 	reportProgress(0)
 
-	logrus.Infof("Importing %d keys for group ID: %d (batch size: %d)", totalKeys, groupID, ImportDecryptBatchSize)
+	// Dynamic batch size based on total key count for optimal performance
+	// Strategy: Balance memory usage, progress granularity, and transaction overhead
+	// - Small imports (≤5K): Use default batch size (1000) for good progress feedback
+	// - Medium imports (5K-20K): Use larger batches (2000) to reduce overhead
+	// - Large imports (20K-100K): Use even larger batches (5000) for efficiency
+	// - Massive imports (>100K): Use very large batches (10000) optimized for 500K+ operations
+	decryptBatchSize := ImportDecryptBatchSize // Default: 1000
+	if totalKeys > MassiveAsyncThreshold {
+		// Tier 6: Massive imports (>100K keys)
+		decryptBatchSize = 10000
+	} else if totalKeys > AsyncThreshold {
+		// Tier 5: Large imports (20K-100K keys)
+		decryptBatchSize = 5000
+	} else if totalKeys > BulkSyncThreshold {
+		// Tier 3-4: Medium imports (5K-20K keys)
+		decryptBatchSize = 2000
+	}
+
+	logrus.Infof("Importing %d keys for group ID: %d (batch size: %d)", totalKeys, groupID, decryptBatchSize)
 
 	// Process keys in batches: decrypt batch -> insert batch -> report progress
 	// This provides real-time progress feedback during both decrypt and insert phases
-	for batchStart := 0; batchStart < totalKeys; batchStart += ImportDecryptBatchSize {
-		batchEnd := batchStart + ImportDecryptBatchSize
+	for batchStart := 0; batchStart < totalKeys; batchStart += decryptBatchSize {
+		batchEnd := batchStart + decryptBatchSize
 		if batchEnd > totalKeys {
 			batchEnd = totalKeys
 		}

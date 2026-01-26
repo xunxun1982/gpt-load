@@ -412,18 +412,21 @@ func (s *GroupService) InvalidateGroupListCache() {
 // other goroutines during potentially slow operations (up to 2 seconds timeout).
 func (s *GroupService) AddGroupToListCache(group *models.Group) {
 	s.groupListCacheMu.Lock()
-	needsDBLoad := s.groupListCache == nil || len(s.groupListCache.Groups) == 0
+	now := time.Now()
+	needsDBLoad := s.groupListCache == nil ||
+		len(s.groupListCache.Groups) == 0 ||
+		now.After(s.groupListCache.ExpiresAt)
 	if !needsDBLoad {
 		// Fast path: cache exists, append only if not already present
 		for _, g := range s.groupListCache.Groups {
 			if g.ID == group.ID {
-				s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCache.CurrentTTL)
+				s.groupListCache.ExpiresAt = now.Add(s.groupListCache.CurrentTTL)
 				s.groupListCacheMu.Unlock()
 				return
 			}
 		}
 		s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
-		s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCache.CurrentTTL)
+		s.groupListCache.ExpiresAt = now.Add(s.groupListCache.CurrentTTL)
 		s.groupListCacheMu.Unlock()
 		return
 	}
@@ -1195,8 +1198,13 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 
 		// Use chunked deletion to avoid long-running single DELETE statement
 		// Note: Use subquery approach for PostgreSQL compatibility (DELETE...LIMIT not supported)
-		// Chunk size uses DefaultDeleteChunkSize for consistency
-		const deleteChunkSize = DefaultDeleteChunkSize
+		// Dynamic chunk size based on key count for optimal performance
+		deleteChunkSize := DefaultDeleteChunkSize // 1000
+		if totalKeyCount > int64(BulkSyncThreshold) {
+			// For larger key counts (>5K), use larger chunks to reduce transaction overhead
+			deleteChunkSize = 2000
+		}
+
 		if totalKeyCount > int64(deleteChunkSize) {
 			// Chunked deletion for moderate key counts using subquery for cross-DB compatibility
 			for {
@@ -1698,21 +1706,21 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 	}
 	tx = nil
 
-	// Update group list cache with the new group before invalidating GroupManager cache
-	// This ensures ListGroups can return cached data even if DB is busy with async import
-	s.AddGroupToListCache(&newGroup)
-
 	// Invalidate GroupManager cache (for GetGroupByID/GetGroupByName lookups)
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
 
-	// Multi-threshold strategy for key copying (5 tiers based on best practices):
+	// Update group list cache with the new group after invalidation
+	s.AddGroupToListCache(&newGroup)
+
+	// Multi-threshold strategy for key copying (6 tiers based on best practices):
 	// - 0-1,000 keys: Fast sync copy using AddMultipleKeys (<5s, simple and fast)
 	// - 1,000-5,000 keys: Bulk sync copy using BulkImportSvc (5-15s, optimized for medium batches)
 	// - 5,000-10,000 keys: Large sync copy using BulkImportSvc (15-30s, large batches)
 	// - 10,000-20,000 keys: Optimized sync copy (30-60s, very large batches, stays within HTTP timeout)
-	// - >20,000 keys: Async copy (return immediately, process in background to avoid timeout)
+	// - 20,000-100,000 keys: Async copy (return immediately, process in background to avoid timeout)
+	// - >100,000 keys: Massive async copy (optimized for 500K+ operations)
 
 	if keyCount > 0 {
 		tier := GetOperationTier(keyCount)
@@ -1764,8 +1772,8 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 				}).Info("Completed bulk sync copy")
 			}
 
-		case TierAsync:
-			// Tier 5: Very large group - async copy to avoid HTTP timeout
+		case TierAsync, TierMassiveAsync:
+			// Tier 5-6: Very large group - async copy to avoid HTTP timeout
 			// Guard against nil keyImportSvc to prevent panic
 			if s.keyImportSvc == nil {
 				logrus.WithContext(ctx).WithFields(logrus.Fields{

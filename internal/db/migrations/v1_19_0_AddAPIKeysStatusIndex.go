@@ -13,7 +13,8 @@ func V1_19_0_AddAPIKeysStatusIndex(db *gorm.DB) error {
 
 	// Add status index for filtering by status
 	// Optimizes: SELECT ... FROM api_keys WHERE status = ?
-	// Optimizes: DELETE FROM api_keys WHERE group_id = ? AND status = ?
+	// Optimizes: DELETE FROM api_keys WHERE status = ? (e.g., RemoveInvalidKeys)
+	// Note: Queries with both group_id AND status use idx_api_keys_group_status
 	if err := createIndexIfNotExists(db, "api_keys", "idx_api_keys_status", "status"); err != nil {
 		logrus.WithError(err).Warn("Failed to create idx_api_keys_status")
 		return err

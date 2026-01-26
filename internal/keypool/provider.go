@@ -448,7 +448,7 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	// Shared data structures with mutex protection
 	var mu sync.Mutex
 	allActiveKeyIDs := make(map[uint][]any)
-	var processedKeys int32 // Use atomic operations
+	var processedKeys int64 // Use atomic operations
 	lastLoggedPercent := 0
 
 	// Error channel to collect errors from workers
@@ -544,7 +544,7 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 					mu.Unlock()
 
 					// Update progress atomically
-					currentProcessed := atomic.AddInt32(&processedKeys, int32(len(batchKeys)))
+					currentProcessed := atomic.AddInt64(&processedKeys, int64(len(batchKeys)))
 
 					// Log progress at 25%, 50%, 75% milestones only
 					if totalCount > 0 {
@@ -960,6 +960,15 @@ var deleteSem = make(chan struct{}, 1)
 func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressCallback func(deleted int64)) (int64, error) {
 	const maxRetries = 3
 
+	// Batch operation thresholds (aligned with services/thresholds.go)
+	const (
+		BulkSyncThreshold         = 5000
+		OptimizedSyncThreshold    = 20000
+		MassiveAsyncThreshold     = 100000
+		MaxSQLiteBatchSizeMassive = 10000
+		MaxMySQLBatchSize         = 10000
+	)
+
 	// Serialize deletions, but honor ctx cancellation
 	select {
 	case deleteSem <- struct{}{}:
@@ -985,7 +994,8 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 	// Strategy: Balance total deletion time with concurrent operation responsiveness
 	// - Small datasets (≤5K): Small batches for quick completion and good responsiveness
 	// - Medium datasets (≤20K): Medium batches for balanced performance
-	// - Large datasets (>20K): Large batches to minimize total time for async operations
+	// - Large datasets (20K-100K): Large batches to minimize total time for async operations
+	// - Massive datasets (>100K): Very large batches optimized for 500K+ operations
 	//
 	// Note: After SQL optimization (query IDs first, then delete by primary key),
 	// large batches no longer cause severe performance degradation.
@@ -993,6 +1003,9 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 	var chunkSize int
 	var batchTimeout time.Duration
 	var batchDelay time.Duration
+
+	// Get database type for dialect-specific optimizations
+	dbDialect := p.db.Dialector.Name()
 
 	if totalCount <= int64(BulkSyncThreshold) {
 		// Tier 1-2: Small batches for fast sync operations
@@ -1006,13 +1019,28 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		chunkSize = 2000
 		batchTimeout = 3000 * time.Millisecond
 		batchDelay = 30 * time.Millisecond
-	} else {
-		// Tier 5: Large batches for async operations
+	} else if totalCount <= int64(MassiveAsyncThreshold) {
+		// Tier 5: Large batches for async operations (20K-100K keys)
 		// Target: Minimize total time for background tasks
 		// Example: 39414 keys = 8 batches instead of 40 batches with 1000/batch
 		chunkSize = 5000
 		batchTimeout = 5000 * time.Millisecond
 		batchDelay = 50 * time.Millisecond
+	} else {
+		// Tier 6: Massive batches for very large async operations (>100K keys)
+		// Optimized for 500K+ operations with minimal transaction overhead
+		// Example: 500K keys = 50 batches with 10K/batch (vs 100 batches with 5K/batch)
+		// SQLite uses smaller batches due to single-writer model
+		if dbDialect == "sqlite" {
+			chunkSize = MaxSQLiteBatchSizeMassive // 10000
+			batchTimeout = 8000 * time.Millisecond
+			batchDelay = 100 * time.Millisecond // Longer delay for SQLite to allow concurrent reads
+		} else {
+			// MySQL/PostgreSQL can handle larger batches efficiently
+			chunkSize = MaxMySQLBatchSize // 10000 (same as MaxPostgresBatchSize)
+			batchTimeout = 10000 * time.Millisecond
+			batchDelay = 20 * time.Millisecond // Shorter delay for MySQL/PostgreSQL
+		}
 	}
 
 	if totalCount > 0 {
@@ -1028,7 +1056,6 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		}
 
 		var res *gorm.DB
-		noMoreRows := false
 		var ids []uint
 		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
 
@@ -1060,17 +1087,12 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		}
 		if len(ids) == 0 {
 			cancel()
-			noMoreRows = true
 			break
 		}
 
 		// Delete by ID list using primary key index (fast for all databases)
 		res = p.db.WithContext(batchCtx).Where("id IN ?", ids).Delete(&models.APIKey{})
 		cancel()
-
-		if noMoreRows {
-			break
-		}
 
 		if res.Error != nil {
 			// Retry with exponential backoff on transient/timeout errors
@@ -1403,7 +1425,7 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 				if key.Status == models.KeyStatusActive {
 					activeKeyIDs = append(activeKeyIDs, key.ID)
 					// Flush active key IDs to Redis in batches to avoid memory buildup
-					// No need for LRem here since we deleted the entire list at the start (line 1372)
+					// No need for LRem here since we deleted the entire list at the start of this function
 					if len(activeKeyIDs) >= redisBatchSize {
 						if err := p.store.LPush(activeKeysListKey, activeKeyIDs...); err != nil {
 							logrus.WithError(err).Warnf("Failed to LPush batch of active keys for group %d", groupID)
@@ -1427,7 +1449,7 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 	}
 
 	// Flush remaining active key IDs
-	// No need for LRem here since we deleted the entire list at the start (line 1372)
+	// No need for LRem here since we deleted the entire list at the start of this function
 	if len(activeKeyIDs) > 0 {
 		if err := p.store.LPush(activeKeysListKey, activeKeyIDs...); err != nil {
 			return fmt.Errorf("failed to update active keys list for group %d: %w", groupID, err)
