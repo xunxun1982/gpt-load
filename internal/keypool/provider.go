@@ -448,7 +448,8 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	// Shared data structures with mutex protection
 	var mu sync.Mutex
 	allActiveKeyIDs := make(map[uint][]any)
-	var processedKeys int64 // Use atomic operations
+	allGroupIDs := make(map[uint]struct{}) // Track all groups seen, even those with no active keys
+	var processedKeys int64                // Use atomic operations
 	lastLoggedPercent := 0
 
 	// Error channel to collect errors from workers
@@ -510,6 +511,7 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 
 					// Local active key IDs for this batch
 					localActiveKeyIDs := make(map[uint][]any)
+					localGroupIDs := make(map[uint]struct{}) // Track all groups in this batch
 
 					for i := range batchKeys {
 						key := &batchKeys[i]
@@ -524,6 +526,9 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 							}
 						}
 
+						// Track all groups seen, regardless of key status
+						localGroupIDs[key.GroupID] = struct{}{}
+
 						if key.Status == models.KeyStatusActive {
 							localActiveKeyIDs[key.GroupID] = append(localActiveKeyIDs[key.GroupID], key.ID)
 						}
@@ -536,10 +541,13 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 						}
 					}
 
-					// Merge local active key IDs into global map with mutex protection
+					// Merge local active key IDs and group IDs into global maps with mutex protection
 					mu.Lock()
 					for groupID, activeIDs := range localActiveKeyIDs {
 						allActiveKeyIDs[groupID] = append(allActiveKeyIDs[groupID], activeIDs...)
+					}
+					for groupID := range localGroupIDs {
+						allGroupIDs[groupID] = struct{}{}
 					}
 					mu.Unlock()
 
@@ -582,11 +590,15 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	}
 
 	// Update active_keys list for all groups
+	// Clear lists for all groups seen, then populate only those with active keys
+	// This ensures groups with no active keys have empty lists (preventing stale data)
 	logrus.Info("Updating active key lists for all groups...")
-	for groupID, activeIDs := range allActiveKeyIDs {
-		if len(activeIDs) > 0 {
-			activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
-			p.store.Delete(activeKeysListKey)
+	for groupID := range allGroupIDs {
+		activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+		_ = p.store.Delete(activeKeysListKey) // Clear existing list
+
+		// Only populate if there are active keys for this group
+		if activeIDs := allActiveKeyIDs[groupID]; len(activeIDs) > 0 {
 			if err := p.store.LPush(activeKeysListKey, activeIDs...); err != nil {
 				logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Error("Failed to LPush active keys for group")
 			}
@@ -1048,6 +1060,8 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		logrus.Infof("Starting deletion of %d keys in group %d (batch size: %d, estimated batches: %d)", totalCount, groupID, chunkSize, estimatedBatches)
 	}
 
+	var totalRetries int // Track total retry attempts for final logging
+
 	for {
 		// Check if context is canceled before each batch
 		if err := ctx.Err(); err != nil {
@@ -1070,16 +1084,18 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			cancel()
 			if utils.IsTransientDBError(err) {
 				if retries >= maxRetries {
-					logrus.WithError(err).Errorf("Max retries reached after deleting %d keys", totalDeleted)
+					logrus.WithError(err).Errorf("Max retries reached after deleting %d keys (total retries: %d)", totalDeleted, totalRetries)
 					return totalDeleted, err
 				}
 				delay := time.Duration(50<<retries) * time.Millisecond
 				if delay > 1000*time.Millisecond {
 					delay = 1000 * time.Millisecond
 				}
-				logrus.WithError(err).Debugf("Transient query failure; retrying in %v (attempt %d/%d)", delay, retries+1, maxRetries)
+				// Use Warn level for transient errors so users know what's happening
+				logrus.WithError(err).Warnf("Transient query error during deletion (progress: %d/%d keys); retrying in %v (attempt %d/%d)", totalDeleted, totalCount, delay, retries+1, maxRetries)
 				time.Sleep(delay)
 				retries++
+				totalRetries++
 				continue
 			}
 			logrus.WithError(err).Errorf("Failed to query IDs after deleting %d keys", totalDeleted)
@@ -1098,20 +1114,27 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			// Retry with exponential backoff on transient/timeout errors
 			if utils.IsTransientDBError(res.Error) {
 				if retries >= maxRetries {
-					logrus.WithError(res.Error).Errorf("Max retries reached after deleting %d keys", totalDeleted)
+					logrus.WithError(res.Error).Errorf("Max retries reached after deleting %d keys (total retries: %d)", totalDeleted, totalRetries)
 					return totalDeleted, res.Error
 				}
 				delay := time.Duration(50<<retries) * time.Millisecond
 				if delay > 1000*time.Millisecond {
 					delay = 1000 * time.Millisecond
 				}
-				logrus.WithError(res.Error).Debugf("Transient delete failure; retrying in %v (attempt %d/%d)", delay, retries+1, maxRetries)
+				// Use Warn level for transient errors so users know what's happening
+				logrus.WithError(res.Error).Warnf("Transient delete error (progress: %d/%d keys); retrying in %v (attempt %d/%d)", totalDeleted, totalCount, delay, retries+1, maxRetries)
 				time.Sleep(delay)
 				retries++
+				totalRetries++
 				continue
 			}
 			logrus.WithError(res.Error).Errorf("Deletion failed after deleting %d keys", totalDeleted)
 			return totalDeleted, res.Error
+		}
+
+		// Log successful recovery after retries
+		if retries > 0 {
+			logrus.Infof("Recovered from transient errors after %d retries (progress: %d/%d keys)", retries, totalDeleted, totalCount)
 		}
 		retries = 0
 
@@ -1158,7 +1181,12 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 	_ = p.store.Delete(activeKeysListKey)
 
-	logrus.Infof("Completed deletion of %d keys in group %d", totalDeleted, groupID)
+	// Log completion with retry statistics if any retries occurred
+	if totalRetries > 0 {
+		logrus.Infof("Completed deletion of %d keys in group %d (recovered from %d transient errors)", totalDeleted, groupID, totalRetries)
+	} else {
+		logrus.Infof("Completed deletion of %d keys in group %d", totalDeleted, groupID)
+	}
 	return totalDeleted, nil
 }
 
@@ -1365,6 +1393,9 @@ func (p *KeyProvider) addKeysToCacheBatch(groupID uint, keys []models.APIKey) er
 
 	// 3. Batch LPush active keys
 	// De-duplicate any existing entries to avoid skewed rotation on retry/partial failure
+	// Note: LRem/LPush operations are not pipelined because the current Pipeliner interface
+	// only supports HSet. Extending the interface would add complexity for minimal benefit
+	// in this specific use case (list operations are typically fast).
 	if len(activeKeyIDs) > 0 {
 		// Remove existing entries before LPush to prevent duplicates
 		for _, id := range activeKeyIDs {

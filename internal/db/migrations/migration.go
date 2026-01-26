@@ -115,7 +115,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.18.0 migration - Optimize dynamic weight metrics queries
-	return V1_18_0_OptimizeDynamicWeightQueries(db)
+	if err := V1_18_0_OptimizeDynamicWeightQueries(db); err != nil {
+		return err
+	}
+	// Run v1.19.0 migration - Add api_keys status index
+	return V1_19_0_AddAPIKeysStatusIndex(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

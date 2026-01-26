@@ -460,7 +460,9 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 	s.groupListCacheMu.Lock()
 	// Re-check: another goroutine may have populated the cache while we queried DB
 	// This prevents race condition where concurrent calls could lose cached groups
-	if s.groupListCache != nil && len(s.groupListCache.Groups) > 0 {
+	now2 := time.Now()
+	if s.groupListCache != nil && len(s.groupListCache.Groups) > 0 &&
+		now2.Before(s.groupListCache.ExpiresAt) {
 		// Merge: check if our group is already there, if not append
 		alreadyCached := false
 		for _, g := range s.groupListCache.Groups {
@@ -471,14 +473,14 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 		}
 		if !alreadyCached {
 			s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
-			s.groupListCache.ExpiresAt = time.Now().Add(s.groupListCache.CurrentTTL)
+			s.groupListCache.ExpiresAt = now2.Add(s.groupListCache.CurrentTTL)
 		}
 		s.groupListCacheMu.Unlock()
 		return
 	}
 	s.groupListCache = &groupListCacheEntry{
 		Groups:     groups,
-		ExpiresAt:  time.Now().Add(s.groupListCacheTTL),
+		ExpiresAt:  now2.Add(s.groupListCacheTTL),
 		HitCount:   0,
 		CurrentTTL: s.groupListCacheTTL,
 	}
@@ -1810,6 +1812,11 @@ func (s *GroupService) CopyGroup(ctx context.Context, sourceGroupID uint, copyKe
 
 // syncCopyKeys performs synchronous key copying for small groups (Tier 1: ≤1000 keys).
 // This provides immediate results for better user experience using simple AddKeys method.
+//
+// Copy behavior:
+// - "valid_only": Only copies active keys, all inserted as active
+// - "all": Copies all keys (including invalid ones), but all inserted as active (reactivation)
+//   This treats copying as a "fresh start" rather than exact duplication.
 func (s *GroupService) syncCopyKeys(ctx context.Context, targetGroup *models.Group, sourceGroupID uint, copyOption string) (addedCount, ignoredCount int, err error) {
 	// Fetch source keys from database
 	var sourceKeyData []struct {
@@ -1854,6 +1861,11 @@ func (s *GroupService) syncCopyKeys(ctx context.Context, targetGroup *models.Gro
 
 // syncBulkCopyKeys performs synchronous bulk key copying for medium/large groups (Tier 2-3: 1K-20K keys).
 // This uses BulkImportService for optimized batch insertion with better performance than AddKeys.
+//
+// Copy behavior:
+// - "valid_only": Only copies active keys, all inserted as active
+// - "all": Copies all keys (including invalid ones), but all inserted as active (reactivation)
+//   This treats copying as a "fresh start" rather than exact duplication.
 func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models.Group, sourceGroupID uint, copyOption string) (addedCount, ignoredCount int, err error) {
 	// Guard against nil BulkImportSvc
 	if s.bulkImportSvc == nil {
@@ -1931,6 +1943,8 @@ func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models
 		}
 
 		uniqueNewKeys[trimmedKey] = true
+		// All copied keys are inserted as active (reactivation behavior)
+		// This treats group copying as a "fresh start" for all keys
 		newKeysToCreate = append(newKeysToCreate, models.APIKey{
 			GroupID:  targetGroup.ID,
 			KeyValue: encryptedKey,
