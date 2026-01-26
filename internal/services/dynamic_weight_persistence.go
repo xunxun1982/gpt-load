@@ -145,13 +145,10 @@ func (p *DynamicWeightPersistence) LoadFromDatabase() error {
 	// The idx_dw_metrics_deleted_type index makes this query very fast
 	// Note: No ORDER BY needed since we iterate all records regardless of order
 	loaded := 0
+	var dbMetrics []models.DynamicWeightMetric
 	err := p.db.Where("deleted_at IS NULL").
-		FindInBatches(&[]models.DynamicWeightMetric{}, 1000, func(tx *gorm.DB, batch int) error {
-			var dbMetrics []models.DynamicWeightMetric
-			if err := tx.Find(&dbMetrics).Error; err != nil {
-				return err
-			}
-
+		FindInBatches(&dbMetrics, 1000, func(tx *gorm.DB, batch int) error {
+			// dbMetrics is automatically populated by FindInBatches for each batch
 			for _, dbm := range dbMetrics {
 				metrics := dbMetricToMemory(&dbm)
 
@@ -630,13 +627,10 @@ func (p *DynamicWeightPersistence) RolloverTimeWindows() {
 	// Use indexed query with batch processing to keep memory usage flat
 	// The idx_dw_metrics_deleted_type index makes this query efficient
 	// Note: No ORDER BY needed since we iterate all records regardless of order
+	var dbMetrics []models.DynamicWeightMetric
 	err := p.db.Where("deleted_at IS NULL").
-		FindInBatches(&[]models.DynamicWeightMetric{}, 1000, func(tx *gorm.DB, batch int) error {
-			var dbMetrics []models.DynamicWeightMetric
-			if err := tx.Find(&dbMetrics).Error; err != nil {
-				return err
-			}
-
+		FindInBatches(&dbMetrics, 1000, func(tx *gorm.DB, batch int) error {
+			// dbMetrics is automatically populated by FindInBatches for each batch
 			var toUpdate []models.DynamicWeightMetric
 			for _, dbm := range dbMetrics {
 				// Check if rollover is needed (more than 24 hours since last rollover)
