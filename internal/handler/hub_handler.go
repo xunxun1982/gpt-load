@@ -84,7 +84,8 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 	if c.Request.Method != http.MethodGet {
 		bodyBytes, err := c.GetRawData()
 		if err == nil {
-			requestSizeKB = len(bodyBytes) / 1024
+			// Use ceiling division to avoid allowing payloads slightly over the limit
+			requestSizeKB = (len(bodyBytes) + 1023) / 1024
 			// Restore body for downstream handlers
 			c.Request.Body = newBodyReader(bodyBytes)
 		}

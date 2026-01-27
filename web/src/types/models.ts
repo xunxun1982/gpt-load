@@ -50,6 +50,23 @@ export interface GroupPreconditions {
   max_request_size_kb?: number; // Maximum request size in KB (0 = no limit)
 }
 
+// Precondition item for UI (dynamic form)
+export interface PreconditionItem {
+  key: string;
+  value: number;
+}
+
+// Precondition option for UI dropdown
+export interface PreconditionOption {
+  key: string;
+  label: string;
+  description: string;
+  default_value: number;
+  min?: number;
+  max?: number;
+  unit?: string;
+}
+
 // V2 Model Redirect Types (one-to-many mapping with weighted selection)
 export interface ModelRedirectTarget {
   model: string;

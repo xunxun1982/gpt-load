@@ -415,6 +415,9 @@ func (s *GroupService) InvalidateGroupListCache() {
 // Lock contention optimization: The mutex is released before DB queries to avoid blocking
 // other goroutines during potentially slow operations (up to 2 seconds timeout).
 func (s *GroupService) AddGroupToListCache(group *models.Group) {
+	if group == nil {
+		return
+	}
 	s.groupListCacheMu.Lock()
 	now := time.Now()
 	needsDBLoad := s.groupListCache == nil ||

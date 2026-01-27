@@ -8,7 +8,7 @@ import (
 
 // V1_20_0_AddGroupPreconditions adds preconditions column to groups table.
 // Preconditions define requirements that must be met before a request can enter an aggregate group.
-// Initial support: max_request_size_kb (default: 128KB)
+// Initial support: max_request_size_kb (default: no limit unless explicitly set)
 //
 // Changes:
 // 1. Add preconditions column to groups table (JSON type)

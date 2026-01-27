@@ -277,96 +277,49 @@ type GroupHourlyStat struct {
 
 // GetMaxRequestSizeKB returns the max_request_size_kb precondition value for the group.
 // Returns 0 if not configured (meaning no size limit).
-// This is used to filter requests before they enter an aggregate group.
-// GetMaxRequestSizeKB returns the max_request_size_kb precondition value for the group.
-// Returns 0 if not configured (meaning no size limit).
-// This is used to filter requests before they enter an aggregate group.
+// Negative values are normalized to 0 (no limit).
 func (g *Group) GetMaxRequestSizeKB() int {
-	// DEBUG: Log preconditions data
-	logrus.WithFields(logrus.Fields{
-		"group_id":      g.ID,
-		"group_name":    g.Name,
-		"preconditions": g.Preconditions,
-		"is_nil":        g.Preconditions == nil,
-	}).Debug("GetMaxRequestSizeKB called")
-
 	if g.Preconditions == nil {
-		logrus.WithFields(logrus.Fields{
-			"group_id":   g.ID,
-			"group_name": g.Name,
-		}).Debug("GetMaxRequestSizeKB: Preconditions is nil")
 		return 0
 	}
 
 	val, ok := g.Preconditions["max_request_size_kb"]
 	if !ok {
-		logrus.WithFields(logrus.Fields{
-			"group_id":   g.ID,
-			"group_name": g.Name,
-			"keys":       getMapKeys(g.Preconditions),
-		}).Debug("GetMaxRequestSizeKB: max_request_size_kb key not found")
 		return 0
 	}
 
-	// DEBUG: Log the value type and value
-	logrus.WithFields(logrus.Fields{
-		"group_id":   g.ID,
-		"group_name": g.Name,
-		"value":      val,
-		"value_type": fmt.Sprintf("%T", val),
-	}).Debug("GetMaxRequestSizeKB: Found value")
+	// Normalize negative values to 0 (no limit)
+	normalize := func(v int) int {
+		if v < 0 {
+			return 0
+		}
+		return v
+	}
 
 	// Handle different numeric types from JSON unmarshaling
 	switch v := val.(type) {
 	case json.Number:
-		// GORM uses json.Number to preserve numeric precision
 		intVal, err := v.Int64()
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
-				"group_id":   g.ID,
-				"group_name": g.Name,
-				"value":      v,
-				"error":      err,
-			}).Warn("GetMaxRequestSizeKB: Failed to parse json.Number, returning 0")
+				"group_id": g.ID,
+				"value":    v,
+				"error":    err,
+			}).Warn("Failed to parse json.Number for max_request_size_kb")
 			return 0
 		}
-		result := int(intVal)
-		logrus.WithFields(logrus.Fields{
-			"group_id":   g.ID,
-			"group_name": g.Name,
-			"value":      result,
-		}).Debug("GetMaxRequestSizeKB: Returning json.Number value")
-		return result
+		return normalize(int(intVal))
 	case float64:
-		result := int(v)
-		logrus.WithFields(logrus.Fields{
-			"group_id":   g.ID,
-			"group_name": g.Name,
-			"value":      result,
-		}).Debug("GetMaxRequestSizeKB: Returning float64 value")
-		return result
+		return normalize(int(v))
 	case int:
-		logrus.WithFields(logrus.Fields{
-			"group_id":   g.ID,
-			"group_name": g.Name,
-			"value":      v,
-		}).Debug("GetMaxRequestSizeKB: Returning int value")
-		return v
+		return normalize(v)
 	case int64:
-		result := int(v)
-		logrus.WithFields(logrus.Fields{
-			"group_id":   g.ID,
-			"group_name": g.Name,
-			"value":      result,
-		}).Debug("GetMaxRequestSizeKB: Returning int64 value")
-		return result
+		return normalize(int(v))
 	default:
 		logrus.WithFields(logrus.Fields{
 			"group_id":   g.ID,
-			"group_name": g.Name,
-			"value":      val,
 			"value_type": fmt.Sprintf("%T", val),
-		}).Warn("GetMaxRequestSizeKB: Unexpected value type, returning 0")
+		}).Warn("Unexpected value type for max_request_size_kb")
 		return 0
 	}
 }
@@ -382,4 +335,3 @@ func getMapKeys(m map[string]any) []string {
 	}
 	return keys
 }
-

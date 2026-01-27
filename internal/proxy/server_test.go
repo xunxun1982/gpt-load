@@ -715,6 +715,16 @@ func TestGetMaxRequestSizeKB(t *testing.T) {
 			expected:      0,
 		},
 		{
+			name:          "negative value (normalized to 0)",
+			preconditions: map[string]any{"max_request_size_kb": -100},
+			expected:      0,
+		},
+		{
+			name:          "negative float64 (normalized to 0)",
+			preconditions: map[string]any{"max_request_size_kb": float64(-50)},
+			expected:      0,
+		},
+		{
 			name:          "invalid type (string)",
 			preconditions: map[string]any{"max_request_size_kb": "128"},
 			expected:      0,
@@ -731,4 +741,3 @@ func TestGetMaxRequestSizeKB(t *testing.T) {
 		})
 	}
 }
-
