@@ -464,7 +464,15 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 		}
 	}
 	if !found {
-		groups = append(groups, *group)
+		// Insert in sorted order (sort ASC, name ASC) to maintain consistency
+		insertIdx := len(groups)
+		for i, g := range groups {
+			if group.Sort < g.Sort || (group.Sort == g.Sort && group.Name < g.Name) {
+				insertIdx = i
+				break
+			}
+		}
+		groups = append(groups[:insertIdx], append([]models.Group{*group}, groups[insertIdx:]...)...)
 	}
 
 	s.groupListCacheMu.Lock()
@@ -482,7 +490,18 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 			}
 		}
 		if !alreadyCached {
-			s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
+			// Insert in sorted order (sort ASC, name ASC) to maintain consistency
+			insertIdx := len(s.groupListCache.Groups)
+			for i, g := range s.groupListCache.Groups {
+				if group.Sort < g.Sort || (group.Sort == g.Sort && group.Name < g.Name) {
+					insertIdx = i
+					break
+				}
+			}
+			s.groupListCache.Groups = append(
+				s.groupListCache.Groups[:insertIdx],
+				append([]models.Group{*group}, s.groupListCache.Groups[insertIdx:]...)...,
+			)
 			s.groupListCache.ExpiresAt = now2.Add(s.groupListCache.CurrentTTL)
 		}
 		s.groupListCacheMu.Unlock()

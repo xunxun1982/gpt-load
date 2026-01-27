@@ -7,8 +7,6 @@ interface Props {
   channelType?: string;
   ccSupport?: boolean;
   size?: "small" | "medium" | "large";
-  name?: string;
-  displayName?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -27,13 +25,15 @@ const showBadge = computed(() => {
 });
 
 // Badge configuration based on channel type
+type BadgeType = "default" | "warning" | "info" | "error" | "success" | "primary";
+
 const badgeConfig = computed(() => {
-  const configs: Record<string, { text: string; type: string }> = {
+  const configs: Record<string, { text: string; type: BadgeType }> = {
     openai: { text: t("keys.openaiCCBadge"), type: "warning" }, // Orange/Yellow
     codex: { text: t("keys.codexCCBadge"), type: "info" }, // Blue
     gemini: { text: t("keys.geminiCCBadge"), type: "success" }, // Green
   };
-  return configs[props.channelType ?? ""] ?? { text: t("keys.ccSupportBadge"), type: "warning" };
+  return configs[props.channelType ?? ""] ?? { text: t("keys.ccSupportBadge"), type: "warning" as BadgeType };
 });
 
 const badgeText = computed(() => badgeConfig.value.text);
