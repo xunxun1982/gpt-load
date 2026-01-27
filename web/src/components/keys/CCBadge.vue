@@ -27,7 +27,7 @@ const showBadge = computed(() => {
 // Badge configuration based on channel type
 type BadgeType = "default" | "warning" | "info" | "error" | "success" | "primary";
 
-const badgeConfig = computed(() => {
+const badgeConfig = computed((): { text: string; type: BadgeType } => {
   const configs: Record<string, { text: string; type: BadgeType }> = {
     openai: { text: t("keys.openaiCCBadge"), type: "warning" }, // Orange/Yellow
     codex: { text: t("keys.codexCCBadge"), type: "info" }, // Blue
