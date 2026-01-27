@@ -417,7 +417,7 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 		len(s.groupListCache.Groups) == 0 ||
 		now.After(s.groupListCache.ExpiresAt)
 	if !needsDBLoad {
-		// Fast path: cache exists, append only if not already present
+		// Fast path: cache exists, insert in sorted order if not already present
 		for _, g := range s.groupListCache.Groups {
 			if g.ID == group.ID {
 				s.groupListCache.ExpiresAt = now.Add(s.groupListCache.CurrentTTL)
@@ -425,7 +425,17 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 				return
 			}
 		}
-		s.groupListCache.Groups = append(s.groupListCache.Groups, *group)
+		// Insert in sorted order (sort ASC, name ASC) to maintain consistency
+		insertIdx := len(s.groupListCache.Groups)
+		for i, g := range s.groupListCache.Groups {
+			if group.Sort < g.Sort || (group.Sort == g.Sort && group.Name < g.Name) {
+				insertIdx = i
+				break
+			}
+		}
+		// Insert at the correct position
+		s.groupListCache.Groups = append(s.groupListCache.Groups[:insertIdx],
+			append([]models.Group{*group}, s.groupListCache.Groups[insertIdx:]...)...)
 		s.groupListCache.ExpiresAt = now.Add(s.groupListCache.CurrentTTL)
 		s.groupListCacheMu.Unlock()
 		return
@@ -1132,6 +1142,8 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		// Decision: Current approach is intentional trade-off between transaction lock duration
 		// and theoretical orphan risk. The small time window and self-healing nature make the
 		// added complexity of alternative approaches unjustified for this use case.
+		// Database does not use foreign key constraints intentionally to avoid cascade complexity
+		// and maintain explicit control over deletion order and error handling.
 
 		// Delete hourly stats before committing transaction
 		if err := tx.Where("group_id IN ?", relatedGroupIDs).Delete(&models.GroupHourlyStat{}).Error; err != nil {
@@ -1411,6 +1423,14 @@ func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uin
 			logrus.WithContext(ctx).WithError(err).Error("Failed to fetch group in async deletion")
 		}
 		// Continue anyway - group may have been deleted by another process
+	}
+
+	// If DB row is gone, try cache to preserve group type for OnGroupDeleted callback
+	if group.ID == 0 && s.groupManager != nil {
+		if g, err := s.groupManager.GetGroupByID(groupID); err == nil && g != nil {
+			group.GroupType = g.GroupType
+			group.Name = g.Name // Also preserve name for logging
+		}
 	}
 
 	// Delete sub-group relationships

@@ -26,33 +26,18 @@ const showBadge = computed(() => {
   );
 });
 
-// Get badge text based on channel type
-const badgeText = computed(() => {
-  switch (props.channelType) {
-    case "openai":
-      return t("keys.openaiCCBadge");
-    case "codex":
-      return t("keys.codexCCBadge");
-    case "gemini":
-      return t("keys.geminiCCBadge");
-    default:
-      return t("keys.ccSupportBadge");
-  }
+// Badge configuration based on channel type
+const badgeConfig = computed(() => {
+  const configs: Record<string, { text: string; type: string }> = {
+    openai: { text: t("keys.openaiCCBadge"), type: "warning" }, // Orange/Yellow
+    codex: { text: t("keys.codexCCBadge"), type: "info" }, // Blue
+    gemini: { text: t("keys.geminiCCBadge"), type: "success" }, // Green
+  };
+  return configs[props.channelType ?? ""] ?? { text: t("keys.ccSupportBadge"), type: "warning" };
 });
 
-// Get badge type (color) based on channel type
-const badgeType = computed(() => {
-  switch (props.channelType) {
-    case "openai":
-      return "warning"; // Orange/Yellow
-    case "codex":
-      return "info"; // Blue
-    case "gemini":
-      return "success"; // Green
-    default:
-      return "warning";
-  }
-});
+const badgeText = computed(() => badgeConfig.value.text);
+const badgeType = computed(() => badgeConfig.value.type);
 </script>
 
 <template>

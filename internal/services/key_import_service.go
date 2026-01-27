@@ -230,6 +230,7 @@ func (s *KeyImportService) runCopyTask(targetGroup *models.Group, sourceGroupID 
 		query := s.KeyService.DB.Model(&models.APIKey{}).
 			Select("key_value").
 			Where("group_id = ?", sourceGroupID).
+			Order("id ASC").
 			Limit(fetchBatchSize).
 			Offset(int(offset))
 		if copyOption == "valid_only" {
@@ -334,6 +335,14 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 	ignoredCount := 0
 
 	for _, plainKey := range decryptedKeys {
+		// Normalize plaintext before dedupe/encrypt
+		trimmed := strings.TrimSpace(plainKey)
+		if trimmed == "" {
+			ignoredCount++
+			continue
+		}
+		plainKey = trimmed
+
 		// Check for duplicates within this batch
 		if localDedupe[plainKey] {
 			ignoredCount++

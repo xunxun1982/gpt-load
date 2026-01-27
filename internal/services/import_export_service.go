@@ -402,10 +402,19 @@ func (s *ImportExportService) ImportKeys(tx *gorm.DB, groupID uint, keys []KeyEx
 			batchStart, batchEnd, len(keyModels), batchSkipped, totalProcessed, totalKeys)
 	}
 
-	// Final summary
+	// Final summary and validation
 	if totalSkipped > 0 {
 		logrus.Warnf("Import completed with %d keys skipped due to decryption errors (total: %d/%d)",
 			totalSkipped, totalProcessed, totalKeys)
+
+		// Fail fast if decryption failure rate is too high (>50%)
+		// This prevents silent data loss when:
+		// 1. Plaintext keys are passed instead of encrypted keys
+		// 2. Wrong encryption key is used
+		// 3. Data corruption in the import file
+		if totalSkipped > totalKeys/2 {
+			return fmt.Errorf("import failed: %d/%d keys could not be decrypted (>50%% failure rate), possible encryption key mismatch or plaintext data", totalSkipped, totalKeys)
+		}
 	} else {
 		logrus.Infof("Import completed successfully: %d keys imported", totalProcessed)
 	}

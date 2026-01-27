@@ -112,8 +112,12 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 	}).Debug("Starting log cleanup")
 
 	for {
-		// Increased timeout from 30s to 60s to handle large batches more reliably
-		// This prevents context deadline exceeded errors on slower systems
+		// Timeout set to 60s for batch deletion operations
+		// Note: This exceeds typical GORM recommendations (5-10s per operation) but is intentional:
+		// 1. Background cleanup task with no user-facing latency requirements
+		// 2. Large batches (5000 records) on slower systems need more time
+		// 3. Testing shows 60s prevents timeout errors while maintaining reasonable progress
+		// 4. Using context.Background() is appropriate as this is a top-level background job
 		batchCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		var result *gorm.DB
 		switch dialect {
