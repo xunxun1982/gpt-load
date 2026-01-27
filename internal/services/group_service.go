@@ -179,6 +179,7 @@ type GroupCreateParams struct {
 	ModelRedirectRules   map[string]string
 	ModelRedirectRulesV2 json.RawMessage // V2: one-to-many mapping
 	ModelRedirectStrict  bool
+	Preconditions        map[string]any
 	PathRedirects        []models.PathRedirectRule
 	ProxyKeys            string
 	SubGroups            []SubGroupInput
@@ -204,6 +205,7 @@ type GroupUpdateParams struct {
 	ModelRedirectRules   map[string]string
 	ModelRedirectRulesV2 json.RawMessage // V2: one-to-many mapping
 	ModelRedirectStrict  *bool
+	Preconditions        map[string]any
 	PathRedirects        []models.PathRedirectRule
 	ProxyKeys            *string
 	SubGroups            *[]SubGroupInput
@@ -357,6 +359,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		ModelRedirectRulesV2: finalV2Rules,
 		ModelRedirectStrict:  params.ModelRedirectStrict,
 		CustomModelNames:     datatypes.JSON("[]"), // Initialize to empty array
+		Preconditions:        params.Preconditions,
 		PathRedirects:        pathRedirectsJSON,
 		ProxyKeys:            strings.TrimSpace(params.ProxyKeys),
 	}
@@ -845,6 +848,10 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 	if params.ProxyKeys != nil {
 		group.ProxyKeys = strings.TrimSpace(*params.ProxyKeys)
+	}
+
+	if params.Preconditions != nil {
+		group.Preconditions = params.Preconditions
 	}
 
 	if params.HeaderRules != nil {

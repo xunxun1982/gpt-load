@@ -45,6 +45,7 @@ type GroupCreateRequest struct {
 	ModelRedirectRules   map[string]string         `json:"model_redirect_rules"`
 	ModelRedirectRulesV2 json.RawMessage           `json:"model_redirect_rules_v2"` // V2: one-to-many mapping
 	ModelRedirectStrict  bool                      `json:"model_redirect_strict"`
+	Preconditions        map[string]any            `json:"preconditions"`
 	PathRedirects        []models.PathRedirectRule `json:"path_redirects"`
 	ProxyKeys            string                    `json:"proxy_keys"`
 }
@@ -74,6 +75,7 @@ func (s *Server) CreateGroup(c *gin.Context) {
 		ModelRedirectRules:   req.ModelRedirectRules,
 		ModelRedirectRulesV2: req.ModelRedirectRulesV2,
 		ModelRedirectStrict:  req.ModelRedirectStrict,
+		Preconditions:        req.Preconditions,
 		PathRedirects:        req.PathRedirects,
 		ProxyKeys:            req.ProxyKeys,
 	}
@@ -120,6 +122,7 @@ type GroupUpdateRequest struct {
 	ModelRedirectRules   map[string]string         `json:"model_redirect_rules"`
 	ModelRedirectRulesV2 json.RawMessage           `json:"model_redirect_rules_v2"` // V2: one-to-many mapping
 	ModelRedirectStrict  *bool                     `json:"model_redirect_strict"`
+	Preconditions        map[string]any            `json:"preconditions"`
 	PathRedirects        []models.PathRedirectRule `json:"path_redirects"`
 	ProxyKeys            *string                   `json:"proxy_keys,omitempty"`
 }
@@ -152,6 +155,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		ModelRedirectRules:   req.ModelRedirectRules,
 		ModelRedirectRulesV2: req.ModelRedirectRulesV2,
 		ModelRedirectStrict:  req.ModelRedirectStrict,
+		Preconditions:        req.Preconditions,
 		PathRedirects:        req.PathRedirects,
 		ProxyKeys:            req.ProxyKeys,
 	}
@@ -200,6 +204,7 @@ type GroupResponse struct {
 	ModelRedirectRules   datatypes.JSONMap         `json:"model_redirect_rules"`
 	ModelRedirectRulesV2 datatypes.JSON            `json:"model_redirect_rules_v2"` // V2: one-to-many mapping
 	ModelRedirectStrict  bool                      `json:"model_redirect_strict"`
+	Preconditions        datatypes.JSONMap         `json:"preconditions"`
 	PathRedirects        []models.PathRedirectRule `json:"path_redirects"`
 	ProxyKeys            string                    `json:"proxy_keys"`
 	ParentGroupID        *uint                     `json:"parent_group_id"`
@@ -258,6 +263,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		ModelRedirectRules:   group.ModelRedirectRules,
 		ModelRedirectRulesV2: group.ModelRedirectRulesV2,
 		ModelRedirectStrict:  group.ModelRedirectStrict,
+		Preconditions:        group.Preconditions,
 		PathRedirects:        pathRedirects,
 		ProxyKeys:            group.ProxyKeys,
 		ParentGroupID:        group.ParentGroupID,
