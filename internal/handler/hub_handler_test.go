@@ -216,13 +216,18 @@ func TestExtractModelFromRequest_JSON(t *testing.T) {
 			c, _ := gin.CreateTestContext(w)
 			c.Request = req
 
-			got, err := h.extractModelFromRequest(c, tt.format)
+			got, returnedBodyBytes, err := h.extractModelFromRequest(c, tt.format)
 			if err != nil {
 				t.Fatalf("extractModelFromRequest() error = %v", err)
 			}
 
 			if got != tt.wantModel {
 				t.Errorf("extractModelFromRequest() = %q, want %q", got, tt.wantModel)
+			}
+
+			// Verify body bytes are returned for non-GET requests
+			if tt.body != nil && len(returnedBodyBytes) == 0 {
+				t.Error("Expected body bytes to be returned, got empty")
 			}
 
 			// Verify default model is used when expected
@@ -265,7 +270,7 @@ func TestExtractModelFromRequest_Gemini(t *testing.T) {
 			c, _ := gin.CreateTestContext(w)
 			c.Request = req
 
-			got, err := h.extractModelFromRequest(c, types.RelayFormatGemini)
+			got, _, err := h.extractModelFromRequest(c, types.RelayFormatGemini)
 			if err != nil {
 				t.Fatalf("extractModelFromRequest() error = %v", err)
 			}
@@ -298,13 +303,18 @@ func TestExtractModelFromRequest_EmptyBody(t *testing.T) {
 			c, _ := gin.CreateTestContext(w)
 			c.Request = req
 
-			got, err := h.extractModelFromRequest(c, tt.format)
+			got, bodyBytes, err := h.extractModelFromRequest(c, tt.format)
 			if err != nil {
 				t.Fatalf("extractModelFromRequest() error = %v", err)
 			}
 
 			if got != tt.wantModel {
 				t.Errorf("extractModelFromRequest() = %q, want %q", got, tt.wantModel)
+			}
+
+			// Verify empty body returns empty bytes
+			if len(bodyBytes) != 0 {
+				t.Errorf("Expected empty body bytes, got %d bytes", len(bodyBytes))
 			}
 		})
 	}
@@ -321,13 +331,18 @@ func TestExtractModelFromRequest_InvalidJSON(t *testing.T) {
 	c.Request = req
 
 	// Should return default model for image format even with invalid JSON
-	got, err := h.extractModelFromRequest(c, types.RelayFormatOpenAIImage)
+	got, bodyBytes, err := h.extractModelFromRequest(c, types.RelayFormatOpenAIImage)
 	if err != nil {
 		t.Fatalf("extractModelFromRequest() error = %v", err)
 	}
 
 	if got != "dall-e-3" {
 		t.Errorf("extractModelFromRequest() with invalid JSON = %q, want %q", got, "dall-e-3")
+	}
+
+	// Verify body bytes are returned even for invalid JSON
+	if len(bodyBytes) == 0 {
+		t.Error("Expected body bytes to be returned for invalid JSON")
 	}
 }
 

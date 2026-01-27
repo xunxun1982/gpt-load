@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -708,6 +709,11 @@ func TestGetMaxRequestSizeKB(t *testing.T) {
 			name:          "int64 value",
 			preconditions: map[string]any{"max_request_size_kb": int64(512)},
 			expected:      512,
+		},
+		{
+			name:          "json.Number value",
+			preconditions: map[string]any{"max_request_size_kb": json.Number("1024")},
+			expected:      1024,
 		},
 		{
 			name:          "zero value",

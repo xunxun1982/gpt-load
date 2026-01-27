@@ -82,7 +82,7 @@ const preconditionOptions = computed<PreconditionOption[]>(() => [
     description: t("keys.maxRequestSizeHint"),
     default_value: 0, // 0 = no limit
     min: 0,
-    max: 10240,
+    max: 153600, // 150 MB (aligned with backend MAX_REQUEST_BODY_SIZE_MB default)
     unit: t("keys.maxRequestSizeUnit"),
   },
 ]);
@@ -409,6 +409,21 @@ async function handleSubmit() {
             />
           </n-form-item>
 
+          <n-form-item :label="t('keys.proxyKeys')">
+            <proxy-keys-input v-model="formData.proxy_keys" />
+          </n-form-item>
+
+          <n-form-item :label="t('common.description')">
+            <n-input
+              v-model:value="formData.description"
+              type="textarea"
+              placeholder=""
+              :rows="1"
+              :autosize="{ minRows: 1, maxRows: 5 }"
+              style="resize: none"
+            />
+          </n-form-item>
+
           <!-- Dynamic preconditions section -->
           <div v-if="formData.preconditionItems.length > 0" class="preconditions-section">
             <h5 class="subsection-title">
@@ -493,21 +508,6 @@ async function handleSubmit() {
               {{ t("keys.addPrecondition") }}
             </n-button>
           </div>
-
-          <n-form-item :label="t('keys.proxyKeys')">
-            <proxy-keys-input v-model="formData.proxy_keys" />
-          </n-form-item>
-
-          <n-form-item :label="t('common.description')">
-            <n-input
-              v-model:value="formData.description"
-              type="textarea"
-              placeholder=""
-              :rows="1"
-              :autosize="{ minRows: 1, maxRows: 5 }"
-              style="resize: none"
-            />
-          </n-form-item>
         </div>
       </n-form>
 
