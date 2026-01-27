@@ -12,6 +12,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -437,8 +438,7 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 			}
 		}
 		// Insert at the correct position
-		s.groupListCache.Groups = append(s.groupListCache.Groups[:insertIdx],
-			append([]models.Group{*group}, s.groupListCache.Groups[insertIdx:]...)...)
+		s.groupListCache.Groups = slices.Insert(s.groupListCache.Groups, insertIdx, *group)
 		s.groupListCache.ExpiresAt = now.Add(s.groupListCache.CurrentTTL)
 		s.groupListCacheMu.Unlock()
 		return
@@ -475,7 +475,7 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 				break
 			}
 		}
-		groups = append(groups[:insertIdx], append([]models.Group{*group}, groups[insertIdx:]...)...)
+		groups = slices.Insert(groups, insertIdx, *group)
 	}
 
 	s.groupListCacheMu.Lock()
@@ -501,10 +501,7 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 					break
 				}
 			}
-			s.groupListCache.Groups = append(
-				s.groupListCache.Groups[:insertIdx],
-				append([]models.Group{*group}, s.groupListCache.Groups[insertIdx:]...)...,
-			)
+			s.groupListCache.Groups = slices.Insert(s.groupListCache.Groups, insertIdx, *group)
 			s.groupListCache.ExpiresAt = now2.Add(s.groupListCache.CurrentTTL)
 		}
 		s.groupListCacheMu.Unlock()
@@ -1209,31 +1206,33 @@ func (s *GroupService) DeleteGroup(ctx context.Context, id uint) (retErr error) 
 		}
 
 		// Start new transaction to delete groups
-		tx = s.db.WithContext(ctx).Begin()
-		if err := tx.Error; err != nil {
+		tx2 := s.db.WithContext(ctx).Begin()
+		if err := tx2.Error; err != nil {
 			return app_errors.ErrDatabase
 		}
 		defer func() {
-			if tx != nil {
-				tx.Rollback()
+			if tx2 != nil {
+				tx2.Rollback()
 			}
 		}()
 
 		// Re-fetch group for logging (may have been modified)
-		if err := tx.First(&group, id).Error; err != nil {
+		if err := tx2.First(&group, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				tx.Rollback()
-				tx = nil
+				tx2.Rollback()
+				tx2 = nil
 				return nil
 			}
 			return app_errors.ParseDBError(err)
 		}
 
 		// Delete sub-group relationships again (in case they were added during key deletion)
-		if err := tx.Where("group_id IN ? OR sub_group_id IN ?", relatedGroupIDs, relatedGroupIDs).
+		if err := tx2.Where("group_id IN ? OR sub_group_id IN ?", relatedGroupIDs, relatedGroupIDs).
 			Delete(&models.GroupSubGroup{}).Error; err != nil {
 			return app_errors.ParseDBError(err)
 		}
+		// Use tx2 for subsequent operations in this branch
+		tx = tx2
 	} else {
 		// Small key count (<5K) - fast sync delete within transaction
 		// Delete hourly stats first

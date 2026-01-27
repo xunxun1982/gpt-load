@@ -3,7 +3,6 @@ package middleware
 
 import (
 	"crypto/subtle"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -492,20 +491,5 @@ func RequestBodySizeLimit(maxBytes int64) gin.HandlerFunc {
 		// Wrap request body with size limiter
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
 		c.Next()
-
-		// Check if MaxBytesError occurred during request processing
-		// Iterate all errors to ensure we don't miss MaxBytesError if other errors are appended
-		for _, err := range c.Errors {
-			var mbErr *http.MaxBytesError
-			if errors.As(err.Err, &mbErr) {
-				logrus.WithFields(logrus.Fields{
-					"path":           c.Request.URL.Path,
-					"content_length": c.Request.ContentLength,
-					"max_bytes":      maxBytes,
-				}).Warn("Request body exceeded limit during processing")
-				c.AbortWithStatus(http.StatusRequestEntityTooLarge)
-				break
-			}
-		}
 	}
 }

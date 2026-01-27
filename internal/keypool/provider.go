@@ -989,6 +989,9 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 	// Batch operation thresholds (aligned with services/thresholds.go)
 	// Note: Cannot import services package due to circular dependency
 	// (services imports keypool, keypool would import services)
+	// AI Review Note: Suggested extracting to internal/constants/thresholds.go to avoid duplication.
+	// Decision: Keep duplication to avoid circular dependency complexity. The constants are stable
+	// and rarely change. Manual synchronization is acceptable given the low maintenance cost.
 	const (
 		BulkSyncThreshold         = 5000
 		OptimizedSyncThreshold    = 20000

@@ -409,9 +409,9 @@ func closeDBConnection(gormDB *gorm.DB, name string) {
 	closeDBConnectionWithOptions(gormDB, name, true)
 }
 
-// closeDBConnectionWithOptions closes a database connection with configurable WAL checkpoint.
-// doCheckpoint should be true for connections that need WAL checkpoint (write connections).
-func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, doCheckpoint bool) {
+// closeDBConnectionWithOptions closes a database connection.
+// logSkipCheckpoint should be true for write connections to log the WAL checkpoint skip message.
+func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, logSkipCheckpoint bool) {
 	if gormDB == nil {
 		return
 	}
@@ -450,7 +450,7 @@ func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, doCheckpoint boo
 	// Alternative considered: PRAGMA wal_checkpoint(NOOP) - explicitly skips checkpoint
 	// Current approach: Simply don't call checkpoint at all - same effect, cleaner code
 	dialect := gormDB.Dialector.Name()
-	if dialect == "sqlite" && doCheckpoint {
+	if dialect == "sqlite" && logSkipCheckpoint {
 		logrus.Debugf("[%s] Skipping WAL checkpoint on shutdown for faster exit (WAL will be checkpointed on next startup)", name)
 	}
 
