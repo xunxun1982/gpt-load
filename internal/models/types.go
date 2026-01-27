@@ -155,6 +155,7 @@ type Group struct {
 	ModelRedirectRulesV2 datatypes.JSON       `gorm:"type:json" json:"model_redirect_rules_v2"`   // Enhanced redirect rules (one-to-many)
 	ModelRedirectStrict  bool                 `gorm:"default:false" json:"model_redirect_strict"` // Strict mode for model redirect
 	CustomModelNames     datatypes.JSON       `gorm:"type:json" json:"custom_model_names"`        // Custom model names for aggregate groups (JSON array)
+	Preconditions        datatypes.JSONMap    `gorm:"type:json" json:"preconditions"`             // Preconditions for aggregate groups (e.g., max_request_size_kb)
 	PathRedirects        datatypes.JSON       `gorm:"type:json" json:"path_redirects"`            // JSON array of {from,to} rules (OpenAI only)
 	ParentGroupID        *uint                `gorm:"index" json:"parent_group_id"`               // Parent group ID for child groups
 	BoundSiteID          *uint                `gorm:"index" json:"bound_site_id"`                 // Bound managed site ID for standard groups
@@ -270,3 +271,30 @@ type GroupHourlyStat struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
+
+// GetMaxRequestSizeKB returns the max_request_size_kb precondition value for the group.
+// Returns 0 if not configured (meaning no size limit).
+// This is used to filter requests before they enter an aggregate group.
+func (g *Group) GetMaxRequestSizeKB() int {
+	if g.Preconditions == nil {
+		return 0
+	}
+
+	val, ok := g.Preconditions["max_request_size_kb"]
+	if !ok {
+		return 0
+	}
+
+	// Handle different numeric types from JSON unmarshaling
+	switch v := val.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+

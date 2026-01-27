@@ -71,10 +71,23 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 	c.Set("relay_format", relayFormat)
 
 	// Step 2: Extract model from request (format-aware)
+	// Note: extractModelFromRequest reads the request body and restores it
 	modelName, err := h.extractModelFromRequest(c, relayFormat)
 	if err != nil {
 		h.returnHubError(c, http.StatusBadRequest, "hub_invalid_request", err.Error())
 		return
+	}
+
+	// Calculate request size for precondition checking
+	// Read body again to get size (body was already restored by extractModelFromRequest)
+	var requestSizeKB int
+	if c.Request.Method != http.MethodGet {
+		bodyBytes, err := c.GetRawData()
+		if err == nil {
+			requestSizeKB = len(bodyBytes) / 1024
+			// Restore body for downstream handlers
+			c.Request.Body = newBodyReader(bodyBytes)
+		}
 	}
 
 	// Validate model is provided (empty model should return 400 early)
@@ -102,7 +115,7 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 	}
 
 	// Step 3: Select the best group for the model with relay format awareness
-	group, err := h.hubService.SelectGroupForModel(ctx, modelName, relayFormat)
+	group, err := h.hubService.SelectGroupForModel(ctx, modelName, relayFormat, requestSizeKB)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to select group for model")
 		h.returnHubError(c, http.StatusInternalServerError, "hub_group_selection_failed", "Failed to select group")

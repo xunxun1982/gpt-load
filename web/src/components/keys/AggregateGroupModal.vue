@@ -13,6 +13,7 @@ import {
   NInputNumber,
   NModal,
   NSelect,
+  NTag,
   useMessage,
   type FormInst,
   type FormRules,
@@ -77,6 +78,7 @@ const defaultFormData = {
   proxy_keys: "",
   max_retries: 0,
   sub_max_retries: 0,
+  max_request_size_kb: 128, // Default 128KB
 };
 
 // Reactive form data
@@ -137,6 +139,7 @@ function loadGroupData() {
   const config = (props.group.config || {}) as GroupConfig;
   const maxRetries = config.max_retries ?? 0;
   const subMaxRetries = config.sub_max_retries ?? 0;
+  const maxRequestSizeKB = props.group.preconditions?.max_request_size_kb ?? 128;
 
   Object.assign(formData, {
     name: props.group.name || "",
@@ -147,6 +150,7 @@ function loadGroupData() {
     proxy_keys: props.group.proxy_keys || "",
     max_retries: maxRetries,
     sub_max_retries: subMaxRetries,
+    max_request_size_kb: maxRequestSizeKB,
   });
 }
 
@@ -202,6 +206,9 @@ async function handleSubmit() {
       config: {
         max_retries: formData.max_retries ?? 0,
         sub_max_retries: formData.sub_max_retries ?? 0,
+      },
+      preconditions: {
+        max_request_size_kb: formData.max_request_size_kb ?? 0,
       },
     };
 
@@ -319,6 +326,31 @@ async function handleSubmit() {
               :max="50"
               style="width: 100%"
             />
+          </n-form-item>
+
+          <n-form-item>
+            <template #label>
+              <span>{{ t('keys.preconditionMaxRequestSize') }}</span>
+              <n-tag size="tiny" type="info" style="margin-left: 8px">
+                {{ t('keys.precondition') }}
+              </n-tag>
+            </template>
+            <n-input-number
+              v-model:value="formData.max_request_size_kb"
+              :placeholder="t('keys.maxRequestSizePlaceholder')"
+              :min="0"
+              :max="10240"
+              style="width: 100%"
+            >
+              <template #suffix>
+                <span style="color: var(--text-secondary)">{{ t('keys.maxRequestSizeUnit') }}</span>
+              </template>
+            </n-input-number>
+            <template #feedback>
+              <span style="color: var(--text-secondary); font-size: 12px">
+                {{ t('keys.maxRequestSizeHint') }}
+              </span>
+            </template>
           </n-form-item>
 
           <n-form-item :label="t('keys.proxyKeys')">

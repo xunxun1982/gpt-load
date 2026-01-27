@@ -376,6 +376,14 @@ export default {
     subMaxRetries: "サブグループ最大リトライ",
     subMaxRetriesPlaceholder:
       "1回のリクエスト内で各サブグループに許可される最大リトライ回数（0はリトライなし、0-5）",
+    precondition: "前提条件",
+    preconditionMaxRequestSize: "リクエストサイズ制限",
+    maxRequestSize: "リクエストサイズ制限",
+    maxRequestSizePlaceholder: "最大リクエストサイズを入力（KB）",
+    maxRequestSizeUnit: "KB",
+    maxRequestSizeHint:
+      "集約グループのリクエストサイズ制限を設定。このサイズを超えるリクエストは拒否されます（0 = 制限なし、デフォルト128KB）",
+    preconditionNotMet: "リクエストが集約グループの前提条件を満たしていません",
     testModelTooltip:
       "APIキーの有効性を検証するためのモデル名。システムはこのモデルを使用してテストリクエストを送信し、キーが機能しているか確認します。軽量で高速なモデルを使用してください",
     testPathTooltip1:

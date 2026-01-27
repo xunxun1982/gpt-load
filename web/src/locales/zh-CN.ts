@@ -368,6 +368,13 @@ export default {
     maxRetriesPlaceholder: "子分组失败时的最大重试次数 (0-5)",
     subMaxRetries: "子组重试上限",
     subMaxRetriesPlaceholder: "限制单个子组在一次请求中的重试次数（0 表示不重试，范围 0-5）",
+    precondition: "前置条件",
+    preconditionMaxRequestSize: "请求大小限制",
+    maxRequestSize: "请求大小限制",
+    maxRequestSizePlaceholder: "输入最大请求大小（KB）",
+    maxRequestSizeUnit: "KB",
+    maxRequestSizeHint: "设置聚合分组的请求大小限制，超过此大小的请求将被拒绝（0 表示不限制，默认 128KB）",
+    preconditionNotMet: "请求不符合聚合分组的前置条件",
     testModelTooltip:
       "用于验证API密钥有效性的模型名称。系统会使用这个模型发送测试请求来检查密钥是否可用，请尽量使用轻量快速的模型",
     testPathTooltip1: "自定义用于验证密钥的API端点路径。如果不填写，将使用默认路径",

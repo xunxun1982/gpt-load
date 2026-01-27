@@ -376,6 +376,14 @@ export default {
     subMaxRetries: "Sub-group max retries",
     subMaxRetriesPlaceholder:
       "Max retries per sub-group within a single request (0 means no retry, 0-5)",
+    precondition: "Precondition",
+    preconditionMaxRequestSize: "Request Size Limit",
+    maxRequestSize: "Request Size Limit",
+    maxRequestSizePlaceholder: "Enter max request size (KB)",
+    maxRequestSizeUnit: "KB",
+    maxRequestSizeHint:
+      "Set request size limit for aggregate group. Requests exceeding this size will be rejected (0 = no limit, default 128KB)",
+    preconditionNotMet: "Request does not meet aggregate group preconditions",
     testModelTooltip:
       "Model name for validating API key availability. System will use this model to send test requests to check if the key is working. Please use lightweight and fast models",
     testPathTooltip1:
