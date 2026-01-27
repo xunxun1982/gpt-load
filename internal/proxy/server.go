@@ -647,8 +647,19 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	// Preconditions must be met before the request can enter the aggregate group
 	if originalGroup.GroupType == "aggregate" {
 		maxSizeKB := originalGroup.GetMaxRequestSizeKB()
+		requestSizeKB := len(bodyBytes) / 1024
+
+		// DEBUG: Log precondition check details
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group":  originalGroup.Name,
+			"group_id":         originalGroup.ID,
+			"request_size_kb":  requestSizeKB,
+			"request_size_bytes": len(bodyBytes),
+			"max_size_kb":      maxSizeKB,
+			"preconditions":    originalGroup.Preconditions,
+		}).Debug("Checking aggregate group preconditions")
+
 		if maxSizeKB > 0 {
-			requestSizeKB := len(bodyBytes) / 1024
 			if requestSizeKB > maxSizeKB {
 				logrus.WithFields(logrus.Fields{
 					"aggregate_group":  originalGroup.Name,
@@ -663,6 +674,12 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 					fmt.Errorf("request size %d KB exceeds limit %d KB", requestSizeKB, maxSizeKB))
 				return
 			}
+		} else {
+			// DEBUG: Log why check was skipped
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"max_size_kb":     maxSizeKB,
+			}).Debug("Precondition check skipped: maxSizeKB is 0 or not configured")
 		}
 	}
 
