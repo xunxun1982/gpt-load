@@ -209,9 +209,9 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 		}
 	}
 
-	// Ensure minimum batch size
-	if baseBatchSize < 10 {
-		baseBatchSize = 10
+	// Ensure minimum batch size (allow 1 for very large records to avoid exceeding DB limits)
+	if baseBatchSize < 1 {
+		baseBatchSize = 1
 	}
 
 	// Adaptive batch sizing based on operation tier
@@ -268,9 +268,9 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 		}
 	}
 
-	// Ensure minimum batch size
-	if adaptiveBatchSize < 10 {
-		adaptiveBatchSize = 10
+	// Ensure minimum batch size (allow 1 for very large records to avoid exceeding DB limits)
+	if adaptiveBatchSize < 1 {
+		adaptiveBatchSize = 1
 	}
 
 	logrus.Debugf("Adaptive batch size: base=%d, tier=%s, multiplier=%d, final=%d (totalKeys=%d)",

@@ -33,7 +33,7 @@ const badgeConfig = computed(() => {
     codex: { text: t("keys.codexCCBadge"), type: "info" }, // Blue
     gemini: { text: t("keys.geminiCCBadge"), type: "success" }, // Green
   };
-  return configs[props.channelType ?? ""] ?? { text: t("keys.ccSupportBadge"), type: "warning" as BadgeType };
+  return configs[props.channelType ?? ""] ?? { text: t("keys.ccSupportBadge"), type: "warning" };
 });
 
 const badgeText = computed(() => badgeConfig.value.text);
@@ -41,14 +41,7 @@ const badgeType = computed(() => badgeConfig.value.type);
 </script>
 
 <template>
-  <n-tag
-    v-if="showBadge"
-    :type="badgeType"
-    :size="size"
-    :bordered="false"
-    round
-    class="cc-badge"
-  >
+  <n-tag v-if="showBadge" :type="badgeType" :size="size" :bordered="false" round class="cc-badge">
     {{ badgeText }}
   </n-tag>
 </template>

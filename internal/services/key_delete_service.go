@@ -202,6 +202,11 @@ func (s *KeyDeleteService) runDeleteInvalidGroupKeys(group *models.Group) {
 		s.KeyService.CacheInvalidationCallback(group.ID)
 	}
 
+	// Update progress to reflect completion
+	if s.TaskService != nil {
+		_ = s.TaskService.UpdateProgress(int(deleted))
+	}
+
 	result := KeyDeleteResult{DeletedCount: int(deleted), IgnoredCount: 0}
 	if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
 		logrus.Warnf("Failed to end delete-invalid-keys task with success result for group %d: %v", group.ID, endErr)
@@ -245,6 +250,11 @@ func (s *KeyDeleteService) runRestoreInvalidGroupKeys(group *models.Group) {
 	if err != nil {
 		logrus.Warnf("Failed to get total keys in group %d: %v", group.ID, err)
 		totalInGroup = 0 // Fallback to 0 if query fails
+	}
+
+	// Update progress to reflect completion
+	if s.TaskService != nil {
+		_ = s.TaskService.UpdateProgress(int(restored))
 	}
 
 	result := RestoreKeysResult{RestoredCount: int(restored), IgnoredCount: 0, TotalInGroup: totalInGroup}

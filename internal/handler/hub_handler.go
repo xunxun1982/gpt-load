@@ -475,14 +475,7 @@ func (h *HubHandler) extractModelFromRequest(c *gin.Context, relayFormat types.R
 	// Get default model for this format
 	defaultModel := h.getDefaultModelForFormat(relayFormat)
 
-	// For Gemini format, extract model from path first
-	if relayFormat == types.RelayFormatGemini {
-		if model := h.extractModelFromGeminiPath(c.Request.URL.Path); model != "" {
-			return model, nil, nil
-		}
-	}
-
-	// Read body first to avoid consumption issues
+	// Read body first to avoid consumption issues and enable precondition checks
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
 		return "", nil, err
@@ -490,6 +483,14 @@ func (h *HubHandler) extractModelFromRequest(c *gin.Context, relayFormat types.R
 
 	// Restore body for downstream handlers
 	c.Request.Body = newBodyReader(bodyBytes)
+
+	// For Gemini format, extract model from path first
+	// Note: We still read the body above to enable precondition checks (e.g., max_request_size_kb)
+	if relayFormat == types.RelayFormatGemini {
+		if model := h.extractModelFromGeminiPath(c.Request.URL.Path); model != "" {
+			return model, bodyBytes, nil
+		}
+	}
 
 	// For multipart formats, try to extract from form data
 	// Parse from bodyBytes copy instead of consuming c.Request.Body

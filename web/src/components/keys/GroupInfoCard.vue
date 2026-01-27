@@ -389,15 +389,16 @@ async function handleDelete() {
 
           delLoading.value = true;
 
-          // Trigger task polling immediately before API call for instant UI feedback
-          localStorage.removeItem("last_closed_task");
-          appState.taskPollingTrigger++;
-
           try {
             if (props.group?.id) {
               const response = await keysApi.deleteGroup(props.group.id);
               // Check if this is an async deletion (GROUP_DELETE_ASYNC code)
               const isAsyncDeletion = response?.code === "GROUP_DELETE_ASYNC";
+
+              // Trigger task polling after the request is accepted
+              localStorage.removeItem("last_closed_task");
+              appState.taskPollingTrigger++;
+
               // If deleting a child group, pass parent group ID so parent component can select it
               emit(
                 "delete",

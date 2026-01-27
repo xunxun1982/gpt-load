@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -611,6 +612,11 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 						maxSizeKB = v
 					case int64:
 						maxSizeKB = int(v)
+					case string:
+						// Support string values for defensive parsing
+						if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+							maxSizeKB = parsed
+						}
 					}
 					// Skip this aggregate group if request size exceeds limit
 					if maxSizeKB > 0 && requestSizeKB > maxSizeKB {

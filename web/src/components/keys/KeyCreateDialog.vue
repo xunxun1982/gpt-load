@@ -11,6 +11,8 @@ import { useI18n } from "vue-i18n";
 const LARGE_FILE_THRESHOLD_MB = 10;
 // Average bytes per key line (matches server-side estimation in key_import_service.go)
 const ESTIMATED_BYTES_PER_KEY = 170;
+// Maximum file size for upload (MB) - should match backend MAX_REQUEST_BODY_SIZE_MB
+const MAX_FILE_SIZE_MB = 150;
 
 interface Props {
   show: boolean;
@@ -105,7 +107,7 @@ async function handleFileChange(event: Event) {
   // Check file size (limit to 150MB to support large key files)
   // Note: This limit should ideally match the backend MAX_REQUEST_BODY_SIZE_MB configuration
   // TODO: Consider fetching this limit from backend API to avoid configuration drift
-  const maxSize = 150 * 1024 * 1024; // 150MB
+  const maxSize = MAX_FILE_SIZE_MB * 1024 * 1024;
   if (file.size > maxSize) {
     window.$message.error(t("keys.fileSizeExceeded"));
     handleClearFile(); // Clear stale file state

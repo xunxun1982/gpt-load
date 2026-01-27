@@ -546,12 +546,28 @@ func optimizeDatabaseAfterImport(ctx context.Context, db *gorm.DB) error {
 	} else if driverName == "mysql" {
 		// For MySQL, analyze the api_keys table to update statistics
 		if err := db.WithContext(ctx).Exec("ANALYZE TABLE api_keys").Error; err != nil {
-			logrus.WithError(err).Warn("Failed to analyze table after import")
+			logrus.WithError(err).Warn("Failed to analyze api_keys table after import")
+		}
+		// Also analyze groups table as it's affected by group imports
+		if err := db.WithContext(ctx).Exec("ANALYZE TABLE groups").Error; err != nil {
+			logrus.WithError(err).Warn("Failed to analyze groups table after import")
+		}
+		// Analyze group_sub_groups for aggregate group imports
+		if err := db.WithContext(ctx).Exec("ANALYZE TABLE group_sub_groups").Error; err != nil {
+			logrus.WithError(err).Warn("Failed to analyze group_sub_groups table after import")
 		}
 	} else if driverName == "postgres" {
 		// For PostgreSQL, analyze the api_keys table
 		if err := db.WithContext(ctx).Exec("ANALYZE api_keys").Error; err != nil {
-			logrus.WithError(err).Warn("Failed to analyze table after import")
+			logrus.WithError(err).Warn("Failed to analyze api_keys table after import")
+		}
+		// Also analyze groups table as it's affected by group imports
+		if err := db.WithContext(ctx).Exec("ANALYZE groups").Error; err != nil {
+			logrus.WithError(err).Warn("Failed to analyze groups table after import")
+		}
+		// Analyze group_sub_groups for aggregate group imports
+		if err := db.WithContext(ctx).Exec("ANALYZE group_sub_groups").Error; err != nil {
+			logrus.WithError(err).Warn("Failed to analyze group_sub_groups table after import")
 		}
 	}
 

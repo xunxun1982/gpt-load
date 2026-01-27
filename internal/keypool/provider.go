@@ -992,10 +992,11 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 	// AI Review Note: Suggested extracting to internal/constants/thresholds.go to avoid duplication.
 	// Decision: Keep duplication to avoid circular dependency complexity. The constants are stable
 	// and rarely change. Manual synchronization is acceptable given the low maintenance cost.
+	// These values MUST match internal/services/thresholds.go for consistency.
 	const (
-		BulkSyncThreshold         = 5000
-		OptimizedSyncThreshold    = 20000
-		MassiveAsyncThreshold     = 100000
+		BulkSyncThreshold         = 5000   // Must match services.BulkSyncThreshold
+		OptimizedSyncThreshold    = 20000  // Must match services.OptimizedSyncThreshold
+		MassiveAsyncThreshold     = 100000 // Must match services.MassiveAsyncThreshold
 		MaxSQLiteBatchSizeMassive = 10000
 		MaxMySQLBatchSize         = 10000
 	)

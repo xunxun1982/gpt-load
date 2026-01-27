@@ -323,15 +323,3 @@ func (g *Group) GetMaxRequestSizeKB() int {
 		return 0
 	}
 }
-
-// Helper function to get map keys for debugging
-func getMapKeys(m map[string]any) []string {
-	if m == nil {
-		return nil
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}

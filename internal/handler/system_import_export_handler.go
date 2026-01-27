@@ -807,7 +807,8 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 				}
 				if taskStarted {
 					// Update progress with cumulative count across all groups
-					totalProcessed := processedKeys + processed
+					// Use groupProcessed to keep progress monotonic even if callbacks regress
+					totalProcessed := processedKeys + groupProcessed
 					if updateErr := s.TaskService.UpdateProgress(totalProcessed); updateErr != nil {
 						logrus.WithError(updateErr).Debug("Failed to update task progress during batch import")
 					}
