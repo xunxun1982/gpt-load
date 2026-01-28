@@ -261,6 +261,7 @@ var MessagesZhCN = map[string]string{
 	"success.child_group_deleted":                       "子分组删除成功",
 	"warning.parent_has_child_groups":                   "该分组有 {{.count}} 个子分组，删除后子分组也将被删除",
 	"group.child_groups_deleted":                        "已同时删除 {{.count}} 个子分组",
+	"errors.child_group_sync_failed":                    "同步子分组与父分组的更改失败",
 
 	// Binding related
 	"binding.group_not_found":                 "分组不存在",

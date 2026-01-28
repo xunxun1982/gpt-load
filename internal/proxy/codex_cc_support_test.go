@@ -308,8 +308,10 @@ func TestCodexCCStreamingWindowsPathConversion(t *testing.T) {
 // are properly converted in Codex CC for both streaming and non-streaming.
 func TestCodexCCCorruptedWindowsPathConversion(t *testing.T) {
 	// Simulate corrupted path where \t became tab
-	corruptedPath := "F:MyProjects\testlanguagepythonxxhello.py"
-	expectedPath := "F:/MyProjectsestlanguagepythonxxhello.py"
+	// Use explicit tab character construction to preserve the full path
+	corruptedPath := "F:MyProjects" + string(rune(9)) + "testlanguagepythonxxhello.py"
+	// Path reconstruction: tab character is replaced with slash to rebuild path structure
+	expectedPath := "F:/MyProjects/testlanguagepythonxxhello.py"
 
 	t.Run("Non-streaming with corrupted path", func(t *testing.T) {
 		codexResp := map[string]interface{}{

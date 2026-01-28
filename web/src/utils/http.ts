@@ -88,10 +88,12 @@ http.interceptors.response.use(
         (typeof responseData === "string" ? responseData : responseData?.message) ??
         error.message ??
         "";
+      // Check for both null and undefined to preserve original behavior
+      // Using explicit checks instead of loose equality (!=) to satisfy ESLint
       const errorMsg =
         typeof rawMsg === "string"
           ? rawMsg
-          : rawMsg != null
+          : rawMsg !== null && rawMsg !== undefined
             ? (() => {
                 try {
                   return JSON.stringify(rawMsg);

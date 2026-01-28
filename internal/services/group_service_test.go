@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
+	"gpt-load/internal/utils"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -22,6 +24,13 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+// expectedProxyURL builds the expected proxy URL using the same PORT logic as production code.
+// AI Review: Added to avoid hardcoding port 3001 in tests, which can fail if PORT env var is set.
+func expectedProxyURL(groupName string) string {
+	port := utils.ParseInteger(os.Getenv("PORT"), 3001)
+	return fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", port, groupName)
+}
 
 // setupTestDB creates an in-memory SQLite database for testing
 func setupTestDB(tb testing.TB) *gorm.DB {
@@ -847,4 +856,256 @@ func BenchmarkGetGroupStats(b *testing.B) {
 			b.Fatalf("Failed to get group stats: %v", err)
 		}
 	}
+}
+
+// TestUpdateGroupWithChildGroupSync tests that child groups are synced when parent group name changes
+func TestUpdateGroupWithChildGroupSync(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	// Create parent group
+	parentGroup, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "parent-group",
+		DisplayName:        "Parent Group",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-3.5-turbo",
+		ValidationEndpoint: "/v1/chat/completions",
+		ProxyKeys:          "sk-parent-key-1,sk-parent-key-2",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parentGroup)
+
+	// Create child group manually (simulating child group creation)
+	childUpstreams := []map[string]interface{}{
+		{
+			"url":    "http://127.0.0.1:3001/proxy/parent-group",
+			"weight": 1,
+		},
+	}
+	childUpstreamsJSON, err := json.Marshal(childUpstreams)
+	require.NoError(t, err)
+
+	childGroup := models.Group{
+		Name:               "parent-group_child1",
+		DisplayName:        "Parent Group (Child1)",
+		GroupType:          "standard",
+		Enabled:            true,
+		Upstreams:          datatypes.JSON(childUpstreamsJSON),
+		ChannelType:        parentGroup.ChannelType,
+		TestModel:          parentGroup.TestModel,
+		ValidationEndpoint: parentGroup.ValidationEndpoint,
+		ParentGroupID:      &parentGroup.ID,
+		ProxyKeys:          "sk-child-random-key",
+		Sort:               parentGroup.Sort,
+	}
+	err = db.Create(&childGroup).Error
+	require.NoError(t, err)
+
+	// Update parent group name
+	newName := "parent-group-renamed"
+	_, err = svc.UpdateGroup(context.Background(), parentGroup.ID, GroupUpdateParams{
+		Name: &newName,
+	})
+	require.NoError(t, err)
+
+	// Verify child group upstream was updated
+	var updatedChild models.Group
+	err = db.First(&updatedChild, childGroup.ID).Error
+	require.NoError(t, err)
+
+	var upstreams []map[string]interface{}
+	err = json.Unmarshal(updatedChild.Upstreams, &upstreams)
+	require.NoError(t, err)
+	require.Len(t, upstreams, 1)
+
+	expectedURL := expectedProxyURL("parent-group-renamed")
+	assert.Equal(t, expectedURL, upstreams[0]["url"])
+}
+
+// TestUpdateGroupWithChildGroupSyncCommit tests that parent update commits successfully with child sync.
+// AI Review: Renamed from TestUpdateGroupWithChildGroupSyncRollback to reflect actual behavior (tests commit, not rollback).
+func TestUpdateGroupWithChildGroupSyncCommit(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	// Create parent group
+	parentGroup, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "parent-rollback",
+		DisplayName:        "Parent Rollback",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-3.5-turbo",
+		ValidationEndpoint: "/v1/chat/completions",
+		ProxyKeys:          "sk-parent-key",
+	})
+	require.NoError(t, err)
+
+	// Create child group
+	childUpstreams := []map[string]interface{}{
+		{
+			"url":    expectedProxyURL("parent-rollback"),
+			"weight": 1,
+		},
+	}
+	childUpstreamsJSON, err := json.Marshal(childUpstreams)
+	require.NoError(t, err)
+
+	childGroup := models.Group{
+		Name:               "parent-rollback_child1",
+		DisplayName:        "Parent Rollback (Child1)",
+		GroupType:          "standard",
+		Enabled:            true,
+		Upstreams:          datatypes.JSON(childUpstreamsJSON),
+		ChannelType:        parentGroup.ChannelType,
+		TestModel:          parentGroup.TestModel,
+		ValidationEndpoint: parentGroup.ValidationEndpoint,
+		ParentGroupID:      &parentGroup.ID,
+		ProxyKeys:          "sk-child-key",
+		Sort:               parentGroup.Sort,
+	}
+	err = db.Create(&childGroup).Error
+	require.NoError(t, err)
+
+	// Get original parent name
+	originalName := parentGroup.Name
+
+	// Update parent group name (should succeed with transaction)
+	newName := "parent-rollback-renamed"
+	updatedGroup, err := svc.UpdateGroup(context.Background(), parentGroup.ID, GroupUpdateParams{
+		Name: &newName,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, newName, updatedGroup.Name)
+
+	// Verify parent group was updated in database
+	var dbParent models.Group
+	err = db.First(&dbParent, parentGroup.ID).Error
+	require.NoError(t, err)
+	assert.Equal(t, newName, dbParent.Name)
+	assert.NotEqual(t, originalName, dbParent.Name)
+
+	// Verify child group upstream was also updated (transaction committed successfully)
+	var dbChild models.Group
+	err = db.First(&dbChild, childGroup.ID).Error
+	require.NoError(t, err)
+
+	var upstreams []map[string]interface{}
+	err = json.Unmarshal(dbChild.Upstreams, &upstreams)
+	require.NoError(t, err)
+	require.Len(t, upstreams, 1)
+
+	expectedURL := expectedProxyURL("parent-rollback-renamed")
+	assert.Equal(t, expectedURL, upstreams[0]["url"])
+}
+
+// TestUpdateGroupNoChildGroupSync tests that non-name changes don't trigger child sync
+func TestUpdateGroupNoChildGroupSync(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	// Create parent group
+	parentGroup, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "parent-no-sync",
+		DisplayName:        "Parent No Sync",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-3.5-turbo",
+		ValidationEndpoint: "/v1/chat/completions",
+		ProxyKeys:          "sk-parent-key",
+	})
+	require.NoError(t, err)
+
+	// Create child group
+	childUpstreams := []map[string]interface{}{
+		{
+			"url":    expectedProxyURL("parent-no-sync"),
+			"weight": 1,
+		},
+	}
+	childUpstreamsJSON, err := json.Marshal(childUpstreams)
+	require.NoError(t, err)
+
+	childGroup := models.Group{
+		Name:               "parent-no-sync_child1",
+		DisplayName:        "Parent No Sync (Child1)",
+		GroupType:          "standard",
+		Enabled:            true,
+		Upstreams:          datatypes.JSON(childUpstreamsJSON),
+		ChannelType:        parentGroup.ChannelType,
+		TestModel:          parentGroup.TestModel,
+		ValidationEndpoint: parentGroup.ValidationEndpoint,
+		ParentGroupID:      &parentGroup.ID,
+		ProxyKeys:          "sk-child-key",
+		Sort:               parentGroup.Sort,
+	}
+	err = db.Create(&childGroup).Error
+	require.NoError(t, err)
+
+	// Update parent group display name (should NOT trigger child sync)
+	newDisplayName := "Parent No Sync Updated"
+	_, err = svc.UpdateGroup(context.Background(), parentGroup.ID, GroupUpdateParams{
+		DisplayName: &newDisplayName,
+	})
+	require.NoError(t, err)
+
+	// Verify child group upstream was NOT changed
+	var updatedChild models.Group
+	err = db.First(&updatedChild, childGroup.ID).Error
+	require.NoError(t, err)
+
+	var upstreams []map[string]interface{}
+	err = json.Unmarshal(updatedChild.Upstreams, &upstreams)
+	require.NoError(t, err)
+	require.Len(t, upstreams, 1)
+
+	// Upstream should still point to original parent name
+	expectedURL := expectedProxyURL("parent-no-sync")
+	assert.Equal(t, expectedURL, upstreams[0]["url"])
+}
+
+// TestUpdateGroupWithoutChildGroups tests that updating a parent group without child groups works correctly
+func TestUpdateGroupWithoutChildGroups(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	// Create parent group without any child groups
+	parentGroup, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "parent-no-children",
+		DisplayName:        "Parent No Children",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-3.5-turbo",
+		ValidationEndpoint: "/v1/chat/completions",
+		ProxyKeys:          "sk-parent-key",
+	})
+	require.NoError(t, err)
+
+	// Update parent group name (should succeed even without child groups)
+	newName := "parent-no-children-renamed"
+	updatedGroup, err := svc.UpdateGroup(context.Background(), parentGroup.ID, GroupUpdateParams{
+		Name: &newName,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, newName, updatedGroup.Name)
+
+	// Verify parent group was updated in database
+	var dbParent models.Group
+	err = db.First(&dbParent, parentGroup.ID).Error
+	require.NoError(t, err)
+	assert.Equal(t, newName, dbParent.Name)
+
+	// Verify no child groups exist
+	var childCount int64
+	err = db.Model(&models.Group{}).Where("parent_group_id = ?", parentGroup.ID).Count(&childCount).Error
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), childCount)
 }
