@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-contrib/static"
+	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
 )
@@ -66,11 +67,17 @@ func NewRouter(
 	// Default: 150MB to support large bulk key imports (500k+ keys)
 	// Can be configured via MAX_REQUEST_BODY_SIZE_MB environment variable
 	// Frontend enforces same 150MB limit for file uploads
-	maxBodySizeMB := utils.ParseInteger(utils.GetEnvOrDefault("MAX_REQUEST_BODY_SIZE_MB", "150"), 150)
-	if maxBodySizeMB < 1 {
+	// Valid range: 1-500MB. Values outside this range will be clamped with a warning.
+	originalMaxBodySizeMB := utils.ParseInteger(utils.GetEnvOrDefault("MAX_REQUEST_BODY_SIZE_MB", "150"), 150)
+	maxBodySizeMB := originalMaxBodySizeMB
+
+	// Only warn if the value was actually clamped (not if user explicitly set boundary values)
+	if originalMaxBodySizeMB < 1 {
 		maxBodySizeMB = 1
-	} else if maxBodySizeMB > 500 {
+		logrus.Warnf("MAX_REQUEST_BODY_SIZE_MB=%d is below minimum, clamped to 1MB", originalMaxBodySizeMB)
+	} else if originalMaxBodySizeMB > 500 {
 		maxBodySizeMB = 500 // Cap at 500MB for safety
+		logrus.Warnf("MAX_REQUEST_BODY_SIZE_MB=%d exceeds maximum, clamped to 500MB for safety", originalMaxBodySizeMB)
 	}
 	router.Use(middleware.RequestBodySizeLimit(int64(maxBodySizeMB) << 20))
 	startTime := time.Now()

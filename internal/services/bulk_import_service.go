@@ -174,6 +174,7 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 	// Get base batch size based on database type and record size
 	var baseBatchSize int
 	var sqliteMaxBySize int // Track SQLite size-based limit for later capping
+	var maxByConstraint int // MySQL/Postgres size/param constraint
 
 	switch s.dbType {
 	case "sqlite":
@@ -193,7 +194,8 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 
 		// Use 80% of max_allowed_packet for safety
 		safePacketSize := int(maxPacket) * 8 / 10
-		baseBatchSize = safePacketSize / recordSize
+		maxByConstraint = safePacketSize / recordSize
+		baseBatchSize = maxByConstraint
 		if baseBatchSize > MaxMySQLBatchSize {
 			baseBatchSize = MaxMySQLBatchSize
 		}
@@ -203,7 +205,8 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 		const maxParams = 65535
 		// Each record has numFields parameters + some overhead
 		paramsPerRecord := numFields + 2 // +2 for safety
-		baseBatchSize = maxParams / paramsPerRecord
+		maxByConstraint = maxParams / paramsPerRecord
+		baseBatchSize = maxByConstraint
 		if baseBatchSize > MaxPostgresBatchSize {
 			baseBatchSize = MaxPostgresBatchSize
 		}
@@ -259,10 +262,18 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 			adaptiveBatchSize = maxSQLiteBatch
 		}
 	case "mysql":
+		// Cap by max_allowed_packet constraint to prevent tier multiplier from exceeding packet size
+		if maxByConstraint > 0 && adaptiveBatchSize > maxByConstraint {
+			adaptiveBatchSize = maxByConstraint
+		}
 		if adaptiveBatchSize > MaxMySQLBatchSize {
 			adaptiveBatchSize = MaxMySQLBatchSize // Cap at 10000 for MySQL
 		}
 	case "postgres":
+		// Cap by parameter limit to prevent tier multiplier from exceeding parameter count
+		if maxByConstraint > 0 && adaptiveBatchSize > maxByConstraint {
+			adaptiveBatchSize = maxByConstraint
+		}
 		if adaptiveBatchSize > MaxPostgresBatchSize {
 			adaptiveBatchSize = MaxPostgresBatchSize // Cap at 10000 for PostgreSQL
 		}

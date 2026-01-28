@@ -832,8 +832,10 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 			// Query the created group within the transaction
 			var createdGroup models.Group
 			if err := tx.First(&createdGroup, groupID).Error; err != nil {
-				logrus.WithError(err).Warnf("Failed to query imported group %d", groupID)
-				continue
+				logrus.WithError(err).Warnf("Failed to query imported group %d, using minimal info", groupID)
+				// Fallback to minimal group record to maintain progress consistency
+				// and ensure cache refresh happens for the imported group
+				createdGroup = models.Group{ID: groupID, Name: groupData.Group.Name}
 			}
 
 			importedGroups = append(importedGroups, createdGroup)
