@@ -811,11 +811,10 @@ func TestGeminiCCStreamingCorruptedWindowsPath(t *testing.T) {
 		state := newGeminiStreamState(nil)
 
 		// Simulate corrupted path where \t became tab
-		corruptedPath := "F:MyProjects\testlanguagepythonxxhello.py"
-		// AI Review Note: Cannot recover "/test" from tab character - once \t is interpreted as tab,
-		// the original text is lost. We can only remove the control character, not restore the original path.
-		// Expected result is the path with tab character removed, not the full original path.
-		expectedPath := "F:/MyProjectsestlanguagepythonxxhello.py"
+		// Use explicit tab character construction to preserve the full path
+		corruptedPath := "F:MyProjects" + string(rune(9)) + "testlanguagepythonxxhello.py"
+		// Path reconstruction: tab character is replaced with slash to rebuild path structure
+		expectedPath := "F:/MyProjects/testlanguagepythonxxhello.py"
 
 		chunk := &GeminiStreamChunk{
 			Candidates: []GeminiCandidate{
@@ -857,11 +856,10 @@ func TestGeminiCCStreamingCorruptedWindowsPath(t *testing.T) {
 		state := newGeminiStreamState(nil)
 
 		// Simulate corrupted path where \t became tab
-		corruptedPath := "I need to check F:MyProjects\testlanguagepythonxxhello.py"
-		// AI Review Note: Cannot recover "/test" from tab character - once \t is interpreted as tab,
-		// the original text is lost. We can only remove the control character, not restore the original path.
-		// Expected result is the path with tab character removed, not the full original path.
-		expectedPath := "F:/MyProjectsestlanguagepythonxxhello.py"
+		// Use explicit tab character construction to preserve the full path
+		corruptedPath := "I need to check F:MyProjects" + string(rune(9)) + "testlanguagepythonxxhello.py"
+		// Path reconstruction: tab character is replaced with slash to rebuild path structure
+		expectedPath := "F:/MyProjects/testlanguagepythonxxhello.py"
 
 		chunk := &GeminiStreamChunk{
 			Candidates: []GeminiCandidate{

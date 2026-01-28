@@ -895,17 +895,26 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 	// Sync child groups if parent's name or proxy_keys changed
 	// Only sync for standard groups that are not child groups themselves
-	// This must be done within the same transaction to ensure atomicity
+	var childGroupsNeedingKeyUpdate []models.Group
+	var newParentFirstKey, oldParentFirstKey string
 	if group.GroupType == "standard" && group.ParentGroupID == nil {
 		nameChanged := oldName != group.Name
 		proxyKeysChanged := oldProxyKeys != group.ProxyKeys
 
 		if nameChanged || proxyKeysChanged {
-			// Sync child groups inline to avoid circular dependency with ChildGroupService
-			// Pass transaction to ensure atomicity - if sync fails, parent update is rolled back
-			if err := s.syncChildGroupsOnParentUpdate(ctx, tx, &group, oldName, oldProxyKeys); err != nil {
-				logrus.WithContext(ctx).WithError(err).Error("Failed to sync child groups after parent update, rolling back transaction")
+			// Sync child group upstreams within transaction for atomicity
+			// Key updates are done after commit to avoid atomicity issues with AddMultipleKeys
+			var err error
+			childGroupsNeedingKeyUpdate, err = s.syncChildGroupUpstreamsInTransaction(ctx, tx, &group, oldName, nameChanged)
+			if err != nil {
+				logrus.WithContext(ctx).WithError(err).Error("Failed to sync child group upstreams, rolling back transaction")
 				return nil, NewI18nError(app_errors.ErrInternalServer, "errors.child_group_sync_failed", nil)
+			}
+
+			// Prepare key update parameters for post-commit execution
+			if proxyKeysChanged && len(childGroupsNeedingKeyUpdate) > 0 {
+				newParentFirstKey = getFirstProxyKeyFromString(group.ProxyKeys)
+				oldParentFirstKey = getFirstProxyKeyFromString(oldProxyKeys)
 			}
 		}
 	}
@@ -915,6 +924,14 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		return nil, app_errors.ParseDBError(err)
 	}
 	tx = nil // Prevent deferred rollback after successful commit
+
+	// Update child group keys after transaction commit to avoid atomicity issues
+	// AI Review: Moved key updates outside transaction per child_group_service.go pattern (lines 207-214).
+	// This prevents orphan keys if transaction rolls back, at the cost of potential inconsistency
+	// if key updates fail after commit (acceptable trade-off per existing design decisions).
+	if len(childGroupsNeedingKeyUpdate) > 0 && newParentFirstKey != "" && newParentFirstKey != oldParentFirstKey {
+		s.syncChildGroupKeysAfterCommit(ctx, childGroupsNeedingKeyUpdate, newParentFirstKey, oldParentFirstKey)
+	}
 
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
@@ -932,30 +949,22 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	return &group, nil
 }
 
-// syncChildGroupsOnParentUpdate updates all child groups when parent group's name or proxy_keys change.
-// When name changes: update child groups' upstream URL.
-// When proxy_keys changes: update child groups' API keys (not proxy_keys).
-//
-// NOTE: Similar logic exists in ChildGroupService.SyncChildGroupsOnParentUpdate. The duplication is
-// intentional to avoid circular dependencies between services. This method is used inline during
-// group updates, while ChildGroupService's method is exposed for external callers with transaction support.
-//
-// IMPORTANT: This method must be called within a transaction to ensure atomicity with parent group updates.
-func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, tx *gorm.DB, parentGroup *models.Group, oldName string, oldProxyKeys string) error {
+// syncChildGroupUpstreamsInTransaction updates child group upstreams within a transaction.
+// Returns the list of child groups that need key updates (to be done after commit).
+// AI Review: Separated from key updates to fix atomicity issue - upstream updates use transaction,
+// key updates happen after commit to avoid orphan keys on rollback.
+func (s *GroupService) syncChildGroupUpstreamsInTransaction(ctx context.Context, tx *gorm.DB, parentGroup *models.Group, oldName string, nameChanged bool) ([]models.Group, error) {
 	// Check if there are any child groups
 	var childGroups []models.Group
 	if err := tx.WithContext(ctx).
 		Where("parent_group_id = ?", parentGroup.ID).
 		Find(&childGroups).Error; err != nil {
-		return app_errors.ParseDBError(err)
+		return nil, app_errors.ParseDBError(err)
 	}
 
 	if len(childGroups) == 0 {
-		return nil
+		return nil, nil
 	}
-
-	nameChanged := oldName != parentGroup.Name
-	proxyKeysChanged := oldProxyKeys != parentGroup.ProxyKeys
 
 	// Update upstream URL if parent name changed
 	if nameChanged {
@@ -969,69 +978,67 @@ func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, tx *go
 		}
 		upstreamsJSON, err := json.Marshal(upstreams)
 		if err != nil {
-			return app_errors.ErrInternalServer
+			return nil, app_errors.ErrInternalServer
 		}
 
 		if err := tx.WithContext(ctx).
 			Model(&models.Group{}).
 			Where("parent_group_id = ?", parentGroup.ID).
 			Update("upstreams", datatypes.JSON(upstreamsJSON)).Error; err != nil {
-			return app_errors.ParseDBError(err)
+			return nil, app_errors.ParseDBError(err)
 		}
+
+		logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"parentGroupID":   parentGroup.ID,
+			"parentGroupName": parentGroup.Name,
+			"oldName":         oldName,
+			"childGroupCount": len(childGroups),
+		}).Info("Updated child group upstreams in transaction")
 	}
 
-	// Update API keys if parent proxy_keys changed
-	if proxyKeysChanged && s.keyService != nil {
-		newParentFirstKey := getFirstProxyKeyFromString(parentGroup.ProxyKeys)
-		oldParentFirstKey := getFirstProxyKeyFromString(oldProxyKeys)
+	return childGroups, nil
+}
 
-		if newParentFirstKey != "" && newParentFirstKey != oldParentFirstKey {
-			// For each child group, update the API key
-			// Add new key FIRST, then delete old key to avoid leaving child without any key
-			//
-			// KNOWN LIMITATION: AddMultipleKeys operates on the base DB connection (not the transaction).
-			// This breaks atomicity - if the parent transaction rolls back after AddMultipleKeys succeeds,
-			// the newly added keys will persist as orphans. This is acceptable because:
-			// 1. Refactoring AddMultipleKeys to accept transactions would require significant changes
-			//    to KeyService and its dependencies (batch processing, memory store updates, etc.)
-			// 2. Orphan keys don't cause system issues - they just consume minimal storage
-			// 3. The add-then-delete order ensures child groups always have a working key during updates
-			// 4. Manual cleanup is straightforward if needed (delete keys where group_id not in groups)
-			for _, childGroup := range childGroups {
-				// Add new key first to ensure child group always has a working key
-				if _, err := s.keyService.AddMultipleKeys(childGroup.ID, newParentFirstKey); err != nil {
-					logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
-						"childGroupID":   childGroup.ID,
-						"childGroupName": childGroup.Name,
-					}).Error("Failed to add new API key for child group, keeping old key")
-					continue // Keep old key if new key addition fails
-				}
+// syncChildGroupKeysAfterCommit updates child group API keys after transaction commit.
+// This is done outside the transaction to avoid atomicity issues with AddMultipleKeys,
+// which uses its own DB connection and cannot participate in the parent transaction.
+// AI Review: Moved from syncChildGroupsOnParentUpdate per child_group_service.go pattern.
+// Trade-off: If key updates fail after commit, child groups may have stale keys, but this
+// is acceptable per existing design decisions (see child_group_service.go lines 207-214).
+func (s *GroupService) syncChildGroupKeysAfterCommit(ctx context.Context, childGroups []models.Group, newParentFirstKey, oldParentFirstKey string) {
+	if s.keyService == nil {
+		return
+	}
 
-				// Now safe to delete old key (uses transaction for consistency with upstream update)
-				if oldParentFirstKey != "" {
-					oldKeyHash := s.encryptionSvc.Hash(oldParentFirstKey)
-					if err := tx.WithContext(ctx).
-						Where("group_id = ? AND key_hash = ?", childGroup.ID, oldKeyHash).
-						Delete(&models.APIKey{}).Error; err != nil {
-						logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
-							"childGroupID": childGroup.ID,
-							"operation":    "delete_old_key",
-						}).Warn("Failed to delete old API key for child group")
-					}
-				}
+	for _, childGroup := range childGroups {
+		// Add new key first to ensure child group always has a working key
+		if _, err := s.keyService.AddMultipleKeys(childGroup.ID, newParentFirstKey); err != nil {
+			logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+				"childGroupID":   childGroup.ID,
+				"childGroupName": childGroup.Name,
+			}).Error("Failed to add new API key for child group, keeping old key")
+			continue // Keep old key if new key addition fails
+		}
+
+		// Now safe to delete old key (uses base DB connection, not transaction)
+		if oldParentFirstKey != "" {
+			oldKeyHash := s.encryptionSvc.Hash(oldParentFirstKey)
+			if err := s.db.WithContext(ctx).
+				Where("group_id = ? AND key_hash = ?", childGroup.ID, oldKeyHash).
+				Delete(&models.APIKey{}).Error; err != nil {
+				logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+					"childGroupID": childGroup.ID,
+					"operation":    "delete_old_key",
+				}).Warn("Failed to delete old API key for child group")
 			}
 		}
 	}
 
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"parentGroupID":    parentGroup.ID,
-		"parentGroupName":  parentGroup.Name,
 		"childGroupCount":  len(childGroups),
-		"nameChanged":      nameChanged,
-		"proxyKeysChanged": proxyKeysChanged,
-	}).Info("Synced child groups after parent update")
-
-	return nil
+		"newKey":           newParentFirstKey[:10] + "...", // Log prefix only for security
+		"oldKey":           oldParentFirstKey[:10] + "...",
+	}).Info("Updated child group API keys after commit")
 }
 
 // getFirstProxyKeyFromString extracts the first proxy key from a comma-separated list.

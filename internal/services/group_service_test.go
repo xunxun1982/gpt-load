@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
+	"gpt-load/internal/utils"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -22,6 +24,13 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+// expectedProxyURL builds the expected proxy URL using the same PORT logic as production code.
+// AI Review: Added to avoid hardcoding port 3001 in tests, which can fail if PORT env var is set.
+func expectedProxyURL(groupName string) string {
+	port := utils.ParseInteger(os.Getenv("PORT"), 3001)
+	return fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", port, groupName)
+}
 
 // setupTestDB creates an in-memory SQLite database for testing
 func setupTestDB(tb testing.TB) *gorm.DB {
@@ -912,11 +921,12 @@ func TestUpdateGroupWithChildGroupSync(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, upstreams, 1)
 
-	expectedURL := "http://127.0.0.1:3001/proxy/parent-group-renamed"
+	expectedURL := expectedProxyURL("parent-group-renamed")
 	assert.Equal(t, expectedURL, upstreams[0]["url"])
 }
 
-// TestUpdateGroupWithChildGroupSyncCommit tests that parent update commits successfully with child sync
+// TestUpdateGroupWithChildGroupSyncCommit tests that parent update commits successfully with child sync.
+// AI Review: Renamed from TestUpdateGroupWithChildGroupSyncRollback to reflect actual behavior (tests commit, not rollback).
 func TestUpdateGroupWithChildGroupSyncCommit(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
@@ -935,11 +945,10 @@ func TestUpdateGroupWithChildGroupSyncCommit(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create child group with invalid upstream (to simulate sync failure scenario)
-	// Note: In practice, sync failures are rare, but we test the transaction rollback behavior
+	// Create child group
 	childUpstreams := []map[string]interface{}{
 		{
-			"url":    "http://127.0.0.1:3001/proxy/parent-rollback",
+			"url":    expectedProxyURL("parent-rollback"),
 			"weight": 1,
 		},
 	}
@@ -990,7 +999,7 @@ func TestUpdateGroupWithChildGroupSyncCommit(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, upstreams, 1)
 
-	expectedURL := "http://127.0.0.1:3001/proxy/parent-rollback-renamed"
+	expectedURL := expectedProxyURL("parent-rollback-renamed")
 	assert.Equal(t, expectedURL, upstreams[0]["url"])
 }
 
@@ -1016,7 +1025,7 @@ func TestUpdateGroupNoChildGroupSync(t *testing.T) {
 	// Create child group
 	childUpstreams := []map[string]interface{}{
 		{
-			"url":    "http://127.0.0.1:3001/proxy/parent-no-sync",
+			"url":    expectedProxyURL("parent-no-sync"),
 			"weight": 1,
 		},
 	}
@@ -1057,7 +1066,7 @@ func TestUpdateGroupNoChildGroupSync(t *testing.T) {
 	require.Len(t, upstreams, 1)
 
 	// Upstream should still point to original parent name
-	expectedURL := "http://127.0.0.1:3001/proxy/parent-no-sync"
+	expectedURL := expectedProxyURL("parent-no-sync")
 	assert.Equal(t, expectedURL, upstreams[0]["url"])
 }
 

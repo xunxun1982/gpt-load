@@ -1789,16 +1789,17 @@ func convertWindowsPathsInToolResult(content string) string {
 					result.WriteRune('/')
 					continue
 				}
-				// Keep alphanumeric, underscore, dash, dot, slash, backslash
-				if (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') ||
-					r == '_' || r == '-' || r == '.' || r == '/' || r == '\\' {
+				// Keep printable characters except Windows-invalid filename chars.
+				// This preserves non-ASCII folder names (e.g., Chinese, Japanese, Cyrillic)
+				// and other valid Windows path characters like (), [], ~, @, #, +, spaces.
+				// AI Review: Changed from whitelist (ASCII only) to blacklist approach to
+				// support Unicode paths. Colon is only allowed as drive separator (handled above).
+				switch r {
+				case '<', '>', '"', '|', '?', '*', ':':
+					// Skip invalid Windows filename characters
+				default:
 					result.WriteRune(r)
-					continue
 				}
-				// Skip other special characters (may drop valid chars like (), [], ~, @, #, +, etc.)
-				// This is acceptable for corrupted path recovery as a best-effort approach.
-				// Valid Windows path characters that are dropped here are rare in practice and
-				// the primary goal is to reconstruct readable paths from control-character corruption.
 			}
 
 			cleaned := result.String()
