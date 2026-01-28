@@ -916,8 +916,8 @@ func TestUpdateGroupWithChildGroupSync(t *testing.T) {
 	assert.Equal(t, expectedURL, upstreams[0]["url"])
 }
 
-// TestUpdateGroupWithChildGroupSyncRollback tests that parent update is rolled back if child sync fails
-func TestUpdateGroupWithChildGroupSyncRollback(t *testing.T) {
+// TestUpdateGroupWithChildGroupSyncCommit tests that parent update commits successfully with child sync
+func TestUpdateGroupWithChildGroupSyncCommit(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)

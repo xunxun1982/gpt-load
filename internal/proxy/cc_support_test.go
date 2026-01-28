@@ -7047,9 +7047,14 @@ func TestConvertWindowsPathsInToolResult_CorruptedPaths(t *testing.T) {
 			expected: "-rw-r--r-- 1 Admin 197121 80 1月 18 02:23 F:/MyProjectstestlanguagepythonxxhello.py", // No separators to add
 		},
 		{
-			name:     "normal Windows path unchanged",
+			name:     "normal Windows path converted to Unix style",
 			input:    `F:\MyProjects\test\file.py`,
 			expected: "F:/MyProjects/test/file.py", // Converted to Unix style
+		},
+		{
+			name:     "path with form feed character (\\f interpreted)",
+			input:    "F:" + string(rune(12)) + "older",  // form feed character (byte 12)
+			expected: "F:/older", // Should reconstruct with slash
 		},
 		{
 			name:     "Unix path unchanged",

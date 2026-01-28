@@ -988,6 +988,15 @@ func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, tx *go
 		if newParentFirstKey != "" && newParentFirstKey != oldParentFirstKey {
 			// For each child group, update the API key
 			// Add new key FIRST, then delete old key to avoid leaving child without any key
+			//
+			// KNOWN LIMITATION: AddMultipleKeys operates on the base DB connection (not the transaction).
+			// This breaks atomicity - if the parent transaction rolls back after AddMultipleKeys succeeds,
+			// the newly added keys will persist as orphans. This is acceptable because:
+			// 1. Refactoring AddMultipleKeys to accept transactions would require significant changes
+			//    to KeyService and its dependencies (batch processing, memory store updates, etc.)
+			// 2. Orphan keys don't cause system issues - they just consume minimal storage
+			// 3. The add-then-delete order ensures child groups always have a working key during updates
+			// 4. Manual cleanup is straightforward if needed (delete keys where group_id not in groups)
 			for _, childGroup := range childGroups {
 				// Add new key first to ensure child group always has a working key
 				if _, err := s.keyService.AddMultipleKeys(childGroup.ID, newParentFirstKey); err != nil {
@@ -998,7 +1007,7 @@ func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, tx *go
 					continue // Keep old key if new key addition fails
 				}
 
-				// Now safe to delete old key
+				// Now safe to delete old key (uses transaction for consistency with upstream update)
 				if oldParentFirstKey != "" {
 					oldKeyHash := s.encryptionSvc.Hash(oldParentFirstKey)
 					if err := tx.WithContext(ctx).

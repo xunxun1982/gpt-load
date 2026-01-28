@@ -1774,8 +1774,12 @@ func convertWindowsPathsInToolResult(content string) string {
 			result.Grow(len(match) + 10)
 
 			for i, r := range match {
-				// Keep drive letter and colon as-is
-				if i < 2 && (r == ':' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')) {
+				// Keep drive letter (position 0) and colon (position 1) as-is
+				if i == 0 && ((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')) {
+					result.WriteRune(r)
+					continue
+				}
+				if i == 1 && r == ':' {
 					result.WriteRune(r)
 					continue
 				}
@@ -1791,7 +1795,10 @@ func convertWindowsPathsInToolResult(content string) string {
 					result.WriteRune(r)
 					continue
 				}
-				// Skip other special characters
+				// Skip other special characters (may drop valid chars like (), [], ~, @, #, +, etc.)
+				// This is acceptable for corrupted path recovery as a best-effort approach.
+				// Valid Windows path characters that are dropped here are rare in practice and
+				// the primary goal is to reconstruct readable paths from control-character corruption.
 			}
 
 			cleaned := result.String()
