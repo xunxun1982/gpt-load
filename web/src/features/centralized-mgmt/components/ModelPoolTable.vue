@@ -161,7 +161,7 @@ function getHealthClass(score: number): string {
 }
 
 function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(0)}%`;
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function getPriorityTagType(

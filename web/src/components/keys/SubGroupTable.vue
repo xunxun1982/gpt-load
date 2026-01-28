@@ -105,8 +105,13 @@ const statusOptions = [
   { label: t("subGroups.statusUnavailable"), value: "unavailable" },
 ];
 
-// Compute sub-group data with percentage and sort by weight (descending)
+// Compute sub-group data with percentage and sort by multiple criteria
 // Percentage calculation only considers enabled sub-groups with weight > 0
+// Sorting priority:
+// 1. Enabled groups first, disabled groups last
+// 2. Within enabled groups: weight > 0 first, weight = 0 last
+// 3. Within same weight status: sort by health score (high to low)
+// 4. Within same health: sort by weight (high to low)
 const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
   if (!props.subGroups) {
     return [];
@@ -131,15 +136,32 @@ const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
     };
   });
 
-  // Sort by effective weight (enabled first, then by weight descending)
+  // Sort by multiple criteria for optimal display order
   return [...withPercentage].sort((a, b) => {
-    // Disabled sub-groups go to the end
+    // Priority 1: Disabled sub-groups go to the end
     const aEnabled = a.group.enabled;
     const bEnabled = b.group.enabled;
     if (aEnabled !== bEnabled) {
       return aEnabled ? -1 : 1;
     }
-    // Within same enabled status, sort by weight descending
+
+    // Priority 2: Within enabled groups, weight=0 (disabled) goes to the end
+    const aHasWeight = a.weight > 0;
+    const bHasWeight = b.weight > 0;
+    if (aHasWeight !== bHasWeight) {
+      return aHasWeight ? -1 : 1;
+    }
+
+    // Priority 3: Within same weight status, sort by health score (high to low)
+    // This ensures unhealthy sub-groups appear lower in the list
+    const aHealth = a.dynamic_weight?.health_score ?? 1.0;
+    const bHealth = b.dynamic_weight?.health_score ?? 1.0;
+    if (Math.abs(aHealth - bHealth) > 0.01) {
+      // Use threshold to avoid floating point comparison issues
+      return bHealth - aHealth; // Higher health first
+    }
+
+    // Priority 4: Within same health, sort by weight (high to low)
     return b.weight - a.weight;
   });
 });
@@ -348,7 +370,7 @@ function formatDateTime(isoString: string | null | undefined): string {
                   class="health-text"
                   :class="getHealthScoreClass(subGroup.dynamic_weight.health_score)"
                 >
-                  {{ Math.round(subGroup.dynamic_weight.health_score * 100) }}%
+                  {{ (subGroup.dynamic_weight.health_score * 100).toFixed(1) }}%
                 </span>
               </div>
             </div>
@@ -412,7 +434,7 @@ function formatDateTime(isoString: string | null | undefined): string {
                           class="info-value"
                           :class="getHealthScoreClass(subGroup.dynamic_weight.health_score)"
                         >
-                          {{ Math.round(subGroup.dynamic_weight.health_score * 100) }}%
+                          {{ (subGroup.dynamic_weight.health_score * 100).toFixed(1) }}%
                         </span>
                       </div>
                       <div class="info-row">

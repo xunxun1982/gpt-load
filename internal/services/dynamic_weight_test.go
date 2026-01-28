@@ -149,6 +149,41 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 			minWeight: 10,
 			maxWeight: 60,
 		},
+		{
+			name:       "critical health score (<= 0.3) returns zero weight",
+			baseWeight: 100,
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 5,
+				Requests180d:        100,
+				Successes180d:       10, // 10% success rate - combined with failures pushes below 0.3
+				Requests7d:          10,
+				Successes7d:         1,
+			},
+			minWeight: 0,
+			maxWeight: 0,
+		},
+		{
+			name:       "medium health score (0.3-0.7) applies aggressive penalty",
+			baseWeight: 100,
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 4, // Health score around 0.4-0.6
+				Requests180d:        50,
+				Successes180d:       25, // 50% success rate
+				Requests7d:          5,
+				Successes7d:         2,
+			},
+			minWeight: 10,
+			maxWeight: 50, // Should be significantly reduced due to quadratic penalty
+		},
+		{
+			name:       "small base weight with medium health gets minimum weight of 1",
+			baseWeight: 1,
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 3, // Medium health
+			},
+			minWeight: 1,
+			maxWeight: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -738,4 +773,197 @@ func TestDynamicWeightManager_HubRetryFailureImpact(t *testing.T) {
 
 	// This test verifies that Hub routing correctly reflects group health
 	// even when the overall request succeeds via retry to another group
+}
+
+
+// TestDynamicWeightManager_NonLinearHealthPenalty tests the non-linear penalty for low health scores
+func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	tests := []struct {
+		name              string
+		metrics           *DynamicWeightMetrics
+		baseWeight        int
+		expectedMinWeight int
+		expectedMaxWeight int
+		description       string
+	}{
+		{
+			name: "critical health (consecutive failures + low success rate) - weight becomes zero",
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 5,
+				Requests180d:        100,
+				Successes180d:       10, // 10% success rate (more severe)
+				Requests7d:          10,
+				Successes7d:         1,
+			},
+			baseWeight:        100,
+			expectedMinWeight: 0,
+			expectedMaxWeight: 0,
+			description:       "Health score < 0.3 should result in zero effective weight",
+		},
+		{
+			name: "low-medium health (moderate failures) - aggressive penalty",
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 4,
+				Requests180d:        50,
+				Successes180d:       25, // 50% success rate
+				Requests7d:          5,
+				Successes7d:         2,
+			},
+			baseWeight:        100,
+			expectedMinWeight: 10,
+			expectedMaxWeight: 50,
+			description:       "Health score 0.3-0.7 should apply quadratic penalty",
+		},
+		{
+			name: "medium health (few failures, good success rate) - moderate penalty",
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 2,
+				Requests180d:        50,
+				Successes180d:       42, // 84% success rate
+				Requests7d:          5,
+				Successes7d:         4,
+			},
+			baseWeight:        100,
+			expectedMinWeight: 50,
+			expectedMaxWeight: 85,
+			description:       "Health score around 0.7-0.8 with quadratic penalty or linear",
+		},
+		{
+			name: "good health (minimal failures) - minimal penalty",
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 1,
+				Requests180d:        50,
+				Successes180d:       48, // 96% success rate
+				Requests7d:          5,
+				Successes7d:         5,
+			},
+			baseWeight:        100,
+			expectedMinWeight: 80,
+			expectedMaxWeight: 95,
+			description:       "Health score > 0.7 should use linear scaling",
+		},
+		{
+			name: "small weight with medium health - minimum 1",
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 3,
+			},
+			baseWeight:        1,
+			expectedMinWeight: 1,
+			expectedMaxWeight: 1,
+			description:       "Even with penalty, non-critical health gets minimum weight of 1",
+		},
+		{
+			name: "small weight with critical health - zero",
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 5,
+				Requests180d:        100,
+				Successes180d:       10, // 10% success rate (more severe)
+				Requests7d:          10,
+				Successes7d:         1,
+			},
+			baseWeight:        1,
+			expectedMinWeight: 0,
+			expectedMaxWeight: 0,
+			description:       "Critical health results in zero weight regardless of base weight",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			effectiveWeight := dwm.GetEffectiveWeight(tt.baseWeight, tt.metrics)
+
+			assert.GreaterOrEqual(t, effectiveWeight, tt.expectedMinWeight,
+				"Effective weight should be >= %d for %s", tt.expectedMinWeight, tt.description)
+			assert.LessOrEqual(t, effectiveWeight, tt.expectedMaxWeight,
+				"Effective weight should be <= %d for %s", tt.expectedMaxWeight, tt.description)
+
+			// Log for debugging
+			healthScore := dwm.CalculateHealthScore(tt.metrics)
+			t.Logf("%s: health=%.2f, baseWeight=%d, effectiveWeight=%d",
+				tt.name, healthScore, tt.baseWeight, effectiveWeight)
+		})
+	}
+}
+
+// TestDynamicWeightManager_HealthThresholdBehavior tests behavior at health threshold boundaries
+func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+
+	// Create custom config to test specific thresholds
+	config := DefaultDynamicWeightConfig()
+	config.CriticalHealthThreshold = 0.3
+	config.MediumHealthThreshold = 0.7
+	config.MediumHealthPenaltyExponent = 2.0
+
+	dwm := NewDynamicWeightManagerWithConfig(memStore, config)
+
+	// Test case 1: Just above critical threshold
+	metrics1 := &DynamicWeightMetrics{
+		ConsecutiveFailures: 5,
+		Requests180d:        50,
+		Successes180d:       30, // 60% success rate (better than previous)
+		Requests7d:          5,
+		Successes7d:         3,
+	}
+	weight1 := dwm.GetEffectiveWeight(100, metrics1)
+	health1 := dwm.CalculateHealthScore(metrics1)
+	t.Logf("Just above critical: health=%.3f, weight=%d", health1, weight1)
+	if health1 > config.CriticalHealthThreshold {
+		assert.Greater(t, weight1, 0, "Weight should be > 0 when health is above critical threshold")
+	} else {
+		assert.Equal(t, 0, weight1, "Weight should be 0 when health is at or below critical threshold")
+	}
+
+	// Test case 2: At or below critical threshold
+	metrics2 := &DynamicWeightMetrics{
+		ConsecutiveFailures: 5,
+		Requests180d:        100,
+		Successes180d:       10, // 10% success rate
+		Requests7d:          10,
+		Successes7d:         1,
+	}
+	weight2 := dwm.GetEffectiveWeight(100, metrics2)
+	health2 := dwm.CalculateHealthScore(metrics2)
+	t.Logf("At or below critical: health=%.3f, weight=%d", health2, weight2)
+	if health2 <= config.CriticalHealthThreshold {
+		assert.Equal(t, 0, weight2, "Weight should be 0 when health is at or below critical threshold")
+	}
+
+	// Test case 3: Just below medium threshold (should use quadratic penalty)
+	metrics3 := &DynamicWeightMetrics{
+		ConsecutiveFailures: 2,
+		Requests180d:        50,
+		Successes180d:       40, // 80% success rate
+		Requests7d:          5,
+		Successes7d:         4,
+	}
+	weight3 := dwm.GetEffectiveWeight(100, metrics3)
+	health3 := dwm.CalculateHealthScore(metrics3)
+	t.Logf("Below medium threshold: health=%.3f, weight=%d", health3, weight3)
+	if health3 < config.MediumHealthThreshold && health3 >= config.CriticalHealthThreshold {
+		expectedWeight3 := int(100 * health3 * health3) // Quadratic penalty
+		// Allow some tolerance due to rounding
+		assert.InDelta(t, expectedWeight3, weight3, 2, "Should apply quadratic penalty below medium threshold")
+	}
+
+	// Test case 4: Above medium threshold (should use linear scaling)
+	metrics4 := &DynamicWeightMetrics{
+		ConsecutiveFailures: 1,
+		Requests180d:        50,
+		Successes180d:       48, // 96% success rate
+		Requests7d:          5,
+		Successes7d:         5,
+	}
+	weight4 := dwm.GetEffectiveWeight(100, metrics4)
+	health4 := dwm.CalculateHealthScore(metrics4)
+	t.Logf("Above medium threshold: health=%.3f, weight=%d", health4, weight4)
+	if health4 >= config.MediumHealthThreshold {
+		expectedWeight4 := int(100 * health4) // Linear scaling
+		assert.InDelta(t, expectedWeight4, weight4, 2, "Should use linear scaling above medium threshold")
+	}
 }

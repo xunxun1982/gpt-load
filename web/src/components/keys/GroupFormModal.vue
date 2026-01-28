@@ -1887,10 +1887,10 @@ async function handleSubmit() {
                                     "
                                   >
                                     {{
-                                      Math.round(
+                                      (
                                         (getDynamicWeightInfo(rule.from, targetIndex)
                                           ?.health_score ?? 1) * 100
-                                      )
+                                      ).toFixed(1)
                                     }}%
                                   </span>
                                 </template>
@@ -1916,10 +1916,10 @@ async function handleSubmit() {
                                       "
                                     >
                                       {{
-                                        Math.round(
+                                        (
                                           (getDynamicWeightInfo(rule.from, targetIndex)
                                             ?.health_score ?? 1) * 100
-                                        )
+                                        ).toFixed(1)
                                       }}%
                                     </span>
                                   </div>
