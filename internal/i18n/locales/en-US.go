@@ -255,6 +255,7 @@ var MessagesEnUS = map[string]string{
 	"validation.child_group_parent_must_be_standard":    "Parent group of child group must be a standard group",
 	"validation.child_group_cannot_nest":                "Child groups cannot create child groups (nesting not supported)",
 	"validation.parent_group_no_proxy_keys":             "Parent group has no proxy keys configured, cannot create child group",
+	"validation.child_group_cannot_modify_upstream":     "Child groups cannot modify upstream URLs. Upstream is auto-managed and always points to parent group's proxy endpoint",
 	"validation.child_group_cannot_export_individually": "Child groups cannot be exported individually, please export the parent group",
 	"validation.child_group_cannot_import_individually": "Child groups cannot be imported individually, they are imported with their parent group",
 	"success.child_group_created":                       "Child group created successfully",

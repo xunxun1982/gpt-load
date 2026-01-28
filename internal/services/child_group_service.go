@@ -634,8 +634,11 @@ func (s *ChildGroupService) SyncChildGroupsEnabled(ctx context.Context, parentGr
 	return nil
 }
 
-// SyncChildGroupUpstreams updates all child groups' upstream URLs to use the current PORT.
-// This should be called at application startup to ensure all child groups use the correct port.
+// SyncChildGroupUpstreams updates all child groups' upstream URLs to match their parent groups.
+// This is called at application startup to ensure:
+// 1. All child groups use the correct PORT
+// 2. All child groups' upstream URLs match their parent group names (fixes stale data)
+// This method is idempotent and safe to run multiple times.
 func (s *ChildGroupService) SyncChildGroupUpstreams(ctx context.Context) error {
 	currentPort := utils.ParseInteger(os.Getenv("PORT"), 3001)
 
@@ -694,6 +697,14 @@ func (s *ChildGroupService) SyncChildGroupUpstreams(ctx context.Context) error {
 				continue
 			}
 
+			// Get current URL for logging
+			var currentURL string
+			if len(currentUpstreams) > 0 {
+				if url, ok := currentUpstreams[0]["url"].(string); ok {
+					currentURL = url
+				}
+			}
+
 			// Update the child group's upstream
 			if err := s.db.WithContext(ctx).
 				Model(&models.Group{}).
@@ -707,19 +718,21 @@ func (s *ChildGroupService) SyncChildGroupUpstreams(ctx context.Context) error {
 			logrus.WithFields(logrus.Fields{
 				"childGroupID":   cg.ID,
 				"childGroupName": cg.Name,
-				"newPort":        currentPort,
-			}).Debug("Updated child group upstream URL")
+				"parentName":     cg.ParentGroupName,
+				"oldURL":         currentURL,
+				"newURL":         expectedURL,
+			}).Info("Fixed child group upstream URL")
 		}
 	}
 
 	if updatedCount > 0 {
-		logrus.Infof("Synced %d child group upstream URLs to port %d", updatedCount, currentPort)
+		logrus.Infof("Fixed %d child group upstream URLs (port: %d)", updatedCount, currentPort)
 		// Invalidate group cache after updates
 		if err := s.groupManager.Invalidate(); err != nil {
 			logrus.WithError(err).Warn("Failed to invalidate group cache after upstream sync")
 		}
 	} else if len(childGroups) > 0 {
-		logrus.Infof("All %d child group upstream URLs are already up to date (port %d)", len(childGroups), currentPort)
+		logrus.Infof("All %d child group upstream URLs are correct (port: %d)", len(childGroups), currentPort)
 	}
 
 	return nil

@@ -197,8 +197,8 @@ func (a *App) Start() error {
 		}
 		logrus.Info("Database auto-migration completed.")
 
-		// Sync child group upstream URLs to current PORT
-		// This ensures all child groups use the correct port after PORT changes
+		// Sync child group upstream URLs to match parent groups
+		// This ensures: 1) correct PORT after changes, 2) upstream URLs match parent names (fixes stale data)
 		if err := a.childGroupService.SyncChildGroupUpstreams(context.Background()); err != nil {
 			logrus.WithError(err).Warn("Failed to sync child group upstream URLs")
 			// Non-fatal: continue startup even if sync fails

@@ -255,6 +255,7 @@ var MessagesZhCN = map[string]string{
 	"validation.child_group_parent_must_be_standard":    "子分组的父分组必须是标准分组",
 	"validation.child_group_cannot_nest":                "子分组不能再创建子分组（不支持嵌套）",
 	"validation.parent_group_no_proxy_keys":             "父分组没有设置外部密钥（proxy_keys），无法创建子分组",
+	"validation.child_group_cannot_modify_upstream":     "子分组不能修改上游地址。上游地址由系统自动管理，始终指向父分组的代理端点",
 	"validation.child_group_cannot_export_individually": "子分组不能单独导出，请导出父分组",
 	"validation.child_group_cannot_import_individually": "子分组不能单独导入，它们会随父分组一起导入",
 	"success.child_group_created":                       "子分组创建成功",

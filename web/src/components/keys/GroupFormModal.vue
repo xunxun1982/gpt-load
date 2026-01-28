@@ -159,6 +159,11 @@ const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
 const modelRedirectDynamicWeights = ref<ModelRedirectDynamicWeight[]>([]);
 
+// Check if current group is a child group (has parent_group_id)
+const isChildGroup = computed(() => {
+  return props.group?.parent_group_id !== null && props.group?.parent_group_id !== undefined;
+});
+
 // Track whether fields were manually modified (used only in create mode)
 const userModifiedFields = ref({
   test_model: false,
@@ -211,11 +216,6 @@ const validationEndpointPlaceholder = computed(() => {
   }
   const defaults = getChannelDefaults(formData.channel_type);
   return defaults?.validationEndpoint || t("keys.enterValidationPath");
-});
-
-// Check if current group is a child group (has parent_group_id)
-const isChildGroup = computed(() => {
-  return !!props.group?.parent_group_id;
 });
 
 // Form validation rules
@@ -273,6 +273,26 @@ watch(
       }
     }
   }
+);
+
+// Watch for group data changes (e.g., when parent group name changes and child group upstream is updated)
+// This ensures the form displays the latest data even if the modal is already open
+watch(
+  () => props.group,
+  (newGroup, oldGroup) => {
+    // Only reload if modal is open and group data actually changed
+    if (props.show && newGroup && oldGroup && newGroup.id === oldGroup.id) {
+      // Check if upstream URLs changed (important for child groups)
+      const oldUpstreams = JSON.stringify(oldGroup.upstreams || []);
+      const newUpstreams = JSON.stringify(newGroup.upstreams || []);
+
+      if (oldUpstreams !== newUpstreams) {
+        // Reload form data to reflect the updated upstream URLs
+        loadGroupData();
+      }
+    }
+  },
+  { deep: true }
 );
 
 // Watch channel type changes and intelligently update defaults in create mode
@@ -1424,17 +1444,32 @@ async function handleSubmit() {
                   <template #trigger>
                     <n-icon :component="HelpCircleOutline" class="help-icon" />
                   </template>
-                  {{ t("keys.upstreamTooltip") }}
+                  <template v-if="isChildGroup">
+                    {{ t("keys.childGroupUpstreamAutoManaged") }}
+                  </template>
+                  <template v-else>
+                    {{ t("keys.upstreamTooltip") }}
+                  </template>
                 </n-tooltip>
               </div>
             </template>
             <div class="upstream-row">
               <div class="upstream-url">
-                <n-input
-                  v-model:value="upstream.url"
-                  :placeholder="upstreamPlaceholder"
-                  @input="() => !props.group && index === 0 && (userModifiedFields.upstream = true)"
-                />
+                <n-tooltip trigger="hover" placement="top" :disabled="!upstream.url">
+                  <template #trigger>
+                    <n-input
+                      v-model:value="upstream.url"
+                      :placeholder="upstreamPlaceholder"
+                      :disabled="isChildGroup"
+                      @input="
+                        () => !props.group && index === 0 && (userModifiedFields.upstream = true)
+                      "
+                    />
+                  </template>
+                  <div style="max-width: 600px; word-break: break-all; white-space: pre-wrap">
+                    {{ upstream.url }}
+                  </div>
+                </n-tooltip>
               </div>
               <div class="upstream-weight">
                 <span class="weight-label">{{ t("keys.weight") }}</span>
@@ -1444,6 +1479,7 @@ async function handleSubmit() {
                       v-model:value="upstream.weight"
                       :min="0"
                       :placeholder="t('keys.weight')"
+                      :disabled="isChildGroup"
                       style="width: 100%"
                     />
                   </template>
@@ -1452,21 +1488,29 @@ async function handleSubmit() {
               </div>
               <div class="upstream-proxy">
                 <span class="proxy-label">{{ t("keys.upstreamProxyUrl") }}</span>
-                <n-tooltip trigger="hover" placement="top" style="width: 100%">
+                <n-tooltip
+                  trigger="hover"
+                  placement="top"
+                  style="width: 100%"
+                  :disabled="!upstream.proxy_url"
+                >
                   <template #trigger>
                     <n-input
                       v-model:value="upstream.proxy_url"
                       :placeholder="t('keys.upstreamProxyUrlPlaceholder')"
+                      :disabled="isChildGroup"
                       style="width: 100%"
                       clearable
                     />
                   </template>
-                  {{ t("keys.upstreamProxyUrlTooltip") }}
+                  <div style="max-width: 600px; word-break: break-all; white-space: pre-wrap">
+                    {{ upstream.proxy_url }}
+                  </div>
                 </n-tooltip>
               </div>
               <div class="upstream-actions">
                 <n-button
-                  v-if="formData.upstreams.length > 1"
+                  v-if="formData.upstreams.length > 1 && !isChildGroup"
                   @click="removeUpstream(index)"
                   type="error"
                   quaternary
@@ -1481,7 +1525,7 @@ async function handleSubmit() {
             </div>
           </n-form-item>
 
-          <n-form-item>
+          <n-form-item v-if="!isChildGroup">
             <n-button @click="addUpstream" dashed style="width: 100%">
               <template #icon>
                 <n-icon :component="Add" />

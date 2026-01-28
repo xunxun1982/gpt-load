@@ -665,6 +665,12 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		group.Description = strings.TrimSpace(*params.Description)
 	}
 
+	// Child groups cannot modify their upstream URLs as they are auto-managed
+	// Child group upstreams always point to parent group's proxy endpoint
+	if params.HasUpstreams && group.ParentGroupID != nil {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.child_group_cannot_modify_upstream", nil)
+	}
+
 	if params.HasUpstreams {
 		cleanedUpstreams, err := s.validateAndCleanUpstreams(params.Upstreams)
 		if err != nil {
@@ -897,9 +903,19 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	// Only sync for standard groups that are not child groups themselves
 	var childGroupsNeedingKeyUpdate []models.Group
 	var newParentFirstKey, oldParentFirstKey string
+	var childGroupsSynced bool
 	if group.GroupType == "standard" && group.ParentGroupID == nil {
 		nameChanged := oldName != group.Name
 		proxyKeysChanged := oldProxyKeys != group.ProxyKeys
+
+		// Log parent group update details for debugging child group sync issues
+		logrus.WithContext(ctx).WithFields(logrus.Fields{
+			"groupID":          group.ID,
+			"groupName":        group.Name,
+			"oldName":          oldName,
+			"nameChanged":      nameChanged,
+			"proxyKeysChanged": proxyKeysChanged,
+		}).Debug("Checking if child groups need sync")
 
 		if nameChanged || proxyKeysChanged {
 			// Sync child group upstreams within transaction for atomicity
@@ -909,6 +925,18 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			if err != nil {
 				logrus.WithContext(ctx).WithError(err).Error("Failed to sync child group upstreams, rolling back transaction")
 				return nil, NewI18nError(app_errors.ErrInternalServer, "errors.child_group_sync_failed", nil)
+			}
+
+			// Mark that child groups were synced (for cache invalidation after commit)
+			if len(childGroupsNeedingKeyUpdate) > 0 {
+				childGroupsSynced = true
+				logrus.WithContext(ctx).WithFields(logrus.Fields{
+					"groupID":          group.ID,
+					"groupName":        group.Name,
+					"childGroupCount":  len(childGroupsNeedingKeyUpdate),
+					"nameChanged":      nameChanged,
+					"proxyKeysChanged": proxyKeysChanged,
+				}).Info("Child groups will be synced")
 			}
 
 			// Prepare key update parameters for post-commit execution
@@ -943,6 +971,13 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	// Invalidate child groups cache if this is a child group update.
 	// This ensures GetAllChildGroups returns fresh data with updated display_name.
 	if group.ParentGroupID != nil && s.InvalidateChildGroupsCacheCallback != nil {
+		s.InvalidateChildGroupsCacheCallback()
+	}
+
+	// Invalidate child groups cache if parent group's name or proxy_keys changed and child groups were synced.
+	// This ensures GetAllChildGroups returns fresh data with updated upstream URLs and API keys.
+	// Without this, frontend would display stale cached data even though database was updated.
+	if childGroupsSynced && s.InvalidateChildGroupsCacheCallback != nil {
 		s.InvalidateChildGroupsCacheCallback()
 	}
 

@@ -390,6 +390,8 @@ export default {
     multiKeysPlaceholder: "多个密钥请用英文逗号 , 分隔",
     descriptionTooltip: "分组的详细说明，帮助团队成员了解该分组的用途和特点。支持多行文本",
     upstreamTooltip: "API服务器的完整URL地址。多个上游可以实现负载均衡和故障转移，提高服务可用性",
+    childGroupUpstreamAutoManaged:
+      "子分组的上游地址由系统自动管理，始终指向父分组的代理端点（http://127.0.0.1:PORT/proxy/父分组名称）。无法手动修改",
     weightTooltip:
       "负载均衡权重配置。权重决定流量分配比例，数值越大获得的流量越多。权重为0时禁用该上游（不接收任何请求）。示例：权重2:1表示前者获得约67%的流量",
     upstreamProxyUrl: "代理",

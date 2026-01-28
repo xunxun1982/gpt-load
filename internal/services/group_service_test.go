@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -1108,4 +1109,358 @@ func TestUpdateGroupWithoutChildGroups(t *testing.T) {
 	err = db.Model(&models.Group{}).Where("parent_group_id = ?", parentGroup.ID).Count(&childCount).Error
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), childCount)
+}
+
+// TestUpdateGroupWithChildGroupCacheInvalidation tests that child groups cache is invalidated
+// when parent group name changes, ensuring frontend displays updated upstream URLs.
+func TestUpdateGroupWithChildGroupCacheInvalidation(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	// Track cache invalidation calls
+	cacheInvalidated := false
+	svc.InvalidateChildGroupsCacheCallback = func() {
+		cacheInvalidated = true
+	}
+
+	// Create parent group
+	parentGroup, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "parent-cache-test",
+		DisplayName:        "Parent Cache Test",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-3.5-turbo",
+		ValidationEndpoint: "/v1/chat/completions",
+		ProxyKeys:          "sk-parent-key",
+	})
+	require.NoError(t, err)
+
+	// Create child group
+	childUpstreams := []map[string]interface{}{
+		{
+			"url":    expectedProxyURL("parent-cache-test"),
+			"weight": 1,
+		},
+	}
+	childUpstreamsJSON, err := json.Marshal(childUpstreams)
+	require.NoError(t, err)
+
+	childGroup := models.Group{
+		Name:               "parent-cache-test_child1",
+		DisplayName:        "Parent Cache Test (Child1)",
+		GroupType:          "standard",
+		Enabled:            true,
+		Upstreams:          datatypes.JSON(childUpstreamsJSON),
+		ChannelType:        parentGroup.ChannelType,
+		TestModel:          parentGroup.TestModel,
+		ValidationEndpoint: parentGroup.ValidationEndpoint,
+		ParentGroupID:      &parentGroup.ID,
+		ProxyKeys:          "sk-child-key",
+		Sort:               parentGroup.Sort,
+	}
+	err = db.Create(&childGroup).Error
+	require.NoError(t, err)
+
+	// Reset cache invalidation flag
+	cacheInvalidated = false
+
+	// Update parent group name
+	newName := "parent-cache-test-renamed"
+	_, err = svc.UpdateGroup(context.Background(), parentGroup.ID, GroupUpdateParams{
+		Name: &newName,
+	})
+	require.NoError(t, err)
+
+	// Verify cache was invalidated
+	assert.True(t, cacheInvalidated, "Child groups cache should be invalidated when parent name changes")
+
+	// Verify child group upstream was updated in database
+	var updatedChild models.Group
+	err = db.First(&updatedChild, childGroup.ID).Error
+	require.NoError(t, err)
+
+	var upstreams []map[string]interface{}
+	err = json.Unmarshal(updatedChild.Upstreams, &upstreams)
+	require.NoError(t, err)
+	require.Len(t, upstreams, 1)
+
+	expectedURL := expectedProxyURL("parent-cache-test-renamed")
+	assert.Equal(t, expectedURL, upstreams[0]["url"])
+}
+
+// TestUpdateGroupWithChildGroupProxyKeysSync tests that child groups' API keys are synced
+// when parent group's proxy_keys change, and cache is invalidated.
+func TestUpdateGroupWithChildGroupProxyKeysSync(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	// Track cache invalidation calls
+	cacheInvalidated := false
+	svc.InvalidateChildGroupsCacheCallback = func() {
+		cacheInvalidated = true
+	}
+
+	// Create parent group
+	parentGroup, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "parent-proxy-test",
+		DisplayName:        "Parent Proxy Test",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-3.5-turbo",
+		ValidationEndpoint: "/v1/chat/completions",
+		ProxyKeys:          "sk-parent-key-1,sk-parent-key-2",
+	})
+	require.NoError(t, err)
+
+	// Create child group
+	childUpstreams := []map[string]interface{}{
+		{
+			"url":    expectedProxyURL("parent-proxy-test"),
+			"weight": 1,
+		},
+	}
+	childUpstreamsJSON, err := json.Marshal(childUpstreams)
+	require.NoError(t, err)
+
+	childGroup := models.Group{
+		Name:               "parent-proxy-test_child1",
+		DisplayName:        "Parent Proxy Test (Child1)",
+		GroupType:          "standard",
+		Enabled:            true,
+		Upstreams:          datatypes.JSON(childUpstreamsJSON),
+		ChannelType:        parentGroup.ChannelType,
+		TestModel:          parentGroup.TestModel,
+		ValidationEndpoint: parentGroup.ValidationEndpoint,
+		ParentGroupID:      &parentGroup.ID,
+		ProxyKeys:          "sk-child-random-key",
+		Sort:               parentGroup.Sort,
+	}
+	err = db.Create(&childGroup).Error
+	require.NoError(t, err)
+
+	// Add parent's first proxy key as child's API key
+	if svc.keyService != nil {
+		_, err = svc.keyService.AddMultipleKeys(childGroup.ID, "sk-parent-key-1")
+		require.NoError(t, err)
+	}
+
+	// Reset cache invalidation flag
+	cacheInvalidated = false
+
+	// Update parent group proxy_keys
+	newProxyKeys := "sk-parent-key-new,sk-parent-key-2"
+	_, err = svc.UpdateGroup(context.Background(), parentGroup.ID, GroupUpdateParams{
+		ProxyKeys: &newProxyKeys,
+	})
+	require.NoError(t, err)
+
+	// Verify cache was invalidated
+	assert.True(t, cacheInvalidated, "Child groups cache should be invalidated when parent proxy_keys change")
+
+	// Verify child group has new API key
+	if svc.keyService != nil {
+		var apiKeys []models.APIKey
+		err = db.Where("group_id = ?", childGroup.ID).Find(&apiKeys).Error
+		require.NoError(t, err)
+
+		// Should have the new key
+		newKeyHash := svc.encryptionSvc.Hash("sk-parent-key-new")
+		found := false
+		for _, key := range apiKeys {
+			if key.KeyHash == newKeyHash {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "Child group should have new API key from parent")
+	}
+}
+
+// TestUpdateGroupNoCacheInvalidationWhenNoChildGroups tests that cache is not invalidated
+// when updating a parent group that has no child groups.
+func TestUpdateGroupNoCacheInvalidationWhenNoChildGroups(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	// Track cache invalidation calls
+	cacheInvalidated := false
+	svc.InvalidateChildGroupsCacheCallback = func() {
+		cacheInvalidated = true
+	}
+
+	// Create parent group without child groups
+	parentGroup, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "parent-no-child",
+		DisplayName:        "Parent No Child",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-3.5-turbo",
+		ValidationEndpoint: "/v1/chat/completions",
+		ProxyKeys:          "sk-parent-key",
+	})
+	require.NoError(t, err)
+
+	// Reset cache invalidation flag
+	cacheInvalidated = false
+
+	// Update parent group name
+	newName := "parent-no-child-renamed"
+	_, err = svc.UpdateGroup(context.Background(), parentGroup.ID, GroupUpdateParams{
+		Name: &newName,
+	})
+	require.NoError(t, err)
+
+	// Verify cache was NOT invalidated (no child groups to sync)
+	assert.False(t, cacheInvalidated, "Child groups cache should not be invalidated when parent has no child groups")
+}
+
+// TestUpdateChildGroupCannotModifyUpstream tests that child groups cannot modify their upstream URLs.
+func TestUpdateChildGroupCannotModifyUpstream(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	// Create parent group
+	parentGroup, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "parent-upstream-test",
+		DisplayName:        "Parent Upstream Test",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-3.5-turbo",
+		ValidationEndpoint: "/v1/chat/completions",
+		ProxyKeys:          "sk-parent-key",
+	})
+	require.NoError(t, err)
+
+	// Create child group
+	childUpstreams := []map[string]interface{}{
+		{
+			"url":    expectedProxyURL("parent-upstream-test"),
+			"weight": 1,
+		},
+	}
+	childUpstreamsJSON, err := json.Marshal(childUpstreams)
+	require.NoError(t, err)
+
+	childGroup := models.Group{
+		Name:               "parent-upstream-test_child1",
+		DisplayName:        "Parent Upstream Test (Child1)",
+		GroupType:          "standard",
+		Enabled:            true,
+		Upstreams:          datatypes.JSON(childUpstreamsJSON),
+		ChannelType:        parentGroup.ChannelType,
+		TestModel:          parentGroup.TestModel,
+		ValidationEndpoint: parentGroup.ValidationEndpoint,
+		ParentGroupID:      &parentGroup.ID,
+		ProxyKeys:          "sk-child-key",
+		Sort:               parentGroup.Sort,
+	}
+	err = db.Create(&childGroup).Error
+	require.NoError(t, err)
+
+	// Try to update child group's upstream (should fail)
+	newUpstreams := json.RawMessage(`[{"url":"https://different-api.com","weight":100}]`)
+	_, err = svc.UpdateGroup(context.Background(), childGroup.ID, GroupUpdateParams{
+		Upstreams:    newUpstreams,
+		HasUpstreams: true,
+	})
+
+	// Should return validation error
+	require.Error(t, err)
+	// Check if it's an I18nError with the correct message ID
+	var i18nErr *I18nError
+	if errors.As(err, &i18nErr) {
+		assert.Equal(t, "validation.child_group_cannot_modify_upstream", i18nErr.MessageID)
+	} else {
+		t.Fatalf("Expected I18nError, got %T", err)
+	}
+
+	// Verify child group upstream was NOT changed
+	var updatedChild models.Group
+	err = db.First(&updatedChild, childGroup.ID).Error
+	require.NoError(t, err)
+
+	var upstreams []map[string]interface{}
+	err = json.Unmarshal(updatedChild.Upstreams, &upstreams)
+	require.NoError(t, err)
+	require.Len(t, upstreams, 1)
+
+	// Upstream should still be the original parent proxy URL
+	expectedURL := expectedProxyURL("parent-upstream-test")
+	assert.Equal(t, expectedURL, upstreams[0]["url"])
+}
+
+// TestUpdateChildGroupOtherFieldsAllowed tests that child groups can update other fields (not upstream).
+func TestUpdateChildGroupOtherFieldsAllowed(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	// Create parent group
+	parentGroup, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "parent-other-fields",
+		DisplayName:        "Parent Other Fields",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-3.5-turbo",
+		ValidationEndpoint: "/v1/chat/completions",
+		ProxyKeys:          "sk-parent-key",
+	})
+	require.NoError(t, err)
+
+	// Create child group
+	childUpstreams := []map[string]interface{}{
+		{
+			"url":    expectedProxyURL("parent-other-fields"),
+			"weight": 1,
+		},
+	}
+	childUpstreamsJSON, err := json.Marshal(childUpstreams)
+	require.NoError(t, err)
+
+	childGroup := models.Group{
+		Name:               "parent-other-fields_child1",
+		DisplayName:        "Parent Other Fields (Child1)",
+		GroupType:          "standard",
+		Enabled:            true,
+		Upstreams:          datatypes.JSON(childUpstreamsJSON),
+		ChannelType:        parentGroup.ChannelType,
+		TestModel:          parentGroup.TestModel,
+		ValidationEndpoint: parentGroup.ValidationEndpoint,
+		ParentGroupID:      &parentGroup.ID,
+		ProxyKeys:          "sk-child-key",
+		Sort:               parentGroup.Sort,
+	}
+	err = db.Create(&childGroup).Error
+	require.NoError(t, err)
+
+	// Update child group's display name and description (should succeed)
+	newDisplayName := "Updated Child Display Name"
+	newDescription := "Updated child description"
+	updatedGroup, err := svc.UpdateGroup(context.Background(), childGroup.ID, GroupUpdateParams{
+		DisplayName: &newDisplayName,
+		Description: &newDescription,
+	})
+
+	// Should succeed
+	require.NoError(t, err)
+	assert.Equal(t, newDisplayName, updatedGroup.DisplayName)
+	assert.Equal(t, newDescription, updatedGroup.Description)
+
+	// Verify upstream was NOT changed
+	var upstreams []map[string]interface{}
+	err = json.Unmarshal(updatedGroup.Upstreams, &upstreams)
+	require.NoError(t, err)
+	require.Len(t, upstreams, 1)
+
+	expectedURL := expectedProxyURL("parent-other-fields")
+	assert.Equal(t, expectedURL, upstreams[0]["url"])
 }
