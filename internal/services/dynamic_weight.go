@@ -4,6 +4,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"sync"
 	"time"
@@ -51,6 +52,17 @@ type DynamicWeightConfig struct {
 	MinHealthScore               float64
 	MetricsTTL                   time.Duration
 	TimeWindowConfigs            []models.TimeWindowConfig
+
+	// Health score threshold below which effective weight becomes zero
+	// This prevents unhealthy targets from receiving traffic
+	CriticalHealthThreshold float64
+	// Health score threshold for applying aggressive penalty
+	// Targets with health score between CriticalHealthThreshold and MediumHealthThreshold
+	// will have their weight reduced more aggressively
+	MediumHealthThreshold float64
+	// Penalty multiplier for medium health scores (0.3-0.7 range)
+	// Applied as: effectiveWeight = baseWeight * (healthScore ^ MediumHealthPenaltyExponent)
+	MediumHealthPenaltyExponent float64
 }
 
 // DefaultDynamicWeightConfig returns the default configuration.
@@ -66,6 +78,14 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 		MinHealthScore:               0.1,
 		MetricsTTL:                   180 * 24 * time.Hour, // 180 days
 		TimeWindowConfigs:            models.DefaultTimeWindowConfigs(),
+		// Critical health threshold: below this, effective weight becomes zero
+		CriticalHealthThreshold: 0.3,
+		// Medium health threshold: between critical and this, apply aggressive penalty
+		MediumHealthThreshold: 0.7,
+		// Penalty exponent for medium health scores (quadratic penalty by default)
+		// This makes low-medium health scores (e.g., 0.4) have much lower effective weight
+		// Example: 0.4^2 = 0.16, so a weight of 10 becomes 1.6 (rounded to 2)
+		MediumHealthPenaltyExponent: 2.0,
 	}
 }
 
@@ -341,15 +361,39 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 }
 
 // GetEffectiveWeight calculates the effective weight based on base weight and health score.
+// Implements non-linear penalty for low health scores to prevent unhealthy targets from receiving traffic.
+// Three health score ranges:
+// 1. Critical (<= CriticalHealthThreshold): effective weight = 0 (completely excluded)
+// 2. Medium (CriticalHealthThreshold to MediumHealthThreshold): aggressive non-linear penalty
+// 3. Good (> MediumHealthThreshold): linear scaling
 func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *DynamicWeightMetrics) int {
 	if baseWeight <= 0 {
 		return 0
 	}
 
 	healthScore := m.CalculateHealthScore(metrics)
-	effectiveWeight := int(float64(baseWeight) * healthScore)
 
-	if effectiveWeight < 1 && healthScore >= m.config.MinHealthScore {
+	// Critical health: completely exclude from selection
+	if healthScore <= m.config.CriticalHealthThreshold {
+		return 0
+	}
+
+	var effectiveWeight int
+
+	// Medium health: apply aggressive non-linear penalty
+	if healthScore < m.config.MediumHealthThreshold {
+		// Use power function to create aggressive penalty curve
+		// Example with exponent=2.0: health=0.4 -> 0.16, health=0.5 -> 0.25, health=0.6 -> 0.36
+		penalizedScore := math.Pow(healthScore, m.config.MediumHealthPenaltyExponent)
+		effectiveWeight = int(float64(baseWeight) * penalizedScore)
+	} else {
+		// Good health: linear scaling
+		effectiveWeight = int(float64(baseWeight) * healthScore)
+	}
+
+	// Ensure minimum weight of 1 for non-critical health scores
+	// This prevents rounding to zero for small base weights with medium health
+	if effectiveWeight < 1 && healthScore > m.config.CriticalHealthThreshold {
 		effectiveWeight = 1
 	}
 
