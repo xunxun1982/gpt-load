@@ -432,14 +432,14 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
   {
     title: t("hub.sourceGroups"),
     key: "groups",
-    minWidth: 360,
+    minWidth: 340,
     titleAlign: "center",
     render: row => h("div", { class: "groups-cell" }, [renderGroupTags(row)]),
   },
   {
     title: t("hub.healthScore"),
     key: "health_score",
-    width: 60,
+    width: 80,
     align: "center",
     titleAlign: "center",
     render: row => {
@@ -448,7 +448,9 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
         return h(NText, { depth: 3 }, () => "-");
       }
       const best = Math.max(...enabledGroups.map(g => g.health_score));
-      return h(NText, { class: getHealthClass(best) }, () => formatPercent(best));
+      return h(NText, { class: getHealthClass(best), style: { whiteSpace: "nowrap" } }, () =>
+        formatPercent(best)
+      );
     },
   },
   {
@@ -894,9 +896,10 @@ onMounted(() => {
 }
 
 .col-health {
-  width: 45px;
+  width: 60px;
   text-align: center;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .col-priority {

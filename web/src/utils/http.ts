@@ -91,7 +91,7 @@ http.interceptors.response.use(
       const errorMsg =
         typeof rawMsg === "string"
           ? rawMsg
-          : rawMsg != null
+          : rawMsg !== null
             ? (() => {
                 try {
                   return JSON.stringify(rawMsg);
