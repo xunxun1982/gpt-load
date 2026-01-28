@@ -360,7 +360,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		ModelRedirectRulesV2: finalV2Rules,
 		ModelRedirectStrict:  params.ModelRedirectStrict,
 		CustomModelNames:     datatypes.JSON("[]"), // Initialize to empty array
-		Preconditions:        params.Preconditions,
+		Preconditions:        datatypes.JSONMap(params.Preconditions),
 		PathRedirects:        pathRedirectsJSON,
 		ProxyKeys:            strings.TrimSpace(params.ProxyKeys),
 	}
@@ -408,6 +408,17 @@ func (s *GroupService) InvalidateGroupListCache() {
 	s.invalidateGroupListCache()
 }
 
+// findSortedInsertIndex returns the index at which group should be inserted
+// to maintain sort order (sort ASC, name ASC).
+func findSortedInsertIndex(groups []models.Group, group *models.Group) int {
+	for i, g := range groups {
+		if group.Sort < g.Sort || (group.Sort == g.Sort && group.Name < g.Name) {
+			return i
+		}
+	}
+	return len(groups)
+}
+
 // AddGroupToListCache adds a new group to the cache without invalidating it.
 // This is used after creating a new group to keep the cache valid during async operations.
 // If cache is empty, it tries to load all groups from DB first using readDB.
@@ -433,13 +444,7 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 			}
 		}
 		// Insert in sorted order (sort ASC, name ASC) to maintain consistency
-		insertIdx := len(s.groupListCache.Groups)
-		for i, g := range s.groupListCache.Groups {
-			if group.Sort < g.Sort || (group.Sort == g.Sort && group.Name < g.Name) {
-				insertIdx = i
-				break
-			}
-		}
+		insertIdx := findSortedInsertIndex(s.groupListCache.Groups, group)
 		// Insert at the correct position
 		s.groupListCache.Groups = slices.Insert(s.groupListCache.Groups, insertIdx, *group)
 		s.groupListCache.ExpiresAt = now.Add(s.groupListCache.CurrentTTL)
@@ -471,13 +476,7 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 	}
 	if !found {
 		// Insert in sorted order (sort ASC, name ASC) to maintain consistency
-		insertIdx := len(groups)
-		for i, g := range groups {
-			if group.Sort < g.Sort || (group.Sort == g.Sort && group.Name < g.Name) {
-				insertIdx = i
-				break
-			}
-		}
+		insertIdx := findSortedInsertIndex(groups, group)
 		groups = slices.Insert(groups, insertIdx, *group)
 	}
 
@@ -497,13 +496,7 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 		}
 		if !alreadyCached {
 			// Insert in sorted order (sort ASC, name ASC) to maintain consistency
-			insertIdx := len(s.groupListCache.Groups)
-			for i, g := range s.groupListCache.Groups {
-				if group.Sort < g.Sort || (group.Sort == g.Sort && group.Name < g.Name) {
-					insertIdx = i
-					break
-				}
-			}
+			insertIdx := findSortedInsertIndex(s.groupListCache.Groups, group)
 			s.groupListCache.Groups = slices.Insert(s.groupListCache.Groups, insertIdx, *group)
 			s.groupListCache.ExpiresAt = now2.Add(s.groupListCache.CurrentTTL)
 		}
@@ -851,7 +844,7 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	}
 
 	if params.Preconditions != nil {
-		group.Preconditions = params.Preconditions
+		group.Preconditions = datatypes.JSONMap(params.Preconditions)
 	}
 
 	if params.HeaderRules != nil {

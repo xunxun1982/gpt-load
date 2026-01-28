@@ -144,6 +144,10 @@ async function handleFileChange(event: Event) {
     } else {
       // For small files, read content for accurate key count
       const text = await file.text();
+      // Guard against race condition if user selected a different file during read
+      if (selectedFile.value !== file) {
+        return;
+      }
       fileContent.value = text;
       estimatedKeyCount.value = 0;
       window.$message.success(t("keys.fileLoadedSuccess", { name: file.name }));
@@ -267,8 +271,18 @@ async function handleSubmit() {
         <template #header>{{ t("keys.fileSelected") }}</template>
         <div>
           <div>{{ t("keys.fileName") }}: {{ selectedFile.name }}</div>
-          <div>{{ t("keys.fileSize") }}: {{ (selectedFile.size / 1024).toFixed(2) }} KB</div>
-          <div>{{ t("keys.keyCount") }}: {{ keyCount }}</div>
+          <div>
+            {{ t("keys.fileSize") }}:
+            {{
+              selectedFile.size > 1024 * 1024
+                ? (selectedFile.size / (1024 * 1024)).toFixed(2) + " MB"
+                : (selectedFile.size / 1024).toFixed(2) + " KB"
+            }}
+          </div>
+          <div>
+            {{ t("keys.keyCount") }}: {{ estimatedKeyCount > 0 ? "~" : ""
+            }}{{ keyCount.toLocaleString() }}
+          </div>
         </div>
       </n-alert>
 
