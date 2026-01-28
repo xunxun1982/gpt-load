@@ -1617,6 +1617,7 @@ func isLikelyGitBashPath(s string) bool {
 //   - /f/MyProjects/test/file.py -> F:\MyProjects\test\file.py
 //   - /c/Users/name/file.txt -> C:\Users\name\file.txt
 //   - /d/work/project -> D:\work\project
+//
 // Only converts paths that match the Git Bash pattern to avoid breaking real Unix paths
 func convertGitBashPathToWindows(s string) string {
 	if !isLikelyGitBashPath(s) {
@@ -1884,10 +1885,10 @@ var reAlreadyDoubleEscaped = regexp.MustCompile(`[A-Za-z]:\\\\`)
 //   - After CC processing: "python F:\MyProjects\test\file.py" (correct)
 //
 // IMPORTANT: We only process the "command" field because:
-// 1. Only Bash tool performs additional escape processing on its command string
-// 2. Other tools (Read, Write, Edit) use file_path for path matching
-// 3. Double-escaping file_path would break Claude Code's file tracking
-//    (e.g., Read("hello.py") vs Write("F:\\\\path\\\\hello.py") won't match)
+//  1. Only Bash tool performs additional escape processing on its command string
+//  2. Other tools (Read, Write, Edit) use file_path for path matching
+//  3. Double-escaping file_path would break Claude Code's file tracking
+//     (e.g., Read("hello.py") vs Write("F:\\\\path\\\\hello.py") won't match)
 func doubleEscapeWindowsPathsForBash(jsonStr string) string {
 	// Quick check: if no "command" field with Windows path, return unchanged
 	if !strings.Contains(jsonStr, `"command"`) {

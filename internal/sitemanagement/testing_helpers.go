@@ -19,7 +19,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	// Use unique in-memory database for each test to avoid conflicts
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		SkipDefaultTransaction: true,
-		PrepareStmt:            true, // Enable prepared statement cache for speed
+		PrepareStmt:            true,                                  // Enable prepared statement cache for speed
 		Logger:                 logger.Default.LogMode(logger.Silent), // Disable logging for speed
 	})
 	require.NoError(t, err, "Failed to create test database")

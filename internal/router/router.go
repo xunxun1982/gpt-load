@@ -9,6 +9,7 @@ import (
 	"gpt-load/internal/proxy"
 	"gpt-load/internal/services"
 	"gpt-load/internal/types"
+	"gpt-load/internal/utils"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-contrib/static"
+	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
 )
@@ -61,10 +63,23 @@ func NewRouter(
 	router.Use(middleware.CORS(configManager.GetCORSConfig()))
 	router.Use(middleware.RateLimiter(configManager.GetPerformanceConfig()))
 	router.Use(middleware.SecurityHeaders())
-	// 32MB limit protects against memory exhaustion from large requests
-	// This is sufficient for most API operations including file uploads
-	// Large bulk imports (>32MB) should be split into smaller batches
-	router.Use(middleware.RequestBodySizeLimit(32 << 20))
+	// Request body size limit protects against memory exhaustion from large requests
+	// Default: 150MB to support large bulk key imports (500k+ keys)
+	// Can be configured via MAX_REQUEST_BODY_SIZE_MB environment variable
+	// Frontend enforces same 150MB limit for file uploads
+	// Valid range: 1-500MB. Values outside this range will be clamped with a warning.
+	originalMaxBodySizeMB := utils.ParseInteger(utils.GetEnvOrDefault("MAX_REQUEST_BODY_SIZE_MB", "150"), 150)
+	maxBodySizeMB := originalMaxBodySizeMB
+
+	// Only warn if the value was actually clamped (not if user explicitly set boundary values)
+	if originalMaxBodySizeMB < 1 {
+		maxBodySizeMB = 1
+		logrus.Warnf("MAX_REQUEST_BODY_SIZE_MB=%d is below minimum, clamped to 1MB", originalMaxBodySizeMB)
+	} else if originalMaxBodySizeMB > 500 {
+		maxBodySizeMB = 500 // Cap at 500MB for safety
+		logrus.Warnf("MAX_REQUEST_BODY_SIZE_MB=%d exceeds maximum, clamped to 500MB for safety", originalMaxBodySizeMB)
+	}
+	router.Use(middleware.RequestBodySizeLimit(int64(maxBodySizeMB) << 20))
 	startTime := time.Now()
 	router.Use(func(c *gin.Context) {
 		c.Set("serverStartTime", startTime)
@@ -171,6 +186,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		keys.GET("/export", serverHandler.ExportKeys)
 		keys.POST("/add-multiple", serverHandler.AddMultipleKeys)
 		keys.POST("/add-async", serverHandler.AddMultipleKeysAsync)
+		keys.POST("/add-async-stream", serverHandler.AddMultipleKeysAsyncStream)
 		keys.POST("/delete-multiple", serverHandler.DeleteMultipleKeys)
 		keys.POST("/delete-async", serverHandler.DeleteMultipleKeysAsync)
 		keys.POST("/restore-multiple", serverHandler.RestoreMultipleKeys)

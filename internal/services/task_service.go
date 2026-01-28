@@ -20,16 +20,21 @@ const (
 	TaskTypeKeyValidation = "KEY_VALIDATION"
 	TaskTypeKeyImport     = "KEY_IMPORT"
 	TaskTypeKeyDelete     = "KEY_DELETE"
+	TaskTypeKeyRestore    = "KEY_RESTORE"
 )
 
 // TaskStatus represents the full lifecycle of a long-running task.
+// IMPORTANT: The Result field must only contain value-only types (primitives, structs with no pointers/slices/maps).
+// This constraint is required for safe shallow copying in task_handler.go cache.
+// Current valid Result types: KeyImportResult, KeyDeleteResult, ManualValidationResult (all value-only).
+// When adding new Result types, ensure they contain only primitive fields (int, string, bool, time.Time).
 type TaskStatus struct {
 	TaskType        string     `json:"task_type"`
 	IsRunning       bool       `json:"is_running"`
 	GroupName       string     `json:"group_name,omitempty"`
 	Processed       int        `json:"processed"`
 	Total           int        `json:"total"`
-	Result          any        `json:"result,omitempty"`
+	Result          any        `json:"result,omitempty"` // Must be value-only type - see struct comment
 	Error           string     `json:"error,omitempty"`
 	StartedAt       time.Time  `json:"started_at"`
 	FinishedAt      *time.Time `json:"finished_at,omitempty"`

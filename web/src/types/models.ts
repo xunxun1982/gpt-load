@@ -45,6 +45,28 @@ export interface PathRedirectRule {
   to: string;
 }
 
+// Group preconditions for aggregate groups
+export interface GroupPreconditions {
+  max_request_size_kb?: number; // Maximum request size in KB (0 = no limit)
+}
+
+// Precondition item for UI (dynamic form)
+export interface PreconditionItem {
+  key: string;
+  value: number;
+}
+
+// Precondition option for UI dropdown
+export interface PreconditionOption {
+  key: string;
+  label: string;
+  description: string;
+  default_value: number;
+  min?: number;
+  max?: number;
+  unit?: string;
+}
+
 // V2 Model Redirect Types (one-to-many mapping with weighted selection)
 export interface ModelRedirectTarget {
   model: string;
@@ -134,6 +156,7 @@ export interface Group {
   model_redirect_rules_v2?: ModelRedirectRulesV2; // V2: one-to-many mapping
   model_redirect_strict: boolean;
   custom_model_names?: string[]; // Custom model names for aggregate groups
+  preconditions?: GroupPreconditions; // Preconditions for aggregate groups
   header_rules?: HeaderRule[];
   path_redirects?: PathRedirectRule[];
   proxy_keys: string;
@@ -190,7 +213,7 @@ export interface RequestStats {
   failure_rate: number;
 }
 
-export type TaskType = "KEY_VALIDATION" | "KEY_IMPORT" | "KEY_DELETE";
+export type TaskType = "KEY_VALIDATION" | "KEY_IMPORT" | "KEY_DELETE" | "KEY_RESTORE";
 
 export interface KeyValidationResult {
   invalid_keys: number;
@@ -208,6 +231,12 @@ export interface KeyDeleteResult {
   ignored_count: number;
 }
 
+export interface KeyRestoreResult {
+  restored_count: number;
+  ignored_count: number;
+  total_in_group: number;
+}
+
 export interface TaskInfo {
   task_type: TaskType;
   is_running: boolean;
@@ -216,7 +245,7 @@ export interface TaskInfo {
   total?: number;
   started_at?: string;
   finished_at?: string;
-  result?: KeyValidationResult | KeyImportResult | KeyDeleteResult;
+  result?: KeyValidationResult | KeyImportResult | KeyDeleteResult | KeyRestoreResult;
   error?: string;
 }
 

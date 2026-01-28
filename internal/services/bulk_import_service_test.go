@@ -149,31 +149,35 @@ func TestBulkImportService_CalculateOptimalBatchSize(t *testing.T) {
 		name          string
 		avgFieldSize  int
 		numFields     int
+		totalKeys     int
 		expectedRange [2]int // min and max expected batch size
 	}{
 		{
 			name:          "small records",
 			avgFieldSize:  10,
 			numFields:     5,
+			totalKeys:     500, // TierFastSync
 			expectedRange: [2]int{10, 100},
 		},
 		{
 			name:          "medium records",
 			avgFieldSize:  50,
 			numFields:     8,
-			expectedRange: [2]int{10, 100},
+			totalKeys:     3000, // TierBulkSync
+			expectedRange: [2]int{10, 200},
 		},
 		{
 			name:          "large records",
 			avgFieldSize:  200,
 			numFields:     10,
-			expectedRange: [2]int{10, 100},
+			totalKeys:     15000, // TierOptimizedSync
+			expectedRange: [2]int{10, 250},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			batchSize := svc.CalculateOptimalBatchSize(tt.avgFieldSize, tt.numFields)
+			batchSize := svc.CalculateOptimalBatchSize(tt.avgFieldSize, tt.numFields, tt.totalKeys)
 			assert.GreaterOrEqual(t, batchSize, tt.expectedRange[0], "Batch size too small")
 			assert.LessOrEqual(t, batchSize, tt.expectedRange[1], "Batch size too large")
 		})
@@ -211,7 +215,7 @@ func TestBulkImportService_WithTransaction(t *testing.T) {
 	}
 
 	// Bulk insert within transaction
-	err = svc.BulkInsertAPIKeysWithTx(tx, keys)
+	err = svc.BulkInsertAPIKeysWithTx(tx, keys, nil)
 	require.NoError(t, err)
 
 	// Commit transaction
@@ -256,7 +260,7 @@ func TestBulkImportService_TransactionRollback(t *testing.T) {
 	}
 
 	// Bulk insert within transaction
-	err = svc.BulkInsertAPIKeysWithTx(tx, keys)
+	err = svc.BulkInsertAPIKeysWithTx(tx, keys, nil)
 	require.NoError(t, err)
 
 	// Rollback transaction

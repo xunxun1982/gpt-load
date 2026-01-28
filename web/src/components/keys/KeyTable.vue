@@ -28,7 +28,7 @@ import {
   useDialog,
   type MessageReactive,
 } from "naive-ui";
-import { computed, h, ref, watch } from "vue";
+import { computed, h, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import KeyCreateDialog from "./KeyCreateDialog.vue";
 import KeyDeleteDialog from "./KeyDeleteDialog.vue";
@@ -89,6 +89,9 @@ const isNextPageDisabled = computed(() => {
 });
 const dialog = useDialog();
 const confirmInput = ref("");
+const loadKeysRetryCount = ref(0); // Track retry attempts to prevent infinite loops
+const MAX_LOAD_KEYS_RETRIES = 3; // Maximum retry attempts for timeout errors
+let loadKeysRetryTimer: number | null = null; // Track retry timer for cleanup
 
 // Status filter options
 const statusOptions = [
@@ -136,6 +139,13 @@ watch(
   () => props.selectedGroup,
   async newGroup => {
     if (newGroup) {
+      // Reset retry state when switching groups to avoid stale counts
+      if (loadKeysRetryTimer) {
+        clearTimeout(loadKeysRetryTimer);
+        loadKeysRetryTimer = null;
+      }
+      loadKeysRetryCount.value = 0;
+
       // Check whether resetting the page will trigger the pagination watcher
       const willWatcherTrigger = currentPage.value !== 1 || statusFilter.value !== "all";
       resetPage();
@@ -172,7 +182,8 @@ watch(
       const shouldRefresh =
         appState.lastCompletedTask.taskType === "KEY_VALIDATION" ||
         appState.lastCompletedTask.taskType === "KEY_IMPORT" ||
-        appState.lastCompletedTask.taskType === "KEY_DELETE";
+        appState.lastCompletedTask.taskType === "KEY_DELETE" ||
+        appState.lastCompletedTask.taskType === "KEY_RESTORE";
 
       if (isCurrentGroup && shouldRefresh) {
         // Refresh key list for current group
@@ -181,6 +192,14 @@ watch(
     }
   }
 );
+
+// Cleanup retry timer on unmount to prevent memory leaks
+onBeforeUnmount(() => {
+  if (loadKeysRetryTimer) {
+    clearTimeout(loadKeysRetryTimer);
+    loadKeysRetryTimer = null;
+  }
+});
 
 // Handle debounced search input
 function handleSearchInput() {
@@ -225,6 +244,12 @@ function handleMoreAction(key: string) {
 }
 
 async function loadKeys() {
+  // Clear any pending retry timer to avoid stale retries
+  if (loadKeysRetryTimer) {
+    clearTimeout(loadKeysRetryTimer);
+    loadKeysRetryTimer = null;
+  }
+
   if (!props.selectedGroup?.id) {
     return;
   }
@@ -240,7 +265,54 @@ async function loadKeys() {
     });
     keys.value = result.items as KeyRow[];
     total.value = result.pagination.total_items;
+    // Reset retry count on successful load
+    loadKeysRetryCount.value = 0;
+  } catch (error: unknown) {
+    // Check if it's a timeout error
+    // Note: Uses string matching for timeout detection as a pragmatic approach
+    // This works for current error formats but could be made more robust with
+    // specific error types or status codes if available from the HTTP client
+    const errorMsg =
+      (error as { response?: { data?: { message?: string } }; message?: string })?.response?.data
+        ?.message ||
+      (error as { message?: string })?.message ||
+      "";
+    if (
+      errorMsg.includes("timeout") ||
+      errorMsg.includes("deadline exceeded") ||
+      errorMsg.includes("context deadline exceeded")
+    ) {
+      // Check if we've exceeded max retries
+      if (loadKeysRetryCount.value >= MAX_LOAD_KEYS_RETRIES) {
+        window.$message.error(t("common.databaseBusyMaxRetries"));
+        loadKeysRetryCount.value = 0; // Reset for next attempt
+        return;
+      }
+
+      loadKeysRetryCount.value++;
+
+      // Show friendly message and auto-retry after 3 seconds
+      const retrySeconds = 3;
+      window.$message.warning(t("common.databaseBusyRetry", { seconds: retrySeconds }), {
+        duration: retrySeconds * 1000,
+      });
+
+      // Auto-retry after delay
+      loadKeysRetryTimer = window.setTimeout(() => {
+        if (props.selectedGroup?.id) {
+          loadKeys();
+        }
+      }, retrySeconds * 1000);
+    } else {
+      // Reset retry count for non-timeout errors to ensure fresh retry attempts
+      loadKeysRetryCount.value = 0;
+    }
+    // Error is already handled by http interceptor, no need to show again
   } finally {
+    // Note: loading is set to false here even during retry wait period.
+    // This is intentional UX design - it allows users to interact with the UI
+    // (e.g., change filters, navigate away) which will cancel the pending retry.
+    // The retry message provides sufficient feedback about the upcoming retry.
     loading.value = false;
   }
 }
@@ -524,12 +596,34 @@ async function restoreAllInvalid() {
     onPositiveClick: async () => {
       isRestoring.value = true;
       d.loading = true;
+
+      // Trigger task polling immediately before API call for instant UI feedback
+      // Note: This pattern is repeated across multiple batch operations but not extracted
+      // to a helper function because each operation has slightly different context
+      // (different loading states, group name handling, etc.) and keeping it inline
+      // makes the flow more explicit and easier to understand.
+      localStorage.removeItem("last_closed_task");
+      appState.taskPollingTrigger++;
+
       try {
-        await keysApi.restoreAllInvalidKeys(groupId);
-        await loadKeys();
-        // Trigger sync operation refresh
-        if (groupName) {
-          triggerSyncOperationRefresh(groupName, "RESTORE_ALL_INVALID");
+        const response = await keysApi.restoreAllInvalidKeys(groupId);
+
+        // Check if response is a task (async operation for large batches)
+        if (
+          response &&
+          typeof response === "object" &&
+          "is_running" in response &&
+          (response as { is_running: boolean }).is_running
+        ) {
+          // Async task started - progress bar already showing
+          window.$message.info(t("keys.restoringInBackground"));
+        } else {
+          // Sync operation completed
+          await loadKeys();
+          // Trigger sync operation refresh
+          if (groupName) {
+            triggerSyncOperationRefresh(groupName, "RESTORE_ALL_INVALID");
+          }
         }
       } catch (_error) {
         console.error("Restore failed");
@@ -559,6 +653,8 @@ async function validateKeys(status: "all" | "active" | "invalid") {
 
   try {
     await keysApi.validateGroupKeys(props.selectedGroup.id, status === "all" ? undefined : status);
+
+    // Trigger task polling immediately after API call succeeds
     localStorage.removeItem("last_closed_task");
     appState.taskPollingTrigger++;
   } catch (_error) {
@@ -585,13 +681,32 @@ async function clearAllInvalid() {
     onPositiveClick: async () => {
       isDeling.value = true;
       d.loading = true;
+
+      // Trigger task polling immediately before API call for instant UI feedback
+      localStorage.removeItem("last_closed_task");
+      appState.taskPollingTrigger++;
+
       try {
-        const { data } = await keysApi.clearAllInvalidKeys(groupId);
-        window.$message.success(data?.message || t("keys.clearSuccess"));
-        await loadKeys();
-        // Trigger sync operation refresh
-        if (groupName) {
-          triggerSyncOperationRefresh(groupName, "CLEAR_ALL_INVALID");
+        const response = await keysApi.clearAllInvalidKeys(groupId);
+
+        // Check if response is a task (async operation for large batches)
+        if (
+          response &&
+          typeof response === "object" &&
+          "is_running" in response &&
+          (response as { is_running: boolean }).is_running
+        ) {
+          // Async task started - progress bar already showing
+          window.$message.info(t("keys.clearingInBackground"));
+        } else {
+          // Sync operation completed
+          const message = (response as { message?: string })?.message || t("keys.clearSuccess");
+          window.$message.success(message);
+          await loadKeys();
+          // Trigger sync operation refresh
+          if (groupName) {
+            triggerSyncOperationRefresh(groupName, "CLEAR_ALL_INVALID");
+          }
         }
       } catch (_error) {
         console.error("Delete failed");
@@ -646,12 +761,30 @@ async function clearAll() {
           }
 
           isDeling.value = true;
+
+          // Trigger task polling immediately before API call for instant UI feedback
+          localStorage.removeItem("last_closed_task");
+          appState.taskPollingTrigger++;
+
           try {
-            await keysApi.clearAllKeys(groupId);
-            window.$message.success(t("keys.clearAllKeysSuccess"));
-            await loadKeys();
-            // Trigger sync operation refresh
-            triggerSyncOperationRefresh(groupName, "CLEAR_ALL");
+            const response = await keysApi.clearAllKeys(groupId);
+
+            // Check if response is a task (async operation for large batches)
+            if (
+              response &&
+              typeof response === "object" &&
+              "is_running" in response &&
+              (response as { is_running: boolean }).is_running
+            ) {
+              // Async task started - progress bar already showing
+              window.$message.info(t("keys.clearingInBackground"));
+            } else {
+              // Sync operation completed - no task was created, hide progress bar
+              window.$message.success(t("keys.clearAllKeysSuccess"));
+              await loadKeys();
+              // Trigger sync operation refresh
+              triggerSyncOperationRefresh(groupName, "CLEAR_ALL");
+            }
           } catch (_error) {
             console.error("Clear all failed", _error);
           } finally {

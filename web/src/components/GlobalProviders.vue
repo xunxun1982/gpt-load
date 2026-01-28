@@ -1,23 +1,23 @@
 <script setup lang="ts">
+import { getLocale } from "@/locales";
 import { appState } from "@/utils/app-state";
 import { actualTheme } from "@/utils/theme";
-import { getLocale } from "@/locales";
 import {
-  darkTheme,
   NConfigProvider,
   NDialogProvider,
   NLoadingBarProvider,
   NMessageProvider,
-  useLoadingBar,
-  useMessage,
-  type GlobalTheme,
-  type GlobalThemeOverrides,
-  zhCN,
-  enUS,
-  jaJP,
-  dateZhCN,
+  darkTheme,
   dateEnUS,
   dateJaJP,
+  dateZhCN,
+  enUS,
+  jaJP,
+  useLoadingBar,
+  useMessage,
+  zhCN,
+  type GlobalTheme,
+  type GlobalThemeOverrides,
 } from "naive-ui";
 import { computed, defineComponent, watch } from "vue";
 
@@ -153,10 +153,12 @@ const theme = computed<GlobalTheme | undefined>(() => {
   return actualTheme.value === "dark" ? darkTheme : undefined;
 });
 
+// Extract current locale to avoid duplicate getLocale() calls
+const currentLocale = computed(() => getLocale());
+
 // Return Naive UI locale based on current language
 const locale = computed(() => {
-  const currentLocale = getLocale();
-  switch (currentLocale) {
+  switch (currentLocale.value) {
     case "zh-CN":
       return zhCN;
     case "en-US":
@@ -170,8 +172,7 @@ const locale = computed(() => {
 
 // Return date-fns locale based on current language
 const dateLocale = computed(() => {
-  const currentLocale = getLocale();
-  switch (currentLocale) {
+  switch (currentLocale.value) {
     case "zh-CN":
       return dateZhCN;
     case "en-US":

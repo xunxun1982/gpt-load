@@ -6,6 +6,7 @@ import GroupList from "@/components/keys/GroupList.vue";
 import KeyTable from "@/components/keys/KeyTable.vue";
 import SubGroupTable from "@/components/keys/SubGroupTable.vue";
 import type { Group, SubGroupInfo } from "@/types/models";
+import { appState } from "@/utils/app-state";
 import { getNearestGroupIdAfterDeletion, getSidebarOrderedGroupIds } from "@/utils/group-sidebar";
 import { onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -104,6 +105,20 @@ watch(selectedGroup, async newGroup => {
   }
 });
 
+// Watch for task completion to refresh group list
+// This handles async group deletion completion
+watch(
+  () => appState.groupDataRefreshTrigger,
+  async () => {
+    // Refresh group list when a task completes
+    await loadGroups();
+    // Also refresh sub-groups if current selection is an aggregate group
+    if (selectedGroup.value?.group_type === "aggregate") {
+      await loadSubGroups();
+    }
+  }
+);
+
 function handleGroupSelect(group: Group | null) {
   selectedGroup.value = group || null;
   setLastSelectedGroupId(group?.id ?? null);
@@ -170,13 +185,19 @@ function getGroupRemovalSet(deletedGroup: Group): Set<number> {
   return removed;
 }
 
-async function handleGroupDeleted(deletedGroup: Group, parentGroupId?: number) {
+async function handleGroupDeleted(
+  deletedGroup: Group,
+  parentGroupId?: number,
+  isAsyncDeletion?: boolean
+) {
   const deletedId = deletedGroup.id;
   let nextGroupId: number | undefined;
 
+  // Calculate removal set once and reuse
+  const removedIds = getGroupRemovalSet(deletedGroup);
+
   if (typeof deletedId === "number") {
     const orderedIds = getSidebarOrderedGroupIds(groups.value);
-    const removedIds = getGroupRemovalSet(deletedGroup);
     nextGroupId = getNearestGroupIdAfterDeletion(orderedIds, deletedId, removedIds);
   }
 
@@ -185,7 +206,32 @@ async function handleGroupDeleted(deletedGroup: Group, parentGroupId?: number) {
     nextGroupId = parentGroupId;
   }
 
-  await refreshGroupsAndSelect(nextGroupId);
+  // Optimistically remove the deleted group from the local list immediately
+  // This provides instant UI feedback, especially for async deletions
+  groups.value = groups.value.filter(g => g.id !== undefined && !removedIds.has(g.id));
+
+  // Select the next group
+  if (nextGroupId !== undefined) {
+    const targetGroup = groups.value.find(g => g.id === nextGroupId);
+    if (targetGroup) {
+      handleGroupSelect(targetGroup);
+    } else if (groups.value.length > 0) {
+      handleGroupSelect(groups.value[0] ?? null);
+    } else {
+      handleGroupSelect(null);
+    }
+  } else if (groups.value.length > 0) {
+    handleGroupSelect(groups.value[0] ?? null);
+  } else {
+    handleGroupSelect(null);
+  }
+
+  // For async deletions, don't refresh immediately as the backend task is still running
+  // The group list will be refreshed when the task completes or when user manually refreshes
+  // For sync deletions, refresh from backend to ensure consistency
+  if (!isAsyncDeletion) {
+    await loadGroups();
+  }
 }
 
 // Handle subgroup selection, navigate to corresponding group

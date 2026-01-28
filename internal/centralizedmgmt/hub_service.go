@@ -477,7 +477,7 @@ func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
 // 4. Prioritize native channel type for the format
 // 5. Filter by enabled status and health score
 // 6. Select by sort order (priority) and weight
-func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, relayFormat types.RelayFormat) (*models.Group, error) {
+func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, relayFormat types.RelayFormat, requestSizeKB int) (*models.Group, error) {
 	pool, err := s.GetModelPool(ctx)
 	if err != nil {
 		return nil, err
@@ -531,6 +531,33 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 		}
 	}
 
+	// Load preconditions for aggregate groups to check request size limits
+	var groupPreconditionsMap map[uint]*models.Group
+	if requestSizeKB > 0 {
+		groupPreconditionsMap = make(map[uint]*models.Group)
+		// Collect aggregate group IDs
+		var aggregateGroupIDs []uint
+		for _, source := range allSources {
+			if source.GroupType == "aggregate" {
+				aggregateGroupIDs = append(aggregateGroupIDs, source.GroupID)
+			}
+		}
+		// Load preconditions in batch for performance
+		if len(aggregateGroupIDs) > 0 {
+			var groups []models.Group
+			if err := s.db.WithContext(ctx).
+				Select("id, preconditions").
+				Where("id IN ?", aggregateGroupIDs).
+				Find(&groups).Error; err != nil {
+				logrus.WithError(err).Warn("Failed to load group preconditions")
+			} else {
+				for i := range groups {
+					groupPreconditionsMap[groups[i].ID] = &groups[i]
+				}
+			}
+		}
+	}
+
 	// Filter by channel compatibility and health
 	// Separate native and compatible channels for priority handling
 	var nativeSources []ModelSource
@@ -567,6 +594,23 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 					"channel_type": source.ChannelType,
 				}).Debug("Skipping source: cc_support not enabled for Claude format request")
 				continue
+			}
+		}
+
+		// Check preconditions for aggregate groups
+		if source.GroupType == "aggregate" && requestSizeKB > 0 {
+			if group, ok := groupPreconditionsMap[source.GroupID]; ok {
+				maxSizeKB := group.GetMaxRequestSizeKB()
+				// Skip this aggregate group if request size exceeds limit
+				if maxSizeKB > 0 && requestSizeKB > maxSizeKB {
+					logrus.WithFields(logrus.Fields{
+						"group_id":        source.GroupID,
+						"group_name":      source.GroupName,
+						"request_size_kb": requestSizeKB,
+						"max_size_kb":     maxSizeKB,
+					}).Debug("Skipping aggregate group: request size exceeds precondition limit")
+					continue
+				}
 			}
 		}
 
@@ -1268,8 +1312,8 @@ func (s *HubService) UpdateAggregateGroupCustomModels(ctx context.Context, param
 	s.InvalidateModelPoolCache()
 
 	logrus.WithFields(logrus.Fields{
-		"group_id":      params.GroupID,
-		"model_count":   len(cleanedModels),
+		"group_id":    params.GroupID,
+		"model_count": len(cleanedModels),
 	}).Info("Updated aggregate group custom models")
 
 	return nil

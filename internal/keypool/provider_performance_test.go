@@ -387,7 +387,7 @@ func BenchmarkAddKeysPerformance(b *testing.B) {
 					b.Fatal(err)
 				}
 				b.StopTimer()
-				if _, err := provider.RemoveAllKeys(context.Background(), group.ID); err != nil {
+				if _, err := provider.RemoveAllKeys(context.Background(), group.ID, nil); err != nil {
 					b.Fatal(err)
 				}
 				b.StartTimer()
@@ -539,7 +539,7 @@ func BenchmarkRemoveAllKeysPerformance(b *testing.B) {
 				b.StartTimer()
 
 				ctx := context.Background()
-				if _, err := provider.RemoveAllKeys(ctx, group.ID); err != nil {
+				if _, err := provider.RemoveAllKeys(ctx, group.ID, nil); err != nil {
 					b.Fatal(err)
 				}
 			}

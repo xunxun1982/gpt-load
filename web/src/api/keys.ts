@@ -49,7 +49,8 @@ export const keysApi = {
   },
 
   // Delete a group
-  deleteGroup(groupId: number): Promise<void> {
+  // Returns response data which may contain status information for async deletions
+  deleteGroup(groupId: number): Promise<{ message?: string; code?: string }> {
     return http.delete(`/groups/${groupId}`);
   },
 
@@ -140,8 +141,30 @@ export const keysApi = {
       },
       {
         hideMessage: true,
+        timeout: 300000, // 5 minutes timeout to support large files over slow networks
       }
     );
+    return res.data;
+  },
+
+  // Add keys asynchronously using streaming (for large files > 10MB)
+  // This method uploads the file using multipart/form-data and processes it in batches on the server
+  // Memory usage is constant regardless of file size
+  async addKeysAsyncStream(group_id: number, file: File): Promise<TaskInfo> {
+    const formData = new FormData();
+    formData.append("group_id", group_id.toString());
+    formData.append("file", file);
+
+    // Note: Must explicitly set Content-Type to undefined for FormData
+    // The default axios instance has "Content-Type: application/json" which overrides FormData's automatic header
+    // Setting to undefined allows axios to set the correct multipart/form-data with boundary
+    const res = await http.post("/keys/add-async-stream", formData, {
+      hideMessage: true,
+      timeout: 300000, // 5 minutes timeout
+      headers: {
+        "Content-Type": undefined, // Let axios set multipart/form-data with boundary
+      },
+    });
     return res.data;
   },
 
@@ -197,6 +220,7 @@ export const keysApi = {
       },
       {
         hideMessage: true,
+        timeout: 300000, // 5 minutes timeout to support large files over slow networks
       }
     );
     return res.data;
@@ -211,12 +235,12 @@ export const keysApi = {
   },
 
   // Restore all invalid keys
-  restoreAllInvalidKeys(group_id: number): Promise<void> {
+  restoreAllInvalidKeys(group_id: number): Promise<TaskInfo | { message: string }> {
     return http.post("/keys/restore-all-invalid", { group_id });
   },
 
   // Clear all invalid keys
-  clearAllInvalidKeys(group_id: number): Promise<{ data: { message: string } }> {
+  clearAllInvalidKeys(group_id: number): Promise<TaskInfo | { message: string }> {
     return http.post(
       "/keys/clear-all-invalid",
       { group_id },
@@ -227,7 +251,7 @@ export const keysApi = {
   },
 
   // Clear all keys
-  clearAllKeys(group_id: number): Promise<{ data: { message: string } }> {
+  clearAllKeys(group_id: number): Promise<TaskInfo | { message: string }> {
     return http.post(
       "/keys/clear-all",
       { group_id },

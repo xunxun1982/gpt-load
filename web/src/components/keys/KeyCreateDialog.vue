@@ -6,6 +6,17 @@ import { NAlert, NButton, NCard, NIcon, NInput, NModal } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
+// Constants for file size thresholds and key estimation
+// Threshold for switching to streaming import (MB)
+const LARGE_FILE_THRESHOLD_MB = 10;
+// Average bytes per key line (matches server-side estimation in key_import_service.go)
+const ESTIMATED_BYTES_PER_KEY = 170;
+// Maximum file size for upload (MB) - should match backend MAX_REQUEST_BODY_SIZE_MB
+// Note: Hardcoded for simplicity. While fetching from backend would ensure sync,
+// it adds complexity (extra API call, loading state, error handling) for a value
+// that rarely changes. The backend will reject oversized requests anyway.
+const MAX_FILE_SIZE_MB = 150;
+
 interface Props {
   show: boolean;
   groupId: number;
@@ -29,19 +40,29 @@ const inputMode = ref<"text" | "file">("text");
 const selectedFile = ref<File | null>(null);
 const fileContent = ref("");
 const fileInputRef = ref<HTMLInputElement | null>(null);
+const estimatedKeyCount = ref(0); // For large files, estimate without reading entire file
 
 // Computed property to check if submit is enabled
 const canSubmit = computed(() => {
   if (inputMode.value === "text") {
     return keysText.value.trim().length > 0;
   } else {
-    return fileContent.value.trim().length > 0;
+    // For file mode, check if file is selected (not fileContent)
+    // Large files don't load content into memory
+    return selectedFile.value !== null;
   }
 });
 
 // Computed property for key count to avoid recalculation on re-renders
 const keyCount = computed(() => {
-  if (!fileContent.value) return 0;
+  // For large files, use estimated count
+  if (estimatedKeyCount.value > 0) {
+    return estimatedKeyCount.value;
+  }
+  // For small files, calculate from content
+  if (!fileContent.value) {
+    return 0;
+  }
   return fileContent.value.split("\n").filter(line => line.trim()).length;
 });
 
@@ -61,6 +82,7 @@ function resetForm() {
   inputMode.value = "text";
   selectedFile.value = null;
   fileContent.value = "";
+  estimatedKeyCount.value = 0;
   if (fileInputRef.value) {
     fileInputRef.value.value = "";
   }
@@ -86,9 +108,12 @@ async function handleFileChange(event: Event) {
   }
 
   // Check file size (limit to 150MB to support large key files)
-  const maxSize = 150 * 1024 * 1024; // 150MB
+  // Note: This limit should ideally match the backend MAX_REQUEST_BODY_SIZE_MB configuration
+  // TODO: Consider fetching this limit from backend API to avoid configuration drift
+  const maxSize = MAX_FILE_SIZE_MB * 1024 * 1024;
   if (file.size > maxSize) {
     window.$message.error(t("keys.fileSizeExceeded"));
+    handleClearFile(); // Clear stale file state
     target.value = "";
     return;
   }
@@ -96,18 +121,45 @@ async function handleFileChange(event: Event) {
   // Check file type (only .txt files, case-insensitive)
   if (!file.name.toLowerCase().endsWith(".txt")) {
     window.$message.error(t("keys.invalidFileType"));
+    handleClearFile(); // Clear stale file state
     target.value = "";
     return;
   }
 
   try {
-    const text = await file.text();
     selectedFile.value = file;
-    fileContent.value = text;
+    const fileSizeMB = file.size / (1024 * 1024);
+
+    // For large files (>LARGE_FILE_THRESHOLD_MB), estimate key count without reading entire file
+    // This prevents loading 150MB into browser memory
+    if (fileSizeMB > LARGE_FILE_THRESHOLD_MB) {
+      // Estimate using ESTIMATED_BYTES_PER_KEY (same as server-side calculation)
+      estimatedKeyCount.value = Math.floor(file.size / ESTIMATED_BYTES_PER_KEY);
+      fileContent.value = ""; // Don't store content for large files
+      window.$message.success(
+        `${t("keys.fileLoadedSuccess", {
+          name: file.name,
+        })} (${fileSizeMB.toFixed(2)}MB, ~${estimatedKeyCount.value.toLocaleString()} keys)`
+      );
+    } else {
+      // For small files, read content for accurate key count
+      const text = await file.text();
+      // Guard against race condition if user selected a different file during read
+      if (selectedFile.value !== file) {
+        return;
+      }
+      fileContent.value = text;
+      estimatedKeyCount.value = 0;
+      window.$message.success(t("keys.fileLoadedSuccess", { name: file.name }));
+    }
+
     inputMode.value = "file";
-    window.$message.success(t("keys.fileLoadedSuccess", { name: file.name }));
   } catch (_error) {
     window.$message.error(t("keys.fileReadError"));
+    selectedFile.value = null;
+    fileContent.value = "";
+    estimatedKeyCount.value = 0;
+    inputMode.value = "text";
     target.value = "";
   }
 }
@@ -116,6 +168,7 @@ async function handleFileChange(event: Event) {
 function handleClearFile() {
   selectedFile.value = null;
   fileContent.value = "";
+  estimatedKeyCount.value = 0;
   inputMode.value = "text";
   if (fileInputRef.value) {
     fileInputRef.value.value = "";
@@ -131,12 +184,39 @@ async function handleSubmit() {
   try {
     loading.value = true;
 
-    const content = inputMode.value === "file" ? fileContent.value : keysText.value;
-    await keysApi.addKeysAsync(props.groupId, content);
+    // Determine which API to use based on input mode and file size
+    if (inputMode.value === "file" && selectedFile.value) {
+      const fileSizeMB = selectedFile.value.size / (1024 * 1024);
+
+      // Show appropriate message based on file size
+      if (fileSizeMB > LARGE_FILE_THRESHOLD_MB) {
+        // Large file - show info about streaming import
+        window.$message.info(t("keys.largeFileImportStarting", { size: fileSizeMB.toFixed(2) }), {
+          duration: 3000,
+        });
+        await keysApi.addKeysAsyncStream(props.groupId, selectedFile.value);
+      } else {
+        // Small file - use regular JSON API
+        await keysApi.addKeysAsync(props.groupId, fileContent.value);
+      }
+    } else {
+      // Text input always uses JSON API
+      await keysApi.addKeysAsync(props.groupId, keysText.value);
+    }
+
+    // Show task started message and trigger polling
+    window.$message.info(t("keys.importTaskStarted"), { duration: 5000 });
+    appState.taskPollingTrigger++;
+
+    // Emit success event to notify parent component
+    emit("success");
+
+    // Close dialog and reset form
     resetForm();
     handleClose();
-    window.$message.success(t("common.operationSuccess"));
-    appState.taskPollingTrigger++;
+  } catch (error) {
+    // Error is already handled by http interceptor
+    console.error("Import failed:", error);
   } finally {
     loading.value = false;
   }
@@ -191,8 +271,18 @@ async function handleSubmit() {
         <template #header>{{ t("keys.fileSelected") }}</template>
         <div>
           <div>{{ t("keys.fileName") }}: {{ selectedFile.name }}</div>
-          <div>{{ t("keys.fileSize") }}: {{ (selectedFile.size / 1024).toFixed(2) }} KB</div>
-          <div>{{ t("keys.keyCount") }}: {{ keyCount }}</div>
+          <div>
+            {{ t("keys.fileSize") }}:
+            {{
+              selectedFile.size > 1024 * 1024
+                ? (selectedFile.size / (1024 * 1024)).toFixed(2) + " MB"
+                : (selectedFile.size / 1024).toFixed(2) + " KB"
+            }}
+          </div>
+          <div>
+            {{ t("keys.keyCount") }}: {{ estimatedKeyCount > 0 ? "~" : ""
+            }}{{ keyCount.toLocaleString() }}
+          </div>
         </div>
       </n-alert>
 

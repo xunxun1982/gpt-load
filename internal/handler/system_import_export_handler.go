@@ -799,8 +799,31 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		// Import all groups using the unified ImportExportService
 		importedCount := 0
 		for _, groupData := range serviceGroups {
-			groupID, err := s.ImportExportService.ImportGroup(tx, &groupData)
+			groupProcessed := 0
+			// Create progress callback for this group's import
+			progressCallback := func(processed int) {
+				if processed > groupProcessed {
+					groupProcessed = processed
+				}
+				if taskStarted {
+					// Update progress with cumulative count across all groups
+					// Use groupProcessed to keep progress monotonic even if callbacks regress
+					totalProcessed := processedKeys + groupProcessed
+					if updateErr := s.TaskService.UpdateProgress(totalProcessed); updateErr != nil {
+						logrus.WithError(updateErr).Debug("Failed to update task progress during batch import")
+					}
+				}
+			}
+
+			groupID, err := s.ImportExportService.ImportGroup(tx, &groupData, progressCallback)
 			if err != nil {
+				// Keep progress monotonic even when a group fails
+				if groupProcessed > 0 {
+					processedKeys += groupProcessed
+					if taskStarted {
+						_ = s.TaskService.UpdateProgress(processedKeys)
+					}
+				}
 				// Log error but continue with other groups
 				logrus.WithError(err).Warnf("Failed to import group %s, skipping", groupData.Group.Name)
 				continue
@@ -809,13 +832,16 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 			// Query the created group within the transaction
 			var createdGroup models.Group
 			if err := tx.First(&createdGroup, groupID).Error; err != nil {
-				logrus.WithError(err).Warnf("Failed to query imported group %d", groupID)
-				continue
+				logrus.WithError(err).Warnf("Failed to query imported group %d, using minimal info", groupID)
+				// Fallback to minimal group record to maintain progress consistency
+				// and ensure cache refresh happens for the imported group
+				createdGroup = models.Group{ID: groupID, Name: groupData.Group.Name}
 			}
 
 			importedGroups = append(importedGroups, createdGroup)
 			importedCount++
 			processedKeys += len(groupData.Keys)
+			// Final progress update after this group is complete
 			if taskStarted {
 				if updateErr := s.TaskService.UpdateProgress(processedKeys); updateErr != nil {
 					logrus.WithError(updateErr).Debug("Failed to update task progress for batch group import")

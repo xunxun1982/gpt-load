@@ -71,10 +71,18 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 	c.Set("relay_format", relayFormat)
 
 	// Step 2: Extract model from request (format-aware)
-	modelName, err := h.extractModelFromRequest(c, relayFormat)
+	// Note: extractModelFromRequest reads the request body once and returns both model and body bytes
+	modelName, bodyBytes, err := h.extractModelFromRequest(c, relayFormat)
 	if err != nil {
 		h.returnHubError(c, http.StatusBadRequest, "hub_invalid_request", err.Error())
 		return
+	}
+
+	// Calculate request size for precondition checking using the body bytes from extraction
+	var requestSizeKB int
+	if len(bodyBytes) > 0 {
+		// Use ceiling division to avoid allowing payloads slightly over the limit
+		requestSizeKB = (len(bodyBytes) + 1023) / 1024
 	}
 
 	// Validate model is provided (empty model should return 400 early)
@@ -102,7 +110,7 @@ func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 	}
 
 	// Step 3: Select the best group for the model with relay format awareness
-	group, err := h.hubService.SelectGroupForModel(ctx, modelName, relayFormat)
+	group, err := h.hubService.SelectGroupForModel(ctx, modelName, relayFormat, requestSizeKB)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to select group for model")
 		h.returnHubError(c, http.StatusInternalServerError, "hub_group_selection_failed", "Failed to select group")
@@ -456,31 +464,33 @@ func (h *HubHandler) detectRelayFormat(path, method string) types.RelayFormat {
 
 // extractModelFromRequest extracts the model name from the request.
 // The extraction method depends on the relay format.
-// Returns the model name and any error encountered.
-func (h *HubHandler) extractModelFromRequest(c *gin.Context, relayFormat types.RelayFormat) (string, error) {
+// Returns the model name, request body bytes, and any error encountered.
+// The body bytes are returned to avoid re-reading the body for size calculation.
+func (h *HubHandler) extractModelFromRequest(c *gin.Context, relayFormat types.RelayFormat) (string, []byte, error) {
 	// For GET requests (like /models), no model extraction needed
 	if c.Request.Method == http.MethodGet {
-		return "", nil
+		return "", nil, nil
 	}
 
 	// Get default model for this format
 	defaultModel := h.getDefaultModelForFormat(relayFormat)
 
-	// For Gemini format, extract model from path first
-	if relayFormat == types.RelayFormatGemini {
-		if model := h.extractModelFromGeminiPath(c.Request.URL.Path); model != "" {
-			return model, nil
-		}
-	}
-
-	// Read body first to avoid consumption issues
+	// Read body first to avoid consumption issues and enable precondition checks
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	// Restore body for downstream handlers
 	c.Request.Body = newBodyReader(bodyBytes)
+
+	// For Gemini format, extract model from path first
+	// Note: We still read the body above to enable precondition checks (e.g., max_request_size_kb)
+	if relayFormat == types.RelayFormatGemini {
+		if model := h.extractModelFromGeminiPath(c.Request.URL.Path); model != "" {
+			return model, bodyBytes, nil
+		}
+	}
 
 	// For multipart formats, try to extract from form data
 	// Parse from bodyBytes copy instead of consuming c.Request.Body
@@ -492,36 +502,36 @@ func (h *HubHandler) extractModelFromRequest(c *gin.Context, relayFormat types.R
 			boundary := extractBoundary(contentType)
 			if boundary != "" {
 				if model := extractModelFromMultipart(bodyBytes, boundary); model != "" {
-					return model, nil
+					return model, bodyBytes, nil
 				}
 			}
 			// Return default model for multipart requests without model field
-			return defaultModel, nil
+			return defaultModel, bodyBytes, nil
 		} else if strings.Contains(contentType, "application/x-www-form-urlencoded") {
 			if model := extractModelFromFormURLEncoded(bodyBytes); model != "" {
-				return model, nil
+				return model, bodyBytes, nil
 			}
-			return defaultModel, nil
+			return defaultModel, bodyBytes, nil
 		}
 	}
 
 	if len(bodyBytes) == 0 {
-		return defaultModel, nil
+		return defaultModel, bodyBytes, nil
 	}
 
 	// Parse JSON to extract model
 	var body map[string]any
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		// If JSON parsing fails, return default model
-		return defaultModel, nil
+		return defaultModel, bodyBytes, nil
 	}
 
 	// Try different model field names
 	if model, ok := body["model"].(string); ok && model != "" {
-		return model, nil
+		return model, bodyBytes, nil
 	}
 
-	return defaultModel, nil
+	return defaultModel, bodyBytes, nil
 }
 
 // getDefaultModelForFormat returns the default model name for a given relay format.

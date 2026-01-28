@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -670,4 +671,79 @@ func strPtr(s string) *string {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+// TestGetMaxRequestSizeKB tests the GetMaxRequestSizeKB method
+func TestGetMaxRequestSizeKB(t *testing.T) {
+	tests := []struct {
+		name          string
+		preconditions map[string]any
+		expected      int
+	}{
+		{
+			name:          "nil preconditions",
+			preconditions: nil,
+			expected:      0,
+		},
+		{
+			name:          "empty preconditions",
+			preconditions: map[string]any{},
+			expected:      0,
+		},
+		{
+			name:          "missing max_request_size_kb",
+			preconditions: map[string]any{"other_key": 100},
+			expected:      0,
+		},
+		{
+			name:          "float64 value",
+			preconditions: map[string]any{"max_request_size_kb": float64(128)},
+			expected:      128,
+		},
+		{
+			name:          "int value",
+			preconditions: map[string]any{"max_request_size_kb": 256},
+			expected:      256,
+		},
+		{
+			name:          "int64 value",
+			preconditions: map[string]any{"max_request_size_kb": int64(512)},
+			expected:      512,
+		},
+		{
+			name:          "json.Number value",
+			preconditions: map[string]any{"max_request_size_kb": json.Number("1024")},
+			expected:      1024,
+		},
+		{
+			name:          "zero value",
+			preconditions: map[string]any{"max_request_size_kb": 0},
+			expected:      0,
+		},
+		{
+			name:          "negative value (normalized to 0)",
+			preconditions: map[string]any{"max_request_size_kb": -100},
+			expected:      0,
+		},
+		{
+			name:          "negative float64 (normalized to 0)",
+			preconditions: map[string]any{"max_request_size_kb": float64(-50)},
+			expected:      0,
+		},
+		{
+			name:          "invalid type (string)",
+			preconditions: map[string]any{"max_request_size_kb": "128"},
+			expected:      0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			group := &models.Group{
+				Preconditions: tt.preconditions,
+			}
+			result := group.GetMaxRequestSizeKB()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

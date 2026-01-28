@@ -1,9 +1,12 @@
 package models
 
 import (
+	"encoding/json"
+	"fmt"
 	"gpt-load/internal/types"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"gorm.io/datatypes"
 )
 
@@ -155,6 +158,7 @@ type Group struct {
 	ModelRedirectRulesV2 datatypes.JSON       `gorm:"type:json" json:"model_redirect_rules_v2"`   // Enhanced redirect rules (one-to-many)
 	ModelRedirectStrict  bool                 `gorm:"default:false" json:"model_redirect_strict"` // Strict mode for model redirect
 	CustomModelNames     datatypes.JSON       `gorm:"type:json" json:"custom_model_names"`        // Custom model names for aggregate groups (JSON array)
+	Preconditions        datatypes.JSONMap    `gorm:"type:json" json:"preconditions"`             // Preconditions for aggregate groups (e.g., max_request_size_kb)
 	PathRedirects        datatypes.JSON       `gorm:"type:json" json:"path_redirects"`            // JSON array of {from,to} rules (OpenAI only)
 	ParentGroupID        *uint                `gorm:"index" json:"parent_group_id"`               // Parent group ID for child groups
 	BoundSiteID          *uint                `gorm:"index" json:"bound_site_id"`                 // Bound managed site ID for standard groups
@@ -180,7 +184,7 @@ type APIKey struct {
 	KeyValue     string     `gorm:"type:text;not null" json:"key_value"`
 	KeyHash      string     `gorm:"type:varchar(128);index" json:"key_hash"`
 	GroupID      uint       `gorm:"not null;index:idx_api_keys_group_status" json:"group_id"`
-	Status       string     `gorm:"type:varchar(50);not null;default:'active';index:idx_api_keys_group_status" json:"status"`
+	Status       string     `gorm:"type:varchar(50);not null;default:'active';index:idx_api_keys_status;index:idx_api_keys_group_status" json:"status"`
 	Notes        string     `gorm:"type:varchar(255);default:''" json:"notes"`
 	RequestCount int64      `gorm:"not null;default:0" json:"request_count"`
 	FailureCount int64      `gorm:"not null;default:0" json:"failure_count"`
@@ -269,4 +273,53 @@ type GroupHourlyStat struct {
 	FailureCount int64     `gorm:"not null;default:0" json:"failure_count"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// GetMaxRequestSizeKB returns the max_request_size_kb precondition value for the group.
+// Returns 0 if not configured (meaning no size limit).
+// Negative values are normalized to 0 (no limit).
+func (g *Group) GetMaxRequestSizeKB() int {
+	if g.Preconditions == nil {
+		return 0
+	}
+
+	val, ok := g.Preconditions["max_request_size_kb"]
+	if !ok {
+		return 0
+	}
+
+	var result int
+
+	// Handle different numeric types from JSON unmarshaling
+	switch v := val.(type) {
+	case json.Number:
+		intVal, err := v.Int64()
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"group_id": g.ID,
+				"value":    v,
+				"error":    err,
+			}).Warn("Failed to parse json.Number for max_request_size_kb")
+			return 0
+		}
+		result = int(intVal)
+	case float64:
+		result = int(v)
+	case int:
+		result = v
+	case int64:
+		result = int(v)
+	default:
+		logrus.WithFields(logrus.Fields{
+			"group_id":   g.ID,
+			"value_type": fmt.Sprintf("%T", val),
+		}).Warn("Unexpected value type for max_request_size_kb")
+		return 0
+	}
+
+	// Normalize negative values to 0 (no limit)
+	if result < 0 {
+		return 0
+	}
+	return result
 }

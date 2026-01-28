@@ -34,7 +34,7 @@ declare module "axios" {
  */
 const http = axios.create({
   baseURL: "/api",
-  timeout: 60000,
+  timeout: 120000, // Increased to 120s for large import operations
   headers: { "Content-Type": "application/json" },
 });
 
@@ -53,6 +53,14 @@ http.interceptors.request.use(config => {
   config.headers["Accept-Language"] = locale;
   return config;
 });
+
+// Helper to detect timeout errors (client-side or server-side)
+function isTimeoutError(error: { code?: string; message?: string }): boolean {
+  return (
+    error.code === "ECONNABORTED" ||
+    /timeout|deadline exceeded|context deadline exceeded/i.test(String(error.message || ""))
+  );
+}
 
 // Response interceptor
 http.interceptors.response.use(
@@ -73,17 +81,58 @@ http.interceptors.response.use(
           window.location.href = "/login";
         }
       }
-      window.$message.error(
-        error.response.data?.message ||
-          i18n.global.t("common.requestFailed", { status: error.response.status }),
-        {
-          keepAliveOnHover: true,
-          duration: 5000,
-          closable: true,
-        }
-      );
+      // Normalize error message to string (can be object/array/blob from server)
+      // Handle both plain string responses and object responses with .message property
+      const responseData = error.response?.data;
+      const rawMsg =
+        (typeof responseData === "string" ? responseData : responseData?.message) ??
+        error.message ??
+        "";
+      const errorMsg =
+        typeof rawMsg === "string"
+          ? rawMsg
+          : rawMsg != null
+            ? (() => {
+                try {
+                  return JSON.stringify(rawMsg);
+                } catch {
+                  return String(rawMsg);
+                }
+              })()
+            : "";
+      let displayMsg = errorMsg;
+
+      // Detect timeout errors: check error code, message patterns, and HTTP status codes
+      // Note: In error.response branch, ECONNABORTED is rare (server responded),
+      // but we check message patterns for server-side database timeouts
+      // HTTP 408 (Request Timeout) and 504 (Gateway Timeout) are also treated as timeouts
+      const status = error.response?.status;
+      const isTimeout =
+        isTimeoutError({ code: error.code, message: errorMsg }) || status === 408 || status === 504;
+
+      if (isTimeout) {
+        // Show database busy message for better UX
+        // This covers both client timeouts and server-reported database timeouts
+        displayMsg = i18n.global.t("common.databaseBusy");
+      } else if (!errorMsg) {
+        displayMsg = i18n.global.t("common.requestFailed", { status: error.response.status });
+      }
+
+      window.$message.error(displayMsg, {
+        keepAliveOnHover: true,
+        duration: 8000, // Longer duration for important error messages
+        closable: true,
+      });
     } else if (error.request) {
-      window.$message.error(i18n.global.t("common.networkError"));
+      // Network errors or timeouts without response
+      const isTimeout = isTimeoutError({ code: error.code, message: error.message });
+
+      // Note: Using "databaseBusy" for timeouts is intentional - most timeouts in this app
+      // occur during backend operations (imports, validations) rather than pure network issues.
+      // This provides more accurate context to users about what's happening.
+      window.$message.error(
+        isTimeout ? i18n.global.t("common.databaseBusy") : i18n.global.t("common.networkError")
+      );
     } else {
       window.$message.error(i18n.global.t("common.requestSetupError"));
     }

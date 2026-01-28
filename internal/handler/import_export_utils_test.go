@@ -32,18 +32,18 @@ func TestConvertModelRedirectRulesToExport(t *testing.T) {
 		{
 			name: "valid_rules",
 			input: datatypes.JSONMap{
-				"gpt-4": "gpt-4-turbo",
+				"gpt-4":         "gpt-4-turbo",
 				"gpt-3.5-turbo": "gpt-3.5-turbo-16k",
 			},
 			expected: map[string]string{
-				"gpt-4": "gpt-4-turbo",
+				"gpt-4":         "gpt-4-turbo",
 				"gpt-3.5-turbo": "gpt-3.5-turbo-16k",
 			},
 		},
 		{
 			name: "mixed_types_filtered",
 			input: datatypes.JSONMap{
-				"valid": "model-name",
+				"valid":   "model-name",
 				"invalid": 123,
 			},
 			expected: map[string]string{
@@ -82,11 +82,11 @@ func TestConvertModelRedirectRulesToImport(t *testing.T) {
 		{
 			name: "valid_rules",
 			input: map[string]string{
-				"gpt-4": "gpt-4-turbo",
+				"gpt-4":         "gpt-4-turbo",
 				"gpt-3.5-turbo": "gpt-3.5-turbo-16k",
 			},
 			expected: datatypes.JSONMap{
-				"gpt-4": "gpt-4-turbo",
+				"gpt-4":         "gpt-4-turbo",
 				"gpt-3.5-turbo": "gpt-3.5-turbo-16k",
 			},
 		},
@@ -442,9 +442,9 @@ func TestLooksLikeHex(t *testing.T) {
 // Benchmark tests
 func BenchmarkConvertModelRedirectRulesToExport(b *testing.B) {
 	input := datatypes.JSONMap{
-		"gpt-4": "gpt-4-turbo",
+		"gpt-4":         "gpt-4-turbo",
 		"gpt-3.5-turbo": "gpt-3.5-turbo-16k",
-		"claude-3": "claude-3-opus",
+		"claude-3":      "claude-3-opus",
 	}
 
 	b.ResetTimer()

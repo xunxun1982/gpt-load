@@ -315,8 +315,10 @@ func TestClearAllInvalidKeys(t *testing.T) {
 	assert.Equal(t, int64(1), totalCount)
 }
 
-// TestClearAllKeys tests clearing all keys
-func TestClearAllKeys(t *testing.T) {
+// TestKeyProviderRemoveAllKeys tests clearing all keys via KeyProvider directly.
+// Note: This tests the underlying provider's RemoveAllKeys method.
+// The KeyService.ClearAllKeys method (if it exists) should have its own test.
+func TestKeyProviderRemoveAllKeys(t *testing.T) {
 	t.Parallel()
 	db, svc := setupKeyServiceTest(t)
 
@@ -328,8 +330,8 @@ func TestClearAllKeys(t *testing.T) {
 	_, err := svc.AddMultipleKeys(group.ID, keysText)
 	require.NoError(t, err)
 
-	// Clear all keys
-	count, err := svc.ClearAllKeys(context.Background(), group.ID)
+	// Clear all keys using KeyProvider directly
+	count, err := svc.KeyProvider.RemoveAllKeys(context.Background(), group.ID, nil)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), count)
 

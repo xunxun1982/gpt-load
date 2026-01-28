@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -366,99 +367,252 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 }
 
 // LoadKeysFromDB loads all groups and keys from the database and populates the Store.
+// Uses parallel loading with work-stealing to improve startup performance for large datasets.
 func (p *KeyProvider) LoadKeysFromDB() error {
 	startTime := time.Now()
 
-	// Get total count first for progress reporting
+	// Get total count and ID range for parallel loading
 	var totalCount int64
+	var minID, maxID uint
 	if err := p.db.Model(&models.APIKey{}).Count(&totalCount).Error; err != nil {
 		return fmt.Errorf("failed to count keys: %w", err)
 	}
 
-	logrus.Infof("Loading %d keys from database to store...", totalCount)
+	if totalCount == 0 {
+		logrus.Info("No keys to load from database")
+		return nil
+	}
 
-	// Use cursor-based pagination instead of FindInBatches to reduce lock time
-	// This allows other operations to proceed between batches
+	// Get min and max ID for range partitioning
+	if err := p.db.Model(&models.APIKey{}).Select("MIN(id) as min_id, MAX(id) as max_id").Row().Scan(&minID, &maxID); err != nil {
+		return fmt.Errorf("failed to get ID range: %w", err)
+	}
+
+	logrus.Infof("Loading %d keys from database to store (ID range: %d-%d)...", totalCount, minID, maxID)
+
+	// Determine number of parallel workers based on CPU cores and database type
+	// SQLite: Use fewer workers to avoid lock contention (single-writer model)
+	// MySQL/PostgreSQL: Use more workers for better parallelism
+	dbType := p.db.Dialector.Name()
+	numWorkers := runtime.NumCPU() / 2
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	// Database-specific worker count optimization
+	switch dbType {
+	case "sqlite", "sqlite3":
+		// SQLite has single-writer model, reduce workers to avoid lock contention
+		if numWorkers > 4 {
+			numWorkers = 4
+		}
+		logrus.Debugf("Using %d workers for SQLite (reduced to avoid lock contention)", numWorkers)
+	case "mysql", "postgres", "postgresql", "pgx":
+		// MySQL and PostgreSQL handle concurrent reads well
+		if numWorkers > 8 {
+			numWorkers = 8
+		}
+		logrus.Debugf("Using %d workers for %s", numWorkers, dbType)
+	default:
+		// Unknown database, use conservative settings
+		if numWorkers > 4 {
+			numWorkers = 4
+		}
+		logrus.Debugf("Using %d workers for unknown database type %s", numWorkers, dbType)
+	}
+
+	// Task chunk size: each task processes a range of IDs
+	// Smaller chunks enable better load balancing through work-stealing
+	// Reduced from 50000 to 30000 for more granular task distribution
+	const taskChunkSize uint = 30000
+
+	// Create task queue with all ID ranges
+	type task struct {
+		startID uint
+		endID   uint
+	}
+	taskQueue := make(chan task, 100) // Buffered channel to avoid blocking
+
+	// Create context for canceling workers on first error
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Generate tasks
+	go func() {
+		defer close(taskQueue)
+		for start := minID; start <= maxID; start += taskChunkSize {
+			end := start + taskChunkSize - 1
+			if end > maxID {
+				end = maxID
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case taskQueue <- task{startID: start, endID: end}:
+			}
+		}
+	}()
+
+	// Shared data structures with mutex protection
+	var mu sync.Mutex
 	allActiveKeyIDs := make(map[uint][]any)
-	batchSize := 1000
-	var lastID uint = 0
-	processedKeys := 0
+	allGroupIDs := make(map[uint]struct{}) // Track all groups seen, even those with no active keys
+	var processedKeys int64                // Use atomic operations
 	lastLoggedPercent := 0
 
-	for {
-		var batchKeys []models.APIKey
+	// Error channel to collect errors from workers
+	errChan := make(chan error, numWorkers)
+	var wg sync.WaitGroup
 
-		// Use cursor-based query to minimize lock time
-		query := p.db.Model(&models.APIKey{}).
-			Order("id ASC").
-			Limit(batchSize)
+	// Batch size for each worker
+	batchSize := 10000
 
-		if lastID > 0 {
-			query = query.Where("id > ?", lastID)
-		}
+	// Launch parallel workers with work-stealing
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		workerID := i
 
-		if err := query.Find(&batchKeys).Error; err != nil {
-			return fmt.Errorf("failed to load keys batch: %w", err)
-		}
+		go func(workerID int) {
+			defer wg.Done()
 
-		if len(batchKeys) == 0 {
-			break
-		}
+			tasksProcessed := 0
+			for t := range taskQueue {
+				tasksProcessed++
+				logrus.Debugf("Worker %d: processing task %d (ID range %d-%d)", workerID, tasksProcessed, t.startID, t.endID)
 
-		// Process batch and write to store
-		var pipeline store.Pipeliner
-		if redisStore, ok := p.store.(store.RedisPipeliner); ok {
-			pipeline = redisStore.Pipeline()
-		}
+				// Guard against uint underflow when startID is 0
+				lastID := t.startID
+				if lastID > 0 {
+					lastID--
+				}
+				firstQuery := true
 
-		for i := range batchKeys {
-			key := &batchKeys[i]
-			keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
-			keyDetails := p.apiKeyToMap(key)
+				for {
+					var batchKeys []models.APIKey
 
-			if pipeline != nil {
-				pipeline.HSet(keyHashKey, keyDetails)
-			} else {
-				if err := p.store.HSet(keyHashKey, keyDetails); err != nil {
-					logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Warn("Failed to HSet key details")
+					// Use cursor-based query to minimize lock time
+					// Only select necessary fields to reduce data transfer and improve performance
+					query := p.db.Model(&models.APIKey{}).
+						Select("id", "key_value", "status", "failure_count", "group_id", "created_at").
+						Where("id > ? AND id <= ?", lastID, t.endID).
+						Order("id ASC").
+						Limit(batchSize)
+
+					if err := query.Find(&batchKeys).Error; err != nil {
+						errChan <- fmt.Errorf("worker %d failed to load keys batch: %w", workerID, err)
+						cancel() // Cancel other workers on error
+						return
+					}
+
+					// Early exit optimization: if first query returns 0 rows, skip this task
+					// This avoids scanning large empty ID ranges (deleted keys)
+					if firstQuery && len(batchKeys) == 0 {
+						logrus.Debugf("Worker %d: task %d has no data, skipping", workerID, tasksProcessed)
+						break
+					}
+					firstQuery = false
+
+					if len(batchKeys) == 0 {
+						break
+					}
+
+					// Process batch and write to store
+					var pipeline store.Pipeliner
+					if redisStore, ok := p.store.(store.RedisPipeliner); ok {
+						pipeline = redisStore.Pipeline()
+					}
+
+					// Local active key IDs for this batch
+					localActiveKeyIDs := make(map[uint][]any)
+					localGroupIDs := make(map[uint]struct{}) // Track all groups in this batch
+
+					for i := range batchKeys {
+						key := &batchKeys[i]
+						keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
+						keyDetails := p.apiKeyToMap(key)
+
+						if pipeline != nil {
+							pipeline.HSet(keyHashKey, keyDetails)
+						} else {
+							if err := p.store.HSet(keyHashKey, keyDetails); err != nil {
+								logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Warn("Failed to HSet key details")
+							}
+						}
+
+						// Track all groups seen, regardless of key status
+						localGroupIDs[key.GroupID] = struct{}{}
+
+						if key.Status == models.KeyStatusActive {
+							localActiveKeyIDs[key.GroupID] = append(localActiveKeyIDs[key.GroupID], key.ID)
+						}
+					}
+
+					if pipeline != nil {
+						if err := pipeline.Exec(); err != nil {
+							errChan <- fmt.Errorf("worker %d failed to execute pipeline: %w", workerID, err)
+							cancel() // Cancel other workers on error
+							return
+						}
+					}
+
+					// Merge local active key IDs and group IDs into global maps with mutex protection
+					mu.Lock()
+					for groupID, activeIDs := range localActiveKeyIDs {
+						allActiveKeyIDs[groupID] = append(allActiveKeyIDs[groupID], activeIDs...)
+					}
+					for groupID := range localGroupIDs {
+						allGroupIDs[groupID] = struct{}{}
+					}
+					mu.Unlock()
+
+					// Update progress atomically
+					currentProcessed := atomic.AddInt64(&processedKeys, int64(len(batchKeys)))
+
+					// Log progress at 25%, 50%, 75% milestones only
+					if totalCount > 0 {
+						currentPercent := (int(currentProcessed) * 100) / int(totalCount)
+						mu.Lock()
+						if currentPercent >= lastLoggedPercent+25 && currentPercent < 100 {
+							logrus.Infof("Loading progress: %d%% (%d/%d keys)", currentPercent, currentProcessed, totalCount)
+							lastLoggedPercent = currentPercent
+						}
+						mu.Unlock()
+					}
+
+					lastID = batchKeys[len(batchKeys)-1].ID
+
+					// If we got fewer than batchSize or reached endID, we're done with this task
+					if len(batchKeys) < batchSize || lastID >= t.endID {
+						break
+					}
 				}
 			}
 
-			if key.Status == models.KeyStatusActive {
-				allActiveKeyIDs[key.GroupID] = append(allActiveKeyIDs[key.GroupID], key.ID)
-			}
-		}
+			logrus.Debugf("Worker %d: completed loading (%d tasks processed)", workerID, tasksProcessed)
+		}(workerID)
+	}
 
-		if pipeline != nil {
-			if err := pipeline.Exec(); err != nil {
-				return fmt.Errorf("failed to execute pipeline: %w", err)
-			}
-		}
+	// Wait for all workers to complete
+	wg.Wait()
+	close(errChan)
 
-		processedKeys += len(batchKeys)
-		lastID = batchKeys[len(batchKeys)-1].ID
-
-		// Log progress at 25%, 50%, 75% milestones only
-		if totalCount > 0 {
-			currentPercent := (processedKeys * 100) / int(totalCount)
-			if currentPercent >= lastLoggedPercent+25 && currentPercent < 100 {
-				logrus.Infof("Loading progress: %d%% (%d/%d keys)", currentPercent, processedKeys, totalCount)
-				lastLoggedPercent = currentPercent
-			}
-		}
-
-		// If we got fewer than batchSize, we're done
-		if len(batchKeys) < batchSize {
-			break
+	// Check for errors
+	for err := range errChan {
+		if err != nil {
+			return err
 		}
 	}
 
 	// Update active_keys list for all groups
+	// Clear lists for all groups seen, then populate only those with active keys
+	// This ensures groups with no active keys have empty lists (preventing stale data)
 	logrus.Info("Updating active key lists for all groups...")
-	for groupID, activeIDs := range allActiveKeyIDs {
-		if len(activeIDs) > 0 {
-			activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
-			p.store.Delete(activeKeysListKey)
+	for groupID := range allGroupIDs {
+		activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+		_ = p.store.Delete(activeKeysListKey) // Clear existing list
+
+		// Only populate if there are active keys for this group
+		if activeIDs := allActiveKeyIDs[groupID]; len(activeIDs) > 0 {
 			if err := p.store.LPush(activeKeysListKey, activeIDs...); err != nil {
 				logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Error("Failed to LPush active keys for group")
 			}
@@ -466,7 +620,7 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	}
 
 	duration := time.Since(startTime)
-	logrus.Infof("Successfully loaded %d keys to store in %v", processedKeys, duration)
+	logrus.Infof("Successfully loaded %d keys to store in %v (using %d parallel workers with work-stealing)", processedKeys, duration, numWorkers)
 	return nil
 }
 
@@ -498,11 +652,9 @@ func (p *KeyProvider) AddKeys(groupID uint, keys []models.APIKey) error {
 			return err
 		}
 
-		// Step 2: Update in-memory store outside the transaction (best-effort)
-		for j := range batch {
-			if err := p.addKeyToStore(&batch[j]); err != nil {
-				logrus.WithFields(logrus.Fields{"keyID": batch[j].ID, "error": err}).Warn("Failed to add key to store; will be refreshed on next reload")
-			}
+		// Step 2: Update in-memory store outside the transaction using batch method
+		if err := p.addKeysToCacheBatch(groupID, batch); err != nil {
+			logrus.WithFields(logrus.Fields{"batchSize": len(batch), "error": err}).Warn("Failed to add batch to store; will be refreshed on next reload")
 		}
 
 		// Short delay between batches to avoid monopolizing the DB
@@ -827,74 +979,236 @@ func (p *KeyProvider) RemoveInvalidKeys(groupID uint) (int64, error) {
 
 // RemoveAllKeys removes all keys in the group using chunked deletion with dialect-specific SQL.
 // This minimizes lock holding time and works across SQLite, MySQL, and PostgreSQL.
+// Optimized for large-scale deletions (500K+ records) with progress tracking.
 // global deletion semaphore to serialize heavy group deletions (especially for SQLite)
 var deleteSem = make(chan struct{}, 1)
 
-func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint) (int64, error) {
-	const chunkSize = 500
-	const maxRetries = 5
+func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressCallback func(deleted int64)) (int64, error) {
+	const maxRetries = 3
 
-	// serialize deletions
-	deleteSem <- struct{}{}
-	defer func() { <-deleteSem }()
+	// Batch operation thresholds (aligned with services/thresholds.go)
+	// Note: Cannot import services package due to circular dependency
+	// (services imports keypool, keypool would import services)
+	// AI Review Note: Suggested extracting to internal/constants/thresholds.go to avoid duplication.
+	// Decision: Keep duplication to avoid circular dependency complexity. The constants are stable
+	// and rarely change. Manual synchronization is acceptable given the low maintenance cost.
+	// These values MUST match internal/services/thresholds.go for consistency.
+	const (
+		BulkSyncThreshold         = 5000   // Must match services.BulkSyncThreshold
+		OptimizedSyncThreshold    = 20000  // Must match services.OptimizedSyncThreshold
+		MassiveAsyncThreshold     = 100000 // Must match services.MassiveAsyncThreshold
+		MaxSQLiteBatchSizeMassive = 10000
+		MaxMySQLBatchSize         = 10000
+	)
+
+	// Serialize deletions, but honor ctx cancellation
+	select {
+	case deleteSem <- struct{}{}:
+		defer func() { <-deleteSem }()
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 
 	totalDeleted := int64(0)
-	dial := p.db.Dialector.Name()
 	retries := 0
+	lastLoggedPercent := 0
+
+	// Get total count for progress reporting and dynamic batch sizing (with timeout to avoid blocking)
+	var totalCount int64
+	countCtx, countCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer countCancel()
+	if err := p.db.WithContext(countCtx).Model(&models.APIKey{}).Where("group_id = ?", groupID).Count(&totalCount).Error; err != nil {
+		logrus.WithError(err).Warn("Failed to get total count for progress tracking, continuing without progress")
+		totalCount = 0
+	}
+
+	// Dynamic batch size and timeout based on total count for optimal performance
+	// Strategy: Balance total deletion time with concurrent operation responsiveness
+	// - Small datasets (≤5K): Small batches for quick completion and good responsiveness
+	// - Medium datasets (≤20K): Medium batches for balanced performance
+	// - Large datasets (20K-100K): Large batches to minimize total time for async operations
+	// - Massive datasets (>100K): Very large batches optimized for 500K+ operations
+	//
+	// Note: After SQL optimization (query IDs first, then delete by primary key),
+	// large batches no longer cause severe performance degradation.
+	// The main concern is now lock contention, addressed by inter-batch delays.
+	var chunkSize int
+	var batchTimeout time.Duration
+	var batchDelay time.Duration
+
+	// Get database type for dialect-specific optimizations
+	dbDialect := p.db.Dialector.Name()
+
+	if totalCount <= int64(BulkSyncThreshold) {
+		// Tier 1-2: Small batches for fast sync operations
+		// Target: Quick completion (<15s) with minimal lock contention
+		chunkSize = 1000
+		batchTimeout = 2000 * time.Millisecond
+		batchDelay = 20 * time.Millisecond
+	} else if totalCount <= int64(OptimizedSyncThreshold) {
+		// Tier 3-4: Medium batches for large sync operations
+		// Target: Reasonable completion time (15-60s) with acceptable lock contention
+		chunkSize = 2000
+		batchTimeout = 3000 * time.Millisecond
+		batchDelay = 30 * time.Millisecond
+	} else if totalCount <= int64(MassiveAsyncThreshold) {
+		// Tier 5: Large batches for async operations (20K-100K keys)
+		// Target: Minimize total time for background tasks
+		// Example: 39414 keys = 8 batches instead of 40 batches with 1000/batch
+		chunkSize = 5000
+		batchTimeout = 5000 * time.Millisecond
+		batchDelay = 50 * time.Millisecond
+	} else {
+		// Tier 6: Massive batches for very large async operations (>100K keys)
+		// Optimized for 500K+ operations with minimal transaction overhead
+		// Example: 500K keys = 50 batches with 10K/batch (vs 100 batches with 5K/batch)
+		// SQLite uses smaller batches due to single-writer model
+		if dbDialect == "sqlite" {
+			chunkSize = MaxSQLiteBatchSizeMassive // 10000
+			batchTimeout = 8000 * time.Millisecond
+			batchDelay = 100 * time.Millisecond // Longer delay for SQLite to allow concurrent reads
+		} else {
+			// MySQL/PostgreSQL can handle larger batches efficiently
+			chunkSize = MaxMySQLBatchSize // 10000 (same as MaxPostgresBatchSize)
+			batchTimeout = 10000 * time.Millisecond
+			batchDelay = 20 * time.Millisecond // Shorter delay for MySQL/PostgreSQL
+		}
+	}
+
+	if totalCount > 0 {
+		estimatedBatches := (totalCount + int64(chunkSize) - 1) / int64(chunkSize)
+		logrus.Infof("Starting deletion of %d keys in group %d (batch size: %d, estimated batches: %d)", totalCount, groupID, chunkSize, estimatedBatches)
+	}
+
+	var totalRetries int // Track total retry attempts for final logging
 
 	for {
 		// Check if context is canceled before each batch
 		if err := ctx.Err(); err != nil {
+			logrus.Infof("Deletion canceled after deleting %d keys", totalDeleted)
 			return totalDeleted, err
 		}
 
 		var res *gorm.DB
-		batchCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		switch dial {
-		case "sqlite":
-			res = p.db.WithContext(batchCtx).Exec("DELETE FROM api_keys WHERE rowid IN (SELECT rowid FROM api_keys WHERE group_id = ? LIMIT ?)", groupID, chunkSize)
-		case "mysql":
-			res = p.db.WithContext(batchCtx).Exec("DELETE FROM api_keys WHERE group_id = ? ORDER BY id LIMIT ?", groupID, chunkSize)
-		case "postgres":
-			res = p.db.WithContext(batchCtx).Exec("WITH c AS (SELECT id FROM api_keys WHERE group_id = ? ORDER BY id LIMIT ?) DELETE FROM api_keys WHERE id IN (SELECT id FROM c)", groupID, chunkSize)
-		default:
-			res = p.db.WithContext(batchCtx).Where("group_id = ?", groupID).Delete(&models.APIKey{})
+		var ids []uint
+		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
+
+		// Fetch IDs first for all dialects to enable consistent cache cleanup
+		// This ensures we can delete both DB records and cache entries
+		if err := p.db.WithContext(batchCtx).Model(&models.APIKey{}).
+			Select("id").
+			Where("group_id = ?", groupID).
+			Order("id ASC").
+			Limit(chunkSize).
+			Pluck("id", &ids).Error; err != nil {
+			cancel()
+			if utils.IsTransientDBError(err) {
+				if retries >= maxRetries {
+					logrus.WithError(err).Errorf("Max retries reached after deleting %d keys (total retries: %d)", totalDeleted, totalRetries)
+					return totalDeleted, err
+				}
+				delay := time.Duration(50<<retries) * time.Millisecond
+				if delay > 1000*time.Millisecond {
+					delay = 1000 * time.Millisecond
+				}
+				// Use Warn level for transient errors so users know what's happening
+				logrus.WithError(err).Warnf("Transient query error during deletion (progress: %d/%d keys); retrying in %v (attempt %d/%d)", totalDeleted, totalCount, delay, retries+1, maxRetries)
+				time.Sleep(delay)
+				retries++
+				totalRetries++
+				continue
+			}
+			logrus.WithError(err).Errorf("Failed to query IDs after deleting %d keys", totalDeleted)
+			return totalDeleted, err
 		}
+		if len(ids) == 0 {
+			cancel()
+			break
+		}
+
+		// Delete by ID list using primary key index (fast for all databases)
+		res = p.db.WithContext(batchCtx).Where("id IN ?", ids).Delete(&models.APIKey{})
 		cancel()
 
 		if res.Error != nil {
 			// Retry with exponential backoff on transient/timeout errors
 			if utils.IsTransientDBError(res.Error) {
 				if retries >= maxRetries {
+					logrus.WithError(res.Error).Errorf("Max retries reached after deleting %d keys (total retries: %d)", totalDeleted, totalRetries)
 					return totalDeleted, res.Error
 				}
-				delay := time.Duration(25<<retries) * time.Millisecond
-				if delay > 500*time.Millisecond {
-					delay = 500 * time.Millisecond
+				delay := time.Duration(50<<retries) * time.Millisecond
+				if delay > 1000*time.Millisecond {
+					delay = 1000 * time.Millisecond
 				}
-				logrus.WithError(res.Error).Debugf("Transient delete failure; retrying in %v (attempt %d/%d)", delay, retries+1, maxRetries)
+				// Use Warn level for transient errors so users know what's happening
+				logrus.WithError(res.Error).Warnf("Transient delete error (progress: %d/%d keys); retrying in %v (attempt %d/%d)", totalDeleted, totalCount, delay, retries+1, maxRetries)
 				time.Sleep(delay)
 				retries++
+				totalRetries++
 				continue
 			}
+			logrus.WithError(res.Error).Errorf("Deletion failed after deleting %d keys", totalDeleted)
 			return totalDeleted, res.Error
+		}
+
+		// Log successful recovery after retries
+		if retries > 0 {
+			logrus.Infof("Recovered from transient errors after %d retries (progress: %d/%d keys)", retries, totalDeleted, totalCount)
 		}
 		retries = 0
 
 		affected := res.RowsAffected
 		totalDeleted += affected
-		if affected == 0 || affected < chunkSize {
+
+		// Best-effort cache cleanup: delete key hashes from store
+		// This prevents memory bloat from deleted keys remaining in Redis/MemoryStore
+		for _, id := range ids {
+			keyHashKey := "key:" + strconv.FormatUint(uint64(id), 10)
+			if err := p.store.Delete(keyHashKey); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"keyID": id,
+					"error": err,
+				}).Warn("Failed to delete key hash from store")
+				// Continue with other keys even if one fails
+			}
+		}
+
+		// Progress callback for task tracking
+		if progressCallback != nil {
+			progressCallback(totalDeleted)
+		}
+
+		// Log progress at 10% intervals
+		if totalCount > 0 {
+			currentPercent := int((totalDeleted * 100) / totalCount)
+			if currentPercent >= lastLoggedPercent+10 && currentPercent < 100 {
+				logrus.Infof("Deletion progress: %d%% (%d/%d keys)", currentPercent, totalDeleted, totalCount)
+				lastLoggedPercent = currentPercent
+			}
+		}
+
+		// Stop when no more keys to fetch (use fetched ID count, not RowsAffected)
+		// This prevents early termination under concurrent deletes
+		if len(ids) < chunkSize {
 			break
 		}
 
-		// Short yield to let other operations proceed
-		time.Sleep(10 * time.Millisecond)
+		// Increased delay between batches to allow other operations to execute
+		// This is critical for SQLite to prevent monopolizing the database lock
+		time.Sleep(batchDelay)
 	}
 
 	// Clear active key list for the group to prevent stale usage
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 	_ = p.store.Delete(activeKeysListKey)
 
+	// Log completion with retry statistics if any retries occurred
+	if totalRetries > 0 {
+		logrus.Infof("Completed deletion of %d keys in group %d (recovered from %d transient errors)", totalDeleted, groupID, totalRetries)
+	} else {
+		logrus.Infof("Completed deletion of %d keys in group %d", totalDeleted, groupID)
+	}
 	return totalDeleted, nil
 }
 
@@ -1062,6 +1376,63 @@ func (p *KeyProvider) addKeyToStore(key *models.APIKey) error {
 	return nil
 }
 
+// addKeysToCacheBatch batch adds keys to cache (optimized for bulk import scenarios).
+// Uses Redis Pipeline for efficient batch operations when available.
+func (p *KeyProvider) addKeysToCacheBatch(groupID uint, keys []models.APIKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// 1. Batch HSet key details
+	if pipeliner, ok := p.store.(store.RedisPipeliner); ok {
+		// Redis: Use Pipeline for batch operations
+		pipe := pipeliner.Pipeline()
+		for i := range keys {
+			keyHashKey := "key:" + strconv.FormatUint(uint64(keys[i].ID), 10)
+			pipe.HSet(keyHashKey, p.apiKeyToMap(&keys[i]))
+		}
+		if err := pipe.Exec(); err != nil {
+			return fmt.Errorf("failed to batch HSet keys: %w", err)
+		}
+	} else {
+		// MemoryStore: Fallback to individual HSet operations
+		for i := range keys {
+			keyHashKey := "key:" + strconv.FormatUint(uint64(keys[i].ID), 10)
+			if err := p.store.HSet(keyHashKey, p.apiKeyToMap(&keys[i])); err != nil {
+				return fmt.Errorf("failed to HSet key %d: %w", keys[i].ID, err)
+			}
+		}
+	}
+
+	// 2. Collect active key IDs
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+	activeKeyIDs := make([]any, 0, len(keys))
+	for i := range keys {
+		if keys[i].Status == models.KeyStatusActive {
+			activeKeyIDs = append(activeKeyIDs, keys[i].ID)
+		}
+	}
+
+	// 3. Batch LPush active keys
+	// De-duplicate any existing entries to avoid skewed rotation on retry/partial failure
+	// Note: LRem/LPush operations are not pipelined because the current Pipeliner interface
+	// only supports HSet. Extending the interface would add complexity for minimal benefit
+	// in this specific use case (list operations are typically fast).
+	if len(activeKeyIDs) > 0 {
+		// Remove existing entries before LPush to prevent duplicates
+		for _, id := range activeKeyIDs {
+			if err := p.store.LRem(activeKeysListKey, 0, id); err != nil {
+				return fmt.Errorf("failed to LRem key %v before LPush: %w", id, err)
+			}
+		}
+		if err := p.store.LPush(activeKeysListKey, activeKeyIDs...); err != nil {
+			return fmt.Errorf("failed to batch LPush keys to group %d: %w", groupID, err)
+		}
+	}
+
+	return nil
+}
+
 // LoadGroupKeysToStore loads all keys for a specific group from database to Redis store
 // This is optimized for bulk loading after import operations
 func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
@@ -1107,6 +1478,7 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 				if key.Status == models.KeyStatusActive {
 					activeKeyIDs = append(activeKeyIDs, key.ID)
 					// Flush active key IDs to Redis in batches to avoid memory buildup
+					// No need for LRem here since we deleted the entire list at the start of this function
 					if len(activeKeyIDs) >= redisBatchSize {
 						if err := p.store.LPush(activeKeysListKey, activeKeyIDs...); err != nil {
 							logrus.WithError(err).Warnf("Failed to LPush batch of active keys for group %d", groupID)
@@ -1130,6 +1502,7 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 	}
 
 	// Flush remaining active key IDs
+	// No need for LRem here since we deleted the entire list at the start of this function
 	if len(activeKeyIDs) > 0 {
 		if err := p.store.LPush(activeKeysListKey, activeKeyIDs...); err != nil {
 			return fmt.Errorf("failed to update active keys list for group %d: %w", groupID, err)

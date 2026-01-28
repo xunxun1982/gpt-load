@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
 const (
-	deleteChunkSize = 1000
+	// deleteChunkSize defines the batch size for key deletion operations.
+	// Uses DefaultDeleteChunkSize from thresholds.go for consistency with other batch operations.
+	deleteChunkSize = DefaultDeleteChunkSize
 )
 
 // KeyDeleteResult holds the result of a delete task.
@@ -58,11 +59,47 @@ func (s *KeyDeleteService) StartDeleteAllGroupKeys(group *models.Group, total in
 	if err != nil {
 		return nil, err
 	}
-	go s.runDeleteAllGroupKeys(group, total)
+	go s.runDeleteAllGroupKeys(group)
+	return status, nil
+}
+
+// StartDeleteInvalidGroupKeys starts a serialized global task to delete all invalid keys in a group.
+// Similar to StartDeleteAllGroupKeys but only targets invalid keys.
+func (s *KeyDeleteService) StartDeleteInvalidGroupKeys(group *models.Group, total int) (*TaskStatus, error) {
+	status, err := s.TaskService.StartTask(TaskTypeKeyDelete, group.Name, total)
+	if err != nil {
+		return nil, err
+	}
+	go s.runDeleteInvalidGroupKeys(group)
+	return status, nil
+}
+
+// StartRestoreInvalidGroupKeys starts a serialized global task to restore all invalid keys in a group.
+// Similar to StartDeleteInvalidGroupKeys but restores keys instead of deleting them.
+func (s *KeyDeleteService) StartRestoreInvalidGroupKeys(group *models.Group, total int) (*TaskStatus, error) {
+	status, err := s.TaskService.StartTask(TaskTypeKeyRestore, group.Name, total)
+	if err != nil {
+		return nil, err
+	}
+	go s.runRestoreInvalidGroupKeys(group)
 	return status, nil
 }
 
 func (s *KeyDeleteService) runDelete(group *models.Group, keys []string) {
+	// Recover from panics to prevent task from being stuck in "running" state
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic in runDelete for group %d: %v", group.ID, r)
+			logrus.WithFields(logrus.Fields{
+				"groupID": group.ID,
+				"panic":   r,
+			}).Error("Panic recovered in runDelete")
+			if s.TaskService != nil {
+				_ = s.TaskService.EndTask(nil, err)
+			}
+		}
+	}()
+
 	progressCallback := func(processed int) {
 		if err := s.TaskService.UpdateProgress(processed); err != nil {
 			logrus.Warnf("Failed to update task progress for group %d: %v", group.ID, err)
@@ -88,21 +125,38 @@ func (s *KeyDeleteService) runDelete(group *models.Group, keys []string) {
 }
 
 // runDeleteAllGroupKeys performs the full-group deletion using the provider's chunked delete.
-func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group, _ int) {
-	// Create a context with timeout for the deletion operation
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group) {
+	// Recover from panics to prevent task from being stuck in "running" state
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic in runDeleteAllGroupKeys for group %d: %v", group.ID, r)
+			logrus.WithFields(logrus.Fields{
+				"groupID": group.ID,
+				"panic":   r,
+			}).Error("Panic recovered in runDeleteAllGroupKeys")
+			if s.TaskService != nil {
+				_ = s.TaskService.EndTask(nil, err)
+			}
+		}
+	}()
 
-	deleted, err := s.KeyService.KeyProvider.RemoveAllKeys(ctx, group.ID)
+	// Use background context with no timeout for large deletions
+	// The deletion itself has internal chunking and progress tracking
+	ctx := context.Background()
+
+	// Progress callback to update task status
+	progressCallback := func(deleted int64) {
+		if err := s.TaskService.UpdateProgress(int(deleted)); err != nil {
+			logrus.Warnf("Failed to update delete-all-keys task progress for group %d: %v", group.ID, err)
+		}
+	}
+
+	deleted, err := s.KeyService.KeyProvider.RemoveAllKeys(ctx, group.ID, progressCallback)
 	if err != nil {
 		if endErr := s.TaskService.EndTask(nil, err); endErr != nil {
 			logrus.Warnf("Failed to end delete-all-keys task for group %d: %v (original: %v)", group.ID, endErr, err)
 		}
 		return
-	}
-	// Best-effort: mark progress as complete
-	if progressErr := s.TaskService.UpdateProgress(int(deleted)); progressErr != nil {
-		logrus.Warnf("Failed to update delete-all-keys task progress for group %d: %v", group.ID, progressErr)
 	}
 
 	// Invalidate cache after deleting keys
@@ -113,6 +167,99 @@ func (s *KeyDeleteService) runDeleteAllGroupKeys(group *models.Group, _ int) {
 	result := KeyDeleteResult{DeletedCount: int(deleted), IgnoredCount: 0}
 	if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
 		logrus.Warnf("Failed to end delete-all-keys task with success result for group %d: %v", group.ID, endErr)
+	}
+}
+
+// runDeleteInvalidGroupKeys performs deletion of all invalid keys using the provider's chunked delete.
+func (s *KeyDeleteService) runDeleteInvalidGroupKeys(group *models.Group) {
+	// Recover from panics to prevent task from being stuck in "running" state
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic in runDeleteInvalidGroupKeys for group %d: %v", group.ID, r)
+			logrus.WithFields(logrus.Fields{
+				"groupID": group.ID,
+				"panic":   r,
+			}).Error("Panic recovered in runDeleteInvalidGroupKeys")
+			if s.TaskService != nil {
+				_ = s.TaskService.EndTask(nil, err)
+			}
+		}
+	}()
+
+	// RemoveInvalidKeys internally uses removeKeysByStatus with chunking
+	// Note: RemoveInvalidKeys doesn't support progress callback yet, but the operation
+	// is still chunked internally for memory efficiency
+	deleted, err := s.KeyService.KeyProvider.RemoveInvalidKeys(group.ID)
+	if err != nil {
+		if endErr := s.TaskService.EndTask(nil, err); endErr != nil {
+			logrus.Warnf("Failed to end delete-invalid-keys task for group %d: %v (original: %v)", group.ID, endErr, err)
+		}
+		return
+	}
+
+	// Invalidate cache after deleting keys
+	if s.KeyService.CacheInvalidationCallback != nil && deleted > 0 {
+		s.KeyService.CacheInvalidationCallback(group.ID)
+	}
+
+	// Update progress to reflect completion
+	if s.TaskService != nil {
+		_ = s.TaskService.UpdateProgress(int(deleted))
+	}
+
+	result := KeyDeleteResult{DeletedCount: int(deleted), IgnoredCount: 0}
+	if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
+		logrus.Warnf("Failed to end delete-invalid-keys task with success result for group %d: %v", group.ID, endErr)
+	}
+}
+
+// runRestoreInvalidGroupKeys performs restoration of all invalid keys using the provider's restore method.
+func (s *KeyDeleteService) runRestoreInvalidGroupKeys(group *models.Group) {
+	// Recover from panics to prevent task from being stuck in "running" state
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic in runRestoreInvalidGroupKeys for group %d: %v", group.ID, r)
+			logrus.WithFields(logrus.Fields{
+				"groupID": group.ID,
+				"panic":   r,
+			}).Error("Panic recovered in runRestoreInvalidGroupKeys")
+			if s.TaskService != nil {
+				_ = s.TaskService.EndTask(nil, err)
+			}
+		}
+	}()
+
+	// RestoreKeys internally updates status from invalid to active
+	// Note: RestoreKeys doesn't support progress callback yet, but the operation
+	// is still chunked internally for memory efficiency
+	restored, err := s.KeyService.KeyProvider.RestoreKeys(group.ID)
+	if err != nil {
+		if endErr := s.TaskService.EndTask(nil, err); endErr != nil {
+			logrus.Warnf("Failed to end restore-invalid-keys task for group %d: %v (original: %v)", group.ID, endErr, err)
+		}
+		return
+	}
+
+	// Invalidate cache after restoring keys
+	if s.KeyService.CacheInvalidationCallback != nil && restored > 0 {
+		s.KeyService.CacheInvalidationCallback(group.ID)
+	}
+
+	// Get total keys in group for result
+	totalInGroup, err := s.KeyService.getTotalKeysInGroup(group.ID)
+	if err != nil {
+		logrus.Warnf("Failed to get total keys in group %d: %v", group.ID, err)
+		totalInGroup = 0 // Fallback to 0 if query fails
+	}
+
+	// Update progress to reflect completion
+	if s.TaskService != nil {
+		_ = s.TaskService.UpdateProgress(int(restored))
+	}
+
+	result := RestoreKeysResult{RestoredCount: int(restored), IgnoredCount: 0, TotalInGroup: totalInGroup}
+	if endErr := s.TaskService.EndTask(result, nil); endErr != nil {
+		logrus.Warnf("Failed to end restore-invalid-keys task with success result for group %d: %v", group.ID, endErr)
 	}
 }
 

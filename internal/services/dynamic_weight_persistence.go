@@ -138,32 +138,41 @@ func (p *DynamicWeightPersistence) checkAndRunMaintenance() {
 // LoadFromDatabase loads all metrics from database into the store.
 // Called on startup to restore metrics after restart.
 // Only loads non-deleted records.
+// Optimized with indexed query and batch processing to handle large datasets efficiently.
+// Uses FindInBatches to keep memory usage bounded even for very large datasets.
 func (p *DynamicWeightPersistence) LoadFromDatabase() error {
-	var dbMetrics []models.DynamicWeightMetric
-	// Only load non-deleted records
-	if err := p.db.Where("deleted_at IS NULL").Find(&dbMetrics).Error; err != nil {
-		return err
-	}
-
+	// Use indexed query with batch processing to keep memory usage flat
+	// The idx_dw_metrics_deleted_type index makes this query very fast
+	// Note: No ORDER BY needed since we iterate all records regardless of order
 	loaded := 0
-	for _, dbm := range dbMetrics {
-		metrics := dbMetricToMemory(&dbm)
+	var dbMetrics []models.DynamicWeightMetric
+	err := p.db.Where("deleted_at IS NULL").
+		FindInBatches(&dbMetrics, 1000, func(tx *gorm.DB, batch int) error {
+			// dbMetrics is automatically populated by FindInBatches for each batch
+			for _, dbm := range dbMetrics {
+				metrics := dbMetricToMemory(&dbm)
 
-		var key string
-		switch dbm.MetricType {
-		case models.MetricTypeSubGroup:
-			key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
-		case models.MetricTypeModelRedirect:
-			key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
-		default:
-			continue
-		}
+				var key string
+				switch dbm.MetricType {
+				case models.MetricTypeSubGroup:
+					key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
+				case models.MetricTypeModelRedirect:
+					key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
+				default:
+					continue
+				}
 
-		if err := p.manager.SetMetrics(key, metrics); err != nil {
-			logrus.WithError(err).WithField("key", key).Debug("Failed to load metric into store")
-			continue
-		}
-		loaded++
+				if err := p.manager.SetMetrics(key, metrics); err != nil {
+					logrus.WithError(err).WithField("key", key).Debug("Failed to load metric into store")
+					continue
+				}
+				loaded++
+			}
+			return nil
+		}).Error
+
+	if err != nil {
+		return err
 	}
 
 	if loaded > 0 {
@@ -462,10 +471,9 @@ func (p *DynamicWeightPersistence) batchUpsertDefault(metrics []models.DynamicWe
 // Uses smaller batch size for better performance with SQLite's single-writer model.
 func (p *DynamicWeightPersistence) batchUpsertSQLite(metrics []models.DynamicWeightMetric) error {
 	// SQLite performs better with smaller batches
-	batchSize := 50
 
-	for i := 0; i < len(metrics); i += batchSize {
-		end := i + batchSize
+	for i := 0; i < len(metrics); i += DynamicWeightBatchSizeSQLite {
+		end := i + DynamicWeightBatchSizeSQLite
 		if end > len(metrics) {
 			end = len(metrics)
 		}
@@ -604,12 +612,8 @@ func (p *DynamicWeightPersistence) DeleteAllModelRedirectMetricsForGroup(groupID
 // RolloverTimeWindows performs daily rollover of time window statistics.
 // This should be called once per day to shift data between time windows.
 // Data older than 180 days is discarded. Only processes non-deleted records.
-//
-// NOTE: Current implementation loads all metrics into memory. For deployments
-// with very large numbers of groups (10000+), consider implementing batched
-// processing. In typical deployments, the number of metrics is bounded by
-// (aggregate_groups * sub_groups) + (groups * model_redirects), which is
-// usually manageable in memory.
+// Optimized to use indexed queries and batch processing for better performance.
+// Uses FindInBatches to keep memory usage bounded even for very large datasets.
 //
 // NOTE: SetMetrics calls here may race with concurrent recordSuccess/recordFailure.
 // This is acceptable because: (1) rollover runs once daily, (2) health scores
@@ -617,75 +621,91 @@ func (p *DynamicWeightPersistence) DeleteAllModelRedirectMetricsForGroup(groupID
 // updates will be re-recorded on next request. This follows eventual consistency
 // pattern common in metrics systems.
 func (p *DynamicWeightPersistence) RolloverTimeWindows() {
+	now := time.Now()
+	totalUpdated := 0
+
+	// Use indexed query with batch processing to keep memory usage flat
+	// The idx_dw_metrics_deleted_type index makes this query efficient
+	// Note: No ORDER BY needed since we iterate all records regardless of order
 	var dbMetrics []models.DynamicWeightMetric
-	// Only process non-deleted records
-	if err := p.db.Where("deleted_at IS NULL").Find(&dbMetrics).Error; err != nil {
+	err := p.db.Where("deleted_at IS NULL").
+		FindInBatches(&dbMetrics, 1000, func(tx *gorm.DB, batch int) error {
+			// dbMetrics is automatically populated by FindInBatches for each batch
+			var toUpdate []models.DynamicWeightMetric
+			for _, dbm := range dbMetrics {
+				// Check if rollover is needed (more than 24 hours since last rollover)
+				if dbm.LastRolloverAt != nil && now.Sub(*dbm.LastRolloverAt) < DefaultRolloverInterval {
+					continue
+				}
+
+				// Calculate days since last rollover
+				daysSinceRollover := 1
+				if dbm.LastRolloverAt != nil {
+					daysSinceRollover = int(now.Sub(*dbm.LastRolloverAt).Hours() / 24)
+					if daysSinceRollover < 1 {
+						continue
+					}
+				}
+
+				// Apply decay to each time window
+				dbm.Requests7d = applyDecay(dbm.Requests7d, 7, daysSinceRollover)
+				dbm.Successes7d = applyDecay(dbm.Successes7d, 7, daysSinceRollover)
+				dbm.Requests14d = applyDecay(dbm.Requests14d, 14, daysSinceRollover)
+				dbm.Successes14d = applyDecay(dbm.Successes14d, 14, daysSinceRollover)
+				dbm.Requests30d = applyDecay(dbm.Requests30d, 30, daysSinceRollover)
+				dbm.Successes30d = applyDecay(dbm.Successes30d, 30, daysSinceRollover)
+				dbm.Requests90d = applyDecay(dbm.Requests90d, 90, daysSinceRollover)
+				dbm.Successes90d = applyDecay(dbm.Successes90d, 90, daysSinceRollover)
+				dbm.Requests180d = applyDecay(dbm.Requests180d, 180, daysSinceRollover)
+				dbm.Successes180d = applyDecay(dbm.Successes180d, 180, daysSinceRollover)
+
+				dbm.LastRolloverAt = &now
+				toUpdate = append(toUpdate, dbm)
+			}
+
+			if len(toUpdate) == 0 {
+				return nil
+			}
+
+			// Persist batch to database
+			if err := p.batchUpsert(toUpdate); err != nil {
+				logrus.WithError(err).WithField("count", len(toUpdate)).Warn("Failed to persist rolled over metrics batch")
+				return err
+			}
+
+			// Update in-memory store for this batch
+			for _, dbm := range toUpdate {
+				var key string
+				switch dbm.MetricType {
+				case models.MetricTypeSubGroup:
+					key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
+				case models.MetricTypeModelRedirect:
+					key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
+				default:
+					continue
+				}
+				metrics := dbMetricToMemory(&dbm)
+				if err := p.manager.SetMetrics(key, metrics); err != nil {
+					logrus.WithError(err).WithField("key", key).Debug("Failed to update store after rollover")
+				}
+			}
+
+			totalUpdated += len(toUpdate)
+			return nil
+		}).Error
+
+	if err != nil {
 		logrus.WithError(err).Warn("Failed to fetch metrics for rollover")
 		return
 	}
 
-	now := time.Now()
-	var toUpdate []models.DynamicWeightMetric
-
-	for _, dbm := range dbMetrics {
-		// Check if rollover is needed (more than 24 hours since last rollover)
-		if dbm.LastRolloverAt != nil && now.Sub(*dbm.LastRolloverAt) < DefaultRolloverInterval {
-			continue
-		}
-
-		// Calculate days since last rollover
-		daysSinceRollover := 1
-		if dbm.LastRolloverAt != nil {
-			daysSinceRollover = int(now.Sub(*dbm.LastRolloverAt).Hours() / 24)
-			if daysSinceRollover < 1 {
-				continue
-			}
-		}
-
-		// Apply decay to each time window
-		dbm.Requests7d = applyDecay(dbm.Requests7d, 7, daysSinceRollover)
-		dbm.Successes7d = applyDecay(dbm.Successes7d, 7, daysSinceRollover)
-		dbm.Requests14d = applyDecay(dbm.Requests14d, 14, daysSinceRollover)
-		dbm.Successes14d = applyDecay(dbm.Successes14d, 14, daysSinceRollover)
-		dbm.Requests30d = applyDecay(dbm.Requests30d, 30, daysSinceRollover)
-		dbm.Successes30d = applyDecay(dbm.Successes30d, 30, daysSinceRollover)
-		dbm.Requests90d = applyDecay(dbm.Requests90d, 90, daysSinceRollover)
-		dbm.Successes90d = applyDecay(dbm.Successes90d, 90, daysSinceRollover)
-		dbm.Requests180d = applyDecay(dbm.Requests180d, 180, daysSinceRollover)
-		dbm.Successes180d = applyDecay(dbm.Successes180d, 180, daysSinceRollover)
-
-		dbm.LastRolloverAt = &now
-		toUpdate = append(toUpdate, dbm)
-	}
-
-	if len(toUpdate) > 0 {
-		if err := p.batchUpsert(toUpdate); err != nil {
-			// Skip in-memory update on DB failure to avoid inconsistency
-			logrus.WithError(err).WithField("count", len(toUpdate)).Warn("Failed to persist rolled over metrics")
-			return
-		}
-		logrus.WithField("count", len(toUpdate)).Info("Dynamic weight metrics rolled over")
-
-		// Also update in-memory store
-		for _, dbm := range toUpdate {
-			var key string
-			switch dbm.MetricType {
-			case models.MetricTypeSubGroup:
-				key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
-			case models.MetricTypeModelRedirect:
-				key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
-			default:
-				continue
-			}
-			metrics := dbMetricToMemory(&dbm)
-			if err := p.manager.SetMetrics(key, metrics); err != nil {
-				logrus.WithError(err).WithField("key", key).Debug("Failed to update store after rollover")
-			}
-		}
+	if totalUpdated > 0 {
+		logrus.WithField("count", totalUpdated).Info("Dynamic weight metrics rolled over")
 	}
 }
 
 // applyDecay applies decay to a count based on window size and days passed.
+// Uses integer arithmetic to avoid float rounding errors and improve performance.
 func applyDecay(count int64, windowDays int, daysPassed int) int64 {
 	if count <= 0 || daysPassed <= 0 {
 		return count
@@ -697,10 +717,10 @@ func applyDecay(count int64, windowDays int, daysPassed int) int64 {
 		return 0
 	}
 
-	// Proportional decay: remove (daysPassed/windowDays) of the data
-	remaining := float64(count) * (1.0 - float64(daysPassed)/float64(windowDays))
+	// Proportional decay using integer math: remaining = count * (windowDays - daysPassed) / windowDays
+	remaining := count * int64(windowDays-daysPassed) / int64(windowDays)
 	if remaining < 0 {
 		return 0
 	}
-	return int64(remaining)
+	return remaining
 }

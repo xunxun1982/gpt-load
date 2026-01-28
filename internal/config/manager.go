@@ -75,7 +75,7 @@ func (m *Manager) ReloadConfig() error {
 			IsMaster:                !utils.ParseBoolean(os.Getenv("IS_SLAVE"), false),
 			Port:                    utils.ParseInteger(os.Getenv("PORT"), 3001),
 			Host:                    utils.GetEnvOrDefault("HOST", "0.0.0.0"),
-			ReadTimeout:             utils.ParseInteger(os.Getenv("SERVER_READ_TIMEOUT"), 60),
+			ReadTimeout:             utils.ParseInteger(os.Getenv("SERVER_READ_TIMEOUT"), 300),
 			WriteTimeout:            utils.ParseInteger(os.Getenv("SERVER_WRITE_TIMEOUT"), 600),
 			IdleTimeout:             utils.ParseInteger(os.Getenv("SERVER_IDLE_TIMEOUT"), 120),
 			GracefulShutdownTimeout: utils.ParseInteger(os.Getenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT"), 10),

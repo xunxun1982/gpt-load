@@ -347,7 +347,7 @@ func TestGroupSelectionPriority(t *testing.T) {
 		// Invalidate cache to force fresh selection
 		svc.InvalidateModelPoolCache()
 
-		group, err := svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatOpenAIChat)
+		group, err := svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatOpenAIChat, 0)
 		if err != nil {
 			t.Fatalf("SelectGroupForModel failed: %v", err)
 		}
@@ -399,7 +399,7 @@ func TestWeightedRandomSelection(t *testing.T) {
 		// Invalidate cache to force fresh selection
 		svc.InvalidateModelPoolCache()
 
-		group, err := svc.SelectGroupForModel(ctx, "weighted-model", types.RelayFormatOpenAIChat)
+		group, err := svc.SelectGroupForModel(ctx, "weighted-model", types.RelayFormatOpenAIChat, 0)
 		if err != nil {
 			t.Fatalf("SelectGroupForModel failed: %v", err)
 		}
@@ -656,7 +656,7 @@ func TestSelectGroupForModelNotFound(t *testing.T) {
 	svc.SetOnlyAggregateGroups(false)
 
 	// Try to select a non-existent model
-	group, err := svc.SelectGroupForModel(ctx, "non-existent-model", types.RelayFormatOpenAIChat)
+	group, err := svc.SelectGroupForModel(ctx, "non-existent-model", types.RelayFormatOpenAIChat, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel should not error for non-existent model: %v", err)
 	}
@@ -1049,7 +1049,7 @@ func TestSelectGroupForModelWithChannelCompatibility(t *testing.T) {
 	svc.SetOnlyAggregateGroups(false)
 
 	// Test 1: OpenAI Embedding format should select OpenAI or Azure, not Anthropic/Gemini
-	group, err := svc.SelectGroupForModel(ctx, "test-embedding", types.RelayFormatOpenAIEmbedding)
+	group, err := svc.SelectGroupForModel(ctx, "test-embedding", types.RelayFormatOpenAIEmbedding, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel failed: %v", err)
 	}
@@ -1076,7 +1076,7 @@ func TestSelectGroupForModelWithChannelCompatibility(t *testing.T) {
 	// Invalidate cache to pick up changes
 	svc.InvalidateModelPoolCache()
 
-	group, err = svc.SelectGroupForModel(ctx, "test-chat", types.RelayFormatOpenAIChat)
+	group, err = svc.SelectGroupForModel(ctx, "test-chat", types.RelayFormatOpenAIChat, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel failed: %v", err)
 	}
@@ -1112,7 +1112,7 @@ func TestSelectGroupForModelNativeChannelPriority(t *testing.T) {
 	svc.SetOnlyAggregateGroups(false)
 
 	// For OpenAI Chat format, should prefer OpenAI (native) over Anthropic (compatible)
-	group, err := svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatOpenAIChat)
+	group, err := svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatOpenAIChat, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel failed: %v", err)
 	}
@@ -1149,7 +1149,7 @@ func TestSelectGroupForModelClaudeFormat(t *testing.T) {
 	svc.SetOnlyAggregateGroups(false)
 
 	// For Claude format, should prefer Anthropic (native)
-	group, err := svc.SelectGroupForModel(ctx, "claude-model", types.RelayFormatClaude)
+	group, err := svc.SelectGroupForModel(ctx, "claude-model", types.RelayFormatClaude, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel failed: %v", err)
 	}
@@ -1185,7 +1185,7 @@ func TestSelectGroupForModelGeminiFormat(t *testing.T) {
 	svc.SetOnlyAggregateGroups(false)
 
 	// For Gemini format, should only select Gemini channel
-	group, err := svc.SelectGroupForModel(ctx, "gemini-model", types.RelayFormatGemini)
+	group, err := svc.SelectGroupForModel(ctx, "gemini-model", types.RelayFormatGemini, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel failed: %v", err)
 	}
@@ -1215,7 +1215,7 @@ func TestSelectGroupForModelNoCompatibleChannel(t *testing.T) {
 	_, svc := setupHubTestServices(t, db)
 
 	// For OpenAI Embedding format, Anthropic is not compatible
-	group, err := svc.SelectGroupForModel(ctx, "test-embedding", types.RelayFormatOpenAIEmbedding)
+	group, err := svc.SelectGroupForModel(ctx, "test-embedding", types.RelayFormatOpenAIEmbedding, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel should not error: %v", err)
 	}
@@ -1274,7 +1274,7 @@ func BenchmarkSelectGroupForModelWithCompatibility(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatOpenAIChat)
+		_, _ = svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatOpenAIChat, 0)
 	}
 }
 
@@ -1444,7 +1444,7 @@ func TestCustomModelNames(t *testing.T) {
 
 	t.Run("custom_models_can_be_selected", func(t *testing.T) {
 		// Try to select a custom model
-		group, err := hubService.SelectGroupForModel(ctx, "custom-model-1", types.RelayFormatOpenAIChat)
+		group, err := hubService.SelectGroupForModel(ctx, "custom-model-1", types.RelayFormatOpenAIChat, 0)
 		if err != nil {
 			t.Fatalf("SelectGroupForModel failed: %v", err)
 		}
@@ -2016,7 +2016,7 @@ func TestSelectGroupForModelWithCCSupport(t *testing.T) {
 	svc.SetOnlyAggregateGroups(false) // Allow all groups for this test
 
 	// Test 1: Claude format request for gpt-4 should select openai-with-cc (not openai-no-cc)
-	selectedGroup, err := svc.SelectGroupForModel(ctx, "gpt-4", types.RelayFormatClaude)
+	selectedGroup, err := svc.SelectGroupForModel(ctx, "gpt-4", types.RelayFormatClaude, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel failed: %v", err)
 	}
@@ -2028,7 +2028,7 @@ func TestSelectGroupForModelWithCCSupport(t *testing.T) {
 	}
 
 	// Test 2: OpenAI Chat format request for gpt-4 should select openai-no-cc (higher priority, sort=1)
-	selectedGroup, err = svc.SelectGroupForModel(ctx, "gpt-4", types.RelayFormatOpenAIChat)
+	selectedGroup, err = svc.SelectGroupForModel(ctx, "gpt-4", types.RelayFormatOpenAIChat, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel failed: %v", err)
 	}
@@ -2040,7 +2040,7 @@ func TestSelectGroupForModelWithCCSupport(t *testing.T) {
 	}
 
 	// Test 3: Claude format request for claude-3-opus should select anthropic-native (native channel)
-	selectedGroup, err = svc.SelectGroupForModel(ctx, "claude-3-opus", types.RelayFormatClaude)
+	selectedGroup, err = svc.SelectGroupForModel(ctx, "claude-3-opus", types.RelayFormatClaude, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel failed: %v", err)
 	}
@@ -2101,11 +2101,50 @@ func TestSelectGroupForModelClaudeFormatNoCCSupport(t *testing.T) {
 	svc.SetOnlyAggregateGroups(false)
 
 	// Test: Claude format request for gpt-4 should return nil (no cc_support enabled)
-	selectedGroup, err := svc.SelectGroupForModel(ctx, "gpt-4", types.RelayFormatClaude)
+	selectedGroup, err := svc.SelectGroupForModel(ctx, "gpt-4", types.RelayFormatClaude, 0)
 	if err != nil {
 		t.Fatalf("SelectGroupForModel failed: %v", err)
 	}
 	if selectedGroup != nil {
 		t.Errorf("Expected nil (no compatible channel with cc_support), got %s", selectedGroup.Name)
+	}
+}
+
+// TestSelectGroupForModelPreconditionsAllFiltered tests that when all groups are filtered
+// by preconditions, nil is returned
+func TestSelectGroupForModelPreconditionsAllFiltered(t *testing.T) {
+	db := setupHubTestDB(t)
+	ctx := context.Background()
+
+	// Create aggregate group with strict request size limit (10KB)
+	aggregateGroup := &models.Group{
+		Name:        "aggregate-strict",
+		GroupType:   "aggregate",
+		ChannelType: "openai",
+		Enabled:     true,
+		Sort:        1,
+		Upstreams:   datatypes.JSON(`[{"url":"https://api.openai.com"}]`),
+		ModelRedirectRulesV2: datatypes.JSON(`{
+			"test-model": {"targets": [{"model": "gpt-4", "weight": 100}]}
+		}`),
+		Preconditions: datatypes.JSONMap{
+			"max_request_size_kb": 10,
+		},
+	}
+	if err := db.Create(aggregateGroup).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up service
+	_, svc := setupHubTestServices(t, db)
+	svc.SetOnlyAggregateGroups(true)
+
+	// Test: Large request (100KB) exceeds all groups' limits
+	selectedGroup, err := svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatOpenAIChat, 100)
+	if err != nil {
+		t.Fatalf("SelectGroupForModel failed: %v", err)
+	}
+	if selectedGroup != nil {
+		t.Errorf("Expected nil (all groups filtered), got %s", selectedGroup.Name)
 	}
 }

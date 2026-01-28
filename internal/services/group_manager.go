@@ -94,7 +94,8 @@ func (gm *GroupManager) Initialize() error {
 				"id, name, display_name, description, group_type, enabled, upstreams, " +
 					"validation_endpoint, channel_type, sort, test_model, param_overrides, " +
 					"config, header_rules, model_mapping, model_redirect_rules, " +
-					"model_redirect_rules_v2, model_redirect_strict, path_redirects, proxy_keys, " +
+					"model_redirect_rules_v2, model_redirect_strict, custom_model_names, " +
+					"preconditions, path_redirects, proxy_keys, parent_group_id, bound_site_id, " +
 					"last_validated_at, created_at, updated_at",
 			).Find(&groups).Error
 			groupsCancel()

@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
-import { type ChannelType, type Group } from "@/types/models";
-import { Close } from "@vicons/ionicons5";
+import {
+  type ChannelType,
+  type Group,
+  type PreconditionItem,
+  type PreconditionOption,
+} from "@/types/models";
+import { Add, Close, Remove } from "@vicons/ionicons5";
 import {
   NButton,
   NCard,
@@ -13,11 +18,13 @@ import {
   NInputNumber,
   NModal,
   NSelect,
+  NTag,
   useMessage,
   type FormInst,
   type FormRules,
+  type SelectOption,
 } from "naive-ui";
-import { reactive, ref, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 // Type definitions for better type safety
@@ -67,6 +74,35 @@ const channelTypeOptions = [
   { label: "Codex", value: "codex" as ChannelType },
 ];
 
+// Precondition options (可扩展)
+const preconditionOptions = computed<PreconditionOption[]>(() => [
+  {
+    key: "max_request_size_kb",
+    label: t("keys.preconditionMaxRequestSize"),
+    description: t("keys.maxRequestSizeHint"),
+    default_value: 0, // 0 = no limit
+    min: 0,
+    max: 153600, // 150 MB (aligned with backend MAX_REQUEST_BODY_SIZE_MB default)
+    unit: t("keys.maxRequestSizeUnit"),
+  },
+]);
+
+// Get available precondition options (exclude already added)
+const availablePreconditionOptions = computed<SelectOption[]>(() => {
+  const addedKeys = new Set(formData.preconditionItems.map(item => item.key));
+  return preconditionOptions.value
+    .filter(opt => !addedKeys.has(opt.key))
+    .map(opt => ({
+      label: opt.label,
+      value: opt.key,
+    }));
+});
+
+// Get precondition option by key
+const getPreconditionOption = (key: string): PreconditionOption | undefined => {
+  return preconditionOptions.value.find(opt => opt.key === key);
+};
+
 // Default form data
 const defaultFormData = {
   name: "",
@@ -77,6 +113,7 @@ const defaultFormData = {
   proxy_keys: "",
   max_retries: 0,
   sub_max_retries: 0,
+  preconditionItems: [] as PreconditionItem[], // Dynamic precondition list
 };
 
 // Reactive form data
@@ -123,6 +160,7 @@ watch(
 // Reset form
 function resetForm() {
   Object.assign(formData, defaultFormData);
+  formData.preconditionItems = [];
   formRef.value?.restoreValidation();
 }
 
@@ -138,6 +176,16 @@ function loadGroupData() {
   const maxRetries = config.max_retries ?? 0;
   const subMaxRetries = config.sub_max_retries ?? 0;
 
+  // Load preconditions as dynamic items
+  const preconditionItems: PreconditionItem[] = [];
+  if (props.group.preconditions) {
+    for (const [key, value] of Object.entries(props.group.preconditions)) {
+      if (typeof value === "number") {
+        preconditionItems.push({ key, value });
+      }
+    }
+  }
+
   Object.assign(formData, {
     name: props.group.name || "",
     display_name: props.group.display_name || "",
@@ -147,7 +195,40 @@ function loadGroupData() {
     proxy_keys: props.group.proxy_keys || "",
     max_retries: maxRetries,
     sub_max_retries: subMaxRetries,
+    preconditionItems,
   });
+}
+
+// Add precondition item
+function addPreconditionItem() {
+  if (availablePreconditionOptions.value.length === 0) {
+    return;
+  }
+  const firstAvailable = availablePreconditionOptions.value[0];
+  if (!firstAvailable) {
+    return;
+  }
+  const option = getPreconditionOption(firstAvailable.value as string);
+  if (option) {
+    formData.preconditionItems.push({
+      key: option.key,
+      value: option.default_value,
+    });
+  }
+}
+
+// Remove precondition item
+function removePreconditionItem(index: number) {
+  formData.preconditionItems.splice(index, 1);
+}
+
+// Handle precondition key change
+function handlePreconditionKeyChange(index: number, key: string) {
+  const option = getPreconditionOption(key);
+  const target = formData.preconditionItems[index];
+  if (option && target) {
+    target.value = option.default_value;
+  }
 }
 
 // Close modal
@@ -190,6 +271,12 @@ async function handleSubmit() {
 
     loading.value = true;
 
+    // Build preconditions from dynamic items
+    const preconditions: Record<string, number> = {};
+    for (const item of formData.preconditionItems) {
+      preconditions[item.key] = item.value;
+    }
+
     // Build submit payload
     const submitData = {
       name: formData.name,
@@ -203,6 +290,7 @@ async function handleSubmit() {
         max_retries: formData.max_retries ?? 0,
         sub_max_retries: formData.sub_max_retries ?? 0,
       },
+      preconditions,
     };
 
     let result: Group;
@@ -335,6 +423,91 @@ async function handleSubmit() {
               style="resize: none"
             />
           </n-form-item>
+
+          <!-- Dynamic preconditions section -->
+          <div v-if="formData.preconditionItems.length > 0" class="preconditions-section">
+            <h5 class="subsection-title">
+              {{ t("keys.preconditions") }}
+              <n-tag size="tiny" type="info" style="margin-left: 8px">
+                {{ t("keys.optional") }}
+              </n-tag>
+            </h5>
+
+            <n-form-item
+              v-for="(item, index) in formData.preconditionItems"
+              :key="index"
+              class="precondition-row"
+            >
+              <template #label>
+                <div class="precondition-label">{{ t("keys.precondition") }} {{ index + 1 }}</div>
+              </template>
+              <div class="precondition-content">
+                <div class="precondition-select">
+                  <n-select
+                    v-model:value="item.key"
+                    :options="[
+                      ...availablePreconditionOptions,
+                      {
+                        label: getPreconditionOption(item.key)?.label || item.key,
+                        value: item.key,
+                      },
+                    ]"
+                    :placeholder="t('keys.selectPrecondition')"
+                    @update:value="(val: string) => handlePreconditionKeyChange(index, val)"
+                    style="width: 200px"
+                  />
+                </div>
+                <div class="precondition-value">
+                  <n-input-number
+                    v-model:value="item.value"
+                    :placeholder="t('keys.preconditionValue')"
+                    :min="getPreconditionOption(item.key)?.min ?? 0"
+                    :max="getPreconditionOption(item.key)?.max ?? 999999"
+                    style="width: 100%"
+                  >
+                    <template #suffix v-if="getPreconditionOption(item.key)?.unit">
+                      <span style="color: var(--text-secondary)">
+                        {{ getPreconditionOption(item.key)?.unit }}
+                      </span>
+                    </template>
+                  </n-input-number>
+                </div>
+                <div class="precondition-actions">
+                  <n-button
+                    @click="removePreconditionItem(index)"
+                    type="error"
+                    quaternary
+                    circle
+                    size="small"
+                  >
+                    <template #icon>
+                      <n-icon :component="Remove" />
+                    </template>
+                  </n-button>
+                </div>
+              </div>
+              <template #feedback v-if="getPreconditionOption(item.key)?.description">
+                <span style="color: var(--text-secondary); font-size: 12px">
+                  {{ getPreconditionOption(item.key)?.description }}
+                </span>
+              </template>
+            </n-form-item>
+          </div>
+
+          <!-- Add precondition button -->
+          <div style="margin-top: 12px; padding-left: 100px">
+            <n-button
+              @click="addPreconditionItem"
+              dashed
+              style="width: 100%"
+              :disabled="availablePreconditionOptions.length === 0"
+            >
+              <template #icon>
+                <n-icon :component="Add" />
+              </template>
+              {{ t("keys.addPrecondition") }}
+            </n-button>
+          </div>
         </div>
       </n-form>
 
@@ -370,6 +543,49 @@ async function handleSubmit() {
   margin-bottom: 8px;
   padding-bottom: 2px;
   border-bottom: 1px solid var(--border-color);
+}
+
+.subsection-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+}
+
+.preconditions-section {
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+
+.precondition-row {
+  margin-bottom: 8px !important;
+}
+
+.precondition-content {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.precondition-select {
+  flex-shrink: 0;
+}
+
+.precondition-value {
+  flex: 1;
+  min-width: 0;
+}
+
+.precondition-actions {
+  flex-shrink: 0;
+}
+
+.precondition-label {
+  font-weight: 500;
+  color: var(--text-primary);
 }
 
 /* ===== CRITICAL FIX: Force compact form spacing ===== */

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import type { ChildGroupInfo, Group } from "@/types/models";
+import { showProgressBar, hideProgressBar } from "@/utils/app-state";
 import { getGroupDisplayName } from "@/utils/display";
 import {
   groupByChannelType,
@@ -430,6 +431,7 @@ function handleImportClick() {
 async function handleFileChange(event: Event) {
   const target = event.target as HTMLInputElement;
   const file = target.files?.[0];
+  let progressShown = false;
 
   if (!file) {
     return;
@@ -449,25 +451,84 @@ async function handleFileChange(event: Event) {
     }
 
     isImporting.value = true;
+
+    // Show progress bar immediately for instant UI feedback
+    localStorage.removeItem("last_closed_task");
+    showProgressBar(data.group?.name || "Unknown");
+    progressShown = true;
+
     const loadingMessage = message.loading(t("keys.importing"), { duration: 0 });
 
     try {
       const created = await keysApi.importGroup(data, { mode, filename: file.name });
+
+      loadingMessage.destroy();
       message.success(t("keys.importSuccess"));
+
+      // Hide progress bar on success (polling will show it again if task is still running)
+      hideProgressBar();
+
+      // Wait a bit before refreshing to allow backend cache warming
+      await new Promise(resolve => setTimeout(resolve, 500));
+
       if (created?.id) {
         emit("refresh-and-select", created.id);
       } else {
         emit("refresh");
       }
     } catch (_error: unknown) {
-      const errorMessage = _error instanceof Error ? _error.message : t("keys.importFailed");
-      message.error(errorMessage);
-    } finally {
       loadingMessage.destroy();
+
+      // Hide progress bar on error to prevent it from showing indefinitely
+      if (progressShown) {
+        hideProgressBar();
+      }
+
+      let errorMessage = t("keys.importFailed");
+
+      if (_error instanceof Error) {
+        // Check for timeout errors
+        if (
+          _error.message.includes("timeout") ||
+          _error.message.includes("ECONNABORTED") ||
+          _error.message.includes("Network Error")
+        ) {
+          errorMessage = t("keys.importTimeoutHint");
+        } else {
+          errorMessage = _error.message;
+        }
+      }
+
+      message.error(errorMessage, { duration: 5000 });
+    } finally {
       isImporting.value = false;
     }
   } catch (_error) {
-    message.error(t("keys.invalidImportFile"));
+    // JSON parse error or other early errors
+    // Hide progress bar on early validation errors
+    if (progressShown) {
+      hideProgressBar();
+    }
+
+    let errorDetail = "";
+    if (_error instanceof Error) {
+      errorDetail = _error.message;
+    }
+
+    // Log detailed error for debugging
+    console.error("Import file validation failed:", {
+      error: _error,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type,
+    });
+
+    message.error(`${t("keys.invalidImportFile")}${errorDetail ? `: ${errorDetail}` : ""}`, {
+      duration: 8000,
+      closable: true,
+    });
+    // Ensure isImporting is reset even if error occurs before it's set
+    isImporting.value = false;
   } finally {
     // Clear file input to allow selecting the same file again
     target.value = "";
@@ -496,6 +557,7 @@ async function handleFileChange(event: Event) {
           size="small"
           @click="handleImportClick"
           :title="t('keys.importGroup')"
+          :disabled="isImporting"
         >
           <template #icon>
             <n-icon :component="CloudUploadOutline" />

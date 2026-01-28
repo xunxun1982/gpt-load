@@ -50,6 +50,16 @@ func SuccessI18n(c *gin.Context, msgID string, data any, templateData ...map[str
 	})
 }
 
+// SuccessI18nWithStatus sends a standardized success response with i18n message and custom status code.
+func SuccessI18nWithStatus(c *gin.Context, httpStatus int, msgID string, data any, templateData ...map[string]any) {
+	message := i18n.Message(c, msgID, templateData...)
+	c.JSON(httpStatus, SuccessResponse{
+		Code:    0,
+		Message: message,
+		Data:    data,
+	})
+}
+
 // ErrorI18n sends a standardized error response with i18n message.
 func ErrorI18n(c *gin.Context, httpStatus int, code string, msgID string, templateData ...map[string]any) {
 	message := i18n.Message(c, msgID, templateData...)
