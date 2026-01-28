@@ -79,19 +79,28 @@ for pkg_pattern in "${BENCH_PACKAGES[@]}"; do
     fi
 done
 
-# Get all packages with tests (including main package if it has tests)
+# Get all packages with tests (only project packages, not dependencies)
 echo "Listing packages..."
 
+# Get module name from go.mod to filter project packages
+# This prevents testing third-party dependencies which pollute PGO profiles
+MODULE_NAME=$(go list -m 2>/dev/null || echo "gpt-load")
+echo "Module name: ${MODULE_NAME}"
+
 # Use a temporary file to avoid pipefail issues
-# Exclude main package to avoid web/dist dependency
+# Only list project packages (exclude main package to avoid web/dist dependency)
 TEMP_PACKAGES=$(mktemp)
 set +e
-go list ./internal/... > "${TEMP_PACKAGES}" 2>&1
+# Redirect stderr to /dev/null to avoid download messages
+# Use -e flag to continue on errors
+go list -e ./internal/... 2>/dev/null > "${TEMP_PACKAGES}"
 LIST_EXIT=$?
 set -e
 
 if [ ${LIST_EXIT} -eq 0 ]; then
-    PACKAGES=$(grep -v '/vendor/' "${TEMP_PACKAGES}" 2>/dev/null || echo "")
+    # Filter: only keep lines that start with module name (project packages)
+    # This excludes third-party dependencies, vendor packages, and download messages
+    PACKAGES=$(grep "^${MODULE_NAME}/" "${TEMP_PACKAGES}" 2>/dev/null | grep -v '/vendor/' || echo "")
 else
     echo "⚠️  go list failed, trying to continue..."
     PACKAGES=""

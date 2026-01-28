@@ -74,15 +74,34 @@ foreach ($pkg in $benchPackages) {
     }
 }
 
-# Get all packages with tests (excluding main package to avoid web/dist dependency)
+# Get all packages with tests (only project packages, not dependencies)
 Write-Host "Listing packages..." -ForegroundColor Gray
+
+# Get module name from go.mod to filter project packages
+# This prevents testing third-party dependencies which pollute PGO profiles
 try {
-    $packagesRaw = go list ./internal/... 2>&1
+    $moduleName = (go list -m 2>&1 | Select-Object -First 1).Trim()
+    if ([string]::IsNullOrEmpty($moduleName) -or $LASTEXITCODE -ne 0) {
+        $moduleName = "gpt-load"
+    }
+} catch {
+    $moduleName = "gpt-load"
+}
+Write-Host "Module name: $moduleName" -ForegroundColor Gray
+
+try {
+    # Use -e flag to continue on errors, redirect stderr to suppress download messages
+    # Filter output to only include project packages (starting with module name)
+    $packagesRaw = go list -e ./internal/... 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "⚠️  go list failed, trying to continue..." -ForegroundColor Yellow
         $packages = @()
     } else {
-        $packages = $packagesRaw | Where-Object { $_ -notmatch '/vendor/' }
+        # Filter: only keep lines that start with module name (project packages)
+        # This excludes third-party dependencies, vendor packages, and download messages
+        $packages = $packagesRaw | Where-Object {
+            $_ -match "^$([regex]::Escape($moduleName))/" -and $_ -notmatch '/vendor/'
+        }
     }
 } catch {
     Write-Host "⚠️  go list failed: $_" -ForegroundColor Yellow
