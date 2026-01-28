@@ -261,6 +261,9 @@ function handleGroupRefresh(updatedGroup?: Group) {
     // Check if enabled status changed - need full refresh to update child groups
     const enabledChanged = selectedGroup.value?.enabled !== updatedGroup.enabled;
 
+    // Check if name changed - need to refresh child groups as their upstream URLs depend on parent name
+    const nameChanged = selectedGroup.value?.name !== updatedGroup.name;
+
     // Check if this is a child group - need to refresh sidebar childGroupsMap
     // The childGroupsMap in GroupList.vue is loaded separately from backend,
     // so we need to explicitly refresh it to sync the sidebar display.
@@ -275,8 +278,8 @@ function handleGroupRefresh(updatedGroup?: Group) {
       groups.value[index] = updatedGroup;
     }
 
-    // If enabled status changed, reload all groups to sync child groups status
-    if (enabledChanged) {
+    // If enabled status changed or name changed, reload all groups to sync child groups
+    if (enabledChanged || nameChanged) {
       refreshGroupsAndSelect(updatedGroup.id);
     } else if (isChildGroup) {
       // For child group updates, directly call loadAllChildGroups to refresh sidebar

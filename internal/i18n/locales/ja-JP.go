@@ -233,6 +233,7 @@ var MessagesJaJP = map[string]string{
 	"validation.child_group_parent_must_be_standard":    "子グループの親グループは標準グループである必要があります",
 	"validation.child_group_cannot_nest":                "子グループは子グループを作成できません（ネストはサポートされていません）",
 	"validation.parent_group_no_proxy_keys":             "親グループにプロキシキーが設定されていないため、子グループを作成できません",
+	"validation.child_group_cannot_modify_upstream":     "子グループはアップストリームURLを変更できません。アップストリームは自動管理され、常に親グループのプロキシエンドポイントを指します",
 	"validation.child_group_cannot_export_individually": "子グループは個別にエクスポートできません。親グループをエクスポートしてください",
 	"validation.child_group_cannot_import_individually": "子グループは個別にインポートできません。親グループと一緒にインポートされます",
 	"success.child_group_created":                       "子グループが正常に作成されました",

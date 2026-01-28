@@ -403,6 +403,8 @@ export default {
       "Detailed description of the group to help team members understand its purpose and features. Supports multi-line text",
     upstreamTooltip:
       "Complete URL of the API server. Multiple upstreams enable load balancing and failover for high availability",
+    childGroupUpstreamAutoManaged:
+      "Child group upstream URL is auto-managed by the system and always points to parent group's proxy endpoint (http://127.0.0.1:PORT/proxy/parent-group-name). Cannot be modified manually",
     weightTooltip:
       "Load balancing weight configuration. Weight determines traffic distribution ratio - higher values receive more traffic. Weight 0 disables the upstream (no requests). Example: Weight 2:1 means the first receives ~67% of traffic",
     upstreamProxyUrl: "Proxy",
