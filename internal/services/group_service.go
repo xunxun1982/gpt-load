@@ -877,25 +877,44 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		group.PathRedirects = pathRedirectsJSON
 	}
 
-	// Perform the actual database write - minimizes lock time
-	if err := s.db.WithContext(ctx).Save(&group).Error; err != nil {
+	// Start transaction to ensure parent group update and child group sync are atomic
+	tx := s.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		return nil, app_errors.ErrDatabase
+	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Perform the actual database write within transaction
+	if err := tx.Save(&group).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 
 	// Sync child groups if parent's name or proxy_keys changed
 	// Only sync for standard groups that are not child groups themselves
+	// This must be done within the same transaction to ensure atomicity
 	if group.GroupType == "standard" && group.ParentGroupID == nil {
 		nameChanged := oldName != group.Name
 		proxyKeysChanged := oldProxyKeys != group.ProxyKeys
 
 		if nameChanged || proxyKeysChanged {
 			// Sync child groups inline to avoid circular dependency with ChildGroupService
-			if err := s.syncChildGroupsOnParentUpdate(ctx, &group, oldName, oldProxyKeys); err != nil {
-				logrus.WithContext(ctx).WithError(err).Error("failed to sync child groups after parent update")
-				// Don't fail the update, just log the error
+			// Pass transaction to ensure atomicity - if sync fails, parent update is rolled back
+			if err := s.syncChildGroupsOnParentUpdate(ctx, tx, &group, oldName, oldProxyKeys); err != nil {
+				logrus.WithContext(ctx).WithError(err).Error("Failed to sync child groups after parent update, rolling back transaction")
+				return nil, NewI18nError(app_errors.ErrInternalServer, "errors.child_group_sync_failed", nil)
 			}
 		}
 	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+	tx = nil // Prevent deferred rollback after successful commit
 
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
@@ -920,10 +939,12 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 // NOTE: Similar logic exists in ChildGroupService.SyncChildGroupsOnParentUpdate. The duplication is
 // intentional to avoid circular dependencies between services. This method is used inline during
 // group updates, while ChildGroupService's method is exposed for external callers with transaction support.
-func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, parentGroup *models.Group, oldName string, oldProxyKeys string) error {
+//
+// IMPORTANT: This method must be called within a transaction to ensure atomicity with parent group updates.
+func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, tx *gorm.DB, parentGroup *models.Group, oldName string, oldProxyKeys string) error {
 	// Check if there are any child groups
 	var childGroups []models.Group
-	if err := s.db.WithContext(ctx).
+	if err := tx.WithContext(ctx).
 		Where("parent_group_id = ?", parentGroup.ID).
 		Find(&childGroups).Error; err != nil {
 		return app_errors.ParseDBError(err)
@@ -951,7 +972,7 @@ func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, parent
 			return app_errors.ErrInternalServer
 		}
 
-		if err := s.db.WithContext(ctx).
+		if err := tx.WithContext(ctx).
 			Model(&models.Group{}).
 			Where("parent_group_id = ?", parentGroup.ID).
 			Update("upstreams", datatypes.JSON(upstreamsJSON)).Error; err != nil {
@@ -980,7 +1001,7 @@ func (s *GroupService) syncChildGroupsOnParentUpdate(ctx context.Context, parent
 				// Now safe to delete old key
 				if oldParentFirstKey != "" {
 					oldKeyHash := s.encryptionSvc.Hash(oldParentFirstKey)
-					if err := s.db.WithContext(ctx).
+					if err := tx.WithContext(ctx).
 						Where("group_id = ? AND key_hash = ?", childGroup.ID, oldKeyHash).
 						Delete(&models.APIKey{}).Error; err != nil {
 						logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{

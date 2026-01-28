@@ -775,7 +775,6 @@ func TestDynamicWeightManager_HubRetryFailureImpact(t *testing.T) {
 	// even when the overall request succeeds via retry to another group
 }
 
-
 // TestDynamicWeightManager_NonLinearHealthPenalty tests the non-linear penalty for low health scores
 func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 	t.Parallel()

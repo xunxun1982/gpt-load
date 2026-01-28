@@ -1567,7 +1567,10 @@ var reWindowsPathNormal = regexp.MustCompile(`[A-Za-z]:\\[^\s\n\r"'<>|]+`)
 
 // reWindowsPathCorrupted matches Windows paths where backslashes may have been corrupted
 // This happens when JSON escape sequences like \t, \n are interpreted as tab, newline, etc.
-var reWindowsPathCorrupted = regexp.MustCompile(`[A-Za-z]:[^ \n\r"'<>|]+`)
+// Pattern matches drive letter + colon + any characters except space and special chars
+// NOTE: This pattern intentionally matches control characters (tab, newline, etc.) to catch corrupted paths
+// We use [^ ] (not space) instead of \s (not whitespace) to allow tabs and other control chars
+var reWindowsPathCorrupted = regexp.MustCompile(`[A-Za-z]:[^ "'<>|]+`)
 
 // reWindowsDrivePath matches Windows drive letter paths (e.g., "C:", "F:")
 // This pattern finds the start of a Windows path within a command string.
@@ -1766,23 +1769,32 @@ func convertWindowsPathsInToolResult(content string) string {
 		// Check if this looks like a corrupted path (no separator after colon)
 		if len(match) > 2 && match[2] != '/' && match[2] != '\\' {
 			// This is a corrupted path like "F:MyProjects..." or "F:MyProjects<tab>est..."
-			// Remove all control characters (tab, newline, etc.), keep only printable chars
-			cleaned := strings.Map(func(r rune) rune {
-				// Keep drive letter and colon
-				if r == ':' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
-					return r
-				}
-				// Keep alphanumeric, underscore, dash, dot, slash
-				if (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == '/' || r == '\\' {
-					return r
-				}
-				// Remove control characters (tab, newline, etc.) and other special chars
-				if r < 32 || r == 127 {
-					return -1 // Remove control characters
-				}
-				return r
-			}, match)
+			// Replace control characters with path separators to reconstruct the path
+			var result strings.Builder
+			result.Grow(len(match) + 10)
 
+			for i, r := range match {
+				// Keep drive letter and colon as-is
+				if i < 2 && (r == ':' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')) {
+					result.WriteRune(r)
+					continue
+				}
+				// Replace control characters (tab, newline, etc.) with path separator
+				// These are where backslashes were incorrectly interpreted as escape sequences
+				if r < 32 || r == 127 {
+					result.WriteRune('/')
+					continue
+				}
+				// Keep alphanumeric, underscore, dash, dot, slash, backslash
+				if (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') ||
+					r == '_' || r == '-' || r == '.' || r == '/' || r == '\\' {
+					result.WriteRune(r)
+					continue
+				}
+				// Skip other special characters
+			}
+
+			cleaned := result.String()
 			// Add slash after drive letter if missing
 			if len(cleaned) > 2 && cleaned[2] != '/' && cleaned[2] != '\\' {
 				cleaned = string(cleaned[0]) + ":/" + cleaned[2:]

@@ -239,6 +239,7 @@ var MessagesJaJP = map[string]string{
 	"success.child_group_deleted":                       "子グループが正常に削除されました",
 	"warning.parent_has_child_groups":                   "このグループには {{.count}} 個の子グループがあり、削除されます",
 	"group.child_groups_deleted":                        "{{.count}} 個の子グループも削除されました",
+	"errors.child_group_sync_failed":                    "親グループの変更と子グループの同期に失敗しました",
 
 	// Binding related
 	"binding.group_not_found":                 "グループが見つかりません",

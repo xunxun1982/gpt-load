@@ -261,6 +261,7 @@ var MessagesEnUS = map[string]string{
 	"success.child_group_deleted":                       "Child group deleted successfully",
 	"warning.parent_has_child_groups":                   "This group has {{.count}} child group(s), they will also be deleted",
 	"group.child_groups_deleted":                        "{{.count}} child group(s) also deleted",
+	"errors.child_group_sync_failed":                    "Failed to synchronize child groups with parent group changes",
 
 	// Binding related
 	"binding.group_not_found":                 "Group not found",
