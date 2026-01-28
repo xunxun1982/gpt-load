@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -533,9 +532,9 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 	}
 
 	// Load preconditions for aggregate groups to check request size limits
-	var groupPreconditions map[uint]map[string]interface{}
+	var groupPreconditionsMap map[uint]*models.Group
 	if requestSizeKB > 0 {
-		groupPreconditions = make(map[uint]map[string]interface{})
+		groupPreconditionsMap = make(map[uint]*models.Group)
 		// Collect aggregate group IDs
 		var aggregateGroupIDs []uint
 		for _, source := range allSources {
@@ -553,9 +552,7 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 				logrus.WithError(err).Warn("Failed to load group preconditions")
 			} else {
 				for i := range groups {
-					if groups[i].Preconditions != nil {
-						groupPreconditions[groups[i].ID] = groups[i].Preconditions
-					}
+					groupPreconditionsMap[groups[i].ID] = &groups[i]
 				}
 			}
 		}
@@ -602,32 +599,17 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 
 		// Check preconditions for aggregate groups
 		if source.GroupType == "aggregate" && requestSizeKB > 0 {
-			if preconditions, ok := groupPreconditions[source.GroupID]; ok {
-				if maxSizeVal, exists := preconditions["max_request_size_kb"]; exists {
-					var maxSizeKB int
-					switch v := maxSizeVal.(type) {
-					case float64:
-						maxSizeKB = int(v)
-					case int:
-						maxSizeKB = v
-					case int64:
-						maxSizeKB = int(v)
-					case string:
-						// Support string values for defensive parsing
-						if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-							maxSizeKB = parsed
-						}
-					}
-					// Skip this aggregate group if request size exceeds limit
-					if maxSizeKB > 0 && requestSizeKB > maxSizeKB {
-						logrus.WithFields(logrus.Fields{
-							"group_id":        source.GroupID,
-							"group_name":      source.GroupName,
-							"request_size_kb": requestSizeKB,
-							"max_size_kb":     maxSizeKB,
-						}).Debug("Skipping aggregate group: request size exceeds precondition limit")
-						continue
-					}
+			if group, ok := groupPreconditionsMap[source.GroupID]; ok {
+				maxSizeKB := group.GetMaxRequestSizeKB()
+				// Skip this aggregate group if request size exceeds limit
+				if maxSizeKB > 0 && requestSizeKB > maxSizeKB {
+					logrus.WithFields(logrus.Fields{
+						"group_id":        source.GroupID,
+						"group_name":      source.GroupName,
+						"request_size_kb": requestSizeKB,
+						"max_size_kb":     maxSizeKB,
+					}).Debug("Skipping aggregate group: request size exceeds precondition limit")
+					continue
 				}
 			}
 		}

@@ -651,37 +651,30 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		// Example: 1025 bytes should count as 2 KB, not 1 KB
 		requestSizeKB := (len(bodyBytes) + 1023) / 1024
 
-		// DEBUG: Log precondition check details
-		logrus.WithFields(logrus.Fields{
-			"aggregate_group":    originalGroup.Name,
-			"group_id":           originalGroup.ID,
-			"request_size_kb":    requestSizeKB,
-			"request_size_bytes": len(bodyBytes),
-			"max_size_kb":        maxSizeKB,
-			"preconditions":      originalGroup.Preconditions,
-		}).Debug("Checking aggregate group preconditions")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group":    originalGroup.Name,
+				"group_id":           originalGroup.ID,
+				"request_size_kb":    requestSizeKB,
+				"request_size_bytes": len(bodyBytes),
+				"max_size_kb":        maxSizeKB,
+				"preconditions":      originalGroup.Preconditions,
+			}).Debug("Checking aggregate group preconditions")
+		}
 
-		if maxSizeKB > 0 {
-			if requestSizeKB > maxSizeKB {
-				logrus.WithFields(logrus.Fields{
-					"aggregate_group": originalGroup.Name,
-					"request_size_kb": requestSizeKB,
-					"max_size_kb":     maxSizeKB,
-				}).Warn("Request size exceeds aggregate group precondition limit")
-				response.Error(c, app_errors.NewAPIError(
-					app_errors.ErrBadRequest,
-					fmt.Sprintf("Request size (%d KB) exceeds aggregate group limit (%d KB)", requestSizeKB, maxSizeKB),
-				))
-				ps.logEarlyError(c, originalGroup, startTime, http.StatusBadRequest,
-					fmt.Errorf("request size %d KB exceeds limit %d KB", requestSizeKB, maxSizeKB))
-				return
-			}
-		} else {
-			// DEBUG: Log why check was skipped
+		if maxSizeKB > 0 && requestSizeKB > maxSizeKB {
 			logrus.WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,
+				"request_size_kb": requestSizeKB,
 				"max_size_kb":     maxSizeKB,
-			}).Debug("Precondition check skipped: maxSizeKB is 0 or not configured")
+			}).Warn("Request size exceeds aggregate group precondition limit")
+			response.Error(c, app_errors.NewAPIError(
+				app_errors.ErrBadRequest,
+				fmt.Sprintf("Request size (%d KB) exceeds aggregate group limit (%d KB)", requestSizeKB, maxSizeKB),
+			))
+			ps.logEarlyError(c, originalGroup, startTime, http.StatusBadRequest,
+				fmt.Errorf("request size %d KB exceeds limit %d KB", requestSizeKB, maxSizeKB))
+			return
 		}
 	}
 

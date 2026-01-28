@@ -288,13 +288,7 @@ func (g *Group) GetMaxRequestSizeKB() int {
 		return 0
 	}
 
-	// Normalize negative values to 0 (no limit)
-	normalize := func(v int) int {
-		if v < 0 {
-			return 0
-		}
-		return v
-	}
+	var result int
 
 	// Handle different numeric types from JSON unmarshaling
 	switch v := val.(type) {
@@ -308,13 +302,13 @@ func (g *Group) GetMaxRequestSizeKB() int {
 			}).Warn("Failed to parse json.Number for max_request_size_kb")
 			return 0
 		}
-		return normalize(int(intVal))
+		result = int(intVal)
 	case float64:
-		return normalize(int(v))
+		result = int(v)
 	case int:
-		return normalize(v)
+		result = v
 	case int64:
-		return normalize(int(v))
+		result = int(v)
 	default:
 		logrus.WithFields(logrus.Fields{
 			"group_id":   g.ID,
@@ -322,4 +316,10 @@ func (g *Group) GetMaxRequestSizeKB() int {
 		}).Warn("Unexpected value type for max_request_size_kb")
 		return 0
 	}
+
+	// Normalize negative values to 0 (no limit)
+	if result < 0 {
+		return 0
+	}
+	return result
 }
