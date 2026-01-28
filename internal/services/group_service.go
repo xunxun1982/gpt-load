@@ -667,8 +667,17 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 	// Child groups cannot modify their upstream URLs as they are auto-managed
 	// Child group upstreams always point to parent group's proxy endpoint
+	// However, allow unchanged upstreams to pass through (frontend may submit them)
 	if params.HasUpstreams && group.ParentGroupID != nil {
-		return nil, NewI18nError(app_errors.ErrValidation, "validation.child_group_cannot_modify_upstream", nil)
+		cleanedUpstreams, err := s.validateAndCleanUpstreams(params.Upstreams)
+		if err != nil {
+			return nil, err
+		}
+		if !upstreamsEqual(cleanedUpstreams, group.Upstreams) {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.child_group_cannot_modify_upstream", nil)
+		}
+		// Upstreams unchanged; ignore to allow other field updates
+		params.HasUpstreams = false
 	}
 
 	if params.HasUpstreams {
@@ -3080,6 +3089,21 @@ func isValidValidationEndpoint(endpoint string) bool {
 		return false
 	}
 	return true
+}
+
+// upstreamsEqual compares two upstream JSON arrays for equality.
+// Returns true if both upstreams have the same structure and values.
+// Used to detect if child group upstreams are being modified during updates.
+func upstreamsEqual(a, b datatypes.JSON) bool {
+	var left, right []struct {
+		URL      string  `json:"url"`
+		Weight   int     `json:"weight"`
+		ProxyURL *string `json:"proxy_url,omitempty"`
+	}
+	if json.Unmarshal(a, &left) != nil || json.Unmarshal(b, &right) != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 // isValidChannelType checks channel type against registered channels.

@@ -680,13 +680,13 @@ func (s *ChildGroupService) SyncChildGroupUpstreams(ctx context.Context) error {
 			continue
 		}
 
+		// Treat empty/malformed upstreams as needing repair for self-healing
+		// This ensures broken child groups are automatically fixed during sync
 		needsUpdate := false
-		if len(currentUpstreams) > 0 {
-			if currentURL, ok := currentUpstreams[0]["url"].(string); ok {
-				if currentURL != expectedURL {
-					needsUpdate = true
-				}
-			}
+		if len(currentUpstreams) == 0 {
+			needsUpdate = true
+		} else if currentURL, ok := currentUpstreams[0]["url"].(string); !ok || currentURL != expectedURL {
+			needsUpdate = true
 		}
 
 		if needsUpdate {

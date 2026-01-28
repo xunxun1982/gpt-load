@@ -1277,6 +1277,17 @@ func TestUpdateGroupWithChildGroupProxyKeysSync(t *testing.T) {
 			}
 		}
 		assert.True(t, found, "Child group should have new API key from parent")
+
+		// Verify old key was removed (sync behavior is replace, not add)
+		oldKeyHash := svc.encryptionSvc.Hash("sk-parent-key-1")
+		oldKeyFound := false
+		for _, key := range apiKeys {
+			if key.KeyHash == oldKeyHash {
+				oldKeyFound = true
+				break
+			}
+		}
+		assert.False(t, oldKeyFound, "Old API key should be removed from child group after sync")
 	}
 }
 
