@@ -80,7 +80,8 @@ Write-Host "Listing packages..." -ForegroundColor Gray
 # Get module name from go.mod to filter project packages
 # This prevents testing third-party dependencies which pollute PGO profiles
 try {
-    $moduleName = (go list -m 2>&1 | Select-Object -First 1).Trim()
+    # Use -f to format output and 2>$null to discard stderr warnings
+    $moduleName = (go list -m -f '{{.Path}}' 2>$null | Select-Object -First 1).Trim()
     if ([string]::IsNullOrEmpty($moduleName) -or $LASTEXITCODE -ne 0) {
         $moduleName = "gpt-load"
     }

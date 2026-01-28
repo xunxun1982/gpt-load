@@ -100,7 +100,8 @@ set -e
 if [ ${LIST_EXIT} -eq 0 ]; then
     # Filter: only keep lines that start with module name (project packages)
     # This excludes third-party dependencies, vendor packages, and download messages
-    PACKAGES=$(grep "^${MODULE_NAME}/" "${TEMP_PACKAGES}" 2>/dev/null | grep -v '/vendor/' || echo "")
+    # Use grep -F for fixed-string matching to avoid regex metacharacter issues
+    PACKAGES=$(grep -F "${MODULE_NAME}/" "${TEMP_PACKAGES}" 2>/dev/null | grep -v '/vendor/' || echo "")
 else
     echo "⚠️  go list failed, trying to continue..."
     PACKAGES=""
