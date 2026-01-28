@@ -56,7 +56,7 @@ func (ch *CodexChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey, 
 }
 
 // ValidateKey checks if the given API key is valid by making a responses request.
-// Uses the Responses API endpoint for validation.
+// Uses the Responses API endpoint (/v1/responses) which is the standard for Codex.
 func (ch *CodexChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
 	// Parse validation endpoint to extract path and query parameters
 	endpointURL, err := url.Parse(ch.ValidationEndpoint)
@@ -75,7 +75,8 @@ func (ch *CodexChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, 
 	reqURL := selection.URL
 
 	// Use Responses API format for validation
-	// The Responses API uses "input" instead of "messages"
+	// The Responses API uses "input" field (can be string or array of objects)
+	// Using simple string format for minimal validation payload
 	payload := gin.H{
 		"model": ch.TestModel,
 		"input": "hi",

@@ -183,6 +183,8 @@ func GetValidationEndpoint(group *models.Group) string {
 		return "/v1/chat/completions"
 	case "anthropic":
 		return "/v1/messages"
+	case "codex":
+		return "/v1/responses"
 	default:
 		return ""
 	}
