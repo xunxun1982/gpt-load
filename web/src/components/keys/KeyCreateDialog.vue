@@ -12,6 +12,9 @@ const LARGE_FILE_THRESHOLD_MB = 10;
 // Average bytes per key line (matches server-side estimation in key_import_service.go)
 const ESTIMATED_BYTES_PER_KEY = 170;
 // Maximum file size for upload (MB) - should match backend MAX_REQUEST_BODY_SIZE_MB
+// Note: Hardcoded for simplicity. While fetching from backend would ensure sync,
+// it adds complexity (extra API call, loading state, error handling) for a value
+// that rarely changes. The backend will reject oversized requests anyway.
 const MAX_FILE_SIZE_MB = 150;
 
 interface Props {

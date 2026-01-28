@@ -280,15 +280,15 @@ func TestDeleteGroupWithKeys(t *testing.T) {
 	})
 
 	t.Run("MediumKeyCount_SyncChunkedDelete", func(t *testing.T) {
-		// This test would require 5000-20000 keys which is too slow for unit tests
+		// This test would require BulkSyncThreshold+ keys which is too slow for unit tests
 		// The logic is covered by the implementation and can be tested in integration tests
-		t.Skip("Skipped: requires 5000+ keys, too slow for unit tests")
+		t.Skip("Skipped: requires BulkSyncThreshold+ keys, too slow for unit tests")
 	})
 
 	t.Run("LargeKeyCount_AsyncDelete", func(t *testing.T) {
-		// This test would require 20000+ keys which is too slow for unit tests
+		// This test would require AsyncThreshold+ keys which is too slow for unit tests
 		// The async logic is covered by the implementation and can be tested in integration tests
-		t.Skip("Skipped: requires 20000+ keys, too slow for unit tests")
+		t.Skip("Skipped: requires AsyncThreshold+ keys, too slow for unit tests")
 	})
 }
 

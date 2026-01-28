@@ -153,10 +153,12 @@ const theme = computed<GlobalTheme | undefined>(() => {
   return actualTheme.value === "dark" ? darkTheme : undefined;
 });
 
+// Extract current locale to avoid duplicate getLocale() calls
+const currentLocale = computed(() => getLocale());
+
 // Return Naive UI locale based on current language
 const locale = computed(() => {
-  const currentLocale = getLocale();
-  switch (currentLocale) {
+  switch (currentLocale.value) {
     case "zh-CN":
       return zhCN;
     case "en-US":
@@ -170,8 +172,7 @@ const locale = computed(() => {
 
 // Return date-fns locale based on current language
 const dateLocale = computed(() => {
-  const currentLocale = getLocale();
-  switch (currentLocale) {
+  switch (currentLocale.value) {
     case "zh-CN":
       return dateZhCN;
     case "en-US":

@@ -1978,7 +1978,7 @@ func (s *GroupService) syncBulkCopyKeys(ctx context.Context, targetGroup *models
 	newKeysToCreate := make([]models.APIKey, 0, len(decryptedKeys))
 	uniqueNewKeys := make(map[string]bool, len(decryptedKeys))
 	duplicateCount := 0
-	encryptErrors := 0 // Track encryption failures separately from duplicates
+	encryptErrors := 0 // Track encryption failures during key preparation (separate from duplicates)
 
 	for _, keyVal := range decryptedKeys {
 		trimmedKey := strings.TrimSpace(keyVal)

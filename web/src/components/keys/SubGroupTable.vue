@@ -28,7 +28,10 @@ import AddSubGroupModal from "./AddSubGroupModal.vue";
 import CCBadge from "./CCBadge.vue";
 import EditSubGroupWeightModal from "./EditSubGroupWeightModal.vue";
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
+
+// Create number formatter that respects app's i18n locale
+const numberFormatter = computed(() => new Intl.NumberFormat(locale.value));
 
 // Get sub-group status based on weight and key/activity
 function getSubGroupStatus(subGroup: SubGroupInfo): {
@@ -354,15 +357,15 @@ function formatDateTime(isoString: string | null | undefined): string {
             <div class="key-stats-row">
               <div class="stats-left">
                 <span class="stat-item">
-                  <span class="stat-value">{{ subGroup.total_keys.toLocaleString() }}</span>
+                  <span class="stat-value">{{ numberFormatter.format(subGroup.total_keys) }}</span>
                 </span>
                 <n-divider vertical />
                 <span class="stat-item stat-success">
-                  {{ subGroup.active_keys.toLocaleString() }}
+                  {{ numberFormatter.format(subGroup.active_keys) }}
                 </span>
                 <n-divider vertical />
                 <span class="stat-item stat-error">
-                  {{ subGroup.invalid_keys.toLocaleString() }}
+                  {{ numberFormatter.format(subGroup.invalid_keys) }}
                 </span>
               </div>
               <n-tag :type="getSubGroupStatus(subGroup).type" size="small">

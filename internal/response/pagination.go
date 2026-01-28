@@ -69,19 +69,24 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 
 	go func() {
 		var total int64 = -1
+		countStartTime := time.Now()
 		// Use a silent logger for COUNT to avoid noisy logs when the context is intentionally cancelled
 		countQuery := query.Session(&gorm.Session{
 			NewDB:  true,
 			Logger: logger.Default.LogMode(logger.Silent),
 		})
 		err := countQuery.WithContext(countCtx).Count(&total).Error
+		countDuration := time.Since(countStartTime)
 
 		result := countResult{totalItems: -1, totalPages: -1}
 		if err != nil {
 			// Distinguish intentional cancellation from real errors
 			switch {
 			case err == context.DeadlineExceeded || countCtx.Err() == context.DeadlineExceeded:
-				logrus.Warn("Pagination COUNT query timed out - this may indicate missing indexes or very large dataset")
+				logrus.WithFields(logrus.Fields{
+					"duration_ms": countDuration.Milliseconds(),
+					"timeout_ms":  CountQueryTimeout.Milliseconds(),
+				}).Warn("Pagination COUNT query timed out - this may indicate missing indexes or very large dataset")
 			case err == context.Canceled || countCtx.Err() == context.Canceled:
 				// Expected when we cancel COUNT on last-page inference; no warning needed
 			default:
@@ -92,6 +97,13 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 			if total >= 0 {
 				result.totalPages = int(math.Ceil(float64(total) / float64(pageSize)))
 			}
+			// Log slow COUNT queries for observability (>50% of timeout threshold)
+			if countDuration > CountQueryTimeout/2 {
+				logrus.WithFields(logrus.Fields{
+					"duration_ms": countDuration.Milliseconds(),
+					"total_items": total,
+				}).Debug("Slow COUNT query detected")
+			}
 		}
 		countDone <- result
 	}()
@@ -101,16 +113,31 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 	dataCtx, dataCancel := context.WithTimeout(c.Request.Context(), DataQueryTimeout)
 	defer dataCancel()
 
+	dataStartTime := time.Now()
 	dataQuery := query.Session(&gorm.Session{NewDB: true})
 	// Fetch one extra row to detect if there are more pages
 	fetchLimit := pageSize + 1
 	err = dataQuery.WithContext(dataCtx).Limit(fetchLimit).Offset(offset).Find(dest).Error
+	dataDuration := time.Since(dataStartTime)
+
 	if err != nil {
-		logrus.WithError(err).Error("Pagination data query failed")
+		logrus.WithFields(logrus.Fields{
+			"duration_ms": dataDuration.Milliseconds(),
+			"timeout_ms":  DataQueryTimeout.Milliseconds(),
+		}).WithError(err).Error("Pagination data query failed")
 		// Cancel COUNT query if data fetch fails
 		countCancel()
 		// Return error to caller for proper 5xx handling
 		return nil, err
+	}
+
+	// Log slow data queries for observability (>50% of timeout threshold)
+	if dataDuration > DataQueryTimeout/2 {
+		logrus.WithFields(logrus.Fields{
+			"duration_ms": dataDuration.Milliseconds(),
+			"page":        page,
+			"page_size":   pageSize,
+		}).Debug("Slow data query detected")
 	}
 
 	// 4. Determine actual row count from fetched data
