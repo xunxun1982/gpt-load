@@ -674,19 +674,15 @@ func (s *ChildGroupService) SyncChildGroupUpstreams(ctx context.Context) error {
 		expectedURL := fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", currentPort, cg.ParentGroupName)
 
 		// Check if current upstream matches expected
-		var currentUpstreams []map[string]interface{}
-		if err := json.Unmarshal(cg.Upstreams, &currentUpstreams); err != nil {
-			logrus.WithError(err).Warnf("Failed to parse upstreams for child group %s", cg.Name)
-			continue
-		}
-
 		// Treat empty/malformed upstreams as needing repair for self-healing
-		// This ensures broken child groups are automatically fixed during sync
-		needsUpdate := false
-		if len(currentUpstreams) == 0 {
-			needsUpdate = true
-		} else if currentURL, ok := currentUpstreams[0]["url"].(string); !ok || currentURL != expectedURL {
-			needsUpdate = true
+		var currentUpstreams []map[string]interface{}
+		needsUpdate := true
+		if err := json.Unmarshal(cg.Upstreams, &currentUpstreams); err != nil {
+			logrus.WithError(err).Warnf("Failed to parse upstreams for child group %s; rebuilding", cg.Name)
+		} else if len(currentUpstreams) > 0 {
+			if currentURL, ok := currentUpstreams[0]["url"].(string); ok && currentURL == expectedURL {
+				needsUpdate = false
+			}
 		}
 
 		if needsUpdate {

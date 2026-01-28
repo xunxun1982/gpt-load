@@ -277,22 +277,24 @@ watch(
 
 // Watch for group data changes (e.g., when parent group name changes and child group upstream is updated)
 // This ensures the form displays the latest data even if the modal is already open
+// Performance optimization: Only watch upstreams specifically instead of deep watching entire group object
 watch(
-  () => props.group,
-  (newGroup, oldGroup) => {
-    // Only reload if modal is open and group data actually changed
-    if (props.show && newGroup && oldGroup && newGroup.id === oldGroup.id) {
-      // Check if upstream URLs changed (important for child groups)
-      const oldUpstreams = JSON.stringify(oldGroup.upstreams || []);
-      const newUpstreams = JSON.stringify(newGroup.upstreams || []);
-
-      if (oldUpstreams !== newUpstreams) {
-        // Reload form data to reflect the updated upstream URLs
-        loadGroupData();
+  () => props.group?.upstreams,
+  (newUpstreams, oldUpstreams) => {
+    // Only reload if modal is open and group exists
+    if (props.show && props.group) {
+      // Shallow comparison first for performance
+      if (newUpstreams !== oldUpstreams) {
+        // Deep comparison only if shallow comparison indicates change
+        const oldStr = JSON.stringify(oldUpstreams || []);
+        const newStr = JSON.stringify(newUpstreams || []);
+        if (oldStr !== newStr) {
+          // Reload form data to reflect the updated upstream URLs
+          loadGroupData();
+        }
       }
     }
-  },
-  { deep: true }
+  }
 );
 
 // Watch channel type changes and intelligently update defaults in create mode
