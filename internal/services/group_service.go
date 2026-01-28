@@ -1034,10 +1034,21 @@ func (s *GroupService) syncChildGroupKeysAfterCommit(ctx context.Context, childG
 		}
 	}
 
+	// Safe prefix extraction helper to prevent slice bounds panic
+	safePrefix := func(k string) string {
+		if k == "" {
+			return ""
+		}
+		if len(k) <= 10 {
+			return k + "..."
+		}
+		return k[:10] + "..."
+	}
+
 	logrus.WithContext(ctx).WithFields(logrus.Fields{
-		"childGroupCount":  len(childGroups),
-		"newKey":           newParentFirstKey[:10] + "...", // Log prefix only for security
-		"oldKey":           oldParentFirstKey[:10] + "...",
+		"childGroupCount": len(childGroups),
+		"newKey":          safePrefix(newParentFirstKey), // Log prefix only for security
+		"oldKey":          safePrefix(oldParentFirstKey),
 	}).Info("Updated child group API keys after commit")
 }
 
