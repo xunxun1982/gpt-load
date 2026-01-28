@@ -402,9 +402,10 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	// Database-specific worker count optimization
 	switch dbType {
 	case "sqlite", "sqlite3":
-		// SQLite has single-writer model, reduce workers to avoid lock contention
-		if numWorkers > 4 {
-			numWorkers = 4
+		// SQLite has single-writer model, use minimal workers to avoid lock contention
+		// Reduced from 4 to 2 to minimize lock contention during batch reads
+		if numWorkers > 2 {
+			numWorkers = 2
 		}
 		logrus.Debugf("Using %d workers for SQLite (reduced to avoid lock contention)", numWorkers)
 	case "mysql", "postgres", "postgresql", "pgx":
@@ -423,8 +424,8 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 
 	// Task chunk size: each task processes a range of IDs
 	// Smaller chunks enable better load balancing through work-stealing
-	// Reduced from 50000 to 30000 for more granular task distribution
-	const taskChunkSize uint = 30000
+	// Reduced from 30000 to 10000 for finer-grained task distribution
+	const taskChunkSize uint = 10000
 
 	// Create task queue with all ID ranges
 	type task struct {
@@ -465,7 +466,9 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 	var wg sync.WaitGroup
 
 	// Batch size for each worker
-	batchSize := 10000
+	// Reduced from 10000 to 2000 to minimize single query execution time
+	// This reduces slow SQL warnings (queries taking >200ms) during startup
+	batchSize := 2000
 
 	// Launch parallel workers with work-stealing
 	for i := 0; i < numWorkers; i++ {
@@ -568,11 +571,11 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 					// Update progress atomically
 					currentProcessed := atomic.AddInt64(&processedKeys, int64(len(batchKeys)))
 
-					// Log progress at 25%, 50%, 75% milestones only
+					// Log progress at 10%, 20%, 30%... milestones for better user feedback
 					if totalCount > 0 {
 						currentPercent := (int(currentProcessed) * 100) / int(totalCount)
 						mu.Lock()
-						if currentPercent >= lastLoggedPercent+25 && currentPercent < 100 {
+						if currentPercent >= lastLoggedPercent+10 && currentPercent < 100 {
 							logrus.Infof("Loading progress: %d%% (%d/%d keys)", currentPercent, currentProcessed, totalCount)
 							lastLoggedPercent = currentPercent
 						}
