@@ -92,7 +92,7 @@ function handleNavigateToGroup(groupId: number) {
         <n-tab-pane v-for="pane in panes" :key="pane.key" :name="pane.key">
           <template #tab>
             <span class="tab-with-icon">
-              <span class="tab-icon">{{ pane.icon }}</span>
+              <span class="tab-icon" aria-hidden="true">{{ pane.icon }}</span>
               <span class="tab-text">{{ t(pane.labelKey) }}</span>
             </span>
           </template>

@@ -38,6 +38,7 @@ function isActive(channelType: string): boolean {
     <button
       v-for="item in channelTypes"
       :key="`${item.sectionKey}-${item.channelType}`"
+      type="button"
       class="nav-indicator"
       :class="{ active: isActive(item.channelType) }"
       :style="{ '--indicator-color': item.color }"

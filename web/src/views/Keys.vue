@@ -75,15 +75,17 @@ const visibleChannelTypes = computed(() => {
   return result;
 });
 
+// Channel color mapping for display
+const CHANNEL_COLOR_MAP: Record<string, string> = {
+  openai: "#10a37f",
+  gemini: "#4285f4",
+  anthropic: "#d97706",
+};
+
 // Get channel type display color
 function getChannelColor(channelType: string): string {
-  const channelColorMap: Record<string, string> = {
-    openai: "#10a37f",
-    gemini: "#4285f4",
-    anthropic: "#d97706",
-  };
   const lowerType = channelType.toLowerCase();
-  return channelColorMap[lowerType] ?? "#6b7280";
+  return CHANNEL_COLOR_MAP[lowerType] ?? "#6b7280";
 }
 
 function getLastSelectedGroupId(): string | null {
