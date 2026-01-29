@@ -359,7 +359,8 @@ function handleGroupRefresh(updatedGroup?: Group) {
 
 // Handle quick navigation
 function handleQuickNavigate(sectionKey: string, channelType: string) {
-  activeChannelType.value = channelType;
+  // Store composite key to match button's :key pattern
+  activeChannelType.value = `${sectionKey}-${channelType}`;
 
   // For aggregate groups, scroll to the section header
   if (channelType === "aggregate") {

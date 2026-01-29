@@ -28,8 +28,9 @@ function handleNavigate(item: ChannelTypeInfo) {
 }
 
 // Check if channel type is active
-function isActive(channelType: string): boolean {
-  return props.activeChannelType === channelType;
+// Compare composite key (sectionKey-channelType) to avoid highlighting multiple buttons
+function isActive(sectionKey: string, channelType: string): boolean {
+  return props.activeChannelType === `${sectionKey}-${channelType}`;
 }
 </script>
 
@@ -40,7 +41,7 @@ function isActive(channelType: string): boolean {
       :key="`${item.sectionKey}-${item.channelType}`"
       type="button"
       class="nav-indicator"
-      :class="{ active: isActive(item.channelType) }"
+      :class="{ active: isActive(item.sectionKey, item.channelType) }"
       :style="{ '--indicator-color': item.color }"
       :title="item.isAggregate ? '聚合分组' : item.channelType"
       :aria-label="item.isAggregate ? '聚合分组' : item.channelType"
@@ -116,6 +117,12 @@ function isActive(channelType: string): boolean {
 .nav-indicator.active::after {
   width: 10px;
   opacity: 1;
+}
+
+/* Keyboard navigation focus styling for accessibility */
+.nav-indicator:focus-visible {
+  outline: 2px solid var(--indicator-color);
+  outline-offset: 2px;
 }
 
 /* Mobile optimization - hide on small screens */

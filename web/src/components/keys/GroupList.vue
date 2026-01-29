@@ -403,7 +403,7 @@ function scrollToChannelType(sectionKey: string, channelType: string) {
   }
 
   // Wait for DOM update before scrolling
-  setTimeout(() => {
+  nextTick(() => {
     const element = channelTypeRefs.value.get(channelKey);
     if (element) {
       element.scrollIntoView({
@@ -411,7 +411,7 @@ function scrollToChannelType(sectionKey: string, channelType: string) {
         block: "start",
       });
     }
-  }, 100);
+  });
 }
 
 // Scroll to specific section header
@@ -424,7 +424,7 @@ function scrollToSection(sectionKey: string) {
   }
 
   // Wait for DOM update before scrolling
-  setTimeout(() => {
+  nextTick(() => {
     const element = sectionHeaderRefs.value.get(sectionKey);
     if (element) {
       element.scrollIntoView({
@@ -432,7 +432,7 @@ function scrollToSection(sectionKey: string) {
         block: "start",
       });
     }
-  }, 100);
+  });
 }
 
 // Get all visible channel types for quick navigation
