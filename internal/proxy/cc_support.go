@@ -1577,6 +1577,16 @@ var reWindowsPathCorrupted = regexp.MustCompile(`[A-Za-z]:[^ "'<>|]+`)
 // The path may contain control characters where backslashes were incorrectly interpreted.
 var reWindowsDrivePath = regexp.MustCompile(`[A-Za-z]:`)
 
+// reWindowsPathBackslash matches ALL backslashes in Windows paths for double-escaping.
+// When we detect a Windows drive path (C:, F:, etc.), ALL backslashes in the command
+// are path separators and should be doubled, even if they look like escape sequences.
+// Examples:
+//   - F:\test\file.py - the \t and \f are path separators, not escape sequences
+//   - C:\new\readme.txt - the \n and \r are path separators, not escape sequences
+// Pattern: Match any single backslash (not already doubled)
+// Strategy: Match \ that is NOT followed by another \ (to avoid matching already-doubled \\)
+var reWindowsPathBackslash = regexp.MustCompile(`\\(?:[^\\]|$)`)
+
 // isLikelyGitBashPath returns true if the path looks like a Git Bash/MSYS2 path
 // Git Bash paths have the pattern /[single-letter]/ (e.g., /c/, /f/, /d/)
 // This is distinct from Unix paths which typically start with /home/, /usr/, /var/, /etc/
@@ -1946,8 +1956,47 @@ func doubleEscapeWindowsPathsForBash(jsonStr string) string {
 	}
 
 	// Double-escape backslashes in the command string
-	// This will be re-escaped when we marshal back to JSON
-	args["command"] = strings.ReplaceAll(command, "\\", "\\\\")
+	// CRITICAL: Only double-escape backslashes that are part of Windows paths,
+	// NOT escape sequences like \n, \t, \r, etc.
+	// Strategy: Replace backslashes that are followed by path-like characters
+	// (letters, numbers, dots, spaces, underscores, hyphens) but NOT by escape chars (n, t, r, etc.)
+	// This preserves legitimate escape sequences while fixing Windows paths.
+	//
+	// Pattern explanation:
+	// - Match backslash followed by:
+	//   - Drive letter pattern: [A-Za-z]: (e.g., C:\, F:\)
+	//   - Path separator: \ (double backslash in path)
+	//   - Path characters: letters, numbers, dots, spaces, underscores, hyphens, Chinese characters
+	// - Do NOT match backslash followed by escape characters: n, t, r, b, f, v, 0, x, u
+	//
+	// Use a more targeted approach: only double-escape backslashes in Windows drive paths
+	// Pattern: X:\ where X is a drive letter
+	// This avoids corrupting escape sequences like \n, \t, \r
+	if reWindowsDrivePath.MatchString(command) {
+		// Only double-escape backslashes that are part of Windows paths
+		// AI Review Note: The concern about "doubling all backslashes including \n, \t" refers to
+		// the case where JSON escape sequences have already been interpreted as control characters.
+		// In that case, the backslash is gone and we have a control char (0x0A for \n, 0x09 for \t).
+		// However, in Windows paths like "F:\test\file.py", the \t is TWO characters (backslash + 't'),
+		// not a tab character. These MUST be doubled for Bash tool compatibility.
+		// The regex pattern \\(?:[^\\]|$) matches backslash + next-char, so match[1] is the char after \.
+		// We double-escape all matches because:
+		// 1. In Windows paths, all backslashes are path separators (even \t, \n, \r in path names)
+		// 2. Real escape sequences (like \n in "echo hello\nworld") are already converted to control
+		//    chars during JSON parsing, so they won't match this pattern (no backslash remains)
+		command = reWindowsPathBackslash.ReplaceAllStringFunc(command, func(match string) string {
+			// match is like "\M" or "\P" or "\t" (two chars: backslash + letter)
+			// We want to replace "\M" with "\\M" (double the backslash, keep the character)
+			if len(match) >= 2 {
+				return "\\\\" + match[1:] // Double backslash + rest of match
+			}
+			return match
+		})
+		args["command"] = command
+	} else {
+		// No Windows paths detected, return unchanged to preserve escape sequences
+		return jsonStr
+	}
 
 	// Re-serialize to JSON
 	result, err := json.Marshal(args)

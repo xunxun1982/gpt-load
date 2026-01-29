@@ -4,11 +4,12 @@ import EncryptionMismatchAlert from "@/components/EncryptionMismatchAlert.vue";
 import GroupInfoCard from "@/components/keys/GroupInfoCard.vue";
 import GroupList from "@/components/keys/GroupList.vue";
 import KeyTable from "@/components/keys/KeyTable.vue";
+import QuickNavigation from "@/components/keys/QuickNavigation.vue";
 import SubGroupTable from "@/components/keys/SubGroupTable.vue";
 import type { Group, SubGroupInfo } from "@/types/models";
 import { appState } from "@/utils/app-state";
 import { getNearestGroupIdAfterDeletion, getSidebarOrderedGroupIds } from "@/utils/group-sidebar";
-import { onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 const LAST_SELECTED_GROUP_ID_KEY = "keys:lastGroupId";
@@ -21,6 +22,71 @@ const router = useRouter();
 const route = useRoute();
 // Ref to GroupList component for direct method calls
 const groupListRef = ref<InstanceType<typeof GroupList> | null>(null);
+// Active channel type for quick navigation
+const activeChannelType = ref<string | undefined>(undefined);
+// Timer for resetting active channel type
+const activeChannelResetTimer = ref<number | undefined>(undefined);
+
+// Get visible channel types for quick navigation
+const visibleChannelTypes = computed(() => {
+  if (!groupListRef.value) {
+    return [];
+  }
+  const channelTypes = groupListRef.value.getVisibleChannelTypes();
+
+  // Group by section: aggregate and standard
+  const result: Array<{
+    channelType: string;
+    icon: string;
+    color: string;
+    sectionKey: string;
+    isAggregate?: boolean;
+  }> = [];
+
+  // Add aggregate group as one item (if exists)
+  const aggregateItems = channelTypes.filter(item => item.sectionKey === "aggregate");
+  if (aggregateItems.length > 0) {
+    result.push({
+      channelType: "aggregate",
+      icon: "🔗",
+      color: "#667eea",
+      sectionKey: "aggregate",
+      isAggregate: true,
+    });
+  }
+
+  // Add standard groups by channel type
+  const standardItems = channelTypes.filter(item => item.sectionKey === "standard");
+  const uniqueChannelTypes = new Map<string, (typeof standardItems)[0]>();
+
+  for (const item of standardItems) {
+    if (!uniqueChannelTypes.has(item.channelType)) {
+      uniqueChannelTypes.set(item.channelType, item);
+    }
+  }
+
+  for (const item of uniqueChannelTypes.values()) {
+    result.push({
+      ...item,
+      color: getChannelColor(item.channelType),
+    });
+  }
+
+  return result;
+});
+
+// Channel color mapping for display
+const CHANNEL_COLOR_MAP: Record<string, string> = {
+  openai: "#10a37f",
+  gemini: "#4285f4",
+  anthropic: "#d97706",
+};
+
+// Get channel type display color
+function getChannelColor(channelType: string): string {
+  const lowerType = channelType.toLowerCase();
+  return CHANNEL_COLOR_MAP[lowerType] ?? "#6b7280";
+}
 
 function getLastSelectedGroupId(): string | null {
   if (typeof localStorage === "undefined") {
@@ -290,6 +356,37 @@ function handleGroupRefresh(updatedGroup?: Group) {
     refreshGroupsAndSelect();
   }
 }
+
+// Handle quick navigation
+function handleQuickNavigate(sectionKey: string, channelType: string) {
+  // Store composite key to match button's :key pattern
+  activeChannelType.value = `${sectionKey}-${channelType}`;
+
+  // For aggregate groups, scroll to the section header
+  if (channelType === "aggregate") {
+    groupListRef.value?.scrollToSection("aggregate");
+  } else {
+    groupListRef.value?.scrollToChannelType(sectionKey, channelType);
+  }
+
+  // Clear existing timer to prevent race conditions
+  if (activeChannelResetTimer.value) {
+    clearTimeout(activeChannelResetTimer.value);
+  }
+
+  // Reset active state after a delay to allow user to see which section they navigated to
+  activeChannelResetTimer.value = window.setTimeout(() => {
+    activeChannelType.value = undefined;
+    activeChannelResetTimer.value = undefined;
+  }, 2000);
+}
+
+// Clean up timer on component unmount
+onBeforeUnmount(() => {
+  if (activeChannelResetTimer.value) {
+    clearTimeout(activeChannelResetTimer.value);
+  }
+});
 </script>
 
 <template>
@@ -298,16 +395,25 @@ function handleGroupRefresh(updatedGroup?: Group) {
     <encryption-mismatch-alert style="margin-bottom: 16px" />
 
     <div class="keys-container">
-      <div class="sidebar">
-        <group-list
-          ref="groupListRef"
-          :groups="groups"
-          :selected-group="selectedGroup"
-          :loading="loading"
-          @group-select="handleGroupSelect"
-          @refresh="() => refreshGroupsAndSelect()"
-          @refresh-and-select="id => refreshGroupsAndSelect(id)"
-        />
+      <div class="sidebar-wrapper">
+        <!-- Group list with quick navigation overlay -->
+        <div class="sidebar">
+          <quick-navigation
+            v-if="visibleChannelTypes.length > 0"
+            :channel-types="visibleChannelTypes"
+            :active-channel-type="activeChannelType"
+            @navigate="handleQuickNavigate"
+          />
+          <group-list
+            ref="groupListRef"
+            :groups="groups"
+            :selected-group="selectedGroup"
+            :loading="loading"
+            @group-select="handleGroupSelect"
+            @refresh="() => refreshGroupsAndSelect()"
+            @refresh-and-select="id => refreshGroupsAndSelect(id)"
+          />
+        </div>
       </div>
 
       <!-- Right side main content area, 80% width -->
@@ -358,9 +464,14 @@ function handleGroupRefresh(updatedGroup?: Group) {
   width: 100%;
 }
 
-.sidebar {
+.sidebar-wrapper {
   width: 100%;
   flex-shrink: 0;
+}
+
+.sidebar {
+  position: relative;
+  width: 100%;
 }
 
 .main-content {
@@ -387,8 +498,12 @@ function handleGroupRefresh(updatedGroup?: Group) {
     height: calc(100vh - 159px);
   }
 
-  .sidebar {
+  .sidebar-wrapper {
     width: 242px;
+    height: 100%;
+  }
+
+  .sidebar {
     height: 100%;
   }
 
@@ -400,14 +515,14 @@ function handleGroupRefresh(updatedGroup?: Group) {
 
 /* Medium screen optimization */
 @media (min-width: 1280px) {
-  .sidebar {
+  .sidebar-wrapper {
     width: 275px;
   }
 }
 
 /* Extra large screen further optimization */
 @media (min-width: 1600px) {
-  .sidebar {
+  .sidebar-wrapper {
     width: 308px;
   }
 }

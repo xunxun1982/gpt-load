@@ -21,10 +21,10 @@ const DEFAULT_TAB: MoreTab = "hub";
 const router = useRouter();
 const route = useRoute();
 
-const panes: Array<{ key: MoreTab; labelKey: string }> = [
-  { key: "hub", labelKey: "hub.tabLabel" },
-  { key: "site", labelKey: "more.siteManagement" },
-  { key: "agent", labelKey: "more.agent" },
+const panes: Array<{ key: MoreTab; labelKey: string; icon: string }> = [
+  { key: "hub", labelKey: "hub.tabLabel", icon: "🏢" },
+  { key: "site", labelKey: "more.siteManagement", icon: "🌐" },
+  { key: "agent", labelKey: "more.agent", icon: "🤖" },
 ];
 
 // Sanitizes route query parameter to a valid tab value
@@ -89,7 +89,13 @@ function handleNavigateToGroup(groupId: number) {
         <template #prefix>
           <span class="more-title">{{ t("nav.more") }}</span>
         </template>
-        <n-tab-pane v-for="pane in panes" :key="pane.key" :name="pane.key" :tab="t(pane.labelKey)">
+        <n-tab-pane v-for="pane in panes" :key="pane.key" :name="pane.key">
+          <template #tab>
+            <span class="tab-with-icon">
+              <span class="tab-icon" aria-hidden="true">{{ pane.icon }}</span>
+              <span class="tab-text">{{ t(pane.labelKey) }}</span>
+            </span>
+          </template>
           <centralized-mgmt-panel v-if="pane.key === 'hub'" />
           <site-management-panel
             v-else-if="pane.key === 'site'"
@@ -121,5 +127,20 @@ function handleNavigateToGroup(groupId: number) {
 .more-title {
   font-weight: 600;
   margin-right: 8px;
+}
+
+.tab-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tab-text {
+  line-height: 1;
 }
 </style>

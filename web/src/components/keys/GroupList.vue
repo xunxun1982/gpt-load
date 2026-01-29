@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import type { ChildGroupInfo, Group } from "@/types/models";
-import { showProgressBar, hideProgressBar } from "@/utils/app-state";
+import { hideProgressBar, showProgressBar } from "@/utils/app-state";
 import { getGroupDisplayName } from "@/utils/display";
 import {
   groupByChannelType,
@@ -31,7 +31,7 @@ import {
   useDialog,
   useMessage,
 } from "naive-ui";
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
 import ChildGroupModal from "./ChildGroupModal.vue";
@@ -92,6 +92,10 @@ const searchText = ref("");
 const showGroupModal = ref(false);
 // Store references to group item DOM elements
 const groupItemRefs = ref(new Map());
+// Store references to channel type DOM elements for quick navigation
+const channelTypeRefs = ref(new Map<string, HTMLElement>());
+// Store references to section header DOM elements for quick navigation
+const sectionHeaderRefs = ref(new Map<string, HTMLElement>());
 const showAggregateGroupModal = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 // Child group related state
@@ -381,11 +385,88 @@ watch(
   { immediate: true }
 );
 
-// Expose loadAllChildGroups for parent component to call directly when needed.
-// This is more reliable than relying solely on watch for props changes,
-// especially for child group updates where the parent groups array may not change.
+// Scroll to specific channel type
+function scrollToChannelType(sectionKey: string, channelType: string) {
+  // Expand section if collapsed
+  if (isSectionCollapsed(sectionKey)) {
+    const next = new Set(collapsedSections.value);
+    next.delete(sectionKey);
+    collapsedSections.value = next;
+  }
+
+  // Expand channel if collapsed
+  const channelKey = `${sectionKey}-${channelType}`;
+  if (isChannelCollapsed(sectionKey, channelType)) {
+    const next = new Set(collapsedChannels.value);
+    next.delete(channelKey);
+    collapsedChannels.value = next;
+  }
+
+  // Wait for DOM update before scrolling
+  nextTick(() => {
+    const element = channelTypeRefs.value.get(channelKey);
+    if (element) {
+      element.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  });
+}
+
+// Scroll to specific section header
+function scrollToSection(sectionKey: string) {
+  // Expand section if collapsed
+  if (isSectionCollapsed(sectionKey)) {
+    const next = new Set(collapsedSections.value);
+    next.delete(sectionKey);
+    collapsedSections.value = next;
+  }
+
+  // Wait for DOM update before scrolling
+  nextTick(() => {
+    const element = sectionHeaderRefs.value.get(sectionKey);
+    if (element) {
+      element.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  });
+}
+
+// Get all visible channel types for quick navigation
+// Note: This is exposed as a method rather than a computed property.
+// Vue 3's reactivity system tracks dependencies even in method calls,
+// so this approach works correctly. The parent component calls this method
+// within a computed context, which ensures proper reactive tracking.
+function getVisibleChannelTypes() {
+  const channelTypes: Array<{
+    channelType: string;
+    icon: string;
+    sectionKey: string;
+  }> = [];
+
+  for (const section of groupSections.value) {
+    const channelGroups = sectionChannelGroups.value.get(section.sectionKey) || [];
+    for (const channelGroup of channelGroups) {
+      channelTypes.push({
+        channelType: channelGroup.channelType,
+        icon: channelGroup.icon,
+        sectionKey: section.sectionKey,
+      });
+    }
+  }
+
+  return channelTypes;
+}
+
+// Expose methods for parent component to call
 defineExpose({
   loadAllChildGroups,
+  scrollToChannelType,
+  scrollToSection,
+  getVisibleChannelTypes,
 });
 
 // Find group by ID from child group info
@@ -592,6 +673,15 @@ async function handleFileChange(event: Event) {
                 @click="toggleSection(section.sectionKey)"
                 @keydown.enter="toggleSection(section.sectionKey)"
                 @keydown.space.prevent="toggleSection(section.sectionKey)"
+                :ref="
+                  el => {
+                    if (el) {
+                      sectionHeaderRefs.set(section.sectionKey, el as HTMLElement);
+                    } else {
+                      sectionHeaderRefs.delete(section.sectionKey);
+                    }
+                  }
+                "
               >
                 <n-icon
                   class="collapse-icon"
@@ -607,6 +697,18 @@ async function handleFileChange(event: Event) {
                   v-for="channelGroup in sectionChannelGroups.get(section.sectionKey) || []"
                   :key="channelGroup.channelType"
                   class="channel-group"
+                  :ref="
+                    el => {
+                      if (el) {
+                        channelTypeRefs.set(
+                          `${section.sectionKey}-${channelGroup.channelType}`,
+                          el as HTMLElement
+                        );
+                      } else {
+                        channelTypeRefs.delete(`${section.sectionKey}-${channelGroup.channelType}`);
+                      }
+                    }
+                  "
                 >
                   <div
                     class="channel-header"
@@ -894,6 +996,7 @@ async function handleFileChange(event: Event) {
   display: flex;
   flex-direction: column;
   background: var(--card-bg-solid);
+  padding-left: 8px;
 }
 
 .group-list-card:hover {
