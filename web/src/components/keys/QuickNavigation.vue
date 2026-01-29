@@ -35,13 +35,14 @@ function isActive(channelType: string): boolean {
 
 <template>
   <div class="quick-navigation">
-    <div
+    <button
       v-for="item in channelTypes"
       :key="`${item.sectionKey}-${item.channelType}`"
       class="nav-indicator"
       :class="{ active: isActive(item.channelType) }"
       :style="{ '--indicator-color': item.color }"
       :title="item.isAggregate ? '聚合分组' : item.channelType"
+      :aria-label="item.isAggregate ? '聚合分组' : item.channelType"
       @click="handleNavigate(item)"
     />
   </div>
@@ -63,6 +64,14 @@ function isActive(channelType: string): boolean {
 }
 
 .nav-indicator {
+  /* Reset button default styles */
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  /* Apply custom styles */
   flex: 1;
   min-height: 24px;
   background: var(--indicator-color);

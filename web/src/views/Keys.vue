@@ -9,7 +9,7 @@ import SubGroupTable from "@/components/keys/SubGroupTable.vue";
 import type { Group, SubGroupInfo } from "@/types/models";
 import { appState } from "@/utils/app-state";
 import { getNearestGroupIdAfterDeletion, getSidebarOrderedGroupIds } from "@/utils/group-sidebar";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 const LAST_SELECTED_GROUP_ID_KEY = "keys:lastGroupId";
@@ -24,6 +24,8 @@ const route = useRoute();
 const groupListRef = ref<InstanceType<typeof GroupList> | null>(null);
 // Active channel type for quick navigation
 const activeChannelType = ref<string | undefined>(undefined);
+// Timer for resetting active channel type
+const activeChannelResetTimer = ref<number | undefined>(undefined);
 
 // Get visible channel types for quick navigation
 const visibleChannelTypes = computed(() => {
@@ -364,11 +366,24 @@ function handleQuickNavigate(sectionKey: string, channelType: string) {
     groupListRef.value?.scrollToChannelType(sectionKey, channelType);
   }
 
+  // Clear existing timer to prevent race conditions
+  if (activeChannelResetTimer.value) {
+    clearTimeout(activeChannelResetTimer.value);
+  }
+
   // Reset active state after a delay to allow user to see which section they navigated to
-  setTimeout(() => {
+  activeChannelResetTimer.value = window.setTimeout(() => {
     activeChannelType.value = undefined;
+    activeChannelResetTimer.value = undefined;
   }, 2000);
 }
+
+// Clean up timer on component unmount
+onBeforeUnmount(() => {
+  if (activeChannelResetTimer.value) {
+    clearTimeout(activeChannelResetTimer.value);
+  }
+});
 </script>
 
 <template>

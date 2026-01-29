@@ -387,28 +387,59 @@ watch(
 
 // Scroll to specific channel type
 function scrollToChannelType(sectionKey: string, channelType: string) {
-  const key = `${sectionKey}-${channelType}`;
-  const element = channelTypeRefs.value.get(key);
-  if (element) {
-    element.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
+  // Expand section if collapsed
+  if (isSectionCollapsed(sectionKey)) {
+    const next = new Set(collapsedSections.value);
+    next.delete(sectionKey);
+    collapsedSections.value = next;
   }
+
+  // Expand channel if collapsed
+  const channelKey = `${sectionKey}-${channelType}`;
+  if (isChannelCollapsed(sectionKey, channelType)) {
+    const next = new Set(collapsedChannels.value);
+    next.delete(channelKey);
+    collapsedChannels.value = next;
+  }
+
+  // Wait for DOM update before scrolling
+  setTimeout(() => {
+    const element = channelTypeRefs.value.get(channelKey);
+    if (element) {
+      element.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, 100);
 }
 
 // Scroll to specific section header
 function scrollToSection(sectionKey: string) {
-  const element = sectionHeaderRefs.value.get(sectionKey);
-  if (element) {
-    element.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
+  // Expand section if collapsed
+  if (isSectionCollapsed(sectionKey)) {
+    const next = new Set(collapsedSections.value);
+    next.delete(sectionKey);
+    collapsedSections.value = next;
   }
+
+  // Wait for DOM update before scrolling
+  setTimeout(() => {
+    const element = sectionHeaderRefs.value.get(sectionKey);
+    if (element) {
+      element.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, 100);
 }
 
 // Get all visible channel types for quick navigation
+// Note: This is exposed as a method rather than a computed property.
+// Vue 3's reactivity system tracks dependencies even in method calls,
+// so this approach works correctly. The parent component calls this method
+// within a computed context, which ensures proper reactive tracking.
 function getVisibleChannelTypes() {
   const channelTypes: Array<{
     channelType: string;
@@ -646,6 +677,8 @@ async function handleFileChange(event: Event) {
                   el => {
                     if (el) {
                       sectionHeaderRefs.set(section.sectionKey, el as HTMLElement);
+                    } else {
+                      sectionHeaderRefs.delete(section.sectionKey);
                     }
                   }
                 "
@@ -671,6 +704,8 @@ async function handleFileChange(event: Event) {
                           `${section.sectionKey}-${channelGroup.channelType}`,
                           el as HTMLElement
                         );
+                      } else {
+                        channelTypeRefs.delete(`${section.sectionKey}-${channelGroup.channelType}`);
                       }
                     }
                   "
