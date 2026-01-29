@@ -74,6 +74,16 @@ RUN echo "🔨 Building PGO-optimized binary..." && \
     -o gpt-load && \
     echo "✅ Build complete: $(ls -lh gpt-load | awk '{print $5}')"
 
+# Build lightweight health check utility for Docker health checks
+# This is necessary because the final image uses scratch base (no wget/curl available)
+RUN echo "🔨 Building health check utility..." && \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=${GOAMD64} go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-s -w" \
+    -o healthcheck ./cmd/healthcheck && \
+    echo "✅ Health check utility built: $(ls -lh healthcheck | awk '{print $5}')"
+
 
 # =============================================================================
 # Minimal runtime image (scratch for smallest size)
@@ -103,6 +113,7 @@ WORKDIR /app
 ENV GOMEMLIMIT=1GiB
 
 COPY --from=go-builder /build/gpt-load .
+COPY --from=go-builder /build/healthcheck .
 
 EXPOSE 3001
 ENTRYPOINT ["/app/gpt-load"]

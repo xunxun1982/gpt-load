@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"time"
@@ -168,6 +169,8 @@ func (s *Server) Login(c *gin.Context) {
 }
 
 // Health handles health check requests
+// Returns HTTP 200 with status information if the service is healthy
+// Returns HTTP 503 if critical components (database) are not available
 func (s *Server) Health(c *gin.Context) {
 	uptime := "unknown"
 	if startTime, exists := c.Get("serverStartTime"); exists {
@@ -176,9 +179,39 @@ func (s *Server) Health(c *gin.Context) {
 		}
 	}
 
+	// Check database connectivity
+	// Use a short timeout to avoid blocking health checks
+	dbHealthy := true
+	if s.DB != nil {
+		sqlDB, err := s.DB.DB()
+		if err != nil {
+			dbHealthy = false
+		} else {
+			// Ping with 2 second timeout to avoid blocking health checks
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+			defer cancel()
+
+			if err := sqlDB.PingContext(ctx); err != nil {
+				dbHealthy = false
+			}
+		}
+	}
+
+	// Return 503 if database is not healthy (critical component)
+	if !dbHealthy {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"status":    "unhealthy",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"uptime":    uptime,
+			"database":  "unavailable",
+		})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "healthy",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 		"uptime":    uptime,
+		"database":  "ok",
 	})
 }
