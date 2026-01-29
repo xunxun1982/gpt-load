@@ -3,6 +3,7 @@ module gpt-load
 go 1.25.6
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/andybalholm/brotli v1.2.0
 	github.com/gin-contrib/gzip v1.2.5
 	github.com/gin-contrib/static v1.1.5
