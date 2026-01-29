@@ -398,6 +398,19 @@ var (
 	// Loose invocation pattern for fuzzy matching when standard parsing fails.
 	// Matches <invocation>...<name>tool</name>...<parameters>...</parameters>...</invocation>
 	// or even just <invocation>...<name>tool</name>... without proper closing.
+
+	// Pattern to match Claude Code UI markers that should not appear in output
+	// Examples: "● Bash", "⎿ (No content)", "∴ Thinking…", "● <thinking"
+	// These are UI elements from Claude Code client that leak into the output
+	// Strategy: Match bullet points followed by specific UI markers
+	// Performance: O(n) character class matching
+	// NOTE: Only matches UI markers, preserves normal bullet-pointed text
+	reCCUIMarkers = regexp.MustCompile(`(?m)^[ \t]*[●•‣][ \t]+(?:Bash|Read|Write|Edit|Grep|Glob|Task|Thinking…|<thinking|<think)(?:[ \t]*\([^)]*\))?[ \t]*$`)
+
+	// Pattern to match Claude Code status indicators
+	// Examples: "⎿ (No content)", "⎿ (Empty)", "⎿ (Success)"
+	// These are status indicators that should not appear in final output
+	reCCStatusIndicators = regexp.MustCompile(`(?m)^[ \t]*[⎿└][ \t]*\([^)]+\)[ \t]*$`)
 	// Optimized: Use non-capturing groups and specific character classes
 	reLooseInvocation = regexp.MustCompile(`(?s)<invocation[^>]*>\s*<name>([^<]+)</name>\s*(?:<parameters>([\s\S]*?)</parameters>)?`)
 
@@ -3435,6 +3448,15 @@ func removeFunctionCallsBlocks(text string, mode ...functionCallCleanupMode) str
 	if hasTruncatedThinking {
 		text = reTruncatedThinkingTag.ReplaceAllString(text, "")
 	}
+
+	// Remove Claude Code UI markers (e.g., "● Bash", "⎿ (No content)", "∴ Thinking…")
+	// These are UI elements from Claude Code client that should not appear in output
+	// Check for bullet points or status indicators before applying regex
+	if strings.ContainsAny(text, "●•‣⎿└") {
+		text = reCCUIMarkers.ReplaceAllString(text, "")
+		text = reCCStatusIndicators.ReplaceAllString(text, "")
+	}
+
 	if hasMalformed {
 		// Remove malformed patterns in order of specificity
 		// CRITICAL: Remove JSON-containing tags first (match to end of line),
