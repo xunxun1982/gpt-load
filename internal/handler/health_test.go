@@ -24,6 +24,8 @@ func TestHealth_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer mockDB.Close()
 
+	// First ping: GORM automatically pings during gorm.Open() initialization
+	// Second ping: Health() handler calls PingContext() to verify database connectivity
 	mock.ExpectPing()
 	mock.ExpectPing()
 
@@ -64,6 +66,8 @@ func TestHealth_DatabaseUnavailable(t *testing.T) {
 	require.NoError(t, err)
 	defer mockDB.Close()
 
+	// First ping: GORM automatically pings during gorm.Open() initialization (succeeds)
+	// Second ping: Health() handler calls PingContext() to verify connectivity (fails)
 	mock.ExpectPing()
 	mock.ExpectPing().WillReturnError(sql.ErrConnDone)
 
@@ -125,6 +129,8 @@ func TestHealth_UptimeCalculation(t *testing.T) {
 	require.NoError(t, err)
 	defer mockDB.Close()
 
+	// First ping: GORM automatically pings during gorm.Open() initialization
+	// Second ping: Health() handler calls PingContext() to verify database connectivity
 	mock.ExpectPing()
 	mock.ExpectPing()
 
@@ -166,6 +172,8 @@ func TestHealth_NoStartTime(t *testing.T) {
 	require.NoError(t, err)
 	defer mockDB.Close()
 
+	// First ping: GORM automatically pings during gorm.Open() initialization
+	// Second ping: Health() handler calls PingContext() to verify database connectivity
 	mock.ExpectPing()
 	mock.ExpectPing()
 
