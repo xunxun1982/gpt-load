@@ -34,7 +34,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Health check failed: %v\n", err)
 		os.Exit(exitFailure)
 	}
-	defer resp.Body.Close()
+	// Close response body immediately since we exit right after checking status
+	// Note: defer won't work here because os.Exit bypasses deferred calls
+	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "Health check returned non-OK status: %d\n", resp.StatusCode)

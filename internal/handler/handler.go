@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"time"
@@ -186,8 +187,10 @@ func (s *Server) Health(c *gin.Context) {
 		if err != nil {
 			dbHealthy = false
 		} else {
-			// Ping with 2 second timeout
-			ctx := c.Request.Context()
+			// Ping with 2 second timeout to avoid blocking health checks
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+			defer cancel()
+
 			if err := sqlDB.PingContext(ctx); err != nil {
 				dbHealthy = false
 			}
