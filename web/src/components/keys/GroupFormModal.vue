@@ -804,7 +804,8 @@ function mergeModelRedirectItems(items: ModelRedirectItemV2[]): ModelRedirectIte
     if (mergedMap.has(from)) {
       // Merge targets into existing rule
       const existing = mergedMap.get(from)!;
-      const seenModels = new Set(existing.targets.map(t => t.model));
+      // Normalize existing target models before dedupe to avoid whitespace duplicates
+      const seenModels = new Set(existing.targets.map(t => t.model.trim()));
 
       for (const target of item.targets) {
         const model = target.model.trim();

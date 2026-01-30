@@ -385,10 +385,18 @@ outer:
 		// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
 		modelRedirectRules := ConvertModelRedirectRulesToImport(groupExport.Group.ModelRedirectRules)
 
-		// Import ModelRedirectRulesV2 as raw JSON bytes
+		// Import ModelRedirectRulesV2 as raw JSON bytes and merge duplicate targets
+		// This ensures consistent behavior with group import (see group_import_export_handler.go)
 		var modelRedirectRulesV2 []byte
 		if len(groupExport.Group.ModelRedirectRulesV2) > 0 {
-			modelRedirectRulesV2 = []byte(groupExport.Group.ModelRedirectRulesV2)
+			rawJSON := []byte(groupExport.Group.ModelRedirectRulesV2)
+			merged, err := utils.MergeModelRedirectRulesV2(rawJSON)
+			if err != nil {
+				logrus.WithError(err).Warn("Failed to merge model redirect rules V2 during system import, using original")
+				modelRedirectRulesV2 = rawJSON
+			} else {
+				modelRedirectRulesV2 = merged
+			}
 		}
 
 		groupData := services.GroupExportData{

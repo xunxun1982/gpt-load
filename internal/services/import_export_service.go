@@ -699,7 +699,7 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData, pr
 	// Import child groups for standard groups
 	if newGroup.GroupType == "standard" && len(data.ChildGroups) > 0 {
 		logrus.Infof("Importing %d child groups for standard group %s (ID: %d)", len(data.ChildGroups), newGroup.Name, newGroup.ID)
-		if err := s.importChildGroups(tx, newGroup.ID, newGroup.Name, newGroup.ChannelType, data.ChildGroups); err != nil {
+		if err := s.importChildGroups(tx, newGroup.ID, newGroup.Name, newGroup.ChannelType, newGroup.TestModel, data.ChildGroups); err != nil {
 			logrus.WithError(err).Errorf("Failed to import child groups for group %s", newGroup.Name)
 			return 0, fmt.Errorf("failed to import child groups: %w", err)
 		}
@@ -710,7 +710,8 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData, pr
 }
 
 // importChildGroups imports child groups for a parent group
-func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint, parentName string, parentChannelType string, childGroups []ChildGroupExport) error {
+// parentTestModel is used as fallback when child group's TestModel is empty (backward compatibility)
+func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint, parentName string, parentChannelType string, parentTestModel string, childGroups []ChildGroupExport) error {
 	logrus.Infof("Starting import of %d child groups for parent %s (ID: %d)", len(childGroups), parentName, parentGroupID)
 
 	for i, childData := range childGroups {
@@ -741,8 +742,15 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 
 		logrus.Debugf("Child group %s upstream: %s", childName, upstreamURL)
 
+		// Fallback to parent's TestModel if child's is empty (backward compatibility)
+		// Older exports may not include test_model for child groups
+		testModel := childData.TestModel
+		if testModel == "" {
+			testModel = parentTestModel
+			logrus.Debugf("Child group %s inheriting TestModel from parent: %s", childName, testModel)
+		}
+
 		// Create child group with inherited channel_type from parent
-		// Child groups inherit TestModel from parent (required field)
 		childGroup := models.Group{
 			Name:                 childName,
 			DisplayName:          childData.DisplayName,
@@ -754,7 +762,7 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 			ProxyKeys:            childData.ProxyKeys,
 			Sort:                 childData.Sort,
 			Upstreams:            []byte(upstreamsJSON),
-			TestModel:            childData.TestModel,
+			TestModel:            testModel, // Use fallback if empty
 			ModelMapping:         childData.ModelMapping,
 			ModelRedirectStrict:  childData.ModelRedirectStrict,
 		}
@@ -782,7 +790,14 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 			}
 		}
 		if len(childData.ModelRedirectRulesV2) > 0 {
-			childGroup.ModelRedirectRulesV2 = childData.ModelRedirectRulesV2
+			// Merge duplicate targets in V2 rules (consistent with parent group import)
+			merged, err := utils.MergeModelRedirectRulesV2(childData.ModelRedirectRulesV2)
+			if err != nil {
+				logrus.WithError(err).Warnf("Failed to merge child group model redirect rules V2 for %s, using original", childName)
+				childGroup.ModelRedirectRulesV2 = childData.ModelRedirectRulesV2
+			} else {
+				childGroup.ModelRedirectRulesV2 = merged
+			}
 		}
 		if len(childData.CustomModelNames) > 0 {
 			childGroup.CustomModelNames = childData.CustomModelNames

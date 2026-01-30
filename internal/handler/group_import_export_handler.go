@@ -574,13 +574,9 @@ func (s *Server) ImportGroup(c *gin.Context) {
 				reloadSuccess = true
 			}
 		case <-reloadCtx.Done():
-			logrus.Warn("Group manager cache reload timed out after import, will retry asynchronously")
-			// Trigger async reload in background
-			go func() {
-				if err := s.GroupManager.Reload(); err != nil {
-					logrus.WithError(err).Error("Async group manager cache reload failed after import")
-				}
-			}()
+			logrus.Warn("Group manager cache reload timed out after import, background syncer will handle refresh")
+			// Let background syncer handle refresh to avoid concurrent Reload calls
+			// Concurrent reloads can cause database connection exhaustion and race conditions
 		}
 	}
 

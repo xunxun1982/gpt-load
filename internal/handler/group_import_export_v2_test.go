@@ -309,8 +309,8 @@ func TestGroupExportInfo_WithChildGroups(t *testing.T) {
 					ProxyKeys:   "key1,key2",
 					Sort:        1,
 					Keys: []KeyExportInfo{
-						{KeyValue: "sk-child1-key1", Status: "active"},
-						{KeyValue: "sk-child1-key2", Status: "active"},
+						{KeyValue: "test-child1-key1", Status: "active"},
+						{KeyValue: "test-child1-key2", Status: "active"},
 					},
 				},
 			},
@@ -332,7 +332,7 @@ func TestGroupExportInfo_WithChildGroups(t *testing.T) {
 					Enabled:     true,
 					Sort:        1,
 					Keys: []KeyExportInfo{
-						{KeyValue: "sk-child1-key1", Status: "active"},
+						{KeyValue: "test-child1-key1", Status: "active"},
 					},
 				},
 				{
@@ -341,8 +341,8 @@ func TestGroupExportInfo_WithChildGroups(t *testing.T) {
 					Enabled:     false,
 					Sort:        2,
 					Keys: []KeyExportInfo{
-						{KeyValue: "sk-child2-key1", Status: "active"},
-						{KeyValue: "sk-child2-key2", Status: "invalid"},
+						{KeyValue: "test-child2-key1", Status: "active"},
+						{KeyValue: "test-child2-key2", Status: "invalid"},
 					},
 				},
 				{
@@ -378,7 +378,7 @@ func TestGroupExportInfo_WithChildGroups(t *testing.T) {
 			exportData := GroupExportData{
 				Group: tt.parentGroup,
 				Keys: []KeyExportInfo{
-					{KeyValue: "sk-parent-key1", Status: "active"},
+					{KeyValue: "test-parent-key1", Status: "active"},
 				},
 				ChildGroups: tt.childGroups,
 				ExportedAt:  "2025-01-31T00:00:00Z",
@@ -492,7 +492,7 @@ func TestGroupExportInfo_ChildGroupsWithV2Rules(t *testing.T) {
 			ModelRedirectRulesV2: json.RawMessage(parentV2JSON),
 		},
 		Keys: []KeyExportInfo{
-			{KeyValue: "sk-parent-key", Status: "active"},
+			{KeyValue: "test-parent-key", Status: "active"},
 		},
 		ChildGroups: []ChildGroupExportInfo{
 			{
@@ -501,7 +501,7 @@ func TestGroupExportInfo_ChildGroupsWithV2Rules(t *testing.T) {
 				Enabled:     true,
 				Sort:        1,
 				Keys: []KeyExportInfo{
-					{KeyValue: "sk-child-key", Status: "active"},
+					{KeyValue: "test-child-key", Status: "active"},
 				},
 			},
 		},

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -194,11 +195,11 @@ func TestMergeModelRedirectRulesV2_Performance(t *testing.T) {
 
 	// Create 1000 rules with 10 targets each
 	for i := 0; i < 1000; i++ {
-		from := "model-" + string(rune(i))
+		from := fmt.Sprintf("model-%d", i)
 		targets := make([]ModelRedirectTarget, 10)
 		for j := 0; j < 10; j++ {
 			targets[j] = ModelRedirectTarget{
-				Model:  "target-" + string(rune(i)) + "-" + string(rune(j)),
+				Model:  fmt.Sprintf("target-%d-%d", i, j),
 				Weight: 100,
 			}
 		}
@@ -224,11 +225,11 @@ func BenchmarkMergeModelRedirectRulesV2(b *testing.B) {
 	// Benchmark with realistic data size
 	rulesMap := make(map[string]ModelRedirectRule)
 	for i := 0; i < 100; i++ {
-		from := "model-" + string(rune(i))
+		from := fmt.Sprintf("model-%d", i)
 		targets := make([]ModelRedirectTarget, 5)
 		for j := 0; j < 5; j++ {
 			targets[j] = ModelRedirectTarget{
-				Model:  "target-" + string(rune(i)) + "-" + string(rune(j)),
+				Model:  fmt.Sprintf("target-%d-%d", i, j),
 				Weight: 100,
 			}
 		}
