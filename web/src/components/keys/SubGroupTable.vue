@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import type { Group, SubGroupInfo } from "@/types/models";
-import { getGroupDisplayName } from "@/utils/display";
+import { formatHealthScore, formatPercentage, getGroupDisplayName } from "@/utils/display";
 import {
   Add,
   CreateOutline,
@@ -130,7 +130,8 @@ const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
     const effectiveWeight = sg.group.enabled ? sg.weight : 0;
     return {
       ...sg,
-      percentage: effectiveTotal > 0 ? Math.round((effectiveWeight / effectiveTotal) * 100) : 0,
+      // Calculate percentage without rounding - let formatPercentage handle precision
+      percentage: effectiveTotal > 0 ? (effectiveWeight / effectiveTotal) * 100 : 0,
       canonicalGroup:
         typeof sg.group.id === "number" ? groupById.value.get(sg.group.id) : undefined,
     };
@@ -354,7 +355,7 @@ function formatDateTime(isoString: string | null | undefined): string {
                     :style="{ width: `${subGroup.percentage}%` }"
                   />
                 </div>
-                <span class="weight-text">{{ subGroup.percentage }}%</span>
+                <span class="weight-text">{{ formatPercentage(subGroup.percentage) }}</span>
               </div>
               <!-- Health score indicator -->
               <div v-if="subGroup.dynamic_weight" class="health-score-row">
@@ -370,7 +371,7 @@ function formatDateTime(isoString: string | null | undefined): string {
                   class="health-text"
                   :class="getHealthScoreClass(subGroup.dynamic_weight.health_score)"
                 >
-                  {{ (subGroup.dynamic_weight.health_score * 100).toFixed(1) }}%
+                  {{ formatHealthScore(subGroup.dynamic_weight.health_score) }}
                 </span>
               </div>
             </div>
@@ -434,13 +435,13 @@ function formatDateTime(isoString: string | null | undefined): string {
                           class="info-value"
                           :class="getHealthScoreClass(subGroup.dynamic_weight.health_score)"
                         >
-                          {{ (subGroup.dynamic_weight.health_score * 100).toFixed(1) }}%
+                          {{ formatHealthScore(subGroup.dynamic_weight.health_score) }}
                         </span>
                       </div>
                       <div class="info-row">
                         <span class="info-label">{{ t("subGroups.successRate") }}:</span>
                         <span class="info-value">
-                          {{ (subGroup.dynamic_weight.success_rate ?? 0).toFixed(1) }}%
+                          {{ formatPercentage((subGroup.dynamic_weight.success_rate ?? 0) * 100) }}
                         </span>
                       </div>
                       <div class="info-row">

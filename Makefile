@@ -105,15 +105,37 @@ build-darwin-arm64: ## Build for macOS ARM64
 # ==============================================================================
 # Run & Development
 # ==============================================================================
-.PHONY: run
-run: ## Build frontend and run server
+.PHONY: frontend-build
+frontend-build: ## Build frontend (local dev)
 	@echo "--- Building frontend... ---"
-	# NOTE: npm ci uses package-lock.json for reproducible builds (does not auto-update)
-	# To update dependencies: npm update --prefix web
+	# npm install: Fast incremental install for local development
+	cd web && npm install && npm run build
+
+.PHONY: frontend-build-ci
+frontend-build-ci: ## Build frontend (CI)
+	@echo "--- Building frontend (CI mode)... ---"
+	# npm ci: Clean install for reproducible CI/CD builds
 	cd web && npm ci && npm run build
-	@echo "--- Preparing backend... ---"
+
+.PHONY: frontend-build-quick
+frontend-build-quick: ## Build frontend (quick)
+	@echo "--- Building frontend (quick mode)... ---"
+	cd web && npm run build
+
+.PHONY: run
+run: frontend-build ## Build frontend and run server (local development)
 	@echo "--- Starting backend... ---"
 	# Equivalent to: go run -tags go_json ./main.go
+	go run -tags $(GOTAGS) ./main.go
+
+.PHONY: run-ci
+run-ci: frontend-build-ci ## Build frontend and run server (CI/CD - clean install)
+	@echo "--- Starting backend... ---"
+	go run -tags $(GOTAGS) ./main.go
+
+.PHONY: quick-run
+quick-run: frontend-build-quick ## Quick run (skip npm install, assumes dependencies are ready)
+	@echo "--- Starting backend... ---"
 	go run -tags $(GOTAGS) ./main.go
 
 .PHONY: dev

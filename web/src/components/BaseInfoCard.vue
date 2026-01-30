@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DashboardStatsResponse } from "@/types/models";
+import { formatPercentage } from "@/utils/display";
 import { NCard, NGrid, NGridItem, NSpace, NTag, NTooltip } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -23,7 +24,7 @@ const animatedValues = ref<Record<string, number>>({});
 // Format numeric values for display
 const formatValue = (value: number, type: "count" | "rate" = "count"): string => {
   if (type === "rate") {
-    return `${value.toFixed(1)}%`;
+    return formatPercentage(value);
   }
   if (value >= 1000) {
     return `${(value / 1000).toFixed(1)}K`;
@@ -34,7 +35,7 @@ const formatValue = (value: number, type: "count" | "rate" = "count"): string =>
 // Format trend value for display
 const formatTrend = (trend: number): string => {
   const sign = trend >= 0 ? "+" : "";
-  return `${sign}${trend.toFixed(1)}%`;
+  return `${sign}${formatPercentage(Math.abs(trend))}`;
 };
 
 // Update animated values when stats change

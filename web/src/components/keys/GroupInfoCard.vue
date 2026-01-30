@@ -9,7 +9,7 @@ import type {
 } from "@/types/models";
 import { appState } from "@/utils/app-state";
 import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
-import { getGroupDisplayName, maskProxyKeys } from "@/utils/display";
+import { formatPercentage, getGroupDisplayName, maskProxyKeys } from "@/utils/display";
 import { CopyOutline, EyeOffOutline, EyeOutline, Pencil, Trash } from "@vicons/ionicons5";
 import {
   NButton,
@@ -424,13 +424,6 @@ function formatNumber(num: number): string {
     return `${(num / 1000).toFixed(1)}K`;
   }
   return num.toString();
-}
-
-function formatPercentage(num: number): string {
-  if (num <= 0) {
-    return "0";
-  }
-  return `${(num * 100).toFixed(1)}%`;
 }
 
 async function copyUrl(url: string) {

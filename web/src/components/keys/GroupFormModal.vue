@@ -11,6 +11,7 @@ import type {
   PathRedirectRule,
   UpstreamInfo,
 } from "@/types/models";
+import { formatHealthScore, formatPercentage } from "@/utils/display";
 import { Add, Close, CloudDownloadOutline, HelpCircleOutline, Remove } from "@vicons/ionicons5";
 import {
   NButton,
@@ -648,7 +649,7 @@ function removeTargetFromRedirectRule(ruleIndex: number, targetIndex: number) {
   }
 }
 
-// Calculate weight percentage for display
+// Calculate weight percentage for display with dynamic precision
 function calculateWeightPercentage(
   targets: ModelRedirectTargetItem[],
   targetIndex: number
@@ -659,7 +660,8 @@ function calculateWeightPercentage(
   if (!target || !target.enabled || target.weight <= 0 || totalWeight === 0) {
     return "0%";
   }
-  return `${((target.weight / totalWeight) * 100).toFixed(1)}%`;
+  const percentage = (target.weight / totalWeight) * 100;
+  return formatPercentage(percentage);
 }
 
 // Fetch dynamic weights for model redirect rules
@@ -1933,11 +1935,11 @@ async function handleSubmit() {
                                     "
                                   >
                                     {{
-                                      (
-                                        (getDynamicWeightInfo(rule.from, targetIndex)
-                                          ?.health_score ?? 1) * 100
-                                      ).toFixed(1)
-                                    }}%
+                                      formatHealthScore(
+                                        getDynamicWeightInfo(rule.from, targetIndex)
+                                          ?.health_score ?? 1
+                                      )
+                                    }}
                                   </span>
                                 </template>
                                 <div class="dynamic-weight-tooltip">
@@ -1962,22 +1964,22 @@ async function handleSubmit() {
                                       "
                                     >
                                       {{
-                                        (
-                                          (getDynamicWeightInfo(rule.from, targetIndex)
-                                            ?.health_score ?? 1) * 100
-                                        ).toFixed(1)
-                                      }}%
+                                        formatHealthScore(
+                                          getDynamicWeightInfo(rule.from, targetIndex)
+                                            ?.health_score ?? 1
+                                        )
+                                      }}
                                     </span>
                                   </div>
                                   <div class="tooltip-row">
                                     <span>{{ t("keys.successRate") }}:</span>
                                     <span>
                                       {{
-                                        (
-                                          getDynamicWeightInfo(rule.from, targetIndex)
-                                            ?.success_rate ?? 0
-                                        ).toFixed(1)
-                                      }}%
+                                        formatPercentage(
+                                          (getDynamicWeightInfo(rule.from, targetIndex)
+                                            ?.success_rate ?? 0) * 100
+                                        )
+                                      }}
                                     </span>
                                   </div>
                                   <div class="tooltip-row">

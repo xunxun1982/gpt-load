@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import type { Group, SubGroupInfo } from "@/types/models";
+import { formatPercentage } from "@/utils/display";
 import { Close } from "@vicons/ionicons5";
 import {
   NButton,
@@ -11,8 +12,8 @@ import {
   NInputNumber,
   NModal,
   useMessage,
-  type FormRules,
   type FormInst,
+  type FormRules,
 } from "naive-ui";
 import { computed, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -46,9 +47,9 @@ const formData = reactive<{
 
 // Preview new weight percentage (assuming other sub-group weights stay unchanged)
 // Only considers enabled sub-groups with weight > 0 for percentage calculation
-const previewPercentage = computed(() => {
+const previewPercentage = computed<string>(() => {
   if (!props.subGroups || !props.subGroup) {
-    return 0;
+    return "0%";
   }
 
   // Check if current sub-group is enabled
@@ -69,10 +70,15 @@ const previewPercentage = computed(() => {
 
   // If current sub-group is disabled, percentage is always 0
   if (!currentEnabled) {
-    return 0;
+    return "0%";
   }
 
-  return totalWeight > 0 ? Math.round((formData.weight / totalWeight) * 100) : 0;
+  if (totalWeight === 0) {
+    return "0%";
+  }
+
+  const percentage = (formData.weight / totalWeight) * 100;
+  return formatPercentage(percentage);
 });
 
 // Form validation rules
@@ -237,7 +243,7 @@ function adjustWeight(delta: number) {
           <div class="preview-section">
             <div class="preview-item">
               <span class="preview-label">{{ t("keys.previewPercentage") }}:</span>
-              <span class="preview-value">{{ previewPercentage }}%</span>
+              <span class="preview-value">{{ previewPercentage }}</span>
             </div>
             <div class="preview-note">
               {{ t("keys.weightPreviewNote") }}
