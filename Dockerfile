@@ -74,10 +74,16 @@ RUN echo "🔨 Building PGO-optimized binary..." && \
     -o gpt-load && \
     echo "✅ Build complete: $(ls -lh gpt-load | awk '{print $5}')"
 
-# Build lightweight health check utility for Docker health checks
+# Build minimal health check utility for Docker health checks
 # This is necessary because the final image uses scratch base (no wget/curl available)
+# Implementation uses TCP dial instead of HTTP GET to minimize binary size:
+# - HTTP client: ~5MB (includes TLS, HTTP/2, full HTTP stack)
+# - TCP dial: ~500KB-1.5MB (only basic networking)
+# For Docker healthcheck, TCP connectivity check is sufficient
 RUN echo "🔨 Building health check utility..." && \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOAMD64=${GOAMD64} go build \
+    -pgo=off \
+    -tags go_json \
     -trimpath \
     -buildvcs=false \
     -ldflags="-s -w" \

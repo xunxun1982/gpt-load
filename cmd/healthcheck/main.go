@@ -1,20 +1,32 @@
-// Package main provides a lightweight health check utility for Docker containers.
+// Package main provides a minimal health check utility for Docker containers.
 // This tool is statically compiled and designed to work in minimal environments
 // like scratch-based Docker images where standard tools (wget, curl) are unavailable.
+//
+// Implementation Note:
+// Uses TCP connection check instead of HTTP GET to minimize binary size.
+// This reduces the binary from ~5MB to ~500KB-1.5MB by avoiding the entire
+// net/http package (which includes TLS, HTTP/2, etc.).
+//
+// For Docker healthcheck purposes, TCP connectivity is sufficient:
+// - TCP connection success = service is listening = container is healthy
+// - TCP connection failure = service is down = container needs restart
+//
+// For more detailed health checks (database connectivity, dependency status, etc.),
+// use application-level monitoring or Kubernetes liveness/readiness probes.
 package main
 
 import (
 	"fmt"
-	"net/http"
+	"net"
 	"os"
 	"time"
 )
 
 const (
-	defaultPort    = "3001"
-	requestTimeout = 5 * time.Second
-	exitSuccess    = 0
-	exitFailure    = 1
+	defaultPort = "3001"
+	dialTimeout = 5 * time.Second
+	exitSuccess = 0
+	exitFailure = 1
 )
 
 func main() {
@@ -23,25 +35,19 @@ func main() {
 		port = defaultPort
 	}
 
-	healthURL := fmt.Sprintf("http://localhost:%s/health", port)
+	address := fmt.Sprintf("localhost:%s", port)
 
-	client := &http.Client{
-		Timeout: requestTimeout,
-	}
-
-	resp, err := client.Get(healthURL)
+	// Use TCP dial instead of HTTP GET to minimize binary size
+	// This checks if the service is listening on the port
+	conn, err := net.DialTimeout("tcp", address, dialTimeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Health check failed: %v\n", err)
 		os.Exit(exitFailure)
 	}
-	// Close response body immediately since we exit right after checking status
-	// Note: defer won't work here because os.Exit bypasses deferred calls
-	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "Health check returned non-OK status: %d\n", resp.StatusCode)
-		os.Exit(exitFailure)
-	}
+	// Close connection immediately
+	// Note: defer won't work here because os.Exit bypasses deferred calls
+	conn.Close()
 
 	os.Exit(exitSuccess)
 }
