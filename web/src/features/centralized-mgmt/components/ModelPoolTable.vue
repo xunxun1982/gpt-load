@@ -4,6 +4,7 @@
  * Displays aggregated model pool with priority-based group management.
  * Compact single-line layout for each model.
  */
+import { formatHealthScore } from "@/utils/display";
 import { CreateOutline, LayersOutline, RefreshOutline, Search } from "@vicons/ionicons5";
 import {
   NButton,
@@ -158,10 +159,6 @@ function getHealthClass(score: number): string {
     return "health-warning";
   }
   return "health-critical";
-}
-
-function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
 }
 
 function getPriorityTagType(
@@ -449,7 +446,7 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
       }
       const best = Math.max(...enabledGroups.map(g => g.health_score));
       return h(NText, { class: getHealthClass(best), style: { whiteSpace: "nowrap" } }, () =>
-        formatPercent(best)
+        formatHealthScore(best)
       );
     },
   },
@@ -679,7 +676,7 @@ onMounted(() => {
                 <span v-else class="text-muted">-</span>
               </span>
               <span class="col-health" :class="getHealthClass(group.health_score)">
-                {{ formatPercent(group.health_score) }}
+                {{ formatHealthScore(group.health_score) }}
               </span>
               <span class="col-priority">
                 <n-input-number

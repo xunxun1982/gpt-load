@@ -72,3 +72,41 @@ export function maskProxyKeys(keys: string): string {
     .map(key => maskKey(key.trim()))
     .join(", ");
 }
+
+/**
+ * Formats a percentage value with dynamic precision.
+ * Uses 1 decimal place for values >= 1%, and 2 decimal places for values < 1%.
+ * This ensures small percentages are visible while keeping larger values concise.
+ *
+ * @param value The percentage value (0-100).
+ * @returns The formatted percentage string with % suffix.
+ *
+ * @example
+ * formatPercentage(5.3)    // "5.3%"
+ * formatPercentage(0.15)   // "0.15%"
+ * formatPercentage(0.05)   // "0.05%"
+ * formatPercentage(100)    // "100.0%"
+ */
+export function formatPercentage(value: number): string {
+  if (value >= 1) {
+    return `${value.toFixed(1)}%`;
+  } else {
+    return `${value.toFixed(2)}%`;
+  }
+}
+
+/**
+ * Formats a health score (0-1 range) as a percentage with dynamic precision.
+ * Converts the 0-1 range to 0-100% and applies dynamic precision formatting.
+ *
+ * @param score The health score value (0-1).
+ * @returns The formatted percentage string with % suffix.
+ *
+ * @example
+ * formatHealthScore(1.0)    // "100.0%"
+ * formatHealthScore(0.053)  // "5.3%"
+ * formatHealthScore(0.0015) // "0.15%"
+ */
+export function formatHealthScore(score: number): string {
+  return formatPercentage(score * 100);
+}
