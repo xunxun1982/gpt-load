@@ -47,9 +47,9 @@ const formData = reactive<{
 
 // Preview new weight percentage (assuming other sub-group weights stay unchanged)
 // Only considers enabled sub-groups with weight > 0 for percentage calculation
-const previewPercentage = computed(() => {
+const previewPercentage = computed<string>(() => {
   if (!props.subGroups || !props.subGroup) {
-    return 0;
+    return "0%";
   }
 
   // Check if current sub-group is enabled

@@ -1976,10 +1976,10 @@ async function handleSubmit() {
                                     <span>
                                       {{
                                         formatPercentage(
-                                          getDynamicWeightInfo(rule.from, targetIndex)
-                                            ?.success_rate ?? 0
+                                          (getDynamicWeightInfo(rule.from, targetIndex)
+                                            ?.success_rate ?? 0) * 100
                                         )
-                                      }}%
+                                      }}
                                     </span>
                                   </div>
                                   <div class="tooltip-row">
