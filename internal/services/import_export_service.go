@@ -431,14 +431,26 @@ type GroupExportData struct {
 }
 
 // ChildGroupExport represents exported child group data
+// Includes all configuration fields to ensure complete export/import
 type ChildGroupExport struct {
-	Name        string          `json:"name"`
-	DisplayName string          `json:"display_name"`
-	Description string          `json:"description"`
-	Enabled     bool            `json:"enabled"`
-	ProxyKeys   string          `json:"proxy_keys"`
-	Sort        int             `json:"sort"`
-	Keys        []KeyExportInfo `json:"keys"`
+	Name                 string          `json:"name"`
+	DisplayName          string          `json:"display_name"`
+	Description          string          `json:"description"`
+	Enabled              bool            `json:"enabled"`
+	ProxyKeys            string          `json:"proxy_keys"`
+	Sort                 int             `json:"sort"`
+	TestModel            string          `json:"test_model"`
+	ParamOverrides       json.RawMessage `json:"param_overrides,omitempty"`
+	Config               json.RawMessage `json:"config,omitempty"`
+	HeaderRules          []byte          `json:"header_rules,omitempty"`
+	ModelMapping         string          `json:"model_mapping,omitempty"`
+	ModelRedirectRules   json.RawMessage `json:"model_redirect_rules,omitempty"`
+	ModelRedirectRulesV2 []byte          `json:"model_redirect_rules_v2,omitempty"`
+	ModelRedirectStrict  bool            `json:"model_redirect_strict"`
+	CustomModelNames     []byte          `json:"custom_model_names,omitempty"`
+	Preconditions        json.RawMessage `json:"preconditions,omitempty"`
+	PathRedirects        []byte          `json:"path_redirects,omitempty"`
+	Keys                 []KeyExportInfo `json:"keys"`
 }
 
 // SubGroupInfo represents sub-group relationship
@@ -528,14 +540,52 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 			result.ChildGroups = make([]ChildGroupExport, 0, len(childGroups))
 			for _, cg := range childGroups {
 				childExport := ChildGroupExport{
-					Name:        cg.Name,
-					DisplayName: cg.DisplayName,
-					Description: cg.Description,
-					Enabled:     cg.Enabled,
-					ProxyKeys:   cg.ProxyKeys,
-					Sort:        cg.Sort,
-					Keys:        childKeysMap[cg.ID],
+					Name:                 cg.Name,
+					DisplayName:          cg.DisplayName,
+					Description:          cg.Description,
+					Enabled:              cg.Enabled,
+					ProxyKeys:            cg.ProxyKeys,
+					Sort:                 cg.Sort,
+					TestModel:            cg.TestModel,
+					ModelMapping:         cg.ModelMapping,
+					ModelRedirectStrict:  cg.ModelRedirectStrict,
+					Keys:                 childKeysMap[cg.ID],
 				}
+
+				// Export JSON fields as raw JSON to preserve structure
+				if cg.ParamOverrides != nil {
+					if data, err := json.Marshal(cg.ParamOverrides); err == nil {
+						childExport.ParamOverrides = data
+					}
+				}
+				if cg.Config != nil {
+					if data, err := json.Marshal(cg.Config); err == nil {
+						childExport.Config = data
+					}
+				}
+				if len(cg.HeaderRules) > 0 {
+					childExport.HeaderRules = cg.HeaderRules
+				}
+				if cg.ModelRedirectRules != nil {
+					if data, err := json.Marshal(cg.ModelRedirectRules); err == nil {
+						childExport.ModelRedirectRules = data
+					}
+				}
+				if len(cg.ModelRedirectRulesV2) > 0 {
+					childExport.ModelRedirectRulesV2 = cg.ModelRedirectRulesV2
+				}
+				if len(cg.CustomModelNames) > 0 {
+					childExport.CustomModelNames = cg.CustomModelNames
+				}
+				if cg.Preconditions != nil {
+					if data, err := json.Marshal(cg.Preconditions); err == nil {
+						childExport.Preconditions = data
+					}
+				}
+				if len(cg.PathRedirects) > 0 {
+					childExport.PathRedirects = cg.PathRedirects
+				}
+
 				result.ChildGroups = append(result.ChildGroups, childExport)
 			}
 
@@ -648,9 +698,12 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData, pr
 
 	// Import child groups for standard groups
 	if newGroup.GroupType == "standard" && len(data.ChildGroups) > 0 {
+		logrus.Infof("Importing %d child groups for standard group %s (ID: %d)", len(data.ChildGroups), newGroup.Name, newGroup.ID)
 		if err := s.importChildGroups(tx, newGroup.ID, newGroup.Name, newGroup.ChannelType, data.ChildGroups); err != nil {
+			logrus.WithError(err).Errorf("Failed to import child groups for group %s", newGroup.Name)
 			return 0, fmt.Errorf("failed to import child groups: %w", err)
 		}
+		logrus.Infof("Successfully imported child groups for standard group %s", newGroup.Name)
 	}
 
 	return newGroup.ID, nil
@@ -658,13 +711,21 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData, pr
 
 // importChildGroups imports child groups for a parent group
 func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint, parentName string, parentChannelType string, childGroups []ChildGroupExport) error {
-	for _, childData := range childGroups {
+	logrus.Infof("Starting import of %d child groups for parent %s (ID: %d)", len(childGroups), parentName, parentGroupID)
+
+	for i, childData := range childGroups {
+		logrus.Debugf("Processing child group %d/%d: %s", i+1, len(childGroups), childData.Name)
+
 		// Each child group should independently check for name conflicts
 		// Try the original name, and add a random suffix if there's a conflict
 		childName, err := s.GenerateUniqueGroupName(tx, childData.Name)
 		if err != nil {
-			logrus.WithError(err).Warnf("Failed to generate unique name for child group %s", childData.Name)
+			logrus.WithError(err).Errorf("Failed to generate unique name for child group %s (index %d)", childData.Name, i)
 			continue
+		}
+
+		if childName != childData.Name {
+			logrus.Infof("Child group renamed: %s -> %s", childData.Name, childName)
 		}
 
 		// Calculate the suffix that was added (if any)
@@ -678,18 +739,62 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 		upstreamURL := fmt.Sprintf("http://127.0.0.1:%d/proxy/%s", port, parentName)
 		upstreamsJSON := fmt.Sprintf(`[{"url":"%s","weight":1}]`, upstreamURL)
 
+		logrus.Debugf("Child group %s upstream: %s", childName, upstreamURL)
+
 		// Create child group with inherited channel_type from parent
+		// Child groups inherit TestModel from parent (required field)
 		childGroup := models.Group{
-			Name:          childName,
-			DisplayName:   childData.DisplayName,
-			Description:   childData.Description,
-			GroupType:     "standard",
-			ChannelType:   parentChannelType, // Inherit from parent
-			Enabled:       childData.Enabled,
-			ParentGroupID: &parentGroupID,
-			ProxyKeys:     childData.ProxyKeys,
-			Sort:          childData.Sort,
-			Upstreams:     []byte(upstreamsJSON),
+			Name:                 childName,
+			DisplayName:          childData.DisplayName,
+			Description:          childData.Description,
+			GroupType:            "standard",
+			ChannelType:          parentChannelType, // Inherit from parent
+			Enabled:              childData.Enabled,
+			ParentGroupID:        &parentGroupID,
+			ProxyKeys:            childData.ProxyKeys,
+			Sort:                 childData.Sort,
+			Upstreams:            []byte(upstreamsJSON),
+			TestModel:            childData.TestModel,
+			ModelMapping:         childData.ModelMapping,
+			ModelRedirectStrict:  childData.ModelRedirectStrict,
+		}
+
+		// Import JSON fields from exported data
+		if len(childData.ParamOverrides) > 0 {
+			var paramOverrides map[string]any
+			if err := json.Unmarshal(childData.ParamOverrides, &paramOverrides); err == nil {
+				childGroup.ParamOverrides = paramOverrides
+			}
+		}
+		if len(childData.Config) > 0 {
+			var config map[string]any
+			if err := json.Unmarshal(childData.Config, &config); err == nil {
+				childGroup.Config = config
+			}
+		}
+		if len(childData.HeaderRules) > 0 {
+			childGroup.HeaderRules = childData.HeaderRules
+		}
+		if len(childData.ModelRedirectRules) > 0 {
+			var redirectRules map[string]any
+			if err := json.Unmarshal(childData.ModelRedirectRules, &redirectRules); err == nil {
+				childGroup.ModelRedirectRules = redirectRules
+			}
+		}
+		if len(childData.ModelRedirectRulesV2) > 0 {
+			childGroup.ModelRedirectRulesV2 = childData.ModelRedirectRulesV2
+		}
+		if len(childData.CustomModelNames) > 0 {
+			childGroup.CustomModelNames = childData.CustomModelNames
+		}
+		if len(childData.Preconditions) > 0 {
+			var preconditions map[string]any
+			if err := json.Unmarshal(childData.Preconditions, &preconditions); err == nil {
+				childGroup.Preconditions = preconditions
+			}
+		}
+		if len(childData.PathRedirects) > 0 {
+			childGroup.PathRedirects = childData.PathRedirects
 		}
 
 		// Apply suffix to display name if a suffix was added to the name
@@ -697,21 +802,30 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 			childGroup.DisplayName = childData.DisplayName + childNameSuffix
 		}
 
+		logrus.Debugf("Creating child group in database: name=%s, display_name=%s, enabled=%v, parent_id=%d",
+			childGroup.Name, childGroup.DisplayName, childGroup.Enabled, parentGroupID)
+
 		if err := tx.Create(&childGroup).Error; err != nil {
-			logrus.WithError(err).Warnf("Failed to create child group %s", childName)
+			logrus.WithError(err).Errorf("Failed to create child group %s in database", childName)
 			continue
 		}
 
+		logrus.Infof("Successfully created child group %s (ID: %d) for parent %s", childName, childGroup.ID, parentName)
+
 		// Import keys for child group
 		if len(childData.Keys) > 0 {
+			logrus.Debugf("Importing %d keys for child group %s", len(childData.Keys), childName)
 			if err := s.ImportKeys(tx, childGroup.ID, childData.Keys, nil); err != nil {
-				logrus.WithError(err).Warnf("Failed to import keys for child group %s", childName)
+				logrus.WithError(err).Errorf("Failed to import keys for child group %s", childName)
+			} else {
+				logrus.Debugf("Successfully imported %d keys for child group %s", len(childData.Keys), childName)
 			}
+		} else {
+			logrus.Debugf("No keys to import for child group %s", childName)
 		}
-
-		logrus.Infof("Imported child group %s (ID: %d) for parent %s", childName, childGroup.ID, parentName)
 	}
 
+	logrus.Infof("Completed import of child groups for parent %s", parentName)
 	return nil
 }
 

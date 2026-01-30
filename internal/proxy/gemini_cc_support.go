@@ -595,7 +595,7 @@ func (ps *ProxyServer) applyGeminiCCRequestConversion(
 	if originalModel != "" {
 		// Check if either V1 or V2 redirect maps are configured to support both legacy and new formats
 		if len(group.ModelRedirectMapV2) > 0 || len(group.ModelRedirectMap) > 0 {
-			targetModel, _, _, _, err := models.ResolveTargetModelWithIndex(
+			targetModel, ruleVersion, targetCount, selectedIdx, err := models.ResolveTargetModelWithIndex(
 				originalModel,
 				group.ModelRedirectMap, // Pass V1 map for backward compatibility
 				group.ModelRedirectMapV2,
@@ -606,11 +606,24 @@ func (ps *ProxyServer) applyGeminiCCRequestConversion(
 			}
 			if targetModel != "" && targetModel != originalModel {
 				claudeReq.Model = targetModel
-				logrus.WithFields(logrus.Fields{
+
+				// Log with additional context for V2 multi-target rules
+				logFields := logrus.Fields{
 					"group":          group.Name,
 					"original_model": originalModel,
 					"target_model":   targetModel,
-				}).Debug("Gemini CC: Applied model redirect")
+				}
+
+				// Add selection details for V2 rules to help debug distribution
+				if ruleVersion == "v2" && targetCount > 1 {
+					logFields["target_count"] = targetCount
+					logFields["target_index"] = selectedIdx
+					if rule, found := group.ModelRedirectMapV2[originalModel]; found && selectedIdx >= 0 && selectedIdx < len(rule.Targets) {
+						logFields["target_weight"] = rule.Targets[selectedIdx].GetWeight()
+					}
+				}
+
+				logrus.WithFields(logFields).Debug("Gemini CC: Applied model redirect")
 			} else if targetModel == "" && group.ModelRedirectStrict {
 				// Strict mode: model not found in redirect rules
 				return bodyBytes, false, fmt.Errorf("model '%s' is not configured in redirect rules", originalModel)

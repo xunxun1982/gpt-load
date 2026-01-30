@@ -322,14 +322,26 @@ func (b *BaseChannel) ApplyModelRedirectWithIndex(req *http.Request, bodyBytes [
 	if targetModel != "" {
 		requestData["model"] = targetModel
 
-		logrus.WithFields(logrus.Fields{
+		// Log at Debug level for normal operation
+		// For V2 rules with multiple targets, include additional context to help users
+		// understand the weighted random selection behavior
+		logFields := logrus.Fields{
 			"group":          group.Name,
 			"original_model": model,
 			"target_model":   targetModel,
 			"target_count":   targetCount,
 			"target_index":   selectedIdx,
 			"rule_version":   ruleVersion,
-		}).Debug("Model redirected")
+		}
+
+		// Add weight information for V2 multi-target rules to help debug selection distribution
+		if ruleVersion == "v2" && targetCount > 1 {
+			if rule, found := group.ModelRedirectMapV2[model]; found && selectedIdx >= 0 && selectedIdx < len(rule.Targets) {
+				logFields["target_weight"] = rule.Targets[selectedIdx].GetWeight()
+			}
+		}
+
+		logrus.WithFields(logFields).Debug("Model redirected")
 
 		modifiedBytes, err := json.Marshal(requestData)
 		if err != nil {

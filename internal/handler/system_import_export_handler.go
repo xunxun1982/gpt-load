@@ -103,26 +103,33 @@ func (s *Server) ExportAll(c *gin.Context) {
 		// Convert ModelRedirectRules from datatypes.JSONMap to map[string]string for export
 		modelRedirectRules := ConvertModelRedirectRulesToExport(groupData.Group.ModelRedirectRules)
 
+		// Export ModelRedirectRulesV2 as raw JSON
+		var modelRedirectRulesV2 json.RawMessage
+		if len(groupData.Group.ModelRedirectRulesV2) > 0 {
+			modelRedirectRulesV2 = json.RawMessage(groupData.Group.ModelRedirectRulesV2)
+		}
+
 		groupExport := GroupExportData{
 			Group: GroupExportInfo{
-				Name:                groupData.Group.Name,
-				DisplayName:         groupData.Group.DisplayName,
-				Description:         groupData.Group.Description,
-				GroupType:           groupData.Group.GroupType,
-				ChannelType:         groupData.Group.ChannelType,
-				Enabled:             groupData.Group.Enabled,
-				TestModel:           groupData.Group.TestModel,
-				ValidationEndpoint:  groupData.Group.ValidationEndpoint,
-				Upstreams:           json.RawMessage(groupData.Group.Upstreams),
-				ParamOverrides:      groupData.Group.ParamOverrides,
-				Config:              groupData.Group.Config,
-				HeaderRules:         headerRules,
-				ModelMapping:        groupData.Group.ModelMapping,
-				ModelRedirectRules:  modelRedirectRules,
-				ModelRedirectStrict: groupData.Group.ModelRedirectStrict,
-				PathRedirects:       pathRedirects,
-				ProxyKeys:           groupData.Group.ProxyKeys,
-				Sort:                groupData.Group.Sort,
+				Name:                 groupData.Group.Name,
+				DisplayName:          groupData.Group.DisplayName,
+				Description:          groupData.Group.Description,
+				GroupType:            groupData.Group.GroupType,
+				ChannelType:          groupData.Group.ChannelType,
+				Enabled:              groupData.Group.Enabled,
+				TestModel:            groupData.Group.TestModel,
+				ValidationEndpoint:   groupData.Group.ValidationEndpoint,
+				Upstreams:            json.RawMessage(groupData.Group.Upstreams),
+				ParamOverrides:       groupData.Group.ParamOverrides,
+				Config:               groupData.Group.Config,
+				HeaderRules:          headerRules,
+				ModelMapping:         groupData.Group.ModelMapping,
+				ModelRedirectRules:   modelRedirectRules,
+				ModelRedirectRulesV2: modelRedirectRulesV2,
+				ModelRedirectStrict:  groupData.Group.ModelRedirectStrict,
+				PathRedirects:        pathRedirects,
+				ProxyKeys:            groupData.Group.ProxyKeys,
+				Sort:                 groupData.Group.Sort,
 			},
 			Keys:      []KeyExportInfo{},
 			SubGroups: []SubGroupExportInfo{},
@@ -378,26 +385,33 @@ outer:
 		// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
 		modelRedirectRules := ConvertModelRedirectRulesToImport(groupExport.Group.ModelRedirectRules)
 
+		// Import ModelRedirectRulesV2 as raw JSON bytes
+		var modelRedirectRulesV2 []byte
+		if len(groupExport.Group.ModelRedirectRulesV2) > 0 {
+			modelRedirectRulesV2 = []byte(groupExport.Group.ModelRedirectRulesV2)
+		}
+
 		groupData := services.GroupExportData{
 			Group: models.Group{
-				Name:                groupExport.Group.Name,
-				DisplayName:         groupExport.Group.DisplayName,
-				Description:         groupExport.Group.Description,
-				GroupType:           groupExport.Group.GroupType,
-				ChannelType:         groupExport.Group.ChannelType,
-				Enabled:             groupExport.Group.Enabled,
-				TestModel:           groupExport.Group.TestModel,
-				ValidationEndpoint:  groupExport.Group.ValidationEndpoint,
-				Upstreams:           []byte(groupExport.Group.Upstreams),
-				ParamOverrides:      groupExport.Group.ParamOverrides,
-				Config:              groupExport.Group.Config,
-				HeaderRules:         headerRulesJSON,
-				ModelMapping:        groupExport.Group.ModelMapping,
-				ModelRedirectRules:  modelRedirectRules,
-				ModelRedirectStrict: groupExport.Group.ModelRedirectStrict,
-				PathRedirects:       pathRedirectsJSON,
-				ProxyKeys:           groupExport.Group.ProxyKeys,
-				Sort:                groupExport.Group.Sort,
+				Name:                 groupExport.Group.Name,
+				DisplayName:          groupExport.Group.DisplayName,
+				Description:          groupExport.Group.Description,
+				GroupType:            groupExport.Group.GroupType,
+				ChannelType:          groupExport.Group.ChannelType,
+				Enabled:              groupExport.Group.Enabled,
+				TestModel:            groupExport.Group.TestModel,
+				ValidationEndpoint:   groupExport.Group.ValidationEndpoint,
+				Upstreams:            []byte(groupExport.Group.Upstreams),
+				ParamOverrides:       groupExport.Group.ParamOverrides,
+				Config:               groupExport.Group.Config,
+				HeaderRules:          headerRulesJSON,
+				ModelMapping:         groupExport.Group.ModelMapping,
+				ModelRedirectRules:   modelRedirectRules,
+				ModelRedirectRulesV2: modelRedirectRulesV2,
+				ModelRedirectStrict:  groupExport.Group.ModelRedirectStrict,
+				PathRedirects:        pathRedirectsJSON,
+				ProxyKeys:            groupExport.Group.ProxyKeys,
+				Sort:                 groupExport.Group.Sort,
 			},
 			Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
 			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
