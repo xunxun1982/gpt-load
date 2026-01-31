@@ -427,8 +427,13 @@ func findSortedInsertIndex(groups []models.Group, group *models.Group) int {
 // other goroutines during potentially slow operations (up to 2 seconds timeout).
 func (s *GroupService) AddGroupToListCache(group *models.Group) {
 	if group == nil {
+		logrus.Debug("AddGroupToListCache called with nil group")
 		return
 	}
+
+	logrus.Debugf("AddGroupToListCache: id=%d, name=%s, parent_id=%v",
+		group.ID, group.Name, group.ParentGroupID)
+
 	s.groupListCacheMu.Lock()
 	now := time.Now()
 	needsDBLoad := s.groupListCache == nil ||
@@ -438,6 +443,7 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 		// Fast path: cache exists, insert in sorted order if not already present
 		for _, g := range s.groupListCache.Groups {
 			if g.ID == group.ID {
+				logrus.Debugf("Group %d already in cache, updating expiry", group.ID)
 				s.groupListCache.ExpiresAt = now.Add(s.groupListCache.CurrentTTL)
 				s.groupListCacheMu.Unlock()
 				return
@@ -448,10 +454,14 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 		// Insert at the correct position
 		s.groupListCache.Groups = slices.Insert(s.groupListCache.Groups, insertIdx, *group)
 		s.groupListCache.ExpiresAt = now.Add(s.groupListCache.CurrentTTL)
+		logrus.Debugf("Added group %d to cache at index %d (fast path), total groups: %d",
+			group.ID, insertIdx, len(s.groupListCache.Groups))
 		s.groupListCacheMu.Unlock()
 		return
 	}
 	s.groupListCacheMu.Unlock()
+
+	logrus.Debugf("Cache empty or expired, loading from DB (slow path)")
 
 	// Slow path: need to load from DB
 	// Release lock before DB query to reduce lock contention
@@ -462,9 +472,11 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 		// DB query failed; keep cache empty to avoid returning partial data
 		// This ensures ListGroups will retry or surface a transient error
 		// instead of masking data loss with an incomplete list
-		logrus.WithError(err).Debug("Failed to load groups for cache; leaving cache empty")
+		logrus.WithError(err).Error("Failed to load groups for cache; leaving cache empty")
 		return
 	}
+
+	logrus.Debugf("Loaded %d groups from DB", len(groups))
 
 	// Check if the new group is already in the list (shouldn't happen but be safe)
 	found := false
@@ -478,6 +490,9 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 		// Insert in sorted order (sort ASC, name ASC) to maintain consistency
 		insertIdx := findSortedInsertIndex(groups, group)
 		groups = slices.Insert(groups, insertIdx, *group)
+		logrus.Debugf("Inserted group %d into loaded groups at index %d", group.ID, insertIdx)
+	} else {
+		logrus.Debugf("Group %d already in loaded groups", group.ID)
 	}
 
 	s.groupListCacheMu.Lock()
@@ -499,6 +514,9 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 			insertIdx := findSortedInsertIndex(s.groupListCache.Groups, group)
 			s.groupListCache.Groups = slices.Insert(s.groupListCache.Groups, insertIdx, *group)
 			s.groupListCache.ExpiresAt = now2.Add(s.groupListCache.CurrentTTL)
+			logrus.Debugf("Merged group %d into existing cache at index %d", group.ID, insertIdx)
+		} else {
+			logrus.Debugf("Group %d already in merged cache", group.ID)
 		}
 		s.groupListCacheMu.Unlock()
 		return
@@ -509,6 +527,7 @@ func (s *GroupService) AddGroupToListCache(group *models.Group) {
 		HitCount:   0,
 		CurrentTTL: s.groupListCacheTTL,
 	}
+	logrus.Infof("Created new cache with %d groups (slow path)", len(groups))
 	s.groupListCacheMu.Unlock()
 }
 
@@ -532,17 +551,22 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 		// Cache hit, return cached groups
 		groups := make([]models.Group, len(s.groupListCache.Groups))
 		copy(groups, s.groupListCache.Groups)
+		cacheSize := len(groups)
 		s.groupListCacheMu.RUnlock()
 
 		// Update hit count asynchronously to avoid blocking the read path
 		go s.updateGroupListCacheHit()
 
-		logrus.WithContext(ctx).Debug("Group list cache hit")
+		logrus.WithContext(ctx).Debugf("Group list cache hit, returning %d groups", cacheSize)
 		return groups, nil
 	}
 	// Check if we have stale cache and a task is running
 	// If so, return stale cache to avoid blocking on DB during import/delete
 	hasStaleCache := s.groupListCache != nil && len(s.groupListCache.Groups) > 0
+	staleCacheSize := 0
+	if hasStaleCache {
+		staleCacheSize = len(s.groupListCache.Groups)
+	}
 	s.groupListCacheMu.RUnlock()
 
 	if hasStaleCache && s.isTaskRunning() {
@@ -550,9 +574,11 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 		stale := make([]models.Group, len(s.groupListCache.Groups))
 		copy(stale, s.groupListCache.Groups)
 		s.groupListCacheMu.RUnlock()
-		logrus.WithContext(ctx).Debug("ListGroups returning stale cache during task execution")
+		logrus.WithContext(ctx).Infof("ListGroups returning stale cache (%d groups) during task execution", staleCacheSize)
 		return stale, nil
 	}
+
+	logrus.WithContext(ctx).Debug("Group list cache miss, querying database")
 
 	// Cache miss, fetch from database with timeout for reliability
 	// Group list queries should be fast with proper indexes
@@ -572,13 +598,16 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 				stale := make([]models.Group, len(s.groupListCache.Groups))
 				copy(stale, s.groupListCache.Groups)
 				s.groupListCacheMu.RUnlock()
-				logrus.WithContext(ctx).WithError(err).Warn("ListGroups transient error - returning stale cache")
+				logrus.WithContext(ctx).WithError(err).Warnf("ListGroups transient error - returning stale cache (%d groups)", len(stale))
 				return stale, nil
 			}
 			s.groupListCacheMu.RUnlock()
 		}
+		logrus.WithContext(ctx).WithError(err).Error("ListGroups database query failed")
 		return nil, app_errors.ParseDBError(err)
 	}
+
+	logrus.WithContext(ctx).Infof("ListGroups loaded %d groups from database", len(groups))
 
 	// Update cache with base TTL
 	s.groupListCacheMu.Lock()
@@ -590,7 +619,7 @@ func (s *GroupService) ListGroups(ctx context.Context) ([]models.Group, error) {
 	}
 	s.groupListCacheMu.Unlock()
 
-	logrus.WithContext(ctx).Debug("Group list cache updated")
+	logrus.WithContext(ctx).Debugf("Group list cache updated with %d groups", len(groups))
 	return groups, nil
 }
 

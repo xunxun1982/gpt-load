@@ -306,6 +306,20 @@ func (gm *GroupManager) Invalidate() error {
 	return gm.syncer.Invalidate()
 }
 
+// Reload forces an immediate synchronous reload of the cache from the database.
+// This is useful when you need to ensure the cache is updated immediately after database changes.
+// Unlike Invalidate(), this method blocks until the cache is fully reloaded.
+func (gm *GroupManager) Reload() error {
+	if gm.syncer == nil {
+		return fmt.Errorf("GroupManager is not initialized")
+	}
+	// Call the callback to invalidate other caches (e.g., GroupService list cache)
+	if gm.CacheInvalidationCallback != nil {
+		gm.CacheInvalidationCallback()
+	}
+	return gm.syncer.Reload()
+}
+
 // Stop gracefully stops the GroupManager's background syncer.
 func (gm *GroupManager) Stop(ctx context.Context) {
 	if gm.syncer != nil {

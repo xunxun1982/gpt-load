@@ -777,22 +777,80 @@ function parseJsonToModelRedirectItemsV2(jsonStr: string): ModelRedirectItemV2[]
         });
       }
     }
-    return items;
+    // Automatically merge duplicate rules after parsing
+    return mergeModelRedirectItems(items);
   } catch {
     return [];
   }
 }
 
+// Merge duplicate model redirect rules by combining targets
+// When multiple rules have the same "from" model, their targets are merged into a single rule
+// Duplicate targets (same model name) are deduplicated, keeping the first occurrence
+function mergeModelRedirectItems(items: ModelRedirectItemV2[]): ModelRedirectItemV2[] {
+  if (!items || items.length === 0) {
+    return items;
+  }
+
+  // Use map to merge rules with same "from" model
+  const mergedMap = new Map<string, ModelRedirectItemV2>();
+
+  for (const item of items) {
+    const from = item.from.trim();
+    if (!from) {
+      continue; // Skip empty "from" values
+    }
+
+    if (mergedMap.has(from)) {
+      // Merge targets into existing rule
+      const existing = mergedMap.get(from)!;
+      // Normalize existing target models before dedupe to avoid whitespace duplicates
+      const seenModels = new Set(existing.targets.map(t => t.model.trim()));
+
+      for (const target of item.targets) {
+        const model = target.model.trim();
+        if (model && !seenModels.has(model)) {
+          // Normalize target model before pushing to avoid storing whitespace
+          existing.targets.push({ ...target, model });
+          seenModels.add(model);
+        }
+      }
+    } else {
+      // Add new rule, deduplicating targets within the rule
+      const seenModels = new Set<string>();
+      const uniqueTargets: ModelRedirectTargetItem[] = [];
+
+      for (const target of item.targets) {
+        const model = target.model.trim();
+        if (model && !seenModels.has(model)) {
+          // Normalize target model before adding to avoid storing whitespace
+          uniqueTargets.push({ ...target, model });
+          seenModels.add(model);
+        }
+      }
+
+      if (uniqueTargets.length > 0) {
+        mergedMap.set(from, {
+          from,
+          targets: uniqueTargets,
+        });
+      }
+    }
+  }
+
+  return Array.from(mergedMap.values());
+}
+
 // Switch between GUI and JSON edit modes
 function switchModelRedirectEditMode(mode: "gui" | "json") {
   if (mode === "json" && modelRedirectEditMode.value === "gui") {
-    // Switching from GUI to JSON: convert current items to JSON
-    modelRedirectJsonStr.value = modelRedirectItemsV2ToFormattedJson(
-      formData.model_redirect_items_v2
-    );
+    // Switching from GUI to JSON: merge duplicate rules first, then convert to JSON
+    const mergedItems = mergeModelRedirectItems(formData.model_redirect_items_v2);
+    formData.model_redirect_items_v2 = mergedItems;
+    modelRedirectJsonStr.value = modelRedirectItemsV2ToFormattedJson(mergedItems);
     modelRedirectJsonError.value = "";
   } else if (mode === "gui" && modelRedirectEditMode.value === "json") {
-    // Switching from JSON to GUI: validate and parse JSON to items
+    // Switching from JSON to GUI: validate and parse JSON to items (auto-merges via parseJsonToModelRedirectItemsV2)
     if (modelRedirectJsonStr.value.trim() && modelRedirectJsonStr.value.trim() !== "{}") {
       try {
         JSON.parse(modelRedirectJsonStr.value);
@@ -979,6 +1037,9 @@ function handleModelSelectorConfirm(redirectRules: Record<string, string[]>) {
     }
   });
 
+  // Automatically merge duplicate rules after adding
+  formData.model_redirect_items_v2 = mergeModelRedirectItems(formData.model_redirect_items_v2);
+
   message.success(t("keys.redirectRulesAdded", { count: addedCount }));
 }
 
@@ -1013,12 +1074,15 @@ async function handleSubmit() {
     // Get V2 JSON based on edit mode
     let v2Json: string;
     if (modelRedirectEditMode.value === "json") {
-      // In JSON mode, use the raw JSON string directly
+      // In JSON mode, normalize and merge duplicates before submission
       v2Json = modelRedirectJsonStr.value.trim();
       if (v2Json && v2Json !== "{}") {
         try {
           // Validate JSON format
           JSON.parse(v2Json);
+          // Normalize + merge duplicates before submit to ensure consistency with GUI mode
+          const mergedItems = parseJsonToModelRedirectItemsV2(v2Json);
+          v2Json = modelRedirectItemsV2ToJson(mergedItems);
         } catch {
           message.error(t("keys.modelRedirectInvalidJson"));
           return;
@@ -1028,8 +1092,9 @@ async function handleSubmit() {
         v2Json = "";
       }
     } else {
-      // In GUI mode, convert items to JSON
-      v2Json = modelRedirectItemsV2ToJson(formData.model_redirect_items_v2);
+      // In GUI mode, merge duplicate rules before converting to JSON
+      const mergedItems = mergeModelRedirectItems(formData.model_redirect_items_v2);
+      v2Json = modelRedirectItemsV2ToJson(mergedItems);
     }
 
     if (v2Json) {

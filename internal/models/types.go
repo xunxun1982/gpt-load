@@ -65,6 +65,14 @@ type GroupConfig struct {
 	// Only applies to Anthropic channel groups. When enabled, /api/event_logging/batch
 	// requests are intercepted and not forwarded to upstream.
 	InterceptEventLog *bool `json:"intercept_event_log,omitempty"`
+	// ParallelToolCalls controls whether multiple tool calls can be executed in parallel.
+	// Only applies to OpenAI and Codex channels. When set to false, tools are called sequentially.
+	// Default behavior (nil): allows upstream API to use its default (typically true for OpenAI).
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
+	// ShortenToolNames enables shortening of tool names for Claude Code compatibility.
+	// Only applies to Anthropic channel with CC support enabled.
+	// Default: true (enabled for OpenAI compatibility).
+	ShortenToolNames *bool `json:"shorten_tool_names,omitempty"`
 }
 
 // HeaderRule defines a single rule for header manipulation.

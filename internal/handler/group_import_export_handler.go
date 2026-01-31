@@ -13,6 +13,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
 	"gpt-load/internal/services"
+	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -36,24 +37,25 @@ type GroupExportData struct {
 
 // GroupExportInfo represents group export information.
 type GroupExportInfo struct {
-	Name                string                    `json:"name"`
-	DisplayName         string                    `json:"display_name"`
-	Description         string                    `json:"description"`
-	GroupType           string                    `json:"group_type"`
-	ChannelType         string                    `json:"channel_type"`
-	Enabled             bool                      `json:"enabled"`
-	TestModel           string                    `json:"test_model"`
-	ValidationEndpoint  string                    `json:"validation_endpoint"`
-	Upstreams           json.RawMessage           `json:"upstreams"`
-	ParamOverrides      map[string]any            `json:"param_overrides"`
-	Config              map[string]any            `json:"config"`
-	HeaderRules         []models.HeaderRule       `json:"header_rules"`
-	ModelMapping        string                    `json:"model_mapping,omitempty"`         // Deprecated: for backward compatibility
-	ModelRedirectRules  map[string]string         `json:"model_redirect_rules,omitempty"`  // New field
-	ModelRedirectStrict bool                      `json:"model_redirect_strict,omitempty"` // New field
-	PathRedirects       []models.PathRedirectRule `json:"path_redirects,omitempty"`        // Path redirect rules
-	ProxyKeys           string                    `json:"proxy_keys"`
-	Sort                int                       `json:"sort"`
+	Name                 string                    `json:"name"`
+	DisplayName          string                    `json:"display_name"`
+	Description          string                    `json:"description"`
+	GroupType            string                    `json:"group_type"`
+	ChannelType          string                    `json:"channel_type"`
+	Enabled              bool                      `json:"enabled"`
+	TestModel            string                    `json:"test_model"`
+	ValidationEndpoint   string                    `json:"validation_endpoint"`
+	Upstreams            json.RawMessage           `json:"upstreams"`
+	ParamOverrides       map[string]any            `json:"param_overrides"`
+	Config               map[string]any            `json:"config"`
+	HeaderRules          []models.HeaderRule       `json:"header_rules"`
+	ModelMapping         string                    `json:"model_mapping,omitempty"`          // Deprecated: for backward compatibility
+	ModelRedirectRules   map[string]string         `json:"model_redirect_rules,omitempty"`   // V1 rules (one-to-one)
+	ModelRedirectRulesV2 json.RawMessage           `json:"model_redirect_rules_v2,omitempty"` // V2 rules (one-to-many)
+	ModelRedirectStrict  bool                      `json:"model_redirect_strict,omitempty"`  // Strict mode
+	PathRedirects        []models.PathRedirectRule `json:"path_redirects,omitempty"`         // Path redirect rules
+	ProxyKeys            string                    `json:"proxy_keys"`
+	Sort                 int                       `json:"sort"`
 }
 
 // KeyExportInfo represents key export information.
@@ -70,13 +72,24 @@ type SubGroupExportInfo struct {
 
 // ChildGroupExportInfo represents child group export information.
 type ChildGroupExportInfo struct {
-	Name        string          `json:"name"`
-	DisplayName string          `json:"display_name"`
-	Description string          `json:"description"`
-	Enabled     bool            `json:"enabled"`
-	ProxyKeys   string          `json:"proxy_keys"`
-	Sort        int             `json:"sort"`
-	Keys        []KeyExportInfo `json:"keys"`
+	Name                 string                    `json:"name"`
+	DisplayName          string                    `json:"display_name"`
+	Description          string                    `json:"description"`
+	Enabled              bool                      `json:"enabled"`
+	ProxyKeys            string                    `json:"proxy_keys"`
+	Sort                 int                       `json:"sort"`
+	TestModel            string                    `json:"test_model"`
+	ParamOverrides       map[string]any            `json:"param_overrides,omitempty"`
+	Config               map[string]any            `json:"config,omitempty"`
+	HeaderRules          []models.HeaderRule       `json:"header_rules,omitempty"`
+	ModelMapping         string                    `json:"model_mapping,omitempty"`
+	ModelRedirectRules   map[string]string         `json:"model_redirect_rules,omitempty"`
+	ModelRedirectRulesV2 json.RawMessage           `json:"model_redirect_rules_v2,omitempty"`
+	ModelRedirectStrict  bool                      `json:"model_redirect_strict"`
+	CustomModelNames     json.RawMessage           `json:"custom_model_names,omitempty"`
+	Preconditions        map[string]any            `json:"preconditions,omitempty"`
+	PathRedirects        []models.PathRedirectRule `json:"path_redirects,omitempty"`
+	Keys                 []KeyExportInfo           `json:"keys"`
 }
 
 // ExportGroup exports complete group data.
@@ -113,27 +126,42 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	// Convert ModelRedirectRules from datatypes.JSONMap to map[string]string for export
 	modelRedirectRules := ConvertModelRedirectRulesToExport(groupData.Group.ModelRedirectRules)
 
+	// Export ModelRedirectRulesV2 as raw JSON
+	var modelRedirectRulesV2 json.RawMessage
+	if len(groupData.Group.ModelRedirectRulesV2) > 0 {
+		rawJSON := []byte(groupData.Group.ModelRedirectRulesV2)
+		// Merge duplicate rules to consolidate targets (same as child groups)
+		merged, err := utils.MergeModelRedirectRulesV2(rawJSON)
+		if err != nil {
+			logrus.WithError(err).Warnf("Failed to merge group %s model redirect rules V2, using original", groupData.Group.Name)
+			modelRedirectRulesV2 = rawJSON
+		} else {
+			modelRedirectRulesV2 = merged
+		}
+	}
+
 	// Build export data structure compatible with existing format
 	exportData := GroupExportData{
 		Group: GroupExportInfo{
-			Name:                groupData.Group.Name,
-			DisplayName:         groupData.Group.DisplayName,
-			Description:         groupData.Group.Description,
-			GroupType:           groupData.Group.GroupType,
-			ChannelType:         groupData.Group.ChannelType,
-			Enabled:             groupData.Group.Enabled,
-			TestModel:           groupData.Group.TestModel,
-			ValidationEndpoint:  groupData.Group.ValidationEndpoint,
-			Upstreams:           json.RawMessage(groupData.Group.Upstreams),
-			ParamOverrides:      groupData.Group.ParamOverrides,
-			Config:              groupData.Group.Config,
-			HeaderRules:         headerRules,
-			ModelMapping:        groupData.Group.ModelMapping,
-			ModelRedirectRules:  modelRedirectRules,
-			ModelRedirectStrict: groupData.Group.ModelRedirectStrict,
-			PathRedirects:       pathRedirects,
-			ProxyKeys:           groupData.Group.ProxyKeys,
-			Sort:                groupData.Group.Sort,
+			Name:                 groupData.Group.Name,
+			DisplayName:          groupData.Group.DisplayName,
+			Description:          groupData.Group.Description,
+			GroupType:            groupData.Group.GroupType,
+			ChannelType:          groupData.Group.ChannelType,
+			Enabled:              groupData.Group.Enabled,
+			TestModel:            groupData.Group.TestModel,
+			ValidationEndpoint:   groupData.Group.ValidationEndpoint,
+			Upstreams:            json.RawMessage(groupData.Group.Upstreams),
+			ParamOverrides:       groupData.Group.ParamOverrides,
+			Config:               groupData.Group.Config,
+			HeaderRules:          headerRules,
+			ModelMapping:         groupData.Group.ModelMapping,
+			ModelRedirectRules:   modelRedirectRules,
+			ModelRedirectRulesV2: modelRedirectRulesV2,
+			ModelRedirectStrict:  groupData.Group.ModelRedirectStrict,
+			PathRedirects:        pathRedirects,
+			ProxyKeys:            groupData.Group.ProxyKeys,
+			Sort:                 groupData.Group.Sort,
 		},
 		Keys:       make([]KeyExportInfo, 0, len(groupData.Keys)),
 		SubGroups:  make([]SubGroupExportInfo, 0, len(groupData.SubGroups)),
@@ -169,14 +197,81 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	if len(groupData.ChildGroups) > 0 {
 		exportData.ChildGroups = make([]ChildGroupExportInfo, 0, len(groupData.ChildGroups))
 		for _, cg := range groupData.ChildGroups {
+			// Parse child group configuration fields
+			childHeaderRules := ParseHeaderRulesForExport(cg.HeaderRules, 0)
+			childPathRedirects := ParsePathRedirectsForExport(cg.PathRedirects)
+
+			// Convert ModelRedirectRules from []byte to map[string]string
+			var childModelRedirectRules map[string]string
+			if len(cg.ModelRedirectRules) > 0 {
+				var tempMap map[string]any
+				if err := json.Unmarshal(cg.ModelRedirectRules, &tempMap); err != nil {
+					logrus.WithError(err).Warnf("Failed to parse child group %s ModelRedirectRules for export", cg.Name)
+				} else {
+					childModelRedirectRules = make(map[string]string)
+					for k, v := range tempMap {
+						if strVal, ok := v.(string); ok {
+							childModelRedirectRules[k] = strVal
+						}
+					}
+				}
+			}
+
+			var childModelRedirectRulesV2 json.RawMessage
+			if len(cg.ModelRedirectRulesV2) > 0 {
+				rawJSON := []byte(cg.ModelRedirectRulesV2)
+				// Merge duplicate rules to consolidate targets (same as parent group)
+				merged, err := utils.MergeModelRedirectRulesV2(rawJSON)
+				if err != nil {
+					logrus.WithError(err).Warnf("Failed to merge child group %s model redirect rules V2, using original", cg.Name)
+					childModelRedirectRulesV2 = rawJSON
+				} else {
+					childModelRedirectRulesV2 = merged
+				}
+			}
+
+			var childCustomModelNames json.RawMessage
+			if len(cg.CustomModelNames) > 0 {
+				childCustomModelNames = json.RawMessage(cg.CustomModelNames)
+			}
+
+			// Convert ParamOverrides, Config, Preconditions from []byte to map[string]any
+			var childParamOverrides, childConfig, childPreconditions map[string]any
+			if len(cg.ParamOverrides) > 0 {
+				if err := json.Unmarshal(cg.ParamOverrides, &childParamOverrides); err != nil {
+					logrus.WithError(err).Warnf("Failed to parse child group %s ParamOverrides for export", cg.Name)
+				}
+			}
+			if len(cg.Config) > 0 {
+				if err := json.Unmarshal(cg.Config, &childConfig); err != nil {
+					logrus.WithError(err).Warnf("Failed to parse child group %s Config for export", cg.Name)
+				}
+			}
+			if len(cg.Preconditions) > 0 {
+				if err := json.Unmarshal(cg.Preconditions, &childPreconditions); err != nil {
+					logrus.WithError(err).Warnf("Failed to parse child group %s Preconditions for export", cg.Name)
+				}
+			}
+
 			childExport := ChildGroupExportInfo{
-				Name:        cg.Name,
-				DisplayName: cg.DisplayName,
-				Description: cg.Description,
-				Enabled:     cg.Enabled,
-				ProxyKeys:   cg.ProxyKeys,
-				Sort:        cg.Sort,
-				Keys:        make([]KeyExportInfo, 0, len(cg.Keys)),
+				Name:                 cg.Name,
+				DisplayName:          cg.DisplayName,
+				Description:          cg.Description,
+				Enabled:              cg.Enabled,
+				ProxyKeys:            cg.ProxyKeys,
+				Sort:                 cg.Sort,
+				TestModel:            cg.TestModel,
+				ParamOverrides:       childParamOverrides,
+				Config:               childConfig,
+				HeaderRules:          childHeaderRules,
+				ModelMapping:         cg.ModelMapping,
+				ModelRedirectRules:   childModelRedirectRules,
+				ModelRedirectRulesV2: childModelRedirectRulesV2,
+				ModelRedirectStrict:  cg.ModelRedirectStrict,
+				CustomModelNames:     childCustomModelNames,
+				Preconditions:        childPreconditions,
+				PathRedirects:        childPathRedirects,
+				Keys:                 make([]KeyExportInfo, 0, len(cg.Keys)),
 			}
 			// Convert child group keys, decrypt if plain mode
 			for _, key := range cg.Keys {
@@ -278,26 +373,42 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
 	modelRedirectRules := ConvertModelRedirectRulesToImport(importData.Group.ModelRedirectRules)
 
+	// Import ModelRedirectRulesV2 as raw JSON bytes
+	// Automatically merge duplicate rules (same "from" model) during import
+	var modelRedirectRulesV2 []byte
+	if len(importData.Group.ModelRedirectRulesV2) > 0 {
+		rawJSON := []byte(importData.Group.ModelRedirectRulesV2)
+		// Merge duplicate rules to consolidate targets
+		merged, err := utils.MergeModelRedirectRulesV2(rawJSON)
+		if err != nil {
+			logrus.WithError(err).Warn("Failed to merge model redirect rules V2, using original")
+			modelRedirectRulesV2 = rawJSON
+		} else {
+			modelRedirectRulesV2 = merged
+		}
+	}
+
 	serviceGroupData := services.GroupExportData{
 		Group: models.Group{
-			Name:                importData.Group.Name,
-			DisplayName:         importData.Group.DisplayName,
-			Description:         importData.Group.Description,
-			GroupType:           importData.Group.GroupType,
-			ChannelType:         importData.Group.ChannelType,
-			Enabled:             importData.Group.Enabled,
-			TestModel:           importData.Group.TestModel,
-			ValidationEndpoint:  importData.Group.ValidationEndpoint,
-			Upstreams:           []byte(importData.Group.Upstreams),
-			ParamOverrides:      importData.Group.ParamOverrides,
-			Config:              importData.Group.Config,
-			HeaderRules:         headerRulesJSON,
-			ModelMapping:        importData.Group.ModelMapping,
-			ModelRedirectRules:  modelRedirectRules,
-			ModelRedirectStrict: importData.Group.ModelRedirectStrict,
-			PathRedirects:       pathRedirectsJSON,
-			ProxyKeys:           importData.Group.ProxyKeys,
-			Sort:                importData.Group.Sort,
+			Name:                 importData.Group.Name,
+			DisplayName:          importData.Group.DisplayName,
+			Description:          importData.Group.Description,
+			GroupType:            importData.Group.GroupType,
+			ChannelType:          importData.Group.ChannelType,
+			Enabled:              importData.Group.Enabled,
+			TestModel:            importData.Group.TestModel,
+			ValidationEndpoint:   importData.Group.ValidationEndpoint,
+			Upstreams:            []byte(importData.Group.Upstreams),
+			ParamOverrides:       importData.Group.ParamOverrides,
+			Config:               importData.Group.Config,
+			HeaderRules:          headerRulesJSON,
+			ModelMapping:         importData.Group.ModelMapping,
+			ModelRedirectRules:   modelRedirectRules,
+			ModelRedirectRulesV2: modelRedirectRulesV2,
+			ModelRedirectStrict:  importData.Group.ModelRedirectStrict,
+			PathRedirects:        pathRedirectsJSON,
+			ProxyKeys:            importData.Group.ProxyKeys,
+			Sort:                 importData.Group.Sort,
 		},
 		Keys:      make([]services.KeyExportInfo, 0, len(importData.Keys)),
 		SubGroups: make([]services.SubGroupInfo, 0, len(importData.SubGroups)),
@@ -333,14 +444,56 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		serviceGroupData.ChildGroups = make([]services.ChildGroupExport, 0, len(importData.ChildGroups))
 		for _, cg := range importData.ChildGroups {
 			childExport := services.ChildGroupExport{
-				Name:        cg.Name,
-				DisplayName: cg.DisplayName,
-				Description: cg.Description,
-				Enabled:     cg.Enabled,
-				ProxyKeys:   cg.ProxyKeys,
-				Sort:        cg.Sort,
-				Keys:        make([]services.KeyExportInfo, 0, len(cg.Keys)),
+				Name:                cg.Name,
+				DisplayName:         cg.DisplayName,
+				Description:         cg.Description,
+				Enabled:             cg.Enabled,
+				ProxyKeys:           cg.ProxyKeys,
+				Sort:                cg.Sort,
+				TestModel:           cg.TestModel,
+				ModelMapping:        cg.ModelMapping,
+				ModelRedirectStrict: cg.ModelRedirectStrict,
+				Keys:                make([]services.KeyExportInfo, 0, len(cg.Keys)),
 			}
+
+			// Convert JSON fields to []byte for service layer
+			if cg.ParamOverrides != nil {
+				if data, err := json.Marshal(cg.ParamOverrides); err == nil {
+					childExport.ParamOverrides = data
+				}
+			}
+			if cg.Config != nil {
+				if data, err := json.Marshal(cg.Config); err == nil {
+					childExport.Config = data
+				}
+			}
+			if len(cg.HeaderRules) > 0 {
+				if data, err := json.Marshal(cg.HeaderRules); err == nil {
+					childExport.HeaderRules = json.RawMessage(data)
+				}
+			}
+			if cg.ModelRedirectRules != nil {
+				if data, err := json.Marshal(cg.ModelRedirectRules); err == nil {
+					childExport.ModelRedirectRules = data
+				}
+			}
+			if len(cg.ModelRedirectRulesV2) > 0 {
+				childExport.ModelRedirectRulesV2 = json.RawMessage(cg.ModelRedirectRulesV2)
+			}
+			if len(cg.CustomModelNames) > 0 {
+				childExport.CustomModelNames = json.RawMessage(cg.CustomModelNames)
+			}
+			if cg.Preconditions != nil {
+				if data, err := json.Marshal(cg.Preconditions); err == nil {
+					childExport.Preconditions = data
+				}
+			}
+			if len(cg.PathRedirects) > 0 {
+				if data, err := json.Marshal(cg.PathRedirects); err == nil {
+					childExport.PathRedirects = json.RawMessage(data)
+				}
+			}
+
 			// Convert child group keys; if input is plaintext, encrypt before passing to service
 			for _, k := range cg.Keys {
 				kv := k.KeyValue
@@ -420,13 +573,57 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		return
 	}
 
-	// Invalidate group manager cache synchronously to ensure new group is immediately visible in the list
-	// This must happen before the success response to provide a good user experience
+	// Reload group manager cache to ensure new group is immediately visible
+	// Use a short timeout to avoid blocking the response for too long
+	// If reload fails or times out, the cache will be updated asynchronously by the background syncer
+	reloadSuccess := false
 	if s.GroupManager != nil {
-		if err := s.GroupManager.Invalidate(); err != nil {
-			logrus.WithError(err).Warn("Failed to invalidate group manager cache after import")
+		// Create a context with short timeout for cache reload
+		// This prevents blocking the HTTP response if database is slow
+		reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer reloadCancel()
+
+		// Attempt synchronous reload with timeout
+		reloadDone := make(chan error, 1)
+		go func() {
+			reloadDone <- s.GroupManager.Reload()
+		}()
+
+		select {
+		case err := <-reloadDone:
+			if err != nil {
+				logrus.WithError(err).Warn("Failed to reload group manager cache after import, will retry asynchronously")
+			} else {
+				logrus.Debug("Group manager cache reloaded successfully after import")
+				reloadSuccess = true
+			}
+		case <-reloadCtx.Done():
+			logrus.Warn("Group manager cache reload timed out after import, background syncer will handle refresh")
+			// Let background syncer handle refresh to avoid concurrent Reload calls
+			// Concurrent reloads can cause database connection exhaustion and race conditions
+		}
+	}
+
+	// Get the group with complete information
+	// If reload succeeded, get from cache; otherwise query from database
+	var groupWithRelations *models.Group
+	if reloadSuccess && s.GroupManager != nil {
+		var err error
+		groupWithRelations, err = s.GroupManager.GetGroupByID(createdGroupID)
+		if err != nil {
+			logrus.WithError(err).Warn("Failed to get group from cache after import, using database query")
+			reloadSuccess = false // Fallback to database
+		}
+	}
+
+	if !reloadSuccess {
+		// Fallback: query from database with relationships
+		var dbGroup models.Group
+		if err := s.DB.Preload("SubGroups").First(&dbGroup, createdGroupID).Error; err != nil {
+			logrus.WithError(err).Warn("Failed to preload group relationships after import, using basic info")
+			groupWithRelations = &createdGroup
 		} else {
-			logrus.Debug("Group manager cache invalidated successfully after import")
+			groupWithRelations = &dbGroup
 		}
 	}
 
@@ -434,10 +631,41 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	// This ensures ListGroups can return cached data immediately without DB query
 	// Similar to CopyGroup optimization - add to cache instead of invalidating
 	if s.GroupService != nil {
+		logrus.Debugf("Adding imported group %d to list cache", createdGroupID)
 		// Use a private method through a helper to add group to list cache
 		// This avoids cache miss when frontend immediately requests /api/groups
 		// Note: AddGroupToListCache does not return an error; it logs internally if needed
-		s.GroupService.AddGroupToListCache(&createdGroup)
+		s.GroupService.AddGroupToListCache(groupWithRelations)
+
+		// For standard groups with child groups, also add each child group to the cache
+		// This ensures the frontend sidebar shows child groups immediately after import
+		if groupWithRelations.GroupType == "standard" && len(serviceGroupData.ChildGroups) > 0 {
+			logrus.Infof("Querying %d child groups from database for cache update", len(serviceGroupData.ChildGroups))
+			// Query all child groups from database to get their complete information
+			var childGroups []models.Group
+			if err := s.DB.Where("parent_group_id = ?", createdGroupID).Find(&childGroups).Error; err != nil {
+				logrus.WithError(err).Errorf("Failed to query child groups for cache update (parent_id=%d)", createdGroupID)
+			} else {
+				logrus.Infof("Found %d child groups in database for parent %d", len(childGroups), createdGroupID)
+				// Add each child group to the list cache
+				for i := range childGroups {
+					logrus.Debugf("Adding child group to cache: id=%d, name=%s, parent_id=%d",
+						childGroups[i].ID, childGroups[i].Name, *childGroups[i].ParentGroupID)
+					s.GroupService.AddGroupToListCache(&childGroups[i])
+				}
+				logrus.Infof("Added %d child groups to list cache for imported group %d", len(childGroups), createdGroupID)
+
+				// Invalidate ChildGroupService cache to ensure /api/groups/all-child-groups returns fresh data
+				if s.ChildGroupService != nil {
+					s.ChildGroupService.InvalidateCache()
+					logrus.Debug("Invalidated ChildGroupService cache after importing child groups")
+				}
+			}
+		} else if groupWithRelations.GroupType == "standard" {
+			logrus.Debugf("Standard group has no child groups to cache")
+		}
+	} else {
+		logrus.Warn("GroupService is nil, cannot update list cache")
 	}
 
 	// Load keys to Redis store and reset failure_count asynchronously
@@ -494,7 +722,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		}
 	}(createdGroupID, parentCtx, reqID)
 
-	response.SuccessI18n(c, "success.group_imported", s.newGroupResponse(&createdGroup))
+	response.SuccessI18n(c, "success.group_imported", s.newGroupResponse(groupWithRelations))
 }
 
 // sanitizeFilename keeps alphanumerics, dash, underscore, and dot; replaces others with '_'

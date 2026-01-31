@@ -385,7 +385,9 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 
 		// Allow group-only boolean flags for experimental features.
 		// These flags are stored only at group level and are not part of system-level settings.
-		if key == "force_function_call" || key == "cc_support" || key == "intercept_event_log" {
+		if key == "force_function_call" || key == "cc_support" ||
+			key == "intercept_event_log" || key == "parallel_tool_calls" ||
+			key == "shorten_tool_names" {
 			// Accept only boolean values; nil is already skipped above.
 			if _, ok := value.(bool); !ok {
 				return fmt.Errorf("invalid type for %s: expected a boolean, got %T", key, value)
