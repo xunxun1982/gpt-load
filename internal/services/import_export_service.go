@@ -442,14 +442,14 @@ type ChildGroupExport struct {
 	TestModel            string          `json:"test_model"`
 	ParamOverrides       json.RawMessage `json:"param_overrides,omitempty"`
 	Config               json.RawMessage `json:"config,omitempty"`
-	HeaderRules          []byte          `json:"header_rules,omitempty"`
+	HeaderRules          json.RawMessage `json:"header_rules,omitempty"`
 	ModelMapping         string          `json:"model_mapping,omitempty"`
 	ModelRedirectRules   json.RawMessage `json:"model_redirect_rules,omitempty"`
-	ModelRedirectRulesV2 []byte          `json:"model_redirect_rules_v2,omitempty"`
+	ModelRedirectRulesV2 json.RawMessage `json:"model_redirect_rules_v2,omitempty"`
 	ModelRedirectStrict  bool            `json:"model_redirect_strict"`
-	CustomModelNames     []byte          `json:"custom_model_names,omitempty"`
+	CustomModelNames     json.RawMessage `json:"custom_model_names,omitempty"`
 	Preconditions        json.RawMessage `json:"preconditions,omitempty"`
-	PathRedirects        []byte          `json:"path_redirects,omitempty"`
+	PathRedirects        json.RawMessage `json:"path_redirects,omitempty"`
 	Keys                 []KeyExportInfo `json:"keys"`
 }
 
@@ -564,7 +564,7 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 					}
 				}
 				if len(cg.HeaderRules) > 0 {
-					childExport.HeaderRules = cg.HeaderRules
+					childExport.HeaderRules = json.RawMessage(cg.HeaderRules)
 				}
 				if cg.ModelRedirectRules != nil {
 					if data, err := json.Marshal(cg.ModelRedirectRules); err == nil {
@@ -572,10 +572,10 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 					}
 				}
 				if len(cg.ModelRedirectRulesV2) > 0 {
-					childExport.ModelRedirectRulesV2 = cg.ModelRedirectRulesV2
+					childExport.ModelRedirectRulesV2 = json.RawMessage(cg.ModelRedirectRulesV2)
 				}
 				if len(cg.CustomModelNames) > 0 {
-					childExport.CustomModelNames = cg.CustomModelNames
+					childExport.CustomModelNames = json.RawMessage(cg.CustomModelNames)
 				}
 				if cg.Preconditions != nil {
 					if data, err := json.Marshal(cg.Preconditions); err == nil {
@@ -583,7 +583,7 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 					}
 				}
 				if len(cg.PathRedirects) > 0 {
-					childExport.PathRedirects = cg.PathRedirects
+					childExport.PathRedirects = json.RawMessage(cg.PathRedirects)
 				}
 
 				result.ChildGroups = append(result.ChildGroups, childExport)
@@ -781,7 +781,7 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 			}
 		}
 		if len(childData.HeaderRules) > 0 {
-			childGroup.HeaderRules = childData.HeaderRules
+			childGroup.HeaderRules = []byte(childData.HeaderRules)
 		}
 		if len(childData.ModelRedirectRules) > 0 {
 			var redirectRules map[string]any
@@ -791,16 +791,16 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 		}
 		if len(childData.ModelRedirectRulesV2) > 0 {
 			// Merge duplicate targets in V2 rules (consistent with parent group import)
-			merged, err := utils.MergeModelRedirectRulesV2(childData.ModelRedirectRulesV2)
+			merged, err := utils.MergeModelRedirectRulesV2([]byte(childData.ModelRedirectRulesV2))
 			if err != nil {
 				logrus.WithError(err).Warnf("Failed to merge child group model redirect rules V2 for %s, using original", childName)
-				childGroup.ModelRedirectRulesV2 = childData.ModelRedirectRulesV2
+				childGroup.ModelRedirectRulesV2 = []byte(childData.ModelRedirectRulesV2)
 			} else {
 				childGroup.ModelRedirectRulesV2 = merged
 			}
 		}
 		if len(childData.CustomModelNames) > 0 {
-			childGroup.CustomModelNames = childData.CustomModelNames
+			childGroup.CustomModelNames = []byte(childData.CustomModelNames)
 		}
 		if len(childData.Preconditions) > 0 {
 			var preconditions map[string]any
@@ -809,7 +809,7 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 			}
 		}
 		if len(childData.PathRedirects) > 0 {
-			childGroup.PathRedirects = childData.PathRedirects
+			childGroup.PathRedirects = []byte(childData.PathRedirects)
 		}
 
 		// Apply suffix to display name if a suffix was added to the name

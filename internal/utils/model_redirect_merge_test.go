@@ -157,6 +157,82 @@ func TestMergeModelRedirectRulesV2(t *testing.T) {
 			input:       `{"invalid": }`,
 			expectError: true,
 		},
+		{
+			name: "trim whitespace from keys and target models",
+			input: `{
+				" gpt-4 ": {
+					"targets": [
+						{"model": " gpt-4-turbo ", "weight": 100},
+						{"model": "gpt-4-0125", "weight": 50}
+					]
+				},
+				"gpt-3.5": {
+					"targets": [
+						{"model": "  gpt-3.5-turbo  ", "weight": 100}
+					]
+				}
+			}`,
+			expected: `{
+				"gpt-4": {
+					"targets": [
+						{"model": "gpt-4-turbo", "weight": 100},
+						{"model": "gpt-4-0125", "weight": 50}
+					]
+				},
+				"gpt-3.5": {
+					"targets": [
+						{"model": "gpt-3.5-turbo", "weight": 100}
+					]
+				}
+			}`,
+		},
+		{
+			name: "merge duplicate keys after trimming whitespace",
+			input: `{
+				"gpt-4": {
+					"targets": [
+						{"model": "gpt-4-turbo", "weight": 100}
+					]
+				},
+				" gpt-4 ": {
+					"targets": [
+						{"model": "gpt-4-0125", "weight": 50}
+					]
+				}
+			}`,
+			// Note: Order of targets may vary due to map iteration order
+			// We verify the content in a separate assertion below
+			expected: `{
+				"gpt-4": {
+					"targets": [
+						{"model": "gpt-4-turbo", "weight": 100},
+						{"model": "gpt-4-0125", "weight": 50}
+					]
+				}
+			}`,
+		},
+		{
+			name: "skip empty keys after trimming",
+			input: `{
+				"  ": {
+					"targets": [
+						{"model": "gpt-4-turbo", "weight": 100}
+					]
+				},
+				"gpt-3.5": {
+					"targets": [
+						{"model": "gpt-3.5-turbo", "weight": 100}
+					]
+				}
+			}`,
+			expected: `{
+				"gpt-3.5": {
+					"targets": [
+						{"model": "gpt-3.5-turbo", "weight": 100}
+					]
+				}
+			}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -176,13 +252,37 @@ func TestMergeModelRedirectRulesV2(t *testing.T) {
 				return
 			}
 
-			// Parse both expected and result to compare as objects (ignore formatting)
-			var expectedObj, resultObj map[string]interface{}
-			err = json.Unmarshal([]byte(tt.expected), &expectedObj)
-			require.NoError(t, err, "expected JSON should be valid")
-
+			// Parse result to verify structure
+			var resultObj map[string]interface{}
 			err = json.Unmarshal(result, &resultObj)
 			require.NoError(t, err, "result JSON should be valid")
+
+			// For the "merge duplicate keys" test, verify content without order dependency
+			if tt.name == "merge duplicate keys after trimming whitespace" {
+				// Verify we have exactly one key "gpt-4"
+				assert.Len(t, resultObj, 1)
+				assert.Contains(t, resultObj, "gpt-4")
+
+				// Verify targets contain both models
+				gpt4Rule := resultObj["gpt-4"].(map[string]interface{})
+				targets := gpt4Rule["targets"].([]interface{})
+				assert.Len(t, targets, 2)
+
+				// Extract model names from targets
+				modelNames := make(map[string]bool)
+				for _, t := range targets {
+					target := t.(map[string]interface{})
+					modelNames[target["model"].(string)] = true
+				}
+				assert.True(t, modelNames["gpt-4-turbo"], "should contain gpt-4-turbo")
+				assert.True(t, modelNames["gpt-4-0125"], "should contain gpt-4-0125")
+				return
+			}
+
+			// For other tests, compare as objects (ignore formatting)
+			var expectedObj map[string]interface{}
+			err = json.Unmarshal([]byte(tt.expected), &expectedObj)
+			require.NoError(t, err, "expected JSON should be valid")
 
 			assert.Equal(t, expectedObj, resultObj)
 		})

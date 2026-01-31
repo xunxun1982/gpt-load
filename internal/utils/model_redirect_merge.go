@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 // ModelRedirectTarget represents a single target in model redirect rules
@@ -37,16 +38,34 @@ func MergeModelRedirectRulesV2(rulesJSON []byte) ([]byte, error) {
 	}
 
 	// Merge targets for each "from" model
+	// First pass: normalize keys and collect all targets
 	// Use map to track seen target models for deduplication
 	mergedMap := make(map[string]ModelRedirectRule)
 
 	for from, rule := range rulesMap {
-		// Use map for O(1) lookup to deduplicate targets
+		// Normalize "from" key by trimming whitespace to avoid duplicates
+		normalizedFrom := strings.TrimSpace(from)
+		if normalizedFrom == "" {
+			continue // Skip empty keys
+		}
+
+		// Get existing rule for this normalized key (if any)
+		existingRule, exists := mergedMap[normalizedFrom]
+		var allTargets []ModelRedirectTarget
+		if exists {
+			allTargets = existingRule.Targets
+		}
+
+		// Add new targets from current rule
+		allTargets = append(allTargets, rule.Targets...)
+
+		// Deduplicate targets
 		seenTargets := make(map[string]bool)
 		var mergedTargets []ModelRedirectTarget
 
-		for _, target := range rule.Targets {
-			modelName := target.Model
+		for _, target := range allTargets {
+			// Normalize target model name by trimming whitespace
+			modelName := strings.TrimSpace(target.Model)
 			if modelName == "" {
 				continue // Skip empty model names
 			}
@@ -54,13 +73,15 @@ func MergeModelRedirectRulesV2(rulesJSON []byte) ([]byte, error) {
 			// Keep first occurrence of each target model
 			if !seenTargets[modelName] {
 				seenTargets[modelName] = true
+				// Update target with normalized model name
+				target.Model = modelName
 				mergedTargets = append(mergedTargets, target)
 			}
 		}
 
 		// Only add rule if it has valid targets
 		if len(mergedTargets) > 0 {
-			mergedMap[from] = ModelRedirectRule{
+			mergedMap[normalizedFrom] = ModelRedirectRule{
 				Targets: mergedTargets,
 			}
 		}

@@ -1072,12 +1072,15 @@ async function handleSubmit() {
     // Get V2 JSON based on edit mode
     let v2Json: string;
     if (modelRedirectEditMode.value === "json") {
-      // In JSON mode, use the raw JSON string directly
+      // In JSON mode, normalize and merge duplicates before submission
       v2Json = modelRedirectJsonStr.value.trim();
       if (v2Json && v2Json !== "{}") {
         try {
           // Validate JSON format
           JSON.parse(v2Json);
+          // Normalize + merge duplicates before submit to ensure consistency with GUI mode
+          const mergedItems = parseJsonToModelRedirectItemsV2(v2Json);
+          v2Json = modelRedirectItemsV2ToJson(mergedItems);
         } catch {
           message.error(t("keys.modelRedirectInvalidJson"));
           return;

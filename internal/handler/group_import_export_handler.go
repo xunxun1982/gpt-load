@@ -209,7 +209,15 @@ func (s *Server) ExportGroup(c *gin.Context) {
 
 			var childModelRedirectRulesV2 json.RawMessage
 			if len(cg.ModelRedirectRulesV2) > 0 {
-				childModelRedirectRulesV2 = json.RawMessage(cg.ModelRedirectRulesV2)
+				rawJSON := []byte(cg.ModelRedirectRulesV2)
+				// Merge duplicate rules to consolidate targets (same as parent group)
+				merged, err := utils.MergeModelRedirectRulesV2(rawJSON)
+				if err != nil {
+					logrus.WithError(err).Warnf("Failed to merge child group %s model redirect rules V2, using original", cg.Name)
+					childModelRedirectRulesV2 = rawJSON
+				} else {
+					childModelRedirectRulesV2 = merged
+				}
 			}
 
 			var childCustomModelNames json.RawMessage
@@ -220,13 +228,19 @@ func (s *Server) ExportGroup(c *gin.Context) {
 			// Convert ParamOverrides, Config, Preconditions from []byte to map[string]any
 			var childParamOverrides, childConfig, childPreconditions map[string]any
 			if len(cg.ParamOverrides) > 0 {
-				json.Unmarshal(cg.ParamOverrides, &childParamOverrides)
+				if err := json.Unmarshal(cg.ParamOverrides, &childParamOverrides); err != nil {
+					logrus.WithError(err).Warnf("Failed to parse child group %s ParamOverrides for export", cg.Name)
+				}
 			}
 			if len(cg.Config) > 0 {
-				json.Unmarshal(cg.Config, &childConfig)
+				if err := json.Unmarshal(cg.Config, &childConfig); err != nil {
+					logrus.WithError(err).Warnf("Failed to parse child group %s Config for export", cg.Name)
+				}
 			}
 			if len(cg.Preconditions) > 0 {
-				json.Unmarshal(cg.Preconditions, &childPreconditions)
+				if err := json.Unmarshal(cg.Preconditions, &childPreconditions); err != nil {
+					logrus.WithError(err).Warnf("Failed to parse child group %s Preconditions for export", cg.Name)
+				}
 			}
 
 			childExport := ChildGroupExportInfo{
@@ -445,7 +459,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 			}
 			if len(cg.HeaderRules) > 0 {
 				if data, err := json.Marshal(cg.HeaderRules); err == nil {
-					childExport.HeaderRules = data
+					childExport.HeaderRules = json.RawMessage(data)
 				}
 			}
 			if cg.ModelRedirectRules != nil {
@@ -454,10 +468,10 @@ func (s *Server) ImportGroup(c *gin.Context) {
 				}
 			}
 			if len(cg.ModelRedirectRulesV2) > 0 {
-				childExport.ModelRedirectRulesV2 = []byte(cg.ModelRedirectRulesV2)
+				childExport.ModelRedirectRulesV2 = json.RawMessage(cg.ModelRedirectRulesV2)
 			}
 			if len(cg.CustomModelNames) > 0 {
-				childExport.CustomModelNames = []byte(cg.CustomModelNames)
+				childExport.CustomModelNames = json.RawMessage(cg.CustomModelNames)
 			}
 			if cg.Preconditions != nil {
 				if data, err := json.Marshal(cg.Preconditions); err == nil {
@@ -466,7 +480,7 @@ func (s *Server) ImportGroup(c *gin.Context) {
 			}
 			if len(cg.PathRedirects) > 0 {
 				if data, err := json.Marshal(cg.PathRedirects); err == nil {
-					childExport.PathRedirects = data
+					childExport.PathRedirects = json.RawMessage(data)
 				}
 			}
 
