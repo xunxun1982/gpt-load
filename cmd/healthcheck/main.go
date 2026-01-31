@@ -4,7 +4,7 @@
 //
 // Implementation Note:
 // Uses TCP connection check instead of HTTP GET to minimize binary size.
-// This reduces the binary from ~5MB to ~500KB-1.5MB by avoiding the entire
+// This reduces the binary from ~5MB to ~2MB by avoiding the entire
 // net/http package (which includes TLS, HTTP/2, etc.).
 //
 // For Docker healthcheck purposes, TCP connectivity is sufficient:
@@ -35,7 +35,7 @@ func main() {
 		port = defaultPort
 	}
 
-	address := fmt.Sprintf("localhost:%s", port)
+	address := buildAddress(port)
 
 	// Use TCP dial instead of HTTP GET to minimize binary size
 	// This checks if the service is listening on the port
@@ -50,4 +50,11 @@ func main() {
 	conn.Close()
 
 	os.Exit(exitSuccess)
+}
+
+// buildAddress constructs the TCP address for health check.
+// Uses 127.0.0.1 instead of localhost for scratch-based Docker images.
+// In minimal environments without /etc/hosts, localhost may not resolve to 127.0.0.1.
+func buildAddress(port string) string {
+	return fmt.Sprintf("127.0.0.1:%s", port)
 }
