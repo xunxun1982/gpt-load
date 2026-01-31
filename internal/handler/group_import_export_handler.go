@@ -129,7 +129,15 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	// Export ModelRedirectRulesV2 as raw JSON
 	var modelRedirectRulesV2 json.RawMessage
 	if len(groupData.Group.ModelRedirectRulesV2) > 0 {
-		modelRedirectRulesV2 = json.RawMessage(groupData.Group.ModelRedirectRulesV2)
+		rawJSON := []byte(groupData.Group.ModelRedirectRulesV2)
+		// Merge duplicate rules to consolidate targets (same as child groups)
+		merged, err := utils.MergeModelRedirectRulesV2(rawJSON)
+		if err != nil {
+			logrus.WithError(err).Warnf("Failed to merge group %s model redirect rules V2, using original", groupData.Group.Name)
+			modelRedirectRulesV2 = rawJSON
+		} else {
+			modelRedirectRulesV2 = merged
+		}
 	}
 
 	// Build export data structure compatible with existing format

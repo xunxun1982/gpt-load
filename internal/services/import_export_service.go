@@ -770,13 +770,19 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 		// Import JSON fields from exported data
 		if len(childData.ParamOverrides) > 0 {
 			var paramOverrides map[string]any
-			if err := json.Unmarshal(childData.ParamOverrides, &paramOverrides); err == nil {
+			if err := json.Unmarshal(childData.ParamOverrides, &paramOverrides); err != nil {
+				logrus.WithError(err).Warnf("Invalid param_overrides for child group %s, skipping", childName)
+			} else if err := validateParamOverrides(paramOverrides); err != nil {
+				logrus.WithError(err).Warnf("Invalid param_overrides for child group %s, skipping", childName)
+			} else {
 				childGroup.ParamOverrides = paramOverrides
 			}
 		}
 		if len(childData.Config) > 0 {
 			var config map[string]any
-			if err := json.Unmarshal(childData.Config, &config); err == nil {
+			if err := json.Unmarshal(childData.Config, &config); err != nil {
+				logrus.WithError(err).Warnf("Invalid config for child group %s, skipping", childName)
+			} else {
 				childGroup.Config = config
 			}
 		}

@@ -301,8 +301,8 @@ func TestMergeModelRedirectRulesV2(t *testing.T) {
 
 				// Extract model names from targets
 				modelNames := make(map[string]bool)
-				for _, t := range targets {
-					target := t.(map[string]interface{})
+				for _, tgt := range targets {
+					target := tgt.(map[string]interface{})
 					modelNames[target["model"].(string)] = true
 				}
 				assert.True(t, modelNames["gpt-4-turbo"], "should contain gpt-4-turbo")
