@@ -233,6 +233,37 @@ func TestMergeModelRedirectRulesV2(t *testing.T) {
 				}
 			}`,
 		},
+		{
+			name: "deterministic merge with multiple duplicate keys",
+			input: `{
+				"gpt-4": {
+					"targets": [
+						{"model": "gpt-4-turbo", "weight": 100}
+					]
+				},
+				" gpt-4": {
+					"targets": [
+						{"model": "gpt-4-0125", "weight": 50}
+					]
+				},
+				"gpt-4 ": {
+					"targets": [
+						{"model": "gpt-4-vision", "weight": 30}
+					]
+				}
+			}`,
+			// With sorted keys, " gpt-4" comes first, then "gpt-4", then "gpt-4 "
+			// All normalize to "gpt-4", so targets are merged in that order
+			expected: `{
+				"gpt-4": {
+					"targets": [
+						{"model": "gpt-4-0125", "weight": 50},
+						{"model": "gpt-4-turbo", "weight": 100},
+						{"model": "gpt-4-vision", "weight": 30}
+					]
+				}
+			}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -342,4 +373,60 @@ func BenchmarkMergeModelRedirectRulesV2(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = MergeModelRedirectRulesV2(inputJSON)
 	}
+}
+
+// TestMergeModelRedirectRulesV2_Deterministic verifies that the merge operation
+// produces consistent results across multiple runs, even with duplicate keys
+func TestMergeModelRedirectRulesV2_Deterministic(t *testing.T) {
+	// Input with keys that normalize to the same value
+	input := `{
+		"gpt-4": {
+			"targets": [
+				{"model": "gpt-4-turbo", "weight": 100}
+			]
+		},
+		" gpt-4": {
+			"targets": [
+				{"model": "gpt-4-0125", "weight": 50}
+			]
+		},
+		"gpt-4 ": {
+			"targets": [
+				{"model": "gpt-4-vision", "weight": 30}
+			]
+		}
+	}`
+
+	// Run merge operation multiple times
+	var firstResult []byte
+	for i := 0; i < 100; i++ {
+		result, err := MergeModelRedirectRulesV2([]byte(input))
+		require.NoError(t, err)
+
+		if i == 0 {
+			firstResult = result
+		} else {
+			// Verify result is identical to first run
+			assert.Equal(t, string(firstResult), string(result),
+				"Result should be deterministic across runs (iteration %d)", i)
+		}
+	}
+
+	// Verify the result structure
+	var resultMap map[string]ModelRedirectRule
+	err := json.Unmarshal(firstResult, &resultMap)
+	require.NoError(t, err)
+
+	// Should have exactly one key "gpt-4"
+	assert.Len(t, resultMap, 1)
+	assert.Contains(t, resultMap, "gpt-4")
+
+	// Should have all three targets in deterministic order
+	rule := resultMap["gpt-4"]
+	assert.Len(t, rule.Targets, 3)
+
+	// Verify order is consistent (based on sorted key order: " gpt-4", "gpt-4", "gpt-4 ")
+	assert.Equal(t, "gpt-4-0125", rule.Targets[0].Model)
+	assert.Equal(t, "gpt-4-turbo", rule.Targets[1].Model)
+	assert.Equal(t, "gpt-4-vision", rule.Targets[2].Model)
 }

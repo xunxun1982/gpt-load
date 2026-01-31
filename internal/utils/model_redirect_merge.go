@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -42,7 +43,17 @@ func MergeModelRedirectRulesV2(rulesJSON []byte) ([]byte, error) {
 	// Use map to track seen target models for deduplication
 	mergedMap := make(map[string]ModelRedirectRule)
 
-	for from, rule := range rulesMap {
+	// Extract and sort keys to ensure deterministic iteration order
+	// This prevents non-deterministic behavior when duplicate keys exist after normalization
+	keys := make([]string, 0, len(rulesMap))
+	for k := range rulesMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, from := range keys {
+		rule := rulesMap[from]
+
 		// Normalize "from" key by trimming whitespace to avoid duplicates
 		normalizedFrom := strings.TrimSpace(from)
 		if normalizedFrom == "" {
