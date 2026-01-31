@@ -59,6 +59,7 @@ func TestGroupExportInfo_ModelRedirectRulesV2(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture loop variable for parallel subtest
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -371,6 +372,7 @@ func TestGroupExportInfo_WithChildGroups(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture loop variable for parallel subtest
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 

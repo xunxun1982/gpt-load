@@ -810,7 +810,8 @@ function mergeModelRedirectItems(items: ModelRedirectItemV2[]): ModelRedirectIte
       for (const target of item.targets) {
         const model = target.model.trim();
         if (model && !seenModels.has(model)) {
-          existing.targets.push(target);
+          // Normalize target model before pushing to avoid storing whitespace
+          existing.targets.push({ ...target, model });
           seenModels.add(model);
         }
       }
@@ -822,7 +823,8 @@ function mergeModelRedirectItems(items: ModelRedirectItemV2[]): ModelRedirectIte
       for (const target of item.targets) {
         const model = target.model.trim();
         if (model && !seenModels.has(model)) {
-          uniqueTargets.push(target);
+          // Normalize target model before adding to avoid storing whitespace
+          uniqueTargets.push({ ...target, model });
           seenModels.add(model);
         }
       }

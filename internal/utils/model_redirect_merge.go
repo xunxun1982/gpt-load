@@ -9,7 +9,7 @@ import (
 // ModelRedirectTarget represents a single target in model redirect rules
 type ModelRedirectTarget struct {
 	Model   string `json:"model"`
-	Weight  int    `json:"weight,omitempty"`
+	Weight  int    `json:"weight,omitempty"` // Default weight is 100 when omitted (0 is treated as 100)
 	Enabled *bool  `json:"enabled,omitempty"`
 }
 

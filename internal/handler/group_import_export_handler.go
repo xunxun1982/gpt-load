@@ -197,7 +197,9 @@ func (s *Server) ExportGroup(c *gin.Context) {
 			var childModelRedirectRules map[string]string
 			if len(cg.ModelRedirectRules) > 0 {
 				var tempMap map[string]any
-				if err := json.Unmarshal(cg.ModelRedirectRules, &tempMap); err == nil {
+				if err := json.Unmarshal(cg.ModelRedirectRules, &tempMap); err != nil {
+					logrus.WithError(err).Warnf("Failed to parse child group %s ModelRedirectRules for export", cg.Name)
+				} else {
 					childModelRedirectRules = make(map[string]string)
 					for k, v := range tempMap {
 						if strVal, ok := v.(string); ok {
