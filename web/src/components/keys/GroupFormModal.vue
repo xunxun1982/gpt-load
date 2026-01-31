@@ -2041,8 +2041,8 @@ async function handleSubmit() {
                                     <span>
                                       {{
                                         formatPercentage(
-                                          (getDynamicWeightInfo(rule.from, targetIndex)
-                                            ?.success_rate ?? 0) * 100
+                                          getDynamicWeightInfo(rule.from, targetIndex)
+                                            ?.success_rate ?? 0
                                         )
                                       }}
                                     </span>

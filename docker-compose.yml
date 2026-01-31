@@ -1,6 +1,11 @@
 services:
   gpt-load:
-    image: ghcr.io/tbphp/gpt-load:latest
+    # NOTE: Using :latest tag for convenience in development/testing.
+    # For production deployments, it's recommended to pin to a specific version tag
+    # (e.g., ghcr.io/xunxun1982/gpt-load:v1.4.2) to ensure reproducibility
+    # and avoid unexpected updates. You can check available tags at:
+    # https://github.com/xunxun1982/gpt-load/pkgs/container/gpt-load
+    image: ghcr.io/xunxun1982/gpt-load:latest
     # build:
     #   context: .
     #   dockerfile: Dockerfile
