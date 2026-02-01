@@ -803,7 +803,10 @@ function mergeModelRedirectItems(items: ModelRedirectItemV2[]): ModelRedirectIte
 
     if (mergedMap.has(from)) {
       // Merge targets into existing rule
-      const existing = mergedMap.get(from)!;
+      const existing = mergedMap.get(from);
+      if (!existing) {
+        continue;
+      }
       // Normalize existing target models before dedupe to avoid whitespace duplicates
       const seenModels = new Set(existing.targets.map(t => t.model.trim()));
 
@@ -2937,6 +2940,10 @@ async function handleSubmit() {
 /* Dynamic weight tooltip styles */
 .dynamic-weight-tooltip {
   min-width: 180px;
+  max-width: 320px;
+  padding: 4px 0;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .dynamic-weight-tooltip .tooltip-title {
@@ -2944,13 +2951,31 @@ async function handleSubmit() {
   margin-bottom: 8px;
   padding-bottom: 4px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dynamic-weight-tooltip .tooltip-row {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   margin-bottom: 4px;
   font-size: 12px;
+  gap: 12px;
+  line-height: 1.5;
+}
+
+.dynamic-weight-tooltip .tooltip-row > span:first-child {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.dynamic-weight-tooltip .tooltip-row > span:last-child {
+  flex: 1;
+  text-align: right;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .dynamic-weight-tooltip .health-good {

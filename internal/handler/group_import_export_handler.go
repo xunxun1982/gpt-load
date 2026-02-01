@@ -49,11 +49,11 @@ type GroupExportInfo struct {
 	ParamOverrides       map[string]any            `json:"param_overrides"`
 	Config               map[string]any            `json:"config"`
 	HeaderRules          []models.HeaderRule       `json:"header_rules"`
-	ModelMapping         string                    `json:"model_mapping,omitempty"`          // Deprecated: for backward compatibility
-	ModelRedirectRules   map[string]string         `json:"model_redirect_rules,omitempty"`   // V1 rules (one-to-one)
+	ModelMapping         string                    `json:"model_mapping,omitempty"`           // Deprecated: for backward compatibility
+	ModelRedirectRules   map[string]string         `json:"model_redirect_rules,omitempty"`    // V1 rules (one-to-one)
 	ModelRedirectRulesV2 json.RawMessage           `json:"model_redirect_rules_v2,omitempty"` // V2 rules (one-to-many)
-	ModelRedirectStrict  bool                      `json:"model_redirect_strict,omitempty"`  // Strict mode
-	PathRedirects        []models.PathRedirectRule `json:"path_redirects,omitempty"`         // Path redirect rules
+	ModelRedirectStrict  bool                      `json:"model_redirect_strict,omitempty"`   // Strict mode
+	PathRedirects        []models.PathRedirectRule `json:"path_redirects,omitempty"`          // Path redirect rules
 	ProxyKeys            string                    `json:"proxy_keys"`
 	Sort                 int                       `json:"sort"`
 }

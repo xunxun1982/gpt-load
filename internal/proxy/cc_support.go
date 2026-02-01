@@ -1596,6 +1596,7 @@ var reWindowsDrivePath = regexp.MustCompile(`[A-Za-z]:`)
 // Examples:
 //   - F:\test\file.py - the \t and \f are path separators, not escape sequences
 //   - C:\new\readme.txt - the \n and \r are path separators, not escape sequences
+//
 // Pattern: Match any single backslash (not already doubled)
 // Strategy: Match \ that is NOT followed by another \ (to avoid matching already-doubled \\)
 var reWindowsPathBackslash = regexp.MustCompile(`\\(?:[^\\]|$)`)

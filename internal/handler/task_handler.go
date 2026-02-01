@@ -30,10 +30,10 @@ var (
 // get returns cached status if valid, otherwise returns nil
 // Returns a copy to prevent callers from mutating cached data
 // Note: Shallow copy is safe because:
-// 1. Result field stores value-only structs (KeyImportResult, KeyDeleteResult, ManualValidationResult)
-//    All these types contain only primitive fields (int, string) with no reference types
-// 2. FinishedAt is *time.Time, but time.Time is immutable - copying the pointer is safe
-// 3. All other fields (string, bool, int, time.Time) are value types
+//  1. Result field stores value-only structs (KeyImportResult, KeyDeleteResult, ManualValidationResult)
+//     All these types contain only primitive fields (int, string) with no reference types
+//  2. FinishedAt is *time.Time, but time.Time is immutable - copying the pointer is safe
+//  3. All other fields (string, bool, int, time.Time) are value types
 func (c *taskStatusCache) get() *services.TaskStatus {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

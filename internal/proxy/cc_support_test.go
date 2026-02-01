@@ -7028,13 +7028,13 @@ func TestConvertWindowsPathsInToolResult_CorruptedPaths(t *testing.T) {
 	}{
 		{
 			name:     "path with tab character (\\t interpreted)",
-			input:    "F:MyProjects" + string(rune(9)) + "test",  // tab character (byte 9)
-			expected: "F:/MyProjects/test", // Should reconstruct with slashes
+			input:    "F:MyProjects" + string(rune(9)) + "test", // tab character (byte 9)
+			expected: "F:/MyProjects/test",                      // Should reconstruct with slashes
 		},
 		{
 			name:     "path with newline character (\\n interpreted)",
-			input:    "F:MyProjects" + string(rune(10)) + "new",  // newline character (byte 10)
-			expected: "F:/MyProjects/new", // Should reconstruct with slashes
+			input:    "F:MyProjects" + string(rune(10)) + "new", // newline character (byte 10)
+			expected: "F:/MyProjects/new",                       // Should reconstruct with slashes
 		},
 		{
 			name:     "path with multiple control chars",
@@ -7053,8 +7053,8 @@ func TestConvertWindowsPathsInToolResult_CorruptedPaths(t *testing.T) {
 		},
 		{
 			name:     "path with form feed character (\\f interpreted)",
-			input:    "F:" + string(rune(12)) + "older",  // form feed character (byte 12)
-			expected: "F:/older", // Should reconstruct with slash
+			input:    "F:" + string(rune(12)) + "older", // form feed character (byte 12)
+			expected: "F:/older",                        // Should reconstruct with slash
 		},
 		{
 			name:     "Unix path unchanged",
@@ -7068,8 +7068,8 @@ func TestConvertWindowsPathsInToolResult_CorruptedPaths(t *testing.T) {
 		},
 		{
 			name:     "path with backspace character (\\b interpreted)",
-			input:    "D:" + string(rune(8)) + "backup",  // backspace character (byte 8)
-			expected: "D:/backup", // Should reconstruct with slash
+			input:    "D:" + string(rune(8)) + "backup", // backspace character (byte 8)
+			expected: "D:/backup",                       // Should reconstruct with slash
 		},
 	}
 
