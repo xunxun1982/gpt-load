@@ -1991,6 +1991,7 @@ async function handleSubmit() {
                               <n-tooltip
                                 v-if="getDynamicWeightInfo(rule.from, targetIndex)"
                                 trigger="hover"
+                                placement="left"
                                 :content-style="{ maxWidth: '400px', padding: '12px' }"
                               >
                                 <template #trigger>

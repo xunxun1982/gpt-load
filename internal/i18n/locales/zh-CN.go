@@ -30,6 +30,7 @@ var MessagesZhCN = map[string]string{
 	"group.deleted":              "分组删除成功",
 	"group.not_found":            "分组不存在",
 	"group.name_exists":          "分组名称已存在",
+	"group.duplicate_name":       "分组名称 {{.name}} 已存在",
 	"group.delete_async_started": "分组删除已在后台启动。将先删除 {{.keyCount}} 个密钥。注意：删除期间该分组的密钥可能不可见。您可以在任务状态中查看进度。",
 
 	// Key related

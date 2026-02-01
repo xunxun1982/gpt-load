@@ -372,7 +372,12 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 
 	if err := tx.Create(&group).Error; err != nil {
 		tx.Rollback()
-		return nil, app_errors.ParseDBError(err)
+		// Check if it's a duplicate name error and return i18n error
+		parsedErr := app_errors.ParseDBError(err)
+		if parsedErr == app_errors.ErrDuplicateResource {
+			return nil, NewI18nError(app_errors.ErrDuplicateResource, "group.duplicate_name", map[string]any{"name": name})
+		}
+		return nil, parsedErr
 	}
 
 	if err := tx.Commit().Error; err != nil {
@@ -934,7 +939,12 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 	// Perform the actual database write within transaction
 	if err := tx.Save(&group).Error; err != nil {
-		return nil, app_errors.ParseDBError(err)
+		// Check if it's a duplicate name error and return i18n error
+		parsedErr := app_errors.ParseDBError(err)
+		if parsedErr == app_errors.ErrDuplicateResource {
+			return nil, NewI18nError(app_errors.ErrDuplicateResource, "group.duplicate_name", map[string]any{"name": group.Name})
+		}
+		return nil, parsedErr
 	}
 
 	// Sync child groups if parent's name or proxy_keys changed

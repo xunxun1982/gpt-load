@@ -389,7 +389,12 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 	}
 
 	if err := s.db.WithContext(ctx).Create(site).Error; err != nil {
-		return nil, app_errors.ParseDBError(err)
+		// Check if it's a duplicate name error and return i18n error
+		parsedErr := app_errors.ParseDBError(err)
+		if parsedErr == app_errors.ErrDuplicateResource {
+			return nil, services.NewI18nError(app_errors.ErrDuplicateResource, "site_management.validation.name_duplicate", map[string]any{"name": site.Name})
+		}
+		return nil, parsedErr
 	}
 
 	// Invalidate cache after creation
@@ -738,7 +743,12 @@ func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDT
 	}
 
 	if err := s.db.WithContext(ctx).Create(newSite).Error; err != nil {
-		return nil, app_errors.ParseDBError(err)
+		// Check if it's a duplicate name error and return i18n error
+		parsedErr := app_errors.ParseDBError(err)
+		if parsedErr == app_errors.ErrDuplicateResource {
+			return nil, services.NewI18nError(app_errors.ErrDuplicateResource, "site_management.validation.name_duplicate", map[string]any{"name": newSite.Name})
+		}
+		return nil, parsedErr
 	}
 
 	// Invalidate cache after copy

@@ -184,6 +184,20 @@ func TestCreateGroup(t *testing.T) {
 			},
 			expectError: true,
 		},
+		{
+			name: "duplicate group name",
+			params: GroupCreateParams{
+				Name:               "test-group-valid", // Same as first test case
+				DisplayName:        "Duplicate Group",
+				Description:        "This should fail",
+				GroupType:          "standard",
+				Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+				ChannelType:        "openai",
+				TestModel:          "gpt-3.5-turbo",
+				ValidationEndpoint: "/v1/chat/completions",
+			},
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {
