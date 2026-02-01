@@ -540,16 +540,16 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 			result.ChildGroups = make([]ChildGroupExport, 0, len(childGroups))
 			for _, cg := range childGroups {
 				childExport := ChildGroupExport{
-					Name:                 cg.Name,
-					DisplayName:          cg.DisplayName,
-					Description:          cg.Description,
-					Enabled:              cg.Enabled,
-					ProxyKeys:            cg.ProxyKeys,
-					Sort:                 cg.Sort,
-					TestModel:            cg.TestModel,
-					ModelMapping:         cg.ModelMapping,
-					ModelRedirectStrict:  cg.ModelRedirectStrict,
-					Keys:                 childKeysMap[cg.ID],
+					Name:                cg.Name,
+					DisplayName:         cg.DisplayName,
+					Description:         cg.Description,
+					Enabled:             cg.Enabled,
+					ProxyKeys:           cg.ProxyKeys,
+					Sort:                cg.Sort,
+					TestModel:           cg.TestModel,
+					ModelMapping:        cg.ModelMapping,
+					ModelRedirectStrict: cg.ModelRedirectStrict,
+					Keys:                childKeysMap[cg.ID],
 				}
 
 				// Export JSON fields as raw JSON to preserve structure
@@ -752,19 +752,19 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 
 		// Create child group with inherited channel_type from parent
 		childGroup := models.Group{
-			Name:                 childName,
-			DisplayName:          childData.DisplayName,
-			Description:          childData.Description,
-			GroupType:            "standard",
-			ChannelType:          parentChannelType, // Inherit from parent
-			Enabled:              childData.Enabled,
-			ParentGroupID:        &parentGroupID,
-			ProxyKeys:            childData.ProxyKeys,
-			Sort:                 childData.Sort,
-			Upstreams:            []byte(upstreamsJSON),
-			TestModel:            testModel, // Use fallback if empty
-			ModelMapping:         childData.ModelMapping,
-			ModelRedirectStrict:  childData.ModelRedirectStrict,
+			Name:                childName,
+			DisplayName:         childData.DisplayName,
+			Description:         childData.Description,
+			GroupType:           "standard",
+			ChannelType:         parentChannelType, // Inherit from parent
+			Enabled:             childData.Enabled,
+			ParentGroupID:       &parentGroupID,
+			ProxyKeys:           childData.ProxyKeys,
+			Sort:                childData.Sort,
+			Upstreams:           []byte(upstreamsJSON),
+			TestModel:           testModel, // Use fallback if empty
+			ModelMapping:        childData.ModelMapping,
+			ModelRedirectStrict: childData.ModelRedirectStrict,
 		}
 
 		// Import JSON fields from exported data

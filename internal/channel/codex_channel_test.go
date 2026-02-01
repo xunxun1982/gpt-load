@@ -194,39 +194,39 @@ func TestForceStreamRequest(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                 string
-		inputBody            string
-		expectedModified     bool
-		expectedStreamValue  bool
-		shouldContainStream  bool
+		name                string
+		inputBody           string
+		expectedModified    bool
+		expectedStreamValue bool
+		shouldContainStream bool
 	}{
 		{
-			name:                 "Non-streaming request becomes streaming",
-			inputBody:            `{"model": "gpt-5.2-codex", "input": "test"}`,
-			expectedModified:     true,
-			expectedStreamValue:  true,
-			shouldContainStream:  true,
+			name:                "Non-streaming request becomes streaming",
+			inputBody:           `{"model": "gpt-5.2-codex", "input": "test"}`,
+			expectedModified:    true,
+			expectedStreamValue: true,
+			shouldContainStream: true,
 		},
 		{
-			name:                 "Already streaming request unchanged",
-			inputBody:            `{"model": "gpt-5.2-codex", "stream": true}`,
-			expectedModified:     false,
-			expectedStreamValue:  true,
-			shouldContainStream:  true,
+			name:                "Already streaming request unchanged",
+			inputBody:           `{"model": "gpt-5.2-codex", "stream": true}`,
+			expectedModified:    false,
+			expectedStreamValue: true,
+			shouldContainStream: true,
 		},
 		{
-			name:                 "Empty body unchanged",
-			inputBody:            ``,
-			expectedModified:     false,
-			expectedStreamValue:  false,
-			shouldContainStream:  false,
+			name:                "Empty body unchanged",
+			inputBody:           ``,
+			expectedModified:    false,
+			expectedStreamValue: false,
+			shouldContainStream: false,
 		},
 		{
-			name:                 "Invalid JSON unchanged",
-			inputBody:            `{invalid}`,
-			expectedModified:     false,
-			expectedStreamValue:  false,
-			shouldContainStream:  false,
+			name:                "Invalid JSON unchanged",
+			inputBody:           `{invalid}`,
+			expectedModified:    false,
+			expectedStreamValue: false,
+			shouldContainStream: false,
 		},
 	}
 
