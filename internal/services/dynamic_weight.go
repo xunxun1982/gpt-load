@@ -135,9 +135,12 @@ func SubGroupMetricsKey(aggregateGroupID, subGroupID uint) string {
 }
 
 // ModelRedirectMetricsKey returns the store key for model redirect metrics.
-func ModelRedirectMetricsKey(groupID uint, sourceModel string, targetIndex int) string {
-	encodedModel := url.PathEscape(sourceModel)
-	return fmt.Sprintf("dw:mr:%d:%s:%d", groupID, encodedModel, targetIndex)
+// Uses target model name instead of index to prevent health score misalignment
+// when targets are deleted from the middle of the array.
+func ModelRedirectMetricsKey(groupID uint, sourceModel string, targetModel string) string {
+	encodedSource := url.PathEscape(sourceModel)
+	encodedTarget := url.PathEscape(targetModel)
+	return fmt.Sprintf("dw:mr:%d:%s:%s", groupID, encodedSource, encodedTarget)
 }
 
 // GetSubGroupMetrics retrieves metrics for a sub-group.
@@ -147,8 +150,8 @@ func (m *DynamicWeightManager) GetSubGroupMetrics(aggregateGroupID, subGroupID u
 }
 
 // GetModelRedirectMetrics retrieves metrics for a model redirect target.
-func (m *DynamicWeightManager) GetModelRedirectMetrics(groupID uint, sourceModel string, targetIndex int) (*DynamicWeightMetrics, error) {
-	key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
+func (m *DynamicWeightManager) GetModelRedirectMetrics(groupID uint, sourceModel string, targetModel string) (*DynamicWeightMetrics, error) {
+	key := ModelRedirectMetricsKey(groupID, sourceModel, targetModel)
 	return m.getMetrics(key)
 }
 
@@ -193,14 +196,14 @@ func (m *DynamicWeightManager) RecordSubGroupFailure(aggregateGroupID, subGroupI
 }
 
 // RecordModelRedirectSuccess records a successful request for a model redirect target.
-func (m *DynamicWeightManager) RecordModelRedirectSuccess(groupID uint, sourceModel string, targetIndex int) {
-	key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
+func (m *DynamicWeightManager) RecordModelRedirectSuccess(groupID uint, sourceModel string, targetModel string) {
+	key := ModelRedirectMetricsKey(groupID, sourceModel, targetModel)
 	m.recordSuccess(key)
 }
 
 // RecordModelRedirectFailure records a failed request for a model redirect target.
-func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceModel string, targetIndex int) {
-	key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
+func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceModel string, targetModel string) {
+	key := ModelRedirectMetricsKey(groupID, sourceModel, targetModel)
 	m.recordFailure(key)
 }
 
@@ -464,15 +467,28 @@ func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID 
 }
 
 // GetModelRedirectEffectiveWeights returns effective weights for model redirect targets.
-func (m *DynamicWeightManager) GetModelRedirectEffectiveWeights(groupID uint, sourceModel string, targetWeights []int) []int {
+// Takes a slice of target models and their base weights, returns effective weights
+// adjusted by health scores.
+func (m *DynamicWeightManager) GetModelRedirectEffectiveWeights(groupID uint, sourceModel string, targets []string, targetWeights []int) []int {
+	if len(targets) != len(targetWeights) {
+		logrus.WithFields(logrus.Fields{
+			"group_id":      groupID,
+			"source_model":  sourceModel,
+			"targets_len":   len(targets),
+			"weights_len":   len(targetWeights),
+		}).Warn("Mismatched targets and weights length")
+		return targetWeights
+	}
+
 	weights := make([]int, len(targetWeights))
 	for i, baseWeight := range targetWeights {
-		metrics, err := m.GetModelRedirectMetrics(groupID, sourceModel, i)
+		targetModel := targets[i]
+		metrics, err := m.GetModelRedirectMetrics(groupID, sourceModel, targetModel)
 		if err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{
 				"group_id":     groupID,
 				"source_model": sourceModel,
-				"target_index": i,
+				"target_model": targetModel,
 			}).Debug("Failed to get model redirect metrics for selection")
 		}
 		weights[i] = m.GetEffectiveWeight(baseWeight, metrics)
@@ -487,8 +503,8 @@ func (m *DynamicWeightManager) ResetSubGroupMetrics(aggregateGroupID, subGroupID
 }
 
 // ResetModelRedirectMetrics resets metrics for a model redirect target.
-func (m *DynamicWeightManager) ResetModelRedirectMetrics(groupID uint, sourceModel string, targetIndex int) error {
-	key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
+func (m *DynamicWeightManager) ResetModelRedirectMetrics(groupID uint, sourceModel string, targetModel string) error {
+	key := ModelRedirectMetricsKey(groupID, sourceModel, targetModel)
 	return m.store.Delete(key)
 }
 

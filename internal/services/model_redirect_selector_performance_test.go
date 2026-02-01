@@ -90,8 +90,8 @@ func BenchmarkSelectTargetWithDynamicWeight(b *testing.B) {
 	sourceModel := "gpt-4"
 
 	// Record some health metrics to simulate realistic scenario
-	dwm.RecordModelRedirectSuccess(groupID, sourceModel, 0)
-	dwm.RecordModelRedirectSuccess(groupID, sourceModel, 1)
+	dwm.RecordModelRedirectSuccess(groupID, sourceModel, "gpt-4-turbo")
+	dwm.RecordModelRedirectSuccess(groupID, sourceModel, "gpt-4-0125")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -212,9 +212,9 @@ func BenchmarkGetModelRedirectDynamicWeights(b *testing.B) {
 		sourceModel := "gpt-4"
 
 		// Record some metrics to simulate realistic scenario
-		dwm.RecordModelRedirectSuccess(groupID, sourceModel, 0)
-		dwm.RecordModelRedirectSuccess(groupID, sourceModel, 1)
-		dwm.RecordModelRedirectFailure(groupID, sourceModel, 2)
+		dwm.RecordModelRedirectSuccess(groupID, sourceModel, "gpt-4-turbo")
+		dwm.RecordModelRedirectSuccess(groupID, sourceModel, "gpt-4-0125")
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, "gpt-4-32k")
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {

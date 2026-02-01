@@ -89,14 +89,14 @@ func (s *DynamicModelRedirectSelector) doWeightedSelectWithContext(
 
 		// Apply dynamic weight if manager is available
 		if s.dynamicWeight != nil {
-			originalIdx := originalIndices[i]
-			metrics, err := s.dynamicWeight.GetModelRedirectMetrics(groupID, sourceModel, originalIdx)
+			targetModel := t.Model
+			metrics, err := s.dynamicWeight.GetModelRedirectMetrics(groupID, sourceModel, targetModel)
 			if err != nil {
 				// Log at debug level - falling back to base weight is acceptable behavior
 				logrus.WithError(err).WithFields(logrus.Fields{
 					"group_id":     groupID,
 					"source_model": sourceModel,
-					"target_index": originalIdx,
+					"target_model": targetModel,
 				}).Debug("Failed to get model redirect metrics, using base weight")
 			}
 			weights[i] = s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
@@ -169,7 +169,8 @@ func GetModelRedirectDynamicWeights(
 		var effectiveWeight int = baseWeight
 
 		if dwm != nil {
-			metrics, _ = dwm.GetModelRedirectMetrics(groupID, sourceModel, i)
+			targetModel := target.Model
+			metrics, _ = dwm.GetModelRedirectMetrics(groupID, sourceModel, targetModel)
 			healthScore = dwm.CalculateHealthScore(metrics)
 			effectiveWeight = dwm.GetEffectiveWeight(baseWeight, metrics)
 		}
