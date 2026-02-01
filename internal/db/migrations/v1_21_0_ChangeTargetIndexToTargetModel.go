@@ -57,17 +57,19 @@ func V1_21_0_ChangeTargetIndexToTargetModel(db *gorm.DB) error {
 			columnExists = migrator.HasColumn(&dynamicWeightMetricV1_21_0{}, "target_model")
 		}
 
+		// Add target_model column if it doesn't exist
+		// Note: We only skip the ALTER TABLE operation if column exists,
+		// but continue with index swap and cleanup to ensure migration completes
+		// even if column was added manually or by a partial previous run
 		if columnExists {
-			logrus.Info("Column target_model already exists in dynamic_weight_metrics, skipping v1.21.0 migration")
-			return nil
+			logrus.Info("Column target_model already exists in dynamic_weight_metrics, skipping column add")
+		} else {
+			if err := tx.Exec("ALTER TABLE dynamic_weight_metrics ADD COLUMN target_model VARCHAR(255) DEFAULT ''").Error; err != nil {
+				logrus.WithError(err).Error("Failed to add target_model column")
+				return err
+			}
+			logrus.Info("Added target_model column to dynamic_weight_metrics table")
 		}
-
-		// Add target_model column
-		if err := tx.Exec("ALTER TABLE dynamic_weight_metrics ADD COLUMN target_model VARCHAR(255) DEFAULT ''").Error; err != nil {
-			logrus.WithError(err).Error("Failed to add target_model column")
-			return err
-		}
-		logrus.Info("Added target_model column to dynamic_weight_metrics table")
 
 		// Step 2: Drop old unique index
 		// Check if index exists before dropping to ensure idempotency
