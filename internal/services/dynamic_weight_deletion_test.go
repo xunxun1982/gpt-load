@@ -74,8 +74,10 @@ func TestModelRedirectTargetDeletion_HealthScorePreservation(t *testing.T) {
 	healthC2 := dwm.CalculateHealthScore(metricsC2)
 
 	// Verify health scores are preserved
-	assert.Equal(t, healthA1, healthA2, "Target A health should remain unchanged after B deletion")
-	assert.Equal(t, healthC1, healthC2, "Target C health should remain unchanged after B deletion")
+	// Note: Using InDelta instead of Equal because health scores include time-decaying
+	// failure penalties, which may cause minor differences between measurements
+	assert.InDelta(t, healthA1, healthA2, 0.01, "Target A health should remain unchanged after B deletion")
+	assert.InDelta(t, healthC1, healthC2, 0.01, "Target C health should remain unchanged after B deletion")
 
 	// Verify that the health scores are still in the correct order
 	assert.Greater(t, healthA2, healthC2, "Target A should still be healthier than C after B deletion")
@@ -184,8 +186,9 @@ func TestModelRedirectTargetDeletion_GetDynamicWeights(t *testing.T) {
 	require.Len(t, weights2, 2)
 
 	// Verify that A and C maintain their health scores
-	assert.Equal(t, weights1[0].HealthScore, weights2[0].HealthScore, "Target A health should remain unchanged")
-	assert.Equal(t, weights1[2].HealthScore, weights2[1].HealthScore, "Target C health should remain unchanged")
+	// Note: Using InDelta for health scores due to time-decaying failure penalties
+	assert.InDelta(t, weights1[0].HealthScore, weights2[0].HealthScore, 0.01, "Target A health should remain unchanged")
+	assert.InDelta(t, weights1[2].HealthScore, weights2[1].HealthScore, 0.01, "Target C health should remain unchanged")
 	assert.Equal(t, weights1[0].RequestCount, weights2[0].RequestCount, "Target A request count should remain unchanged")
 	assert.Equal(t, weights1[2].RequestCount, weights2[1].RequestCount, "Target C request count should remain unchanged")
 }
