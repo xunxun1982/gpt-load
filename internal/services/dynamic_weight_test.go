@@ -264,22 +264,22 @@ func TestDynamicWeightManager_ModelRedirectMetrics(t *testing.T) {
 
 	groupID := uint(1)
 	sourceModel := "gpt-4"
-	targetModel := "gpt-4-turbo"
+	targetIndex := 0
 
 	// Record success
-	dwm.RecordModelRedirectSuccess(groupID, sourceModel, targetModel)
+	dwm.RecordModelRedirectSuccess(groupID, sourceModel, targetIndex)
 
 	// Verify metrics
-	metrics, err := dwm.GetModelRedirectMetrics(groupID, sourceModel, targetModel)
+	metrics, err := dwm.GetModelRedirectMetrics(groupID, sourceModel, targetIndex)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), metrics.Requests7d)
 	assert.Equal(t, int64(1), metrics.Successes7d)
 
 	// Record failure
-	dwm.RecordModelRedirectFailure(groupID, sourceModel, targetModel)
+	dwm.RecordModelRedirectFailure(groupID, sourceModel, targetIndex)
 
 	// Verify updated metrics
-	metrics, err = dwm.GetModelRedirectMetrics(groupID, sourceModel, targetModel)
+	metrics, err = dwm.GetModelRedirectMetrics(groupID, sourceModel, targetIndex)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), metrics.Requests7d)
 	assert.Equal(t, int64(1), metrics.Successes7d)
@@ -436,8 +436,8 @@ func TestGetModelRedirectDynamicWeights(t *testing.T) {
 	}
 
 	// Record some metrics
-	dwm.RecordModelRedirectSuccess(groupID, sourceModel, "gpt-4-turbo")
-	dwm.RecordModelRedirectFailure(groupID, sourceModel, "gpt-4-0125")
+	dwm.RecordModelRedirectSuccess(groupID, sourceModel, 0)
+	dwm.RecordModelRedirectFailure(groupID, sourceModel, 1)
 
 	// Get dynamic weights
 	weights := GetModelRedirectDynamicWeights(dwm, groupID, sourceModel, rule)
@@ -541,18 +541,18 @@ func TestDynamicWeightManager_ModelRedirectRetryScenario(t *testing.T) {
 
 	groupID := uint(1)
 	sourceModel := "gpt-4"
-	targetModelA := "gpt-4-turbo"
-	targetModelB := "gpt-4-0125"
+	targetIndexA := 0
+	targetIndexB := 1
 
 	// Simulate model redirect retry scenario:
 	// 1. Target A fails (retry request)
-	dwm.RecordModelRedirectFailure(groupID, sourceModel, targetModelA)
+	dwm.RecordModelRedirectFailure(groupID, sourceModel, targetIndexA)
 
 	// 2. Target B succeeds (final request)
-	dwm.RecordModelRedirectSuccess(groupID, sourceModel, targetModelB)
+	dwm.RecordModelRedirectSuccess(groupID, sourceModel, targetIndexB)
 
 	// Verify target A health is affected by the failure
-	metricsA, err := dwm.GetModelRedirectMetrics(groupID, sourceModel, targetModelA)
+	metricsA, err := dwm.GetModelRedirectMetrics(groupID, sourceModel, targetIndexA)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), metricsA.ConsecutiveFailures)
 	assert.Equal(t, int64(1), metricsA.Requests7d)
@@ -562,7 +562,7 @@ func TestDynamicWeightManager_ModelRedirectRetryScenario(t *testing.T) {
 	assert.Less(t, healthScoreA, 1.0, "Target A health should be less than 100% after failure")
 
 	// Verify target B health is normal
-	metricsB, err := dwm.GetModelRedirectMetrics(groupID, sourceModel, targetModelB)
+	metricsB, err := dwm.GetModelRedirectMetrics(groupID, sourceModel, targetIndexB)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), metricsB.ConsecutiveFailures)
 	assert.Equal(t, int64(1), metricsB.Requests7d)
@@ -572,9 +572,8 @@ func TestDynamicWeightManager_ModelRedirectRetryScenario(t *testing.T) {
 	assert.Equal(t, 1.0, healthScoreB, "Target B health should be 100% after success")
 
 	// Verify effective weights reflect health difference
-	targetModels := []string{targetModelA, targetModelB}
 	targetWeights := []int{100, 100}
-	effectiveWeights := dwm.GetModelRedirectEffectiveWeights(groupID, sourceModel, targetModels, targetWeights)
+	effectiveWeights := dwm.GetModelRedirectEffectiveWeights(groupID, sourceModel, targetWeights)
 
 	require.Len(t, effectiveWeights, 2)
 	assert.Less(t, effectiveWeights[0], effectiveWeights[1],

@@ -24,15 +24,13 @@ const (
 // - Same sub-group in different aggregate groups has separate health tracking
 // - This isolation prevents one aggregate group's failures from affecting others
 // - Soft delete is used to preserve data when sub-groups are temporarily removed
-// - For model redirect metrics, target_model is used instead of target_index to prevent
-//   health score misalignment when targets are deleted from the middle of the array
 type DynamicWeightMetric struct {
 	ID          uint       `gorm:"primaryKey" json:"id"`
 	MetricType  MetricType `gorm:"type:varchar(20);not null;uniqueIndex:idx_dwm_unique" json:"metric_type"`
 	GroupID     uint       `gorm:"not null;uniqueIndex:idx_dwm_unique;index:idx_dwm_group" json:"group_id"`
 	SubGroupID  uint       `gorm:"default:0;uniqueIndex:idx_dwm_unique" json:"sub_group_id"`
 	SourceModel string     `gorm:"type:varchar(255);default:'';uniqueIndex:idx_dwm_unique" json:"source_model"`
-	TargetModel string     `gorm:"type:varchar(255);default:'';uniqueIndex:idx_dwm_unique" json:"target_model"`
+	TargetIndex int        `gorm:"default:0;uniqueIndex:idx_dwm_unique" json:"target_index"`
 
 	// Real-time tracking fields
 	ConsecutiveFailures int64      `gorm:"default:0" json:"consecutive_failures"`
