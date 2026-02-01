@@ -13,13 +13,13 @@ import (
 // Changes:
 // 1. Add target_model column (varchar(255))
 // 2. Drop old unique index idx_dwm_unique
-// 3. Create new unique index with target_model instead of target_index
-// 4. Existing data will lose health scores (acceptable as they will rebuild automatically)
+// 3. Delete all existing model redirect metrics (to prevent UNIQUE constraint violations)
+// 4. Create new unique index with target_model instead of target_index
 //
 // Note: We don't migrate existing data because:
 // - Old records only have target_index, not the actual model name
 // - Health scores are dynamic metrics that rebuild quickly
-// - Soft-deleted records will be cleaned up by the cleanup task
+// - Deleting old data prevents UNIQUE constraint violations when creating the new index
 func V1_21_0_ChangeTargetIndexToTargetModel(db *gorm.DB) error {
 	migrator := db.Migrator()
 
@@ -128,7 +128,23 @@ func V1_21_0_ChangeTargetIndexToTargetModel(db *gorm.DB) error {
 			logrus.Info("Index idx_dwm_unique does not exist, skipping drop")
 		}
 
-		// Step 3: Create new unique index with target_model
+		// Step 3: Delete all existing model redirect metrics before creating new index
+		// This prevents UNIQUE constraint violations when creating the new index.
+		// We physically delete instead of soft-delete because:
+		// 1. Old records only have target_index, not target_model
+		// 2. Unique indexes check all rows including soft-deleted ones
+		// 3. Health scores will rebuild automatically with new schema
+		logrus.Info("Deleting all existing model redirect metrics")
+		if err := tx.Exec(`
+			DELETE FROM dynamic_weight_metrics
+			WHERE metric_type = 'model_redirect'
+		`).Error; err != nil {
+			logrus.WithError(err).Error("Failed to delete existing model redirect metrics")
+			return err
+		}
+		logrus.Info("Deleted all existing model redirect metrics")
+
+		// Step 4: Create new unique index with target_model
 		// The unique constraint is: (metric_type, group_id, sub_group_id, source_model, target_model)
 		// This ensures each combination is unique
 		// Note: CREATE UNIQUE INDEX syntax is identical across SQLite, MySQL, and PostgreSQL
@@ -141,20 +157,6 @@ func V1_21_0_ChangeTargetIndexToTargetModel(db *gorm.DB) error {
 			return err
 		}
 		logrus.Info("Created new unique index")
-
-		// Step 4: Soft-delete all existing model redirect metrics
-		// They will be cleaned up by the cleanup task after 180 days
-		// New metrics will be created with target_model populated
-		logrus.Info("Soft-deleting existing model redirect metrics")
-		if err := tx.Exec(`
-			UPDATE dynamic_weight_metrics
-			SET deleted_at = CURRENT_TIMESTAMP
-			WHERE metric_type = 'model_redirect' AND deleted_at IS NULL
-		`).Error; err != nil {
-			logrus.WithError(err).Error("Failed to soft-delete existing metrics")
-			return err
-		}
-		logrus.Info("Soft-deleted existing model redirect metrics")
 
 		logrus.Info("Migration v1.21.0 completed successfully")
 		return nil
