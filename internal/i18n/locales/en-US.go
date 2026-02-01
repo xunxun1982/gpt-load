@@ -30,6 +30,7 @@ var MessagesEnUS = map[string]string{
 	"group.deleted":              "Group deleted successfully",
 	"group.not_found":            "Group not found",
 	"group.name_exists":          "Group name already exists",
+	"group.duplicate_name":       "Group name {{.name}} already exists",
 	"group.delete_async_started": "Group deletion started in background. {{.keyCount}} keys will be deleted first. Note: This group's keys may not be visible during deletion. You can check progress in the task status.",
 
 	// Key related

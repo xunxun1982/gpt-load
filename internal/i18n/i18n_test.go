@@ -295,3 +295,40 @@ func BenchmarkT(b *testing.B) {
 		_ = T(localizer, "common.success")
 	}
 }
+
+// TestGroupDuplicateNameTranslation tests the translation of duplicate group name error
+func TestGroupDuplicateNameTranslation(t *testing.T) {
+	// Initialize i18n
+	err := Init()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name       string
+		acceptLang string
+		expected   string
+	}{
+		{
+			name:       "Chinese",
+			acceptLang: "zh-CN",
+			expected:   "分组名称 test-group 已存在",
+		},
+		{
+			name:       "English",
+			acceptLang: "en-US",
+			expected:   "Group name test-group already exists",
+		},
+		{
+			name:       "Japanese",
+			acceptLang: "ja-JP",
+			expected:   "グループ名 test-group は既に存在します",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localizer := GetLocalizer(tt.acceptLang)
+			msg := T(localizer, "group.duplicate_name", map[string]any{"name": "test-group"})
+			assert.Equal(t, tt.expected, msg)
+		})
+	}
+}

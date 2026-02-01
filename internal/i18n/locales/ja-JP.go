@@ -30,6 +30,7 @@ var MessagesJaJP = map[string]string{
 	"group.deleted":              "グループが削除されました",
 	"group.not_found":            "グループが存在しません",
 	"group.name_exists":          "グループ名が既に存在します",
+	"group.duplicate_name":       "グループ名 {{.name}} は既に存在します",
 	"group.delete_async_started": "グループの削除がバックグラウンドで開始されました。まず {{.keyCount}} 個のキーが削除されます。注意：削除中、このグループのキーは表示されない場合があります。タスクステータスで進行状況を確認できます。",
 
 	// Key related
