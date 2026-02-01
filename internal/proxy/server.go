@@ -2236,20 +2236,33 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 			// Get the selected target index from context if available
 			if targetIdx, exists := c.Get("model_redirect_target_index"); exists {
 				if targetIdxInt, ok := targetIdx.(int); ok && targetIdxInt >= 0 {
-					if isSuccess {
-						ps.dynamicWeightManager.RecordModelRedirectSuccess(group.ID, originalModelStr, targetIdxInt)
-					} else {
-						ps.dynamicWeightManager.RecordModelRedirectFailure(group.ID, originalModelStr, targetIdxInt)
+					// Get target model name from the redirect rule
+					var targetModel string
+					if rule, found := group.ModelRedirectMapV2[originalModelStr]; found {
+						if targetIdxInt < len(rule.Targets) {
+							targetModel = rule.Targets[targetIdxInt].Model
+						}
 					}
 
-					logrus.WithFields(logrus.Fields{
-						"group_id":     group.ID,
-						"source_model": originalModelStr,
-						"target_index": targetIdxInt,
-						"is_success":   isSuccess,
-					}).Debug("Recorded dynamic weight metrics for model redirect")
+					// Only record if we have a valid target model
+					if targetModel != "" {
+						if isSuccess {
+							ps.dynamicWeightManager.RecordModelRedirectSuccess(group.ID, originalModelStr, targetModel)
+						} else {
+							ps.dynamicWeightManager.RecordModelRedirectFailure(group.ID, originalModelStr, targetModel)
+						}
+
+						logrus.WithFields(logrus.Fields{
+							"group_id":     group.ID,
+							"source_model": originalModelStr,
+							"target_model": targetModel,
+							"target_index": targetIdxInt,
+							"is_success":   isSuccess,
+						}).Debug("Recorded dynamic weight metrics for model redirect")
+					}
 				}
 			}
 		}
 	}
+
 }

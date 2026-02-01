@@ -157,7 +157,7 @@ func (p *DynamicWeightPersistence) LoadFromDatabase() error {
 				case models.MetricTypeSubGroup:
 					key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
 				case models.MetricTypeModelRedirect:
-					key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
+					key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetModel)
 				default:
 					continue
 				}
@@ -319,13 +319,13 @@ func (p *DynamicWeightPersistence) keyToDBMetric(key string, metrics *DynamicWei
 			return dbm
 		}
 	} else if len(key) > 6 && key[:6] == "dw:mr:" {
-		// Model redirect key: dw:mr:{groupID}:{encodedModel}:{targetIndex}
-		groupID, sourceModel, targetIndex, ok := parseModelRedirectKeyParts(key[6:])
+		// Model redirect key: dw:mr:{groupID}:{encodedSourceModel}:{encodedTargetModel}
+		groupID, sourceModel, targetModel, ok := parseModelRedirectKeyParts(key[6:])
 		if ok {
 			dbm.MetricType = models.MetricTypeModelRedirect
 			dbm.GroupID = groupID
 			dbm.SourceModel = sourceModel
-			dbm.TargetIndex = targetIndex
+			dbm.TargetModel = targetModel
 			return dbm
 		}
 	}
@@ -351,8 +351,8 @@ func parseSubGroupKeyParts(s string) (aggID, subID uint, ok bool) {
 	return aggID, subID, true
 }
 
-// parseModelRedirectKeyParts parses "{groupID}:{encodedModel}:{targetIndex}".
-func parseModelRedirectKeyParts(s string) (groupID uint, sourceModel string, targetIndex int, ok bool) {
+// parseModelRedirectKeyParts parses "{groupID}:{encodedSourceModel}:{encodedTargetModel}".
+func parseModelRedirectKeyParts(s string) (groupID uint, sourceModel string, targetModel string, ok bool) {
 	// Find first colon
 	idx1 := -1
 	for i := 0; i < len(s); i++ {
@@ -362,33 +362,39 @@ func parseModelRedirectKeyParts(s string) (groupID uint, sourceModel string, tar
 		}
 	}
 	if idx1 <= 0 || idx1 >= len(s)-1 {
-		return 0, "", 0, false
+		return 0, "", "", false
 	}
 	groupID = parseUintSimple(s[:idx1])
 
-	// Find last colon
+	// Find second colon (between source and target models)
 	idx2 := -1
-	for i := len(s) - 1; i > idx1; i-- {
+	for i := idx1 + 1; i < len(s); i++ {
 		if s[i] == ':' {
 			idx2 = i
 			break
 		}
 	}
 	if idx2 <= idx1 || idx2 >= len(s)-1 {
-		return 0, "", 0, false
+		return 0, "", "", false
 	}
-
-	targetIndex = int(parseUintSimple(s[idx2+1:]))
 
 	// Decode source model (URL encoded)
-	encodedModel := s[idx1+1 : idx2]
-	if decoded, err := url.PathUnescape(encodedModel); err == nil {
+	encodedSource := s[idx1+1 : idx2]
+	if decoded, err := url.PathUnescape(encodedSource); err == nil {
 		sourceModel = decoded
 	} else {
-		sourceModel = encodedModel
+		sourceModel = encodedSource
 	}
 
-	return groupID, sourceModel, targetIndex, true
+	// Decode target model (URL encoded)
+	encodedTarget := s[idx2+1:]
+	if decoded, err := url.PathUnescape(encodedTarget); err == nil {
+		targetModel = decoded
+	} else {
+		targetModel = encodedTarget
+	}
+
+	return groupID, sourceModel, targetModel, true
 }
 
 // parseUintSimple parses a string to uint.
@@ -444,7 +450,7 @@ func (p *DynamicWeightPersistence) batchUpsertDefault(metrics []models.DynamicWe
 			{Name: "group_id"},
 			{Name: "sub_group_id"},
 			{Name: "source_model"},
-			{Name: "target_index"},
+			{Name: "target_model"},
 		},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"consecutive_failures",
@@ -487,7 +493,7 @@ func (p *DynamicWeightPersistence) batchUpsertSQLite(metrics []models.DynamicWei
 				{Name: "group_id"},
 				{Name: "sub_group_id"},
 				{Name: "source_model"},
-				{Name: "target_index"},
+				{Name: "target_model"},
 			},
 			UpdateAll: true,
 		}).Create(&batch).Error
@@ -511,11 +517,11 @@ func (p *DynamicWeightPersistence) DeleteSubGroupMetrics(aggregateGroupID, subGr
 }
 
 // DeleteModelRedirectMetrics soft-deletes model redirect metrics from database.
-func (p *DynamicWeightPersistence) DeleteModelRedirectMetrics(groupID uint, sourceModel string, targetIndex int) error {
+func (p *DynamicWeightPersistence) DeleteModelRedirectMetrics(groupID uint, sourceModel string, targetModel string) error {
 	now := time.Now()
 	return p.db.Model(&models.DynamicWeightMetric{}).
-		Where("metric_type = ? AND group_id = ? AND source_model = ? AND target_index = ? AND deleted_at IS NULL",
-			models.MetricTypeModelRedirect, groupID, sourceModel, targetIndex).
+		Where("metric_type = ? AND group_id = ? AND source_model = ? AND target_model = ? AND deleted_at IS NULL",
+			models.MetricTypeModelRedirect, groupID, sourceModel, targetModel).
 		Update("deleted_at", now).Error
 }
 
@@ -551,19 +557,19 @@ func (p *DynamicWeightPersistence) RestoreSubGroupMetrics(aggregateGroupID, subG
 // RestoreModelRedirectMetrics restores soft-deleted model redirect metrics.
 // NOTE: Memory update failure is logged but not returned as error since DB restore
 // is the primary operation. Memory will be consistent after next service restart.
-func (p *DynamicWeightPersistence) RestoreModelRedirectMetrics(groupID uint, sourceModel string, targetIndex int) (bool, error) {
+func (p *DynamicWeightPersistence) RestoreModelRedirectMetrics(groupID uint, sourceModel string, targetModel string) (bool, error) {
 	result := p.db.Model(&models.DynamicWeightMetric{}).
-		Where("metric_type = ? AND group_id = ? AND source_model = ? AND target_index = ? AND deleted_at IS NOT NULL",
-			models.MetricTypeModelRedirect, groupID, sourceModel, targetIndex).
+		Where("metric_type = ? AND group_id = ? AND source_model = ? AND target_model = ? AND deleted_at IS NOT NULL",
+			models.MetricTypeModelRedirect, groupID, sourceModel, targetModel).
 		Update("deleted_at", nil)
 	if result.Error != nil {
 		return false, result.Error
 	}
 	if result.RowsAffected > 0 {
 		var dbm models.DynamicWeightMetric
-		if err := p.db.Where("metric_type = ? AND group_id = ? AND source_model = ? AND target_index = ?",
-			models.MetricTypeModelRedirect, groupID, sourceModel, targetIndex).First(&dbm).Error; err == nil {
-			key := ModelRedirectMetricsKey(groupID, sourceModel, targetIndex)
+		if err := p.db.Where("metric_type = ? AND group_id = ? AND source_model = ? AND target_model = ?",
+			models.MetricTypeModelRedirect, groupID, sourceModel, targetModel).First(&dbm).Error; err == nil {
+			key := ModelRedirectMetricsKey(groupID, sourceModel, targetModel)
 			metrics := dbMetricToMemory(&dbm)
 			if err := p.manager.SetMetrics(key, metrics); err != nil {
 				logrus.WithError(err).WithField("key", key).Warn("Failed to restore metrics to store")
@@ -680,7 +686,7 @@ func (p *DynamicWeightPersistence) RolloverTimeWindows() {
 				case models.MetricTypeSubGroup:
 					key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
 				case models.MetricTypeModelRedirect:
-					key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetIndex)
+					key = ModelRedirectMetricsKey(dbm.GroupID, dbm.SourceModel, dbm.TargetModel)
 				default:
 					continue
 				}
