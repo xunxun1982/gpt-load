@@ -443,23 +443,6 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
     render: row => h("div", { class: "groups-cell" }, [renderGroupTags(row)]),
   },
   {
-    title: t("hub.healthScore"),
-    key: "health_score",
-    width: 80,
-    align: "center",
-    titleAlign: "center",
-    render: row => {
-      const enabledGroups = row.groups.filter(g => g.enabled && g.priority < 1000);
-      if (!enabledGroups.length) {
-        return h(NText, { depth: 3 }, () => "-");
-      }
-      const best = Math.max(...enabledGroups.map(g => g.health_score));
-      return h(NText, { class: getHealthClass(best), style: { whiteSpace: "nowrap" } }, () =>
-        formatHealthScore(best)
-      );
-    },
-  },
-  {
     title: t("hub.groupCount"),
     key: "group_count",
     width: 65,
@@ -655,7 +638,7 @@ onMounted(() => {
       v-model:show="showEditModal"
       preset="card"
       :title="t('hub.editPriority')"
-      style="width: 560px; max-width: 95vw"
+      style="width: 680px; max-width: 95vw"
       :bordered="false"
       size="small"
     >
@@ -884,26 +867,41 @@ onMounted(() => {
 .priority-table-header {
   display: flex;
   align-items: center;
-  padding: 6px 8px;
+  padding: 8px 10px;
   background: var(--n-color-embedded);
   border-radius: 4px;
   font-weight: 500;
+  font-size: 11px;
   color: var(--n-text-color-2);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.priority-table-header > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .priority-table-body {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .priority-row {
   display: flex;
   align-items: center;
-  padding: 5px 8px;
+  padding: 8px 10px;
   border-radius: 4px;
   transition: background 0.15s;
+  min-height: 40px;
+}
+
+.priority-row > span {
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .priority-row:hover {
@@ -915,59 +913,68 @@ onMounted(() => {
 }
 
 .col-name {
-  flex: 1;
-  min-width: 0;
+  flex: 2;
+  min-width: 140px;
+  max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-right: 8px;
+  padding-right: 12px;
 }
 
 .col-gtype {
-  width: 50px;
-  text-align: center;
+  width: 75px;
   flex-shrink: 0;
-}
-
-.col-ctype {
-  width: 60px;
   text-align: center;
-  flex-shrink: 0;
-}
-
-.col-health {
-  width: 60px;
-  text-align: center;
-  flex-shrink: 0;
+  padding: 0 6px;
   white-space: nowrap;
 }
 
-.col-priority {
-  width: 100px;
-  text-align: right;
+.col-ctype {
+  width: 95px;
   flex-shrink: 0;
+  text-align: center;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.col-health {
+  width: 85px;
+  flex-shrink: 0;
+  text-align: right;
+  white-space: nowrap;
+  padding-right: 12px;
+}
+
+.col-priority {
+  width: 115px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-left: 8px;
+  white-space: nowrap;
 }
 </style>
 
 <!-- Global styles for popover -->
 <style>
 .hidden-groups-popover {
-  min-width: 320px;
-  max-width: 420px;
+  min-width: 360px;
+  max-width: 480px;
   padding: 4px 0;
 }
 
 .popover-groups {
-  max-height: 280px;
+  max-height: 320px;
   overflow-y: auto;
 }
 
 .hidden-group-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
+  gap: 10px;
+  padding: 6px 12px;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .hidden-group-item:hover {
@@ -979,13 +986,14 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 80px;
+  min-width: 100px;
+  padding: 0 8px;
 }
 
 .popover-footer {
   display: flex;
   justify-content: flex-end;
-  padding: 8px 10px 4px;
+  padding: 8px 12px 4px;
   border-top: 1px solid var(--n-border-color);
   margin-top: 4px;
 }

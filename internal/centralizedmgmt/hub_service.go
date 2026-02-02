@@ -218,16 +218,8 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 		groupModels := s.getGroupModels(&group)
 
 		// Calculate health score and effective weight
-		healthScore := 1.0
+		healthScore := s.calculateGroupHealthScore(&group)
 		baseWeight := 100 // Default weight for standard groups
-
-		// For aggregate groups, we don't have a single weight
-		// For standard groups, use default weight
-		if s.dynamicWeightManager != nil {
-			// Use a simple health score based on group metrics
-			// For hub purposes, we use a simplified calculation
-			healthScore = s.calculateGroupHealthScore(&group)
-		}
 
 		effectiveWeight := int(float64(baseWeight) * healthScore)
 		if effectiveWeight < 1 && healthScore >= healthThreshold {
@@ -457,16 +449,98 @@ func (s *HubService) parseModelRedirectRulesV2(rulesJSON []byte) map[string]*mod
 	return rules
 }
 
-// calculateGroupHealthScore calculates a simplified health score for a group.
-// This is used for hub-level group selection, not for sub-group selection within aggregates.
+// calculateGroupHealthScore calculates health score for a group based on its API keys.
+// Health score is calculated as: active_keys / total_keys
+// - Returns 1.0 if group has no keys (considered healthy by default)
+// - Returns 0.0 if all keys are invalid
+// - Returns value between 0.0 and 1.0 based on active key ratio
+// This is used for hub-level group selection to route requests to healthy groups.
 func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
-	if s.dynamicWeightManager == nil {
+	if group == nil {
 		return 1.0
 	}
 
-	// For now, return 1.0 as we don't have group-level metrics
-	// In the future, this could aggregate metrics from all keys in the group
-	return 1.0
+	// For aggregate groups, calculate average health score of sub-groups
+	if group.GroupType == "aggregate" {
+		return s.calculateAggregateGroupHealthScore(group.ID)
+	}
+
+	// For standard groups, calculate based on API key health
+	var totalKeys, activeKeys int64
+
+	// Query total keys count
+	if err := s.db.Model(&models.APIKey{}).
+		Where("group_id = ?", group.ID).
+		Count(&totalKeys).Error; err != nil {
+		logrus.WithError(err).WithField("group_id", group.ID).
+			Warn("Failed to count total keys for health score calculation")
+		return 1.0 // Fail-open: assume healthy if query fails
+	}
+
+	// If no keys, consider group as healthy (1.0)
+	if totalKeys == 0 {
+		return 1.0
+	}
+
+	// Query active keys count
+	if err := s.db.Model(&models.APIKey{}).
+		Where("group_id = ? AND status = ?", group.ID, models.KeyStatusActive).
+		Count(&activeKeys).Error; err != nil {
+		logrus.WithError(err).WithField("group_id", group.ID).
+			Warn("Failed to count active keys for health score calculation")
+		return 1.0 // Fail-open: assume healthy if query fails
+	}
+
+	// Calculate health score as ratio of active keys
+	healthScore := float64(activeKeys) / float64(totalKeys)
+	return healthScore
+}
+
+// calculateAggregateGroupHealthScore calculates health score for an aggregate group.
+// It returns the average health score of all enabled sub-groups.
+// Returns 1.0 if no sub-groups are found (fail-open).
+func (s *HubService) calculateAggregateGroupHealthScore(aggregateGroupID uint) float64 {
+	// Get sub-group relationships
+	var subGroupRels []models.GroupSubGroup
+	if err := s.db.Where("group_id = ? AND weight > 0", aggregateGroupID).
+		Find(&subGroupRels).Error; err != nil {
+		logrus.WithError(err).WithField("aggregate_group_id", aggregateGroupID).
+			Warn("Failed to get sub-groups for health score calculation")
+		return 1.0 // Fail-open
+	}
+
+	if len(subGroupRels) == 0 {
+		return 1.0 // No sub-groups, consider healthy
+	}
+
+	// Collect sub-group IDs
+	subGroupIDs := make([]uint, 0, len(subGroupRels))
+	for _, sg := range subGroupRels {
+		subGroupIDs = append(subGroupIDs, sg.SubGroupID)
+	}
+
+	// Load sub-groups
+	var subGroups []models.Group
+	if err := s.db.Where("id IN ? AND enabled = ?", subGroupIDs, true).
+		Find(&subGroups).Error; err != nil {
+		logrus.WithError(err).WithField("aggregate_group_id", aggregateGroupID).
+			Warn("Failed to load sub-groups for health score calculation")
+		return 1.0 // Fail-open
+	}
+
+	if len(subGroups) == 0 {
+		return 1.0 // No enabled sub-groups, consider healthy
+	}
+
+	// Calculate average health score of sub-groups
+	var totalHealthScore float64
+	for _, subGroup := range subGroups {
+		subHealthScore := s.calculateGroupHealthScore(&subGroup)
+		totalHealthScore += subHealthScore
+	}
+
+	avgHealthScore := totalHealthScore / float64(len(subGroups))
+	return avgHealthScore
 }
 
 // SelectGroupForModel selects the best group for a given model with relay format awareness.

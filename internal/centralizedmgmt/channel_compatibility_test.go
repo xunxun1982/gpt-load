@@ -45,24 +45,16 @@ func TestGetCompatibleChannels(t *testing.T) {
 			wantCompatible: []string{},
 		},
 		{
-			name:           "Unknown format",
-			format:         types.RelayFormat("unknown"),
-			wantNative:     "",
-			wantCompatible: nil,
+			name:           "Unknown format (fallback to OpenAI)",
+			format:         types.RelayFormatUnknown,
+			wantNative:     "openai",
+			wantCompatible: []string{},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := GetCompatibleChannels(tt.format)
-
-			if tt.wantNative == "" {
-				// Unknown format should return empty slice
-				if len(got) != 0 {
-					t.Errorf("GetCompatibleChannels() = %v, want empty slice", got)
-				}
-				return
-			}
 
 			// Check native channel (first element)
 			if len(got) == 0 {
@@ -102,7 +94,7 @@ func TestGetNativeChannel(t *testing.T) {
 		{"Claude", types.RelayFormatClaude, "anthropic"},
 		{"Gemini", types.RelayFormatGemini, "gemini"},
 		{"Codex", types.RelayFormatCodex, "codex"},
-		{"Unknown", types.RelayFormat("unknown"), ""},
+		{"Unknown (fallback to OpenAI)", types.RelayFormatUnknown, "openai"},
 	}
 
 	for _, tt := range tests {
@@ -150,8 +142,9 @@ func TestIsChannelCompatible(t *testing.T) {
 		{"Codex native", "codex", types.RelayFormatCodex, true},
 		{"OpenAI NOT compatible for Codex", "openai", types.RelayFormatCodex, false},
 
-		// Unknown format
-		{"Unknown format", "openai", types.RelayFormat("unknown"), false},
+		// Unknown format (fallback to OpenAI)
+		{"Unknown format fallback to OpenAI", "openai", types.RelayFormatUnknown, true},
+		{"Unknown format NOT compatible with Anthropic", "anthropic", types.RelayFormatUnknown, false},
 	}
 
 	for _, tt := range tests {
@@ -189,8 +182,9 @@ func TestGetChannelPriority(t *testing.T) {
 		{"Anthropic NOT compatible for embedding", "anthropic", types.RelayFormatOpenAIEmbedding, -1},
 		{"OpenAI NOT compatible for Gemini", "openai", types.RelayFormatGemini, -1},
 
-		// Unknown format
-		{"Unknown format", "openai", types.RelayFormat("unknown"), -1},
+		// Unknown format (fallback to OpenAI)
+		{"Unknown format fallback to OpenAI", "openai", types.RelayFormatUnknown, 0},
+		{"Unknown format NOT compatible with Anthropic", "anthropic", types.RelayFormatUnknown, -1},
 	}
 
 	for _, tt := range tests {

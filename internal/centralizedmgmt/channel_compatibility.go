@@ -15,7 +15,15 @@ type ChannelCompatibility struct {
 // channelCompatibilityMap maps relay formats to their compatible channel types.
 // Priority order: Native channel first, then compatible channels.
 // Note: CC (Claude Code) support only converts Claude format to other formats (one-way conversion).
+// Unknown formats fallback to OpenAI for maximum compatibility.
 var channelCompatibilityMap = map[types.RelayFormat]ChannelCompatibility{
+	// Unknown format - fallback to OpenAI for unrecognized paths
+	// This ensures requests with unknown paths can still be routed instead of failing
+	types.RelayFormatUnknown: {
+		Native:     "openai",
+		Compatible: []string{},
+	},
+
 	// OpenAI formats - native to OpenAI only (no Azure in this project)
 	types.RelayFormatOpenAIChat: {
 		Native:     "openai",
@@ -79,10 +87,12 @@ var channelCompatibilityMap = map[types.RelayFormat]ChannelCompatibility{
 
 // GetCompatibleChannels returns all compatible channel types for a given relay format.
 // Returns native channel first, followed by compatible channels in priority order.
+// For unknown formats, returns ["openai"] as a fallback to ensure maximum compatibility.
 func GetCompatibleChannels(format types.RelayFormat) []string {
 	compat, exists := channelCompatibilityMap[format]
 	if !exists {
-		return []string{} // Unknown format, no compatible channels
+		// Fallback to OpenAI for truly unknown formats not in the map
+		return []string{"openai"}
 	}
 
 	// Build result: native first, then compatible channels
@@ -93,10 +103,11 @@ func GetCompatibleChannels(format types.RelayFormat) []string {
 }
 
 // GetNativeChannel returns the native (preferred) channel type for a given relay format.
+// For unknown formats, returns "openai" as a fallback.
 func GetNativeChannel(format types.RelayFormat) string {
 	compat, exists := channelCompatibilityMap[format]
 	if !exists {
-		return "" // Unknown format
+		return "openai" // Fallback to OpenAI for unknown formats
 	}
 	return compat.Native
 }

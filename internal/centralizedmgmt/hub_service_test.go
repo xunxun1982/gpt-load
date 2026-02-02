@@ -1224,6 +1224,51 @@ func TestSelectGroupForModelNoCompatibleChannel(t *testing.T) {
 	}
 }
 
+// TestSelectGroupForModelUnknownFormat tests that unknown formats fallback to OpenAI channel
+func TestSelectGroupForModelUnknownFormat(t *testing.T) {
+	db := setupHubTestDB(t)
+	ctx := context.Background()
+
+	redirects := map[string]*models.ModelRedirectRuleV2{
+		"test-model": {Targets: []models.ModelRedirectTarget{{Model: "gpt-4", Weight: 100}}},
+	}
+
+	// Create OpenAI group (should be selected for unknown format)
+	openaiGroup := createTestGroupWithRedirects(t, db, "openai-group", 10, true, "gpt-4", redirects)
+	openaiGroup.ChannelType = "openai"
+	db.Save(openaiGroup)
+
+	// Create Anthropic group (should NOT be selected for unknown format)
+	anthropicGroup := createTestGroupWithRedirects(t, db, "anthropic-group", 20, true, "claude-3", redirects)
+	anthropicGroup.ChannelType = "anthropic"
+	db.Save(anthropicGroup)
+
+	// Create Gemini group (should NOT be selected for unknown format)
+	geminiGroup := createTestGroupWithRedirects(t, db, "gemini-group", 30, true, "gemini-pro", redirects)
+	geminiGroup.ChannelType = "gemini"
+	db.Save(geminiGroup)
+
+	_, svc := setupHubTestServices(t, db)
+
+	// Disable only_aggregate_groups to allow standard groups
+	svc.SetOnlyAggregateGroups(false)
+
+	// For Unknown format, should fallback to OpenAI channel
+	group, err := svc.SelectGroupForModel(ctx, "test-model", types.RelayFormatUnknown, 0)
+	if err != nil {
+		t.Fatalf("SelectGroupForModel should not error: %v", err)
+	}
+	if group == nil {
+		t.Fatal("SelectGroupForModel should return a group for unknown format (fallback to OpenAI)")
+	}
+	if group.ChannelType != "openai" {
+		t.Errorf("SelectGroupForModel should select OpenAI channel for unknown format, got %s", group.ChannelType)
+	}
+	if group.Name != "openai-group" {
+		t.Errorf("SelectGroupForModel should select openai-group, got %s", group.Name)
+	}
+}
+
 // Benchmark for SelectGroupForModel with channel compatibility
 func BenchmarkSelectGroupForModelWithCompatibility(b *testing.B) {
 	// Create a minimal test setup for benchmarking
@@ -2309,5 +2354,272 @@ func TestInvalidPriorityErrorMessage(t *testing.T) {
 
 	if err.Error() != expectedMsg {
 		t.Errorf("Expected error message:\n%s\nGot:\n%s", expectedMsg, err.Error())
+	}
+}
+
+// TestCalculateGroupHealthScore tests health score calculation based on API key status
+func TestCalculateGroupHealthScore(t *testing.T) {
+	db := setupHubTestDB(t)
+
+	// Migrate APIKey model for this test
+	if err := db.AutoMigrate(&models.APIKey{}); err != nil {
+		t.Fatalf("failed to migrate APIKey model: %v", err)
+	}
+
+	_, hubService := setupHubTestServices(t, db)
+
+	// Create test group
+	group := createTestGroup(t, db, "test-group", "standard", "openai", 1, true, "gpt-4")
+
+	t.Run("no_keys_returns_1.0", func(t *testing.T) {
+		score := hubService.calculateGroupHealthScore(group)
+		if score != 1.0 {
+			t.Errorf("Expected health score 1.0 for group with no keys, got %f", score)
+		}
+	})
+
+	t.Run("all_active_keys_returns_1.0", func(t *testing.T) {
+		// Create 5 active keys
+		for i := 0; i < 5; i++ {
+			key := &models.APIKey{
+				GroupID:  group.ID,
+				KeyValue: "sk-test-" + strconv.Itoa(i),
+				Status:   models.KeyStatusActive,
+			}
+			if err := db.Create(key).Error; err != nil {
+				t.Fatalf("failed to create test key: %v", err)
+			}
+		}
+
+		score := hubService.calculateGroupHealthScore(group)
+		if score != 1.0 {
+			t.Errorf("Expected health score 1.0 for all active keys, got %f", score)
+		}
+
+		// Cleanup
+		db.Where("group_id = ?", group.ID).Delete(&models.APIKey{})
+	})
+
+	t.Run("half_active_keys_returns_0.5", func(t *testing.T) {
+		// Create 5 active keys and 5 invalid keys
+		for i := 0; i < 5; i++ {
+			key := &models.APIKey{
+				GroupID:  group.ID,
+				KeyValue: "sk-active-" + strconv.Itoa(i),
+				Status:   models.KeyStatusActive,
+			}
+			if err := db.Create(key).Error; err != nil {
+				t.Fatalf("failed to create active key: %v", err)
+			}
+		}
+		for i := 0; i < 5; i++ {
+			key := &models.APIKey{
+				GroupID:  group.ID,
+				KeyValue: "sk-invalid-" + strconv.Itoa(i),
+				Status:   models.KeyStatusInvalid,
+			}
+			if err := db.Create(key).Error; err != nil {
+				t.Fatalf("failed to create invalid key: %v", err)
+			}
+		}
+
+		score := hubService.calculateGroupHealthScore(group)
+		if score != 0.5 {
+			t.Errorf("Expected health score 0.5 for half active keys, got %f", score)
+		}
+
+		// Cleanup
+		db.Where("group_id = ?", group.ID).Delete(&models.APIKey{})
+	})
+
+	t.Run("all_invalid_keys_returns_0.0", func(t *testing.T) {
+		// Create 5 invalid keys
+		for i := 0; i < 5; i++ {
+			key := &models.APIKey{
+				GroupID:  group.ID,
+				KeyValue: "sk-invalid-" + strconv.Itoa(i),
+				Status:   models.KeyStatusInvalid,
+			}
+			if err := db.Create(key).Error; err != nil {
+				t.Fatalf("failed to create invalid key: %v", err)
+			}
+		}
+
+		score := hubService.calculateGroupHealthScore(group)
+		if score != 0.0 {
+			t.Errorf("Expected health score 0.0 for all invalid keys, got %f", score)
+		}
+
+		// Cleanup
+		db.Where("group_id = ?", group.ID).Delete(&models.APIKey{})
+	})
+
+	t.Run("nil_group_returns_1.0", func(t *testing.T) {
+		score := hubService.calculateGroupHealthScore(nil)
+		if score != 1.0 {
+			t.Errorf("Expected health score 1.0 for nil group, got %f", score)
+		}
+	})
+}
+
+// TestCalculateAggregateGroupHealthScore tests health score calculation for aggregate groups
+func TestCalculateAggregateGroupHealthScore(t *testing.T) {
+	db := setupHubTestDB(t)
+
+	// Migrate APIKey model for this test
+	if err := db.AutoMigrate(&models.APIKey{}); err != nil {
+		t.Fatalf("failed to migrate APIKey model: %v", err)
+	}
+
+	_, hubService := setupHubTestServices(t, db)
+
+	// Create sub-groups
+	subGroup1 := createTestGroup(t, db, "sub-group-1", "standard", "openai", 1, true, "gpt-4")
+	subGroup2 := createTestGroup(t, db, "sub-group-2", "standard", "openai", 2, true, "gpt-4")
+
+	// Create aggregate group
+	aggGroup := createTestGroup(t, db, "agg-group", "aggregate", "openai", 1, true, "gpt-4")
+
+	// Link sub-groups to aggregate group
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroup1.ID, Weight: 100})
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroup2.ID, Weight: 100})
+
+	t.Run("average_health_score_of_sub_groups", func(t *testing.T) {
+		// Sub-group 1: 100% healthy (5 active keys)
+		for i := 0; i < 5; i++ {
+			key := &models.APIKey{
+				GroupID:  subGroup1.ID,
+				KeyValue: "sk-sub1-" + strconv.Itoa(i),
+				Status:   models.KeyStatusActive,
+			}
+			if err := db.Create(key).Error; err != nil {
+				t.Fatalf("failed to create key for sub-group 1: %v", err)
+			}
+		}
+
+		// Sub-group 2: 50% healthy (2 active, 2 invalid)
+		for i := 0; i < 2; i++ {
+			key := &models.APIKey{
+				GroupID:  subGroup2.ID,
+				KeyValue: "sk-sub2-active-" + strconv.Itoa(i),
+				Status:   models.KeyStatusActive,
+			}
+			if err := db.Create(key).Error; err != nil {
+				t.Fatalf("failed to create active key for sub-group 2: %v", err)
+			}
+		}
+		for i := 0; i < 2; i++ {
+			key := &models.APIKey{
+				GroupID:  subGroup2.ID,
+				KeyValue: "sk-sub2-invalid-" + strconv.Itoa(i),
+				Status:   models.KeyStatusInvalid,
+			}
+			if err := db.Create(key).Error; err != nil {
+				t.Fatalf("failed to create invalid key for sub-group 2: %v", err)
+			}
+		}
+
+		// Expected: (1.0 + 0.5) / 2 = 0.75
+		score := hubService.calculateGroupHealthScore(aggGroup)
+		expected := 0.75
+		if score != expected {
+			t.Errorf("Expected health score %f for aggregate group, got %f", expected, score)
+		}
+	})
+}
+
+// TestHealthScoreInModelPool tests that health scores are correctly reflected in model pool
+func TestHealthScoreInModelPool(t *testing.T) {
+	db := setupHubTestDB(t)
+	ctx := context.Background()
+
+	// Migrate APIKey model for this test
+	if err := db.AutoMigrate(&models.APIKey{}); err != nil {
+		t.Fatalf("failed to migrate APIKey model: %v", err)
+	}
+
+	// Create test group with model redirect BEFORE initializing services
+	enabled := true
+	redirects := map[string]*models.ModelRedirectRuleV2{
+		"gpt-4": {
+			Targets: []models.ModelRedirectTarget{
+				{Model: "gpt-4-turbo", Weight: 100, Enabled: &enabled},
+			},
+		},
+	}
+	group := createTestGroupWithRedirects(t, db, "test-group", 1, true, "gpt-4", redirects)
+
+	// Create keys with 80% health (4 active, 1 invalid)
+	for i := 0; i < 4; i++ {
+		key := &models.APIKey{
+			GroupID:  group.ID,
+			KeyValue: "sk-active-" + strconv.Itoa(i),
+			Status:   models.KeyStatusActive,
+		}
+		if err := db.Create(key).Error; err != nil {
+			t.Fatalf("failed to create active key: %v", err)
+		}
+	}
+	key := &models.APIKey{
+		GroupID:  group.ID,
+		KeyValue: "sk-invalid",
+		Status:   models.KeyStatusInvalid,
+	}
+	if err := db.Create(key).Error; err != nil {
+		t.Fatalf("failed to create invalid key: %v", err)
+	}
+
+	// Verify keys were created
+	var keyCount int64
+	if err := db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&keyCount).Error; err != nil {
+		t.Fatalf("failed to count keys: %v", err)
+	}
+	t.Logf("Created %d keys for group %d", keyCount, group.ID)
+
+	// Now initialize services - this will load the group into cache
+	_, hubService := setupHubTestServices(t, db)
+
+	// Disable only_aggregate_groups to allow standard groups
+	hubService.SetOnlyAggregateGroups(false)
+
+	// Manually test health score calculation
+	testHealthScore := hubService.calculateGroupHealthScore(group)
+	t.Logf("Direct health score calculation: %f", testHealthScore)
+
+	// Get model pool
+	pool, err := hubService.GetModelPool(ctx)
+	if err != nil {
+		t.Fatalf("failed to get model pool: %v", err)
+	}
+
+	// Find gpt-4 model
+	var found bool
+	var actualHealthScore float64
+	for _, entry := range pool {
+		if entry.ModelName == "gpt-4" {
+			found = true
+			// Check health score in sources
+			for _, sources := range entry.SourcesByType {
+				for _, source := range sources {
+					if source.GroupID == group.ID {
+						actualHealthScore = source.HealthScore
+						expected := 0.8
+						// Allow small floating point differences
+						if actualHealthScore < expected-0.01 || actualHealthScore > expected+0.01 {
+							t.Errorf("Expected health score %f in model pool, got %f", expected, source.HealthScore)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if !found {
+		t.Errorf("Model gpt-4 not found in model pool. Pool has %d models", len(pool))
+		for _, entry := range pool {
+			t.Logf("  - %s", entry.ModelName)
+		}
+	} else {
+		t.Logf("Health score correctly reflected: %f", actualHealthScore)
 	}
 }

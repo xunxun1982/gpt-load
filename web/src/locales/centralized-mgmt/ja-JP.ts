@@ -134,7 +134,8 @@ export default {
 
   // Routing logic
   routingLogic: "ルーティングロジック（順次実行）",
-  routingStep1: "① パス → フォーマット検出（Chat/Claude/Gemini/Image/Audio）",
+  routingStep1:
+    "① パス → フォーマット検出（Chat/Claude/Gemini/Image/Audio）。不明な形式は OpenAI にフォールバック",
   routingStep2: "② リクエストからモデル名を抽出",
   routingStep3: "③ アクセス制御：キー権限の検証",
   routingStep4: "④ モデル可用性：有効なグループにモデルが存在するか確認",

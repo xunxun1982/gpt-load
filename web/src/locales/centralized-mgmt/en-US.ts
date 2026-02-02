@@ -137,7 +137,8 @@ export default {
 
   // Routing logic
   routingLogic: "Routing Logic (Sequential)",
-  routingStep1: "① Path → Format Detection (Chat/Claude/Gemini/Image/Audio)",
+  routingStep1:
+    "① Path → Format Detection (Chat/Claude/Gemini/Image/Audio). Unknown formats fallback to OpenAI",
   routingStep2: "② Extract model name from request",
   routingStep3: "③ Access Control: Validate key permissions",
   routingStep4: "④ Model Availability: Check if model exists in any enabled group",

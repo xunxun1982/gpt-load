@@ -132,7 +132,7 @@ export default {
 
   // Routing logic
   routingLogic: "路由逻辑（先后顺序）",
-  routingStep1: "① 路径识别格式（Chat/Claude/Gemini/Image/Audio）",
+  routingStep1: "① 路径识别格式（Chat/Claude/Gemini/Image/Audio）。未知格式默认使用 OpenAI",
   routingStep2: "② 提取模型名称",
   routingStep3: "③ 访问控制：密钥权限验证",
   routingStep4: "④ 模型可用性：检查模型是否存在于任何启用的分组",
