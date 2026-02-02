@@ -228,15 +228,7 @@ function openPopoverEdit(model: ModelPoolEntryV2, groups: ModelGroupPriority[]) 
   popoverEditingGroups.value = groups
     .filter(g => g.priority < 1000) // Exclude system-reserved disabled state
     .map(g => ({ ...g }))
-    .sort((a, b) => {
-      if (a.priority >= 1000 && b.priority < 1000) {
-        return 1;
-      }
-      if (b.priority >= 1000 && a.priority < 1000) {
-        return -1;
-      }
-      return a.priority - b.priority;
-    });
+    .sort((a, b) => a.priority - b.priority);
 }
 
 // Save popover edited priorities
@@ -500,15 +492,7 @@ function openEditModal(model: ModelPoolEntryV2) {
   editingGroups.value = model.groups
     .filter(g => g.priority < 1000) // Exclude system-reserved disabled state
     .map(g => ({ ...g }))
-    .sort((a, b) => {
-      if (a.priority >= 1000 && b.priority < 1000) {
-        return 1;
-      }
-      if (b.priority >= 1000 && a.priority < 1000) {
-        return -1;
-      }
-      return a.priority - b.priority;
-    });
+    .sort((a, b) => a.priority - b.priority);
   showEditModal.value = true;
 }
 
@@ -702,12 +686,7 @@ onMounted(() => {
             </span>
           </div>
           <div class="priority-table-body">
-            <div
-              v-for="group in editingGroups"
-              :key="group.group_id"
-              class="priority-row"
-              :class="{ disabled: group.priority >= 1000 }"
-            >
+            <div v-for="group in editingGroups" :key="group.group_id" class="priority-row">
               <span class="col-name" :title="group.group_name">{{ group.group_name }}</span>
               <span class="col-gtype">
                 <n-tag size="tiny" :type="getGroupTypeTagType(group)" :bordered="false">

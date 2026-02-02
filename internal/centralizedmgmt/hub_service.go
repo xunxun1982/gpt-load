@@ -612,18 +612,26 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 		// Check preconditions for aggregate groups - EARLY FILTERING
 		// This prevents unsuitable groups from entering the selection process
 		if source.GroupType == "aggregate" && requestSizeKB > 0 {
-			if group, ok := groupPreconditionsMap[source.GroupID]; ok {
-				maxSizeKB := group.GetMaxRequestSizeKB()
-				// Skip this aggregate group if request size exceeds limit
-				if maxSizeKB > 0 && requestSizeKB > maxSizeKB {
-					logrus.WithFields(logrus.Fields{
-						"group_id":        source.GroupID,
-						"group_name":      source.GroupName,
-						"request_size_kb": requestSizeKB,
-						"max_size_kb":     maxSizeKB,
-					}).Debug("Skipping aggregate group: request size exceeds precondition limit")
-					continue
-				}
+			group, ok := groupPreconditionsMap[source.GroupID]
+			if !ok {
+				// Fail-closed: skip aggregate group if preconditions cannot be verified
+				logrus.WithFields(logrus.Fields{
+					"group_id":        source.GroupID,
+					"group_name":      source.GroupName,
+					"request_size_kb": requestSizeKB,
+				}).Warn("Skipping aggregate group: preconditions not loaded")
+				continue
+			}
+			maxSizeKB := group.GetMaxRequestSizeKB()
+			// Skip this aggregate group if request size exceeds limit
+			if maxSizeKB > 0 && requestSizeKB > maxSizeKB {
+				logrus.WithFields(logrus.Fields{
+					"group_id":        source.GroupID,
+					"group_name":      source.GroupName,
+					"request_size_kb": requestSizeKB,
+					"max_size_kb":     maxSizeKB,
+				}).Debug("Skipping aggregate group: request size exceeds precondition limit")
+				continue
 			}
 		}
 
