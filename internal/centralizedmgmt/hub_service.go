@@ -470,13 +470,22 @@ func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
 }
 
 // SelectGroupForModel selects the best group for a given model with relay format awareness.
-// Selection algorithm:
+// Selection algorithm with early filtering optimization:
 // 1. Filter by model availability
 // 2. Filter by channel compatibility with relay format
 // 3. For Claude format, verify target channel has cc_support enabled
-// 4. Prioritize native channel type for the format
-// 5. Filter by enabled status and health score
-// 6. Select by sort order (priority) and weight
+// 4. For aggregate groups, check preconditions (e.g., max_request_size_kb) - EARLY FILTERING
+//    - Batch load preconditions for all aggregate groups (avoid N+1 queries)
+//    - Filter out groups that don't meet preconditions before selection
+//    - This prevents unsuitable groups from entering the selection process
+// 5. Prioritize native channel type for the format
+// 6. Filter by enabled status and health score
+// 7. Select by sort order (priority) and weight
+//
+// IMPORTANT: Priority semantics - LOWER value = HIGHER priority
+// - priority=0: Disabled (filtered out)
+// - priority=1: Highest priority
+// - priority=999: Lowest priority
 func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, relayFormat types.RelayFormat, requestSizeKB int) (*models.Group, error) {
 	pool, err := s.GetModelPool(ctx)
 	if err != nil {
@@ -532,6 +541,8 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 	}
 
 	// Load preconditions for aggregate groups to check request size limits
+	// OPTIMIZATION: Batch load all preconditions at once to avoid N+1 queries
+	// This is an early filtering step - unsuitable groups are excluded before selection
 	var groupPreconditionsMap map[uint]*models.Group
 	if requestSizeKB > 0 {
 		groupPreconditionsMap = make(map[uint]*models.Group)
@@ -597,7 +608,8 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 			}
 		}
 
-		// Check preconditions for aggregate groups
+		// Check preconditions for aggregate groups - EARLY FILTERING
+		// This prevents unsuitable groups from entering the selection process
 		if source.GroupType == "aggregate" && requestSizeKB > 0 {
 			if group, ok := groupPreconditionsMap[source.GroupID]; ok {
 				maxSizeKB := group.GetMaxRequestSizeKB()
@@ -637,6 +649,16 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 
 // selectFromSources selects the best source from a list based on sort order and weight.
 // This is a helper method extracted from SelectGroupForModel for reusability.
+// Selection algorithm:
+// 1. Find the minimum priority value (which represents the highest priority)
+// 2. Get all groups with that minimum priority
+// 3. If only one group, select it
+// 4. If multiple groups, use weighted random selection based on health_score
+//
+// IMPORTANT: Priority semantics - LOWER value = HIGHER priority
+// - priority=0: Disabled (filtered out before calling this function)
+// - priority=1: Highest priority
+// - priority=999: Lowest priority
 func (s *HubService) selectFromSources(sources []ModelSource) (*models.Group, error) {
 	if len(sources) == 0 {
 		return nil, nil
@@ -897,6 +919,10 @@ func (s *HubService) GetModelPoolV2(ctx context.Context) ([]ModelPoolEntryV2, er
 
 // UpdateModelGroupPriority updates the priority for a model-group pair.
 // Priority 0 means disabled (skip this group for this model).
+// IMPORTANT: Priority semantics - LOWER value = HIGHER priority
+// - priority=0: Disabled
+// - priority=1: Highest priority
+// - priority=999: Lowest priority
 func (s *HubService) UpdateModelGroupPriority(ctx context.Context, modelName string, groupID uint, priority int) error {
 	// Validate priority range
 	if priority < 0 || priority > 999 {

@@ -50,7 +50,21 @@ func NewHubHandler(
 // HandleHubProxy handles /hub/v1/* proxy requests.
 // It validates the access key, detects the request format from path,
 // extracts the model, selects the best group, and forwards to proxy server.
-// Flow: Path → Format → Model → Group → Proxy
+//
+// Complete routing flow (in order):
+// ① Path → Format Detection: Identify API format (Chat/Claude/Gemini/Image/Audio)
+// ② Model Extraction: Extract model name from request (format-aware)
+// ③ Access Control: Validate access key permissions for the model
+// ④ Model Availability: Check if model exists in any enabled group
+// ⑤ Group Selection (SelectGroupForModel):
+//    - Filter: Health threshold + Enabled status
+//    - Filter: Channel compatibility with relay format
+//    - Filter: Claude format CC support (for non-Anthropic channels)
+//    - Filter: Aggregate group preconditions (e.g., max_request_size_kb) - EARLY FILTERING
+//    - Prioritize: Native channels > Compatible channels
+//    - Select: Minimum priority value → Health-weighted random selection
+// ⑥ Path Rewrite: /hub/v1/* → /proxy/{group_name}/v1/*
+// ⑦ Forward: Proxy to selected group's upstream
 func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 	ctx := c.Request.Context()
 

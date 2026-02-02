@@ -5,7 +5,13 @@
  * Compact single-line layout for each model.
  */
 import { formatHealthScore } from "@/utils/display";
-import { CreateOutline, LayersOutline, RefreshOutline, Search } from "@vicons/ionicons5";
+import {
+  CreateOutline,
+  InformationCircleOutline,
+  LayersOutline,
+  RefreshOutline,
+  Search,
+} from "@vicons/ionicons5";
 import {
   NButton,
   NDataTable,
@@ -320,7 +326,14 @@ function renderGroupTags(row: ModelPoolEntryV2) {
                   ? h("span", { style: { opacity: 0.6, marginRight: "1px" } }, typeShort)
                   : null,
                 h("span", null, g.group_name),
-                h("span", { style: { opacity: 0.7, marginLeft: "2px" } }, `:${g.priority}`),
+                h(
+                  "span",
+                  {
+                    style: { opacity: 0.7, marginLeft: "2px" },
+                    title: t("hub.priorityColumnHint"),
+                  },
+                  `:${g.priority}`
+                ),
               ]
             );
           })
@@ -602,6 +615,18 @@ onMounted(() => {
       </n-text>
     </div>
 
+    <!-- Priority explanation hint -->
+    <div class="priority-explanation-hint">
+      <n-icon
+        :component="InformationCircleOutline"
+        size="14"
+        style="flex-shrink: 0; opacity: 0.7"
+      />
+      <n-text depth="3" style="font-size: 11px">
+        {{ t("hub.priorityExplanationHint") }}
+      </n-text>
+    </div>
+
     <!-- Table -->
     <div class="table-wrapper">
       <n-spin :show="loading">
@@ -654,7 +679,19 @@ onMounted(() => {
             <span class="col-gtype">{{ t("hub.groupType") }}</span>
             <span class="col-ctype">{{ t("hub.channelType") }}</span>
             <span class="col-health">{{ t("hub.healthScore") }}</span>
-            <span class="col-priority">{{ t("hub.priority") }}</span>
+            <span class="col-priority">
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  {{ t("hub.priority") }}
+                  <n-icon
+                    :component="InformationCircleOutline"
+                    size="12"
+                    style="margin-left: 2px; opacity: 0.6"
+                  />
+                </template>
+                {{ t("hub.priorityColumnHint") }}
+              </n-tooltip>
+            </span>
           </div>
           <div class="priority-table-body">
             <div
@@ -745,6 +782,18 @@ onMounted(() => {
   background: var(--n-color-embedded);
   border-radius: 4px;
   font-size: 12px;
+  flex-shrink: 0;
+}
+
+.priority-explanation-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  margin: 4px 0;
+  background: linear-gradient(135deg, rgba(24, 160, 88, 0.08) 0%, rgba(24, 160, 88, 0.04) 100%);
+  border-left: 3px solid var(--success-color, #18a058);
+  border-radius: 3px;
   flex-shrink: 0;
 }
 
