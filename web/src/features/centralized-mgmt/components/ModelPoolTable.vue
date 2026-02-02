@@ -223,8 +223,10 @@ const popoverSaving = ref(false);
 // Open popover editing for groups
 function openPopoverEdit(model: ModelPoolEntryV2, groups: ModelGroupPriority[]) {
   popoverEditingModel.value = model.model_name;
-  // Sort by priority for editing
+  // Filter out groups with priority >= 1000 (system reserved disabled state)
+  // These should not be editable by users to prevent accidental re-enabling
   popoverEditingGroups.value = groups
+    .filter(g => g.priority < 1000) // Exclude system-reserved disabled state
     .map(g => ({ ...g }))
     .sort((a, b) => {
       if (a.priority >= 1000 && b.priority < 1000) {
@@ -492,7 +494,11 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
 
 function openEditModal(model: ModelPoolEntryV2) {
   editingModel.value = model;
+  // Filter out groups with priority >= 1000 (system reserved disabled state)
+  // These should not be editable by users to prevent accidental re-enabling
+  // Users should delete priority records instead of setting to 1000
   editingGroups.value = model.groups
+    .filter(g => g.priority < 1000) // Exclude system-reserved disabled state
     .map(g => ({ ...g }))
     .sort((a, b) => {
       if (a.priority >= 1000 && b.priority < 1000) {

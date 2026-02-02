@@ -959,6 +959,10 @@ func (s *HubService) UpdateModelGroupPriority(ctx context.Context, modelName str
 }
 
 // BatchUpdateModelGroupPriorities updates multiple model-group priorities at once.
+// Invalid priorities (outside 1-999 range) are silently skipped with a warning log,
+// allowing the batch operation to partially succeed rather than failing entirely.
+// This design choice enables resilient batch operations where some updates may have
+// validation issues while others can proceed successfully.
 func (s *HubService) BatchUpdateModelGroupPriorities(ctx context.Context, updates []UpdateModelGroupPriorityParams) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, update := range updates {
