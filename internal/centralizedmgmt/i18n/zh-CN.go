@@ -16,7 +16,7 @@ var MessagesZhCN = map[string]string{
 	// Hub model pool related
 	"hub.model_pool.updated":           "模型池更新成功",
 	"hub.model_pool.priority_updated":  "模型组优先级更新成功",
-	"hub.model_pool.invalid_priority":  "优先级必须在 0 到 999 之间",
+	"hub.model_pool.invalid_priority":  "优先级必须在 1 到 999 之间（1000 为系统内部保留值）",
 	"hub.model_pool.model_not_found":   "模型池中未找到该模型",
 	"hub.model_pool.no_healthy_groups": "该模型没有可用的健康组",
 

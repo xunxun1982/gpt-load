@@ -350,16 +350,17 @@ function renderGroupTags(row: ModelPoolEntryV2) {
                   getGroupTypeLabel(g)
                 ),
                 h("span", { class: "group-name" }, g.group_name),
+                // Priority range: 1-999 (user-settable), 1000 is reserved for internal use
                 h(NInputNumber, {
                   value: g.priority,
-                  min: 0,
+                  min: 1,
                   max: 999,
                   size: "tiny",
                   showButton: true,
                   buttonPlacement: "both",
                   style: { width: "90px" },
                   onUpdateValue: (v: number | null) => {
-                    g.priority = v ?? 0;
+                    g.priority = v ?? 1;
                   },
                 }),
               ])
@@ -717,10 +718,17 @@ onMounted(() => {
                 {{ formatHealthScore(group.health_score) }}
               </span>
               <span class="col-priority">
+                <!-- Priority range: 1-999 (user-settable)
+                     Priority 1000 is reserved for internal use (disabled state)
+                     Users should delete priority records instead of setting to 1000
+                     AI Review Note: Rejected suggestion to allow max=1000 because:
+                     1. User explicitly requested range 1-999
+                     2. Priority 1000 should be system-managed, not user-settable
+                     3. Disabling should be done by deleting records, not setting to 1000 -->
                 <n-input-number
                   v-model:value="group.priority"
                   :min="1"
-                  :max="1000"
+                  :max="999"
                   size="tiny"
                   :show-button="true"
                   button-placement="both"

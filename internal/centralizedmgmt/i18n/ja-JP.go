@@ -16,7 +16,7 @@ var MessagesJaJP = map[string]string{
 	// Hub model pool related
 	"hub.model_pool.updated":           "モデルプールが正常に更新されました",
 	"hub.model_pool.priority_updated":  "モデルグループの優先度が正常に更新されました",
-	"hub.model_pool.invalid_priority":  "優先度は0から999の間である必要があります",
+	"hub.model_pool.invalid_priority":  "優先度は1から999の間である必要があります（1000はシステム内部予約値）",
 	"hub.model_pool.model_not_found":   "プールにモデルが見つかりません",
 	"hub.model_pool.no_healthy_groups": "モデルに利用可能な正常なグループがありません",
 

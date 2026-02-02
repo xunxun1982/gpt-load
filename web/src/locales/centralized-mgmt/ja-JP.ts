@@ -35,10 +35,10 @@ export default {
 
   // Priority
   priority: "優先度",
-  priorityHint: "1-999=優先度（数字が小さいほど優先度が高い）、1000=無効",
+  priorityHint: "1-999=優先度（数字が小さいほど優先度が高い）、1000=システム内部予約値",
   prioritySortHint:
     "同じ優先度内では、健康度が高いほど選択確率が高くなります。例：priority=10はpriority=100より優先されます",
-  priorityColumnHint: "数値が小さい=優先度が高い（1=最高、999=最低、1000=無効）",
+  priorityColumnHint: "数値が小さい=優先度が高い（1=最高、999=最低、1000=システム予約）",
   priorityExplanationHint:
     "💡 グループタグの数字（例：:20、:100）は優先度です。数値が小さいほど優先度が高くなります。同じ優先度では健康度加重ランダム選択",
 

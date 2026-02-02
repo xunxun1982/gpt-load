@@ -16,7 +16,7 @@ var MessagesEnUS = map[string]string{
 	// Hub model pool related
 	"hub.model_pool.updated":           "Model pool updated successfully",
 	"hub.model_pool.priority_updated":  "Model group priority updated successfully",
-	"hub.model_pool.invalid_priority":  "Priority must be between 0 and 999",
+	"hub.model_pool.invalid_priority":  "Priority must be between 1 and 999 (1000 is reserved for internal use)",
 	"hub.model_pool.model_not_found":   "Model not found in pool",
 	"hub.model_pool.no_healthy_groups": "No healthy groups available for model",
 

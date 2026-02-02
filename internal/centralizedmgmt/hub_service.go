@@ -919,14 +919,16 @@ func (s *HubService) GetModelPoolV2(ctx context.Context) ([]ModelPoolEntryV2, er
 }
 
 // UpdateModelGroupPriority updates the priority for a model-group pair.
-// Priority 1000 means disabled (skip this group for this model).
+// Valid priority range: 1-999 (lower value = higher priority).
+// Priority 1000 is reserved for internal use (disabled state) and cannot be set by users.
 // IMPORTANT: Priority semantics - LOWER value = HIGHER priority
 // - priority=1: Highest priority
 // - priority=999: Lowest priority
-// - priority=1000: Disabled
+// - priority=1000: Reserved for disabled state (internal use only)
 func (s *HubService) UpdateModelGroupPriority(ctx context.Context, modelName string, groupID uint, priority int) error {
-	// Validate priority range
-	if priority < 1 || priority > 1000 {
+	// Validate priority range: only 1-999 are allowed for user input
+	// Priority 1000 is reserved for internal disabled state
+	if priority < 1 || priority > 999 {
 		return ErrInvalidPriority
 	}
 
@@ -960,7 +962,9 @@ func (s *HubService) UpdateModelGroupPriority(ctx context.Context, modelName str
 func (s *HubService) BatchUpdateModelGroupPriorities(ctx context.Context, updates []UpdateModelGroupPriorityParams) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, update := range updates {
-			if update.Priority < 1 || update.Priority > 1000 {
+			// Validate priority range: only 1-999 are allowed for user input
+			// Priority 1000 is reserved for internal disabled state
+			if update.Priority < 1 || update.Priority > 999 {
 				// Log skipped invalid priorities for debugging
 				logrus.WithFields(logrus.Fields{
 					"model_name": update.ModelName,
@@ -1251,7 +1255,7 @@ var ErrInvalidPriority = &InvalidPriorityError{}
 type InvalidPriorityError struct{}
 
 func (e *InvalidPriorityError) Error() string {
-	return "priority must be between 1 and 1000 (1=highest, 999=lowest, 1000=disabled)"
+	return "priority must be between 1 and 999 (1=highest, 999=lowest). Priority 1000 is reserved for internal use"
 }
 
 // InvalidGroupTypeError represents an error when trying to set custom models on a non-aggregate group.

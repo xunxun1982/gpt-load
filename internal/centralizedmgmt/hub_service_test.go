@@ -2148,3 +2148,166 @@ func TestSelectGroupForModelPreconditionsAllFiltered(t *testing.T) {
 		t.Errorf("Expected nil (all groups filtered), got %s", selectedGroup.Name)
 	}
 }
+
+// TestUpdateModelGroupPriorityValidation tests priority validation in UpdateModelGroupPriority
+func TestUpdateModelGroupPriorityValidation(t *testing.T) {
+	t.Parallel()
+
+	db := setupHubTestDB(t)
+	ctx := context.Background()
+
+	// Create test group
+	redirects := map[string]*models.ModelRedirectRuleV2{
+		"test-model": {Targets: []models.ModelRedirectTarget{{Model: "target-model", Weight: 100}}},
+	}
+	group := createTestGroupWithRedirects(t, db, "test-group", 1, true, "test-model", redirects)
+
+	// Auto-migrate HubModelGroupPriority table
+	if err := db.AutoMigrate(&HubModelGroupPriority{}); err != nil {
+		t.Fatalf("failed to migrate HubModelGroupPriority: %v", err)
+	}
+
+	svc := setupHubService(t, db)
+
+	tests := []struct {
+		name        string
+		priority    int
+		expectError bool
+		description string
+	}{
+		{
+			name:        "Valid priority 1 (highest)",
+			priority:    1,
+			expectError: false,
+			description: "Priority 1 should be accepted (highest priority)",
+		},
+		{
+			name:        "Valid priority 500 (middle)",
+			priority:    500,
+			expectError: false,
+			description: "Priority 500 should be accepted (middle priority)",
+		},
+		{
+			name:        "Valid priority 999 (lowest)",
+			priority:    999,
+			expectError: false,
+			description: "Priority 999 should be accepted (lowest priority)",
+		},
+		{
+			name:        "Invalid priority 0",
+			priority:    0,
+			expectError: true,
+			description: "Priority 0 should be rejected (below valid range)",
+		},
+		{
+			name:        "Invalid priority 1000",
+			priority:    1000,
+			expectError: true,
+			description: "Priority 1000 should be rejected (reserved for internal use)",
+		},
+		{
+			name:        "Invalid priority 1001",
+			priority:    1001,
+			expectError: true,
+			description: "Priority 1001 should be rejected (above valid range)",
+		},
+		{
+			name:        "Invalid priority -1",
+			priority:    -1,
+			expectError: true,
+			description: "Priority -1 should be rejected (negative value)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := svc.UpdateModelGroupPriority(ctx, "test-model", group.ID, tt.priority)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("Expected error for %s, got nil", tt.description)
+				} else if err != ErrInvalidPriority {
+					t.Errorf("Expected ErrInvalidPriority, got %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for %s: %v", tt.description, err)
+				}
+
+				// Verify the priority was actually saved
+				var saved HubModelGroupPriority
+				if err := db.Where("model_name = ? AND group_id = ?", "test-model", group.ID).
+					First(&saved).Error; err != nil {
+					t.Errorf("Failed to retrieve saved priority: %v", err)
+				} else if saved.Priority != tt.priority {
+					t.Errorf("Expected saved priority %d, got %d", tt.priority, saved.Priority)
+				}
+			}
+		})
+	}
+}
+
+// TestBatchUpdateModelGroupPrioritiesValidation tests priority validation in batch updates
+func TestBatchUpdateModelGroupPrioritiesValidation(t *testing.T) {
+	t.Parallel()
+
+	db := setupHubTestDB(t)
+	ctx := context.Background()
+
+	// Create test groups
+	redirects := map[string]*models.ModelRedirectRuleV2{
+		"test-model": {Targets: []models.ModelRedirectTarget{{Model: "target-model", Weight: 100}}},
+	}
+	group1 := createTestGroupWithRedirects(t, db, "group-1", 1, true, "test-model", redirects)
+	group2 := createTestGroupWithRedirects(t, db, "group-2", 2, true, "test-model", redirects)
+	group3 := createTestGroupWithRedirects(t, db, "group-3", 3, true, "test-model", redirects)
+
+	// Auto-migrate HubModelGroupPriority table
+	if err := db.AutoMigrate(&HubModelGroupPriority{}); err != nil {
+		t.Fatalf("failed to migrate HubModelGroupPriority: %v", err)
+	}
+
+	svc := setupHubService(t, db)
+
+	// Test batch update with mixed valid and invalid priorities
+	updates := []UpdateModelGroupPriorityParams{
+		{ModelName: "test-model", GroupID: group1.ID, Priority: 10},   // Valid
+		{ModelName: "test-model", GroupID: group2.ID, Priority: 0},    // Invalid - should be skipped
+		{ModelName: "test-model", GroupID: group3.ID, Priority: 1000}, // Invalid - should be skipped
+	}
+
+	err := svc.BatchUpdateModelGroupPriorities(ctx, updates)
+	if err != nil {
+		t.Fatalf("BatchUpdateModelGroupPriorities failed: %v", err)
+	}
+
+	// Verify only valid priority was saved
+	var saved1 HubModelGroupPriority
+	err1 := db.Where("model_name = ? AND group_id = ?", "test-model", group1.ID).First(&saved1).Error
+	if err1 != nil {
+		t.Errorf("Expected group1 priority to be saved, got error: %v", err1)
+	} else if saved1.Priority != 10 {
+		t.Errorf("Expected group1 priority 10, got %d", saved1.Priority)
+	}
+
+	// Verify invalid priorities were not saved
+	var count int64
+	db.Model(&HubModelGroupPriority{}).
+		Where("model_name = ? AND group_id IN ?", "test-model", []uint{group2.ID, group3.ID}).
+		Count(&count)
+	if count != 0 {
+		t.Errorf("Expected invalid priorities to be skipped, but found %d records", count)
+	}
+}
+
+// TestInvalidPriorityErrorMessage tests the error message format
+func TestInvalidPriorityErrorMessage(t *testing.T) {
+	t.Parallel()
+
+	err := ErrInvalidPriority
+	expectedMsg := "priority must be between 1 and 999 (1=highest, 999=lowest). Priority 1000 is reserved for internal use"
+
+	if err.Error() != expectedMsg {
+		t.Errorf("Expected error message:\n%s\nGot:\n%s", expectedMsg, err.Error())
+	}
+}
