@@ -483,9 +483,9 @@ func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
 // 7. Select by sort order (priority) and weight
 //
 // IMPORTANT: Priority semantics - LOWER value = HIGHER priority
-// - priority=0: Disabled (filtered out)
 // - priority=1: Highest priority
 // - priority=999: Lowest priority
+// - priority=1000: Disabled (filtered out)
 func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, relayFormat types.RelayFormat, requestSizeKB int) (*models.Group, error) {
 	pool, err := s.GetModelPool(ctx)
 	if err != nil {
@@ -576,8 +576,9 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 	nativeChannel := GetNativeChannel(relayFormat)
 
 	for _, source := range allSources {
-		// Skip disabled or unhealthy sources
-		if !source.Enabled || source.HealthScore < healthThreshold {
+		// Skip disabled, unhealthy, or disabled-priority sources
+		// Priority >= 1000 means disabled (as documented in function comments)
+		if !source.Enabled || source.Sort >= 1000 || source.HealthScore < healthThreshold {
 			continue
 		}
 
@@ -656,9 +657,9 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 // 4. If multiple groups, use weighted random selection based on health_score
 //
 // IMPORTANT: Priority semantics - LOWER value = HIGHER priority
-// - priority=0: Disabled (filtered out before calling this function)
 // - priority=1: Highest priority
 // - priority=999: Lowest priority
+// - priority=1000: Disabled (filtered out before calling this function)
 func (s *HubService) selectFromSources(sources []ModelSource) (*models.Group, error) {
 	if len(sources) == 0 {
 		return nil, nil
@@ -918,14 +919,14 @@ func (s *HubService) GetModelPoolV2(ctx context.Context) ([]ModelPoolEntryV2, er
 }
 
 // UpdateModelGroupPriority updates the priority for a model-group pair.
-// Priority 0 means disabled (skip this group for this model).
+// Priority 1000 means disabled (skip this group for this model).
 // IMPORTANT: Priority semantics - LOWER value = HIGHER priority
-// - priority=0: Disabled
 // - priority=1: Highest priority
 // - priority=999: Lowest priority
+// - priority=1000: Disabled
 func (s *HubService) UpdateModelGroupPriority(ctx context.Context, modelName string, groupID uint, priority int) error {
 	// Validate priority range
-	if priority < 0 || priority > 999 {
+	if priority < 1 || priority > 1000 {
 		return ErrInvalidPriority
 	}
 
@@ -959,7 +960,7 @@ func (s *HubService) UpdateModelGroupPriority(ctx context.Context, modelName str
 func (s *HubService) BatchUpdateModelGroupPriorities(ctx context.Context, updates []UpdateModelGroupPriorityParams) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, update := range updates {
-			if update.Priority < 0 || update.Priority > 999 {
+			if update.Priority < 1 || update.Priority > 1000 {
 				// Log skipped invalid priorities for debugging
 				logrus.WithFields(logrus.Fields{
 					"model_name": update.ModelName,
@@ -1101,8 +1102,8 @@ func (s *HubService) SelectGroupForModelWithPriority(ctx context.Context, modelN
 	nativeChannel := GetNativeChannel(relayFormat)
 
 	for _, g := range groups {
-		// Skip disabled, zero-priority, or unhealthy groups
-		if !g.Enabled || g.Priority == 0 || g.HealthScore < healthThreshold {
+		// Skip disabled, disabled-priority, or unhealthy groups
+		if !g.Enabled || g.Priority >= 1000 || g.HealthScore < healthThreshold {
 			continue
 		}
 
@@ -1250,7 +1251,7 @@ var ErrInvalidPriority = &InvalidPriorityError{}
 type InvalidPriorityError struct{}
 
 func (e *InvalidPriorityError) Error() string {
-	return "priority must be between 0 and 999"
+	return "priority must be between 1 and 1000 (1=highest, 999=lowest, 1000=disabled)"
 }
 
 // InvalidGroupTypeError represents an error when trying to set custom models on a non-aggregate group.

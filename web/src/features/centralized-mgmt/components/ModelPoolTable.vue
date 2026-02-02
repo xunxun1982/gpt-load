@@ -26,6 +26,7 @@ import {
   NSpin,
   NTag,
   NText,
+  NTooltip,
   useMessage,
   type DataTableColumns,
   type SelectOption,
@@ -85,14 +86,14 @@ const channelTypeOptions = computed<SelectOption[]>(() => {
 
 /**
  * Get the primary channel type for a model.
- * Prioritizes enabled groups with priority > 0 and lowest priority value, falls back to first group's channel type.
+ * Prioritizes enabled groups with priority < 1000 and lowest priority value, falls back to first group's channel type.
  * Uses single-pass scan instead of filter+sort for better performance.
  */
 function getPrimaryChannelType(model: ModelPoolEntryV2): string {
   // Single-pass scan to find the enabled group with lowest priority
   const enabledGroup = model.groups.reduce(
     (best, g) => {
-      if (!g.enabled || g.priority <= 0 || !g.channel_type) {
+      if (!g.enabled || g.priority >= 1000 || !g.channel_type) {
         return best;
       }
       if (!best || g.priority < best.priority) {
@@ -170,7 +171,7 @@ function getHealthClass(score: number): string {
 function getPriorityTagType(
   priority: number
 ): "default" | "success" | "warning" | "error" | "info" {
-  if (priority === 0) {
+  if (priority >= 1000) {
     return "error";
   }
   if (priority <= 50) {
@@ -226,10 +227,10 @@ function openPopoverEdit(model: ModelPoolEntryV2, groups: ModelGroupPriority[]) 
   popoverEditingGroups.value = groups
     .map(g => ({ ...g }))
     .sort((a, b) => {
-      if (a.priority === 0 && b.priority !== 0) {
+      if (a.priority >= 1000 && b.priority < 1000) {
         return 1;
       }
-      if (b.priority === 0 && a.priority !== 0) {
+      if (b.priority >= 1000 && a.priority < 1000) {
         return -1;
       }
       return a.priority - b.priority;
@@ -281,10 +282,10 @@ function renderGroupTags(row: ModelPoolEntryV2) {
 
   // Sort by priority for display
   const sortedGroups = [...groups].sort((a, b) => {
-    if (a.priority === 0 && b.priority !== 0) {
+    if (a.priority >= 1000 && b.priority < 1000) {
       return 1;
     }
-    if (b.priority === 0 && a.priority !== 0) {
+    if (b.priority >= 1000 && a.priority < 1000) {
       return -1;
     }
     return a.priority - b.priority;
@@ -453,7 +454,7 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
     align: "center",
     titleAlign: "center",
     render: row => {
-      const enabledGroups = row.groups.filter(g => g.enabled && g.priority > 0);
+      const enabledGroups = row.groups.filter(g => g.enabled && g.priority < 1000);
       if (!enabledGroups.length) {
         return h(NText, { depth: 3 }, () => "-");
       }
@@ -470,7 +471,7 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
     align: "center",
     titleAlign: "center",
     render: row => {
-      const enabled = row.groups.filter(g => g.enabled && g.priority > 0).length;
+      const enabled = row.groups.filter(g => g.enabled && g.priority < 1000).length;
       return h(NText, null, () => `${enabled}/${row.groups.length}`);
     },
   },
@@ -493,10 +494,10 @@ function openEditModal(model: ModelPoolEntryV2) {
   editingGroups.value = model.groups
     .map(g => ({ ...g }))
     .sort((a, b) => {
-      if (a.priority === 0 && b.priority !== 0) {
+      if (a.priority >= 1000 && b.priority < 1000) {
         return 1;
       }
-      if (b.priority === 0 && a.priority !== 0) {
+      if (b.priority >= 1000 && a.priority < 1000) {
         return -1;
       }
       return a.priority - b.priority;
@@ -698,7 +699,7 @@ onMounted(() => {
               v-for="group in editingGroups"
               :key="group.group_id"
               class="priority-row"
-              :class="{ disabled: group.priority === 0 }"
+              :class="{ disabled: group.priority >= 1000 }"
             >
               <span class="col-name" :title="group.group_name">{{ group.group_name }}</span>
               <span class="col-gtype">
@@ -718,8 +719,8 @@ onMounted(() => {
               <span class="col-priority">
                 <n-input-number
                   v-model:value="group.priority"
-                  :min="0"
-                  :max="999"
+                  :min="1"
+                  :max="1000"
                   size="tiny"
                   :show-button="true"
                   button-placement="both"

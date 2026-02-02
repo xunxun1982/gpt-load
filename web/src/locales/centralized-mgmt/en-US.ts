@@ -36,10 +36,10 @@ export default {
 
   // Priority
   priority: "Priority",
-  priorityHint: "0=disabled, 1-999=priority (lower=higher priority)",
+  priorityHint: "1-999=priority (lower=higher priority), 1000=disabled",
   prioritySortHint:
     "Within same priority, higher health score = higher selection probability. E.g., priority=10 is chosen before priority=100",
-  priorityColumnHint: "Lower value = Higher priority (1=highest, 999=lowest)",
+  priorityColumnHint: "Lower value = Higher priority (1=highest, 999=lowest, 1000=disabled)",
   priorityExplanationHint:
     "💡 Numbers on group tags (e.g., :20, :100) are priorities. Lower value = higher priority. Same priority uses health-weighted random selection",
 

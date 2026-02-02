@@ -56,15 +56,14 @@ func NewHubHandler(
 // ② Model Extraction: Extract model name from request (format-aware)
 // ③ Access Control: Validate access key permissions for the model
 // ④ Model Availability: Check if model exists in any enabled group
-// ⑤ Group Selection (SelectGroupForModel):
+// ⑤ Group Selection Filters (SelectGroupForModel):
 //    - Filter: Health threshold + Enabled status
 //    - Filter: Channel compatibility with relay format
 //    - Filter: Claude format CC support (for non-Anthropic channels)
 //    - Filter: Aggregate group preconditions (e.g., max_request_size_kb) - EARLY FILTERING
-//    - Prioritize: Native channels > Compatible channels
-//    - Select: Minimum priority value → Health-weighted random selection
-// ⑥ Path Rewrite: /hub/v1/* → /proxy/{group_name}/v1/*
-// ⑦ Forward: Proxy to selected group's upstream
+// ⑥ Channel Priority: Native channels > Compatible channels
+// ⑦ Group Selection: Minimum priority value (lower=higher) → Health-weighted random selection
+// ⑧ Path Rewrite & Forward: /hub/v1/* → /proxy/{group_name}/v1/*
 func (h *HubHandler) HandleHubProxy(c *gin.Context) {
 	ctx := c.Request.Context()
 

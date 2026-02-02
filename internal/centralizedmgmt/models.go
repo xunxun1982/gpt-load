@@ -88,13 +88,13 @@ type BatchEnableDisableParams struct {
 }
 
 // HubModelGroupPriority stores priority configuration for a model in a specific group.
-// Priority 0 means disabled (skip this group for this model).
-// Lower priority values are tried first (1 is highest priority).
+// Priority semantics: Lower value = Higher priority (1 is highest priority).
+// Priority 1000 means disabled (skip this group for this model).
 type HubModelGroupPriority struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	ModelName string    `gorm:"type:varchar(255);not null;uniqueIndex:idx_hub_model_group_priority" json:"model_name"`
 	GroupID   uint      `gorm:"not null;uniqueIndex:idx_hub_model_group_priority" json:"group_id"`
-	Priority  int       `gorm:"not null;default:100" json:"priority"` // 0=disabled, 1-999=priority (lower=higher)
+	Priority  int       `gorm:"not null;default:100" json:"priority"` // 1-999=priority (lower=higher), 1000=disabled
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -153,7 +153,7 @@ type ModelPoolEntryV2 struct {
 type UpdateModelGroupPriorityParams struct {
 	ModelName string `json:"model_name" binding:"required"`
 	GroupID   uint   `json:"group_id" binding:"required"`
-	Priority  int    `json:"priority"` // 0=disabled, 1-999=priority
+	Priority  int    `json:"priority"` // 1-999=priority (lower=higher), 1000=disabled
 }
 
 // AggregateGroupCustomModels represents custom model names for an aggregate group.
