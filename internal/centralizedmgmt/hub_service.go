@@ -205,9 +205,7 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 		return nil, err
 	}
 
-	// Get health score threshold and only aggregate groups setting once for this build
-	// Note: healthThreshold is used in GetAvailableModels/IsModelAvailable for filtering
-	_ = s.GetHealthScoreThreshold() // Validate threshold is accessible
+	// Get only aggregate groups setting once for this build
 	onlyAggregateGroups := s.getOnlyAggregateGroups()
 
 	// Map to aggregate models by name
@@ -377,14 +375,18 @@ func (s *HubService) getAggregateGroupModelsWithVisited(aggregateGroupID uint, v
 	}
 
 	// Collect sub-group IDs, filtering out circular references
+	// Fail closed on cycles for consistency with getGroupModelsWithVisited
 	subGroupIDs := make([]uint, 0, len(subGroupRels))
 	for _, sg := range subGroupRels {
+		// Check for circular reference before querying
 		if _, seen := visited[sg.SubGroupID]; seen {
 			logrus.WithFields(logrus.Fields{
 				"aggregate_group_id": aggregateGroupID,
 				"sub_group_id":       sg.SubGroupID,
 			}).Warn("Circular reference detected in sub-group hierarchy")
-			continue
+			// Fail closed: return nil to indicate invalid hierarchy
+			// This prevents corrupted intersection results from entering selection
+			return nil
 		}
 		subGroupIDs = append(subGroupIDs, sg.SubGroupID)
 	}

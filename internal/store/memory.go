@@ -24,6 +24,7 @@ type MemoryStore struct {
 	subscribers     map[string]map[chan *Message]struct{}
 	droppedMessages atomic.Int64
 	stopCleanup     chan struct{} // Channel to stop cleanup goroutine
+	closeOnce       sync.Once     // Ensure Close is idempotent
 }
 
 // NOTE: This store uses the global logrus logger configured at application startup to stay aligned
@@ -44,20 +45,23 @@ func NewMemoryStore() *MemoryStore {
 }
 
 // Close cleans up resources.
+// Idempotent: safe to call multiple times without panicking.
 func (s *MemoryStore) Close() error {
-	// Stop cleanup goroutine
-	close(s.stopCleanup)
+	s.closeOnce.Do(func() {
+		// Stop cleanup goroutine
+		close(s.stopCleanup)
 
-	// Close all subscriber channels to prevent goroutine leaks
-	// This ensures all blocked goroutines on <-sub.Channel() are unblocked
-	s.muSubscribers.Lock()
-	for channel, subs := range s.subscribers {
-		for subCh := range subs {
-			close(subCh)
+		// Close all subscriber channels to prevent goroutine leaks
+		// This ensures all blocked goroutines on <-sub.Channel() are unblocked
+		s.muSubscribers.Lock()
+		for channel, subs := range s.subscribers {
+			for subCh := range subs {
+				close(subCh)
+			}
+			delete(s.subscribers, channel)
 		}
-		delete(s.subscribers, channel)
-	}
-	s.muSubscribers.Unlock()
+		s.muSubscribers.Unlock()
+	})
 
 	return nil
 }

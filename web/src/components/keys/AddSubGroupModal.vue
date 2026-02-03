@@ -59,7 +59,7 @@ const formRef = ref();
 const formData = reactive<{
   sub_groups: SubGroupItem[];
 }>({
-  sub_groups: [{ group_id: null, weight: 1 }],
+  sub_groups: [{ group_id: null, weight: 10 }],
 });
 
 // Compute available group options (exclude already added ones)

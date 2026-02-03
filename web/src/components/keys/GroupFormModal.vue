@@ -683,6 +683,9 @@ async function resetModelRedirectHealth(sourceModel: string, targetModel: string
         message.success(t("keys.resetModelRedirectHealthSuccess"));
         // Refresh dynamic weights after reset
         await fetchModelRedirectDynamicWeights(props.group.id);
+      } catch (error) {
+        console.error("Failed to reset model redirect health:", error);
+        message.error(t("common.operationFailed"));
       } finally {
         d.loading = false;
       }

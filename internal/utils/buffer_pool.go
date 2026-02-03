@@ -93,8 +93,10 @@ func GetBufferWithCapacity(capacity int) *bytes.Buffer {
 
 	// Ensure the buffer has at least the requested capacity to avoid reallocation
 	// This is critical for performance when the caller knows the required size
-	if capacity > 0 && buf.Cap() < capacity {
-		buf.Grow(capacity - buf.Cap())
+	// bytes.Buffer.Grow(n) ensures space for n more bytes relative to current length
+	// So we need to grow by (capacity - current_length) when capacity > current_capacity
+	if buf.Cap() < capacity {
+		buf.Grow(capacity)
 	}
 
 	return buf

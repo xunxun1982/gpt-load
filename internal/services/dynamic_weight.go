@@ -395,7 +395,9 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 // Three health score ranges (optimized for unstable channels with intermittent failures):
 // 1. Critical (<= 0.50): effective weight reduced to 10% of base weight, capped at 1 (min 0.1)
 //    This prevents unhealthy high-weight targets from dominating healthy low-weight targets
-//    Example: baseWeight=100 -> min(10, 1) = 1, baseWeight=5 -> 0.5, baseWeight=1 -> 0.1
+//    Example (intermediate values before rounding): baseWeight=100 -> 10% = 10, capped to 1;
+//    baseWeight=5 -> 10% = 0.5; baseWeight=1 -> 10% = 0.1
+//    (all rounded to minimum 1 in final result)
 // 2. Medium (0.50 to 0.75): aggressive non-linear penalty using quadratic function
 //    Example: health=0.6 -> weight multiplier = 0.6^2 = 0.36
 // 3. Good (> 0.75): linear scaling

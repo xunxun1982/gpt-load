@@ -38,7 +38,7 @@ export default {
   priority: "Priority",
   priorityHint: "1-999=priority (lower=higher priority), 1000=internal reserved value",
   prioritySortHint:
-    "Within same priority, higher health score = higher selection probability. E.g., priority=10 is chosen before priority=100",
+    "Within the same priority, higher health score = higher selection probability. E.g., two priority=10 groups are weighted by health",
   priorityColumnHint:
     "Lower value = Higher priority (1=highest, 999=lowest, 1000=internal reserved)",
   priorityExplanationHint:

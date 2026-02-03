@@ -37,7 +37,7 @@ export default {
   priority: "优先级",
   priorityHint: "1-999=优先级（数字越小优先级越高），1000=系统内部保留值",
   prioritySortHint:
-    "相同优先级时，健康度越高被选中概率越大。例如：priority=10的分组优先于priority=100的分组",
+    "相同优先级时，健康度越高被选中概率越大。例如：priority=10 的分组A与 priority=10 的分组B，健康度更高者更易被选中",
   priorityColumnHint: "数值越小=优先级越高（1最高，999最低，1000系统保留）",
   priorityExplanationHint:
     "💡 分组标签上的数字（如 :20、:100）是优先级，数值越小优先级越高。相同优先级时按健康度加权随机选择",
