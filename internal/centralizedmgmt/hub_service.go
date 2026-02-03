@@ -456,13 +456,25 @@ func (s *HubService) parseModelRedirectRulesV2(rulesJSON []byte) map[string]*mod
 // - Returns value between 0.0 and 1.0 based on active key ratio
 // This is used for hub-level group selection to route requests to healthy groups.
 func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
+	return s.calculateGroupHealthScoreWithVisited(group, make(map[uint]struct{}))
+}
+
+// calculateGroupHealthScoreWithVisited calculates health score with cycle detection.
+// Uses visited set to prevent infinite recursion on circular aggregate group references.
+func (s *HubService) calculateGroupHealthScoreWithVisited(group *models.Group, visited map[uint]struct{}) float64 {
 	if group == nil {
 		return 1.0
 	}
 
 	// For aggregate groups, calculate average health score of sub-groups
 	if group.GroupType == "aggregate" {
-		return s.calculateAggregateGroupHealthScore(group.ID)
+		// Check for circular reference before recursing
+		if _, seen := visited[group.ID]; seen {
+			logrus.WithField("group_id", group.ID).Warn("Circular reference detected in aggregate group health calculation")
+			return 1.0 // Fail-open on cycles
+		}
+		visited[group.ID] = struct{}{}
+		return s.calculateAggregateGroupHealthScoreWithVisited(group.ID, visited)
 	}
 
 	// For standard groups, calculate based on API key health
@@ -500,6 +512,12 @@ func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
 // It returns the average health score of all enabled sub-groups.
 // Returns 1.0 if no sub-groups are found (fail-open).
 func (s *HubService) calculateAggregateGroupHealthScore(aggregateGroupID uint) float64 {
+	return s.calculateAggregateGroupHealthScoreWithVisited(aggregateGroupID, make(map[uint]struct{}))
+}
+
+// calculateAggregateGroupHealthScoreWithVisited calculates health score with cycle detection.
+// Uses visited set to prevent infinite recursion on circular aggregate group references.
+func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGroupID uint, visited map[uint]struct{}) float64 {
 	// Get sub-group relationships
 	var subGroupRels []models.GroupSubGroup
 	if err := s.db.Where("group_id = ? AND weight > 0", aggregateGroupID).
@@ -535,7 +553,7 @@ func (s *HubService) calculateAggregateGroupHealthScore(aggregateGroupID uint) f
 	// Calculate average health score of sub-groups
 	var totalHealthScore float64
 	for _, subGroup := range subGroups {
-		subHealthScore := s.calculateGroupHealthScore(&subGroup)
+		subHealthScore := s.calculateGroupHealthScoreWithVisited(&subGroup, visited)
 		totalHealthScore += subHealthScore
 	}
 

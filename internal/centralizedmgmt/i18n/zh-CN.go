@@ -39,7 +39,7 @@ var MessagesZhCN = map[string]string{
 	"hub.routing.logic.step2":       "② 模型提取：从请求中提取模型名称（格式感知）",
 	"hub.routing.logic.step3":       "③ 访问控制：验证访问密钥对该模型的权限",
 	"hub.routing.logic.step4":       "④ 模型可用性：检查模型是否存在于任何启用的分组中",
-	"hub.routing.logic.step5":       "⑤ 分组选择过滤：健康阈值 + 启用状态 + 渠道兼容性 + CC 支持（Claude 格式）+ 聚合分组前置条件（请求大小限制等）",
+	"hub.routing.logic.step5":       "⑤ 分组选择过滤：健康阈值 + 启用状态 + 渠道兼容性 + Claude Code 支持 + 聚合分组前置条件（请求大小限制等）",
 	"hub.routing.logic.step6":       "⑥ 渠道优先级：原生渠道 > 兼容渠道",
 	"hub.routing.logic.step7":       "⑦ 分组选择：最小 priority 值（数值越小优先级越高）→ 健康度加权随机选择",
 	"hub.routing.logic.step8":       "⑧ 路径重写并转发：/hub/v1/* → /proxy/{分组名}/v1/*",

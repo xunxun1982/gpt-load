@@ -39,7 +39,7 @@ var MessagesEnUS = map[string]string{
 	"hub.routing.logic.step2":       "② Model Extraction: Extract model name from request (format-aware)",
 	"hub.routing.logic.step3":       "③ Access Control: Validate access key permissions for the model",
 	"hub.routing.logic.step4":       "④ Model Availability: Check if model exists in any enabled group",
-	"hub.routing.logic.step5":       "⑤ Group Selection Filters: Health threshold + Enabled status + Channel compatibility + CC support (Claude format) + Aggregate group preconditions (request size limits, etc.)",
+	"hub.routing.logic.step5":       "⑤ Group Selection Filters: Health threshold + Enabled status + Channel compatibility + Claude Code support + Aggregate group preconditions (request size limits, etc.)",
 	"hub.routing.logic.step6":       "⑥ Channel Priority: Native channels > Compatible channels",
 	"hub.routing.logic.step7":       "⑦ Group Selection: Minimum priority value (lower=higher) → Health-weighted random selection",
 	"hub.routing.logic.step8":       "⑧ Path Rewrite & Forward: /hub/v1/* → /proxy/{group_name}/v1/*",

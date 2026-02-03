@@ -263,6 +263,12 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_group_type", nil)
 	}
 
+	// Validate Sort field: must be between 1 and 999
+	// Priority >= 1000 is reserved for internal use (disabled state)
+	if params.Sort < 1 || params.Sort > 999 {
+		return nil, NewI18nError(app_errors.ErrValidation, "hub.model_pool.invalid_priority", nil)
+	}
+
 	var cleanedUpstreams datatypes.JSON
 	var testModel string
 	var validationEndpoint string
@@ -752,6 +758,11 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	}
 
 	if params.Sort != nil {
+		// Validate Sort field: must be between 1 and 999
+		// Priority >= 1000 is reserved for internal use (disabled state)
+		if *params.Sort < 1 || *params.Sort > 999 {
+			return nil, NewI18nError(app_errors.ErrValidation, "hub.model_pool.invalid_priority", nil)
+		}
 		group.Sort = *params.Sort
 	}
 
