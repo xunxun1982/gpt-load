@@ -221,7 +221,8 @@ var MessagesEnUS = map[string]string{
 	"error.decrypt_key_copy":         "Failed to decrypt key during group copy, skipping",
 	"error.start_import_task":        "Failed to start async key import task for group copy",
 	"error.export_logs":              "Failed to export logs",
-	"error.debug_mode_required":      "This operation requires DEBUG_MODE to be enabled",
+	"error.debug_mode_required":          "This operation requires DEBUG_MODE to be enabled",
+	"error.dynamic_weight_not_configured": "Dynamic weight manager is not configured",
 
 	// Login related
 	"auth.invalid_request":           "Invalid request format",
@@ -235,6 +236,7 @@ var MessagesEnUS = map[string]string{
 	"success.sub_groups_added":         "Sub groups added successfully",
 	"success.sub_group_weight_updated": "Sub group weight updated successfully",
 	"success.sub_group_deleted":        "Sub group deleted successfully",
+	"success.health_reset":             "Health metrics reset successfully",
 	"success.group_enabled":            "Group enabled successfully",
 	"success.group_disabled":           "Group disabled successfully",
 	"success.all_groups_deleted":       "All groups deleted successfully",

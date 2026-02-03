@@ -66,25 +66,51 @@ type DynamicWeightConfig struct {
 }
 
 // DefaultDynamicWeightConfig returns the default configuration.
+// Optimized for unstable channels that may experience intermittent failures.
+// Tolerates patterns like "5-6 consecutive failures followed by 1 success" while still
+// penalizing persistently poor performance. Balances between availability and quality.
 func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 	return &DynamicWeightConfig{
-		ConsecutiveFailurePenalty:    0.1,
-		MaxConsecutiveFailurePenalty: 0.5,
-		RecentFailurePenalty:         0.2,
-		RecentFailureCooldown:        5 * time.Minute,
-		LowSuccessRatePenalty:        0.2,
-		LowSuccessRateThreshold:      50.0,
-		MinRequestsForSuccessRate:    5,
-		MinHealthScore:               0.1,
-		MetricsTTL:                   180 * 24 * time.Hour, // 180 days
-		TimeWindowConfigs:            models.DefaultTimeWindowConfigs(),
-		// Critical health threshold: below this, effective weight becomes zero
-		CriticalHealthThreshold: 0.3,
-		// Medium health threshold: between critical and this, apply aggressive penalty
-		MediumHealthThreshold: 0.7,
-		// Penalty exponent for medium health scores (quadratic penalty by default)
-		// This makes low-medium health scores (e.g., 0.4) have much lower effective weight
-		// Example: 0.4^2 = 0.16, so a weight of 10 becomes 1.6 (rounded to 2)
+		// Consecutive failure penalty: 0.08 per failure
+		// Tolerates up to 5-6 failures before significant penalty (5 × 0.08 = 0.40 max)
+		// More forgiving than strict circuit breaker patterns for unstable channels
+		ConsecutiveFailurePenalty: 0.08,
+		// Max penalty at 0.40 (reached after 5 consecutive failures)
+		// Allows unstable channels to still receive some traffic for recovery
+		MaxConsecutiveFailurePenalty: 0.40,
+		// Recent failure penalty: 0.12 with time decay
+		// Moderate penalty that decays over cooldown period
+		RecentFailurePenalty: 0.12,
+		// 8-minute cooldown for recent failure penalty
+		// Longer cooldown gives unstable channels more time to stabilize
+		RecentFailureCooldown: 8 * time.Minute,
+		// Low success rate penalty: 0.18
+		// Applied when success rate falls below threshold
+		LowSuccessRatePenalty: 0.18,
+		// 40% success rate threshold
+		// Tolerates intermittent failures (e.g., 5-6 failures + 1 success ≈ 14-17% raw rate,
+		// but with other successful requests mixed in, actual rate may be 30-50%)
+		LowSuccessRateThreshold: 40.0,
+		// Minimum 5 requests before evaluating success rate
+		// Prevents premature penalties on low sample sizes
+		MinRequestsForSuccessRate: 5,
+		// Minimum health score of 0.1
+		MinHealthScore: 0.1,
+		// Metrics TTL of 180 days
+		MetricsTTL: 180 * 24 * time.Hour,
+		// Time window configs for weighted success rate calculation
+		TimeWindowConfigs: models.DefaultTimeWindowConfigs(),
+		// Critical health threshold: 0.25
+		// Below this, effective weight becomes 10% of base weight (min 1)
+		// More tolerant threshold for unstable channels
+		CriticalHealthThreshold: 0.25,
+		// Medium health threshold: 0.65
+		// Between 0.25 and 0.65, apply quadratic penalty for traffic reduction
+		// Wider range than strict standards to accommodate channel instability
+		MediumHealthThreshold: 0.65,
+		// Quadratic penalty exponent for medium health range
+		// effectiveWeight = baseWeight * (healthScore ^ 2.0)
+		// Example: health=0.5 -> weight multiplier=0.25
 		MediumHealthPenaltyExponent: 2.0,
 	}
 }
@@ -364,11 +390,15 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 }
 
 // GetEffectiveWeight calculates the effective weight based on base weight and health score.
-// Implements non-linear penalty for low health scores to prevent unhealthy targets from receiving traffic.
-// Three health score ranges:
-// 1. Critical (<= CriticalHealthThreshold): effective weight = 0 (completely excluded)
-// 2. Medium (CriticalHealthThreshold to MediumHealthThreshold): aggressive non-linear penalty
-// 3. Good (> MediumHealthThreshold): linear scaling
+// Implements non-linear penalty for low health scores to reduce traffic to unhealthy targets.
+// Three health score ranges (optimized for unstable channels with intermittent failures):
+// 1. Critical (<= 0.25): minimum effective weight of max(1, baseWeight * 0.1)
+//    This allows recovery while distinguishing from targets with baseWeight=1
+// 2. Medium (0.25 to 0.65): aggressive non-linear penalty using quadratic function
+//    Example: health=0.5 -> weight multiplier = 0.5^2 = 0.25
+// 3. Good (> 0.65): linear scaling
+// Note: Critical health targets get minimum 10% of base weight (at least 1) to allow recovery
+// while maintaining distinction from healthy targets with low base weights.
 func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *DynamicWeightMetrics) int {
 	if baseWeight <= 0 {
 		return 0
@@ -376,31 +406,35 @@ func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *Dynam
 
 	healthScore := m.CalculateHealthScore(metrics)
 
-	// Critical health: completely exclude from selection
+	var effectiveWeight float64
+
+	// Critical health: use minimum 10% of base weight to allow recovery
+	// This distinguishes unhealthy high-weight targets from healthy low-weight targets
+	// Example: baseWeight=100 -> effectiveWeight=10, baseWeight=10 -> effectiveWeight=1
 	if healthScore <= m.config.CriticalHealthThreshold {
-		return 0
-	}
-
-	var effectiveWeight int
-
-	// Medium health: apply aggressive non-linear penalty
-	if healthScore < m.config.MediumHealthThreshold {
+		minWeight := float64(baseWeight) * 0.1
+		if minWeight < 1.0 {
+			minWeight = 1.0
+		}
+		effectiveWeight = minWeight
+	} else if healthScore < m.config.MediumHealthThreshold {
+		// Medium health: apply aggressive non-linear penalty
 		// Use power function to create aggressive penalty curve
 		// Example with exponent=2.0: health=0.4 -> 0.16, health=0.5 -> 0.25, health=0.6 -> 0.36
 		penalizedScore := math.Pow(healthScore, m.config.MediumHealthPenaltyExponent)
-		effectiveWeight = int(float64(baseWeight) * penalizedScore)
+		effectiveWeight = float64(baseWeight) * penalizedScore
 	} else {
 		// Good health: linear scaling
-		effectiveWeight = int(float64(baseWeight) * healthScore)
+		effectiveWeight = float64(baseWeight) * healthScore
 	}
 
-	// Ensure minimum weight of 1 for non-critical health scores
-	// This prevents rounding to zero for small base weights with medium health
-	if effectiveWeight < 1 && healthScore > m.config.CriticalHealthThreshold {
-		effectiveWeight = 1
+	// Round to nearest integer and ensure minimum of 1
+	result := int(math.Round(effectiveWeight))
+	if result < 1 {
+		result = 1
 	}
 
-	return effectiveWeight
+	return result
 }
 
 // SubGroupWeightInput is the input for GetSubGroupDynamicWeights.

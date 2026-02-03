@@ -155,9 +155,11 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		groups.POST("/:id/sub-groups", serverHandler.AddSubGroups)
 		groups.PUT("/:id/sub-groups/:subGroupId/weight", serverHandler.UpdateSubGroupWeight)
 		groups.DELETE("/:id/sub-groups/:subGroupId", serverHandler.DeleteSubGroup)
+		groups.POST("/:id/sub-groups/:subGroupId/reset-health", serverHandler.ResetSubGroupHealth)
 		groups.GET("/:id/parent-aggregate-groups", serverHandler.GetParentAggregateGroups)
 		groups.GET("/:id/models", serverHandler.GetGroupModels)
 		groups.GET("/:id/model-redirect-weights", serverHandler.GetModelRedirectDynamicWeights)
+		groups.POST("/:id/model-redirect-health/reset", serverHandler.ResetModelRedirectHealth)
 
 		// Child group routes
 		groups.POST("/:id/child-groups", serverHandler.CreateChildGroup)

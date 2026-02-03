@@ -545,6 +545,10 @@ export default {
     minutesAgo: "{minutes} minutes ago",
     secondsAgo: "{seconds} seconds ago",
     justNow: "Just now",
+    resetModelRedirectHealth: "Reset Health",
+    confirmResetModelRedirectHealth:
+      'Are you sure to reset health metrics for model redirect "{source}" → "{target}"?',
+    resetModelRedirectHealthSuccess: "Model redirect health metrics reset successfully",
     restoreKeys: "Restore Keys",
     confirmRestoreAllInvalid: "Are you sure to restore all invalid keys?",
     validatingKeysMsg: "Validating {type} keys...",
@@ -699,6 +703,9 @@ export default {
     requestCount: "Requests",
     lastFailure: "Last Failure",
     lastSuccess: "Last Success",
+    resetHealth: "Reset Health",
+    confirmResetHealth: 'Are you sure to reset health metrics for sub group "{name}"?',
+    resetHealthSuccess: "Health metrics reset successfully",
   },
   logs: {
     title: "Logs",

@@ -857,3 +857,71 @@ func (s *Server) GetModelRedirectDynamicWeights(c *gin.Context) {
 
 	response.Success(c, result)
 }
+
+// ResetSubGroupHealth handles resetting health metrics for a sub-group.
+// POST /api/groups/:id/sub-groups/:subGroupId/reset-health
+func (s *Server) ResetSubGroupHealth(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	subGroupID, err := strconv.Atoi(c.Param("subGroupId"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_sub_group_id")
+		return
+	}
+
+	if s.DynamicWeightManager == nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.dynamic_weight_not_configured")
+		return
+	}
+
+	if err := s.DynamicWeightManager.ResetSubGroupMetrics(uint(id), uint(subGroupID)); err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"group_id":     id,
+			"sub_group_id": subGroupID,
+		}).Error("Failed to reset sub-group health metrics")
+		response.Error(c, app_errors.ErrInternalServer)
+		return
+	}
+
+	response.SuccessI18n(c, "success.health_reset", nil)
+}
+
+// ResetModelRedirectHealth handles resetting health metrics for a model redirect target.
+// POST /api/groups/:id/model-redirect-health/reset
+func (s *Server) ResetModelRedirectHealth(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	var req struct {
+		SourceModel string `json:"source_model" binding:"required"`
+		TargetModel string `json:"target_model" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_request_body")
+		return
+	}
+
+	if s.DynamicWeightManager == nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.dynamic_weight_not_configured")
+		return
+	}
+
+	if err := s.DynamicWeightManager.ResetModelRedirectMetrics(uint(id), req.SourceModel, req.TargetModel); err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"group_id":     id,
+			"source_model": req.SourceModel,
+			"target_model": req.TargetModel,
+		}).Error("Failed to reset model redirect health metrics")
+		response.Error(c, app_errors.ErrInternalServer)
+		return
+	}
+
+	response.SuccessI18n(c, "success.health_reset", nil)
+}

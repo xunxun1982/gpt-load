@@ -268,7 +268,7 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 
 			qctx, qcancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			err := query.WithContext(qctx).Find(&batchKeys).Error
-			qcancel()
+			qcancel() // Safe: Find doesn't panic, and we need immediate cancel before next iteration
 
 			if err != nil {
 				logrus.Errorf("CronChecker: Failed to get invalid keys for group %s: %v", group.Name, err)

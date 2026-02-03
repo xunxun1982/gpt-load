@@ -109,7 +109,7 @@ type HubSettings struct {
 	ID                  uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	MaxRetries          int       `gorm:"not null;default:3" json:"max_retries"`              // Max retries per priority level
 	RetryDelay          int       `gorm:"not null;default:100" json:"retry_delay"`            // Delay between retries in ms
-	HealthThreshold     float64   `gorm:"not null;default:0.5" json:"health_threshold"`       // Min health score for group selection
+	HealthThreshold     float64   `gorm:"not null;default:0.3" json:"health_threshold"`       // Min health score for group selection (hard filter)
 	EnablePriority      bool      `gorm:"not null;default:true" json:"enable_priority"`       // Enable priority-based routing
 	OnlyAggregateGroups bool      `gorm:"not null;default:true" json:"only_aggregate_groups"` // Only accept aggregate groups for routing
 	CreatedAt           time.Time `json:"created_at"`

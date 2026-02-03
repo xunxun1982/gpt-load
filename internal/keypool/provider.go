@@ -218,8 +218,10 @@ func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, i
 		// Task submitted successfully
 	default:
 		// Channel full, process synchronously to avoid data loss
+		// Note: Using sync processing instead of spawning goroutine to prevent
+		// unbounded goroutine creation when channel is persistently full
 		logrus.Warn("Status update channel full, processing synchronously")
-		go p.processStatusUpdate(task)
+		p.processStatusUpdate(task)
 	}
 }
 
