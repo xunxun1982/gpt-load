@@ -137,6 +137,11 @@ func (s *RedisStore) SPopN(key string, count int64) ([]string, error) {
 	return s.client.SPopN(context.Background(), s.prefixKey(key), count).Result()
 }
 
+// SCard returns the cardinality (number of elements) of a set.
+func (s *RedisStore) SCard(key string) (int64, error) {
+	return s.client.SCard(context.Background(), s.prefixKey(key)).Result()
+}
+
 // --- Pipeliner implementation ---
 
 type redisPipeliner struct {

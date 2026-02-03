@@ -526,6 +526,9 @@ func TestGetBufferWithCapacity(t *testing.T) {
 					t.Errorf("Expected capacity >= %d for huge buffer, got %d", tt.expectedMinCap, buf.Cap())
 				}
 			} else if buf.Cap() > 0 && buf.Cap() < tt.expectedMinCap {
+				// Note: Using t.Logf instead of assertion because sync.Pool behavior is non-deterministic.
+				// The GC can clear pools at any time, so we cannot reliably assert pool reuse.
+				// This log helps verify pool behavior during manual testing without causing flaky test failures.
 				t.Logf("Buffer capacity: %d (expected >= %d for %s pool)", buf.Cap(), tt.expectedMinCap, tt.expectedPoolType)
 			}
 		})
@@ -624,6 +627,9 @@ func TestTieredBufferPooling(t *testing.T) {
 
 			if tt.shouldPool {
 				// For pooled buffers, verify they're routed to correct pool
+				// Note: Capacity checks use t.Logf instead of assertions due to sync.Pool's non-deterministic behavior.
+				// The Go runtime's GC can clear pools at any time, making strict assertions unreliable and causing flaky tests.
+				// These logs provide observability during manual testing without test failures.
 				switch tt.poolType {
 				case "small":
 					if buf2.Cap() > smallBufferThreshold*2 {
@@ -647,6 +653,7 @@ func TestTieredBufferPooling(t *testing.T) {
 				}
 			} else {
 				// For non-pooled buffers, the large buffer should not be reused
+				// Note: Using t.Logf because pool behavior is non-deterministic (see above explanation)
 				if buf2.Cap() >= initialCap {
 					t.Logf("Warning: huge buffer may have been pooled (cap: %d)", buf2.Cap())
 				}

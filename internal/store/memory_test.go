@@ -328,6 +328,45 @@ func TestMemoryStore_SPopN(t *testing.T) {
 	assert.Len(t, popped, 2)
 }
 
+// TestMemoryStore_SCard tests set cardinality operation
+func TestMemoryStore_SCard(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	key := "set_card_key"
+
+	// Check cardinality of non-existent set
+	card, err := store.SCard(key)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), card)
+
+	// Add members
+	err = store.SAdd(key, "member1", "member2", "member3")
+	require.NoError(t, err)
+
+	// Check cardinality
+	card, err = store.SCard(key)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), card)
+
+	// Add duplicate (should not increase cardinality)
+	err = store.SAdd(key, "member1")
+	require.NoError(t, err)
+
+	card, err = store.SCard(key)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), card)
+
+	// Test type mismatch error
+	listKey := "list_key"
+	err = store.LPush(listKey, "item1")
+	require.NoError(t, err)
+
+	_, err = store.SCard(listKey)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "type mismatch")
+}
+
 // TestMemoryStore_PubSub tests publish/subscribe operations
 func TestMemoryStore_PubSub(t *testing.T) {
 	store := NewMemoryStore()

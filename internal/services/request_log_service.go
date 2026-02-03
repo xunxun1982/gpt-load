@@ -170,7 +170,13 @@ func (s *RequestLogService) Record(log *models.RequestLog) error {
 		return err
 	}
 
+	// Add to pending set; cleanup orphaned cache entry if SAdd fails
+	// to prevent memory leaks from untracked entries
 	if err := s.store.SAdd(PendingLogKeysSet, cacheKey); err != nil {
+		// Best-effort cleanup: delete the orphaned cache entry
+		if delErr := s.store.Del(cacheKey); delErr != nil {
+			logrus.WithError(delErr).Warnf("Failed to cleanup orphaned log cache key %s", cacheKey)
+		}
 		return err
 	}
 
@@ -302,21 +308,25 @@ func (s *RequestLogService) flush() {
 			return
 		}
 
+		// Only decrement pendingCount after successful deletion to maintain accurate counter
+		// This follows atomic operation best practices: only update counter on success
 		if len(processedKeys) > 0 {
 			if err := s.store.Del(processedKeys...); err != nil {
 				logrus.Errorf("Failed to delete flushed log bodies from store: %v", err)
+			} else {
+				atomic.AddInt64(&s.pendingCount, -int64(len(processedKeys)))
 			}
-			// Decrement approximate pending count
-			atomic.AddInt64(&s.pendingCount, -int64(len(processedKeys)))
-		}
-		// Decrement pendingCount for missing and bad keys to prevent counter drift
-		if missingCount+len(badKeys) > 0 {
-			atomic.AddInt64(&s.pendingCount, -int64(missingCount+len(badKeys)))
 		}
 		if len(badKeys) > 0 {
 			if err := s.store.Del(badKeys...); err != nil {
 				logrus.WithError(err).Error("Failed to delete corrupted log bodies from store")
+			} else {
+				atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 			}
+		}
+		// Decrement for missing keys (they were never in cache, so safe to decrement)
+		if missingCount > 0 {
+			atomic.AddInt64(&s.pendingCount, -int64(missingCount))
 		}
 		if len(retryKeys) > 0 {
 			args := make([]any, len(retryKeys))

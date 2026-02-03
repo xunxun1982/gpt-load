@@ -330,6 +330,7 @@ func (s *MemoryStore) Rotate(key string) (string, error) {
 }
 
 // LLen returns the length of a list.
+// Note: This method only supports list types. For set cardinality, use SCard instead.
 func (s *MemoryStore) LLen(key string) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -339,15 +340,31 @@ func (s *MemoryStore) LLen(key string) (int64, error) {
 		return 0, nil
 	}
 
-	// Support both list and set types for flexibility
-	switch v := rawItem.(type) {
-	case []string:
-		return int64(len(v)), nil
-	case map[string]struct{}:
-		return int64(len(v)), nil
-	default:
-		return 0, fmt.Errorf("type mismatch: key '%s' holds a different data type", key)
+	list, ok := rawItem.([]string)
+	if !ok {
+		return 0, fmt.Errorf("type mismatch: key '%s' is not a list", key)
 	}
+
+	return int64(len(list)), nil
+}
+
+// SCard returns the cardinality (number of elements) of a set.
+// This follows Redis semantics where SCARD is used for sets and LLEN for lists.
+func (s *MemoryStore) SCard(key string) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rawItem, exists := s.data[key]
+	if !exists {
+		return 0, nil
+	}
+
+	set, ok := rawItem.(map[string]struct{})
+	if !ok {
+		return 0, fmt.Errorf("type mismatch: key '%s' is not a set", key)
+	}
+
+	return int64(len(set)), nil
 }
 
 // --- SET operations ---

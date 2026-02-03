@@ -54,6 +54,7 @@ type Store interface {
 	// SET operations
 	SAdd(key string, members ...any) error
 	SPopN(key string, count int64) ([]string, error)
+	SCard(key string) (int64, error)
 
 	// Close closes the store and releases any underlying resources.
 	Close() error
