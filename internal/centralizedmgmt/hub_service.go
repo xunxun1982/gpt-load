@@ -564,14 +564,14 @@ func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGrou
 // SelectGroupForModel selects the best group for a given model with relay format awareness.
 // Selection algorithm with early filtering optimization:
 // 1. Filter by model availability
-// 2. Filter by channel compatibility with relay format
-// 3. For Claude format, verify target channel has cc_support enabled
-// 4. For aggregate groups, check preconditions (e.g., max_request_size_kb) - EARLY FILTERING
+// 2. Filter by enabled status, priority (Sort >= 1000 means disabled), and health score
+// 3. Filter by channel compatibility with relay format
+// 4. For Claude format, verify target channel has cc_support enabled
+// 5. For aggregate groups, check preconditions (e.g., max_request_size_kb) - EARLY FILTERING
 //    - Batch load preconditions for all aggregate groups (avoid N+1 queries)
 //    - Filter out groups that don't meet preconditions before selection
 //    - This prevents unsuitable groups from entering the selection process
-// 5. Prioritize native channel type for the format
-// 6. Filter by enabled status and health score
+// 6. Prioritize native channel type for the format
 // 7. Select by sort order (priority) and weight
 //
 // IMPORTANT: Priority semantics - LOWER value = HIGHER priority
