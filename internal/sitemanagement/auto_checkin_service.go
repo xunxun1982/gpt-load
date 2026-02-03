@@ -64,6 +64,9 @@ type AutoCheckinService struct {
 
 	subConfig store.Subscription
 	subRunNow store.Subscription
+
+	// Protect against double-close panics when Stop() is called multiple times
+	stopOnce sync.Once
 }
 
 func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encryption.Service) *AutoCheckinService {
@@ -130,8 +133,12 @@ func (s *AutoCheckinService) Start() {
 }
 
 func (s *AutoCheckinService) Stop(ctx context.Context) {
-	close(s.stopCh)
-	close(s.cleanupCh) // Stop periodic cleanup goroutine
+	// Use sync.Once to prevent double-close panics if Stop() is called multiple times
+	// This is important for error recovery scenarios where Stop() might be called repeatedly
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		close(s.cleanupCh) // Stop periodic cleanup goroutine
+	})
 
 	// Clean up proxy client cache
 	s.proxyClients.Range(func(key, value interface{}) bool {

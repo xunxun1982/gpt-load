@@ -51,6 +51,9 @@ type BalanceService struct {
 	stopCh    chan struct{}
 	cleanupCh chan struct{} // Channel for periodic cleanup ticker
 	wg        sync.WaitGroup
+
+	// Protect against double-close panics when Stop() is called multiple times
+	stopOnce sync.Once
 }
 
 // NewBalanceService creates a new balance service
@@ -85,8 +88,12 @@ func (s *BalanceService) Start() {
 
 // Stop gracefully stops the background scheduler
 func (s *BalanceService) Stop(_ context.Context) {
-	close(s.stopCh)
-	close(s.cleanupCh) // Stop periodic cleanup goroutine
+	// Use sync.Once to prevent double-close panics if Stop() is called multiple times
+	// This is important for error recovery scenarios where Stop() might be called repeatedly
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		close(s.cleanupCh) // Stop periodic cleanup goroutine
+	})
 
 	// Clean up proxy client cache
 	s.proxyClients.Range(func(key, value interface{}) bool {

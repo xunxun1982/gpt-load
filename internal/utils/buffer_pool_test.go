@@ -609,9 +609,8 @@ func TestTieredBufferPooling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create buffer with specific size
-			buf := GetBuffer()
-			buf.Grow(tt.bufferSize)
+			// Use GetBufferWithCapacity to test tier selection
+			buf := GetBufferWithCapacity(tt.bufferSize)
 			buf.Write(make([]byte, tt.bufferSize))
 
 			initialCap := buf.Cap()
@@ -620,7 +619,7 @@ func TestTieredBufferPooling(t *testing.T) {
 			PutBuffer(buf)
 
 			// Get a new buffer and check if it's from the pool
-			buf2 := GetBuffer()
+			buf2 := GetBufferWithCapacity(tt.bufferSize)
 			defer PutBuffer(buf2)
 
 			if tt.shouldPool {
@@ -682,7 +681,8 @@ func BenchmarkTieredBufferPooling(b *testing.B) {
 			b.ReportAllocs()
 
 			for i := 0; i < b.N; i++ {
-				buf := GetBuffer()
+				// Use GetBufferWithCapacity to test tier selection
+				buf := GetBufferWithCapacity(sz.size)
 				buf.Write(data)
 				PutBuffer(buf)
 			}

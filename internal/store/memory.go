@@ -49,10 +49,12 @@ func (s *MemoryStore) Close() error {
 	close(s.stopCleanup)
 
 	// Close all subscriber channels to prevent goroutine leaks
-	// Note: We don't close channels directly here to avoid double-close panics.
-	// Instead, we remove them from tracking and let memorySubscription.Close() handle cleanup.
+	// This ensures all blocked goroutines on <-sub.Channel() are unblocked
 	s.muSubscribers.Lock()
-	for channel := range s.subscribers {
+	for channel, subs := range s.subscribers {
+		for subCh := range subs {
+			close(subCh)
+		}
 		delete(s.subscribers, channel)
 	}
 	s.muSubscribers.Unlock()
@@ -428,12 +430,16 @@ func (ms *memorySubscription) Close() error {
 		defer ms.store.muSubscribers.Unlock()
 
 		if subs, ok := ms.store.subscribers[ms.channel]; ok {
-			delete(subs, ms.msgChan)
-			if len(subs) == 0 {
-				delete(ms.store.subscribers, ms.channel)
+			// Only close if still tracked (not already closed by MemoryStore.Close)
+			if _, exists := subs[ms.msgChan]; exists {
+				delete(subs, ms.msgChan)
+				close(ms.msgChan)
+				if len(subs) == 0 {
+					delete(ms.store.subscribers, ms.channel)
+				}
 			}
+			// If not found, MemoryStore.Close() already closed it
 		}
-		close(ms.msgChan)
 	})
 	return nil
 }

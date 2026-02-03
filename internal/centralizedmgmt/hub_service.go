@@ -482,33 +482,28 @@ func (s *HubService) calculateGroupHealthScoreWithVisited(group *models.Group, v
 	}
 
 	// For standard groups, calculate based on API key health
-	var totalKeys, activeKeys int64
-
-	// Query total keys count
+	// Use single query with conditional count for efficiency (avoids N+1 query pattern)
+	type keyCounts struct {
+		TotalKeys  int64
+		ActiveKeys int64
+	}
+	var counts keyCounts
 	if err := s.db.Model(&models.APIKey{}).
+		Select("COUNT(*) as total_keys, SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as active_keys", models.KeyStatusActive).
 		Where("group_id = ?", group.ID).
-		Count(&totalKeys).Error; err != nil {
+		Scan(&counts).Error; err != nil {
 		logrus.WithError(err).WithField("group_id", group.ID).
-			Warn("Failed to count total keys for health score calculation")
+			Warn("Failed to count keys for health score calculation")
 		return 1.0 // Fail-open: assume healthy if query fails
 	}
 
 	// If no keys, consider group as healthy (1.0)
-	if totalKeys == 0 {
+	if counts.TotalKeys == 0 {
 		return 1.0
 	}
 
-	// Query active keys count
-	if err := s.db.Model(&models.APIKey{}).
-		Where("group_id = ? AND status = ?", group.ID, models.KeyStatusActive).
-		Count(&activeKeys).Error; err != nil {
-		logrus.WithError(err).WithField("group_id", group.ID).
-			Warn("Failed to count active keys for health score calculation")
-		return 1.0 // Fail-open: assume healthy if query fails
-	}
-
 	// Calculate health score as ratio of active keys
-	healthScore := float64(activeKeys) / float64(totalKeys)
+	healthScore := float64(counts.ActiveKeys) / float64(counts.TotalKeys)
 	return healthScore
 }
 
