@@ -193,12 +193,12 @@ watch(
 
 // Reset form
 function resetForm() {
-  formData.sub_groups = [{ group_id: null, weight: 1 }];
+  formData.sub_groups = [{ group_id: null, weight: 10 }];
 }
 
 // Add sub-group item
 function addSubGroupItem() {
-  formData.sub_groups.push({ group_id: null, weight: 1 });
+  formData.sub_groups.push({ group_id: null, weight: 10 });
 }
 
 // Remove sub-group item

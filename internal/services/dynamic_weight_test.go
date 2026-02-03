@@ -146,11 +146,11 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 5,
 			},
-			minWeight: 30, // Health score ~0.60 (1.0 - 5*0.08 = 0.60), in medium range (0.25-0.65), quadratic: 0.60^2 = 0.36, weight ~36
+			minWeight: 30, // Health score ~0.60 (1.0 - 5*0.08 = 0.60), in medium range (0.50-0.75), quadratic: 0.60^2 = 0.36, weight ~36
 			maxWeight: 40,
 		},
 		{
-			name:       "very poor health returns 10% of base weight (min 1)",
+			name:       "poor health returns ~10% weight via quadratic penalty",
 			baseWeight: 100,
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 6,        // Max penalty 0.40 (capped at 5 failures)
@@ -160,13 +160,13 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 				Successes7d:         2,
 				LastFailureAt:       time.Now().Add(-1 * time.Minute), // Recent failure ~0.11 penalty
 			},
-			// Total penalty ~0.69 (0.40 + 0.18 + 0.11), health ~0.31, in medium range (0.25-0.65)
-			// With quadratic penalty: 0.31^2 = 0.096, so weight ~10
-			minWeight: 8,
-			maxWeight: 12,
+			// Total penalty ~0.69 (0.40 + 0.18 + 0.11), health ~0.31, in critical range (<=0.50)
+			// Critical health: capped at 1
+			minWeight: 1,
+			maxWeight: 1,
 		},
 		{
-			name:       "medium health score (0.25-0.65) applies aggressive penalty",
+			name:       "good health score (>0.75) uses linear scaling",
 			baseWeight: 100,
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 3, // 3 * 0.08 = 0.24 penalty, health ~0.76
@@ -175,7 +175,7 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 				Requests7d:          5,
 				Successes7d:         4,
 			},
-			minWeight: 70, // Health ~0.76, above medium threshold (0.65), linear scaling
+			minWeight: 70, // Health ~0.76, above medium threshold (0.75), linear scaling
 			maxWeight: 80,
 		},
 		{
@@ -803,9 +803,9 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 				Successes7d:         2,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 8,  // Health ~0.42 (1.0 - 0.40 - 0.18), in medium range, quadratic: 0.42^2 = 0.18, weight ~18
-			expectedMaxWeight: 20,
-			description:       "Health score ~0.42 with quadratic penalty in medium range (0.25-0.65)",
+			expectedMinWeight: 1,  // Health ~0.42 (1.0 - 0.40 - 0.18), in critical range (<=0.50), capped at 1
+			expectedMaxWeight: 1,
+			description:       "Health score ~0.42 in critical range, weight capped at 1",
 		},
 		{
 			name: "moderate health (few failures) - moderate penalty",
@@ -817,7 +817,7 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 				Successes7d:         4,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 70, // Health ~0.76, above medium threshold (0.65), linear scaling
+			expectedMinWeight: 70, // Health ~0.76, above medium threshold (0.75), linear scaling
 			expectedMaxWeight: 80,
 			description:       "Health score ~0.76 with linear scaling in good range",
 		},

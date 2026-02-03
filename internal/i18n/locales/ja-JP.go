@@ -200,7 +200,8 @@ var MessagesJaJP = map[string]string{
 	"error.start_import_task":        "グループコピー用の非同期キーインポートタスクの開始に失敗しました",
 	"error.debug_mode_required":          "この操作にはDEBUG_MODEを有効にする必要があります",
 	"error.dynamic_weight_not_configured": "動的重み管理が設定されていません",
-	"error.export_logs":              "ログのエクスポートに失敗しました",
+	"error.health_reset_failed":          "ヘルスメトリクスのリセットに失敗しました",
+	"error.export_logs":                  "ログのエクスポートに失敗しました",
 
 	// Login related
 	"auth.invalid_request":           "無効なリクエスト形式",

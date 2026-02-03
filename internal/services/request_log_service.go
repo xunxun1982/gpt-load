@@ -65,6 +65,17 @@ func NewRequestLogService(db *gorm.DB, store store.Store, sm *config.SystemSetti
 
 // Start initializes the service and starts the periodic flush routine
 func (s *RequestLogService) Start() {
+	// Initialize pendingCount from persistent store to maintain accuracy across restarts
+	// This prevents MaxPendingLogs checks from being bypassed after restart
+	if card, err := s.store.SCard(PendingLogKeysSet); err != nil {
+		logrus.WithError(err).Warn("Failed to get pending log count from store, starting with 0")
+	} else {
+		atomic.StoreInt64(&s.pendingCount, card)
+		if card > 0 {
+			logrus.Infof("Initialized pending log count: %d logs from previous session", card)
+		}
+	}
+
 	s.wg.Add(1)
 	go s.runLoop()
 }
@@ -259,9 +270,13 @@ func (s *RequestLogService) flush() {
 		}
 
 		if len(logs) == 0 {
+			// Delete corrupted keys only if deletion succeeds, then decrement counter
 			if len(badKeys) > 0 {
 				if err := s.store.Del(badKeys...); err != nil {
 					logrus.WithError(err).Error("Failed to delete corrupted log bodies from store")
+				} else {
+					// Only decrement counter after successful deletion to maintain accuracy
+					atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 				}
 			}
 			if len(retryKeys) > 0 {
@@ -273,9 +288,9 @@ func (s *RequestLogService) flush() {
 					logrus.Errorf("CRITICAL: Failed to re-add unread log keys to set: %v", saddErr)
 				}
 			}
-			// Decrement pendingCount for missing and bad keys to prevent counter drift
-			if missingCount+len(badKeys) > 0 {
-				atomic.AddInt64(&s.pendingCount, -int64(missingCount+len(badKeys)))
+			// Decrement pendingCount for missing keys to prevent counter drift
+			if missingCount > 0 {
+				atomic.AddInt64(&s.pendingCount, -int64(missingCount))
 			}
 			continue
 		}
@@ -296,14 +311,18 @@ func (s *RequestLogService) flush() {
 					logrus.Errorf("CRITICAL: Failed to re-add failed log keys to set: %v", saddErr)
 				}
 			}
+			// Delete corrupted keys only if deletion succeeds, then decrement counter
 			if len(badKeys) > 0 {
 				if delErr := s.store.Del(badKeys...); delErr != nil {
 					logrus.WithError(delErr).Error("Failed to delete corrupted log bodies from store")
+				} else {
+					// Only decrement counter after successful deletion to maintain accuracy
+					atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 				}
 			}
-			// Decrement pendingCount for missing and bad keys to prevent counter drift
-			if missingCount+len(badKeys) > 0 {
-				atomic.AddInt64(&s.pendingCount, -int64(missingCount+len(badKeys)))
+			// Decrement pendingCount for missing keys to prevent counter drift
+			if missingCount > 0 {
+				atomic.AddInt64(&s.pendingCount, -int64(missingCount))
 			}
 			return
 		}

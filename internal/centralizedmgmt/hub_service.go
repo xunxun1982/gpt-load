@@ -299,14 +299,18 @@ func (s *HubService) getGroupModels(group *models.Group) []string {
 }
 
 // getGroupModelsWithVisited returns the list of virtual models with cycle detection.
-// Uses visited set to prevent infinite recursion on circular group references.
+// Uses path-scoped visited set to prevent infinite recursion on circular group references.
+// The visited set is scoped to the current recursion path, allowing shared sub-groups in DAG structures.
 func (s *HubService) getGroupModelsWithVisited(group *models.Group, visited map[uint]struct{}) []string {
 	// Check for circular reference
 	if _, seen := visited[group.ID]; seen {
 		logrus.WithField("group_id", group.ID).Warn("Circular reference detected in group hierarchy")
 		return nil
 	}
+	// Path-scoped visited: add current group to path, remove when done
+	// This allows shared sub-groups in DAG structures while detecting true cycles
 	visited[group.ID] = struct{}{}
+	defer delete(visited, group.ID)
 
 	if group.GroupType == "aggregate" {
 		// For aggregate groups, get intersection of models from all sub-groups

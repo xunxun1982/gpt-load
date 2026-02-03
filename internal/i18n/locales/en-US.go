@@ -220,9 +220,10 @@ var MessagesEnUS = map[string]string{
 	"error.delete_group_cache":       "Failed to delete group: unable to clean up cache",
 	"error.decrypt_key_copy":         "Failed to decrypt key during group copy, skipping",
 	"error.start_import_task":        "Failed to start async key import task for group copy",
-	"error.export_logs":              "Failed to export logs",
+	"error.export_logs":                  "Failed to export logs",
 	"error.debug_mode_required":          "This operation requires DEBUG_MODE to be enabled",
 	"error.dynamic_weight_not_configured": "Dynamic weight manager is not configured",
+	"error.health_reset_failed":          "Failed to reset health metrics",
 
 	// Login related
 	"auth.invalid_request":           "Invalid request format",

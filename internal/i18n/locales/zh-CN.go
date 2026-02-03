@@ -222,7 +222,8 @@ var MessagesZhCN = map[string]string{
 	"error.start_import_task":        "启动异步密钥导入任务失败",
 	"error.debug_mode_required":          "此操作需要启用 DEBUG_MODE",
 	"error.dynamic_weight_not_configured": "动态权重管理器未配置",
-	"error.export_logs":              "导出日志失败",
+	"error.health_reset_failed":          "重置健康度指标失败",
+	"error.export_logs":                  "导出日志失败",
 
 	// Login related
 	"auth.invalid_request":           "无效的请求格式",

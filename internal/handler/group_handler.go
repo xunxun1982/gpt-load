@@ -883,7 +883,7 @@ func (s *Server) ResetSubGroupHealth(c *gin.Context) {
 			"group_id":     id,
 			"sub_group_id": subGroupID,
 		}).Error("Failed to reset sub-group health metrics")
-		response.Error(c, app_errors.ErrInternalServer)
+		response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.health_reset_failed")
 		return
 	}
 
@@ -919,7 +919,7 @@ func (s *Server) ResetModelRedirectHealth(c *gin.Context) {
 			"source_model": req.SourceModel,
 			"target_model": req.TargetModel,
 		}).Error("Failed to reset model redirect health metrics")
-		response.Error(c, app_errors.ErrInternalServer)
+		response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.health_reset_failed")
 		return
 	}
 

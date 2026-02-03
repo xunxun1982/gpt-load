@@ -680,6 +680,7 @@ async function resetModelRedirectHealth(sourceModel: string, targetModel: string
       d.loading = true;
       try {
         await keysApi.resetModelRedirectHealth(props.group.id, sourceModel, targetModel);
+        message.success(t("keys.resetModelRedirectHealthSuccess"));
         // Refresh dynamic weights after reset
         await fetchModelRedirectDynamicWeights(props.group.id);
       } finally {

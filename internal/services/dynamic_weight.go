@@ -53,12 +53,13 @@ type DynamicWeightConfig struct {
 	MetricsTTL                   time.Duration
 	TimeWindowConfigs            []models.TimeWindowConfig
 
-	// Health score threshold below which effective weight becomes zero
-	// This prevents unhealthy targets from receiving traffic
+	// Health score threshold below which effective weight is reduced to 10% of base weight
+	// (capped at 1, min 0.1) to prevent unhealthy high-weight targets from dominating
+	// healthy low-weight targets
 	CriticalHealthThreshold float64
 	// Health score threshold for applying aggressive penalty
 	// Targets with health score between CriticalHealthThreshold and MediumHealthThreshold
-	// will have their weight reduced more aggressively
+	// will have their weight reduced more aggressively using quadratic penalty
 	MediumHealthThreshold float64
 	// Penalty multiplier for medium health scores (0.3-0.7 range)
 	// Applied as: effectiveWeight = baseWeight * (healthScore ^ MediumHealthPenaltyExponent)
@@ -100,14 +101,14 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 		MetricsTTL: 180 * 24 * time.Hour,
 		// Time window configs for weighted success rate calculation
 		TimeWindowConfigs: models.DefaultTimeWindowConfigs(),
-		// Critical health threshold: 0.25
-		// Below this, effective weight becomes 10% of base weight (min 1)
-		// More tolerant threshold for unstable channels
-		CriticalHealthThreshold: 0.25,
-		// Medium health threshold: 0.65
-		// Between 0.25 and 0.65, apply quadratic penalty for traffic reduction
-		// Wider range than strict standards to accommodate channel instability
-		MediumHealthThreshold: 0.65,
+		// Critical health threshold: 0.50
+		// Below this, effective weight is capped at 1 (min 0.1) to prevent unhealthy
+		// high-weight targets from dominating healthy low-weight targets
+		CriticalHealthThreshold: 0.50,
+		// Medium health threshold: 0.75
+		// Between 0.50 and 0.75, apply quadratic penalty for traffic reduction
+		// Balances between availability and quality for moderately unhealthy targets
+		MediumHealthThreshold: 0.75,
 		// Quadratic penalty exponent for medium health range
 		// effectiveWeight = baseWeight * (healthScore ^ 2.0)
 		// Example: health=0.5 -> weight multiplier=0.25
@@ -392,13 +393,13 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 // GetEffectiveWeight calculates the effective weight based on base weight and health score.
 // Implements non-linear penalty for low health scores to reduce traffic to unhealthy targets.
 // Three health score ranges (optimized for unstable channels with intermittent failures):
-// 1. Critical (<= 0.25): minimum effective weight of max(1, baseWeight * 0.1)
-//    This allows recovery while distinguishing from targets with baseWeight=1
-// 2. Medium (0.25 to 0.65): aggressive non-linear penalty using quadratic function
-//    Example: health=0.5 -> weight multiplier = 0.5^2 = 0.25
-// 3. Good (> 0.65): linear scaling
-// Note: Critical health targets get minimum 10% of base weight (at least 1) to allow recovery
-// while maintaining distinction from healthy targets with low base weights.
+// 1. Critical (<= 0.50): effective weight reduced to 10% of base weight, capped at 1 (min 0.1)
+//    This prevents unhealthy high-weight targets from dominating healthy low-weight targets
+//    Example: baseWeight=100 -> min(10, 1) = 1, baseWeight=5 -> 0.5, baseWeight=1 -> 0.1
+// 2. Medium (0.50 to 0.75): aggressive non-linear penalty using quadratic function
+//    Example: health=0.6 -> weight multiplier = 0.6^2 = 0.36
+// 3. Good (> 0.75): linear scaling
+// Note: All effective weights are rounded to integers with minimum of 1 for weighted random selection.
 func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *DynamicWeightMetrics) int {
 	if baseWeight <= 0 {
 		return 0
@@ -409,12 +410,15 @@ func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *Dynam
 	var effectiveWeight float64
 
 	// Critical health: use minimum 10% of base weight to allow recovery
-	// This distinguishes unhealthy high-weight targets from healthy low-weight targets
-	// Example: baseWeight=100 -> effectiveWeight=10, baseWeight=10 -> effectiveWeight=1
+	// Cap at 1 to prevent unhealthy high-weight targets from dominating healthy low-weight targets
+	// Example: baseWeight=100 -> min(10, 1) = 1, baseWeight=5 -> 0.5 (rounds up to 1)
 	if healthScore <= m.config.CriticalHealthThreshold {
 		minWeight := float64(baseWeight) * 0.1
-		if minWeight < 1.0 {
-			minWeight = 1.0
+		if minWeight > 1.0 {
+			minWeight = 1.0 // Cap at 1 to ensure fair competition with healthy low-weight targets
+		}
+		if minWeight < 0.1 {
+			minWeight = 0.1 // Floor at 0.1 to allow recovery
 		}
 		effectiveWeight = minWeight
 	} else if healthScore < m.config.MediumHealthThreshold {
