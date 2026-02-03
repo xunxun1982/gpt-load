@@ -1104,6 +1104,12 @@ func (s *HubService) UpdateModelGroupPriority(ctx context.Context, modelName str
 // allowing the batch operation to partially succeed rather than failing entirely.
 // This design choice enables resilient batch operations where some updates may have
 // validation issues while others can proceed successfully.
+//
+// Design Note: Callers receive no indication of which updates were skipped.
+// This is intentional to maintain API simplicity and backward compatibility.
+// Skipped updates are logged with logrus.Warn for operational monitoring.
+// If detailed feedback is needed in the future, consider returning a summary
+// struct (e.g., {updated: N, skipped: M, skippedItems: []...}) instead of error.
 func (s *HubService) BatchUpdateModelGroupPriorities(ctx context.Context, updates []UpdateModelGroupPriorityParams) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, update := range updates {

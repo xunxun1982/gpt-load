@@ -91,7 +91,9 @@ var channelCompatibilityMap = map[types.RelayFormat]ChannelCompatibility{
 func GetCompatibleChannels(format types.RelayFormat) []string {
 	compat, exists := channelCompatibilityMap[format]
 	if !exists {
-		// Fallback to OpenAI for truly unknown formats not in the map
+		// Fallback to OpenAI for formats not defined in the map
+		// This handles edge cases like typos or future formats not yet added to the map
+		// The defensive fallback ensures requests with unknown paths can still be routed
 		return []string{"openai"}
 	}
 

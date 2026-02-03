@@ -270,14 +270,14 @@ func (s *RequestLogService) flush() {
 		}
 
 		if len(logs) == 0 {
-			// Delete corrupted keys only if deletion succeeds, then decrement counter
+			// Decrement pendingCount regardless of Del success since keys are already popped from set
+			// This prevents counter drift when Del fails but keys are already removed from tracking set
 			if len(badKeys) > 0 {
 				if err := s.store.Del(badKeys...); err != nil {
 					logrus.WithError(err).Error("Failed to delete corrupted log bodies from store")
-				} else {
-					// Only decrement counter after successful deletion to maintain accuracy
-					atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 				}
+				// Decrement regardless of Del success since keys are already popped from set
+				atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 			}
 			if len(retryKeys) > 0 {
 				args := make([]any, len(retryKeys))
@@ -311,14 +311,14 @@ func (s *RequestLogService) flush() {
 					logrus.Errorf("CRITICAL: Failed to re-add failed log keys to set: %v", saddErr)
 				}
 			}
-			// Delete corrupted keys only if deletion succeeds, then decrement counter
+			// Decrement pendingCount regardless of Del success since keys are already popped from set
+			// This prevents counter drift when Del fails but keys are already removed from tracking set
 			if len(badKeys) > 0 {
 				if delErr := s.store.Del(badKeys...); delErr != nil {
 					logrus.WithError(delErr).Error("Failed to delete corrupted log bodies from store")
-				} else {
-					// Only decrement counter after successful deletion to maintain accuracy
-					atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 				}
+				// Decrement regardless of Del success since keys are already popped from set
+				atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 			}
 			// Decrement pendingCount for missing keys to prevent counter drift
 			if missingCount > 0 {

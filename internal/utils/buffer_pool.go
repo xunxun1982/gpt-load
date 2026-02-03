@@ -91,12 +91,15 @@ func GetBufferWithCapacity(capacity int) *bytes.Buffer {
 		return buf
 	}
 
+	// Reset buffer to ensure clean state and correct length for Grow calculation
+	// This prevents over-allocation when non-empty buffers slip into the pool
+	buf.Reset()
+
 	// Ensure the buffer has at least the requested capacity to avoid reallocation
-	// This is critical for performance when the caller knows the required size
-	// bytes.Buffer.Grow(n) ensures space for n more bytes relative to current length
-	// So we need to grow by (capacity - current_length) when capacity > current_capacity
-	if buf.Cap() < capacity {
-		buf.Grow(capacity)
+	// bytes.Buffer.Grow(n) reserves space for n more bytes relative to current length
+	// After Reset(), length is 0, so we grow by the delta from current capacity
+	if capacity > 0 && buf.Cap() < capacity {
+		buf.Grow(capacity - buf.Len())
 	}
 
 	return buf

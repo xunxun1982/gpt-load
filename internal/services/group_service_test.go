@@ -158,6 +158,32 @@ func TestCreateGroup(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "default sort when omitted",
+			params: GroupCreateParams{
+				Name:               "default-sort-group",
+				GroupType:          "standard",
+				Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+				ChannelType:        "openai",
+				TestModel:          "gpt-3.5-turbo",
+				ValidationEndpoint: "/v1/chat/completions",
+				// Sort omitted -> expect default 100
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid sort range",
+			params: GroupCreateParams{
+				Name:               "invalid-sort",
+				GroupType:          "standard",
+				Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+				ChannelType:        "openai",
+				Sort:               1000,
+				TestModel:          "gpt-3.5-turbo",
+				ValidationEndpoint: "/v1/chat/completions",
+			},
+			expectError: true,
+		},
+		{
 			name: "invalid group name",
 			params: GroupCreateParams{
 				Name:        "Invalid Name!",
@@ -216,6 +242,10 @@ func TestCreateGroup(t *testing.T) {
 				assert.NotNil(t, group)
 				assert.NotZero(t, group.ID)
 				assert.Equal(t, tt.params.Name, group.Name)
+				// Verify default sort value when omitted
+				if tt.params.Sort == 0 {
+					assert.Equal(t, 100, group.Sort, "Expected default sort value of 100 when omitted")
+				}
 			}
 		})
 	}

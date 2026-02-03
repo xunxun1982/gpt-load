@@ -17,6 +17,12 @@ import (
 func V1_22_0_UpdatePrioritySemantics(db *gorm.DB) error {
 	logrus.Info("Starting migration: Update priority semantics (0→1000 for disabled)")
 
+	// Check if table exists to avoid migration failures on partial installs
+	if !db.Migrator().HasTable("hub_model_group_priorities") {
+		logrus.Info("Table hub_model_group_priorities does not exist, skipping priority semantics update")
+		return nil
+	}
+
 	// Update hub_model_group_priorities table
 	// Change all priority=0 to priority=1000
 	result := db.Exec(`
