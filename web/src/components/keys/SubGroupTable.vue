@@ -7,6 +7,7 @@ import {
   CreateOutline,
   EyeOutline,
   InformationCircleOutline,
+  RefreshOutline,
   Search,
   Trash,
 } from "@vicons/ionicons5";
@@ -21,6 +22,7 @@ import {
   NTag,
   NTooltip,
   useDialog,
+  useMessage,
 } from "naive-ui";
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
@@ -29,6 +31,7 @@ import CCBadge from "./CCBadge.vue";
 import EditSubGroupWeightModal from "./EditSubGroupWeightModal.vue";
 
 const { t, locale } = useI18n();
+const message = useMessage();
 
 // Create number formatter that respects app's i18n locale
 const numberFormatter = computed(() => new Intl.NumberFormat(locale.value));
@@ -220,6 +223,40 @@ async function deleteSubGroup(subGroup: SubGroupInfo) {
         }
         await keysApi.deleteSubGroup(props.selectedGroup.id, groupId);
         emit("refresh");
+      } finally {
+        d.loading = false;
+      }
+    },
+  });
+}
+
+// Reset health metrics for a sub-group
+async function resetSubGroupHealth(subGroup: SubGroupInfo) {
+  if (!props.selectedGroup?.id) {
+    return;
+  }
+
+  const d = dialog.warning({
+    title: t("subGroups.resetHealth"),
+    content: t("subGroups.confirmResetHealth", { name: getGroupDisplayName(subGroup) }),
+    positiveText: t("common.confirm"),
+    negativeText: t("common.cancel"),
+    onPositiveClick: async () => {
+      if (!props.selectedGroup?.id) {
+        return;
+      }
+
+      d.loading = true;
+      try {
+        const groupId = subGroup.group.id;
+        if (!groupId) {
+          return;
+        }
+        await keysApi.resetSubGroupHealth(props.selectedGroup.id, groupId);
+        emit("refresh");
+      } catch (error) {
+        console.error("Failed to reset sub-group health:", error);
+        message.error(t("common.operationFailed"));
       } finally {
         d.loading = false;
       }
@@ -521,6 +558,20 @@ function formatDateTime(isoString: string | null | undefined): string {
                     <n-icon :component="CreateOutline" />
                   </template>
                   {{ t("common.edit") }}
+                </n-button>
+                <n-button
+                  v-if="subGroup.dynamic_weight"
+                  round
+                  tertiary
+                  type="warning"
+                  size="tiny"
+                  @click="resetSubGroupHealth(subGroup)"
+                  :title="t('subGroups.resetHealth')"
+                >
+                  <template #icon>
+                    <n-icon :component="RefreshOutline" />
+                  </template>
+                  {{ t("subGroups.resetHealth") }}
                 </n-button>
                 <n-button
                   round

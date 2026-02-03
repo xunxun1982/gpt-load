@@ -66,6 +66,10 @@ func (m *mockStore) SPopN(key string, count int64) ([]string, error) {
 	return nil, nil
 }
 
+func (m *mockStore) SCard(key string) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockStore) Exists(key string) (bool, error) {
 	return false, nil
 }

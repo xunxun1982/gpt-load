@@ -36,7 +36,7 @@ Write-Host "🔥 Running benchmarks for hot paths..." -ForegroundColor Cyan
 $benchPackages = @(
     @{Path="./internal/keypool"; Pattern="^Benchmark(SelectKey|RealisticWorkload)"},
     @{Path="./internal/encryption"; Pattern="^Benchmark(Encrypt|Decrypt|Hash)"},
-    @{Path="./internal/utils"; Pattern="^Benchmark(BufferPool|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"}
+    @{Path="./internal/utils"; Pattern="^Benchmark(BufferPool|TieredBufferPooling|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"}
 )
 $benchIndex = 0
 

@@ -127,7 +127,15 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.21.0 migration - Change target_index to target_model for model redirect metrics
-	return V1_21_0_ChangeTargetIndexToTargetModel(db)
+	if err := V1_21_0_ChangeTargetIndexToTargetModel(db); err != nil {
+		return err
+	}
+	// Run v1.22.0 migration - Update priority semantics (0→1000 for disabled)
+	if err := V1_22_0_UpdatePrioritySemantics(db); err != nil {
+		return err
+	}
+	// Run v1.23.0 migration - Update health threshold default (0.5→0.3)
+	return V1_23_0_UpdateHealthThresholdDefault(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

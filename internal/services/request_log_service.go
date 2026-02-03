@@ -10,6 +10,7 @@ import (
 	"gpt-load/internal/utils"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +35,10 @@ const (
 	RequestLogCachePrefix    = "request_log:"
 	PendingLogKeysSet        = "pending_log_keys"
 	DefaultLogFlushBatchSize = 200
+	// MaxPendingLogs is the maximum number of logs that can be pending in memory
+	// If this limit is reached, new logs will be dropped to prevent memory exhaustion
+	// Set to 10000 to handle ~10MB of log data (assuming ~1KB per log)
+	MaxPendingLogs = 10000
 )
 
 // RequestLogService is responsible for managing request logs.
@@ -44,6 +49,8 @@ type RequestLogService struct {
 	stopChan        chan struct{}
 	wg              sync.WaitGroup
 	ticker          *time.Ticker
+	droppedLogs     int64 // Counter for dropped logs due to memory pressure
+	pendingCount    int64 // Approximate count of pending logs (updated on flush)
 }
 
 // NewRequestLogService creates a new RequestLogService instance
@@ -58,6 +65,17 @@ func NewRequestLogService(db *gorm.DB, store store.Store, sm *config.SystemSetti
 
 // Start initializes the service and starts the periodic flush routine
 func (s *RequestLogService) Start() {
+	// Initialize pendingCount from persistent store to maintain accuracy across restarts
+	// This prevents MaxPendingLogs checks from being bypassed after restart
+	if card, err := s.store.SCard(PendingLogKeysSet); err != nil {
+		logrus.WithError(err).Warn("Failed to get pending log count from store, starting with 0")
+	} else {
+		atomic.StoreInt64(&s.pendingCount, card)
+		if card > 0 {
+			logrus.Infof("Initialized pending log count: %d logs from previous session", card)
+		}
+	}
+
 	s.wg.Add(1)
 	go s.runLoop()
 }
@@ -75,6 +93,11 @@ func (s *RequestLogService) runLoop() {
 	s.ticker = time.NewTicker(interval)
 	defer s.ticker.Stop()
 
+	// Emergency flush ticker - runs every 30 seconds to check for memory pressure
+	// This provides a safety net if regular flush is delayed or failing
+	emergencyTicker := time.NewTicker(30 * time.Second)
+	defer emergencyTicker.Stop()
+
 	for {
 		select {
 		case <-s.ticker.C:
@@ -88,6 +111,14 @@ func (s *RequestLogService) runLoop() {
 				logrus.Debugf("Request log write interval updated to: %v", interval)
 			}
 			s.flush()
+		case <-emergencyTicker.C:
+			// Check if we're under memory pressure and force flush if needed
+			// Use atomic counter for fast check without store query
+			pendingCount := atomic.LoadInt64(&s.pendingCount)
+			if pendingCount > MaxPendingLogs/2 {
+				logrus.Warnf("Emergency flush triggered: %d pending logs (threshold: %d)", pendingCount, MaxPendingLogs/2)
+				s.flush()
+			}
 		case <-s.stopChan:
 			return
 		}
@@ -115,12 +146,24 @@ func (s *RequestLogService) Stop(ctx context.Context) {
 
 // Record logs a request to the database and cache.
 // Uses pooled JSON encoder for efficient memory allocation in high-frequency scenarios.
+// Implements backpressure: drops logs if pending count exceeds MaxPendingLogs to prevent memory exhaustion.
 func (s *RequestLogService) Record(log *models.RequestLog) error {
 	log.ID = uuid.NewString()
 	log.Timestamp = time.Now()
 
 	if s.settingsManager.GetSettings().RequestLogWriteIntervalMinutes == 0 {
 		return s.writeLogsToDB([]*models.RequestLog{log})
+	}
+
+	// Fast path: check approximate pending count using atomic counter
+	// This avoids expensive LLen call on every request
+	approxPending := atomic.LoadInt64(&s.pendingCount)
+	if approxPending >= MaxPendingLogs {
+		dropped := atomic.AddInt64(&s.droppedLogs, 1)
+		if dropped%100 == 1 { // Log every 100 drops to avoid log spam
+			logrus.Warnf("Dropping request log due to memory pressure (approx pending: %d, dropped total: %d)", approxPending, dropped)
+		}
+		return nil
 	}
 
 	cacheKey := RequestLogCachePrefix + log.ID
@@ -131,12 +174,26 @@ func (s *RequestLogService) Record(log *models.RequestLog) error {
 		return fmt.Errorf("failed to marshal request log: %w", err)
 	}
 
-	ttl := time.Duration(s.settingsManager.GetSettings().RequestLogWriteIntervalMinutes*5) * time.Minute
+	// Reduce TTL from 5x to 3x flush interval to free memory faster
+	// This is safe because flush runs every interval, so 3x provides adequate buffer
+	ttl := time.Duration(s.settingsManager.GetSettings().RequestLogWriteIntervalMinutes*3) * time.Minute
 	if err := s.store.Set(cacheKey, logBytes, ttl); err != nil {
 		return err
 	}
 
-	return s.store.SAdd(PendingLogKeysSet, cacheKey)
+	// Add to pending set; cleanup orphaned cache entry if SAdd fails
+	// to prevent memory leaks from untracked entries
+	if err := s.store.SAdd(PendingLogKeysSet, cacheKey); err != nil {
+		// Best-effort cleanup: delete the orphaned cache entry
+		if delErr := s.store.Del(cacheKey); delErr != nil {
+			logrus.WithError(delErr).Warnf("Failed to cleanup orphaned log cache key %s", cacheKey)
+		}
+		return err
+	}
+
+	// Increment approximate counter
+	atomic.AddInt64(&s.pendingCount, 1)
+	return nil
 }
 
 // RecordError is a convenience method to record error logs with minimal parameters.
@@ -189,11 +246,13 @@ func (s *RequestLogService) flush() {
 		processedKeys := make([]string, 0, len(keys))
 		retryKeys := make([]string, 0, len(keys)/10)
 		badKeys := make([]string, 0, len(keys)/50)
+		missingCount := 0 // Track missing keys for pendingCount adjustment
 		for _, key := range keys {
 			logBytes, err := s.store.Get(key)
 			if err != nil {
 				if err == store.ErrNotFound {
 					logrus.Warnf("Log key %s found in set but not in store, skipping.", key)
+					missingCount++
 				} else {
 					logrus.Warnf("Failed to get log for key %s: %v", key, err)
 					retryKeys = append(retryKeys, key)
@@ -211,10 +270,14 @@ func (s *RequestLogService) flush() {
 		}
 
 		if len(logs) == 0 {
+			// Decrement pendingCount regardless of Del success since keys are already popped from set
+			// This prevents counter drift when Del fails but keys are already removed from tracking set
 			if len(badKeys) > 0 {
 				if err := s.store.Del(badKeys...); err != nil {
 					logrus.WithError(err).Error("Failed to delete corrupted log bodies from store")
 				}
+				// Decrement regardless of Del success since keys are already popped from set
+				atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 			}
 			if len(retryKeys) > 0 {
 				args := make([]any, len(retryKeys))
@@ -224,6 +287,10 @@ func (s *RequestLogService) flush() {
 				if saddErr := s.store.SAdd(PendingLogKeysSet, args...); saddErr != nil {
 					logrus.Errorf("CRITICAL: Failed to re-add unread log keys to set: %v", saddErr)
 				}
+			}
+			// Decrement pendingCount for missing keys to prevent counter drift
+			if missingCount > 0 {
+				atomic.AddInt64(&s.pendingCount, -int64(missingCount))
 			}
 			continue
 		}
@@ -244,23 +311,40 @@ func (s *RequestLogService) flush() {
 					logrus.Errorf("CRITICAL: Failed to re-add failed log keys to set: %v", saddErr)
 				}
 			}
+			// Decrement pendingCount regardless of Del success since keys are already popped from set
+			// This prevents counter drift when Del fails but keys are already removed from tracking set
 			if len(badKeys) > 0 {
 				if delErr := s.store.Del(badKeys...); delErr != nil {
 					logrus.WithError(delErr).Error("Failed to delete corrupted log bodies from store")
 				}
+				// Decrement regardless of Del success since keys are already popped from set
+				atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
+			}
+			// Decrement pendingCount for missing keys to prevent counter drift
+			if missingCount > 0 {
+				atomic.AddInt64(&s.pendingCount, -int64(missingCount))
 			}
 			return
 		}
 
+		// Decrement pendingCount regardless of Del success since keys are already popped from set
+		// and logs are written to DB. Orphaned cache entries will TTL out.
+		// This prevents counter drift when Del fails but keys are already removed from tracking set.
 		if len(processedKeys) > 0 {
 			if err := s.store.Del(processedKeys...); err != nil {
 				logrus.Errorf("Failed to delete flushed log bodies from store: %v", err)
 			}
+			atomic.AddInt64(&s.pendingCount, -int64(len(processedKeys)))
 		}
 		if len(badKeys) > 0 {
 			if err := s.store.Del(badKeys...); err != nil {
 				logrus.WithError(err).Error("Failed to delete corrupted log bodies from store")
 			}
+			atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
+		}
+		// Decrement for missing keys (they were never in cache, so safe to decrement)
+		if missingCount > 0 {
+			atomic.AddInt64(&s.pendingCount, -int64(missingCount))
 		}
 		if len(retryKeys) > 0 {
 			args := make([]any, len(retryKeys))

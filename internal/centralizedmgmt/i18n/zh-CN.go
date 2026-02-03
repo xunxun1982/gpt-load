@@ -16,7 +16,7 @@ var MessagesZhCN = map[string]string{
 	// Hub model pool related
 	"hub.model_pool.updated":           "模型池更新成功",
 	"hub.model_pool.priority_updated":  "模型组优先级更新成功",
-	"hub.model_pool.invalid_priority":  "优先级必须在 0 到 999 之间",
+	"hub.model_pool.invalid_priority":  "优先级必须在 1 到 999 之间（1000 为系统内部保留值）",
 	"hub.model_pool.model_not_found":   "模型池中未找到该模型",
 	"hub.model_pool.no_healthy_groups": "该模型没有可用的健康组",
 
@@ -31,6 +31,19 @@ var MessagesZhCN = map[string]string{
 	"hub.routing.model_not_available":    "该模型在任何组中都不可用",
 	"hub.routing.group_selection_failed": "为模型选择组失败",
 	"hub.routing.no_healthy_group":       "该模型没有可用的健康组",
+
+	// Hub routing logic description
+	"hub.routing.logic.title":       "Hub 路由逻辑",
+	"hub.routing.logic.description": "请求路由按以下顺序执行",
+	"hub.routing.logic.step1":       "① 路径格式识别：识别 API 格式（Chat/Claude/Gemini/Image/Audio）。未知格式默认使用 OpenAI。",
+	"hub.routing.logic.step2":       "② 模型提取：从请求中提取模型名称（格式感知）",
+	"hub.routing.logic.step3":       "③ 访问控制：验证访问密钥对该模型的权限",
+	"hub.routing.logic.step4":       "④ 模型可用性：检查模型是否存在于任何启用的分组中",
+	"hub.routing.logic.step5":       "⑤ 分组选择过滤：健康阈值 + 启用状态 + 渠道兼容性 + Claude Code 支持 + 聚合分组前置条件（请求大小限制等）",
+	"hub.routing.logic.step6":       "⑥ 渠道优先级：原生渠道 > 兼容渠道",
+	"hub.routing.logic.step7":       "⑦ 分组选择：最小 priority 值（数值越小优先级越高）→ 健康度加权随机选择",
+	"hub.routing.logic.step8":       "⑧ 路径重写并转发：/hub/v1/* → /proxy/{分组名}/v1/*",
+	"hub.routing.logic.note":        "注意：首先匹配模型名称以确定可用的分组范围，然后使用路径格式进行渠道兼容性过滤。",
 
 	// Channel types
 	"channel.type.openai":    "OpenAI",
@@ -53,7 +66,7 @@ var MessagesZhCN = map[string]string{
 	"relay_format.openai_embedding":           "OpenAI 向量嵌入",
 	"relay_format.openai_moderation":          "OpenAI 内容审核",
 	"relay_format.gemini":                     "Gemini",
-	"relay_format.unknown":                    "未知格式",
+	"relay_format.unknown":                    "未知格式（默认使用 OpenAI）",
 
 	// Endpoint descriptions
 	"endpoint.chat_completions":     "对话补全",

@@ -12,7 +12,14 @@ import type {
   UpstreamInfo,
 } from "@/types/models";
 import { formatHealthScore, formatPercentage } from "@/utils/display";
-import { Add, Close, CloudDownloadOutline, HelpCircleOutline, Remove } from "@vicons/ionicons5";
+import {
+  Add,
+  Close,
+  CloudDownloadOutline,
+  HelpCircleOutline,
+  RefreshOutline,
+  Remove,
+} from "@vicons/ionicons5";
 import {
   NButton,
   NCard,
@@ -27,6 +34,7 @@ import {
   NSelect,
   NSwitch,
   NTooltip,
+  useDialog,
   useMessage,
   type FormRules,
 } from "naive-ui";
@@ -65,6 +73,7 @@ const emit = defineEmits<Emits>();
 
 const { t } = useI18n();
 const message = useMessage();
+const dialog = useDialog();
 const loading = ref(false);
 const formRef = ref();
 const fetchingModels = ref(false);
@@ -647,6 +656,41 @@ function removeTargetFromRedirectRule(ruleIndex: number, targetIndex: number) {
   if (rule && rule.targets.length > 1) {
     rule.targets.splice(targetIndex, 1);
   }
+}
+
+// Reset health metrics for a model redirect target
+async function resetModelRedirectHealth(sourceModel: string, targetModel: string) {
+  if (!props.group?.id) {
+    return;
+  }
+
+  const d = dialog.warning({
+    title: t("keys.resetModelRedirectHealth"),
+    content: t("keys.confirmResetModelRedirectHealth", {
+      source: sourceModel,
+      target: targetModel,
+    }),
+    positiveText: t("common.confirm"),
+    negativeText: t("common.cancel"),
+    onPositiveClick: async () => {
+      if (!props.group?.id) {
+        return;
+      }
+
+      d.loading = true;
+      try {
+        await keysApi.resetModelRedirectHealth(props.group.id, sourceModel, targetModel);
+        message.success(t("keys.resetModelRedirectHealthSuccess"));
+        // Refresh dynamic weights after reset
+        await fetchModelRedirectDynamicWeights(props.group.id);
+      } catch (error) {
+        console.error("Failed to reset model redirect health:", error);
+        message.error(t("common.operationFailed"));
+      } finally {
+        d.loading = false;
+      }
+    },
+  });
 }
 
 // Calculate weight percentage for display with dynamic precision
@@ -2063,6 +2107,19 @@ async function handleSubmit() {
                                   </div>
                                 </div>
                               </n-tooltip>
+                              <n-button
+                                v-if="getDynamicWeightInfo(rule.from, targetIndex)"
+                                text
+                                type="warning"
+                                size="small"
+                                @click="resetModelRedirectHealth(rule.from, target.model)"
+                                style="margin-left: 4px"
+                                :title="t('keys.resetModelRedirectHealth')"
+                              >
+                                <template #icon>
+                                  <n-icon :component="RefreshOutline" />
+                                </template>
+                              </n-button>
                               <n-button
                                 v-if="rule.targets.length > 1"
                                 text

@@ -220,8 +220,10 @@ var MessagesZhCN = map[string]string{
 	"error.delete_group_cache":       "删除分组失败: 无法清理缓存",
 	"error.decrypt_key_copy":         "解密密钥时失败，跳过该密钥",
 	"error.start_import_task":        "启动异步密钥导入任务失败",
-	"error.debug_mode_required":      "此操作需要启用 DEBUG_MODE",
-	"error.export_logs":              "导出日志失败",
+	"error.debug_mode_required":          "此操作需要启用 DEBUG_MODE",
+	"error.dynamic_weight_not_configured": "动态权重管理器未配置",
+	"error.health_reset_failed":          "重置健康度指标失败",
+	"error.export_logs":                  "导出日志失败",
 
 	// Login related
 	"auth.invalid_request":           "无效的请求格式",
@@ -235,6 +237,7 @@ var MessagesZhCN = map[string]string{
 	"success.sub_groups_added":         "子分组添加成功",
 	"success.sub_group_weight_updated": "子分组权重更新成功",
 	"success.sub_group_deleted":        "子分组删除成功",
+	"success.health_reset":             "健康度指标重置成功",
 	"success.group_enabled":            "分组已启用",
 	"success.group_disabled":           "分组已禁用",
 	"success.all_groups_deleted":       "所有分组已删除",

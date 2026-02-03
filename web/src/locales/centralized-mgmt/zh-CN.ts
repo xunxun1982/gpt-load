@@ -35,7 +35,12 @@ export default {
 
   // Priority
   priority: "优先级",
-  priorityHint: "0=禁用，1-999=优先级（数字越小优先级越高）",
+  priorityHint: "1-999=优先级（数字越小优先级越高），1000=系统内部保留值",
+  prioritySortHint:
+    "相同优先级时，健康度越高被选中概率越大。例如：priority=10 的分组A与 priority=10 的分组B，健康度更高者更易被选中",
+  priorityColumnHint: "数值越小=优先级越高（1最高，999最低，1000系统保留）",
+  priorityExplanationHint:
+    "💡 分组标签上的数字（如 :20、:100）是优先级，数值越小优先级越高。相同优先级时按健康度加权随机选择",
 
   // Hub settings
   hubSettings: "Hub 设置",
@@ -127,11 +132,13 @@ export default {
 
   // Routing logic
   routingLogic: "路由逻辑（先后顺序）",
-  routingStep1: "① 路径识别格式（Chat/Claude/Gemini/Image/Audio）",
+  routingStep1: "① 路径识别格式（Chat/Claude/Gemini/Image/Audio）。未知格式默认使用 OpenAI",
   routingStep2: "② 提取模型名称",
-  routingStep3: "③ 过滤：模型可用性 + 密钥权限",
-  routingStep4: "④ 过滤：渠道兼容性 + 健康阈值 + 启用状态（Claude格式需验证目标渠道的CC支持）",
-  routingStep5: "⑤ 优先：原生渠道 > 兼容渠道",
-  routingStep6: "⑥ 选择：最小优先级 → 权重随机",
-  routingStep7: "⑦ 转发：/hub/v1/* → /proxy/分组名/v1/*",
+  routingStep3: "③ 访问控制：密钥权限验证",
+  routingStep4: "④ 模型可用性：检查模型是否存在于任何启用的分组",
+  routingStep5:
+    "⑤ 分组选择过滤：健康阈值 + 启用状态 + 渠道兼容性 + CC支持（Claude格式）+ 聚合分组前置条件（请求大小限制等）",
+  routingStep6: "⑥ 渠道优先级：原生渠道 > 兼容渠道",
+  routingStep7: "⑦ 分组选择：最小priority值（数值越小优先级越高）→ 健康度加权随机",
+  routingStep8: "⑧ 路径重写并转发：/hub/v1/* → /proxy/分组名/v1/*",
 };

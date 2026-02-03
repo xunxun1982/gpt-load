@@ -59,7 +59,7 @@ const formRef = ref();
 const formData = reactive<{
   sub_groups: SubGroupItem[];
 }>({
-  sub_groups: [{ group_id: null, weight: 1 }],
+  sub_groups: [{ group_id: null, weight: 10 }],
 });
 
 // Compute available group options (exclude already added ones)
@@ -193,12 +193,12 @@ watch(
 
 // Reset form
 function resetForm() {
-  formData.sub_groups = [{ group_id: null, weight: 1 }];
+  formData.sub_groups = [{ group_id: null, weight: 10 }];
 }
 
 // Add sub-group item
 function addSubGroupItem() {
-  formData.sub_groups.push({ group_id: null, weight: 1 });
+  formData.sub_groups.push({ group_id: null, weight: 10 });
 }
 
 // Remove sub-group item

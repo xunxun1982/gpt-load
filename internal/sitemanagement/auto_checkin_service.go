@@ -55,6 +55,7 @@ type AutoCheckinService struct {
 	stopCh       chan struct{}
 	rescheduleCh chan struct{}
 	runNowCh     chan struct{}
+	cleanupCh    chan struct{} // Channel for periodic cleanup ticker
 
 	wg sync.WaitGroup
 
@@ -63,6 +64,9 @@ type AutoCheckinService struct {
 
 	subConfig store.Subscription
 	subRunNow store.Subscription
+
+	// Protect against double-close panics when Stop() is called multiple times
+	stopOnce sync.Once
 }
 
 func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encryption.Service) *AutoCheckinService {
@@ -70,15 +74,15 @@ func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encrypt
 	var transport *http.Transport
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		transport = t.Clone()
-		transport.MaxIdleConns = 100
-		transport.MaxIdleConnsPerHost = 20
-		transport.IdleConnTimeout = 10 * time.Second // Short timeout for batch operations
+		transport.MaxIdleConns = 50  // Reduced for aggressive memory release (site management is non-critical)
+		transport.MaxIdleConnsPerHost = 10  // Reduced for aggressive memory release
+		transport.IdleConnTimeout = 5 * time.Second // Aggressive timeout for faster resource cleanup
 	} else {
 		// Fallback if DefaultTransport was replaced with a different type
 		transport = &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 20,
-			IdleConnTimeout:     10 * time.Second, // Short timeout for batch operations
+			MaxIdleConns:        50,  // Reduced for aggressive memory release
+			MaxIdleConnsPerHost: 10,  // Reduced for aggressive memory release
+			IdleConnTimeout:     5 * time.Second, // Aggressive timeout for faster resource cleanup
 		}
 	}
 
@@ -94,6 +98,7 @@ func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encrypt
 		stopCh:           make(chan struct{}),
 		rescheduleCh:     make(chan struct{}, 1),
 		runNowCh:         make(chan struct{}, 1),
+		cleanupCh:        make(chan struct{}),
 	}
 }
 
@@ -105,6 +110,10 @@ func (s *AutoCheckinService) Start() {
 
 	s.wg.Add(1)
 	go s.runLoop()
+
+	// Start periodic cleanup goroutine for aggressive memory release
+	s.wg.Add(1)
+	go s.periodicCleanup()
 
 	// Best-effort subscriptions for multi-node setups.
 	if sub, err := s.store.Subscribe(autoCheckinConfigUpdatedChannel); err == nil {
@@ -124,7 +133,12 @@ func (s *AutoCheckinService) Start() {
 }
 
 func (s *AutoCheckinService) Stop(ctx context.Context) {
-	close(s.stopCh)
+	// Use sync.Once to prevent double-close panics if Stop() is called multiple times
+	// This is important for error recovery scenarios where Stop() might be called repeatedly
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		close(s.cleanupCh) // Stop periodic cleanup goroutine
+	})
 
 	// Clean up proxy client cache
 	s.proxyClients.Range(func(key, value interface{}) bool {
@@ -767,9 +781,9 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 	// Create a new transport with proxy
 	transport := &http.Transport{
 		Proxy:               http.ProxyURL(parsedProxyURL),
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     10 * time.Second, // Short timeout for batch operations
+		MaxIdleConns:        50,  // Reduced for aggressive memory release (site management is non-critical)
+		MaxIdleConnsPerHost: 10,  // Reduced for aggressive memory release
+		IdleConnTimeout:     5 * time.Second, // Aggressive timeout for faster resource cleanup
 	}
 
 	client := &http.Client{
@@ -895,6 +909,24 @@ func (s *AutoCheckinService) closeIdleConnections() {
 
 	// Close idle connections for stealth client manager
 	s.stealthClientMgr.CloseIdleConnections()
+}
+
+// periodicCleanup runs periodic cleanup of idle connections for aggressive memory release.
+// Site management is a non-critical feature, so we can be more aggressive with resource cleanup.
+func (s *AutoCheckinService) periodicCleanup() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(5 * time.Minute) // Cleanup every 5 minutes
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.cleanupCh:
+			return
+		case <-ticker.C:
+			s.closeIdleConnections()
+			logrus.Debug("ManagedSite AutoCheckinService: periodic cleanup completed")
+		}
+	}
 }
 
 type providerResult struct {

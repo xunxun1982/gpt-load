@@ -47,7 +47,7 @@ func NewSiteService(db *gorm.DB, store store.Store, encryptionSvc encryption.Ser
 		db:               db,
 		store:            store,
 		encryptionSvc:    encryptionSvc,
-		siteListCacheTTL: 30 * time.Second, // Short TTL for freshness
+		siteListCacheTTL: 15 * time.Second, // Aggressive TTL for faster memory release (site management is non-critical)
 	}
 }
 

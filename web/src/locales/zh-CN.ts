@@ -519,6 +519,10 @@ export default {
     minutesAgo: "{minutes}分钟前",
     secondsAgo: "{seconds}秒前",
     justNow: "刚刚",
+    resetModelRedirectHealth: "重置健康度",
+    confirmResetModelRedirectHealth:
+      '确定要重置模型重定向 "{source}" → "{target}" 的健康度指标吗？',
+    resetModelRedirectHealthSuccess: "模型重定向健康度指标已重置",
     restoreKeys: "恢复密钥",
     confirmRestoreAllInvalid: "确定要恢复所有无效密钥吗？",
     validatingKeysMsg: "正在验证{type}密钥...",
@@ -670,6 +674,9 @@ export default {
     requestCount: "请求数",
     lastFailure: "最后失败",
     lastSuccess: "最后成功",
+    resetHealth: "重置健康度",
+    confirmResetHealth: '确定要重置子分组 "{name}" 的健康度指标吗？',
+    resetHealthSuccess: "健康度指标已重置",
   },
   logs: {
     title: "日志",

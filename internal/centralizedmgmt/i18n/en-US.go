@@ -16,7 +16,7 @@ var MessagesEnUS = map[string]string{
 	// Hub model pool related
 	"hub.model_pool.updated":           "Model pool updated successfully",
 	"hub.model_pool.priority_updated":  "Model group priority updated successfully",
-	"hub.model_pool.invalid_priority":  "Priority must be between 0 and 999",
+	"hub.model_pool.invalid_priority":  "Priority must be between 1 and 999 (1000 is reserved for internal use)",
 	"hub.model_pool.model_not_found":   "Model not found in pool",
 	"hub.model_pool.no_healthy_groups": "No healthy groups available for model",
 
@@ -31,6 +31,19 @@ var MessagesEnUS = map[string]string{
 	"hub.routing.model_not_available":    "Model not available in any group",
 	"hub.routing.group_selection_failed": "Failed to select group for model",
 	"hub.routing.no_healthy_group":       "No healthy groups available for model",
+
+	// Hub routing logic description
+	"hub.routing.logic.title":       "Hub Routing Logic",
+	"hub.routing.logic.description": "Request routing follows these steps in order",
+	"hub.routing.logic.step1":       "① Path Format Detection: Identify API format (Chat/Claude/Gemini/Image/Audio). Unknown formats fallback to OpenAI.",
+	"hub.routing.logic.step2":       "② Model Extraction: Extract model name from request (format-aware)",
+	"hub.routing.logic.step3":       "③ Access Control: Validate access key permissions for the model",
+	"hub.routing.logic.step4":       "④ Model Availability: Check if model exists in any enabled group",
+	"hub.routing.logic.step5":       "⑤ Group Selection Filters: Health threshold + Enabled status + Channel compatibility + Claude Code support + Aggregate group preconditions (request size limits, etc.)",
+	"hub.routing.logic.step6":       "⑥ Channel Priority: Native channels > Compatible channels",
+	"hub.routing.logic.step7":       "⑦ Group Selection: Minimum priority value (lower=higher) → Health-weighted random selection",
+	"hub.routing.logic.step8":       "⑧ Path Rewrite & Forward: /hub/v1/* → /proxy/{group_name}/v1/*",
+	"hub.routing.logic.note":        "Note: Model matching happens first to determine the available group range, then path format is used for channel compatibility filtering.",
 
 	// Channel types
 	"channel.type.openai":    "OpenAI",
@@ -53,7 +66,7 @@ var MessagesEnUS = map[string]string{
 	"relay_format.openai_embedding":           "OpenAI Embeddings",
 	"relay_format.openai_moderation":          "OpenAI Moderation",
 	"relay_format.gemini":                     "Gemini",
-	"relay_format.unknown":                    "Unknown Format",
+	"relay_format.unknown":                    "Unknown Format (defaults to OpenAI)",
 
 	// Endpoint descriptions
 	"endpoint.chat_completions":     "Chat Completions",

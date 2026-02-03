@@ -109,6 +109,9 @@ async function copyBaseUrl() {
             <div class="logic-step">
               <span class="step-text">{{ t("hub.routingStep7") }}</span>
             </div>
+            <div class="logic-step">
+              <span class="step-text">{{ t("hub.routingStep8") }}</span>
+            </div>
           </div>
         </div>
       </div>

@@ -205,6 +205,10 @@ func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 
 // UpdateStatus submits a key status update task to the worker pool.
 // Uses bounded concurrency to prevent resource exhaustion.
+// Logs a warning when channel is full to enable monitoring of backpressure.
+// Note: Synchronous fallback blocks callers (proxy error handlers) on store operations,
+// which may increase client response latency under sustained load. This is acceptable
+// as it provides backpressure to prevent unbounded goroutine creation.
 func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, isSuccess bool, errorMessage string) {
 	task := statusUpdateTask{
 		apiKey:       apiKey,
@@ -218,8 +222,15 @@ func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, i
 		// Task submitted successfully
 	default:
 		// Channel full, process synchronously to avoid data loss
-		logrus.Warn("Status update channel full, processing synchronously")
-		go p.processStatusUpdate(task)
+		// Note: Using sync processing instead of spawning goroutine to prevent
+		// unbounded goroutine creation when channel is persistently full
+		// Log warning to enable monitoring of channel overflow events
+		logrus.WithFields(logrus.Fields{
+			"key_id":    apiKey.ID,
+			"group_id":  group.ID,
+			"is_success": isSuccess,
+		}).Warn("Status update channel full (1000 capacity), processing synchronously - may increase client latency")
+		p.processStatusUpdate(task)
 	}
 }
 

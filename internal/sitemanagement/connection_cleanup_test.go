@@ -208,7 +208,7 @@ func TestStealthClientManager_Cleanup(t *testing.T) {
 	assert.Equal(t, 0, count, "Client cache should be empty after Cleanup()")
 }
 
-// TestIdleConnTimeout_Configuration tests that IdleConnTimeout is set to 10 seconds
+// TestIdleConnTimeout_Configuration tests that IdleConnTimeout is set to 5 seconds for aggressive memory release
 func TestIdleConnTimeout_Configuration(t *testing.T) {
 	t.Parallel()
 
@@ -220,7 +220,9 @@ func TestIdleConnTimeout_Configuration(t *testing.T) {
 		service := NewAutoCheckinService(db, nil, encSvc)
 		transport, ok := service.client.Transport.(*http.Transport)
 		assert.True(t, ok)
-		assert.Equal(t, 10*time.Second, transport.IdleConnTimeout, "IdleConnTimeout should be 10 seconds")
+		assert.Equal(t, 5*time.Second, transport.IdleConnTimeout, "IdleConnTimeout should be 5 seconds for aggressive memory release")
+		assert.Equal(t, 50, transport.MaxIdleConns, "MaxIdleConns should be 50 for aggressive memory release")
+		assert.Equal(t, 10, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost should be 10 for aggressive memory release")
 	})
 
 	t.Run("BalanceService", func(t *testing.T) {
@@ -228,7 +230,9 @@ func TestIdleConnTimeout_Configuration(t *testing.T) {
 		service := NewBalanceService(db, encSvc)
 		transport, ok := service.client.Transport.(*http.Transport)
 		assert.True(t, ok)
-		assert.Equal(t, 10*time.Second, transport.IdleConnTimeout, "IdleConnTimeout should be 10 seconds")
+		assert.Equal(t, 5*time.Second, transport.IdleConnTimeout, "IdleConnTimeout should be 5 seconds for aggressive memory release")
+		assert.Equal(t, 50, transport.MaxIdleConns, "MaxIdleConns should be 50 for aggressive memory release")
+		assert.Equal(t, 10, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost should be 10 for aggressive memory release")
 	})
 
 	t.Run("StealthClientManager", func(t *testing.T) {
@@ -237,7 +241,9 @@ func TestIdleConnTimeout_Configuration(t *testing.T) {
 		client := manager.GetClient("")
 		transport, ok := client.Transport.(*http.Transport)
 		assert.True(t, ok)
-		assert.Equal(t, 10*time.Second, transport.IdleConnTimeout, "IdleConnTimeout should be 10 seconds")
+		assert.Equal(t, 5*time.Second, transport.IdleConnTimeout, "IdleConnTimeout should be 5 seconds for aggressive memory release")
+		assert.Equal(t, 50, transport.MaxIdleConns, "MaxIdleConns should be 50 for aggressive memory release")
+		assert.Equal(t, 10, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost should be 10 for aggressive memory release")
 	})
 }
 

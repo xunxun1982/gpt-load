@@ -544,6 +544,10 @@ export default {
     minutesAgo: "{minutes}分前",
     secondsAgo: "{seconds}秒前",
     justNow: "たった今",
+    resetModelRedirectHealth: "健康度をリセット",
+    confirmResetModelRedirectHealth:
+      'モデルリダイレクト "{source}" → "{target}" の健康度指標をリセットしてもよろしいですか？',
+    resetModelRedirectHealthSuccess: "モデルリダイレクトの健康度指標がリセットされました",
     restoreKeys: "キーを復元",
     confirmRestoreAllInvalid: "すべての無効なキーを復元してもよろしいですか？",
     validatingKeysMsg: "{type}キーを検証中...",
@@ -684,6 +688,9 @@ export default {
     requestCount: "リクエスト数",
     lastFailure: "最後の失敗",
     lastSuccess: "最後の成功",
+    resetHealth: "健康度をリセット",
+    confirmResetHealth: 'サブグループ "{name}" の健康度指標をリセットしてもよろしいですか？',
+    resetHealthSuccess: "健康度指標がリセットされました",
   },
   logs: {
     title: "ログ",

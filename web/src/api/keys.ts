@@ -483,4 +483,21 @@ export const keysApi = {
     });
     return res.data || [];
   },
+
+  // Reset sub-group health metrics
+  async resetSubGroupHealth(aggregateGroupId: number, subGroupId: number): Promise<void> {
+    await http.post(`/groups/${aggregateGroupId}/sub-groups/${subGroupId}/reset-health`);
+  },
+
+  // Reset model redirect health metrics
+  async resetModelRedirectHealth(
+    groupId: number,
+    sourceModel: string,
+    targetModel: string
+  ): Promise<void> {
+    await http.post(`/groups/${groupId}/model-redirect-health/reset`, {
+      source_model: sourceModel,
+      target_model: targetModel,
+    });
+  },
 };

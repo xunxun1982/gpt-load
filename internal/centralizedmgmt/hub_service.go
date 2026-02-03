@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -30,7 +31,10 @@ const (
 	defaultModelPoolCacheMaxTTL = 2 * time.Minute
 
 	// Default health score threshold for group selection
-	defaultHealthScoreThreshold = 0.5
+	// Groups with health score below this threshold are excluded from selection.
+	// This is a hard filter, different from dynamic weight's soft penalty.
+	// Lowered from 0.5 to 0.3 to align with unstable channel tolerance.
+	defaultHealthScoreThreshold = 0.3
 
 	// Hit threshold for adaptive TTL extension
 	cacheHitThreshold = 10
@@ -84,11 +88,11 @@ type HubService struct {
 	modelPoolCacheTTL time.Duration
 	modelPoolMaxTTL   time.Duration
 
-	// Health score threshold for group selection (use atomic for thread-safe access)
-	healthScoreThreshold atomic.Value // stores float64
+	// Health score threshold for group selection (stored as uint64 bits for atomic access)
+	healthScoreThreshold atomic.Uint64
 
-	// Only aggregate groups setting (use atomic for thread-safe access)
-	onlyAggregateGroups atomic.Value // stores bool
+	// Only aggregate groups setting (type-safe atomic)
+	onlyAggregateGroups atomic.Bool
 }
 
 // NewHubService creates a new HubService instance.
@@ -104,7 +108,7 @@ func NewHubService(
 		modelPoolCacheTTL:    defaultModelPoolCacheTTL,
 		modelPoolMaxTTL:      defaultModelPoolCacheMaxTTL,
 	}
-	svc.healthScoreThreshold.Store(defaultHealthScoreThreshold)
+	svc.healthScoreThreshold.Store(math.Float64bits(defaultHealthScoreThreshold))
 	svc.onlyAggregateGroups.Store(true) // Default: only accept aggregate groups
 	return svc
 }
@@ -112,13 +116,13 @@ func NewHubService(
 // SetHealthScoreThreshold sets the minimum health score for group selection.
 // Thread-safe using atomic operations.
 func (s *HubService) SetHealthScoreThreshold(threshold float64) {
-	s.healthScoreThreshold.Store(threshold)
+	s.healthScoreThreshold.Store(math.Float64bits(threshold))
 }
 
 // GetHealthScoreThreshold returns the current health score threshold.
 // Thread-safe using atomic operations.
 func (s *HubService) GetHealthScoreThreshold() float64 {
-	return s.healthScoreThreshold.Load().(float64)
+	return math.Float64frombits(s.healthScoreThreshold.Load())
 }
 
 // SetOnlyAggregateGroups sets whether to only accept aggregate groups.
@@ -132,7 +136,7 @@ func (s *HubService) SetOnlyAggregateGroups(only bool) {
 // getOnlyAggregateGroups returns the current only aggregate groups setting.
 // Thread-safe using atomic operations.
 func (s *HubService) getOnlyAggregateGroups() bool {
-	return s.onlyAggregateGroups.Load().(bool)
+	return s.onlyAggregateGroups.Load()
 }
 
 // GetModelPool returns the aggregated model pool from all enabled groups.
@@ -201,8 +205,7 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 		return nil, err
 	}
 
-	// Get health score threshold and only aggregate groups setting once for this build
-	healthThreshold := s.GetHealthScoreThreshold()
+	// Get only aggregate groups setting once for this build
 	onlyAggregateGroups := s.getOnlyAggregateGroups()
 
 	// Map to aggregate models by name
@@ -218,19 +221,13 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 		groupModels := s.getGroupModels(&group)
 
 		// Calculate health score and effective weight
-		healthScore := 1.0
+		healthScore := s.calculateGroupHealthScore(&group)
 		baseWeight := 100 // Default weight for standard groups
 
-		// For aggregate groups, we don't have a single weight
-		// For standard groups, use default weight
-		if s.dynamicWeightManager != nil {
-			// Use a simple health score based on group metrics
-			// For hub purposes, we use a simplified calculation
-			healthScore = s.calculateGroupHealthScore(&group)
-		}
-
+		// Calculate effective weight with minimum of 1 to allow recovery
+		// Even unhealthy groups get minimum weight to receive occasional requests
 		effectiveWeight := int(float64(baseWeight) * healthScore)
-		if effectiveWeight < 1 && healthScore >= healthThreshold {
+		if effectiveWeight < 1 {
 			effectiveWeight = 1
 		}
 
@@ -300,14 +297,18 @@ func (s *HubService) getGroupModels(group *models.Group) []string {
 }
 
 // getGroupModelsWithVisited returns the list of virtual models with cycle detection.
-// Uses visited set to prevent infinite recursion on circular group references.
+// Uses path-scoped visited set to prevent infinite recursion on circular group references.
+// The visited set is scoped to the current recursion path, allowing shared sub-groups in DAG structures.
 func (s *HubService) getGroupModelsWithVisited(group *models.Group, visited map[uint]struct{}) []string {
 	// Check for circular reference
 	if _, seen := visited[group.ID]; seen {
 		logrus.WithField("group_id", group.ID).Warn("Circular reference detected in group hierarchy")
 		return nil
 	}
+	// Path-scoped visited: add current group to path, remove when done
+	// This allows shared sub-groups in DAG structures while detecting true cycles
 	visited[group.ID] = struct{}{}
+	defer delete(visited, group.ID)
 
 	if group.GroupType == "aggregate" {
 		// For aggregate groups, get intersection of models from all sub-groups
@@ -373,8 +374,9 @@ func (s *HubService) getAggregateGroupModelsWithVisited(aggregateGroupID uint, v
 		return nil
 	}
 
-	// Collect models from each enabled sub-group
-	var allSubGroupModels []map[string]struct{}
+	// Collect sub-group IDs, filtering out circular references
+	// Fail closed on cycles for consistency with getGroupModelsWithVisited
+	subGroupIDs := make([]uint, 0, len(subGroupRels))
 	for _, sg := range subGroupRels {
 		// Check for circular reference before querying
 		if _, seen := visited[sg.SubGroupID]; seen {
@@ -382,21 +384,42 @@ func (s *HubService) getAggregateGroupModelsWithVisited(aggregateGroupID uint, v
 				"aggregate_group_id": aggregateGroupID,
 				"sub_group_id":       sg.SubGroupID,
 			}).Warn("Circular reference detected in sub-group hierarchy")
-			continue
+			// Fail closed: return nil to indicate invalid hierarchy
+			// This prevents corrupted intersection results from entering selection
+			return nil
 		}
+		subGroupIDs = append(subGroupIDs, sg.SubGroupID)
+	}
 
-		var subGroup models.Group
-		if err := s.db.Select("id, name, group_type, model_redirect_rules_v2, enabled").
-			First(&subGroup, sg.SubGroupID).Error; err != nil {
-			continue
-		}
+	if len(subGroupIDs) == 0 {
+		return nil
+	}
 
-		if !subGroup.Enabled {
+	// Batch query all sub-groups at once to avoid N+1 queries
+	var subGroups []models.Group
+	if err := s.db.Select("id, name, group_type, model_redirect_rules_v2, custom_model_names, enabled").
+		Where("id IN ?", subGroupIDs).
+		Find(&subGroups).Error; err != nil {
+		logrus.WithError(err).WithField("aggregate_group_id", aggregateGroupID).Warn("Failed to batch query sub-groups")
+		return nil
+	}
+
+	// Build map for quick lookup
+	subGroupMap := make(map[uint]*models.Group, len(subGroups))
+	for i := range subGroups {
+		subGroupMap[subGroups[i].ID] = &subGroups[i]
+	}
+
+	// Collect models from each enabled sub-group
+	var allSubGroupModels []map[string]struct{}
+	for _, sg := range subGroupRels {
+		subGroup, exists := subGroupMap[sg.SubGroupID]
+		if !exists || !subGroup.Enabled {
 			continue
 		}
 
 		// Recursively get models with visited set (handles nested aggregates)
-		subModels := s.getGroupModelsWithVisited(&subGroup, visited)
+		subModels := s.getGroupModelsWithVisited(subGroup, visited)
 		if len(subModels) == 0 {
 			// If any sub-group has no models, intersection is empty
 			return nil
@@ -457,26 +480,135 @@ func (s *HubService) parseModelRedirectRulesV2(rulesJSON []byte) map[string]*mod
 	return rules
 }
 
-// calculateGroupHealthScore calculates a simplified health score for a group.
-// This is used for hub-level group selection, not for sub-group selection within aggregates.
+// calculateGroupHealthScore calculates health score for a group based on its API keys.
+// Health score is calculated as: active_keys / total_keys
+// - Returns 1.0 if group has no keys (considered healthy by default)
+// - Returns 0.0 if all keys are invalid
+// - Returns value between 0.0 and 1.0 based on active key ratio
+// This is used for hub-level group selection to route requests to healthy groups.
 func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
-	if s.dynamicWeightManager == nil {
+	return s.calculateGroupHealthScoreWithVisited(group, make(map[uint]struct{}))
+}
+
+// calculateGroupHealthScoreWithVisited calculates health score with cycle detection.
+// Uses path-scoped visited set to prevent infinite recursion on circular aggregate group references.
+// The visited set is scoped to the current recursion path, allowing shared sub-groups in DAG structures.
+func (s *HubService) calculateGroupHealthScoreWithVisited(group *models.Group, visited map[uint]struct{}) float64 {
+	if group == nil {
 		return 1.0
 	}
 
-	// For now, return 1.0 as we don't have group-level metrics
-	// In the future, this could aggregate metrics from all keys in the group
-	return 1.0
+	// For aggregate groups, calculate average health score of sub-groups
+	if group.GroupType == "aggregate" {
+		// Check for circular reference before recursing
+		if _, seen := visited[group.ID]; seen {
+			logrus.WithField("group_id", group.ID).Warn("Circular reference detected in aggregate group health calculation")
+			return 1.0 // Fail-open on cycles
+		}
+		// Path-scoped visited: add current group to path, remove when done
+		// This allows shared sub-groups in DAG structures while detecting true cycles
+		visited[group.ID] = struct{}{}
+		defer delete(visited, group.ID)
+		return s.calculateAggregateGroupHealthScoreWithVisited(group.ID, visited)
+	}
+
+	// For standard groups, calculate based on API key health
+	// Use single query with conditional count for efficiency (avoids N+1 query pattern)
+	type keyCounts struct {
+		TotalKeys  int64
+		ActiveKeys int64
+	}
+	var counts keyCounts
+	if err := s.db.Model(&models.APIKey{}).
+		Select("COUNT(*) as total_keys, SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as active_keys", models.KeyStatusActive).
+		Where("group_id = ?", group.ID).
+		Scan(&counts).Error; err != nil {
+		logrus.WithError(err).WithField("group_id", group.ID).
+			Warn("Failed to count keys for health score calculation")
+		return 1.0 // Fail-open: assume healthy if query fails
+	}
+
+	// If no keys, consider group as healthy (1.0)
+	if counts.TotalKeys == 0 {
+		return 1.0
+	}
+
+	// Calculate health score as ratio of active keys
+	healthScore := float64(counts.ActiveKeys) / float64(counts.TotalKeys)
+	return healthScore
+}
+
+// calculateAggregateGroupHealthScore calculates health score for an aggregate group.
+// It returns the average health score of all enabled sub-groups.
+// Returns 1.0 if no sub-groups are found (fail-open).
+func (s *HubService) calculateAggregateGroupHealthScore(aggregateGroupID uint) float64 {
+	return s.calculateAggregateGroupHealthScoreWithVisited(aggregateGroupID, make(map[uint]struct{}))
+}
+
+// calculateAggregateGroupHealthScoreWithVisited calculates health score with cycle detection.
+// Uses path-scoped visited set to prevent infinite recursion on circular aggregate group references.
+// The visited set is scoped to the current recursion path, allowing shared sub-groups in DAG structures.
+func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGroupID uint, visited map[uint]struct{}) float64 {
+	// Get sub-group relationships
+	var subGroupRels []models.GroupSubGroup
+	if err := s.db.Where("group_id = ? AND weight > 0", aggregateGroupID).
+		Find(&subGroupRels).Error; err != nil {
+		logrus.WithError(err).WithField("aggregate_group_id", aggregateGroupID).
+			Warn("Failed to get sub-groups for health score calculation")
+		return 1.0 // Fail-open
+	}
+
+	if len(subGroupRels) == 0 {
+		return 1.0 // No sub-groups, consider healthy
+	}
+
+	// Collect sub-group IDs
+	subGroupIDs := make([]uint, 0, len(subGroupRels))
+	for _, sg := range subGroupRels {
+		subGroupIDs = append(subGroupIDs, sg.SubGroupID)
+	}
+
+	// Load sub-groups
+	var subGroups []models.Group
+	if err := s.db.Where("id IN ? AND enabled = ?", subGroupIDs, true).
+		Find(&subGroups).Error; err != nil {
+		logrus.WithError(err).WithField("aggregate_group_id", aggregateGroupID).
+			Warn("Failed to load sub-groups for health score calculation")
+		return 1.0 // Fail-open
+	}
+
+	if len(subGroups) == 0 {
+		return 1.0 // No enabled sub-groups, consider healthy
+	}
+
+	// Calculate average health score of sub-groups
+	var totalHealthScore float64
+	for _, subGroup := range subGroups {
+		subHealthScore := s.calculateGroupHealthScoreWithVisited(&subGroup, visited)
+		totalHealthScore += subHealthScore
+	}
+
+	avgHealthScore := totalHealthScore / float64(len(subGroups))
+	return avgHealthScore
 }
 
 // SelectGroupForModel selects the best group for a given model with relay format awareness.
-// Selection algorithm:
+// Selection algorithm with early filtering optimization:
 // 1. Filter by model availability
-// 2. Filter by channel compatibility with relay format
-// 3. For Claude format, verify target channel has cc_support enabled
-// 4. Prioritize native channel type for the format
-// 5. Filter by enabled status and health score
-// 6. Select by sort order (priority) and weight
+// 2. Filter by enabled status, priority (Sort >= 1000 means disabled), and health score
+// 3. Filter by channel compatibility with relay format
+// 4. For Claude format, verify target channel has cc_support enabled
+// 5. For aggregate groups, check preconditions (e.g., max_request_size_kb) - EARLY FILTERING
+//    - Batch load preconditions for all aggregate groups (avoid N+1 queries)
+//    - Filter out groups that don't meet preconditions before selection
+//    - This prevents unsuitable groups from entering the selection process
+// 6. Prioritize native channel type for the format
+// 7. Select by sort order (priority) and weight
+//
+// IMPORTANT: Priority semantics - LOWER value = HIGHER priority
+// - priority=1: Highest priority
+// - priority=999: Lowest priority
+// - priority=1000: Disabled (filtered out)
 func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, relayFormat types.RelayFormat, requestSizeKB int) (*models.Group, error) {
 	pool, err := s.GetModelPool(ctx)
 	if err != nil {
@@ -532,6 +664,8 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 	}
 
 	// Load preconditions for aggregate groups to check request size limits
+	// OPTIMIZATION: Batch load all preconditions at once to avoid N+1 queries
+	// This is an early filtering step - unsuitable groups are excluded before selection
 	var groupPreconditionsMap map[uint]*models.Group
 	if requestSizeKB > 0 {
 		groupPreconditionsMap = make(map[uint]*models.Group)
@@ -563,10 +697,12 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 	var nativeSources []ModelSource
 	var compatibleSources []ModelSource
 	nativeChannel := GetNativeChannel(relayFormat)
+	preconditionsMissingLogged := false // Track if we've logged the preconditions warning to avoid log spam
 
 	for _, source := range allSources {
-		// Skip disabled or unhealthy sources
-		if !source.Enabled || source.HealthScore < healthThreshold {
+		// Skip disabled, unhealthy, or disabled-priority sources
+		// Priority >= 1000 means disabled (as documented in function comments)
+		if !source.Enabled || source.Sort >= 1000 || source.HealthScore < healthThreshold {
 			continue
 		}
 
@@ -597,9 +733,25 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 			}
 		}
 
-		// Check preconditions for aggregate groups
+		// Check preconditions for aggregate groups - EARLY FILTERING
+		// This prevents unsuitable groups from entering the selection process
 		if source.GroupType == "aggregate" && requestSizeKB > 0 {
-			if group, ok := groupPreconditionsMap[source.GroupID]; ok {
+			group, ok := groupPreconditionsMap[source.GroupID]
+			if !ok {
+				// Fail-open: allow aggregate group if preconditions cannot be verified
+				// Rationale: Temporary DB issues should not block all aggregate routing.
+				// This prioritizes availability over strict precondition enforcement.
+				// The downstream group selection will still apply health checks.
+				// Log only once per request to avoid log spam during DB issues
+				if !preconditionsMissingLogged {
+					logrus.WithFields(logrus.Fields{
+						"group_id":        source.GroupID,
+						"group_name":      source.GroupName,
+						"request_size_kb": requestSizeKB,
+					}).Warn("Preconditions not loaded; allowing aggregate group (fail-open)")
+					preconditionsMissingLogged = true
+				}
+			} else {
 				maxSizeKB := group.GetMaxRequestSizeKB()
 				// Skip this aggregate group if request size exceeds limit
 				if maxSizeKB > 0 && requestSizeKB > maxSizeKB {
@@ -637,6 +789,16 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 
 // selectFromSources selects the best source from a list based on sort order and weight.
 // This is a helper method extracted from SelectGroupForModel for reusability.
+// Selection algorithm:
+// 1. Find the minimum priority value (which represents the highest priority)
+// 2. Get all groups with that minimum priority
+// 3. If only one group, select it
+// 4. If multiple groups, use weighted random selection based on health_score
+//
+// IMPORTANT: Priority semantics - LOWER value = HIGHER priority
+// - priority=1: Highest priority
+// - priority=999: Lowest priority
+// - priority=1000: Disabled (filtered out before calling this function)
 func (s *HubService) selectFromSources(sources []ModelSource) (*models.Group, error) {
 	if len(sources) == 0 {
 		return nil, nil
@@ -737,7 +899,8 @@ func (s *HubService) GetAvailableModels(ctx context.Context) ([]string, error) {
 		hasHealthySource := false
 		for _, sources := range entry.SourcesByType {
 			for _, source := range sources {
-				if source.Enabled && source.HealthScore >= healthThreshold {
+				// Align with SelectGroupForModel: skip disabled-priority sources (Sort >= 1000)
+				if source.Enabled && source.Sort < 1000 && source.HealthScore >= healthThreshold {
 					hasHealthySource = true
 					break
 				}
@@ -792,7 +955,8 @@ func (s *HubService) IsModelAvailable(ctx context.Context, modelName string) (bo
 	// Check if at least one source is healthy
 	for _, sources := range sourcesByType {
 		for _, source := range sources {
-			if source.Enabled && source.HealthScore >= healthThreshold {
+			// Align with SelectGroupForModel: skip disabled-priority sources (Sort >= 1000)
+			if source.Enabled && source.Sort < 1000 && source.HealthScore >= healthThreshold {
 				return true, nil
 			}
 		}
@@ -896,10 +1060,16 @@ func (s *HubService) GetModelPoolV2(ctx context.Context) ([]ModelPoolEntryV2, er
 }
 
 // UpdateModelGroupPriority updates the priority for a model-group pair.
-// Priority 0 means disabled (skip this group for this model).
+// Valid priority range: 1-999 (lower value = higher priority).
+// Priority 1000 is reserved for internal use (disabled state) and cannot be set by users.
+// IMPORTANT: Priority semantics - LOWER value = HIGHER priority
+// - priority=1: Highest priority
+// - priority=999: Lowest priority
+// - priority=1000: Reserved for disabled state (internal use only)
 func (s *HubService) UpdateModelGroupPriority(ctx context.Context, modelName string, groupID uint, priority int) error {
-	// Validate priority range
-	if priority < 0 || priority > 999 {
+	// Validate priority range: only 1-999 are allowed for user input
+	// Priority 1000 is reserved for internal disabled state
+	if priority < 1 || priority > 999 {
 		return ErrInvalidPriority
 	}
 
@@ -930,10 +1100,22 @@ func (s *HubService) UpdateModelGroupPriority(ctx context.Context, modelName str
 }
 
 // BatchUpdateModelGroupPriorities updates multiple model-group priorities at once.
+// Invalid priorities (outside 1-999 range) are silently skipped with a warning log,
+// allowing the batch operation to partially succeed rather than failing entirely.
+// This design choice enables resilient batch operations where some updates may have
+// validation issues while others can proceed successfully.
+//
+// Design Note: Callers receive no indication of which updates were skipped.
+// This is intentional to maintain API simplicity and backward compatibility.
+// Skipped updates are logged with logrus.Warn for operational monitoring.
+// If detailed feedback is needed in the future, consider returning a summary
+// struct (e.g., {updated: N, skipped: M, skippedItems: []...}) instead of error.
 func (s *HubService) BatchUpdateModelGroupPriorities(ctx context.Context, updates []UpdateModelGroupPriorityParams) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, update := range updates {
-			if update.Priority < 0 || update.Priority > 999 {
+			// Validate priority range: only 1-999 are allowed for user input
+			// Priority 1000 is reserved for internal disabled state
+			if update.Priority < 1 || update.Priority > 999 {
 				// Log skipped invalid priorities for debugging
 				logrus.WithFields(logrus.Fields{
 					"model_name": update.ModelName,
@@ -978,7 +1160,7 @@ func (s *HubService) GetHubSettings(ctx context.Context) (*HubSettingsDTO, error
 			return &HubSettingsDTO{
 				MaxRetries:          3,
 				RetryDelay:          100,
-				HealthThreshold:     0.5,
+				HealthThreshold:     0.3,
 				EnablePriority:      true,
 				OnlyAggregateGroups: true,
 			}, nil
@@ -1075,8 +1257,8 @@ func (s *HubService) SelectGroupForModelWithPriority(ctx context.Context, modelN
 	nativeChannel := GetNativeChannel(relayFormat)
 
 	for _, g := range groups {
-		// Skip disabled, zero-priority, or unhealthy groups
-		if !g.Enabled || g.Priority == 0 || g.HealthScore < healthThreshold {
+		// Skip disabled, disabled-priority, or unhealthy groups
+		if !g.Enabled || g.Priority >= 1000 || g.HealthScore < healthThreshold {
 			continue
 		}
 
@@ -1224,7 +1406,7 @@ var ErrInvalidPriority = &InvalidPriorityError{}
 type InvalidPriorityError struct{}
 
 func (e *InvalidPriorityError) Error() string {
-	return "priority must be between 0 and 999"
+	return "priority must be between 1 and 999 (1=highest, 999=lowest). Priority 1000 is reserved for internal use"
 }
 
 // InvalidGroupTypeError represents an error when trying to set custom models on a non-aggregate group.

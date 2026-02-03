@@ -7,14 +7,59 @@ import (
 	"sync"
 )
 
-// maxPooledBufferSize is the maximum buffer size to return to pool.
-// Buffers larger than this are discarded to prevent memory bloat.
-const maxPooledBufferSize = 64 * 1024 // 64KB
+// Buffer pool size thresholds for tiered pooling strategy
+const (
+	// Tier 1: Small buffers (most common case)
+	smallBufferThreshold = 64 * 1024 // 64KB
 
-// BufferPool manages a pool of bytes.Buffer to reduce garbage collection overhead.
+	// Tier 2: Medium buffers (larger API responses)
+	mediumBufferThreshold = 256 * 1024 // 256KB
+
+	// Tier 3: Large buffers (AI context with moderate length)
+	largeBufferThreshold = 1024 * 1024 // 1MB
+
+	// Tier 4: XLarge buffers (AI context with long history)
+	xlargeBufferThreshold = 2 * 1024 * 1024 // 2MB
+
+	// Buffers larger than xlargeBufferThreshold are not pooled to prevent excessive memory retention
+	// This protects against edge cases like 150MB bulk imports which should not be pooled
+)
+
+// BufferPool manages a pool of bytes.Buffer for small requests (most common case).
+// This pool handles the majority of requests efficiently with minimal memory overhead.
 var BufferPool = sync.Pool{
 	New: func() interface{} {
 		return new(bytes.Buffer)
+	},
+}
+
+// MediumBufferPool manages a pool of bytes.Buffer for medium-sized requests (64KB-256KB).
+// Pre-allocates 128KB to reduce reallocation.
+var MediumBufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := new(bytes.Buffer)
+		buf.Grow(128 * 1024)
+		return buf
+	},
+}
+
+// LargeBufferPool manages a pool of bytes.Buffer for large requests (256KB-1MB).
+// Pre-allocates 512KB to reduce reallocation.
+var LargeBufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := new(bytes.Buffer)
+		buf.Grow(512 * 1024)
+		return buf
+	},
+}
+
+// XLargeBufferPool manages a pool of bytes.Buffer for extra large AI context requests (1MB-2MB).
+// Pre-allocates 1MB to reduce reallocation for long context requests.
+var XLargeBufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := new(bytes.Buffer)
+		buf.Grow(1024 * 1024)
+		return buf
 	},
 }
 
@@ -23,18 +68,75 @@ func GetBuffer() *bytes.Buffer {
 	return BufferPool.Get().(*bytes.Buffer)
 }
 
-// PutBuffer resets the buffer and returns it to the pool.
-// Buffers larger than 64KB are not returned to avoid memory bloat.
+// GetBufferWithCapacity retrieves a buffer from the appropriate pool based on requested capacity.
+// This enables efficient use of tiered pools for known buffer sizes.
+// Falls back to small pool for unknown or small capacities.
+// Ensures the returned buffer has at least the requested capacity to avoid reallocation.
+func GetBufferWithCapacity(capacity int) *bytes.Buffer {
+	var buf *bytes.Buffer
+
+	switch {
+	case capacity <= smallBufferThreshold:
+		buf = BufferPool.Get().(*bytes.Buffer)
+	case capacity <= mediumBufferThreshold:
+		buf = MediumBufferPool.Get().(*bytes.Buffer)
+	case capacity <= largeBufferThreshold:
+		buf = LargeBufferPool.Get().(*bytes.Buffer)
+	case capacity <= xlargeBufferThreshold:
+		buf = XLargeBufferPool.Get().(*bytes.Buffer)
+	default:
+		// For huge buffers (>2MB), allocate directly without pooling
+		buf = new(bytes.Buffer)
+		buf.Grow(capacity)
+		return buf
+	}
+
+	// Reset buffer to ensure clean state and correct length for Grow calculation
+	// This prevents over-allocation when non-empty buffers slip into the pool
+	buf.Reset()
+
+	// Ensure the buffer has at least the requested capacity to avoid reallocation
+	// bytes.Buffer.Grow(n) reserves space for n more bytes relative to current length
+	// After Reset(), length is 0, so we grow by the delta from current capacity
+	if capacity > 0 && buf.Cap() < capacity {
+		buf.Grow(capacity - buf.Len())
+	}
+
+	return buf
+}
+
+// PutBuffer resets the buffer and returns it to the appropriate pool.
+// Uses tiered pooling strategy:
+// - Tier 1 (<=64KB): returned to small pool (most common case)
+// - Tier 2 (64KB-256KB): returned to medium pool (larger API responses)
+// - Tier 3 (256KB-1MB): returned to large pool (AI context with moderate length)
+// - Tier 4 (1MB-2MB): returned to xlarge pool (AI context with long history)
+// - Tier 5 (>2MB): discarded to prevent memory bloat
 func PutBuffer(buf *bytes.Buffer) {
 	if buf == nil {
 		return
 	}
-	// Discard large buffers to prevent memory bloat
-	if buf.Cap() > maxPooledBufferSize {
+
+	capacity := buf.Cap()
+
+	// Discard huge buffers (>2MB) to prevent memory bloat
+	if capacity > xlargeBufferThreshold {
 		return
 	}
+
 	buf.Reset()
-	BufferPool.Put(buf)
+
+	// Route to appropriate pool based on size
+	switch {
+	case capacity <= smallBufferThreshold:
+		BufferPool.Put(buf)
+	case capacity <= mediumBufferThreshold:
+		MediumBufferPool.Put(buf)
+	case capacity <= largeBufferThreshold:
+		LargeBufferPool.Put(buf)
+	default:
+		XLargeBufferPool.Put(buf)
+	}
 }
 
 // ByteSlicePool provides reusable byte slices for common operations.
@@ -57,7 +159,7 @@ func PutByteSlice(b *[]byte) {
 	if b == nil {
 		return
 	}
-	if cap(*b) > maxPooledBufferSize {
+	if cap(*b) > smallBufferThreshold {
 		return
 	}
 	*b = (*b)[:0]
@@ -110,7 +212,7 @@ func PutJSONEncoder(enc *JSONEncoder) {
 		return
 	}
 	// Discard encoders with large buffers to prevent memory bloat
-	if enc.buf.Cap() > maxPooledBufferSize {
+	if enc.buf.Cap() > smallBufferThreshold {
 		return
 	}
 	jsonEncoderPool.Put(enc)
@@ -136,7 +238,7 @@ func PutStringBuilder(sb *strings.Builder) {
 		return
 	}
 	// Discard large builders to prevent memory bloat
-	if sb.Cap() > maxPooledBufferSize {
+	if sb.Cap() > smallBufferThreshold {
 		return
 	}
 	StringBuilderPool.Put(sb)

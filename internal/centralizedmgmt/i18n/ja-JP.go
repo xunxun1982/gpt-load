@@ -16,7 +16,7 @@ var MessagesJaJP = map[string]string{
 	// Hub model pool related
 	"hub.model_pool.updated":           "モデルプールが正常に更新されました",
 	"hub.model_pool.priority_updated":  "モデルグループの優先度が正常に更新されました",
-	"hub.model_pool.invalid_priority":  "優先度は0から999の間である必要があります",
+	"hub.model_pool.invalid_priority":  "優先度は1から999の間である必要があります（1000はシステム内部予約値）",
 	"hub.model_pool.model_not_found":   "プールにモデルが見つかりません",
 	"hub.model_pool.no_healthy_groups": "モデルに利用可能な正常なグループがありません",
 
@@ -31,6 +31,19 @@ var MessagesJaJP = map[string]string{
 	"hub.routing.model_not_available":    "どのグループでもモデルが利用できません",
 	"hub.routing.group_selection_failed": "モデルのグループ選択に失敗しました",
 	"hub.routing.no_healthy_group":       "モデルに利用可能な正常なグループがありません",
+
+	// Hub routing logic description
+	"hub.routing.logic.title":       "Hub ルーティングロジック",
+	"hub.routing.logic.description": "リクエストルーティングは次の順序で実行されます",
+	"hub.routing.logic.step1":       "① パス形式検出：API 形式を識別（Chat/Claude/Gemini/Image/Audio）。不明な形式は OpenAI にフォールバックします。",
+	"hub.routing.logic.step2":       "② モデル抽出：リクエストからモデル名を抽出（形式認識）",
+	"hub.routing.logic.step3":       "③ アクセス制御：モデルに対するアクセスキーの権限を検証",
+	"hub.routing.logic.step4":       "④ モデル可用性：有効なグループにモデルが存在するか確認",
+	"hub.routing.logic.step5":       "⑤ グループ選択フィルター：ヘルス閾値 + 有効状態 + チャネル互換性 + Claude Code サポート + 集約グループ前提条件（リクエストサイズ制限など）",
+	"hub.routing.logic.step6":       "⑥ チャネル優先度：ネイティブチャネル > 互換チャネル",
+	"hub.routing.logic.step7":       "⑦ グループ選択：最小 priority 値（値が小さいほど優先度が高い）→ ヘルススコア加重ランダム選択",
+	"hub.routing.logic.step8":       "⑧ パス書き換えと転送：/hub/v1/* → /proxy/{グループ名}/v1/*",
+	"hub.routing.logic.note":        "注意：最初にモデル名をマッチングして利用可能なグループ範囲を決定し、その後パス形式を使用してチャネル互換性フィルタリングを行います。",
 
 	// Channel types
 	"channel.type.openai":    "OpenAI",
@@ -53,7 +66,7 @@ var MessagesJaJP = map[string]string{
 	"relay_format.openai_embedding":           "OpenAI 埋め込み",
 	"relay_format.openai_moderation":          "OpenAI モデレーション",
 	"relay_format.gemini":                     "Gemini",
-	"relay_format.unknown":                    "不明な形式",
+	"relay_format.unknown":                    "不明な形式（OpenAIにフォールバック）",
 
 	// Endpoint descriptions
 	"endpoint.chat_completions":     "チャット補完",

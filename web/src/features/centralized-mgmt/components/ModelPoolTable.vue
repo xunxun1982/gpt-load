@@ -5,7 +5,13 @@
  * Compact single-line layout for each model.
  */
 import { formatHealthScore } from "@/utils/display";
-import { CreateOutline, LayersOutline, RefreshOutline, Search } from "@vicons/ionicons5";
+import {
+  CreateOutline,
+  InformationCircleOutline,
+  LayersOutline,
+  RefreshOutline,
+  Search,
+} from "@vicons/ionicons5";
 import {
   NButton,
   NDataTable,
@@ -20,6 +26,7 @@ import {
   NSpin,
   NTag,
   NText,
+  NTooltip,
   useMessage,
   type DataTableColumns,
   type SelectOption,
@@ -79,14 +86,14 @@ const channelTypeOptions = computed<SelectOption[]>(() => {
 
 /**
  * Get the primary channel type for a model.
- * Prioritizes enabled groups with priority > 0 and lowest priority value, falls back to first group's channel type.
+ * Prioritizes enabled groups with priority < 1000 and lowest priority value, falls back to first group's channel type.
  * Uses single-pass scan instead of filter+sort for better performance.
  */
 function getPrimaryChannelType(model: ModelPoolEntryV2): string {
   // Single-pass scan to find the enabled group with lowest priority
   const enabledGroup = model.groups.reduce(
     (best, g) => {
-      if (!g.enabled || g.priority <= 0 || !g.channel_type) {
+      if (!g.enabled || g.priority >= 1000 || !g.channel_type) {
         return best;
       }
       if (!best || g.priority < best.priority) {
@@ -164,7 +171,7 @@ function getHealthClass(score: number): string {
 function getPriorityTagType(
   priority: number
 ): "default" | "success" | "warning" | "error" | "info" {
-  if (priority === 0) {
+  if (priority >= 1000) {
     return "error";
   }
   if (priority <= 50) {
@@ -216,18 +223,12 @@ const popoverSaving = ref(false);
 // Open popover editing for groups
 function openPopoverEdit(model: ModelPoolEntryV2, groups: ModelGroupPriority[]) {
   popoverEditingModel.value = model.model_name;
-  // Sort by priority for editing
+  // Filter out groups with priority >= 1000 (system reserved disabled state)
+  // These should not be editable by users to prevent accidental re-enabling
   popoverEditingGroups.value = groups
+    .filter(g => g.priority < 1000) // Exclude system-reserved disabled state
     .map(g => ({ ...g }))
-    .sort((a, b) => {
-      if (a.priority === 0 && b.priority !== 0) {
-        return 1;
-      }
-      if (b.priority === 0 && a.priority !== 0) {
-        return -1;
-      }
-      return a.priority - b.priority;
-    });
+    .sort((a, b) => a.priority - b.priority);
 }
 
 // Save popover edited priorities
@@ -275,10 +276,10 @@ function renderGroupTags(row: ModelPoolEntryV2) {
 
   // Sort by priority for display
   const sortedGroups = [...groups].sort((a, b) => {
-    if (a.priority === 0 && b.priority !== 0) {
+    if (a.priority >= 1000 && b.priority < 1000) {
       return 1;
     }
-    if (b.priority === 0 && a.priority !== 0) {
+    if (b.priority >= 1000 && a.priority < 1000) {
       return -1;
     }
     return a.priority - b.priority;
@@ -320,7 +321,14 @@ function renderGroupTags(row: ModelPoolEntryV2) {
                   ? h("span", { style: { opacity: 0.6, marginRight: "1px" } }, typeShort)
                   : null,
                 h("span", null, g.group_name),
-                h("span", { style: { opacity: 0.7, marginLeft: "2px" } }, `:${g.priority}`),
+                h(
+                  "span",
+                  {
+                    style: { opacity: 0.7, marginLeft: "2px" },
+                    title: t("hub.priorityColumnHint"),
+                  },
+                  `:${g.priority}`
+                ),
               ]
             );
           })
@@ -336,16 +344,17 @@ function renderGroupTags(row: ModelPoolEntryV2) {
                   getGroupTypeLabel(g)
                 ),
                 h("span", { class: "group-name" }, g.group_name),
+                // Priority range: 1-999 (user-settable), 1000 is reserved for internal use
                 h(NInputNumber, {
                   value: g.priority,
-                  min: 0,
+                  min: 1,
                   max: 999,
                   size: "tiny",
                   showButton: true,
                   buttonPlacement: "both",
                   style: { width: "90px" },
                   onUpdateValue: (v: number | null) => {
-                    g.priority = v ?? 0;
+                    g.priority = v ?? 1;
                   },
                 }),
               ])
@@ -434,30 +443,13 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
     render: row => h("div", { class: "groups-cell" }, [renderGroupTags(row)]),
   },
   {
-    title: t("hub.healthScore"),
-    key: "health_score",
-    width: 80,
-    align: "center",
-    titleAlign: "center",
-    render: row => {
-      const enabledGroups = row.groups.filter(g => g.enabled && g.priority > 0);
-      if (!enabledGroups.length) {
-        return h(NText, { depth: 3 }, () => "-");
-      }
-      const best = Math.max(...enabledGroups.map(g => g.health_score));
-      return h(NText, { class: getHealthClass(best), style: { whiteSpace: "nowrap" } }, () =>
-        formatHealthScore(best)
-      );
-    },
-  },
-  {
     title: t("hub.groupCount"),
     key: "group_count",
     width: 65,
     align: "center",
     titleAlign: "center",
     render: row => {
-      const enabled = row.groups.filter(g => g.enabled && g.priority > 0).length;
+      const enabled = row.groups.filter(g => g.enabled && g.priority < 1000).length;
       return h(NText, null, () => `${enabled}/${row.groups.length}`);
     },
   },
@@ -477,17 +469,13 @@ const columns = computed<DataTableColumns<ModelPoolEntryV2>>(() => [
 
 function openEditModal(model: ModelPoolEntryV2) {
   editingModel.value = model;
+  // Filter out groups with priority >= 1000 (system reserved disabled state)
+  // These should not be editable by users to prevent accidental re-enabling
+  // Users should delete priority records instead of setting to 1000
   editingGroups.value = model.groups
+    .filter(g => g.priority < 1000) // Exclude system-reserved disabled state
     .map(g => ({ ...g }))
-    .sort((a, b) => {
-      if (a.priority === 0 && b.priority !== 0) {
-        return 1;
-      }
-      if (b.priority === 0 && a.priority !== 0) {
-        return -1;
-      }
-      return a.priority - b.priority;
-    });
+    .sort((a, b) => a.priority - b.priority);
   showEditModal.value = true;
 }
 
@@ -602,6 +590,18 @@ onMounted(() => {
       </n-text>
     </div>
 
+    <!-- Priority explanation hint -->
+    <div class="priority-explanation-hint">
+      <n-icon
+        :component="InformationCircleOutline"
+        size="14"
+        style="flex-shrink: 0; opacity: 0.7"
+      />
+      <n-text depth="3" style="font-size: 11px">
+        {{ t("hub.priorityExplanationHint") }}
+      </n-text>
+    </div>
+
     <!-- Table -->
     <div class="table-wrapper">
       <n-spin :show="loading">
@@ -638,7 +638,7 @@ onMounted(() => {
       v-model:show="showEditModal"
       preset="card"
       :title="t('hub.editPriority')"
-      style="width: 560px; max-width: 95vw"
+      style="width: 680px; max-width: 95vw"
       :bordered="false"
       size="small"
     >
@@ -654,15 +654,22 @@ onMounted(() => {
             <span class="col-gtype">{{ t("hub.groupType") }}</span>
             <span class="col-ctype">{{ t("hub.channelType") }}</span>
             <span class="col-health">{{ t("hub.healthScore") }}</span>
-            <span class="col-priority">{{ t("hub.priority") }}</span>
+            <span class="col-priority">
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  {{ t("hub.priority") }}
+                  <n-icon
+                    :component="InformationCircleOutline"
+                    size="12"
+                    style="margin-left: 2px; opacity: 0.6"
+                  />
+                </template>
+                {{ t("hub.priorityColumnHint") }}
+              </n-tooltip>
+            </span>
           </div>
           <div class="priority-table-body">
-            <div
-              v-for="group in editingGroups"
-              :key="group.group_id"
-              class="priority-row"
-              :class="{ disabled: group.priority === 0 }"
-            >
+            <div v-for="group in editingGroups" :key="group.group_id" class="priority-row">
               <span class="col-name" :title="group.group_name">{{ group.group_name }}</span>
               <span class="col-gtype">
                 <n-tag size="tiny" :type="getGroupTypeTagType(group)" :bordered="false">
@@ -679,9 +686,16 @@ onMounted(() => {
                 {{ formatHealthScore(group.health_score) }}
               </span>
               <span class="col-priority">
+                <!-- Priority range: 1-999 (user-settable)
+                     Priority 1000 is reserved for internal use (disabled state)
+                     Users should delete priority records instead of setting to 1000
+                     AI Review Note: Rejected suggestion to allow max=1000 because:
+                     1. User explicitly requested range 1-999
+                     2. Priority 1000 should be system-managed, not user-settable
+                     3. Disabling should be done by deleting records, not setting to 1000 -->
                 <n-input-number
                   v-model:value="group.priority"
-                  :min="0"
+                  :min="1"
                   :max="999"
                   size="tiny"
                   :show-button="true"
@@ -745,6 +759,18 @@ onMounted(() => {
   background: var(--n-color-embedded);
   border-radius: 4px;
   font-size: 12px;
+  flex-shrink: 0;
+}
+
+.priority-explanation-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  margin: 4px 0;
+  background: linear-gradient(135deg, rgba(24, 160, 88, 0.08) 0%, rgba(24, 160, 88, 0.04) 100%);
+  border-left: 3px solid var(--success-color, #18a058);
+  border-radius: 3px;
   flex-shrink: 0;
 }
 
@@ -841,26 +867,41 @@ onMounted(() => {
 .priority-table-header {
   display: flex;
   align-items: center;
-  padding: 6px 8px;
+  padding: 8px 10px;
   background: var(--n-color-embedded);
   border-radius: 4px;
   font-weight: 500;
+  font-size: 11px;
   color: var(--n-text-color-2);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.priority-table-header > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .priority-table-body {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .priority-row {
   display: flex;
   align-items: center;
-  padding: 5px 8px;
+  padding: 8px 10px;
   border-radius: 4px;
   transition: background 0.15s;
+  min-height: 40px;
+}
+
+.priority-row > span {
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .priority-row:hover {
@@ -872,59 +913,68 @@ onMounted(() => {
 }
 
 .col-name {
-  flex: 1;
-  min-width: 0;
+  flex: 2;
+  min-width: 140px;
+  max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-right: 8px;
+  padding-right: 12px;
 }
 
 .col-gtype {
-  width: 50px;
-  text-align: center;
+  width: 75px;
   flex-shrink: 0;
-}
-
-.col-ctype {
-  width: 60px;
   text-align: center;
-  flex-shrink: 0;
-}
-
-.col-health {
-  width: 60px;
-  text-align: center;
-  flex-shrink: 0;
+  padding: 0 6px;
   white-space: nowrap;
 }
 
-.col-priority {
-  width: 100px;
-  text-align: right;
+.col-ctype {
+  width: 95px;
   flex-shrink: 0;
+  text-align: center;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.col-health {
+  width: 85px;
+  flex-shrink: 0;
+  text-align: right;
+  white-space: nowrap;
+  padding-right: 12px;
+}
+
+.col-priority {
+  width: 115px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-left: 8px;
+  white-space: nowrap;
 }
 </style>
 
 <!-- Global styles for popover -->
 <style>
 .hidden-groups-popover {
-  min-width: 320px;
-  max-width: 420px;
+  min-width: 360px;
+  max-width: 480px;
   padding: 4px 0;
 }
 
 .popover-groups {
-  max-height: 280px;
+  max-height: 320px;
   overflow-y: auto;
 }
 
 .hidden-group-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
+  gap: 10px;
+  padding: 6px 12px;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .hidden-group-item:hover {
@@ -936,13 +986,14 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 80px;
+  min-width: 100px;
+  padding: 0 8px;
 }
 
 .popover-footer {
   display: flex;
   justify-content: flex-end;
-  padding: 8px 10px 4px;
+  padding: 8px 12px 4px;
   border-top: 1px solid var(--n-border-color);
   margin-top: 4px;
 }

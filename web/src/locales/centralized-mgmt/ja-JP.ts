@@ -35,7 +35,12 @@ export default {
 
   // Priority
   priority: "優先度",
-  priorityHint: "0=無効、1-999=優先度（数字が小さいほど優先度が高い）",
+  priorityHint: "1-999=優先度（数字が小さいほど優先度が高い）、1000=システム内部予約値",
+  prioritySortHint:
+    "同じ優先度内では、健康度が高いほど選択確率が高くなります。例：priority=10はpriority=100より優先されます",
+  priorityColumnHint: "数値が小さい=優先度が高い（1=最高、999=最低、1000=システム予約）",
+  priorityExplanationHint:
+    "💡 グループタグの数字（例：:20、:100）は優先度です。数値が小さいほど優先度が高くなります。同じ優先度では健康度加重ランダム選択",
 
   // Hub settings
   hubSettings: "Hub設定",
@@ -129,12 +134,14 @@ export default {
 
   // Routing logic
   routingLogic: "ルーティングロジック（順次実行）",
-  routingStep1: "① パス → フォーマット（Chat/Claude/Gemini/Image/Audio）",
-  routingStep2: "② モデル名を抽出",
-  routingStep3: "③ フィルタ：モデル可用性 + キー権限",
-  routingStep4:
-    "④ フィルタ：チャネル互換性 + 健康閾値 + 有効状態（Claude形式はCCサポート検証が必要）",
-  routingStep5: "⑤ 優先：ネイティブチャネル > 互換チャネル",
-  routingStep6: "⑥ 選択：最小優先度 → 重み付きランダム",
-  routingStep7: "⑦ 転送：/hub/v1/* → /proxy/グループ名/v1/*",
+  routingStep1:
+    "① パス → フォーマット検出（Chat/Claude/Gemini/Image/Audio）。不明な形式は OpenAI にフォールバック",
+  routingStep2: "② リクエストからモデル名を抽出",
+  routingStep3: "③ アクセス制御：キー権限の検証",
+  routingStep4: "④ モデル可用性：有効なグループにモデルが存在するか確認",
+  routingStep5:
+    "⑤ グループ選択フィルタ：健康閾値 + 有効状態 + チャネル互換性 + CCサポート（Claude）+ 集約前提条件（リクエストサイズ制限など）",
+  routingStep6: "⑥ チャネル優先度：ネイティブチャネル > 互換チャネル",
+  routingStep7: "⑦ グループ選択：最小priority値（小さいほど高優先度）→ 健康度加重ランダム",
+  routingStep8: "⑧ パス書き換えと転送：/hub/v1/* → /proxy/グループ名/v1/*",
 };
