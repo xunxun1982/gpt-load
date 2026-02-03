@@ -49,11 +49,10 @@ func (s *MemoryStore) Close() error {
 	close(s.stopCleanup)
 
 	// Close all subscriber channels to prevent goroutine leaks
+	// Note: We don't close channels directly here to avoid double-close panics.
+	// Instead, we remove them from tracking and let memorySubscription.Close() handle cleanup.
 	s.muSubscribers.Lock()
-	for channel, subs := range s.subscribers {
-		for subCh := range subs {
-			close(subCh)
-		}
+	for channel := range s.subscribers {
 		delete(s.subscribers, channel)
 	}
 	s.muSubscribers.Unlock()
@@ -410,9 +409,10 @@ func (s *MemoryStore) SPopN(key string, count int64) ([]string, error) {
 
 // memorySubscription implements the Subscription interface for the in-memory store.
 type memorySubscription struct {
-	store   *MemoryStore
-	channel string
-	msgChan chan *Message
+	store     *MemoryStore
+	channel   string
+	msgChan   chan *Message
+	closeOnce sync.Once // Ensure Close is idempotent to prevent double-close panics
 }
 
 // Channel returns the message channel for the subscription.
@@ -421,17 +421,20 @@ func (ms *memorySubscription) Channel() <-chan *Message {
 }
 
 // Close removes the subscription from the store.
+// Uses sync.Once to ensure idempotent behavior and prevent double-close panics.
 func (ms *memorySubscription) Close() error {
-	ms.store.muSubscribers.Lock()
-	defer ms.store.muSubscribers.Unlock()
+	ms.closeOnce.Do(func() {
+		ms.store.muSubscribers.Lock()
+		defer ms.store.muSubscribers.Unlock()
 
-	if subs, ok := ms.store.subscribers[ms.channel]; ok {
-		delete(subs, ms.msgChan)
-		if len(subs) == 0 {
-			delete(ms.store.subscribers, ms.channel)
+		if subs, ok := ms.store.subscribers[ms.channel]; ok {
+			delete(subs, ms.msgChan)
+			if len(subs) == 0 {
+				delete(ms.store.subscribers, ms.channel)
+			}
 		}
-	}
-	close(ms.msgChan)
+		close(ms.msgChan)
+	})
 	return nil
 }
 
@@ -554,6 +557,7 @@ func (s *MemoryStore) performCleanup() {
 
 	// Second pass: delete expired keys (write lock)
 	if len(expiredKeys) > 0 {
+		deletedCount := 0
 		s.mu.Lock()
 		for _, key := range expiredKeys {
 			// Double-check expiration under write lock to avoid race conditions
@@ -561,6 +565,7 @@ func (s *MemoryStore) performCleanup() {
 				if item, ok := rawItem.(memoryStoreItem); ok {
 					if item.expiresAt > 0 && now > item.expiresAt {
 						delete(s.data, key)
+						deletedCount++
 					}
 				}
 			}
@@ -568,7 +573,7 @@ func (s *MemoryStore) performCleanup() {
 		s.mu.Unlock()
 
 		if logrus.IsLevelEnabled(logrus.DebugLevel) {
-			logrus.Debugf("MemoryStore cleanup: removed %d expired items", len(expiredKeys))
+			logrus.Debugf("MemoryStore cleanup: removed %d expired items", deletedCount)
 		}
 	}
 }

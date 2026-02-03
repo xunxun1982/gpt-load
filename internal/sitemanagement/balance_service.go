@@ -48,16 +48,17 @@ type BalanceService struct {
 	proxyClients     sync.Map // Cache for proxy-enabled HTTP clients
 
 	// Background refresh control
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh    chan struct{}
+	cleanupCh chan struct{} // Channel for periodic cleanup ticker
+	wg        sync.WaitGroup
 }
 
 // NewBalanceService creates a new balance service
 func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceService {
 	transport := &http.Transport{
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     10 * time.Second, // Short timeout for batch operations
+		MaxIdleConns:        50,  // Reduced for aggressive memory release (site management is non-critical)
+		MaxIdleConnsPerHost: 10,  // Reduced for aggressive memory release
+		IdleConnTimeout:     5 * time.Second, // Aggressive timeout for faster resource cleanup
 	}
 
 	return &BalanceService{
@@ -66,6 +67,7 @@ func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceSe
 		client:           &http.Client{Transport: transport, Timeout: balanceRequestTimeout},
 		stealthClientMgr: NewStealthClientManager(balanceRequestTimeout),
 		stopCh:           make(chan struct{}),
+		cleanupCh:        make(chan struct{}),
 	}
 }
 
@@ -73,12 +75,18 @@ func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceSe
 func (s *BalanceService) Start() {
 	s.wg.Add(1)
 	go s.runScheduler()
+
+	// Start periodic cleanup goroutine for aggressive memory release
+	s.wg.Add(1)
+	go s.periodicCleanup()
+
 	logrus.Info("Balance refresh scheduler started")
 }
 
 // Stop gracefully stops the background scheduler
 func (s *BalanceService) Stop(_ context.Context) {
 	close(s.stopCh)
+	close(s.cleanupCh) // Stop periodic cleanup goroutine
 
 	// Clean up proxy client cache
 	s.proxyClients.Range(func(key, value interface{}) bool {
@@ -362,9 +370,9 @@ func (s *BalanceService) getHTTPClient(site *ManagedSite) *http.Client {
 	// Create new proxy client
 	transport := &http.Transport{
 		Proxy:               http.ProxyURL(parsedURL),
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     10 * time.Second, // Short timeout for batch operations
+		MaxIdleConns:        50,  // Reduced for aggressive memory release (site management is non-critical)
+		MaxIdleConnsPerHost: 10,  // Reduced for aggressive memory release
+		IdleConnTimeout:     5 * time.Second, // Aggressive timeout for faster resource cleanup
 	}
 
 	client := &http.Client{Transport: transport, Timeout: balanceRequestTimeout}
@@ -437,6 +445,24 @@ func (s *BalanceService) closeIdleConnections() {
 
 	// Close idle connections for stealth client manager
 	s.stealthClientMgr.CloseIdleConnections()
+}
+
+// periodicCleanup runs periodic cleanup of idle connections for aggressive memory release.
+// Site management is a non-critical feature, so we can be more aggressive with resource cleanup.
+func (s *BalanceService) periodicCleanup() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(5 * time.Minute) // Cleanup every 5 minutes
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.cleanupCh:
+			return
+		case <-ticker.C:
+			s.closeIdleConnections()
+			logrus.Debug("BalanceService: periodic cleanup completed")
+		}
+	}
 }
 
 // RefreshAllBalancesManual is called by the manual refresh button.

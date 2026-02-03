@@ -73,9 +73,9 @@ func (m *StealthClientManager) createStealthClient(proxyURL string) *http.Client
 
 	transport := &http.Transport{
 		DialContext:           dialer.DialContext,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       10 * time.Second, // Short timeout for batch operations
+		MaxIdleConns:          50,  // Reduced for aggressive memory release (site management is non-critical)
+		MaxIdleConnsPerHost:   10,  // Reduced for aggressive memory release
+		IdleConnTimeout:       5 * time.Second, // Aggressive timeout for faster resource cleanup
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,

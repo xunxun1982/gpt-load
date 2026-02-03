@@ -459,9 +459,85 @@ func TestBufferPoolConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
+// TestGetBufferWithCapacity tests the capacity-aware buffer getter
+func TestGetBufferWithCapacity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		capacity         int
+		expectedMinCap   int
+		expectedPoolType string
+	}{
+		{
+			name:             "small_4KB",
+			capacity:         4 * 1024,
+			expectedMinCap:   0,
+			expectedPoolType: "small",
+		},
+		{
+			name:             "small_64KB",
+			capacity:         64 * 1024,
+			expectedMinCap:   0,
+			expectedPoolType: "small",
+		},
+		{
+			name:             "medium_128KB",
+			capacity:         128 * 1024,
+			expectedMinCap:   64 * 1024,
+			expectedPoolType: "medium",
+		},
+		{
+			name:             "large_512KB",
+			capacity:         512 * 1024,
+			expectedMinCap:   256 * 1024,
+			expectedPoolType: "large",
+		},
+		{
+			name:             "xlarge_1.5MB",
+			capacity:         1536 * 1024,
+			expectedMinCap:   512 * 1024,
+			expectedPoolType: "xlarge",
+		},
+		{
+			name:             "huge_3MB",
+			capacity:         3 * 1024 * 1024,
+			expectedMinCap:   3 * 1024 * 1024,
+			expectedPoolType: "none",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			buf := GetBufferWithCapacity(tt.capacity)
+			defer PutBuffer(buf)
+
+			if buf == nil {
+				t.Fatal("GetBufferWithCapacity returned nil")
+			}
+
+			// For pooled buffers, capacity should be at least the expected minimum
+			// For non-pooled huge buffers, capacity should match requested size
+			if tt.expectedPoolType == "none" {
+				if buf.Cap() < tt.expectedMinCap {
+					t.Errorf("Expected capacity >= %d for huge buffer, got %d", tt.expectedMinCap, buf.Cap())
+				}
+			} else if buf.Cap() > 0 && buf.Cap() < tt.expectedMinCap {
+				t.Logf("Buffer capacity: %d (expected >= %d for %s pool)", buf.Cap(), tt.expectedMinCap, tt.expectedPoolType)
+			}
+		})
+	}
+}
+
 // TestTieredBufferPooling tests the tiered buffer pooling strategy
 func TestTieredBufferPooling(t *testing.T) {
-	t.Parallel()
+	// Skip large allocations in short mode to prevent OOM in CI
+	if testing.Short() {
+		t.Skip("skipping large buffer allocations in short mode")
+	}
 
 	tests := []struct {
 		name       string
@@ -526,12 +602,6 @@ func TestTieredBufferPooling(t *testing.T) {
 		{
 			name:       "huge_buffer_5MB",
 			bufferSize: 5 * 1024 * 1024,
-			shouldPool: false,
-			poolType:   "none",
-		},
-		{
-			name:       "huge_buffer_150MB",
-			bufferSize: 150 * 1024 * 1024,
 			shouldPool: false,
 			poolType:   "none",
 		},

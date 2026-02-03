@@ -68,6 +68,27 @@ func GetBuffer() *bytes.Buffer {
 	return BufferPool.Get().(*bytes.Buffer)
 }
 
+// GetBufferWithCapacity retrieves a buffer from the appropriate pool based on requested capacity.
+// This enables efficient use of tiered pools for known buffer sizes.
+// Falls back to small pool for unknown or small capacities.
+func GetBufferWithCapacity(capacity int) *bytes.Buffer {
+	switch {
+	case capacity <= smallBufferThreshold:
+		return BufferPool.Get().(*bytes.Buffer)
+	case capacity <= mediumBufferThreshold:
+		return MediumBufferPool.Get().(*bytes.Buffer)
+	case capacity <= largeBufferThreshold:
+		return LargeBufferPool.Get().(*bytes.Buffer)
+	case capacity <= xlargeBufferThreshold:
+		return XLargeBufferPool.Get().(*bytes.Buffer)
+	default:
+		// For huge buffers (>2MB), allocate directly without pooling
+		buf := new(bytes.Buffer)
+		buf.Grow(capacity)
+		return buf
+	}
+}
+
 // PutBuffer resets the buffer and returns it to the appropriate pool.
 // Uses tiered pooling strategy:
 // - Tier 1 (<=64KB): returned to small pool (most common case)

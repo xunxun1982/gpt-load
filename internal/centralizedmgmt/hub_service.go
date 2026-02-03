@@ -671,6 +671,7 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 	var nativeSources []ModelSource
 	var compatibleSources []ModelSource
 	nativeChannel := GetNativeChannel(relayFormat)
+	preconditionsMissingLogged := false // Track if we've logged the preconditions warning to avoid log spam
 
 	for _, source := range allSources {
 		// Skip disabled, unhealthy, or disabled-priority sources
@@ -715,11 +716,15 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 				// Rationale: Temporary DB issues should not block all aggregate routing.
 				// This prioritizes availability over strict precondition enforcement.
 				// The downstream group selection will still apply health checks.
-				logrus.WithFields(logrus.Fields{
-					"group_id":        source.GroupID,
-					"group_name":      source.GroupName,
-					"request_size_kb": requestSizeKB,
-				}).Warn("Preconditions not loaded; allowing aggregate group (fail-open)")
+				// Log only once per request to avoid log spam during DB issues
+				if !preconditionsMissingLogged {
+					logrus.WithFields(logrus.Fields{
+						"group_id":        source.GroupID,
+						"group_name":      source.GroupName,
+						"request_size_kb": requestSizeKB,
+					}).Warn("Preconditions not loaded; allowing aggregate group (fail-open)")
+					preconditionsMissingLogged = true
+				}
 			} else {
 				maxSizeKB := group.GetMaxRequestSizeKB()
 				// Skip this aggregate group if request size exceeds limit

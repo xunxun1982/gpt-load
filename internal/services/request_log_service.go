@@ -229,11 +229,13 @@ func (s *RequestLogService) flush() {
 		processedKeys := make([]string, 0, len(keys))
 		retryKeys := make([]string, 0, len(keys)/10)
 		badKeys := make([]string, 0, len(keys)/50)
+		missingCount := 0 // Track missing keys for pendingCount adjustment
 		for _, key := range keys {
 			logBytes, err := s.store.Get(key)
 			if err != nil {
 				if err == store.ErrNotFound {
 					logrus.Warnf("Log key %s found in set but not in store, skipping.", key)
+					missingCount++
 				} else {
 					logrus.Warnf("Failed to get log for key %s: %v", key, err)
 					retryKeys = append(retryKeys, key)
@@ -265,6 +267,10 @@ func (s *RequestLogService) flush() {
 					logrus.Errorf("CRITICAL: Failed to re-add unread log keys to set: %v", saddErr)
 				}
 			}
+			// Decrement pendingCount for missing and bad keys to prevent counter drift
+			if missingCount+len(badKeys) > 0 {
+				atomic.AddInt64(&s.pendingCount, -int64(missingCount+len(badKeys)))
+			}
 			continue
 		}
 
@@ -289,6 +295,10 @@ func (s *RequestLogService) flush() {
 					logrus.WithError(delErr).Error("Failed to delete corrupted log bodies from store")
 				}
 			}
+			// Decrement pendingCount for missing and bad keys to prevent counter drift
+			if missingCount+len(badKeys) > 0 {
+				atomic.AddInt64(&s.pendingCount, -int64(missingCount+len(badKeys)))
+			}
 			return
 		}
 
@@ -298,6 +308,10 @@ func (s *RequestLogService) flush() {
 			}
 			// Decrement approximate pending count
 			atomic.AddInt64(&s.pendingCount, -int64(len(processedKeys)))
+		}
+		// Decrement pendingCount for missing and bad keys to prevent counter drift
+		if missingCount+len(badKeys) > 0 {
+			atomic.AddInt64(&s.pendingCount, -int64(missingCount+len(badKeys)))
 		}
 		if len(badKeys) > 0 {
 			if err := s.store.Del(badKeys...); err != nil {
