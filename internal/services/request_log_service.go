@@ -327,21 +327,20 @@ func (s *RequestLogService) flush() {
 			return
 		}
 
-		// Only decrement pendingCount after successful deletion to maintain accurate counter
-		// This follows atomic operation best practices: only update counter on success
+		// Decrement pendingCount regardless of Del success since keys are already popped from set
+		// and logs are written to DB. Orphaned cache entries will TTL out.
+		// This prevents counter drift when Del fails but keys are already removed from tracking set.
 		if len(processedKeys) > 0 {
 			if err := s.store.Del(processedKeys...); err != nil {
 				logrus.Errorf("Failed to delete flushed log bodies from store: %v", err)
-			} else {
-				atomic.AddInt64(&s.pendingCount, -int64(len(processedKeys)))
 			}
+			atomic.AddInt64(&s.pendingCount, -int64(len(processedKeys)))
 		}
 		if len(badKeys) > 0 {
 			if err := s.store.Del(badKeys...); err != nil {
 				logrus.WithError(err).Error("Failed to delete corrupted log bodies from store")
-			} else {
-				atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 			}
+			atomic.AddInt64(&s.pendingCount, -int64(len(badKeys)))
 		}
 		// Decrement for missing keys (they were never in cache, so safe to decrement)
 		if missingCount > 0 {

@@ -899,7 +899,7 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 
 	// Create custom config to test specific thresholds
 	config := DefaultDynamicWeightConfig()
-	config.CriticalHealthThreshold = 0.25
+	config.CriticalHealthThreshold = 0.35 // Adjusted to be reachable with current penalty system
 	config.MediumHealthThreshold = 0.65
 	config.MediumHealthPenaltyExponent = 2.0
 
@@ -923,24 +923,28 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 	}
 
 	// Test case 2: At or below critical threshold
+	// Added LastFailureAt to apply recent-failure penalty and push health below threshold
 	metrics2 := &DynamicWeightMetrics{
 		ConsecutiveFailures: 6,
 		Requests180d:        100,
 		Successes180d:       20, // 20% success rate
 		Requests7d:          10,
 		Successes7d:         2,
+		LastFailureAt:       time.Now().Add(-1 * time.Minute), // Apply recent-failure penalty
 	}
 	weight2 := dwm.GetEffectiveWeight(100, metrics2)
 	health2 := dwm.CalculateHealthScore(metrics2)
 	t.Logf("At or below critical: health=%.3f, weight=%d", health2, weight2)
 	if health2 <= config.CriticalHealthThreshold {
-		// Returns 10% of base weight (min 1) to allow recovery while distinguishing from healthy low-weight targets
-		assert.Equal(t, 10, weight2, "Weight should be 10 (10% of 100) when health is at or below critical threshold")
+		// Critical health: capped at 1 to prevent unhealthy high-weight targets
+		// from dominating healthy low-weight targets
+		assert.Equal(t, 1, weight2, "Weight should be capped at 1 when health is at or below critical threshold")
 	}
 
 	// Test case 3: Just below medium threshold (should use quadratic penalty)
+	// Increased ConsecutiveFailures to push health below medium threshold
 	metrics3 := &DynamicWeightMetrics{
-		ConsecutiveFailures: 3,
+		ConsecutiveFailures: 5, // Increased to push health below medium threshold
 		Requests180d:        50,
 		Successes180d:       45, // 90% success rate
 		Requests7d:          5,

@@ -395,7 +395,7 @@ func (s *HubService) getAggregateGroupModelsWithVisited(aggregateGroupID uint, v
 
 	// Batch query all sub-groups at once to avoid N+1 queries
 	var subGroups []models.Group
-	if err := s.db.Select("id, name, group_type, model_redirect_rules_v2, enabled").
+	if err := s.db.Select("id, name, group_type, model_redirect_rules_v2, custom_model_names, enabled").
 		Where("id IN ?", subGroupIDs).
 		Find(&subGroups).Error; err != nil {
 		logrus.WithError(err).WithField("aggregate_group_id", aggregateGroupID).Warn("Failed to batch query sub-groups")
