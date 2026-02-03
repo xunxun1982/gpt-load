@@ -23,6 +23,7 @@ type MemoryStore struct {
 	muSubscribers   sync.RWMutex
 	subscribers     map[string]map[chan *Message]struct{}
 	droppedMessages atomic.Int64
+	stopCleanup     chan struct{} // Channel to stop cleanup goroutine
 }
 
 // NOTE: This store uses the global logrus logger configured at application startup to stay aligned
@@ -34,12 +35,29 @@ func NewMemoryStore() *MemoryStore {
 	s := &MemoryStore{
 		data:        make(map[string]any),
 		subscribers: make(map[string]map[chan *Message]struct{}),
+		stopCleanup: make(chan struct{}),
 	}
+	// Start background goroutine to periodically clean expired items
+	// This prevents memory leaks from expired items that are never accessed
+	go s.cleanupExpiredItems()
 	return s
 }
 
 // Close cleans up resources.
 func (s *MemoryStore) Close() error {
+	// Stop cleanup goroutine
+	close(s.stopCleanup)
+
+	// Close all subscriber channels to prevent goroutine leaks
+	s.muSubscribers.Lock()
+	for channel, subs := range s.subscribers {
+		for subCh := range subs {
+			close(subCh)
+		}
+		delete(s.subscribers, channel)
+	}
+	s.muSubscribers.Unlock()
+
 	return nil
 }
 
@@ -315,17 +333,20 @@ func (s *MemoryStore) LLen(key string) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rawList, exists := s.data[key]
+	rawItem, exists := s.data[key]
 	if !exists {
 		return 0, nil
 	}
 
-	list, ok := rawList.([]string)
-	if !ok {
+	// Support both list and set types for flexibility
+	switch v := rawItem.(type) {
+	case []string:
+		return int64(len(v)), nil
+	case map[string]struct{}:
+		return int64(len(v)), nil
+	default:
 		return 0, fmt.Errorf("type mismatch: key '%s' holds a different data type", key)
 	}
-
-	return int64(len(list)), nil
 }
 
 // --- SET operations ---
@@ -495,4 +516,59 @@ func (s *MemoryStore) Clear() error {
 // and fast; callers can layer additional metrics if needed.
 func (s *MemoryStore) DroppedMessages() int64 {
 	return s.droppedMessages.Load()
+}
+
+// cleanupExpiredItems periodically removes expired items from the store.
+// This prevents memory leaks from expired items that are never accessed again.
+// Runs every 5 minutes to balance memory usage and CPU overhead.
+func (s *MemoryStore) cleanupExpiredItems() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.performCleanup()
+		case <-s.stopCleanup:
+			logrus.Debug("MemoryStore cleanup goroutine stopped")
+			return
+		}
+	}
+}
+
+// performCleanup scans the store and removes expired items.
+func (s *MemoryStore) performCleanup() {
+	now := time.Now().UnixNano()
+	expiredKeys := make([]string, 0, 100) // Pre-allocate for common case
+
+	// First pass: identify expired keys (read lock)
+	s.mu.RLock()
+	for key, rawItem := range s.data {
+		if item, ok := rawItem.(memoryStoreItem); ok {
+			if item.expiresAt > 0 && now > item.expiresAt {
+				expiredKeys = append(expiredKeys, key)
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	// Second pass: delete expired keys (write lock)
+	if len(expiredKeys) > 0 {
+		s.mu.Lock()
+		for _, key := range expiredKeys {
+			// Double-check expiration under write lock to avoid race conditions
+			if rawItem, exists := s.data[key]; exists {
+				if item, ok := rawItem.(memoryStoreItem); ok {
+					if item.expiresAt > 0 && now > item.expiresAt {
+						delete(s.data, key)
+					}
+				}
+			}
+		}
+		s.mu.Unlock()
+
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.Debugf("MemoryStore cleanup: removed %d expired items", len(expiredKeys))
+		}
+	}
 }

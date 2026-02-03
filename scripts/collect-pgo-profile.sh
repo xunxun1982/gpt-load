@@ -42,7 +42,7 @@ echo "🔥 Running benchmarks for hot paths..."
 declare -a BENCH_PACKAGES=(
     "./internal/keypool:^Benchmark(SelectKey|RealisticWorkload)"
     "./internal/encryption:^Benchmark(Encrypt|Decrypt|Hash)"
-    "./internal/utils:^Benchmark(BufferPool|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"
+    "./internal/utils:^Benchmark(BufferPool|TieredBufferPooling|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"
 )
 BENCH_INDEX=0
 

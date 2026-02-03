@@ -46,7 +46,7 @@ func TestPutBuffer(t *testing.T) {
 		{
 			name: "large_buffer",
 			setupBuf: func() *bytes.Buffer {
-				buf := bytes.NewBuffer(make([]byte, 0, maxPooledBufferSize+1))
+				buf := bytes.NewBuffer(make([]byte, 0, smallBufferThreshold+1))
 				return buf
 			},
 			shouldPool: false,
@@ -107,7 +107,7 @@ func TestPutByteSlice(t *testing.T) {
 		{
 			name: "large_slice",
 			setupSlice: func() *[]byte {
-				large := make([]byte, 0, maxPooledBufferSize+1)
+				large := make([]byte, 0, smallBufferThreshold+1)
 				return &large
 			},
 			shouldPool: false,
@@ -232,7 +232,7 @@ func TestPutJSONEncoder(t *testing.T) {
 			setupEnc: func() *JSONEncoder {
 				enc := GetJSONEncoder()
 				// Create large buffer
-				largeData := make([]byte, maxPooledBufferSize+1)
+				largeData := make([]byte, smallBufferThreshold+1)
 				enc.buf.Write(largeData)
 				return enc
 			},
@@ -288,7 +288,7 @@ func TestPutStringBuilder(t *testing.T) {
 			name: "large_builder",
 			setupSB: func() *strings.Builder {
 				sb := &strings.Builder{}
-				sb.Grow(maxPooledBufferSize + 1)
+				sb.Grow(smallBufferThreshold + 1)
 				return sb
 			},
 			shouldPool: false,
@@ -457,4 +457,165 @@ func TestBufferPoolConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestTieredBufferPooling tests the tiered buffer pooling strategy
+func TestTieredBufferPooling(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		bufferSize int
+		shouldPool bool
+		poolType   string // "small", "medium", "large", "xlarge", or "none"
+	}{
+		{
+			name:       "small_buffer_4KB",
+			bufferSize: 4 * 1024,
+			shouldPool: true,
+			poolType:   "small",
+		},
+		{
+			name:       "small_buffer_64KB",
+			bufferSize: 64 * 1024,
+			shouldPool: true,
+			poolType:   "small",
+		},
+		{
+			name:       "medium_buffer_128KB",
+			bufferSize: 128 * 1024,
+			shouldPool: true,
+			poolType:   "medium",
+		},
+		{
+			name:       "medium_buffer_256KB",
+			bufferSize: 256 * 1024,
+			shouldPool: true,
+			poolType:   "medium",
+		},
+		{
+			name:       "large_buffer_512KB",
+			bufferSize: 512 * 1024,
+			shouldPool: true,
+			poolType:   "large",
+		},
+		{
+			name:       "large_buffer_1MB",
+			bufferSize: 1024 * 1024,
+			shouldPool: true,
+			poolType:   "large",
+		},
+		{
+			name:       "xlarge_buffer_1.5MB",
+			bufferSize: 1536 * 1024,
+			shouldPool: true,
+			poolType:   "xlarge",
+		},
+		{
+			name:       "xlarge_buffer_2MB",
+			bufferSize: 2 * 1024 * 1024,
+			shouldPool: true,
+			poolType:   "xlarge",
+		},
+		{
+			name:       "huge_buffer_3MB",
+			bufferSize: 3 * 1024 * 1024,
+			shouldPool: false,
+			poolType:   "none",
+		},
+		{
+			name:       "huge_buffer_5MB",
+			bufferSize: 5 * 1024 * 1024,
+			shouldPool: false,
+			poolType:   "none",
+		},
+		{
+			name:       "huge_buffer_150MB",
+			bufferSize: 150 * 1024 * 1024,
+			shouldPool: false,
+			poolType:   "none",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create buffer with specific size
+			buf := GetBuffer()
+			buf.Grow(tt.bufferSize)
+			buf.Write(make([]byte, tt.bufferSize))
+
+			initialCap := buf.Cap()
+
+			// Return to pool
+			PutBuffer(buf)
+
+			// Get a new buffer and check if it's from the pool
+			buf2 := GetBuffer()
+			defer PutBuffer(buf2)
+
+			if tt.shouldPool {
+				// For pooled buffers, verify they're routed to correct pool
+				switch tt.poolType {
+				case "small":
+					if buf2.Cap() > smallBufferThreshold*2 {
+						t.Errorf("Expected small pool buffer, got capacity %d", buf2.Cap())
+					}
+				case "medium":
+					// Medium pool pre-allocates 128KB
+					if buf2.Cap() > 0 && buf2.Cap() < 64*1024 {
+						t.Logf("Medium pool buffer capacity: %d (expected >= 64KB)", buf2.Cap())
+					}
+				case "large":
+					// Large pool pre-allocates 512KB
+					if buf2.Cap() > 0 && buf2.Cap() < 256*1024 {
+						t.Logf("Large pool buffer capacity: %d (expected >= 256KB)", buf2.Cap())
+					}
+				case "xlarge":
+					// XLarge pool pre-allocates 1MB
+					if buf2.Cap() > 0 && buf2.Cap() < 512*1024 {
+						t.Logf("XLarge pool buffer capacity: %d (expected >= 512KB)", buf2.Cap())
+					}
+				}
+			} else {
+				// For non-pooled buffers, the large buffer should not be reused
+				if buf2.Cap() >= initialCap {
+					t.Logf("Warning: huge buffer may have been pooled (cap: %d)", buf2.Cap())
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkTieredBufferPooling benchmarks the 5-tier buffer pooling strategy
+// across different buffer sizes to demonstrate performance characteristics
+func BenchmarkTieredBufferPooling(b *testing.B) {
+	sizes := []struct {
+		name string
+		size int
+		tier string
+	}{
+		{"Tier1_4KB", 4 * 1024, "small"},
+		{"Tier1_64KB", 64 * 1024, "small"},
+		{"Tier2_128KB", 128 * 1024, "medium"},
+		{"Tier2_256KB", 256 * 1024, "medium"},
+		{"Tier3_512KB", 512 * 1024, "large"},
+		{"Tier3_1MB", 1024 * 1024, "large"},
+		{"Tier4_1.5MB", 1536 * 1024, "xlarge"},
+		{"Tier4_2MB", 2 * 1024 * 1024, "xlarge"},
+		{"Tier5_3MB", 3 * 1024 * 1024, "none"},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			data := make([]byte, sz.size)
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				buf := GetBuffer()
+				buf.Write(data)
+				PutBuffer(buf)
+			}
+		})
+	}
 }

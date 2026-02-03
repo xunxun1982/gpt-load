@@ -460,7 +460,8 @@ func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
 }
 
 // calculateGroupHealthScoreWithVisited calculates health score with cycle detection.
-// Uses visited set to prevent infinite recursion on circular aggregate group references.
+// Uses path-scoped visited set to prevent infinite recursion on circular aggregate group references.
+// The visited set is scoped to the current recursion path, allowing shared sub-groups in DAG structures.
 func (s *HubService) calculateGroupHealthScoreWithVisited(group *models.Group, visited map[uint]struct{}) float64 {
 	if group == nil {
 		return 1.0
@@ -473,7 +474,10 @@ func (s *HubService) calculateGroupHealthScoreWithVisited(group *models.Group, v
 			logrus.WithField("group_id", group.ID).Warn("Circular reference detected in aggregate group health calculation")
 			return 1.0 // Fail-open on cycles
 		}
+		// Path-scoped visited: add current group to path, remove when done
+		// This allows shared sub-groups in DAG structures while detecting true cycles
 		visited[group.ID] = struct{}{}
+		defer delete(visited, group.ID)
 		return s.calculateAggregateGroupHealthScoreWithVisited(group.ID, visited)
 	}
 
@@ -516,7 +520,8 @@ func (s *HubService) calculateAggregateGroupHealthScore(aggregateGroupID uint) f
 }
 
 // calculateAggregateGroupHealthScoreWithVisited calculates health score with cycle detection.
-// Uses visited set to prevent infinite recursion on circular aggregate group references.
+// Uses path-scoped visited set to prevent infinite recursion on circular aggregate group references.
+// The visited set is scoped to the current recursion path, allowing shared sub-groups in DAG structures.
 func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGroupID uint, visited map[uint]struct{}) float64 {
 	// Get sub-group relationships
 	var subGroupRels []models.GroupSubGroup
@@ -706,24 +711,27 @@ func (s *HubService) SelectGroupForModel(ctx context.Context, modelName string, 
 		if source.GroupType == "aggregate" && requestSizeKB > 0 {
 			group, ok := groupPreconditionsMap[source.GroupID]
 			if !ok {
-				// Fail-closed: skip aggregate group if preconditions cannot be verified
+				// Fail-open: allow aggregate group if preconditions cannot be verified
+				// Rationale: Temporary DB issues should not block all aggregate routing.
+				// This prioritizes availability over strict precondition enforcement.
+				// The downstream group selection will still apply health checks.
 				logrus.WithFields(logrus.Fields{
 					"group_id":        source.GroupID,
 					"group_name":      source.GroupName,
 					"request_size_kb": requestSizeKB,
-				}).Warn("Skipping aggregate group: preconditions not loaded")
-				continue
-			}
-			maxSizeKB := group.GetMaxRequestSizeKB()
-			// Skip this aggregate group if request size exceeds limit
-			if maxSizeKB > 0 && requestSizeKB > maxSizeKB {
-				logrus.WithFields(logrus.Fields{
-					"group_id":        source.GroupID,
-					"group_name":      source.GroupName,
-					"request_size_kb": requestSizeKB,
-					"max_size_kb":     maxSizeKB,
-				}).Debug("Skipping aggregate group: request size exceeds precondition limit")
-				continue
+				}).Warn("Preconditions not loaded; allowing aggregate group (fail-open)")
+			} else {
+				maxSizeKB := group.GetMaxRequestSizeKB()
+				// Skip this aggregate group if request size exceeds limit
+				if maxSizeKB > 0 && requestSizeKB > maxSizeKB {
+					logrus.WithFields(logrus.Fields{
+						"group_id":        source.GroupID,
+						"group_name":      source.GroupName,
+						"request_size_kb": requestSizeKB,
+						"max_size_kb":     maxSizeKB,
+					}).Debug("Skipping aggregate group: request size exceeds precondition limit")
+					continue
+				}
 			}
 		}
 
