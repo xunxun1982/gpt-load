@@ -459,7 +459,7 @@ func GetEffectiveWeightForSelection(effectiveWeight float64) int {
 	return weight
 }
 
-// GetSubGroupDynamicWeights returns dynamic weight info for all sub-groups of an aggregate group.
+// SubGroupWeightInput holds the sub-group ID and its base weight for dynamic weight calculation.
 type SubGroupWeightInput struct {
 	SubGroupID uint
 	Weight     int

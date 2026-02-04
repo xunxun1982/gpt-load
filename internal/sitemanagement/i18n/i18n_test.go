@@ -197,6 +197,8 @@ func TestKeyCategories(t *testing.T) {
 }
 
 // TestNoEmptyTranslations verifies no translation is an empty string
+// Note: This test is intentionally similar to TestTranslationValuesNotEmpty
+// for defense-in-depth validation, following the pattern in other i18n test files.
 func TestNoEmptyTranslations(t *testing.T) {
 	allMaps := map[string]map[string]string{
 		"English":  MessagesEnUS,
