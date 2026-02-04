@@ -2489,91 +2489,6 @@ func TestGroupHealthScoreVsSubGroupMetrics(t *testing.T) {
 	hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, standardGroup.ID))
 }
 
-// TestAggregateGroupHealthScoreRecursion tests that aggregate group health score
-// correctly recurses through nested aggregate groups.
-func TestAggregateGroupHealthScoreRecursion(t *testing.T) {
-	db := setupHubTestDB(t)
-
-	_, hubService := setupHubTestServices(t, db)
-
-	// Create standard groups
-	standardGroup1 := createTestGroup(t, db, "standard-1", "standard", "openai", 1, true, "gpt-4")
-	standardGroup2 := createTestGroup(t, db, "standard-2", "standard", "openai", 2, true, "gpt-4")
-
-	// Create nested aggregate groups
-	aggGroup1 := createTestGroup(t, db, "agg-1", "aggregate", "openai", 1, true, "gpt-4")
-	aggGroup2 := createTestGroup(t, db, "agg-2", "aggregate", "openai", 2, true, "gpt-4")
-
-	// Structure: aggGroup2 -> aggGroup1 -> [standardGroup1, standardGroup2]
-	db.Create(&models.GroupSubGroup{GroupID: aggGroup1.ID, SubGroupID: standardGroup1.ID, Weight: 100})
-	db.Create(&models.GroupSubGroup{GroupID: aggGroup1.ID, SubGroupID: standardGroup2.ID, Weight: 100})
-	db.Create(&models.GroupSubGroup{GroupID: aggGroup2.ID, SubGroupID: aggGroup1.ID, Weight: 100})
-
-	// Record sub-group metrics for aggGroup1 (used for aggregate health calculation)
-	// standardGroup1 in aggGroup1: 100% success
-	for i := 0; i < 10; i++ {
-		hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup1.ID, standardGroup1.ID)
-	}
-
-	// standardGroup2 in aggGroup1: 50% success
-	for i := 0; i < 5; i++ {
-		hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup1.ID, standardGroup2.ID)
-	}
-	for i := 0; i < 5; i++ {
-		hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup1.ID, standardGroup2.ID)
-	}
-
-	// Note: For nested aggregates (aggGroup2 -> aggGroup1), we don't record sub-group metrics
-	// because aggGroup1 is itself an aggregate. The health calculation will recursively
-	// calculate aggGroup1's health from its own sub-groups.
-
-	// Calculate health scores
-	// For standard groups accessed directly, use group-level metrics (not recorded in this test)
-	// For aggregate groups, use weighted average based on sub-group request counts
-
-	// Get sub-group metrics for health calculation
-	metrics1, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup1.ID, standardGroup1.ID)
-	health1 := hubService.dynamicWeightManager.CalculateHealthScore(metrics1)
-	requestCount1 := metrics1.Requests180d
-
-	metrics2, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup1.ID, standardGroup2.ID)
-	health2 := hubService.dynamicWeightManager.CalculateHealthScore(metrics2)
-	requestCount2 := metrics2.Requests180d
-
-	healthAgg1 := hubService.calculateGroupHealthScore(aggGroup1)
-	healthAgg2 := hubService.calculateGroupHealthScore(aggGroup2)
-
-	// Verify sub-group health scores based on recorded metrics
-	if health1 < 0.9 {
-		t.Errorf("Expected standardGroup1 health (in aggGroup1) >= 0.9, got %f", health1)
-	}
-	if health2 >= 0.7 || health2 < 0.3 {
-		t.Errorf("Expected standardGroup2 health (in aggGroup1) between 0.3 and 0.7, got %f", health2)
-	}
-
-	// Verify aggGroup1 health is weighted average of its sub-groups
-	// Weighted average = (health1 * count1 + health2 * count2) / (count1 + count2)
-	expectedAgg1 := (health1*float64(requestCount1) + health2*float64(requestCount2)) / float64(requestCount1+requestCount2)
-	if healthAgg1 < expectedAgg1-0.1 || healthAgg1 > expectedAgg1+0.1 {
-		t.Errorf("Expected aggGroup1 health ~%f (weighted average of sub-groups), got %f", expectedAgg1, healthAgg1)
-	}
-
-	// Verify aggGroup2 health equals aggGroup1 health (only one sub-group)
-	// Since aggGroup1 is a nested aggregate, aggGroup2 should recursively calculate its health
-	if healthAgg2 < healthAgg1-0.01 || healthAgg2 > healthAgg1+0.01 {
-		t.Errorf("Expected aggGroup2 health ~%f (same as aggGroup1), got %f", healthAgg1, healthAgg2)
-	}
-
-	t.Logf("Sub-group 1: health=%f, requests=%d", health1, requestCount1)
-	t.Logf("Sub-group 2: health=%f, requests=%d", health2, requestCount2)
-	t.Logf("Aggregate 1: health=%f (weighted average)", healthAgg1)
-	t.Logf("Aggregate 2: health=%f (recursive)", healthAgg2)
-
-	// Cleanup
-	hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup1.ID, standardGroup1.ID))
-	hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup1.ID, standardGroup2.ID))
-}
-
 // TestGroupHealthScoreWithNoMetrics tests that groups with no metrics return 1.0 (healthy).
 func TestGroupHealthScoreWithNoMetrics(t *testing.T) {
 	db := setupHubTestDB(t)
@@ -2620,27 +2535,27 @@ func TestCalculateAggregateGroupHealthScore(t *testing.T) {
 	t.Run("average_health_score_of_sub_groups", func(t *testing.T) {
 		// Sub-group 1: 100% healthy (10 successful requests)
 		for i := 0; i < 10; i++ {
-			hubService.dynamicWeightManager.RecordGroupSuccess(subGroup1.ID)
+			hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, subGroup1.ID)
 		}
 
 		// Sub-group 2: ~70% healthy (7 successes, 3 failures)
 		for i := 0; i < 7; i++ {
-			hubService.dynamicWeightManager.RecordGroupSuccess(subGroup2.ID)
+			hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, subGroup2.ID)
 		}
 		for i := 0; i < 3; i++ {
-			hubService.dynamicWeightManager.RecordGroupFailure(subGroup2.ID)
+			hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, subGroup2.ID)
 		}
 
-		// Calculate aggregate health score (average of sub-groups)
+		// Calculate aggregate health score (weighted average of sub-groups)
 		score := hubService.calculateGroupHealthScore(aggGroup)
-		// Health score should be between 0.7 and 1.0 (average of ~1.0 and ~0.7-0.9)
+		// Health score should be between 0.7 and 1.0 (weighted average of ~1.0 and ~0.7-0.9)
 		if score < 0.7 || score > 1.0 {
 			t.Errorf("Expected health score between 0.7 and 1.0 for aggregate group, got %f", score)
 		}
 
 		// Cleanup metrics
-		hubService.dynamicWeightManager.GetStore().Delete(services.GroupMetricsKey(subGroup1.ID))
-		hubService.dynamicWeightManager.GetStore().Delete(services.GroupMetricsKey(subGroup2.ID))
+		hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, subGroup1.ID))
+		hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, subGroup2.ID))
 	})
 }
 

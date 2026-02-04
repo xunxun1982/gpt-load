@@ -587,6 +587,8 @@ func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGrou
 	// - Rarely used unhealthy sub-groups have minimal impact
 	// - Sub-groups with no requests don't affect the score
 	// This ensures aggregate health reflects actual performance, not theoretical worst-case.
+	// NOTE: Nested aggregates are not supported (validated at sub-group creation time),
+	// so all sub-groups are guaranteed to be standard groups.
 	var totalWeightedHealthScore float64
 	var totalWeight int64
 
@@ -594,51 +596,29 @@ func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGrou
 		var subHealthScore float64
 		var requestCount int64
 
-		// If sub-group is also an aggregate group, recurse
-		if subGroup.GroupType == "aggregate" {
-			// Check for circular reference before recursing
-			if _, seen := visited[subGroup.ID]; seen {
-				logrus.WithField("sub_group_id", subGroup.ID).Warn("Circular reference detected in nested aggregate group")
-				subHealthScore = 1.0 // Fail-open on cycles
-				requestCount = 0    // Don't include in weighted average
-			} else {
-				// Path-scoped visited: add current group to path, remove when done
-				visited[subGroup.ID] = struct{}{}
-				subHealthScore = s.calculateAggregateGroupHealthScoreWithVisited(subGroup.ID, visited)
-				delete(visited, subGroup.ID)
-
-				// For nested aggregates, we don't have direct request count
-				// Use a nominal weight of 1 if health is calculated, 0 otherwise
-				// This ensures nested aggregates participate in health calculation
-				// but don't dominate over sub-groups with actual metrics
-				if subHealthScore > 0 {
-					requestCount = 1
-				}
-			}
+		// All sub-groups must be standard groups (aggregate cannot contain aggregate)
+		// This is enforced by ValidateSubGroups in aggregate_group_service.go
+		if s.dynamicWeightManager == nil {
+			subHealthScore = 1.0 // Fail-open if manager not available
+			requestCount = 0     // Don't include in weighted average
 		} else {
-			// For standard sub-groups, use sub-group metrics (performance within this aggregate)
-			if s.dynamicWeightManager == nil {
-				subHealthScore = 1.0 // Fail-open if manager not available
+			metrics, err := s.dynamicWeightManager.GetSubGroupMetrics(aggregateGroupID, subGroup.ID)
+			if err != nil {
+				logrus.WithError(err).WithFields(logrus.Fields{
+					"aggregate_group_id": aggregateGroupID,
+					"sub_group_id":       subGroup.ID,
+				}).Warn("Failed to get sub-group metrics for health score calculation")
+				subHealthScore = 1.0 // Fail-open
 				requestCount = 0     // Don't include in weighted average
+			} else if metrics.Requests180d == 0 {
+				// No request history through this aggregate group
+				// Don't include in weighted average (weight = 0)
+				subHealthScore = 1.0
+				requestCount = 0
 			} else {
-				metrics, err := s.dynamicWeightManager.GetSubGroupMetrics(aggregateGroupID, subGroup.ID)
-				if err != nil {
-					logrus.WithError(err).WithFields(logrus.Fields{
-						"aggregate_group_id": aggregateGroupID,
-						"sub_group_id":       subGroup.ID,
-					}).Warn("Failed to get sub-group metrics for health score calculation")
-					subHealthScore = 1.0 // Fail-open
-					requestCount = 0     // Don't include in weighted average
-				} else if metrics.Requests180d == 0 {
-					// No request history through this aggregate group
-					// Don't include in weighted average (weight = 0)
-					subHealthScore = 1.0
-					requestCount = 0
-				} else {
-					// Calculate health score using dynamic weight algorithm
-					subHealthScore = s.dynamicWeightManager.CalculateHealthScore(metrics)
-					requestCount = metrics.Requests180d
-				}
+				// Calculate health score using dynamic weight algorithm
+				subHealthScore = s.dynamicWeightManager.CalculateHealthScore(metrics)
+				requestCount = metrics.Requests180d
 			}
 		}
 
