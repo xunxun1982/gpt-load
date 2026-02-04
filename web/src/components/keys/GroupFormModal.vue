@@ -11,7 +11,7 @@ import type {
   PathRedirectRule,
   UpstreamInfo,
 } from "@/types/models";
-import { formatHealthScore, formatPercentage } from "@/utils/display";
+import { formatEffectiveWeight, formatHealthScore, formatPercentage } from "@/utils/display";
 import {
   Add,
   Close,
@@ -2062,8 +2062,10 @@ async function handleSubmit() {
                                     <span>{{ t("keys.effectiveWeight") }}:</span>
                                     <span>
                                       {{
-                                        getDynamicWeightInfo(rule.from, targetIndex)
-                                          ?.effective_weight
+                                        formatEffectiveWeight(
+                                          getDynamicWeightInfo(rule.from, targetIndex)
+                                            ?.effective_weight ?? 0
+                                        )
                                       }}
                                     </span>
                                   </div>

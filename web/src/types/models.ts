@@ -92,7 +92,7 @@ export interface SubGroupConfig {
 export interface DynamicWeightInfo {
   base_weight: number;
   health_score: number;
-  effective_weight: number;
+  effective_weight: number; // Float with 1 decimal place, min 0.1
   success_rate: number;
   request_count: number;
   last_failure_at?: string | null;
@@ -103,7 +103,7 @@ export interface DynamicWeightInfo {
 export interface ModelRedirectTargetWeight {
   model: string;
   base_weight: number;
-  effective_weight: number;
+  effective_weight: number; // Float with 1 decimal place, min 0.1
   health_score: number;
   success_rate: number;
   request_count: number;

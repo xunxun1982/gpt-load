@@ -397,7 +397,8 @@ func (s *selector) selectByWeight() *subGroupItem {
 			// Apply dynamic weight if manager is available
 			if s.dynamicWeight != nil {
 				metrics, _ := s.dynamicWeight.GetSubGroupMetrics(s.groupID, s.subGroups[i].subGroupID)
-				weights[i] = s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
+				effectiveWeight := s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
+				weights[i] = GetEffectiveWeightForSelection(effectiveWeight)
 			} else {
 				weights[i] = baseWeight
 			}
@@ -434,7 +435,8 @@ func (s *selector) selectByWeightWithExclusion(excludeIDs map[uint]bool) *subGro
 			// Apply dynamic weight if manager is available
 			if s.dynamicWeight != nil {
 				metrics, _ := s.dynamicWeight.GetSubGroupMetrics(s.groupID, s.subGroups[i].subGroupID)
-				weights[i] = s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
+				effectiveWeight := s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
+				weights[i] = GetEffectiveWeightForSelection(effectiveWeight)
 			} else {
 				weights[i] = baseWeight
 			}

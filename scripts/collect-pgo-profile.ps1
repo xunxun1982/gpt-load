@@ -34,9 +34,12 @@ Write-Host "🔥 Running benchmarks for hot paths..." -ForegroundColor Cyan
 # Run benchmarks for each package separately (cpuprofile requires single package)
 # Focus on proxy/forwarding hot paths: keypool selection, encryption, buffer pool, JSON processing
 $benchPackages = @(
-    @{Path="./internal/keypool"; Pattern="^Benchmark(SelectKey|RealisticWorkload)"},
+    @{Path="./internal/keypool"; Pattern="^Benchmark(SelectKey|RealisticWorkload|ConcurrentOperations)"},
     @{Path="./internal/encryption"; Pattern="^Benchmark(Encrypt|Decrypt|Hash)"},
-    @{Path="./internal/utils"; Pattern="^Benchmark(BufferPool|TieredBufferPooling|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"}
+    @{Path="./internal/utils"; Pattern="^Benchmark(BufferPool|TieredBufferPooling|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"},
+    @{Path="./internal/proxy"; Pattern="^Benchmark(ApplyModelMapping|ApplyParamOverrides|RealisticProxyWorkload|ConcurrentProxyOperations)"},
+    @{Path="./internal/types"; Pattern="^Benchmark(SupportsStreaming|RealisticFormatChecks|FormatStringConversion)"},
+    @{Path="./internal/middleware"; Pattern="^Benchmark(CORSMiddleware|RealisticMiddlewareChain|SecurityHeaders|MultipleMiddlewares)"}
 )
 $benchIndex = 0
 
@@ -50,7 +53,7 @@ foreach ($pkg in $benchPackages) {
         go test `
             -tags $GO_TAGS `
             -bench="$($pkg.Pattern)" `
-            -benchtime=2s `
+            -benchtime=3s `
             -cpuprofile="$benchmarkProfile" `
             -run='^$' `
             $pkg.Path 2>&1 | Out-Null

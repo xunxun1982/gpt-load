@@ -40,9 +40,12 @@ echo "🔥 Running benchmarks for hot paths..."
 # Run benchmarks for each package separately (cpuprofile requires single package)
 # Focus on proxy/forwarding hot paths: keypool selection, encryption, buffer pool, JSON processing
 declare -a BENCH_PACKAGES=(
-    "./internal/keypool:^Benchmark(SelectKey|RealisticWorkload)"
+    "./internal/keypool:^Benchmark(SelectKey|RealisticWorkload|ConcurrentOperations)"
     "./internal/encryption:^Benchmark(Encrypt|Decrypt|Hash)"
     "./internal/utils:^Benchmark(BufferPool|TieredBufferPooling|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"
+    "./internal/proxy:^Benchmark(ApplyModelMapping|ApplyParamOverrides|RealisticProxyWorkload|ConcurrentProxyOperations)"
+    "./internal/types:^Benchmark(SupportsStreaming|RealisticFormatChecks|FormatStringConversion)"
+    "./internal/middleware:^Benchmark(CORSMiddleware|RealisticMiddlewareChain|SecurityHeaders|MultipleMiddlewares)"
 )
 BENCH_INDEX=0
 
@@ -58,7 +61,7 @@ for pkg_pattern in "${BENCH_PACKAGES[@]}"; do
     go test \
         -tags "${GO_TAGS}" \
         -bench="${PATTERN}" \
-        -benchtime=2s \
+        -benchtime=3s \
         -cpuprofile="${BENCHMARK_PROFILE}" \
         -run=^$ \
         "${PKG}" >/dev/null 2>&1

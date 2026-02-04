@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import type { Group, SubGroupInfo } from "@/types/models";
-import { formatHealthScore, formatPercentage, getGroupDisplayName } from "@/utils/display";
+import {
+  formatEffectiveWeight,
+  formatHealthScore,
+  formatPercentage,
+  getGroupDisplayName,
+} from "@/utils/display";
 import {
   Add,
   CreateOutline,
@@ -120,17 +125,23 @@ const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
     return [];
   }
   // Calculate effective total weight (only enabled sub-groups with weight > 0)
+  // Use dynamic effective weight if available, otherwise use base weight
   const effectiveTotal = props.subGroups.reduce((sum, sg) => {
     // Only count weight if sub-group is enabled and has positive weight
     if (sg.group.enabled && sg.weight > 0) {
-      return sum + sg.weight;
+      // Use effective weight from dynamic weight info if available
+      const weight = sg.dynamic_weight?.effective_weight ?? sg.weight;
+      return sum + weight;
     }
     return sum;
   }, 0);
 
   const withPercentage = props.subGroups.map(sg => {
-    // Effective weight is 0 if sub-group is disabled, otherwise use actual weight
-    const effectiveWeight = sg.group.enabled ? sg.weight : 0;
+    // Calculate effective weight: 0 if disabled, otherwise use dynamic effective weight or base weight
+    let effectiveWeight = 0;
+    if (sg.group.enabled) {
+      effectiveWeight = sg.dynamic_weight?.effective_weight ?? sg.weight;
+    }
     return {
       ...sg,
       // Calculate percentage without rounding - let formatPercentage handle precision
@@ -378,7 +389,7 @@ function formatDateTime(isoString: string | null | undefined): string {
                   <!-- Show effective weight if dynamic weight is available -->
                   <template v-if="subGroup.dynamic_weight">
                     <span class="effective-weight">
-                      → {{ subGroup.dynamic_weight.effective_weight }}
+                      → {{ formatEffectiveWeight(subGroup.dynamic_weight.effective_weight) }}
                     </span>
                   </template>
                 </span>
@@ -463,7 +474,7 @@ function formatDateTime(isoString: string | null | undefined): string {
                       <div class="info-row">
                         <span class="info-label">{{ t("subGroups.effectiveWeight") }}:</span>
                         <span class="info-value">
-                          {{ subGroup.dynamic_weight.effective_weight }}
+                          {{ formatEffectiveWeight(subGroup.dynamic_weight.effective_weight) }}
                         </span>
                       </div>
                       <div class="info-row">

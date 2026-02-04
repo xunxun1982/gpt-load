@@ -99,7 +99,8 @@ func (s *DynamicModelRedirectSelector) doWeightedSelectWithContext(
 					"target_model": targetModel,
 				}).Debug("Failed to get model redirect metrics, using base weight")
 			}
-			weights[i] = s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
+			effectiveWeight := s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
+			weights[i] = GetEffectiveWeightForSelection(effectiveWeight)
 		} else {
 			weights[i] = baseWeight
 		}
@@ -166,7 +167,7 @@ func GetModelRedirectDynamicWeights(
 
 		var metrics *DynamicWeightMetrics
 		var healthScore float64 = 1.0
-		var effectiveWeight int = baseWeight
+		var effectiveWeight float64 = float64(baseWeight)
 
 		if dwm != nil {
 			targetModel := target.Model

@@ -118,7 +118,7 @@ type SubGroupInfo struct {
 type DynamicWeightInfo struct {
 	BaseWeight      int     `json:"base_weight"`      // Original configured weight
 	HealthScore     float64 `json:"health_score"`     // Health score (0.0 - 1.0)
-	EffectiveWeight int     `json:"effective_weight"` // Calculated effective weight
+	EffectiveWeight float64 `json:"effective_weight"` // Calculated effective weight (1 decimal place, min 0.1)
 	SuccessRate     float64 `json:"success_rate"`     // Success rate percentage (0-100)
 	RequestCount    int64   `json:"request_count"`    // Total request count
 	LastFailureAt   *string `json:"last_failure_at"`  // Last failure timestamp (ISO8601, nil if never failed)

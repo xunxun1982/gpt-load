@@ -63,7 +63,7 @@ type ModelSource struct {
 	Sort            int     `json:"sort"`
 	Weight          int     `json:"weight"`
 	HealthScore     float64 `json:"health_score"`
-	EffectiveWeight int     `json:"effective_weight"`
+	EffectiveWeight float64 `json:"effective_weight"` // Effective weight (1 decimal place, min 0.1)
 	Enabled         bool    `json:"enabled"`
 }
 
@@ -224,11 +224,13 @@ func (s *HubService) buildModelPool(ctx context.Context) ([]ModelPoolEntry, erro
 		healthScore := s.calculateGroupHealthScore(&group)
 		baseWeight := 100 // Default weight for standard groups
 
-		// Calculate effective weight with minimum of 1 to allow recovery
+		// Calculate effective weight with 1 decimal place precision, minimum 0.1
 		// Even unhealthy groups get minimum weight to receive occasional requests
-		effectiveWeight := int(float64(baseWeight) * healthScore)
-		if effectiveWeight < 1 {
-			effectiveWeight = 1
+		effectiveWeight := float64(baseWeight) * healthScore
+		// Round to 1 decimal place
+		effectiveWeight = math.Round(effectiveWeight*10) / 10
+		if effectiveWeight < 0.1 {
+			effectiveWeight = 0.1
 		}
 
 		source := ModelSource{
@@ -833,7 +835,8 @@ func (s *HubService) selectFromSources(sources []ModelSource) (*models.Group, er
 		// Multiple sources with same priority - use weighted random selection
 		weights := make([]int, len(topSources))
 		for i, source := range topSources {
-			weights[i] = source.EffectiveWeight
+			// Convert float effective weight to int for weighted selection
+			weights[i] = services.GetEffectiveWeightForSelection(source.EffectiveWeight)
 		}
 
 		idx := utils.WeightedRandomSelect(weights)

@@ -110,3 +110,19 @@ export function formatPercentage(value: number): string {
 export function formatHealthScore(score: number): string {
   return formatPercentage(score * 100);
 }
+
+/**
+ * Formats an effective weight value with 1 decimal place.
+ * Used for displaying dynamic effective weights in the UI.
+ *
+ * @param weight The effective weight value.
+ * @returns The formatted weight string with 1 decimal place.
+ *
+ * @example
+ * formatEffectiveWeight(1.5)  // "1.5"
+ * formatEffectiveWeight(0.1)  // "0.1"
+ * formatEffectiveWeight(10)   // "10.0"
+ */
+export function formatEffectiveWeight(weight: number): string {
+  return weight.toFixed(1);
+}
