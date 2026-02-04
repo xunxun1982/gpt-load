@@ -393,18 +393,17 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 // GetEffectiveWeight calculates the effective weight based on base weight and health score.
 // Implements non-linear penalty for low health scores to reduce traffic to unhealthy targets.
 // Three health score ranges (optimized for unstable channels with intermittent failures):
-// 1. Critical (<= 0.50): effective weight reduced to 10% of base weight, capped at 1 (min 0.1)
+// 1. Critical (<= 0.50): effective weight reduced to 10% of base weight, capped at 1.0 (min 0.1)
 //    This prevents unhealthy high-weight targets from dominating healthy low-weight targets
-//    Example (intermediate values before rounding): baseWeight=100 -> 10% = 10, capped to 1;
+//    Example: baseWeight=100 -> 10% = 10.0, capped to 1.0;
 //    baseWeight=5 -> 10% = 0.5; baseWeight=1 -> 10% = 0.1
-//    (all rounded to minimum 1 in final result)
 // 2. Medium (0.50 to 0.75): aggressive non-linear penalty using quadratic function
 //    Example: health=0.6 -> weight multiplier = 0.6^2 = 0.36
 // 3. Good (> 0.75): linear scaling
-// Note: All effective weights are rounded to integers with minimum of 1 for weighted random selection.
-func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *DynamicWeightMetrics) int {
+// Returns a float64 value with 1 decimal place precision, minimum 0.1
+func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *DynamicWeightMetrics) float64 {
 	if baseWeight <= 0 {
-		return 0
+		return 0.0
 	}
 
 	healthScore := m.CalculateHealthScore(metrics)
@@ -412,12 +411,12 @@ func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *Dynam
 	var effectiveWeight float64
 
 	// Critical health: use minimum 10% of base weight to allow recovery
-	// Cap at 1 to prevent unhealthy high-weight targets from dominating healthy low-weight targets
-	// Example: baseWeight=100 -> min(10, 1) = 1, baseWeight=5 -> 0.5 (rounds up to 1)
+	// Cap at 1.0 to prevent unhealthy high-weight targets from dominating healthy low-weight targets
+	// Example: baseWeight=100 -> min(10.0, 1.0) = 1.0, baseWeight=5 -> 0.5
 	if healthScore <= m.config.CriticalHealthThreshold {
 		minWeight := float64(baseWeight) * 0.1
 		if minWeight > 1.0 {
-			minWeight = 1.0 // Cap at 1 to ensure fair competition with healthy low-weight targets
+			minWeight = 1.0 // Cap at 1.0 to ensure fair competition with healthy low-weight targets
 		}
 		if minWeight < 0.1 {
 			minWeight = 0.1 // Floor at 0.1 to allow recovery
@@ -434,16 +433,33 @@ func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *Dynam
 		effectiveWeight = float64(baseWeight) * healthScore
 	}
 
-	// Round to nearest integer and ensure minimum of 1
-	result := int(math.Round(effectiveWeight))
-	if result < 1 {
-		result = 1
+	// Round to 1 decimal place and ensure minimum of 0.1
+	result := math.Round(effectiveWeight*10) / 10
+	if result < 0.1 {
+		result = 0.1
 	}
 
 	return result
 }
 
-// SubGroupWeightInput is the input for GetSubGroupDynamicWeights.
+// GetEffectiveWeightForSelection converts float effective weight to integer for weighted random selection.
+// Multiplies by 10 to preserve 1 decimal place precision (e.g., 1.5 -> 15, 0.1 -> 1).
+// This ensures accurate weight ratios in weighted random selection:
+//   - Without scaling: 1.5 rounds to 2, 0.5 rounds to 1, ratio becomes 2:1 (incorrect)
+//   - With 10x scaling: 1.5 -> 15, 0.5 -> 5, ratio stays 15:5 = 3:1 (correct)
+// Returns 0 if the effective weight is 0 (disabled).
+func GetEffectiveWeightForSelection(effectiveWeight float64) int {
+	if effectiveWeight == 0.0 {
+		return 0
+	}
+	weight := int(math.Round(effectiveWeight * 10))
+	if weight < 1 {
+		weight = 1
+	}
+	return weight
+}
+
+// SubGroupWeightInput holds the sub-group ID and its base weight for dynamic weight calculation.
 type SubGroupWeightInput struct {
 	SubGroupID uint
 	Weight     int
@@ -491,6 +507,8 @@ func (m *DynamicWeightManager) GetSubGroupDynamicWeights(aggregateGroupID uint, 
 }
 
 // GetEffectiveWeightsForSelection returns effective weights for weighted random selection.
+// Converts float effective weights to integers by multiplying by 10 to preserve 1 decimal place precision.
+// Returns 0 for disabled sub-groups (base weight = 0).
 func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID uint, subGroups []SubGroupWeightInput) []int {
 	weights := make([]int, len(subGroups))
 	for i, sg := range subGroups {
@@ -501,14 +519,16 @@ func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID 
 				"sub_group_id":       sg.SubGroupID,
 			}).Debug("Failed to get sub-group metrics for selection")
 		}
-		weights[i] = m.GetEffectiveWeight(sg.Weight, metrics)
+		effectiveWeight := m.GetEffectiveWeight(sg.Weight, metrics)
+		weights[i] = GetEffectiveWeightForSelection(effectiveWeight)
 	}
 	return weights
 }
 
 // GetModelRedirectEffectiveWeights returns effective weights for model redirect targets.
 // Takes a slice of target models and their base weights, returns effective weights
-// adjusted by health scores.
+// adjusted by health scores. Converts float weights to integers for weighted random selection.
+// Returns 0 for disabled targets (base weight = 0).
 func (m *DynamicWeightManager) GetModelRedirectEffectiveWeights(groupID uint, sourceModel string, targets []string, targetWeights []int) []int {
 	if len(targets) != len(targetWeights) {
 		logrus.WithFields(logrus.Fields{
@@ -531,7 +551,8 @@ func (m *DynamicWeightManager) GetModelRedirectEffectiveWeights(groupID uint, so
 				"target_model": targetModel,
 			}).Debug("Failed to get model redirect metrics for selection")
 		}
-		weights[i] = m.GetEffectiveWeight(baseWeight, metrics)
+		effectiveWeight := m.GetEffectiveWeight(baseWeight, metrics)
+		weights[i] = GetEffectiveWeightForSelection(effectiveWeight)
 	}
 	return weights
 }

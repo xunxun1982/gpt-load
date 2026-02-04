@@ -254,6 +254,28 @@ var MessagesJaJP = map[string]string{
 	"binding.group_already_bound":             "このグループは既に別のサイトにバインドされています",
 	"binding.must_unbind_before_delete_group": "グループを削除する前にサイトとのバインドを解除してください",
 	"binding.must_unbind_before_delete_site":  "サイトを削除する前にすべてのグループ（{{.count}}個）のバインドを解除してください",
+
+	// Channel types
+	"channel.openai":    "OpenAI",
+	"channel.anthropic": "Anthropic",
+	"channel.gemini":    "Gemini",
+	"channel.codex":     "Codex",
+	"channel.azure":     "Azure",
+	"channel.custom":    "カスタム",
+
+	// Relay formats
+	"relay_format.openai_chat":                "OpenAI チャット補完",
+	"relay_format.openai_completion":          "OpenAI テキスト補完",
+	"relay_format.claude":                     "Claude メッセージ",
+	"relay_format.codex":                      "Codex レスポンス",
+	"relay_format.openai_image":               "OpenAI 画像生成",
+	"relay_format.openai_image_edit":          "OpenAI 画像編集",
+	"relay_format.openai_audio_transcription": "OpenAI 音声文字起こし",
+	"relay_format.openai_audio_translation":   "OpenAI 音声翻訳",
+	"relay_format.openai_audio_speech":        "OpenAI 音声合成",
+	"relay_format.openai_embedding":           "OpenAI 埋め込み",
+	"relay_format.openai_moderation":          "OpenAI モデレーション",
+	"relay_format.gemini":                     "Gemini",
 }
 
 func init() {

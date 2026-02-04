@@ -1,6 +1,7 @@
 package services
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -123,22 +124,22 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 		name       string
 		baseWeight int
 		metrics    *DynamicWeightMetrics
-		minWeight  int
-		maxWeight  int
+		minWeight  float64
+		maxWeight  float64
 	}{
 		{
 			name:       "zero base weight returns zero",
 			baseWeight: 0,
 			metrics:    &DynamicWeightMetrics{},
-			minWeight:  0,
-			maxWeight:  0,
+			minWeight:  0.0,
+			maxWeight:  0.0,
 		},
 		{
 			name:       "healthy metrics maintain weight",
 			baseWeight: 100,
 			metrics:    &DynamicWeightMetrics{},
-			minWeight:  90,
-			maxWeight:  100,
+			minWeight:  90.0,
+			maxWeight:  100.0,
 		},
 		{
 			name:       "consecutive failures reduce weight",
@@ -146,11 +147,11 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 5,
 			},
-			minWeight: 30, // Health score ~0.60 (1.0 - 5*0.08 = 0.60), in medium range (0.50-0.75), quadratic: 0.60^2 = 0.36, weight ~36
-			maxWeight: 40,
+			minWeight: 30.0, // Health score ~0.60 (1.0 - 5*0.08 = 0.60), in medium range (0.50-0.75), quadratic: 0.60^2 = 0.36, weight ~36.0
+			maxWeight: 40.0,
 		},
 		{
-			name:       "poor health returns ~10% weight via quadratic penalty",
+			name:       "poor health returns capped weight of 1.0",
 			baseWeight: 100,
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 6,        // Max penalty 0.40 (capped at 5 failures)
@@ -161,9 +162,9 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 				LastFailureAt:       time.Now().Add(-1 * time.Minute), // Recent failure ~0.11 penalty
 			},
 			// Total penalty ~0.69 (0.40 + 0.18 + 0.11), health ~0.31, in critical range (<=0.50)
-			// Critical health: capped at 1
-			minWeight: 1,
-			maxWeight: 1,
+			// Critical health: capped at 1.0
+			minWeight: 1.0,
+			maxWeight: 1.0,
 		},
 		{
 			name:       "good health score (>0.75) uses linear scaling",
@@ -175,17 +176,17 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 				Requests7d:          5,
 				Successes7d:         4,
 			},
-			minWeight: 70, // Health ~0.76, above medium threshold (0.75), linear scaling
-			maxWeight: 80,
+			minWeight: 70.0, // Health ~0.76, above medium threshold (0.75), linear scaling
+			maxWeight: 80.0,
 		},
 		{
-			name:       "small base weight with medium health gets minimum weight of 1",
+			name:       "small base weight with medium health gets minimum weight of 0.1",
 			baseWeight: 1,
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 3, // Medium health
 			},
-			minWeight: 1,
-			maxWeight: 1,
+			minWeight: 0.1,
+			maxWeight: 1.0,
 		},
 	}
 
@@ -194,6 +195,81 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 			weight := dwm.GetEffectiveWeight(tt.baseWeight, tt.metrics)
 			assert.GreaterOrEqual(t, weight, tt.minWeight)
 			assert.LessOrEqual(t, weight, tt.maxWeight)
+		})
+	}
+}
+
+// TestGetEffectiveWeightForSelection tests conversion of float effective weight to integer for weighted selection
+// The function multiplies by 10 to preserve 1 decimal place precision in weighted random selection.
+// This is necessary because:
+// 1. Effective weights are float64 with 1 decimal place (e.g., 1.5, 0.1, 36.7)
+// 2. Weighted random selection requires integer weights
+// 3. Direct rounding would lose precision and distort weight ratios
+// Example: weights [1.5, 0.5] should maintain 3:1 ratio
+//   - Direct rounding: [2, 1] = 2:1 ratio (incorrect)
+//   - Multiply by 10: [15, 5] = 3:1 ratio (correct)
+func TestGetEffectiveWeightForSelection(t *testing.T) {
+	tests := []struct {
+		name            string
+		effectiveWeight float64
+		expected        int
+	}{
+		{
+			name:            "zero weight returns zero",
+			effectiveWeight: 0.0,
+			expected:        0,
+		},
+		{
+			name:            "minimum weight 0.1 converts to 1",
+			effectiveWeight: 0.1,
+			expected:        1,
+		},
+		{
+			name:            "weight 0.5 converts to 5 (preserves ratio)",
+			effectiveWeight: 0.5,
+			expected:        5,
+		},
+		{
+			name:            "weight 1.0 converts to 10",
+			effectiveWeight: 1.0,
+			expected:        10,
+		},
+		{
+			name:            "weight 1.5 converts to 15 (preserves ratio)",
+			effectiveWeight: 1.5,
+			expected:        15,
+		},
+		{
+			name:            "weight 10.0 converts to 100",
+			effectiveWeight: 10.0,
+			expected:        100,
+		},
+		{
+			name:            "weight 36.0 converts to 360",
+			effectiveWeight: 36.0,
+			expected:        360,
+		},
+		{
+			name:            "weight 76.5 converts to 765 (preserves decimal)",
+			effectiveWeight: 76.5,
+			expected:        765,
+		},
+		{
+			name:            "weight 100.0 converts to 1000",
+			effectiveWeight: 100.0,
+			expected:        1000,
+		},
+		{
+			name:            "very small weight 0.05 rounds to minimum 1",
+			effectiveWeight: 0.05,
+			expected:        1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetEffectiveWeightForSelection(tt.effectiveWeight)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
@@ -338,8 +414,8 @@ func TestDynamicWeightManager_GetSubGroupDynamicWeights(t *testing.T) {
 	require.Len(t, weights, 2)
 	assert.Equal(t, 100, weights[0].BaseWeight)
 	assert.Equal(t, 50, weights[1].BaseWeight)
-	assert.Greater(t, weights[0].EffectiveWeight, 0)
-	assert.Greater(t, weights[1].EffectiveWeight, 0)
+	assert.Greater(t, weights[0].EffectiveWeight, 0.0)
+	assert.Greater(t, weights[1].EffectiveWeight, 0.0)
 	// Verify health-based weight ordering: sub-group 1 (success) > sub-group 2 (failure)
 	assert.Greater(t, weights[0].EffectiveWeight, weights[1].EffectiveWeight,
 		"Sub-group with success should have higher effective weight than sub-group with failure")
@@ -448,8 +524,8 @@ func TestGetModelRedirectDynamicWeights(t *testing.T) {
 	require.Len(t, weights, 2)
 	assert.Equal(t, 70, weights[0].BaseWeight)
 	assert.Equal(t, 30, weights[1].BaseWeight)
-	assert.Greater(t, weights[0].EffectiveWeight, 0)
-	assert.Greater(t, weights[1].EffectiveWeight, 0)
+	assert.Greater(t, weights[0].EffectiveWeight, 0.0)
+	assert.Greater(t, weights[1].EffectiveWeight, 0.0)
 	// Verify health-based weight ordering: target 0 (success) > target 1 (failure)
 	assert.Greater(t, weights[0].EffectiveWeight, weights[1].EffectiveWeight,
 		"Target with success should have higher effective weight than target with failure")
@@ -611,7 +687,7 @@ func TestDynamicWeightManager_MultipleRetriesHealthDecay(t *testing.T) {
 
 	// Verify effective weight is reduced
 	effectiveWeight := dwm.GetEffectiveWeight(100, metrics)
-	assert.LessOrEqual(t, effectiveWeight, 50, "Effective weight should be significantly reduced")
+	assert.LessOrEqual(t, effectiveWeight, 50.0, "Effective weight should be significantly reduced")
 }
 
 // TestDynamicWeightManager_HealthRecoveryAfterRetryFailures tests health recovery after retry failures
@@ -789,8 +865,8 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 		name              string
 		metrics           *DynamicWeightMetrics
 		baseWeight        int
-		expectedMinWeight int
-		expectedMaxWeight int
+		expectedMinWeight float64
+		expectedMaxWeight float64
 		description       string
 	}{
 		{
@@ -803,9 +879,9 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 				Successes7d:         2,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 1,  // Health ~0.42 (1.0 - 0.40 - 0.18), in critical range (<=0.50), capped at 1
-			expectedMaxWeight: 1,
-			description:       "Health score ~0.42 in critical range, weight capped at 1",
+			expectedMinWeight: 1.0,  // Health ~0.42 (1.0 - 0.40 - 0.18), in critical range (<=0.50), capped at 1.0
+			expectedMaxWeight: 1.0,
+			description:       "Health score ~0.42 in critical range, weight capped at 1.0",
 		},
 		{
 			name: "moderate health (few failures) - moderate penalty",
@@ -817,8 +893,8 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 				Successes7d:         4,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 70, // Health ~0.76, above medium threshold (0.75), linear scaling
-			expectedMaxWeight: 80,
+			expectedMinWeight: 70.0, // Health ~0.76, above medium threshold (0.75), linear scaling
+			expectedMaxWeight: 80.0,
 			description:       "Health score ~0.76 with linear scaling in good range",
 		},
 		{
@@ -831,8 +907,8 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 				Successes7d:         4,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 75,
-			expectedMaxWeight: 90,
+			expectedMinWeight: 75.0,
+			expectedMaxWeight: 90.0,
 			description:       "Health score around 0.84 with linear scaling",
 		},
 		{
@@ -845,22 +921,22 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 				Successes7d:         5,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 85,
-			expectedMaxWeight: 95,
+			expectedMinWeight: 85.0,
+			expectedMaxWeight: 95.0,
 			description:       "Health score ~0.92 should use linear scaling",
 		},
 		{
-			name: "small weight with medium health - minimum 1",
+			name: "small weight with medium health - minimum 0.1",
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 3,
 			},
 			baseWeight:        1,
-			expectedMinWeight: 1,
-			expectedMaxWeight: 1,
-			description:       "Even with penalty, non-critical health gets minimum weight of 1",
+			expectedMinWeight: 0.1,
+			expectedMaxWeight: 1.0,
+			description:       "Even with penalty, non-critical health gets minimum weight of 0.1",
 		},
 		{
-			name: "small weight with critical health - minimum 1",
+			name: "small weight with critical health - minimum 0.1",
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 5,
 				Requests180d:        100,
@@ -869,9 +945,9 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 				Successes7d:         2,
 			},
 			baseWeight:        1,
-			expectedMinWeight: 1,
-			expectedMaxWeight: 1,
-			description:       "Critical health results in minimum weight of 1 to allow recovery",
+			expectedMinWeight: 0.1,
+			expectedMaxWeight: 0.1,
+			description:       "Critical health results in minimum weight of 0.1 to allow recovery",
 		},
 	}
 
@@ -880,13 +956,13 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 			effectiveWeight := dwm.GetEffectiveWeight(tt.baseWeight, tt.metrics)
 
 			assert.GreaterOrEqual(t, effectiveWeight, tt.expectedMinWeight,
-				"Effective weight should be >= %d for %s", tt.expectedMinWeight, tt.description)
+				"Effective weight should be >= %.1f for %s", tt.expectedMinWeight, tt.description)
 			assert.LessOrEqual(t, effectiveWeight, tt.expectedMaxWeight,
-				"Effective weight should be <= %d for %s", tt.expectedMaxWeight, tt.description)
+				"Effective weight should be <= %.1f for %s", tt.expectedMaxWeight, tt.description)
 
 			// Log for debugging
 			healthScore := dwm.CalculateHealthScore(tt.metrics)
-			t.Logf("%s: health=%.2f, baseWeight=%d, effectiveWeight=%d",
+			t.Logf("%s: health=%.2f, baseWeight=%d, effectiveWeight=%.1f",
 				tt.name, healthScore, tt.baseWeight, effectiveWeight)
 		})
 	}
@@ -915,11 +991,11 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 	}
 	weight1 := dwm.GetEffectiveWeight(100, metrics1)
 	health1 := dwm.CalculateHealthScore(metrics1)
-	t.Logf("Just above critical: health=%.3f, weight=%d", health1, weight1)
+	t.Logf("Just above critical: health=%.3f, weight=%.1f", health1, weight1)
 	if health1 > config.CriticalHealthThreshold {
-		assert.Greater(t, weight1, 10, "Weight should be > 10 when health is above critical threshold")
+		assert.Greater(t, weight1, 1.0, "Weight should be > 1.0 when health is above critical threshold")
 	} else {
-		assert.Equal(t, 10, weight1, "Weight should be 10 (10% of 100) when health is at or below critical threshold")
+		assert.LessOrEqual(t, weight1, 1.0, "Weight should be <= 1.0 when health is at or below critical threshold")
 	}
 
 	// Test case 2: At or below critical threshold
@@ -934,11 +1010,11 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 	}
 	weight2 := dwm.GetEffectiveWeight(100, metrics2)
 	health2 := dwm.CalculateHealthScore(metrics2)
-	t.Logf("At or below critical: health=%.3f, weight=%d", health2, weight2)
+	t.Logf("At or below critical: health=%.3f, weight=%.1f", health2, weight2)
 	if health2 <= config.CriticalHealthThreshold {
-		// Critical health: capped at 1 to prevent unhealthy high-weight targets
+		// Critical health: capped at 1.0 to prevent unhealthy high-weight targets
 		// from dominating healthy low-weight targets
-		assert.Equal(t, 1, weight2, "Weight should be capped at 1 when health is at or below critical threshold")
+		assert.Equal(t, 1.0, weight2, "Weight should be capped at 1.0 when health is at or below critical threshold")
 	}
 
 	// Test case 3: Just below medium threshold (should use quadratic penalty)
@@ -952,11 +1028,11 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 	}
 	weight3 := dwm.GetEffectiveWeight(100, metrics3)
 	health3 := dwm.CalculateHealthScore(metrics3)
-	t.Logf("Below medium threshold: health=%.3f, weight=%d", health3, weight3)
+	t.Logf("Below medium threshold: health=%.3f, weight=%.1f", health3, weight3)
 	if health3 < config.MediumHealthThreshold && health3 >= config.CriticalHealthThreshold {
-		expectedWeight3 := int(100 * health3 * health3) // Quadratic penalty
+		expectedWeight3 := math.Round(100 * health3 * health3 * 10) / 10 // Quadratic penalty with 1 decimal place
 		// Allow some tolerance due to rounding
-		assert.InDelta(t, expectedWeight3, weight3, 5, "Should apply quadratic penalty below medium threshold")
+		assert.InDelta(t, expectedWeight3, weight3, 0.5, "Should apply quadratic penalty below medium threshold")
 	}
 
 	// Test case 4: Above medium threshold (should use linear scaling)
@@ -969,9 +1045,9 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 	}
 	weight4 := dwm.GetEffectiveWeight(100, metrics4)
 	health4 := dwm.CalculateHealthScore(metrics4)
-	t.Logf("Above medium threshold: health=%.3f, weight=%d", health4, weight4)
+	t.Logf("Above medium threshold: health=%.3f, weight=%.1f", health4, weight4)
 	if health4 >= config.MediumHealthThreshold {
-		expectedWeight4 := int(100 * health4) // Linear scaling
-		assert.InDelta(t, expectedWeight4, weight4, 5, "Should use linear scaling above medium threshold")
+		expectedWeight4 := math.Round(100 * health4 * 10) / 10 // Linear scaling with 1 decimal place
+		assert.InDelta(t, expectedWeight4, weight4, 0.5, "Should use linear scaling above medium threshold")
 	}
 }

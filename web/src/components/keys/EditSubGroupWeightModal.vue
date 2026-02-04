@@ -56,14 +56,17 @@ const previewPercentage = computed<string>(() => {
   const currentEnabled = props.subGroup.group.enabled;
 
   // Calculate effective total weight (only enabled sub-groups with weight > 0)
+  // Use dynamic effective weight for other sub-groups if available
   const totalWeight = props.subGroups.reduce((sum, sg) => {
     if (sg.group.id === props.subGroup?.group.id) {
       // For current sub-group, use new weight only if enabled
       return sum + (currentEnabled ? formData.weight : 0);
     }
     // For other sub-groups, only count if enabled and has positive weight
+    // Use effective weight from dynamic weight info if available
     if (sg.group.enabled && sg.weight > 0) {
-      return sum + sg.weight;
+      const weight = sg.dynamic_weight?.effective_weight ?? sg.weight;
+      return sum + weight;
     }
     return sum;
   }, 0);

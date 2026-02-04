@@ -760,7 +760,7 @@ type ModelRedirectDynamicWeightResponse struct {
 type ModelRedirectTargetWeight struct {
 	Model           string  `json:"model"`
 	BaseWeight      int     `json:"base_weight"`
-	EffectiveWeight int     `json:"effective_weight"`
+	EffectiveWeight float64 `json:"effective_weight"` // Effective weight (1 decimal place, min 0.1)
 	HealthScore     float64 `json:"health_score"`
 	SuccessRate     float64 `json:"success_rate"`
 	RequestCount    int64   `json:"request_count"`
@@ -841,9 +841,9 @@ func (s *Server) GetModelRedirectDynamicWeights(c *gin.Context) {
 				// No dynamic weight data, use base weight for effective weight
 				// For disabled targets, effective weight should be 0
 				if target.IsEnabled() {
-					targets[i].EffectiveWeight = target.GetWeight()
+					targets[i].EffectiveWeight = float64(target.GetWeight())
 				} else {
-					targets[i].EffectiveWeight = 0
+					targets[i].EffectiveWeight = 0.0
 				}
 				targets[i].HealthScore = 1.0
 			}
