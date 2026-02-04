@@ -482,11 +482,12 @@ func (s *HubService) parseModelRedirectRulesV2(rulesJSON []byte) map[string]*mod
 	return rules
 }
 
-// calculateGroupHealthScore calculates health score for a group based on its API keys.
-// Health score is calculated as: active_keys / total_keys
-// - Returns 1.0 if group has no keys (considered healthy by default)
-// - Returns 0.0 if all keys are invalid
-// - Returns value between 0.0 and 1.0 based on active key ratio
+// calculateGroupHealthScore calculates health score for a group based on request success rate.
+// For standard groups, uses dynamic weight metrics (request success/failure statistics).
+// For aggregate groups, calculates average health score of sub-groups.
+// Health score is calculated as: weighted_success_rate with penalties for consecutive failures.
+// - Returns 1.0 if group has no request history (considered healthy by default)
+// - Returns value between MinHealthScore and 1.0 based on request success rate
 // This is used for hub-level group selection to route requests to healthy groups.
 func (s *HubService) calculateGroupHealthScore(group *models.Group) float64 {
 	return s.calculateGroupHealthScoreWithVisited(group, make(map[uint]struct{}))
@@ -514,29 +515,26 @@ func (s *HubService) calculateGroupHealthScoreWithVisited(group *models.Group, v
 		return s.calculateAggregateGroupHealthScoreWithVisited(group.ID, visited)
 	}
 
-	// For standard groups, calculate based on API key health
-	// Use single query with conditional count for efficiency (avoids N+1 query pattern)
-	type keyCounts struct {
-		TotalKeys  int64
-		ActiveKeys int64
+	// For standard groups, calculate based on request success rate using dynamic weight metrics
+	if s.dynamicWeightManager == nil {
+		logrus.WithField("group_id", group.ID).Warn("Dynamic weight manager not initialized, returning default health score")
+		return 1.0 // Fail-open: assume healthy if manager not available
 	}
-	var counts keyCounts
-	if err := s.db.Model(&models.APIKey{}).
-		Select("COUNT(*) as total_keys, SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as active_keys", models.KeyStatusActive).
-		Where("group_id = ?", group.ID).
-		Scan(&counts).Error; err != nil {
+
+	metrics, err := s.dynamicWeightManager.GetGroupMetrics(group.ID)
+	if err != nil {
 		logrus.WithError(err).WithField("group_id", group.ID).
-			Warn("Failed to count keys for health score calculation")
+			Warn("Failed to get group metrics for health score calculation")
 		return 1.0 // Fail-open: assume healthy if query fails
 	}
 
-	// If no keys, consider group as healthy (1.0)
-	if counts.TotalKeys == 0 {
+	// If no request history, consider group as healthy (1.0)
+	if metrics.Requests180d == 0 {
 		return 1.0
 	}
 
-	// Calculate health score as ratio of active keys
-	healthScore := float64(counts.ActiveKeys) / float64(counts.TotalKeys)
+	// Calculate health score using dynamic weight algorithm
+	healthScore := s.dynamicWeightManager.CalculateHealthScore(metrics)
 	return healthScore
 }
 
@@ -583,15 +581,62 @@ func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGrou
 		return 1.0 // No enabled sub-groups, consider healthy
 	}
 
-	// Calculate average health score of sub-groups
-	var totalHealthScore float64
+	// Calculate weighted average health score of sub-groups
+	// Weight by request count to reflect actual usage patterns:
+	// - Frequently used healthy sub-groups dominate the health score
+	// - Rarely used unhealthy sub-groups have minimal impact
+	// - Sub-groups with no requests don't affect the score
+	// This ensures aggregate health reflects actual performance, not theoretical worst-case.
+	// NOTE: Nested aggregates are not supported (validated at sub-group creation time),
+	// so all sub-groups are guaranteed to be standard groups.
+	var totalWeightedHealthScore float64
+	var totalWeight int64
+
 	for _, subGroup := range subGroups {
-		subHealthScore := s.calculateGroupHealthScoreWithVisited(&subGroup, visited)
-		totalHealthScore += subHealthScore
+		var subHealthScore float64
+		var requestCount int64
+
+		// All sub-groups must be standard groups (aggregate cannot contain aggregate)
+		// This is enforced by ValidateSubGroups in aggregate_group_service.go
+		if s.dynamicWeightManager == nil {
+			subHealthScore = 1.0 // Fail-open if manager not available
+			requestCount = 0     // Don't include in weighted average
+		} else {
+			metrics, err := s.dynamicWeightManager.GetSubGroupMetrics(aggregateGroupID, subGroup.ID)
+			if err != nil {
+				logrus.WithError(err).WithFields(logrus.Fields{
+					"aggregate_group_id": aggregateGroupID,
+					"sub_group_id":       subGroup.ID,
+				}).Warn("Failed to get sub-group metrics for health score calculation")
+				subHealthScore = 1.0 // Fail-open
+				requestCount = 0     // Don't include in weighted average
+			} else if metrics.Requests180d == 0 {
+				// No request history through this aggregate group
+				// Don't include in weighted average (weight = 0)
+				subHealthScore = 1.0
+				requestCount = 0
+			} else {
+				// Calculate health score using dynamic weight algorithm
+				subHealthScore = s.dynamicWeightManager.CalculateHealthScore(metrics)
+				requestCount = metrics.Requests180d
+			}
+		}
+
+		// Add to weighted sum if this sub-group has been used
+		if requestCount > 0 {
+			totalWeightedHealthScore += subHealthScore * float64(requestCount)
+			totalWeight += requestCount
+		}
 	}
 
-	avgHealthScore := totalHealthScore / float64(len(subGroups))
-	return avgHealthScore
+	// If no sub-groups have request history, return 1.0 (healthy by default)
+	if totalWeight == 0 {
+		return 1.0
+	}
+
+	// Return weighted average
+	weightedAvgHealthScore := totalWeightedHealthScore / float64(totalWeight)
+	return weightedAvgHealthScore
 }
 
 // SelectGroupForModel selects the best group for a given model with relay format awareness.

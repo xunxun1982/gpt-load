@@ -46,7 +46,9 @@ func setupHubTestServices(t *testing.T, db *gorm.DB) (*services.GroupManager, *H
 	if err := groupManager.Initialize(); err != nil {
 		t.Fatalf("failed to initialize group manager: %v", err)
 	}
-	hubService := NewHubService(db, groupManager, nil)
+	// Create dynamic weight manager for health score calculation
+	dynamicWeightManager := services.NewDynamicWeightManager(memStore)
+	hubService := NewHubService(db, groupManager, dynamicWeightManager)
 	return groupManager, hubService
 }
 
@@ -2357,101 +2359,71 @@ func TestInvalidPriorityErrorMessage(t *testing.T) {
 	}
 }
 
-// TestCalculateGroupHealthScore tests health score calculation based on API key status
+// TestCalculateGroupHealthScore tests health score calculation based on request success rate
 func TestCalculateGroupHealthScore(t *testing.T) {
 	db := setupHubTestDB(t)
 
-	// Migrate APIKey model for this test
-	if err := db.AutoMigrate(&models.APIKey{}); err != nil {
-		t.Fatalf("failed to migrate APIKey model: %v", err)
-	}
-
-	_, hubService := setupHubTestServices(t, db)
+	groupManager, hubService := setupHubTestServices(t, db)
 
 	// Create test group
 	group := createTestGroup(t, db, "test-group", "standard", "openai", 1, true, "gpt-4")
 
-	t.Run("no_keys_returns_1.0", func(t *testing.T) {
+	t.Run("no_request_history_returns_1.0", func(t *testing.T) {
 		score := hubService.calculateGroupHealthScore(group)
 		if score != 1.0 {
-			t.Errorf("Expected health score 1.0 for group with no keys, got %f", score)
+			t.Errorf("Expected health score 1.0 for group with no request history, got %f", score)
 		}
 	})
 
-	t.Run("all_active_keys_returns_1.0", func(t *testing.T) {
-		// Create 5 active keys
-		for i := 0; i < 5; i++ {
-			key := &models.APIKey{
-				GroupID:  group.ID,
-				KeyValue: "sk-test-" + strconv.Itoa(i),
-				Status:   models.KeyStatusActive,
-			}
-			if err := db.Create(key).Error; err != nil {
-				t.Fatalf("failed to create test key: %v", err)
-			}
+	t.Run("all_successful_requests_returns_1.0", func(t *testing.T) {
+		// Record 10 successful requests
+		for i := 0; i < 10; i++ {
+			hubService.dynamicWeightManager.RecordGroupSuccess(group.ID)
 		}
 
 		score := hubService.calculateGroupHealthScore(group)
 		if score != 1.0 {
-			t.Errorf("Expected health score 1.0 for all active keys, got %f", score)
+			t.Errorf("Expected health score 1.0 for all successful requests, got %f", score)
 		}
 
-		// Cleanup
-		db.Where("group_id = ?", group.ID).Delete(&models.APIKey{})
+		// Cleanup metrics
+		hubService.dynamicWeightManager.GetStore().Delete(services.GroupMetricsKey(group.ID))
 	})
 
-	t.Run("half_active_keys_returns_0.5", func(t *testing.T) {
-		// Create 5 active keys and 5 invalid keys
-		for i := 0; i < 5; i++ {
-			key := &models.APIKey{
-				GroupID:  group.ID,
-				KeyValue: "sk-active-" + strconv.Itoa(i),
-				Status:   models.KeyStatusActive,
-			}
-			if err := db.Create(key).Error; err != nil {
-				t.Fatalf("failed to create active key: %v", err)
-			}
+	t.Run("mixed_success_and_failure", func(t *testing.T) {
+		// Record 7 successes and 3 failures (70% success rate)
+		for i := 0; i < 7; i++ {
+			hubService.dynamicWeightManager.RecordGroupSuccess(group.ID)
 		}
-		for i := 0; i < 5; i++ {
-			key := &models.APIKey{
-				GroupID:  group.ID,
-				KeyValue: "sk-invalid-" + strconv.Itoa(i),
-				Status:   models.KeyStatusInvalid,
-			}
-			if err := db.Create(key).Error; err != nil {
-				t.Fatalf("failed to create invalid key: %v", err)
-			}
+		for i := 0; i < 3; i++ {
+			hubService.dynamicWeightManager.RecordGroupFailure(group.ID)
 		}
 
 		score := hubService.calculateGroupHealthScore(group)
-		if score != 0.5 {
-			t.Errorf("Expected health score 0.5 for half active keys, got %f", score)
+		// Health score should be less than 1.0 due to failures
+		// Exact value depends on dynamic weight algorithm
+		if score >= 1.0 || score < 0.1 {
+			t.Errorf("Expected health score between 0.1 and 1.0 for mixed requests, got %f", score)
 		}
 
-		// Cleanup
-		db.Where("group_id = ?", group.ID).Delete(&models.APIKey{})
+		// Cleanup metrics
+		hubService.dynamicWeightManager.GetStore().Delete(services.GroupMetricsKey(group.ID))
 	})
 
-	t.Run("all_invalid_keys_returns_0.0", func(t *testing.T) {
-		// Create 5 invalid keys
+	t.Run("consecutive_failures_reduce_health", func(t *testing.T) {
+		// Record 5 consecutive failures
 		for i := 0; i < 5; i++ {
-			key := &models.APIKey{
-				GroupID:  group.ID,
-				KeyValue: "sk-invalid-" + strconv.Itoa(i),
-				Status:   models.KeyStatusInvalid,
-			}
-			if err := db.Create(key).Error; err != nil {
-				t.Fatalf("failed to create invalid key: %v", err)
-			}
+			hubService.dynamicWeightManager.RecordGroupFailure(group.ID)
 		}
 
 		score := hubService.calculateGroupHealthScore(group)
-		if score != 0.0 {
-			t.Errorf("Expected health score 0.0 for all invalid keys, got %f", score)
+		// Health score should be significantly reduced due to consecutive failures
+		if score >= 0.5 {
+			t.Errorf("Expected health score < 0.5 for consecutive failures, got %f", score)
 		}
 
-		// Cleanup
-		db.Where("group_id = ?", group.ID).Delete(&models.APIKey{})
+		// Cleanup metrics
+		hubService.dynamicWeightManager.GetStore().Delete(services.GroupMetricsKey(group.ID))
 	})
 
 	t.Run("nil_group_returns_1.0", func(t *testing.T) {
@@ -2460,16 +2432,94 @@ func TestCalculateGroupHealthScore(t *testing.T) {
 			t.Errorf("Expected health score 1.0 for nil group, got %f", score)
 		}
 	})
+
+	// Cleanup
+	_ = groupManager
+}
+
+// TestGroupHealthScoreVsSubGroupMetrics tests that group health score uses group-level metrics,
+// not sub-group metrics from aggregate groups.
+func TestGroupHealthScoreVsSubGroupMetrics(t *testing.T) {
+	db := setupHubTestDB(t)
+
+	_, hubService := setupHubTestServices(t, db)
+
+	// Create a standard group
+	standardGroup := createTestGroup(t, db, "standard-group", "standard", "openai", 1, true, "gpt-4")
+
+	// Create an aggregate group that uses the standard group
+	aggGroup := createTestGroup(t, db, "agg-group", "aggregate", "openai", 1, true, "gpt-4")
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: standardGroup.ID, Weight: 100})
+
+	// Scenario: Standard group performs well overall (group-level metrics)
+	// but poorly in the aggregate group (sub-group metrics)
+
+	// Record good performance at group level (used for Hub health score when accessed directly)
+	for i := 0; i < 9; i++ {
+		hubService.dynamicWeightManager.RecordGroupSuccess(standardGroup.ID)
+	}
+	hubService.dynamicWeightManager.RecordGroupFailure(standardGroup.ID)
+
+	// Record poor performance in aggregate group (used for aggregate health score)
+	// Record 1 success first, then 8 failures to get low success rate + consecutive failures
+	for i := 0; i < 1; i++ {
+		hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, standardGroup.ID)
+	}
+	for i := 0; i < 8; i++ {
+		hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, standardGroup.ID)
+	}
+
+	// Hub health score should reflect group-level metrics (90% success rate)
+	// Use epsilon to avoid floating-point comparison brittleness
+	const epsilon = 1e-6
+	groupHealthScore := hubService.calculateGroupHealthScore(standardGroup)
+	if groupHealthScore+epsilon < 0.8 {
+		t.Errorf("Expected group health score >= 0.8 (based on group-level metrics), got %f", groupHealthScore)
+	}
+
+	// Aggregate group health score should reflect sub-group metrics (poor performance)
+	aggHealthScore := hubService.calculateGroupHealthScore(aggGroup)
+	if aggHealthScore >= 0.5+epsilon {
+		t.Errorf("Expected aggregate health score < 0.5 (based on sub-group poor performance), got %f", aggHealthScore)
+	}
+
+	t.Logf("Standard group health (group-level): %f", groupHealthScore)
+	t.Logf("Aggregate group health (sub-group-level): %f", aggHealthScore)
+
+	// Cleanup
+	hubService.dynamicWeightManager.GetStore().Delete(services.GroupMetricsKey(standardGroup.ID))
+	hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, standardGroup.ID))
+}
+
+// TestGroupHealthScoreWithNoMetrics tests that groups with no metrics return 1.0 (healthy).
+func TestGroupHealthScoreWithNoMetrics(t *testing.T) {
+	db := setupHubTestDB(t)
+
+	_, hubService := setupHubTestServices(t, db)
+
+	// Create groups without any request history
+	standardGroup := createTestGroup(t, db, "standard-no-metrics", "standard", "openai", 1, true, "gpt-4")
+	aggGroup := createTestGroup(t, db, "agg-no-metrics", "aggregate", "openai", 1, true, "gpt-4")
+	subGroup := createTestGroup(t, db, "sub-no-metrics", "standard", "openai", 2, true, "gpt-4")
+
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroup.ID, Weight: 100})
+
+	// All should return 1.0 (healthy by default)
+	standardHealth := hubService.calculateGroupHealthScore(standardGroup)
+	aggHealth := hubService.calculateGroupHealthScore(aggGroup)
+
+	if standardHealth != 1.0 {
+		t.Errorf("Expected standard group with no metrics to have health 1.0, got %f", standardHealth)
+	}
+
+	if aggHealth != 1.0 {
+		t.Errorf("Expected aggregate group with no metrics to have health 1.0, got %f", aggHealth)
+	}
 }
 
 // TestCalculateAggregateGroupHealthScore tests health score calculation for aggregate groups
 func TestCalculateAggregateGroupHealthScore(t *testing.T) {
 	db := setupHubTestDB(t)
-
-	// Migrate APIKey model for this test
-	if err := db.AutoMigrate(&models.APIKey{}); err != nil {
-		t.Fatalf("failed to migrate APIKey model: %v", err)
-	}
 
 	_, hubService := setupHubTestServices(t, db)
 
@@ -2485,46 +2535,29 @@ func TestCalculateAggregateGroupHealthScore(t *testing.T) {
 	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroup2.ID, Weight: 100})
 
 	t.Run("average_health_score_of_sub_groups", func(t *testing.T) {
-		// Sub-group 1: 100% healthy (5 active keys)
-		for i := 0; i < 5; i++ {
-			key := &models.APIKey{
-				GroupID:  subGroup1.ID,
-				KeyValue: "sk-sub1-" + strconv.Itoa(i),
-				Status:   models.KeyStatusActive,
-			}
-			if err := db.Create(key).Error; err != nil {
-				t.Fatalf("failed to create key for sub-group 1: %v", err)
-			}
+		// Sub-group 1: 100% healthy (10 successful requests)
+		for i := 0; i < 10; i++ {
+			hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, subGroup1.ID)
 		}
 
-		// Sub-group 2: 50% healthy (2 active, 2 invalid)
-		for i := 0; i < 2; i++ {
-			key := &models.APIKey{
-				GroupID:  subGroup2.ID,
-				KeyValue: "sk-sub2-active-" + strconv.Itoa(i),
-				Status:   models.KeyStatusActive,
-			}
-			if err := db.Create(key).Error; err != nil {
-				t.Fatalf("failed to create active key for sub-group 2: %v", err)
-			}
+		// Sub-group 2: ~70% healthy (7 successes, 3 failures)
+		for i := 0; i < 7; i++ {
+			hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, subGroup2.ID)
 		}
-		for i := 0; i < 2; i++ {
-			key := &models.APIKey{
-				GroupID:  subGroup2.ID,
-				KeyValue: "sk-sub2-invalid-" + strconv.Itoa(i),
-				Status:   models.KeyStatusInvalid,
-			}
-			if err := db.Create(key).Error; err != nil {
-				t.Fatalf("failed to create invalid key for sub-group 2: %v", err)
-			}
+		for i := 0; i < 3; i++ {
+			hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, subGroup2.ID)
 		}
 
-		// Expected: (1.0 + 0.5) / 2 = 0.75
+		// Calculate aggregate health score (weighted average of sub-groups)
 		score := hubService.calculateGroupHealthScore(aggGroup)
-		expected := 0.75
-		if score != expected {
-			t.Errorf("Expected health score %f for aggregate group, got %f", expected, score)
+		// Health score should be between 0.7 and 1.0 (weighted average of ~1.0 and ~0.7-0.9)
+		if score < 0.7 || score > 1.0 {
+			t.Errorf("Expected health score between 0.7 and 1.0 for aggregate group, got %f", score)
 		}
+
+		// Cleanup metrics
+		hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, subGroup1.ID))
+		hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, subGroup2.ID))
 	})
 }
 
@@ -2532,11 +2565,6 @@ func TestCalculateAggregateGroupHealthScore(t *testing.T) {
 func TestHealthScoreInModelPool(t *testing.T) {
 	db := setupHubTestDB(t)
 	ctx := context.Background()
-
-	// Migrate APIKey model for this test
-	if err := db.AutoMigrate(&models.APIKey{}); err != nil {
-		t.Fatalf("failed to migrate APIKey model: %v", err)
-	}
 
 	// Create test group with model redirect BEFORE initializing services
 	enabled := true
@@ -2549,38 +2577,19 @@ func TestHealthScoreInModelPool(t *testing.T) {
 	}
 	group := createTestGroupWithRedirects(t, db, "test-group", 1, true, "gpt-4", redirects)
 
-	// Create keys with 80% health (4 active, 1 invalid)
-	for i := 0; i < 4; i++ {
-		key := &models.APIKey{
-			GroupID:  group.ID,
-			KeyValue: "sk-active-" + strconv.Itoa(i),
-			Status:   models.KeyStatusActive,
-		}
-		if err := db.Create(key).Error; err != nil {
-			t.Fatalf("failed to create active key: %v", err)
-		}
-	}
-	key := &models.APIKey{
-		GroupID:  group.ID,
-		KeyValue: "sk-invalid",
-		Status:   models.KeyStatusInvalid,
-	}
-	if err := db.Create(key).Error; err != nil {
-		t.Fatalf("failed to create invalid key: %v", err)
-	}
-
-	// Verify keys were created
-	var keyCount int64
-	if err := db.Model(&models.APIKey{}).Where("group_id = ?", group.ID).Count(&keyCount).Error; err != nil {
-		t.Fatalf("failed to count keys: %v", err)
-	}
-	t.Logf("Created %d keys for group %d", keyCount, group.ID)
-
 	// Now initialize services - this will load the group into cache
 	_, hubService := setupHubTestServices(t, db)
 
 	// Disable only_aggregate_groups to allow standard groups
 	hubService.SetOnlyAggregateGroups(false)
+
+	// Record requests to establish health score (~80% success rate)
+	for i := 0; i < 8; i++ {
+		hubService.dynamicWeightManager.RecordGroupSuccess(group.ID)
+	}
+	for i := 0; i < 2; i++ {
+		hubService.dynamicWeightManager.RecordGroupFailure(group.ID)
+	}
 
 	// Manually test health score calculation
 	testHealthScore := hubService.calculateGroupHealthScore(group)
@@ -2603,10 +2612,10 @@ func TestHealthScoreInModelPool(t *testing.T) {
 				for _, source := range sources {
 					if source.GroupID == group.ID {
 						actualHealthScore = source.HealthScore
-						expected := 0.8
-						// Allow small floating point differences
-						if actualHealthScore < expected-0.01 || actualHealthScore > expected+0.01 {
-							t.Errorf("Expected health score %f in model pool, got %f", expected, source.HealthScore)
+						// Health score should be less than 1.0 due to failures
+						// but greater than minimum (0.1)
+						if actualHealthScore >= 1.0 || actualHealthScore < 0.1 {
+							t.Errorf("Expected health score between 0.1 and 1.0 in model pool, got %f", source.HealthScore)
 						}
 					}
 				}
@@ -2622,4 +2631,241 @@ func TestHealthScoreInModelPool(t *testing.T) {
 	} else {
 		t.Logf("Health score correctly reflected: %f", actualHealthScore)
 	}
+
+	// Cleanup metrics
+	hubService.dynamicWeightManager.GetStore().Delete(services.GroupMetricsKey(group.ID))
+}
+
+// TestAggregateHealthWithSkewedUsage tests that aggregate health score correctly reflects
+// actual usage patterns when one sub-group handles most requests.
+// Scenario: Aggregate has 3 sub-groups:
+// - Sub-group A: 100 requests, 100% success (heavily used, healthy)
+// - Sub-group B: 10 requests, 20% success (rarely used, unhealthy)
+// - Sub-group C: 0 requests (never used)
+// Expected: Aggregate health should be close to sub-group A's health (~1.0),
+// not dragged down by sub-group B's poor health or sub-group C's lack of usage.
+func TestAggregateHealthWithSkewedUsage(t *testing.T) {
+	db := setupHubTestDB(t)
+
+	_, hubService := setupHubTestServices(t, db)
+
+	// Create standard groups
+	subGroupA := createTestGroup(t, db, "sub-a-healthy-heavy", "standard", "openai", 1, true, "gpt-4")
+	subGroupB := createTestGroup(t, db, "sub-b-unhealthy-light", "standard", "openai", 2, true, "gpt-4")
+	subGroupC := createTestGroup(t, db, "sub-c-unused", "standard", "openai", 3, true, "gpt-4")
+
+	// Create aggregate group
+	aggGroup := createTestGroup(t, db, "agg-skewed", "aggregate", "openai", 1, true, "gpt-4")
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroupA.ID, Weight: 100})
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroupB.ID, Weight: 100})
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroupC.ID, Weight: 100})
+
+	// Sub-group A: 100 requests, 100% success (heavily used, healthy)
+	for i := 0; i < 100; i++ {
+		hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, subGroupA.ID)
+	}
+
+	// Sub-group B: 10 requests, 20% success (rarely used, unhealthy)
+	for i := 0; i < 2; i++ {
+		hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, subGroupB.ID)
+	}
+	for i := 0; i < 8; i++ {
+		hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, subGroupB.ID)
+	}
+
+	// Sub-group C: 0 requests (never used)
+	// No metrics recorded
+
+	// Calculate health scores
+	metricsA, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup.ID, subGroupA.ID)
+	healthA := hubService.dynamicWeightManager.CalculateHealthScore(metricsA)
+
+	metricsB, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup.ID, subGroupB.ID)
+	healthB := hubService.dynamicWeightManager.CalculateHealthScore(metricsB)
+
+	metricsC, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup.ID, subGroupC.ID)
+	healthC := hubService.dynamicWeightManager.CalculateHealthScore(metricsC)
+
+	aggHealth := hubService.calculateGroupHealthScore(aggGroup)
+
+	// Verify sub-group health scores
+	if healthA < 0.95 {
+		t.Errorf("Expected sub-group A health >= 0.95 (100%% success), got %f", healthA)
+	}
+	if healthB >= 0.5 {
+		t.Errorf("Expected sub-group B health < 0.5 (20%% success), got %f", healthB)
+	}
+	if healthC != 1.0 {
+		t.Errorf("Expected sub-group C health = 1.0 (no requests), got %f", healthC)
+	}
+
+	// Calculate expected weighted average
+	// Only sub-groups A and B have requests (C has 0 requests, so weight = 0)
+	expectedWeightedAvg := (healthA*float64(metricsA.Requests180d) + healthB*float64(metricsB.Requests180d)) /
+		float64(metricsA.Requests180d+metricsB.Requests180d)
+
+	// Verify aggregate health is close to weighted average
+	if aggHealth < expectedWeightedAvg-0.05 || aggHealth > expectedWeightedAvg+0.05 {
+		t.Errorf("Expected aggregate health ~%f (weighted average), got %f", expectedWeightedAvg, aggHealth)
+	}
+
+	// Most importantly: aggregate health should be close to sub-group A's health
+	// because it handles 100 out of 110 requests (90.9%)
+	// With weighted average: (1.0 * 100 + healthB * 10) / 110
+	// Even if healthB = 0.2, aggregate = (100 + 2) / 110 = 0.927
+	if aggHealth < 0.85 {
+		t.Errorf("Expected aggregate health >= 0.85 (dominated by healthy sub-group A), got %f", aggHealth)
+	}
+
+	t.Logf("Sub-group A: health=%f, requests=%d (heavily used, healthy)", healthA, metricsA.Requests180d)
+	t.Logf("Sub-group B: health=%f, requests=%d (rarely used, unhealthy)", healthB, metricsB.Requests180d)
+	t.Logf("Sub-group C: health=%f, requests=%d (never used)", healthC, metricsC.Requests180d)
+	t.Logf("Aggregate: health=%f (weighted average, dominated by A)", aggHealth)
+	t.Logf("Expected weighted average: %f", expectedWeightedAvg)
+
+	// Cleanup
+	hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, subGroupA.ID))
+	hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, subGroupB.ID))
+	hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, subGroupC.ID))
+}
+
+// TestAggregateHealthWithNoRequests tests that aggregate health returns 1.0 (healthy)
+// when all sub-groups have no request history.
+// Scenario: New aggregate group with 3 sub-groups, none have been used yet.
+// Expected: Aggregate health should be 1.0 (fail-open, give new groups a chance).
+func TestAggregateHealthWithNoRequests(t *testing.T) {
+	db := setupHubTestDB(t)
+
+	_, hubService := setupHubTestServices(t, db)
+
+	// Create standard groups
+	subGroup1 := createTestGroup(t, db, "sub-1-new", "standard", "openai", 1, true, "gpt-4")
+	subGroup2 := createTestGroup(t, db, "sub-2-new", "standard", "openai", 2, true, "gpt-4")
+	subGroup3 := createTestGroup(t, db, "sub-3-new", "standard", "openai", 3, true, "gpt-4")
+
+	// Create aggregate group
+	aggGroup := createTestGroup(t, db, "agg-new", "aggregate", "openai", 1, true, "gpt-4")
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroup1.ID, Weight: 100})
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroup2.ID, Weight: 100})
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroup3.ID, Weight: 100})
+
+	// No metrics recorded for any sub-group (simulating new/unused aggregate)
+
+	// Calculate health scores
+	metrics1, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup.ID, subGroup1.ID)
+	health1 := hubService.dynamicWeightManager.CalculateHealthScore(metrics1)
+
+	metrics2, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup.ID, subGroup2.ID)
+	health2 := hubService.dynamicWeightManager.CalculateHealthScore(metrics2)
+
+	metrics3, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup.ID, subGroup3.ID)
+	health3 := hubService.dynamicWeightManager.CalculateHealthScore(metrics3)
+
+	aggHealth := hubService.calculateGroupHealthScore(aggGroup)
+
+	// Verify all sub-groups have no requests
+	if metrics1.Requests180d != 0 {
+		t.Errorf("Expected sub-group 1 to have 0 requests, got %d", metrics1.Requests180d)
+	}
+	if metrics2.Requests180d != 0 {
+		t.Errorf("Expected sub-group 2 to have 0 requests, got %d", metrics2.Requests180d)
+	}
+	if metrics3.Requests180d != 0 {
+		t.Errorf("Expected sub-group 3 to have 0 requests, got %d", metrics3.Requests180d)
+	}
+
+	// Verify all sub-groups return 1.0 (healthy by default)
+	if health1 != 1.0 {
+		t.Errorf("Expected sub-group 1 health = 1.0 (no requests), got %f", health1)
+	}
+	if health2 != 1.0 {
+		t.Errorf("Expected sub-group 2 health = 1.0 (no requests), got %f", health2)
+	}
+	if health3 != 1.0 {
+		t.Errorf("Expected sub-group 3 health = 1.0 (no requests), got %f", health3)
+	}
+
+	// Verify aggregate health is 1.0 (fail-open for new/unused aggregates)
+	if aggHealth != 1.0 {
+		t.Errorf("Expected aggregate health = 1.0 (all sub-groups have no requests), got %f", aggHealth)
+	}
+
+	t.Logf("Sub-group 1: health=%f, requests=%d", health1, metrics1.Requests180d)
+	t.Logf("Sub-group 2: health=%f, requests=%d", health2, metrics2.Requests180d)
+	t.Logf("Sub-group 3: health=%f, requests=%d", health3, metrics3.Requests180d)
+	t.Logf("Aggregate: health=%f (fail-open, no request history)", aggHealth)
+}
+
+// TestAggregateHealthWithMixedUsage tests aggregate health calculation when some
+// sub-groups have requests and others don't.
+// Scenario: Aggregate with 3 sub-groups:
+// - Sub-group A: 50 requests, 100% success (used, healthy)
+// - Sub-group B: 0 requests (never used)
+// - Sub-group C: 0 requests (never used)
+// Expected: Aggregate health should equal sub-group A's health (1.0),
+// not affected by unused sub-groups B and C.
+func TestAggregateHealthWithMixedUsage(t *testing.T) {
+	db := setupHubTestDB(t)
+
+	_, hubService := setupHubTestServices(t, db)
+
+	// Create standard groups
+	subGroupA := createTestGroup(t, db, "sub-a-used", "standard", "openai", 1, true, "gpt-4")
+	subGroupB := createTestGroup(t, db, "sub-b-unused", "standard", "openai", 2, true, "gpt-4")
+	subGroupC := createTestGroup(t, db, "sub-c-unused", "standard", "openai", 3, true, "gpt-4")
+
+	// Create aggregate group
+	aggGroup := createTestGroup(t, db, "agg-mixed", "aggregate", "openai", 1, true, "gpt-4")
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroupA.ID, Weight: 100})
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroupB.ID, Weight: 100})
+	db.Create(&models.GroupSubGroup{GroupID: aggGroup.ID, SubGroupID: subGroupC.ID, Weight: 100})
+
+	// Sub-group A: 50 requests, 100% success
+	for i := 0; i < 50; i++ {
+		hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, subGroupA.ID)
+	}
+
+	// Sub-groups B and C: no requests
+
+	// Calculate health scores
+	metricsA, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup.ID, subGroupA.ID)
+	healthA := hubService.dynamicWeightManager.CalculateHealthScore(metricsA)
+
+	metricsB, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup.ID, subGroupB.ID)
+	healthB := hubService.dynamicWeightManager.CalculateHealthScore(metricsB)
+
+	metricsC, _ := hubService.dynamicWeightManager.GetSubGroupMetrics(aggGroup.ID, subGroupC.ID)
+	healthC := hubService.dynamicWeightManager.CalculateHealthScore(metricsC)
+
+	aggHealth := hubService.calculateGroupHealthScore(aggGroup)
+
+	// Verify sub-group A has requests and is healthy
+	if metricsA.Requests180d != 50 {
+		t.Errorf("Expected sub-group A to have 50 requests, got %d", metricsA.Requests180d)
+	}
+	if healthA < 0.95 {
+		t.Errorf("Expected sub-group A health >= 0.95, got %f", healthA)
+	}
+
+	// Verify sub-groups B and C have no requests
+	if metricsB.Requests180d != 0 {
+		t.Errorf("Expected sub-group B to have 0 requests, got %d", metricsB.Requests180d)
+	}
+	if metricsC.Requests180d != 0 {
+		t.Errorf("Expected sub-group C to have 0 requests, got %d", metricsC.Requests180d)
+	}
+
+	// Verify aggregate health equals sub-group A's health
+	// (unused sub-groups B and C don't participate in weighted average)
+	if aggHealth < healthA-0.01 || aggHealth > healthA+0.01 {
+		t.Errorf("Expected aggregate health ~%f (same as sub-group A), got %f", healthA, aggHealth)
+	}
+
+	t.Logf("Sub-group A: health=%f, requests=%d (used, healthy)", healthA, metricsA.Requests180d)
+	t.Logf("Sub-group B: health=%f, requests=%d (unused)", healthB, metricsB.Requests180d)
+	t.Logf("Sub-group C: health=%f, requests=%d (unused)", healthC, metricsC.Requests180d)
+	t.Logf("Aggregate: health=%f (equals sub-group A, unused groups excluded)", aggHealth)
+
+	// Cleanup
+	hubService.dynamicWeightManager.GetStore().Delete(services.SubGroupMetricsKey(aggGroup.ID, subGroupA.ID))
 }

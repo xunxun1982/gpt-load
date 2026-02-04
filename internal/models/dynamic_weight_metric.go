@@ -8,6 +8,8 @@ import (
 type MetricType string
 
 const (
+	// MetricTypeGroup represents metrics for standard groups (used for Hub health score).
+	MetricTypeGroup MetricType = "group"
 	// MetricTypeSubGroup represents metrics for aggregate group sub-groups.
 	MetricTypeSubGroup MetricType = "sub_group"
 	// MetricTypeModelRedirect represents metrics for model redirect targets.

@@ -154,6 +154,8 @@ func (p *DynamicWeightPersistence) LoadFromDatabase() error {
 
 				var key string
 				switch dbm.MetricType {
+				case models.MetricTypeGroup:
+					key = GroupMetricsKey(dbm.GroupID)
 				case models.MetricTypeSubGroup:
 					key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
 				case models.MetricTypeModelRedirect:
@@ -309,7 +311,15 @@ func (p *DynamicWeightPersistence) keyToDBMetric(key string, metrics *DynamicWei
 	}
 
 	// Parse key to determine type and IDs
-	if len(key) > 6 && key[:6] == "dw:sg:" {
+	if len(key) > 5 && key[:5] == "dw:g:" {
+		// Group key: dw:g:{groupID}
+		groupID := parseUintSimple(key[5:])
+		if groupID > 0 {
+			dbm.MetricType = models.MetricTypeGroup
+			dbm.GroupID = groupID
+			return dbm
+		}
+	} else if len(key) > 6 && key[:6] == "dw:sg:" {
 		// Sub-group key: dw:sg:{aggregateGroupID}:{subGroupID}
 		aggID, subID, ok := parseSubGroupKeyParts(key[6:])
 		if ok {
@@ -683,6 +693,8 @@ func (p *DynamicWeightPersistence) RolloverTimeWindows() {
 			for _, dbm := range toUpdate {
 				var key string
 				switch dbm.MetricType {
+				case models.MetricTypeGroup:
+					key = GroupMetricsKey(dbm.GroupID)
 				case models.MetricTypeSubGroup:
 					key = SubGroupMetricsKey(dbm.GroupID, dbm.SubGroupID)
 				case models.MetricTypeModelRedirect:
