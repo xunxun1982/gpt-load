@@ -118,8 +118,9 @@ const statusOptions = [
 // Sorting priority:
 // 1. Enabled groups first, disabled groups last
 // 2. Within enabled groups: weight > 0 first, weight = 0 last
-// 3. Within same weight status: sort by health score (high to low)
-// 4. Within same health: sort by weight (high to low)
+// 3. Sort by effective weight (high to low) - matches backend weighted random selection
+// 4. Within same effective weight: sort by health score (high to low)
+// 5. Within same health: sort by base weight (high to low)
 const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
   if (!props.subGroups) {
     return [];
@@ -167,16 +168,24 @@ const sortedSubGroupsWithPercentage = computed<SubGroupRow[]>(() => {
       return aHasWeight ? -1 : 1;
     }
 
-    // Priority 3: Within same weight status, sort by health score (high to low)
-    // This ensures unhealthy sub-groups appear lower in the list
+    // Priority 3: Sort by effective weight (high to low)
+    // This matches backend weighted random selection logic where higher effective weight = more traffic
+    const aEffectiveWeight = a.dynamic_weight?.effective_weight ?? a.weight;
+    const bEffectiveWeight = b.dynamic_weight?.effective_weight ?? b.weight;
+    if (Math.abs(aEffectiveWeight - bEffectiveWeight) > 0.01) {
+      // Use threshold to avoid floating point comparison issues
+      return bEffectiveWeight - aEffectiveWeight; // Higher effective weight first
+    }
+
+    // Priority 4: Within same effective weight, sort by health score (high to low)
+    // This ensures unhealthy sub-groups appear lower in the list when weights are equal
     const aHealth = a.dynamic_weight?.health_score ?? 1.0;
     const bHealth = b.dynamic_weight?.health_score ?? 1.0;
     if (Math.abs(aHealth - bHealth) > 0.01) {
-      // Use threshold to avoid floating point comparison issues
       return bHealth - aHealth; // Higher health first
     }
 
-    // Priority 4: Within same health, sort by weight (high to low)
+    // Priority 5: Within same health, sort by base weight (high to low)
     return b.weight - a.weight;
   });
 });
