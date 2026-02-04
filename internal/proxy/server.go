@@ -2229,6 +2229,21 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 		}).Debug("Recorded dynamic weight metrics for sub-group")
 	}
 
+	// Record group-level metrics for standard groups (used for Hub health score)
+	// Only record for the final group that handled the request
+	if group != nil && group.GroupType == "standard" {
+		if isSuccess {
+			ps.dynamicWeightManager.RecordGroupSuccess(group.ID)
+		} else {
+			ps.dynamicWeightManager.RecordGroupFailure(group.ID)
+		}
+
+		logrus.WithFields(logrus.Fields{
+			"group_id":   group.ID,
+			"is_success": isSuccess,
+		}).Debug("Recorded dynamic weight metrics for standard group")
+	}
+
 	// Record model redirect metrics if a redirect occurred
 	// Check if original_model was set in context (indicates redirect happened)
 	if originalModel, exists := c.Get("original_model"); exists {

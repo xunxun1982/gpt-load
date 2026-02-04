@@ -161,6 +161,12 @@ func SubGroupMetricsKey(aggregateGroupID, subGroupID uint) string {
 	return fmt.Sprintf("dw:sg:%d:%d", aggregateGroupID, subGroupID)
 }
 
+// GroupMetricsKey returns the store key for standard group metrics.
+// Used for tracking request success/failure at the group level for Hub health score calculation.
+func GroupMetricsKey(groupID uint) string {
+	return fmt.Sprintf("dw:g:%d", groupID)
+}
+
 // ModelRedirectMetricsKey returns the store key for model redirect metrics.
 // Uses target model name instead of index to prevent health score misalignment
 // when targets are deleted from the middle of the array.
@@ -173,6 +179,13 @@ func ModelRedirectMetricsKey(groupID uint, sourceModel string, targetModel strin
 // GetSubGroupMetrics retrieves metrics for a sub-group.
 func (m *DynamicWeightManager) GetSubGroupMetrics(aggregateGroupID, subGroupID uint) (*DynamicWeightMetrics, error) {
 	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
+	return m.getMetrics(key)
+}
+
+// GetGroupMetrics retrieves metrics for a standard group.
+// Used for Hub health score calculation based on request success rate.
+func (m *DynamicWeightManager) GetGroupMetrics(groupID uint) (*DynamicWeightMetrics, error) {
+	key := GroupMetricsKey(groupID)
 	return m.getMetrics(key)
 }
 
@@ -219,6 +232,20 @@ func (m *DynamicWeightManager) RecordSubGroupSuccess(aggregateGroupID, subGroupI
 // RecordSubGroupFailure records a failed request for a sub-group.
 func (m *DynamicWeightManager) RecordSubGroupFailure(aggregateGroupID, subGroupID uint) {
 	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
+	m.recordFailure(key)
+}
+
+// RecordGroupSuccess records a successful request for a standard group.
+// Used for Hub health score calculation based on request success rate.
+func (m *DynamicWeightManager) RecordGroupSuccess(groupID uint) {
+	key := GroupMetricsKey(groupID)
+	m.recordSuccess(key)
+}
+
+// RecordGroupFailure records a failed request for a standard group.
+// Used for Hub health score calculation based on request success rate.
+func (m *DynamicWeightManager) RecordGroupFailure(groupID uint) {
+	key := GroupMetricsKey(groupID)
 	m.recordFailure(key)
 }
 
