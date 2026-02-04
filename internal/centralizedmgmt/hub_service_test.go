@@ -2470,14 +2470,16 @@ func TestGroupHealthScoreVsSubGroupMetrics(t *testing.T) {
 	}
 
 	// Hub health score should reflect group-level metrics (90% success rate)
+	// Use epsilon to avoid floating-point comparison brittleness
+	const epsilon = 1e-6
 	groupHealthScore := hubService.calculateGroupHealthScore(standardGroup)
-	if groupHealthScore < 0.8 {
+	if groupHealthScore+epsilon < 0.8 {
 		t.Errorf("Expected group health score >= 0.8 (based on group-level metrics), got %f", groupHealthScore)
 	}
 
 	// Aggregate group health score should reflect sub-group metrics (poor performance)
 	aggHealthScore := hubService.calculateGroupHealthScore(aggGroup)
-	if aggHealthScore >= 0.5 {
+	if aggHealthScore >= 0.5+epsilon {
 		t.Errorf("Expected aggregate health score < 0.5 (based on sub-group poor performance), got %f", aggHealthScore)
 	}
 
