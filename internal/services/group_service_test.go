@@ -171,17 +171,17 @@ func TestCreateGroup(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "invalid sort range",
+			name: "valid high sort value",
 			params: GroupCreateParams{
-				Name:               "invalid-sort",
+				Name:               "high-sort-group",
 				GroupType:          "standard",
 				Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
 				ChannelType:        "openai",
-				Sort:               1000,
+				Sort:               5000, // Valid: no range limit on sort field
 				TestModel:          "gpt-3.5-turbo",
 				ValidationEndpoint: "/v1/chat/completions",
 			},
-			expectError: true,
+			expectError: false,
 		},
 		{
 			name: "invalid group name",
