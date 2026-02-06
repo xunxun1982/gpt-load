@@ -1213,16 +1213,17 @@ func hasSessionCookie(cookieStr string) bool {
 			return true
 		}
 	}
-	// If we have any cookies, assume at least one might be a session cookie
-	return len(cookies) > 0
+	return false
 }
 
 // truncateString truncates a string to maxLen characters, adding "..." if truncated.
+// Uses rune-aware truncation to avoid splitting multi-byte UTF-8 characters.
 func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }
 
 // formatHTTPError returns a user-friendly error message for common HTTP status codes.
@@ -1388,10 +1389,7 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 	}
 
 	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/checkin")
-	data, _, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
-	if err != nil {
-		return providerResult{}, err
-	}
+	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
 
 	var resp struct {
 		Success bool   `json:"success"`
@@ -1401,7 +1399,31 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 			Enabled   *bool `json:"enabled"`
 		} `json:"data"`
 	}
-	_ = json.Unmarshal(data, &resp)
+
+	// Try to parse response body even on error
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &resp)
+	}
+
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"site_id":     site.ID,
+			"site_name":   site.Name,
+			"api_url":     apiURL,
+			"status_code": statusCode,
+			"response":    truncateString(string(data), 500),
+			"error":       err.Error(),
+		}).Warn("Wong check-in HTTP error")
+
+		if isAlreadyCheckedMessage(resp.Message) {
+			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
+		}
+		if resp.Message != "" {
+			return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("HTTP %d: %s", statusCode, resp.Message)}, nil
+		}
+		return providerResult{Status: CheckinResultFailed, Message: formatHTTPError(statusCode)}, nil
+	}
+
 	if resp.Data.Enabled != nil && !*resp.Data.Enabled {
 		return providerResult{Status: CheckinResultFailed, Message: "check-in disabled"}, nil
 	}
@@ -1486,9 +1508,11 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 		logrus.WithFields(logrus.Fields{
 			"site_id":     site.ID,
 			"site_name":   site.Name,
+			"api_url":     apiURL,
 			"status_code": statusCode,
-			"response":    string(data),
-		}).Debug("Anyrouter check-in HTTP error")
+			"response":    truncateString(string(data), 500),
+			"error":       err.Error(),
+		}).Warn("Anyrouter check-in HTTP error")
 
 		// Check for Cloudflare challenge response
 		if isCFChallengeResponse(statusCode, data) {
@@ -1501,7 +1525,7 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 		if resp.Message != "" {
 			return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
 		}
-		return providerResult{}, fmt.Errorf("http %d", statusCode)
+		return providerResult{Status: CheckinResultFailed, Message: formatHTTPError(statusCode)}, nil
 	}
 
 	// Anyrouter returns empty message when already checked in
@@ -1581,7 +1605,7 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 		"use_stealth":  useStealth,
 		"has_user_id":  site.UserID != "",
 		"cookie_count": len(parseCookieString(authValue)),
-	}).Info("NewAPI check-in request")
+	}).Debug("NewAPI check-in request")
 
 	// Use stealth request for Cloudflare bypass when bypass_method is "stealth"
 	var data []byte
@@ -1657,7 +1681,7 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 			"site_id":   site.ID,
 			"site_name": site.Name,
 			"message":   resp.Message,
-		}).Info("NewAPI check-in success")
+		}).Debug("NewAPI check-in success")
 		return providerResult{Status: CheckinResultSuccess, Message: resp.Message}, nil
 	}
 	// Failure with message

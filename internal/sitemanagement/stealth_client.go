@@ -2,6 +2,7 @@ package sitemanagement
 
 import (
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -63,7 +64,6 @@ func (m *StealthClientManager) GetClient(proxyURL string) *http.Client {
 func (m *StealthClientManager) createStealthClient(proxyURL string) *http.Client {
 	// Configure tls-client options
 	options := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(int(m.timeout.Seconds())),
 		// Use Chrome 120 profile for best compatibility
 		// This includes proper HTTP/2 support and modern TLS fingerprinting
 		tls_client.WithClientProfile(profiles.Chrome_120),
@@ -79,13 +79,36 @@ func (m *StealthClientManager) createStealthClient(proxyURL string) *http.Client
 	// Create tls-client
 	tlsClient, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
 	if err != nil {
-		logrus.WithError(err).WithField("proxy_url", proxyURL).
+		// Sanitize proxy URL before logging to avoid credential leakage
+		sanitizedProxy := proxyURL
+		if proxyURL != "" {
+			if parsed, parseErr := url.Parse(proxyURL); parseErr == nil && parsed.User != nil {
+				parsed.User = nil
+				sanitizedProxy = parsed.String()
+			}
+		}
+		logrus.WithError(err).WithField("proxy_url", sanitizedProxy).
 			Warn("Failed to create stealth client, falling back to standard client")
-		return &http.Client{Timeout: m.timeout}
+
+		// Fallback client should preserve proxy settings
+		transport := &http.Transport{
+			MaxIdleConns:        50,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     5 * time.Second,
+		}
+		if proxyURL != "" {
+			if parsed, parseErr := url.Parse(proxyURL); parseErr == nil {
+				transport.Proxy = http.ProxyURL(parsed)
+			}
+		}
+		return &http.Client{
+			Transport: transport,
+			Timeout:   m.timeout,
+		}
 	}
 
 	// Wrap tls-client in a standard http.Client for compatibility
-	// tls-client implements the http.Client interface, so we can use it directly
+	// Timeout is set on the outer http.Client for consistent behavior
 	return &http.Client{
 		Transport: &tlsClientTransport{client: tlsClient},
 		Timeout:   m.timeout,
@@ -101,10 +124,12 @@ type tlsClientTransport struct {
 func (t *tlsClientTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Convert standard http.Request to fhttp.Request
 	fhttpReq := &http_tls.Request{
-		Method: req.Method,
-		URL:    req.URL,
-		Header: convertHeaders(req.Header),
-		Body:   req.Body,
+		Method:        req.Method,
+		URL:           req.URL,
+		Header:        convertHeaders(req.Header),
+		Body:          req.Body,
+		Host:          req.Host,
+		ContentLength: req.ContentLength,
 	}
 
 	// Copy context
@@ -153,6 +178,7 @@ func convertHeadersBack(fh http_tls.Header) http.Header {
 // Note: Accept-Encoding is intentionally omitted to let Go's http.Client handle
 // automatic gzip/deflate decompression. Setting it manually would disable
 // Go's transparent decompression, causing json.Unmarshal to fail on compressed responses.
+// Note: Connection header is omitted as it violates RFC 9113 §8.2.2 for HTTP/2.
 func stealthHeaders() map[string]string {
 	return map[string]string{
 		"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -166,7 +192,6 @@ func stealthHeaders() map[string]string {
 		"Sec-Fetch-Site":            "same-origin",
 		"Cache-Control":             "no-cache",
 		"Pragma":                    "no-cache",
-		"Connection":                "keep-alive",
 		"Upgrade-Insecure-Requests": "1",
 	}
 }
@@ -205,9 +230,7 @@ func (m *StealthClientManager) CloseIdleConnections() {
 	m.clients.Range(func(key, value any) bool {
 		if client, ok := value.(*http.Client); ok {
 			if transport, ok := client.Transport.(*tlsClientTransport); ok {
-				// tls-client doesn't expose CloseIdleConnections, but we can recreate the client
-				// This is acceptable since connections will be cleaned up by GC
-				_ = transport
+				transport.client.CloseIdleConnections()
 			}
 		}
 		return true
@@ -220,8 +243,7 @@ func (m *StealthClientManager) Cleanup() {
 	m.clients.Range(func(key, value any) bool {
 		if client, ok := value.(*http.Client); ok {
 			if transport, ok := client.Transport.(*tlsClientTransport); ok {
-				// Clean up resources
-				_ = transport
+				transport.client.CloseIdleConnections()
 			}
 		}
 		m.clients.Delete(key)

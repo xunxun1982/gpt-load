@@ -325,8 +325,8 @@ func (s *KeyImportService) importDecryptedKeysBatch(
 	targetGroup *models.Group,
 	decryptedKeys []string,
 	existingHashes map[string]bool,
-	processedSoFar int64,
-	totalKeys int64,
+	_ int64,
+	_ int64,
 ) (KeyImportResult, error) {
 	// Encrypt and prepare keys for insertion
 	keysToInsert := make([]models.APIKey, 0, len(decryptedKeys))

@@ -104,10 +104,6 @@ func runServer() {
 		sig := <-quit
 		logrus.Infof("Received signal: %v, initiating graceful shutdown...", sig)
 
-		// Stop listening for more signals to allow second Ctrl+C to force exit
-		// This is important for Windows where Ctrl+C might not work properly without this
-		signal.Stop(quit)
-
 		// Create a context with timeout for shutdown
 		serverConfig := configManager.GetEffectiveServerConfig()
 		shutdownTimeout := time.Duration(serverConfig.GracefulShutdownTimeout) * time.Second

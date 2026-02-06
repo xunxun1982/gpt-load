@@ -78,7 +78,7 @@ func (s *DynamicModelRedirectSelector) filterValidTargetsWithIndices(targets []m
 // doWeightedSelectWithContext performs weighted random selection with dynamic weight adjustment.
 func (s *DynamicModelRedirectSelector) doWeightedSelectWithContext(
 	targets []models.ModelRedirectTarget,
-	originalIndices []int,
+	_ []int,
 	groupID uint,
 	sourceModel string,
 ) (int, error) {
