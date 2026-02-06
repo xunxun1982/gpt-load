@@ -163,7 +163,6 @@ func V1_21_0_ChangeTargetIndexToTargetModel(db *gorm.DB) error {
 	})
 }
 
-
 // dynamicWeightMetricV1_21_0 is a minimal struct for migration purposes
 type dynamicWeightMetricV1_21_0 struct {
 	ID          uint   `gorm:"primaryKey"`

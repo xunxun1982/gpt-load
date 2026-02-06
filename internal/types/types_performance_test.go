@@ -120,7 +120,7 @@ func BenchmarkFormatOperations(b *testing.B) {
 func BenchmarkRealisticFormatChecks(b *testing.B) {
 	// Simulate realistic distribution of format checks
 	formats := []RelayFormat{
-		RelayFormatOpenAIChat,      // 60% - most common
+		RelayFormatOpenAIChat, // 60% - most common
 		RelayFormatOpenAIChat,
 		RelayFormatOpenAIChat,
 		RelayFormatOpenAIChat,
@@ -128,9 +128,9 @@ func BenchmarkRealisticFormatChecks(b *testing.B) {
 		RelayFormatOpenAIChat,
 		RelayFormatOpenAICompletion, // 15%
 		RelayFormatOpenAICompletion,
-		RelayFormatClaude,           // 10% - Claude
-		RelayFormatOpenAIEmbedding,  // 8%
-		RelayFormatOpenAIImage,      // 5%
+		RelayFormatClaude,                   // 10% - Claude
+		RelayFormatOpenAIEmbedding,          // 8%
+		RelayFormatOpenAIImage,              // 5%
 		RelayFormatOpenAIAudioTranscription, // 2%
 	}
 

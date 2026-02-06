@@ -18,8 +18,8 @@ func BenchmarkApplyModelMapping(b *testing.B) {
 		requestBody string
 	}{
 		{
-			name: "NoMapping",
-			modelMap: map[string]string{},
+			name:        "NoMapping",
+			modelMap:    map[string]string{},
 			requestBody: `{"model":"gpt-4","messages":[{"role":"user","content":"test"}]}`,
 		},
 		{
@@ -32,10 +32,10 @@ func BenchmarkApplyModelMapping(b *testing.B) {
 		{
 			name: "ComplexMapping",
 			modelMap: map[string]string{
-				"gpt-4":          "gpt-4-turbo",
-				"gpt-3.5-turbo":  "gpt-3.5-turbo-16k",
-				"claude-2":       "claude-2.1",
-				"gemini-pro":     "gemini-pro-vision",
+				"gpt-4":         "gpt-4-turbo",
+				"gpt-3.5-turbo": "gpt-3.5-turbo-16k",
+				"claude-2":      "claude-2.1",
+				"gemini-pro":    "gemini-pro-vision",
 			},
 			requestBody: `{"model":"gpt-4","messages":[{"role":"user","content":"test"}],"temperature":0.7}`,
 		},
@@ -82,9 +82,9 @@ func BenchmarkApplyParamOverrides(b *testing.B) {
 		{
 			name: "MultipleOverrides",
 			overrides: map[string]any{
-				"temperature":      0.7,
-				"max_tokens":       1000,
-				"top_p":            0.9,
+				"temperature":       0.7,
+				"max_tokens":        1000,
+				"top_p":             0.9,
 				"frequency_penalty": 0.5,
 			},
 			body: `{"model":"gpt-4","messages":[{"role":"user","content":"test"}],"stream":true}`,

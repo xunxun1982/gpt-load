@@ -59,8 +59,8 @@ type BalanceService struct {
 // NewBalanceService creates a new balance service
 func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceService {
 	transport := &http.Transport{
-		MaxIdleConns:        50,  // Reduced for aggressive memory release (site management is non-critical)
-		MaxIdleConnsPerHost: 10,  // Reduced for aggressive memory release
+		MaxIdleConns:        50,              // Reduced for aggressive memory release (site management is non-critical)
+		MaxIdleConnsPerHost: 10,              // Reduced for aggressive memory release
 		IdleConnTimeout:     5 * time.Second, // Aggressive timeout for faster resource cleanup
 	}
 
@@ -377,8 +377,8 @@ func (s *BalanceService) getHTTPClient(site *ManagedSite) *http.Client {
 	// Create new proxy client
 	transport := &http.Transport{
 		Proxy:               http.ProxyURL(parsedURL),
-		MaxIdleConns:        50,  // Reduced for aggressive memory release (site management is non-critical)
-		MaxIdleConnsPerHost: 10,  // Reduced for aggressive memory release
+		MaxIdleConns:        50,              // Reduced for aggressive memory release (site management is non-critical)
+		MaxIdleConnsPerHost: 10,              // Reduced for aggressive memory release
 		IdleConnTimeout:     5 * time.Second, // Aggressive timeout for faster resource cleanup
 	}
 

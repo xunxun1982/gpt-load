@@ -243,16 +243,20 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 	// Ensure we don't exceed database-specific limits
 	switch s.dbType {
 	case "sqlite":
-		// For very large operations, allow larger batches since they don't block the UI
-		maxSQLiteBatch := MaxSQLiteBatchSize * 5 // Default cap at 250
-		if tier == TierAsync {
+		// Determine max batch size based on tier
+		var maxSQLiteBatch int
+		switch tier {
+		case TierAsync:
 			// Async operations (20K-100K keys): use larger batches
 			// For 30K keys: 30000/5000 = 6 batches
 			maxSQLiteBatch = MaxSQLiteBatchSizeAsync // 5000
-		} else if tier == TierMassiveAsync {
+		case TierMassiveAsync:
 			// Massive async operations (>100K keys): use even larger batches
 			// For 500K keys: 500000/10000 = 50 batches (vs 100 batches with 5000)
 			maxSQLiteBatch = MaxSQLiteBatchSizeMassive // 10000
+		default:
+			// For sync/small-to-medium operations, cap at 5× the base SQLite batch limit
+			maxSQLiteBatch = MaxSQLiteBatchSize * 5
 		}
 		// Cap by SQL statement size to prevent tier multiplier from exceeding size limit
 		if sqliteMaxBySize > 0 && maxSQLiteBatch > sqliteMaxBySize {

@@ -154,9 +154,9 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 			name:       "poor health returns capped weight of 1.0",
 			baseWeight: 100,
 			metrics: &DynamicWeightMetrics{
-				ConsecutiveFailures: 6,        // Max penalty 0.40 (capped at 5 failures)
+				ConsecutiveFailures: 6, // Max penalty 0.40 (capped at 5 failures)
 				Requests180d:        100,
-				Successes180d:       20,       // 20% success rate, penalty 0.18
+				Successes180d:       20, // 20% success rate, penalty 0.18
 				Requests7d:          10,
 				Successes7d:         2,
 				LastFailureAt:       time.Now().Add(-1 * time.Minute), // Recent failure ~0.11 penalty
@@ -872,23 +872,23 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 		{
 			name: "poor health (consecutive failures + low success rate)",
 			metrics: &DynamicWeightMetrics{
-				ConsecutiveFailures: 6,        // Max penalty 0.40 (capped at 5 failures)
+				ConsecutiveFailures: 6, // Max penalty 0.40 (capped at 5 failures)
 				Requests180d:        100,
-				Successes180d:       20,       // 20% success rate, penalty 0.18
+				Successes180d:       20, // 20% success rate, penalty 0.18
 				Requests7d:          10,
 				Successes7d:         2,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 1.0,  // Health ~0.42 (1.0 - 0.40 - 0.18), in critical range (<=0.50), capped at 1.0
+			expectedMinWeight: 1.0, // Health ~0.42 (1.0 - 0.40 - 0.18), in critical range (<=0.50), capped at 1.0
 			expectedMaxWeight: 1.0,
 			description:       "Health score ~0.42 in critical range, weight capped at 1.0",
 		},
 		{
 			name: "moderate health (few failures) - moderate penalty",
 			metrics: &DynamicWeightMetrics{
-				ConsecutiveFailures: 3,        // 0.24 penalty
+				ConsecutiveFailures: 3, // 0.24 penalty
 				Requests180d:        50,
-				Successes180d:       45,       // 90% success rate (above 40% threshold, no penalty)
+				Successes180d:       45, // 90% success rate (above 40% threshold, no penalty)
 				Requests7d:          5,
 				Successes7d:         4,
 			},
@@ -900,9 +900,9 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 		{
 			name: "good health (minimal failures, good success rate)",
 			metrics: &DynamicWeightMetrics{
-				ConsecutiveFailures: 2,        // 0.16 penalty
+				ConsecutiveFailures: 2, // 0.16 penalty
 				Requests180d:        50,
-				Successes180d:       45,       // 90% success rate
+				Successes180d:       45, // 90% success rate
 				Requests7d:          5,
 				Successes7d:         4,
 			},
@@ -1030,7 +1030,7 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 	health3 := dwm.CalculateHealthScore(metrics3)
 	t.Logf("Below medium threshold: health=%.3f, weight=%.1f", health3, weight3)
 	if health3 < config.MediumHealthThreshold && health3 >= config.CriticalHealthThreshold {
-		expectedWeight3 := math.Round(100 * health3 * health3 * 10) / 10 // Quadratic penalty with 1 decimal place
+		expectedWeight3 := math.Round(100*health3*health3*10) / 10 // Quadratic penalty with 1 decimal place
 		// Allow some tolerance due to rounding
 		assert.InDelta(t, expectedWeight3, weight3, 0.5, "Should apply quadratic penalty below medium threshold")
 	}
@@ -1047,7 +1047,7 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 	health4 := dwm.CalculateHealthScore(metrics4)
 	t.Logf("Above medium threshold: health=%.3f, weight=%.1f", health4, weight4)
 	if health4 >= config.MediumHealthThreshold {
-		expectedWeight4 := math.Round(100 * health4 * 10) / 10 // Linear scaling with 1 decimal place
+		expectedWeight4 := math.Round(100*health4*10) / 10 // Linear scaling with 1 decimal place
 		assert.InDelta(t, expectedWeight4, weight4, 0.5, "Should use linear scaling above medium threshold")
 	}
 }

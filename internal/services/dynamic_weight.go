@@ -420,13 +420,14 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 // GetEffectiveWeight calculates the effective weight based on base weight and health score.
 // Implements non-linear penalty for low health scores to reduce traffic to unhealthy targets.
 // Three health score ranges (optimized for unstable channels with intermittent failures):
-// 1. Critical (<= 0.50): effective weight reduced to 10% of base weight, capped at 1.0 (min 0.1)
-//    This prevents unhealthy high-weight targets from dominating healthy low-weight targets
-//    Example: baseWeight=100 -> 10% = 10.0, capped to 1.0;
-//    baseWeight=5 -> 10% = 0.5; baseWeight=1 -> 10% = 0.1
-// 2. Medium (0.50 to 0.75): aggressive non-linear penalty using quadratic function
-//    Example: health=0.6 -> weight multiplier = 0.6^2 = 0.36
-// 3. Good (> 0.75): linear scaling
+//  1. Critical (<= 0.50): effective weight reduced to 10% of base weight, capped at 1.0 (min 0.1)
+//     This prevents unhealthy high-weight targets from dominating healthy low-weight targets
+//     Example: baseWeight=100 -> 10% = 10.0, capped to 1.0;
+//     baseWeight=5 -> 10% = 0.5; baseWeight=1 -> 10% = 0.1
+//  2. Medium (0.50 to 0.75): aggressive non-linear penalty using quadratic function
+//     Example: health=0.6 -> weight multiplier = 0.6^2 = 0.36
+//  3. Good (> 0.75): linear scaling
+//
 // Returns a float64 value with 1 decimal place precision, minimum 0.1
 func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *DynamicWeightMetrics) float64 {
 	if baseWeight <= 0 {
@@ -474,6 +475,7 @@ func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *Dynam
 // This ensures accurate weight ratios in weighted random selection:
 //   - Without scaling: 1.5 rounds to 2, 0.5 rounds to 1, ratio becomes 2:1 (incorrect)
 //   - With 10x scaling: 1.5 -> 15, 0.5 -> 5, ratio stays 15:5 = 3:1 (correct)
+//
 // Returns 0 if the effective weight is 0 (disabled).
 func GetEffectiveWeightForSelection(effectiveWeight float64) int {
 	if effectiveWeight == 0.0 {
@@ -559,10 +561,10 @@ func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID 
 func (m *DynamicWeightManager) GetModelRedirectEffectiveWeights(groupID uint, sourceModel string, targets []string, targetWeights []int) []int {
 	if len(targets) != len(targetWeights) {
 		logrus.WithFields(logrus.Fields{
-			"group_id":      groupID,
-			"source_model":  sourceModel,
-			"targets_len":   len(targets),
-			"weights_len":   len(targetWeights),
+			"group_id":     groupID,
+			"source_model": sourceModel,
+			"targets_len":  len(targets),
+			"weights_len":  len(targetWeights),
 		}).Warn("Mismatched targets and weights length")
 		return targetWeights
 	}

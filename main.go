@@ -95,18 +95,41 @@ func runServer() {
 			logrus.Fatalf("Failed to start application: %v", err)
 		}
 
-		// Wait for interrupt signal for graceful shutdown
+		// Setup signal handling for graceful shutdown
+		// Use buffered channel to avoid missing signals
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-		<-quit
+
+		// Wait for first interrupt signal
+		sig := <-quit
+		logrus.Infof("Received signal: %v, initiating graceful shutdown...", sig)
 
 		// Create a context with timeout for shutdown
 		serverConfig := configManager.GetEffectiveServerConfig()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(serverConfig.GracefulShutdownTimeout)*time.Second)
+		shutdownTimeout := time.Duration(serverConfig.GracefulShutdownTimeout) * time.Second
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 
-		// Perform graceful shutdown
-		application.Stop(shutdownCtx)
+		// Start graceful shutdown in a goroutine
+		done := make(chan struct{})
+		go func() {
+			application.Stop(shutdownCtx)
+			close(done)
+		}()
+
+		// Wait for shutdown to complete or second signal for force exit
+		select {
+		case <-done:
+			logrus.Info("Graceful shutdown completed successfully")
+		case <-quit:
+			logrus.Warn("Second interrupt signal received, forcing immediate exit")
+			utils.CloseLogger()
+			os.Exit(1)
+		case <-shutdownCtx.Done():
+			logrus.Warn("Shutdown timeout exceeded, forcing exit")
+			utils.CloseLogger()
+			os.Exit(1)
+		}
 
 	}); err != nil {
 		logrus.Fatalf("Failed to run application: %v", err)

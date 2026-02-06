@@ -22,12 +22,12 @@ const (
 // with different weights for health score calculation.
 //
 // Design notes:
-// - Each (aggregate_group, sub_group) pair has independent metrics
-// - Same sub-group in different aggregate groups has separate health tracking
-// - This isolation prevents one aggregate group's failures from affecting others
-// - Soft delete is used to preserve data when sub-groups are temporarily removed
-// - For model redirect metrics, target_model is used instead of target_index to prevent
-//   health score misalignment when targets are deleted from the middle of the array
+//   - Each (aggregate_group, sub_group) pair has independent metrics
+//   - Same sub-group in different aggregate groups has separate health tracking
+//   - This isolation prevents one aggregate group's failures from affecting others
+//   - Soft delete is used to preserve data when sub-groups are temporarily removed
+//   - For model redirect metrics, target_model is used instead of target_index to prevent
+//     health score misalignment when targets are deleted from the middle of the array
 type DynamicWeightMetric struct {
 	ID          uint       `gorm:"primaryKey" json:"id"`
 	MetricType  MetricType `gorm:"type:varchar(20);not null;uniqueIndex:idx_dwm_unique" json:"metric_type"`

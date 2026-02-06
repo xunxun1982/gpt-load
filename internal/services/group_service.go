@@ -978,7 +978,7 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			childGroupsNeedingKeyUpdate, err = s.syncChildGroupUpstreamsInTransaction(ctx, tx, &group, oldName, nameChanged)
 			if err != nil {
 				logrus.WithContext(ctx).WithError(err).Error("Failed to sync child group upstreams, rolling back transaction")
-				return nil, NewI18nError(app_errors.ErrInternalServer, "errors.child_group_sync_failed", nil)
+				return nil, NewI18nError(app_errors.ErrInternalServer, "error.child_group_sync_failed", nil)
 			}
 
 			// Mark that child groups were synced (for cache invalidation after commit)
@@ -1514,7 +1514,7 @@ func (s *GroupService) StartDeleteGroupTask(ctx context.Context, groupID uint, r
 
 // runAsyncGroupDeletion performs the actual group deletion in background.
 // This is called by StartDeleteGroupTask and runs in a separate goroutine.
-func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uint, totalKeys int) {
+func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uint, _ int) {
 	// Recover from panics to prevent task from being stuck in "running" state
 	defer func() {
 		if r := recover(); r != nil {
