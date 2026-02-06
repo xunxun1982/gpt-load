@@ -255,8 +255,8 @@ func (s *BulkImportService) CalculateOptimalBatchSize(avgFieldSize int, numField
 			// For 500K keys: 500000/10000 = 50 batches (vs 100 batches with 5000)
 			maxSQLiteBatch = MaxSQLiteBatchSizeMassive // 10000
 		default:
-			// For very large operations, allow larger batches since they don't block the UI
-			maxSQLiteBatch = MaxSQLiteBatchSize * 5 // Default cap at 250
+			// For sync/small-to-medium operations, cap at 5× the base SQLite batch limit
+			maxSQLiteBatch = MaxSQLiteBatchSize * 5
 		}
 		// Cap by SQL statement size to prevent tier multiplier from exceeding size limit
 		if sqliteMaxBySize > 0 && maxSQLiteBatch > sqliteMaxBySize {

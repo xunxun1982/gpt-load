@@ -123,9 +123,11 @@ func runServer() {
 			logrus.Info("Graceful shutdown completed successfully")
 		case <-quit:
 			logrus.Warn("Second interrupt signal received, forcing immediate exit")
+			utils.CloseLogger()
 			os.Exit(1)
 		case <-shutdownCtx.Done():
 			logrus.Warn("Shutdown timeout exceeded, forcing exit")
+			utils.CloseLogger()
 			os.Exit(1)
 		}
 

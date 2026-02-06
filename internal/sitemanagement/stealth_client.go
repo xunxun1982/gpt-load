@@ -181,18 +181,17 @@ func convertHeadersBack(fh http_tls.Header) http.Header {
 // Note: Connection header is omitted as it violates RFC 9113 §8.2.2 for HTTP/2.
 func stealthHeaders() map[string]string {
 	return map[string]string{
-		"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-		"Accept":                    "application/json, text/plain, */*",
-		"Accept-Language":           "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-		"Sec-Ch-Ua":                 `"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"`,
-		"Sec-Ch-Ua-Mobile":          "?0",
-		"Sec-Ch-Ua-Platform":        `"Windows"`,
-		"Sec-Fetch-Dest":            "empty",
-		"Sec-Fetch-Mode":            "cors",
-		"Sec-Fetch-Site":            "same-origin",
-		"Cache-Control":             "no-cache",
-		"Pragma":                    "no-cache",
-		"Upgrade-Insecure-Requests": "1",
+		"User-Agent":         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Accept":             "application/json, text/plain, */*",
+		"Accept-Language":    "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+		"Sec-Ch-Ua":          `"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"`,
+		"Sec-Ch-Ua-Mobile":   "?0",
+		"Sec-Ch-Ua-Platform": `"Windows"`,
+		"Sec-Fetch-Dest":     "empty",
+		"Sec-Fetch-Mode":     "cors",
+		"Sec-Fetch-Site":     "same-origin",
+		"Cache-Control":      "no-cache",
+		"Pragma":             "no-cache",
 	}
 }
 
@@ -229,8 +228,11 @@ func isStealthBypassMethod(method string) bool {
 func (m *StealthClientManager) CloseIdleConnections() {
 	m.clients.Range(func(key, value any) bool {
 		if client, ok := value.(*http.Client); ok {
-			if transport, ok := client.Transport.(*tlsClientTransport); ok {
+			switch transport := client.Transport.(type) {
+			case *tlsClientTransport:
 				transport.client.CloseIdleConnections()
+			case *http.Transport:
+				transport.CloseIdleConnections()
 			}
 		}
 		return true
@@ -242,8 +244,11 @@ func (m *StealthClientManager) CloseIdleConnections() {
 func (m *StealthClientManager) Cleanup() {
 	m.clients.Range(func(key, value any) bool {
 		if client, ok := value.(*http.Client); ok {
-			if transport, ok := client.Transport.(*tlsClientTransport); ok {
+			switch transport := client.Transport.(type) {
+			case *tlsClientTransport:
 				transport.client.CloseIdleConnections()
+			case *http.Transport:
+				transport.CloseIdleConnections()
 			}
 		}
 		m.clients.Delete(key)

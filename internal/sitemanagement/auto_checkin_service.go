@@ -1597,6 +1597,10 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/checkin")
 
 	// Log request details for debugging
+	cookieCount := 0
+	if site.AuthType == AuthTypeCookie {
+		cookieCount = len(parseCookieString(authValue))
+	}
 	logrus.WithFields(logrus.Fields{
 		"site_id":      site.ID,
 		"site_name":    site.Name,
@@ -1604,7 +1608,7 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 		"auth_type":    site.AuthType,
 		"use_stealth":  useStealth,
 		"has_user_id":  site.UserID != "",
-		"cookie_count": len(parseCookieString(authValue)),
+		"cookie_count": cookieCount,
 	}).Debug("NewAPI check-in request")
 
 	// Use stealth request for Cloudflare bypass when bypass_method is "stealth"
