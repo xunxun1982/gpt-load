@@ -5,6 +5,8 @@ go 1.25.6
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/andybalholm/brotli v1.2.0
+	github.com/bogdanfinn/fhttp v0.6.8
+	github.com/bogdanfinn/tls-client v1.14.0
 	github.com/gin-contrib/gzip v1.2.5
 	github.com/gin-contrib/static v1.1.5
 	github.com/gin-gonic/gin v1.11.0
@@ -16,7 +18,6 @@ require (
 	github.com/klauspost/compress v1.18.3
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/redis/go-redis/v9 v9.17.3
-	github.com/refraction-networking/utls v1.8.2
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
 	github.com/tidwall/gjson v1.18.0
@@ -32,6 +33,11 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/bdandy/go-errors v1.2.2 // indirect
+	github.com/bdandy/go-socks4 v1.2.3 // indirect
+	github.com/bogdanfinn/quic-go-utls v1.0.9-utls // indirect
+	github.com/bogdanfinn/utls v1.7.7-barnius // indirect
+	github.com/bogdanfinn/websocket v1.5.5-barnius // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
@@ -55,7 +61,6 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.33 // indirect
@@ -67,6 +72,7 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

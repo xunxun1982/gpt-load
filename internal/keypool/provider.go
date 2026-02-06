@@ -226,8 +226,8 @@ func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, i
 		// unbounded goroutine creation when channel is persistently full
 		// Log warning to enable monitoring of channel overflow events
 		logrus.WithFields(logrus.Fields{
-			"key_id":    apiKey.ID,
-			"group_id":  group.ID,
+			"key_id":     apiKey.ID,
+			"group_id":   group.ID,
 			"is_success": isSuccess,
 		}).Warn("Status update channel full (1000 capacity), processing synchronously - may increase client latency")
 		p.processStatusUpdate(task)

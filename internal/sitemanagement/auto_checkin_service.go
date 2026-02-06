@@ -74,14 +74,14 @@ func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encrypt
 	var transport *http.Transport
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		transport = t.Clone()
-		transport.MaxIdleConns = 50  // Reduced for aggressive memory release (site management is non-critical)
-		transport.MaxIdleConnsPerHost = 10  // Reduced for aggressive memory release
+		transport.MaxIdleConns = 50                 // Reduced for aggressive memory release (site management is non-critical)
+		transport.MaxIdleConnsPerHost = 10          // Reduced for aggressive memory release
 		transport.IdleConnTimeout = 5 * time.Second // Aggressive timeout for faster resource cleanup
 	} else {
 		// Fallback if DefaultTransport was replaced with a different type
 		transport = &http.Transport{
-			MaxIdleConns:        50,  // Reduced for aggressive memory release
-			MaxIdleConnsPerHost: 10,  // Reduced for aggressive memory release
+			MaxIdleConns:        50,              // Reduced for aggressive memory release
+			MaxIdleConnsPerHost: 10,              // Reduced for aggressive memory release
 			IdleConnTimeout:     5 * time.Second, // Aggressive timeout for faster resource cleanup
 		}
 	}
@@ -781,8 +781,8 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 	// Create a new transport with proxy
 	transport := &http.Transport{
 		Proxy:               http.ProxyURL(parsedProxyURL),
-		MaxIdleConns:        50,  // Reduced for aggressive memory release (site management is non-critical)
-		MaxIdleConnsPerHost: 10,  // Reduced for aggressive memory release
+		MaxIdleConns:        50,              // Reduced for aggressive memory release (site management is non-critical)
+		MaxIdleConnsPerHost: 10,              // Reduced for aggressive memory release
 		IdleConnTimeout:     5 * time.Second, // Aggressive timeout for faster resource cleanup
 	}
 
@@ -1090,12 +1090,25 @@ func doJSONRequest(ctx context.Context, client *http.Client, method, fullURL str
 	if err != nil {
 		return nil, 0, err
 	}
-	// Set default User-Agent to help bypass basic bot detection
+
+	// Extract base URL for Origin and Referer headers (important for CORS)
+	baseURL := extractBaseURL(fullURL)
+
+	// Set default headers to help bypass basic bot detection and CORS
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
+
+	// Set Origin and Referer for CORS (can be overridden by custom headers)
+	if baseURL != "" {
+		req.Header.Set("Origin", baseURL)
+		req.Header.Set("Referer", baseURL)
+	}
+
+	// Apply custom headers (may override defaults)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -1186,6 +1199,56 @@ func isAlreadyCheckedMessage(msg string) bool {
 	return false
 }
 
+// hasSessionCookie checks if the cookie string contains a session cookie.
+// Common session cookie names: session, PHPSESSID, JSESSIONID, etc.
+func hasSessionCookie(cookieStr string) bool {
+	if cookieStr == "" {
+		return false
+	}
+	cookies := parseCookieString(cookieStr)
+	// Check for common session cookie names
+	sessionCookieNames := []string{"session", "PHPSESSID", "JSESSIONID", "connect.sid", "SESSIONID"}
+	for _, name := range sessionCookieNames {
+		if _, ok := cookies[name]; ok {
+			return true
+		}
+	}
+	// If we have any cookies, assume at least one might be a session cookie
+	return len(cookies) > 0
+}
+
+// truncateString truncates a string to maxLen characters, adding "..." if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// formatHTTPError returns a user-friendly error message for common HTTP status codes.
+func formatHTTPError(statusCode int) string {
+	switch statusCode {
+	case 400:
+		return "HTTP 400: Bad Request - check API endpoint and request format"
+	case 401:
+		return "HTTP 401: Unauthorized - cookie or token expired/invalid"
+	case 403:
+		return "HTTP 403: Forbidden - access denied, check permissions or update cookies"
+	case 404:
+		return "HTTP 404: Not Found - check-in endpoint not found, verify base URL"
+	case 429:
+		return "HTTP 429: Too Many Requests - rate limited, try again later"
+	case 500:
+		return "HTTP 500: Internal Server Error - site API error"
+	case 502:
+		return "HTTP 502: Bad Gateway - site temporarily unavailable"
+	case 503:
+		return "HTTP 503: Service Unavailable - site under maintenance"
+	default:
+		return fmt.Sprintf("HTTP %d: request failed", statusCode)
+	}
+}
+
 type veloeraProvider struct{}
 
 func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
@@ -1250,14 +1313,16 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 
 	// Handle HTTP errors with parsed response message
 	if err != nil {
-		// Log detailed error info for debugging
+		// Log error with full details at Warn level so users can see it
 		logrus.WithFields(logrus.Fields{
 			"site_id":     site.ID,
 			"site_name":   site.Name,
+			"api_url":     apiURL,
 			"status_code": statusCode,
-			"response":    string(data),
+			"response":    truncateString(string(data), 500),
 			"resp_msg":    resp.Message,
-		}).Debug("Veloera check-in HTTP error")
+			"error":       err.Error(),
+		}).Warn("Veloera check-in HTTP error")
 
 		// Check for Cloudflare challenge response
 		if useStealth && isCFChallengeResponse(statusCode, data) {
@@ -1268,11 +1333,11 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 		if isAlreadyCheckedMessage(resp.Message) {
 			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
 		}
-		// Return error with response message if available, otherwise HTTP status
+		// Return detailed error message with HTTP status code
 		if resp.Message != "" {
-			return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+			return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("HTTP %d: %s", statusCode, resp.Message)}, nil
 		}
-		return providerResult{}, fmt.Errorf("http %d", statusCode)
+		return providerResult{Status: CheckinResultFailed, Message: formatHTTPError(statusCode)}, nil
 	}
 
 	// Log response for debugging when check-in fails
@@ -1281,10 +1346,10 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 			"site_id":     site.ID,
 			"site_name":   site.Name,
 			"status_code": statusCode,
-			"response":    string(data),
+			"response":    truncateString(string(data), 500),
 			"resp_msg":    resp.Message,
 			"success":     resp.Success,
-		}).Debug("Veloera check-in failed")
+		}).Warn("Veloera check-in failed")
 	}
 
 	if isAlreadyCheckedMessage(resp.Message) {
@@ -1381,16 +1446,20 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 		}
 	}
 
-	// Use new-api-user header for anyrouter (required for API authentication)
-	headers := map[string]string{
-		"Cookie":           authValue,
-		"X-Requested-With": "XMLHttpRequest",
+	// Build headers with user ID for API authentication
+	headers := buildUserHeaders(site.UserID)
+	if headers == nil {
+		headers = make(map[string]string)
 	}
 
-	// Add user ID header if available (some anyrouter instances require this)
-	if uid := strings.TrimSpace(site.UserID); uid != "" {
-		headers["new-api-user"] = uid
-	}
+	// Add required headers for anyrouter
+	headers["Cookie"] = authValue
+	headers["X-Requested-With"] = "XMLHttpRequest"
+
+	// Extract base URL for Origin and Referer headers (important for CORS)
+	baseURL := extractBaseURL(site.BaseURL)
+	headers["Origin"] = baseURL
+	headers["Referer"] = site.BaseURL // Use full URL with path for Referer
 
 	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/sign_in")
 
@@ -1489,12 +1558,30 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 				}, nil
 			}
 		}
+		// Validate session cookie exists for cookie auth
+		if !hasSessionCookie(authValue) {
+			logrus.WithFields(logrus.Fields{
+				"site_id":   site.ID,
+				"site_name": site.Name,
+			}).Warn("NewAPI check-in: session cookie not found in cookie string")
+		}
 		headers["Cookie"] = authValue
 	default:
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
 	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/checkin")
+
+	// Log request details for debugging
+	logrus.WithFields(logrus.Fields{
+		"site_id":      site.ID,
+		"site_name":    site.Name,
+		"api_url":      apiURL,
+		"auth_type":    site.AuthType,
+		"use_stealth":  useStealth,
+		"has_user_id":  site.UserID != "",
+		"cookie_count": len(parseCookieString(authValue)),
+	}).Info("NewAPI check-in request")
 
 	// Use stealth request for Cloudflare bypass when bypass_method is "stealth"
 	var data []byte
@@ -1519,13 +1606,16 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 
 	// Handle HTTP errors with parsed response message
 	if err != nil {
+		// Log error with full details at Warn level so users can see it
 		logrus.WithFields(logrus.Fields{
 			"site_id":     site.ID,
 			"site_name":   site.Name,
+			"api_url":     apiURL,
 			"status_code": statusCode,
-			"response":    string(data),
+			"response":    truncateString(string(data), 500),
 			"resp_msg":    resp.Message,
-		}).Debug("NewAPI check-in HTTP error")
+			"error":       err.Error(),
+		}).Warn("NewAPI check-in HTTP error")
 
 		// Check for Cloudflare challenge response
 		if useStealth && isCFChallengeResponse(statusCode, data) {
@@ -1536,11 +1626,13 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 		if isAlreadyCheckedMessage(resp.Message) {
 			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
 		}
-		// Return error with response message if available, otherwise HTTP status
+
+		// Return detailed error message with HTTP status code
 		if resp.Message != "" {
-			return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+			return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("HTTP %d: %s", statusCode, resp.Message)}, nil
 		}
-		return providerResult{}, fmt.Errorf("http %d", statusCode)
+		// Return HTTP status code with common error explanations
+		return providerResult{Status: CheckinResultFailed, Message: formatHTTPError(statusCode)}, nil
 	}
 
 	// Log response for debugging when check-in fails
@@ -1549,10 +1641,10 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 			"site_id":     site.ID,
 			"site_name":   site.Name,
 			"status_code": statusCode,
-			"response":    string(data),
+			"response":    truncateString(string(data), 500),
 			"resp_msg":    resp.Message,
 			"success":     resp.Success,
-		}).Debug("NewAPI check-in failed")
+		}).Warn("NewAPI check-in failed")
 	}
 
 	// Check for "already checked in" message
@@ -1561,6 +1653,11 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 	}
 	// Success case
 	if resp.Success {
+		logrus.WithFields(logrus.Fields{
+			"site_id":   site.ID,
+			"site_name": site.Name,
+			"message":   resp.Message,
+		}).Info("NewAPI check-in success")
 		return providerResult{Status: CheckinResultSuccess, Message: resp.Message}, nil
 	}
 	// Failure with message
