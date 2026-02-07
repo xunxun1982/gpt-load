@@ -41,7 +41,7 @@ func TestDynamicWeightManager_RecordFailure(t *testing.T) {
 	subGroupID := uint(2)
 
 	// Record failure
-	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
 
 	// Verify metrics
 	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
@@ -355,7 +355,7 @@ func TestDynamicWeightManager_ModelRedirectMetrics(t *testing.T) {
 	assert.Equal(t, int64(1), metrics.Successes7d)
 
 	// Record failure
-	dwm.RecordModelRedirectFailure(groupID, sourceModel, targetModel)
+	dwm.RecordModelRedirectFailure(groupID, sourceModel, targetModel, false)
 
 	// Verify updated metrics
 	metrics, err = dwm.GetModelRedirectMetrics(groupID, sourceModel, targetModel)
@@ -375,7 +375,7 @@ func TestDynamicWeightManager_ResetMetrics(t *testing.T) {
 
 	// Record some data
 	dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupID)
-	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
 
 	// Verify data exists
 	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
@@ -406,7 +406,7 @@ func TestDynamicWeightManager_GetSubGroupDynamicWeights(t *testing.T) {
 
 	// Record some metrics
 	dwm.RecordSubGroupSuccess(aggregateGroupID, 1)
-	dwm.RecordSubGroupFailure(aggregateGroupID, 2)
+	dwm.RecordSubGroupFailure(aggregateGroupID, 2, false)
 
 	// Get dynamic weights
 	weights := dwm.GetSubGroupDynamicWeights(aggregateGroupID, subGroups)
@@ -516,7 +516,7 @@ func TestGetModelRedirectDynamicWeights(t *testing.T) {
 
 	// Record some metrics
 	dwm.RecordModelRedirectSuccess(groupID, sourceModel, "gpt-4-turbo")
-	dwm.RecordModelRedirectFailure(groupID, sourceModel, "gpt-4-0125")
+	dwm.RecordModelRedirectFailure(groupID, sourceModel, "gpt-4-0125", false)
 
 	// Get dynamic weights
 	weights := GetModelRedirectDynamicWeights(dwm, groupID, sourceModel, rule)
@@ -541,7 +541,7 @@ func TestDynamicWeightManager_RecordRetryAndFinalRequests(t *testing.T) {
 	subGroupID := uint(2)
 
 	// Record a retry request failure
-	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
 
 	// Verify retry failure is recorded
 	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
@@ -575,7 +575,7 @@ func TestDynamicWeightManager_AggregateRetryScenario(t *testing.T) {
 
 	// Simulate aggregate retry scenario:
 	// 1. Sub-group A fails (retry request)
-	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupA)
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupA, false)
 
 	// 2. Sub-group B succeeds (final request)
 	dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupB)
@@ -625,7 +625,7 @@ func TestDynamicWeightManager_ModelRedirectRetryScenario(t *testing.T) {
 
 	// Simulate model redirect retry scenario:
 	// 1. Target A fails (retry request)
-	dwm.RecordModelRedirectFailure(groupID, sourceModel, targetModelA)
+	dwm.RecordModelRedirectFailure(groupID, sourceModel, targetModelA, false)
 
 	// 2. Target B succeeds (final request)
 	dwm.RecordModelRedirectSuccess(groupID, sourceModel, targetModelB)
@@ -671,7 +671,7 @@ func TestDynamicWeightManager_MultipleRetriesHealthDecay(t *testing.T) {
 
 	// Record multiple retry failures
 	for i := 0; i < 5; i++ {
-		dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
+		dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
 	}
 
 	// Verify health degrades with multiple failures
@@ -700,8 +700,8 @@ func TestDynamicWeightManager_HealthRecoveryAfterRetryFailures(t *testing.T) {
 	subGroupID := uint(2)
 
 	// Record retry failures
-	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
-	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID)
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
 
 	// Verify health is degraded
 	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
@@ -740,9 +740,9 @@ func TestDynamicWeightManager_HubHealthScoreCalculation(t *testing.T) {
 
 	// Simulate multiple requests through Hub to a group
 	// Some fail (retry), some succeed (final)
-	dwm.RecordSubGroupFailure(groupID, subGroupID) // Retry failure
+	dwm.RecordSubGroupFailure(groupID, subGroupID, false) // Retry failure
 	dwm.RecordSubGroupSuccess(groupID, subGroupID) // Final success
-	dwm.RecordSubGroupFailure(groupID, subGroupID) // Retry failure
+	dwm.RecordSubGroupFailure(groupID, subGroupID, false) // Retry failure
 	dwm.RecordSubGroupSuccess(groupID, subGroupID) // Final success
 
 	// Verify health score reflects both retry and final requests
@@ -774,7 +774,7 @@ func TestDynamicWeightManager_HubGroupSelectionWithHealth(t *testing.T) {
 
 	// Group A: Multiple failures
 	for i := 0; i < 5; i++ {
-		dwm.RecordSubGroupFailure(aggregateGroupID, groupA)
+		dwm.RecordSubGroupFailure(aggregateGroupID, groupA, false)
 	}
 	dwm.RecordSubGroupSuccess(aggregateGroupID, groupA)
 
@@ -782,7 +782,7 @@ func TestDynamicWeightManager_HubGroupSelectionWithHealth(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		dwm.RecordSubGroupSuccess(aggregateGroupID, groupB)
 	}
-	dwm.RecordSubGroupFailure(aggregateGroupID, groupB)
+	dwm.RecordSubGroupFailure(aggregateGroupID, groupB, false)
 
 	// Calculate health scores
 	metricsA, err := dwm.GetSubGroupMetrics(aggregateGroupID, groupA)
@@ -826,7 +826,7 @@ func TestDynamicWeightManager_HubRetryFailureImpact(t *testing.T) {
 	secondGroup := uint(302)
 
 	// First group fails on retry
-	dwm.RecordSubGroupFailure(aggregateGroupID, firstGroup)
+	dwm.RecordSubGroupFailure(aggregateGroupID, firstGroup, false)
 
 	// Second group succeeds on final request
 	dwm.RecordSubGroupSuccess(aggregateGroupID, secondGroup)
@@ -1050,4 +1050,141 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 		expectedWeight4 := math.Round(100*health4*10) / 10 // Linear scaling with 1 decimal place
 		assert.InDelta(t, expectedWeight4, weight4, 0.5, "Should use linear scaling above medium threshold")
 	}
+}
+
+// TestDynamicWeightManager_RateLimitHandling tests that 429 rate limit errors
+// receive lighter penalties than regular failures
+func TestDynamicWeightManager_RateLimitHandling(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(100)
+	subGroupA := uint(101) // Will receive regular failures
+	subGroupB := uint(102) // Will receive rate limit failures
+
+	// Sub-group A: 5 consecutive regular failures (500, 401, etc.)
+	for i := 0; i < 5; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, subGroupA, false)
+	}
+
+	// Sub-group B: 5 consecutive rate limit failures (429)
+	for i := 0; i < 5; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, subGroupB, true)
+	}
+
+	// Get metrics and health scores
+	metricsA, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupA)
+	require.NoError(t, err)
+	healthA := dwm.CalculateHealthScore(metricsA)
+
+	metricsB, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupB)
+	require.NoError(t, err)
+	healthB := dwm.CalculateHealthScore(metricsB)
+
+	// Verify that rate limit failures are tracked separately
+	assert.Equal(t, int64(5), metricsA.ConsecutiveFailures, "Regular failures should increment ConsecutiveFailures")
+	assert.Equal(t, int64(0), metricsA.ConsecutiveRateLimits, "Regular failures should not increment ConsecutiveRateLimits")
+
+	assert.Equal(t, int64(0), metricsB.ConsecutiveFailures, "Rate limit failures should not increment ConsecutiveFailures")
+	assert.Equal(t, int64(5), metricsB.ConsecutiveRateLimits, "Rate limit failures should increment ConsecutiveRateLimits")
+
+	// Verify that rate limit failures receive lighter penalties
+	// Regular failures: 5 * 0.08 = 0.40 penalty (consecutive) + ~0.12 (recent, time-decaying) + 0.18 (low success rate)
+	// Rate limit failures: 5 * 0.025 = 0.125 penalty (consecutive) + ~0.04 (recent, time-decaying) + 0.18 (low success rate)
+	// Note: Recent failure penalty decays over time, so exact values may vary slightly
+	assert.Less(t, healthA, 0.65, "Regular failures should have significant penalty")
+	assert.Greater(t, healthB, 0.60, "Rate limit failures should have lighter penalty")
+
+	// Health score with rate limits should be significantly higher than with regular failures
+	assert.Greater(t, healthB, healthA, "Rate limit health should be higher than regular failure health")
+	assert.Greater(t, healthB-healthA, 0.15, "Health difference should be significant (>0.15)")
+}
+
+// TestDynamicWeightManager_RateLimitRecovery tests that rate limit counters
+// are cleared on success
+func TestDynamicWeightManager_RateLimitRecovery(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(200)
+	subGroupID := uint(201)
+
+	// Record some rate limit failures
+	for i := 0; i < 3; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, true)
+	}
+
+	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), metrics.ConsecutiveRateLimits)
+
+	// Record a success - should clear rate limit counter
+	dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupID)
+
+	metrics, err = dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), metrics.ConsecutiveRateLimits, "Success should clear rate limit counter")
+	assert.Equal(t, int64(0), metrics.ConsecutiveFailures, "Success should clear failure counter")
+}
+
+// TestDynamicWeightManager_MixedFailureTypes tests handling of mixed failure types
+func TestDynamicWeightManager_MixedFailureTypes(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(300)
+	subGroupID := uint(301)
+
+	// Record mixed failures: 2 rate limits, then 1 regular failure
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, true)  // 429
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, true)  // 429
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false) // 500
+
+	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+
+	// Regular failure should reset rate limit counter
+	assert.Equal(t, int64(1), metrics.ConsecutiveFailures, "Regular failure should increment ConsecutiveFailures")
+	assert.Equal(t, int64(0), metrics.ConsecutiveRateLimits, "Regular failure should reset ConsecutiveRateLimits")
+
+	// Now record rate limits after regular failure
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, true) // 429
+
+	metrics, err = dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+
+	// Rate limit after regular failure should not increment ConsecutiveFailures
+	assert.Equal(t, int64(1), metrics.ConsecutiveFailures, "Rate limit should not increment ConsecutiveFailures")
+	assert.Equal(t, int64(1), metrics.ConsecutiveRateLimits, "Rate limit should increment ConsecutiveRateLimits")
+}
+
+// TestDynamicWeightManager_RateLimitTimeDecay tests that rate limit penalties decay over time
+func TestDynamicWeightManager_RateLimitTimeDecay(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(400)
+	subGroupID := uint(401)
+
+	// Record a rate limit failure
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, true)
+
+	// Get metrics and manually set LastRateLimitAt to past
+	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+
+	// Test immediate penalty
+	healthImmediate := dwm.CalculateHealthScore(metrics)
+
+	// Simulate time passing (beyond cooldown period)
+	metrics.LastRateLimitAt = time.Now().Add(-4 * time.Minute) // Beyond 3-minute cooldown
+	healthAfterCooldown := dwm.CalculateHealthScore(metrics)
+
+	// Health should improve after cooldown period
+	assert.Greater(t, healthAfterCooldown, healthImmediate, "Health should improve after rate limit cooldown")
+	assert.InDelta(t, 1.0, healthAfterCooldown, 0.15, "Health should be near 1.0 after cooldown (only consecutive penalty remains)")
 }

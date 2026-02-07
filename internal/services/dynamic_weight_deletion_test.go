@@ -35,12 +35,12 @@ func TestModelRedirectTargetDeletion_HealthScorePreservation(t *testing.T) {
 	// Target B: 5 successes, 5 failures (medium health)
 	for i := 0; i < 5; i++ {
 		dwm.RecordModelRedirectSuccess(groupID, sourceModel, targetB)
-		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetB)
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetB, false)
 	}
 
 	// Target C: 10 failures (unhealthy)
 	for i := 0; i < 10; i++ {
-		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetC)
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetC, false)
 	}
 
 	// Get initial health scores
@@ -106,11 +106,11 @@ func TestModelRedirectTargetDeletion_EffectiveWeights(t *testing.T) {
 		dwm.RecordModelRedirectSuccess(groupID, sourceModel, targetB)
 	}
 	for i := 0; i < 3; i++ {
-		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetB)
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetB, false)
 	}
 	// Target C: all failures
 	for i := 0; i < 10; i++ {
-		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetC)
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetC, false)
 	}
 
 	// Get effective weights for all three targets
@@ -156,10 +156,10 @@ func TestModelRedirectTargetDeletion_GetDynamicWeights(t *testing.T) {
 	}
 	for i := 0; i < 5; i++ {
 		dwm.RecordModelRedirectSuccess(groupID, sourceModel, targetB)
-		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetB)
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetB, false)
 	}
 	for i := 0; i < 10; i++ {
-		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetC)
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, targetC, false)
 	}
 
 	enabledTrue := true

@@ -162,7 +162,7 @@ func TestDynamicModelRedirectSelector_DynamicWeightAdjustment(t *testing.T) {
 
 	// Record failures for first target to reduce its effective weight
 	for i := 0; i < 10; i++ {
-		dwm.RecordModelRedirectFailure(groupID, sourceModel, "gpt-4-turbo")
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, "gpt-4-turbo", false)
 	}
 
 	// Record successes for second target

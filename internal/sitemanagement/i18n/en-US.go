@@ -21,4 +21,15 @@ var MessagesEnUS = map[string]string{
 	"site_management.checkin.missing_cf_cookies":        "Missing CF cookies, need one of: {{.cookies}}",
 	"site_management.checkin.cloudflare_challenge":      "Cloudflare challenge, update cookies from browser",
 	"site_management.checkin.anyrouter_requires_cookie": "Anyrouter requires cookie auth",
+
+	// HTTP error messages
+	"site_management.checkin.http_400": "HTTP 400: Bad Request - check API endpoint and request format",
+	"site_management.checkin.http_401": "HTTP 401: Unauthorized - cookie or token expired/invalid",
+	"site_management.checkin.http_403": "HTTP 403: Forbidden - access denied, check permissions or update cookies",
+	"site_management.checkin.http_404": "HTTP 404: Not Found - check-in endpoint not found, verify base URL",
+	"site_management.checkin.http_429": "HTTP 429: Too Many Requests - rate limited, try again later",
+	"site_management.checkin.http_500": "HTTP 500: Internal Server Error - site API error",
+	"site_management.checkin.http_502": "HTTP 502: Bad Gateway - site temporarily unavailable",
+	"site_management.checkin.http_503": "HTTP 503: Service Unavailable - site under maintenance",
+	"site_management.checkin.http_xxx": "HTTP {{.code}}: request failed",
 }

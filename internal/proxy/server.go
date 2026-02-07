@@ -757,8 +757,10 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			// direct API calls that should preserve their original query parameters.
 			// Also check /v1beta/messages for Gemini CC conversion (path may be rewritten to /v1beta/messages)
 			if isCCSupportEnabled(group) && (strings.HasSuffix(c.Request.URL.Path, "/v1/messages") || strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")) {
-				// Handle Codex channel CC support (Claude -> Codex/Responses API)
-				if group.ChannelType == "codex" {
+				// Handle channel-specific CC support conversions
+				switch group.ChannelType {
+				case "codex":
+					// Handle Codex channel CC support (Claude -> Codex/Responses API)
 					convertedBody, converted, ccErr := ps.applyCodexCCRequestConversion(c, group, finalBodyBytes)
 					if ccErr != nil {
 						logrus.WithError(ccErr).WithFields(logrus.Fields{
@@ -784,7 +786,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 							"new_path":     c.Request.URL.Path,
 						}).Debug("Codex CC support: converted Claude request to Codex format")
 					}
-				} else if group.ChannelType == "gemini" {
+				case "gemini":
 					// Handle Gemini channel CC support (Claude -> Gemini API)
 					convertedBody, converted, ccErr := ps.applyGeminiCCRequestConversion(c, group, finalBodyBytes)
 					if ccErr != nil {
@@ -809,7 +811,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 							"new_path":     c.Request.URL.Path,
 						}).Debug("Gemini CC support: converted Claude request to Gemini format")
 					}
-				} else {
+				default:
 					// Handle OpenAI channel CC support (Claude -> OpenAI Chat Completions)
 					convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
 					if ccErr != nil {
@@ -1377,8 +1379,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	isMessagesEndpoint := strings.HasSuffix(c.Request.URL.Path, "/v1/messages") ||
 		strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")
 	if isCCSupportEnabled(group) && isMessagesEndpoint {
-		// Handle Codex channel CC support (Claude -> Codex/Responses API)
-		if group.ChannelType == "codex" {
+		// Handle channel-specific CC support conversions
+		switch group.ChannelType {
+		case "codex":
+			// Handle Codex channel CC support (Claude -> Codex/Responses API)
 			// Sanitize query parameters for Codex CC (remove Claude-specific params like beta=true)
 			// This is needed even if path wasn't /claude/ since Anthropic aggregate may send directly to /v1/messages
 			sanitizeCCQueryParams(c.Request.URL)
@@ -1440,7 +1444,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					"new_path":        c.Request.URL.Path,
 				}).Debug("Codex CC support: converted Claude request for sub-group")
 			}
-		} else if group.ChannelType == "gemini" {
+		case "gemini":
 			// Handle Gemini channel CC support (Claude -> Gemini API)
 			sanitizeCCQueryParams(c.Request.URL)
 
@@ -1469,7 +1473,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					"new_path":        c.Request.URL.Path,
 				}).Debug("Gemini CC support: converted Claude request for sub-group")
 			}
-		} else {
+		default:
 			// Handle OpenAI channel CC support (Claude -> OpenAI Chat Completions)
 			convertedBody, converted, ccErr := ps.applyCCRequestConversionDirect(c, group, finalBodyBytes)
 			if ccErr != nil {
@@ -2198,7 +2202,7 @@ func (ps *ProxyServer) logRequest(
 	// This ensures that failed sub-group attempts are reflected in health scores,
 	// even when the overall aggregate request succeeds via retry to another sub-group.
 	if ps.dynamicWeightManager != nil {
-		ps.recordDynamicWeightMetrics(c, originalGroup, group, logEntry.IsSuccess)
+		ps.recordDynamicWeightMetrics(c, originalGroup, group, logEntry.IsSuccess, statusCode)
 	}
 }
 
@@ -2209,23 +2213,30 @@ func (ps *ProxyServer) logRequest(
 // or unavailable, it can add tail latency or reduce throughput. The current implementation
 // prioritizes simplicity and correctness. For production deployments with strict latency SLAs,
 // consider async/buffering and ensure strict client timeouts in the store implementation.
-func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup, group *models.Group, isSuccess bool) {
+func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup, group *models.Group, isSuccess bool, statusCode int) {
 	if ps.dynamicWeightManager == nil {
 		return
 	}
+
+	// Determine if this is a rate limit error (429)
+	// Rate limit errors receive lighter penalties as they indicate temporary throttling
+	// rather than service unavailability
+	isRateLimit := !isSuccess && statusCode == 429
 
 	// Record sub-group metrics for aggregate groups
 	if originalGroup != nil && originalGroup.GroupType == "aggregate" && originalGroup.ID != group.ID {
 		if isSuccess {
 			ps.dynamicWeightManager.RecordSubGroupSuccess(originalGroup.ID, group.ID)
 		} else {
-			ps.dynamicWeightManager.RecordSubGroupFailure(originalGroup.ID, group.ID)
+			ps.dynamicWeightManager.RecordSubGroupFailure(originalGroup.ID, group.ID, isRateLimit)
 		}
 
 		logrus.WithFields(logrus.Fields{
 			"aggregate_group_id": originalGroup.ID,
 			"sub_group_id":       group.ID,
 			"is_success":         isSuccess,
+			"is_rate_limit":      isRateLimit,
+			"status_code":        statusCode,
 		}).Debug("Recorded dynamic weight metrics for sub-group")
 	}
 
@@ -2235,12 +2246,14 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 		if isSuccess {
 			ps.dynamicWeightManager.RecordGroupSuccess(group.ID)
 		} else {
-			ps.dynamicWeightManager.RecordGroupFailure(group.ID)
+			ps.dynamicWeightManager.RecordGroupFailure(group.ID, isRateLimit)
 		}
 
 		logrus.WithFields(logrus.Fields{
-			"group_id":   group.ID,
-			"is_success": isSuccess,
+			"group_id":      group.ID,
+			"is_success":    isSuccess,
+			"is_rate_limit": isRateLimit,
+			"status_code":   statusCode,
 		}).Debug("Recorded dynamic weight metrics for standard group")
 	}
 
@@ -2264,15 +2277,17 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 						if isSuccess {
 							ps.dynamicWeightManager.RecordModelRedirectSuccess(group.ID, originalModelStr, targetModel)
 						} else {
-							ps.dynamicWeightManager.RecordModelRedirectFailure(group.ID, originalModelStr, targetModel)
+							ps.dynamicWeightManager.RecordModelRedirectFailure(group.ID, originalModelStr, targetModel, isRateLimit)
 						}
 
 						logrus.WithFields(logrus.Fields{
-							"group_id":     group.ID,
-							"source_model": originalModelStr,
-							"target_model": targetModel,
-							"target_index": targetIdxInt,
-							"is_success":   isSuccess,
+							"group_id":      group.ID,
+							"source_model":  originalModelStr,
+							"target_model":  targetModel,
+							"target_index":  targetIdxInt,
+							"is_success":    isSuccess,
+							"is_rate_limit": isRateLimit,
+							"status_code":   statusCode,
 						}).Debug("Recorded dynamic weight metrics for model redirect")
 					}
 				}

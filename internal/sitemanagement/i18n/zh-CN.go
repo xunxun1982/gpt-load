@@ -21,4 +21,15 @@ var MessagesZhCN = map[string]string{
 	"site_management.checkin.missing_cf_cookies":        "缺少CF Cookies，需要以下之一：{{.cookies}}",
 	"site_management.checkin.cloudflare_challenge":      "Cloudflare验证，请从浏览器更新Cookies",
 	"site_management.checkin.anyrouter_requires_cookie": "Anyrouter需要使用Cookie认证",
+
+	// HTTP error messages
+	"site_management.checkin.http_400": "HTTP 400: 错误请求 - 请检查API端点和请求格式",
+	"site_management.checkin.http_401": "HTTP 401: 未授权 - Cookie或令牌已过期/无效",
+	"site_management.checkin.http_403": "HTTP 403: 禁止访问 - 访问被拒绝，请检查权限或更新Cookies",
+	"site_management.checkin.http_404": "HTTP 404: 未找到 - 签到端点不存在，请验证基础URL",
+	"site_management.checkin.http_429": "HTTP 429: 请求过多 - 已被限流，请稍后重试",
+	"site_management.checkin.http_500": "HTTP 500: 内部服务器错误 - 站点API错误",
+	"site_management.checkin.http_502": "HTTP 502: 网关错误 - 站点暂时不可用",
+	"site_management.checkin.http_503": "HTTP 503: 服务不可用 - 站点维护中",
+	"site_management.checkin.http_xxx": "HTTP {{.code}}: 请求失败",
 }

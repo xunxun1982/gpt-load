@@ -548,7 +548,9 @@ func (s *HubService) calculateAggregateGroupHealthScore(aggregateGroupID uint) f
 // calculateAggregateGroupHealthScoreWithVisited calculates health score with cycle detection.
 // Uses path-scoped visited set to prevent infinite recursion on circular aggregate group references.
 // The visited set is scoped to the current recursion path, allowing shared sub-groups in DAG structures.
-func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGroupID uint, visited map[uint]struct{}) float64 {
+// NOTE: Currently nested aggregates are not supported (validated at sub-group creation time),
+// so the visited parameter is not actively used but kept for future extensibility.
+func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGroupID uint, _ map[uint]struct{}) float64 {
 	// Get sub-group relationships
 	var subGroupRels []models.GroupSubGroup
 	if err := s.db.Where("group_id = ? AND weight > 0", aggregateGroupID).
