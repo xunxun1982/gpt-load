@@ -214,7 +214,7 @@ func BenchmarkGetModelRedirectDynamicWeights(b *testing.B) {
 		// Record some metrics to simulate realistic scenario
 		dwm.RecordModelRedirectSuccess(groupID, sourceModel, "gpt-4-turbo")
 		dwm.RecordModelRedirectSuccess(groupID, sourceModel, "gpt-4-0125")
-		dwm.RecordModelRedirectFailure(groupID, sourceModel, "gpt-4-32k")
+		dwm.RecordModelRedirectFailure(groupID, sourceModel, "gpt-4-32k", false)
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {

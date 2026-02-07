@@ -16,6 +16,7 @@ import (
 
 	"gpt-load/internal/encryption"
 	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/i18n"
 	"gpt-load/internal/store"
 
 	"github.com/sirupsen/logrus"
@@ -1227,27 +1228,37 @@ func truncateString(s string, maxLen int) string {
 }
 
 // formatHTTPError returns a user-friendly error message for common HTTP status codes.
+// Uses i18n for multi-language support with Chinese as default fallback.
 func formatHTTPError(statusCode int) string {
+	// Use default Chinese localizer for background tasks
+	localizer := i18n.GetLocalizer("zh-CN")
+
+	var msgID string
+	var templateData map[string]any
+
 	switch statusCode {
 	case 400:
-		return "HTTP 400: Bad Request - check API endpoint and request format"
+		msgID = "site_management.checkin.http_400"
 	case 401:
-		return "HTTP 401: Unauthorized - cookie or token expired/invalid"
+		msgID = "site_management.checkin.http_401"
 	case 403:
-		return "HTTP 403: Forbidden - access denied, check permissions or update cookies"
+		msgID = "site_management.checkin.http_403"
 	case 404:
-		return "HTTP 404: Not Found - check-in endpoint not found, verify base URL"
+		msgID = "site_management.checkin.http_404"
 	case 429:
-		return "HTTP 429: Too Many Requests - rate limited, try again later"
+		msgID = "site_management.checkin.http_429"
 	case 500:
-		return "HTTP 500: Internal Server Error - site API error"
+		msgID = "site_management.checkin.http_500"
 	case 502:
-		return "HTTP 502: Bad Gateway - site temporarily unavailable"
+		msgID = "site_management.checkin.http_502"
 	case 503:
-		return "HTTP 503: Service Unavailable - site under maintenance"
+		msgID = "site_management.checkin.http_503"
 	default:
-		return fmt.Sprintf("HTTP %d: request failed", statusCode)
+		msgID = "site_management.checkin.http_xxx"
+		templateData = map[string]any{"code": statusCode}
 	}
+
+	return i18n.T(localizer, msgID, templateData)
 }
 
 type veloeraProvider struct{}

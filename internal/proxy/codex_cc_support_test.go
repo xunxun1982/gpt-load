@@ -149,7 +149,7 @@ func TestCodexCCThinkingBlockWindowsPathConversion(t *testing.T) {
 }
 
 // Helper function to convert Codex response map to Claude response
-func convertCodexToClaudeResponseFromMap(codexResp map[string]interface{}, reverseToolNameMap map[string]string) *ClaudeResponse {
+func convertCodexToClaudeResponseFromMap(codexResp map[string]interface{}, _ map[string]string) *ClaudeResponse {
 	// This is a simplified version for testing
 	claudeResp := &ClaudeResponse{
 		ID:      "msg_test",

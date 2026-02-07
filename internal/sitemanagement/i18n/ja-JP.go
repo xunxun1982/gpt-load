@@ -21,4 +21,15 @@ var MessagesJaJP = map[string]string{
 	"site_management.checkin.missing_cf_cookies":        "CF Cookiesが不足しています。次のいずれかが必要: {{.cookies}}",
 	"site_management.checkin.cloudflare_challenge":      "Cloudflareチャレンジ、ブラウザからCookiesを更新してください",
 	"site_management.checkin.anyrouter_requires_cookie": "AnyrouterにはCookie認証が必要です",
+
+	// HTTP error messages
+	"site_management.checkin.http_400": "HTTP 400: 不正なリクエスト - APIエンドポイントとリクエスト形式を確認してください",
+	"site_management.checkin.http_401": "HTTP 401: 認証エラー - Cookieまたはトークンが期限切れ/無効です",
+	"site_management.checkin.http_403": "HTTP 403: アクセス禁止 - アクセスが拒否されました。権限を確認するかCookiesを更新してください",
+	"site_management.checkin.http_404": "HTTP 404: 見つかりません - チェックインエンドポイントが見つかりません。ベースURLを確認してください",
+	"site_management.checkin.http_429": "HTTP 429: リクエスト過多 - レート制限されています。後でもう一度お試しください",
+	"site_management.checkin.http_500": "HTTP 500: 内部サーバーエラー - サイトAPIエラー",
+	"site_management.checkin.http_502": "HTTP 502: ゲートウェイエラー - サイトが一時的に利用できません",
+	"site_management.checkin.http_503": "HTTP 503: サービス利用不可 - サイトメンテナンス中",
+	"site_management.checkin.http_xxx": "HTTP {{.code}}: リクエスト失敗",
 }

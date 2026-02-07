@@ -400,9 +400,10 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 		var userParts []GeminiPart
 		frIndex := 0 // Track which function response to use (matches order of tool_result blocks)
 		for _, block := range blocks {
-			if block.Type == "text" {
+			switch block.Type {
+			case "text":
 				userParts = append(userParts, GeminiPart{Text: block.Text})
-			} else if block.Type == "tool_result" {
+			case "tool_result":
 				// Flush accumulated user text before function response
 				if len(userParts) > 0 {
 					result = append(result, GeminiContent{
@@ -421,6 +422,8 @@ func convertClaudeMessageToGemini(msg ClaudeMessage, toolNameShortMap map[string
 						Parts: []GeminiPart{{FunctionResponse: &fr}},
 					})
 				}
+			default:
+				// Ignore unknown block types
 			}
 		}
 		// Flush any remaining user text

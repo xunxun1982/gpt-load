@@ -24,6 +24,12 @@ type DynamicWeightMetrics struct {
 	LastFailureAt       time.Time `json:"last_failure_at"`
 	LastSuccessAt       time.Time `json:"last_success_at"`
 
+	// Rate limit tracking (429 errors)
+	// Rate limit failures are tracked separately because they indicate temporary throttling
+	// rather than service unavailability, and should receive lighter penalties
+	ConsecutiveRateLimits int64     `json:"consecutive_rate_limits"`
+	LastRateLimitAt       time.Time `json:"last_rate_limit_at"`
+
 	// Time-windowed statistics (cumulative)
 	Requests7d    int64 `json:"requests_7d"`
 	Successes7d   int64 `json:"successes_7d"`
@@ -52,6 +58,14 @@ type DynamicWeightConfig struct {
 	MinHealthScore               float64
 	MetricsTTL                   time.Duration
 	TimeWindowConfigs            []models.TimeWindowConfig
+
+	// Rate limit (429) specific penalties
+	// 429 errors indicate temporary throttling, not service failure
+	// They should receive lighter penalties than hard failures (500, 401, etc.)
+	ConsecutiveRateLimitPenalty    float64
+	MaxConsecutiveRateLimitPenalty float64
+	RecentRateLimitPenalty         float64
+	RecentRateLimitCooldown        time.Duration
 
 	// Health score threshold below which effective weight is reduced to 10% of base weight
 	// (capped at 1, min 0.1) to prevent unhealthy high-weight targets from dominating
@@ -101,6 +115,20 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 		MetricsTTL: 180 * 24 * time.Hour,
 		// Time window configs for weighted success rate calculation
 		TimeWindowConfigs: models.DefaultTimeWindowConfigs(),
+
+		// Rate limit (429) penalties - approximately 30% of regular failure penalties
+		// 429 indicates temporary throttling, not service unavailability
+		// Lighter penalties allow the service to recover traffic faster once rate limit clears
+		ConsecutiveRateLimitPenalty: 0.025, // ~30% of 0.08
+		// Max penalty at 0.125 (reached after 5 consecutive rate limits)
+		// Much lighter than regular failure max of 0.40
+		MaxConsecutiveRateLimitPenalty: 0.125,
+		// Recent rate limit penalty: 0.04 with time decay (~30% of 0.12)
+		RecentRateLimitPenalty: 0.04,
+		// 3-minute cooldown for rate limit penalty (shorter than regular 8-minute)
+		// Rate limits typically clear faster than service failures
+		RecentRateLimitCooldown: 3 * time.Minute,
+
 		// Critical health threshold: 0.50
 		// Below this, effective weight is capped at 1 (min 0.1) to prevent unhealthy
 		// high-weight targets from dominating healthy low-weight targets
@@ -230,9 +258,9 @@ func (m *DynamicWeightManager) RecordSubGroupSuccess(aggregateGroupID, subGroupI
 }
 
 // RecordSubGroupFailure records a failed request for a sub-group.
-func (m *DynamicWeightManager) RecordSubGroupFailure(aggregateGroupID, subGroupID uint) {
+func (m *DynamicWeightManager) RecordSubGroupFailure(aggregateGroupID, subGroupID uint, isRateLimit bool) {
 	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
-	m.recordFailure(key)
+	m.recordFailure(key, isRateLimit)
 }
 
 // RecordGroupSuccess records a successful request for a standard group.
@@ -244,9 +272,9 @@ func (m *DynamicWeightManager) RecordGroupSuccess(groupID uint) {
 
 // RecordGroupFailure records a failed request for a standard group.
 // Used for Hub health score calculation based on request success rate.
-func (m *DynamicWeightManager) RecordGroupFailure(groupID uint) {
+func (m *DynamicWeightManager) RecordGroupFailure(groupID uint, isRateLimit bool) {
 	key := GroupMetricsKey(groupID)
-	m.recordFailure(key)
+	m.recordFailure(key, isRateLimit)
 }
 
 // RecordModelRedirectSuccess records a successful request for a model redirect target.
@@ -256,9 +284,9 @@ func (m *DynamicWeightManager) RecordModelRedirectSuccess(groupID uint, sourceMo
 }
 
 // RecordModelRedirectFailure records a failed request for a model redirect target.
-func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceModel string, targetModel string) {
+func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceModel string, targetModel string, isRateLimit bool) {
 	key := ModelRedirectMetricsKey(groupID, sourceModel, targetModel)
-	m.recordFailure(key)
+	m.recordFailure(key, isRateLimit)
 }
 
 // recordSuccess records a successful request.
@@ -278,6 +306,7 @@ func (m *DynamicWeightManager) recordSuccess(key string) {
 
 	now := time.Now()
 	metrics.ConsecutiveFailures = 0
+	metrics.ConsecutiveRateLimits = 0 // Clear rate limit counter on success
 	metrics.LastSuccessAt = now
 
 	// Increment all time window counters (new request falls into all windows)
@@ -303,7 +332,8 @@ func (m *DynamicWeightManager) recordSuccess(key string) {
 }
 
 // recordFailure records a failed request.
-func (m *DynamicWeightManager) recordFailure(key string) {
+// isRateLimit indicates if this is a 429 rate limit error, which receives lighter penalties.
+func (m *DynamicWeightManager) recordFailure(key string, isRateLimit bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -314,8 +344,18 @@ func (m *DynamicWeightManager) recordFailure(key string) {
 	}
 
 	now := time.Now()
-	metrics.ConsecutiveFailures++
-	metrics.LastFailureAt = now
+
+	if isRateLimit {
+		// Rate limit (429) errors: track separately with lighter penalties
+		// Don't increment ConsecutiveFailures as service is still available
+		metrics.ConsecutiveRateLimits++
+		metrics.LastRateLimitAt = now
+	} else {
+		// Regular failures (500, 401, etc.): full penalty
+		metrics.ConsecutiveFailures++
+		metrics.ConsecutiveRateLimits = 0 // Reset rate limit counter on hard failure
+		metrics.LastFailureAt = now
+	}
 
 	// Increment all time window request counters (failure doesn't increment success)
 	metrics.Requests7d++
@@ -382,11 +422,20 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 
 	score := 1.0
 
-	// Penalty for consecutive failures
+	// Penalty for consecutive failures (hard failures like 500, 401, etc.)
 	if metrics.ConsecutiveFailures > 0 {
 		penalty := float64(metrics.ConsecutiveFailures) * m.config.ConsecutiveFailurePenalty
 		if penalty > m.config.MaxConsecutiveFailurePenalty {
 			penalty = m.config.MaxConsecutiveFailurePenalty
+		}
+		score -= penalty
+	}
+
+	// Penalty for consecutive rate limits (429 errors) - lighter than hard failures
+	if metrics.ConsecutiveRateLimits > 0 {
+		penalty := float64(metrics.ConsecutiveRateLimits) * m.config.ConsecutiveRateLimitPenalty
+		if penalty > m.config.MaxConsecutiveRateLimitPenalty {
+			penalty = m.config.MaxConsecutiveRateLimitPenalty
 		}
 		score -= penalty
 	}
@@ -397,6 +446,16 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 		if timeSinceFailure < m.config.RecentFailureCooldown {
 			decayRatio := 1.0 - (float64(timeSinceFailure) / float64(m.config.RecentFailureCooldown))
 			penalty := m.config.RecentFailurePenalty * decayRatio
+			score -= penalty
+		}
+	}
+
+	// Penalty for recent rate limit (time-decaying) - lighter than hard failure
+	if !metrics.LastRateLimitAt.IsZero() {
+		timeSinceRateLimit := time.Since(metrics.LastRateLimitAt)
+		if timeSinceRateLimit < m.config.RecentRateLimitCooldown {
+			decayRatio := 1.0 - (float64(timeSinceRateLimit) / float64(m.config.RecentRateLimitCooldown))
+			penalty := m.config.RecentRateLimitPenalty * decayRatio
 			score -= penalty
 		}
 	}

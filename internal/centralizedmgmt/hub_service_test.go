@@ -134,7 +134,7 @@ func createTestSubGroup(t *testing.T, db *gorm.DB, aggregateGroupID, subGroupID 
 // setupHubService creates a HubService with test dependencies
 // Note: GroupManager is set to nil for most tests since HubService queries DB directly.
 // For tests that need SelectGroupForModel, we need to set up GroupManager properly.
-func setupHubService(t *testing.T, db *gorm.DB) *HubService {
+func setupHubService(_ *testing.T, db *gorm.DB) *HubService {
 	// Create a mock store
 	mockStore := store.NewMemoryStore()
 
@@ -150,7 +150,7 @@ func setupHubService(t *testing.T, db *gorm.DB) *HubService {
 // This is needed for tests that use SelectGroupForModel
 // Note: This requires the global db.DB to be set, which is complex in unit tests.
 // For now, we skip tests that require GroupManager if setup fails.
-func setupHubServiceWithGroupManager(t *testing.T, db *gorm.DB) *HubService {
+func setupHubServiceWithGroupManager(t *testing.T, _ *gorm.DB) *HubService {
 	t.Skip("Skipping test that requires GroupManager - complex setup with global db.DB")
 	return nil
 }
@@ -2396,7 +2396,7 @@ func TestCalculateGroupHealthScore(t *testing.T) {
 			hubService.dynamicWeightManager.RecordGroupSuccess(group.ID)
 		}
 		for i := 0; i < 3; i++ {
-			hubService.dynamicWeightManager.RecordGroupFailure(group.ID)
+			hubService.dynamicWeightManager.RecordGroupFailure(group.ID, false)
 		}
 
 		score := hubService.calculateGroupHealthScore(group)
@@ -2413,7 +2413,7 @@ func TestCalculateGroupHealthScore(t *testing.T) {
 	t.Run("consecutive_failures_reduce_health", func(t *testing.T) {
 		// Record 5 consecutive failures
 		for i := 0; i < 5; i++ {
-			hubService.dynamicWeightManager.RecordGroupFailure(group.ID)
+			hubService.dynamicWeightManager.RecordGroupFailure(group.ID, false)
 		}
 
 		score := hubService.calculateGroupHealthScore(group)
@@ -2458,7 +2458,7 @@ func TestGroupHealthScoreVsSubGroupMetrics(t *testing.T) {
 	for i := 0; i < 9; i++ {
 		hubService.dynamicWeightManager.RecordGroupSuccess(standardGroup.ID)
 	}
-	hubService.dynamicWeightManager.RecordGroupFailure(standardGroup.ID)
+	hubService.dynamicWeightManager.RecordGroupFailure(standardGroup.ID, false)
 
 	// Record poor performance in aggregate group (used for aggregate health score)
 	// Record 1 success first, then 8 failures to get low success rate + consecutive failures
@@ -2466,7 +2466,7 @@ func TestGroupHealthScoreVsSubGroupMetrics(t *testing.T) {
 		hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, standardGroup.ID)
 	}
 	for i := 0; i < 8; i++ {
-		hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, standardGroup.ID)
+		hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, standardGroup.ID, false)
 	}
 
 	// Hub health score should reflect group-level metrics (90% success rate)
@@ -2545,7 +2545,7 @@ func TestCalculateAggregateGroupHealthScore(t *testing.T) {
 			hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, subGroup2.ID)
 		}
 		for i := 0; i < 3; i++ {
-			hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, subGroup2.ID)
+			hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, subGroup2.ID, false)
 		}
 
 		// Calculate aggregate health score (weighted average of sub-groups)
@@ -2588,7 +2588,7 @@ func TestHealthScoreInModelPool(t *testing.T) {
 		hubService.dynamicWeightManager.RecordGroupSuccess(group.ID)
 	}
 	for i := 0; i < 2; i++ {
-		hubService.dynamicWeightManager.RecordGroupFailure(group.ID)
+		hubService.dynamicWeightManager.RecordGroupFailure(group.ID, false)
 	}
 
 	// Manually test health score calculation
@@ -2670,7 +2670,7 @@ func TestAggregateHealthWithSkewedUsage(t *testing.T) {
 		hubService.dynamicWeightManager.RecordSubGroupSuccess(aggGroup.ID, subGroupB.ID)
 	}
 	for i := 0; i < 8; i++ {
-		hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, subGroupB.ID)
+		hubService.dynamicWeightManager.RecordSubGroupFailure(aggGroup.ID, subGroupB.ID, false)
 	}
 
 	// Sub-group C: 0 requests (never used)
