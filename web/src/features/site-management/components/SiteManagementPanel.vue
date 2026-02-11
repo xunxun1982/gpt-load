@@ -409,6 +409,12 @@ async function submitSite() {
     }
   }
 
+  // Validate auth_type array length (max 2 types supported by ManagedSiteAuthType)
+  if (siteForm.auth_type.length > 2) {
+    message.error(t("siteManagement.maxTwoAuthTypes"));
+    return;
+  }
+
   // Build auth_type string (comma-separated)
   const authTypeStr = (
     siteForm.auth_type.length > 0 ? siteForm.auth_type.join(",") : "none"

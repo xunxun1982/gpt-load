@@ -10,7 +10,6 @@ import (
 	"gpt-load/internal/models"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestOpenAIChannel_ModifyRequest(t *testing.T) {
@@ -48,7 +47,6 @@ func TestOpenAIChannel_ModifyRequest(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -93,7 +91,10 @@ func TestOpenAIChannel_ValidateKey_Success(t *testing.T) {
 		// Verify request body
 		var body map[string]interface{}
 		err := json.NewDecoder(r.Body).Decode(&body)
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		assert.Equal(t, "gpt-3.5-turbo", body["model"])
 		assert.NotNil(t, body["messages"])
 

@@ -45,7 +45,6 @@ func TestGeminiChannel_ModifyRequest_NativeFormat(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -101,7 +100,6 @@ func TestGeminiChannel_ModifyRequest_OpenAICompatible(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -163,7 +161,6 @@ func TestGeminiChannel_IsStreamRequest(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -217,7 +214,6 @@ func TestGeminiChannel_ExtractModel(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -250,7 +246,10 @@ func TestGeminiChannel_ValidateKey_Success(t *testing.T) {
 		// Verify request body
 		var body map[string]interface{}
 		err := json.NewDecoder(r.Body).Decode(&body)
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		assert.NotNil(t, body["contents"])
 
 		// Return success response
@@ -358,7 +357,6 @@ func TestGeminiChannel_ApplyModelRedirect_NativeFormat(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -459,7 +457,6 @@ func TestGeminiChannel_TransformModelList_NativeFormat(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -580,7 +577,6 @@ func TestBuildConfiguredGeminiModelsFromRules(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -677,7 +673,6 @@ func TestIsFirstPage(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
