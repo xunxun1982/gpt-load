@@ -13,7 +13,6 @@ import {
   type AutoCheckinConfig,
   type AutoCheckinStatus,
   type CheckinLogDTO,
-  type ManagedSiteAuthType,
   type ManagedSiteBypassMethod,
   type ManagedSiteDTO,
   type ManagedSiteType,
@@ -76,7 +75,6 @@ const loading = ref(false);
 const sites = ref<ManagedSiteDTO[]>([]);
 const showSiteModal = ref(false);
 const editingSite = ref<ManagedSiteDTO | null>(null);
-const authValueInput = ref("");
 const importLoading = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const deleteConfirmInput = ref("");
@@ -125,7 +123,13 @@ const siteForm = reactive({
   use_proxy: false,
   proxy_url: "",
   bypass_method: "" as ManagedSiteBypassMethod,
-  auth_type: "none" as ManagedSiteAuthType,
+  auth_type: [] as string[], // Changed to array for multi-select
+});
+
+// Separate inputs for each auth type
+const authValueInputs = reactive({
+  access_token: "",
+  cookie: "",
 });
 
 const showLogsModal = ref(false);
@@ -143,8 +147,9 @@ const siteTypeOptions = computed(() => [
   { label: t("siteManagement.siteTypeBrand"), value: "brand" },
   { label: t("siteManagement.siteTypeOther"), value: "unknown" },
 ]);
+
+// Auth type options for multi-select
 const authTypeOptions = computed(() => [
-  { label: t("siteManagement.authTypeNone"), value: "none" },
   { label: t("siteManagement.authTypeAccessToken"), value: "access_token" },
   { label: t("siteManagement.authTypeCookie"), value: "cookie" },
 ]);
@@ -265,9 +270,10 @@ function resetSiteForm() {
     use_proxy: false,
     proxy_url: "",
     bypass_method: "",
-    auth_type: "none",
+    auth_type: [],
   });
-  authValueInput.value = "";
+  authValueInputs.access_token = "";
+  authValueInputs.cookie = "";
 }
 
 function openCreateSite() {
@@ -278,6 +284,15 @@ function openCreateSite() {
 
 function openEditSite(site: ManagedSiteDTO) {
   editingSite.value = site;
+
+  // Parse auth_type (can be comma-separated string)
+  const authTypes = site.auth_type
+    ? site.auth_type
+        .split(",")
+        .map(t => t.trim())
+        .filter(t => t && t !== "none")
+    : [];
+
   Object.assign(siteForm, {
     name: site.name,
     notes: site.notes,
@@ -294,9 +309,10 @@ function openEditSite(site: ManagedSiteDTO) {
     use_proxy: site.use_proxy,
     proxy_url: site.proxy_url,
     bypass_method: site.bypass_method,
-    auth_type: site.auth_type,
+    auth_type: authTypes,
   });
-  authValueInput.value = "";
+  authValueInputs.access_token = "";
+  authValueInputs.cookie = "";
   showSiteModal.value = true;
 }
 
@@ -360,20 +376,23 @@ async function submitSite() {
   // Validate stealth bypass requirements
   if (siteForm.bypass_method === "stealth") {
     // Stealth bypass requires cookie auth type
-    if (siteForm.auth_type !== "cookie") {
+    if (!siteForm.auth_type.includes("cookie")) {
       message.error(t("siteManagement.stealthRequiresCookieAuth"));
       return;
     }
 
     // Validate CF cookies for stealth mode
-    const cookieValue = authValueInput.value.trim();
+    const cookieValue = authValueInputs.cookie.trim();
     const prev = editingSite.value;
     // Need cookie validation when:
     // 1. Creating new site (!prev)
     // 2. User entered new cookie value (cookieValue is not empty)
     // 3. Switching from non-cookie auth or non-stealth bypass to stealth/cookie
     const needsCookie =
-      !prev || !!cookieValue || prev.auth_type !== "cookie" || prev.bypass_method !== "stealth";
+      !prev ||
+      !!cookieValue ||
+      !prev.auth_type.includes("cookie") ||
+      prev.bypass_method !== "stealth";
     if (needsCookie) {
       if (!cookieValue) {
         message.error(t("siteManagement.stealthRequiresCookieValue"));
@@ -387,19 +406,53 @@ async function submitSite() {
     }
   }
 
-  const payload = { ...siteForm };
+  // Build auth_type string (comma-separated)
+  const authTypeStr = siteForm.auth_type.length > 0 ? siteForm.auth_type.join(",") : "none";
+
+  // Build auth_value (JSON format for multi-auth, or single value for backward compatibility)
+  let authValueStr = "";
+  if (siteForm.auth_type.length > 0) {
+    const authValues: Record<string, string> = {};
+    let hasAnyValue = false;
+
+    for (const authType of siteForm.auth_type) {
+      const value = authValueInputs[authType as keyof typeof authValueInputs]?.trim();
+      if (value) {
+        authValues[authType] = value;
+        hasAnyValue = true;
+      }
+    }
+
+    // Only set auth_value if user provided at least one value
+    if (hasAnyValue) {
+      if (siteForm.auth_type.length === 1) {
+        // Single auth type: use plain value for backward compatibility
+        const firstAuthType = siteForm.auth_type[0];
+        authValueStr = (firstAuthType && authValues[firstAuthType]) || "";
+      } else {
+        // Multiple auth types: use JSON format
+        authValueStr = JSON.stringify(authValues);
+      }
+    }
+  }
+
+  const payload = {
+    ...siteForm,
+    auth_type: authTypeStr,
+  };
+
   try {
     if (editingSite.value) {
       const updatePayload: Record<string, unknown> = { ...payload };
-      if (authValueInput.value.trim()) {
-        updatePayload.auth_value = authValueInput.value;
+      if (authValueStr) {
+        updatePayload.auth_value = authValueStr;
       }
       await siteManagementApi.updateSite(editingSite.value.id, updatePayload);
       message.success(t("siteManagement.siteUpdated"));
     } else {
       await siteManagementApi.createSite({
         ...payload,
-        auth_value: authValueInput.value,
+        auth_value: authValueStr,
       });
       message.success(t("siteManagement.siteCreated"));
     }
@@ -1780,7 +1833,7 @@ onMounted(() => {
             <template #icon><n-icon :component="Close" /></template>
           </n-button>
         </template>
-        <n-form label-placement="left" label-width="80" size="small" class="site-form">
+        <n-form label-placement="left" label-width="120" size="small" class="site-form">
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.basicInfo") }}</h4>
             <div class="form-row">
@@ -1882,41 +1935,73 @@ onMounted(() => {
           </div>
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.authSettings") }}</h4>
-            <div class="form-row form-row-auth">
-              <n-form-item :label="t('siteManagement.authType')" class="form-item-auth-type">
-                <n-select
-                  v-model:value="siteForm.auth_type"
-                  :options="authTypeOptions"
-                  style="width: 150px"
-                  placement="top-start"
-                />
-              </n-form-item>
-              <n-form-item :label="t('siteManagement.authValue')" class="form-item-auth-value">
-                <n-input
-                  v-model:value="authValueInput"
-                  type="password"
-                  show-password-on="click"
-                  :placeholder="
-                    siteForm.auth_type === 'cookie'
-                      ? t('siteManagement.authTypeCookiePlaceholder')
-                      : editingSite
-                        ? t('siteManagement.authValueEditHint')
-                        : t('siteManagement.authValuePlaceholder')
-                  "
-                />
-              </n-form-item>
-            </div>
+            <n-form-item :label="t('siteManagement.authType')">
+              <n-select
+                v-model:value="siteForm.auth_type"
+                :options="authTypeOptions"
+                multiple
+                :placeholder="t('siteManagement.authTypePlaceholder')"
+                style="width: 100%"
+                placement="top-start"
+              />
+            </n-form-item>
+            <!-- Access Token input (shown when access_token is selected) -->
+            <n-form-item
+              v-if="siteForm.auth_type.includes('access_token')"
+              :label="t('siteManagement.authTypeAccessToken')"
+            >
+              <n-input
+                v-model:value="authValueInputs.access_token"
+                type="password"
+                show-password-on="click"
+                :placeholder="
+                  editingSite
+                    ? t('siteManagement.authValueEditHint')
+                    : t('siteManagement.authValuePlaceholder')
+                "
+              />
+            </n-form-item>
+            <!-- Cookie input (shown when cookie is selected) -->
+            <n-form-item
+              v-if="siteForm.auth_type.includes('cookie')"
+              :label="t('siteManagement.authTypeCookie')"
+            >
+              <n-input
+                v-model:value="authValueInputs.cookie"
+                type="password"
+                show-password-on="click"
+                :placeholder="
+                  editingSite
+                    ? t('siteManagement.authValueEditHint')
+                    : t('siteManagement.authTypeCookiePlaceholder')
+                "
+              />
+            </n-form-item>
             <!-- Cookie auth hint -->
             <n-text
-              v-if="siteForm.auth_type === 'cookie'"
+              v-if="siteForm.auth_type.includes('cookie')"
               depth="3"
               style="font-size: 12px; display: block; margin-top: -4px; margin-bottom: 8px"
             >
               {{ t("siteManagement.authTypeCookieHint") }}
             </n-text>
+            <!-- Multi-auth hint -->
+            <n-text
+              v-if="siteForm.auth_type.length > 1"
+              depth="3"
+              style="
+                font-size: 12px;
+                display: block;
+                margin-top: -4px;
+                margin-bottom: 8px;
+                color: #18a058;
+              "
+            >
+              {{ t("siteManagement.multiAuthHint") }}
+            </n-text>
             <!-- Stealth cookie requirement hint -->
             <n-text
-              v-if="siteForm.bypass_method === 'stealth' && siteForm.auth_type === 'cookie'"
+              v-if="siteForm.bypass_method === 'stealth' && siteForm.auth_type.includes('cookie')"
               depth="3"
               style="
                 font-size: 12px;

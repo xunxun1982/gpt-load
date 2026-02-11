@@ -58,6 +58,7 @@ export default {
 
   // Auth related
   authType: "认证方式",
+  authTypePlaceholder: "选择认证方式（可多选）",
   authValue: "认证信息",
   authValuePlaceholder: "输入 Access Token",
   authValueEditHint: "留空表示不修改现有认证信息",
@@ -67,6 +68,8 @@ export default {
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
     "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了 Cloudflare 防护，还需包含 cf_clearance。",
+  multiAuthHint:
+    "已选择多个认证方式。签到时将先尝试 Access Token，失败后再尝试 Cookie，任一成功即算签到成功。",
   hasAuth: "已配置认证",
   noAuth: "未配置认证",
 

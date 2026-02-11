@@ -699,13 +699,16 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 		return result
 	}
 
-	authValue, err := s.decryptAuthValue(site.AuthValue)
+	decryptedAuthValue, err := s.decryptAuthValue(site.AuthValue)
 	if err != nil {
 		result.Status = CheckinResultFailed
 		result.Message = "decrypt auth failed"
 		s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
 		return result
 	}
+
+	// Parse auth configuration (supports both legacy single-auth and new multi-auth formats)
+	authConfig := parseAuthConfig(site.AuthType, decryptedAuthValue)
 
 	// Decrypt user_id (stored encrypted like auth_value)
 	userID, err := s.decryptAuthValue(site.UserID)
@@ -720,7 +723,7 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	// Get HTTP client based on bypass method and proxy settings
 	client := s.getCheckinHTTPClient(site)
 
-	res, err := provider.CheckIn(ctx, client, site, authValue)
+	res, err := provider.CheckIn(ctx, client, site, authConfig)
 	if err != nil {
 		result.Status = CheckinResultFailed
 		result.Message = err.Error()
@@ -936,7 +939,7 @@ type providerResult struct {
 }
 
 type checkinProvider interface {
-	CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error)
+	CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error)
 }
 
 func resolveProvider(siteType string) checkinProvider {
@@ -1263,21 +1266,66 @@ func formatHTTPError(statusCode int) string {
 
 type veloeraProvider struct{}
 
-func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
-	// Support both access_token and cookie auth
-	if authValue == "" {
+func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error) {
+	// Check if auth config is empty
+	if authConfig.IsEmpty() {
 		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
 	}
 
+	useStealth := shouldUseStealthRequest(site)
+
+	// Try each auth type in order: access_token first, then cookie
+	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
+	var lastError error
+	var lastResult providerResult
+
+	for _, authType := range authTypesToTry {
+		// Skip if this auth type is not configured
+		if !authConfig.HasAuthType(authType) {
+			continue
+		}
+
+		authValue := authConfig.GetAuthValue(authType)
+		if authValue == "" {
+			continue
+		}
+
+		// Try check-in with this auth type
+		result, err := p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
+
+		// If successful or already checked, return immediately
+		if err == nil && (result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked) {
+			return result, nil
+		}
+
+		// Store last error and result for fallback
+		lastError = err
+		lastResult = result
+	}
+
+	// All auth types failed, return the last error
+	if lastError != nil {
+		return lastResult, lastError
+	}
+
+	return providerResult{Status: CheckinResultSkipped, Message: "no valid credentials"}, nil
+}
+
+func (p veloeraProvider) tryCheckInWithAuthType(
+	ctx context.Context,
+	client *http.Client,
+	site ManagedSite,
+	authType string,
+	authValue string,
+	useStealth bool,
+) (providerResult, error) {
 	headers := buildUserHeaders(site.UserID)
 	if headers == nil {
 		headers = make(map[string]string)
 	}
 
-	useStealth := shouldUseStealthRequest(site)
-
 	// Set auth header based on auth type
-	switch site.AuthType {
+	switch authType {
 	case AuthTypeAccessToken:
 		if useStealth {
 			return providerResult{Status: CheckinResultFailed, Message: "stealth bypass requires cookie auth"}, nil
@@ -1330,6 +1378,7 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 			"site_id":     site.ID,
 			"site_name":   site.Name,
 			"api_url":     apiURL,
+			"auth_type":   authType,
 			"status_code": statusCode,
 			"response":    truncateString(string(data), 500),
 			"resp_msg":    resp.Message,
@@ -1357,6 +1406,7 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 		logrus.WithFields(logrus.Fields{
 			"site_id":     site.ID,
 			"site_name":   site.Name,
+			"auth_type":   authType,
 			"status_code": statusCode,
 			"response":    truncateString(string(data), 500),
 			"resp_msg":    resp.Message,
@@ -1378,19 +1428,63 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 
 type wongProvider struct{}
 
-func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
-	// Support both access_token and cookie auth
-	if authValue == "" {
+func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error) {
+	// Check if auth config is empty
+	if authConfig.IsEmpty() {
 		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
 	}
 
+	// Try each auth type in order: access_token first, then cookie
+	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
+	var lastError error
+	var lastResult providerResult
+
+	for _, authType := range authTypesToTry {
+		// Skip if this auth type is not configured
+		if !authConfig.HasAuthType(authType) {
+			continue
+		}
+
+		authValue := authConfig.GetAuthValue(authType)
+		if authValue == "" {
+			continue
+		}
+
+		// Try check-in with this auth type
+		result, err := p.tryCheckInWithAuthType(ctx, client, site, authType, authValue)
+
+		// If successful or already checked, return immediately
+		if err == nil && (result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked) {
+			return result, nil
+		}
+
+		// Store last error and result for fallback
+		lastError = err
+		lastResult = result
+	}
+
+	// All auth types failed, return the last error
+	if lastError != nil {
+		return lastResult, lastError
+	}
+
+	return providerResult{Status: CheckinResultSkipped, Message: "no valid credentials"}, nil
+}
+
+func (p wongProvider) tryCheckInWithAuthType(
+	ctx context.Context,
+	client *http.Client,
+	site ManagedSite,
+	authType string,
+	authValue string,
+) (providerResult, error) {
 	headers := buildUserHeaders(site.UserID)
 	if headers == nil {
 		headers = make(map[string]string)
 	}
 
 	// Set auth header based on auth type
-	switch site.AuthType {
+	switch authType {
 	case AuthTypeAccessToken:
 		headers["Authorization"] = "Bearer " + authValue
 	case AuthTypeCookie:
@@ -1421,6 +1515,7 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 			"site_id":     site.ID,
 			"site_name":   site.Name,
 			"api_url":     apiURL,
+			"auth_type":   authType,
 			"status_code": statusCode,
 			"response":    truncateString(string(data), 500),
 			"error":       err.Error(),
@@ -1455,19 +1550,67 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 // This provider uses stealth requests to bypass Cloudflare protection when enabled.
 type anyrouterProvider struct{}
 
-func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
+func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error) {
 	// Anyrouter only supports cookie auth
-	if authValue == "" {
+	if authConfig.IsEmpty() {
 		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
-	}
-	if site.AuthType != AuthTypeCookie {
-		return providerResult{Status: CheckinResultFailed, Message: "anyrouter requires cookie auth"}, nil
 	}
 
 	// Determine if stealth mode should be used
 	// Use stealth only when explicitly enabled via bypass_method setting
 	useStealth := isStealthBypassMethod(site.BypassMethod)
 
+	// Try cookie auth first, then access_token as fallback
+	authTypesToTry := []string{AuthTypeCookie, AuthTypeAccessToken}
+	var lastError error
+	var lastResult providerResult
+
+	for _, authType := range authTypesToTry {
+		// Skip if this auth type is not configured
+		if !authConfig.HasAuthType(authType) {
+			continue
+		}
+
+		authValue := authConfig.GetAuthValue(authType)
+		if authValue == "" {
+			continue
+		}
+
+		// Anyrouter primarily uses cookie auth, but we try access_token as fallback
+		if authType == AuthTypeAccessToken {
+			// Skip access_token for anyrouter (cookie-only site)
+			continue
+		}
+
+		// Try check-in with this auth type
+		result, err := p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
+
+		// If successful or already checked, return immediately
+		if err == nil && (result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked) {
+			return result, nil
+		}
+
+		// Store last error and result for fallback
+		lastError = err
+		lastResult = result
+	}
+
+	// All auth types failed, return the last error
+	if lastError != nil {
+		return lastResult, lastError
+	}
+
+	return providerResult{Status: CheckinResultFailed, Message: "anyrouter requires cookie auth"}, nil
+}
+
+func (p anyrouterProvider) tryCheckInWithAuthType(
+	ctx context.Context,
+	client *http.Client,
+	site ManagedSite,
+	authType string,
+	authValue string,
+	useStealth bool,
+) (providerResult, error) {
 	// Only validate CF cookies when stealth mode is explicitly enabled
 	if useStealth {
 		missingCookies := validateCFCookies(authValue)
@@ -1520,6 +1663,7 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 			"site_id":     site.ID,
 			"site_name":   site.Name,
 			"api_url":     apiURL,
+			"auth_type":   authType,
 			"status_code": statusCode,
 			"response":    truncateString(string(data), 500),
 			"error":       err.Error(),
@@ -1558,23 +1702,70 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 
 // newAPIProvider handles check-in for NewAPI-compatible sites (new-api, one-hub, done-hub).
 // These sites share the same check-in endpoint: POST /api/user/checkin
+// Supports multi-auth fallback: tries access_token first, then cookie if access_token fails.
 type newAPIProvider struct{}
 
-func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authValue string) (providerResult, error) {
-	// Support both access_token and cookie auth
-	if authValue == "" {
+func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error) {
+	// Check if auth config is empty
+	if authConfig.IsEmpty() {
 		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
 	}
 
+	useStealth := shouldUseStealthRequest(site)
+
+	// Try each auth type in order: access_token first, then cookie
+	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
+	var lastError error
+	var lastResult providerResult
+
+	for _, authType := range authTypesToTry {
+		// Skip if this auth type is not configured
+		if !authConfig.HasAuthType(authType) {
+			continue
+		}
+
+		authValue := authConfig.GetAuthValue(authType)
+		if authValue == "" {
+			continue
+		}
+
+		// Try check-in with this auth type
+		result, err := p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
+
+		// If successful or already checked, return immediately
+		if err == nil && (result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked) {
+			return result, nil
+		}
+
+		// Store last error and result for fallback
+		lastError = err
+		lastResult = result
+	}
+
+	// All auth types failed, return the last error
+	if lastError != nil {
+		return lastResult, lastError
+	}
+
+	return providerResult{Status: CheckinResultSkipped, Message: "no valid credentials"}, nil
+}
+
+// tryCheckInWithAuthType attempts check-in with a specific auth type.
+func (p newAPIProvider) tryCheckInWithAuthType(
+	ctx context.Context,
+	client *http.Client,
+	site ManagedSite,
+	authType string,
+	authValue string,
+	useStealth bool,
+) (providerResult, error) {
 	headers := buildUserHeaders(site.UserID)
 	if headers == nil {
 		headers = make(map[string]string)
 	}
 
-	useStealth := shouldUseStealthRequest(site)
-
 	// Set auth header based on auth type
-	switch site.AuthType {
+	switch authType {
 	case AuthTypeAccessToken:
 		// Stealth bypass requires cookie auth for CF cookies
 		if useStealth {
@@ -1609,14 +1800,14 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 
 	// Log request details for debugging
 	cookieCount := 0
-	if site.AuthType == AuthTypeCookie {
+	if authType == AuthTypeCookie {
 		cookieCount = len(parseCookieString(authValue))
 	}
 	logrus.WithFields(logrus.Fields{
 		"site_id":      site.ID,
 		"site_name":    site.Name,
 		"api_url":      apiURL,
-		"auth_type":    site.AuthType,
+		"auth_type":    authType,
 		"use_stealth":  useStealth,
 		"has_user_id":  site.UserID != "",
 		"cookie_count": cookieCount,
@@ -1650,6 +1841,7 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 			"site_id":     site.ID,
 			"site_name":   site.Name,
 			"api_url":     apiURL,
+			"auth_type":   authType,
 			"status_code": statusCode,
 			"response":    truncateString(string(data), 500),
 			"resp_msg":    resp.Message,
@@ -1679,6 +1871,7 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 		logrus.WithFields(logrus.Fields{
 			"site_id":     site.ID,
 			"site_name":   site.Name,
+			"auth_type":   authType,
 			"status_code": statusCode,
 			"response":    truncateString(string(data), 500),
 			"resp_msg":    resp.Message,
@@ -1695,6 +1888,7 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 		logrus.WithFields(logrus.Fields{
 			"site_id":   site.ID,
 			"site_name": site.Name,
+			"auth_type": authType,
 			"message":   resp.Message,
 		}).Debug("NewAPI check-in success")
 		return providerResult{Status: CheckinResultSuccess, Message: resp.Message}, nil

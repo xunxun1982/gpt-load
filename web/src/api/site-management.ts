@@ -10,7 +10,9 @@ export type ManagedSiteType =
   | "done-hub"
   | "anyrouter"
   | "brand";
-export type ManagedSiteAuthType = "none" | "access_token" | "cookie";
+// Auth type can be single value or comma-separated multiple values
+// Examples: "access_token", "cookie", "access_token,cookie"
+export type ManagedSiteAuthType = string;
 export type ManagedSiteBypassMethod = "" | "none" | "stealth";
 
 export type ManagedSiteCheckinStatus = "success" | "failed" | "skipped" | "already_checked" | "";
