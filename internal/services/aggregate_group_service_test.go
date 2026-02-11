@@ -92,11 +92,53 @@ func TestIsGroupCCSupportEnabled(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "cc_support invalid type",
+			name: "cc_support string true",
 			group: &models.Group{
 				Config: map[string]any{"cc_support": "true"},
 			},
+			expected: true,
+		},
+		{
+			name: "cc_support string TRUE (case insensitive)",
+			group: &models.Group{
+				Config: map[string]any{"cc_support": "TRUE"},
+			},
+			expected: true,
+		},
+		{
+			name: "cc_support string 1",
+			group: &models.Group{
+				Config: map[string]any{"cc_support": "1"},
+			},
+			expected: true,
+		},
+		{
+			name: "cc_support string yes",
+			group: &models.Group{
+				Config: map[string]any{"cc_support": "yes"},
+			},
+			expected: true,
+		},
+		{
+			name: "cc_support string on",
+			group: &models.Group{
+				Config: map[string]any{"cc_support": "on"},
+			},
+			expected: true,
+		},
+		{
+			name: "cc_support string false",
+			group: &models.Group{
+				Config: map[string]any{"cc_support": "false"},
+			},
 			expected: false,
+		},
+		{
+			name: "cc_support string with spaces",
+			group: &models.Group{
+				Config: map[string]any{"cc_support": " true "},
+			},
+			expected: true,
 		},
 	}
 

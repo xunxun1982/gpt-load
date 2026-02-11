@@ -655,8 +655,8 @@ func TestChildGroupService_SyncChildGroupsEnabled(t *testing.T) {
 
 func TestCopyChildGroupsMap(t *testing.T) {
 	t.Parallel()
-	db := setupTestDB(t)
-	service := NewChildGroupService(db, ReadOnlyDB{DB: db}, nil, nil, nil)
+	// copyChildGroupsMap is a pure logic function that doesn't need database
+	service := &ChildGroupService{}
 
 	// Test nil input
 	result := service.copyChildGroupsMap(nil)

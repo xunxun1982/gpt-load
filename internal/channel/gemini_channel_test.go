@@ -473,13 +473,13 @@ func TestGeminiChannel_TransformModelList_NativeFormat(t *testing.T) {
 			assert.NoError(t, err)
 			assert.NotNil(t, result)
 
-			models, ok := result["models"].([]any)
+			modelList, ok := result["models"].([]any)
 			require.True(t, ok)
-			assert.Len(t, models, tt.expectedLen)
+			assert.Len(t, modelList, tt.expectedLen)
 
 			// Check that expected models are present
-			modelNames := make([]string, 0, len(models))
-			for _, m := range models {
+			modelNames := make([]string, 0, len(modelList))
+			for _, m := range modelList {
 				if modelObj, ok := m.(map[string]any); ok {
 					if name, ok := modelObj["name"].(string); ok {
 						modelNames = append(modelNames, name)
@@ -732,12 +732,13 @@ func BenchmarkGeminiChannel_ExtractModel(b *testing.B) {
 
 	bodyBytes := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 
+	// Setup context once before benchmark loop
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1beta/models/gemini-pro:generateContent", nil)
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Create fresh context for each iteration to avoid state pollution
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest("POST", "/v1beta/models/gemini-pro:generateContent", nil)
 		ch.ExtractModel(c, bodyBytes)
 	}
 }

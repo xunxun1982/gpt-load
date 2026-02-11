@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestGetBeijingCheckinDay(t *testing.T) {
+func TestGetBeijingCheckinDayAt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

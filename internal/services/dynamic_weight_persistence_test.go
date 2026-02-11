@@ -65,44 +65,76 @@ func TestDbMetricToMemory(t *testing.T) {
 	lastSuccess := now.Add(-30 * time.Minute)
 	lastRollover := now.Add(-24 * time.Hour)
 
-	dbm := &models.DynamicWeightMetric{
-		ConsecutiveFailures: 3,
-		LastFailureAt:       &lastFailure,
-		LastSuccessAt:       &lastSuccess,
-		Requests7d:          100,
-		Successes7d:         95,
-		Requests14d:         200,
-		Successes14d:        190,
-		Requests30d:         400,
-		Successes30d:        380,
-		Requests90d:         1000,
-		Successes90d:        950,
-		Requests180d:        2000,
-		Successes180d:       1900,
-		LastRolloverAt:      &lastRollover,
-		UpdatedAt:           now,
-	}
+	t.Run("all fields populated", func(t *testing.T) {
+		dbm := &models.DynamicWeightMetric{
+			ConsecutiveFailures: 3,
+			LastFailureAt:       &lastFailure,
+			LastSuccessAt:       &lastSuccess,
+			Requests7d:          100,
+			Successes7d:         95,
+			Requests14d:         200,
+			Successes14d:        190,
+			Requests30d:         400,
+			Successes30d:        380,
+			Requests90d:         1000,
+			Successes90d:        950,
+			Requests180d:        2000,
+			Successes180d:       1900,
+			LastRolloverAt:      &lastRollover,
+			UpdatedAt:           now,
+		}
 
-	metrics := dbMetricToMemory(dbm)
+		metrics := dbMetricToMemory(dbm)
 
-	if metrics.ConsecutiveFailures != 3 {
-		t.Errorf("Expected ConsecutiveFailures 3, got %d", metrics.ConsecutiveFailures)
-	}
-	if !metrics.LastFailureAt.Equal(lastFailure) {
-		t.Error("LastFailureAt mismatch")
-	}
-	if !metrics.LastSuccessAt.Equal(lastSuccess) {
-		t.Error("LastSuccessAt mismatch")
-	}
-	if metrics.Requests7d != 100 {
-		t.Errorf("Expected Requests7d 100, got %d", metrics.Requests7d)
-	}
-	if metrics.Successes7d != 95 {
-		t.Errorf("Expected Successes7d 95, got %d", metrics.Successes7d)
-	}
-	if !metrics.LastRolloverAt.Equal(lastRollover) {
-		t.Error("LastRolloverAt mismatch")
-	}
+		if metrics.ConsecutiveFailures != 3 {
+			t.Errorf("Expected ConsecutiveFailures 3, got %d", metrics.ConsecutiveFailures)
+		}
+		if !metrics.LastFailureAt.Equal(lastFailure) {
+			t.Error("LastFailureAt mismatch")
+		}
+		if !metrics.LastSuccessAt.Equal(lastSuccess) {
+			t.Error("LastSuccessAt mismatch")
+		}
+		if metrics.Requests7d != 100 {
+			t.Errorf("Expected Requests7d 100, got %d", metrics.Requests7d)
+		}
+		if metrics.Successes7d != 95 {
+			t.Errorf("Expected Successes7d 95, got %d", metrics.Successes7d)
+		}
+		if !metrics.LastRolloverAt.Equal(lastRollover) {
+			t.Error("LastRolloverAt mismatch")
+		}
+	})
+
+	t.Run("nil time pointers", func(t *testing.T) {
+		dbm := &models.DynamicWeightMetric{
+			ConsecutiveFailures: 0,
+			LastFailureAt:       nil,
+			LastSuccessAt:       nil,
+			Requests7d:          50,
+			Successes7d:         50,
+			LastRolloverAt:      nil,
+			UpdatedAt:           now,
+		}
+
+		metrics := dbMetricToMemory(dbm)
+
+		if metrics.ConsecutiveFailures != 0 {
+			t.Errorf("Expected ConsecutiveFailures 0, got %d", metrics.ConsecutiveFailures)
+		}
+		if !metrics.LastFailureAt.IsZero() {
+			t.Error("Expected zero LastFailureAt for nil pointer")
+		}
+		if !metrics.LastSuccessAt.IsZero() {
+			t.Error("Expected zero LastSuccessAt for nil pointer")
+		}
+		if !metrics.LastRolloverAt.IsZero() {
+			t.Error("Expected zero LastRolloverAt for nil pointer")
+		}
+		if metrics.Requests7d != 50 {
+			t.Errorf("Expected Requests7d 50, got %d", metrics.Requests7d)
+		}
+	})
 }
 
 func TestParseSubGroupKeyParts(t *testing.T) {

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -46,6 +47,21 @@ func TestDelimitersPattern(t *testing.T) {
 			input:    "key1\tkey2\tkey3",
 			expected: []string{"key1", "key2", "key3"},
 		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: []string{},
+		},
+		{
+			name:     "delimiter only",
+			input:    ",; \n",
+			expected: []string{},
+		},
+		{
+			name:     "leading and trailing delimiters",
+			input:    ",key1,key2,",
+			expected: []string{"key1", "key2"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -60,15 +76,8 @@ func TestDelimitersPattern(t *testing.T) {
 				}
 			}
 
-			if len(filtered) != len(tt.expected) {
-				t.Errorf("Expected %d parts, got %d", len(tt.expected), len(filtered))
-				return
-			}
-
-			for i, expected := range tt.expected {
-				if filtered[i] != expected {
-					t.Errorf("Part %d: expected %q, got %q", i, expected, filtered[i])
-				}
+			if !slices.Equal(filtered, tt.expected) {
+				t.Errorf("Split(%q) = %v, want %v", tt.input, filtered, tt.expected)
 			}
 		})
 	}
@@ -172,7 +181,6 @@ func TestValidKeyCharsPattern(t *testing.T) {
 // Benchmark tests for regex performance
 func BenchmarkDelimitersPattern(b *testing.B) {
 	input := "key1, key2; key3\nkey4\tkey5, key6; key7\nkey8\tkey9, key10"
-	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = DelimitersPattern.Split(input, -1)
 	}
@@ -180,7 +188,6 @@ func BenchmarkDelimitersPattern(b *testing.B) {
 
 func BenchmarkValidKeyCharsPattern(b *testing.B) {
 	input := "sk-proj_1234567890.abcdef/test+key=value:123"
-	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = ValidKeyCharsPattern.MatchString(input)
 	}

@@ -126,7 +126,7 @@ func TestDynamicWeightMetric_IsDeleted(t *testing.T) {
 		{
 			name: "deleted - has DeletedAt",
 			metric: &DynamicWeightMetric{
-				DeletedAt: func() *time.Time { t := time.Now(); return &t }(),
+				DeletedAt: func() *time.Time { now := time.Now(); return &now }(),
 			},
 			want: true,
 		},
@@ -164,9 +164,6 @@ func TestDefaultTimeWindowConfigs(t *testing.T) {
 	}
 
 	for i, expected := range expectedWindows {
-		if i >= len(configs) {
-			break
-		}
 		if configs[i].Days != expected.days {
 			t.Errorf("Window %d: Days = %d, want %d", i, configs[i].Days, expected.days)
 		}

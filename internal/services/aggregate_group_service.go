@@ -62,6 +62,8 @@ func NewAggregateGroupService(db *gorm.DB, groupManager *GroupManager, dynamicWe
 }
 
 // isGroupCCSupportEnabled checks whether cc_support is enabled for a group.
+// Supports multiple types for flexibility: bool, numeric (float64/int), and string.
+// String values are case-insensitive and accept "true", "1", "yes", "on".
 func isGroupCCSupportEnabled(group *models.Group) bool {
 	if group == nil || group.Config == nil {
 		return false
@@ -79,6 +81,10 @@ func isGroupCCSupportEnabled(group *models.Group) bool {
 		return v != 0
 	case int:
 		return v != 0
+	case string:
+		// Handle string values case-insensitively, matching HubService behavior
+		lower := strings.ToLower(strings.TrimSpace(v))
+		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
 	default:
 		return false
 	}

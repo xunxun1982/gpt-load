@@ -34,10 +34,10 @@ func saveLoggerState() *loggerState {
 
 // restore restores the logger to the saved state
 func (s *loggerState) restore() {
+	CloseLogger()
 	logrus.SetOutput(s.output)
 	logrus.SetLevel(s.level)
 	logrus.SetFormatter(s.formatter)
-	CloseLogger()
 }
 
 // mockConfigManager implements types.ConfigManager for testing
