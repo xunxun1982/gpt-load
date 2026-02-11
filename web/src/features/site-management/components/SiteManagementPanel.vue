@@ -13,6 +13,8 @@ import {
   type AutoCheckinConfig,
   type AutoCheckinStatus,
   type CheckinLogDTO,
+  type CreateManagedSiteRequest,
+  type ManagedSiteAuthType,
   type ManagedSiteBypassMethod,
   type ManagedSiteDTO,
   type ManagedSiteType,
@@ -408,7 +410,9 @@ async function submitSite() {
   }
 
   // Build auth_type string (comma-separated)
-  const authTypeStr = siteForm.auth_type.length > 0 ? siteForm.auth_type.join(",") : "none";
+  const authTypeStr = (
+    siteForm.auth_type.length > 0 ? siteForm.auth_type.join(",") : "none"
+  ) as ManagedSiteAuthType;
 
   // Build auth_value (JSON format for multi-auth, or single value for backward compatibility)
   let authValueStr = "";
@@ -455,7 +459,7 @@ async function submitSite() {
       await siteManagementApi.createSite({
         ...payload,
         auth_value: authValueStr,
-      });
+      } as CreateManagedSiteRequest);
       message.success(t("siteManagement.siteCreated"));
     }
     showSiteModal.value = false;
