@@ -732,13 +732,12 @@ func BenchmarkGeminiChannel_ExtractModel(b *testing.B) {
 
 	bodyBytes := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 
-	// Setup context once before benchmark loop
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("POST", "/v1beta/models/gemini-pro:generateContent", nil)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		// Create fresh context per iteration to avoid state accumulation
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "/v1beta/models/gemini-pro:generateContent", nil)
 		ch.ExtractModel(c, bodyBytes)
 	}
 }

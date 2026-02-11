@@ -242,6 +242,8 @@ func TestSetupLogger_FileLogging(t *testing.T) {
 	logrus.Info(testMsg)
 
 	// Close logger to flush
+	// Note: CloseLogger is called explicitly here and again in saved.restore() defer.
+	// This is safe because CloseLogger is idempotent.
 	CloseLogger()
 
 	// Verify log file was created

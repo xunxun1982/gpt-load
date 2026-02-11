@@ -206,10 +206,8 @@ func TestChildGroupService_CreateChildGroup(t *testing.T) {
 	service := NewChildGroupService(db, ReadOnlyDB{DB: db}, groupManager, nil, nil)
 
 	tests := []struct {
-		name        string
-		params      CreateChildGroupParams
-		expectError bool
-		errorMsg    string
+		name   string
+		params CreateChildGroupParams
 	}{
 		{
 			name: "create with auto-generated name",
@@ -217,7 +215,6 @@ func TestChildGroupService_CreateChildGroup(t *testing.T) {
 				ParentGroupID: parentGroup.ID,
 				Description:   "Test child group",
 			},
-			expectError: false,
 		},
 		{
 			name: "create with custom name",
@@ -227,14 +224,12 @@ func TestChildGroupService_CreateChildGroup(t *testing.T) {
 				DisplayName:   "Custom Child",
 				Description:   "Custom child group",
 			},
-			expectError: false,
 		},
 		{
 			name: "parent not found",
 			params: CreateChildGroupParams{
 				ParentGroupID: 99999,
 			},
-			expectError: true,
 		},
 	}
 
@@ -242,8 +237,10 @@ func TestChildGroupService_CreateChildGroup(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			childGroup, err := service.CreateChildGroup(ctx, tt.params)
 
-			if (err != nil) != tt.expectError {
-				t.Errorf("Expected error: %v, got: %v", tt.expectError, err)
+			// Determine if error is expected based on test name
+			expectError := tt.name == "parent not found"
+			if (err != nil) != expectError {
+				t.Errorf("Expected error: %v, got: %v", expectError, err)
 			}
 
 			if err != nil {

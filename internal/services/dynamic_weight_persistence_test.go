@@ -696,6 +696,12 @@ func TestDynamicWeightPersistence_StartStop(t *testing.T) {
 
 	// Start service
 	persistence.Start()
+	// Ensure Stop is called on all exit paths to prevent goroutine leak
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		persistence.Stop(ctx)
+	})
 
 	// Mark a key dirty
 	key := GroupMetricsKey(1)
@@ -728,11 +734,6 @@ func TestDynamicWeightPersistence_StartStop(t *testing.T) {
 			persisted = count > 0
 		}
 	}
-
-	// Stop service
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	persistence.Stop(ctx)
 
 	// Verify metric was persisted
 	var dbMetric models.DynamicWeightMetric

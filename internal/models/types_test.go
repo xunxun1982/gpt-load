@@ -148,7 +148,7 @@ func TestDefaultTimeWindowConfigs(t *testing.T) {
 
 	// Verify we have 5 time windows
 	if len(configs) != 5 {
-		t.Errorf("DefaultTimeWindowConfigs() returned %d windows, want 5", len(configs))
+		t.Fatalf("DefaultTimeWindowConfigs() returned %d windows, want 5", len(configs))
 	}
 
 	// Verify the expected windows

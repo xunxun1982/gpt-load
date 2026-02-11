@@ -140,6 +140,20 @@ func TestIsGroupCCSupportEnabled(t *testing.T) {
 			},
 			expected: true,
 		},
+		{
+			name: "cc_support unsupported type (slice)",
+			group: &models.Group{
+				Config: map[string]any{"cc_support": []int{1}},
+			},
+			expected: false,
+		},
+		{
+			name: "cc_support unsupported type (map)",
+			group: &models.Group{
+				Config: map[string]any{"cc_support": map[string]string{"key": "value"}},
+			},
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
