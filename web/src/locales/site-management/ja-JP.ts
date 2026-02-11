@@ -60,6 +60,7 @@ export default {
 
   // Auth related
   authType: "認証方式",
+  authTypePlaceholder: "認証方式を選択（複数選択可）",
   authValue: "認証情報",
   authValuePlaceholder: "アクセストークンを入力",
   authValueEditHint: "空欄で既存の認証情報を維持",
@@ -69,6 +70,8 @@ export default {
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
     "ブラウザからCookieを取得してください。session/tokenなどのフィールドを含めます。サイトがCloudflare保護を使用している場合は、cf_clearanceも含めてください。",
+  multiAuthHint:
+    "複数の認証方式が選択されています。チェックイン時はまずアクセストークンを試し、失敗した場合はCookieを試します。いずれかが成功すればチェックイン成功となります。",
   hasAuth: "認証設定済み",
   noAuth: "認証なし",
 

@@ -59,7 +59,19 @@ type ManagedSite struct {
 	// should be included in AuthValue along with user session cookies.
 	BypassMethod string `gorm:"column:bypass_method;type:varchar(32);not null;default:''" json:"bypass_method"`
 
-	AuthType  string `gorm:"type:varchar(32);not null;default:'none'" json:"auth_type"`
+	// AuthType specifies the authentication method(s) to use for check-in.
+	// Supports both single-auth (legacy) and multi-auth (new) formats:
+	// - Single-auth: "access_token", "cookie", or "none"
+	// - Multi-auth: comma-separated list, e.g., "access_token,cookie"
+	// When multiple auth types are specified, check-in will try them in order (access_token first, then cookie).
+	// Only one successful authentication is needed for check-in to succeed.
+	AuthType string `gorm:"type:varchar(32);not null;default:'none'" json:"auth_type"`
+
+	// AuthValue stores encrypted authentication credentials.
+	// Supports both single-auth (legacy) and multi-auth (new) formats:
+	// - Single-auth: encrypted single value (e.g., access token or cookie string)
+	// - Multi-auth: encrypted JSON string, e.g., {"access_token":"xxx","cookie":"yyy"}
+	// The system automatically detects the format and handles backward compatibility.
 	AuthValue string `gorm:"type:text;not null;default:''" json:"-"`
 
 	LastCheckInAt      *time.Time `gorm:"column:last_checkin_at" json:"last_checkin_at,omitempty"`

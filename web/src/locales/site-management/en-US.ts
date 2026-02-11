@@ -59,6 +59,7 @@ export default {
 
   // Auth related
   authType: "Auth Type",
+  authTypePlaceholder: "Select auth type(s) (multiple allowed)",
   authValue: "Auth Value",
   authValuePlaceholder: "Enter Access Token",
   authValueEditHint: "Leave empty to keep existing auth",
@@ -68,6 +69,8 @@ export default {
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
     "Capture Cookie from browser, including session/token fields. If site uses Cloudflare protection, also include cf_clearance.",
+  multiAuthHint:
+    "Multiple auth types selected. Check-in will try Access Token first, then Cookie if it fails. Success with either counts as successful check-in.",
   hasAuth: "Auth Configured",
   noAuth: "No Auth",
 
