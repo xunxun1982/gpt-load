@@ -289,8 +289,8 @@ function openEditSite(site: ManagedSiteDTO) {
   const authTypes = site.auth_type
     ? site.auth_type
         .split(",")
-        .map(t => t.trim())
-        .filter(t => t && t !== "none")
+        .map(s => s.trim())
+        .filter(s => s && s !== "none")
     : [];
 
   Object.assign(siteForm, {
@@ -388,10 +388,11 @@ async function submitSite() {
     // 1. Creating new site (!prev)
     // 2. User entered new cookie value (cookieValue is not empty)
     // 3. Switching from non-cookie auth or non-stealth bypass to stealth/cookie
+    const prevAuthTypes = prev?.auth_type ? prev.auth_type.split(",").map(s => s.trim()) : [];
     const needsCookie =
       !prev ||
       !!cookieValue ||
-      !prev.auth_type.includes("cookie") ||
+      !prevAuthTypes.includes("cookie") ||
       prev.bypass_method !== "stealth";
     if (needsCookie) {
       if (!cookieValue) {
@@ -424,6 +425,7 @@ async function submitSite() {
     }
 
     // Only set auth_value if user provided at least one value
+    // Backend will merge with existing values for multi-auth (preserves unchanged credentials)
     if (hasAnyValue) {
       if (siteForm.auth_type.length === 1) {
         // Single auth type: use plain value for backward compatibility

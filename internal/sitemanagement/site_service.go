@@ -2,6 +2,7 @@ package sitemanagement
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -497,7 +498,15 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 			if site.AuthType == AuthTypeNone {
 				return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.auth_value_requires_auth_type", nil)
 			}
-			enc, err := s.encryptionSvc.Encrypt(value)
+
+			// Merge with existing auth values for multi-auth support
+			// This prevents partial updates from clearing unconfigured auth types
+			mergedValue, err := s.mergeAuthValues(site.AuthType, site.AuthValue, value)
+			if err != nil {
+				return nil, fmt.Errorf("failed to merge auth values: %w", err)
+			}
+
+			enc, err := s.encryptionSvc.Encrypt(mergedValue)
 			if err != nil {
 				return nil, fmt.Errorf("failed to encrypt auth value: %w", err)
 			}
@@ -1329,4 +1338,86 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 	}
 
 	return imported, skipped, nil
+}
+
+// mergeAuthValues merges new auth values with existing ones for multi-auth support.
+// This prevents partial updates from clearing unconfigured auth types.
+//
+// Parameters:
+//   - authType: comma-separated auth types (e.g., "access_token,cookie")
+//   - existingEncrypted: existing encrypted auth value from database
+//   - newValue: new auth value from update request (plain text or JSON)
+//
+// Returns merged value in appropriate format (plain text for single auth, JSON for multi-auth).
+func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue string) (string, error) {
+	// Parse auth types
+	authTypes := strings.Split(authType, ",")
+	var cleanAuthTypes []string
+	for _, t := range authTypes {
+		t = strings.TrimSpace(t)
+		if t != "" && t != AuthTypeNone {
+			cleanAuthTypes = append(cleanAuthTypes, t)
+		}
+	}
+
+	// If only one auth type, no merging needed - return new value as-is
+	if len(cleanAuthTypes) <= 1 {
+		return newValue, nil
+	}
+
+	// Multi-auth case: merge with existing values
+	existingValues := make(map[string]string)
+
+	// Decrypt and parse existing auth value if present
+	if existingEncrypted != "" {
+		decrypted, err := s.encryptionSvc.Decrypt(existingEncrypted)
+		if err != nil {
+			// If decryption fails, proceed without existing values (best effort)
+			logrus.WithError(err).Warn("Failed to decrypt existing auth value during merge, proceeding without merge")
+		} else {
+			// Try to parse as JSON (multi-auth format)
+			var jsonValues map[string]string
+			if err := json.Unmarshal([]byte(decrypted), &jsonValues); err == nil {
+				existingValues = jsonValues
+			} else {
+				// Legacy single-auth format - assign to first auth type
+				if len(cleanAuthTypes) > 0 {
+					existingValues[cleanAuthTypes[0]] = decrypted
+				}
+			}
+		}
+	}
+
+	// Parse new value (could be JSON or plain text)
+	newValues := make(map[string]string)
+	var jsonValues map[string]string
+	if err := json.Unmarshal([]byte(newValue), &jsonValues); err == nil {
+		// New value is JSON
+		newValues = jsonValues
+	} else {
+		// New value is plain text - assign to first auth type
+		if len(cleanAuthTypes) > 0 {
+			newValues[cleanAuthTypes[0]] = newValue
+		}
+	}
+
+	// Merge: new values override existing ones, but keep existing values for unconfigured types
+	mergedValues := make(map[string]string)
+	for _, authType := range cleanAuthTypes {
+		if newVal, ok := newValues[authType]; ok && newVal != "" {
+			// Use new value if provided
+			mergedValues[authType] = newVal
+		} else if existingVal, ok := existingValues[authType]; ok && existingVal != "" {
+			// Keep existing value if new value not provided
+			mergedValues[authType] = existingVal
+		}
+	}
+
+	// Return merged values as JSON
+	mergedJSON, err := json.Marshal(mergedValues)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal merged auth values: %w", err)
+	}
+
+	return string(mergedJSON), nil
 }

@@ -59,20 +59,20 @@ func parseAuthConfig(authType, decryptedAuthValue string) AuthConfig {
 	// Try to parse as JSON (new multi-auth format)
 	var jsonValues map[string]string
 	if err := json.Unmarshal([]byte(decryptedAuthValue), &jsonValues); err == nil {
-		// Successfully parsed as JSON
-		config.AuthValues = jsonValues
+		// Successfully parsed as JSON - only keep values for configured auth types
+		for _, t := range config.AuthTypes {
+			if v, ok := jsonValues[t]; ok {
+				config.AuthValues[t] = v
+			}
+		}
 		return config
 	}
 
 	// Fallback to legacy single-auth format
-	// If only one auth type, use the value directly
-	if len(config.AuthTypes) == 1 {
-		config.AuthValues[config.AuthTypes[0]] = decryptedAuthValue
-	} else {
-		// Multiple auth types but value is not JSON - invalid state
-		// Assign the value to the first auth type as fallback
-		config.AuthValues[config.AuthTypes[0]] = decryptedAuthValue
-	}
+	// Assign the raw value to the first auth type as a legacy fallback.
+	// If multiple types were configured but the value isn't JSON, this is
+	// a best-effort recovery - only the first type gets a credential.
+	config.AuthValues[config.AuthTypes[0]] = decryptedAuthValue
 
 	return config
 }

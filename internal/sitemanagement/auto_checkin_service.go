@@ -1264,19 +1264,15 @@ func formatHTTPError(statusCode int) string {
 	return i18n.T(localizer, msgID, templateData)
 }
 
-type veloeraProvider struct{}
-
-func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error) {
-	// Check if auth config is empty
-	if authConfig.IsEmpty() {
-		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
-	}
-
-	useStealth := shouldUseStealthRequest(site)
-
-	// Try each auth type in order: access_token first, then cookie
-	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
-	var lastError error
+// tryMultiAuth iterates through auth types in order, calling tryFn for each configured type.
+// Returns the first successful result (CheckinResultSuccess or CheckinResultAlreadyChecked),
+// or the last failure result if all attempts fail.
+// This helper eliminates code duplication across all provider CheckIn methods.
+func tryMultiAuth(
+	authConfig AuthConfig,
+	authTypesToTry []string,
+	tryFn func(authType, authValue string) (providerResult, error),
+) (providerResult, error) {
 	var lastResult providerResult
 
 	for _, authType := range authTypesToTry {
@@ -1291,24 +1287,41 @@ func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site 
 		}
 
 		// Try check-in with this auth type
-		result, err := p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
+		result, err := tryFn(authType, authValue)
 
 		// If successful or already checked, return immediately
 		if err == nil && (result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked) {
 			return result, nil
 		}
 
-		// Store last error and result for fallback
-		lastError = err
+		// Store last result for fallback
 		lastResult = result
 	}
 
-	// All auth types failed, return the last error
-	if lastError != nil {
-		return lastResult, lastError
+	// All auth types failed, return the last result if any attempt was made
+	if lastResult.Status != "" {
+		return lastResult, nil
 	}
 
 	return providerResult{Status: CheckinResultSkipped, Message: "no valid credentials"}, nil
+}
+
+type veloeraProvider struct{}
+
+func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error) {
+	// Check if auth config is empty
+	if authConfig.IsEmpty() {
+		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
+	}
+
+	useStealth := shouldUseStealthRequest(site)
+
+	// Try each auth type in order: access_token first, then cookie
+	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
+
+	return tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
+		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
+	})
 }
 
 func (p veloeraProvider) tryCheckInWithAuthType(
@@ -1436,39 +1449,10 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 
 	// Try each auth type in order: access_token first, then cookie
 	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
-	var lastError error
-	var lastResult providerResult
 
-	for _, authType := range authTypesToTry {
-		// Skip if this auth type is not configured
-		if !authConfig.HasAuthType(authType) {
-			continue
-		}
-
-		authValue := authConfig.GetAuthValue(authType)
-		if authValue == "" {
-			continue
-		}
-
-		// Try check-in with this auth type
-		result, err := p.tryCheckInWithAuthType(ctx, client, site, authType, authValue)
-
-		// If successful or already checked, return immediately
-		if err == nil && (result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked) {
-			return result, nil
-		}
-
-		// Store last error and result for fallback
-		lastError = err
-		lastResult = result
-	}
-
-	// All auth types failed, return the last error
-	if lastError != nil {
-		return lastResult, lastError
-	}
-
-	return providerResult{Status: CheckinResultSkipped, Message: "no valid credentials"}, nil
+	return tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
+		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue)
+	})
 }
 
 func (p wongProvider) tryCheckInWithAuthType(
@@ -1560,47 +1544,19 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 	// Use stealth only when explicitly enabled via bypass_method setting
 	useStealth := isStealthBypassMethod(site.BypassMethod)
 
-	// Try cookie auth first, then access_token as fallback
-	authTypesToTry := []string{AuthTypeCookie, AuthTypeAccessToken}
-	var lastError error
-	var lastResult providerResult
+	// Anyrouter only supports cookie auth (access_token is not supported)
+	authTypesToTry := []string{AuthTypeCookie}
 
-	for _, authType := range authTypesToTry {
-		// Skip if this auth type is not configured
-		if !authConfig.HasAuthType(authType) {
-			continue
-		}
+	result, err := tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
+		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
+	})
 
-		authValue := authConfig.GetAuthValue(authType)
-		if authValue == "" {
-			continue
-		}
-
-		// Anyrouter primarily uses cookie auth, but we try access_token as fallback
-		if authType == AuthTypeAccessToken {
-			// Skip access_token for anyrouter (cookie-only site)
-			continue
-		}
-
-		// Try check-in with this auth type
-		result, err := p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
-
-		// If successful or already checked, return immediately
-		if err == nil && (result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked) {
-			return result, nil
-		}
-
-		// Store last error and result for fallback
-		lastError = err
-		lastResult = result
+	// If no cookie auth was configured, return specific error message
+	if result.Status == CheckinResultSkipped && result.Message == "no valid credentials" {
+		return providerResult{Status: CheckinResultFailed, Message: "anyrouter requires cookie auth"}, nil
 	}
 
-	// All auth types failed, return the last error
-	if lastError != nil {
-		return lastResult, lastError
-	}
-
-	return providerResult{Status: CheckinResultFailed, Message: "anyrouter requires cookie auth"}, nil
+	return result, err
 }
 
 func (p anyrouterProvider) tryCheckInWithAuthType(
@@ -1715,39 +1671,10 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 
 	// Try each auth type in order: access_token first, then cookie
 	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
-	var lastError error
-	var lastResult providerResult
 
-	for _, authType := range authTypesToTry {
-		// Skip if this auth type is not configured
-		if !authConfig.HasAuthType(authType) {
-			continue
-		}
-
-		authValue := authConfig.GetAuthValue(authType)
-		if authValue == "" {
-			continue
-		}
-
-		// Try check-in with this auth type
-		result, err := p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
-
-		// If successful or already checked, return immediately
-		if err == nil && (result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked) {
-			return result, nil
-		}
-
-		// Store last error and result for fallback
-		lastError = err
-		lastResult = result
-	}
-
-	// All auth types failed, return the last error
-	if lastError != nil {
-		return lastResult, lastError
-	}
-
-	return providerResult{Status: CheckinResultSkipped, Message: "no valid credentials"}, nil
+	return tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
+		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
+	})
 }
 
 // tryCheckInWithAuthType attempts check-in with a specific auth type.
