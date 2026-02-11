@@ -37,6 +37,9 @@ const (
 	// Note: autoCheckinConfigUpdatedChannel is defined in site_service.go (same package)
 
 	maxResponseBodySize = 2 << 20 // 2 MB limit for HTTP response body
+
+	// Message constants for check-in results
+	msgNoValidCredentials = "no valid credentials"
 )
 
 type AutoCheckinService struct {
@@ -1303,7 +1306,7 @@ func tryMultiAuth(
 		return lastResult, nil
 	}
 
-	return providerResult{Status: CheckinResultSkipped, Message: "no valid credentials"}, nil
+	return providerResult{Status: CheckinResultSkipped, Message: msgNoValidCredentials}, nil
 }
 
 type veloeraProvider struct{}
@@ -1552,7 +1555,7 @@ func (p anyrouterProvider) CheckIn(ctx context.Context, client *http.Client, sit
 	})
 
 	// If no cookie auth was configured, return specific error message
-	if result.Status == CheckinResultSkipped && result.Message == "no valid credentials" {
+	if result.Status == CheckinResultSkipped && result.Message == msgNoValidCredentials {
 		return providerResult{Status: CheckinResultFailed, Message: "anyrouter requires cookie auth"}, nil
 	}
 

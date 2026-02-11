@@ -978,11 +978,41 @@ func (s *SiteService) toDTO(ctx context.Context, site *ManagedSite) *ManagedSite
 	}
 }
 
+// normalizeAuthType normalizes auth type string, supporting both single and comma-separated multi-auth values.
+// Examples: "access_token" -> "access_token", "access_token,cookie" -> "access_token,cookie"
+// Returns empty string if any component is invalid.
 func normalizeAuthType(raw string) string {
 	s := strings.TrimSpace(raw)
 	s = strings.ToLower(s)
 	s = strings.ReplaceAll(s, " ", "")
 
+	// Handle comma-separated multi-auth types (e.g., "access_token,cookie")
+	if strings.Contains(s, ",") {
+		parts := strings.Split(s, ",")
+		var normalized []string
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" || part == strings.ToLower(AuthTypeNone) {
+				continue
+			}
+			n := normalizeSingleAuthType(part)
+			if n == "" {
+				return "" // invalid component
+			}
+			normalized = append(normalized, n)
+		}
+		if len(normalized) == 0 {
+			return AuthTypeNone
+		}
+		return strings.Join(normalized, ",")
+	}
+
+	return normalizeSingleAuthType(s)
+}
+
+// normalizeSingleAuthType normalizes a single auth type value.
+// Returns empty string for invalid values.
+func normalizeSingleAuthType(s string) string {
 	switch s {
 	case strings.ToLower(AuthTypeAccessToken):
 		return AuthTypeAccessToken
@@ -1353,10 +1383,10 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 	// Parse auth types
 	authTypes := strings.Split(authType, ",")
 	var cleanAuthTypes []string
-	for _, t := range authTypes {
-		t = strings.TrimSpace(t)
-		if t != "" && t != AuthTypeNone {
-			cleanAuthTypes = append(cleanAuthTypes, t)
+	for _, at := range authTypes {
+		at = strings.TrimSpace(at)
+		if at != "" && at != AuthTypeNone {
+			cleanAuthTypes = append(cleanAuthTypes, at)
 		}
 	}
 
@@ -1403,13 +1433,13 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 
 	// Merge: new values override existing ones, but keep existing values for unconfigured types
 	mergedValues := make(map[string]string)
-	for _, authType := range cleanAuthTypes {
-		if newVal, ok := newValues[authType]; ok && newVal != "" {
+	for _, at := range cleanAuthTypes {
+		if newVal, ok := newValues[at]; ok && newVal != "" {
 			// Use new value if provided
-			mergedValues[authType] = newVal
-		} else if existingVal, ok := existingValues[authType]; ok && existingVal != "" {
+			mergedValues[at] = newVal
+		} else if existingVal, ok := existingValues[at]; ok && existingVal != "" {
 			// Keep existing value if new value not provided
-			mergedValues[authType] = existingVal
+			mergedValues[at] = existingVal
 		}
 	}
 

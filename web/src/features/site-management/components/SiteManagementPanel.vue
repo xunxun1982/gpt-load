@@ -1944,7 +1944,6 @@ onMounted(() => {
                 multiple
                 :placeholder="t('siteManagement.authTypePlaceholder')"
                 style="width: 100%"
-                placement="top-start"
               />
             </n-form-item>
             <!-- Access Token input (shown when access_token is selected) -->

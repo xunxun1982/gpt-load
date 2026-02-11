@@ -557,3 +557,183 @@ func BenchmarkSiteService_CacheHit(b *testing.B) {
 		service.ListSites(context.Background())
 	}
 }
+
+// TestNormalizeAuthType tests auth type normalization including multi-auth support
+func TestNormalizeAuthType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		// Single auth types
+		{
+			name:     "access_token lowercase",
+			input:    "access_token",
+			expected: AuthTypeAccessToken,
+		},
+		{
+			name:     "access_token uppercase",
+			input:    "ACCESS_TOKEN",
+			expected: AuthTypeAccessToken,
+		},
+		{
+			name:     "access_token mixed case",
+			input:    "Access_Token",
+			expected: AuthTypeAccessToken,
+		},
+		{
+			name:     "cookie lowercase",
+			input:    "cookie",
+			expected: AuthTypeCookie,
+		},
+		{
+			name:     "cookie uppercase",
+			input:    "COOKIE",
+			expected: AuthTypeCookie,
+		},
+		{
+			name:     "none lowercase",
+			input:    "none",
+			expected: AuthTypeNone,
+		},
+		{
+			name:     "none uppercase",
+			input:    "NONE",
+			expected: AuthTypeNone,
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: AuthTypeNone,
+		},
+		{
+			name:     "whitespace only",
+			input:    "   ",
+			expected: AuthTypeNone,
+		},
+		{
+			name:     "invalid type",
+			input:    "invalid",
+			expected: "",
+		},
+		// Multi-auth types (comma-separated)
+		{
+			name:     "access_token,cookie",
+			input:    "access_token,cookie",
+			expected: "access_token,cookie",
+		},
+		{
+			name:     "cookie,access_token (reversed order)",
+			input:    "cookie,access_token",
+			expected: "cookie,access_token",
+		},
+		{
+			name:     "access_token,cookie with spaces",
+			input:    "access_token , cookie",
+			expected: "access_token,cookie",
+		},
+		{
+			name:     "ACCESS_TOKEN,COOKIE uppercase",
+			input:    "ACCESS_TOKEN,COOKIE",
+			expected: "access_token,cookie",
+		},
+		{
+			name:     "access_token,cookie with extra spaces",
+			input:    "  access_token  ,  cookie  ",
+			expected: "access_token,cookie",
+		},
+		{
+			name:     "access_token,none,cookie (none filtered out)",
+			input:    "access_token,none,cookie",
+			expected: "access_token,cookie",
+		},
+		{
+			name:     "none,access_token (none filtered out)",
+			input:    "none,access_token",
+			expected: "access_token",
+		},
+		{
+			name:     "access_token,invalid (invalid component)",
+			input:    "access_token,invalid",
+			expected: "",
+		},
+		{
+			name:     "invalid,cookie (invalid component)",
+			input:    "invalid,cookie",
+			expected: "",
+		},
+		{
+			name:     "none,none (all filtered out)",
+			input:    "none,none",
+			expected: AuthTypeNone,
+		},
+		{
+			name:     "empty components",
+			input:    "access_token,,cookie",
+			expected: "access_token,cookie",
+		},
+		{
+			name:     "trailing comma",
+			input:    "access_token,",
+			expected: "access_token",
+		},
+		{
+			name:     "leading comma",
+			input:    ",cookie",
+			expected: "cookie",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeAuthType(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestNormalizeSingleAuthType tests single auth type normalization
+func TestNormalizeSingleAuthType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "access_token",
+			input:    "access_token",
+			expected: AuthTypeAccessToken,
+		},
+		{
+			name:     "cookie",
+			input:    "cookie",
+			expected: AuthTypeCookie,
+		},
+		{
+			name:     "none",
+			input:    "none",
+			expected: AuthTypeNone,
+		},
+		{
+			name:     "empty",
+			input:    "",
+			expected: AuthTypeNone,
+		},
+		{
+			name:     "invalid",
+			input:    "invalid",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeSingleAuthType(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
