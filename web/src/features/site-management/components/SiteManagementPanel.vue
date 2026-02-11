@@ -13,6 +13,8 @@ import {
   type AutoCheckinConfig,
   type AutoCheckinStatus,
   type CheckinLogDTO,
+  type CreateManagedSiteRequest,
+  type ManagedSiteAuthType,
   type ManagedSiteBypassMethod,
   type ManagedSiteDTO,
   type ManagedSiteType,
@@ -407,8 +409,16 @@ async function submitSite() {
     }
   }
 
+  // Validate auth_type array length (max 2 types supported by ManagedSiteAuthType)
+  if (siteForm.auth_type.length > 2) {
+    message.error(t("siteManagement.maxTwoAuthTypes"));
+    return;
+  }
+
   // Build auth_type string (comma-separated)
-  const authTypeStr = siteForm.auth_type.length > 0 ? siteForm.auth_type.join(",") : "none";
+  const authTypeStr = (
+    siteForm.auth_type.length > 0 ? siteForm.auth_type.join(",") : "none"
+  ) as ManagedSiteAuthType;
 
   // Build auth_value (JSON format for multi-auth, or single value for backward compatibility)
   let authValueStr = "";
@@ -452,10 +462,13 @@ async function submitSite() {
       await siteManagementApi.updateSite(editingSite.value.id, updatePayload);
       message.success(t("siteManagement.siteUpdated"));
     } else {
+      // Type assertion is intentional here: payload is dynamically constructed
+      // from siteForm and authValueStr, which matches CreateManagedSiteRequest structure.
+      // Using 'as' instead of 'satisfies' because the payload is built incrementally.
       await siteManagementApi.createSite({
         ...payload,
         auth_value: authValueStr,
-      });
+      } as CreateManagedSiteRequest);
       message.success(t("siteManagement.siteCreated"));
     }
     showSiteModal.value = false;

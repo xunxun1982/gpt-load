@@ -57,6 +57,7 @@ export default {
   stealthRequiresCookieValue: "ステルスバイパスにはCookie値が必要です",
   missingCFCookies:
     "Cloudflareバイパスに必要なCF Cookiesが不足しています。次のいずれかが必要：{cookies}",
+  maxTwoAuthTypes: "認証方式は最大2つまで選択できます",
 
   // Auth related
   authType: "認証方式",

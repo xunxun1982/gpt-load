@@ -11,9 +11,9 @@ import (
 // - New: 1-999=priority (lower=higher), 1000=disabled
 //
 // Migration steps:
-// 1. Update all priority=0 records to priority=1000
-// 2. This ensures disabled groups are represented by the maximum value (1000)
-//    which is consistent with "lower value = higher priority" semantics
+//  1. Update all priority=0 records to priority=1000
+//  2. This ensures disabled groups are represented by the maximum value (1000)
+//     which is consistent with "lower value = higher priority" semantics
 func V1_22_0_UpdatePrioritySemantics(db *gorm.DB) error {
 	logrus.Info("Starting migration: Update priority semantics (0→1000 for disabled)")
 
