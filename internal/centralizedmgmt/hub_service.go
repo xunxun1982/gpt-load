@@ -1418,6 +1418,8 @@ func (s *HubService) parseCustomModelNames(customModelNamesJSON []byte) []string
 // isGroupCCSupportEnabled checks if cc_support is enabled for the given group.
 // CC support allows Claude format requests to be converted to the target channel format.
 // Only applicable to openai, gemini, and codex channel types.
+// NOTE: This method includes channel type validation specific to HubService's needs.
+// For general cc_support checking without channel type restrictions, use utils.IsGroupCCSupportEnabled.
 func (s *HubService) isGroupCCSupportEnabled(group *models.Group) bool {
 	if group == nil {
 		return false
@@ -1426,28 +1428,8 @@ func (s *HubService) isGroupCCSupportEnabled(group *models.Group) bool {
 	if group.ChannelType != "openai" && group.ChannelType != "gemini" && group.ChannelType != "codex" {
 		return false
 	}
-	// Check cc_support flag in config
-	if group.Config == nil {
-		return false
-	}
-	raw, ok := group.Config["cc_support"]
-	if !ok || raw == nil {
-		return false
-	}
-	// Handle multiple types for flexibility
-	switch v := raw.(type) {
-	case bool:
-		return v
-	case float64:
-		return v != 0
-	case int:
-		return v != 0
-	case string:
-		lower := strings.ToLower(strings.TrimSpace(v))
-		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
-	default:
-		return false
-	}
+	// Delegate to shared implementation for cc_support flag checking
+	return utils.IsGroupCCSupportEnabled(group)
 }
 
 // ErrInvalidPriority is returned when priority value is out of range.

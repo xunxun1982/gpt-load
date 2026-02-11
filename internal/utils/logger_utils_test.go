@@ -335,32 +335,35 @@ func TestSetupLogger_MultipleSetups(t *testing.T) {
 }
 
 func TestSetupLogger_AllLevels(t *testing.T) {
-	levels := []string{"trace", "debug", "info", "warn", "error", "fatal", "panic"}
-	expectedLevels := []logrus.Level{
-		logrus.TraceLevel,
-		logrus.DebugLevel,
-		logrus.InfoLevel,
-		logrus.WarnLevel,
-		logrus.ErrorLevel,
-		logrus.FatalLevel,
-		logrus.PanicLevel,
+	tests := []struct {
+		name     string
+		level    string
+		expected logrus.Level
+	}{
+		{"trace", "trace", logrus.TraceLevel},
+		{"debug", "debug", logrus.DebugLevel},
+		{"info", "info", logrus.InfoLevel},
+		{"warn", "warn", logrus.WarnLevel},
+		{"error", "error", logrus.ErrorLevel},
+		{"fatal", "fatal", logrus.FatalLevel},
+		{"panic", "panic", logrus.PanicLevel},
 	}
 
-	for i, level := range levels {
-		t.Run(level, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			saved := saveLoggerState()
 			defer saved.restore()
 
 			cfg := &mockConfigManager{
 				logConfig: types.LogConfig{
-					Level:      level,
+					Level:      tt.level,
 					Format:     "text",
 					EnableFile: false,
 				},
 			}
 
 			SetupLogger(cfg)
-			assert.Equal(t, expectedLevels[i], logrus.GetLevel())
+			assert.Equal(t, tt.expected, logrus.GetLevel())
 		})
 	}
 }

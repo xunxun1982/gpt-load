@@ -46,7 +46,7 @@ func TestGetBeijingCheckinDayAt(t *testing.T) {
 			expectedDate: "2024-01-15",
 		},
 		{
-			name:         "UTC time before 05:00 Beijing (21:00 UTC previous day)",
+			name:         "UTC time exactly 05:00 Beijing (21:00 UTC previous day)",
 			inputTime:    time.Date(2024, 1, 14, 21, 0, 0, 0, time.UTC), // 05:00 Beijing next day
 			expectedDate: "2024-01-15",
 		},
@@ -300,7 +300,6 @@ func BenchmarkGetBeijingCheckinDayAt(b *testing.B) {
 
 	testTime := time.Date(2024, 1, 15, 12, 0, 0, 0, beijingLocation)
 
-	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = GetBeijingCheckinDayAt(testTime)
 	}
@@ -309,7 +308,6 @@ func BenchmarkGetBeijingCheckinDayAt(b *testing.B) {
 func BenchmarkParseTimeToMinutes(b *testing.B) {
 	b.ReportAllocs()
 
-	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = parseTimeToMinutes("12:45")
 	}
@@ -318,7 +316,6 @@ func BenchmarkParseTimeToMinutes(b *testing.B) {
 func BenchmarkIsMinutesWithinWindow(b *testing.B) {
 	b.ReportAllocs()
 
-	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = isMinutesWithinWindow(600, 540, 720)
 	}
