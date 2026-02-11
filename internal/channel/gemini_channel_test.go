@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"gpt-load/internal/models"
@@ -632,10 +631,10 @@ func TestMergeGeminiModelLists(t *testing.T) {
 	assert.Contains(t, names, "models/gemini-ultra")
 	assert.Contains(t, names, "models/custom-model")
 
-	// Count occurrences of gemini-pro (should be 1, not 2)
+	// Count occurrences of gemini-pro (should be 1, not 2) - use exact match
 	count := 0
 	for _, name := range names {
-		if strings.Contains(name, "gemini-pro") && !strings.Contains(name, "custom") {
+		if name == "models/gemini-pro" {
 			count++
 		}
 	}
@@ -731,14 +730,14 @@ func BenchmarkGeminiChannel_ExtractModel(b *testing.B) {
 		BaseChannel: &BaseChannel{},
 	}
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("POST", "/v1beta/models/gemini-pro:generateContent", nil)
-
 	bodyBytes := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		// Create fresh context for each iteration to avoid state pollution
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "/v1beta/models/gemini-pro:generateContent", nil)
 		ch.ExtractModel(c, bodyBytes)
 	}
 }

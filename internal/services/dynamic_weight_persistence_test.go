@@ -16,6 +16,7 @@ func TestNewDynamicWeightPersistence(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
 	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
 	manager := NewDynamicWeightManager(kvStore)
 
 	persistence := NewDynamicWeightPersistence(db, manager)
@@ -41,6 +42,7 @@ func TestDynamicWeightPersistence_MarkDirtyByKey(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
 	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
 	manager := NewDynamicWeightManager(kvStore)
 	persistence := NewDynamicWeightPersistence(db, manager)
 
@@ -286,6 +288,7 @@ func TestDynamicWeightPersistence_LoadFromDatabase(t *testing.T) {
 	}
 
 	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
 	manager := NewDynamicWeightManager(kvStore)
 	persistence := NewDynamicWeightPersistence(db, manager)
 
@@ -388,6 +391,7 @@ func TestDynamicWeightPersistence_DeleteAndRestoreSubGroupMetrics(t *testing.T) 
 	}
 
 	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
 	manager := NewDynamicWeightManager(kvStore)
 	persistence := NewDynamicWeightPersistence(db, manager)
 
@@ -455,6 +459,7 @@ func TestDynamicWeightPersistence_DeleteAndRestoreModelRedirectMetrics(t *testin
 	}
 
 	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
 	manager := NewDynamicWeightManager(kvStore)
 	persistence := NewDynamicWeightPersistence(db, manager)
 
@@ -520,6 +525,7 @@ func TestDynamicWeightPersistence_CleanupExpiredMetrics(t *testing.T) {
 	}
 
 	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
 	manager := NewDynamicWeightManager(kvStore)
 	persistence := NewDynamicWeightPersistence(db, manager)
 
@@ -649,6 +655,7 @@ func TestDynamicWeightPersistence_StartStop(t *testing.T) {
 	}
 
 	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
 	manager := NewDynamicWeightManager(kvStore)
 	persistence := NewDynamicWeightPersistence(db, manager)
 

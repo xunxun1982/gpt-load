@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,30 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// saveLoggerState saves the current logger state for restoration in tests
+type loggerState struct {
+	output    io.Writer
+	level     logrus.Level
+	formatter logrus.Formatter
+}
+
+// saveLoggerState captures current logger configuration
+func saveLoggerState() *loggerState {
+	return &loggerState{
+		output:    logrus.StandardLogger().Out,
+		level:     logrus.GetLevel(),
+		formatter: logrus.StandardLogger().Formatter,
+	}
+}
+
+// restore restores the logger to the saved state
+func (s *loggerState) restore() {
+	logrus.SetOutput(s.output)
+	logrus.SetLevel(s.level)
+	logrus.SetFormatter(s.formatter)
+	CloseLogger()
+}
 
 // mockConfigManager implements types.ConfigManager for testing
 type mockConfigManager struct {
@@ -133,16 +158,8 @@ func TestCloseLogger(t *testing.T) {
 }
 
 func TestSetupLogger_TextFormat(t *testing.T) {
-	// Save original state
-	originalOutput := logrus.StandardLogger().Out
-	originalLevel := logrus.GetLevel()
-	originalFormatter := logrus.StandardLogger().Formatter
-	defer func() {
-		logrus.SetOutput(originalOutput)
-		logrus.SetLevel(originalLevel)
-		logrus.SetFormatter(originalFormatter)
-		CloseLogger()
-	}()
+	saved := saveLoggerState()
+	defer saved.restore()
 
 	cfg := &mockConfigManager{
 		logConfig: types.LogConfig{
@@ -163,16 +180,8 @@ func TestSetupLogger_TextFormat(t *testing.T) {
 }
 
 func TestSetupLogger_JSONFormat(t *testing.T) {
-	// Save original state
-	originalOutput := logrus.StandardLogger().Out
-	originalLevel := logrus.GetLevel()
-	originalFormatter := logrus.StandardLogger().Formatter
-	defer func() {
-		logrus.SetOutput(originalOutput)
-		logrus.SetLevel(originalLevel)
-		logrus.SetFormatter(originalFormatter)
-		CloseLogger()
-	}()
+	saved := saveLoggerState()
+	defer saved.restore()
 
 	cfg := &mockConfigManager{
 		logConfig: types.LogConfig{
@@ -193,16 +202,8 @@ func TestSetupLogger_JSONFormat(t *testing.T) {
 }
 
 func TestSetupLogger_InvalidLevel(t *testing.T) {
-	// Save original state
-	originalOutput := logrus.StandardLogger().Out
-	originalLevel := logrus.GetLevel()
-	originalFormatter := logrus.StandardLogger().Formatter
-	defer func() {
-		logrus.SetOutput(originalOutput)
-		logrus.SetLevel(originalLevel)
-		logrus.SetFormatter(originalFormatter)
-		CloseLogger()
-	}()
+	saved := saveLoggerState()
+	defer saved.restore()
 
 	cfg := &mockConfigManager{
 		logConfig: types.LogConfig{
@@ -219,16 +220,8 @@ func TestSetupLogger_InvalidLevel(t *testing.T) {
 }
 
 func TestSetupLogger_FileLogging(t *testing.T) {
-	// Save original state
-	originalOutput := logrus.StandardLogger().Out
-	originalLevel := logrus.GetLevel()
-	originalFormatter := logrus.StandardLogger().Formatter
-	defer func() {
-		logrus.SetOutput(originalOutput)
-		logrus.SetLevel(originalLevel)
-		logrus.SetFormatter(originalFormatter)
-		CloseLogger()
-	}()
+	saved := saveLoggerState()
+	defer saved.restore()
 
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "logs", "test.log")
@@ -261,16 +254,8 @@ func TestSetupLogger_FileLogging(t *testing.T) {
 }
 
 func TestSetupLogger_FileLoggingError(t *testing.T) {
-	// Save original state
-	originalOutput := logrus.StandardLogger().Out
-	originalLevel := logrus.GetLevel()
-	originalFormatter := logrus.StandardLogger().Formatter
-	defer func() {
-		logrus.SetOutput(originalOutput)
-		logrus.SetLevel(originalLevel)
-		logrus.SetFormatter(originalFormatter)
-		CloseLogger()
-	}()
+	saved := saveLoggerState()
+	defer saved.restore()
 
 	// Create a file (not a directory) and try to use it as a log directory
 	// This will fail when trying to create the log file
@@ -300,16 +285,8 @@ func TestSetupLogger_FileLoggingError(t *testing.T) {
 }
 
 func TestSetupLogger_MultipleSetups(t *testing.T) {
-	// Save original state
-	originalOutput := logrus.StandardLogger().Out
-	originalLevel := logrus.GetLevel()
-	originalFormatter := logrus.StandardLogger().Formatter
-	defer func() {
-		logrus.SetOutput(originalOutput)
-		logrus.SetLevel(originalLevel)
-		logrus.SetFormatter(originalFormatter)
-		CloseLogger()
-	}()
+	saved := saveLoggerState()
+	defer saved.restore()
 
 	tmpDir := t.TempDir()
 	logPath1 := filepath.Join(tmpDir, "log1.log")
@@ -369,16 +346,8 @@ func TestSetupLogger_AllLevels(t *testing.T) {
 
 	for i, level := range levels {
 		t.Run(level, func(t *testing.T) {
-			// Save original state
-			originalOutput := logrus.StandardLogger().Out
-			originalLevel := logrus.GetLevel()
-			originalFormatter := logrus.StandardLogger().Formatter
-			defer func() {
-				logrus.SetOutput(originalOutput)
-				logrus.SetLevel(originalLevel)
-				logrus.SetFormatter(originalFormatter)
-				CloseLogger()
-			}()
+			saved := saveLoggerState()
+			defer saved.restore()
 
 			cfg := &mockConfigManager{
 				logConfig: types.LogConfig{

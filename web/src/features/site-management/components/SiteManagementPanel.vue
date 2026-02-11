@@ -462,6 +462,9 @@ async function submitSite() {
       await siteManagementApi.updateSite(editingSite.value.id, updatePayload);
       message.success(t("siteManagement.siteUpdated"));
     } else {
+      // Type assertion is intentional here: payload is dynamically constructed
+      // from siteForm and authValueStr, which matches CreateManagedSiteRequest structure.
+      // Using 'as' instead of 'satisfies' because the payload is built incrementally.
       await siteManagementApi.createSite({
         ...payload,
         auth_value: authValueStr,
