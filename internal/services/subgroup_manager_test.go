@@ -9,13 +9,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// newTestManager creates a new SubGroupManager with a memory store for testing
+func newTestManager(t *testing.T) (*SubGroupManager, *store.MemoryStore) {
+	t.Helper()
+	s := store.NewMemoryStore()
+	t.Cleanup(func() { s.Close() })
+	return NewSubGroupManager(s), s
+}
+
 func TestNewSubGroupManager(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
-
-	manager := NewSubGroupManager(mockStore)
+	manager, mockStore := newTestManager(t)
 
 	assert.NotNil(t, manager)
 	assert.Equal(t, mockStore, manager.store)
@@ -26,10 +31,7 @@ func TestNewSubGroupManager(t *testing.T) {
 func TestSetDynamicWeightManager(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
-
-	manager := NewSubGroupManager(mockStore)
+	manager, _ := newTestManager(t)
 	dwm := &DynamicWeightManager{}
 
 	manager.SetDynamicWeightManager(dwm)
@@ -40,10 +42,7 @@ func TestSetDynamicWeightManager(t *testing.T) {
 func TestSelectSubGroup_NonAggregate(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
-
-	manager := NewSubGroupManager(mockStore)
+	manager, _ := newTestManager(t)
 
 	group := &models.Group{
 		Name:      "standard-group",
@@ -59,10 +58,7 @@ func TestSelectSubGroup_NonAggregate(t *testing.T) {
 func TestSelectSubGroup_NoSubGroups(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
-
-	manager := NewSubGroupManager(mockStore)
+	manager, _ := newTestManager(t)
 
 	group := &models.Group{
 		Name:      "aggregate-group",
@@ -80,10 +76,7 @@ func TestSelectSubGroup_NoSubGroups(t *testing.T) {
 func TestSelectSubGroupWithRetry_WithExclusion(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
-
-	manager := NewSubGroupManager(mockStore)
+	manager, mockStore := newTestManager(t)
 
 	// Create test group with sub-groups
 	group := &models.Group{
@@ -109,17 +102,15 @@ func TestSelectSubGroupWithRetry_WithExclusion(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotEmpty(t, name)
-	assert.NotEqual(t, uint(10), id)       // Should not select excluded group
-	assert.Contains(t, []uint{20, 30}, id) // Should select from remaining groups
+	assert.NotEqual(t, uint(10), id, "should not select excluded group 10")
+	// Improved assertion with clearer failure message
+	assert.True(t, id == 20 || id == 30, "expected id 20 or 30 but got %d", id)
 }
 
 func TestRebuildSelectors(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
-
-	manager := NewSubGroupManager(mockStore)
+	manager, _ := newTestManager(t)
 
 	groups := map[string]*models.Group{
 		"agg1": {
@@ -157,8 +148,7 @@ func TestRebuildSelectors(t *testing.T) {
 func TestSelector_SelectByWeight_SingleSubGroup(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
+	_, mockStore := newTestManager(t)
 
 	sel := &selector{
 		groupID:   1,
@@ -182,8 +172,7 @@ func TestSelector_SelectByWeight_SingleSubGroup(t *testing.T) {
 func TestSelector_SelectByWeight_DisabledSubGroup(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
+	_, mockStore := newTestManager(t)
 
 	sel := &selector{
 		groupID:   1,
@@ -211,8 +200,7 @@ func TestSelector_SelectByWeight_DisabledSubGroup(t *testing.T) {
 func TestSelector_HasActiveKeys(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
+	_, mockStore := newTestManager(t)
 
 	sel := &selector{
 		groupID:   1,
@@ -231,8 +219,7 @@ func TestSelector_HasActiveKeys(t *testing.T) {
 func TestSelector_SelectNext_NoActiveKeys(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
+	_, mockStore := newTestManager(t)
 
 	sel := &selector{
 		groupID:   1,
@@ -253,8 +240,7 @@ func TestSelector_SelectNext_NoActiveKeys(t *testing.T) {
 func TestSelector_SelectNextWithExclusion_AllExcluded(t *testing.T) {
 	t.Parallel()
 
-	mockStore := store.NewMemoryStore()
-	t.Cleanup(func() { mockStore.Close() })
+	_, mockStore := newTestManager(t)
 
 	sel := &selector{
 		groupID:   1,

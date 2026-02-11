@@ -106,18 +106,29 @@ func TestSyncWriter(t *testing.T) {
 	numGoroutines := 10
 	numWrites := 100
 
+	// Channel to collect errors from goroutines
+	errChan := make(chan error, numGoroutines*numWrites)
+
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < numWrites; j++ {
-				_, err := sw.Write([]byte("test\n"))
-				assert.NoError(t, err)
+				if _, err := sw.Write([]byte("test\n")); err != nil {
+					errChan <- err
+					return
+				}
 			}
 		}(i)
 	}
 
 	wg.Wait()
+	close(errChan)
+
+	// Check for any errors from goroutines
+	for err := range errChan {
+		t.Errorf("Write error in goroutine: %v", err)
+	}
 
 	// Verify all writes completed
 	lines := strings.Split(buf.String(), "\n")

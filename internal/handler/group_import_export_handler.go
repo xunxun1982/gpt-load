@@ -798,6 +798,10 @@ func optimizeDatabaseAfterImport(ctx context.Context, db *gorm.DB) error {
 		if err := db.WithContext(ctx).Exec("ANALYZE group_sub_groups").Error; err != nil {
 			logrus.WithError(err).Warn("Failed to analyze group_sub_groups table after import")
 		}
+	default:
+		// Log when optimization is skipped for unsupported database drivers
+		// This helps operators identify when database-specific optimizations are not applied
+		logrus.Debugf("Database optimization skipped for unsupported driver: %s", driverName)
 	}
 
 	// Verify connection is still alive after optimization
