@@ -10,6 +10,8 @@ import (
 )
 
 func TestNewAggregateGroupService(t *testing.T) {
+	t.Parallel()
+
 	groupManager := &GroupManager{}
 	dynamicWeightManager := &DynamicWeightManager{}
 
@@ -23,6 +25,8 @@ func TestNewAggregateGroupService(t *testing.T) {
 }
 
 func TestIsGroupCCSupportEnabled(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		group    *models.Group
@@ -74,6 +78,13 @@ func TestIsGroupCCSupportEnabled(t *testing.T) {
 			expected: true,
 		},
 		{
+			name: "cc_support 0 (int)",
+			group: &models.Group{
+				Config: map[string]any{"cc_support": 0},
+			},
+			expected: false,
+		},
+		{
 			name: "cc_support missing",
 			group: &models.Group{
 				Config: map[string]any{"other_key": "value"},
@@ -91,6 +102,7 @@ func TestIsGroupCCSupportEnabled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := isGroupCCSupportEnabled(tt.group)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -98,6 +110,8 @@ func TestIsGroupCCSupportEnabled(t *testing.T) {
 }
 
 func TestGetEffectiveEndpointForAggregation(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name                 string
 		subGroup             *models.Group
@@ -149,6 +163,7 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := getEffectiveEndpointForAggregation(tt.subGroup, tt.aggregateChannelType, tt.isOpenAIWithCC)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -156,6 +171,8 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 }
 
 func TestGenerateCacheKey(t *testing.T) {
+	t.Parallel()
+
 	service := NewAggregateGroupService(nil, &GroupManager{}, nil)
 
 	tests := []struct {
@@ -187,6 +204,7 @@ func TestGenerateCacheKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := service.generateCacheKey(tt.groupIDs)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -194,6 +212,8 @@ func TestGenerateCacheKey(t *testing.T) {
 }
 
 func TestContainsGroupID(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		cacheKey   string
@@ -252,6 +272,7 @@ func TestContainsGroupID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := containsGroupID(tt.cacheKey, tt.groupIDStr)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -259,9 +280,13 @@ func TestContainsGroupID(t *testing.T) {
 }
 
 func TestInvalidateStatsCacheForGroup(t *testing.T) {
+	t.Parallel()
+
 	service := NewAggregateGroupService(nil, &GroupManager{}, nil)
 
 	// Populate cache with test data
+	// Note: Direct cache manipulation is acceptable in unit tests for simplicity.
+	// If statsCache becomes concurrent-safe or access is restructured, update this test.
 	service.statsCache["1,2,3"] = keyStatsCacheEntry{
 		results:   map[uint]keyStatsResult{1: {GroupID: 1}},
 		expiresAt: time.Now().Add(time.Hour),

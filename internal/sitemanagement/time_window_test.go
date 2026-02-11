@@ -206,37 +206,37 @@ func TestIsMinutesWithinWindow(t *testing.T) {
 	}{
 		{
 			name:        "Within normal window",
-			minutes:     600,  // 10:00
-			windowStart: 540,  // 09:00
-			windowEnd:   720,  // 12:00
+			minutes:     600, // 10:00
+			windowStart: 540, // 09:00
+			windowEnd:   720, // 12:00
 			expected:    true,
 		},
 		{
 			name:        "At window start",
-			minutes:     540,  // 09:00
-			windowStart: 540,  // 09:00
-			windowEnd:   720,  // 12:00
+			minutes:     540, // 09:00
+			windowStart: 540, // 09:00
+			windowEnd:   720, // 12:00
 			expected:    true,
 		},
 		{
 			name:        "At window end",
-			minutes:     720,  // 12:00
-			windowStart: 540,  // 09:00
-			windowEnd:   720,  // 12:00
+			minutes:     720, // 12:00
+			windowStart: 540, // 09:00
+			windowEnd:   720, // 12:00
 			expected:    true,
 		},
 		{
 			name:        "Before window start",
-			minutes:     480,  // 08:00
-			windowStart: 540,  // 09:00
-			windowEnd:   720,  // 12:00
+			minutes:     480, // 08:00
+			windowStart: 540, // 09:00
+			windowEnd:   720, // 12:00
 			expected:    false,
 		},
 		{
 			name:        "After window end",
-			minutes:     780,  // 13:00
-			windowStart: 540,  // 09:00
-			windowEnd:   720,  // 12:00
+			minutes:     780, // 13:00
+			windowStart: 540, // 09:00
+			windowEnd:   720, // 12:00
 			expected:    false,
 		},
 		{

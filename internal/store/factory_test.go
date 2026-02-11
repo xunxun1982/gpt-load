@@ -89,7 +89,7 @@ func TestNewStore_InvalidRedisDSN(t *testing.T) {
 	}
 
 	store, err := NewStore(cfg)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, store)
 	assert.Contains(t, err.Error(), "failed to parse redis DSN")
 }
@@ -102,7 +102,7 @@ func TestNewStore_RedisConnectionFailed(t *testing.T) {
 	}
 
 	store, err := NewStore(cfg)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, store)
 	assert.Contains(t, err.Error(), "failed to connect to redis")
 }

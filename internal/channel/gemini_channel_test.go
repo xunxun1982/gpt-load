@@ -317,12 +317,12 @@ func TestGeminiChannel_ApplyModelRedirect_NativeFormat(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                string
-		path                string
-		redirectMap         map[string]string
-		expectedPath        string
-		expectedOriginal    string
-		shouldModify        bool
+		name             string
+		path             string
+		redirectMap      map[string]string
+		expectedPath     string
+		expectedOriginal string
+		shouldModify     bool
 	}{
 		{
 			name: "Redirect gemini-pro to gemini-1.5-pro",
@@ -416,11 +416,11 @@ func TestGeminiChannel_TransformModelList_NativeFormat(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		responseJSON string
-		redirectMap  map[string]string
-		strictMode   bool
-		expectedLen  int
+		name          string
+		responseJSON  string
+		redirectMap   map[string]string
+		strictMode    bool
+		expectedLen   int
 		shouldContain []string
 	}{
 		{
@@ -530,10 +530,10 @@ func TestBuildConfiguredGeminiModelsFromRules(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		v1Map       map[string]string
-		v2Map       map[string]*models.ModelRedirectRuleV2
-		expectedLen int
+		name          string
+		v1Map         map[string]string
+		v2Map         map[string]*models.ModelRedirectRuleV2
+		expectedLen   int
 		shouldContain []string
 	}{
 		{
@@ -542,8 +542,8 @@ func TestBuildConfiguredGeminiModelsFromRules(t *testing.T) {
 				"model-a": "target-a",
 				"model-b": "target-b",
 			},
-			v2Map:       nil,
-			expectedLen: 2,
+			v2Map:         nil,
+			expectedLen:   2,
 			shouldContain: []string{"models/model-a", "models/model-b"},
 		},
 		{
@@ -553,7 +553,7 @@ func TestBuildConfiguredGeminiModelsFromRules(t *testing.T) {
 				"model-x": {Targets: []models.ModelRedirectTarget{{Model: "target-x", Weight: 100}}},
 				"model-y": {Targets: []models.ModelRedirectTarget{{Model: "target-y", Weight: 100}}},
 			},
-			expectedLen: 2,
+			expectedLen:   2,
 			shouldContain: []string{"models/model-x", "models/model-y"},
 		},
 		{
@@ -564,14 +564,14 @@ func TestBuildConfiguredGeminiModelsFromRules(t *testing.T) {
 			v2Map: map[string]*models.ModelRedirectRuleV2{
 				"model-x": {Targets: []models.ModelRedirectTarget{{Model: "target-x", Weight: 100}}},
 			},
-			expectedLen: 1, // Only V2 models
+			expectedLen:   1, // Only V2 models
 			shouldContain: []string{"models/model-x"},
 		},
 		{
-			name:        "Empty rules",
-			v1Map:       map[string]string{},
-			v2Map:       map[string]*models.ModelRedirectRuleV2{},
-			expectedLen: 0,
+			name:          "Empty rules",
+			v1Map:         map[string]string{},
+			v2Map:         map[string]*models.ModelRedirectRuleV2{},
+			expectedLen:   0,
 			shouldContain: []string{},
 		},
 	}

@@ -648,9 +648,10 @@ func (s *HubService) calculateAggregateGroupHealthScoreWithVisited(aggregateGrou
 // 3. Filter by channel compatibility with relay format
 // 4. For Claude format, verify target channel has cc_support enabled
 // 5. For aggregate groups, check preconditions (e.g., max_request_size_kb) - EARLY FILTERING
-//    - Batch load preconditions for all aggregate groups (avoid N+1 queries)
-//    - Filter out groups that don't meet preconditions before selection
-//    - This prevents unsuitable groups from entering the selection process
+//   - Batch load preconditions for all aggregate groups (avoid N+1 queries)
+//   - Filter out groups that don't meet preconditions before selection
+//   - This prevents unsuitable groups from entering the selection process
+//
 // 6. Prioritize native channel type for the format
 // 7. Select by sort order (priority) and weight
 //

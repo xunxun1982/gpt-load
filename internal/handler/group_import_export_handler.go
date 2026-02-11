@@ -758,7 +758,8 @@ func optimizeDatabaseAfterImport(ctx context.Context, db *gorm.DB) error {
 	// Get driver name to determine database type
 	driverName := db.Dialector.Name()
 
-	if driverName == "sqlite" {
+	switch driverName {
+	case "sqlite":
 		// For SQLite, run PRAGMA optimize to update query planner statistics
 		// This is crucial after bulk inserts to ensure efficient query plans
 		if err := db.WithContext(ctx).Exec("PRAGMA optimize").Error; err != nil {
@@ -771,7 +772,7 @@ func optimizeDatabaseAfterImport(ctx context.Context, db *gorm.DB) error {
 		if err := db.WithContext(ctx).Exec("PRAGMA wal_checkpoint(PASSIVE)").Error; err != nil {
 			logrus.WithError(err).Warn("Failed to checkpoint WAL after import")
 		}
-	} else if driverName == "mysql" {
+	case "mysql":
 		// For MySQL, analyze the api_keys table to update statistics
 		if err := db.WithContext(ctx).Exec("ANALYZE TABLE api_keys").Error; err != nil {
 			logrus.WithError(err).Warn("Failed to analyze api_keys table after import")
@@ -784,7 +785,7 @@ func optimizeDatabaseAfterImport(ctx context.Context, db *gorm.DB) error {
 		if err := db.WithContext(ctx).Exec("ANALYZE TABLE group_sub_groups").Error; err != nil {
 			logrus.WithError(err).Warn("Failed to analyze group_sub_groups table after import")
 		}
-	} else if driverName == "postgres" {
+	case "postgres":
 		// For PostgreSQL, analyze the api_keys table
 		if err := db.WithContext(ctx).Exec("ANALYZE api_keys").Error; err != nil {
 			logrus.WithError(err).Warn("Failed to analyze api_keys table after import")
