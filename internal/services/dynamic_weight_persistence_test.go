@@ -671,8 +671,24 @@ func TestDynamicWeightPersistence_StartStop(t *testing.T) {
 	}
 	persistence.MarkDirtyByKey(key)
 
-	// Wait for sync
-	time.Sleep(200 * time.Millisecond)
+	// Poll until the metric is persisted or timeout
+	// Using polling instead of sleep to avoid flaky tests in CI
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	persisted := false
+	for !persisted {
+		select {
+		case <-deadline:
+			t.Fatal("Timed out waiting for metric to be persisted")
+		case <-ticker.C:
+			var count int64
+			db.Model(&models.DynamicWeightMetric{}).
+				Where("metric_type = ? AND group_id = ?", models.MetricTypeGroup, 1).
+				Count(&count)
+			persisted = count > 0
+		}
+	}
 
 	// Stop service
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

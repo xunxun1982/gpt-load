@@ -56,7 +56,8 @@ func TestChildGroupService_InvalidateCache(t *testing.T) {
 }
 
 func TestBuildChildGroupUpstream(t *testing.T) {
-	t.Parallel()
+	// Note: t.Parallel() removed to avoid data race with os.Setenv/os.Unsetenv.
+	// Using t.Setenv (Go 1.17+) which requires non-parallel test.
 	tests := []struct {
 		name           string
 		parentName     string
@@ -81,8 +82,7 @@ func TestBuildChildGroupUpstream(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.port != "" {
-				os.Setenv("PORT", tt.port)
-				defer os.Unsetenv("PORT")
+				t.Setenv("PORT", tt.port)
 			}
 
 			upstream, err := buildChildGroupUpstream(tt.parentName)
@@ -280,7 +280,12 @@ func TestChildGroupService_CreateChildGroup(t *testing.T) {
 			if len(upstreams) != 1 {
 				t.Fatalf("Expected 1 upstream, got %d", len(upstreams))
 			}
-			expectedURL := fmt.Sprintf("http://127.0.0.1:3001/proxy/%s", parentGroup.Name)
+			// Dynamically get port from environment to avoid hardcoding
+			port := os.Getenv("PORT")
+			if port == "" {
+				port = "3001" // Default port
+			}
+			expectedURL := fmt.Sprintf("http://127.0.0.1:%s/proxy/%s", port, parentGroup.Name)
 			if upstreams[0]["url"] != expectedURL {
 				t.Errorf("Expected URL %s, got %s", expectedURL, upstreams[0]["url"])
 			}
@@ -429,11 +434,6 @@ func TestChildGroupService_GetChildGroups(t *testing.T) {
 		t.Fatalf("Expected 2 children, got %d", len(children))
 	}
 
-	// Debug: print children
-	for i, child := range children {
-		t.Logf("Child %d: Name=%s, Enabled=%v", i, child.Name, child.Enabled)
-	}
-
 	// Verify order (by name since sort is same)
 	if children[0].Name != "child1" {
 		t.Errorf("Expected first child to be child1, got %s", children[0].Name)
@@ -446,12 +446,12 @@ func TestChildGroupService_GetChildGroups(t *testing.T) {
 	if !children[0].Enabled {
 		t.Error("Expected child1 to be enabled")
 	}
-	// Note: GORM's default:true on Enabled field means false values may not persist correctly
-	// This is a known GORM limitation with boolean fields and default values
-	// In production, groups are typically enabled by default anyway
-	if !children[1].Enabled {
-		t.Log("Note: child2 Enabled=false did not persist due to GORM default:true behavior")
-	}
+	// TODO: GORM's default:true on Enabled field prevents false values from persisting correctly.
+	// This is a known GORM limitation with boolean fields and default values.
+	// In production, groups are typically enabled by default anyway, so this limitation
+	// has minimal impact. If strict false persistence is needed, consider using *bool
+	// or a custom SQL insert for testing.
+	// Reference: https://github.com/go-gorm/gorm/issues/2978
 }
 
 func TestChildGroupService_GetAllChildGroups(t *testing.T) {
