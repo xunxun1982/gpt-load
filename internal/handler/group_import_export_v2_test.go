@@ -65,7 +65,7 @@ func TestGroupExportInfo_ModelRedirectRulesV2(t *testing.T) {
 
 			// Marshal V2 rules to JSON
 			var v2JSON json.RawMessage
-			if tt.v2Rules != nil && len(tt.v2Rules) > 0 {
+			if len(tt.v2Rules) > 0 {
 				data, err := json.Marshal(tt.v2Rules)
 				if err != nil {
 					t.Fatalf("Failed to marshal V2 rules: %v", err)

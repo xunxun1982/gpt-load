@@ -189,3 +189,33 @@ func GetValidationEndpoint(group *models.Group) string {
 		return ""
 	}
 }
+
+// IsGroupCCSupportEnabled checks whether cc_support is enabled for a group.
+// Supports multiple types for flexibility: bool, numeric (float64/int), and string.
+// String values are case-insensitive and accept "true", "1", "yes", "on".
+// This function is shared across aggregate_group_service and hub_service to ensure consistent behavior.
+func IsGroupCCSupportEnabled(group *models.Group) bool {
+	if group == nil || group.Config == nil {
+		return false
+	}
+
+	raw, ok := group.Config["cc_support"]
+	if !ok || raw == nil {
+		return false
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	case string:
+		// Handle string values case-insensitively
+		lower := strings.ToLower(strings.TrimSpace(v))
+		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
+	default:
+		return false
+	}
+}

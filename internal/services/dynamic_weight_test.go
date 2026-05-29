@@ -741,9 +741,9 @@ func TestDynamicWeightManager_HubHealthScoreCalculation(t *testing.T) {
 	// Simulate multiple requests through Hub to a group
 	// Some fail (retry), some succeed (final)
 	dwm.RecordSubGroupFailure(groupID, subGroupID, false) // Retry failure
-	dwm.RecordSubGroupSuccess(groupID, subGroupID) // Final success
+	dwm.RecordSubGroupSuccess(groupID, subGroupID)        // Final success
 	dwm.RecordSubGroupFailure(groupID, subGroupID, false) // Retry failure
-	dwm.RecordSubGroupSuccess(groupID, subGroupID) // Final success
+	dwm.RecordSubGroupSuccess(groupID, subGroupID)        // Final success
 
 	// Verify health score reflects both retry and final requests
 	metrics, err := dwm.GetSubGroupMetrics(groupID, subGroupID)

@@ -55,6 +55,7 @@ export default {
   stealthRequiresCookieAuth: "隐身绕过需要使用 Cookie 认证方式",
   stealthRequiresCookieValue: "隐身绕过需要填写 Cookie 值",
   missingCFCookies: "缺少 Cloudflare 绕过所需的 CF Cookies，需要以下至少一个：{cookies}",
+  maxTwoAuthTypes: "最多只能选择 2 种认证方式",
 
   // Auth related
   authType: "认证方式",

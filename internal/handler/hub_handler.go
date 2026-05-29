@@ -57,10 +57,11 @@ func NewHubHandler(
 // ③ Access Control: Validate access key permissions for the model
 // ④ Model Availability: Check if model exists in any enabled group
 // ⑤ Group Selection Filters (SelectGroupForModel):
-//    - Filter: Health threshold + Enabled status
-//    - Filter: Channel compatibility with relay format
-//    - Filter: Claude format CC support (for non-Anthropic channels)
-//    - Filter: Aggregate group preconditions (e.g., max_request_size_kb) - EARLY FILTERING
+//   - Filter: Health threshold + Enabled status
+//   - Filter: Channel compatibility with relay format
+//   - Filter: Claude format CC support (for non-Anthropic channels)
+//   - Filter: Aggregate group preconditions (e.g., max_request_size_kb) - EARLY FILTERING
+//
 // ⑥ Channel Priority: Native channels > Compatible channels
 // ⑦ Group Selection: Minimum priority value (lower=higher) → Health-weighted random selection
 // ⑧ Path Rewrite & Forward: /hub/v1/* → /proxy/{group_name}/v1/*
@@ -418,7 +419,7 @@ func (h *HubHandler) HandleDeleteAccessKey(c *gin.Context) {
 
 // detectRelayFormat detects the API format from the request path and method.
 // This determines how to parse the request and which default model to use.
-func (h *HubHandler) detectRelayFormat(path, method string) types.RelayFormat {
+func (h *HubHandler) detectRelayFormat(path, _ string) types.RelayFormat {
 	// Normalize path for comparison only, keep original for model extraction
 	lowerPath := strings.ToLower(path)
 

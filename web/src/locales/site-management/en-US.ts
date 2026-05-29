@@ -56,6 +56,7 @@ export default {
   stealthRequiresCookieAuth: "Stealth bypass requires Cookie auth type",
   stealthRequiresCookieValue: "Stealth bypass requires cookie value",
   missingCFCookies: "Missing CF cookies for Cloudflare bypass. Need at least one of: {cookies}",
+  maxTwoAuthTypes: "Maximum 2 authentication types allowed",
 
   // Auth related
   authType: "Auth Type",
