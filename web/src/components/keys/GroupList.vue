@@ -306,9 +306,11 @@ function scrollWithinGroupsSection(element: HTMLElement, block: ScrollLogicalPos
     return;
   }
 
+  const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
   container.scrollTo({
     top: Math.max(0, targetTop),
-    behavior: "smooth",
+    behavior: prefersReducedMotion ? "auto" : "smooth",
   });
 }
 
@@ -1691,15 +1693,15 @@ async function handleFileChange(event: Event) {
 }
 
 .group-order-controls {
-  width: 16px;
+  width: 24px;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
 }
 
 .group-order-button {
-  width: 16px;
-  height: 14px;
+  width: 24px;
+  min-height: 24px;
   padding: 0;
   border: 0;
   color: var(--text-secondary);
@@ -1723,8 +1725,8 @@ async function handleFileChange(event: Event) {
 }
 
 .group-drag-handle {
-  width: 16px;
-  height: 28px;
+  width: 24px;
+  min-height: 28px;
   padding: 0;
   border: 0;
   color: var(--text-secondary);

@@ -5,11 +5,27 @@ import LanguageSelector from "@/components/LanguageSelector.vue";
 import Logout from "@/components/Logout.vue";
 import NavBar from "@/components/NavBar.vue";
 import ThemeToggle from "@/components/ThemeToggle.vue";
-import { useMediaQuery } from "@vueuse/core";
-import { ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const isMenuOpen = ref(false);
-const isMobile = useMediaQuery("(max-width: 768px)");
+const isMobile = ref(false);
+const mobileMediaQuery = "(max-width: 768px)";
+let mediaQueryList: MediaQueryList | null = null;
+
+const handleMediaQueryChange = (event: MediaQueryListEvent) => {
+  isMobile.value = event.matches;
+};
+
+onMounted(() => {
+  mediaQueryList = window.matchMedia(mobileMediaQuery);
+  isMobile.value = mediaQueryList.matches;
+  mediaQueryList.addEventListener("change", handleMediaQueryChange);
+});
+
+onBeforeUnmount(() => {
+  mediaQueryList?.removeEventListener("change", handleMediaQueryChange);
+  mediaQueryList = null;
+});
 
 watch(isMobile, value => {
   if (!value) {
@@ -82,6 +98,8 @@ const toggleMenu = () => {
 
 <style scoped>
 .main-layout {
+  --content-padding-x: clamp(12px, 1.5vw, 20px);
+  --content-padding-y: 8px;
   background: transparent;
   min-height: 100vh;
   display: flex;
@@ -177,7 +195,7 @@ const toggleMenu = () => {
 }
 
 .content-wrapper {
-  padding: clamp(12px, 1.5vw, 20px);
+  padding: var(--content-padding-y) var(--content-padding-x);
   min-height: calc(100vh - 111px);
   max-width: 100%;
   margin: 0 auto;

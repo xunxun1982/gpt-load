@@ -8,8 +8,42 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
 
+	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
+
+const (
+	ctxKeyModelRedirectSourceModel = "model_redirect_source_model"
+	ctxKeyModelRedirectTargetIndex = "model_redirect_target_index"
+)
+
+func setModelRedirectContext(c *gin.Context, originalModel string, targetIdx int, preserveOriginal bool) {
+	if originalModel == "" {
+		clearModelRedirectContext(c)
+		return
+	}
+	if preserveOriginal {
+		if _, exists := c.Get("original_model"); !exists {
+			c.Set("original_model", originalModel)
+		}
+	} else {
+		c.Set("original_model", originalModel)
+	}
+	// Keep redirect metrics independent from original_model, which is also used
+	// for model-mapping log output and may contain a user-facing alias.
+	c.Set(ctxKeyModelRedirectSourceModel, originalModel)
+	if targetIdx >= 0 {
+		c.Set(ctxKeyModelRedirectTargetIndex, targetIdx)
+	} else {
+		c.Set(ctxKeyModelRedirectTargetIndex, -1)
+	}
+}
+
+func clearModelRedirectContext(c *gin.Context) {
+	delete(c.Keys, "original_model")
+	delete(c.Keys, ctxKeyModelRedirectSourceModel)
+	delete(c.Keys, ctxKeyModelRedirectTargetIndex)
+}
 
 func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group) ([]byte, error) {
 	if len(group.ParamOverrides) == 0 || len(bodyBytes) == 0 {

@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"sync"
@@ -357,60 +358,45 @@ func (a *App) Stop(ctx context.Context) {
 		logrus.Debugf("Idle HTTP connections closed. (took %v)", time.Since(httpCloseStart))
 	}
 
-	// Close storage and database connections in parallel for faster shutdown
-	var dbWg sync.WaitGroup
+	// Close storage before database pools so in-memory cleanup cannot race with DB close.
 	dbCloseStart := time.Now()
 
-	// Close storage
 	if a.storage != nil {
-		dbWg.Add(1)
-		go func() {
-			defer dbWg.Done()
-			logrus.Debug("Closing storage...")
-			storageStart := time.Now()
-			a.storage.Close()
-			logrus.Debugf("Storage closed. (took %v)", time.Since(storageStart))
-		}()
+		logrus.Debug("Closing storage...")
+		storageStart := time.Now()
+		a.storage.Close()
+		logrus.Debugf("Storage closed. (took %v)", time.Since(storageStart))
 	}
 
-	// Close database connections to prevent resource leaks
-	// Best practice: explicitly close connection pools during graceful shutdown
-	// Note: ReadDB and main DB are closed in parallel since they are independent connections.
-	// In SQLite WAL mode, readers don't block writers regardless of closure order.
+	// Close database connections to prevent resource leaks.
+	// Best practice: explicitly close connection pools during graceful shutdown.
+	// For SQLite, close the read pool before the write pool so WAL cleanup does not
+	// wait on another connection from this process.
 
 	// Close read-only database connection if it's separate from main DB (SQLite WAL mode)
 	if db.ReadDB != nil && db.ReadDB != a.db {
-		dbWg.Add(1)
-		go func() {
-			defer dbWg.Done()
-			// Skip WAL checkpoint for read-only connection - it doesn't write to WAL
-			closeDBConnectionWithOptions(db.ReadDB, "Read database", false)
-		}()
+		// The read-only connection does not need explicit checkpoint logging.
+		closeDBConnectionWithOptions(db.ReadDB, "Read database", false)
 	}
 
 	// Close main database connection
 	if a.db != nil {
-		dbWg.Add(1)
-		go func() {
-			defer dbWg.Done()
-			closeDBConnection(a.db, "Main database")
-		}()
+		closeDBConnection(a.db, "Main database")
 	}
 
-	dbWg.Wait()
 	logrus.Debugf("All database connections closed. (took %v)", time.Since(dbCloseStart))
 	logrus.Info("Server exited gracefully")
 }
 
-// closeDBConnection gracefully closes a GORM database connection with timeout.
-// It first closes prepared statement cache, then forces idle connections to close,
-// and finally closes the connection pool with a timeout to avoid hanging.
+// closeDBConnection handles GORM database shutdown.
+// It closes prepared statements first, then closes the database pool.
 func closeDBConnection(gormDB *gorm.DB, name string) {
 	closeDBConnectionWithOptions(gormDB, name, true)
 }
 
 // closeDBConnectionWithOptions closes a database connection.
-// logSkipCheckpoint should be true for write connections to log the WAL checkpoint skip message.
+// logSkipCheckpoint should be true for write connections to log that this path
+// does not request an explicit WAL checkpoint.
 func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, logSkipCheckpoint bool) {
 	if gormDB == nil {
 		return
@@ -439,57 +425,58 @@ func closeDBConnectionWithOptions(gormDB *gorm.DB, name string, logSkipCheckpoin
 	logrus.Debugf("[%s] Connection pool stats: Open=%d, InUse=%d, Idle=%d, WaitCount=%d",
 		name, stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
 
-	// For SQLite main DB only: Skip WAL checkpoint on shutdown for faster exit.
-	// Rationale:
-	// - WAL checkpoint can take 30-60 seconds after heavy write operations
-	// - SQLite automatically checkpoints on next connection open
-	// - OS will flush WAL to disk on process exit
-	// - No data loss risk: WAL is durable and will be replayed on next open
-	// - User experience: Ctrl+C should exit quickly (< 1 second)
-	//
-	// Alternative considered: PRAGMA wal_checkpoint(NOOP) - explicitly skips checkpoint
-	// Current approach: Simply don't call checkpoint at all - same effect, cleaner code
 	dialect := gormDB.Dialector.Name()
 	if dialect == "sqlite" && logSkipCheckpoint {
-		logrus.Debugf("[%s] Skipping WAL checkpoint on shutdown for faster exit (WAL will be checkpointed on next startup)", name)
+		// For SQLite main DB only: do not request an explicit WAL checkpoint during shutdown.
+		// Rationale:
+		// - A checkpoint can be slow after heavy writes.
+		// - SQLite replays durable WAL content on the next open.
+		// - Ctrl+C should not wait on optional checkpoint work.
+		//
+		// SQLite may still perform its own final close-time checkpoint. Persist WAL
+		// keeps WAL/SHM files available after close, which avoids extra cleanup work
+		// and preserves the full WAL-mode database state for the next startup.
+		logrus.Debugf("[%s] Skipping explicit WAL checkpoint on shutdown", name)
+		setSQLitePersistWAL(sqlDB, name)
 	}
+	closeSQLDB(sqlDB, name)
+	logrus.Debugf("[%s] Total close time: %v", name, time.Since(totalStart))
+}
 
-	// Force close all idle connections immediately by setting pool size to 0
-	// This triggers immediate cleanup of idle connections in the pool
-	logrus.Debugf("[%s] Setting MaxIdleConns to 0...", name)
-	sqlDB.SetMaxIdleConns(0)
+type sqlitePersistWALController interface {
+	FileControlPersistWAL(dbName string, mode int) (int, error)
+}
 
-	// Set timeouts to 0 to prevent new connections from being kept alive
-	sqlDB.SetConnMaxIdleTime(0)
-	sqlDB.SetConnMaxLifetime(0)
+func setSQLitePersistWAL(sqlDB *sql.DB, name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 
-	// Log connection pool stats after forcing idle close
-	stats = sqlDB.Stats()
-	logrus.Debugf("[%s] After idle cleanup: Open=%d, InUse=%d, Idle=%d",
-		name, stats.OpenConnections, stats.InUse, stats.Idle)
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		logrus.WithError(err).Debugf("[%s] Failed to acquire SQLite connection for persist WAL", name)
+		return
+	}
+	defer conn.Close()
 
-	// Close with timeout to avoid hanging on stuck connections
-	// Use a goroutine with channel to implement timeout for Close()
-	closeStart := time.Now()
-	done := make(chan error, 1)
-	go func() {
-		done <- sqlDB.Close()
-	}()
-
-	// Wait up to 1 second for graceful close, then force proceed
-	select {
-	case err := <-done:
-		if err != nil {
-			logrus.Errorf("[%s] Error closing connection: %v (took %v)", name, err, time.Since(closeStart))
-		} else {
-			logrus.Debugf("[%s] Connection closed successfully. (took %v)", name, time.Since(closeStart))
+	if err := conn.Raw(func(driverConn any) error {
+		controller, ok := driverConn.(sqlitePersistWALController)
+		if !ok {
+			return nil
 		}
-		logrus.Debugf("[%s] Total close time: %v", name, time.Since(totalStart))
-	case <-time.After(1 * time.Second):
-		logrus.Warnf("[%s] Connection close timed out after 1s, proceeding anyway (background close will continue)", name)
-		logrus.Debugf("[%s] Total close time (with timeout): %v", name, time.Since(totalStart))
-		// Note: The goroutine will continue running in background, but we return immediately
-		// This allows the program to exit quickly while SQLite finishes cleanup
-		// The deferred dbWg.Done() in the caller will be called, allowing main to exit
+		_, err := controller.FileControlPersistWAL("main", 1)
+		return err
+	}); err != nil {
+		logrus.WithError(err).Debugf("[%s] Failed to enable SQLite persist WAL", name)
+		return
+	}
+	logrus.Debugf("[%s] SQLite persist WAL enabled before close", name)
+}
+
+func closeSQLDB(sqlDB *sql.DB, name string) {
+	closeStart := time.Now()
+	if err := sqlDB.Close(); err != nil {
+		logrus.Errorf("[%s] Error closing connection: %v (took %v)", name, err, time.Since(closeStart))
+	} else {
+		logrus.Debugf("[%s] Connection closed successfully. (took %v)", name, time.Since(closeStart))
 	}
 }

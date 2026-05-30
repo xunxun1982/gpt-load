@@ -39,7 +39,6 @@
   },
   "dependencies": {
     "@vicons/ionicons5": "^0.13.0",
-    "@vueuse/core": "^14.3.0",
     "axios": "^1.16.1",
     "naive-ui": "^2.44.1",
     "vue": "^3.5.35",
@@ -60,7 +59,7 @@
     "typescript": "^6.0.3",
     "vite": "^8.0.14",
     "vite-plugin-compression2": "^2.5.3",
-    "vue-tsc": "^3.3.2"
+    "vue-tsc": "^3.3.3"
   },
   "allowScripts": {
     "esbuild@0.27.2": true

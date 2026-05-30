@@ -997,10 +997,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 		// Store original model and target index in context for logging and dynamic weight metrics
 		if originalModel != "" {
-			c.Set("original_model", originalModel)
-			if targetIdx >= 0 {
-				c.Set("model_redirect_target_index", targetIdx)
-			}
+			setModelRedirectContext(c, originalModel, targetIdx, false)
 		}
 
 		// Update request body if it was modified by redirection
@@ -1313,6 +1310,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Store current sub-group ID for failure handling
 	c.Set("current_sub_group_id", subGroupID)
+	clearModelRedirectContext(c)
 
 	// Apply model mapping for the selected sub-group
 	finalBodyBytes, originalModel := ps.applyModelMapping(bodyBytes, group)
@@ -1663,12 +1661,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// Store original model and target index in context for logging and dynamic weight metrics
 		// Only update if not already set by model mapping
 		if redirectOriginalModel != "" {
-			if _, exists := c.Get("original_model"); !exists {
-				c.Set("original_model", redirectOriginalModel)
-			}
-			if targetIdx >= 0 {
-				c.Set("model_redirect_target_index", targetIdx)
-			}
+			setModelRedirectContext(c, redirectOriginalModel, targetIdx, true)
 		}
 
 		if !bytes.Equal(redirectedBody, finalBodyBytes) {
@@ -2265,12 +2258,13 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 		}).Debug("Recorded dynamic weight metrics for standard group")
 	}
 
-	// Record model redirect metrics if a redirect occurred
-	// Check if original_model was set in context (indicates redirect happened)
-	if originalModel, exists := c.Get("original_model"); exists {
-		if originalModelStr, ok := originalModel.(string); ok && originalModelStr != "" {
+	// Record model redirect metrics if a redirect occurred.
+	// Use the dedicated redirect source model because original_model may be a
+	// user-facing model-mapping alias used only for request logs.
+	if redirectSourceModel, exists := c.Get(ctxKeyModelRedirectSourceModel); exists {
+		if originalModelStr, ok := redirectSourceModel.(string); ok && originalModelStr != "" {
 			// Get the selected target index from context if available
-			if targetIdx, exists := c.Get("model_redirect_target_index"); exists {
+			if targetIdx, exists := c.Get(ctxKeyModelRedirectTargetIndex); exists {
 				if targetIdxInt, ok := targetIdx.(int); ok && targetIdxInt >= 0 {
 					// Get target model name from the redirect rule
 					var targetModel string

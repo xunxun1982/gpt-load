@@ -60,10 +60,6 @@ export default defineConfig(({ mode }) => {
         fileName: ".vite/license.json",
       },
       rolldownOptions: {
-        // VueUse emits Rollup-compatible pure annotations that Rolldown reports as invalid.
-        checks: {
-          invalidAnnotation: false,
-        },
         output: {
           /**
            * Manual chunk configuration - Optimize caching and loading performance.
@@ -85,7 +81,7 @@ export default defineConfig(({ mode }) => {
               },
               {
                 name: "vendor",
-                test: /node_modules[\\/](@vueuse[\\/]core|@vicons[\\/]ionicons5|axios)[\\/]/,
+                test: /node_modules[\\/](@vicons[\\/]ionicons5|axios)[\\/]/,
                 priority: 1,
               },
             ],

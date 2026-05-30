@@ -916,9 +916,7 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	// Preserve any existing original_model (from model mapping) so
 	// MappedModel logging continues to work. Only set it when absent.
 	if originalModel != "" {
-		if _, exists := c.Get("original_model"); !exists {
-			c.Set("original_model", originalModel)
-		}
+		setModelRedirectContext(c, originalModel, -1, true)
 	}
 
 	// Apply model redirect rules for OpenAI CC mode
@@ -938,6 +936,7 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 			}
 			if targetModel != "" && targetModel != originalModel {
 				claudeReq.Model = targetModel
+				setModelRedirectContext(c, originalModel, selectedIdx, true)
 
 				// Log with additional context for V2 multi-target rules
 				logFields := logrus.Fields{

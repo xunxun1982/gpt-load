@@ -499,7 +499,7 @@ onBeforeUnmount(() => {
 @media (min-width: 768px) {
   .keys-container {
     flex-direction: row;
-    height: calc(100vh - 159px);
+    height: calc(100vh - 111px - (var(--content-padding-y, 8px) * 2));
   }
 
   .sidebar-wrapper {
