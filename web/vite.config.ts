@@ -55,6 +55,10 @@ export default defineConfig(({ mode }) => {
       sourcemap: false,
       // Report compressed size for better size visibility (set to false for faster builds)
       reportCompressedSize: true,
+      // Emit dependency license metadata without generating Markdown artifacts.
+      license: {
+        fileName: ".vite/license.json",
+      },
       rolldownOptions: {
         // VueUse emits Rollup-compatible pure annotations that Rolldown reports as invalid.
         checks: {
@@ -94,7 +98,11 @@ export default defineConfig(({ mode }) => {
                 },
               }
             : undefined,
-          comments: false,
+          comments: {
+            legal: true,
+            annotation: false,
+            jsdoc: false,
+          },
           // Optimize chunk file names for better caching
           chunkFileNames: "assets/[name]-[hash].js",
           entryFileNames: "assets/[name]-[hash].js",
