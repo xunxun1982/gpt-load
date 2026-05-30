@@ -15,11 +15,11 @@ const props = withDefaults(defineProps<Props>(), {
 
 const { t } = useI18n();
 
-// Show badge when channelType is OpenAI, Codex, or Gemini and ccSupport is explicitly true
+// Show badge when channelType is OpenAI, OpenAI Responses, or Gemini and ccSupport is explicitly true.
 const showBadge = computed(() => {
   const { channelType, ccSupport } = props;
   return (
-    (channelType === "openai" || channelType === "codex" || channelType === "gemini") &&
+    (channelType === "openai" || channelType === "openai-response" || channelType === "gemini") &&
     ccSupport === true
   );
 });
@@ -30,7 +30,7 @@ type BadgeType = "default" | "warning" | "info" | "error" | "success" | "primary
 const badgeConfig = computed((): { text: string; type: BadgeType } => {
   const configs: Record<string, { text: string; type: BadgeType }> = {
     openai: { text: t("keys.openaiCCBadge"), type: "warning" }, // Orange/Yellow
-    codex: { text: t("keys.codexCCBadge"), type: "info" }, // Blue
+    "openai-response": { text: t("keys.openaiResponseCCBadge"), type: "info" }, // Blue
     gemini: { text: t("keys.geminiCCBadge"), type: "success" }, // Green
   };
   return configs[props.channelType ?? ""] ?? { text: t("keys.ccSupportBadge"), type: "warning" };

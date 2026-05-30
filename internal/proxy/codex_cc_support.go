@@ -1,7 +1,6 @@
-// Package proxy provides Codex CC (Claude Code) support functionality.
-// Codex CC support enables Claude Code clients to connect via /claude endpoint
-// and have requests converted from Claude format to Codex/Responses API format.
-// This is similar to OpenAI CC support but targets the Responses API instead of Chat Completions.
+// Package proxy provides OpenAI Responses CC (Claude Code) support functionality.
+// The implementation keeps Codex names for Codex CLI-compatible protocol details,
+// not for a standalone codex channel type.
 package proxy
 
 import (
@@ -22,10 +21,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// isCodexCCMode checks if the current request is in Codex CC mode.
-// This is used to determine which response conversion to apply.
-func isCodexCCMode(c *gin.Context) bool {
-	if v, ok := c.Get(ctxKeyCodexCC); ok {
+// isOpenAIResponseCCMode checks if the current request is in OpenAI Responses CC mode.
+// The conversion still uses Codex CLI-compatible payload details internally.
+func isOpenAIResponseCCMode(c *gin.Context) bool {
+	if v, ok := c.Get(ctxKeyOpenAIResponseCC); ok {
 		if enabled, ok := v.(bool); ok && enabled {
 			return true
 		}
@@ -66,7 +65,7 @@ type CodexRequest struct {
 	Include           []string        `json:"include,omitempty"`
 }
 
-// CodexReasoning represents reasoning configuration for Codex API.
+// CodexReasoning represents reasoning configuration for Codex CLI-compatible Responses requests.
 // This enables thinking/reasoning capabilities in Codex models.
 // NOTE: Effort values vary by model - we use "low", "medium", "high" for compatibility.
 // GPT-5.2+ supports additional values like "minimal", "none", "xhigh".
@@ -127,7 +126,7 @@ type CodexError struct {
 // NOTE: codexDefaultInstructions and CodexOfficialInstructions are defined in codex_instructions.go
 // for better code organization and maintainability (per AI review suggestion).
 
-// codexToolNameLimit is the maximum length for tool names in Codex API.
+// codexToolNameLimit is the maximum length for tool names in Codex CLI-compatible Responses requests.
 // Names exceeding this limit will be shortened to ensure compatibility.
 const codexToolNameLimit = 64
 
@@ -192,7 +191,7 @@ func buildToolNameShortMap(names []string) map[string]string {
 
 	// Helper to make name unique by appending suffix.
 	// Per AI review: ensure at least 1 character from base is preserved to avoid
-	// names like "_1" which may be rejected by Codex API's tool name charset rules.
+	// names like "_1" which may be rejected by Responses tool name charset rules.
 	makeUnique := func(cand string) string {
 		// Per AI review: guard against empty candidate to avoid invalid tool names like "_1"
 		if cand == "" {
@@ -288,7 +287,7 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	// Note: max_output_tokens is intentionally NOT sent.
 	// Codex CLI (as of commit f7d2f3e) does not send this parameter.
 	// Reason: Some providers may reject or mishandle this parameter, and the
-	// Codex API typically uses provider defaults for output length.
+	// Responses upstreams typically use provider defaults for output length.
 	// See: https://github.com/openai/codex/issues/4138
 
 	// Build tool name short map for tools that exceed the 64 char limit
@@ -301,11 +300,11 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		toolNameShortMap = buildToolNameShortMap(names)
 	}
 
-	// Build input array using Codex format
+	// Build input array using the Codex CLI-compatible Responses format.
 	var inputItems []interface{}
 
 	// Convert Claude system prompt to user message in input array
-	// Note: Codex API doesn't support "developer" role in input, only in instructions
+	// Note: Codex CLI-compatible Responses input does not support "developer" role, only instructions.
 	// We prepend system content as a user message with clear delimiter
 	//
 	// AI REVIEW NOTE: Suggestion to merge system prompt into instructions was considered.
@@ -377,7 +376,7 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 				Name:        toolName,
 				Description: tool.Description,
 				Parameters:  params,
-				Strict:      false, // Codex API requires strict=false for flexibility
+				Strict:      false, // Codex CLI-compatible Responses tools require strict=false for flexibility.
 			})
 		}
 		codexReq.Tools = tools
@@ -417,24 +416,24 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		}
 	}
 
-	// Apply parallel_tool_calls config for Codex channel.
+	// Apply parallel_tool_calls config for OpenAI Responses CC mode.
 	// Only set when tools are present (some upstreams reject the parameter without tools).
-	// Default behavior: if not configured, enable parallel tool calls (true) for Codex.
+	// Default behavior: if not configured, enable parallel tool calls for Codex CLI-compatible requests.
 	// Users can disable via group config: {"parallel_tool_calls": false}
 	// NOTE: force_function_call precedence check is not needed here because force_function_call
-	// is UI-restricted to OpenAI-only channels and is not applicable to Codex channel.
+	// is UI-restricted to OpenAI chat channels and is not applicable to OpenAI Responses.
 	if len(codexReq.Tools) > 0 {
 		parallelConfig := getParallelToolCallsConfig(group)
 		if parallelConfig != nil {
 			codexReq.ParallelToolCalls = parallelConfig
 		} else {
-			// Default to true for Codex channel (original behavior)
+			// Default to true to preserve the original Codex CLI-compatible behavior.
 			parallelCalls := true
 			codexReq.ParallelToolCalls = &parallelCalls
 		}
 	}
 
-	// Configure reasoning for Codex API (Responses API) only when thinking is enabled.
+	// Configure reasoning for OpenAI Responses only when thinking is enabled.
 	// Non-reasoning models (e.g., gpt-4o) will reject these parameters with 400 errors.
 	// Only set when client explicitly requests thinking to avoid breaking non-reasoning models.
 	// Codex uses "reasoning.effort" (nested object) vs OpenAI Chat's "reasoning_effort" (flat field).
@@ -494,7 +493,7 @@ func normalizeToolParameters(raw json.RawMessage) json.RawMessage {
 		}
 	}
 
-	// Remove $schema field if present (not needed for Codex API)
+	// Remove $schema field if present (not needed for OpenAI Responses).
 	delete(schema, "$schema")
 
 	result, err := json.Marshal(schema)
@@ -545,7 +544,7 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 			// AI REVIEW NOTE: Suggestion to handle thinking blocks separately was considered.
 			// This is intentionally merged into textParts because:
 			// 1. This is Claude→Codex REQUEST conversion (not response conversion)
-			// 2. Codex API does not support thinking blocks as input format
+			// 2. OpenAI Responses does not support thinking blocks as input format.
 			// 3. Thinking content from Claude client's history provides important reasoning context
 			// 4. Discarding thinking would lose valuable context for multi-turn conversations
 			// 5. Merging preserves the assistant's reasoning chain for better continuity
@@ -811,8 +810,8 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 			}
 		case "reasoning":
 			// Convert reasoning to thinking block.
-			// Codex API returns reasoning in "summary" field with type "summary_text".
-			// First try summary field (standard Codex format), then fall back to content.
+			// Codex CLI-compatible Responses returns reasoning in "summary" field with type "summary_text".
+			// First try summary field, then fall back to content.
 			var thinkingText strings.Builder
 			for _, summaryItem := range item.Summary {
 				if summaryItem.Type == "summary_text" && summaryItem.Text != "" {
@@ -881,7 +880,7 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 // Context key for storing tool name reverse map for response conversion.
 const ctxKeyCodexToolNameReverseMap = "codex_tool_name_reverse_map"
 
-// applyCodexCCRequestConversion converts Claude request to Codex format.
+// applyCodexCCRequestConversion converts Claude request to Codex CLI-compatible Responses format.
 // Returns the converted body bytes, whether conversion was applied, and any error.
 // Also stores the tool name reverse map in context for response conversion.
 func (ps *ProxyServer) applyCodexCCRequestConversion(
@@ -1005,7 +1004,7 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 		c.Set(ctxKeyCodexToolNameReverseMap, reverseMap)
 	}
 
-	// Convert to Codex format with custom instructions
+	// Convert to Codex CLI-compatible Responses format with custom instructions.
 	codexReq, err := convertClaudeToCodex(&claudeReq, customInstructions, group)
 	if err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to convert Claude to Codex: %w", err)
@@ -1017,10 +1016,10 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 		return bodyBytes, false, fmt.Errorf("failed to marshal Codex request: %w", err)
 	}
 
-	// Mark CC conversion as enabled (for Codex)
+	// Mark CC conversion as enabled for OpenAI Responses.
 	c.Set(ctxKeyCCEnabled, true)
 	c.Set(ctxKeyOriginalFormat, "claude")
-	c.Set(ctxKeyCodexCC, true) // Mark as Codex CC mode for response handling
+	c.Set(ctxKeyOpenAIResponseCC, true)
 
 	// Debug log: output converted request details for troubleshooting
 	// Only log input_preview when EnableRequestBodyLogging is enabled to avoid leaking sensitive data
@@ -1038,7 +1037,7 @@ func (ps *ProxyServer) applyCodexCCRequestConversion(
 		inputPreview := utils.TruncateString(utils.SanitizeErrorBody(string(codexReq.Input)), 500)
 		logFields["input_preview"] = inputPreview
 	}
-	logrus.WithFields(logFields).Debug("Codex CC: Converted Claude request to Codex format")
+	logrus.WithFields(logFields).Debug("OpenAI Responses CC: Converted Claude request to Responses format")
 
 	return convertedBody, true, nil
 }
@@ -1101,7 +1100,7 @@ type codexStreamState struct {
 	inThinkingBlock bool
 }
 
-// newCodexStreamState creates a new stream state for Codex CC conversion.
+// newCodexStreamState creates a new stream state for Codex CLI-compatible Responses conversion.
 // The reverseToolNameMap is used to restore original tool names in streaming responses.
 func newCodexStreamState(reverseToolNameMap map[string]string) *codexStreamState {
 	return &codexStreamState{
@@ -1482,7 +1481,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	default:
 		// Log unknown event types at debug level for forward compatibility.
-		// New Codex API event types may be introduced; logging helps debugging
+		// New Responses event types may be introduced; logging helps debugging.
 		// without breaking existing functionality.
 		if event.Type != "" {
 			logrus.WithField("event_type", event.Type).Debug("Codex CC: Ignoring unknown stream event type")
@@ -1498,7 +1497,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 	if err != nil {
 		if errors.Is(err, ErrBodyTooLarge) {
 			maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
-			message := fmt.Sprintf("Upstream response exceeded maximum allowed size (%dMB) for Codex CC conversion", maxMB)
+			message := fmt.Sprintf("Upstream response exceeded maximum allowed size (%dMB) for OpenAI Responses CC conversion", maxMB)
 			logrus.WithField("limit_mb", maxMB).
 				Warn("Codex CC: Upstream response body too large for conversion")
 			// Per AI review: use overloaded_error for size exceeded errors
@@ -1533,7 +1532,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		// Use errors.Is() for sentinel error comparison to handle wrapped errors properly
 		if errors.Is(err, utils.ErrDecompressedTooLarge) {
 			maxMB := maxUpstreamResponseBodySize / (1024 * 1024)
-			message := fmt.Sprintf("Decompressed response exceeded maximum allowed size (%dMB) for Codex CC conversion", maxMB)
+			message := fmt.Sprintf("Decompressed response exceeded maximum allowed size (%dMB) for OpenAI Responses CC conversion", maxMB)
 			logrus.WithField("limit_mb", maxMB).
 				Warn("Codex CC: Decompressed response body too large for conversion")
 			// Per AI review: use overloaded_error for size exceeded errors
@@ -1712,7 +1711,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	state := newCodexStreamState(reverseToolNameMap)
 
 	// Handle gzip/deflate/br decompression for streaming response
-	// Codex API may return gzip-compressed streaming responses
+	// Responses upstreams may return gzip-compressed streaming responses.
 	reader := resp.Body
 	contentEncoding := resp.Header.Get("Content-Encoding")
 	var decompressErr error

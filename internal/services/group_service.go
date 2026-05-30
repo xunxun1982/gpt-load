@@ -212,6 +212,12 @@ type GroupUpdateParams struct {
 	SubGroups            *[]SubGroupInput
 }
 
+// GroupReorderItem captures one sort update in a group reorder operation.
+type GroupReorderItem struct {
+	ID   uint
+	Sort int
+}
+
 // KeyStats captures aggregated API key statistics for a group.
 type KeyStats struct {
 	TotalKeys   int64 `json:"total_keys"`
@@ -675,6 +681,87 @@ func (s *GroupService) CountChildGroups(ctx context.Context, parentGroupID uint)
 	return count, nil
 }
 
+func validateGroupReorderItems(items []GroupReorderItem) error {
+	if len(items) == 0 {
+		return NewI18nError(app_errors.ErrValidation, "validation.reorder_items_required", nil)
+	}
+
+	seen := make(map[uint]struct{}, len(items))
+	for _, item := range items {
+		if item.ID == 0 {
+			return NewI18nError(app_errors.ErrValidation, "validation.reorder_group_id", nil)
+		}
+		if item.Sort < 0 {
+			return NewI18nError(app_errors.ErrValidation, "validation.reorder_sort_negative", nil)
+		}
+		if _, ok := seen[item.ID]; ok {
+			return NewI18nError(app_errors.ErrValidation, "validation.reorder_duplicate_group", map[string]any{"id": item.ID})
+		}
+		seen[item.ID] = struct{}{}
+	}
+	return nil
+}
+
+func buildGroupReorderCase(items []GroupReorderItem) (string, []any, []uint) {
+	args := make([]any, 0, len(items)*2)
+	ids := make([]uint, 0, len(items))
+	caseSQL := strings.Builder{}
+	caseSQL.WriteString("CASE id")
+	for _, item := range items {
+		caseSQL.WriteString(" WHEN ? THEN ?")
+		args = append(args, item.ID, item.Sort)
+		ids = append(ids, item.ID)
+	}
+	caseSQL.WriteString(" ELSE sort END")
+	return caseSQL.String(), args, ids
+}
+
+// ReorderGroups updates group sort values in one transaction.
+func (s *GroupService) ReorderGroups(ctx context.Context, items []GroupReorderItem) error {
+	if err := validateGroupReorderItems(items); err != nil {
+		return err
+	}
+
+	tx := s.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+		}
+	}()
+
+	caseSQL, args, ids := buildGroupReorderCase(items)
+
+	var count int64
+	if err := tx.Model(&models.Group{}).Where("id IN ?", ids).Count(&count).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	if count != int64(len(ids)) {
+		return NewI18nError(app_errors.ErrValidation, "validation.reorder_group_not_found", nil)
+	}
+
+	result := tx.Model(&models.Group{}).
+		Where("id IN ?", ids).
+		Update("sort", gorm.Expr(caseSQL, args...))
+	if result.Error != nil {
+		return app_errors.ParseDBError(result.Error)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	tx = nil
+
+	if err := s.groupManager.Invalidate(); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
+	}
+	s.invalidateGroupListCache()
+
+	return nil
+}
+
 // UpdateGroup validates and updates an existing group.
 func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpdateParams) (*models.Group, error) {
 	var group models.Group
@@ -836,13 +923,13 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			return nil, err
 		}
 
-		// Check if cc_support is being disabled for OpenAI/Codex/Gemini groups before performing any database write.
+		// Check if cc_support is being disabled for OpenAI/OpenAI Responses/Gemini groups before performing any database write.
 		// If so, verify that this group is not used as a sub-group in any Anthropic aggregate groups.
 		// NOTE: This guard is best-effort and not wrapped in an explicit transaction. There is a small
 		// time-of-check-to-time-of-use window where aggregate membership can change concurrently, but
 		// we intentionally keep lock time minimal (especially for SQLite). Any misconfiguration will
 		// surface quickly via failing aggregate requests and can be corrected via configuration.
-		if (group.ChannelType == "openai" || group.ChannelType == "codex" || group.ChannelType == "gemini") && group.GroupType != "aggregate" {
+		if (group.ChannelType == "openai" || group.ChannelType == "openai-response" || group.ChannelType == "gemini") && group.GroupType != "aggregate" {
 			// Note: models.Group.Config is stored as datatypes.JSONMap while validateAndCleanConfig
 			// returns a map[string]any. We intentionally convert cleanedConfig to JSONMap here to
 			// keep the helper signature strongly typed and avoid accidental misuse.
@@ -3370,17 +3457,17 @@ func (s *GroupService) FetchGroupModels(ctx context.Context, groupID uint) (map[
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Set User-Agent for Codex channel when fetching models
+	// Set User-Agent for OpenAI Responses model fetching when Codex-compatible behavior is needed.
 	// IMPORTANT: This UA is ONLY set for model fetching requests, NOT for normal proxy requests.
-	// Normal Codex requests should use passthrough behavior (preserve client's original UA).
-	// Codex CC mode (/claude path) sets UA separately in server.go via isCodexCCMode() check.
-	// Codex upstream may reject model list requests without proper User-Agent.
-	if group.ChannelType == "codex" {
+	// Normal Responses requests should use passthrough behavior (preserve client's original UA).
+	// OpenAI Responses CC mode (/claude path) sets UA separately in server.go.
+	// Some Responses upstreams may reject model list requests without proper User-Agent.
+	if group.ChannelType == "openai-response" {
 		req.Header.Set("User-Agent", channel.CodexUserAgent)
 	}
 
-	// Set User-Agent for Anthropic channel when fetching models
-	// Similar to Codex, this is ONLY for model fetching requests.
+	// Set User-Agent for Anthropic channel when fetching models.
+	// Similar to Responses, this is ONLY for model fetching requests.
 	// Normal Anthropic requests preserve client's original UA.
 	// OpenAI CC mode (/claude path) sets UA separately in server.go via isCCMode() check.
 	if group.ChannelType == "anthropic" {

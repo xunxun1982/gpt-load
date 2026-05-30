@@ -90,9 +90,10 @@ const getAvailableOptions = computed(() => {
       if (props.aggregateGroup?.channel_type === "anthropic") {
         const isAnthropic = group.channel_type === "anthropic";
         const isOpenAIWithCC = group.channel_type === "openai" && group.config?.cc_support === true;
-        const isCodexWithCC = group.channel_type === "codex" && group.config?.cc_support === true;
+        const isOpenAIResponseWithCC =
+          group.channel_type === "openai-response" && group.config?.cc_support === true;
         const isGeminiWithCC = group.channel_type === "gemini" && group.config?.cc_support === true;
-        if (!isAnthropic && !isOpenAIWithCC && !isCodexWithCC && !isGeminiWithCC) {
+        if (!isAnthropic && !isOpenAIWithCC && !isOpenAIResponseWithCC && !isGeminiWithCC) {
           return false;
         }
       } else {

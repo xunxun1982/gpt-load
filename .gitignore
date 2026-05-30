@@ -123,9 +123,6 @@ coverage
 ehthumbs.db
 Thumbs.db
 
-# Docker
-.dockerignore
-
 # Database files
 *.db
 *.sqlite
@@ -149,6 +146,15 @@ Thumbs.db
 # Local development
 local/
 dev/
+3rd/
+docs/
+patches/
+.cursorindexingignore
+implementation-notes.md
+.kiro/
+.specstory/
+.vscode/
+.ace-tool/
 
 # Test files
 test-results/

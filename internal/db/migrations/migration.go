@@ -135,7 +135,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.23.0 migration - Update health threshold default (0.5→0.3)
-	return V1_23_0_UpdateHealthThresholdDefault(db)
+	if err := V1_23_0_UpdateHealthThresholdDefault(db); err != nil {
+		return err
+	}
+	// Run v1.24.0 migration - Migrate legacy codex channel groups to openai-response
+	return V1_24_0_MigrateCodexChannelToOpenAIResponse(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

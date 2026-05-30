@@ -5444,10 +5444,10 @@ func TestIsCCSupportEnabled(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "codex channel with cc_support enabled",
+			name: "openai-response channel with cc_support enabled",
 			group: &models.Group{
 				Name:        "test",
-				ChannelType: "codex",
+				ChannelType: "openai-response",
 				Config:      map[string]any{"cc_support": true},
 			},
 			expected: true,
@@ -6363,7 +6363,7 @@ func TestHelperFunctions(t *testing.T) {
 		}{
 			{"openai_enabled", "openai", map[string]interface{}{"cc_support": true}, true},
 			{"openai_disabled", "openai", map[string]interface{}{"cc_support": false}, false},
-			{"codex_enabled", "codex", map[string]interface{}{"cc_support": true}, true},
+			{"openai_response_enabled", "openai-response", map[string]interface{}{"cc_support": true}, true},
 			{"gemini_enabled", "gemini", map[string]interface{}{"cc_support": true}, true},
 			{"anthropic_enabled", "anthropic", map[string]interface{}{"cc_support": true}, false},
 			{"nil_group", "", nil, false},

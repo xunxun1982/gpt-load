@@ -36,17 +36,17 @@ func TestGetValidationEndpoint(t *testing.T) {
 			expectedResult: "/v1/messages",
 		},
 		{
-			name: "Codex channel with default endpoint",
+			name: "OpenAI Responses channel with default endpoint",
 			group: &models.Group{
-				ChannelType:        "codex",
+				ChannelType:        "openai-response",
 				ValidationEndpoint: "",
 			},
 			expectedResult: "/v1/responses",
 		},
 		{
-			name: "Codex channel with custom endpoint",
+			name: "OpenAI Responses channel with custom endpoint",
 			group: &models.Group{
-				ChannelType:        "codex",
+				ChannelType:        "openai-response",
 				ValidationEndpoint: "/v1/chat/completions",
 			},
 			expectedResult: "/v1/chat/completions",

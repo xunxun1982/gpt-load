@@ -17,6 +17,7 @@ import {
   CloudUploadOutline,
   GitBranchOutline,
   LinkOutline,
+  ReorderThreeOutline,
   Search,
 } from "@vicons/ionicons5";
 import {
@@ -46,6 +47,7 @@ const GROUP_TYPE_AGGREGATE = "aggregate" as const;
 const ICON_AGGREGATE = "🔗";
 const ICON_STANDARD = "📦";
 const ICON_OPENAI = "🤖";
+const ICON_OPENAI_RESPONSE = "🔁";
 const ICON_GEMINI = "💎";
 const ICON_ANTHROPIC = "🧠";
 const ICON_DEFAULT = "🔧";
@@ -104,6 +106,13 @@ const selectedParentGroup = ref<Group | null>(null);
 const childGroupsMap = ref<Map<number, ChildGroupInfo[]>>(new Map());
 const collapsedChildGroups = ref<Set<number>>(new Set());
 const ICON_CHILD = "🌿";
+const localGroupOrder = ref<Map<string, number[]>>(new Map());
+const draggingGroupId = ref<number | null>(null);
+const draggingBucketKey = ref<string | null>(null);
+const dragOverGroupId = ref<number | null>(null);
+const savingOrder = ref(false);
+
+const canDragGroups = computed(() => searchText.value.trim() === "" && !savingOrder.value);
 
 // Filtered and grouped group list
 const filteredGroups = computed(() => {
@@ -159,6 +168,49 @@ const groupSections = computed<GroupSection[]>(() => {
   return sections;
 });
 
+function getGroupBucketKey(sectionKey: string, channelType: string): string {
+  return `${sectionKey}:${channelType}`;
+}
+
+function setLocalGroupOrder(bucketKey: string, order: number[] | null) {
+  const next = new Map(localGroupOrder.value);
+  if (order) {
+    next.set(bucketKey, order);
+  } else {
+    next.delete(bucketKey);
+  }
+  localGroupOrder.value = next;
+}
+
+function applyLocalGroupOrder(bucketKey: string, groups: Group[]): Group[] {
+  const order = localGroupOrder.value.get(bucketKey);
+  if (!order) {
+    return groups;
+  }
+
+  const remaining = new Map<number, Group>();
+  for (const group of groups) {
+    if (typeof group.id === "number") {
+      remaining.set(group.id, group);
+    }
+  }
+
+  const ordered: Group[] = [];
+  for (const id of order) {
+    const group = remaining.get(id);
+    if (!group) {
+      continue;
+    }
+    ordered.push(group);
+    remaining.delete(id);
+  }
+
+  if (remaining.size > 0) {
+    ordered.push(...Array.from(remaining.values()).sort(sortBySortThenName));
+  }
+  return ordered;
+}
+
 // Calculate channel groups for each group section (cached for performance)
 const sectionChannelGroups = computed(() => {
   const result = new Map<string, ChannelGroup[]>();
@@ -167,6 +219,10 @@ const sectionChannelGroups = computed(() => {
       section.sectionKey,
       groupByChannelType(section.groups).map(channelGroup => ({
         ...channelGroup,
+        groups: applyLocalGroupOrder(
+          getGroupBucketKey(section.sectionKey, channelGroup.channelType),
+          channelGroup.groups
+        ),
         icon: getChannelTypeIcon(channelGroup.channelType),
       }))
     );
@@ -180,6 +236,8 @@ function getChannelTypeIcon(channelType: string): string {
   switch (lowerType) {
     case "openai":
       return ICON_OPENAI;
+    case "openai-response":
+      return ICON_OPENAI_RESPONSE;
     case "gemini":
       return ICON_GEMINI;
     case "anthropic":
@@ -263,6 +321,7 @@ function getChannelTagType(channelType: string) {
   const normalized = channelType?.trim().toLowerCase();
   switch (normalized) {
     case "openai":
+    case "openai-response":
       return "success";
     case "gemini":
       return "info";
@@ -377,6 +436,10 @@ const groupsKey = computed(() => {
   return props.groups.map(g => `${g.id}:${g.display_name}:${g.name}`).join(",");
 });
 
+const groupSortKey = computed(() => {
+  return props.groups.map(g => `${g.id}:${g.sort}`).join(",");
+});
+
 watch(
   groupsKey,
   () => {
@@ -384,6 +447,156 @@ watch(
   },
   { immediate: true }
 );
+
+watch(groupSortKey, () => {
+  if (!savingOrder.value && !draggingGroupId.value) {
+    localGroupOrder.value = new Map();
+  }
+});
+
+function canDragInBucket(groups: Group[]): boolean {
+  return canDragGroups.value && groups.length > 1;
+}
+
+function getDragTooltip(groups: Group[]): string {
+  if (canDragInBucket(groups)) {
+    return t("keys.dragHandle");
+  }
+  if (savingOrder.value) {
+    return t("keys.dragSortSaving");
+  }
+  if (searchText.value.trim()) {
+    return t("keys.dragSortHint");
+  }
+  return t("keys.dragSortUnavailable");
+}
+
+function handleDragStart(
+  event: DragEvent,
+  sectionKey: string,
+  channelType: string,
+  groupId: number | undefined
+) {
+  const bucketKey = getGroupBucketKey(sectionKey, channelType);
+  const groups = sectionChannelGroups.value
+    .get(sectionKey)
+    ?.find(g => g.channelType === channelType)?.groups;
+  if (!groupId || !groups || !canDragInBucket(groups)) {
+    event.preventDefault();
+    return;
+  }
+
+  draggingGroupId.value = groupId;
+  draggingBucketKey.value = bucketKey;
+  dragOverGroupId.value = null;
+  event.dataTransfer?.setData("text/plain", String(groupId));
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+  }
+}
+
+function handleDragOver(
+  event: DragEvent,
+  sectionKey: string,
+  channelType: string,
+  targetGroupId: number | undefined
+) {
+  const bucketKey = getGroupBucketKey(sectionKey, channelType);
+  if (!targetGroupId || !draggingGroupId.value || draggingBucketKey.value !== bucketKey) {
+    return;
+  }
+  event.preventDefault();
+  dragOverGroupId.value = targetGroupId;
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+}
+
+function reorderGroupIds(
+  ids: number[],
+  sourceGroupId: number,
+  targetGroupId: number,
+  placeAfterTarget: boolean
+): number[] | null {
+  if (sourceGroupId === targetGroupId) {
+    return null;
+  }
+
+  const next = ids.filter(id => id !== sourceGroupId);
+  let targetIndex = next.indexOf(targetGroupId);
+  if (targetIndex === -1 || next.length === ids.length) {
+    return null;
+  }
+  if (placeAfterTarget) {
+    targetIndex += 1;
+  }
+  next.splice(targetIndex, 0, sourceGroupId);
+  return next;
+}
+
+async function saveGroupOrder(bucketKey: string, orderedIds: number[]) {
+  const previousOrder = localGroupOrder.value.get(bucketKey) ?? null;
+  setLocalGroupOrder(bucketKey, orderedIds);
+  savingOrder.value = true;
+
+  try {
+    const items = orderedIds.map((id, index) => ({
+      id,
+      sort: (index + 1) * 10,
+    }));
+    await keysApi.reorderGroups(items);
+    message.success(t("keys.dragSortSaved"));
+    emit("refresh");
+  } catch (error) {
+    setLocalGroupOrder(bucketKey, previousOrder);
+    console.error("Failed to reorder groups:", error);
+    message.error(t("keys.dragSortSaveFailed"));
+  } finally {
+    savingOrder.value = false;
+  }
+}
+
+async function handleDrop(
+  event: DragEvent,
+  sectionKey: string,
+  channelType: string,
+  targetGroupId: number | undefined
+) {
+  event.preventDefault();
+  const sourceGroupId = draggingGroupId.value;
+  const bucketKey = getGroupBucketKey(sectionKey, channelType);
+  draggingGroupId.value = null;
+  draggingBucketKey.value = null;
+  dragOverGroupId.value = null;
+
+  if (!sourceGroupId || !targetGroupId) {
+    return;
+  }
+
+  const groups = sectionChannelGroups.value
+    .get(sectionKey)
+    ?.find(g => g.channelType === channelType)?.groups;
+  if (!groups) {
+    return;
+  }
+
+  const target = event.currentTarget as HTMLElement | null;
+  const rect = target?.getBoundingClientRect();
+  const placeAfterTarget = rect ? event.clientY > rect.top + rect.height / 2 : false;
+  const ids = groups.map(group => group.id).filter((id): id is number => typeof id === "number");
+  const reordered = reorderGroupIds(ids, sourceGroupId, targetGroupId, placeAfterTarget);
+  if (!reordered) {
+    return;
+  }
+
+  await saveGroupOrder(bucketKey, reordered);
+}
+
+function handleDragEnd() {
+  draggingGroupId.value = null;
+  draggingBucketKey.value = null;
+  dragOverGroupId.value = null;
+}
 
 // Scroll to specific channel type
 function scrollToChannelType(sectionKey: string, channelType: string) {
@@ -751,6 +964,8 @@ async function handleFileChange(event: Event) {
                           active: selectedGroup?.id === group.id,
                           disabled: !group.enabled,
                           'has-children': hasChildGroups(group.id),
+                          dragging: draggingGroupId === group.id,
+                          'drag-over': dragOverGroupId === group.id,
                         }"
                         :aria-label="
                           !group.enabled
@@ -758,6 +973,17 @@ async function handleFileChange(event: Event) {
                             : undefined
                         "
                         @click="handleGroupClick(group)"
+                        @dragover="
+                          handleDragOver(
+                            $event,
+                            section.sectionKey,
+                            channelGroup.channelType,
+                            group.id
+                          )
+                        "
+                        @drop="
+                          handleDrop($event, section.sectionKey, channelGroup.channelType, group.id)
+                        "
                         :ref="
                           el => {
                             if (el) {
@@ -768,6 +994,32 @@ async function handleFileChange(event: Event) {
                           }
                         "
                       >
+                        <n-tooltip trigger="hover">
+                          <template #trigger>
+                            <button
+                              type="button"
+                              class="group-drag-handle"
+                              :class="{
+                                disabled: !canDragInBucket(channelGroup.groups),
+                              }"
+                              :draggable="canDragInBucket(channelGroup.groups)"
+                              :aria-label="t('keys.dragHandle')"
+                              @click.stop
+                              @dragstart.stop="
+                                handleDragStart(
+                                  $event,
+                                  section.sectionKey,
+                                  channelGroup.channelType,
+                                  group.id
+                                )
+                              "
+                              @dragend="handleDragEnd"
+                            >
+                              <n-icon :component="ReorderThreeOutline" :size="14" />
+                            </button>
+                          </template>
+                          {{ getDragTooltip(channelGroup.groups) }}
+                        </n-tooltip>
                         <div class="group-icon">
                           <span>{{ getGroupIcon(group, section.isAggregate) }}</span>
                         </div>
@@ -1312,6 +1564,38 @@ async function handleFileChange(event: Event) {
   border-radius: 6px;
   flex-shrink: 0;
   box-sizing: border-box;
+}
+
+.group-drag-handle {
+  width: 22px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.group-drag-handle.disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.group-drag-handle:active {
+  cursor: grabbing;
+}
+
+.group-item.dragging {
+  opacity: 0.55;
+}
+
+.group-item.drag-over {
+  border-color: var(--primary-color);
+  box-shadow: inset 0 0 0 1px var(--primary-color);
 }
 
 .group-item.active .group-icon {

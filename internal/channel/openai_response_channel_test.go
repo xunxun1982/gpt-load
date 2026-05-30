@@ -1,6 +1,9 @@
 package channel
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -13,13 +16,12 @@ import (
 func TestCodexUserAgent(t *testing.T) {
 	t.Parallel()
 
-	// Test that the constant is defined and has the expected format
 	assert.NotEmpty(t, CodexUserAgent)
 	assert.Contains(t, CodexUserAgent, "codex-cli")
-	assert.Contains(t, CodexUserAgent, "0.77.0")
+	assert.Contains(t, CodexUserAgent, "0.135.0")
 }
 
-func TestCodexChannel_ModifyRequest(t *testing.T) {
+func TestOpenAIResponseChannel_ModifyRequest(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -42,36 +44,120 @@ func TestCodexChannel_ModifyRequest(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt // Capture range variable for parallel subtests
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a mock channel
-			ch := &CodexChannel{
+			ch := &OpenAIResponseChannel{
 				BaseChannel: &BaseChannel{},
 			}
 
-			// Create a test request
 			req := httptest.NewRequest("POST", "/v1/responses", nil)
 			for k, v := range tt.existingHeaders {
 				req.Header.Set(k, v)
 			}
 
-			// Create a test API key
 			apiKey := &models.APIKey{
 				KeyValue: "test-key",
 			}
 
-			// Call ModifyRequest
 			ch.ModifyRequest(req, apiKey, &models.Group{})
-
-			// Verify Authorization header
 			assert.Equal(t, tt.expectedAuthHeader, req.Header.Get("Authorization"))
 		})
 	}
 }
 
-func TestCodexChannel_IsStreamRequest(t *testing.T) {
+func TestOpenAIResponseChannel_ValidateKey_ValidKey(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/responses", r.URL.Path)
+		assert.Equal(t, "Bearer test-valid-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, "gpt-5.2-codex", body["model"])
+		assert.Equal(t, "hi", body["input"])
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-valid-key"},
+		&models.Group{Name: "responses-group"},
+	)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestOpenAIResponseChannel_ValidateKey_InvalidKey(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid key","type":"invalid_request_error"}}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "invalid-key"},
+		&models.Group{Name: "responses-group"},
+	)
+	assert.Error(t, err)
+	assert.False(t, valid)
+	assert.Contains(t, err.Error(), "401")
+	assert.Contains(t, err.Error(), "invalid key")
+}
+
+func TestOpenAIResponseChannel_ValidateKey_NoUpstream(t *testing.T) {
+	t.Parallel()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			Upstreams:          []UpstreamInfo{},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{Name: "responses-group"},
+	)
+	assert.Error(t, err)
+	assert.False(t, valid)
+	assert.Contains(t, err.Error(), "failed to select validation upstream")
+}
+
+func TestOpenAIResponseChannel_IsStreamRequest(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -123,16 +209,14 @@ func TestCodexChannel_IsStreamRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ch := &CodexChannel{
+			ch := &OpenAIResponseChannel{
 				BaseChannel: &BaseChannel{},
 			}
 
-			// Create mock Gin context
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
 
-			// Set headers and query params
 			if tt.acceptHeader != "" {
 				c.Request.Header.Set("Accept", tt.acceptHeader)
 			}
@@ -146,7 +230,7 @@ func TestCodexChannel_IsStreamRequest(t *testing.T) {
 	}
 }
 
-func TestCodexChannel_ExtractModel(t *testing.T) {
+func TestOpenAIResponseChannel_ExtractModel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -176,7 +260,7 @@ func TestCodexChannel_ExtractModel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ch := &CodexChannel{
+			ch := &OpenAIResponseChannel{
 				BaseChannel: &BaseChannel{},
 			}
 
@@ -239,7 +323,6 @@ func TestForceStreamRequest(t *testing.T) {
 			assert.Equal(t, tt.expectedModified, wasModified)
 
 			if tt.shouldContainStream {
-				// Check for stream field with flexible whitespace matching
 				assert.Contains(t, string(modifiedBody), `"stream"`)
 				assert.Contains(t, string(modifiedBody), `true`)
 			}
@@ -247,11 +330,10 @@ func TestForceStreamRequest(t *testing.T) {
 	}
 }
 
-// Benchmark tests
-func BenchmarkCodexChannel_ModifyRequest(b *testing.B) {
+func BenchmarkOpenAIResponseChannel_ModifyRequest(b *testing.B) {
 	b.ReportAllocs()
 
-	ch := &CodexChannel{
+	ch := &OpenAIResponseChannel{
 		BaseChannel: &BaseChannel{},
 	}
 

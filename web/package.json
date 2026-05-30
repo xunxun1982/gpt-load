@@ -54,5 +54,8 @@
     "vite": "^7.3.1",
     "vite-plugin-compression2": "^2.4.0",
     "vue-tsc": "^3.2.4"
+  },
+  "allowScripts": {
+    "esbuild@0.27.2": true
   }
 }

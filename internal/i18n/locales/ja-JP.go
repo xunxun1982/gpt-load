@@ -83,6 +83,11 @@ var MessagesJaJP = map[string]string{
 	"validation.aggregate_no_model_redirect":                 "集約グループはモデルリダイレクトルールをサポートしていません",
 	"validation.invalid_model_redirect":                      "無効なモデルリダイレクトルール：{{.error}}",
 	"validation.invalid_param_overrides":                     "パラメータ上書きフィールド {{.field}} の型が無効です：期待 {{.expected}}、実際 {{.got}}",
+	"validation.reorder_items_required":                      "並び替え項目は空にできません",
+	"validation.reorder_group_id":                            "並び替え項目に無効なグループIDが含まれています",
+	"validation.reorder_sort_negative":                       "並び順の値は負数にできません",
+	"validation.reorder_duplicate_group":                     "並び替え項目に重複したグループIDがあります: {{.id}}",
+	"validation.reorder_group_not_found":                     "並び替え項目に存在しないグループが含まれています",
 
 	// Task related
 	"task.validation_started": "キー検証タスクが開始されました",
@@ -127,6 +132,7 @@ var MessagesJaJP = map[string]string{
 	"success.unbound_sites_deleted":   "{{.count}}個のバインドされていないサイトが削除されました",
 	"success.sites_imported":          "{{.imported}}個のサイトをインポートしました。{{.skipped}}個をスキップしました（合計: {{.total}}個）",
 	"success.sites_exported":          "{{.count}}個のサイトを正常にエクスポートしました",
+	"success.groups_reordered":        "グループの並び順を保存しました",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}}が短すぎます（{{.length}}文字）。少なくとも16文字を推奨します",
@@ -171,7 +177,9 @@ var MessagesJaJP = map[string]string{
 	"config.max_retries":                     "最大リトライ数",
 	"config.max_retries_desc":                "異なるキーを使用した単一リクエストの最大リトライ数、0でリトライなし。",
 	"config.blacklist_threshold":             "ブラックリストしきい値",
-	"config.blacklist_threshold_desc":        "キーがブラックリストに入るまでの連続失敗回数、0でブラックリスト無効。",
+	"config.blacklist_threshold_desc":        "キーがブラックリストに入るまでの累積失敗回数、0でブラックリスト無効。",
+	"config.failover_status_codes":           "フェイルオーバーステータスコード",
+	"config.failover_status_codes_desc":      "フェイルオーバー（リトライ）をトリガーする上流 HTTP ステータスコードの完全なリスト。カンマ区切りと範囲指定に対応（例：400-403,405-999,250-260）。グループごとに個別上書き可能。",
 	"config.key_validation_interval":         "キー検証間隔（分）",
 	"config.key_validation_interval_desc":    "バックグラウンドキー検証のデフォルト間隔（分）。",
 	"config.key_validation_concurrency":      "キー検証並行数",

@@ -47,9 +47,9 @@ var MessagesZhCN = map[string]string{
 
 	// Channel types
 	"channel.type.openai":    "OpenAI",
+	"channel.type.openai-response": "OpenAI Responses",
 	"channel.type.anthropic": "Anthropic",
 	"channel.type.gemini":    "Gemini",
-	"channel.type.codex":     "Codex",
 	"channel.type.azure":     "Azure",
 	"channel.type.custom":    "自定义",
 
@@ -57,7 +57,7 @@ var MessagesZhCN = map[string]string{
 	"relay_format.openai_chat":                "OpenAI 对话补全",
 	"relay_format.openai_completion":          "OpenAI 文本补全",
 	"relay_format.claude":                     "Claude 消息",
-	"relay_format.codex":                      "Codex 响应",
+	"relay_format.codex":                      "OpenAI Responses 响应",
 	"relay_format.openai_image":               "OpenAI 图片生成",
 	"relay_format.openai_image_edit":          "OpenAI 图片编辑",
 	"relay_format.openai_audio_transcription": "OpenAI 音频转录",

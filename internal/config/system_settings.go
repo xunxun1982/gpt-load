@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"gpt-load/internal/db"
+	"gpt-load/internal/failover"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 	"gpt-load/internal/syncer"
@@ -30,6 +31,15 @@ type SystemSettingsManager struct {
 // NewSystemSettingsManager creates a new, uninitialized SystemSettingsManager.
 func NewSystemSettingsManager() *SystemSettingsManager {
 	return &SystemSettingsManager{}
+}
+
+func validateStringSettingValue(key, val string) error {
+	if key == "failover_status_codes" {
+		if _, err := failover.ParseStatusCodeMatcher(val); err != nil {
+			return fmt.Errorf("invalid value for %s (%q): %w", key, val, err)
+		}
+	}
+	return nil
 }
 
 type groupManager interface {
@@ -330,6 +340,9 @@ func (sm *SystemSettingsManager) ValidateSettings(settingsMap map[string]any) er
 					}
 				}
 			}
+			if err := validateStringSettingValue(key, strVal); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("unsupported type for setting key validation: %s", key)
 		}
@@ -411,7 +424,7 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
-		// Allow codex_instructions string field for Codex CC support.
+		// Allow codex_instructions string field for OpenAI Responses CC support.
 		// This specifies custom instructions for providers that validate this field strictly.
 		if key == "codex_instructions" {
 			if _, ok := value.(string); !ok {
@@ -420,7 +433,7 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
-		// Allow codex_instructions_mode string field for Codex CC support.
+		// Allow codex_instructions_mode string field for OpenAI Responses CC support.
 		// Values: "auto", "official", "custom"
 		if key == "codex_instructions_mode" {
 			mode, ok := value.(string)
@@ -481,6 +494,9 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 					}
 				}
 			}
+			if err := validateStringSettingValue(key, strVal); err != nil {
+				return err
+			}
 		case reflect.Bool:
 			_, ok := value.(bool)
 			if !ok {
@@ -514,6 +530,7 @@ func (sm *SystemSettingsManager) DisplaySystemConfig(settings types.SystemSettin
 	logrus.Info("  --- Key & Group Behavior ---")
 	logrus.Infof("    Max Retries: %d", settings.MaxRetries)
 	logrus.Infof("    Blacklist Threshold: %d", settings.BlacklistThreshold)
+	logrus.Infof("    Failover Status Codes: %s", settings.FailoverStatusCodes)
 	logrus.Infof("    Key Validation Interval: %d minutes", settings.KeyValidationIntervalMinutes)
 	logrus.Info("====================================")
 	logrus.Info("")

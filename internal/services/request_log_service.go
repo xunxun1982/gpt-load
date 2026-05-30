@@ -8,7 +8,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 	"gpt-load/internal/utils"
-	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +29,16 @@ type hourlyStatKey struct {
 type hourlyStatCounts struct {
 	Success int64
 	Failure int64
+}
+
+type apiKeyStatsKey struct {
+	GroupID uint
+	KeyHash string
+}
+
+type apiKeyStats struct {
+	Count      int64
+	LastUsedAt time.Time
 }
 
 const (
@@ -370,38 +380,22 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 			return fmt.Errorf("failed to batch insert request logs: %w", err)
 		}
 
-		keyStats := make(map[string]int64, len(logs)/2)
+		keyStats := make(map[apiKeyStatsKey]apiKeyStats, len(logs)/2)
 		for _, log := range logs {
-			if log.IsSuccess && log.KeyHash != "" {
-				keyStats[log.KeyHash]++
+			if log.IsSuccess && log.GroupID > 0 && log.KeyHash != "" {
+				key := apiKeyStatsKey{GroupID: log.GroupID, KeyHash: log.KeyHash}
+				stats := keyStats[key]
+				stats.Count++
+				if log.Timestamp.After(stats.LastUsedAt) {
+					stats.LastUsedAt = log.Timestamp
+				}
+				keyStats[key] = stats
 			}
 		}
 
 		if len(keyStats) > 0 {
-			// Use pooled string builder to reduce allocations
-			caseStmt := utils.GetStringBuilder()
-			defer utils.PutStringBuilder(caseStmt)
-
-			keyHashes := make([]string, 0, len(keyStats))
-			// Pre-allocate capacity: ~50 bytes per CASE clause
-			caseStmt.Grow(len(keyStats) * 50)
-			caseStmt.WriteString("CASE key_hash ")
-			for keyHash, count := range keyStats {
-				caseStmt.WriteString("WHEN '")
-				caseStmt.WriteString(keyHash)
-				caseStmt.WriteString("' THEN request_count + ")
-				caseStmt.WriteString(strconv.FormatInt(count, 10))
-				caseStmt.WriteString(" ")
-				keyHashes = append(keyHashes, keyHash)
-			}
-			caseStmt.WriteString("END")
-
-			if err := tx.Model(&models.APIKey{}).Where("key_hash IN ?", keyHashes).
-				Updates(map[string]any{
-					"request_count": gorm.Expr(caseStmt.String()),
-					"last_used_at":  time.Now(),
-				}).Error; err != nil {
-				return fmt.Errorf("failed to batch update api_key stats: %w", err)
+			if err := updateAPIKeyStats(tx, keyStats); err != nil {
+				return err
 			}
 		}
 
@@ -443,6 +437,48 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 
 		return nil
 	})
+}
+
+func updateAPIKeyStats(tx *gorm.DB, keyStats map[apiKeyStatsKey]apiKeyStats) error {
+	if len(keyStats) == 0 {
+		return nil
+	}
+
+	countCase := utils.GetStringBuilder()
+	defer utils.PutStringBuilder(countCase)
+	lastUsedCase := utils.GetStringBuilder()
+	defer utils.PutStringBuilder(lastUsedCase)
+
+	countArgs := make([]any, 0, len(keyStats)*3)
+	lastUsedArgs := make([]any, 0, len(keyStats)*4)
+	whereParts := make([]string, 0, len(keyStats))
+	whereArgs := make([]any, 0, len(keyStats)*2)
+
+	countCase.WriteString("CASE ")
+	lastUsedCase.WriteString("CASE ")
+
+	for key, stats := range keyStats {
+		countCase.WriteString("WHEN group_id = ? AND key_hash = ? THEN request_count + ? ")
+		countArgs = append(countArgs, key.GroupID, key.KeyHash, stats.Count)
+
+		lastUsedCase.WriteString("WHEN group_id = ? AND key_hash = ? THEN CASE WHEN last_used_at IS NULL OR last_used_at < ? THEN ? ELSE last_used_at END ")
+		lastUsedArgs = append(lastUsedArgs, key.GroupID, key.KeyHash, stats.LastUsedAt, stats.LastUsedAt)
+
+		whereParts = append(whereParts, "(group_id = ? AND key_hash = ?)")
+		whereArgs = append(whereArgs, key.GroupID, key.KeyHash)
+	}
+
+	countCase.WriteString("ELSE request_count END")
+	lastUsedCase.WriteString("ELSE last_used_at END")
+
+	if err := tx.Model(&models.APIKey{}).Where(strings.Join(whereParts, " OR "), whereArgs...).
+		Updates(map[string]any{
+			"request_count": gorm.Expr(countCase.String(), countArgs...),
+			"last_used_at":  gorm.Expr(lastUsedCase.String(), lastUsedArgs...),
+		}).Error; err != nil {
+		return fmt.Errorf("failed to batch update api_key stats: %w", err)
+	}
+	return nil
 }
 
 // batchUpsertHourlyStats performs batch upsert for hourly statistics.

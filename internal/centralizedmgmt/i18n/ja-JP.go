@@ -47,9 +47,9 @@ var MessagesJaJP = map[string]string{
 
 	// Channel types
 	"channel.type.openai":    "OpenAI",
+	"channel.type.openai-response": "OpenAI Responses",
 	"channel.type.anthropic": "Anthropic",
 	"channel.type.gemini":    "Gemini",
-	"channel.type.codex":     "Codex",
 	"channel.type.azure":     "Azure",
 	"channel.type.custom":    "カスタム",
 
@@ -57,7 +57,7 @@ var MessagesJaJP = map[string]string{
 	"relay_format.openai_chat":                "OpenAI チャット補完",
 	"relay_format.openai_completion":          "OpenAI テキスト補完",
 	"relay_format.claude":                     "Claude メッセージ",
-	"relay_format.codex":                      "Codex レスポンス",
+	"relay_format.codex":                      "OpenAI Responses レスポンス",
 	"relay_format.openai_image":               "OpenAI 画像生成",
 	"relay_format.openai_image_edit":          "OpenAI 画像編集",
 	"relay_format.openai_audio_transcription": "OpenAI 音声文字起こし",

@@ -152,7 +152,7 @@ export default {
     ccSupportSuffix: " - 強制CCサポート",
     ccSupportBadge: "強制CC",
     openaiCCBadge: "OpenAI CC",
-    codexCCBadge: "Codex CC",
+    openaiResponseCCBadge: "OpenAI Responses CC",
     geminiCCBadge: "Gemini CC",
     allSubGroupsSelected: "すべての利用可能なサブグループが選択されています",
     selectChannelTypeFirst: "先にチャンネルタイプを選択してください",
@@ -212,6 +212,12 @@ export default {
     createFirstKey: "最初のキーを追加",
     searchGroupPlaceholder: "グループ名を検索...",
     noMatchingGroups: "一致するグループが見つかりません",
+    dragHandle: "ドラッグして並べ替え",
+    dragSortHint: "検索をクリアするとドラッグで並べ替えできます",
+    dragSortUnavailable: "このセクションで並べ替えるには少なくとも2つのグループが必要です",
+    dragSortSaving: "グループの並び順を保存中",
+    dragSortSaved: "グループの並び順を保存しました",
+    dragSortSaveFailed: "グループの並び順の保存に失敗しました。元に戻しました",
     addKey: "キー追加",
     exportAllKeys: "すべてのキーをエクスポート",
     exportValidKeys: "有効なキーをエクスポート",
@@ -495,7 +501,7 @@ export default {
     parallelToolCallsEnabled: "有効",
     parallelToolCallsDisabled: "無効",
     parallelToolCallsTip:
-      "リクエストにネイティブツールが含まれている場合にのみ有効です。「強制関数呼び出し」が有効な場合、この設定は無効です。Codex チャンネルはデフォルトで有効です。",
+      "リクエストにネイティブツールが含まれている場合にのみ有効です。「強制関数呼び出し」が有効な場合、この設定は無効です。OpenAI Responses チャンネルはデフォルトで有効です。",
     ccSupport: "強制 CC サポート",
     ccSupportTooltip1:
       "Claude Code 互換モードを有効にし、Claude クライアントが /claude エンドポイント経由で接続できるようにします。",
@@ -506,22 +512,22 @@ export default {
     ccSupportTip:
       "有効にすると、クライアントは /proxy/グループ名/claude/v1/messages エンドポイントを使用でき、リクエストは自動的にターゲット形式に変換されます。",
     ccSupportCompatibilityTip:
-      "このスイッチは OpenAI、Codex、Gemini チャンネルのグループに有効で、他のチャンネルではこの設定は無視され、表示されません。",
+      "このスイッチは OpenAI、OpenAI Responses、Gemini チャンネルのグループに有効で、他のチャンネルではこの設定は無視され、表示されません。",
     ccSupportRedirectTip:
       "Claude Code 互換性向けに、別名とフルモデル名の両方をリダイレクトに追加（opus/claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001 → 上流モデル。例：opus → deepseek-chat）。任意でクライアント側フォールバックとして、Claude Code の settings.json に env を設定（関連する環境変数には ANTHROPIC_MODEL、ANTHROPIC_DEFAULT_OPUS_MODEL、ANTHROPIC_DEFAULT_SONNET_MODEL、ANTHROPIC_DEFAULT_HAIKU_MODEL が含まれます）。",
     thinkingModel: "思考モデル",
     thinkingModelTooltip:
       "Claude Code が拡張思考モードを有効にすると、このモデルが自動的に使用されます。空のままにすると、リクエストの元のモデルが使用されます。例：deepseek-reasoner",
     thinkingModelPlaceholder: "例：deepseek-reasoner",
-    codexInstructionsMode: "Codex 指示モード",
+    codexInstructionsMode: "OpenAI Responses 指示モード",
     codexInstructionsModeTooltip:
-      "Codex API の instructions フィールドの処理方法を制御します。自動：組み込みのデフォルト指示を使用；公式：公式 Codex CLI 指示を使用；カスタム：以下に入力したカスタム指示を使用。",
+      "Codex CLI 互換リクエスト向けに OpenAI Responses の instructions フィールドの処理方法を制御します。自動：組み込みのデフォルト指示を使用；公式：公式 Codex CLI 指示を使用；カスタム：以下に入力したカスタム指示を使用。",
     codexInstructionsModeAuto: "自動",
     codexInstructionsModeOfficial: "公式",
     codexInstructionsModeCustom: "カスタム",
-    codexInstructions: "Codex 指示",
+    codexInstructions: "OpenAI Responses 指示",
     codexInstructionsTooltip:
-      "Codex API のカスタム instructions フィールド。一部のプロバイダー（88code.ai など）はこのフィールドを厳密に検証します。空のままにするとデフォルトを使用します。必要に応じて実際の Codex CLI リクエストから抽出してください。",
+      "OpenAI Responses のカスタム instructions フィールド。一部のプロバイダー（88code.ai など）はこのフィールドを厳密に検証します。空のままにするとデフォルトを使用します。必要に応じて実際の Codex CLI リクエストから抽出してください。",
     codexInstructionsPlaceholder:
       "デフォルト指示を使用する場合は空のまま、またはこのフィールドを検証するプロバイダー用のカスタム指示を貼り付け",
     interceptEventLog: "イベントログ傍受",

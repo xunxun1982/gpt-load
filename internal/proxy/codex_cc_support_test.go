@@ -1165,26 +1165,26 @@ func TestCodexHelperFunctions(t *testing.T) {
 		}
 	})
 
-	t.Run("isCodexCCMode", func(t *testing.T) {
+	t.Run("isOpenAIResponseCCMode", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 
 		// Test when not set
-		if isCodexCCMode(c) {
-			t.Error("expected false when ctxKeyCodexCC not set")
+		if isOpenAIResponseCCMode(c) {
+			t.Error("expected false when ctxKeyOpenAIResponseCC not set")
 		}
 
 		// Test when set to true
-		c.Set(ctxKeyCodexCC, true)
-		if !isCodexCCMode(c) {
-			t.Error("expected true when ctxKeyCodexCC is true")
+		c.Set(ctxKeyOpenAIResponseCC, true)
+		if !isOpenAIResponseCCMode(c) {
+			t.Error("expected true when ctxKeyOpenAIResponseCC is true")
 		}
 
 		// Test when set to false
-		c.Set(ctxKeyCodexCC, false)
-		if isCodexCCMode(c) {
-			t.Error("expected false when ctxKeyCodexCC is false")
+		c.Set(ctxKeyOpenAIResponseCC, false)
+		if isOpenAIResponseCCMode(c) {
+			t.Error("expected false when ctxKeyOpenAIResponseCC is false")
 		}
 	})
 

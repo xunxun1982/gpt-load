@@ -118,9 +118,9 @@ func TestSpecificTranslationKeys(t *testing.T) {
 func TestChannelTypeTranslations(t *testing.T) {
 	channelTypes := []string{
 		"channel.type.openai",
+		"channel.type.openai-response",
 		"channel.type.anthropic",
 		"channel.type.gemini",
-		"channel.type.codex",
 		"channel.type.azure",
 		"channel.type.custom",
 	}

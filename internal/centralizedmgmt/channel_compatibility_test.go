@@ -30,7 +30,7 @@ func TestGetCompatibleChannels(t *testing.T) {
 			format:     types.RelayFormatClaude,
 			wantNative: "anthropic",
 			// Compatible channels require cc_support enabled (runtime check)
-			wantCompatible: []string{"openai", "gemini", "codex"},
+			wantCompatible: []string{"openai", "gemini", "openai-response"},
 		},
 		{
 			name:           "Gemini",
@@ -39,9 +39,9 @@ func TestGetCompatibleChannels(t *testing.T) {
 			wantCompatible: []string{},
 		},
 		{
-			name:           "Codex",
+			name:           "OpenAI Responses",
 			format:         types.RelayFormatCodex,
-			wantNative:     "codex",
+			wantNative:     "openai-response",
 			wantCompatible: []string{},
 		},
 		{
@@ -93,7 +93,7 @@ func TestGetNativeChannel(t *testing.T) {
 		{"OpenAI Embedding", types.RelayFormatOpenAIEmbedding, "openai"},
 		{"Claude", types.RelayFormatClaude, "anthropic"},
 		{"Gemini", types.RelayFormatGemini, "gemini"},
-		{"Codex", types.RelayFormatCodex, "codex"},
+		{"OpenAI Responses", types.RelayFormatCodex, "openai-response"},
 		{"Unknown (fallback to OpenAI)", types.RelayFormatUnknown, "openai"},
 	}
 
@@ -119,28 +119,28 @@ func TestIsChannelCompatible(t *testing.T) {
 		{"OpenAI native for chat", "openai", types.RelayFormatOpenAIChat, true},
 		{"Anthropic NOT compatible for chat", "anthropic", types.RelayFormatOpenAIChat, false},
 		{"Gemini NOT compatible for chat", "gemini", types.RelayFormatOpenAIChat, false},
-		{"Codex NOT compatible for chat", "codex", types.RelayFormatOpenAIChat, false},
+		{"OpenAI Responses NOT compatible for chat", "openai-response", types.RelayFormatOpenAIChat, false},
 
 		// OpenAI Embedding - only native
 		{"OpenAI native for embedding", "openai", types.RelayFormatOpenAIEmbedding, true},
 		{"Anthropic NOT compatible for embedding", "anthropic", types.RelayFormatOpenAIEmbedding, false},
 		{"Gemini NOT compatible for embedding", "gemini", types.RelayFormatOpenAIEmbedding, false},
-		{"Codex NOT compatible for embedding", "codex", types.RelayFormatOpenAIEmbedding, false},
+		{"OpenAI Responses NOT compatible for embedding", "openai-response", types.RelayFormatOpenAIEmbedding, false},
 
 		// Claude - native to Anthropic, compatible with others via CC (requires cc_support enabled)
 		{"Anthropic native for Claude", "anthropic", types.RelayFormatClaude, true},
 		{"OpenAI compatible for Claude", "openai", types.RelayFormatClaude, true},
 		{"Gemini compatible for Claude", "gemini", types.RelayFormatClaude, true},
-		{"Codex compatible for Claude", "codex", types.RelayFormatClaude, true},
+		{"OpenAI Responses compatible for Claude", "openai-response", types.RelayFormatClaude, true},
 
 		// Gemini - only native
 		{"Gemini native", "gemini", types.RelayFormatGemini, true},
 		{"OpenAI NOT compatible for Gemini", "openai", types.RelayFormatGemini, false},
 		{"Anthropic NOT compatible for Gemini", "anthropic", types.RelayFormatGemini, false},
 
-		// Codex - only native
-		{"Codex native", "codex", types.RelayFormatCodex, true},
-		{"OpenAI NOT compatible for Codex", "openai", types.RelayFormatCodex, false},
+		// Responses - only native
+		{"OpenAI Responses native", "openai-response", types.RelayFormatCodex, true},
+		{"OpenAI NOT compatible for Responses", "openai", types.RelayFormatCodex, false},
 
 		// Unknown format (fallback to OpenAI)
 		{"Unknown format fallback to OpenAI", "openai", types.RelayFormatUnknown, true},
@@ -173,12 +173,12 @@ func TestGetChannelPriority(t *testing.T) {
 		// Compatible channels have priority 1+ (Claude format only)
 		{"OpenAI compatible for Claude", "openai", types.RelayFormatClaude, 1},
 		{"Gemini compatible for Claude", "gemini", types.RelayFormatClaude, 2},
-		{"Codex compatible for Claude", "codex", types.RelayFormatClaude, 3},
+		{"OpenAI Responses compatible for Claude", "openai-response", types.RelayFormatClaude, 3},
 
 		// Incompatible channels have priority -1
 		{"Anthropic NOT compatible for chat", "anthropic", types.RelayFormatOpenAIChat, -1},
 		{"Gemini NOT compatible for chat", "gemini", types.RelayFormatOpenAIChat, -1},
-		{"Codex NOT compatible for chat", "codex", types.RelayFormatOpenAIChat, -1},
+		{"OpenAI Responses NOT compatible for chat", "openai-response", types.RelayFormatOpenAIChat, -1},
 		{"Anthropic NOT compatible for embedding", "anthropic", types.RelayFormatOpenAIEmbedding, -1},
 		{"OpenAI NOT compatible for Gemini", "openai", types.RelayFormatGemini, -1},
 

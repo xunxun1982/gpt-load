@@ -1,0 +1,9 @@
+.git
+.github
+gpt-load
+data
+tmp
+web/node_modules
+web/dist
+*.log
+.DS_Store
