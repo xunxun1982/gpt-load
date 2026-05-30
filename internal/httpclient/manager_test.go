@@ -2,6 +2,7 @@ package httpclient
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -16,6 +17,85 @@ func TestNewHTTPClientManager(t *testing.T) {
 	manager := NewHTTPClientManager()
 	assert.NotNil(t, manager)
 	assert.NotNil(t, manager.clients)
+}
+
+func TestStripSensitiveOnCrossHostRedirect(t *testing.T) {
+	t.Parallel()
+
+	headers := make(chan http.Header, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers <- r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	client := NewHTTPClientManager().GetClient(&Config{RequestTimeout: 5 * time.Second})
+	req, err := http.NewRequest(http.MethodGet, source.URL, nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("x-api-key", "secret")
+	req.Header.Set("api-key", "secret")
+	req.Header.Set("X-Goog-Api-Key", "secret")
+	req.Header.Set("X-Auth-Token", "secret")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	received := <-headers
+	for _, header := range sensitiveProxyHeaders {
+		assert.Empty(t, received.Get(header), "%s should be stripped", header)
+	}
+}
+
+func TestStripSensitiveOnSameHostRedirectPreservesHeaders(t *testing.T) {
+	t.Parallel()
+
+	headers := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/target", http.StatusTemporaryRedirect)
+			return
+		}
+		headers <- r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClientManager().GetClient(&Config{RequestTimeout: 5 * time.Second})
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/redirect", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("x-api-key", "secret")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	received := <-headers
+	assert.Equal(t, "Bearer secret", received.Get("Authorization"))
+	assert.Equal(t, "secret", received.Get("x-api-key"))
+}
+
+func TestStripSensitiveOnSchemeDowngradeRedirect(t *testing.T) {
+	t.Parallel()
+
+	previous := httptest.NewRequest(http.MethodGet, "https://api.example.com/source", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://API.EXAMPLE.COM/target", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("x-api-key", "secret")
+
+	err := stripSensitiveOnCrossHostRedirect(req, []*http.Request{previous})
+	require.NoError(t, err)
+	assert.Empty(t, req.Header.Get("Authorization"))
+	assert.Empty(t, req.Header.Get("x-api-key"))
 }
 
 // TestGetClient tests client retrieval and caching

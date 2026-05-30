@@ -47,9 +47,9 @@ var MessagesEnUS = map[string]string{
 
 	// Channel types
 	"channel.type.openai":    "OpenAI",
+	"channel.type.openai-response": "OpenAI Responses",
 	"channel.type.anthropic": "Anthropic",
 	"channel.type.gemini":    "Gemini",
-	"channel.type.codex":     "Codex",
 	"channel.type.azure":     "Azure",
 	"channel.type.custom":    "Custom",
 
@@ -57,7 +57,7 @@ var MessagesEnUS = map[string]string{
 	"relay_format.openai_chat":                "OpenAI Chat Completions",
 	"relay_format.openai_completion":          "OpenAI Completions",
 	"relay_format.claude":                     "Claude Messages",
-	"relay_format.codex":                      "Codex Responses",
+	"relay_format.codex":                      "OpenAI Responses",
 	"relay_format.openai_image":               "OpenAI Image Generation",
 	"relay_format.openai_image_edit":          "OpenAI Image Editing",
 	"relay_format.openai_audio_transcription": "OpenAI Audio Transcription",

@@ -27,7 +27,7 @@ const channels = computed(() => [
   { key: "openai", label: "OpenAI", type: "success" as const },
   { key: "anthropic", label: "Anthropic", type: "warning" as const },
   { key: "gemini", label: "Gemini", type: "default" as const },
-  { key: "codex", label: "Codex", type: "info" as const },
+  { key: "openai-response", label: "OpenAI Responses", type: "info" as const },
 ]);
 
 async function copyBaseUrl() {

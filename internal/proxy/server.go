@@ -19,6 +19,7 @@ import (
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
 	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/failover"
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
@@ -30,6 +31,13 @@ import (
 )
 
 const maxUpstreamErrorBodySize = 64 * 1024 // 64KB
+
+func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
+	if group == nil || group.FailoverStatusCodeMatcher.IsZero() {
+		return failover.DefaultStatusCodeMatcher().Match(statusCode)
+	}
+	return group.FailoverStatusCodeMatcher.Match(statusCode)
+}
 
 // Context keys used for function call middleware.
 const (
@@ -288,19 +296,19 @@ func isChatCompletionsEndpoint(path, method string) bool {
 	return strings.HasSuffix(path, "/v1/chat/completions")
 }
 
-// isCodexResponsesEndpoint checks whether the current request targets the
-// Codex/Responses API endpoint.
-func isCodexResponsesEndpoint(path string) bool {
+// isOpenAIResponsesEndpoint checks whether the current request targets the
+// OpenAI Responses API endpoint used by the openai-response channel.
+func isOpenAIResponsesEndpoint(path string) bool {
 	if path == "/v1/responses" {
 		return true
 	}
 	return strings.HasSuffix(path, "/v1/responses")
 }
 
-// isCodexForcedStream returns true if Codex forced streaming was applied.
+// isOpenAIResponseForcedStream returns true if OpenAI Responses forced streaming was applied.
 // This indicates the response handler should collect stream and return non-stream.
-func isCodexForcedStream(c *gin.Context) bool {
-	if v, ok := c.Get(ctxKeyCodexForcedStream); ok {
+func isOpenAIResponseForcedStream(c *gin.Context) bool {
+	if v, ok := c.Get(ctxKeyOpenAIResponseForcedStream); ok {
 		if enabled, ok := v.(bool); ok && enabled {
 			return true
 		}
@@ -335,7 +343,7 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 	// Path is already rewritten from /claude/v1/messages/count_tokens to /v1/messages/count_tokens
 	// or /v1beta/messages/count_tokens (for Gemini CC) by rewriteClaudePathToOpenAIGeneric()
 	// or rewriteClaudePathToGemini() before this function is called.
-	// This works for OpenAI CC mode, Codex CC mode, and Gemini CC mode (/claude entry point).
+	// This works for OpenAI CC mode, OpenAI Responses CC mode, and Gemini CC mode (/claude entry point).
 	if !strings.HasSuffix(path, "/v1/messages/count_tokens") &&
 		!strings.HasSuffix(path, "/v1beta/messages/count_tokens") {
 		return false
@@ -343,7 +351,7 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 
 	// Local heuristic estimation: count runes and assume ~4 runes per token.
 	// This endpoint is intercepted locally and not forwarded to upstream.
-	// Supports: OpenAI channel CC mode, Codex channel CC mode, Gemini channel CC mode (/claude entry).
+	// Supports: OpenAI channel CC mode, OpenAI Responses CC mode, Gemini channel CC mode (/claude entry).
 	estimatedTokens := estimateTokensForClaudeCountTokens(bodyBytes)
 
 	// Apply multiplier (billing adjustment).
@@ -370,7 +378,7 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 // This endpoint is intercepted locally and not forwarded to upstream.
 // Supports:
 // 1. OpenAI channel CC mode - intercepts /claude/api/event_logging/batch
-// 2. Codex channel CC mode (/claude entry) - intercepts /claude/api/event_logging/batch
+// 2. OpenAI Responses CC mode (/claude entry) - intercepts /claude/api/event_logging/batch
 // 3. Anthropic channel (intercept_event_log enabled) - intercepts /api/event_logging/batch
 // Returns: {"accepted_count": X, "rejected_count": 0} where X is the number of events.
 func (ps *ProxyServer) handleEventLoggingBatch(c *gin.Context, group *models.Group, bodyBytes []byte) bool {
@@ -383,8 +391,8 @@ func (ps *ProxyServer) handleEventLoggingBatch(c *gin.Context, group *models.Gro
 
 	path := c.Request.URL.Path
 
-	// Check if this is a CC support case (OpenAI, Codex, or Gemini channel with /claude/api/event_logging/batch)
-	// isCCSupportEnabled() returns true for OpenAI, Codex, and Gemini channels when cc_support is enabled.
+	// Check if this is a CC support case (OpenAI, OpenAI Responses, or Gemini channel with /claude/api/event_logging/batch)
+	// isCCSupportEnabled() returns true for OpenAI, OpenAI Responses, and Gemini channels when cc_support is enabled.
 	isCCCase := isCCSupportEnabled(group) && strings.HasSuffix(path, "/claude/api/event_logging/batch")
 
 	// Check if this is an Anthropic intercept case (/api/event_logging/batch without /claude/ prefix)
@@ -759,32 +767,32 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			if isCCSupportEnabled(group) && (strings.HasSuffix(c.Request.URL.Path, "/v1/messages") || strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")) {
 				// Handle channel-specific CC support conversions
 				switch group.ChannelType {
-				case "codex":
-					// Handle Codex channel CC support (Claude -> Codex/Responses API)
+				case "openai-response":
+					// Handle OpenAI Responses CC support (Claude -> Responses API)
 					convertedBody, converted, ccErr := ps.applyCodexCCRequestConversion(c, group, finalBodyBytes)
 					if ccErr != nil {
 						logrus.WithError(ccErr).WithFields(logrus.Fields{
 							"group": group.Name,
 							"path":  c.Request.URL.Path,
-						}).Error("Failed to convert Claude request to Codex format")
-						response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Codex CC conversion failed: %v", ccErr)))
+						}).Error("Failed to convert Claude request to OpenAI Responses format")
+						response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("OpenAI Responses CC conversion failed: %v", ccErr)))
 						return
 					} else if converted {
 						finalBodyBytes = convertedBody
 						// Re-apply param overrides after CC conversion to allow overriding
-						// converted parameters (e.g., reasoning.effort for Codex API).
+						// converted parameters (e.g., reasoning.effort for OpenAI Responses API).
 						// This enables users to force specific values like {"reasoning": {"effort": "xhigh"}}.
 						finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
 						if err != nil {
-							logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex CC conversion")
+							logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI Responses CC conversion")
 						}
-						// Rewrite path from /v1/messages to /v1/responses for Codex
+						// Rewrite path from /v1/messages to /v1/responses for OpenAI Responses
 						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
 						logrus.WithFields(logrus.Fields{
 							"group":        group.Name,
 							"channel_type": group.ChannelType,
 							"new_path":     c.Request.URL.Path,
-						}).Debug("Codex CC support: converted Claude request to Codex format")
+						}).Debug("OpenAI Responses CC support: converted Claude request to Responses format")
 					}
 				case "gemini":
 					// Handle Gemini channel CC support (Claude -> Gemini API)
@@ -874,14 +882,14 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 			isStream = channelHandler.IsStreamRequest(c, finalBodyBytes)
 
-			// Apply Codex forced streaming for direct Codex requests (non-CC mode).
-			// Per CLIProxyAPI implementation, Codex API requires stream: true for reliable responses.
+			// Apply forced streaming for direct OpenAI Responses requests (non-CC mode).
+			// Codex-compatible upstreams require stream: true for reliable responses.
 			// If client requests non-stream, we force stream: true to upstream and collect response.
-			if group.ChannelType == "codex" && !isCodexCCMode(c) && isCodexResponsesEndpoint(c.Request.URL.Path) {
+			if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 				modifiedBody, wasNonStream := channel.ForceStreamRequest(finalBodyBytes)
 				if wasNonStream {
 					finalBodyBytes = modifiedBody
-					c.Set(ctxKeyCodexForcedStream, true)
+					c.Set(ctxKeyOpenAIResponseForcedStream, true)
 					logrus.WithFields(logrus.Fields{
 						"group":        group.Name,
 						"channel_type": group.ChannelType,
@@ -989,10 +997,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 		// Store original model and target index in context for logging and dynamic weight metrics
 		if originalModel != "" {
-			c.Set("original_model", originalModel)
-			if targetIdx >= 0 {
-				c.Set("model_redirect_target_index", targetIdx)
-			}
+			setModelRedirectContext(c, originalModel, targetIdx, true)
 		}
 
 		// Update request body if it was modified by redirection
@@ -1015,16 +1020,16 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Set headers for Codex CC mode AFTER header rules to ensure upstream compatibility.
+	// Set headers for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
 	// NOTE: This intentionally overrides any custom headers set by header rules.
-	// Reason: Codex upstream may reject requests without proper headers.
+	// Reason: some Responses upstreams validate Codex CLI-compatible headers.
 	// IMPORTANT: These headers are ONLY set when CC mode is enabled (/claude path with cc_support=true).
-	// Normal Codex requests (non-CC) should use passthrough behavior (preserve client's original headers).
+	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original headers).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
 	// Reference: CLIProxyAPI codex_executor.go applyCodexHeaders()
-	if isCodexCCMode(c) {
+	if isOpenAIResponseCCMode(c) {
 		req.Header.Set("User-Agent", channel.CodexUserAgent)
-		// Additional headers required by Codex API (per CLIProxyAPI implementation)
+		// Additional headers required by Codex CLI-compatible Responses upstreams.
 		req.Header.Set("Openai-Beta", "responses=experimental")
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("Connection", "Keep-Alive")
@@ -1061,8 +1066,8 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		defer resp.Body.Close()
 	}
 
-	// Unified error handling for retries. Exclude 404 from being a retryable error.
-	if err != nil || (resp != nil && resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound) {
+	// Unified error handling for retries.
+	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
 			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, channelHandler, bodyBytes, models.RequestTypeFinal)
@@ -1148,7 +1153,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// function-call aware streaming handler. Other streaming requests keep
 			// the existing behavior.
 			ccEnabled := isCCEnabled(c)
-			codexCCMode := isCodexCCMode(c)
+			codexCCMode := isOpenAIResponseCCMode(c)
 			geminiCCMode := isGeminiCCMode(c)
 			logrus.WithFields(logrus.Fields{
 				"cc_enabled":     ccEnabled,
@@ -1173,9 +1178,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			// For non-streaming chat completions with function call enabled, use
 			// the function-call aware response handler.
 			ccEnabled := isCCEnabled(c)
-			codexCCMode := isCodexCCMode(c)
+			codexCCMode := isOpenAIResponseCCMode(c)
 			geminiCCMode := isGeminiCCMode(c)
-			codexForcedStream := isCodexForcedStream(c)
+			codexForcedStream := isOpenAIResponseForcedStream(c)
 			logrus.WithFields(logrus.Fields{
 				"cc_enabled":          ccEnabled,
 				"codex_cc_mode":       codexCCMode,
@@ -1305,6 +1310,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Store current sub-group ID for failure handling
 	c.Set("current_sub_group_id", subGroupID)
+	clearModelRedirectContext(c)
 
 	// Apply model mapping for the selected sub-group
 	finalBodyBytes, originalModel := ps.applyModelMapping(bodyBytes, group)
@@ -1370,20 +1376,20 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}).Debug("CC support: rewritten Claude path for sub-group channel type and sanitized query params")
 	}
 
-	// Convert Claude messages request to target format (OpenAI, Codex, or Gemini)
+	// Convert Claude messages request to target format (OpenAI, OpenAI Responses, or Gemini)
 	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages (or /v1beta/messages for Gemini)
-	// Clear any stale Codex CC state from previous sub-group attempts
-	c.Set(ctxKeyCodexCC, false)
+	// Clear any stale OpenAI Responses CC state from previous sub-group attempts.
+	c.Set(ctxKeyOpenAIResponseCC, false)
 	c.Set(ctxKeyGeminiCC, false)
-	// Check for both /v1/messages (OpenAI, Codex, Anthropic) and /v1beta/messages (Gemini)
+	// Check for both /v1/messages (OpenAI, OpenAI Responses, Anthropic) and /v1beta/messages (Gemini)
 	isMessagesEndpoint := strings.HasSuffix(c.Request.URL.Path, "/v1/messages") ||
 		strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")
 	if isCCSupportEnabled(group) && isMessagesEndpoint {
 		// Handle channel-specific CC support conversions
 		switch group.ChannelType {
-		case "codex":
-			// Handle Codex channel CC support (Claude -> Codex/Responses API)
-			// Sanitize query parameters for Codex CC (remove Claude-specific params like beta=true)
+		case "openai-response":
+			// Handle OpenAI Responses CC support (Claude -> Responses API)
+			// Sanitize query parameters for Responses CC (remove Claude-specific params like beta=true)
 			// This is needed even if path wasn't /claude/ since Anthropic aggregate may send directly to /v1/messages
 			sanitizeCCQueryParams(c.Request.URL)
 
@@ -1401,7 +1407,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				inputPreview := utils.TruncateString(utils.SanitizeErrorBody(string(finalBodyBytes)), 1000)
 				logFields["input_body_preview"] = inputPreview
 			}
-			logrus.WithFields(logFields).Debug("Codex CC: Starting conversion for aggregate sub-group")
+			logrus.WithFields(logFields).Debug("OpenAI Responses CC: Starting conversion for aggregate sub-group")
 
 			convertedBody, converted, ccErr := ps.applyCodexCCRequestConversion(c, group, finalBodyBytes)
 			if ccErr != nil {
@@ -1409,8 +1415,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					"aggregate_group": originalGroup.Name,
 					"sub_group":       group.Name,
 					"path":            c.Request.URL.Path,
-				}).Error("Failed to convert Claude request to Codex format for sub-group")
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Codex CC conversion failed: %v", ccErr)))
+				}).Error("Failed to convert Claude request to OpenAI Responses format for sub-group")
+				response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("OpenAI Responses CC conversion failed: %v", ccErr)))
 				return
 			} else if converted {
 				// Debug log: output body after conversion
@@ -1426,23 +1432,23 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					outputPreview := utils.TruncateString(utils.SanitizeErrorBody(string(convertedBody)), 1000)
 					outFields["output_body_preview"] = outputPreview
 				}
-				logrus.WithFields(outFields).Debug("Codex CC: Conversion completed for aggregate sub-group")
+				logrus.WithFields(outFields).Debug("OpenAI Responses CC: Conversion completed for aggregate sub-group")
 
 				finalBodyBytes = convertedBody
 				// Re-apply param overrides after CC conversion to allow overriding
-				// converted parameters (e.g., reasoning.effort for Codex API).
+				// converted parameters (e.g., reasoning.effort for OpenAI Responses API).
 				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
 				if err != nil {
-					logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex CC conversion for sub-group")
+					logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI Responses CC conversion for sub-group")
 				}
-				// Rewrite path from /v1/messages to /v1/responses for Codex
+				// Rewrite path from /v1/messages to /v1/responses for OpenAI Responses
 				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
 				logrus.WithFields(logrus.Fields{
 					"aggregate_group": originalGroup.Name,
 					"sub_group":       group.Name,
 					"channel_type":    group.ChannelType,
 					"new_path":        c.Request.URL.Path,
-				}).Debug("Codex CC support: converted Claude request for sub-group")
+				}).Debug("OpenAI Responses CC support: converted Claude request for sub-group")
 			}
 		case "gemini":
 			// Handle Gemini channel CC support (Claude -> Gemini API)
@@ -1546,14 +1552,14 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
-	// Apply Codex forced streaming for direct Codex sub-group requests (non-CC mode).
+	// Apply forced streaming for direct OpenAI Responses sub-group requests (non-CC mode).
 	// Clear any stale forced stream state from previous sub-group attempts.
-	c.Set(ctxKeyCodexForcedStream, false)
-	if group.ChannelType == "codex" && !isCodexCCMode(c) && isCodexResponsesEndpoint(c.Request.URL.Path) {
+	c.Set(ctxKeyOpenAIResponseForcedStream, false)
+	if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 		modifiedBody, wasNonStream := channel.ForceStreamRequest(finalBodyBytes)
 		if wasNonStream {
 			finalBodyBytes = modifiedBody
-			c.Set(ctxKeyCodexForcedStream, true)
+			c.Set(ctxKeyOpenAIResponseForcedStream, true)
 			logrus.WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,
 				"sub_group":       group.Name,
@@ -1655,12 +1661,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// Store original model and target index in context for logging and dynamic weight metrics
 		// Only update if not already set by model mapping
 		if redirectOriginalModel != "" {
-			if _, exists := c.Get("original_model"); !exists {
-				c.Set("original_model", redirectOriginalModel)
-			}
-			if targetIdx >= 0 {
-				c.Set("model_redirect_target_index", targetIdx)
-			}
+			setModelRedirectContext(c, redirectOriginalModel, targetIdx, true)
 		}
 
 		if !bytes.Equal(redirectedBody, finalBodyBytes) {
@@ -1681,17 +1682,17 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Set User-Agent for Codex CC mode AFTER header rules to ensure upstream compatibility.
+	// Set User-Agent for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
 	// NOTE: This intentionally overrides any custom User-Agent set by header rules.
-	// Reason: Codex upstream may reject requests without proper User-Agent header.
+	// Reason: some Responses upstreams validate the Codex CLI-compatible User-Agent header.
 	// IMPORTANT: This UA is ONLY set when CC mode is enabled (/claude path with cc_support=true).
-	// Normal Codex requests (non-CC) should use passthrough behavior (preserve client's original UA).
+	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original UA).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
 	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version.
 	// Reference: CLIProxyAPI codex_executor.go applyCodexHeaders()
-	if isCodexCCMode(c) {
+	if isOpenAIResponseCCMode(c) {
 		req.Header.Set("User-Agent", channel.CodexUserAgent)
-		// Additional headers required by Codex API (per CLIProxyAPI implementation)
+		// Additional headers required by Codex CLI-compatible Responses upstreams.
 		req.Header.Set("Openai-Beta", "responses=experimental")
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("Connection", "Keep-Alive")
@@ -1728,8 +1729,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		defer resp.Body.Close()
 	}
 
-	// Unified error handling for retries. Exclude 404 from being a retryable error.
-	if err != nil || (resp != nil && resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound) {
+	// Unified error handling for retries.
+	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
 			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
@@ -1859,7 +1860,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// aggregate groups.
 		if isStream {
 			ccEnabled := isCCEnabled(c)
-			codexCCMode := isCodexCCMode(c)
+			codexCCMode := isOpenAIResponseCCMode(c)
 			geminiCCMode := isGeminiCCMode(c)
 			logrus.WithFields(logrus.Fields{
 				"cc_enabled":     ccEnabled,
@@ -1893,9 +1894,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			ps.handleModelsResponse(c, resp, group, subGroupChannelHandler)
 		} else {
 			ccEnabled := isCCEnabled(c)
-			codexCCMode := isCodexCCMode(c)
+			codexCCMode := isOpenAIResponseCCMode(c)
 			geminiCCMode := isGeminiCCMode(c)
-			codexForcedStream := isCodexForcedStream(c)
+			codexForcedStream := isOpenAIResponseForcedStream(c)
 			logrus.WithFields(logrus.Fields{
 				"cc_enabled":          ccEnabled,
 				"codex_cc_mode":       codexCCMode,
@@ -2257,12 +2258,13 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 		}).Debug("Recorded dynamic weight metrics for standard group")
 	}
 
-	// Record model redirect metrics if a redirect occurred
-	// Check if original_model was set in context (indicates redirect happened)
-	if originalModel, exists := c.Get("original_model"); exists {
-		if originalModelStr, ok := originalModel.(string); ok && originalModelStr != "" {
+	// Record model redirect metrics if a redirect occurred.
+	// Use the dedicated redirect source model because original_model may be a
+	// user-facing model-mapping alias used only for request logs.
+	if redirectSourceModel, exists := c.Get(ctxKeyModelRedirectSourceModel); exists {
+		if originalModelStr, ok := redirectSourceModel.(string); ok && originalModelStr != "" {
 			// Get the selected target index from context if available
-			if targetIdx, exists := c.Get("model_redirect_target_index"); exists {
+			if targetIdx, exists := c.Get(ctxKeyModelRedirectTargetIndex); exists {
 				if targetIdxInt, ok := targetIdx.(int); ok && targetIdxInt >= 0 {
 					// Get target model name from the redirect rule
 					var targetModel string

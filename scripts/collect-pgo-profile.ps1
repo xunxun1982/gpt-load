@@ -6,10 +6,29 @@ $ErrorActionPreference = "Continue"  # Continue on errors to collect as many pro
 $PROFILE_DIR = if ($env:PROFILE_DIR) { $env:PROFILE_DIR } else { "profiles" }
 $MERGED_PROFILE = if ($env:MERGED_PROFILE) { $env:MERGED_PROFILE } else { "default.pgo" }
 $GO_TAGS = if ($env:GO_TAGS) { $env:GO_TAGS } else { "go_json" }
+$PGO_BENCHTIME = if ($env:PGO_BENCHTIME) { $env:PGO_BENCHTIME } else { "3s" }
+$GO_TEST_TIMEOUT = if ($env:GO_TEST_TIMEOUT) { $env:GO_TEST_TIMEOUT } else { "5m" }
+
+function Test-ValidProfile {
+    param([string]$ProfilePath)
+
+    if (-not (Test-Path $ProfilePath)) {
+        return $false
+    }
+
+    if ((Get-Item $ProfilePath).Length -le 0) {
+        return $false
+    }
+
+    & go tool pprof -top -nodecount=1 $ProfilePath *> $null
+    return $LASTEXITCODE -eq 0
+}
 
 Write-Host "🔍 Collecting PGO profiles..." -ForegroundColor Cyan
 Write-Host "Profile directory: $PROFILE_DIR"
 Write-Host "Merged profile: $MERGED_PROFILE"
+Write-Host "Benchmark time: $PGO_BENCHTIME"
+Write-Host "Go test timeout: $GO_TEST_TIMEOUT"
 
 # Create profile directory
 New-Item -ItemType Directory -Force -Path $PROFILE_DIR | Out-Null
@@ -52,9 +71,10 @@ foreach ($pkg in $benchPackages) {
     try {
         go test `
             -tags $GO_TAGS `
-            -bench="$($pkg.Pattern)" `
-            -benchtime=3s `
-            -cpuprofile="$benchmarkProfile" `
+            "-bench=$($pkg.Pattern)" `
+            "-benchtime=$PGO_BENCHTIME" `
+            "-timeout=$GO_TEST_TIMEOUT" `
+            "-cpuprofile=$benchmarkProfile" `
             -run='^$' `
             $pkg.Path 2>&1 | Out-Null
         $benchExitCode = $LASTEXITCODE
@@ -113,9 +133,9 @@ try {
 }
 
 if ($packages.Count -eq 0) {
-    Write-Host "⚠️  No packages found, creating minimal profile..." -ForegroundColor Yellow
-    "PGO profile placeholder" | Set-Content -Path $MERGED_PROFILE
-    exit 0
+    Write-Host "❌ No project packages found; cannot generate a valid PGO profile" -ForegroundColor Red
+    Remove-Item $MERGED_PROFILE -Force -ErrorAction SilentlyContinue
+    exit 1
 }
 
 Write-Host "Found $($packages.Count) packages" -ForegroundColor Gray
@@ -136,7 +156,7 @@ foreach ($pkg in $packages) {
     # Run test with -count=1 to avoid caching
     # Use -tags to match build environment (go_json for high-performance JSON)
     try {
-        $result = go test -tags $GO_TAGS -cpuprofile="$testProfile" -count=1 $pkg 2>&1
+        & go test -tags $GO_TAGS "-timeout=$GO_TEST_TIMEOUT" "-cpuprofile=$testProfile" -count=1 $pkg *> $null
         $testExitCode = $LASTEXITCODE
 
         if ($testExitCode -eq 0) {
@@ -175,11 +195,9 @@ $profileCount = if ($profiles) { $profiles.Count } else { 0 }
 Write-Host "✅ Collected $profileCount profile(s)" -ForegroundColor Green
 
 if ($profileCount -eq 0) {
-    Write-Host "⚠️  No profiles collected from tests" -ForegroundColor Yellow
-    Write-Host "Creating minimal profile for build compatibility..." -ForegroundColor Yellow
-    "PGO profile placeholder" | Set-Content -Path $MERGED_PROFILE
-    Write-Host "✅ Profile collection complete!" -ForegroundColor Green
-    exit 0
+    Write-Host "❌ No valid profiles collected; cannot generate a PGO profile" -ForegroundColor Red
+    Remove-Item $MERGED_PROFILE -Force -ErrorAction SilentlyContinue
+    exit 1
 }
 
 # Merge profiles
@@ -202,15 +220,14 @@ try {
     if ($firstProfile) {
         Copy-Item $firstProfile.FullName $MERGED_PROFILE -Force
     } else {
-        Write-Host "Creating minimal profile for build compatibility..." -ForegroundColor Yellow
-        "PGO profile placeholder" | Set-Content -Path $MERGED_PROFILE
-        Write-Host "✅ Profile collection complete!" -ForegroundColor Green
-        exit 0
+        Write-Host "❌ No fallback profile is available" -ForegroundColor Red
+        Remove-Item $MERGED_PROFILE -Force -ErrorAction SilentlyContinue
+        exit 1
     }
 }
 
 # Verify the merged profile
-if ((Test-Path $MERGED_PROFILE) -and ((Get-Item $MERGED_PROFILE).Length -gt 0)) {
+if (Test-ValidProfile $MERGED_PROFILE) {
     $profileSize = (Get-Item $MERGED_PROFILE).Length
     $profileSizeKB = [math]::Round($profileSize / 1KB, 2)
     Write-Host "✅ PGO profile ready: $MERGED_PROFILE ($profileSizeKB KB)" -ForegroundColor Green
@@ -223,8 +240,9 @@ if ((Test-Path $MERGED_PROFILE) -and ((Get-Item $MERGED_PROFILE).Length -gt 0)) 
         # Ignore errors in statistics display
     }
 } else {
-    Write-Host "Creating minimal profile for build compatibility..." -ForegroundColor Yellow
-    "PGO profile placeholder" | Set-Content -Path $MERGED_PROFILE
+    Write-Host "❌ Generated PGO profile is missing or invalid" -ForegroundColor Red
+    Remove-Item $MERGED_PROFILE -Force -ErrorAction SilentlyContinue
+    exit 1
 }
 
 Write-Host "✅ Profile collection complete!" -ForegroundColor Green
@@ -241,7 +259,7 @@ Get-ChildItem -Path . -File -ErrorAction SilentlyContinue | Where-Object { $_.Na
 
 # Remove coverage files
 if (Test-Path "coverage") {
-    Remove-Item "coverage" -Force -ErrorAction SilentlyContinue
+    Remove-Item "coverage" -Recurse -Force -ErrorAction SilentlyContinue
     $cleanupCount++
 }
 if (Test-Path "coverage.out") {

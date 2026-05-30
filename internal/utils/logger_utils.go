@@ -40,7 +40,8 @@ func CloseLogger() {
 	}
 
 	logrus.SetOutput(os.Stdout)
-	_ = file.Sync()
+	// Do not fsync log files during shutdown. The log writer is not buffered in
+	// process, and fsync can block shutdown for seconds on Windows or slow disks.
 	_ = file.Close()
 }
 

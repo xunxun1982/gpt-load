@@ -12,6 +12,7 @@ import (
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 // TestCodexCCWindowsPathPreservation tests that Windows paths are preserved correctly
@@ -85,6 +86,43 @@ func TestCodexCCWindowsPathPreservation(t *testing.T) {
 			t.Errorf("Command contains corrupted path pattern: %q", corruptedPattern)
 		}
 	})
+}
+
+func TestApplyCodexCCRequestConversionStoresModelRedirectTargetIndex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := []byte(`{"model":"virtual-model","messages":[{"role":"user","content":"hello"}]}`)
+	group := &models.Group{
+		ID:          42,
+		Name:        "responses-group",
+		ChannelType: "openai-response",
+		GroupType:   "standard",
+		Config:      map[string]any{"cc_support": true},
+		ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
+			"virtual-model": {
+				Targets: []models.ModelRedirectTarget{
+					{Model: "gpt-5.2-codex", Weight: 100},
+				},
+			},
+		},
+	}
+
+	converted, ok, err := (&ProxyServer{}).applyCodexCCRequestConversion(ctx, group, body)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	var convertedBody CodexRequest
+	require.NoError(t, json.Unmarshal(converted, &convertedBody))
+	require.Equal(t, "gpt-5.2-codex", convertedBody.Model)
+
+	originalModel, exists := ctx.Get("original_model")
+	require.True(t, exists)
+	require.Equal(t, "virtual-model", originalModel)
+
+	targetIndex, exists := ctx.Get(ctxKeyModelRedirectTargetIndex)
+	require.True(t, exists)
+	require.Equal(t, 0, targetIndex)
 }
 
 // TestCodexCCThinkingBlockWindowsPathConversion tests that Windows paths in Codex reasoning/thinking blocks are converted to Unix-style
@@ -1165,26 +1203,26 @@ func TestCodexHelperFunctions(t *testing.T) {
 		}
 	})
 
-	t.Run("isCodexCCMode", func(t *testing.T) {
+	t.Run("isOpenAIResponseCCMode", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 
 		// Test when not set
-		if isCodexCCMode(c) {
-			t.Error("expected false when ctxKeyCodexCC not set")
+		if isOpenAIResponseCCMode(c) {
+			t.Error("expected false when ctxKeyOpenAIResponseCC not set")
 		}
 
 		// Test when set to true
-		c.Set(ctxKeyCodexCC, true)
-		if !isCodexCCMode(c) {
-			t.Error("expected true when ctxKeyCodexCC is true")
+		c.Set(ctxKeyOpenAIResponseCC, true)
+		if !isOpenAIResponseCCMode(c) {
+			t.Error("expected true when ctxKeyOpenAIResponseCC is true")
 		}
 
 		// Test when set to false
-		c.Set(ctxKeyCodexCC, false)
-		if isCodexCCMode(c) {
-			t.Error("expected false when ctxKeyCodexCC is false")
+		c.Set(ctxKeyOpenAIResponseCC, false)
+		if isOpenAIResponseCCMode(c) {
+			t.Error("expected false when ctxKeyOpenAIResponseCC is false")
 		}
 	})
 

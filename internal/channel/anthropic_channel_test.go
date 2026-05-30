@@ -15,6 +15,7 @@ func TestClaudeCodeUserAgent(t *testing.T) {
 	// Test that the constant is defined and has the expected format
 	assert.NotEmpty(t, ClaudeCodeUserAgent)
 	assert.Contains(t, ClaudeCodeUserAgent, "claude-cli")
+	assert.Contains(t, ClaudeCodeUserAgent, "2.1.158")
 	assert.Contains(t, ClaudeCodeUserAgent, "external")
 	assert.Contains(t, ClaudeCodeUserAgent, "cli")
 }

@@ -466,12 +466,16 @@ onBeforeUnmount(() => {
 
 .sidebar-wrapper {
   width: 100%;
+  height: clamp(360px, 62vh, 560px);
   flex-shrink: 0;
+  min-height: 0;
 }
 
 .sidebar {
   position: relative;
   width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 
 .main-content {
@@ -495,7 +499,7 @@ onBeforeUnmount(() => {
 @media (min-width: 768px) {
   .keys-container {
     flex-direction: row;
-    height: calc(100vh - 159px);
+    height: calc(100vh - 111px - (var(--content-padding-y, 8px) * 2));
   }
 
   .sidebar-wrapper {

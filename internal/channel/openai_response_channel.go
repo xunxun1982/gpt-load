@@ -17,54 +17,43 @@ import (
 )
 
 func init() {
-	Register("codex", newCodexChannel)
+	Register("openai-response", newOpenAIResponseChannel)
 }
 
-// CodexChannel handles OpenAI Codex/Responses API requests.
-// Codex uses the Responses API (/v1/responses) which is an evolution of Chat Completions.
-// It supports both the new Responses format and legacy Chat Completions format for compatibility.
-type CodexChannel struct {
+// OpenAIResponseChannel handles OpenAI-compatible Responses API requests.
+// It also carries Codex CLI compatibility behavior used by CC mode.
+type OpenAIResponseChannel struct {
 	*BaseChannel
 }
 
-func newCodexChannel(f *Factory, group *models.Group) (ChannelProxy, error) {
-	base, err := f.newBaseChannel("codex", group)
+func newOpenAIResponseChannel(f *Factory, group *models.Group) (ChannelProxy, error) {
+	base, err := f.newBaseChannel("openai-response", group)
 	if err != nil {
 		return nil, err
 	}
 
-	return &CodexChannel{
+	return &OpenAIResponseChannel{
 		BaseChannel: base,
 	}, nil
 }
 
-// CodexUserAgent is the User-Agent header value for Codex CLI requests.
-// Format: codex-cli/VERSION - matches the npm package @openai/codex client format.
-// NOTE: Version 0.77.0 is the latest stable release from GitHub (released December 21, 2025).
-// GitHub releases may show different versions than npm as they are not always in sync.
-// We use the latest stable version from GitHub releases.
-// Check: https://github.com/openai/codex/releases for latest versions
-const CodexUserAgent = "codex-cli/0.77.0"
+// CodexUserAgent is the User-Agent header value for Codex CLI-compatible requests.
+// Format: codex-cli/VERSION, matching the npm package @openai/codex client format.
+const CodexUserAgent = "codex-cli/0.135.0"
 
-// ModifyRequest sets the Authorization header for the Codex/Responses API.
-// Note: User-Agent is NOT set here to ensure passthrough behavior for non-CC requests.
-// User-Agent is only set in specific cases:
-// 1. When fetching models (/v1/models) - handled by FetchGroupModels in group_service.go
-// 2. When CC support is enabled - handled by server.go using isCodexCCMode check
-func (ch *CodexChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey, group *models.Group) {
+// ModifyRequest sets the Authorization header for the Responses API.
+// User-Agent is intentionally left unchanged for normal proxy requests.
+func (ch *OpenAIResponseChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey, group *models.Group) {
 	req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
 }
 
-// ValidateKey checks if the given API key is valid by making a responses request.
-// Uses the Responses API endpoint (/v1/responses) which is the standard for Codex.
-func (ch *CodexChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
-	// Parse validation endpoint to extract path and query parameters
+// ValidateKey checks whether the given API key can call the Responses API.
+func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
 	endpointURL, err := url.Parse(ch.ValidationEndpoint)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse validation endpoint: %w", err)
 	}
 
-	// Select upstream with dedicated client using the unified helper
 	selection, err := ch.SelectValidationUpstream(group, endpointURL.Path, endpointURL.RawQuery)
 	if err != nil {
 		return false, fmt.Errorf("failed to select validation upstream: %w", err)
@@ -74,9 +63,6 @@ func (ch *CodexChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, 
 	}
 	reqURL := selection.URL
 
-	// Use Responses API format for validation
-	// The Responses API uses "input" field (can be string or array of objects)
-	// Using simple string format for minimal validation payload
 	payload := gin.H{
 		"model": ch.TestModel,
 		"input": "hi",
@@ -93,7 +79,6 @@ func (ch *CodexChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, 
 	req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
 	req.Header.Set("Content-Type", "application/json")
 
-	// Apply custom header rules if available
 	if len(group.HeaderRuleList) > 0 {
 		headerCtx := utils.NewHeaderVariableContext(group, apiKey)
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
@@ -109,37 +94,29 @@ func (ch *CodexChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, 
 	}
 	defer resp.Body.Close()
 
-	// Any 2xx status code indicates the key is valid.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return true, nil
 	}
 
-	// For non-200 responses, parse the body to provide a more specific error reason.
 	errorBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return false, fmt.Errorf("key is invalid (status %d), but failed to read error body: %w", resp.StatusCode, err)
 	}
 
-	// Use the parser to extract a clean error message.
 	parsedError := app_errors.ParseUpstreamError(errorBody)
-
 	return false, fmt.Errorf("[status %d] %s", resp.StatusCode, parsedError)
 }
 
-// IsStreamRequest checks if the request is for a streaming response.
-// Responses API uses "stream" parameter similar to Chat Completions.
-func (ch *CodexChannel) IsStreamRequest(c *gin.Context, bodyBytes []byte) bool {
-	// Check Accept header for SSE
+// IsStreamRequest checks whether the request expects a streaming response.
+func (ch *OpenAIResponseChannel) IsStreamRequest(c *gin.Context, bodyBytes []byte) bool {
 	if strings.Contains(c.GetHeader("Accept"), "text/event-stream") {
 		return true
 	}
 
-	// Check query parameter
 	if c.Query("stream") == "true" {
 		return true
 	}
 
-	// Check JSON body for stream field
 	type streamPayload struct {
 		Stream bool `json:"stream"`
 	}
@@ -151,9 +128,8 @@ func (ch *CodexChannel) IsStreamRequest(c *gin.Context, bodyBytes []byte) bool {
 	return false
 }
 
-// ExtractModel extracts the model name from the request body.
-// Supports both Responses API format and Chat Completions format.
-func (ch *CodexChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
+// ExtractModel extracts the model name from a Responses API request body.
+func (ch *OpenAIResponseChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
 	type modelPayload struct {
 		Model string `json:"model"`
 	}
@@ -164,9 +140,8 @@ func (ch *CodexChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
 	return ""
 }
 
-// ForceStreamRequest modifies the request body to force stream: true.
-// Codex API requires streaming for reliable responses (per CLIProxyAPI implementation).
-// Returns the modified body bytes and whether the original request was non-streaming.
+// ForceStreamRequest modifies a Responses API request body to force stream: true.
+// It returns the modified body and whether the original request was non-streaming.
 func ForceStreamRequest(bodyBytes []byte) ([]byte, bool) {
 	if len(bodyBytes) == 0 {
 		return bodyBytes, false
@@ -177,18 +152,15 @@ func ForceStreamRequest(bodyBytes []byte) ([]byte, bool) {
 		return bodyBytes, false
 	}
 
-	// Check original stream value
 	originalStream := false
 	if v, ok := payload["stream"].(bool); ok {
 		originalStream = v
 	}
 
-	// If already streaming, no modification needed
 	if originalStream {
 		return bodyBytes, false
 	}
 
-	// Force stream: true
 	payload["stream"] = true
 	modifiedBody, err := json.Marshal(payload)
 	if err != nil {

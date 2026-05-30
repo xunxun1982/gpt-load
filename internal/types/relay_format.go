@@ -14,7 +14,8 @@ const (
 	// RelayFormatClaude represents Anthropic Claude messages format
 	RelayFormatClaude RelayFormat = "claude"
 
-	// RelayFormatCodex represents OpenAI Codex responses format
+	// RelayFormatCodex represents the OpenAI Responses format.
+	// The value is kept for hub API compatibility.
 	RelayFormatCodex RelayFormat = "codex"
 
 	// RelayFormatOpenAIImage represents OpenAI image generation format

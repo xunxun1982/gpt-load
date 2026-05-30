@@ -1304,7 +1304,7 @@ func BenchmarkSelectGroupForModelWithCompatibility(b *testing.B) {
 			ModelRedirectRulesV2: datatypes.JSON(redirectsJSON),
 			Upstreams:            datatypes.JSON("[]"),
 		}
-		channelTypes := []string{"openai", "azure", "anthropic", "gemini", "codex"}
+		channelTypes := []string{"openai", "azure", "anthropic", "gemini", "openai-response"}
 		group.ChannelType = channelTypes[i%len(channelTypes)]
 		db.Create(group)
 	}
@@ -1917,15 +1917,15 @@ func TestIsGroupCCSupportEnabled(t *testing.T) {
 			description: "Gemini channel with cc_support=true should return true",
 		},
 		{
-			name: "Codex with cc_support enabled",
+			name: "OpenAI Responses with cc_support enabled",
 			group: &models.Group{
-				ChannelType: "codex",
+				ChannelType: "openai-response",
 				Config: datatypes.JSONMap{
 					"cc_support": true,
 				},
 			},
 			want:        true,
-			description: "Codex channel with cc_support=true should return true",
+			description: "OpenAI Responses channel with cc_support=true should return true",
 		},
 		{
 			name: "Anthropic with cc_support enabled",

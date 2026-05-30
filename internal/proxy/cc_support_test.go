@@ -16,7 +16,45 @@ import (
 	"gpt-load/internal/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
+
+func TestApplyCCRequestConversionDirectStoresModelRedirectTargetIndex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := []byte(`{"model":"virtual-model","messages":[{"role":"user","content":"hello"}]}`)
+	group := &models.Group{
+		ID:          43,
+		Name:        "openai-group",
+		ChannelType: "openai",
+		GroupType:   "standard",
+		Config:      map[string]any{"cc_support": true},
+		ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
+			"virtual-model": {
+				Targets: []models.ModelRedirectTarget{
+					{Model: "gpt-4.1", Weight: 100},
+				},
+			},
+		},
+	}
+
+	converted, ok, err := (&ProxyServer{}).applyCCRequestConversionDirect(ctx, group, body)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	var convertedBody OpenAIRequest
+	require.NoError(t, json.Unmarshal(converted, &convertedBody))
+	require.Equal(t, "gpt-4.1", convertedBody.Model)
+
+	originalModel, exists := ctx.Get("original_model")
+	require.True(t, exists)
+	require.Equal(t, "virtual-model", originalModel)
+
+	targetIndex, exists := ctx.Get(ctxKeyModelRedirectTargetIndex)
+	require.True(t, exists)
+	require.Equal(t, 0, targetIndex)
+}
 
 // TestParseFunctionCallsFromContentForCC_TodoWriteNormalization verifies that
 // TodoWrite tool calls parsed via parseFunctionCallsFromContentForCC are
@@ -5444,10 +5482,10 @@ func TestIsCCSupportEnabled(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "codex channel with cc_support enabled",
+			name: "openai-response channel with cc_support enabled",
 			group: &models.Group{
 				Name:        "test",
-				ChannelType: "codex",
+				ChannelType: "openai-response",
 				Config:      map[string]any{"cc_support": true},
 			},
 			expected: true,
@@ -6363,7 +6401,7 @@ func TestHelperFunctions(t *testing.T) {
 		}{
 			{"openai_enabled", "openai", map[string]interface{}{"cc_support": true}, true},
 			{"openai_disabled", "openai", map[string]interface{}{"cc_support": false}, false},
-			{"codex_enabled", "codex", map[string]interface{}{"cc_support": true}, true},
+			{"openai_response_enabled", "openai-response", map[string]interface{}{"cc_support": true}, true},
 			{"gemini_enabled", "gemini", map[string]interface{}{"cc_support": true}, true},
 			{"anthropic_enabled", "anthropic", map[string]interface{}{"cc_support": true}, false},
 			{"nil_group", "", nil, false},

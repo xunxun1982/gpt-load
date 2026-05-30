@@ -158,7 +158,7 @@ async function copyProxyKeys() {
   try {
     success = await copy(formattedKeys);
   } catch {
-    success = false;
+    // Copy failures fall through to the manual fallback dialog.
   }
   const isSecureContext = typeof window !== "undefined" && window.isSecureContext;
 

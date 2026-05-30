@@ -103,6 +103,63 @@ func (s *Server) ListGroups(c *gin.Context) {
 	response.Success(c, groupResponses)
 }
 
+// GroupReorderItemRequest defines one group sort update in a reorder request.
+type GroupReorderItemRequest struct {
+	ID   uint `json:"id"`
+	Sort int  `json:"sort"`
+}
+
+// GroupReorderRequest defines the payload for batch group reordering.
+type GroupReorderRequest struct {
+	Items []GroupReorderItemRequest `json:"items"`
+}
+
+func validateGroupReorderRequest(req GroupReorderRequest) ([]services.GroupReorderItem, error) {
+	if len(req.Items) == 0 {
+		return nil, services.NewI18nError(app_errors.ErrValidation, "validation.reorder_items_required", nil)
+	}
+
+	items := make([]services.GroupReorderItem, 0, len(req.Items))
+	seen := make(map[uint]struct{}, len(req.Items))
+	for _, item := range req.Items {
+		if item.ID == 0 {
+			return nil, services.NewI18nError(app_errors.ErrValidation, "validation.reorder_group_id", nil)
+		}
+		if item.Sort < 0 {
+			return nil, services.NewI18nError(app_errors.ErrValidation, "validation.reorder_sort_negative", nil)
+		}
+		if _, ok := seen[item.ID]; ok {
+			return nil, services.NewI18nError(app_errors.ErrValidation, "validation.reorder_duplicate_group", map[string]any{"id": item.ID})
+		}
+		seen[item.ID] = struct{}{}
+		items = append(items, services.GroupReorderItem{
+			ID:   item.ID,
+			Sort: item.Sort,
+		})
+	}
+	return items, nil
+}
+
+// ReorderGroups handles batch sort updates for groups.
+func (s *Server) ReorderGroups(c *gin.Context) {
+	var req GroupReorderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	items, err := validateGroupReorderRequest(req)
+	if s.handleGroupError(c, err) {
+		return
+	}
+
+	if s.handleGroupError(c, s.GroupService.ReorderGroups(c.Request.Context(), items)) {
+		return
+	}
+
+	response.SuccessI18n(c, "success.groups_reordered", nil)
+}
+
 // GroupUpdateRequest defines the payload for updating a group.
 // Using a dedicated struct avoids issues with zero values being ignored by GORM's Update.
 type GroupUpdateRequest struct {

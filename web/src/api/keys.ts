@@ -48,6 +48,10 @@ export const keysApi = {
     return res.data;
   },
 
+  async reorderGroups(items: { id: number; sort: number }[]): Promise<void> {
+    await http.put("/groups/reorder", { items });
+  },
+
   // Delete a group
   // Returns response data which may contain status information for async deletions
   deleteGroup(groupId: number): Promise<{ message?: string; code?: string }> {

@@ -69,9 +69,9 @@ const formRef = ref<FormInst | null>(null);
 // Channel type options
 const channelTypeOptions = [
   { label: "OpenAI", value: "openai" as ChannelType },
+  { label: "OpenAI Responses", value: "openai-response" as ChannelType },
   { label: "Gemini", value: "gemini" as ChannelType },
   { label: "Anthropic", value: "anthropic" as ChannelType },
-  { label: "Codex", value: "codex" as ChannelType },
 ];
 
 // Precondition options (可扩展)

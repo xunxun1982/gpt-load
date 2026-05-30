@@ -34,13 +34,15 @@ import (
 const (
 	ctxKeyCCEnabled      = "cc_enabled"
 	ctxKeyOriginalFormat = "cc_original_format"
-	ctxKeyCodexCC        = "codex_cc" // Indicates Codex CC mode (Claude -> Codex/Responses API)
+	// ctxKeyOpenAIResponseCC indicates OpenAI Responses CC mode.
+	// The conversion still uses Codex CLI-compatible request/response details internally.
+	ctxKeyOpenAIResponseCC = "openai_response_cc"
 	// ctxKeyOpenAIToolNameReverseMap stores the reverse map for tool name restoration in OpenAI CC mode.
 	// This is used to restore original tool names that were shortened to comply with OpenAI's 64-char limit.
 	ctxKeyOpenAIToolNameReverseMap = "openai_tool_name_reverse_map"
-	// ctxKeyCodexForcedStream indicates that Codex channel forced stream: true for upstream.
+	// ctxKeyOpenAIResponseForcedStream indicates that OpenAI Responses forced stream: true for upstream.
 	// When set, the response handler should collect stream and return non-stream if client requested non-stream.
-	ctxKeyCodexForcedStream = "codex_forced_stream"
+	ctxKeyOpenAIResponseForcedStream = "openai_response_forced_stream"
 )
 
 // ctxKeyTriggerSignal and ctxKeyFunctionCallEnabled are declared in server.go (same package proxy).
@@ -174,10 +176,10 @@ func getGroupConfigString(group *models.Group, key string) string {
 
 // isCCSupportEnabled checks whether the cc_support flag is enabled for the given group.
 // This flag is stored in the group-level JSON config.
-// Supports OpenAI, Codex, and Gemini channel types.
+// Supports OpenAI, OpenAI Responses, and Gemini channel types.
 func isCCSupportEnabled(group *models.Group) bool {
-	// Enable CC support for OpenAI, Codex, and Gemini channel groups.
-	if group == nil || (group.ChannelType != "openai" && group.ChannelType != "codex" && group.ChannelType != "gemini") {
+	// Enable CC support for OpenAI, OpenAI Responses, and Gemini channel groups.
+	if group == nil || (group.ChannelType != "openai" && group.ChannelType != "openai-response" && group.ChannelType != "gemini") {
 		return false
 	}
 	return getGroupConfigBool(group, "cc_support")
@@ -914,9 +916,7 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 	// Preserve any existing original_model (from model mapping) so
 	// MappedModel logging continues to work. Only set it when absent.
 	if originalModel != "" {
-		if _, exists := c.Get("original_model"); !exists {
-			c.Set("original_model", originalModel)
-		}
+		setModelRedirectContext(c, originalModel, -1, true)
 	}
 
 	// Apply model redirect rules for OpenAI CC mode
@@ -936,6 +936,7 @@ func (ps *ProxyServer) applyCCRequestConversionDirect(
 			}
 			if targetModel != "" && targetModel != originalModel {
 				claudeReq.Model = targetModel
+				setModelRedirectContext(c, originalModel, selectedIdx, true)
 
 				// Log with additional context for V2 multi-target rules
 				logFields := logrus.Fields{

@@ -10,10 +10,20 @@ set -uo pipefail
 PROFILE_DIR="${PROFILE_DIR:-profiles}"
 MERGED_PROFILE="${MERGED_PROFILE:-default.pgo}"
 GO_TAGS="${GO_TAGS:-go_json}"
+PGO_BENCHTIME="${PGO_BENCHTIME:-3s}"
+GO_TEST_TIMEOUT="${GO_TEST_TIMEOUT:-5m}"
+
+is_valid_profile() {
+    local profile_path="$1"
+    [ -f "${profile_path}" ] && [ -s "${profile_path}" ] && \
+        go tool pprof -top -nodecount=1 "${profile_path}" >/dev/null 2>&1
+}
 
 echo "🔍 Collecting PGO profiles..."
 echo "Profile directory: ${PROFILE_DIR}"
 echo "Merged profile: ${MERGED_PROFILE}"
+echo "Benchmark time: ${PGO_BENCHTIME}"
+echo "Go test timeout: ${GO_TEST_TIMEOUT}"
 
 # Create profile directory
 mkdir -p "${PROFILE_DIR}"
@@ -61,7 +71,8 @@ for pkg_pattern in "${BENCH_PACKAGES[@]}"; do
     go test \
         -tags "${GO_TAGS}" \
         -bench="${PATTERN}" \
-        -benchtime=3s \
+        -benchtime="${PGO_BENCHTIME}" \
+        -timeout="${GO_TEST_TIMEOUT}" \
         -cpuprofile="${BENCHMARK_PROFILE}" \
         -run=^$ \
         "${PKG}" >/dev/null 2>&1
@@ -112,9 +123,9 @@ fi
 rm -f "${TEMP_PACKAGES}"
 
 if [ -z "${PACKAGES}" ]; then
-    echo "⚠️  No packages found, creating minimal profile..."
-    echo "PGO profile placeholder" > "${MERGED_PROFILE}"
-    exit 0
+    echo "❌ No project packages found; cannot generate a valid PGO profile"
+    rm -f "${MERGED_PROFILE}"
+    exit 1
 fi
 
 PACKAGE_COUNT=$(echo "${PACKAGES}" | wc -l | tr -d ' ')
@@ -137,6 +148,7 @@ for pkg in ${PACKAGES}; do
     set +e  # Temporarily disable exit on error
     go test \
         -tags "${GO_TAGS}" \
+        -timeout="${GO_TEST_TIMEOUT}" \
         -cpuprofile="${PROFILE_PATH}" \
         -count=1 \
         "${pkg}" >/dev/null 2>&1
@@ -185,10 +197,9 @@ fi
 echo "✅ Collected ${PROFILE_COUNT} profile(s)"
 
 if [ "${PROFILE_COUNT}" -eq 0 ]; then
-    echo "⚠️  No profiles collected from tests"
-    echo "Creating minimal profile for build compatibility..."
-    echo "PGO profile placeholder" > "${MERGED_PROFILE}"
-    exit 0
+    echo "❌ No valid profiles collected; cannot generate a PGO profile"
+    rm -f "${MERGED_PROFILE}"
+    exit 1
 fi
 
 # Merge profiles using go tool pprof
@@ -206,14 +217,14 @@ if [ ${MERGE_EXIT_CODE} -ne 0 ]; then
     if [ -n "${FIRST_PROFILE}" ] && [ -f "${FIRST_PROFILE}" ]; then
         cp "${FIRST_PROFILE}" "${MERGED_PROFILE}"
     else
-        echo "Creating minimal profile for build compatibility..."
-        echo "PGO profile placeholder" > "${MERGED_PROFILE}"
-        exit 0
+        echo "❌ No fallback profile is available"
+        rm -f "${MERGED_PROFILE}"
+        exit 1
     fi
 fi
 
 # Verify the merged profile
-if [ -f "${MERGED_PROFILE}" ] && [ -s "${MERGED_PROFILE}" ]; then
+if is_valid_profile "${MERGED_PROFILE}"; then
     PROFILE_SIZE=$(du -h "${MERGED_PROFILE}" 2>/dev/null | cut -f1 || echo "unknown")
     echo "✅ PGO profile ready: ${MERGED_PROFILE} (${PROFILE_SIZE})"
 
@@ -223,8 +234,9 @@ if [ -f "${MERGED_PROFILE}" ] && [ -s "${MERGED_PROFILE}" ]; then
     go tool pprof -top -nodecount=5 "${MERGED_PROFILE}" 2>/dev/null
     set -e  # Re-enable exit on error
 else
-    echo "Creating minimal profile for build compatibility..."
-    echo "PGO profile placeholder" > "${MERGED_PROFILE}"
+    echo "❌ Generated PGO profile is missing or invalid"
+    rm -f "${MERGED_PROFILE}"
+    exit 1
 fi
 
 echo "✅ Profile collection complete!"
@@ -242,8 +254,8 @@ for test_binary in *.test *.test.exe; do
 done
 
 # Remove coverage files
-if [ -f "coverage" ]; then
-    rm -f "coverage"
+if [ -e "coverage" ]; then
+    rm -rf "coverage"
     CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
 fi
 if [ -f "coverage.out" ]; then

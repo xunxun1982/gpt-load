@@ -587,9 +587,7 @@ func (ps *ProxyServer) applyGeminiCCRequestConversion(
 	// Store original model for logging
 	originalModel := claudeReq.Model
 	if originalModel != "" {
-		if _, exists := c.Get("original_model"); !exists {
-			c.Set("original_model", originalModel)
-		}
+		setModelRedirectContext(c, originalModel, -1, true)
 	}
 
 	// Apply model redirect rules for Gemini CC mode
@@ -609,6 +607,7 @@ func (ps *ProxyServer) applyGeminiCCRequestConversion(
 			}
 			if targetModel != "" && targetModel != originalModel {
 				claudeReq.Model = targetModel
+				setModelRedirectContext(c, originalModel, selectedIdx, true)
 
 				// Log with additional context for V2 multi-target rules
 				logFields := logrus.Fields{

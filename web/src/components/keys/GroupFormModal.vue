@@ -106,7 +106,7 @@ interface GroupFormData {
   display_name: string;
   description: string;
   upstreams: UpstreamInfo[];
-  channel_type: "anthropic" | "gemini" | "openai" | "codex";
+  channel_type: "anthropic" | "gemini" | "openai" | "openai-response";
   sort: number;
   test_model: string;
   validation_endpoint: string;
@@ -180,13 +180,18 @@ const userModifiedFields = ref({
   upstream: false,
 });
 const channelDefaults: Record<
-  "openai" | "gemini" | "anthropic" | "codex",
+  "openai" | "gemini" | "anthropic" | "openai-response",
   { testModel: string; upstream: string; validationEndpoint: string }
 > = {
   openai: {
     testModel: "gpt-4.1-nano",
     upstream: "https://api.openai.com",
     validationEndpoint: "/v1/chat/completions",
+  },
+  "openai-response": {
+    testModel: "gpt-4.1-mini",
+    upstream: "https://api.openai.com",
+    validationEndpoint: "/v1/responses",
   },
   gemini: {
     testModel: "gemini-2.0-flash-lite",
@@ -197,11 +202,6 @@ const channelDefaults: Record<
     testModel: "claude-3-haiku-20240307",
     upstream: "https://api.anthropic.com",
     validationEndpoint: "/v1/messages",
-  },
-  codex: {
-    testModel: "gpt-5-codex",
-    upstream: "https://api.openai.com",
-    validationEndpoint: "/v1/responses",
   },
 };
 
@@ -337,11 +337,18 @@ watch(
     }
 
     // Force disable function call when channel is not OpenAI.
-    // CC support is available for OpenAI, Codex, and Gemini channels.
+    // CC support is available for OpenAI, OpenAI Responses, and Gemini channels.
     if (newChannelType !== "openai") {
       formData.force_function_call = false;
     }
-    if (newChannelType !== "openai" && newChannelType !== "codex" && newChannelType !== "gemini") {
+    if (!supportsParallelToolCalls(newChannelType)) {
+      formData.parallel_tool_calls = "default";
+    }
+    if (
+      newChannelType !== "openai" &&
+      newChannelType !== "openai-response" &&
+      newChannelType !== "gemini"
+    ) {
       formData.cc_support = false;
     }
     // Handle intercept_event_log based on channel type.
@@ -366,6 +373,10 @@ function getOldDefaultTestModel(channelType: string): string {
 function getOldDefaultUpstream(channelType: string): string {
   const defaults = getChannelDefaults(channelType);
   return defaults?.upstream || "";
+}
+
+function supportsParallelToolCalls(channelType: string): boolean {
+  return channelType === "openai" || channelType === "openai-response";
 }
 
 // Reset form
@@ -452,10 +463,10 @@ function loadGroupData() {
     parallelToolCalls = ptcRaw ? "true" : "false";
   }
   const ccRaw = rawConfig["cc_support"];
-  // CC support is available for OpenAI, Codex, and Gemini channels
+  // CC support is available for OpenAI, OpenAI Responses, and Gemini channels.
   const ccSupport =
     (props.group.channel_type === "openai" ||
-      props.group.channel_type === "codex" ||
+      props.group.channel_type === "openai-response" ||
       props.group.channel_type === "gemini") &&
     typeof ccRaw === "boolean"
       ? ccRaw
@@ -1222,8 +1233,8 @@ async function handleSubmit() {
       delete config["thinking_model"];
     }
 
-    // Persist codex_instructions_mode and codex_instructions as dedicated config keys (only when cc_support is enabled for Codex channel).
-    if (formData.cc_support && formData.channel_type === "codex") {
+    // Persist Codex CLI-compatible instructions for OpenAI Responses CC mode.
+    if (formData.cc_support && formData.channel_type === "openai-response") {
       // Always save mode if not "auto"
       if (formData.codex_instructions_mode && formData.codex_instructions_mode !== "auto") {
         config["codex_instructions_mode"] = formData.codex_instructions_mode;
@@ -2321,12 +2332,12 @@ async function handleSubmit() {
                 </n-form-item>
               </div>
 
-              <!-- Parallel Tool Calls toggle (OpenAI and Codex channels) -->
+              <!-- Parallel Tool Calls toggle (OpenAI and OpenAI Responses channels) -->
               <div
                 class="config-section"
                 v-if="
                   formData.group_type !== 'aggregate' &&
-                  (formData.channel_type === 'openai' || formData.channel_type === 'codex')
+                  supportsParallelToolCalls(formData.channel_type)
                 "
               >
                 <n-form-item path="parallel_tool_calls">
@@ -2361,13 +2372,13 @@ async function handleSubmit() {
                 </n-form-item>
               </div>
 
-              <!-- CC Support toggle (OpenAI, Codex, and Gemini channels) -->
+              <!-- CC Support toggle (OpenAI, OpenAI Responses, and Gemini channels) -->
               <div
                 class="config-section"
                 v-if="
                   formData.group_type !== 'aggregate' &&
                   (formData.channel_type === 'openai' ||
-                    formData.channel_type === 'codex' ||
+                    formData.channel_type === 'openai-response' ||
                     formData.channel_type === 'gemini')
                 "
               >
@@ -2424,9 +2435,9 @@ async function handleSubmit() {
                         style="width: 100%"
                       />
                     </div>
-                    <!-- Codex Instructions Mode (only shown when cc_support is enabled for Codex channel) -->
+                    <!-- Codex CLI-compatible instructions mode for OpenAI Responses CC mode. -->
                     <div
-                      v-if="formData.cc_support && formData.channel_type === 'codex'"
+                      v-if="formData.cc_support && formData.channel_type === 'openai-response'"
                       style="margin-top: 12px"
                     >
                       <div style="font-size: 13px; color: #666; margin-bottom: 4px">
@@ -2455,11 +2466,11 @@ async function handleSubmit() {
                         style="width: 100%"
                       />
                     </div>
-                    <!-- Codex Instructions Input (only shown when mode is "custom") -->
+                    <!-- Custom Codex CLI-compatible instructions input. -->
                     <div
                       v-if="
                         formData.cc_support &&
-                        formData.channel_type === 'codex' &&
+                        formData.channel_type === 'openai-response' &&
                         formData.codex_instructions_mode === 'custom'
                       "
                       style="margin-top: 12px"
