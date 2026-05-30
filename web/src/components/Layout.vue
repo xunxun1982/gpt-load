@@ -8,8 +8,10 @@ import ThemeToggle from "@/components/ThemeToggle.vue";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const isMenuOpen = ref(false);
-const isMobile = ref(false);
 const mobileMediaQuery = "(max-width: 768px)";
+const isMobile = ref(
+  typeof window !== "undefined" ? window.matchMedia(mobileMediaQuery).matches : false
+);
 let mediaQueryList: MediaQueryList | null = null;
 
 const handleMediaQueryChange = (event: MediaQueryListEvent) => {

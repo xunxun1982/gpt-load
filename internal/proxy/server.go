@@ -997,7 +997,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 		// Store original model and target index in context for logging and dynamic weight metrics
 		if originalModel != "" {
-			setModelRedirectContext(c, originalModel, targetIdx, false)
+			setModelRedirectContext(c, originalModel, targetIdx, true)
 		}
 
 		// Update request body if it was modified by redirection
