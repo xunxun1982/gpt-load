@@ -56,6 +56,7 @@ const ICON_DEFAULT = "🔧";
 // Collapse state management
 const collapsedSections = ref<Set<string>>(new Set());
 const collapsedChannels = ref<Set<string>>(new Set());
+const groupsSectionRef = ref<HTMLElement | null>(null);
 
 interface Props {
   groups: Group[];
@@ -281,6 +282,36 @@ function isChannelCollapsed(sectionKey: string, channelType: string): boolean {
   return collapsedChannels.value.has(`${sectionKey}-${channelType}`);
 }
 
+function scrollWithinGroupsSection(element: HTMLElement, block: ScrollLogicalPosition = "nearest") {
+  const container = groupsSectionRef.value;
+  if (!container) {
+    return;
+  }
+
+  // Keep auto-scroll scoped to the sidebar; scrollIntoView can move the outer layout.
+  const containerRect = container.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  const currentTop = container.scrollTop;
+  const topDelta = elementRect.top - containerRect.top;
+  const bottomDelta = elementRect.bottom - containerRect.bottom;
+
+  let targetTop: number;
+  if (block === "start") {
+    targetTop = currentTop + topDelta;
+  } else if (topDelta < 0) {
+    targetTop = currentTop + topDelta;
+  } else if (bottomDelta > 0) {
+    targetTop = currentTop + bottomDelta;
+  } else {
+    return;
+  }
+
+  container.scrollTo({
+    top: Math.max(0, targetTop),
+    behavior: "smooth",
+  });
+}
+
 // Get group icon
 function getGroupIcon(group: Group, isAggregate: boolean): string {
   if (isAggregate) {
@@ -300,10 +331,7 @@ watch(
 
     const element = groupItemRefs.value.get(id);
     if (element) {
-      element.scrollIntoView({
-        behavior: "smooth", // Smooth scrolling
-        block: "nearest", // Scroll element to nearest edge
-      });
+      scrollWithinGroupsSection(element, "nearest");
     }
   },
   {
@@ -677,10 +705,7 @@ function scrollToChannelType(sectionKey: string, channelType: string) {
   nextTick(() => {
     const element = channelTypeRefs.value.get(channelKey);
     if (element) {
-      element.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
+      scrollWithinGroupsSection(element, "start");
     }
   });
 }
@@ -698,10 +723,7 @@ function scrollToSection(sectionKey: string) {
   nextTick(() => {
     const element = sectionHeaderRefs.value.get(sectionKey);
     if (element) {
-      element.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
+      scrollWithinGroupsSection(element, "start");
     }
   });
 }
@@ -918,7 +940,7 @@ async function handleFileChange(event: Event) {
       </div>
 
       <!-- Group list -->
-      <div class="groups-section">
+      <div ref="groupsSectionRef" class="groups-section">
         <n-spin :show="loading" size="small">
           <div
             v-if="
@@ -1311,8 +1333,11 @@ async function handleFileChange(event: Event) {
 </template>
 
 <style scoped>
-:deep(.n-card__content) {
+.group-list-card :deep(.n-card-content) {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .groups-section::-webkit-scrollbar {
@@ -1341,6 +1366,7 @@ async function handleFileChange(event: Event) {
 
 .group-list-container {
   height: 100%;
+  min-height: 0;
 }
 
 .group-list-card {
@@ -1364,8 +1390,8 @@ async function handleFileChange(event: Event) {
 }
 
 .groups-section {
-  flex: 1;
-  height: calc(100% - 120px);
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -1377,8 +1403,6 @@ async function handleFileChange(event: Event) {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 100%;
-  overflow-y: auto;
   width: 100%;
 }
 
@@ -1557,8 +1581,8 @@ async function handleFileChange(event: Event) {
 .group-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 7px;
+  gap: 4px;
+  padding: 4px 5px;
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -1654,27 +1678,27 @@ async function handleFileChange(event: Event) {
 }
 
 .group-icon {
-  font-size: 16px;
-  width: 28px;
-  height: 28px;
+  font-size: 15px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--bg-secondary);
-  border-radius: 6px;
+  border-radius: 5px;
   flex-shrink: 0;
   box-sizing: border-box;
 }
 
 .group-order-controls {
-  width: 22px;
+  width: 16px;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
 }
 
 .group-order-button {
-  width: 22px;
+  width: 16px;
   height: 14px;
   padding: 0;
   border: 0;
@@ -1699,7 +1723,7 @@ async function handleFileChange(event: Event) {
 }
 
 .group-drag-handle {
-  width: 22px;
+  width: 16px;
   height: 28px;
   padding: 0;
   border: 0;
@@ -1772,6 +1796,16 @@ async function handleFileChange(event: Event) {
   color: rgba(255, 255, 255, 0.85) !important;
 }
 
+.group-item.active .group-order-button,
+.group-item.active .group-drag-handle {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.group-item.active .group-order-button:disabled,
+.group-item.active .group-drag-handle.disabled {
+  opacity: 0.55;
+}
+
 .group-item.active .group-actions :deep(.n-button:hover .n-icon) {
   color: white !important;
 }
@@ -1789,7 +1823,7 @@ async function handleFileChange(event: Event) {
 .group-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 10px;
   flex-wrap: wrap;
 }
@@ -2006,6 +2040,11 @@ async function handleFileChange(event: Event) {
 :root.dark .group-icon {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .group-item.active .group-icon {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.28);
 }
 
 :root.dark .search-section :deep(.n-input) {

@@ -466,12 +466,16 @@ onBeforeUnmount(() => {
 
 .sidebar-wrapper {
   width: 100%;
+  height: clamp(360px, 62vh, 560px);
   flex-shrink: 0;
+  min-height: 0;
 }
 
 .sidebar {
   position: relative;
   width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 
 .main-content {
