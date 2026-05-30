@@ -341,6 +341,9 @@ watch(
     if (newChannelType !== "openai") {
       formData.force_function_call = false;
     }
+    if (!supportsParallelToolCalls(newChannelType)) {
+      formData.parallel_tool_calls = "default";
+    }
     if (
       newChannelType !== "openai" &&
       newChannelType !== "openai-response" &&
@@ -370,6 +373,10 @@ function getOldDefaultTestModel(channelType: string): string {
 function getOldDefaultUpstream(channelType: string): string {
   const defaults = getChannelDefaults(channelType);
   return defaults?.upstream || "";
+}
+
+function supportsParallelToolCalls(channelType: string): boolean {
+  return channelType === "openai" || channelType === "openai-response";
 }
 
 // Reset form
@@ -2330,8 +2337,7 @@ async function handleSubmit() {
                 class="config-section"
                 v-if="
                   formData.group_type !== 'aggregate' &&
-                  (formData.channel_type === 'openai' ||
-                    formData.channel_type === 'openai-response')
+                  supportsParallelToolCalls(formData.channel_type)
                 "
               >
                 <n-form-item path="parallel_tool_calls">

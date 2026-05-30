@@ -215,6 +215,8 @@ export default {
     dragSortSaving: "正在保存分组排序",
     dragSortSaved: "分组排序已保存",
     dragSortSaveFailed: "分组排序保存失败，已恢复原顺序",
+    moveGroupUp: "上移分组",
+    moveGroupDown: "下移分组",
     addKey: "添加密钥",
     exportAllKeys: "导出所有密钥",
     exportValidKeys: "导出有效密钥",

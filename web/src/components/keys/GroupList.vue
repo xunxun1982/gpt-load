@@ -13,6 +13,7 @@ import {
   Add,
   ChevronDown,
   ChevronForward,
+  ChevronUp,
   CloudDownloadOutline,
   CloudUploadOutline,
   GitBranchOutline,
@@ -534,16 +535,27 @@ function reorderGroupIds(
   return next;
 }
 
-async function saveGroupOrder(bucketKey: string, orderedIds: number[]) {
+function getBucketGroupIds(groups: Group[]): number[] {
+  return groups.map(group => group.id).filter((id): id is number => typeof id === "number");
+}
+
+function buildGroupOrderItems(groups: Group[], orderedIds: number[]) {
+  const sortValues = groups.map(group => group.sort ?? 0).sort((a, b) => a - b);
+  // Keep this bucket's existing sort values so a local reorder does not shift
+  // other channel buckets that share the same global sort column.
+  return orderedIds.map((id, index) => ({
+    id,
+    sort: sortValues[index] ?? (index + 1) * 10,
+  }));
+}
+
+async function saveGroupOrder(bucketKey: string, groups: Group[], orderedIds: number[]) {
   const previousOrder = localGroupOrder.value.get(bucketKey) ?? null;
   setLocalGroupOrder(bucketKey, orderedIds);
   savingOrder.value = true;
 
   try {
-    const items = orderedIds.map((id, index) => ({
-      id,
-      sort: (index + 1) * 10,
-    }));
+    const items = buildGroupOrderItems(groups, orderedIds);
     await keysApi.reorderGroups(items);
     message.success(t("keys.dragSortSaved"));
     emit("refresh");
@@ -583,19 +595,65 @@ async function handleDrop(
   const target = event.currentTarget as HTMLElement | null;
   const rect = target?.getBoundingClientRect();
   const placeAfterTarget = rect ? event.clientY > rect.top + rect.height / 2 : false;
-  const ids = groups.map(group => group.id).filter((id): id is number => typeof id === "number");
+  const ids = getBucketGroupIds(groups);
   const reordered = reorderGroupIds(ids, sourceGroupId, targetGroupId, placeAfterTarget);
   if (!reordered) {
     return;
   }
 
-  await saveGroupOrder(bucketKey, reordered);
+  await saveGroupOrder(bucketKey, groups, reordered);
 }
 
 function handleDragEnd() {
   draggingGroupId.value = null;
   draggingBucketKey.value = null;
   dragOverGroupId.value = null;
+}
+
+function canMoveGroup(groups: Group[], groupId: number | undefined, direction: -1 | 1): boolean {
+  if (!groupId || !canDragInBucket(groups)) {
+    return false;
+  }
+  const ids = getBucketGroupIds(groups);
+  const index = ids.indexOf(groupId);
+  const nextIndex = index + direction;
+  return index !== -1 && nextIndex >= 0 && nextIndex < ids.length;
+}
+
+async function moveGroupInBucket(
+  sectionKey: string,
+  channelType: string,
+  groupId: number | undefined,
+  direction: -1 | 1
+) {
+  const groups = sectionChannelGroups.value
+    .get(sectionKey)
+    ?.find(g => g.channelType === channelType)?.groups;
+  if (!groupId || !groups || !canMoveGroup(groups, groupId, direction)) {
+    return;
+  }
+
+  const bucketKey = getGroupBucketKey(sectionKey, channelType);
+  const ids = getBucketGroupIds(groups);
+  const index = ids.indexOf(groupId);
+  const nextIndex = index + direction;
+  const reordered = [...ids];
+  const currentId = reordered[index];
+  const nextId = reordered[nextIndex];
+  if (currentId === undefined || nextId === undefined) {
+    return;
+  }
+  reordered[index] = nextId;
+  reordered[nextIndex] = currentId;
+  await saveGroupOrder(bucketKey, groups, reordered);
+}
+
+function handleMoveGroupUp(sectionKey: string, channelType: string, groupId: number | undefined) {
+  void moveGroupInBucket(sectionKey, channelType, groupId, -1);
+}
+
+function handleMoveGroupDown(sectionKey: string, channelType: string, groupId: number | undefined) {
+  void moveGroupInBucket(sectionKey, channelType, groupId, 1);
 }
 
 // Scroll to specific channel type
@@ -994,6 +1052,48 @@ async function handleFileChange(event: Event) {
                           }
                         "
                       >
+                        <div class="group-order-controls">
+                          <n-tooltip trigger="hover">
+                            <template #trigger>
+                              <button
+                                type="button"
+                                class="group-order-button"
+                                :disabled="!canMoveGroup(channelGroup.groups, group.id, -1)"
+                                :aria-label="t('keys.moveGroupUp')"
+                                @click.stop="
+                                  handleMoveGroupUp(
+                                    section.sectionKey,
+                                    channelGroup.channelType,
+                                    group.id
+                                  )
+                                "
+                              >
+                                <n-icon :component="ChevronUp" :size="12" />
+                              </button>
+                            </template>
+                            {{ t("keys.moveGroupUp") }}
+                          </n-tooltip>
+                          <n-tooltip trigger="hover">
+                            <template #trigger>
+                              <button
+                                type="button"
+                                class="group-order-button"
+                                :disabled="!canMoveGroup(channelGroup.groups, group.id, 1)"
+                                :aria-label="t('keys.moveGroupDown')"
+                                @click.stop="
+                                  handleMoveGroupDown(
+                                    section.sectionKey,
+                                    channelGroup.channelType,
+                                    group.id
+                                  )
+                                "
+                              >
+                                <n-icon :component="ChevronDown" :size="12" />
+                              </button>
+                            </template>
+                            {{ t("keys.moveGroupDown") }}
+                          </n-tooltip>
+                        </div>
                         <n-tooltip trigger="hover">
                           <template #trigger>
                             <button
@@ -1564,6 +1664,38 @@ async function handleFileChange(event: Event) {
   border-radius: 6px;
   flex-shrink: 0;
   box-sizing: border-box;
+}
+
+.group-order-controls {
+  width: 22px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.group-order-button {
+  width: 22px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.group-order-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.group-order-button:focus-visible,
+.group-drag-handle:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 1px;
+  border-radius: 4px;
 }
 
 .group-drag-handle {

@@ -40,21 +40,14 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
-    // Production build: remove console and debugger statements
-    esbuild: isProd
-      ? {
-          drop: ["console", "debugger"],
-          legalComments: "none",
-        }
-      : undefined,
     // Build configuration
     build: {
       // Target modern browsers for smaller bundle size
       target: "esnext",
       outDir: "dist",
       assetsDir: "assets",
-      // Use esbuild for faster minification (default in Vite)
-      minify: "esbuild",
+      // Use Vite 8's default Oxc minifier.
+      minify: "oxc",
       // Enable CSS minification and code splitting
       cssMinify: true,
       cssCodeSplit: true,
@@ -62,24 +55,50 @@ export default defineConfig(({ mode }) => {
       sourcemap: false,
       // Report compressed size for better size visibility (set to false for faster builds)
       reportCompressedSize: true,
-      rollupOptions: {
+      rolldownOptions: {
+        // VueUse emits Rollup-compatible pure annotations that Rolldown reports as invalid.
+        checks: {
+          invalidAnnotation: false,
+        },
         output: {
           /**
-           * Manual chunk configuration - Optimize caching and loading performance
+           * Manual chunk configuration - Optimize caching and loading performance.
            * - vue-vendor: Vue core libraries, stable and suitable for long-term caching
            * - naive-ui: Large UI library, updated independently
            * - vendor: Utility dependencies, shared functionality
-           * Use object format to avoid circular dependency issues
            */
-          manualChunks: {
-            "vue-vendor": ["vue", "vue-router", "vue-i18n"],
-            "naive-ui": ["naive-ui"],
-            vendor: ["axios", "@vueuse/core", "@vicons/ionicons5"],
+          codeSplitting: {
+            groups: [
+              {
+                name: "vue-vendor",
+                test: /node_modules[\\/](vue|vue-router|vue-i18n)[\\/]/,
+                priority: 3,
+              },
+              {
+                name: "naive-ui",
+                test: /node_modules[\\/]naive-ui[\\/]/,
+                priority: 2,
+              },
+              {
+                name: "vendor",
+                test: /node_modules[\\/](@vueuse[\\/]core|@vicons[\\/]ionicons5|axios)[\\/]/,
+                priority: 1,
+              },
+            ],
           },
+          minify: isProd
+            ? {
+                compress: {
+                  dropConsole: true,
+                  dropDebugger: true,
+                },
+              }
+            : undefined,
+          comments: false,
           // Optimize chunk file names for better caching
           chunkFileNames: "assets/[name]-[hash].js",
           entryFileNames: "assets/[name]-[hash].js",
-          assetFileNames: "assets/[name]-[hash].[ext]",
+          assetFileNames: "assets/[name]-[hash][extname]",
         },
         // Tree-shaking optimization
         treeshake: {

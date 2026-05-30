@@ -84,6 +84,20 @@ func TestStripSensitiveOnSameHostRedirectPreservesHeaders(t *testing.T) {
 	assert.Equal(t, "secret", received.Get("x-api-key"))
 }
 
+func TestStripSensitiveOnSchemeDowngradeRedirect(t *testing.T) {
+	t.Parallel()
+
+	previous := httptest.NewRequest(http.MethodGet, "https://api.example.com/source", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://API.EXAMPLE.COM/target", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("x-api-key", "secret")
+
+	err := stripSensitiveOnCrossHostRedirect(req, []*http.Request{previous})
+	require.NoError(t, err)
+	assert.Empty(t, req.Header.Get("Authorization"))
+	assert.Empty(t, req.Header.Get("x-api-key"))
+}
+
 // TestGetClient tests client retrieval and caching
 func TestGetClient(t *testing.T) {
 	t.Parallel()

@@ -29,6 +29,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ReadOnlyDB is a wrapper type for the read-only database connection.
@@ -716,6 +717,21 @@ func buildGroupReorderCase(items []GroupReorderItem) (string, []any, []uint) {
 	return caseSQL.String(), args, ids
 }
 
+func lockExistingGroupIDsForReorder(tx *gorm.DB, ids []uint) (int64, error) {
+	query := tx.Model(&models.Group{}).Where("id IN ?", ids)
+	switch tx.Dialector.Name() {
+	case "mysql", "postgres":
+		// Select concrete rows so FOR UPDATE locks the reorder targets until commit.
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+
+	var existingIDs []uint
+	if err := query.Pluck("id", &existingIDs).Error; err != nil {
+		return 0, err
+	}
+	return int64(len(existingIDs)), nil
+}
+
 // ReorderGroups updates group sort values in one transaction.
 func (s *GroupService) ReorderGroups(ctx context.Context, items []GroupReorderItem) error {
 	if err := validateGroupReorderItems(items); err != nil {
@@ -734,8 +750,8 @@ func (s *GroupService) ReorderGroups(ctx context.Context, items []GroupReorderIt
 
 	caseSQL, args, ids := buildGroupReorderCase(items)
 
-	var count int64
-	if err := tx.Model(&models.Group{}).Where("id IN ?", ids).Count(&count).Error; err != nil {
+	count, err := lockExistingGroupIDsForReorder(tx, ids)
+	if err != nil {
 		return app_errors.ParseDBError(err)
 	}
 	if count != int64(len(ids)) {
@@ -747,6 +763,15 @@ func (s *GroupService) ReorderGroups(ctx context.Context, items []GroupReorderIt
 		Update("sort", gorm.Expr(caseSQL, args...))
 	if result.Error != nil {
 		return app_errors.ParseDBError(result.Error)
+	}
+	// Re-count instead of using RowsAffected: MySQL may report only changed
+	// rows for no-op updates. This also keeps SQLite validation portable because
+	// SQLite does not support SELECT ... FOR UPDATE.
+	if err := tx.Model(&models.Group{}).Where("id IN ?", ids).Count(&count).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	if count != int64(len(ids)) {
+		return NewI18nError(app_errors.ErrValidation, "validation.reorder_group_not_found", nil)
 	}
 
 	if err := tx.Commit().Error; err != nil {

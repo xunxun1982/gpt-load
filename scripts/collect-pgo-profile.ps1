@@ -156,7 +156,7 @@ foreach ($pkg in $packages) {
     # Run test with -count=1 to avoid caching
     # Use -tags to match build environment (go_json for high-performance JSON)
     try {
-        $result = go test -tags $GO_TAGS "-timeout=$GO_TEST_TIMEOUT" "-cpuprofile=$testProfile" -count=1 $pkg 2>&1
+        & go test -tags $GO_TAGS "-timeout=$GO_TEST_TIMEOUT" "-cpuprofile=$testProfile" -count=1 $pkg *> $null
         $testExitCode = $LASTEXITCODE
 
         if ($testExitCode -eq 0) {

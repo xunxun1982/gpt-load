@@ -203,7 +203,8 @@ func stripSensitiveOnCrossHostRedirect(req *http.Request, via []*http.Request) e
 	}
 
 	previous := via[len(via)-1]
-	if req.URL.Host == previous.URL.Host {
+	downgraded := previous.URL.Scheme == "https" && req.URL.Scheme != "https"
+	if strings.EqualFold(req.URL.Host, previous.URL.Host) && !downgraded {
 		return nil
 	}
 

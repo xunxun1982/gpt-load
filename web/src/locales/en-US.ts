@@ -218,6 +218,8 @@ export default {
     dragSortSaving: "Saving group order",
     dragSortSaved: "Group order saved",
     dragSortSaveFailed: "Failed to save group order, restored",
+    moveGroupUp: "Move group up",
+    moveGroupDown: "Move group down",
     addKey: "Add Key",
     exportAllKeys: "Export All Keys",
     exportValidKeys: "Export Valid Keys",

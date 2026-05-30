@@ -218,6 +218,8 @@ export default {
     dragSortSaving: "グループの並び順を保存中",
     dragSortSaved: "グループの並び順を保存しました",
     dragSortSaveFailed: "グループの並び順の保存に失敗しました。元に戻しました",
+    moveGroupUp: "グループを上へ移動",
+    moveGroupDown: "グループを下へ移動",
     addKey: "キー追加",
     exportAllKeys: "すべてのキーをエクスポート",
     exportValidKeys: "有効なキーをエクスポート",

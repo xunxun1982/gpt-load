@@ -312,6 +312,42 @@ func TestReorderGroups(t *testing.T) {
 	})
 }
 
+func TestReorderGroupsAllowsNoopSortValues(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	groups := []models.Group{
+		{
+			Name:               "reorder-noop-a",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":100}]`)),
+			ChannelType:        "openai",
+			Sort:               10,
+			TestModel:          "gpt-4.1-mini",
+			ValidationEndpoint: "/v1/chat/completions",
+		},
+		{
+			Name:               "reorder-noop-b",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":100}]`)),
+			ChannelType:        "openai",
+			Sort:               20,
+			TestModel:          "gpt-4.1-mini",
+			ValidationEndpoint: "/v1/chat/completions",
+		},
+	}
+	require.NoError(t, db.Create(&groups).Error)
+
+	err := svc.ReorderGroups(context.Background(), []GroupReorderItem{
+		{ID: groups[0].ID, Sort: 10},
+		{ID: groups[1].ID, Sort: 20},
+	})
+	require.NoError(t, err)
+}
+
 func TestReorderGroupsValidation(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
