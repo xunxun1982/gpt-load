@@ -161,7 +161,8 @@ func (s *RequestLogService) Record(log *models.RequestLog) error {
 	log.ID = uuid.NewString()
 	log.Timestamp = time.Now()
 
-	if s.settingsManager.GetSettings().RequestLogWriteIntervalMinutes == 0 {
+	settings := s.settingsManager.GetSettings()
+	if settings.RequestLogWriteIntervalMinutes == 0 {
 		return s.writeLogsToDB([]*models.RequestLog{log})
 	}
 
@@ -186,7 +187,7 @@ func (s *RequestLogService) Record(log *models.RequestLog) error {
 
 	// Reduce TTL from 5x to 3x flush interval to free memory faster
 	// This is safe because flush runs every interval, so 3x provides adequate buffer
-	ttl := time.Duration(s.settingsManager.GetSettings().RequestLogWriteIntervalMinutes*3) * time.Minute
+	ttl := time.Duration(settings.RequestLogWriteIntervalMinutes*3) * time.Minute
 	if err := s.store.Set(cacheKey, logBytes, ttl); err != nil {
 		return err
 	}

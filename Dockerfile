@@ -54,7 +54,7 @@ COPY default.pgo* ./
 # - -tags go_json: High-performance JSON (goccy/go-json, 2-3x faster)
 # - -trimpath: Remove file system paths from binary (smaller size)
 # - -buildvcs=false: Skip VCS stamping for reproducible builds
-# - -ldflags="-s -w": Strip debug symbols and DWARF info (~30% size reduction)
+# - -ldflags="-s -w -buildid=": Strip debug symbols, DWARF info, and Go build ID
 # - GOAMD64=v2: Use SSE4.2/POPCNT instructions (safe for most CPUs)
 # - PGO: Go compiler automatically detects default.pgo and applies profile-guided optimizations
 #   providing 3-7% additional performance improvement through better inlining decisions
@@ -72,7 +72,7 @@ RUN echo "🔨 Building PGO-optimized binary..." && \
     -tags go_json \
     -trimpath \
     -buildvcs=false \
-    -ldflags="-s -w -X gpt-load/internal/version.Version=${VERSION}" \
+    -ldflags="-s -w -buildid= -X gpt-load/internal/version.Version=${VERSION}" \
     -o gpt-load && \
     echo "✅ Build complete: $(ls -lh gpt-load | awk '{print $5}')"
 
@@ -88,7 +88,7 @@ RUN echo "🔨 Building health check utility..." && \
     -tags go_json \
     -trimpath \
     -buildvcs=false \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -buildid=" \
     -o healthcheck ./cmd/healthcheck && \
     echo "✅ Health check utility built: $(ls -lh healthcheck | awk '{print $5}')"
 

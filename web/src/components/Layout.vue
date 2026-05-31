@@ -5,6 +5,7 @@ import LanguageSelector from "@/components/LanguageSelector.vue";
 import Logout from "@/components/Logout.vue";
 import NavBar from "@/components/NavBar.vue";
 import ThemeToggle from "@/components/ThemeToggle.vue";
+import { NButton, NDrawer, NDrawerContent, NLayout, NLayoutContent, NLayoutHeader } from "naive-ui";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const isMenuOpen = ref(false);

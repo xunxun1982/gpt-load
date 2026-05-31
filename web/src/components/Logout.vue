@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { useAuthService } from "@/services/auth";
 import { LogOutOutline } from "@vicons/ionicons5";
-import { useRouter } from "vue-router";
+import { NButton, NIcon } from "naive-ui";
 import { useI18n } from "vue-i18n";
+import { useRouter } from "vue-router";
 
 const { t } = useI18n();
 

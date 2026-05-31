@@ -668,6 +668,7 @@ func (s *Server) ToggleGroupEnabled(c *gin.Context) {
 // The operation will:
 // - Delete all sub-group relationships
 // - Delete all API keys across all groups
+// - Delete request logs, hourly stats, and dynamic weight metrics tied to groups
 // - Delete all groups
 // - Clear the in-memory key cache
 // - Invalidate the group cache

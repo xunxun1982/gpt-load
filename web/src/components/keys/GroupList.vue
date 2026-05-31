@@ -421,8 +421,16 @@ function toggleChildGroups(groupId: number | undefined, event: Event) {
 
 function openCreateChildGroupModal(group: Group, event: Event) {
   event.stopPropagation();
+  if (!hasUsableProxyKey(group.proxy_keys)) {
+    message.error(t("keys.childGroupRequiresProxyKeys"));
+    return;
+  }
   selectedParentGroup.value = group;
   showChildGroupModal.value = true;
+}
+
+function hasUsableProxyKey(proxyKeys: string | undefined): boolean {
+  return Boolean(proxyKeys?.split(",").some(key => key.trim() !== ""));
 }
 
 // Note: async keyword removed as suggested by AI review - no await expressions in this function
@@ -1098,7 +1106,7 @@ async function handleFileChange(event: Event) {
                                   )
                                 "
                               >
-                                <n-icon :component="ChevronUp" :size="12" />
+                                <n-icon :component="ChevronUp" :size="9" />
                               </button>
                             </template>
                             {{ t("keys.moveGroupUp") }}
@@ -1118,7 +1126,7 @@ async function handleFileChange(event: Event) {
                                   )
                                 "
                               >
-                                <n-icon :component="ChevronDown" :size="12" />
+                                <n-icon :component="ChevronDown" :size="9" />
                               </button>
                             </template>
                             {{ t("keys.moveGroupDown") }}
@@ -1145,7 +1153,7 @@ async function handleFileChange(event: Event) {
                               "
                               @dragend="handleDragEnd"
                             >
-                              <n-icon :component="ReorderThreeOutline" :size="14" />
+                              <n-icon :component="ReorderThreeOutline" :size="11" />
                             </button>
                           </template>
                           {{ getDragTooltip(channelGroup.groups) }}
@@ -1200,7 +1208,7 @@ async function handleFileChange(event: Event) {
                                         ? ChevronForward
                                         : ChevronDown
                                     "
-                                    :size="16"
+                                    :size="15"
                                   />
                                 </template>
                               </n-button>
@@ -1217,7 +1225,7 @@ async function handleFileChange(event: Event) {
                                 :title="t('keys.createChildGroup')"
                               >
                                 <template #icon>
-                                  <n-icon :component="GitBranchOutline" :size="16" />
+                                  <n-icon :component="GitBranchOutline" :size="15" />
                                 </template>
                               </n-button>
                             </template>
@@ -1230,7 +1238,7 @@ async function handleFileChange(event: Event) {
                             :title="t('keys.exportGroup')"
                           >
                             <template #icon>
-                              <n-icon :component="CloudDownloadOutline" :size="16" />
+                              <n-icon :component="CloudDownloadOutline" :size="15" />
                             </template>
                           </n-button>
                         </div>
@@ -1589,8 +1597,8 @@ async function handleFileChange(event: Event) {
 .group-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 5px;
+  gap: 1px;
+  padding: 4px 3px;
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -1686,9 +1694,9 @@ async function handleFileChange(event: Event) {
 }
 
 .group-icon {
-  font-size: 15px;
-  width: 24px;
-  height: 24px;
+  font-size: 14px;
+  width: 18px;
+  height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1699,15 +1707,15 @@ async function handleFileChange(event: Event) {
 }
 
 .group-order-controls {
-  width: 24px;
+  width: 14px;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
 }
 
 .group-order-button {
-  width: 24px;
-  min-height: 24px;
+  width: 14px;
+  min-height: 15px;
   padding: 0;
   border: 0;
   color: var(--text-secondary);
@@ -1731,8 +1739,8 @@ async function handleFileChange(event: Event) {
 }
 
 .group-drag-handle {
-  width: 24px;
-  min-height: 28px;
+  width: 14px;
+  min-height: 20px;
   padding: 0;
   border: 0;
   color: var(--text-secondary);
@@ -1769,17 +1777,29 @@ async function handleFileChange(event: Event) {
 .group-content {
   flex: 1;
   min-width: 0;
+  padding: 0 2px;
 }
 
 .group-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 1px;
   opacity: 0;
   transition: opacity 0.2s ease;
   flex-shrink: 0;
   margin-left: auto;
-  padding-left: 8px;
+  padding-left: 1px;
+}
+
+.group-actions :deep(.n-button) {
+  width: 16px;
+  min-width: 16px;
+  height: 18px;
+  padding: 0;
+}
+
+.group-actions :deep(.n-button__icon) {
+  margin: 0;
 }
 
 .group-item:hover .group-actions {
@@ -1831,9 +1851,17 @@ async function handleFileChange(event: Event) {
 .group-meta {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   font-size: 10px;
   flex-wrap: wrap;
+}
+
+.group-meta :deep(.n-tag) {
+  padding: 0 4px;
+}
+
+.group-meta :deep(.n-tag__content) {
+  padding: 0;
 }
 
 .group-id {

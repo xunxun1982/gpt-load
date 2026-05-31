@@ -1807,102 +1807,47 @@ func (s *GroupService) runAsyncGroupDeletion(groupID uint, relatedGroupIDs []uin
 	}).Info("Successfully completed async group deletion")
 }
 
+var deleteAllGroupDataTables = []string{
+	"group_sub_groups",
+	"dynamic_weight_metrics",
+	"group_hourly_stats",
+	"request_logs",
+	"api_keys",
+	"groups",
+}
+
 // DeleteAllGroups removes all groups and their associated resources.
 // This is a dangerous operation intended for debugging and testing purposes only.
 // It should only be accessible when DEBUG_MODE environment variable is enabled.
 //
 // The operation performs the following steps:
-// 1. Deletes all sub-group relationships
-// 2. Deletes all API keys (with SQLite sequence reset)
-// 3. Deletes all groups
-// 4. Clears the key store cache
-// 5. Invalidates the group cache
+// 1. Clears group-related database tables.
+// 2. Clears the key store cache.
+// 3. Invalidates the group cache.
 //
 // Returns an error if any database operation fails.
 func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	logrus.WithContext(ctx).Warn("DeleteAllGroups called - this will remove ALL groups and keys")
 
-	// Step 1: Get total key count before deletion (for logging only)
-	var totalKeys int64
-	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).Count(&totalKeys).Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Error("failed to count API keys")
+	logrus.WithContext(ctx).Info("Starting fast deletion of all group-related data")
+
+	if err := s.clearAllGroupDataTables(ctx); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to clear group-related tables")
 		return app_errors.ParseDBError(err)
 	}
 
-	logrus.WithContext(ctx).WithField("totalKeys", totalKeys).Info("Starting deletion of all groups and keys")
-
-	// Step 3: Begin transaction
-	tx := s.db.WithContext(ctx).Begin()
-	if err := tx.Error; err != nil {
-		return app_errors.ErrDatabase
-	}
-	defer func() {
-		if tx != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// Step 4: Delete all sub-group relationships
-	if err := tx.Exec("DELETE FROM group_sub_groups").Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Error("failed to delete sub-group relationships")
-		return app_errors.ParseDBError(err)
-	}
-
-	// Step 5: Delete all API keys using optimized DELETE
-	// For SQLite, a simple DELETE FROM is the fastest way to remove all rows
-	if totalKeys > 0 {
-		result := tx.Exec("DELETE FROM api_keys")
-		if result.Error != nil {
-			logrus.WithContext(ctx).WithError(result.Error).Error("failed to delete all API keys")
-			return app_errors.ParseDBError(result.Error)
-		}
-		logrus.WithContext(ctx).WithField("deletedKeys", result.RowsAffected).Info("Deleted all API keys")
-
-		// Reset auto-increment counter (SQLite-specific)
-		// This is optional but keeps the database clean for future inserts
-		// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
-		if s.db.Dialector.Name() == "sqlite" {
-			if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='api_keys'").Error; err != nil {
-				logrus.WithContext(ctx).WithError(err).Warn("failed to reset api_keys sequence, continuing anyway")
-			}
+	// Clear the key store cache to ensure in-memory/Redis state matches the database.
+	if s.keyService != nil && s.keyService.KeyProvider != nil {
+		if err := s.keyService.KeyProvider.ClearAllKeys(); err != nil {
+			logrus.WithContext(ctx).WithError(err).Error("failed to clear key store cache")
+			// Continue even if cache clear fails, as database is already updated.
 		}
 	}
 
-	// Step 6: Delete all groups
-	result := tx.Exec("DELETE FROM groups")
-	if result.Error != nil {
-		logrus.WithContext(ctx).WithError(result.Error).Error("failed to delete all groups")
-		return app_errors.ParseDBError(result.Error)
-	}
-	logrus.WithContext(ctx).WithField("deletedGroups", result.RowsAffected).Info("Deleted all groups")
-
-	// Reset auto-increment counter (SQLite-specific)
-	// This is optional but keeps the database clean for future inserts
-	// Note: This will fail silently on non-SQLite databases, which is acceptable for debug-only operations
-	if s.db.Dialector.Name() == "sqlite" {
-		if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name='groups'").Error; err != nil {
-			logrus.WithContext(ctx).WithError(err).Warn("failed to reset groups sequence, continuing anyway")
-		}
-	}
-
-	// Step 7: Commit the transaction
-	if err := tx.Commit().Error; err != nil {
-		logrus.WithContext(ctx).WithError(err).Error("failed to commit transaction")
-		return app_errors.ErrDatabase
-	}
-	tx = nil
-
-	// Step 9: Clear the key store cache
-	// This removes all keys from memory to ensure consistency
-	if err := s.keyService.KeyProvider.ClearAllKeys(); err != nil {
-		logrus.WithContext(ctx).WithError(err).Error("failed to clear key store cache")
-		// Continue even if cache clear fails, as database is already updated
-	}
-
-	// Step 10: Invalidate the group cache to force reload
+	// Invalidate the group cache to force reload.
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
-		// Continue even if cache invalidation fails
+		// Continue even if cache invalidation fails.
 	}
 
 	// Invalidate group list cache after deleting all groups
@@ -1913,13 +1858,104 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 		s.InvalidateChildGroupsCacheCallback()
 	}
 
-	// Step 11: Reset in-memory key stats cache to avoid serving stale data for reused IDs
+	// Reset in-memory key stats cache to avoid serving stale data for reused IDs.
 	s.keyStatsCacheMu.Lock()
 	s.keyStatsCache = make(map[uint]groupKeyStatsCacheEntry)
 	s.keyStatsCacheMu.Unlock()
 
 	logrus.WithContext(ctx).Info("Successfully deleted all groups and keys")
 	return nil
+}
+
+func (s *GroupService) clearAllGroupDataTables(ctx context.Context) error {
+	switch s.db.Dialector.Name() {
+	case "postgres":
+		return s.clearAllGroupDataTablesPostgres(ctx)
+	case "mysql":
+		return s.clearAllGroupDataTablesMySQL(ctx)
+	default:
+		return s.clearAllGroupDataTablesByDelete(ctx)
+	}
+}
+
+func (s *GroupService) clearAllGroupDataTablesPostgres(ctx context.Context) error {
+	tables := strings.Join(quotedDeleteAllGroupDataTables("postgres"), ", ")
+	return s.db.WithContext(ctx).Exec("TRUNCATE TABLE " + tables + " RESTART IDENTITY").Error
+}
+
+func (s *GroupService) clearAllGroupDataTablesMySQL(ctx context.Context) error {
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	// FOREIGN_KEY_CHECKS is scoped to the current MySQL session, so keep all
+	// truncate statements on one physical connection.
+	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
+		return err
+	}
+	foreignKeyChecksRestored := false
+	defer func() {
+		if foreignKeyChecksRestored {
+			return
+		}
+		if _, err := conn.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS=1"); err != nil {
+			logrus.WithError(err).Warn("failed to restore MySQL foreign key checks after debug table truncation")
+		}
+	}()
+
+	for _, table := range deleteAllGroupDataTables {
+		if _, err := conn.ExecContext(ctx, "TRUNCATE TABLE "+quoteTableName("mysql", table)); err != nil {
+			return err
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
+		return err
+	}
+	foreignKeyChecksRestored = true
+	return nil
+}
+
+func (s *GroupService) clearAllGroupDataTablesByDelete(ctx context.Context) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, table := range deleteAllGroupDataTables {
+			if err := tx.Exec("DELETE FROM " + quoteTableName(s.db.Dialector.Name(), table)).Error; err != nil {
+				return err
+			}
+		}
+
+		if s.db.Dialector.Name() == "sqlite" {
+			tables := "'" + strings.Join(deleteAllGroupDataTables, "','") + "'"
+			if err := tx.Exec("DELETE FROM sqlite_sequence WHERE name IN (" + tables + ")").Error; err != nil {
+				logrus.WithContext(ctx).WithError(err).Warn("failed to reset SQLite sequences after debug table deletion")
+			}
+		}
+		return nil
+	})
+}
+
+func quotedDeleteAllGroupDataTables(dialect string) []string {
+	tables := make([]string, 0, len(deleteAllGroupDataTables))
+	for _, table := range deleteAllGroupDataTables {
+		tables = append(tables, quoteTableName(dialect, table))
+	}
+	return tables
+}
+
+func quoteTableName(dialect, table string) string {
+	switch dialect {
+	case "mysql":
+		return "`" + table + "`"
+	case "postgres", "sqlite":
+		return `"` + table + `"`
+	default:
+		return table
+	}
 }
 
 // CopyGroup duplicates a group and optionally copies active keys.

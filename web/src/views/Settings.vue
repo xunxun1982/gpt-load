@@ -158,6 +158,8 @@ async function handleSystemFileChange(event: Event) {
       version?: string;
       system_settings?: Record<string, unknown>;
       groups?: unknown[];
+      managed_sites?: unknown;
+      hub_access_keys?: unknown[];
     }
 
     interface WrappedResponse {
@@ -197,12 +199,20 @@ async function handleSystemFileChange(event: Event) {
     // Determine import data type - more lenient check
     const hasSystemSettings = data.system_settings && typeof data.system_settings === "object";
     const hasGroups = data.groups && Array.isArray(data.groups);
+    const hasManagedSites = data.managed_sites && typeof data.managed_sites === "object";
     const systemSettingsCount =
       hasSystemSettings && data.system_settings ? Object.keys(data.system_settings).length : 0;
     const groupsCount = hasGroups && data.groups ? data.groups.length : 0;
+    const hubAccessKeysCount = Array.isArray(data.hub_access_keys)
+      ? data.hub_access_keys.length
+      : 0;
 
-    // If both system settings and groups exist (even if one is empty), use full import
-    if (hasSystemSettings && systemSettingsCount > 0 && hasGroups && groupsCount > 0) {
+    // If the file has full-system fields, keep it on the full import path even when settings are empty.
+    if (
+      (hasSystemSettings && hasGroups && (systemSettingsCount > 0 || groupsCount > 0)) ||
+      hasManagedSites ||
+      hubAccessKeysCount > 0
+    ) {
       dialog.warning({
         title: t("settings.importSystem"),
         content: t("settings.importSystemWithGroups"),
@@ -495,7 +505,7 @@ async function performDeleteAllGroups() {
     const { keysApi } = await import("@/api/keys");
 
     await keysApi.deleteAllGroups();
-    message.success(t("groups.allGroupsDeletedSuccess"));
+    message.success(t("settings.deleteAllGroupsSuccess"));
 
     // Optionally refresh the page or redirect
     setTimeout(() => {
@@ -503,15 +513,16 @@ async function performDeleteAllGroups() {
     }, 1500);
   } catch (error: unknown) {
     console.error("Delete all groups error:", error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    if (errorMessage?.includes("DEBUG_MODE")) {
-      message.error(t("groups.debugModeRequired"));
-    } else {
-      message.error(errorMessage || t("settings.deleteAllGroupsFailed"));
+    if (!isHttpClientError(error)) {
+      message.error(t("settings.deleteAllGroupsFailed"));
     }
   } finally {
     isDeletingAllGroups.value = false;
   }
+}
+
+function isHttpClientError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && ("response" in error || "request" in error);
 }
 
 // Check if debug mode is enabled by checking if the endpoint is accessible

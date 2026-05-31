@@ -626,6 +626,7 @@ export default {
     childGroupDescriptionPlaceholder: "输入子分组描述...",
     childGroupCreated: "子分组创建成功",
     childGroupCreateFailed: "创建子分组失败",
+    childGroupRequiresProxyKeys: "父分组没有设置代理密钥，无法创建子分组",
     noChildGroups: "暂无子分组",
     childGroupCount: "{count} 个子分组",
     deleteWarningWithChildGroups: "该分组有 {count} 个子分组，删除后子分组也将被删除",
@@ -821,6 +822,7 @@ export default {
     caseSensitiveWarning: "注意：区分大小写，必须完全匹配",
     confirmTextMismatch: "确认文本不匹配。请准确输入：{text}",
     finalWarning: "最后警告",
+    deleteAllGroupsSuccess: "所有分组已删除",
     deleteAllGroupsFailed: "删除所有分组失败",
   },
   footer: {

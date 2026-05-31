@@ -48,17 +48,17 @@ const router = createRouter({
 
 const { checkLogin } = useAuthService();
 
-router.beforeEach((to, _from, next) => {
+router.beforeEach(to => {
   const loggedIn = checkLogin();
   if (to.path !== "/login" && !loggedIn) {
-    return next({ path: "/login" });
+    return { path: "/login" };
   }
 
   if (to.path === "/login" && loggedIn) {
-    return next({ path: "/" });
+    return { path: "/" };
   }
 
-  next();
+  return true;
 });
 
 export default router;

@@ -7,7 +7,7 @@
  */
 import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
 import { ChevronDownOutline, CopyOutline } from "@vicons/ionicons5";
-import { NButton, NIcon, NPopover, NText, NTooltip, useDialog, useMessage } from "naive-ui";
+import { NButton, NIcon, NPopover, NTag, NText, NTooltip, useDialog, useMessage } from "naive-ui";
 import { computed, h } from "vue";
 import { useI18n } from "vue-i18n";
 

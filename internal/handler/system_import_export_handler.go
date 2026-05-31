@@ -24,12 +24,13 @@ import (
 // SystemExportData represents the data structure for system-wide export.
 // Note: This type mirrors services.SystemExportData for JSON binding in handlers.
 type SystemExportData struct {
-	Version        string                            `json:"version"`
-	ExportedAt     string                            `json:"exported_at"`
-	SystemSettings map[string]string                 `json:"system_settings"`
-	Groups         []GroupExportData                 `json:"groups"`
-	ManagedSites   *ManagedSitesExportData           `json:"managed_sites,omitempty"`
-	HubAccessKeys  []services.HubAccessKeyExportInfo `json:"hub_access_keys,omitempty"`
+	Version        string                                   `json:"version"`
+	ExportedAt     string                                   `json:"exported_at"`
+	SystemSettings map[string]string                        `json:"system_settings"`
+	Groups         []GroupExportData                        `json:"groups"`
+	ManagedSites   *ManagedSitesExportData                  `json:"managed_sites,omitempty"`
+	HubAccessKeys  []services.HubAccessKeyExportInfo        `json:"hub_access_keys,omitempty"`
+	DynamicWeights []services.DynamicWeightMetricExportInfo `json:"dynamic_weights,omitempty"`
 }
 
 // ManagedSitesExportData represents exported managed sites data for handler
@@ -160,6 +161,10 @@ func (s *Server) ExportAll(c *gin.Context) {
 			})
 		}
 
+		if childGroups := ConvertChildGroupsForExport(groupData.ChildGroups, exportMode, s.EncryptionSvc.Decrypt); len(childGroups) > 0 {
+			groupExport.ChildGroups = childGroups
+		}
+
 		groupExports = append(groupExports, groupExport)
 	}
 
@@ -193,6 +198,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 		SystemSettings: systemData.SystemSettings,
 		Groups:         groupExports,
 		HubAccessKeys:  hubAccessKeys,
+		DynamicWeights: systemData.DynamicWeights,
 	}
 
 	// Convert managed sites if present
@@ -270,11 +276,12 @@ func (s *Server) ExportAll(c *gin.Context) {
 
 // SystemImportData represents the data structure for system-wide import.
 type SystemImportData struct {
-	Version        string                            `json:"version"`
-	SystemSettings map[string]string                 `json:"system_settings"`
-	Groups         []GroupExportData                 `json:"groups"`
-	ManagedSites   *ManagedSitesExportData           `json:"managed_sites,omitempty"`
-	HubAccessKeys  []services.HubAccessKeyExportInfo `json:"hub_access_keys,omitempty"`
+	Version        string                                   `json:"version"`
+	SystemSettings map[string]string                        `json:"system_settings"`
+	Groups         []GroupExportData                        `json:"groups"`
+	ManagedSites   *ManagedSitesExportData                  `json:"managed_sites,omitempty"`
+	HubAccessKeys  []services.HubAccessKeyExportInfo        `json:"hub_access_keys,omitempty"`
+	DynamicWeights []services.DynamicWeightMetricExportInfo `json:"dynamic_weights,omitempty"`
 }
 
 // ImportAll imports all system data (system settings and all groups).
@@ -286,25 +293,12 @@ func (s *Server) ImportAll(c *gin.Context) {
 	}
 
 	// Determine import mode from query, filename or content
-	sample := make([]string, 0, 5)
-outer:
-	for _, g := range importData.Groups {
-		for _, k := range g.Keys {
-			if len(sample) < 5 {
-				sample = append(sample, k.KeyValue)
-			} else {
-				break outer
-			}
-		}
-	}
+	sample := CollectGroupImportSampleKeys(importData.Groups)
 	importMode := GetImportMode(c, sample)
 	inputIsPlain := importMode == "plain"
 
 	// Log import summary
-	totalKeys := 0
-	for _, groupExport := range importData.Groups {
-		totalKeys += len(groupExport.Keys)
-	}
+	totalKeys := CountGroupExportKeys(importData.Groups)
 	logrus.Infof("System import: %d groups with %d total keys (mode=%s)",
 		len(importData.Groups), totalKeys, importMode)
 	if len(importData.SystemSettings) > 0 {
@@ -372,85 +366,12 @@ outer:
 		SystemSettings: importData.SystemSettings,
 		Groups:         make([]services.GroupExportData, 0, len(importData.Groups)),
 		HubAccessKeys:  hubAccessKeys,
+		DynamicWeights: importData.DynamicWeights,
 	}
 
 	// Convert groups to service format
 	for _, groupExport := range importData.Groups {
-		// Convert HeaderRules back to JSON for storage using common utility function
-		headerRulesJSON := ConvertHeaderRulesToJSON(groupExport.Group.HeaderRules)
-
-		// Convert PathRedirects back to JSON for storage using common utility function
-		pathRedirectsJSON := ConvertPathRedirectsToJSON(groupExport.Group.PathRedirects)
-
-		// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
-		modelRedirectRules := ConvertModelRedirectRulesToImport(groupExport.Group.ModelRedirectRules)
-
-		// Import ModelRedirectRulesV2 as raw JSON bytes and merge duplicate targets
-		// This ensures consistent behavior with group import (see group_import_export_handler.go)
-		var modelRedirectRulesV2 []byte
-		if len(groupExport.Group.ModelRedirectRulesV2) > 0 {
-			rawJSON := []byte(groupExport.Group.ModelRedirectRulesV2)
-			merged, err := utils.MergeModelRedirectRulesV2(rawJSON)
-			if err != nil {
-				logrus.WithError(err).Warn("Failed to merge model redirect rules V2 during system import, using original")
-				modelRedirectRulesV2 = rawJSON
-			} else {
-				modelRedirectRulesV2 = merged
-			}
-		}
-
-		groupData := services.GroupExportData{
-			Group: models.Group{
-				Name:                 groupExport.Group.Name,
-				DisplayName:          groupExport.Group.DisplayName,
-				Description:          groupExport.Group.Description,
-				GroupType:            groupExport.Group.GroupType,
-				ChannelType:          groupExport.Group.ChannelType,
-				Enabled:              groupExport.Group.Enabled,
-				TestModel:            groupExport.Group.TestModel,
-				ValidationEndpoint:   groupExport.Group.ValidationEndpoint,
-				Upstreams:            []byte(groupExport.Group.Upstreams),
-				ParamOverrides:       groupExport.Group.ParamOverrides,
-				Config:               groupExport.Group.Config,
-				HeaderRules:          headerRulesJSON,
-				ModelMapping:         groupExport.Group.ModelMapping,
-				ModelRedirectRules:   modelRedirectRules,
-				ModelRedirectRulesV2: modelRedirectRulesV2,
-				ModelRedirectStrict:  groupExport.Group.ModelRedirectStrict,
-				PathRedirects:        pathRedirectsJSON,
-				ProxyKeys:            groupExport.Group.ProxyKeys,
-				Sort:                 groupExport.Group.Sort,
-			},
-			Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
-			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
-		}
-
-		// Convert keys; if input is plaintext, encrypt before passing to service
-		for idx := range groupExport.Keys {
-			kv := groupExport.Keys[idx].KeyValue
-			if inputIsPlain {
-				if enc, e := s.EncryptionSvc.Encrypt(kv); e == nil {
-					kv = enc
-				} else {
-					logrus.WithError(e).WithField("group", groupExport.Group.Name).Warn("Failed to encrypt plaintext key during system import, skipping")
-					continue
-				}
-			}
-			groupData.Keys = append(groupData.Keys, services.KeyExportInfo{
-				KeyValue: kv,
-				Status:   groupExport.Keys[idx].Status,
-			})
-		}
-
-		// Convert sub-groups
-		for _, sg := range groupExport.SubGroups {
-			groupData.SubGroups = append(groupData.SubGroups, services.SubGroupInfo{
-				GroupName: sg.GroupName,
-				Weight:    sg.Weight,
-			})
-		}
-
-		serviceImportData.Groups = append(serviceImportData.Groups, groupData)
+		serviceImportData.Groups = append(serviceImportData.Groups, ConvertGroupForImport(groupExport, inputIsPlain, s.EncryptionSvc.Encrypt))
 	}
 
 	// Convert managed sites if present
@@ -552,6 +473,9 @@ outer:
 	// Also invalidate the group list cache so /api/groups returns fresh list
 	if s.GroupService != nil {
 		s.GroupService.InvalidateGroupListCache()
+	}
+	if s.ChildGroupService != nil {
+		s.ChildGroupService.InvalidateCache()
 	}
 
 	// Load keys to Redis store asynchronously for all imported groups
@@ -713,12 +637,13 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 		return
 	}
 
+	sample := CollectGroupImportSampleKeys(importData.Groups)
+	importMode := GetImportMode(c, sample)
+	inputIsPlain := importMode == "plain"
+
 	// Log import summary
-	totalKeys := 0
-	for _, groupExport := range importData.Groups {
-		totalKeys += len(groupExport.Keys)
-	}
-	logrus.Infof("Batch importing %d groups with %d total keys", len(importData.Groups), totalKeys)
+	totalKeys := CountGroupExportKeys(importData.Groups)
+	logrus.Infof("Batch importing %d groups with %d total keys (mode=%s)", len(importData.Groups), totalKeys, importMode)
 
 	// Avoid concurrent long-running tasks to reduce DB contention.
 	// Best-effort: If task signaling fails, continue without task status updates.
@@ -753,57 +678,7 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	// Convert handler format to service format for unified import
 	serviceGroups := make([]services.GroupExportData, 0, len(importData.Groups))
 	for _, groupExport := range importData.Groups {
-		// Convert HeaderRules back to JSON for storage using common utility function
-		headerRulesJSON := ConvertHeaderRulesToJSON(groupExport.Group.HeaderRules)
-
-		// Convert PathRedirects back to JSON for storage using common utility function
-		pathRedirectsJSON := ConvertPathRedirectsToJSON(groupExport.Group.PathRedirects)
-
-		// Convert ModelRedirectRules to datatypes.JSONMap using common utility function
-		modelRedirectRules := ConvertModelRedirectRulesToImport(groupExport.Group.ModelRedirectRules)
-
-		groupData := services.GroupExportData{
-			Group: models.Group{
-				Name:                groupExport.Group.Name,
-				DisplayName:         groupExport.Group.DisplayName,
-				Description:         groupExport.Group.Description,
-				GroupType:           groupExport.Group.GroupType,
-				ChannelType:         groupExport.Group.ChannelType,
-				Enabled:             groupExport.Group.Enabled,
-				TestModel:           groupExport.Group.TestModel,
-				ValidationEndpoint:  groupExport.Group.ValidationEndpoint,
-				Upstreams:           []byte(groupExport.Group.Upstreams),
-				ParamOverrides:      groupExport.Group.ParamOverrides,
-				Config:              groupExport.Group.Config,
-				HeaderRules:         headerRulesJSON,
-				ModelMapping:        groupExport.Group.ModelMapping,
-				ModelRedirectRules:  modelRedirectRules,
-				ModelRedirectStrict: groupExport.Group.ModelRedirectStrict,
-				PathRedirects:       pathRedirectsJSON,
-				ProxyKeys:           groupExport.Group.ProxyKeys,
-				Sort:                groupExport.Group.Sort,
-			},
-			Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
-			SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
-		}
-
-		// Convert keys
-		for _, key := range groupExport.Keys {
-			groupData.Keys = append(groupData.Keys, services.KeyExportInfo{
-				KeyValue: key.KeyValue,
-				Status:   key.Status,
-			})
-		}
-
-		// Convert sub-groups
-		for _, sg := range groupExport.SubGroups {
-			groupData.SubGroups = append(groupData.SubGroups, services.SubGroupInfo{
-				GroupName: sg.GroupName,
-				Weight:    sg.Weight,
-			})
-		}
-
-		serviceGroups = append(serviceGroups, groupData)
+		serviceGroups = append(serviceGroups, ConvertGroupForImport(groupExport, inputIsPlain, s.EncryptionSvc.Encrypt))
 	}
 
 	// Use transaction to ensure data consistency
@@ -862,7 +737,7 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 
 			importedGroups = append(importedGroups, createdGroup)
 			importedCount++
-			processedKeys += len(groupData.Keys)
+			processedKeys += countServiceGroupExportKeys(groupData)
 			// Final progress update after this group is complete
 			if taskStarted {
 				if updateErr := s.TaskService.UpdateProgress(processedKeys); updateErr != nil {
@@ -894,6 +769,9 @@ func (s *Server) ImportGroupsBatch(c *gin.Context) {
 	// Also invalidate the group list cache so /api/groups returns fresh list
 	if s.GroupService != nil {
 		s.GroupService.InvalidateGroupListCache()
+	}
+	if s.ChildGroupService != nil {
+		s.ChildGroupService.InvalidateCache()
 	}
 
 	// Load keys to Redis store and reset failure_count for all active keys asynchronously

@@ -9,8 +9,9 @@ BINARY_NAME := gpt-load
 # Optimization flags for smallest size and best performance:
 # -s: Omit symbol table and debug info (~20% size reduction)
 # -w: Omit DWARF symbol table (~10% size reduction)
+# -buildid=: Omit Go build ID for smaller reproducible release binaries
 # -X: Set version info at build time
-LDFLAGS := -s -w -X gpt-load/internal/version.Version=$(VERSION)
+LDFLAGS := -s -w -buildid= -X gpt-load/internal/version.Version=$(VERSION)
 # Use go_json tag to enable goccy/go-json for gin framework (2-3x faster than encoding/json)
 GOTAGS := go_json
 # Build flags:
