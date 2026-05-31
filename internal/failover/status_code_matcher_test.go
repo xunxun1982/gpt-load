@@ -32,11 +32,32 @@ func TestParseStatusCodeMatcherMergesRanges(t *testing.T) {
 	assert.False(t, matcher.Match(505))
 }
 
+func TestParseStatusCodeMatcherAllowsBlankPattern(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+	}{
+		{name: "empty", pattern: ""},
+		{name: "whitespace", pattern: " \t "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			matcher, err := ParseStatusCodeMatcher(tt.pattern)
+			require.NoError(t, err)
+			assert.True(t, matcher.IsZero())
+		})
+	}
+}
+
 func TestParseStatusCodeMatcherRejectsInvalidPattern(t *testing.T) {
 	t.Parallel()
 
 	tests := []string{
-		"",
 		"400,",
 		"99",
 		"1000",

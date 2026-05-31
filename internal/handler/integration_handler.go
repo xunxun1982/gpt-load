@@ -79,8 +79,10 @@ func (s *Server) GetIntegrationInfo(c *gin.Context) {
 	var result []IntegrationGroupInfo
 	for _, group := range groupsToCheck {
 		if hasProxyKeyPermission(group, key) {
+			effectiveValidationEndpoint := utils.GetValidationEndpoint(group)
 			channelType := getEffectiveChannelType(group)
-			path := buildPath(isGroupSpecific, group.Name, channelType, group.ValidationEndpoint)
+			// Keep channel classification and advertised path on the same endpoint source.
+			path := buildPath(isGroupSpecific, group.Name, channelType, effectiveValidationEndpoint)
 
 			result = append(result, IntegrationGroupInfo{
 				Name:        group.Name,

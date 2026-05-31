@@ -572,11 +572,17 @@ function getBucketGroupIds(groups: Group[]): number[] {
 function buildGroupOrderItems(groups: Group[], orderedIds: number[]) {
   const sortValues = groups.map(group => group.sort ?? 0).sort((a, b) => a - b);
   // Keep this bucket's existing sort values so a local reorder does not shift
-  // other channel buckets that share the same global sort column.
-  return orderedIds.map((id, index) => ({
-    id,
-    sort: sortValues[index] ?? (index + 1) * 10,
-  }));
+  // other channel buckets that share the same global sort column. Duplicate
+  // sort values are bumped to preserve the persisted order after refresh.
+  let lastAssigned = Number.NEGATIVE_INFINITY;
+  return orderedIds.map((id, index) => {
+    let sort = sortValues[index] ?? (index + 1) * 10;
+    if (sort <= lastAssigned) {
+      sort = lastAssigned + 1;
+    }
+    lastAssigned = sort;
+    return { id, sort };
+  });
 }
 
 async function saveGroupOrder(bucketKey: string, groups: Group[], orderedIds: number[]) {

@@ -47,6 +47,10 @@ func TestApplyGeminiCCRequestConversionStoresModelRedirectTargetIndex(t *testing
 	require.True(t, exists)
 	require.Equal(t, "virtual-model", originalModel)
 
+	redirectSourceModel, exists := ctx.Get(ctxKeyModelRedirectSourceModel)
+	require.True(t, exists)
+	require.Equal(t, "virtual-model", redirectSourceModel)
+
 	targetIndex, exists := ctx.Get(ctxKeyModelRedirectTargetIndex)
 	require.True(t, exists)
 	require.Equal(t, 0, targetIndex)

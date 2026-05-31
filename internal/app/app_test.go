@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ const blockingCloseDelay = 150 * time.Millisecond
 var registerBlockingCloseDriverOnce sync.Once
 var registerFailingCloseDriverOnce sync.Once
 var registerPersistWALDriverOnce sync.Once
+var failingCloseCalled atomic.Bool
 var persistWALDriverMu sync.Mutex
 var persistWALDriverConn *fakeSQLitePersistConn
 
@@ -88,6 +90,7 @@ func (failingCloseConn) Prepare(_ string) (driver.Stmt, error) {
 }
 
 func (failingCloseConn) Close() error {
+	failingCloseCalled.Store(true)
 	return errors.New("close failed")
 }
 
@@ -362,6 +365,7 @@ func TestCloseSQLDBReturnsDriverError(t *testing.T) {
 	registerFailingCloseDriverOnce.Do(func() {
 		sql.Register(failingCloseDriverName, failingCloseDriver{})
 	})
+	failingCloseCalled.Store(false)
 
 	sqlDB, err := sql.Open(failingCloseDriverName, "")
 	require.NoError(t, err)
@@ -369,8 +373,10 @@ func TestCloseSQLDBReturnsDriverError(t *testing.T) {
 	conn, err := sqlDB.Conn(t.Context())
 	require.NoError(t, err)
 	require.NoError(t, conn.Close())
+	failingCloseCalled.Store(false)
 
 	closeSQLDB(sqlDB, "failing test")
+	assert.True(t, failingCloseCalled.Load())
 }
 
 func TestCloseDBConnectionClosesSQLiteDriverConnection(t *testing.T) {

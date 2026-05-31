@@ -28,6 +28,11 @@ func DefaultStatusCodeMatcher() StatusCodeMatcher {
 }
 
 func ParseStatusCodeMatcher(pattern string) (StatusCodeMatcher, error) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return StatusCodeMatcher{}, nil
+	}
+
 	parts := strings.Split(pattern, ",")
 	ranges := make([]statusCodeRange, 0, len(parts))
 

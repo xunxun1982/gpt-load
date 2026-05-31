@@ -1,4 +1,4 @@
-# PowerShell script to collect PGO profiles for Windows builds
+﻿# PowerShell script to collect PGO profiles for Windows builds
 # This script runs unit tests to generate CPU profiles for PGO optimization
 
 $ErrorActionPreference = "Continue"  # Continue on errors to collect as many profiles as possible
