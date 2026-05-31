@@ -1350,6 +1350,8 @@ async function handleSubmit() {
       size="huge"
       role="dialog"
       aria-modal="true"
+      content-class="group-form-card-content"
+      footer-class="group-form-card-footer"
     >
       <template #header-extra>
         <n-button quaternary circle @click="handleClose">
@@ -2570,34 +2572,44 @@ async function handleSubmit() {
   flex-direction: column;
 }
 
-.group-form-card :deep(.n-card__content) {
+.group-form-card :deep(.n-card-header),
+.group-form-card :deep(.group-form-card-footer) {
+  flex: 0 0 auto;
+}
+
+.group-form-card :deep(.group-form-card-content) {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  max-height: calc(85vh - 80px);
   padding-right: 24px;
   /* Reserve space for scrollbar to prevent layout shift */
   scrollbar-gutter: stable;
 }
 
+.group-form-card :deep(.group-form-card-footer) {
+  border-top: 1px solid var(--border-color);
+}
+
 /* Custom scrollbar styling */
-.group-form-card :deep(.n-card__content)::-webkit-scrollbar {
+.group-form-card :deep(.group-form-card-content)::-webkit-scrollbar {
   width: 6px;
 }
 
-.group-form-card :deep(.n-card__content)::-webkit-scrollbar-track {
+.group-form-card :deep(.group-form-card-content)::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.group-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb {
+.group-form-card :deep(.group-form-card-content)::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.2);
   border-radius: 3px;
 }
 
-.group-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb:hover {
+.group-form-card :deep(.group-form-card-content)::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.3);
 }
 
-.group-form-card :deep(.n-card__content) {
+.group-form-card :deep(.group-form-card-content) {
   scrollbar-width: thin;
   scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
 }
