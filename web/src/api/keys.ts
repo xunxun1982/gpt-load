@@ -65,6 +65,7 @@ export const keysApi = {
   deleteAllGroups(): Promise<void> {
     return http.delete("/groups/debug/delete-all", {
       timeout: 300000, // 5 minutes timeout for large deletions
+      hideMessage: true,
     });
   },
 

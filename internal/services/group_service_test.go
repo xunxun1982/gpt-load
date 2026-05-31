@@ -59,7 +59,9 @@ func setupTestDB(tb testing.TB) *gorm.DB {
 		&models.Group{},
 		&models.APIKey{},
 		&models.GroupSubGroup{},
+		&models.RequestLog{},
 		&models.GroupHourlyStat{},
+		&models.DynamicWeightMetric{},
 	)
 	require.NoError(tb, err)
 
@@ -1654,4 +1656,128 @@ func TestUpdateChildGroupOtherFieldsAllowed(t *testing.T) {
 
 	expectedURL := expectedProxyURL("parent-other-fields")
 	assert.Equal(t, expectedURL, upstreams[0]["url"])
+}
+
+func TestDeleteAllGroupsClearsGroupRelatedTables(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+	ctx := context.Background()
+
+	parent := models.Group{
+		Name:      "delete-all-parent",
+		GroupType: "standard",
+		Enabled:   true,
+		Upstreams: datatypes.JSON(`[{"url":"http://example.com","weight":1}]`),
+	}
+	require.NoError(t, db.Create(&parent).Error)
+
+	child := models.Group{
+		Name:          "delete-all-child",
+		GroupType:     "standard",
+		Enabled:       true,
+		ParentGroupID: &parent.ID,
+		Upstreams:     datatypes.JSON(`[{"url":"http://example.com","weight":1}]`),
+	}
+	require.NoError(t, db.Create(&child).Error)
+
+	aggregate := models.Group{
+		Name:      "delete-all-aggregate",
+		GroupType: "aggregate",
+		Enabled:   true,
+		Upstreams: datatypes.JSON(`[]`),
+	}
+	require.NoError(t, db.Create(&aggregate).Error)
+
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:    aggregate.ID,
+		SubGroupID: parent.ID,
+		Weight:     1,
+	}).Error)
+	require.NoError(t, db.Create(&models.APIKey{
+		GroupID:  parent.ID,
+		KeyValue: "encrypted-key",
+		KeyHash:  "delete-all-key-hash",
+		Status:   models.KeyStatusActive,
+	}).Error)
+	require.NoError(t, db.Create(&models.RequestLog{
+		ID:        "delete-all-request-log",
+		Timestamp: time.Now(),
+		GroupID:   parent.ID,
+		GroupName: parent.Name,
+		IsSuccess: true,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupHourlyStat{
+		Time:         time.Now().Truncate(time.Hour),
+		GroupID:      parent.ID,
+		SuccessCount: 1,
+	}).Error)
+	require.NoError(t, db.Create(&models.DynamicWeightMetric{
+		MetricType: models.MetricTypeModelRedirect,
+		GroupID:    parent.ID,
+	}).Error)
+	require.NoError(t, db.Exec(
+		"INSERT INTO managed_sites (bound_group_id, created_at, updated_at) VALUES (?, ?, ?)",
+		parent.ID,
+		time.Now(),
+		time.Now(),
+	).Error)
+
+	aggregateSvc := NewAggregateGroupService(db, nil, nil)
+	aggregateSvc.statsCacheMu.Lock()
+	aggregateSvc.statsCache["1,2,3"] = keyStatsCacheEntry{
+		results: map[uint]keyStatsResult{
+			parent.ID: {TotalKeys: 1, ActiveKeys: 1},
+		},
+		expiresAt: time.Now().Add(time.Minute),
+	}
+	aggregateSvc.statsCacheMu.Unlock()
+	svc.aggregateGroupService = aggregateSvc
+
+	svc.keyStatsCacheMu.Lock()
+	svc.keyStatsCache[parent.ID] = groupKeyStatsCacheEntry{
+		Stats:      KeyStats{TotalKeys: 1, ActiveKeys: 1},
+		ExpiresAt:  time.Now().Add(time.Minute),
+		CurrentTTL: time.Minute,
+	}
+	svc.keyStatsCacheMu.Unlock()
+
+	require.NoError(t, svc.DeleteAllGroups(ctx))
+
+	assertTableEmpty(t, db, "groups")
+	assertTableEmpty(t, db, "api_keys")
+	assertTableEmpty(t, db, "group_sub_groups")
+	assertTableEmpty(t, db, "request_logs")
+	assertTableEmpty(t, db, "group_hourly_stats")
+	assertTableEmpty(t, db, "dynamic_weight_metrics")
+
+	svc.keyStatsCacheMu.RLock()
+	assert.Empty(t, svc.keyStatsCache)
+	svc.keyStatsCacheMu.RUnlock()
+	aggregateSvc.statsCacheMu.RLock()
+	assert.Empty(t, aggregateSvc.statsCache)
+	aggregateSvc.statsCacheMu.RUnlock()
+
+	var site struct {
+		BoundGroupID *uint
+	}
+	require.NoError(t, db.Table("managed_sites").Select("bound_group_id").Scan(&site).Error)
+	assert.Nil(t, site.BoundGroupID)
+
+	afterReset := models.Group{
+		Name:      "after-delete-all",
+		GroupType: "standard",
+		Enabled:   true,
+		Upstreams: datatypes.JSON(`[{"url":"http://example.com","weight":1}]`),
+	}
+	require.NoError(t, db.Create(&afterReset).Error)
+	assert.Equal(t, uint(1), afterReset.ID)
+}
+
+func assertTableEmpty(t *testing.T, db *gorm.DB, table string) {
+	t.Helper()
+
+	var count int64
+	require.NoError(t, db.Table(table).Count(&count).Error)
+	assert.Zero(t, count, "expected %s to be empty", table)
 }

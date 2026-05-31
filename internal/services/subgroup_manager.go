@@ -23,6 +23,7 @@ type SubGroupManager struct {
 type subGroupItem struct {
 	name          string
 	subGroupID    uint
+	activeKeysKey string
 	weight        int
 	currentWeight int
 	enabled       bool
@@ -67,10 +68,12 @@ func (m *SubGroupManager) SelectSubGroup(group *models.Group) (string, error) {
 		return "", fmt.Errorf("no sub-groups with active keys for aggregate group '%s'", group.Name)
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"aggregate_group": group.Name,
-		"selected_group":  selectedName,
-	}).Debug("Selected sub-group from aggregate")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group": group.Name,
+			"selected_group":  selectedName,
+		}).Debug("Selected sub-group from aggregate")
+	}
 
 	return selectedName, nil
 }
@@ -93,12 +96,14 @@ func (m *SubGroupManager) SelectSubGroupWithRetry(group *models.Group, excludeSu
 		return "", 0, fmt.Errorf("no sub-groups with active keys for aggregate group '%s'", group.Name)
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"aggregate_group": group.Name,
-		"selected_group":  selectedName,
-		"selected_id":     selectedID,
-		"excluded_count":  len(excludeSubGroupIDs),
-	}).Debug("Selected sub-group from aggregate with exclusion list")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group": group.Name,
+			"selected_group":  selectedName,
+			"selected_id":     selectedID,
+			"excluded_count":  len(excludeSubGroupIDs),
+		}).Debug("Selected sub-group from aggregate with exclusion list")
+	}
 
 	return selectedName, selectedID, nil
 }
@@ -124,7 +129,9 @@ func (m *SubGroupManager) RebuildSelectors(groups map[string]*models.Group) {
 	m.selectors = newSelectors
 	m.mu.Unlock()
 
-	logrus.WithField("new_count", len(newSelectors)).Debug("Rebuilt selectors for aggregate groups")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithField("new_count", len(newSelectors)).Debug("Rebuilt selectors for aggregate groups")
+	}
 }
 
 // getSelector retrieves or creates a selector for the aggregate group
@@ -148,11 +155,13 @@ func (m *SubGroupManager) getSelector(group *models.Group) *selector {
 	sel := m.createSelector(group, dwm)
 	if sel != nil {
 		m.selectors[group.ID] = sel
-		logrus.WithFields(logrus.Fields{
-			"group_id":        group.ID,
-			"group_name":      group.Name,
-			"sub_group_count": len(sel.subGroups),
-		}).Debug("Created sub-group selector")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"group_id":        group.ID,
+				"group_name":      group.Name,
+				"sub_group_count": len(sel.subGroups),
+			}).Debug("Created sub-group selector")
+		}
 	}
 
 	return sel
@@ -170,6 +179,7 @@ func (m *SubGroupManager) createSelector(group *models.Group, dynamicWeight *Dyn
 		items = append(items, subGroupItem{
 			name:          sg.SubGroupName,
 			subGroupID:    sg.SubGroupID,
+			activeKeysKey: activeKeysListKey(sg.SubGroupID),
 			weight:        sg.Weight,
 			currentWeight: 0,
 			enabled:       sg.SubGroupEnabled,
@@ -184,6 +194,8 @@ func (m *SubGroupManager) createSelector(group *models.Group, dynamicWeight *Dyn
 		groupID:       group.ID,
 		groupName:     group.Name,
 		subGroups:     items,
+		weights:       make([]int, len(items)),
+		attempted:     make([]uint, 0, len(items)),
 		store:         m.store,
 		dynamicWeight: dynamicWeight,
 	}
@@ -194,6 +206,8 @@ type selector struct {
 	groupID       uint
 	groupName     string
 	subGroups     []subGroupItem
+	weights       []int  // Reused under mu to avoid per-selection allocations.
+	attempted     []uint // Reused under mu to avoid per-selection map allocations.
 	store         store.Store
 	mu            sync.Mutex
 	dynamicWeight *DynamicWeightManager // Optional dynamic weight manager
@@ -210,57 +224,67 @@ func (s *selector) selectNext() string {
 
 	if len(s.subGroups) == 1 {
 		if !s.subGroups[0].enabled {
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"group_id":   s.subGroups[0].subGroupID,
+					"group_name": s.subGroups[0].name,
+				}).Debug("Single sub-group is disabled")
+			}
+			return ""
+		}
+		if s.hasActiveKeys(&s.subGroups[0]) {
+			return s.subGroups[0].name
+		}
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
 			logrus.WithFields(logrus.Fields{
 				"group_id":   s.subGroups[0].subGroupID,
 				"group_name": s.subGroups[0].name,
-			}).Debug("Single sub-group is disabled")
-			return ""
+			}).Debug("Single sub-group has no active keys")
 		}
-		if s.hasActiveKeys(s.subGroups[0].subGroupID) {
-			return s.subGroups[0].name
-		}
-		logrus.WithFields(logrus.Fields{
-			"group_id":   s.subGroups[0].subGroupID,
-			"group_name": s.subGroups[0].name,
-		}).Debug("Single sub-group has no active keys")
 		return ""
 	}
 
-	attempted := make(map[uint]bool)
+	attempted := s.resetAttempted()
+	defer func() {
+		s.attempted = attempted
+	}()
 	for len(attempted) < len(s.subGroups) {
-		item := s.selectByWeight()
+		item := s.selectByWeightSkipping(nil, attempted)
 		if item == nil {
 			break
 		}
 
-		if attempted[item.subGroupID] {
-			continue
-		}
-		attempted[item.subGroupID] = true
+		attempted = append(attempted, item.subGroupID)
 
 		if !item.enabled {
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"group_id":   item.subGroupID,
+					"group_name": item.name,
+					"attempts":   len(attempted),
+				}).Debug("Sub-group is disabled, trying next")
+			}
+			continue
+		}
+
+		if s.hasActiveKeys(item) {
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"aggregate_group": s.groupName,
+					"selected_group":  item.name,
+					"attempts":        len(attempted),
+				}).Debug("Selected sub-group with active keys")
+			}
+			return item.name
+		}
+
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
 			logrus.WithFields(logrus.Fields{
 				"group_id":   item.subGroupID,
 				"group_name": item.name,
 				"attempts":   len(attempted),
-			}).Debug("Sub-group is disabled, trying next")
-			continue
+			}).Debug("Sub-group has no active keys, trying next")
 		}
-
-		if s.hasActiveKeys(item.subGroupID) {
-			logrus.WithFields(logrus.Fields{
-				"aggregate_group": s.groupName,
-				"selected_group":  item.name,
-				"attempts":        len(attempted),
-			}).Debug("Selected sub-group with active keys")
-			return item.name
-		}
-
-		logrus.WithFields(logrus.Fields{
-			"group_id":   item.subGroupID,
-			"group_name": item.name,
-			"attempts":   len(attempted),
-		}).Debug("Sub-group has no active keys, trying next")
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -291,20 +315,24 @@ func (s *selector) selectNextWithExclusion(excludeIDs map[uint]bool) (string, ui
 		}
 		// Check if enabled
 		if !item.enabled {
-			logrus.WithFields(logrus.Fields{
-				"group_id":   item.subGroupID,
-				"group_name": item.name,
-			}).Debug("Single sub-group is disabled")
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"group_id":   item.subGroupID,
+					"group_name": item.name,
+				}).Debug("Single sub-group is disabled")
+			}
 			return "", 0
 		}
 		// Check if has active keys
-		if s.hasActiveKeys(item.subGroupID) {
+		if s.hasActiveKeys(item) {
 			return item.name, item.subGroupID
 		}
-		logrus.WithFields(logrus.Fields{
-			"group_id":   item.subGroupID,
-			"group_name": item.name,
-		}).Debug("Single sub-group has no active keys")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"group_id":   item.subGroupID,
+				"group_name": item.name,
+			}).Debug("Single sub-group has no active keys")
+		}
 		return "", 0
 	}
 
@@ -318,25 +346,27 @@ func (s *selector) selectNextWithExclusion(excludeIDs map[uint]bool) (string, ui
 	}
 
 	if availableCount == 0 {
-		logrus.WithFields(logrus.Fields{
-			"aggregate_group": s.groupName,
-			"excluded_count":  len(excludeIDs),
-		}).Debug("No available sub-groups after exclusion")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": s.groupName,
+				"excluded_count":  len(excludeIDs),
+			}).Debug("No available sub-groups after exclusion")
+		}
 		return "", 0
 	}
 
 	// Try to select a sub-group using weighted round-robin
-	attempted := make(map[uint]bool)
+	attempted := s.resetAttempted()
+	defer func() {
+		s.attempted = attempted
+	}()
 	for len(attempted) < len(s.subGroups) {
-		item := s.selectByWeightWithExclusion(excludeIDs)
+		item := s.selectByWeightSkipping(excludeIDs, attempted)
 		if item == nil {
 			break
 		}
 
-		if attempted[item.subGroupID] {
-			continue
-		}
-		attempted[item.subGroupID] = true
+		attempted = append(attempted, item.subGroupID)
 
 		// Skip if excluded
 		if excludeIDs[item.subGroupID] {
@@ -345,31 +375,37 @@ func (s *selector) selectNextWithExclusion(excludeIDs map[uint]bool) (string, ui
 
 		// Skip if disabled
 		if !item.enabled {
-			logrus.WithFields(logrus.Fields{
-				"group_id":   item.subGroupID,
-				"group_name": item.name,
-				"attempts":   len(attempted),
-			}).Debug("Sub-group is disabled, trying next")
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"group_id":   item.subGroupID,
+					"group_name": item.name,
+					"attempts":   len(attempted),
+				}).Debug("Sub-group is disabled, trying next")
+			}
 			continue
 		}
 
 		// Check if has active keys
-		if s.hasActiveKeys(item.subGroupID) {
-			logrus.WithFields(logrus.Fields{
-				"aggregate_group": s.groupName,
-				"selected_group":  item.name,
-				"selected_id":     item.subGroupID,
-				"attempts":        len(attempted),
-				"excluded_count":  len(excludeIDs),
-			}).Debug("Selected sub-group with active keys (with exclusion)")
+		if s.hasActiveKeys(item) {
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{
+					"aggregate_group": s.groupName,
+					"selected_group":  item.name,
+					"selected_id":     item.subGroupID,
+					"attempts":        len(attempted),
+					"excluded_count":  len(excludeIDs),
+				}).Debug("Selected sub-group with active keys (with exclusion)")
+			}
 			return item.name, item.subGroupID
 		}
 
-		logrus.WithFields(logrus.Fields{
-			"group_id":   item.subGroupID,
-			"group_name": item.name,
-			"attempts":   len(attempted),
-		}).Debug("Sub-group has no active keys, trying next")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"group_id":   item.subGroupID,
+				"group_name": item.name,
+				"attempts":   len(attempted),
+			}).Debug("Sub-group has no active keys, trying next")
+		}
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -385,14 +421,18 @@ func (s *selector) selectNextWithExclusion(excludeIDs map[uint]bool) (string, ui
 // Disabled sub-groups are treated as having zero weight to exclude them from selection.
 // If dynamic weight manager is set, effective weights are calculated based on health scores.
 func (s *selector) selectByWeight() *subGroupItem {
+	return s.selectByWeightSkipping(nil, nil)
+}
+
+func (s *selector) selectByWeightSkipping(excludeIDs map[uint]bool, attempted []uint) *subGroupItem {
 	if len(s.subGroups) == 0 {
 		return nil
 	}
 
 	// Build weights array, treating disabled sub-groups as weight 0
-	weights := make([]int, len(s.subGroups))
+	weights := s.resetWeights()
 	for i := range s.subGroups {
-		if s.subGroups[i].enabled {
+		if s.subGroups[i].enabled && !isExcludedSubGroup(s.subGroups[i].subGroupID, excludeIDs, attempted) {
 			baseWeight := s.subGroups[i].weight
 			// Apply dynamic weight if manager is available
 			if s.dynamicWeight != nil {
@@ -421,48 +461,62 @@ func (s *selector) selectByWeight() *subGroupItem {
 // Disabled sub-groups are treated as having zero weight to exclude them from selection.
 // If dynamic weight manager is set, effective weights are calculated based on health scores.
 func (s *selector) selectByWeightWithExclusion(excludeIDs map[uint]bool) *subGroupItem {
-	if len(s.subGroups) == 0 {
-		return nil
-	}
-
-	// Build weights array (0 for excluded or disabled sub-groups)
-	weights := make([]int, len(s.subGroups))
-	for i := range s.subGroups {
-		if excludeIDs[s.subGroups[i].subGroupID] || !s.subGroups[i].enabled {
-			weights[i] = 0 // Exclude by setting weight to 0
-		} else {
-			baseWeight := s.subGroups[i].weight
-			// Apply dynamic weight if manager is available
-			if s.dynamicWeight != nil {
-				metrics, _ := s.dynamicWeight.GetSubGroupMetrics(s.groupID, s.subGroups[i].subGroupID)
-				effectiveWeight := s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
-				weights[i] = GetEffectiveWeightForSelection(effectiveWeight)
-			} else {
-				weights[i] = baseWeight
-			}
-		}
-	}
-
-	// Use shared weighted random selection
-	idx := utils.WeightedRandomSelect(weights)
-	if idx < 0 {
-		return nil
-	}
-
-	return &s.subGroups[idx]
+	return s.selectByWeightSkipping(excludeIDs, nil)
 }
 
-// hasActiveKeys checks if a sub-group has available API keys
-func (s *selector) hasActiveKeys(groupID uint) bool {
-	// Use strconv instead of fmt.Sprintf for better performance in hot path
-	key := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+func (s *selector) resetWeights() []int {
+	if cap(s.weights) < len(s.subGroups) {
+		s.weights = make([]int, len(s.subGroups))
+	} else {
+		s.weights = s.weights[:len(s.subGroups)]
+		clear(s.weights)
+	}
+	return s.weights
+}
+
+func (s *selector) resetAttempted() []uint {
+	if cap(s.attempted) < len(s.subGroups) {
+		s.attempted = make([]uint, 0, len(s.subGroups))
+		return s.attempted
+	}
+	return s.attempted[:0]
+}
+
+func containsAttempted(attempted []uint, id uint) bool {
+	for _, attemptedID := range attempted {
+		if attemptedID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func isExcludedSubGroup(id uint, excludeIDs map[uint]bool, attempted []uint) bool {
+	if excludeIDs != nil && excludeIDs[id] {
+		return true
+	}
+	return containsAttempted(attempted, id)
+}
+
+// hasActiveKeys checks if a sub-group has available API keys.
+func (s *selector) hasActiveKeys(item *subGroupItem) bool {
+	key := item.activeKeysKey
+	if key == "" {
+		key = activeKeysListKey(item.subGroupID)
+	}
 	length, err := s.store.LLen(key)
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"group_id": groupID,
-			"error":    err,
-		}).Debug("Error checking active keys, assuming available")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"group_id": item.subGroupID,
+				"error":    err,
+			}).Debug("Error checking active keys, assuming available")
+		}
 		return true
 	}
 	return length > 0
+}
+
+func activeKeysListKey(groupID uint) string {
+	return "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 }

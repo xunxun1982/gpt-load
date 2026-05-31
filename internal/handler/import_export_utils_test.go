@@ -1,13 +1,17 @@
 package handler
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/services"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
 )
 
@@ -265,6 +269,165 @@ func TestConvertHeaderRulesToJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConvertChildGroupsForExportAndImport(t *testing.T) {
+	t.Parallel()
+
+	source := []services.ChildGroupExport{
+		{
+			Name:               "child-group",
+			DisplayName:        "Child Group",
+			Description:        "Child description",
+			Enabled:            true,
+			ProxyKeys:          "proxy-key",
+			Sort:               7,
+			TestModel:          "gpt-4o-mini",
+			Config:             json.RawMessage(`{"base_url":"https://child.example.com"}`),
+			HeaderRules:        json.RawMessage(`[{"key":"X-Test","value":"ok"}]`),
+			ModelRedirectRules: json.RawMessage(`{"gpt-4":"gpt-4o"}`),
+			Keys: []services.KeyExportInfo{
+				{KeyValue: "encrypted-key", Status: models.KeyStatusActive},
+			},
+		},
+	}
+
+	exported := ConvertChildGroupsForExport(source, "plain", func(value string) (string, error) {
+		return "plain-" + value, nil
+	})
+	assert.Len(t, exported, 1)
+	assert.Equal(t, "child-group", exported[0].Name)
+	assert.Equal(t, "plain-encrypted-key", exported[0].Keys[0].KeyValue)
+	assert.Equal(t, map[string]string{"gpt-4": "gpt-4o"}, exported[0].ModelRedirectRules)
+	assert.Equal(t, map[string]any{"base_url": "https://child.example.com"}, exported[0].Config)
+
+	imported := ConvertChildGroupsForImport(exported, true, func(value string) (string, error) {
+		return "encrypted-" + value, nil
+	})
+	assert.Len(t, imported, 1)
+	assert.Equal(t, "child-group", imported[0].Name)
+	assert.JSONEq(t, `{"base_url":"https://child.example.com"}`, string(imported[0].Config))
+	assert.JSONEq(t, `{"gpt-4":"gpt-4o"}`, string(imported[0].ModelRedirectRules))
+	assert.Equal(t, "encrypted-plain-encrypted-key", imported[0].Keys[0].KeyValue)
+}
+
+func TestConvertGroupForImportPreservesChildGroups(t *testing.T) {
+	t.Parallel()
+
+	groupExport := GroupExportData{
+		Group: GroupExportInfo{
+			Name:        "parent",
+			GroupType:   "standard",
+			ChannelType: "openai",
+			Enabled:     true,
+			TestModel:   "gpt-4o-mini",
+			Upstreams:   json.RawMessage(`[{"url":"https://parent.example.com","weight":1}]`),
+		},
+		Keys: []KeyExportInfo{
+			{KeyValue: "parent-key", Status: models.KeyStatusActive},
+		},
+		ChildGroups: []ChildGroupExportInfo{
+			{
+				Name:               "child-a",
+				DisplayName:        "Child A",
+				Enabled:            true,
+				Sort:               1,
+				TestModel:          "child-a-model",
+				Config:             map[string]any{"base_url": "https://child-a.example.com"},
+				ModelRedirectRules: map[string]string{"gpt-4": "gpt-4o"},
+				Keys: []KeyExportInfo{
+					{KeyValue: "child-a-key", Status: models.KeyStatusInvalid},
+				},
+			},
+			{
+				Name:                 "child-b",
+				DisplayName:          "Child B",
+				Enabled:              false,
+				Sort:                 2,
+				TestModel:            "child-b-model",
+				ModelRedirectRulesV2: json.RawMessage(`{"source":{"targets":[{"model":"target","weight":100}]}}`),
+				Keys: []KeyExportInfo{
+					{KeyValue: "child-b-key", Status: models.KeyStatusInvalid},
+				},
+			},
+		},
+	}
+
+	converted := ConvertGroupForImport(groupExport, true, func(value string) (string, error) {
+		return "encrypted-" + value, nil
+	})
+	require.Len(t, converted.Keys, 1)
+	assert.Equal(t, "encrypted-parent-key", converted.Keys[0].KeyValue)
+	require.Len(t, converted.ChildGroups, 2)
+	assert.Equal(t, "child-a", converted.ChildGroups[0].Name)
+	assert.Equal(t, "encrypted-child-a-key", converted.ChildGroups[0].Keys[0].KeyValue)
+	assert.JSONEq(t, `{"base_url":"https://child-a.example.com"}`, string(converted.ChildGroups[0].Config))
+	assert.JSONEq(t, `{"gpt-4":"gpt-4o"}`, string(converted.ChildGroups[0].ModelRedirectRules))
+	assert.Equal(t, "child-b", converted.ChildGroups[1].Name)
+	assert.Equal(t, "encrypted-child-b-key", converted.ChildGroups[1].Keys[0].KeyValue)
+	assert.JSONEq(t, `{"source":{"targets":[{"model":"target","weight":100}]}}`, string(converted.ChildGroups[1].ModelRedirectRulesV2))
+}
+
+func TestGroupImportHelpersCountAndSampleChildKeys(t *testing.T) {
+	t.Parallel()
+
+	groups := []GroupExportData{
+		{
+			Group: GroupExportInfo{Name: "parent-a"},
+			ChildGroups: []ChildGroupExportInfo{
+				{
+					Name: "child-a",
+					Keys: []KeyExportInfo{
+						{KeyValue: "child-a-key-1"},
+						{KeyValue: "child-a-key-2"},
+					},
+				},
+			},
+		},
+		{
+			Group: GroupExportInfo{Name: "parent-b"},
+			Keys: []KeyExportInfo{
+				{KeyValue: "parent-b-key"},
+			},
+			ChildGroups: []ChildGroupExportInfo{
+				{
+					Name: "child-b",
+					Keys: []KeyExportInfo{
+						{KeyValue: "child-b-key"},
+					},
+				},
+			},
+		},
+	}
+
+	assert.Equal(t, 4, CountGroupExportKeys(groups))
+	assert.Equal(t, []string{"child-a-key-1", "child-a-key-2", "parent-b-key", "child-b-key"}, CollectGroupImportSampleKeys(groups))
+}
+
+func TestGetImportModeUsesChildOnlyEncryptedKeys(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	groups := []GroupExportData{
+		{
+			Group: GroupExportInfo{Name: "parent-with-only-child-keys"},
+			ChildGroups: []ChildGroupExportInfo{
+				{
+					Name: "child",
+					Keys: []KeyExportInfo{
+						{KeyValue: "00112233445566778899aabbccddeeff"},
+					},
+				},
+			},
+		},
+	}
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req, err := http.NewRequest(http.MethodPost, "/api/groups/import", nil)
+	require.NoError(t, err)
+	c.Request = req
+
+	assert.Equal(t, "encrypted", GetImportMode(c, CollectGroupImportSampleKeys(groups)))
 }
 
 func TestGetExportMode(t *testing.T) {

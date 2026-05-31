@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Sentinel errors for import/export operations
@@ -32,6 +34,10 @@ type ImportExportService struct {
 	db                *gorm.DB
 	bulkImportService *BulkImportService
 	encryptionService encryption.Service
+}
+
+type importGroupOptions struct {
+	ImportAggregateSubGroups bool
 }
 
 // NewImportExportService creates a new import/export service
@@ -459,6 +465,31 @@ type SubGroupInfo struct {
 	Weight    int    `json:"weight"`
 }
 
+// DynamicWeightMetricExportInfo stores dynamic health metrics using stable group names.
+type DynamicWeightMetricExportInfo struct {
+	MetricType          models.MetricType `json:"metric_type"`
+	GroupName           string            `json:"group_name"`
+	SubGroupName        string            `json:"sub_group_name,omitempty"`
+	SourceModel         string            `json:"source_model,omitempty"`
+	TargetModel         string            `json:"target_model,omitempty"`
+	ConsecutiveFailures int64             `json:"consecutive_failures"`
+	LastFailureAt       *time.Time        `json:"last_failure_at,omitempty"`
+	LastSuccessAt       *time.Time        `json:"last_success_at,omitempty"`
+	Requests7d          int64             `json:"requests_7d"`
+	Successes7d         int64             `json:"successes_7d"`
+	Requests14d         int64             `json:"requests_14d"`
+	Successes14d        int64             `json:"successes_14d"`
+	Requests30d         int64             `json:"requests_30d"`
+	Successes30d        int64             `json:"successes_30d"`
+	Requests90d         int64             `json:"requests_90d"`
+	Successes90d        int64             `json:"successes_90d"`
+	Requests180d        int64             `json:"requests_180d"`
+	Successes180d       int64             `json:"successes_180d"`
+	LastRolloverAt      *time.Time        `json:"last_rollover_at,omitempty"`
+	UpdatedAt           time.Time         `json:"updated_at"`
+	DeletedAt           *time.Time        `json:"deleted_at,omitempty"`
+}
+
 // ExportGroup exports a complete group with keys and sub-groups
 func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error) {
 	var group models.Group
@@ -539,54 +570,7 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 
 			result.ChildGroups = make([]ChildGroupExport, 0, len(childGroups))
 			for _, cg := range childGroups {
-				childExport := ChildGroupExport{
-					Name:                cg.Name,
-					DisplayName:         cg.DisplayName,
-					Description:         cg.Description,
-					Enabled:             cg.Enabled,
-					ProxyKeys:           cg.ProxyKeys,
-					Sort:                cg.Sort,
-					TestModel:           cg.TestModel,
-					ModelMapping:        cg.ModelMapping,
-					ModelRedirectStrict: cg.ModelRedirectStrict,
-					Keys:                childKeysMap[cg.ID],
-				}
-
-				// Export JSON fields as raw JSON to preserve structure
-				if cg.ParamOverrides != nil {
-					if data, err := json.Marshal(cg.ParamOverrides); err == nil {
-						childExport.ParamOverrides = data
-					}
-				}
-				if cg.Config != nil {
-					if data, err := json.Marshal(cg.Config); err == nil {
-						childExport.Config = data
-					}
-				}
-				if len(cg.HeaderRules) > 0 {
-					childExport.HeaderRules = json.RawMessage(cg.HeaderRules)
-				}
-				if cg.ModelRedirectRules != nil {
-					if data, err := json.Marshal(cg.ModelRedirectRules); err == nil {
-						childExport.ModelRedirectRules = data
-					}
-				}
-				if len(cg.ModelRedirectRulesV2) > 0 {
-					childExport.ModelRedirectRulesV2 = json.RawMessage(cg.ModelRedirectRulesV2)
-				}
-				if len(cg.CustomModelNames) > 0 {
-					childExport.CustomModelNames = json.RawMessage(cg.CustomModelNames)
-				}
-				if cg.Preconditions != nil {
-					if data, err := json.Marshal(cg.Preconditions); err == nil {
-						childExport.Preconditions = data
-					}
-				}
-				if len(cg.PathRedirects) > 0 {
-					childExport.PathRedirects = json.RawMessage(cg.PathRedirects)
-				}
-
-				result.ChildGroups = append(result.ChildGroups, childExport)
+				result.ChildGroups = append(result.ChildGroups, buildChildGroupExport(cg, childKeysMap[cg.ID]))
 			}
 
 			logrus.Infof("Exported %d child groups for parent group %s", len(childGroups), group.Name)
@@ -599,15 +583,25 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 // ImportGroup imports a complete group with keys and sub-groups
 // progressCallback is an optional callback function to report progress during import
 func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData, progressCallback func(processed int)) (uint, error) {
+	importedGroup, _, err := s.importGroup(tx, data, progressCallback, importGroupOptions{
+		ImportAggregateSubGroups: true,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return importedGroup.ID, nil
+}
+
+func (s *ImportExportService) importGroup(tx *gorm.DB, data *GroupExportData, progressCallback func(processed int), options importGroupOptions) (*models.Group, map[string]models.Group, error) {
 	// Child groups cannot be imported individually - they are imported with their parent
 	if data.Group.ParentGroupID != nil {
-		return 0, ErrChildGroupCannotImportIndividually
+		return nil, nil, ErrChildGroupCannotImportIndividually
 	}
 
 	// Use the centralized unique name generation function
 	groupName, err := s.GenerateUniqueGroupName(tx, data.Group.Name)
 	if err != nil {
-		return 0, err
+		return nil, nil, err
 	}
 
 	// Create the group with cleaned configuration
@@ -642,11 +636,18 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData, pr
 		newGroup.Config = cleanedConfig
 	}
 	if err := validateParamOverrides(newGroup.ParamOverrides); err != nil {
-		return 0, err
+		return nil, nil, err
 	}
 
 	if err := tx.Create(&newGroup).Error; err != nil {
-		return 0, fmt.Errorf("failed to create group: %w", err)
+		return nil, nil, fmt.Errorf("failed to create group: %w", err)
+	}
+	if !data.Group.Enabled {
+		// GORM skips zero values for fields with DB defaults during Create; preserve disabled imports explicitly.
+		if err := tx.Model(&newGroup).Update("enabled", false).Error; err != nil {
+			return nil, nil, fmt.Errorf("failed to restore imported group enabled state: %w", err)
+		}
+		newGroup.Enabled = false
 	}
 
 	if groupName != data.Group.Name {
@@ -658,61 +659,41 @@ func (s *ImportExportService) ImportGroup(tx *gorm.DB, data *GroupExportData, pr
 	// Import keys
 	if len(data.Keys) > 0 {
 		if err := s.ImportKeys(tx, newGroup.ID, data.Keys, progressCallback); err != nil {
-			return 0, fmt.Errorf("failed to import keys: %w", err)
+			return nil, nil, fmt.Errorf("failed to import keys: %w", err)
 		}
 	}
 
 	// Import sub-groups for aggregate groups
-	if newGroup.GroupType == "aggregate" && len(data.SubGroups) > 0 {
-		// Find sub-group IDs
-		var groupNames []string
-		for _, sg := range data.SubGroups {
-			groupNames = append(groupNames, sg.GroupName)
+	if options.ImportAggregateSubGroups && newGroup.GroupType == "aggregate" && len(data.SubGroups) > 0 {
+		imported := map[string]models.Group{
+			data.Group.Name: newGroup,
 		}
-
-		var subGroups []models.Group
-		if err := tx.Where("name IN ?", groupNames).Find(&subGroups).Error; err == nil {
-			// Create relationships
-			for _, subGroup := range subGroups {
-				// Find the weight for this sub-group
-				weight := 0
-				for _, sg := range data.SubGroups {
-					if sg.GroupName == subGroup.Name {
-						weight = sg.Weight
-						break
-					}
-				}
-
-				relation := models.GroupSubGroup{
-					GroupID:    newGroup.ID,
-					SubGroupID: subGroup.ID,
-					Weight:     weight,
-				}
-
-				if err := tx.Create(&relation).Error; err != nil {
-					logrus.WithError(err).Warnf("Failed to create sub-group relation for %s", subGroup.Name)
-				}
-			}
+		if _, skipped := s.importAggregateSubGroupRelations(tx, []GroupExportData{*data}, imported); skipped > 0 {
+			logrus.Warnf("Skipped %d sub-group relation(s) while importing aggregate group %s", skipped, newGroup.Name)
 		}
 	}
 
 	// Import child groups for standard groups
+	importedChildGroups := make(map[string]models.Group)
 	if newGroup.GroupType == "standard" && len(data.ChildGroups) > 0 {
 		logrus.Infof("Importing %d child groups for standard group %s (ID: %d)", len(data.ChildGroups), newGroup.Name, newGroup.ID)
-		if err := s.importChildGroups(tx, newGroup.ID, newGroup.Name, newGroup.ChannelType, newGroup.TestModel, data.ChildGroups); err != nil {
+		importedChildren, err := s.importChildGroups(tx, newGroup.ID, newGroup.Name, newGroup.ChannelType, newGroup.TestModel, data.ChildGroups)
+		if err != nil {
 			logrus.WithError(err).Errorf("Failed to import child groups for group %s", newGroup.Name)
-			return 0, fmt.Errorf("failed to import child groups: %w", err)
+			return nil, nil, fmt.Errorf("failed to import child groups: %w", err)
 		}
+		importedChildGroups = importedChildren
 		logrus.Infof("Successfully imported child groups for standard group %s", newGroup.Name)
 	}
 
-	return newGroup.ID, nil
+	return &newGroup, importedChildGroups, nil
 }
 
 // importChildGroups imports child groups for a parent group
 // parentTestModel is used as fallback when child group's TestModel is empty (backward compatibility)
-func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint, parentName string, parentChannelType string, parentTestModel string, childGroups []ChildGroupExport) error {
+func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint, parentName string, parentChannelType string, parentTestModel string, childGroups []ChildGroupExport) (map[string]models.Group, error) {
 	logrus.Infof("Starting import of %d child groups for parent %s (ID: %d)", len(childGroups), parentName, parentGroupID)
+	importedChildrenByOriginalName := make(map[string]models.Group, len(childGroups))
 
 	for i, childData := range childGroups {
 		logrus.Debugf("Processing child group %d/%d: %s", i+1, len(childGroups), childData.Name)
@@ -830,6 +811,14 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 			logrus.WithError(err).Errorf("Failed to create child group %s in database", childName)
 			continue
 		}
+		if !childData.Enabled {
+			// GORM skips zero values for fields with DB defaults during Create; preserve disabled child imports explicitly.
+			if err := tx.Model(&childGroup).Update("enabled", false).Error; err != nil {
+				logrus.WithError(err).Errorf("Failed to restore enabled state for child group %s", childName)
+				continue
+			}
+			childGroup.Enabled = false
+		}
 
 		logrus.Infof("Successfully created child group %s (ID: %d) for parent %s", childName, childGroup.ID, parentName)
 
@@ -844,20 +833,23 @@ func (s *ImportExportService) importChildGroups(tx *gorm.DB, parentGroupID uint,
 		} else {
 			logrus.Debugf("No keys to import for child group %s", childName)
 		}
+
+		importedChildrenByOriginalName[childData.Name] = childGroup
 	}
 
 	logrus.Infof("Completed import of child groups for parent %s", parentName)
-	return nil
+	return importedChildrenByOriginalName, nil
 }
 
 // SystemExportData represents full system export
 type SystemExportData struct {
-	Version        string                   `json:"version"`
-	ExportedAt     string                   `json:"exported_at"`
-	SystemSettings map[string]string        `json:"system_settings"`
-	Groups         []GroupExportData        `json:"groups"`
-	ManagedSites   *ManagedSitesExportData  `json:"managed_sites,omitempty"`
-	HubAccessKeys  []HubAccessKeyExportInfo `json:"hub_access_keys,omitempty"`
+	Version        string                          `json:"version"`
+	ExportedAt     string                          `json:"exported_at"`
+	SystemSettings map[string]string               `json:"system_settings"`
+	Groups         []GroupExportData               `json:"groups"`
+	ManagedSites   *ManagedSitesExportData         `json:"managed_sites,omitempty"`
+	HubAccessKeys  []HubAccessKeyExportInfo        `json:"hub_access_keys,omitempty"`
+	DynamicWeights []DynamicWeightMetricExportInfo `json:"dynamic_weights,omitempty"`
 }
 
 // HubAccessKeyExportInfo represents exported Hub access key data.
@@ -1114,16 +1106,7 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 			if childGroups, exists := childGroupsByParent[group.ID]; exists && len(childGroups) > 0 {
 				groupData.ChildGroups = make([]ChildGroupExport, 0, len(childGroups))
 				for _, cg := range childGroups {
-					childExport := ChildGroupExport{
-						Name:        cg.Name,
-						DisplayName: cg.DisplayName,
-						Description: cg.Description,
-						Enabled:     cg.Enabled,
-						ProxyKeys:   cg.ProxyKeys,
-						Sort:        cg.Sort,
-						Keys:        keysMap[cg.ID],
-					}
-					groupData.ChildGroups = append(groupData.ChildGroups, childExport)
+					groupData.ChildGroups = append(groupData.ChildGroups, buildChildGroupExport(cg, keysMap[cg.ID]))
 				}
 			}
 		}
@@ -1137,6 +1120,9 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 	// Export Hub access keys
 	hubAccessKeysData := s.exportHubAccessKeys()
 
+	// Export dynamic health metrics after groups are known so IDs can be converted to names.
+	dynamicWeightsData := s.exportDynamicWeights()
+
 	return &SystemExportData{
 		Version:        "2.0",
 		ExportedAt:     time.Now().Format(time.RFC3339),
@@ -1144,14 +1130,424 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 		Groups:         groupExports,
 		ManagedSites:   managedSitesData,
 		HubAccessKeys:  hubAccessKeysData,
+		DynamicWeights: dynamicWeightsData,
 	}, nil
+}
+
+func (s *ImportExportService) exportDynamicWeights() []DynamicWeightMetricExportInfo {
+	var metrics []models.DynamicWeightMetric
+	if err := s.db.Order("id ASC").Find(&metrics).Error; err != nil {
+		logrus.WithError(err).Warn("Failed to export dynamic weight metrics")
+		return nil
+	}
+	if len(metrics) == 0 {
+		return nil
+	}
+
+	groupIDs := make([]uint, 0, len(metrics)*2)
+	for _, metric := range metrics {
+		groupIDs = append(groupIDs, metric.GroupID)
+		if metric.SubGroupID > 0 {
+			groupIDs = append(groupIDs, metric.SubGroupID)
+		}
+	}
+
+	var groups []models.Group
+	if err := s.db.Select("id", "name").Where("id IN ?", groupIDs).Find(&groups).Error; err != nil {
+		logrus.WithError(err).Warn("Failed to load group names for dynamic weight export")
+		return nil
+	}
+
+	groupNamesByID := make(map[uint]string, len(groups))
+	for _, group := range groups {
+		groupNamesByID[group.ID] = group.Name
+	}
+
+	result := make([]DynamicWeightMetricExportInfo, 0, len(metrics))
+	for _, metric := range metrics {
+		groupName := groupNamesByID[metric.GroupID]
+		if groupName == "" {
+			continue
+		}
+
+		item := DynamicWeightMetricExportInfo{
+			MetricType:          metric.MetricType,
+			GroupName:           groupName,
+			SourceModel:         metric.SourceModel,
+			TargetModel:         metric.TargetModel,
+			ConsecutiveFailures: metric.ConsecutiveFailures,
+			LastFailureAt:       metric.LastFailureAt,
+			LastSuccessAt:       metric.LastSuccessAt,
+			Requests7d:          metric.Requests7d,
+			Successes7d:         metric.Successes7d,
+			Requests14d:         metric.Requests14d,
+			Successes14d:        metric.Successes14d,
+			Requests30d:         metric.Requests30d,
+			Successes30d:        metric.Successes30d,
+			Requests90d:         metric.Requests90d,
+			Successes90d:        metric.Successes90d,
+			Requests180d:        metric.Requests180d,
+			Successes180d:       metric.Successes180d,
+			LastRolloverAt:      metric.LastRolloverAt,
+			UpdatedAt:           metric.UpdatedAt,
+			DeletedAt:           metric.DeletedAt,
+		}
+		if metric.SubGroupID > 0 {
+			item.SubGroupName = groupNamesByID[metric.SubGroupID]
+			if item.SubGroupName == "" {
+				continue
+			}
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func buildChildGroupExport(group models.Group, keys []KeyExportInfo) ChildGroupExport {
+	childExport := ChildGroupExport{
+		Name:                group.Name,
+		DisplayName:         group.DisplayName,
+		Description:         group.Description,
+		Enabled:             group.Enabled,
+		ProxyKeys:           group.ProxyKeys,
+		Sort:                group.Sort,
+		TestModel:           group.TestModel,
+		ModelMapping:        group.ModelMapping,
+		ModelRedirectStrict: group.ModelRedirectStrict,
+		Keys:                keys,
+	}
+
+	// Export JSON fields as raw JSON to preserve exact child group behavior.
+	if group.ParamOverrides != nil {
+		if data, err := json.Marshal(group.ParamOverrides); err == nil {
+			childExport.ParamOverrides = data
+		}
+	}
+	if group.Config != nil {
+		if data, err := json.Marshal(group.Config); err == nil {
+			childExport.Config = data
+		}
+	}
+	if len(group.HeaderRules) > 0 {
+		childExport.HeaderRules = json.RawMessage(group.HeaderRules)
+	}
+	if group.ModelRedirectRules != nil {
+		if data, err := json.Marshal(group.ModelRedirectRules); err == nil {
+			childExport.ModelRedirectRules = data
+		}
+	}
+	if len(group.ModelRedirectRulesV2) > 0 {
+		childExport.ModelRedirectRulesV2 = json.RawMessage(group.ModelRedirectRulesV2)
+	}
+	if len(group.CustomModelNames) > 0 {
+		childExport.CustomModelNames = json.RawMessage(group.CustomModelNames)
+	}
+	if group.Preconditions != nil {
+		if data, err := json.Marshal(group.Preconditions); err == nil {
+			childExport.Preconditions = data
+		}
+	}
+	if len(group.PathRedirects) > 0 {
+		childExport.PathRedirects = json.RawMessage(group.PathRedirects)
+	}
+
+	return childExport
+}
+
+func (s *ImportExportService) importAggregateSubGroupRelations(tx *gorm.DB, groups []GroupExportData, importedGroups map[string]models.Group) (int, int) {
+	imported := 0
+	skipped := 0
+
+	for _, groupData := range groups {
+		if groupData.Group.GroupType != "aggregate" || len(groupData.SubGroups) == 0 {
+			continue
+		}
+
+		aggregateGroup, ok := importedGroups[groupData.Group.Name]
+		if !ok {
+			if err := tx.Where("name = ?", groupData.Group.Name).First(&aggregateGroup).Error; err != nil {
+				logrus.WithError(err).Warnf("Skipping sub-group relations for missing aggregate group %s", groupData.Group.Name)
+				skipped += len(groupData.SubGroups)
+				continue
+			}
+		}
+
+		for _, subGroupInfo := range groupData.SubGroups {
+			subGroup, ok := importedGroups[subGroupInfo.GroupName]
+			if !ok {
+				if err := tx.Where("name = ?", subGroupInfo.GroupName).First(&subGroup).Error; err != nil {
+					logrus.WithError(err).Warnf("Skipping missing sub-group relation %s -> %s", aggregateGroup.Name, subGroupInfo.GroupName)
+					skipped++
+					continue
+				}
+			}
+
+			relation := models.GroupSubGroup{
+				GroupID:    aggregateGroup.ID,
+				SubGroupID: subGroup.ID,
+				Weight:     subGroupInfo.Weight,
+			}
+
+			if err := tx.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).
+				Assign(models.GroupSubGroup{Weight: subGroupInfo.Weight}).
+				FirstOrCreate(&relation).Error; err != nil {
+				logrus.WithError(err).Warnf("Failed to create sub-group relation %s -> %s", aggregateGroup.Name, subGroup.Name)
+				skipped++
+				continue
+			}
+			imported++
+		}
+	}
+
+	return imported, skipped
+}
+
+func (s *ImportExportService) importDynamicWeights(tx *gorm.DB, metrics []DynamicWeightMetricExportInfo, importedGroups map[string]models.Group) (int, int) {
+	imported := 0
+	skipped := 0
+
+	for _, item := range metrics {
+		group, ok := importedGroups[item.GroupName]
+		if !ok {
+			if err := tx.Where("name = ?", item.GroupName).First(&group).Error; err != nil {
+				logrus.WithError(err).Warnf("Skipping dynamic weight metric for missing group %s", item.GroupName)
+				skipped++
+				continue
+			}
+		}
+
+		subGroupID := uint(0)
+		if item.MetricType == models.MetricTypeSubGroup {
+			subGroup, ok := importedGroups[item.SubGroupName]
+			if !ok {
+				if err := tx.Where("name = ?", item.SubGroupName).First(&subGroup).Error; err != nil {
+					logrus.WithError(err).Warnf("Skipping dynamic weight metric for missing sub-group %s", item.SubGroupName)
+					skipped++
+					continue
+				}
+			}
+			subGroupID = subGroup.ID
+		}
+
+		metric := models.DynamicWeightMetric{
+			MetricType:          item.MetricType,
+			GroupID:             group.ID,
+			SubGroupID:          subGroupID,
+			SourceModel:         item.SourceModel,
+			TargetModel:         item.TargetModel,
+			ConsecutiveFailures: item.ConsecutiveFailures,
+			LastFailureAt:       item.LastFailureAt,
+			LastSuccessAt:       item.LastSuccessAt,
+			Requests7d:          item.Requests7d,
+			Successes7d:         item.Successes7d,
+			Requests14d:         item.Requests14d,
+			Successes14d:        item.Successes14d,
+			Requests30d:         item.Requests30d,
+			Successes30d:        item.Successes30d,
+			Requests90d:         item.Requests90d,
+			Successes90d:        item.Successes90d,
+			Requests180d:        item.Requests180d,
+			Successes180d:       item.Successes180d,
+			LastRolloverAt:      item.LastRolloverAt,
+			UpdatedAt:           item.UpdatedAt,
+			DeletedAt:           item.DeletedAt,
+		}
+
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "metric_type"},
+				{Name: "group_id"},
+				{Name: "sub_group_id"},
+				{Name: "source_model"},
+				{Name: "target_model"},
+			},
+			UpdateAll: true,
+		}).Create(&metric).Error; err != nil {
+			logrus.WithError(err).Warnf("Failed to import dynamic weight metric for group %s", item.GroupName)
+			skipped++
+			continue
+		}
+		imported++
+	}
+
+	return imported, skipped
+}
+
+type legacyUpstreamInfo struct {
+	URL string `json:"url"`
+}
+
+func normalizeLegacyChildGroups(groups []GroupExportData) []GroupExportData {
+	if len(groups) == 0 || hasExplicitChildGroupMetadata(groups) {
+		return groups
+	}
+
+	nameToIndex := make(map[string]int, len(groups))
+	for i := range groups {
+		nameToIndex[groups[i].Group.Name] = i
+	}
+
+	childToParent := make(map[int]int)
+	for i := range groups {
+		if parentName := legacyProxyParentName(groups[i]); parentName != "" {
+			if parentIndex, ok := nameToIndex[parentName]; ok && parentIndex != i && canUseLegacyChildParent(groups[parentIndex], groups[i]) {
+				childToParent[i] = parentIndex
+			}
+		}
+	}
+
+	for childIndex := range groups {
+		if _, exists := childToParent[childIndex]; exists || groups[childIndex].Group.GroupType != "standard" {
+			continue
+		}
+		parentIndex := findLegacyNameBasedParent(groups, childIndex)
+		if parentIndex >= 0 {
+			childToParent[childIndex] = parentIndex
+		}
+	}
+
+	if len(childToParent) == 0 {
+		return groups
+	}
+
+	normalized := make([]GroupExportData, len(groups))
+	copy(normalized, groups)
+	for childIndex, parentIndex := range childToParent {
+		child := groups[childIndex]
+		parent := &normalized[parentIndex]
+		parent.ChildGroups = append(parent.ChildGroups, childGroupExportFromLegacyGroup(child))
+	}
+
+	result := make([]GroupExportData, 0, len(groups)-len(childToParent))
+	for i := range normalized {
+		if _, isChild := childToParent[i]; isChild {
+			continue
+		}
+		result = append(result, normalized[i])
+	}
+
+	logrus.Infof("Inferred %d legacy child group relation(s) during system import", len(childToParent))
+	return result
+}
+
+func hasExplicitChildGroupMetadata(groups []GroupExportData) bool {
+	for _, group := range groups {
+		if len(group.ChildGroups) > 0 || group.Group.ParentGroupID != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func findLegacyNameBasedParent(groups []GroupExportData, childIndex int) int {
+	child := groups[childIndex]
+	bestIndex := -1
+	bestNameLen := 0
+	for parentIndex := range groups {
+		if parentIndex == childIndex || !canUseLegacyChildParent(groups[parentIndex], child) {
+			continue
+		}
+		if !isLegacyNameBasedChild(groups[parentIndex].Group, child.Group) {
+			continue
+		}
+		if nameLen := len(groups[parentIndex].Group.Name); nameLen > bestNameLen {
+			bestIndex = parentIndex
+			bestNameLen = nameLen
+		}
+	}
+	return bestIndex
+}
+
+func canUseLegacyChildParent(parent GroupExportData, child GroupExportData) bool {
+	return parent.Group.GroupType == "standard" &&
+		child.Group.GroupType == "standard" &&
+		parent.Group.Name != "" &&
+		child.Group.Name != "" &&
+		parent.Group.ChannelType == child.Group.ChannelType &&
+		legacyUpstreamSignature(parent.Group.Upstreams) == legacyUpstreamSignature(child.Group.Upstreams)
+}
+
+func isLegacyNameBasedChild(parent models.Group, child models.Group) bool {
+	if strings.HasPrefix(child.Name, parent.Name+"_") {
+		return true
+	}
+	if !isLegacyDefaultParent(parent) {
+		return false
+	}
+	parentPrefix := legacyNamePrefix(parent.Name)
+	return parentPrefix != "" && parentPrefix == legacyNamePrefix(child.Name)
+}
+
+func isLegacyDefaultParent(group models.Group) bool {
+	name := strings.ToLower(group.Name)
+	return strings.HasSuffix(name, "_default") ||
+		strings.HasSuffix(name, "_defalut") ||
+		strings.HasSuffix(name, "_main") ||
+		strings.HasSuffix(name, "_base") ||
+		strings.Contains(group.DisplayName, "默认")
+}
+
+func legacyNamePrefix(name string) string {
+	index := strings.LastIndex(name, "_")
+	if index <= 0 {
+		return ""
+	}
+	return name[:index]
+}
+
+func legacyProxyParentName(group GroupExportData) string {
+	for _, upstream := range legacyUpstreamURLs(group.Group.Upstreams) {
+		if index := strings.Index(upstream, "/proxy/"); index >= 0 {
+			parentName := upstream[index+len("/proxy/"):]
+			if cut := strings.IndexAny(parentName, "?#"); cut >= 0 {
+				parentName = parentName[:cut]
+			}
+			if decoded, err := url.PathUnescape(parentName); err == nil {
+				parentName = decoded
+			}
+			return strings.TrimSpace(parentName)
+		}
+	}
+	return ""
+}
+
+func legacyUpstreamSignature(upstreams []byte) string {
+	urls := legacyUpstreamURLs(upstreams)
+	if len(urls) == 0 {
+		return ""
+	}
+	return strings.Join(urls, "\n")
+}
+
+func legacyUpstreamURLs(upstreams []byte) []string {
+	if len(upstreams) == 0 {
+		return nil
+	}
+	var parsed []legacyUpstreamInfo
+	if err := json.Unmarshal(upstreams, &parsed); err != nil {
+		return nil
+	}
+	urls := make([]string, 0, len(parsed))
+	for _, upstream := range parsed {
+		trimmed := strings.TrimSpace(upstream.URL)
+		if trimmed != "" {
+			urls = append(urls, trimmed)
+		}
+	}
+	return urls
+}
+
+func childGroupExportFromLegacyGroup(groupData GroupExportData) ChildGroupExport {
+	child := buildChildGroupExport(groupData.Group, groupData.Keys)
+	return child
 }
 
 // ImportSystem imports the entire system configuration
 func (s *ImportExportService) ImportSystem(tx *gorm.DB, data *SystemExportData) error {
 	// Count settings to import for logging
 	settingsCount := len(data.SystemSettings)
-	groupsCount := len(data.Groups)
+	groupsToImport := normalizeLegacyChildGroups(data.Groups)
+	groupsCount := len(groupsToImport)
 
 	logrus.Infof("Starting system import: %d settings, %d groups", settingsCount, groupsCount)
 
@@ -1194,18 +1590,41 @@ func (s *ImportExportService) ImportSystem(tx *gorm.DB, data *SystemExportData) 
 
 	// Import all groups with unique name handling
 	importedGroups := 0
-	for _, groupData := range data.Groups {
-		groupID, err := s.ImportGroup(tx, &groupData, nil)
+	importedGroupsByOriginalName := make(map[string]models.Group, len(data.Groups))
+	for _, groupData := range groupsToImport {
+		var importedGroup *models.Group
+		var importedChildGroups map[string]models.Group
+		err := tx.Transaction(func(groupTx *gorm.DB) error {
+			var importErr error
+			importedGroup, importedChildGroups, importErr = s.importGroup(groupTx, &groupData, nil, importGroupOptions{
+				ImportAggregateSubGroups: false,
+			})
+			return importErr
+		})
 		if err != nil {
-			// Log error but continue with other groups
+			// Nested transactions keep the best-effort import behavior without committing half-created groups.
 			logrus.WithError(err).Warnf("Failed to import group %s, skipping", groupData.Group.Name)
 			continue
 		}
 		importedGroups++
-		logrus.Debugf("Imported group %s with ID %d", groupData.Group.Name, groupID)
+		importedGroupsByOriginalName[groupData.Group.Name] = *importedGroup
+		for originalName, importedChildGroup := range importedChildGroups {
+			importedGroupsByOriginalName[originalName] = importedChildGroup
+		}
+		logrus.Debugf("Imported group %s with ID %d", groupData.Group.Name, importedGroup.ID)
 	}
 
 	logrus.Infof("Groups imported: %d/%d successful", importedGroups, groupsCount)
+
+	importedRelations, skippedRelations := s.importAggregateSubGroupRelations(tx, groupsToImport, importedGroupsByOriginalName)
+	if importedRelations > 0 || skippedRelations > 0 {
+		logrus.Infof("Aggregate sub-group relations imported: %d created, %d skipped", importedRelations, skippedRelations)
+	}
+
+	if len(data.DynamicWeights) > 0 {
+		importedMetrics, skippedMetrics := s.importDynamicWeights(tx, data.DynamicWeights, importedGroupsByOriginalName)
+		logrus.Infof("Dynamic weight metrics imported: %d upserted, %d skipped", importedMetrics, skippedMetrics)
+	}
 
 	// Import managed sites if present
 	if data.ManagedSites != nil && len(data.ManagedSites.Sites) > 0 {

@@ -193,103 +193,8 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		})
 	}
 
-	// Convert child groups to export format (for standard groups)
-	if len(groupData.ChildGroups) > 0 {
-		exportData.ChildGroups = make([]ChildGroupExportInfo, 0, len(groupData.ChildGroups))
-		for _, cg := range groupData.ChildGroups {
-			// Parse child group configuration fields
-			childHeaderRules := ParseHeaderRulesForExport(cg.HeaderRules, 0)
-			childPathRedirects := ParsePathRedirectsForExport(cg.PathRedirects)
-
-			// Convert ModelRedirectRules from []byte to map[string]string
-			var childModelRedirectRules map[string]string
-			if len(cg.ModelRedirectRules) > 0 {
-				var tempMap map[string]any
-				if err := json.Unmarshal(cg.ModelRedirectRules, &tempMap); err != nil {
-					logrus.WithError(err).Warnf("Failed to parse child group %s ModelRedirectRules for export", cg.Name)
-				} else {
-					childModelRedirectRules = make(map[string]string)
-					for k, v := range tempMap {
-						if strVal, ok := v.(string); ok {
-							childModelRedirectRules[k] = strVal
-						}
-					}
-				}
-			}
-
-			var childModelRedirectRulesV2 json.RawMessage
-			if len(cg.ModelRedirectRulesV2) > 0 {
-				rawJSON := []byte(cg.ModelRedirectRulesV2)
-				// Merge duplicate rules to consolidate targets (same as parent group)
-				merged, err := utils.MergeModelRedirectRulesV2(rawJSON)
-				if err != nil {
-					logrus.WithError(err).Warnf("Failed to merge child group %s model redirect rules V2, using original", cg.Name)
-					childModelRedirectRulesV2 = rawJSON
-				} else {
-					childModelRedirectRulesV2 = merged
-				}
-			}
-
-			var childCustomModelNames json.RawMessage
-			if len(cg.CustomModelNames) > 0 {
-				childCustomModelNames = json.RawMessage(cg.CustomModelNames)
-			}
-
-			// Convert ParamOverrides, Config, Preconditions from []byte to map[string]any
-			var childParamOverrides, childConfig, childPreconditions map[string]any
-			if len(cg.ParamOverrides) > 0 {
-				if err := json.Unmarshal(cg.ParamOverrides, &childParamOverrides); err != nil {
-					logrus.WithError(err).Warnf("Failed to parse child group %s ParamOverrides for export", cg.Name)
-				}
-			}
-			if len(cg.Config) > 0 {
-				if err := json.Unmarshal(cg.Config, &childConfig); err != nil {
-					logrus.WithError(err).Warnf("Failed to parse child group %s Config for export", cg.Name)
-				}
-			}
-			if len(cg.Preconditions) > 0 {
-				if err := json.Unmarshal(cg.Preconditions, &childPreconditions); err != nil {
-					logrus.WithError(err).Warnf("Failed to parse child group %s Preconditions for export", cg.Name)
-				}
-			}
-
-			childExport := ChildGroupExportInfo{
-				Name:                 cg.Name,
-				DisplayName:          cg.DisplayName,
-				Description:          cg.Description,
-				Enabled:              cg.Enabled,
-				ProxyKeys:            cg.ProxyKeys,
-				Sort:                 cg.Sort,
-				TestModel:            cg.TestModel,
-				ParamOverrides:       childParamOverrides,
-				Config:               childConfig,
-				HeaderRules:          childHeaderRules,
-				ModelMapping:         cg.ModelMapping,
-				ModelRedirectRules:   childModelRedirectRules,
-				ModelRedirectRulesV2: childModelRedirectRulesV2,
-				ModelRedirectStrict:  cg.ModelRedirectStrict,
-				CustomModelNames:     childCustomModelNames,
-				Preconditions:        childPreconditions,
-				PathRedirects:        childPathRedirects,
-				Keys:                 make([]KeyExportInfo, 0, len(cg.Keys)),
-			}
-			// Convert child group keys, decrypt if plain mode
-			for _, key := range cg.Keys {
-				kv := key.KeyValue
-				if exportMode == "plain" {
-					if decrypted, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
-						kv = decrypted
-					} else {
-						logrus.WithError(derr).Debug("Failed to decrypt child group key during plain export, keeping original value")
-					}
-				}
-				childExport.Keys = append(childExport.Keys, KeyExportInfo{
-					KeyValue: kv,
-					Status:   key.Status,
-				})
-			}
-			exportData.ChildGroups = append(exportData.ChildGroups, childExport)
-		}
+	if childGroups := ConvertChildGroupsForExport(groupData.ChildGroups, exportMode, s.EncryptionSvc.Decrypt); len(childGroups) > 0 {
+		exportData.ChildGroups = childGroups
 		logrus.Debugf("Export via new service: Total %d child groups exported for group %s",
 			len(exportData.ChildGroups), groupData.Group.Name)
 	}
@@ -334,10 +239,10 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	}
 
 	// Determine import mode from query, filename or content
-	sample := make([]string, 0, 5)
-	for i := 0; i < len(importData.Keys) && i < 5; i++ {
-		sample = append(sample, importData.Keys[i].KeyValue)
-	}
+	sample := CollectGroupImportSampleKeys([]GroupExportData{{
+		Keys:        importData.Keys,
+		ChildGroups: importData.ChildGroups,
+	}})
 	importMode := GetImportMode(c, sample)
 	inputIsPlain := importMode == "plain"
 
@@ -439,79 +344,8 @@ func (s *Server) ImportGroup(c *gin.Context) {
 		})
 	}
 
-	// Convert child groups (for standard groups)
-	if len(importData.ChildGroups) > 0 {
-		serviceGroupData.ChildGroups = make([]services.ChildGroupExport, 0, len(importData.ChildGroups))
-		for _, cg := range importData.ChildGroups {
-			childExport := services.ChildGroupExport{
-				Name:                cg.Name,
-				DisplayName:         cg.DisplayName,
-				Description:         cg.Description,
-				Enabled:             cg.Enabled,
-				ProxyKeys:           cg.ProxyKeys,
-				Sort:                cg.Sort,
-				TestModel:           cg.TestModel,
-				ModelMapping:        cg.ModelMapping,
-				ModelRedirectStrict: cg.ModelRedirectStrict,
-				Keys:                make([]services.KeyExportInfo, 0, len(cg.Keys)),
-			}
-
-			// Convert JSON fields to []byte for service layer
-			if cg.ParamOverrides != nil {
-				if data, err := json.Marshal(cg.ParamOverrides); err == nil {
-					childExport.ParamOverrides = data
-				}
-			}
-			if cg.Config != nil {
-				if data, err := json.Marshal(cg.Config); err == nil {
-					childExport.Config = data
-				}
-			}
-			if len(cg.HeaderRules) > 0 {
-				if data, err := json.Marshal(cg.HeaderRules); err == nil {
-					childExport.HeaderRules = json.RawMessage(data)
-				}
-			}
-			if cg.ModelRedirectRules != nil {
-				if data, err := json.Marshal(cg.ModelRedirectRules); err == nil {
-					childExport.ModelRedirectRules = data
-				}
-			}
-			if len(cg.ModelRedirectRulesV2) > 0 {
-				childExport.ModelRedirectRulesV2 = json.RawMessage(cg.ModelRedirectRulesV2)
-			}
-			if len(cg.CustomModelNames) > 0 {
-				childExport.CustomModelNames = json.RawMessage(cg.CustomModelNames)
-			}
-			if cg.Preconditions != nil {
-				if data, err := json.Marshal(cg.Preconditions); err == nil {
-					childExport.Preconditions = data
-				}
-			}
-			if len(cg.PathRedirects) > 0 {
-				if data, err := json.Marshal(cg.PathRedirects); err == nil {
-					childExport.PathRedirects = json.RawMessage(data)
-				}
-			}
-
-			// Convert child group keys; if input is plaintext, encrypt before passing to service
-			for _, k := range cg.Keys {
-				kv := k.KeyValue
-				if inputIsPlain {
-					if enc, e := s.EncryptionSvc.Encrypt(kv); e == nil {
-						kv = enc
-					} else {
-						logrus.WithError(e).WithField("childGroup", cg.Name).Warn("Failed to encrypt plaintext key during child group import, skipping")
-						continue
-					}
-				}
-				childExport.Keys = append(childExport.Keys, services.KeyExportInfo{
-					KeyValue: kv,
-					Status:   k.Status,
-				})
-			}
-			serviceGroupData.ChildGroups = append(serviceGroupData.ChildGroups, childExport)
-		}
+	if childGroups := ConvertChildGroupsForImport(importData.ChildGroups, inputIsPlain, s.EncryptionSvc.Encrypt); len(childGroups) > 0 {
+		serviceGroupData.ChildGroups = childGroups
 		logrus.Debugf("ChildGroups: %d", len(importData.ChildGroups))
 	}
 

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strconv"
 	"testing"
 
 	"gpt-load/internal/models"
@@ -209,11 +210,12 @@ func TestSelector_HasActiveKeys(t *testing.T) {
 	}
 
 	// No keys initially
-	assert.False(t, sel.hasActiveKeys(10))
+	item := &subGroupItem{subGroupID: 10}
+	assert.False(t, sel.hasActiveKeys(item))
 
 	// Add key using LPush
 	mockStore.LPush("group:10:active_keys", "key1")
-	assert.True(t, sel.hasActiveKeys(10))
+	assert.True(t, sel.hasActiveKeys(item))
 }
 
 func TestSelector_SelectNext_NoActiveKeys(t *testing.T) {
@@ -263,4 +265,64 @@ func TestSelector_SelectNextWithExclusion_AllExcluded(t *testing.T) {
 
 	assert.Empty(t, name)
 	assert.Equal(t, uint(0), id)
+}
+
+func BenchmarkSelectorSelectNext(b *testing.B) {
+	sel, mockStore := newBenchmarkSelector(b, 16)
+	for _, item := range sel.subGroups {
+		mockStore.LPush(activeKeysListKey(item.subGroupID), "key")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if name := sel.selectNext(); name == "" {
+			b.Fatal("expected selected sub-group")
+		}
+	}
+}
+
+func BenchmarkSelectorSelectNextWithExclusion(b *testing.B) {
+	sel, mockStore := newBenchmarkSelector(b, 16)
+	for _, item := range sel.subGroups {
+		mockStore.LPush(activeKeysListKey(item.subGroupID), "key")
+	}
+	excludeIDs := map[uint]bool{1: true, 3: true, 5: true}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		name, id := sel.selectNextWithExclusion(excludeIDs)
+		if name == "" || excludeIDs[id] {
+			b.Fatal("expected non-excluded sub-group")
+		}
+	}
+}
+
+func newBenchmarkSelector(b *testing.B, count int) (*selector, *store.MemoryStore) {
+	b.Helper()
+
+	mockStore := store.NewMemoryStore()
+	b.Cleanup(func() { _ = mockStore.Close() })
+
+	subGroups := make([]subGroupItem, 0, count)
+	for i := 0; i < count; i++ {
+		id := uint(i + 1)
+		subGroups = append(subGroups, subGroupItem{
+			name:          "sub" + strconv.Itoa(i+1),
+			subGroupID:    id,
+			activeKeysKey: activeKeysListKey(id),
+			weight:        (i % 4) + 1,
+			enabled:       true,
+		})
+	}
+
+	return &selector{
+		groupID:   1,
+		groupName: "bench-aggregate",
+		subGroups: subGroups,
+		weights:   make([]int, len(subGroups)),
+		attempted: make([]uint, 0, len(subGroups)),
+		store:     mockStore,
+	}, mockStore
 }

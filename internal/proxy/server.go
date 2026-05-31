@@ -30,7 +30,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const maxUpstreamErrorBodySize = 64 * 1024 // 64KB
+const (
+	maxUpstreamErrorBodySize  = 64 * 1024
+	maxProxyBodyPreallocBytes = 2 * 1024 * 1024
+)
 
 func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
 	if group == nil || group.FailoverStatusCodeMatcher.IsZero() {
@@ -630,8 +633,14 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 
-	// Read request body using buffer pool to reduce GC overhead
-	buf := utils.GetBuffer()
+	// Read request body using the tiered buffer pool to reduce reallocations.
+	// Do not trust Content-Length for large preallocations; the body reader still enforces the real size.
+	var buf *bytes.Buffer
+	if contentLength := c.Request.ContentLength; contentLength > 0 && contentLength <= maxProxyBodyPreallocBytes {
+		buf = utils.GetBufferWithCapacity(int(contentLength))
+	} else {
+		buf = utils.GetBuffer()
+	}
 	defer utils.PutBuffer(buf)
 
 	_, err = buf.ReadFrom(c.Request.Body)
@@ -1052,14 +1061,16 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		return
 	}
 
-	// Log which client is being used for debugging proxy issues
-	logrus.WithFields(logrus.Fields{
-		"group":     group.Name,
-		"upstream":  upstreamSelection.URL,
-		"has_proxy": upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
-		"proxy_url": safeProxyURL(upstreamSelection.ProxyURL),
-		"is_stream": isStream,
-	}).Debug("Using HTTP client for request")
+	// Log which client is being used for debugging proxy issues.
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"group":     group.Name,
+			"upstream":  upstreamSelection.URL,
+			"has_proxy": upstreamSelection.ProxyURL != nil && *upstreamSelection.ProxyURL != "",
+			"proxy_url": safeProxyURL(upstreamSelection.ProxyURL),
+			"is_stream": isStream,
+		}).Debug("Using HTTP client for request")
+	}
 
 	resp, err := client.Do(req)
 	if resp != nil {
@@ -1260,7 +1271,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Pre-check: if this is the first attempt, check if there are any valid sub-groups
 	if retryCtx.attemptCount == 0 {
-		availableCount := ps.countAvailableSubGroups(originalGroup, make(map[uint]bool))
+		availableCount := ps.countAvailableSubGroups(originalGroup, nil)
 		if availableCount == 0 {
 			// No valid sub-groups available, return error immediately without retry
 			logrus.WithField("aggregate_group", originalGroup.Name).

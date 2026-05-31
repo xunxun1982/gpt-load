@@ -653,6 +653,7 @@ export default {
     childGroupDescriptionPlaceholder: "子グループの説明を入力...",
     childGroupCreated: "子グループを作成しました",
     childGroupCreateFailed: "子グループの作成に失敗しました",
+    childGroupRequiresProxyKeys: "親グループにプロキシキーが設定されていません",
     noChildGroups: "子グループがありません",
     childGroupCount: "{count} 個の子グループ",
     deleteWarningWithChildGroups:
@@ -845,6 +846,7 @@ export default {
     caseSensitiveWarning: "注意：大文字と小文字を区別し、完全に一致する必要があります",
     confirmTextMismatch: "確認テキストが一致しません。正確に入力してください：{text}",
     finalWarning: "最終警告",
+    deleteAllGroupsSuccess: "すべてのグループが削除されました",
     deleteAllGroupsFailed: "すべてのグループの削除に失敗しました",
   },
   footer: {

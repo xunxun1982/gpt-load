@@ -16,7 +16,6 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"os"
 	"time"
@@ -41,7 +40,7 @@ func main() {
 	// This checks if the service is listening on the port
 	conn, err := net.DialTimeout("tcp", address, dialTimeout)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Health check failed: %v\n", err)
+		_, _ = os.Stderr.WriteString("Health check failed: " + err.Error() + "\n")
 		os.Exit(exitFailure)
 	}
 
@@ -56,5 +55,5 @@ func main() {
 // Uses 127.0.0.1 instead of localhost for scratch-based Docker images.
 // In minimal environments without /etc/hosts, localhost may not resolve to 127.0.0.1.
 func buildAddress(port string) string {
-	return fmt.Sprintf("127.0.0.1:%s", port)
+	return "127.0.0.1:" + port
 }

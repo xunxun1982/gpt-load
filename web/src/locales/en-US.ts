@@ -654,6 +654,7 @@ export default {
     childGroupDescriptionPlaceholder: "Enter child group description...",
     childGroupCreated: "Child group created successfully",
     childGroupCreateFailed: "Failed to create child group",
+    childGroupRequiresProxyKeys: "Parent group has no proxy keys configured",
     noChildGroups: "No child groups",
     childGroupCount: "{count} child group(s)",
     deleteWarningWithChildGroups:
@@ -858,6 +859,7 @@ export default {
     caseSensitiveWarning: "Note: This is case-sensitive and must match exactly",
     confirmTextMismatch: "Confirmation text does not match. Please type exactly: {text}",
     finalWarning: "Final Warning",
+    deleteAllGroupsSuccess: "All groups deleted successfully",
     deleteAllGroupsFailed: "Failed to delete all groups",
   },
   footer: {

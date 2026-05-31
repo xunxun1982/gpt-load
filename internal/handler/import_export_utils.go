@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/services"
+	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -96,6 +98,305 @@ func ConvertHeaderRulesToJSON(headerRules []models.HeaderRule) []byte {
 		return []byte("[]")
 	}
 	return headerRulesJSON
+}
+
+// ConvertChildGroupsForExport converts service child groups to the handler JSON format.
+func ConvertChildGroupsForExport(childGroups []services.ChildGroupExport, exportMode string, decrypt func(string) (string, error)) []ChildGroupExportInfo {
+	if len(childGroups) == 0 {
+		return nil
+	}
+
+	result := make([]ChildGroupExportInfo, 0, len(childGroups))
+	for _, cg := range childGroups {
+		childExport := ChildGroupExportInfo{
+			Name:                 cg.Name,
+			DisplayName:          cg.DisplayName,
+			Description:          cg.Description,
+			Enabled:              cg.Enabled,
+			ProxyKeys:            cg.ProxyKeys,
+			Sort:                 cg.Sort,
+			TestModel:            cg.TestModel,
+			ParamOverrides:       rawJSONMapForExport(cg.ParamOverrides, cg.Name, "ParamOverrides"),
+			Config:               rawJSONMapForExport(cg.Config, cg.Name, "Config"),
+			HeaderRules:          ParseHeaderRulesForExport(cg.HeaderRules, 0),
+			ModelMapping:         cg.ModelMapping,
+			ModelRedirectRules:   rawModelRedirectRulesForExport(cg.ModelRedirectRules, cg.Name),
+			ModelRedirectRulesV2: mergedRawJSONForExport(cg.ModelRedirectRulesV2, cg.Name, "model redirect rules V2"),
+			ModelRedirectStrict:  cg.ModelRedirectStrict,
+			CustomModelNames:     rawJSONForExport(cg.CustomModelNames),
+			Preconditions:        rawJSONMapForExport(cg.Preconditions, cg.Name, "Preconditions"),
+			PathRedirects:        ParsePathRedirectsForExport(cg.PathRedirects),
+			Keys:                 make([]KeyExportInfo, 0, len(cg.Keys)),
+		}
+
+		for _, key := range cg.Keys {
+			kv := key.KeyValue
+			if exportMode == "plain" && decrypt != nil {
+				if decrypted, err := decrypt(kv); err == nil {
+					kv = decrypted
+				} else {
+					logrus.WithError(err).WithField("child_group", cg.Name).Debug("Failed to decrypt child group key during plain export, keeping original value")
+				}
+			}
+			childExport.Keys = append(childExport.Keys, KeyExportInfo{
+				KeyValue: kv,
+				Status:   key.Status,
+			})
+		}
+
+		result = append(result, childExport)
+	}
+
+	return result
+}
+
+// ConvertChildGroupsForImport converts handler child groups to the service import format.
+func ConvertChildGroupsForImport(childGroups []ChildGroupExportInfo, inputIsPlain bool, encrypt func(string) (string, error)) []services.ChildGroupExport {
+	if len(childGroups) == 0 {
+		return nil
+	}
+
+	result := make([]services.ChildGroupExport, 0, len(childGroups))
+	for _, cg := range childGroups {
+		childExport := services.ChildGroupExport{
+			Name:                cg.Name,
+			DisplayName:         cg.DisplayName,
+			Description:         cg.Description,
+			Enabled:             cg.Enabled,
+			ProxyKeys:           cg.ProxyKeys,
+			Sort:                cg.Sort,
+			TestModel:           cg.TestModel,
+			ParamOverrides:      jsonMapForImport(cg.ParamOverrides, cg.Name, "ParamOverrides"),
+			Config:              jsonMapForImport(cg.Config, cg.Name, "Config"),
+			HeaderRules:         jsonSliceForImport(cg.HeaderRules, cg.Name, "HeaderRules"),
+			ModelMapping:        cg.ModelMapping,
+			ModelRedirectRules:  jsonMapForImport(cg.ModelRedirectRules, cg.Name, "ModelRedirectRules"),
+			ModelRedirectStrict: cg.ModelRedirectStrict,
+			CustomModelNames:    rawJSONForExport(cg.CustomModelNames),
+			Preconditions:       jsonMapForImport(cg.Preconditions, cg.Name, "Preconditions"),
+			PathRedirects:       jsonSliceForImport(cg.PathRedirects, cg.Name, "PathRedirects"),
+			Keys:                make([]services.KeyExportInfo, 0, len(cg.Keys)),
+		}
+		if len(cg.ModelRedirectRulesV2) > 0 {
+			childExport.ModelRedirectRulesV2 = json.RawMessage(cg.ModelRedirectRulesV2)
+		}
+
+		for _, key := range cg.Keys {
+			kv := key.KeyValue
+			if inputIsPlain && encrypt != nil {
+				if encrypted, err := encrypt(kv); err == nil {
+					kv = encrypted
+				} else {
+					logrus.WithError(err).WithField("child_group", cg.Name).Warn("Failed to encrypt plaintext key during child group import, skipping")
+					continue
+				}
+			}
+			childExport.Keys = append(childExport.Keys, services.KeyExportInfo{
+				KeyValue: kv,
+				Status:   key.Status,
+			})
+		}
+
+		result = append(result, childExport)
+	}
+
+	return result
+}
+
+func CountGroupExportKeys(groups []GroupExportData) int {
+	total := 0
+	for _, group := range groups {
+		total += len(group.Keys)
+		for _, child := range group.ChildGroups {
+			total += len(child.Keys)
+		}
+	}
+	return total
+}
+
+func countServiceGroupExportKeys(group services.GroupExportData) int {
+	total := len(group.Keys)
+	for _, child := range group.ChildGroups {
+		total += len(child.Keys)
+	}
+	return total
+}
+
+func CollectGroupImportSampleKeys(groups []GroupExportData) []string {
+	sample := make([]string, 0, 5)
+	for _, group := range groups {
+		for _, key := range group.Keys {
+			if key.KeyValue == "" {
+				continue
+			}
+			sample = append(sample, key.KeyValue)
+			if len(sample) >= 5 {
+				return sample
+			}
+		}
+		for _, child := range group.ChildGroups {
+			for _, key := range child.Keys {
+				if key.KeyValue == "" {
+					continue
+				}
+				sample = append(sample, key.KeyValue)
+				if len(sample) >= 5 {
+					return sample
+				}
+			}
+		}
+	}
+	return sample
+}
+
+func ConvertGroupForImport(groupExport GroupExportData, inputIsPlain bool, encrypt func(string) (string, error)) services.GroupExportData {
+	headerRulesJSON := ConvertHeaderRulesToJSON(groupExport.Group.HeaderRules)
+	pathRedirectsJSON := ConvertPathRedirectsToJSON(groupExport.Group.PathRedirects)
+	modelRedirectRules := ConvertModelRedirectRulesToImport(groupExport.Group.ModelRedirectRules)
+
+	var modelRedirectRulesV2 []byte
+	if len(groupExport.Group.ModelRedirectRulesV2) > 0 {
+		rawJSON := []byte(groupExport.Group.ModelRedirectRulesV2)
+		merged, err := utils.MergeModelRedirectRulesV2(rawJSON)
+		if err != nil {
+			logrus.WithError(err).Warn("Failed to merge model redirect rules V2 during import, using original")
+			modelRedirectRulesV2 = rawJSON
+		} else {
+			modelRedirectRulesV2 = merged
+		}
+	}
+
+	groupData := services.GroupExportData{
+		Group: models.Group{
+			Name:                 groupExport.Group.Name,
+			DisplayName:          groupExport.Group.DisplayName,
+			Description:          groupExport.Group.Description,
+			GroupType:            groupExport.Group.GroupType,
+			ChannelType:          groupExport.Group.ChannelType,
+			Enabled:              groupExport.Group.Enabled,
+			TestModel:            groupExport.Group.TestModel,
+			ValidationEndpoint:   groupExport.Group.ValidationEndpoint,
+			Upstreams:            []byte(groupExport.Group.Upstreams),
+			ParamOverrides:       groupExport.Group.ParamOverrides,
+			Config:               groupExport.Group.Config,
+			HeaderRules:          headerRulesJSON,
+			ModelMapping:         groupExport.Group.ModelMapping,
+			ModelRedirectRules:   modelRedirectRules,
+			ModelRedirectRulesV2: modelRedirectRulesV2,
+			ModelRedirectStrict:  groupExport.Group.ModelRedirectStrict,
+			PathRedirects:        pathRedirectsJSON,
+			ProxyKeys:            groupExport.Group.ProxyKeys,
+			Sort:                 groupExport.Group.Sort,
+		},
+		Keys:      make([]services.KeyExportInfo, 0, len(groupExport.Keys)),
+		SubGroups: make([]services.SubGroupInfo, 0, len(groupExport.SubGroups)),
+	}
+
+	for _, key := range groupExport.Keys {
+		kv := key.KeyValue
+		if inputIsPlain && encrypt != nil {
+			encrypted, err := encrypt(kv)
+			if err != nil {
+				logrus.WithError(err).WithField("group", groupExport.Group.Name).Warn("Failed to encrypt plaintext key during group import, skipping")
+				continue
+			}
+			kv = encrypted
+		}
+		groupData.Keys = append(groupData.Keys, services.KeyExportInfo{
+			KeyValue: kv,
+			Status:   key.Status,
+		})
+	}
+
+	for _, sg := range groupExport.SubGroups {
+		groupData.SubGroups = append(groupData.SubGroups, services.SubGroupInfo{
+			GroupName: sg.GroupName,
+			Weight:    sg.Weight,
+		})
+	}
+
+	if childGroups := ConvertChildGroupsForImport(groupExport.ChildGroups, inputIsPlain, encrypt); len(childGroups) > 0 {
+		groupData.ChildGroups = childGroups
+	}
+
+	return groupData
+}
+
+func rawJSONMapForExport(raw json.RawMessage, groupName string, fieldName string) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		logrus.WithError(err).WithField("child_group", groupName).Warnf("Failed to parse child group %s for export", fieldName)
+		return nil
+	}
+	return result
+}
+
+func rawModelRedirectRulesForExport(raw json.RawMessage, groupName string) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var tempMap map[string]any
+	if err := json.Unmarshal(raw, &tempMap); err != nil {
+		logrus.WithError(err).WithField("child_group", groupName).Warn("Failed to parse child group ModelRedirectRules for export")
+		return nil
+	}
+
+	result := make(map[string]string, len(tempMap))
+	for k, v := range tempMap {
+		if strVal, ok := v.(string); ok {
+			result[k] = strVal
+		}
+	}
+	return result
+}
+
+func mergedRawJSONForExport(raw json.RawMessage, groupName string, fieldName string) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	merged, err := utils.MergeModelRedirectRulesV2(raw)
+	if err != nil {
+		logrus.WithError(err).WithField("child_group", groupName).Warnf("Failed to merge child group %s, using original", fieldName)
+		return raw
+	}
+	return merged
+}
+
+func rawJSONForExport(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	return raw
+}
+
+func jsonMapForImport[T any](value map[string]T, groupName string, fieldName string) json.RawMessage {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		logrus.WithError(err).WithField("child_group", groupName).Warnf("Failed to marshal child group %s for import", fieldName)
+		return nil
+	}
+	return data
+}
+
+func jsonSliceForImport[T any](value []T, groupName string, fieldName string) json.RawMessage {
+	if len(value) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		logrus.WithError(err).WithField("child_group", groupName).Warnf("Failed to marshal child group %s for import", fieldName)
+		return nil
+	}
+	return data
 }
 
 // GetExportMode returns "plain" or "encrypted" based on query params. Default is "encrypted".

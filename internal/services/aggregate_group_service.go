@@ -640,6 +640,13 @@ func (s *AggregateGroupService) cleanupExpiredCacheEntries() {
 	}
 }
 
+// ResetStatsCache clears all aggregate key-stat cache entries.
+func (s *AggregateGroupService) ResetStatsCache() {
+	s.statsCacheMu.Lock()
+	s.statsCache = make(map[string]keyStatsCacheEntry)
+	s.statsCacheMu.Unlock()
+}
+
 // InvalidateStatsCacheForGroup clears cached key statistics that include the specified group.
 // Uses string matching on cache keys which are formatted as "id1,id2,id3,...".
 // This approach avoids parsing overhead while maintaining correctness.

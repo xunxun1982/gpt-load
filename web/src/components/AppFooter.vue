@@ -10,7 +10,7 @@ import {
   TimeOutline,
   WarningOutline,
 } from "@vicons/ionicons5";
-import { NIcon, NTooltip } from "naive-ui";
+import { NDivider, NIcon, NTooltip } from "naive-ui";
 import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 

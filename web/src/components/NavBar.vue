@@ -1,16 +1,13 @@
 <script setup lang="ts">
-import { type MenuOption } from "naive-ui";
+import { NMenu, type MenuOption } from "naive-ui";
 import { computed, h, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { RouterLink, useRoute } from "vue-router";
 
 const { t } = useI18n();
 
-const props = defineProps({
-  mode: {
-    type: String,
-    default: "horizontal",
-  },
+const props = withDefaults(defineProps<{ mode?: "horizontal" | "vertical" }>(), {
+  mode: "horizontal",
 });
 
 const emit = defineEmits(["close"]);
@@ -32,7 +29,7 @@ const menuOptions = computed<MenuOption[]>(() => {
 });
 
 const route = useRoute();
-const activeMenu = computed(() => route.name);
+const activeMenu = computed(() => (typeof route.name === "string" ? route.name : null));
 
 watch(activeMenu, () => {
   if (props.mode === "vertical") {
