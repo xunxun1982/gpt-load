@@ -239,10 +239,10 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	}
 
 	// Determine import mode from query, filename or content
-	sample := make([]string, 0, 5)
-	for i := 0; i < len(importData.Keys) && i < 5; i++ {
-		sample = append(sample, importData.Keys[i].KeyValue)
-	}
+	sample := CollectGroupImportSampleKeys([]GroupExportData{{
+		Keys:        importData.Keys,
+		ChildGroups: importData.ChildGroups,
+	}})
 	importMode := GetImportMode(c, sample)
 	inputIsPlain := importMode == "plain"
 

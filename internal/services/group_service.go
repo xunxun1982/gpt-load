@@ -1831,6 +1831,11 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 
 	logrus.WithContext(ctx).Info("Starting fast deletion of all group-related data")
 
+	if err := s.clearManagedSiteGroupBindings(ctx); err != nil {
+		logrus.WithContext(ctx).WithError(err).Error("failed to clear managed site group bindings")
+		return app_errors.ParseDBError(err)
+	}
+
 	if err := s.clearAllGroupDataTables(ctx); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to clear group-related tables")
 		return app_errors.ParseDBError(err)
@@ -1862,9 +1867,19 @@ func (s *GroupService) DeleteAllGroups(ctx context.Context) error {
 	s.keyStatsCacheMu.Lock()
 	s.keyStatsCache = make(map[uint]groupKeyStatsCacheEntry)
 	s.keyStatsCacheMu.Unlock()
+	if s.aggregateGroupService != nil {
+		s.aggregateGroupService.ResetStatsCache()
+	}
 
 	logrus.WithContext(ctx).Info("Successfully deleted all groups and keys")
 	return nil
+}
+
+func (s *GroupService) clearManagedSiteGroupBindings(ctx context.Context) error {
+	return s.db.WithContext(ctx).
+		Table("managed_sites").
+		Where("bound_group_id IS NOT NULL").
+		Update("bound_group_id", nil).Error
 }
 
 func (s *GroupService) clearAllGroupDataTables(ctx context.Context) error {

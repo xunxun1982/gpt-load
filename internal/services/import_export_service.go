@@ -1592,11 +1592,17 @@ func (s *ImportExportService) ImportSystem(tx *gorm.DB, data *SystemExportData) 
 	importedGroups := 0
 	importedGroupsByOriginalName := make(map[string]models.Group, len(data.Groups))
 	for _, groupData := range groupsToImport {
-		importedGroup, importedChildGroups, err := s.importGroup(tx, &groupData, nil, importGroupOptions{
-			ImportAggregateSubGroups: false,
+		var importedGroup *models.Group
+		var importedChildGroups map[string]models.Group
+		err := tx.Transaction(func(groupTx *gorm.DB) error {
+			var importErr error
+			importedGroup, importedChildGroups, importErr = s.importGroup(groupTx, &groupData, nil, importGroupOptions{
+				ImportAggregateSubGroups: false,
+			})
+			return importErr
 		})
 		if err != nil {
-			// Log error but continue with other groups
+			// Nested transactions keep the best-effort import behavior without committing half-created groups.
 			logrus.WithError(err).Warnf("Failed to import group %s, skipping", groupData.Group.Name)
 			continue
 		}

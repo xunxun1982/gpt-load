@@ -30,7 +30,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const maxUpstreamErrorBodySize = 64 * 1024 // 64KB
+const (
+	maxUpstreamErrorBodySize  = 64 * 1024
+	maxProxyBodyPreallocBytes = 2 * 1024 * 1024
+)
 
 func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
 	if group == nil || group.FailoverStatusCodeMatcher.IsZero() {
@@ -631,8 +634,9 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	}
 
 	// Read request body using the tiered buffer pool to reduce reallocations.
+	// Do not trust Content-Length for large preallocations; the body reader still enforces the real size.
 	var buf *bytes.Buffer
-	if contentLength := c.Request.ContentLength; contentLength > 0 && uint64(contentLength) <= uint64(^uint(0)>>1) {
+	if contentLength := c.Request.ContentLength; contentLength > 0 && contentLength <= maxProxyBodyPreallocBytes {
 		buf = utils.GetBufferWithCapacity(int(contentLength))
 	} else {
 		buf = utils.GetBuffer()

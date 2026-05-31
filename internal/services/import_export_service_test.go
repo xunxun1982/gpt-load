@@ -676,6 +676,50 @@ func TestImportSystemDoesNotInferUnrelatedSameUpstreamGroups(t *testing.T) {
 	}
 }
 
+func TestImportSystemRollsBackFailedGroupImport(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&models.SystemSetting{}))
+	encryptionSvc, err := encryption.NewService("test-encryption-key-long-enough")
+	require.NoError(t, err)
+	service := NewImportExportService(db, nil, encryptionSvc)
+
+	importData := &SystemExportData{
+		Version: "2.0",
+		Groups: []GroupExportData{
+			{
+				Group: models.Group{
+					Name:        "bad-partial-group",
+					GroupType:   "standard",
+					ChannelType: "openai",
+					Enabled:     true,
+					Upstreams:   datatypes.JSON(`[{"url":"https://bad.example.com","weight":1}]`),
+				},
+				Keys: []KeyExportInfo{{KeyValue: "not-encrypted", Status: "active"}},
+			},
+			{
+				Group: models.Group{
+					Name:        "good-group-after-failure",
+					GroupType:   "standard",
+					ChannelType: "openai",
+					Enabled:     true,
+					Upstreams:   datatypes.JSON(`[{"url":"https://good.example.com","weight":1}]`),
+				},
+			},
+		},
+	}
+
+	require.NoError(t, service.ImportSystem(db, importData))
+
+	var badCount int64
+	require.NoError(t, db.Model(&models.Group{}).Where("name = ?", "bad-partial-group").Count(&badCount).Error)
+	assert.Zero(t, badCount)
+
+	var good models.Group
+	require.NoError(t, db.Where("name = ?", "good-group-after-failure").First(&good).Error)
+}
+
 func jsonString(t *testing.T, value any) string {
 	t.Helper()
 

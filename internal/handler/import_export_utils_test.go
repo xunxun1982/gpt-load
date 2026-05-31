@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -401,6 +402,32 @@ func TestGroupImportHelpersCountAndSampleChildKeys(t *testing.T) {
 
 	assert.Equal(t, 4, CountGroupExportKeys(groups))
 	assert.Equal(t, []string{"child-a-key-1", "child-a-key-2", "parent-b-key", "child-b-key"}, CollectGroupImportSampleKeys(groups))
+}
+
+func TestGetImportModeUsesChildOnlyEncryptedKeys(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	groups := []GroupExportData{
+		{
+			Group: GroupExportInfo{Name: "parent-with-only-child-keys"},
+			ChildGroups: []ChildGroupExportInfo{
+				{
+					Name: "child",
+					Keys: []KeyExportInfo{
+						{KeyValue: "00112233445566778899aabbccddeeff"},
+					},
+				},
+			},
+		},
+	}
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req, err := http.NewRequest(http.MethodPost, "/api/groups/import", nil)
+	require.NoError(t, err)
+	c.Request = req
+
+	assert.Equal(t, "encrypted", GetImportMode(c, CollectGroupImportSampleKeys(groups)))
 }
 
 func TestGetExportMode(t *testing.T) {

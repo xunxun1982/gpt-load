@@ -1716,6 +1716,23 @@ func TestDeleteAllGroupsClearsGroupRelatedTables(t *testing.T) {
 		MetricType: models.MetricTypeModelRedirect,
 		GroupID:    parent.ID,
 	}).Error)
+	require.NoError(t, db.Exec(
+		"INSERT INTO managed_sites (bound_group_id, created_at, updated_at) VALUES (?, ?, ?)",
+		parent.ID,
+		time.Now(),
+		time.Now(),
+	).Error)
+
+	aggregateSvc := NewAggregateGroupService(db, nil, nil)
+	aggregateSvc.statsCacheMu.Lock()
+	aggregateSvc.statsCache["1,2,3"] = keyStatsCacheEntry{
+		results: map[uint]keyStatsResult{
+			parent.ID: {TotalKeys: 1, ActiveKeys: 1},
+		},
+		expiresAt: time.Now().Add(time.Minute),
+	}
+	aggregateSvc.statsCacheMu.Unlock()
+	svc.aggregateGroupService = aggregateSvc
 
 	svc.keyStatsCacheMu.Lock()
 	svc.keyStatsCache[parent.ID] = groupKeyStatsCacheEntry{
@@ -1737,6 +1754,15 @@ func TestDeleteAllGroupsClearsGroupRelatedTables(t *testing.T) {
 	svc.keyStatsCacheMu.RLock()
 	assert.Empty(t, svc.keyStatsCache)
 	svc.keyStatsCacheMu.RUnlock()
+	aggregateSvc.statsCacheMu.RLock()
+	assert.Empty(t, aggregateSvc.statsCache)
+	aggregateSvc.statsCacheMu.RUnlock()
+
+	var site struct {
+		BoundGroupID *uint
+	}
+	require.NoError(t, db.Table("managed_sites").Select("bound_group_id").Scan(&site).Error)
+	assert.Nil(t, site.BoundGroupID)
 
 	afterReset := models.Group{
 		Name:      "after-delete-all",
