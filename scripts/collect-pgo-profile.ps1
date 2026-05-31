@@ -24,6 +24,24 @@ function Test-ValidProfile {
     return $LASTEXITCODE -eq 0
 }
 
+function Test-PGOStrictMode {
+    $strictValue = if ($env:PGO_FAIL_ON_ERROR) { $env:PGO_FAIL_ON_ERROR } else { $env:PGO_STRICT }
+    return $strictValue -match '^(1|true|yes|on)$'
+}
+
+function Complete-PGOFailure {
+    param([string]$Message)
+
+    Write-Host "❌ $Message" -ForegroundColor Red
+    Remove-Item $MERGED_PROFILE -Force -ErrorAction SilentlyContinue
+    if (Test-PGOStrictMode) {
+        Write-Host "PGO strict mode is enabled; failing." -ForegroundColor Red
+        exit 1
+    }
+    Write-Warning "PGO strict mode is disabled; continuing without a generated profile."
+    exit 0
+}
+
 Write-Host "🔍 Collecting PGO profiles..." -ForegroundColor Cyan
 Write-Host "Profile directory: $PROFILE_DIR"
 Write-Host "Merged profile: $MERGED_PROFILE"
@@ -133,9 +151,7 @@ try {
 }
 
 if ($packages.Count -eq 0) {
-    Write-Host "❌ No project packages found; cannot generate a valid PGO profile" -ForegroundColor Red
-    Remove-Item $MERGED_PROFILE -Force -ErrorAction SilentlyContinue
-    exit 1
+    Complete-PGOFailure "No project packages found; cannot generate a valid PGO profile"
 }
 
 Write-Host "Found $($packages.Count) packages" -ForegroundColor Gray
@@ -195,9 +211,7 @@ $profileCount = if ($profiles) { $profiles.Count } else { 0 }
 Write-Host "✅ Collected $profileCount profile(s)" -ForegroundColor Green
 
 if ($profileCount -eq 0) {
-    Write-Host "❌ No valid profiles collected; cannot generate a PGO profile" -ForegroundColor Red
-    Remove-Item $MERGED_PROFILE -Force -ErrorAction SilentlyContinue
-    exit 1
+    Complete-PGOFailure "No valid profiles collected; cannot generate a PGO profile"
 }
 
 # Merge profiles
@@ -220,9 +234,7 @@ try {
     if ($firstProfile) {
         Copy-Item $firstProfile.FullName $MERGED_PROFILE -Force
     } else {
-        Write-Host "❌ No fallback profile is available" -ForegroundColor Red
-        Remove-Item $MERGED_PROFILE -Force -ErrorAction SilentlyContinue
-        exit 1
+        Complete-PGOFailure "No fallback profile is available"
     }
 }
 
@@ -240,9 +252,7 @@ if (Test-ValidProfile $MERGED_PROFILE) {
         # Ignore errors in statistics display
     }
 } else {
-    Write-Host "❌ Generated PGO profile is missing or invalid" -ForegroundColor Red
-    Remove-Item $MERGED_PROFILE -Force -ErrorAction SilentlyContinue
-    exit 1
+    Complete-PGOFailure "Generated PGO profile is missing or invalid"
 }
 
 Write-Host "✅ Profile collection complete!" -ForegroundColor Green
