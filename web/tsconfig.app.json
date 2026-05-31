@@ -13,9 +13,8 @@
     "moduleDetection": "force",
 
     // Path mapping
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     },
 
     // Vue specific

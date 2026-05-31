@@ -37,7 +37,7 @@ pgo-profile: ## Collect PGO profile from tests and benchmarks
 		rm -f "$(PGO_PROFILE)"; \
 	fi
 	@chmod +x scripts/collect-pgo-profile.sh
-	@./scripts/collect-pgo-profile.sh
+	@PGO_FAIL_ON_ERROR=1 ./scripts/collect-pgo-profile.sh
 	@echo "✅ PGO profile ready: $(PGO_PROFILE)"
 
 .PHONY: pgo-build

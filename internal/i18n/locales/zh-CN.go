@@ -83,6 +83,11 @@ var MessagesZhCN = map[string]string{
 	"validation.aggregate_no_model_redirect":                 "聚合分组不支持模型重定向规则",
 	"validation.invalid_model_redirect":                      "无效的模型重定向规则：{{.error}}",
 	"validation.invalid_param_overrides":                     "参数覆盖字段 {{.field}} 类型无效：期望 {{.expected}}，实际 {{.got}}",
+	"validation.reorder_items_required":                      "排序项不能为空",
+	"validation.reorder_group_id":                            "排序项包含无效分组ID",
+	"validation.reorder_sort_negative":                       "排序值不能为负数",
+	"validation.reorder_duplicate_group":                     "排序项中存在重复分组ID: {{.id}}",
+	"validation.reorder_group_not_found":                     "排序项包含不存在的分组",
 
 	// Task related
 	"task.validation_started": "密钥验证任务已开始",
@@ -149,6 +154,7 @@ var MessagesZhCN = map[string]string{
 	"success.unbound_sites_deleted":   "已删除 {{.count}} 个未绑定的站点",
 	"success.sites_imported":          "已导入 {{.imported}} 个站点，跳过 {{.skipped}} 个（共 {{.total}} 个）",
 	"success.sites_exported":          "已成功导出 {{.count}} 个站点",
+	"success.groups_reordered":        "分组排序已保存",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}}长度不足（{{.length}}字符），建议至少16字符",
@@ -193,7 +199,9 @@ var MessagesZhCN = map[string]string{
 	"config.max_retries":                     "最大重试次数",
 	"config.max_retries_desc":                "单个请求使用不同 Key 的最大重试次数，0为不重试。",
 	"config.blacklist_threshold":             "黑名单阈值",
-	"config.blacklist_threshold_desc":        "一个 Key 连续失败多少次后进入黑名单，0为不拉黑。",
+	"config.blacklist_threshold_desc":        "一个 Key 累计失败多少次后进入黑名单，0为不拉黑。",
+	"config.failover_status_codes":           "故障转移状态码",
+	"config.failover_status_codes_desc":      "触发故障转移（重试）的上游 HTTP 状态码完整列表，支持逗号分隔和范围，例如：400-403,405-999,250-260。分组可单独覆盖此值。",
 	"config.key_validation_interval":         "密钥验证间隔（分钟）",
 	"config.key_validation_interval_desc":    "后台验证密钥的默认间隔（分钟）。",
 	"config.key_validation_concurrency":      "密钥验证并发数",

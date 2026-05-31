@@ -10,7 +10,7 @@ import (
 //     NOTE: idx_groups_sort_name on (sort, name) is added later in v1.4.2 for the new ORDER BY semantics
 //   - Adds composite index on api_keys(group_id, status) for filtering by group and status
 //   - Adds composite index on group_hourly_stats(group_id, time) for time-range queries
-//   - Adds composite index on api_keys(group_id, last_used_at, updated_at) for ORDER BY queries
+//   - Adds composite index on api_keys(group_id, last_used_at, updated_at, id) for ORDER BY queries
 func V1_3_3_AddCompositeIndexes(db *gorm.DB) error {
 	logrus.Info("Running migration v1.3.3: Adding composite indexes to optimize slow SQL queries")
 
@@ -35,7 +35,7 @@ func V1_3_3_AddCompositeIndexes(db *gorm.DB) error {
 		logrus.Warn("Index idx_group_time on group_hourly_stats not found, time-range queries may be slow")
 	}
 
-	// 4. Add composite index on api_keys(group_id, last_used_at, updated_at) for ORDER BY queries
-	// This optimizes: SELECT * FROM api_keys WHERE group_id = ? ORDER BY last_used_at desc, updated_at desc
-	return createIndexIfNotExists(db, "api_keys", "idx_api_keys_group_order", "group_id, last_used_at, updated_at")
+	// 4. Add composite index on api_keys(group_id, last_used_at, updated_at, id) for ORDER BY queries
+	// This optimizes: SELECT * FROM api_keys WHERE group_id = ? ORDER BY last_used_at desc, updated_at desc, id desc
+	return createAPIKeyGroupOrderIndex(db)
 }

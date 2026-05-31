@@ -256,6 +256,122 @@ func TestListGroups(t *testing.T) {
 	t.Skip("Disabled: background syncer causes 'no such table' errors. Covered by integration tests.")
 }
 
+func TestReorderGroups(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	groups := []models.Group{
+		{
+			Name:               "reorder-a",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":100}]`)),
+			ChannelType:        "openai",
+			Sort:               10,
+			TestModel:          "gpt-4.1-mini",
+			ValidationEndpoint: "/v1/chat/completions",
+		},
+		{
+			Name:               "reorder-b",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":100}]`)),
+			ChannelType:        "openai",
+			Sort:               20,
+			TestModel:          "gpt-4.1-mini",
+			ValidationEndpoint: "/v1/chat/completions",
+		},
+		{
+			Name:               "reorder-c",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":100}]`)),
+			ChannelType:        "openai",
+			Sort:               30,
+			TestModel:          "gpt-4.1-mini",
+			ValidationEndpoint: "/v1/chat/completions",
+		},
+	}
+	require.NoError(t, db.Create(&groups).Error)
+
+	err := svc.ReorderGroups(context.Background(), []GroupReorderItem{
+		{ID: groups[0].ID, Sort: 30},
+		{ID: groups[1].ID, Sort: 10},
+		{ID: groups[2].ID, Sort: 20},
+	})
+	require.NoError(t, err)
+
+	var updated []models.Group
+	require.NoError(t, db.Order(GroupListOrderClause).Find(&updated).Error)
+	require.Len(t, updated, 3)
+	assert.Equal(t, []string{"reorder-b", "reorder-c", "reorder-a"}, []string{
+		updated[0].Name,
+		updated[1].Name,
+		updated[2].Name,
+	})
+}
+
+func TestReorderGroupsAllowsNoopSortValues(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	groups := []models.Group{
+		{
+			Name:               "reorder-noop-a",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":100}]`)),
+			ChannelType:        "openai",
+			Sort:               10,
+			TestModel:          "gpt-4.1-mini",
+			ValidationEndpoint: "/v1/chat/completions",
+		},
+		{
+			Name:               "reorder-noop-b",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":100}]`)),
+			ChannelType:        "openai",
+			Sort:               20,
+			TestModel:          "gpt-4.1-mini",
+			ValidationEndpoint: "/v1/chat/completions",
+		},
+	}
+	require.NoError(t, db.Create(&groups).Error)
+
+	err := svc.ReorderGroups(context.Background(), []GroupReorderItem{
+		{ID: groups[0].ID, Sort: 10},
+		{ID: groups[1].ID, Sort: 20},
+	})
+	require.NoError(t, err)
+}
+
+func TestReorderGroupsValidation(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	tests := []struct {
+		name  string
+		items []GroupReorderItem
+	}{
+		{name: "empty", items: nil},
+		{name: "zero id", items: []GroupReorderItem{{ID: 0, Sort: 1}}},
+		{name: "negative sort", items: []GroupReorderItem{{ID: 1, Sort: -1}}},
+		{name: "duplicate id", items: []GroupReorderItem{{ID: 1, Sort: 1}, {ID: 1, Sort: 2}}},
+		{name: "not found", items: []GroupReorderItem{{ID: 999, Sort: 1}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := svc.ReorderGroups(context.Background(), tt.items)
+			require.Error(t, err)
+		})
+	}
+}
+
 // TestUpdateGroup tests group updates
 func TestUpdateGroup(t *testing.T) {
 	t.Skip("Disabled: background syncer causes 'no such table' errors. Covered by integration tests.")

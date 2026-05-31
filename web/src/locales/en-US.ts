@@ -151,7 +151,7 @@ export default {
     ccSupportSuffix: " - Force CC Support",
     ccSupportBadge: "Force CC",
     openaiCCBadge: "OpenAI CC",
-    codexCCBadge: "Codex CC",
+    openaiResponseCCBadge: "OpenAI Responses CC",
     geminiCCBadge: "Gemini CC",
     allSubGroupsSelected: "All available sub groups have been selected",
     selectChannelTypeFirst: "Please select channel type first",
@@ -212,6 +212,14 @@ export default {
     createFirstKey: "Add your first key",
     searchGroupPlaceholder: "Search group name...",
     noMatchingGroups: "No matching groups found",
+    dragHandle: "Drag to reorder",
+    dragSortHint: "Clear search to enable drag sorting",
+    dragSortUnavailable: "Drag sorting needs at least two groups in this section",
+    dragSortSaving: "Saving group order",
+    dragSortSaved: "Group order saved",
+    dragSortSaveFailed: "Failed to save group order, restored",
+    moveGroupUp: "Move group up",
+    moveGroupDown: "Move group down",
     addKey: "Add Key",
     exportAllKeys: "Export All Keys",
     exportValidKeys: "Export Valid Keys",
@@ -495,7 +503,7 @@ export default {
     parallelToolCallsEnabled: "Enabled",
     parallelToolCallsDisabled: "Disabled",
     parallelToolCallsTip:
-      "Only effective when native tools are present in the request. Has no effect when Force Function Call is enabled. Codex channel defaults to enabled.",
+      "Only effective when native tools are present in the request. Has no effect when Force Function Call is enabled. OpenAI Responses channel defaults to enabled.",
     ccSupport: "Force CC Support",
     ccSupportTooltip1:
       "Enable Claude Code compatibility mode, allowing Claude clients to connect via /claude endpoint.",
@@ -506,7 +514,7 @@ export default {
     ccSupportTip:
       "When enabled, clients can use /proxy/[group]/claude/v1/messages endpoint, requests will be auto-converted to target format.",
     ccSupportCompatibilityTip:
-      "This switch is available and effective for OpenAI, Codex, and Gemini channel groups. Other channels ignore this setting.",
+      "This switch is available and effective for OpenAI, OpenAI Responses, and Gemini channel groups. Other channels ignore this setting.",
     // NOTE: Keep detailed guidance here intentionally to avoid external doc dependency for CC users.
     ccSupportRedirectTip:
       "For Claude Code compatibility, configure both alias and full-name redirects: 1) Add model redirect rules for opus, claude-opus-4-5-20251101, sonnet, claude-sonnet-4-5-20250929, haiku, claude-haiku-4-5-20251001 (targets can be your actual upstream model, e.g. opus → deepseek-chat); 2) Optional client-side fallback: set env in Claude Code settings.json, related environment variables include ANTHROPIC_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL, ANTHROPIC_DEFAULT_HAIKU_MODEL.",
@@ -514,15 +522,15 @@ export default {
     thinkingModelTooltip:
       "When Claude Code enables extended thinking mode, this model will be used automatically. Leave empty to use the original model from request. e.g., deepseek-reasoner",
     thinkingModelPlaceholder: "e.g., deepseek-reasoner",
-    codexInstructionsMode: "Codex Instructions Mode",
+    codexInstructionsMode: "OpenAI Responses Instructions Mode",
     codexInstructionsModeTooltip:
-      "Controls how the Codex API instructions field is handled. Auto: use built-in default instructions; Official: use official Codex CLI instructions; Custom: use custom instructions entered below.",
+      "Controls how the OpenAI Responses instructions field is handled for Codex CLI-compatible requests. Auto: use built-in default instructions; Official: use official Codex CLI instructions; Custom: use custom instructions entered below.",
     codexInstructionsModeAuto: "Auto",
     codexInstructionsModeOfficial: "Official",
     codexInstructionsModeCustom: "Custom",
-    codexInstructions: "Codex Instructions",
+    codexInstructions: "OpenAI Responses Instructions",
     codexInstructionsTooltip:
-      "Custom instructions field for Codex API. Some providers (like 88code.ai) validate this field strictly. Leave empty to use default. Extract from real Codex CLI requests if needed.",
+      "Custom instructions field for OpenAI Responses. Some providers (like 88code.ai) validate this field strictly. Leave empty to use default. Extract from real Codex CLI requests if needed.",
     codexInstructionsPlaceholder:
       "Leave empty to use default instructions, or paste custom instructions for providers that validate this field",
     interceptEventLog: "Intercept Event Log",

@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"fmt"
+	"gpt-load/internal/failover"
 	"gpt-load/internal/types"
 	"time"
 
@@ -38,6 +39,7 @@ type GroupConfig struct {
 	MaxRetries                   *int    `json:"max_retries,omitempty"`
 	SubMaxRetries                *int    `json:"sub_max_retries,omitempty"`
 	BlacklistThreshold           *int    `json:"blacklist_threshold,omitempty"`
+	FailoverStatusCodes          *string `json:"failover_status_codes,omitempty"`
 	KeyValidationIntervalMinutes *int    `json:"key_validation_interval_minutes,omitempty"`
 	KeyValidationConcurrency     *int    `json:"key_validation_concurrency,omitempty"`
 	KeyValidationTimeoutSeconds  *int    `json:"key_validation_timeout_seconds,omitempty"`
@@ -53,11 +55,11 @@ type GroupConfig struct {
 	// When a request has thinking.type="enabled", the model will be automatically
 	// switched to this model. Leave empty to use the original model from request.
 	ThinkingModel *string `json:"thinking_model,omitempty"`
-	// CodexInstructions specifies custom instructions for Codex API requests.
+	// CodexInstructions specifies custom instructions for Codex CLI-compatible Responses requests.
 	// Some providers (like 88code.ai) validate this field strictly.
 	// Leave empty to use default instructions.
 	CodexInstructions *string `json:"codex_instructions,omitempty"`
-	// CodexInstructionsMode controls how Codex instructions are handled.
+	// CodexInstructionsMode controls how Codex CLI-compatible instructions are handled.
 	// Values: "auto" (default, use codexDefaultInstructions), "official" (use official Codex CLI instructions),
 	// "custom" (use CodexInstructions field value).
 	CodexInstructionsMode *string `json:"codex_instructions_mode,omitempty"`
@@ -66,7 +68,7 @@ type GroupConfig struct {
 	// requests are intercepted and not forwarded to upstream.
 	InterceptEventLog *bool `json:"intercept_event_log,omitempty"`
 	// ParallelToolCalls controls whether multiple tool calls can be executed in parallel.
-	// Only applies to OpenAI and Codex channels. When set to false, tools are called sequentially.
+	// Only applies to OpenAI and OpenAI Responses channels. When set to false, tools are called sequentially.
 	// Default behavior (nil): allows upstream API to use its default (typically true for OpenAI).
 	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 	// ShortenToolNames enables shortening of tool names for Claude Code compatibility.
@@ -178,20 +180,21 @@ type Group struct {
 	UpdatedAt            time.Time            `json:"updated_at"`
 
 	// For cache
-	ProxyKeysMap         map[string]struct{}             `gorm:"-" json:"-"`
-	HeaderRuleList       []HeaderRule                    `gorm:"-" json:"-"`
-	ModelMappingCache    map[string]string               `gorm:"-" json:"-"` // Deprecated: for backward compatibility
-	ModelRedirectMap     map[string]string               `gorm:"-" json:"-"` // Parsed model redirect rules (one-to-one)
-	ModelRedirectMapV2   map[string]*ModelRedirectRuleV2 `gorm:"-" json:"-"` // Parsed V2 rules (one-to-many)
-	PathRedirectRuleList []PathRedirectRule              `gorm:"-" json:"-"` // Parsed path redirect rules (OpenAI)
+	ProxyKeysMap              map[string]struct{}             `gorm:"-" json:"-"`
+	HeaderRuleList            []HeaderRule                    `gorm:"-" json:"-"`
+	ModelMappingCache         map[string]string               `gorm:"-" json:"-"` // Deprecated: for backward compatibility
+	ModelRedirectMap          map[string]string               `gorm:"-" json:"-"` // Parsed model redirect rules (one-to-one)
+	ModelRedirectMapV2        map[string]*ModelRedirectRuleV2 `gorm:"-" json:"-"` // Parsed V2 rules (one-to-many)
+	PathRedirectRuleList      []PathRedirectRule              `gorm:"-" json:"-"` // Parsed path redirect rules (OpenAI)
+	FailoverStatusCodeMatcher failover.StatusCodeMatcher      `gorm:"-" json:"-"`
 }
 
 // APIKey corresponds to the api_keys table.
 type APIKey struct {
 	ID           uint       `gorm:"primaryKey;autoIncrement" json:"id"`
 	KeyValue     string     `gorm:"type:text;not null" json:"key_value"`
-	KeyHash      string     `gorm:"type:varchar(128);index" json:"key_hash"`
-	GroupID      uint       `gorm:"not null;index:idx_api_keys_group_status" json:"group_id"`
+	KeyHash      string     `gorm:"type:varchar(128);index;index:idx_api_keys_group_key_hash,priority:2" json:"key_hash"`
+	GroupID      uint       `gorm:"not null;index:idx_api_keys_group_status;index:idx_api_keys_group_key_hash,priority:1" json:"group_id"`
 	Status       string     `gorm:"type:varchar(50);not null;default:'active';index:idx_api_keys_status;index:idx_api_keys_group_status" json:"status"`
 	Notes        string     `gorm:"type:varchar(255);default:''" json:"notes"`
 	RequestCount int64      `gorm:"not null;default:0" json:"request_count"`

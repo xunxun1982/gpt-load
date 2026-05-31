@@ -6,6 +6,7 @@ import (
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
+	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -78,8 +79,10 @@ func (s *Server) GetIntegrationInfo(c *gin.Context) {
 	var result []IntegrationGroupInfo
 	for _, group := range groupsToCheck {
 		if hasProxyKeyPermission(group, key) {
+			effectiveValidationEndpoint := utils.GetValidationEndpoint(group)
 			channelType := getEffectiveChannelType(group)
-			path := buildPath(isGroupSpecific, group.Name, channelType, group.ValidationEndpoint)
+			// Keep channel classification and advertised path on the same endpoint source.
+			path := buildPath(isGroupSpecific, group.Name, channelType, effectiveValidationEndpoint)
 
 			result = append(result, IntegrationGroupInfo{
 				Name:        group.Name,
@@ -100,20 +103,20 @@ func (s *Server) GetIntegrationInfo(c *gin.Context) {
 
 // getEffectiveChannelType returns the effective channel type
 func getEffectiveChannelType(group *models.Group) string {
-	if group.ChannelType != "openai" {
+	switch group.ChannelType {
+	case "openai":
+		return getCustomizableChannelType(group, "/v1/chat/completions")
+	case "openai-response":
+		return getCustomizableChannelType(group, "/v1/responses")
+	default:
 		return group.ChannelType
 	}
+}
 
-	if group.ValidationEndpoint == "" {
-		return "openai"
+func getCustomizableChannelType(group *models.Group, defaultEndpoint string) string {
+	if utils.GetValidationEndpoint(group) == defaultEndpoint {
+		return group.ChannelType
 	}
-
-	defaultEndpoint := "/v1/chat/completions"
-
-	if group.ValidationEndpoint == defaultEndpoint {
-		return "openai"
-	}
-
 	return "custom"
 }
 

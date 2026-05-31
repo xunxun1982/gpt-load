@@ -538,6 +538,104 @@ func TestCountAvailableSubGroups(t *testing.T) {
 	}
 }
 
+func TestRecordDynamicWeightMetricsForV2ModelRedirect(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
+
+	group := &models.Group{
+		ID:        77,
+		GroupType: "standard",
+		ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
+			"virtual-model": {
+				Targets: []models.ModelRedirectTarget{
+					{Model: "target-a", Weight: 100},
+					{Model: "target-b", Weight: 100},
+				},
+			},
+		},
+	}
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	setModelRedirectContext(ctx, "virtual-model", 1, false)
+
+	ps.recordDynamicWeightMetrics(ctx, group, group, true, http.StatusOK)
+
+	targetA, err := dwm.GetModelRedirectMetrics(group.ID, "virtual-model", "target-a")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), targetA.Requests180d)
+
+	targetB, err := dwm.GetModelRedirectMetrics(group.ID, "virtual-model", "target-b")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), targetB.Requests180d)
+	assert.Equal(t, int64(1), targetB.Successes180d)
+}
+
+func TestRecordDynamicWeightMetricsUsesRedirectSourceWhenModelMappingExists(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
+
+	group := &models.Group{
+		ID:        78,
+		GroupType: "standard",
+		ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
+			"mapped-model": {
+				Targets: []models.ModelRedirectTarget{
+					{Model: "target-a", Weight: 100},
+					{Model: "target-b", Weight: 100},
+				},
+			},
+		},
+	}
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("original_model", "user-facing-alias")
+	setModelRedirectContext(ctx, "mapped-model", 1, true)
+
+	ps.recordDynamicWeightMetrics(ctx, group, group, true, http.StatusOK)
+
+	mappedTarget, err := dwm.GetModelRedirectMetrics(group.ID, "mapped-model", "target-b")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), mappedTarget.Requests180d)
+
+	aliasTarget, err := dwm.GetModelRedirectMetrics(group.ID, "user-facing-alias", "target-b")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), aliasTarget.Requests180d)
+
+	originalModel, exists := ctx.Get("original_model")
+	require.True(t, exists)
+	assert.Equal(t, "user-facing-alias", originalModel)
+}
+
+func TestClearModelRedirectContextRemovesRetryAttemptState(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("original_model", "previous-alias")
+	setModelRedirectContext(ctx, "previous-model", 1, true)
+
+	clearModelRedirectContext(ctx)
+
+	_, exists := ctx.Get("original_model")
+	require.False(t, exists)
+	_, exists = ctx.Get(ctxKeyModelRedirectSourceModel)
+	require.False(t, exists)
+	_, exists = ctx.Get(ctxKeyModelRedirectTargetIndex)
+	require.False(t, exists)
+}
+
 func TestEstimateTokensForClaudeCountTokens(t *testing.T) {
 	t.Parallel()
 

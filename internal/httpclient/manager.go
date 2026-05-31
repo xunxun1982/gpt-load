@@ -164,18 +164,9 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	}
 
 	newClient := &http.Client{
-		Transport: transport,
-		Timeout:   config.RequestTimeout,
-		// Explicitly limit redirect following to prevent infinite loops.
-		// Note: This matches Go's default behavior (stop after 10 redirects),
-		// but we keep it explicit for documentation and to ensure consistent
-		// behavior across Go versions.
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
-			}
-			return nil
-		},
+		Transport:     transport,
+		Timeout:       config.RequestTimeout,
+		CheckRedirect: stripSensitiveOnCrossHostRedirect,
 	}
 
 	m.clients[fingerprint] = newClient
@@ -190,6 +181,37 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	}).Debug("Created new HTTP client with optimized connection pool")
 
 	return newClient
+}
+
+var sensitiveProxyHeaders = []string{
+	"Authorization",
+	"x-api-key",
+	"api-key",
+	"X-Goog-Api-Key",
+	"X-Auth-Token",
+}
+
+// stripSensitiveOnCrossHostRedirect removes upstream credential headers when a
+// redirect crosses host boundaries. net/http protects Authorization in common
+// cases, but it does not know about proxy-specific credential header names.
+func stripSensitiveOnCrossHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if len(via) == 0 {
+		return nil
+	}
+
+	previous := via[len(via)-1]
+	downgraded := previous.URL.Scheme == "https" && req.URL.Scheme != "https"
+	if strings.EqualFold(req.URL.Host, previous.URL.Host) && !downgraded {
+		return nil
+	}
+
+	for _, header := range sensitiveProxyHeaders {
+		req.Header.Del(header)
+	}
+	return nil
 }
 
 // CloseIdleConnections closes idle connections for all managed clients.

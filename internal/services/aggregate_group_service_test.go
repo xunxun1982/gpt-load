@@ -1,12 +1,15 @@
 package services
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"gpt-load/internal/models"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
 
 func TestNewAggregateGroupService(t *testing.T) {
@@ -172,7 +175,7 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 		name                 string
 		subGroup             *models.Group
 		aggregateChannelType string
-		isOpenAIWithCC       bool
+		usesClaudeEndpoint   bool
 		expected             string
 	}{
 		{
@@ -182,7 +185,7 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 				ChannelType:        "openai",
 			},
 			aggregateChannelType: "openai",
-			isOpenAIWithCC:       false,
+			usesClaudeEndpoint:   false,
 			expected:             "/custom/endpoint",
 		},
 		{
@@ -192,7 +195,7 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 				ChannelType:        "openai",
 			},
 			aggregateChannelType: "anthropic",
-			isOpenAIWithCC:       true,
+			usesClaudeEndpoint:   true,
 			expected:             "/v1/messages",
 		},
 		{
@@ -202,7 +205,27 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 				ChannelType:        "openai",
 			},
 			aggregateChannelType: "anthropic",
-			isOpenAIWithCC:       true,
+			usesClaudeEndpoint:   true,
+			expected:             "/v1/messages",
+		},
+		{
+			name: "no custom endpoint - anthropic with OpenAI Responses CC",
+			subGroup: &models.Group{
+				ValidationEndpoint: "",
+				ChannelType:        "openai-response",
+			},
+			aggregateChannelType: "anthropic",
+			usesClaudeEndpoint:   true,
+			expected:             "/v1/messages",
+		},
+		{
+			name: "no custom endpoint - anthropic with Gemini CC",
+			subGroup: &models.Group{
+				ValidationEndpoint: "",
+				ChannelType:        "gemini",
+			},
+			aggregateChannelType: "anthropic",
+			usesClaudeEndpoint:   true,
 			expected:             "/v1/messages",
 		},
 		{
@@ -212,18 +235,77 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 				ChannelType:        "openai",
 			},
 			aggregateChannelType: "openai",
-			isOpenAIWithCC:       false,
+			usesClaudeEndpoint:   false,
 			expected:             "/v1/chat/completions",
+		},
+		{
+			name: "no custom endpoint - standard OpenAI Responses",
+			subGroup: &models.Group{
+				ValidationEndpoint: "",
+				ChannelType:        "openai-response",
+			},
+			aggregateChannelType: "openai-response",
+			usesClaudeEndpoint:   false,
+			expected:             "/v1/responses",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := getEffectiveEndpointForAggregation(tt.subGroup, tt.aggregateChannelType, tt.isOpenAIWithCC)
+			result := getEffectiveEndpointForAggregation(tt.subGroup, tt.aggregateChannelType, tt.usesClaudeEndpoint)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	groups := []models.Group{
+		{
+			Name:        "anthropic-native",
+			DisplayName: "Anthropic Native",
+			GroupType:   "standard",
+			Enabled:     true,
+			ChannelType: "anthropic",
+			TestModel:   "claude-3-haiku-20240307",
+			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.anthropic.com","weight":1}]`)),
+			Config:      datatypes.JSONMap{},
+		},
+		{
+			Name:        "responses-cc",
+			DisplayName: "Responses CC",
+			GroupType:   "standard",
+			Enabled:     true,
+			ChannelType: "openai-response",
+			TestModel:   "gpt-4.1-mini",
+			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+			Config:      datatypes.JSONMap{"cc_support": true},
+		},
+		{
+			Name:        "gemini-cc",
+			DisplayName: "Gemini CC",
+			GroupType:   "standard",
+			Enabled:     true,
+			ChannelType: "gemini",
+			TestModel:   "gemini-2.0-flash-lite",
+			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://generativelanguage.googleapis.com","weight":1}]`)),
+			Config:      datatypes.JSONMap{"cc_support": true},
+		},
+	}
+	require.NoError(t, db.Create(&groups).Error)
+
+	inputs := make([]SubGroupInput, 0, len(groups))
+	for _, group := range groups {
+		inputs = append(inputs, SubGroupInput{GroupID: group.ID, Weight: 100})
+	}
+
+	result, err := service.ValidateSubGroups(context.Background(), "anthropic", inputs, "")
+	require.NoError(t, err)
+	require.Len(t, result.SubGroups, len(groups))
+	assert.Equal(t, "/v1/messages", result.ValidationEndpoint)
 }
 
 func TestGenerateCacheKey(t *testing.T) {

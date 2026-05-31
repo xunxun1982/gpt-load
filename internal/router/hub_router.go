@@ -39,7 +39,7 @@ func RegisterHubRoutes(
 		hub.POST("/messages", hubHandler.HandleHubProxy)
 		hub.POST("/messages/count_tokens", hubHandler.HandleHubProxy)
 
-		// Codex format
+		// OpenAI Responses format
 		hub.POST("/responses", hubHandler.HandleHubProxy)
 
 		// Image generation and editing

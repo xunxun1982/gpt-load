@@ -1,7 +1,7 @@
 # =============================================================================
 # Frontend build stage
 # =============================================================================
-FROM node:22-alpine AS node-builder
+FROM node:26.2.0-alpine3.23 AS node-builder
 
 ARG VERSION=1.0.0
 WORKDIR /build
@@ -17,18 +17,20 @@ RUN VITE_VERSION=${VERSION} npm run build
 # =============================================================================
 # Go build stage with PGO optimization
 # =============================================================================
-FROM golang:1.25.6-alpine AS go-builder
+FROM golang:1.26.3-alpine3.23 AS go-builder
 
 ARG VERSION=1.0.0
 ARG TARGETARCH
 ARG TARGETOS=linux
+ARG TZ=Asia/Shanghai
 
 # CPU Architecture Level: v2 (SSE4.2, POPCNT) for better compatibility (amd64 only)
 # v2 is safe for most CPUs, v3 requires AVX2 which may not be available
 ARG GOAMD64=v2
 
 ENV GO111MODULE=on \
-    CGO_ENABLED=0
+    CGO_ENABLED=0 \
+    TZ=${TZ}
 
 WORKDIR /build
 
@@ -96,6 +98,8 @@ RUN echo "🔨 Building health check utility..." && \
 # =============================================================================
 FROM scratch AS final
 
+ARG TZ=Asia/Shanghai
+
 # Copy CA certificates for HTTPS connections (required for TLS/SSL)
 # Without this, any HTTPS request will fail with "certificate signed by unknown authority"
 COPY --from=go-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
@@ -116,7 +120,8 @@ WORKDIR /app
 # Recommendation: Set to 90% of container memory limit in production
 # For 2GB container: GOMEMLIMIT=1800MiB
 # For 4GB container: GOMEMLIMIT=3600MiB
-ENV GOMEMLIMIT=1GiB
+ENV GOMEMLIMIT=1GiB \
+    TZ=${TZ}
 
 COPY --from=go-builder /build/gpt-load .
 COPY --from=go-builder /build/healthcheck .

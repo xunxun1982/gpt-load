@@ -4,7 +4,7 @@ import { naturalCompare } from "@/utils/sort";
 const DEFAULT_CHANNEL_TYPE = "default";
 const KNOWN_CHANNEL_ORDER: string[] = [
   "openai",
-  "codex",
+  "openai-response",
   "gemini",
   "anthropic",
   DEFAULT_CHANNEL_TYPE,

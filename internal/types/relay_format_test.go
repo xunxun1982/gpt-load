@@ -63,7 +63,7 @@ func TestRelayFormat_SupportsStreaming(t *testing.T) {
 		{"OpenAI Chat supports streaming", RelayFormatOpenAIChat, true},
 		{"OpenAI Completion supports streaming", RelayFormatOpenAICompletion, true},
 		{"Claude supports streaming", RelayFormatClaude, true},
-		{"Codex supports streaming", RelayFormatCodex, true},
+		{"OpenAI Responses supports streaming", RelayFormatCodex, true},
 		{"Gemini supports streaming", RelayFormatGemini, true},
 		{"Image does not support streaming", RelayFormatOpenAIImage, false},
 		{"Audio Speech does not support streaming", RelayFormatOpenAIAudioSpeech, false},

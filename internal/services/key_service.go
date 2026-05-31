@@ -374,7 +374,11 @@ func (s *KeyService) ListKeysInGroupQuery(groupID uint, statusFilter string, sea
 		query = query.Where("key_hash = ?", searchHash)
 	}
 
-	query = query.Order("last_used_at desc, updated_at desc")
+	if s.DB.Dialector.Name() == "postgres" {
+		query = query.Order("last_used_at DESC NULLS LAST, updated_at DESC, id DESC")
+	} else {
+		query = query.Order("last_used_at IS NULL ASC, last_used_at DESC, updated_at DESC, id DESC")
+	}
 
 	return query
 }

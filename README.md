@@ -3,7 +3,7 @@
 English | [中文](README_CN.md) | [日本語](README_JP.md)
 
 [![Release](https://img.shields.io/github/v/release/tbphp/gpt-load)](https://github.com/tbphp/gpt-load/releases)
-![Go Version](https://img.shields.io/badge/Go-1.23+-blue.svg)
+![Go Version](https://img.shields.io/badge/Go-1.25+-blue.svg)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 A high-performance, enterprise-grade AI API transparent proxy service designed specifically for enterprises and developers who need to integrate multiple AI services. Built with Go, featuring intelligent key management, load balancing, and comprehensive monitoring capabilities, designed for high-concurrency production environments.
@@ -39,7 +39,7 @@ GPT-Load serves as a transparent proxy service, completely preserving the native
 
 ### System Requirements
 
-- Go 1.23+ (for source builds)
+- Go 1.25+ (for source builds)
 - Docker (for containerized deployment)
 - MySQL, PostgreSQL, or SQLite (for database storage)
 - Redis (for caching and distributed coordination, optional)
@@ -258,7 +258,8 @@ Supported Proxy Protocol Formats:
 | Setting                    | Field Name                        | Default | Group Override | Description                                                                |
 | -------------------------- | --------------------------------- | ------- | -------------- | -------------------------------------------------------------------------- |
 | Max Retries                | `max_retries`                     | 3       | ✅             | Maximum retry count using different keys for single request                |
-| Blacklist Threshold        | `blacklist_threshold`             | 3       | ✅             | Number of consecutive failures before key enters blacklist                 |
+| Blacklist Threshold        | `blacklist_threshold`             | 3       | ✅             | After how many cumulative failures the key gets blacklisted                |
+| Failover Status Codes      | `failover_status_codes`           | `400-403,405-999` | ✅     | Upstream HTTP status codes that trigger failover; supports comma-separated values and ranges |
 | Key Validation Interval    | `key_validation_interval_minutes` | 60      | ✅             | Background scheduled key validation cycle (minutes)                        |
 | Key Validation Concurrency | `key_validation_concurrency`      | 10      | ✅             | Concurrency for background validation of invalid keys                      |
 | Key Validation Timeout     | `key_validation_timeout_seconds`  | 20      | ✅             | API request timeout for validating individual keys in background (seconds) |
@@ -405,6 +406,11 @@ Configure **Proxy Keys** in the web management interface, which supports system-
 
 ### 3. OpenAI Interface Example
 
+GPT-Load currently supports two OpenAI-compatible group types:
+
+- `openai` (OpenAI Chat Completions format)
+- `openai-response` (OpenAI Responses format)
+
 Assuming a group named `openai` was created:
 
 **Original invocation:**
@@ -429,6 +435,15 @@ curl -X POST http://localhost:3001/proxy/openai/v1/chat/completions \
 
 - Replace `https://api.openai.com` with `http://localhost:3001/proxy/openai`
 - Replace original API Key with the **Proxy Key**
+
+**OpenAI Responses format example (`openai-response` group):**
+
+```bash
+curl -X POST http://localhost:3001/proxy/openai-response/v1/responses \
+  -H "Authorization: Bearer your-proxy-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4.1-mini", "input": "Hello"}'
+```
 
 ### 4. Gemini Interface Example
 
@@ -486,13 +501,19 @@ curl -X POST http://localhost:3001/proxy/anthropic/v1/messages \
 
 ### 6. Supported Interfaces
 
-**OpenAI Format:**
+**OpenAI Chat Completions Format (`openai`):**
 
 - `/v1/chat/completions` - Chat conversations
 - `/v1/completions` - Text completion
 - `/v1/embeddings` - Text embeddings
 - `/v1/models` - Model list
 - And all other OpenAI-compatible interfaces
+
+**OpenAI Responses Format (`openai-response`):**
+
+- `/v1/responses` - Unified response generation
+- `/v1/models` - Model list
+- And all other OpenAI Responses-compatible interfaces
 
 **Gemini Format:**
 
@@ -568,6 +589,13 @@ response = client.messages.create(
 Thanks to all the developers who have contributed to GPT-Load!
 
 [![Contributors](https://contrib.rocks/image?repo=tbphp/gpt-load)](https://github.com/tbphp/gpt-load/graphs/contributors)
+
+## Supporters
+
+- Thank you very much for the support from the [LINUX DO](https://linux.do) community!
+
+- This project is supported by DigitalOcean.
+  [![DigitalOcean Referral Badge](https://web-platforms.sfo2.cdn.digitaloceanspaces.com/WWW/Badge%202.svg)](https://www.digitalocean.com/?refcode=3d52cff21342&utm_campaign=Referral_Invite&utm_medium=Referral_Program&utm_source=badge)
 
 ## License
 

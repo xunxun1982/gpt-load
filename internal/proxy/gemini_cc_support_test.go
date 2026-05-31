@@ -9,10 +9,53 @@ import (
 	"strings"
 	"testing"
 
+	"gpt-load/internal/models"
+
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestApplyGeminiCCRequestConversionStoresModelRedirectTargetIndex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := []byte(`{"model":"virtual-model","messages":[{"role":"user","content":"hello"}]}`)
+	group := &models.Group{
+		ID:          44,
+		Name:        "gemini-group",
+		ChannelType: "gemini",
+		GroupType:   "standard",
+		Config:      map[string]any{"cc_support": true},
+		ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
+			"virtual-model": {
+				Targets: []models.ModelRedirectTarget{
+					{Model: "gemini-2.5-pro", Weight: 100},
+				},
+			},
+		},
+	}
+
+	converted, ok, err := (&ProxyServer{}).applyGeminiCCRequestConversion(ctx, group, body)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	var convertedBody GeminiRequest
+	require.NoError(t, json.Unmarshal(converted, &convertedBody))
+
+	originalModel, exists := ctx.Get("original_model")
+	require.True(t, exists)
+	require.Equal(t, "virtual-model", originalModel)
+
+	redirectSourceModel, exists := ctx.Get(ctxKeyModelRedirectSourceModel)
+	require.True(t, exists)
+	require.Equal(t, "virtual-model", redirectSourceModel)
+
+	targetIndex, exists := ctx.Get(ctxKeyModelRedirectTargetIndex)
+	require.True(t, exists)
+	require.Equal(t, 0, targetIndex)
+	require.NotEmpty(t, convertedBody.Contents)
+}
 
 // TestProcessJsonSchema tests the JSON schema conversion for Gemini API compatibility
 func TestProcessJsonSchema(t *testing.T) {

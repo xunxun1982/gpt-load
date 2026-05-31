@@ -150,7 +150,7 @@ export default {
     ccSupportSuffix: " - 强制 CC 支持",
     ccSupportBadge: "强制CC",
     openaiCCBadge: "OpenAI CC",
-    codexCCBadge: "Codex CC",
+    openaiResponseCCBadge: "OpenAI Responses CC",
     geminiCCBadge: "Gemini CC",
     allSubGroupsSelected: "所有可用的子分组已被选择",
     selectChannelTypeFirst: "请先选择渠道类型",
@@ -209,6 +209,14 @@ export default {
     createFirstKey: "添加第一个密钥",
     searchGroupPlaceholder: "搜索分组名称...",
     noMatchingGroups: "未找到匹配的分组",
+    dragHandle: "拖拽排序",
+    dragSortHint: "请清空搜索后再拖拽排序",
+    dragSortUnavailable: "该分区至少需要两个分组才能拖拽排序",
+    dragSortSaving: "正在保存分组排序",
+    dragSortSaved: "分组排序已保存",
+    dragSortSaveFailed: "分组排序保存失败，已恢复原顺序",
+    moveGroupUp: "上移分组",
+    moveGroupDown: "下移分组",
     addKey: "添加密钥",
     exportAllKeys: "导出所有密钥",
     exportValidKeys: "导出有效密钥",
@@ -474,7 +482,7 @@ export default {
     parallelToolCallsEnabled: "启用",
     parallelToolCallsDisabled: "禁用",
     parallelToolCallsTip:
-      "仅在请求中包含原生工具时生效。启用「强制函数调用」时此配置无效。Codex 渠道默认启用并行调用。",
+      "仅在请求中包含原生工具时生效。启用「强制函数调用」时此配置无效。OpenAI Responses 渠道默认启用并行调用。",
     ccSupport: "强制 CC 支持",
     ccSupportTooltip1: "启用 Claude Code 兼容模式，允许 Claude 客户端通过 /claude 端点连接。",
     ccSupportTooltip2: "请求将自动从 Claude 格式转换为 OpenAI 格式后转发到上游。",
@@ -482,23 +490,23 @@ export default {
     ccSupportTip:
       "开启后，客户端可使用 /proxy/分组名/claude/v1/messages 端点，请求会自动转换为目标格式。",
     ccSupportCompatibilityTip:
-      "此开关对 OpenAI、Codex 和 Gemini 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
-    // NOTE: 保持此处详细指引以避免依赖外部文档，符合既有使用需求。
+      "此开关对 OpenAI、OpenAI Responses 和 Gemini 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
+    // NOTE: Keep detailed guidance here to avoid external doc dependency for CC users.
     ccSupportRedirectTip:
       "为了兼容 Claude Code 的模型别名与完整模型名，建议按以下方式配置：1）在「模型重定向规则」中同时为别名与全名添加重定向：opus、claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001（目标可指向你实际使用的上游模型，例如：opus → deepseek-chat）；2）可选：在 Claude Code 的 settings.json 中配置 env 作为客户端兜底，相关环境变量包括：ANTHROPIC_MODEL、ANTHROPIC_DEFAULT_OPUS_MODEL、ANTHROPIC_DEFAULT_SONNET_MODEL、ANTHROPIC_DEFAULT_HAIKU_MODEL。",
     thinkingModel: "思考模型",
     thinkingModelTooltip:
       "当 Claude Code 启用扩展思考模式时，自动使用此模型。留空则使用请求中的原始模型。例如：deepseek-reasoner",
     thinkingModelPlaceholder: "例如：deepseek-reasoner",
-    codexInstructionsMode: "Codex 指令模式",
+    codexInstructionsMode: "OpenAI Responses 指令模式",
     codexInstructionsModeTooltip:
-      "控制 Codex API 的 instructions 字段如何处理。自动：使用内置默认指令；强制官方：使用官方 Codex CLI 指令；自定义：使用下方输入的自定义指令。",
+      "控制 OpenAI Responses 的 instructions 字段如何处理，用于兼容 Codex CLI 请求。自动：使用内置默认指令；强制官方：使用官方 Codex CLI 指令；自定义：使用下方输入的自定义指令。",
     codexInstructionsModeAuto: "自动",
     codexInstructionsModeOfficial: "强制官方",
     codexInstructionsModeCustom: "自定义",
-    codexInstructions: "Codex 指令",
+    codexInstructions: "OpenAI Responses 指令",
     codexInstructionsTooltip:
-      "Codex API 的自定义 instructions 字段。部分提供商（如 88code.ai）会严格验证此字段。留空使用默认值。如需自定义，请从真实 Codex CLI 请求中提取。",
+      "OpenAI Responses 的自定义 instructions 字段。部分提供商（如 88code.ai）会严格验证此字段。留空使用默认值。如需自定义，请从真实 Codex CLI 请求中提取。",
     codexInstructionsPlaceholder: "留空使用默认指令，或粘贴自定义指令（用于验证此字段的提供商）",
     interceptEventLog: "拦截事件日志",
     interceptEventLogTooltip:

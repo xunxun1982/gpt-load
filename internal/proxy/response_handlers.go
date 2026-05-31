@@ -115,8 +115,8 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 	}
 }
 
-// handleCodexForcedStreamResponse handles Codex streaming response and converts to non-streaming format.
-// This is used when client requests non-streaming but Codex API requires streaming internally.
+// handleCodexForcedStreamResponse handles OpenAI Responses streaming response and converts to non-streaming format.
+// This is used when client requests non-streaming but the upstream requires streaming internally.
 // Per CLIProxyAPI implementation: collect stream events until response.completed, then return non-streaming response.
 func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *http.Response) {
 	logrus.WithFields(logrus.Fields{
@@ -125,7 +125,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 		"status_code":      resp.StatusCode,
 	}).Debug("Codex forced stream: collecting stream response for non-stream client")
 
-	// Collect stream events and build CodexResponse
+	// Collect stream events and build a Responses API response.
 	codexResp, err := collectCodexStreamToResponse(resp)
 	if err != nil {
 		logrus.WithError(err).Error("Codex forced stream: failed to collect stream response")

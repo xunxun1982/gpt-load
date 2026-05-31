@@ -83,6 +83,11 @@ var MessagesEnUS = map[string]string{
 	"validation.aggregate_no_model_redirect":                 "Aggregate groups do not support model redirect rules",
 	"validation.invalid_model_redirect":                      "Invalid model redirect rules: {{.error}}",
 	"validation.invalid_param_overrides":                     "Invalid param override field {{.field}}: expected {{.expected}}, got {{.got}}",
+	"validation.reorder_items_required":                      "Reorder items cannot be empty",
+	"validation.reorder_group_id":                            "Reorder item contains invalid group ID",
+	"validation.reorder_sort_negative":                       "Sort value cannot be negative",
+	"validation.reorder_duplicate_group":                     "Duplicate group ID in reorder items: {{.id}}",
+	"validation.reorder_group_not_found":                     "Reorder items contain non-existent group",
 
 	// Task related
 	"task.validation_started": "Key validation task started",
@@ -149,6 +154,7 @@ var MessagesEnUS = map[string]string{
 	"success.unbound_sites_deleted":   "{{.count}} unbound site(s) deleted",
 	"success.sites_imported":          "Imported {{.imported}} site(s), skipped {{.skipped}} (total: {{.total}})",
 	"success.sites_exported":          "Exported {{.count}} site(s) successfully",
+	"success.groups_reordered":        "Group order saved",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}} is too short ({{.length}} characters), recommend at least 16 characters",
@@ -193,7 +199,9 @@ var MessagesEnUS = map[string]string{
 	"config.max_retries":                     "Max Retries",
 	"config.max_retries_desc":                "Maximum number of retries for a single request using different keys, 0 for no retries.",
 	"config.blacklist_threshold":             "Blacklist Threshold",
-	"config.blacklist_threshold_desc":        "Number of consecutive failures before a key is blacklisted, 0 to disable blacklisting.",
+	"config.blacklist_threshold_desc":        "After how many cumulative failures the key is blacklisted, 0 to disable blacklisting.",
+	"config.failover_status_codes":           "Failover Status Codes",
+	"config.failover_status_codes_desc":      "Complete list of upstream HTTP status codes that trigger failover (retry). Supports comma-separated values and ranges, e.g. 400-403,405-999,250-260. Groups can override this value individually.",
 	"config.key_validation_interval":         "Key Validation Interval (minutes)",
 	"config.key_validation_interval_desc":    "Default interval (minutes) for background key validation.",
 	"config.key_validation_concurrency":      "Key Validation Concurrency",

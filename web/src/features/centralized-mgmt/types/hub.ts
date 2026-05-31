@@ -133,7 +133,7 @@ export interface HubEndpointInfo {
   chat_completions: string;
   models: string;
   messages: string; // Claude format
-  responses: string; // Codex format
+  responses: string; // OpenAI Responses format
 }
 
 // Update model group priority params
