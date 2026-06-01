@@ -746,6 +746,72 @@ func TestApplyDecay(t *testing.T) {
 	}
 }
 
+func TestDynamicWeightPersistence_RolloverTimeWindowsPreservesRateLimits(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(&models.DynamicWeightMetric{}); err != nil {
+		t.Fatalf("Failed to migrate: %v", err)
+	}
+
+	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
+	manager := NewDynamicWeightManager(kvStore)
+	persistence := NewDynamicWeightPersistence(db, manager)
+
+	groupID := uint(42)
+	for i := 0; i < 70; i++ {
+		manager.RecordGroupFailure(groupID, true)
+	}
+	persistence.syncDirtyKeys()
+
+	previousRollover := time.Now().Add(-24 * time.Hour)
+	if err := db.Model(&models.DynamicWeightMetric{}).
+		Where("metric_type = ? AND group_id = ?", models.MetricTypeGroup, groupID).
+		Update("last_rollover_at", previousRollover).Error; err != nil {
+		t.Fatalf("Failed to set last rollover: %v", err)
+	}
+
+	persistence.RolloverTimeWindows()
+
+	var dbMetric models.DynamicWeightMetric
+	if err := db.Where("metric_type = ? AND group_id = ?", models.MetricTypeGroup, groupID).
+		First(&dbMetric).Error; err != nil {
+		t.Fatalf("Failed to load rolled over metric: %v", err)
+	}
+	if dbMetric.RateLimits7d != 60 {
+		t.Errorf("Expected RateLimits7d 60, got %d", dbMetric.RateLimits7d)
+	}
+	if dbMetric.RateLimits14d != 65 {
+		t.Errorf("Expected RateLimits14d 65, got %d", dbMetric.RateLimits14d)
+	}
+	if dbMetric.RateLimits30d != 67 {
+		t.Errorf("Expected RateLimits30d 67, got %d", dbMetric.RateLimits30d)
+	}
+	if dbMetric.RateLimits90d != 69 {
+		t.Errorf("Expected RateLimits90d 69, got %d", dbMetric.RateLimits90d)
+	}
+	if dbMetric.RateLimits180d != 69 {
+		t.Errorf("Expected RateLimits180d 69, got %d", dbMetric.RateLimits180d)
+	}
+	if dbMetric.LastRolloverAt == nil || !dbMetric.LastRolloverAt.After(previousRollover) {
+		t.Error("Expected LastRolloverAt to be updated")
+	}
+
+	memoryMetrics, err := manager.GetGroupMetrics(groupID)
+	if err != nil {
+		t.Fatalf("Failed to get memory metrics: %v", err)
+	}
+	if memoryMetrics.RateLimits7d != dbMetric.RateLimits7d {
+		t.Errorf("Expected memory RateLimits7d %d, got %d", dbMetric.RateLimits7d, memoryMetrics.RateLimits7d)
+	}
+	if memoryMetrics.RateLimits180d != dbMetric.RateLimits180d {
+		t.Errorf("Expected memory RateLimits180d %d, got %d", dbMetric.RateLimits180d, memoryMetrics.RateLimits180d)
+	}
+	if memoryMetrics.LastRolloverAt.IsZero() || !memoryMetrics.LastRolloverAt.After(previousRollover) {
+		t.Error("Expected memory LastRolloverAt to be updated")
+	}
+}
+
 func TestDynamicWeightPersistence_StartStop(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)

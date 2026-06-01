@@ -459,7 +459,8 @@ func (m *DynamicWeightManager) calculateWeightedSuccessRate(metrics *DynamicWeig
 // calculateHealthSuccessRate returns a weighted success rate for health scoring.
 // It gives 429 throttling failures partial credit while preserving raw success rate reporting.
 func (m *DynamicWeightManager) calculateHealthSuccessRate(metrics *DynamicWeightMetrics) float64 {
-	return m.calculateWeightedSuccessRate(metrics, m.config.RateLimitSuccessCredit)
+	credit := min(max(m.config.RateLimitSuccessCredit, 0.0), 1.0)
+	return m.calculateWeightedSuccessRate(metrics, credit)
 }
 
 // CalculateHealthScore calculates the health score based on metrics.

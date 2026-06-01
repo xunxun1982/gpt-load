@@ -361,6 +361,23 @@ func TestDynamicWeightManager_HealthUsesRateLimitCreditWithoutChangingRawSuccess
 	assert.Greater(t, dwm.CalculateHealthScore(rateLimitMetrics), dwm.CalculateHealthScore(hardFailureMetrics))
 }
 
+func TestDynamicWeightManager_HealthClampsRateLimitSuccessCredit(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	config := DefaultDynamicWeightConfig()
+	config.RateLimitSuccessCredit = 2.0
+	dwm := NewDynamicWeightManagerWithConfig(memStore, config)
+
+	metrics := &DynamicWeightMetrics{
+		Requests7d:     10,
+		RateLimits7d:   10,
+		Requests180d:   10,
+		RateLimits180d: 10,
+	}
+
+	assert.InDelta(t, 100.0, dwm.calculateHealthSuccessRate(metrics), 0.001)
+}
+
 func TestDynamicWeightManager_InterleavedFailuresKeepModerateHealth(t *testing.T) {
 	t.Parallel()
 	memStore := store.NewMemoryStore()
