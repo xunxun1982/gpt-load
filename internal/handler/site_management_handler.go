@@ -65,8 +65,7 @@ func (s *Server) ListManagedSites(c *gin.Context) {
 	// - Paginated: For frontend table with filters, search, and large datasets
 	// AI suggested always using pagination, but this dual approach provides flexibility
 	// and better performance for cached full-list scenarios.
-	pageStr := c.Query("page")
-	if pageStr != "" {
+	if c.Query("page") != "" || hasPositiveUintQuery(c, "focus_site_id") {
 		// Use paginated endpoint
 		s.ListManagedSitesPaginated(c)
 		return
@@ -78,6 +77,15 @@ func (s *Server) ListManagedSites(c *gin.Context) {
 		return
 	}
 	response.Success(c, sites)
+}
+
+func hasPositiveUintQuery(c *gin.Context, key string) bool {
+	value := c.Query(key)
+	if value == "" {
+		return false
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	return err == nil && parsed > 0
 }
 
 // ListManagedSitesPaginated handles paginated site listing with filters

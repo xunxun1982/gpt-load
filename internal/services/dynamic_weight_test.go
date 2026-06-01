@@ -378,6 +378,26 @@ func TestDynamicWeightManager_HealthClampsRateLimitSuccessCredit(t *testing.T) {
 	assert.InDelta(t, 100.0, dwm.calculateHealthSuccessRate(metrics), 0.001)
 }
 
+func TestDynamicWeightManager_UsesConfiguredTimeWindowWeights(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	config := DefaultDynamicWeightConfig()
+	config.TimeWindowConfigs = []models.TimeWindowConfig{
+		{Days: 30, Weight: 1.0},
+		{Days: 7, Weight: 0.0},
+	}
+	dwm := NewDynamicWeightManagerWithConfig(memStore, config)
+
+	metrics := &DynamicWeightMetrics{
+		Requests7d:   10,
+		Successes7d:  10,
+		Requests30d:  30,
+		Successes30d: 10,
+	}
+
+	assert.InDelta(t, 0.0, dwm.CalculateWeightedSuccessRate(metrics), 0.001)
+}
+
 func TestDynamicWeightManager_InterleavedFailuresKeepModerateHealth(t *testing.T) {
 	t.Parallel()
 	memStore := store.NewMemoryStore()

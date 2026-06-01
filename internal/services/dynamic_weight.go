@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"sort"
 	"sync"
 	"time"
 
@@ -422,38 +423,55 @@ func (m *DynamicWeightManager) calculateWeightedSuccessRate(metrics *DynamicWeig
 		totalWeightedRequests += float64(requests) * weight
 	}
 
+	windowConfigs := m.config.TimeWindowConfigs
+	if len(windowConfigs) == 0 {
+		windowConfigs = models.DefaultTimeWindowConfigs()
+	}
+	windowConfigs = append([]models.TimeWindowConfig(nil), windowConfigs...)
+	sort.Slice(windowConfigs, func(i, j int) bool {
+		return windowConfigs[i].Days < windowConfigs[j].Days
+	})
+
 	// Window data is cumulative, so each older bucket is converted to its incremental value.
-	addWeightedWindow(metrics.Requests7d, metrics.Successes7d, metrics.RateLimits7d, 1.0)
-	addWeightedWindow(
-		metrics.Requests14d-metrics.Requests7d,
-		metrics.Successes14d-metrics.Successes7d,
-		metrics.RateLimits14d-metrics.RateLimits7d,
-		0.8,
-	)
-	addWeightedWindow(
-		metrics.Requests30d-metrics.Requests14d,
-		metrics.Successes30d-metrics.Successes14d,
-		metrics.RateLimits30d-metrics.RateLimits14d,
-		0.6,
-	)
-	addWeightedWindow(
-		metrics.Requests90d-metrics.Requests30d,
-		metrics.Successes90d-metrics.Successes30d,
-		metrics.RateLimits90d-metrics.RateLimits30d,
-		0.3,
-	)
-	addWeightedWindow(
-		metrics.Requests180d-metrics.Requests90d,
-		metrics.Successes180d-metrics.Successes90d,
-		metrics.RateLimits180d-metrics.RateLimits90d,
-		0.1,
-	)
+	var previousRequests, previousSuccesses, previousRateLimits int64
+	for _, config := range windowConfigs {
+		requests, successes, rateLimits, ok := metrics.windowValues(config.Days)
+		if !ok {
+			continue
+		}
+		addWeightedWindow(
+			requests-previousRequests,
+			successes-previousSuccesses,
+			rateLimits-previousRateLimits,
+			config.Weight,
+		)
+		previousRequests = requests
+		previousSuccesses = successes
+		previousRateLimits = rateLimits
+	}
 
 	if totalWeightedRequests == 0 {
 		return 100.0
 	}
 
 	return (totalWeightedSuccesses / totalWeightedRequests) * 100
+}
+
+func (m *DynamicWeightMetrics) windowValues(days int) (requests, successes, rateLimits int64, ok bool) {
+	switch days {
+	case 7:
+		return m.Requests7d, m.Successes7d, m.RateLimits7d, true
+	case 14:
+		return m.Requests14d, m.Successes14d, m.RateLimits14d, true
+	case 30:
+		return m.Requests30d, m.Successes30d, m.RateLimits30d, true
+	case 90:
+		return m.Requests90d, m.Successes90d, m.RateLimits90d, true
+	case 180:
+		return m.Requests180d, m.Successes180d, m.RateLimits180d, true
+	default:
+		return 0, 0, 0, false
+	}
 }
 
 // calculateHealthSuccessRate returns a weighted success rate for health scoring.
