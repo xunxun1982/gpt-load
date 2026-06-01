@@ -151,6 +151,8 @@ docs/
 patches/
 .cursorindexingignore
 implementation-notes.md
+.codex/skills/
+skills/gpt-load-code-review/
 .kiro/
 .specstory/
 .vscode/

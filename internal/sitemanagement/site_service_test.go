@@ -480,6 +480,28 @@ func TestSiteService_ListSitesPaginated(t *testing.T) {
 	for _, site := range result.Sites {
 		assert.True(t, site.Enabled, "All returned sites should be enabled")
 	}
+
+	var target ManagedSite
+	err = db.Where("name = ?", "Site M").First(&target).Error
+	require.NoError(t, err)
+
+	result, err = service.ListSitesPaginated(context.Background(), SiteListParams{
+		Page:        1,
+		PageSize:    5,
+		FocusSiteID: target.ID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 3, result.Page)
+	require.NotEmpty(t, result.Sites)
+
+	foundTarget := false
+	for _, site := range result.Sites {
+		if site.ID == target.ID {
+			foundTarget = true
+			break
+		}
+	}
+	assert.True(t, foundTarget, "focused site should be included in the returned page")
 }
 
 // BenchmarkSiteService_ListSites benchmarks site listing

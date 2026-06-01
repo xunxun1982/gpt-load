@@ -9,6 +9,7 @@ type SiteListParams struct {
 	Search           string // Optional search term for name/notes/description/base_url
 	Enabled          *bool  // Optional filter by enabled status
 	CheckinAvailable *bool  // Optional filter by checkin_available status
+	FocusSiteID      uint   // Optional site ID that should be included in the returned page
 }
 
 // SiteListResult contains paginated site list with metadata

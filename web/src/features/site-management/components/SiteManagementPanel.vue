@@ -60,12 +60,25 @@ import {
   type DataTableColumns,
   type SelectOption,
 } from "naive-ui";
-import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  h,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  watch,
+  type HTMLAttributes,
+} from "vue";
 import { useI18n } from "vue-i18n";
+import { useRoute, useRouter } from "vue-router";
 
 const { t } = useI18n();
 const message = useMessage();
 const dialog = useDialog();
+const route = useRoute();
+const router = useRouter();
 
 // Emit for navigation to group
 interface Emits {
@@ -75,6 +88,9 @@ const emit = defineEmits<Emits>();
 
 const loading = ref(false);
 const sites = ref<ManagedSiteDTO[]>([]);
+const focusedSiteId = ref<number | null>(null);
+const focusedSiteClearTimer = ref<number | undefined>(undefined);
+const applyingRouteFocus = ref(false);
 const showSiteModal = ref(false);
 const editingSite = ref<ManagedSiteDTO | null>(null);
 const importLoading = ref(false);
@@ -189,10 +205,84 @@ const currentCheckinDay = computed(() => {
   return beijingTime.toISOString().slice(0, 10); // YYYY-MM-DD format
 });
 
+interface LoadSitesOptions {
+  focusSiteId?: number | null;
+}
+
+function parseRouteSiteId(value: unknown): number | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return null;
+  }
+  const siteId = Number(raw);
+  return Number.isInteger(siteId) && siteId > 0 ? siteId : null;
+}
+
+function clearFocusedSite() {
+  if (focusedSiteClearTimer.value) {
+    window.clearTimeout(focusedSiteClearTimer.value);
+    focusedSiteClearTimer.value = undefined;
+  }
+  focusedSiteId.value = null;
+}
+
+function scheduleFocusedSiteClear() {
+  if (focusedSiteClearTimer.value) {
+    window.clearTimeout(focusedSiteClearTimer.value);
+  }
+  focusedSiteClearTimer.value = window.setTimeout(() => {
+    focusedSiteId.value = null;
+    focusedSiteClearTimer.value = undefined;
+  }, 4000);
+}
+
+function scrollToSiteRow(siteId: number): boolean {
+  const row = document.querySelector<HTMLElement>(`.site-table-wrapper [data-site-id="${siteId}"]`);
+  if (!row) {
+    return false;
+  }
+  row.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+  return true;
+}
+
+async function clearRouteSiteId(siteId: number) {
+  if (parseRouteSiteId(route.query.siteId) !== siteId) {
+    return;
+  }
+
+  const query = { ...route.query };
+  delete query.siteId;
+  await router.replace({ name: "more", query });
+}
+
+async function focusSiteFromRoute(siteId: number) {
+  applyingRouteFocus.value = true;
+  clearFocusedSite();
+  focusedSiteId.value = siteId;
+  filters.search = "";
+  filters.enabled = "all";
+  filters.checkinAvailable = "all";
+  pagination.page = 1;
+
+  try {
+    await nextTick();
+    debouncedSearch.cancel();
+    await loadSites({ focusSiteId: siteId });
+    await nextTick();
+    if (scrollToSiteRow(siteId)) {
+      scheduleFocusedSiteClear();
+    }
+    await clearRouteSiteId(siteId);
+  } finally {
+    applyingRouteFocus.value = false;
+  }
+}
+
 // Load sites with pagination
-async function loadSites() {
+async function loadSites(options: LoadSitesOptions = {}) {
   loading.value = true;
   try {
+    const focusSiteId = options.focusSiteId ?? null;
     const params: SiteListParams = {
       page: pagination.page,
       page_size: pagination.pageSize,
@@ -200,10 +290,12 @@ async function loadSites() {
       enabled: filters.enabled === "all" ? null : filters.enabled === "true",
       checkin_available:
         filters.checkinAvailable === "all" ? null : filters.checkinAvailable === "true",
+      focus_site_id: focusSiteId || undefined,
     };
 
     const result = await siteManagementApi.listSitesPaginated(params);
     sites.value = result.sites;
+    pagination.page = result.page;
     pagination.total = result.total;
     pagination.totalPages = result.total_pages;
   } finally {
@@ -213,6 +305,10 @@ async function loadSites() {
 
 // Debounced search handler
 const debouncedSearch = debounce(() => {
+  if (applyingRouteFocus.value) {
+    return;
+  }
+  clearFocusedSite();
   pagination.page = 1; // Reset to first page on search
   loadSites();
 }, 300);
@@ -220,6 +316,7 @@ const debouncedSearch = debounce(() => {
 // Cleanup debounced search on component unmount to prevent memory leaks
 onUnmounted(() => {
   debouncedSearch.cancel();
+  clearFocusedSite();
 });
 
 // Watch search input changes
@@ -229,6 +326,10 @@ watch(() => filters.search, debouncedSearch);
 watch(
   () => [filters.enabled, filters.checkinAvailable],
   () => {
+    if (applyingRouteFocus.value) {
+      return;
+    }
+    clearFocusedSite();
     pagination.page = 1;
     loadSites();
   }
@@ -236,11 +337,13 @@ watch(
 
 // Pagination handlers
 function handlePageChange(page: number) {
+  clearFocusedSite();
   pagination.page = page;
   loadSites();
 }
 
 function handlePageSizeChange(pageSize: number) {
+  clearFocusedSite();
   pagination.pageSize = pageSize;
   pagination.page = 1;
   loadSites();
@@ -248,6 +351,7 @@ function handlePageSizeChange(pageSize: number) {
 
 // Reset filters
 function resetFilters() {
+  clearFocusedSite();
   filters.search = "";
   filters.enabled = "all";
   filters.checkinAvailable = "all";
@@ -613,7 +717,18 @@ function truncateNotes(text: string, maxChars: number): string {
 
 // Row class name for disabled sites (grayed out style)
 function rowClassName(row: ManagedSiteDTO) {
-  return row.enabled ? "" : "site-row-disabled";
+  const classes: string[] = [];
+  if (!row.enabled) {
+    classes.push("site-row-disabled");
+  }
+  if (focusedSiteId.value === row.id) {
+    classes.push("site-row-focused");
+  }
+  return classes.join(" ");
+}
+
+function rowProps(row: ManagedSiteDTO): HTMLAttributes {
+  return { "data-site-id": String(row.id) } as HTMLAttributes;
 }
 
 // Backend message to i18n key mapping
@@ -1479,11 +1594,26 @@ const lastRunDisplay = computed(() => {
 });
 
 onMounted(() => {
-  loadSites();
+  const routeSiteId = parseRouteSiteId(route.query.siteId);
+  if (routeSiteId) {
+    focusSiteFromRoute(routeSiteId);
+  } else {
+    loadSites();
+  }
   loadAutoCheckinConfig();
   // Balance is loaded from database cache (last_balance field) via loadSites()
   // Manual refresh button is available for users to update balances on demand
 });
+
+watch(
+  () => route.query.siteId,
+  siteId => {
+    const routeSiteId = parseRouteSiteId(siteId);
+    if (routeSiteId) {
+      focusSiteFromRoute(routeSiteId);
+    }
+  }
+);
 </script>
 
 <template>
@@ -1816,6 +1946,7 @@ onMounted(() => {
         :max-height="'calc(100vh - 280px)'"
         :scroll-x="900"
         :row-class-name="rowClassName"
+        :row-props="rowProps"
       />
     </div>
 
@@ -2092,6 +2223,10 @@ onMounted(() => {
 }
 .site-management :deep(.site-row-disabled:hover) {
   opacity: 0.65;
+}
+.site-management :deep(.site-row-focused) {
+  background-color: rgba(24, 160, 88, 0.16) !important;
+  box-shadow: inset 3px 0 0 var(--success-color);
 }
 /* Table wrapper for keyboard navigation support */
 .site-table-wrapper {

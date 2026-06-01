@@ -467,27 +467,34 @@ type SubGroupInfo struct {
 
 // DynamicWeightMetricExportInfo stores dynamic health metrics using stable group names.
 type DynamicWeightMetricExportInfo struct {
-	MetricType          models.MetricType `json:"metric_type"`
-	GroupName           string            `json:"group_name"`
-	SubGroupName        string            `json:"sub_group_name,omitempty"`
-	SourceModel         string            `json:"source_model,omitempty"`
-	TargetModel         string            `json:"target_model,omitempty"`
-	ConsecutiveFailures int64             `json:"consecutive_failures"`
-	LastFailureAt       *time.Time        `json:"last_failure_at,omitempty"`
-	LastSuccessAt       *time.Time        `json:"last_success_at,omitempty"`
-	Requests7d          int64             `json:"requests_7d"`
-	Successes7d         int64             `json:"successes_7d"`
-	Requests14d         int64             `json:"requests_14d"`
-	Successes14d        int64             `json:"successes_14d"`
-	Requests30d         int64             `json:"requests_30d"`
-	Successes30d        int64             `json:"successes_30d"`
-	Requests90d         int64             `json:"requests_90d"`
-	Successes90d        int64             `json:"successes_90d"`
-	Requests180d        int64             `json:"requests_180d"`
-	Successes180d       int64             `json:"successes_180d"`
-	LastRolloverAt      *time.Time        `json:"last_rollover_at,omitempty"`
-	UpdatedAt           time.Time         `json:"updated_at"`
-	DeletedAt           *time.Time        `json:"deleted_at,omitempty"`
+	MetricType            models.MetricType `json:"metric_type"`
+	GroupName             string            `json:"group_name"`
+	SubGroupName          string            `json:"sub_group_name,omitempty"`
+	SourceModel           string            `json:"source_model,omitempty"`
+	TargetModel           string            `json:"target_model,omitempty"`
+	ConsecutiveFailures   int64             `json:"consecutive_failures"`
+	LastFailureAt         *time.Time        `json:"last_failure_at,omitempty"`
+	LastSuccessAt         *time.Time        `json:"last_success_at,omitempty"`
+	ConsecutiveRateLimits int64             `json:"consecutive_rate_limits"`
+	LastRateLimitAt       *time.Time        `json:"last_rate_limit_at,omitempty"`
+	Requests7d            int64             `json:"requests_7d"`
+	Successes7d           int64             `json:"successes_7d"`
+	RateLimits7d          int64             `json:"rate_limits_7d"`
+	Requests14d           int64             `json:"requests_14d"`
+	Successes14d          int64             `json:"successes_14d"`
+	RateLimits14d         int64             `json:"rate_limits_14d"`
+	Requests30d           int64             `json:"requests_30d"`
+	Successes30d          int64             `json:"successes_30d"`
+	RateLimits30d         int64             `json:"rate_limits_30d"`
+	Requests90d           int64             `json:"requests_90d"`
+	Successes90d          int64             `json:"successes_90d"`
+	RateLimits90d         int64             `json:"rate_limits_90d"`
+	Requests180d          int64             `json:"requests_180d"`
+	Successes180d         int64             `json:"successes_180d"`
+	RateLimits180d        int64             `json:"rate_limits_180d"`
+	LastRolloverAt        *time.Time        `json:"last_rollover_at,omitempty"`
+	UpdatedAt             time.Time         `json:"updated_at"`
+	DeletedAt             *time.Time        `json:"deleted_at,omitempty"`
 }
 
 // ExportGroup exports a complete group with keys and sub-groups
@@ -1171,26 +1178,33 @@ func (s *ImportExportService) exportDynamicWeights() []DynamicWeightMetricExport
 		}
 
 		item := DynamicWeightMetricExportInfo{
-			MetricType:          metric.MetricType,
-			GroupName:           groupName,
-			SourceModel:         metric.SourceModel,
-			TargetModel:         metric.TargetModel,
-			ConsecutiveFailures: metric.ConsecutiveFailures,
-			LastFailureAt:       metric.LastFailureAt,
-			LastSuccessAt:       metric.LastSuccessAt,
-			Requests7d:          metric.Requests7d,
-			Successes7d:         metric.Successes7d,
-			Requests14d:         metric.Requests14d,
-			Successes14d:        metric.Successes14d,
-			Requests30d:         metric.Requests30d,
-			Successes30d:        metric.Successes30d,
-			Requests90d:         metric.Requests90d,
-			Successes90d:        metric.Successes90d,
-			Requests180d:        metric.Requests180d,
-			Successes180d:       metric.Successes180d,
-			LastRolloverAt:      metric.LastRolloverAt,
-			UpdatedAt:           metric.UpdatedAt,
-			DeletedAt:           metric.DeletedAt,
+			MetricType:            metric.MetricType,
+			GroupName:             groupName,
+			SourceModel:           metric.SourceModel,
+			TargetModel:           metric.TargetModel,
+			ConsecutiveFailures:   metric.ConsecutiveFailures,
+			LastFailureAt:         metric.LastFailureAt,
+			LastSuccessAt:         metric.LastSuccessAt,
+			ConsecutiveRateLimits: metric.ConsecutiveRateLimits,
+			LastRateLimitAt:       metric.LastRateLimitAt,
+			Requests7d:            metric.Requests7d,
+			Successes7d:           metric.Successes7d,
+			RateLimits7d:          metric.RateLimits7d,
+			Requests14d:           metric.Requests14d,
+			Successes14d:          metric.Successes14d,
+			RateLimits14d:         metric.RateLimits14d,
+			Requests30d:           metric.Requests30d,
+			Successes30d:          metric.Successes30d,
+			RateLimits30d:         metric.RateLimits30d,
+			Requests90d:           metric.Requests90d,
+			Successes90d:          metric.Successes90d,
+			RateLimits90d:         metric.RateLimits90d,
+			Requests180d:          metric.Requests180d,
+			Successes180d:         metric.Successes180d,
+			RateLimits180d:        metric.RateLimits180d,
+			LastRolloverAt:        metric.LastRolloverAt,
+			UpdatedAt:             metric.UpdatedAt,
+			DeletedAt:             metric.DeletedAt,
 		}
 		if metric.SubGroupID > 0 {
 			item.SubGroupName = groupNamesByID[metric.SubGroupID]
@@ -1330,27 +1344,34 @@ func (s *ImportExportService) importDynamicWeights(tx *gorm.DB, metrics []Dynami
 		}
 
 		metric := models.DynamicWeightMetric{
-			MetricType:          item.MetricType,
-			GroupID:             group.ID,
-			SubGroupID:          subGroupID,
-			SourceModel:         item.SourceModel,
-			TargetModel:         item.TargetModel,
-			ConsecutiveFailures: item.ConsecutiveFailures,
-			LastFailureAt:       item.LastFailureAt,
-			LastSuccessAt:       item.LastSuccessAt,
-			Requests7d:          item.Requests7d,
-			Successes7d:         item.Successes7d,
-			Requests14d:         item.Requests14d,
-			Successes14d:        item.Successes14d,
-			Requests30d:         item.Requests30d,
-			Successes30d:        item.Successes30d,
-			Requests90d:         item.Requests90d,
-			Successes90d:        item.Successes90d,
-			Requests180d:        item.Requests180d,
-			Successes180d:       item.Successes180d,
-			LastRolloverAt:      item.LastRolloverAt,
-			UpdatedAt:           item.UpdatedAt,
-			DeletedAt:           item.DeletedAt,
+			MetricType:            item.MetricType,
+			GroupID:               group.ID,
+			SubGroupID:            subGroupID,
+			SourceModel:           item.SourceModel,
+			TargetModel:           item.TargetModel,
+			ConsecutiveFailures:   item.ConsecutiveFailures,
+			LastFailureAt:         item.LastFailureAt,
+			LastSuccessAt:         item.LastSuccessAt,
+			ConsecutiveRateLimits: item.ConsecutiveRateLimits,
+			LastRateLimitAt:       item.LastRateLimitAt,
+			Requests7d:            item.Requests7d,
+			Successes7d:           item.Successes7d,
+			RateLimits7d:          item.RateLimits7d,
+			Requests14d:           item.Requests14d,
+			Successes14d:          item.Successes14d,
+			RateLimits14d:         item.RateLimits14d,
+			Requests30d:           item.Requests30d,
+			Successes30d:          item.Successes30d,
+			RateLimits30d:         item.RateLimits30d,
+			Requests90d:           item.Requests90d,
+			Successes90d:          item.Successes90d,
+			RateLimits90d:         item.RateLimits90d,
+			Requests180d:          item.Requests180d,
+			Successes180d:         item.Successes180d,
+			RateLimits180d:        item.RateLimits180d,
+			LastRolloverAt:        item.LastRolloverAt,
+			UpdatedAt:             item.UpdatedAt,
+			DeletedAt:             item.DeletedAt,
 		}
 
 		if err := tx.Clauses(clause.OnConflict{

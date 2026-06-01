@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"sort"
 	"sync"
 	"time"
 
@@ -31,16 +32,21 @@ type DynamicWeightMetrics struct {
 	LastRateLimitAt       time.Time `json:"last_rate_limit_at"`
 
 	// Time-windowed statistics (cumulative)
-	Requests7d    int64 `json:"requests_7d"`
-	Successes7d   int64 `json:"successes_7d"`
-	Requests14d   int64 `json:"requests_14d"`
-	Successes14d  int64 `json:"successes_14d"`
-	Requests30d   int64 `json:"requests_30d"`
-	Successes30d  int64 `json:"successes_30d"`
-	Requests90d   int64 `json:"requests_90d"`
-	Successes90d  int64 `json:"successes_90d"`
-	Requests180d  int64 `json:"requests_180d"`
-	Successes180d int64 `json:"successes_180d"`
+	Requests7d     int64 `json:"requests_7d"`
+	Successes7d    int64 `json:"successes_7d"`
+	RateLimits7d   int64 `json:"rate_limits_7d"`
+	Requests14d    int64 `json:"requests_14d"`
+	Successes14d   int64 `json:"successes_14d"`
+	RateLimits14d  int64 `json:"rate_limits_14d"`
+	Requests30d    int64 `json:"requests_30d"`
+	Successes30d   int64 `json:"successes_30d"`
+	RateLimits30d  int64 `json:"rate_limits_30d"`
+	Requests90d    int64 `json:"requests_90d"`
+	Successes90d   int64 `json:"successes_90d"`
+	RateLimits90d  int64 `json:"rate_limits_90d"`
+	Requests180d   int64 `json:"requests_180d"`
+	Successes180d  int64 `json:"successes_180d"`
+	RateLimits180d int64 `json:"rate_limits_180d"`
 
 	LastRolloverAt time.Time `json:"last_rollover_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
@@ -66,6 +72,7 @@ type DynamicWeightConfig struct {
 	MaxConsecutiveRateLimitPenalty float64
 	RecentRateLimitPenalty         float64
 	RecentRateLimitCooldown        time.Duration
+	RateLimitSuccessCredit         float64
 
 	// Health score threshold below which effective weight is reduced to 10% of base weight
 	// (capped at 1, min 0.1) to prevent unhealthy high-weight targets from dominating
@@ -128,6 +135,9 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 		// 3-minute cooldown for rate limit penalty (shorter than regular 8-minute)
 		// Rate limits typically clear faster than service failures
 		RecentRateLimitCooldown: 3 * time.Minute,
+		// Count 429 as a partial success in long-window success rate.
+		// Throttling is still a failed request, but it should not collapse health like auth/billing/server failures.
+		RateLimitSuccessCredit: 0.35,
 
 		// Critical health threshold: 0.50
 		// Below this, effective weight is capped at 1 (min 0.1) to prevent unhealthy
@@ -363,6 +373,13 @@ func (m *DynamicWeightManager) recordFailure(key string, isRateLimit bool) {
 	metrics.Requests30d++
 	metrics.Requests90d++
 	metrics.Requests180d++
+	if isRateLimit {
+		metrics.RateLimits7d++
+		metrics.RateLimits14d++
+		metrics.RateLimits30d++
+		metrics.RateLimits90d++
+		metrics.RateLimits180d++
+	}
 
 	if err := m.SetMetrics(key, metrics); err != nil {
 		logrus.WithError(err).WithField("key", key).Debug("Failed to set metrics after failure")
@@ -378,32 +395,59 @@ func (m *DynamicWeightManager) recordFailure(key string, isRateLimit bool) {
 // Recent data (7 days) has the highest weight, older data has progressively lower weights.
 // Returns a value between 0 and 100.
 func (m *DynamicWeightManager) CalculateWeightedSuccessRate(metrics *DynamicWeightMetrics) float64 {
+	return m.calculateWeightedSuccessRate(metrics, 0)
+}
+
+func (m *DynamicWeightManager) calculateWeightedSuccessRate(metrics *DynamicWeightMetrics, rateLimitCredit float64) float64 {
 	if metrics == nil {
 		return 100.0
 	}
 
-	// Get incremental requests and successes for each time window
-	// Window data is cumulative, so we need to calculate incremental values
-	type windowData struct {
-		requests  int64
-		successes int64
-		weight    float64
-	}
-
-	windows := []windowData{
-		{metrics.Requests7d, metrics.Successes7d, 1.0},
-		{metrics.Requests14d - metrics.Requests7d, metrics.Successes14d - metrics.Successes7d, 0.8},
-		{metrics.Requests30d - metrics.Requests14d, metrics.Successes30d - metrics.Successes14d, 0.6},
-		{metrics.Requests90d - metrics.Requests30d, metrics.Successes90d - metrics.Successes30d, 0.3},
-		{metrics.Requests180d - metrics.Requests90d, metrics.Successes180d - metrics.Successes90d, 0.1},
-	}
-
 	var totalWeightedSuccesses, totalWeightedRequests float64
-	for _, w := range windows {
-		if w.requests > 0 {
-			totalWeightedSuccesses += float64(w.successes) * w.weight
-			totalWeightedRequests += float64(w.requests) * w.weight
+	addWeightedWindow := func(requests, successes, rateLimits int64, weight float64) {
+		if requests <= 0 {
+			return
 		}
+		creditedSuccesses := float64(successes)
+		if rateLimitCredit > 0 && rateLimits > 0 {
+			failedRequests := requests - successes
+			if failedRequests < 0 {
+				failedRequests = 0
+			}
+			if rateLimits > failedRequests {
+				rateLimits = failedRequests
+			}
+			creditedSuccesses += float64(rateLimits) * rateLimitCredit
+		}
+		totalWeightedSuccesses += creditedSuccesses * weight
+		totalWeightedRequests += float64(requests) * weight
+	}
+
+	windowConfigs := m.config.TimeWindowConfigs
+	if len(windowConfigs) == 0 {
+		windowConfigs = models.DefaultTimeWindowConfigs()
+	}
+	windowConfigs = supportedTimeWindowConfigs(windowConfigs)
+	sort.Slice(windowConfigs, func(i, j int) bool {
+		return windowConfigs[i].Days < windowConfigs[j].Days
+	})
+
+	// Window data is cumulative, so each older bucket is converted to its incremental value.
+	var previousRequests, previousSuccesses, previousRateLimits int64
+	for _, config := range windowConfigs {
+		requests, successes, rateLimits, ok := metrics.windowValues(config.Days)
+		if !ok {
+			continue
+		}
+		addWeightedWindow(
+			requests-previousRequests,
+			successes-previousSuccesses,
+			rateLimits-previousRateLimits,
+			config.Weight,
+		)
+		previousRequests = requests
+		previousSuccesses = successes
+		previousRateLimits = rateLimits
 	}
 
 	if totalWeightedRequests == 0 {
@@ -411,6 +455,52 @@ func (m *DynamicWeightManager) CalculateWeightedSuccessRate(metrics *DynamicWeig
 	}
 
 	return (totalWeightedSuccesses / totalWeightedRequests) * 100
+}
+
+func supportedTimeWindowConfigs(configs []models.TimeWindowConfig) []models.TimeWindowConfig {
+	valid := make([]models.TimeWindowConfig, 0, len(configs))
+	for _, config := range configs {
+		if isSupportedTimeWindow(config.Days) {
+			valid = append(valid, config)
+		}
+	}
+	if len(valid) == 0 {
+		return models.DefaultTimeWindowConfigs()
+	}
+	return valid
+}
+
+func isSupportedTimeWindow(days int) bool {
+	switch days {
+	case 7, 14, 30, 90, 180:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *DynamicWeightMetrics) windowValues(days int) (requests, successes, rateLimits int64, ok bool) {
+	switch days {
+	case 7:
+		return m.Requests7d, m.Successes7d, m.RateLimits7d, true
+	case 14:
+		return m.Requests14d, m.Successes14d, m.RateLimits14d, true
+	case 30:
+		return m.Requests30d, m.Successes30d, m.RateLimits30d, true
+	case 90:
+		return m.Requests90d, m.Successes90d, m.RateLimits90d, true
+	case 180:
+		return m.Requests180d, m.Successes180d, m.RateLimits180d, true
+	default:
+		return 0, 0, 0, false
+	}
+}
+
+// calculateHealthSuccessRate returns a weighted success rate for health scoring.
+// It gives 429 throttling failures partial credit while preserving raw success rate reporting.
+func (m *DynamicWeightManager) calculateHealthSuccessRate(metrics *DynamicWeightMetrics) float64 {
+	credit := min(max(m.config.RateLimitSuccessCredit, 0.0), 1.0)
+	return m.calculateWeightedSuccessRate(metrics, credit)
 }
 
 // CalculateHealthScore calculates the health score based on metrics.
@@ -463,7 +553,7 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 	// Penalty for low weighted success rate (using time-windowed calculation)
 	totalRequests := metrics.Requests180d
 	if totalRequests >= m.config.MinRequestsForSuccessRate {
-		weightedSuccessRate := m.CalculateWeightedSuccessRate(metrics)
+		weightedSuccessRate := m.calculateHealthSuccessRate(metrics)
 		if weightedSuccessRate < m.config.LowSuccessRateThreshold {
 			score -= m.config.LowSuccessRatePenalty
 		}

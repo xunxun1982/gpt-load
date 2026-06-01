@@ -5,7 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+
+	"gpt-load/internal/encryption"
+	"gpt-load/internal/models"
+	"gpt-load/internal/sitemanagement"
+	"gpt-load/internal/store"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -138,4 +144,61 @@ func TestUpdateManagedSiteRequest_Validation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestListManagedSites_FocusSiteIDUsesPaginatedPath(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	err := db.AutoMigrate(&sitemanagement.ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
+
+	service := sitemanagement.NewSiteService(db, kvStore, encSvc)
+	for i := 0; i < 6; i++ {
+		site := &sitemanagement.ManagedSite{
+			Name:     "Site " + string(rune('A'+i)),
+			BaseURL:  "https://example.com",
+			Sort:     i,
+			AuthType: sitemanagement.AuthTypeNone,
+		}
+		require.NoError(t, db.Create(site).Error)
+	}
+
+	var target sitemanagement.ManagedSite
+	require.NoError(t, db.Where("name = ?", "Site F").First(&target).Error)
+
+	server := &Server{SiteService: service}
+	router := gin.New()
+	router.GET("/site-management/sites", server.ListManagedSites)
+
+	req := httptest.NewRequest(http.MethodGet, "/site-management/sites?focus_site_id="+strconv.FormatUint(uint64(target.ID), 10)+"&page_size=2", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data, ok := resp["data"].(map[string]any)
+	require.True(t, ok, "focus_site_id should use paginated response shape")
+	assert.Equal(t, float64(3), data["page"])
+
+	sites, ok := data["sites"].([]any)
+	require.True(t, ok)
+	foundTarget := false
+	for _, item := range sites {
+		site, ok := item.(map[string]any)
+		require.True(t, ok)
+		if uint(site["id"].(float64)) == target.ID {
+			foundTarget = true
+			break
+		}
+	}
+	assert.True(t, foundTarget, "focused site should be included in the returned page")
 }

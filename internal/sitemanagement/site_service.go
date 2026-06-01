@@ -187,6 +187,15 @@ func (s *SiteService) ListSitesPaginated(ctx context.Context, params SiteListPar
 	}
 
 	// Calculate pagination
+	if params.FocusSiteID > 0 {
+		focusPage, err := s.focusSitePage(ctx, query, params.FocusSiteID, params.PageSize)
+		if err != nil {
+			return nil, err
+		}
+		if focusPage > 0 {
+			params.Page = focusPage
+		}
+	}
 	offset := (params.Page - 1) * params.PageSize
 	totalPages := int((total + int64(params.PageSize) - 1) / int64(params.PageSize))
 
@@ -213,6 +222,31 @@ func (s *SiteService) ListSitesPaginated(ctx context.Context, params SiteListPar
 		PageSize:   params.PageSize,
 		TotalPages: totalPages,
 	}, nil
+}
+
+func (s *SiteService) focusSitePage(ctx context.Context, baseQuery *gorm.DB, siteID uint, pageSize int) (int, error) {
+	var target ManagedSite
+	if err := baseQuery.Session(&gorm.Session{}).
+		Select("id", "sort").
+		Where("id = ?", siteID).
+		First(&target).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, nil
+		}
+		return 0, app_errors.ParseDBError(err)
+	}
+
+	var position int64
+	err := baseQuery.Session(&gorm.Session{}).
+		Where("(sort < ? OR (sort = ? AND id <= ?))", target.Sort, target.Sort, target.ID).
+		Count(&position).Error
+	if err != nil {
+		return 0, app_errors.ParseDBError(err)
+	}
+	if position == 0 {
+		return 0, nil
+	}
+	return int((position-1)/int64(pageSize)) + 1, nil
 }
 
 // convertSitesToDTOs converts sites to DTOs with batch operations for bound groups

@@ -26,6 +26,7 @@ export interface SiteListParams {
   search?: string;
   enabled?: boolean | null;
   checkin_available?: boolean | null;
+  focus_site_id?: number;
 }
 
 // Paginated site list result
@@ -152,6 +153,9 @@ export const siteManagementApi = {
     }
     if (params.checkin_available !== undefined && params.checkin_available !== null) {
       query.set("checkin_available", params.checkin_available.toString());
+    }
+    if (params.focus_site_id) {
+      query.set("focus_site_id", params.focus_site_id.toString());
     }
 
     const res = await http.get(`/site-management/sites?${query.toString()}`);
