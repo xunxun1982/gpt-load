@@ -462,6 +462,12 @@ func (s *Server) ImportAll(c *gin.Context) {
 		}
 	}
 
+	if len(serviceImportData.DynamicWeights) > 0 && s.DynamicWeightManager != nil {
+		if err := services.LoadDynamicWeightMetricsFromDatabase(s.DB, s.DynamicWeightManager); err != nil {
+			logrus.WithError(err).Warn("Failed to reload dynamic weight metrics after import")
+		}
+	}
+
 	// Invalidate group manager cache to ensure new groups are visible
 	if s.GroupManager != nil {
 		if err := s.GroupManager.Invalidate(); err != nil {

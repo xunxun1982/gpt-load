@@ -7,6 +7,7 @@ import (
 
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
+	"gpt-load/internal/store"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -467,6 +468,16 @@ func TestExportImportSystemRestoresDynamicWeightsByGroupName(t *testing.T) {
 	assert.Equal(t, "target-model", modelMetric.TargetModel)
 	require.NotNil(t, modelMetric.DeletedAt)
 	assert.True(t, modelMetric.DeletedAt.Equal(deletedAt))
+
+	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { _ = kvStore.Close() })
+	manager := NewDynamicWeightManager(kvStore)
+	require.NoError(t, LoadDynamicWeightMetricsFromDatabase(targetDB, manager))
+
+	hydratedGroupMetric, err := manager.GetGroupMetrics(groupMetric.GroupID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(10), hydratedGroupMetric.Requests7d)
+	assert.Equal(t, int64(160), hydratedGroupMetric.Successes180d)
 }
 
 func TestImportSystemSkipsMissingDynamicWeightsForOldExports(t *testing.T) {

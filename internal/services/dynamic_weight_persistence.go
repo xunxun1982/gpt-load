@@ -141,12 +141,21 @@ func (p *DynamicWeightPersistence) checkAndRunMaintenance() {
 // Optimized with indexed query and batch processing to handle large datasets efficiently.
 // Uses FindInBatches to keep memory usage bounded even for very large datasets.
 func (p *DynamicWeightPersistence) LoadFromDatabase() error {
+	return LoadDynamicWeightMetricsFromDatabase(p.db, p.manager)
+}
+
+// LoadDynamicWeightMetricsFromDatabase hydrates non-deleted database metrics into the live manager store.
+func LoadDynamicWeightMetricsFromDatabase(db *gorm.DB, manager *DynamicWeightManager) error {
+	if db == nil || manager == nil {
+		return nil
+	}
+
 	// Use indexed query with batch processing to keep memory usage flat
 	// The idx_dw_metrics_deleted_type index makes this query very fast
 	// Note: No ORDER BY needed since we iterate all records regardless of order
 	loaded := 0
 	var dbMetrics []models.DynamicWeightMetric
-	err := p.db.Where("deleted_at IS NULL").
+	err := db.Where("deleted_at IS NULL").
 		FindInBatches(&dbMetrics, 1000, func(tx *gorm.DB, batch int) error {
 			// dbMetrics is automatically populated by FindInBatches for each batch
 			for _, dbm := range dbMetrics {
@@ -164,7 +173,7 @@ func (p *DynamicWeightPersistence) LoadFromDatabase() error {
 					continue
 				}
 
-				if err := p.manager.SetMetrics(key, metrics); err != nil {
+				if err := manager.SetMetrics(key, metrics); err != nil {
 					logrus.WithError(err).WithField("key", key).Debug("Failed to load metric into store")
 					continue
 				}

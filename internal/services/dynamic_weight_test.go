@@ -398,6 +398,26 @@ func TestDynamicWeightManager_UsesConfiguredTimeWindowWeights(t *testing.T) {
 	assert.InDelta(t, 0.0, dwm.CalculateWeightedSuccessRate(metrics), 0.001)
 }
 
+func TestDynamicWeightManager_FallsBackWhenConfiguredTimeWindowsAreUnsupported(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	config := DefaultDynamicWeightConfig()
+	config.TimeWindowConfigs = []models.TimeWindowConfig{
+		{Days: 1, Weight: 1.0},
+		{Days: 365, Weight: 1.0},
+	}
+	dwm := NewDynamicWeightManagerWithConfig(memStore, config)
+
+	metrics := &DynamicWeightMetrics{
+		Requests7d:    10,
+		Successes7d:   5,
+		Requests180d:  10,
+		Successes180d: 5,
+	}
+
+	assert.InDelta(t, 50.0, dwm.CalculateWeightedSuccessRate(metrics), 0.001)
+}
+
 func TestDynamicWeightManager_InterleavedFailuresKeepModerateHealth(t *testing.T) {
 	t.Parallel()
 	memStore := store.NewMemoryStore()

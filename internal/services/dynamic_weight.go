@@ -427,7 +427,7 @@ func (m *DynamicWeightManager) calculateWeightedSuccessRate(metrics *DynamicWeig
 	if len(windowConfigs) == 0 {
 		windowConfigs = models.DefaultTimeWindowConfigs()
 	}
-	windowConfigs = append([]models.TimeWindowConfig(nil), windowConfigs...)
+	windowConfigs = supportedTimeWindowConfigs(windowConfigs)
 	sort.Slice(windowConfigs, func(i, j int) bool {
 		return windowConfigs[i].Days < windowConfigs[j].Days
 	})
@@ -455,6 +455,28 @@ func (m *DynamicWeightManager) calculateWeightedSuccessRate(metrics *DynamicWeig
 	}
 
 	return (totalWeightedSuccesses / totalWeightedRequests) * 100
+}
+
+func supportedTimeWindowConfigs(configs []models.TimeWindowConfig) []models.TimeWindowConfig {
+	valid := make([]models.TimeWindowConfig, 0, len(configs))
+	for _, config := range configs {
+		if isSupportedTimeWindow(config.Days) {
+			valid = append(valid, config)
+		}
+	}
+	if len(valid) == 0 {
+		return models.DefaultTimeWindowConfigs()
+	}
+	return valid
+}
+
+func isSupportedTimeWindow(days int) bool {
+	switch days {
+	case 7, 14, 30, 90, 180:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *DynamicWeightMetrics) windowValues(days int) (requests, successes, rateLimits int64, ok bool) {
