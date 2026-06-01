@@ -2154,6 +2154,15 @@ func (ps *ProxyServer) logRequest(
 	if channelHandler != nil && bodyBytes != nil {
 		logEntry.Model = channelHandler.ExtractModel(c, bodyBytes)
 	}
+	if logEntry.Model == "" && ps.isModelsEndpoint(c.Request.URL.Path) {
+		model, mappedModel := modelListRedirectLogModels(group)
+		if model != "" {
+			logEntry.Model = model
+			if mappedModel != "" && mappedModel != model {
+				logEntry.MappedModel = mappedModel
+			}
+		}
+	}
 
 	// Get original model from context (before mapping)
 	if originalModel, exists := c.Get("original_model"); exists {

@@ -246,3 +246,89 @@ func TestHandleGzipCompression(t *testing.T) {
 		assert.Equal(t, input, result)
 	})
 }
+
+func TestModelListRedirectLogModels(t *testing.T) {
+	t.Run("nil group", func(t *testing.T) {
+		model, mappedModel := modelListRedirectLogModels(nil)
+		assert.Empty(t, model)
+		assert.Empty(t, mappedModel)
+	})
+
+	t.Run("no redirect rules", func(t *testing.T) {
+		model, mappedModel := modelListRedirectLogModels(&models.Group{})
+		assert.Empty(t, model)
+		assert.Empty(t, mappedModel)
+	})
+
+	t.Run("v1 single mapping", func(t *testing.T) {
+		group := &models.Group{
+			ModelRedirectMap: map[string]string{
+				"medreview": "deepseek-expert",
+			},
+		}
+
+		model, mappedModel := modelListRedirectLogModels(group)
+		assert.Equal(t, "deepseek-expert", model)
+		assert.Equal(t, "medreview", mappedModel)
+	})
+
+	t.Run("v1 stable multiple mappings", func(t *testing.T) {
+		group := &models.Group{
+			ModelRedirectMap: map[string]string{
+				"alias-b": "target-b",
+				"alias-a": "target-a",
+			},
+		}
+
+		model, mappedModel := modelListRedirectLogModels(group)
+		assert.Equal(t, "target-a, target-b", model)
+		assert.Equal(t, "alias-a, alias-b", mappedModel)
+	})
+
+	t.Run("v2 ignores v1 and filters disabled targets", func(t *testing.T) {
+		enabled := true
+		disabled := false
+		group := &models.Group{
+			ModelRedirectMap: map[string]string{
+				"legacy": "legacy-target",
+			},
+			ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
+				"medreview": {
+					Targets: []models.ModelRedirectTarget{
+						{Model: "deepseek-expert", Enabled: &enabled},
+						{Model: ""},
+						{Model: "deepseek-disabled", Enabled: &disabled},
+						{Model: "deepseek-expert", Enabled: &enabled},
+					},
+				},
+			},
+		}
+
+		model, mappedModel := modelListRedirectLogModels(group)
+		assert.Equal(t, "deepseek-expert", model)
+		assert.Equal(t, "medreview", mappedModel)
+	})
+
+	t.Run("v2 skips sources without valid targets", func(t *testing.T) {
+		disabled := false
+		group := &models.Group{
+			ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
+				"alias-a": {
+					Targets: []models.ModelRedirectTarget{
+						{Model: "disabled-target", Enabled: &disabled},
+						{Model: ""},
+					},
+				},
+				"alias-b": {
+					Targets: []models.ModelRedirectTarget{
+						{Model: "target-b"},
+					},
+				},
+			},
+		}
+
+		model, mappedModel := modelListRedirectLogModels(group)
+		assert.Equal(t, "target-b", model)
+		assert.Equal(t, "alias-b", mappedModel)
+	})
+}

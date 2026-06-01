@@ -44,8 +44,8 @@ export default defineConfig(({ mode }) => {
       cssCodeSplit: true,
       // Disable sourcemap in production for smaller output
       sourcemap: false,
-      // Report compressed size for better size visibility (set to false for faster builds)
-      reportCompressedSize: true,
+      // Disable gzip size calculation for faster production builds.
+      reportCompressedSize: false,
       // Emit dependency license metadata without generating Markdown artifacts.
       license: {
         fileName: ".vite/license.json",

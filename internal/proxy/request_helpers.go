@@ -3,6 +3,8 @@ package proxy
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strings"
 
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
@@ -15,6 +17,7 @@ import (
 const (
 	ctxKeyModelRedirectSourceModel = "model_redirect_source_model"
 	ctxKeyModelRedirectTargetIndex = "model_redirect_target_index"
+	requestLogModelMaxLength       = 255
 )
 
 func setModelRedirectContext(c *gin.Context, originalModel string, targetIdx int, preserveOriginal bool) {
@@ -43,6 +46,69 @@ func clearModelRedirectContext(c *gin.Context) {
 	delete(c.Keys, "original_model")
 	delete(c.Keys, ctxKeyModelRedirectSourceModel)
 	delete(c.Keys, ctxKeyModelRedirectTargetIndex)
+}
+
+// modelListRedirectLogModels returns display-only model labels for /models logs.
+// It lists configured targets instead of selecting one, because model-list requests
+// do not route to a single redirected model.
+func modelListRedirectLogModels(group *models.Group) (string, string) {
+	if group == nil {
+		return "", ""
+	}
+
+	sourceModels := models.CollectSourceModels(group.ModelRedirectMap, group.ModelRedirectMapV2)
+	if len(sourceModels) == 0 {
+		return "", ""
+	}
+	sort.Strings(sourceModels)
+
+	var requestedModels, targetModels []string
+	if len(group.ModelRedirectMapV2) > 0 {
+		for _, sourceModel := range sourceModels {
+			rule := group.ModelRedirectMapV2[sourceModel]
+			if rule == nil {
+				continue
+			}
+			validTargets := make([]string, 0, len(rule.Targets))
+			for _, target := range rule.Targets {
+				if target.Model == "" || !target.IsEnabled() {
+					continue
+				}
+				appendUnique(&validTargets, target.Model)
+			}
+			if len(validTargets) == 0 {
+				continue
+			}
+			appendUnique(&requestedModels, sourceModel)
+			for _, targetModel := range validTargets {
+				appendUnique(&targetModels, targetModel)
+			}
+		}
+	} else {
+		for _, sourceModel := range sourceModels {
+			targetModel := group.ModelRedirectMap[sourceModel]
+			if targetModel == "" {
+				continue
+			}
+			appendUnique(&requestedModels, sourceModel)
+			appendUnique(&targetModels, targetModel)
+		}
+	}
+
+	if len(requestedModels) == 0 || len(targetModels) == 0 {
+		return "", ""
+	}
+	return utils.TruncateString(strings.Join(targetModels, ", "), requestLogModelMaxLength),
+		utils.TruncateString(strings.Join(requestedModels, ", "), requestLogModelMaxLength)
+}
+
+func appendUnique(values *[]string, value string) {
+	for _, existing := range *values {
+		if existing == value {
+			return
+		}
+	}
+	*values = append(*values, value)
 }
 
 func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group) ([]byte, error) {
