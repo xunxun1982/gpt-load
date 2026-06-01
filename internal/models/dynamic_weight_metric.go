@@ -37,22 +37,29 @@ type DynamicWeightMetric struct {
 	TargetModel string     `gorm:"type:varchar(255);default:'';uniqueIndex:idx_dwm_unique" json:"target_model"`
 
 	// Real-time tracking fields
-	ConsecutiveFailures int64      `gorm:"default:0" json:"consecutive_failures"`
-	LastFailureAt       *time.Time `json:"last_failure_at"`
-	LastSuccessAt       *time.Time `json:"last_success_at"`
+	ConsecutiveFailures   int64      `gorm:"default:0" json:"consecutive_failures"`
+	LastFailureAt         *time.Time `json:"last_failure_at"`
+	LastSuccessAt         *time.Time `json:"last_success_at"`
+	ConsecutiveRateLimits int64      `gorm:"default:0" json:"consecutive_rate_limits"`
+	LastRateLimitAt       *time.Time `json:"last_rate_limit_at"`
 
 	// Time-windowed statistics (cumulative, each includes all shorter windows)
 	// These are updated in real-time for the current window and periodically rolled over
-	Requests7d    int64 `gorm:"default:0" json:"requests_7d"`
-	Successes7d   int64 `gorm:"default:0" json:"successes_7d"`
-	Requests14d   int64 `gorm:"default:0" json:"requests_14d"`
-	Successes14d  int64 `gorm:"default:0" json:"successes_14d"`
-	Requests30d   int64 `gorm:"default:0" json:"requests_30d"`
-	Successes30d  int64 `gorm:"default:0" json:"successes_30d"`
-	Requests90d   int64 `gorm:"default:0" json:"requests_90d"`
-	Successes90d  int64 `gorm:"default:0" json:"successes_90d"`
-	Requests180d  int64 `gorm:"default:0" json:"requests_180d"`
-	Successes180d int64 `gorm:"default:0" json:"successes_180d"`
+	Requests7d     int64 `gorm:"default:0" json:"requests_7d"`
+	Successes7d    int64 `gorm:"default:0" json:"successes_7d"`
+	RateLimits7d   int64 `gorm:"default:0" json:"rate_limits_7d"`
+	Requests14d    int64 `gorm:"default:0" json:"requests_14d"`
+	Successes14d   int64 `gorm:"default:0" json:"successes_14d"`
+	RateLimits14d  int64 `gorm:"default:0" json:"rate_limits_14d"`
+	Requests30d    int64 `gorm:"default:0" json:"requests_30d"`
+	Successes30d   int64 `gorm:"default:0" json:"successes_30d"`
+	RateLimits30d  int64 `gorm:"default:0" json:"rate_limits_30d"`
+	Requests90d    int64 `gorm:"default:0" json:"requests_90d"`
+	Successes90d   int64 `gorm:"default:0" json:"successes_90d"`
+	RateLimits90d  int64 `gorm:"default:0" json:"rate_limits_90d"`
+	Requests180d   int64 `gorm:"default:0" json:"requests_180d"`
+	Successes180d  int64 `gorm:"default:0" json:"successes_180d"`
+	RateLimits180d int64 `gorm:"default:0" json:"rate_limits_180d"`
 
 	// Lifecycle management
 	LastRolloverAt *time.Time `json:"last_rollover_at"`

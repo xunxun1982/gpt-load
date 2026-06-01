@@ -9,7 +9,7 @@ import SubGroupTable from "@/components/keys/SubGroupTable.vue";
 import type { Group, SubGroupInfo } from "@/types/models";
 import { appState } from "@/utils/app-state";
 import { getNearestGroupIdAfterDeletion, getSidebarOrderedGroupIds } from "@/utils/group-sidebar";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 const LAST_SELECTED_GROUP_ID_KEY = "keys:lastGroupId";
@@ -132,6 +132,10 @@ async function loadGroups() {
       const found = groups.value.find(g => String(g.id) === String(groupId));
       if (found) {
         handleGroupSelect(found);
+        if (queryGroupId && found.id) {
+          await nextTick();
+          groupListRef.value?.scrollToGroup(found.id, "center");
+        }
       } else {
         handleGroupSelect(groups.value[0] ?? null);
       }
@@ -317,8 +321,8 @@ function handleNavigateToGroup(groupId: number) {
 }
 
 // Handle site navigation, navigate to site management page
-function handleNavigateToSite(_siteId: number) {
-  router.push({ name: "more", query: { tab: "site" } });
+function handleNavigateToSite(siteId: number) {
+  router.push({ name: "more", query: { tab: "site", siteId } });
 }
 
 // Handle group refresh from GroupInfoCard (e.g., after binding/unbinding)

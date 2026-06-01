@@ -63,25 +63,33 @@ func TestDbMetricToMemory(t *testing.T) {
 	now := time.Now()
 	lastFailure := now.Add(-time.Hour)
 	lastSuccess := now.Add(-30 * time.Minute)
+	lastRateLimit := now.Add(-15 * time.Minute)
 	lastRollover := now.Add(-24 * time.Hour)
 
 	t.Run("all fields populated", func(t *testing.T) {
 		dbm := &models.DynamicWeightMetric{
-			ConsecutiveFailures: 3,
-			LastFailureAt:       &lastFailure,
-			LastSuccessAt:       &lastSuccess,
-			Requests7d:          100,
-			Successes7d:         95,
-			Requests14d:         200,
-			Successes14d:        190,
-			Requests30d:         400,
-			Successes30d:        380,
-			Requests90d:         1000,
-			Successes90d:        950,
-			Requests180d:        2000,
-			Successes180d:       1900,
-			LastRolloverAt:      &lastRollover,
-			UpdatedAt:           now,
+			ConsecutiveFailures:   3,
+			LastFailureAt:         &lastFailure,
+			LastSuccessAt:         &lastSuccess,
+			ConsecutiveRateLimits: 2,
+			LastRateLimitAt:       &lastRateLimit,
+			Requests7d:            100,
+			Successes7d:           95,
+			RateLimits7d:          4,
+			Requests14d:           200,
+			Successes14d:          190,
+			RateLimits14d:         8,
+			Requests30d:           400,
+			Successes30d:          380,
+			RateLimits30d:         12,
+			Requests90d:           1000,
+			Successes90d:          950,
+			RateLimits90d:         20,
+			Requests180d:          2000,
+			Successes180d:         1900,
+			RateLimits180d:        40,
+			LastRolloverAt:        &lastRollover,
+			UpdatedAt:             now,
 		}
 
 		metrics := dbMetricToMemory(dbm)
@@ -95,11 +103,23 @@ func TestDbMetricToMemory(t *testing.T) {
 		if !metrics.LastSuccessAt.Equal(lastSuccess) {
 			t.Error("LastSuccessAt mismatch")
 		}
+		if metrics.ConsecutiveRateLimits != 2 {
+			t.Errorf("Expected ConsecutiveRateLimits 2, got %d", metrics.ConsecutiveRateLimits)
+		}
+		if !metrics.LastRateLimitAt.Equal(lastRateLimit) {
+			t.Error("LastRateLimitAt mismatch")
+		}
 		if metrics.Requests7d != 100 {
 			t.Errorf("Expected Requests7d 100, got %d", metrics.Requests7d)
 		}
 		if metrics.Successes7d != 95 {
 			t.Errorf("Expected Successes7d 95, got %d", metrics.Successes7d)
+		}
+		if metrics.RateLimits7d != 4 {
+			t.Errorf("Expected RateLimits7d 4, got %d", metrics.RateLimits7d)
+		}
+		if metrics.RateLimits180d != 40 {
+			t.Errorf("Expected RateLimits180d 40, got %d", metrics.RateLimits180d)
 		}
 		if !metrics.LastRolloverAt.Equal(lastRollover) {
 			t.Error("LastRolloverAt mismatch")
@@ -128,6 +148,9 @@ func TestDbMetricToMemory(t *testing.T) {
 		if !metrics.LastSuccessAt.IsZero() {
 			t.Error("Expected zero LastSuccessAt for nil pointer")
 		}
+		if !metrics.LastRateLimitAt.IsZero() {
+			t.Error("Expected zero LastRateLimitAt for nil pointer")
+		}
 		if !metrics.LastRolloverAt.IsZero() {
 			t.Error("Expected zero LastRolloverAt for nil pointer")
 		}
@@ -135,6 +158,53 @@ func TestDbMetricToMemory(t *testing.T) {
 			t.Errorf("Expected Requests7d 50, got %d", metrics.Requests7d)
 		}
 	})
+}
+
+func TestDynamicWeightPersistence_KeyToDBMetricPreservesRateLimitFields(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
+	manager := NewDynamicWeightManager(kvStore)
+	persistence := NewDynamicWeightPersistence(db, manager)
+
+	lastRateLimit := time.Now().Add(-time.Minute).Truncate(time.Second)
+	metrics := &DynamicWeightMetrics{
+		ConsecutiveRateLimits: 3,
+		LastRateLimitAt:       lastRateLimit,
+		Requests7d:            10,
+		Successes7d:           6,
+		RateLimits7d:          4,
+		Requests14d:           20,
+		Successes14d:          15,
+		RateLimits14d:         5,
+		Requests30d:           30,
+		Successes30d:          24,
+		RateLimits30d:         6,
+		Requests90d:           90,
+		Successes90d:          70,
+		RateLimits90d:         7,
+		Requests180d:          180,
+		Successes180d:         140,
+		RateLimits180d:        8,
+	}
+
+	dbm := persistence.keyToDBMetric(GroupMetricsKey(7), metrics)
+	if dbm == nil {
+		t.Fatal("Expected DB metric")
+	}
+	if dbm.ConsecutiveRateLimits != 3 {
+		t.Errorf("Expected ConsecutiveRateLimits 3, got %d", dbm.ConsecutiveRateLimits)
+	}
+	if dbm.LastRateLimitAt == nil || !dbm.LastRateLimitAt.Equal(lastRateLimit) {
+		t.Error("LastRateLimitAt mismatch")
+	}
+	if dbm.RateLimits7d != 4 {
+		t.Errorf("Expected RateLimits7d 4, got %d", dbm.RateLimits7d)
+	}
+	if dbm.RateLimits180d != 8 {
+		t.Errorf("Expected RateLimits180d 8, got %d", dbm.RateLimits180d)
+	}
 }
 
 func TestParseSubGroupKeyParts(t *testing.T) {
@@ -616,53 +686,53 @@ func TestDynamicWeightPersistence_CleanupExpiredMetrics(t *testing.T) {
 func TestApplyDecay(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name        string
-		count       int64
-		windowDays  int
-		daysPassed  int
-		expected    int64
+		name       string
+		count      int64
+		windowDays int
+		daysPassed int
+		expected   int64
 	}{
 		{
-			name:        "no decay",
-			count:       100,
-			windowDays:  7,
-			daysPassed:  0,
-			expected:    100,
+			name:       "no decay",
+			count:      100,
+			windowDays: 7,
+			daysPassed: 0,
+			expected:   100,
 		},
 		{
-			name:        "half window passed",
-			count:       100,
-			windowDays:  10,
-			daysPassed:  5,
-			expected:    50,
+			name:       "half window passed",
+			count:      100,
+			windowDays: 10,
+			daysPassed: 5,
+			expected:   50,
 		},
 		{
-			name:        "full window passed",
-			count:       100,
-			windowDays:  7,
-			daysPassed:  7,
-			expected:    0,
+			name:       "full window passed",
+			count:      100,
+			windowDays: 7,
+			daysPassed: 7,
+			expected:   0,
 		},
 		{
-			name:        "more than window passed",
-			count:       100,
-			windowDays:  7,
-			daysPassed:  10,
-			expected:    0,
+			name:       "more than window passed",
+			count:      100,
+			windowDays: 7,
+			daysPassed: 10,
+			expected:   0,
 		},
 		{
-			name:        "zero count",
-			count:       0,
-			windowDays:  7,
-			daysPassed:  3,
-			expected:    0,
+			name:       "zero count",
+			count:      0,
+			windowDays: 7,
+			daysPassed: 3,
+			expected:   0,
 		},
 		{
-			name:        "one day passed in 7-day window",
-			count:       70,
-			windowDays:  7,
-			daysPassed:  1,
-			expected:    60,
+			name:       "one day passed in 7-day window",
+			count:      70,
+			windowDays: 7,
+			daysPassed: 1,
+			expected:   60,
 		},
 	}
 

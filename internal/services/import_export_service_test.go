@@ -360,27 +360,35 @@ func TestExportImportSystemRestoresDynamicWeightsByGroupName(t *testing.T) {
 
 	lastFailureAt := time.Now().Add(-time.Hour).Truncate(time.Second)
 	lastSuccessAt := time.Now().Add(-time.Minute).Truncate(time.Second)
+	lastRateLimitAt := time.Now().Add(-30 * time.Minute).Truncate(time.Second)
 	lastRolloverAt := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
 	deletedAt := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 
 	sourceMetrics := []models.DynamicWeightMetric{
 		{
-			MetricType:          models.MetricTypeGroup,
-			GroupID:             standard.ID,
-			ConsecutiveFailures: 2,
-			LastFailureAt:       &lastFailureAt,
-			LastSuccessAt:       &lastSuccessAt,
-			Requests7d:          10,
-			Successes7d:         8,
-			Requests14d:         15,
-			Successes14d:        12,
-			Requests30d:         30,
-			Successes30d:        25,
-			Requests90d:         90,
-			Successes90d:        80,
-			Requests180d:        180,
-			Successes180d:       160,
-			LastRolloverAt:      &lastRolloverAt,
+			MetricType:            models.MetricTypeGroup,
+			GroupID:               standard.ID,
+			ConsecutiveFailures:   2,
+			LastFailureAt:         &lastFailureAt,
+			LastSuccessAt:         &lastSuccessAt,
+			ConsecutiveRateLimits: 1,
+			LastRateLimitAt:       &lastRateLimitAt,
+			Requests7d:            10,
+			Successes7d:           8,
+			RateLimits7d:          1,
+			Requests14d:           15,
+			Successes14d:          12,
+			RateLimits14d:         2,
+			Requests30d:           30,
+			Successes30d:          25,
+			RateLimits30d:         3,
+			Requests90d:           90,
+			Successes90d:          80,
+			RateLimits90d:         4,
+			Requests180d:          180,
+			Successes180d:         160,
+			RateLimits180d:        5,
+			LastRolloverAt:        &lastRolloverAt,
 		},
 		{
 			MetricType:          models.MetricTypeSubGroup,
@@ -389,10 +397,13 @@ func TestExportImportSystemRestoresDynamicWeightsByGroupName(t *testing.T) {
 			ConsecutiveFailures: 1,
 			Requests7d:          20,
 			Successes7d:         19,
+			RateLimits7d:        1,
 			Requests14d:         25,
 			Successes14d:        23,
+			RateLimits14d:       2,
 			Requests30d:         40,
 			Successes30d:        35,
+			RateLimits30d:       3,
 		},
 		{
 			MetricType:          models.MetricTypeModelRedirect,
@@ -437,13 +448,18 @@ func TestExportImportSystemRestoresDynamicWeightsByGroupName(t *testing.T) {
 	assert.Equal(t, groupByName["dw-standard"].ID, groupMetric.GroupID)
 	assert.Equal(t, int64(10), groupMetric.Requests7d)
 	assert.Equal(t, int64(160), groupMetric.Successes180d)
+	assert.Equal(t, int64(1), groupMetric.ConsecutiveRateLimits)
+	assert.Equal(t, int64(5), groupMetric.RateLimits180d)
 	require.NotNil(t, groupMetric.LastFailureAt)
 	assert.True(t, groupMetric.LastFailureAt.Equal(lastFailureAt))
+	require.NotNil(t, groupMetric.LastRateLimitAt)
+	assert.True(t, groupMetric.LastRateLimitAt.Equal(lastRateLimitAt))
 
 	subGroupMetric := restoredByType[models.MetricTypeSubGroup]
 	assert.Equal(t, groupByName["dw-aggregate"].ID, subGroupMetric.GroupID)
 	assert.Equal(t, groupByName["dw-sub"].ID, subGroupMetric.SubGroupID)
 	assert.Equal(t, int64(19), subGroupMetric.Successes7d)
+	assert.Equal(t, int64(3), subGroupMetric.RateLimits30d)
 
 	modelMetric := restoredByType[models.MetricTypeModelRedirect]
 	assert.Equal(t, groupByName["dw-standard"].ID, modelMetric.GroupID)

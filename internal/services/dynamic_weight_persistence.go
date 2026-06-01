@@ -187,24 +187,33 @@ func (p *DynamicWeightPersistence) LoadFromDatabase() error {
 // dbMetricToMemory converts database model to in-memory metrics.
 func dbMetricToMemory(dbm *models.DynamicWeightMetric) *DynamicWeightMetrics {
 	metrics := &DynamicWeightMetrics{
-		ConsecutiveFailures: dbm.ConsecutiveFailures,
-		Requests7d:          dbm.Requests7d,
-		Successes7d:         dbm.Successes7d,
-		Requests14d:         dbm.Requests14d,
-		Successes14d:        dbm.Successes14d,
-		Requests30d:         dbm.Requests30d,
-		Successes30d:        dbm.Successes30d,
-		Requests90d:         dbm.Requests90d,
-		Successes90d:        dbm.Successes90d,
-		Requests180d:        dbm.Requests180d,
-		Successes180d:       dbm.Successes180d,
-		UpdatedAt:           dbm.UpdatedAt,
+		ConsecutiveFailures:   dbm.ConsecutiveFailures,
+		ConsecutiveRateLimits: dbm.ConsecutiveRateLimits,
+		Requests7d:            dbm.Requests7d,
+		Successes7d:           dbm.Successes7d,
+		RateLimits7d:          dbm.RateLimits7d,
+		Requests14d:           dbm.Requests14d,
+		Successes14d:          dbm.Successes14d,
+		RateLimits14d:         dbm.RateLimits14d,
+		Requests30d:           dbm.Requests30d,
+		Successes30d:          dbm.Successes30d,
+		RateLimits30d:         dbm.RateLimits30d,
+		Requests90d:           dbm.Requests90d,
+		Successes90d:          dbm.Successes90d,
+		RateLimits90d:         dbm.RateLimits90d,
+		Requests180d:          dbm.Requests180d,
+		Successes180d:         dbm.Successes180d,
+		RateLimits180d:        dbm.RateLimits180d,
+		UpdatedAt:             dbm.UpdatedAt,
 	}
 	if dbm.LastFailureAt != nil {
 		metrics.LastFailureAt = *dbm.LastFailureAt
 	}
 	if dbm.LastSuccessAt != nil {
 		metrics.LastSuccessAt = *dbm.LastSuccessAt
+	}
+	if dbm.LastRateLimitAt != nil {
+		metrics.LastRateLimitAt = *dbm.LastRateLimitAt
 	}
 	if dbm.LastRolloverAt != nil {
 		metrics.LastRolloverAt = *dbm.LastRolloverAt
@@ -284,18 +293,24 @@ func (p *DynamicWeightPersistence) syncDirtyKeys() {
 // keyToDBMetric converts a store key and metrics to database model.
 func (p *DynamicWeightPersistence) keyToDBMetric(key string, metrics *DynamicWeightMetrics) *models.DynamicWeightMetric {
 	dbm := &models.DynamicWeightMetric{
-		ConsecutiveFailures: metrics.ConsecutiveFailures,
-		Requests7d:          metrics.Requests7d,
-		Successes7d:         metrics.Successes7d,
-		Requests14d:         metrics.Requests14d,
-		Successes14d:        metrics.Successes14d,
-		Requests30d:         metrics.Requests30d,
-		Successes30d:        metrics.Successes30d,
-		Requests90d:         metrics.Requests90d,
-		Successes90d:        metrics.Successes90d,
-		Requests180d:        metrics.Requests180d,
-		Successes180d:       metrics.Successes180d,
-		UpdatedAt:           metrics.UpdatedAt,
+		ConsecutiveFailures:   metrics.ConsecutiveFailures,
+		ConsecutiveRateLimits: metrics.ConsecutiveRateLimits,
+		Requests7d:            metrics.Requests7d,
+		Successes7d:           metrics.Successes7d,
+		RateLimits7d:          metrics.RateLimits7d,
+		Requests14d:           metrics.Requests14d,
+		Successes14d:          metrics.Successes14d,
+		RateLimits14d:         metrics.RateLimits14d,
+		Requests30d:           metrics.Requests30d,
+		Successes30d:          metrics.Successes30d,
+		RateLimits30d:         metrics.RateLimits30d,
+		Requests90d:           metrics.Requests90d,
+		Successes90d:          metrics.Successes90d,
+		RateLimits90d:         metrics.RateLimits90d,
+		Requests180d:          metrics.Requests180d,
+		Successes180d:         metrics.Successes180d,
+		RateLimits180d:        metrics.RateLimits180d,
+		UpdatedAt:             metrics.UpdatedAt,
 	}
 	if !metrics.LastFailureAt.IsZero() {
 		t := metrics.LastFailureAt
@@ -304,6 +319,10 @@ func (p *DynamicWeightPersistence) keyToDBMetric(key string, metrics *DynamicWei
 	if !metrics.LastSuccessAt.IsZero() {
 		t := metrics.LastSuccessAt
 		dbm.LastSuccessAt = &t
+	}
+	if !metrics.LastRateLimitAt.IsZero() {
+		t := metrics.LastRateLimitAt
+		dbm.LastRateLimitAt = &t
 	}
 	if !metrics.LastRolloverAt.IsZero() {
 		t := metrics.LastRolloverAt
@@ -467,16 +486,23 @@ func (p *DynamicWeightPersistence) batchUpsertDefault(metrics []models.DynamicWe
 			"consecutive_failures",
 			"last_failure_at",
 			"last_success_at",
+			"consecutive_rate_limits",
+			"last_rate_limit_at",
 			"requests_7d",
 			"successes_7d",
+			"rate_limits_7d",
 			"requests_14d",
 			"successes_14d",
+			"rate_limits_14d",
 			"requests_30d",
 			"successes_30d",
+			"rate_limits_30d",
 			"requests_90d",
 			"successes_90d",
+			"rate_limits_90d",
 			"requests_180d",
 			"successes_180d",
+			"rate_limits_180d",
 			"last_rollover_at",
 			"updated_at",
 		}),
@@ -667,14 +693,19 @@ func (p *DynamicWeightPersistence) RolloverTimeWindows() {
 				// Apply decay to each time window
 				dbm.Requests7d = applyDecay(dbm.Requests7d, 7, daysSinceRollover)
 				dbm.Successes7d = applyDecay(dbm.Successes7d, 7, daysSinceRollover)
+				dbm.RateLimits7d = applyDecay(dbm.RateLimits7d, 7, daysSinceRollover)
 				dbm.Requests14d = applyDecay(dbm.Requests14d, 14, daysSinceRollover)
 				dbm.Successes14d = applyDecay(dbm.Successes14d, 14, daysSinceRollover)
+				dbm.RateLimits14d = applyDecay(dbm.RateLimits14d, 14, daysSinceRollover)
 				dbm.Requests30d = applyDecay(dbm.Requests30d, 30, daysSinceRollover)
 				dbm.Successes30d = applyDecay(dbm.Successes30d, 30, daysSinceRollover)
+				dbm.RateLimits30d = applyDecay(dbm.RateLimits30d, 30, daysSinceRollover)
 				dbm.Requests90d = applyDecay(dbm.Requests90d, 90, daysSinceRollover)
 				dbm.Successes90d = applyDecay(dbm.Successes90d, 90, daysSinceRollover)
+				dbm.RateLimits90d = applyDecay(dbm.RateLimits90d, 90, daysSinceRollover)
 				dbm.Requests180d = applyDecay(dbm.Requests180d, 180, daysSinceRollover)
 				dbm.Successes180d = applyDecay(dbm.Successes180d, 180, daysSinceRollover)
+				dbm.RateLimits180d = applyDecay(dbm.RateLimits180d, 180, daysSinceRollover)
 
 				dbm.LastRolloverAt = &now
 				toUpdate = append(toUpdate, dbm)

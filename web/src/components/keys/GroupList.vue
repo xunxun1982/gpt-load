@@ -296,8 +296,12 @@ function scrollWithinGroupsSection(element: HTMLElement, block: ScrollLogicalPos
   const bottomDelta = elementRect.bottom - containerRect.bottom;
 
   let targetTop: number;
-  if (block === "start") {
+  if (block === "center") {
+    targetTop = currentTop + topDelta - (containerRect.height - elementRect.height) / 2;
+  } else if (block === "start") {
     targetTop = currentTop + topDelta;
+  } else if (block === "end") {
+    targetTop = currentTop + bottomDelta;
   } else if (topDelta < 0) {
     targetTop = currentTop + topDelta;
   } else if (bottomDelta > 0) {
@@ -311,6 +315,15 @@ function scrollWithinGroupsSection(element: HTMLElement, block: ScrollLogicalPos
   container.scrollTo({
     top: Math.max(0, targetTop),
     behavior: prefersReducedMotion ? "auto" : "smooth",
+  });
+}
+
+function scrollToGroup(groupId: number, block: ScrollLogicalPosition = "nearest") {
+  nextTick(() => {
+    const element = groupItemRefs.value.get(groupId);
+    if (element instanceof HTMLElement) {
+      scrollWithinGroupsSection(element, block);
+    }
   });
 }
 
@@ -331,10 +344,7 @@ watch(
       return;
     }
 
-    const element = groupItemRefs.value.get(id);
-    if (element) {
-      scrollWithinGroupsSection(element, "nearest");
-    }
+    scrollToGroup(id, "nearest");
   },
   {
     flush: "post", // Ensure callback executes after DOM update
@@ -773,6 +783,7 @@ function getVisibleChannelTypes() {
 // Expose methods for parent component to call
 defineExpose({
   loadAllChildGroups,
+  scrollToGroup,
   scrollToChannelType,
   scrollToSection,
   getVisibleChannelTypes,

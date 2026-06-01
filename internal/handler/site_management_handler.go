@@ -97,6 +97,10 @@ func (s *Server) ListManagedSitesPaginated(c *gin.Context) {
 		pageSize = 50
 	}
 	params.PageSize = pageSize
+	focusSiteID, err := strconv.ParseUint(c.DefaultQuery("focus_site_id", "0"), 10, 64)
+	if err == nil && focusSiteID > 0 {
+		params.FocusSiteID = uint(focusSiteID)
+	}
 	params.Search = c.Query("search")
 
 	// Parse boolean filter params using direct string comparison.

@@ -336,6 +336,88 @@ func TestDynamicWeightManager_CalculateWeightedSuccessRate(t *testing.T) {
 	}
 }
 
+func TestDynamicWeightManager_HealthUsesRateLimitCreditWithoutChangingRawSuccessRate(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	rateLimitMetrics := &DynamicWeightMetrics{
+		Requests7d:     6,
+		Successes7d:    2,
+		RateLimits7d:   4,
+		Requests180d:   6,
+		Successes180d:  2,
+		RateLimits180d: 4,
+	}
+	hardFailureMetrics := &DynamicWeightMetrics{
+		Requests7d:    6,
+		Successes7d:   2,
+		Requests180d:  6,
+		Successes180d: 2,
+	}
+
+	assert.InDelta(t, 33.3, dwm.CalculateWeightedSuccessRate(rateLimitMetrics), 0.1)
+	assert.Greater(t, dwm.calculateHealthSuccessRate(rateLimitMetrics), dwm.CalculateWeightedSuccessRate(rateLimitMetrics))
+	assert.Greater(t, dwm.CalculateHealthScore(rateLimitMetrics), dwm.CalculateHealthScore(hardFailureMetrics))
+}
+
+func TestDynamicWeightManager_InterleavedFailuresKeepModerateHealth(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(501)
+	subGroupID := uint(502)
+
+	// Pattern: F,F,F,S,S,F,S. A success clears consecutive failure pressure,
+	// while the 3/7 raw success rate still prevents full recovery.
+	for i := 0; i < 3; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
+	}
+	for i := 0; i < 2; i++ {
+		dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupID)
+	}
+	dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
+	dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupID)
+
+	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), metrics.Requests7d)
+	assert.Equal(t, int64(3), metrics.Successes7d)
+	assert.Equal(t, int64(0), metrics.ConsecutiveFailures)
+
+	healthScore := dwm.CalculateHealthScore(metrics)
+	assert.GreaterOrEqual(t, healthScore, 0.65)
+	assert.Less(t, healthScore, 1.0)
+}
+
+func TestDynamicWeightManager_SingleSuccessAfterFailuresImprovesButDoesNotFullyRecover(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(601)
+	subGroupID := uint(602)
+
+	for i := 0; i < 5; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
+	}
+	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	healthBefore := dwm.CalculateHealthScore(metrics)
+
+	dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupID)
+	metrics, err = dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	healthAfter := dwm.CalculateHealthScore(metrics)
+
+	assert.Equal(t, int64(0), metrics.ConsecutiveFailures)
+	assert.Greater(t, healthAfter, healthBefore)
+	assert.Greater(t, healthAfter-healthBefore, 0.25)
+	assert.GreaterOrEqual(t, healthAfter, 0.65)
+	assert.Less(t, healthAfter, 0.9)
+}
+
 // TestDynamicWeightManager_ModelRedirectMetrics tests model redirect metrics
 func TestDynamicWeightManager_ModelRedirectMetrics(t *testing.T) {
 	memStore := store.NewMemoryStore()
@@ -1099,6 +1181,33 @@ func TestDynamicWeightManager_RateLimitHandling(t *testing.T) {
 	// Health score with rate limits should be significantly higher than with regular failures
 	assert.Greater(t, healthB, healthA, "Rate limit health should be higher than regular failure health")
 	assert.Greater(t, healthB-healthA, 0.15, "Health difference should be significant (>0.15)")
+}
+
+func TestDynamicWeightManager_ConsecutiveRateLimitsDecaySlowerThanHardFailures(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(700)
+	hardFailureSubGroupID := uint(701)
+	rateLimitSubGroupID := uint(702)
+
+	for i := 0; i < 8; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, hardFailureSubGroupID, false)
+		dwm.RecordSubGroupFailure(aggregateGroupID, rateLimitSubGroupID, true)
+	}
+
+	hardFailureMetrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, hardFailureSubGroupID)
+	require.NoError(t, err)
+	rateLimitMetrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, rateLimitSubGroupID)
+	require.NoError(t, err)
+
+	hardFailureHealth := dwm.CalculateHealthScore(hardFailureMetrics)
+	rateLimitHealth := dwm.CalculateHealthScore(rateLimitMetrics)
+
+	assert.LessOrEqual(t, hardFailureHealth, 0.35)
+	assert.GreaterOrEqual(t, rateLimitHealth, 0.55)
+	assert.Greater(t, rateLimitHealth, hardFailureHealth+0.25)
 }
 
 // TestDynamicWeightManager_RateLimitRecovery tests that rate limit counters
