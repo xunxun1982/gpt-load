@@ -2585,6 +2585,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			c.Header("Content-Encoding", origEncoding)
 		}
 
+		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
@@ -3720,7 +3721,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	})
 	defer aggregator.Close()
 
-	finalize := func(stopReason string, usage *OpenAIUsage) {
+	finalize := func(stopReason string, usage *OpenAIUsage, success bool) {
 		initialStopReason := stopReason
 		logrus.WithFields(logrus.Fields{
 			"msg_id":                  msgID,
@@ -3802,7 +3803,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			usagePayload.InputTokens = usage.PromptTokens
 			usagePayload.OutputTokens = usage.CompletionTokens
 			setTokenUsageCounts(c, int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens))
-		} else if estimatedOutputTokens := outputEstimate.Tokens(); estimatedOutputTokens > 0 {
+		} else if estimatedOutputTokens := outputEstimate.Tokens(); success && estimatedOutputTokens > 0 {
 			setEstimatedOutputTokens(c, estimatedOutputTokens)
 			usagePayload.OutputTokens = int(estimatedOutputTokens)
 			// Keep fallback tokens in the estimated path so request logs do not mark them as upstream usage.
@@ -3840,7 +3841,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			if err == io.EOF {
 				logrus.Debug("CC: Upstream stream EOF")
 				// Ensure final events are sent on EOF to prevent client hanging
-				finalize(streamStopReason, streamUsage)
+				finalize(streamStopReason, streamUsage, true)
 			} else if errors.Is(err, ErrSSETimeout) {
 				// Handle timeout error - send error event to client instead of hanging
 				logrus.WithError(err).Warn("CC: SSE read timeout, sending error to client")
@@ -3862,17 +3863,17 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					logrus.WithError(sendErr).Error("CC: Failed to send timeout error event")
 				}
 				// Send final events to properly terminate the stream
-				finalize(streamStopReason, streamUsage)
+				finalize(streamStopReason, streamUsage, false)
 			} else {
 				logrus.WithError(err).Error("CC: Error reading stream")
 				// Send final events on error to ensure client receives termination
-				finalize(streamStopReason, streamUsage)
+				finalize(streamStopReason, streamUsage, false)
 			}
 			break
 		}
 
 		if event.Data == "[DONE]" {
-			finalize(streamStopReason, streamUsage)
+			finalize(streamStopReason, streamUsage, true)
 			logrus.Debug("CC: Stream finished successfully")
 			break
 		}

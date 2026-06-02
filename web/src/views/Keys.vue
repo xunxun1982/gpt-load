@@ -123,28 +123,32 @@ async function loadGroups() {
   try {
     loading.value = true;
     groups.value = await keysApi.getGroups();
-    // Select default group
-    if (groups.value.length > 0 && !selectedGroup.value) {
-      const queryGroupId = Array.isArray(route.query.groupId)
-        ? route.query.groupId[0]
-        : route.query.groupId;
-      const groupId = queryGroupId ?? getLastSelectedGroupId();
-      const found = groups.value.find(g => String(g.id) === String(groupId));
-      if (found) {
-        handleGroupSelect(found);
-        if (queryGroupId && found.id) {
-          await nextTick();
-          groupListRef.value?.scrollToGroup(found.id, "center");
-        }
-      } else {
-        handleGroupSelect(groups.value[0] ?? null);
-      }
-    }
+    await syncSelectedGroupAfterLoad();
   } catch (error) {
     console.error("Failed to load groups:", error);
     window.$message?.error("加载分组列表失败");
   } finally {
     loading.value = false;
+  }
+}
+
+async function syncSelectedGroupAfterLoad() {
+  if (groups.value.length === 0) {
+    handleGroupSelect(null);
+    return;
+  }
+
+  const queryGroupId = Array.isArray(route.query.groupId)
+    ? route.query.groupId[0]
+    : route.query.groupId;
+  const targetId = queryGroupId ?? selectedGroup.value?.id ?? getLastSelectedGroupId();
+  const targetGroup = groups.value.find(g => String(g.id) === String(targetId));
+  const nextGroup = targetGroup ?? groups.value[0] ?? null;
+
+  handleGroupSelect(nextGroup);
+  if (queryGroupId && nextGroup?.id) {
+    await nextTick();
+    groupListRef.value?.scrollToGroup(nextGroup.id, "center");
   }
 }
 
@@ -174,6 +178,16 @@ watch(selectedGroup, async newGroup => {
     subGroups.value = [];
   }
 });
+
+watch(
+  () => route.query.groupId,
+  async () => {
+    if (groups.value.length === 0) {
+      return;
+    }
+    await syncSelectedGroupAfterLoad();
+  }
+);
 
 // Watch for task completion to refresh group list
 // This handles async group deletion completion

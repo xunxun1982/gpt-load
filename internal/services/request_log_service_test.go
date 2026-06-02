@@ -12,12 +12,23 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestRequestLogServiceWriteLogsToDBUpdatesKeyStatsByGroupAndHash(t *testing.T) {
-	t.Parallel()
+func setupRequestLogServiceTestDB(t *testing.T, tables ...interface{}) *gorm.DB {
+	t.Helper()
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&models.APIKey{}, &models.RequestLog{}, &models.GroupHourlyStat{}, &models.ModelTokenHourlyStat{}))
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	require.NoError(t, db.AutoMigrate(tables...))
+	return db
+}
+
+func TestRequestLogServiceWriteLogsToDBUpdatesKeyStatsByGroupAndHash(t *testing.T) {
+	t.Parallel()
+
+	db := setupRequestLogServiceTestDB(t, &models.APIKey{}, &models.RequestLog{}, &models.GroupHourlyStat{}, &models.ModelTokenHourlyStat{})
 
 	const sharedHash = "shared-hash"
 	keys := []models.APIKey{
@@ -53,9 +64,7 @@ func TestRequestLogServiceWriteLogsToDBUpdatesKeyStatsByGroupAndHash(t *testing.
 func TestRequestLogServiceWriteLogsToDBAggregatesModelTokenStats(t *testing.T) {
 	t.Parallel()
 
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&models.RequestLog{}, &models.GroupHourlyStat{}, &models.ModelTokenHourlyStat{}))
+	db := setupRequestLogServiceTestDB(t, &models.RequestLog{}, &models.GroupHourlyStat{}, &models.ModelTokenHourlyStat{})
 
 	baseTime := time.Date(2026, 5, 30, 10, 10, 0, 0, time.UTC)
 	logs := []*models.RequestLog{

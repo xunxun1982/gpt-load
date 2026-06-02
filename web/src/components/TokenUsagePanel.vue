@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { getDashboardTokenUsage, type DashboardChartRange } from "@/api/dashboard";
 import type { ChartData, DashboardTokenUsageResponse, ModelTokenUsageItem } from "@/types/models";
+import { formatTokenCount } from "@/utils/display";
 import { NEmpty, NSelect, NSpin, type SelectOption } from "naive-ui";
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -58,26 +59,6 @@ const timeRanges: Array<{ value: DashboardChartRange; labelKey: string }> = [
   { value: "last_month", labelKey: "charts.rangeLastMonth" },
   { value: "last_30_days", labelKey: "dashboard.last30Days" },
 ];
-
-const formatTokenCount = (value: number) => {
-  const roundedValue = Math.round(value);
-  const absValue = Math.abs(roundedValue);
-  const units = [
-    { threshold: 1_000_000_000_000, suffix: "T" },
-    { threshold: 1_000_000_000, suffix: "B" },
-    { threshold: 1_000_000, suffix: "M" },
-    { threshold: 1_000, suffix: "K" },
-  ];
-
-  for (const unit of units) {
-    if (absValue >= unit.threshold) {
-      const scaled = roundedValue / unit.threshold;
-      const fractionDigits = Math.abs(scaled) >= 100 ? 0 : 1;
-      return `${scaled.toFixed(fractionDigits)}${unit.suffix}`;
-    }
-  }
-  return roundedValue.toString();
-};
 
 const formatExactTokenCount = (value: number) => {
   return new Intl.NumberFormat().format(Math.round(value));

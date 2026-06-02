@@ -252,7 +252,19 @@ func usageFromRaw(raw json.RawMessage) (Usage, bool) {
 func fallbackTotalTokens(fields map[string]json.RawMessage, usage Usage) int64 {
 	total := usage.InputTokens + usage.OutputTokens
 
-	if hasAnyField(fields, "cache_read_input_tokens", "cache_creation_input_tokens", "cached_input_tokens", "cache_read_tokens", "cache_write_tokens") {
+	if hasAnyField(
+		fields,
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+		"cached_input_tokens",
+		"cached_tokens",
+		"cachedContentTokenCount",
+		"cacheReadInputTokens",
+		"prompt_cache_hit_tokens",
+		"cache_read_tokens",
+		"cache_write_tokens",
+		"cacheWriteInputTokens",
+	) {
 		total += usage.CacheReadTokens + usage.CacheWriteTokens
 	}
 	if hasAnyField(fields, "thinking_tokens", "reasoning_output_tokens", "thoughtsTokenCount") {

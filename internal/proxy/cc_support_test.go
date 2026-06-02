@@ -1238,6 +1238,10 @@ data: [DONE]
 	if got := getEstimatedOutputTokens(c); got <= 0 {
 		t.Fatalf("expected estimated output tokens from tool call arguments, got %d", got)
 	}
+	usage, source, hasUsage := getTokenUsage(c)
+	if hasUsage || !usage.IsZero() || source != "" {
+		t.Fatalf("tool-call-only fallback should not set upstream usage: %+v source=%q ok=%v", usage, source, hasUsage)
+	}
 }
 
 func TestCCStreamingResponse_UsageOnlyChunkAfterFinishReason(t *testing.T) {
@@ -1272,7 +1276,40 @@ data: [DONE]
 	require.Equal(t, int64(11), usage.InputTokens)
 	require.Equal(t, int64(7), usage.OutputTokens)
 	require.Equal(t, int64(18), usage.TotalTokens)
+	require.Zero(t, getEstimatedOutputTokens(c), "trailing upstream usage should suppress fallback estimation")
 	require.Contains(t, w.Body.String(), `"usage":{"input_tokens":11,"output_tokens":7}`)
+}
+
+func TestCCStreamingResponse_SkipsEstimatedFallbackOnTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"id":"chatcmpl-timeout","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"partial output"},"finish_reason":null}]}` + "\n\n"))
+	}()
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       pr,
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("original_model", "gpt-4")
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{RequestTimeout: 1}})
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	require.Contains(t, w.Body.String(), `"type":"error"`)
+	require.Zero(t, getEstimatedOutputTokens(c), "aborted streams should not persist fallback estimates")
+	usage, source, hasUsage := getTokenUsage(c)
+	require.False(t, hasUsage, "aborted stream without upstream usage should not set token usage")
+	require.True(t, usage.IsZero())
+	require.Empty(t, source)
 }
 
 // TestCCNormalResponse_ReasoningContent tests that reasoning_content from
@@ -6346,6 +6383,34 @@ func TestHandleCCNormalResponseWithToolNameRestore(t *testing.T) {
 	if claudeResp.Content[0].Name != "mcp__very_long_original_tool_name_that_exceeds_64_characters_limit" {
 		t.Errorf("expected restored tool name, got %s", claudeResp.Content[0].Name)
 	}
+}
+
+func TestHandleCCNormalResponsePassthroughCapturesTokenUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	responseBody := `plain alternate schema response`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(responseBody)),
+	}
+	resp.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCCEnabled, true)
+	c.Set(ctxKeyOriginalFormat, "claude")
+
+	ps := &ProxyServer{}
+	ps.handleCCNormalResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, responseBody, w.Body.String())
+	usage, source, ok := getTokenUsage(c)
+	require.False(t, ok)
+	require.True(t, usage.IsZero())
+	require.Empty(t, source)
+	require.Greater(t, getEstimatedOutputTokens(c), int64(0), "expected passthrough response to set fallback estimate")
 }
 
 // TestHandleCCNormalResponseBodyTooLarge tests response body size limit

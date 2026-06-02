@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DashboardStatsResponse } from "@/types/models";
-import { formatPercentage } from "@/utils/display";
+import { formatPercentage, formatTokenCount } from "@/utils/display";
 import { NCard, NGrid, NGridItem, NSpace, NTag, NTooltip } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -200,19 +200,19 @@ watch(
 
             <div class="stat-content">
               <div class="stat-value">
-                {{ stats?.token_usage ? formatValue(stats.token_usage.total_tokens) : "--" }}
+                {{ stats?.token_usage ? formatTokenCount(stats.token_usage.total_tokens) : "--" }}
               </div>
               <div class="stat-title">{{ t("dashboard.tokens24h") }}</div>
               <div class="stat-detail">
                 {{ t("dashboard.inputTokens") }}:
-                {{ stats?.token_usage ? formatValue(stats.token_usage.input_tokens) : "--" }}
+                {{ stats?.token_usage ? formatTokenCount(stats.token_usage.input_tokens) : "--" }}
                 ·
                 {{ t("dashboard.outputTokens") }}:
-                {{ stats?.token_usage ? formatValue(stats.token_usage.output_tokens) : "--" }}
+                {{ stats?.token_usage ? formatTokenCount(stats.token_usage.output_tokens) : "--" }}
               </div>
               <div v-if="stats?.token_usage?.estimated_tokens" class="stat-detail">
                 {{ t("dashboard.includesEstimated") }}:
-                {{ formatValue(stats.token_usage.estimated_tokens) }}
+                {{ formatTokenCount(stats.token_usage.estimated_tokens) }}
               </div>
             </div>
 

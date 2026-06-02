@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,23 @@ import (
 )
 
 var benchmarkTokenCountSink int64
+
+type errorAfterReadCloser struct {
+	data []byte
+	done bool
+}
+
+func (r *errorAfterReadCloser) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		return copy(p, r.data), nil
+	}
+	return 0, errors.New("test copy error")
+}
+
+func (r *errorAfterReadCloser) Close() error {
+	return nil
+}
 
 func TestShouldCaptureResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -164,6 +182,26 @@ func TestHandleNormalResponsePrefersUpstreamUsage(t *testing.T) {
 	}
 	assert.Equal(t, int64(12), usage.TotalTokens)
 	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: &errorAfterReadCloser{
+			data: []byte(`{"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`),
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	if usage, source, ok := getTokenUsage(c); ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected token usage from truncated body: %+v source=%q ok=%v", usage, source, ok)
+	}
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
 }
 

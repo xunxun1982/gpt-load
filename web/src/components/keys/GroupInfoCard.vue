@@ -7,9 +7,14 @@ import type {
   ParentAggregateGroup,
   SubGroupInfo,
 } from "@/types/models";
-import { appState } from "@/utils/app-state";
+import { appState, showProgressBar } from "@/utils/app-state";
 import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
-import { formatPercentage, getGroupDisplayName, maskProxyKeys } from "@/utils/display";
+import {
+  formatDisplayName,
+  formatPercentage,
+  getGroupDisplayName,
+  maskProxyKeys,
+} from "@/utils/display";
 import { CopyOutline, EyeOffOutline, EyeOutline, Pencil, Trash } from "@vicons/ionicons5";
 import {
   NButton,
@@ -77,6 +82,12 @@ const groupEnabled = computed({
   set: (_value: boolean) => {
     // Handled by handleToggleEnabled
   },
+});
+const groupTitle = computed(() => {
+  if (!props.group) {
+    return t("keys.selectGroup");
+  }
+  return props.group.display_name || formatDisplayName(props.group.name);
 });
 
 const proxyKeysDisplay = computed(() => {
@@ -412,9 +423,10 @@ async function handleDelete() {
               // Check if this is an async deletion (GROUP_DELETE_ASYNC code)
               const isAsyncDeletion = response?.code === "GROUP_DELETE_ASYNC";
 
-              // Trigger task polling after the request is accepted
-              localStorage.removeItem("last_closed_task");
-              appState.taskPollingTrigger++;
+              if (isAsyncDeletion) {
+                localStorage.removeItem("last_closed_task");
+                showProgressBar(props.group.name);
+              }
 
               // If deleting a child group, pass parent group ID so parent component can select it
               emit(
@@ -523,7 +535,7 @@ function handleNavigateToSite(siteId: number) {
         <div class="card-header">
           <div class="header-left">
             <h3 class="group-title">
-              {{ group ? getGroupDisplayName(group) : t("keys.selectGroup") }}
+              {{ groupTitle }}
               <n-tooltip trigger="hover" v-if="group && group.endpoint">
                 <template #trigger>
                   <code class="group-url" @click="copyUrl(group.endpoint)">

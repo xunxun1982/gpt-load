@@ -153,6 +153,7 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		estimateCapture := &estimatedTokenCapture{}
 		if _, err := io.Copy(io.MultiWriter(c.Writer, usageCapture, estimateCapture), resp.Body); err != nil {
 			logUpstreamError("copying response body", err)
+			return
 		}
 		if (len(usageCapture.buf) == 0 || !setTokenUsageFromBody(c, usageCapture.buf)) && resp.StatusCode < http.StatusBadRequest {
 			setEstimatedOutputTokens(c, estimateCapture.Tokens())

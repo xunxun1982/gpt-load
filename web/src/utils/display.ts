@@ -95,6 +95,26 @@ export function formatPercentage(value: number): string {
   }
 }
 
+export function formatTokenCount(value: number): string {
+  const roundedValue = Math.round(value);
+  const absValue = Math.abs(roundedValue);
+  const units = [
+    { threshold: 1_000_000_000_000, suffix: "T" },
+    { threshold: 1_000_000_000, suffix: "B" },
+    { threshold: 1_000_000, suffix: "M" },
+    { threshold: 1_000, suffix: "K" },
+  ];
+
+  for (const unit of units) {
+    if (absValue >= unit.threshold) {
+      const scaled = roundedValue / unit.threshold;
+      const fractionDigits = Math.abs(scaled) >= 100 ? 0 : 1;
+      return `${scaled.toFixed(fractionDigits)}${unit.suffix}`;
+    }
+  }
+  return roundedValue.toString();
+}
+
 /**
  * Formats a health score (0-1 range) as a percentage with dynamic precision.
  * Converts the 0-1 range to 0-100% and applies dynamic precision formatting.

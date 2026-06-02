@@ -43,7 +43,12 @@ func (s *Server) Stats(c *gin.Context) {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.previous_stats_failed")
 		return
 	}
-	tokenUsage, err := s.getTokenUsageSummary(twentyFourHoursAgo, now, 0, false, "")
+	tokenStartHour, tokenEndExclusive, err := dashboardChartTimeRange(now, "")
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.current_stats_failed")
+		return
+	}
+	tokenUsage, err := s.getTokenUsageSummary(tokenStartHour, tokenEndExclusive, 0, false, "")
 	if err != nil {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.current_stats_failed")
 		return

@@ -128,6 +128,56 @@ func TestFromJSONDeepSeekUsageDetails(t *testing.T) {
 	}
 }
 
+func TestFromJSONFallbackTotalIncludesCacheAliases(t *testing.T) {
+	tests := []struct {
+		name       string
+		usageJSON  string
+		cacheRead  int64
+		cacheWrite int64
+		total      int64
+	}{
+		{
+			name:       "cached_tokens",
+			usageJSON:  `"cached_tokens": 5`,
+			cacheRead:  5,
+			cacheWrite: 0,
+			total:      33,
+		},
+		{
+			name:       "prompt_cache_hit_tokens",
+			usageJSON:  `"prompt_cache_hit_tokens": 6`,
+			cacheRead:  6,
+			cacheWrite: 0,
+			total:      34,
+		},
+		{
+			name:       "camel_case_cache_tokens",
+			usageJSON:  `"cacheReadInputTokens": 4, "cacheWriteInputTokens": 3`,
+			cacheRead:  4,
+			cacheWrite: 3,
+			total:      35,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usage, ok := FromJSON([]byte(`{
+				"usage": {
+					"input_tokens": 20,
+					"output_tokens": 8,
+					` + tt.usageJSON + `
+				}
+			}`))
+			if !ok {
+				t.Fatal("expected usage")
+			}
+			if usage.TotalTokens != tt.total || usage.CacheReadTokens != tt.cacheRead || usage.CacheWriteTokens != tt.cacheWrite {
+				t.Fatalf("unexpected usage: %+v", usage)
+			}
+		})
+	}
+}
+
 func TestFromJSONQwenPromptTokenDetails(t *testing.T) {
 	usage, ok := FromJSON([]byte(`{
 		"usage": {
