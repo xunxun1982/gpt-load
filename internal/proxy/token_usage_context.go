@@ -31,6 +31,9 @@ func setTokenUsageWithSource(c *gin.Context, usage tokenusage.Usage, source stri
 	if source == "" {
 		source = models.TokenUsageSourceUpstream
 	}
+	if source == models.TokenUsageSourceUpstream && c.Keys != nil {
+		delete(c.Keys, ctxKeyEstimatedOutputTokens)
+	}
 	c.Set(ctxKeyTokenUsage, tokenUsageContextValue{
 		Usage:  usage.Normalize(),
 		Source: source,
@@ -54,14 +57,26 @@ func setTokenUsageFromBody(c *gin.Context, body []byte) bool {
 }
 
 func setTokenUsageOrEstimateFromFullBody(c *gin.Context, body []byte) {
+	setTokenUsageOrEstimateFromFullBodyIf(c, body, true)
+}
+
+func setTokenUsageOrEstimateFromFullBodyIf(c *gin.Context, body []byte, allowEstimate bool) {
 	if setTokenUsageFromBody(c, body) {
 		return
 	}
-	setEstimatedOutputTokensFromBody(c, body)
+	if allowEstimate {
+		setEstimatedOutputTokensFromBody(c, body)
+	}
 }
 
 func setEstimatedOutputTokensFromBody(c *gin.Context, body []byte) {
 	setEstimatedOutputTokens(c, int64(utils.EstimateTokensFromBytes(body)))
+}
+
+func setEstimatedOutputTokensFromText(c *gin.Context, text string) int64 {
+	tokens := int64(utils.EstimateTokensFromString(text))
+	setEstimatedOutputTokens(c, tokens)
+	return tokens
 }
 
 func setEstimatedOutputTokens(c *gin.Context, tokens int64) {

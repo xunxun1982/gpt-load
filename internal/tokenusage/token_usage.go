@@ -63,6 +63,11 @@ func FromJSON(body []byte) (Usage, bool) {
 			return usage, true
 		}
 	}
+	if response, ok := objectField(root, "response"); ok {
+		if usage, ok := usageFromRaw(response["usage"]); ok {
+			return usage, true
+		}
+	}
 	if usage, ok := usageFromRaw(body); ok {
 		return usage, true
 	}

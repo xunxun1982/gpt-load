@@ -279,6 +279,7 @@ export interface RequestLog {
   cache_read_tokens?: number;
   cache_write_tokens?: number;
   thinking_tokens?: number;
+  token_usage_source?: "" | "upstream" | "estimated";
 }
 
 export interface Pagination {

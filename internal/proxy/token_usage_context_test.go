@@ -53,3 +53,25 @@ func TestEstimatedTokenCaptureHandlesSplitUTF8(t *testing.T) {
 		t.Fatalf("unexpected token estimate: got %d want %d", got, want)
 	}
 }
+
+func TestUpstreamTokenUsageClearsStaleEstimate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c := &gin.Context{}
+
+	setEstimatedOutputTokens(c, 9)
+	setTokenUsage(c, tokenusage.Usage{InputTokens: 4, OutputTokens: 2})
+
+	if got := getEstimatedOutputTokens(c); got != 0 {
+		t.Fatalf("unexpected stale estimated output tokens: %d", got)
+	}
+	usage, source, ok := getTokenUsage(c)
+	if !ok {
+		t.Fatal("expected token usage")
+	}
+	if source != models.TokenUsageSourceUpstream {
+		t.Fatalf("unexpected source: %q", source)
+	}
+	if usage.TotalTokens != 6 {
+		t.Fatalf("unexpected total tokens: %d", usage.TotalTokens)
+	}
+}

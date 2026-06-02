@@ -11014,10 +11014,11 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		events        []string
-		triggerSignal string
-		checkFunc     func(*testing.T, string)
+		name                 string
+		events               []string
+		triggerSignal        string
+		expectEstimatedUsage bool
+		checkFunc            func(*testing.T, string)
 	}{
 		{
 			name: "streaming with function call",
@@ -11060,7 +11061,8 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 				`data: {"id":"chatcmpl-456","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n",
 				`data: [DONE]` + "\n",
 			},
-			triggerSignal: "<<CALL_test>>",
+			triggerSignal:        "<<CALL_test>>",
+			expectEstimatedUsage: true,
 			checkFunc: func(t *testing.T, output string) {
 				// Should not have tool_calls
 				if strings.Contains(output, `"tool_calls"`) {
@@ -11160,6 +11162,11 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 			output := w.Body.String()
 			if tt.checkFunc != nil {
 				tt.checkFunc(t, output)
+			}
+			if tt.expectEstimatedUsage {
+				if got := getEstimatedOutputTokens(c); got <= 0 {
+					t.Fatalf("expected estimated output tokens, got %d", got)
+				}
 			}
 		})
 	}

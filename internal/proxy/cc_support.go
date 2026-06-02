@@ -2541,7 +2541,6 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		// Decompression succeeded, mark as decompressed
 		decompressed = true
 	}
-	setTokenUsageOrEstimateFromFullBody(c, bodyBytes)
 
 	// Parse OpenAI response
 	var openaiResp OpenAIResponse
@@ -2559,6 +2558,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		// Per AI review: removed "|| err != nil" since we're already inside err != nil block,
 		// making that condition always true and the 2xx fallback unreachable
 		if resp.StatusCode >= 400 {
+			setTokenUsageFromBody(c, bodyBytes)
 			// Extract error message from response body
 			errorMessage := strings.TrimSpace(string(bodyBytes))
 
@@ -2591,6 +2591,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 
 	// Check for OpenAI error
 	if openaiResp.Error != nil {
+		setTokenUsageFromBody(c, bodyBytes)
 		logrus.WithFields(logrus.Fields{
 			"error_type":    openaiResp.Error.Type,
 			"error_message": openaiResp.Error.Message,
@@ -2608,6 +2609,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		c.JSON(resp.StatusCode, claudeErr)
 		return
 	}
+	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
 
 	// When force_function_call is enabled in CC mode, extract original content
 	// BEFORE conversion for function call parsing. This is necessary because
@@ -3798,6 +3800,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			usagePayload.InputTokens = usage.PromptTokens
 			usagePayload.OutputTokens = usage.CompletionTokens
 			setTokenUsageCounts(c, int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens))
+		} else if accumulatedContent.Len() > 0 {
+			estimatedOutputTokens := setEstimatedOutputTokensFromText(c, accumulatedContent.String())
+			usagePayload.OutputTokens = int(estimatedOutputTokens)
+			// Keep fallback tokens in the estimated path so request logs do not mark them as upstream usage.
 		}
 		applyTokenMultiplier(usagePayload)
 

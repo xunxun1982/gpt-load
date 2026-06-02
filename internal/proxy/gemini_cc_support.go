@@ -773,7 +773,6 @@ func (ps *ProxyServer) handleGeminiCCNormalResponse(c *gin.Context, resp *http.R
 			decompressed = !bytes.Equal(bodyBytes, originalBodyBytes)
 		}
 	}
-	setTokenUsageOrEstimateFromFullBody(c, bodyBytes)
 
 	// Parse Gemini response
 	var geminiResp GeminiResponse
@@ -783,6 +782,7 @@ func (ps *ProxyServer) handleGeminiCCNormalResponse(c *gin.Context, resp *http.R
 			Warn("Failed to parse Gemini response for CC conversion")
 
 		if resp.StatusCode >= 400 {
+			setTokenUsageFromBody(c, bodyBytes)
 			errorMessage := strings.TrimSpace(string(bodyBytes))
 			logrus.WithFields(logrus.Fields{
 				"status_code":   resp.StatusCode,
@@ -803,6 +803,7 @@ func (ps *ProxyServer) handleGeminiCCNormalResponse(c *gin.Context, resp *http.R
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
+	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
 
 	// Get tool name reverse map from context
 	reverseToolNameMap := getGeminiToolNameReverseMap(c)
@@ -1103,6 +1104,7 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 			return
 		}
 		clearUpstreamEncodingHeaders(c)
+		setTokenUsageFromBody(c, bodyBytes)
 		returnClaudeError(c, resp.StatusCode, string(bodyBytes))
 		return
 	}

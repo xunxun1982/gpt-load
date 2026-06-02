@@ -89,6 +89,64 @@ func TestHandleNormalResponseSetsEstimatedOutputFallback(t *testing.T) {
 	assert.Greater(t, getEstimatedOutputTokens(c), int64(0))
 }
 
+func TestHandleNormalResponseSkipsEstimatedOutputForError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"upstream failed"}}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	if usage, source, ok := getTokenUsage(c); ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected upstream usage: %+v source=%q ok=%v", usage, source, ok)
+	}
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleNormalResponseCaptureSkipsEstimatedOutputForError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Body:       io.NopCloser(strings.NewReader(`plain upstream error`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+	if usage, source, ok := getTokenUsage(c); ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected upstream usage: %+v source=%q ok=%v", usage, source, ok)
+	}
+}
+
+func TestHandleNormalResponseKeepsExplicitUsageOnError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5},"error":{"message":"bad request"}}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	usage, source, ok := getTokenUsage(c)
+	if !ok {
+		t.Fatal("expected explicit usage")
+	}
+	assert.Equal(t, int64(5), usage.TotalTokens)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
 func TestHandleNormalResponsePrefersUpstreamUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

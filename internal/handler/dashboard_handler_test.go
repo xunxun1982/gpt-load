@@ -262,6 +262,30 @@ func TestTokenUsage(t *testing.T) {
 	assert.Equal(t, float64(15), sumChartDataset(t, datasets[0]))
 }
 
+func TestTokenUsageGroupFilterErrors(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	server := setupTestServerWithDB(t, db)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/api/dashboard/token-usage?groupId=invalid", nil)
+	server.TokenUsage(c)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/api/dashboard/token-usage?groupId=1", nil)
+	server.TokenUsage(c)
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
 func sumChartDataset(t *testing.T, dataset any) float64 {
 	t.Helper()
 	values := dataset.(map[string]any)["data"].([]any)

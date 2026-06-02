@@ -1553,7 +1553,6 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		// Decompression succeeded, mark as decompressed
 		decompressed = true
 	}
-	setTokenUsageOrEstimateFromFullBody(c, bodyBytes)
 
 	// Parse Codex response
 	var codexResp CodexResponse
@@ -1570,6 +1569,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		// Per AI review: removed "|| err != nil" since we're already inside err != nil block,
 		// making that condition always true and the 2xx fallback unreachable
 		if resp.StatusCode >= 400 {
+			setTokenUsageFromBody(c, bodyBytes)
 			// Extract error message from response body
 			errorMessage := strings.TrimSpace(string(bodyBytes))
 
@@ -1600,6 +1600,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 
 	// Check for Codex error
 	if codexResp.Error != nil {
+		setTokenUsageFromBody(c, bodyBytes)
 		logrus.WithFields(logrus.Fields{
 			"error_type":    codexResp.Error.Type,
 			"error_message": codexResp.Error.Message,
@@ -1632,6 +1633,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		c.JSON(resp.StatusCode, claudeErr)
 		return
 	}
+	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
 
 	// Get tool name reverse map from context for restoring original tool names
 	reverseToolNameMap := getCodexToolNameReverseMap(c)
@@ -1776,6 +1778,14 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 
 	var currentEventType string
 	lineCount := 0
+	streamCompleted := false
+	var estimateCapture estimatedTokenCapture
+	finalizeEstimatedUsage := func() {
+		if _, _, ok := getTokenUsage(c); ok {
+			return
+		}
+		setEstimatedOutputTokens(c, estimateCapture.Tokens())
+	}
 	// AI REVIEW NOTE: Suggestion to add explicit context cancellation check in the loop was considered.
 	// This is unnecessary because Go's http.Response.Body is automatically closed when the request
 	// context is cancelled. When the body is closed, ReadString returns an error (io.EOF or
@@ -1872,6 +1882,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 						return
 					}
 				}
+				streamCompleted = true
 				break
 			}
 			logrus.WithError(err).Error("Codex CC: Error reading stream")
@@ -1910,6 +1921,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 						return
 					}
 				}
+				streamCompleted = true
 				break
 			}
 
@@ -1927,6 +1939,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 				codexEvent.Type = currentEventType
 			}
 			currentEventType = "" // Reset for next event
+			captureCodexStreamOutputEstimate(&estimateCapture, &codexEvent)
 
 			// Debug log: show received event type
 			logrus.WithFields(logrus.Fields{
@@ -1948,5 +1961,21 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		}
 	}
 
+	if streamCompleted {
+		finalizeEstimatedUsage()
+	}
 	logrus.Debug("Codex CC: Streaming response completed")
+}
+
+func captureCodexStreamOutputEstimate(capture *estimatedTokenCapture, event *CodexStreamEvent) {
+	if capture == nil || event == nil || event.Delta == "" {
+		return
+	}
+	switch event.Type {
+	case "response.output_text.delta",
+		"response.reasoning_summary_text.delta",
+		"response.reasoning_text.delta",
+		"response.function_call_arguments.delta":
+		capture.add([]byte(event.Delta))
+	}
 }

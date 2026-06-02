@@ -116,7 +116,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	}
 	if usage, ok := usageParser.Finish(); ok {
 		setTokenUsage(c, usage)
-	} else {
+	} else if resp.StatusCode < http.StatusBadRequest {
 		setEstimatedOutputTokens(c, estimateCapture.Tokens())
 	}
 }
@@ -139,7 +139,7 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		} else {
 			c.Set("response_body", string(body))
 		}
-		setTokenUsageOrEstimateFromFullBody(c, body)
+		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
 
 		// Write to client
 		if _, err := c.Writer.Write(body); err != nil {
@@ -154,7 +154,7 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		if _, err := io.Copy(io.MultiWriter(c.Writer, usageCapture, estimateCapture), resp.Body); err != nil {
 			logUpstreamError("copying response body", err)
 		}
-		if len(usageCapture.buf) == 0 || !setTokenUsageFromBody(c, usageCapture.buf) {
+		if (len(usageCapture.buf) == 0 || !setTokenUsageFromBody(c, usageCapture.buf)) && resp.StatusCode < http.StatusBadRequest {
 			setEstimatedOutputTokens(c, estimateCapture.Tokens())
 		}
 	}
@@ -222,7 +222,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 			c.Set("response_body", string(responseBody))
 		}
 	}
-	setTokenUsageOrEstimateFromFullBody(c, responseBody)
+	setTokenUsageOrEstimateFromFullBodyIf(c, responseBody, resp.StatusCode < http.StatusBadRequest)
 
 	// c.Data already sets Content-Type, no need for redundant c.Header call
 	c.Data(resp.StatusCode, "application/json", responseBody)

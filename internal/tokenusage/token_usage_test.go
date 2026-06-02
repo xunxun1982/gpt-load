@@ -223,6 +223,26 @@ func TestFromJSONOllamaTopLevelCounts(t *testing.T) {
 	}
 }
 
+func TestFromJSONResponseWrappedUsage(t *testing.T) {
+	usage, ok := FromJSON([]byte(`{
+		"type": "response.completed",
+		"response": {
+			"id": "resp-test",
+			"usage": {
+				"input_tokens": 12,
+				"output_tokens": 8,
+				"total_tokens": 20
+			}
+		}
+	}`))
+	if !ok {
+		t.Fatal("expected usage")
+	}
+	if usage.InputTokens != 12 || usage.OutputTokens != 8 || usage.TotalTokens != 20 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}
+
 func TestFromSSEUsesLastUsageChunk(t *testing.T) {
 	body := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n" +
 		"data: {\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":6,\"total_tokens\":10}}\n\n" +

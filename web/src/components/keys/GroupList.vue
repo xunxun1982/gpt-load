@@ -484,12 +484,11 @@ function canHaveChildGroups(group: Group): boolean {
   return group.group_type !== GROUP_TYPE_AGGREGATE && !group.parent_group_id;
 }
 
-// Load child groups when groups change
-// Use a computed key based on group IDs to detect actual data changes,
-// not just reference changes. This ensures childGroupsMap is refreshed
-// when groups are reloaded from backend (e.g., after editing a child group).
+// Load child groups when structural group fields change, not just object references.
 const groupsKey = computed(() => {
-  return props.groups.map(g => `${g.id}:${g.display_name}:${g.name}`).join(",");
+  return props.groups
+    .map(g => `${g.id}:${g.display_name}:${g.name}:${g.group_type}:${g.parent_group_id ?? ""}`)
+    .join(",");
 });
 
 const hasParentGroups = computed(() => {

@@ -240,7 +240,9 @@ async function loadConfigOptions() {
 }
 
 function groupNeedsConfigOptions(group: Group | null) {
-  return group?.config !== undefined && Object.keys(group.config).length > 0;
+  return (
+    !!group?.config && typeof group.config === "object" && Object.keys(group.config).length > 0
+  );
 }
 
 function ensureConfigOptionsForGroup() {

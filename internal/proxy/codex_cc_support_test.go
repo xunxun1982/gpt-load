@@ -1182,6 +1182,34 @@ func TestHandleCodexCCStreamingResponse(t *testing.T) {
 	}
 }
 
+func TestHandleCodexCCStreamingResponseSetsEstimatedFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	streamData := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_tokens","model":"gpt-4o"}}`,
+		`data: {"type":"response.output_text.delta","delta":"Hello"}`,
+		`data: {"type":"response.output_text.delta","delta":" world"}`,
+		`data: {"type":"response.completed"}`,
+		`data: [DONE]`,
+		"",
+	}, "\n\n")
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamData)),
+		Header:     make(http.Header),
+	}
+	upstreamResp.Header.Set("Content-Type", "text/event-stream")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+
+	ps := &ProxyServer{}
+	ps.handleCodexCCStreamingResponse(c, upstreamResp)
+
+	require.Greater(t, getEstimatedOutputTokens(c), int64(0))
+}
+
 // TestCodexHelperFunctions tests various helper functions in codex_cc_support.go
 func TestCodexHelperFunctions(t *testing.T) {
 	t.Run("buildReverseToolNameMap", func(t *testing.T) {

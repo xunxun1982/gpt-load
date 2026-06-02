@@ -13,10 +13,15 @@ interface EncryptionStatusResponse {
 }
 
 let cachedEncryptionStatus: EncryptionStatusResponse | null = null;
+let cachedEncryptionStatusAt = 0;
 let pendingEncryptionStatusRequest: Promise<EncryptionStatusResponse> | null = null;
+const ENCRYPTION_STATUS_CACHE_TTL_MS = 30_000;
 
 async function fetchEncryptionStatus() {
-  if (cachedEncryptionStatus) {
+  if (
+    cachedEncryptionStatus &&
+    Date.now() - cachedEncryptionStatusAt < ENCRYPTION_STATUS_CACHE_TTL_MS
+  ) {
     return cachedEncryptionStatus;
   }
   if (!pendingEncryptionStatusRequest) {
@@ -24,6 +29,7 @@ async function fetchEncryptionStatus() {
       .get<EncryptionStatusResponse>("/dashboard/encryption-status")
       .then(response => {
         cachedEncryptionStatus = response.data;
+        cachedEncryptionStatusAt = Date.now();
         return response.data;
       })
       .finally(() => {

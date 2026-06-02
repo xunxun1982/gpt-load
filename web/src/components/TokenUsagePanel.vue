@@ -41,6 +41,7 @@ const tooltipData = ref<{
 } | null>(null);
 const tooltipPosition = ref({ x: 0, y: 0 });
 let tokenPanelMounted = false;
+let tokenUsageRequestSeq = 0;
 
 const chartWidth = 800;
 const chartHeight = 260;
@@ -297,6 +298,7 @@ const hideChartTooltip = () => {
 };
 
 const loadTokenUsage = async () => {
+  const requestSeq = ++tokenUsageRequestSeq;
   try {
     loading.value = true;
     const response = await getDashboardTokenUsage(
@@ -305,6 +307,9 @@ const loadTokenUsage = async () => {
       10,
       selectedModel.value?.trim()
     );
+    if (requestSeq !== tokenUsageRequestSeq) {
+      return;
+    }
     tokenUsage.value = response.data;
     const knownModels = new Map(modelOptions.value.map(option => [String(option.value), option]));
     for (const item of response.data.models) {
@@ -314,10 +319,15 @@ const loadTokenUsage = async () => {
       String(a.label).localeCompare(String(b.label))
     );
   } catch (error) {
+    if (requestSeq !== tokenUsageRequestSeq) {
+      return;
+    }
     console.error("Failed to load token usage:", error);
     tokenUsage.value = null;
   } finally {
-    loading.value = false;
+    if (requestSeq === tokenUsageRequestSeq) {
+      loading.value = false;
+    }
   }
 };
 
@@ -615,13 +625,23 @@ onMounted(() => {
         </div>
         <div v-for="item in topModels" :key="item.model" class="token-row">
           <span class="model-name" :title="item.model">{{ item.model }}</span>
-          <span :title="formatExactTokenCount(item.input_tokens)">
+          <span
+            :data-label="t('dashboard.inputTokens')"
+            :title="formatExactTokenCount(item.input_tokens)"
+          >
             {{ formatTokenCount(item.input_tokens) }}
           </span>
-          <span :title="formatExactTokenCount(item.output_tokens)">
+          <span
+            :data-label="t('dashboard.outputTokens')"
+            :title="formatExactTokenCount(item.output_tokens)"
+          >
             {{ formatTokenCount(item.output_tokens) }}
           </span>
-          <span class="total-cell" :title="formatExactTokenCount(item.total_tokens)">
+          <span
+            class="total-cell"
+            :data-label="t('dashboard.totalTokens')"
+            :title="formatExactTokenCount(item.total_tokens)"
+          >
             <strong>{{ formatTokenCount(item.total_tokens) }}</strong>
             <small v-if="item.estimated_tokens > 0">
               {{ t("dashboard.includesEstimated") }}
@@ -1120,6 +1140,34 @@ onMounted(() => {
 
   .model-name {
     white-space: normal;
+  }
+
+  .token-row > span[data-label] {
+    display: grid;
+    grid-template-columns: auto minmax(0, max-content);
+    gap: 12px;
+    align-items: start;
+  }
+
+  .token-row > span[data-label]::before {
+    content: attr(data-label);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+  }
+
+  .token-row > span[data-label]:not(.total-cell) {
+    justify-content: space-between;
+  }
+
+  .total-cell[data-label] {
+    grid-template-columns: auto minmax(0, max-content);
+  }
+
+  .total-cell[data-label] small {
+    grid-column: 2;
+    text-align: right;
   }
 }
 
