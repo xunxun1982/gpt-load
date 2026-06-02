@@ -1280,6 +1280,12 @@ func (s *ImportExportService) importAggregateSubGroupRelations(tx *gorm.DB, grou
 		}
 
 		for _, subGroupInfo := range groupData.SubGroups {
+			if err := validateHealthResetIntervalSeconds(subGroupInfo.HealthResetIntervalSeconds); err != nil {
+				logrus.WithError(err).Warnf("Skipping sub-group relation %s -> %s with invalid health reset interval", aggregateGroup.Name, subGroupInfo.GroupName)
+				skipped++
+				continue
+			}
+
 			subGroup, ok := importedGroups[subGroupInfo.GroupName]
 			if !ok {
 				if err := tx.Where("name = ?", subGroupInfo.GroupName).First(&subGroup).Error; err != nil {

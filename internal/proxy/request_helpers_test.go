@@ -335,6 +335,11 @@ func TestApplyGeminiNativeStreamPathOverride(t *testing.T) {
 		"/v1beta/openai/chat/completions",
 		applyGeminiNativeStreamPathOverride("/v1beta/openai/chat/completions", true, false),
 	)
+	assert.Equal(
+		t,
+		"/v1beta/models/gemini-pro:generateContent",
+		applyGeminiNativeStreamPathOverride("/v1beta/models/gemini-pro:generateContent", true, true),
+	)
 	assert.True(t, isGeminiNativeGenerateContentPath("/v1beta/models/gemini-pro:generateContent"))
 	assert.True(t, isGeminiNativeGenerateContentPath("/v1beta/models/gemini-pro:streamGenerateContent"))
 	assert.False(t, isGeminiNativeGenerateContentPath("/v1beta/openai/chat/completions"))

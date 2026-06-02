@@ -2613,9 +2613,6 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	}
 	if len(openaiResp.Choices) == 0 && openaiResp.Usage == nil {
 		clearUpstreamEncodingHeaders(c)
-		if !decompressed && origEncoding != "" {
-			c.Header("Content-Encoding", origEncoding)
-		}
 		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
 		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)

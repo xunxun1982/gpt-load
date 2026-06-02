@@ -31,8 +31,9 @@ import (
 )
 
 const (
-	maxUpstreamErrorBodySize  = 64 * 1024
-	maxProxyBodyPreallocBytes = 2 * 1024 * 1024
+	maxUpstreamErrorBodySize   = 64 * 1024
+	maxProxyBodyPreallocBytes  = 2 * 1024 * 1024
+	maxEstimatedTokenBodyBytes = 256 * 1024
 )
 
 func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
@@ -2252,7 +2253,7 @@ func (ps *ProxyServer) logRequest(
 		logEntry.CacheWriteTokens = usage.CacheWriteTokens
 		logEntry.ThinkingTokens = usage.ThinkingTokens
 		logEntry.TokenUsageSource = source
-	} else if logEntry.RequestType == models.RequestTypeFinal && logEntry.IsSuccess {
+	} else if logEntry.RequestType == models.RequestTypeFinal && logEntry.IsSuccess && len(bodyBytes) <= maxEstimatedTokenBodyBytes {
 		inputTokens := int64(utils.EstimateTokensFromBytes(bodyBytes))
 		outputTokens := getEstimatedOutputTokens(c)
 		totalTokens := inputTokens + outputTokens

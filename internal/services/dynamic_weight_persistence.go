@@ -723,7 +723,7 @@ func alignedHealthResetSlotStart(now time.Time, intervalSeconds int64) time.Time
 		if daysInterval <= 0 {
 			return time.Time{}
 		}
-		daysSinceAnchor := int(dayStart.Sub(anchor).Hours() / 24)
+		daysSinceAnchor := int(dayStart.Sub(anchor) / (24 * time.Hour))
 		return anchor.AddDate(0, 0, (daysSinceAnchor/daysInterval)*daysInterval)
 	}
 

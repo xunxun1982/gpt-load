@@ -320,6 +320,50 @@ func TestImportSystemRestoresAggregateSubGroupsAfterReferencedGroups(t *testing.
 	assert.Equal(t, 7, weightsBySubGroupName["standard-later-b"])
 }
 
+func TestImportSystemSkipsSubGroupWithInvalidHealthResetInterval(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&models.SystemSetting{}))
+	service := NewImportExportService(db, nil, nil)
+
+	importData := &SystemExportData{
+		Version: "2.0",
+		Groups: []GroupExportData{
+			{
+				Group: models.Group{
+					Name:        "aggregate-invalid-reset",
+					GroupType:   "aggregate",
+					ChannelType: "openai",
+					Enabled:     true,
+					Upstreams:   datatypes.JSON(`[]`),
+				},
+				SubGroups: []SubGroupInfo{
+					{GroupName: "standard-valid-reset", Weight: 3, HealthResetIntervalSeconds: 3600},
+					{GroupName: "standard-invalid-reset", Weight: 7, HealthResetIntervalSeconds: -1},
+				},
+			},
+			{
+				Group: models.Group{Name: "standard-valid-reset", GroupType: "standard", ChannelType: "openai", Enabled: true, Upstreams: datatypes.JSON(`[]`)},
+			},
+			{
+				Group: models.Group{Name: "standard-invalid-reset", GroupType: "standard", ChannelType: "openai", Enabled: true, Upstreams: datatypes.JSON(`[]`)},
+			},
+		},
+	}
+
+	require.NoError(t, service.ImportSystem(db, importData))
+
+	var aggregate models.Group
+	require.NoError(t, db.Where("name = ?", "aggregate-invalid-reset").First(&aggregate).Error)
+
+	var relations []models.GroupSubGroup
+	require.NoError(t, db.Where("group_id = ?", aggregate.ID).Find(&relations).Error)
+	require.Len(t, relations, 1)
+	assert.Equal(t, int64(3600), relations[0].HealthResetIntervalSeconds)
+	assert.Equal(t, 3, relations[0].Weight)
+}
+
 func TestExportImportSystemRestoresDynamicWeightsByGroupName(t *testing.T) {
 	t.Parallel()
 

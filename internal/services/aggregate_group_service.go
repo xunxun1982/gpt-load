@@ -31,7 +31,7 @@ type SubGroupInput struct {
 // UpdateSubGroupSettingsInput defines relationship-level settings for an aggregate sub-group.
 type UpdateSubGroupSettingsInput struct {
 	Weight                     int
-	HealthResetIntervalSeconds int64
+	HealthResetIntervalSeconds *int64
 }
 
 // AggregateValidationResult captures the normalized aggregate group parameters.
@@ -370,8 +370,10 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 	if input.Weight > 1000 {
 		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
 	}
-	if err := validateHealthResetIntervalSeconds(input.HealthResetIntervalSeconds); err != nil {
-		return err
+	if input.HealthResetIntervalSeconds != nil {
+		if err := validateHealthResetIntervalSeconds(*input.HealthResetIntervalSeconds); err != nil {
+			return err
+		}
 	}
 
 	// Check if sub-group relationship exists
@@ -383,13 +385,15 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
 	}
 
+	updates := map[string]any{"weight": input.Weight}
+	if input.HealthResetIntervalSeconds != nil {
+		updates["health_reset_interval_seconds"] = *input.HealthResetIntervalSeconds
+	}
+
 	result := s.db.WithContext(ctx).
 		Model(&models.GroupSubGroup{}).
 		Where("group_id = ? AND sub_group_id = ?", groupID, subGroupID).
-		Updates(map[string]any{
-			"weight":                        input.Weight,
-			"health_reset_interval_seconds": input.HealthResetIntervalSeconds,
-		})
+		Updates(updates)
 
 	if result.Error != nil {
 		return result.Error

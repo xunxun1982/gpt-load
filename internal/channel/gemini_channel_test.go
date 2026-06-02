@@ -288,6 +288,7 @@ func TestGeminiChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
 		assert.Contains(t, r.URL.Path, "gemini-pro")
 		assert.Contains(t, r.URL.Path, "streamGenerateContent")
 		assert.Equal(t, "test-key", r.URL.Query().Get("key"))
+		assert.Equal(t, "sse", r.URL.Query().Get("alt"))
 
 		var body map[string]any
 		err := json.NewDecoder(r.Body).Decode(&body)

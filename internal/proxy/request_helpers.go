@@ -272,6 +272,9 @@ func (ps *ProxyServer) applyResponsesIncludeConfig(bodyBytes []byte, group *mode
 }
 
 func applyGeminiNativeStreamPathOverride(path string, forceStream, forceNonStream bool) string {
+	if forceStream && forceNonStream {
+		return path
+	}
 	if forceStream && strings.HasSuffix(path, ":generateContent") {
 		return strings.TrimSuffix(path, ":generateContent") + ":streamGenerateContent"
 	}

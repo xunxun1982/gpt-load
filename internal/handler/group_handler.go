@@ -498,8 +498,8 @@ type AddSubGroupsRequest struct {
 
 // UpdateSubGroupWeightRequest defines the payload for updating a sub group weight
 type UpdateSubGroupWeightRequest struct {
-	Weight                     int   `json:"weight"`
-	HealthResetIntervalSeconds int64 `json:"health_reset_interval_seconds"`
+	Weight                     int    `json:"weight"`
+	HealthResetIntervalSeconds *int64 `json:"health_reset_interval_seconds"`
 }
 
 // GetSubGroups handles getting sub groups of an aggregate group

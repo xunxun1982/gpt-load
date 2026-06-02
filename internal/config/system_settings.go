@@ -407,6 +407,7 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			if err != nil {
 				return err
 			}
+			// Zero intentionally disables scheduled health resets; enabled intervals start at one hour.
 			if intVal < 0 {
 				return fmt.Errorf("value for %s (%d) is below minimum value (%d)", key, intVal, 0)
 			}
