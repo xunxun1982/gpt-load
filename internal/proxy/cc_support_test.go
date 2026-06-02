@@ -1240,6 +1240,41 @@ data: [DONE]
 	}
 }
 
+func TestCCStreamingResponse_UsageOnlyChunkAfterFinishReason(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	sseData := `data: {"id":"chatcmpl-usage","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-usage","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-usage","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}
+
+data: [DONE]
+`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("original_model", "gpt-4")
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok, "expected upstream usage from trailing usage-only chunk")
+	require.Equal(t, models.TokenUsageSourceUpstream, source)
+	require.Equal(t, int64(11), usage.InputTokens)
+	require.Equal(t, int64(7), usage.OutputTokens)
+	require.Equal(t, int64(18), usage.TotalTokens)
+	require.Contains(t, w.Body.String(), `"usage":{"input_tokens":11,"output_tokens":7}`)
+}
+
 // TestCCNormalResponse_ReasoningContent tests that reasoning_content from
 // DeepSeek reasoner models is correctly converted to Claude thinking blocks
 // in non-streaming responses.

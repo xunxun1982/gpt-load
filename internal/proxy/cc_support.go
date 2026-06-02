@@ -3831,13 +3831,16 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}).Info("CC: Stream finalized successfully with stop_reason")
 	}
 
+	streamStopReason := "end_turn"
+	var streamUsage *OpenAIUsage
+
 	for {
 		event, err := reader.ReadEvent()
 		if err != nil {
 			if err == io.EOF {
 				logrus.Debug("CC: Upstream stream EOF")
 				// Ensure final events are sent on EOF to prevent client hanging
-				finalize("end_turn", nil)
+				finalize(streamStopReason, streamUsage)
 			} else if errors.Is(err, ErrSSETimeout) {
 				// Handle timeout error - send error event to client instead of hanging
 				logrus.WithError(err).Warn("CC: SSE read timeout, sending error to client")
@@ -3859,17 +3862,17 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					logrus.WithError(sendErr).Error("CC: Failed to send timeout error event")
 				}
 				// Send final events to properly terminate the stream
-				finalize("end_turn", nil)
+				finalize(streamStopReason, streamUsage)
 			} else {
 				logrus.WithError(err).Error("CC: Error reading stream")
 				// Send final events on error to ensure client receives termination
-				finalize("end_turn", nil)
+				finalize(streamStopReason, streamUsage)
 			}
 			break
 		}
 
 		if event.Data == "[DONE]" {
-			finalize("end_turn", nil)
+			finalize(streamStopReason, streamUsage)
 			logrus.Debug("CC: Stream finished successfully")
 			break
 		}
@@ -3878,6 +3881,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if err := json.Unmarshal([]byte(event.Data), &openaiChunk); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"event_type": event.Event, "data_preview": utils.TruncateString(event.Data, 512)}).Debug("CC: Failed to parse OpenAI chunk as JSON, skipping")
 			continue
+		}
+
+		if openaiChunk.Usage != nil {
+			streamUsage = openaiChunk.Usage
 		}
 
 		if len(openaiChunk.Choices) == 0 {
@@ -4061,9 +4068,8 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					Warn("CC: Received tool_calls finish_reason but no valid tool calls were processed, converting to end_turn")
 				stopReason = "end_turn"
 			}
-			finalize(stopReason, openaiChunk.Usage)
+			streamStopReason = stopReason
 			logrus.WithField("upstream_finish_reason", *choice.FinishReason).Debug("CC: Stream finished with upstream finish_reason")
-			break
 		}
 	}
 }
