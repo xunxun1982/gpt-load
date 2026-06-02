@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 )
+
+var benchmarkTokenCountSink int64
 
 func TestShouldCaptureResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -49,6 +52,88 @@ func TestShouldCaptureResponse(t *testing.T) {
 		result := shouldCaptureResponse(c)
 		assert.False(t, result)
 	})
+}
+
+func TestTailUsageCaptureKeepsResponseTail(t *testing.T) {
+	capture := &tailUsageCapture{
+		buf:   make([]byte, 0, 10),
+		limit: 10,
+	}
+
+	if _, err := capture.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture.Write([]byte("defghijkl")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(capture.buf); got != "cdefghijkl" {
+		t.Fatalf("unexpected tail capture: %q", got)
+	}
+}
+
+func TestHandleNormalResponseSetsEstimatedOutputFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"hello world"}}]}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	if usage, source, ok := getTokenUsage(c); ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected upstream usage: %+v source=%q ok=%v", usage, source, ok)
+	}
+	assert.Greater(t, getEstimatedOutputTokens(c), int64(0))
+}
+
+func TestHandleNormalResponsePrefersUpstreamUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(`{"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	usage, source, ok := getTokenUsage(c)
+	if !ok {
+		t.Fatal("expected upstream usage")
+	}
+	assert.Equal(t, int64(12), usage.TotalTokens)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func BenchmarkTailUsageCaptureWrite(b *testing.B) {
+	payload := bytes.Repeat([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello world\"}}]}\n\n"), 2048)
+	b.SetBytes(int64(len(payload)))
+	for b.Loop() {
+		capture := &tailUsageCapture{
+			buf:   make([]byte, 0, maxUsageTailCaptureBytes),
+			limit: maxUsageTailCaptureBytes,
+		}
+		if _, err := capture.Write(payload); err != nil {
+			b.Fatal(err)
+		}
+		benchmarkTokenCountSink = int64(len(capture.buf))
+	}
+}
+
+func BenchmarkEstimatedTokenCaptureWrite(b *testing.B) {
+	payload := bytes.Repeat([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello 世界\"}}]}\n\n"), 2048)
+	b.SetBytes(int64(len(payload)))
+	for b.Loop() {
+		var capture estimatedTokenCapture
+		if _, err := capture.Write(payload); err != nil {
+			b.Fatal(err)
+		}
+		benchmarkTokenCountSink = capture.Tokens()
+	}
 }
 
 func TestCollectCodexStreamToResponse(t *testing.T) {

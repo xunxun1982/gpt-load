@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 )
 
 // Stats Get dashboard statistics
@@ -39,6 +40,11 @@ func (s *Server) Stats(c *gin.Context) {
 	previousPeriod, err := s.getHourlyStats(fortyEightHoursAgo, twentyFourHoursAgo)
 	if err != nil {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.previous_stats_failed")
+		return
+	}
+	tokenUsage, err := s.getTokenUsageSummary(twentyFourHoursAgo, now, 0, false, "")
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.current_stats_failed")
 		return
 	}
 
@@ -105,6 +111,7 @@ func (s *Server) Stats(c *gin.Context) {
 			Trend:         reqTrend,
 			TrendIsGrowth: reqTrendIsGrowth,
 		},
+		TokenUsage: tokenUsage,
 		ErrorRate: models.StatCard{
 			Value:         currentErrorRate,
 			Trend:         errorRateTrend,
@@ -213,6 +220,60 @@ func (s *Server) Chart(c *gin.Context) {
 	response.Success(c, chartData)
 }
 
+// TokenUsage returns token usage summary and top model usage for the dashboard.
+func (s *Server) TokenUsage(c *gin.Context) {
+	groupID, filterByParent, err := s.parseTokenUsageGroupFilter(c)
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "invalid_param")
+		return
+	}
+
+	startHour, endExclusive, err := dashboardChartTimeRange(time.Now(), c.Query("range"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "invalid_param")
+		return
+	}
+	modelFilter := strings.TrimSpace(c.Query("model"))
+
+	limit := 10
+	if limitStr := c.Query("limit"); limitStr != "" {
+		parsed, err := strconv.Atoi(limitStr)
+		if err != nil || parsed <= 0 {
+			response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "invalid_param")
+			return
+		}
+		if parsed < limit {
+			limit = parsed
+		} else if parsed <= 50 {
+			limit = parsed
+		} else {
+			limit = 50
+		}
+	}
+
+	summary, err := s.getTokenUsageSummary(startHour, endExclusive, groupID, filterByParent, modelFilter)
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.current_stats_failed")
+		return
+	}
+	modelsUsage, err := s.getModelTokenUsageItems(startHour, endExclusive, groupID, filterByParent, modelFilter, limit)
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.current_stats_failed")
+		return
+	}
+	chartData, err := s.getTokenUsageChartData(c, startHour, endExclusive, groupID, filterByParent, modelFilter)
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.chart_data_failed")
+		return
+	}
+
+	response.Success(c, models.DashboardTokenUsageResponse{
+		Summary: summary,
+		Models:  modelsUsage,
+		Chart:   chartData,
+	})
+}
+
 // dashboardChartTimeRange returns the hourly-aligned start and end timestamps for the dashboard chart.
 // The end timestamp is exclusive.
 func dashboardChartTimeRange(now time.Time, rangeParam string) (time.Time, time.Time, error) {
@@ -263,6 +324,158 @@ func (s *Server) getHourlyStats(startTime, endTime time.Time) (hourlyStatResult,
 		Select("COALESCE(SUM(success_count), 0) + COALESCE(SUM(failure_count), 0) as total_requests, COALESCE(SUM(failure_count), 0) as total_failures").
 		Scan(&result).Error
 	return result, err
+}
+
+func (s *Server) parseTokenUsageGroupFilter(c *gin.Context) (uint, bool, error) {
+	groupIDStr := c.Query("groupId")
+	if groupIDStr == "" {
+		return 0, false, nil
+	}
+	parsed, err := strconv.ParseUint(groupIDStr, 10, 0)
+	if err != nil {
+		return 0, false, err
+	}
+	groupID := uint(parsed)
+	var group models.Group
+	if err := s.DB.Select("id", "group_type").First(&group, groupID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return groupID, false, nil
+		}
+		return 0, false, err
+	}
+	return groupID, group.GroupType == "aggregate", nil
+}
+
+func applyTokenUsageGroupFilter(query *gorm.DB, groupID uint, filterByParent bool) *gorm.DB {
+	if groupID == 0 {
+		return query
+	}
+	if filterByParent {
+		return query.Where("parent_group_id = ?", groupID)
+	}
+	return query.Where("group_id = ?", groupID)
+}
+
+func applyTokenUsageModelFilter(query *gorm.DB, model string) *gorm.DB {
+	if model == "" {
+		return query
+	}
+	return query.Where("model = ?", model)
+}
+
+func (s *Server) getTokenUsageSummary(startTime, endTime time.Time, groupID uint, filterByParent bool, modelFilter string) (models.TokenUsageCard, error) {
+	var summary models.TokenUsageCard
+	query := s.DB.Model(&models.ModelTokenHourlyStat{}).
+		Where("time >= ? AND time < ?", startTime, endTime)
+	query = applyTokenUsageGroupFilter(query, groupID, filterByParent)
+	query = applyTokenUsageModelFilter(query, modelFilter)
+	err := query.Select(`
+		COALESCE(SUM(input_tokens), 0) AS input_tokens,
+		COALESCE(SUM(output_tokens), 0) AS output_tokens,
+		COALESCE(SUM(total_tokens), 0) AS total_tokens,
+		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(thinking_tokens), 0) AS thinking_tokens,
+		COALESCE(SUM(estimated_tokens), 0) AS estimated_tokens,
+		COALESCE(SUM(estimated_request_count), 0) AS estimated_request_count`,
+	).Scan(&summary).Error
+	return summary, err
+}
+
+func (s *Server) getModelTokenUsageItems(startTime, endTime time.Time, groupID uint, filterByParent bool, modelFilter string, limit int) ([]models.ModelTokenUsageItem, error) {
+	var items []models.ModelTokenUsageItem
+	query := s.DB.Model(&models.ModelTokenHourlyStat{}).
+		Where("time >= ? AND time < ?", startTime, endTime)
+	query = applyTokenUsageGroupFilter(query, groupID, filterByParent)
+	query = applyTokenUsageModelFilter(query, modelFilter)
+	err := query.Select(`
+		model,
+		COALESCE(SUM(request_count), 0) AS request_count,
+		COALESCE(SUM(input_tokens), 0) AS input_tokens,
+		COALESCE(SUM(output_tokens), 0) AS output_tokens,
+		COALESCE(SUM(total_tokens), 0) AS total_tokens,
+		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(thinking_tokens), 0) AS thinking_tokens,
+		COALESCE(SUM(estimated_tokens), 0) AS estimated_tokens,
+		COALESCE(SUM(estimated_request_count), 0) AS estimated_request_count`,
+	).Group("model").
+		Order("total_tokens DESC").
+		Order("model ASC").
+		Limit(limit).
+		Scan(&items).Error
+	return items, err
+}
+
+func (s *Server) getTokenUsageChartData(c *gin.Context, startTime, endTime time.Time, groupID uint, filterByParent bool, modelFilter string) (models.ChartData, error) {
+	hours := int(endTime.Sub(startTime) / time.Hour)
+	if hours <= 0 {
+		return models.ChartData{}, fmt.Errorf("invalid token chart range")
+	}
+
+	type tokenHourlyStat struct {
+		Time         time.Time `gorm:"column:time"`
+		InputTokens  int64     `gorm:"column:input_tokens"`
+		OutputTokens int64     `gorm:"column:output_tokens"`
+		TotalTokens  int64     `gorm:"column:total_tokens"`
+	}
+
+	var hourlyStats []tokenHourlyStat
+	query := s.DB.Model(&models.ModelTokenHourlyStat{}).
+		Where("time >= ? AND time < ?", startTime, endTime)
+	query = applyTokenUsageGroupFilter(query, groupID, filterByParent)
+	query = applyTokenUsageModelFilter(query, modelFilter)
+	err := query.Select(`
+		time,
+		COALESCE(SUM(input_tokens), 0) AS input_tokens,
+		COALESCE(SUM(output_tokens), 0) AS output_tokens,
+		COALESCE(SUM(total_tokens), 0) AS total_tokens`,
+	).Group("time").
+		Scan(&hourlyStats).Error
+	if err != nil {
+		return models.ChartData{}, err
+	}
+
+	labels := make([]string, hours)
+	inputData := make([]int64, hours)
+	outputData := make([]int64, hours)
+	totalData := make([]int64, hours)
+
+	for i := 0; i < hours; i++ {
+		labels[i] = startTime.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
+	}
+
+	for _, stat := range hourlyStats {
+		hour := stat.Time.In(startTime.Location()).Truncate(time.Hour)
+		idx := int(hour.Sub(startTime) / time.Hour)
+		if idx < 0 || idx >= hours {
+			continue
+		}
+		inputData[idx] += stat.InputTokens
+		outputData[idx] += stat.OutputTokens
+		totalData[idx] += stat.TotalTokens
+	}
+
+	return models.ChartData{
+		Labels: labels,
+		Datasets: []models.ChartDataset{
+			{
+				Label: i18n.Message(c, "dashboard.totalTokens"),
+				Data:  totalData,
+				Color: "rgba(99, 102, 241, 1)",
+			},
+			{
+				Label: i18n.Message(c, "dashboard.inputTokens"),
+				Data:  inputData,
+				Color: "rgba(37, 99, 235, 1)",
+			},
+			{
+				Label: i18n.Message(c, "dashboard.outputTokens"),
+				Data:  outputData,
+				Color: "rgba(15, 118, 110, 1)",
+			},
+		},
+	}, nil
 }
 
 type rpmStatResult struct {

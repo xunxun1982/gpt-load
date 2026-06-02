@@ -170,7 +170,7 @@ async function copyProxyKeys() {
 
 onMounted(() => {
   loadStats();
-  loadConfigOptions();
+  ensureConfigOptionsForGroup();
   loadParentAggregateGroups();
   loadParentGroup();
 });
@@ -180,6 +180,7 @@ watch(
   () => {
     resetPage();
     loadStats();
+    ensureConfigOptionsForGroup();
     loadParentAggregateGroups();
     loadParentGroup();
   },
@@ -236,6 +237,17 @@ async function loadConfigOptions() {
   } catch (error) {
     console.error("Failed to load config options:", error);
   }
+}
+
+function groupNeedsConfigOptions(group: Group | null) {
+  return group?.config !== undefined && Object.keys(group.config).length > 0;
+}
+
+function ensureConfigOptionsForGroup() {
+  if (!groupNeedsConfigOptions(props.group) || configOptions.value.length > 0) {
+    return;
+  }
+  loadConfigOptions();
 }
 
 async function loadParentAggregateGroups() {

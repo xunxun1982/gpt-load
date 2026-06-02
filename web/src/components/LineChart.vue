@@ -10,6 +10,19 @@ import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
 
+const props = withDefaults(
+  defineProps<{
+    range?: DashboardChartRange;
+  }>(),
+  {
+    range: "today",
+  }
+);
+
+const emit = defineEmits<{
+  "update:range": [value: DashboardChartRange];
+}>();
+
 // Chart data and reactive state
 const chartData = ref<ChartData | null>(null);
 const ALL_GROUPS_VALUE = -1; // Safe sentinel: Backend IDs are uint (always >= 0)
@@ -69,6 +82,16 @@ const rangeOptions = computed<SelectOption[]>(() =>
     value: range.value,
     label: t(range.labelKey),
   }))
+);
+
+watch(
+  () => props.range,
+  value => {
+    if (selectedRange.value !== value) {
+      selectedRange.value = value;
+    }
+  },
+  { immediate: true }
 );
 
 // Derived drawable area size
@@ -480,17 +503,23 @@ const fetchChartData = async () => {
 // Refresh chart when selected group or time range changes
 // AI suggestion: Setting default value when selectedGroup is cleared triggers watch again, suggest optimization
 // Not adopted: 1) return exits early avoiding immediate fetchChartData call 2) Next trigger executes normally 3) Ensures state consistency
-watch([selectedGroup, selectedRange], () => {
-  if (selectedGroup.value === null) {
-    selectedGroup.value = ALL_GROUPS_VALUE;
-    return;
-  }
-  fetchChartData();
-});
+watch(
+  [selectedGroup, selectedRange],
+  () => {
+    if (selectedGroup.value === null) {
+      selectedGroup.value = ALL_GROUPS_VALUE;
+      return;
+    }
+    if (selectedRange.value !== props.range) {
+      emit("update:range", selectedRange.value);
+    }
+    fetchChartData();
+  },
+  { immediate: true }
+);
 
 onMounted(() => {
   fetchGroups();
-  fetchChartData();
 });
 
 onUnmounted(() => {

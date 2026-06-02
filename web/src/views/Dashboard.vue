@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { getDashboardStats } from "@/api/dashboard";
+import { getDashboardStats, type DashboardChartRange } from "@/api/dashboard";
 import BaseInfoCard from "@/components/BaseInfoCard.vue";
 import EncryptionMismatchAlert from "@/components/EncryptionMismatchAlert.vue";
 import LineChart from "@/components/LineChart.vue";
 import SecurityAlert from "@/components/SecurityAlert.vue";
+import TokenUsagePanel from "@/components/TokenUsagePanel.vue";
 import type { DashboardStatsResponse } from "@/types/models";
-import { NSpace } from "naive-ui";
+import { NRadioButton, NRadioGroup, NSpace } from "naive-ui";
 import { onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 
+const { t } = useI18n();
 const dashboardStats = ref<DashboardStatsResponse | null>(null);
+const selectedAnalysis = ref<"trend" | "tokens">("trend");
+const selectedRange = ref<DashboardChartRange>("today");
 
 onMounted(async () => {
   try {
@@ -33,12 +38,37 @@ onMounted(async () => {
       />
 
       <base-info-card :stats="dashboardStats" />
-      <line-chart class="dashboard-chart" />
+      <div class="dashboard-analysis">
+        <n-radio-group
+          v-model:value="selectedAnalysis"
+          name="dashboard-analysis"
+          size="small"
+          class="dashboard-analysis-switch"
+        >
+          <n-radio-button value="trend">{{ t("charts.requestTrend") }}</n-radio-button>
+          <n-radio-button value="tokens">{{ t("dashboard.modelTokenUsage") }}</n-radio-button>
+        </n-radio-group>
+        <line-chart
+          v-if="selectedAnalysis === 'trend'"
+          class="dashboard-chart"
+          :range="selectedRange"
+          @update:range="selectedRange = $event"
+        />
+        <token-usage-panel v-else :range="selectedRange" @update:range="selectedRange = $event" />
+      </div>
     </n-space>
   </div>
 </template>
 
 <style scoped>
+.dashboard-analysis {
+  animation: fadeInUp 0.2s ease-out 0.2s both;
+}
+
+.dashboard-analysis-switch {
+  margin-bottom: 12px;
+}
+
 .dashboard-header-card {
   background: var(--card-bg);
   border-radius: var(--border-radius-lg);
@@ -59,7 +89,7 @@ onMounted(async () => {
 }
 
 .dashboard-chart {
-  animation: fadeInUp 0.2s ease-out 0.2s both;
+  animation: none;
 }
 
 @keyframes fadeInUp {

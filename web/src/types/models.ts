@@ -273,6 +273,12 @@ export interface RequestLog {
   is_stream: boolean;
   request_body?: string;
   response_body?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  thinking_tokens?: number;
 }
 
 export interface Pagination {
@@ -339,8 +345,31 @@ export interface DashboardStatsResponse {
   key_count: StatCard;
   rpm: StatCard;
   request_count: StatCard;
+  token_usage: TokenUsageSummary;
   error_rate: StatCard;
   security_warnings: SecurityWarning[];
+}
+
+export interface TokenUsageSummary {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  thinking_tokens: number;
+  estimated_tokens: number;
+  estimated_request_count: number;
+}
+
+export interface ModelTokenUsageItem extends TokenUsageSummary {
+  model: string;
+  request_count: number;
+}
+
+export interface DashboardTokenUsageResponse {
+  summary: TokenUsageSummary;
+  models: ModelTokenUsageItem[];
+  chart: ChartData;
 }
 
 // Chart dataset definition

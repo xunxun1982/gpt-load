@@ -773,6 +773,7 @@ func (ps *ProxyServer) handleGeminiCCNormalResponse(c *gin.Context, resp *http.R
 			decompressed = !bytes.Equal(bodyBytes, originalBodyBytes)
 		}
 	}
+	setTokenUsageOrEstimateFromFullBody(c, bodyBytes)
 
 	// Parse Gemini response
 	var geminiResp GeminiResponse
@@ -1195,6 +1196,7 @@ func (ps *ProxyServer) handleGeminiCCStreamingResponse(c *gin.Context, resp *htt
 		sendSSEError("Failed to parse upstream response")
 		return
 	}
+	setTokenUsageOrEstimateFromFullBody(c, bodyBytes)
 
 	// Process chunk and get Claude events
 	events := state.processGeminiStreamChunk(&chunk)

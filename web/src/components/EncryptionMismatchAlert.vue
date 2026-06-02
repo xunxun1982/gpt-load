@@ -12,6 +12,27 @@ interface EncryptionStatusResponse {
   suggestion: string;
 }
 
+let cachedEncryptionStatus: EncryptionStatusResponse | null = null;
+let pendingEncryptionStatusRequest: Promise<EncryptionStatusResponse> | null = null;
+
+async function fetchEncryptionStatus() {
+  if (cachedEncryptionStatus) {
+    return cachedEncryptionStatus;
+  }
+  if (!pendingEncryptionStatusRequest) {
+    pendingEncryptionStatusRequest = http
+      .get<EncryptionStatusResponse>("/dashboard/encryption-status")
+      .then(response => {
+        cachedEncryptionStatus = response.data;
+        return response.data;
+      })
+      .finally(() => {
+        pendingEncryptionStatusRequest = null;
+      });
+  }
+  return pendingEncryptionStatusRequest;
+}
+
 // Whether to show the alert
 const showAlert = ref(false);
 
@@ -37,12 +58,12 @@ const { t } = useI18n();
 // Check encryption status
 const checkEncryptionStatus = async () => {
   try {
-    const response = await http.get<EncryptionStatusResponse>("/dashboard/encryption-status");
-    if (response.data.has_mismatch) {
+    const status = await fetchEncryptionStatus();
+    if (status.has_mismatch) {
       showAlert.value = true;
-      scenarioType.value = response.data.scenario_type;
-      message.value = response.data.message;
-      suggestion.value = response.data.suggestion;
+      scenarioType.value = status.scenario_type;
+      message.value = status.message;
+      suggestion.value = status.suggestion;
     }
   } catch (error) {
     console.error("Failed to check encryption status:", error);

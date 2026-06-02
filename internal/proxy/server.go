@@ -2193,6 +2193,27 @@ func (ps *ProxyServer) logRequest(
 		logEntry.ErrorMessage = finalError.Error()
 	}
 
+	if usage, source, ok := getTokenUsage(c); ok {
+		logEntry.InputTokens = usage.InputTokens
+		logEntry.OutputTokens = usage.OutputTokens
+		logEntry.TotalTokens = usage.TotalTokens
+		logEntry.CacheReadTokens = usage.CacheReadTokens
+		logEntry.CacheWriteTokens = usage.CacheWriteTokens
+		logEntry.ThinkingTokens = usage.ThinkingTokens
+		logEntry.TokenUsageSource = source
+	} else if logEntry.RequestType == models.RequestTypeFinal && logEntry.IsSuccess {
+		inputTokens := int64(utils.EstimateTokensFromBytes(bodyBytes))
+		outputTokens := getEstimatedOutputTokens(c)
+		totalTokens := inputTokens + outputTokens
+		if totalTokens > 0 {
+			logEntry.InputTokens = inputTokens
+			logEntry.OutputTokens = outputTokens
+			logEntry.TotalTokens = totalTokens
+			logEntry.TokenUsageSource = models.TokenUsageSourceEstimated
+		}
+	}
+	clearTokenUsage(c)
+
 	// Debug log for request recording
 	if !logEntry.IsSuccess {
 		logrus.WithFields(logrus.Fields{

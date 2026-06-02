@@ -2541,6 +2541,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		// Decompression succeeded, mark as decompressed
 		decompressed = true
 	}
+	setTokenUsageOrEstimateFromFullBody(c, bodyBytes)
 
 	// Parse OpenAI response
 	var openaiResp OpenAIResponse
@@ -3796,6 +3797,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if usage != nil {
 			usagePayload.InputTokens = usage.PromptTokens
 			usagePayload.OutputTokens = usage.CompletionTokens
+			setTokenUsageCounts(c, int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens))
 		}
 		applyTokenMultiplier(usagePayload)
 

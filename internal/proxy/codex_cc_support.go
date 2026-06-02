@@ -1553,6 +1553,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		// Decompression succeeded, mark as decompressed
 		decompressed = true
 	}
+	setTokenUsageOrEstimateFromFullBody(c, bodyBytes)
 
 	// Parse Codex response
 	var codexResp CodexResponse
@@ -1919,6 +1920,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 					Debug("Codex CC: Failed to parse stream event")
 				continue
 			}
+			setTokenUsageFromBody(c, []byte(data))
 
 			// Use event type from "event:" line if available, otherwise from JSON
 			if currentEventType != "" && codexEvent.Type == "" {

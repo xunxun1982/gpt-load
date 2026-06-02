@@ -185,6 +185,7 @@ func (a *App) Start() error {
 			&models.APIKey{},
 			&models.RequestLog{},
 			&models.GroupHourlyStat{},
+			&models.ModelTokenHourlyStat{},
 			&models.DynamicWeightMetric{},
 			&sitemanagement.ManagedSite{},
 			&sitemanagement.ManagedSiteCheckinLog{},

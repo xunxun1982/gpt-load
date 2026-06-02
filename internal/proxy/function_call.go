@@ -1288,6 +1288,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		return
 	}
 	body := handleGzipCompression(resp, rawBody)
+	setTokenUsageOrEstimateFromFullBody(c, body)
 
 	// Fallback: if we cannot parse JSON, behave like normal response handler.
 	var payload map[string]any
@@ -1823,6 +1824,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		// Parse current chunk, accumulate content, and strip XML blocks in real-time.
 		var modifiedLines []string
 		if dataStr != "" {
+			setTokenUsageFromBody(c, []byte(dataStr))
 			var evt map[string]any
 			if err := json.Unmarshal([]byte(dataStr), &evt); err == nil {
 				if choicesVal, ok := evt["choices"]; ok {
