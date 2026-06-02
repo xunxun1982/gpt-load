@@ -889,12 +889,34 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				}
 			}
 
+			if group.ChannelType == "gemini" {
+				c.Request.URL.Path = applyGeminiNativeStreamPathOverride(
+					c.Request.URL.Path,
+					getGroupConfigBool(group, "force_stream"),
+					getGroupConfigBool(group, "force_non_stream"),
+				)
+			}
+			// Native Gemini selects streaming via endpoint suffix, not a JSON stream field.
+			if group.ChannelType != "gemini" || !isGeminiNativeGenerateContentPath(c.Request.URL.Path) {
+				finalBodyBytes, err = ps.applyStreamOverrideConfig(finalBodyBytes, group)
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to apply stream override config")
+				}
+			}
+			if group.ChannelType == "openai-response" && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+				finalBodyBytes, err = ps.applyResponsesIncludeConfig(finalBodyBytes, group)
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to apply Responses include config")
+				}
+			}
+
 			isStream = channelHandler.IsStreamRequest(c, finalBodyBytes)
 
 			// Apply forced streaming for direct OpenAI Responses requests (non-CC mode).
 			// Codex-compatible upstreams require stream: true for reliable responses.
 			// If client requests non-stream, we force stream: true to upstream and collect response.
-			if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+			if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) &&
+				!getGroupConfigBool(group, "force_non_stream") && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 				modifiedBody, wasNonStream := channel.ForceStreamRequest(finalBodyBytes)
 				if wasNonStream {
 					finalBodyBytes = modifiedBody
@@ -1563,10 +1585,39 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
+	if group.ChannelType == "gemini" {
+		c.Request.URL.Path = applyGeminiNativeStreamPathOverride(
+			c.Request.URL.Path,
+			getGroupConfigBool(group, "force_stream"),
+			getGroupConfigBool(group, "force_non_stream"),
+		)
+	}
+	// Native Gemini selects streaming via endpoint suffix, not a JSON stream field.
+	if group.ChannelType != "gemini" || !isGeminiNativeGenerateContentPath(c.Request.URL.Path) {
+		finalBodyBytes, err = ps.applyStreamOverrideConfig(finalBodyBytes, group)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply stream override config for sub-group")
+		}
+	}
+	if group.ChannelType == "openai-response" && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+		finalBodyBytes, err = ps.applyResponsesIncludeConfig(finalBodyBytes, group)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply Responses include config for sub-group")
+		}
+	}
+	isStream = subGroupChannelHandler.IsStreamRequest(c, finalBodyBytes)
+
 	// Apply forced streaming for direct OpenAI Responses sub-group requests (non-CC mode).
 	// Clear any stale forced stream state from previous sub-group attempts.
 	c.Set(ctxKeyOpenAIResponseForcedStream, false)
-	if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+	if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) &&
+		!getGroupConfigBool(group, "force_non_stream") && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 		modifiedBody, wasNonStream := channel.ForceStreamRequest(finalBodyBytes)
 		if wasNonStream {
 			finalBodyBytes = modifiedBody

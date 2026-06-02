@@ -397,6 +397,12 @@ export default {
     subMaxRetries: "サブグループ最大リトライ",
     subMaxRetriesPlaceholder:
       "1回のリクエスト内で各サブグループに許可される最大リトライ回数（0はリトライなし、0-5）",
+    healthResetInterval: "健康度リセット間隔",
+    healthResetDisabled: "自動リセットしない",
+    healthResetEveryHours: "{count}時間ごと",
+    healthResetEveryDays: "{count}日ごと",
+    healthResetHint:
+      "毎日 00:00 を基準に、この集約グループ内のすべてのサブグループの健康度をリセットします",
     precondition: "前提条件",
     preconditions: "前提条件",
     preconditionMaxRequestSize: "リクエストサイズ制限",
@@ -517,6 +523,25 @@ export default {
     parallelToolCallsDisabled: "無効",
     parallelToolCallsTip:
       "リクエストにネイティブツールが含まれている場合にのみ有効です。「強制関数呼び出し」が有効な場合、この設定は無効です。OpenAI Responses チャンネルはデフォルトで有効です。",
+    validationStream: "テスト流式",
+    validationStreamTip:
+      "キー検証リクエストのみに適用。デフォルトはオフで非ストリーミング検証です。",
+    validationPromptMode: "テストプロンプト",
+    validationPromptModeDefault: "デフォルト hi",
+    validationPromptModeRandomQueue: "短い質問キュー",
+    validationPromptModeTip:
+      "デフォルトは hi を送信します。キューモードでは100個の短い質問を順番に使用します。",
+    requestBehavior: "リクエスト動作",
+    requestBehaviorTooltip: "上流へ転送する前にリクエスト本文を軽く書き換えます。",
+    requestStreamMode: "リクエスト流式",
+    requestStreamModeDefault: "デフォルト（クライアントに従う）",
+    requestStreamModeForceStream: "強制ストリーミング",
+    requestStreamModeForceNonStream: "強制非ストリーミング",
+    requestStreamModeTip:
+      "stream フィールドを書き換えます。Gemini ネイティブでは generateContent/streamGenerateContent パスも切り替えます。",
+    responsesIncludeEncryptedReasoning: "暗号化推理",
+    responsesIncludeEncryptedReasoningTip:
+      'OpenAI Responses のみ。リクエストの include 配列に "reasoning.encrypted_content" を追加します。',
     ccSupport: "強制 CC サポート",
     ccSupportTooltip1:
       "Claude Code 互換モードを有効にし、Claude クライアントが /claude エンドポイント経由で接続できるようにします。",
@@ -713,6 +738,10 @@ export default {
     resetHealth: "健康度をリセット",
     confirmResetHealth: 'サブグループ "{name}" の健康度指標をリセットしてもよろしいですか？',
     resetHealthSuccess: "健康度指標がリセットされました",
+    healthResetInterval: "健康度リセット間隔",
+    healthResetFollowAggregate: "集約グループに従う",
+    healthResetOverrideHint:
+      "設定するとこのサブグループのみをリセットします。従う場合は集約グループの既定間隔を使用します",
   },
   logs: {
     title: "ログ",

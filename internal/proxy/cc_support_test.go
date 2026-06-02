@@ -1215,6 +1215,7 @@ data: {"id":"chatcmpl-tool","object":"chat.completion.chunk","created":123456789
 data: {"id":"chatcmpl-tool","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
 
 data: [DONE]
+
 `
 
 	resp := &http.Response{
@@ -6388,7 +6389,7 @@ func TestHandleCCNormalResponseWithToolNameRestore(t *testing.T) {
 func TestHandleCCNormalResponsePassthroughCapturesTokenUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	responseBody := `plain alternate schema response`
+	responseBody := `{"result":"plain alternate schema response","provider":"custom"}`
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),

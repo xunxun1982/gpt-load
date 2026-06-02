@@ -7,6 +7,7 @@ import {
   type PreconditionItem,
   type PreconditionOption,
 } from "@/types/models";
+import { getAggregateHealthResetOptions } from "@/utils/health-reset";
 import { Add, Close, Remove } from "@vicons/ionicons5";
 import {
   NButton,
@@ -35,6 +36,7 @@ import { useI18n } from "vue-i18n";
 interface GroupConfig {
   max_retries?: number;
   sub_max_retries?: number;
+  health_reset_interval_seconds?: number;
 }
 
 interface ApiError {
@@ -86,6 +88,7 @@ const preconditionOptions = computed<PreconditionOption[]>(() => [
     unit: t("keys.maxRequestSizeUnit"),
   },
 ]);
+const healthResetOptions = computed(() => getAggregateHealthResetOptions(t));
 
 // Get available precondition options (exclude already added)
 const availablePreconditionOptions = computed<SelectOption[]>(() => {
@@ -113,6 +116,7 @@ const defaultFormData = {
   proxy_keys: "",
   max_retries: 0,
   sub_max_retries: 0,
+  health_reset_interval_seconds: 0,
   preconditionItems: [] as PreconditionItem[], // Dynamic precondition list
 };
 
@@ -175,6 +179,7 @@ function loadGroupData() {
   const config = (props.group.config || {}) as GroupConfig;
   const maxRetries = config.max_retries ?? 0;
   const subMaxRetries = config.sub_max_retries ?? 0;
+  const healthResetIntervalSeconds = config.health_reset_interval_seconds ?? 0;
 
   // Load preconditions as dynamic items
   const preconditionItems: PreconditionItem[] = [];
@@ -195,6 +200,7 @@ function loadGroupData() {
     proxy_keys: props.group.proxy_keys || "",
     max_retries: maxRetries,
     sub_max_retries: subMaxRetries,
+    health_reset_interval_seconds: healthResetIntervalSeconds,
     preconditionItems,
   });
 }
@@ -289,6 +295,7 @@ async function handleSubmit() {
       config: {
         max_retries: formData.max_retries ?? 0,
         sub_max_retries: formData.sub_max_retries ?? 0,
+        health_reset_interval_seconds: formData.health_reset_interval_seconds ?? 0,
       },
       preconditions,
     };
@@ -407,6 +414,19 @@ async function handleSubmit() {
               :max="50"
               style="width: 100%"
             />
+          </n-form-item>
+
+          <n-form-item :label="t('keys.healthResetInterval')">
+            <n-select
+              v-model:value="formData.health_reset_interval_seconds"
+              :options="healthResetOptions"
+              :placeholder="t('keys.healthResetDisabled')"
+            />
+            <template #feedback>
+              <span style="color: var(--text-secondary); font-size: 12px">
+                {{ t("keys.healthResetHint") }}
+              </span>
+            </template>
           </n-form-item>
 
           <n-form-item :label="t('keys.proxyKeys')">

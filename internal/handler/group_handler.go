@@ -498,7 +498,8 @@ type AddSubGroupsRequest struct {
 
 // UpdateSubGroupWeightRequest defines the payload for updating a sub group weight
 type UpdateSubGroupWeightRequest struct {
-	Weight int `json:"weight"`
+	Weight                     int   `json:"weight"`
+	HealthResetIntervalSeconds int64 `json:"health_reset_interval_seconds"`
 }
 
 // GetSubGroups handles getting sub groups of an aggregate group
@@ -570,7 +571,11 @@ func (s *Server) UpdateSubGroupWeight(c *gin.Context) {
 		return
 	}
 
-	if err := s.AggregateGroupService.UpdateSubGroupWeight(c.Request.Context(), uint(id), uint(subGroupID), req.Weight); s.handleGroupError(c, err) {
+	input := services.UpdateSubGroupSettingsInput{
+		Weight:                     req.Weight,
+		HealthResetIntervalSeconds: req.HealthResetIntervalSeconds,
+	}
+	if err := s.AggregateGroupService.UpdateSubGroupWeight(c.Request.Context(), uint(id), uint(subGroupID), input); s.handleGroupError(c, err) {
 		return
 	}
 
@@ -931,16 +936,14 @@ func (s *Server) ResetSubGroupHealth(c *gin.Context) {
 		return
 	}
 
-	if s.DynamicWeightManager == nil {
-		response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.dynamic_weight_not_configured")
-		return
-	}
-
-	if err := s.DynamicWeightManager.ResetSubGroupMetrics(uint(id), uint(subGroupID)); err != nil {
+	if err := s.AggregateGroupService.ResetSubGroupHealth(c.Request.Context(), uint(id), uint(subGroupID)); err != nil {
 		logrus.WithError(err).WithFields(logrus.Fields{
 			"group_id":     id,
 			"sub_group_id": subGroupID,
 		}).Error("Failed to reset sub-group health metrics")
+		if s.handleGroupError(c, err) {
+			return
+		}
 		response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.health_reset_failed")
 		return
 	}

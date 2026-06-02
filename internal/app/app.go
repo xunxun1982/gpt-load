@@ -124,6 +124,9 @@ func NewApp(params AppParams) *App {
 				}).Debug("Restored soft-deleted sub-group metrics")
 			}
 		}
+		params.AggregateGroupService.OnSubGroupHealthReset = func(aggregateGroupID, subGroupID uint) error {
+			return dwPersistence.ResetSubGroupMetrics(aggregateGroupID, subGroupID)
+		}
 
 		// Set callback for group deletion on GroupService
 		params.GroupService.OnGroupDeleted = func(groupID uint, isAggregateGroup bool) {

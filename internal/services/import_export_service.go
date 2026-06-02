@@ -461,8 +461,9 @@ type ChildGroupExport struct {
 
 // SubGroupInfo represents sub-group relationship
 type SubGroupInfo struct {
-	GroupName string `json:"group_name"`
-	Weight    int    `json:"weight"`
+	GroupName                  string `json:"group_name"`
+	Weight                     int    `json:"weight"`
+	HealthResetIntervalSeconds int64  `json:"health_reset_interval_seconds,omitempty"`
 }
 
 // DynamicWeightMetricExportInfo stores dynamic health metrics using stable group names.
@@ -529,8 +530,10 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 		if err == nil && len(subGroupRelations) > 0 {
 			// Get sub-group IDs
 			subGroupIDs := make([]uint, 0, len(subGroupRelations))
+			relationMap := make(map[uint]models.GroupSubGroup, len(subGroupRelations))
 			for _, rel := range subGroupRelations {
 				subGroupIDs = append(subGroupIDs, rel.SubGroupID)
+				relationMap[rel.SubGroupID] = rel
 			}
 
 			// Get sub-group details
@@ -538,17 +541,11 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 			if err := s.db.Where("id IN ?", subGroupIDs).Find(&subGroups).Error; err == nil {
 				result.SubGroups = make([]SubGroupInfo, 0, len(subGroups))
 				for _, sg := range subGroups {
-					// Find the weight for this sub-group
-					weight := 0
-					for _, rel := range subGroupRelations {
-						if rel.SubGroupID == sg.ID {
-							weight = rel.Weight
-							break
-						}
-					}
+					relation := relationMap[sg.ID]
 					result.SubGroups = append(result.SubGroups, SubGroupInfo{
-						GroupName: sg.Name,
-						Weight:    weight,
+						GroupName:                  sg.Name,
+						Weight:                     relation.Weight,
+						HealthResetIntervalSeconds: relation.HealthResetIntervalSeconds,
 					})
 				}
 			}
@@ -1082,8 +1079,10 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 			if err == nil && len(subGroupRelations) > 0 {
 				// Get sub-group IDs
 				subGroupIDs := make([]uint, 0, len(subGroupRelations))
+				relationMap := make(map[uint]models.GroupSubGroup, len(subGroupRelations))
 				for _, rel := range subGroupRelations {
 					subGroupIDs = append(subGroupIDs, rel.SubGroupID)
+					relationMap[rel.SubGroupID] = rel
 				}
 
 				// Get sub-group details
@@ -1091,17 +1090,11 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 				if err := s.db.Where("id IN ?", subGroupIDs).Find(&subGroups).Error; err == nil {
 					groupData.SubGroups = make([]SubGroupInfo, 0, len(subGroups))
 					for _, sg := range subGroups {
-						// Find the weight for this sub-group
-						weight := 0
-						for _, rel := range subGroupRelations {
-							if rel.SubGroupID == sg.ID {
-								weight = rel.Weight
-								break
-							}
-						}
+						relation := relationMap[sg.ID]
 						groupData.SubGroups = append(groupData.SubGroups, SubGroupInfo{
-							GroupName: sg.Name,
-							Weight:    weight,
+							GroupName:                  sg.Name,
+							Weight:                     relation.Weight,
+							HealthResetIntervalSeconds: relation.HealthResetIntervalSeconds,
 						})
 					}
 				}
@@ -1297,13 +1290,17 @@ func (s *ImportExportService) importAggregateSubGroupRelations(tx *gorm.DB, grou
 			}
 
 			relation := models.GroupSubGroup{
-				GroupID:    aggregateGroup.ID,
-				SubGroupID: subGroup.ID,
-				Weight:     subGroupInfo.Weight,
+				GroupID:                    aggregateGroup.ID,
+				SubGroupID:                 subGroup.ID,
+				Weight:                     subGroupInfo.Weight,
+				HealthResetIntervalSeconds: subGroupInfo.HealthResetIntervalSeconds,
 			}
 
 			if err := tx.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).
-				Assign(models.GroupSubGroup{Weight: subGroupInfo.Weight}).
+				Assign(map[string]any{
+					"weight":                        subGroupInfo.Weight,
+					"health_reset_interval_seconds": subGroupInfo.HealthResetIntervalSeconds,
+				}).
 				FirstOrCreate(&relation).Error; err != nil {
 				logrus.WithError(err).Warnf("Failed to create sub-group relation %s -> %s", aggregateGroup.Name, subGroup.Name)
 				skipped++

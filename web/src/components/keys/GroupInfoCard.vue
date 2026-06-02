@@ -37,7 +37,7 @@ import {
   NTooltip,
   useDialog,
 } from "naive-ui";
-import { computed, h, onMounted, ref, watch } from "vue";
+import { computed, h, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
 import GroupCopyModal from "./GroupCopyModal.vue";
@@ -178,13 +178,6 @@ async function copyProxyKeys() {
     },
   });
 }
-
-onMounted(() => {
-  loadStats();
-  ensureConfigOptionsForGroup();
-  loadParentAggregateGroups();
-  loadParentGroup();
-});
 
 watch(
   () => props.group,

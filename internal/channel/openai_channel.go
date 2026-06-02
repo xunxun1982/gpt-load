@@ -57,12 +57,15 @@ func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 	}
 	reqURL := selection.URL
 
-	// Use a minimal, low-cost payload for validation
+	// Use a minimal, low-cost payload for validation.
 	payload := gin.H{
 		"model": ch.TestModel,
 		"messages": []gin.H{
-			{"role": "user", "content": "hi"},
+			{"role": "user", "content": validationPromptForGroup(group)},
 		},
+	}
+	if validationStreamEnabled(group) {
+		payload["stream"] = true
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

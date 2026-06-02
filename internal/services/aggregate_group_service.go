@@ -17,10 +17,21 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	minHealthResetIntervalSeconds = int64(time.Hour / time.Second)
+	maxHealthResetIntervalSeconds = int64((365 * 24 * time.Hour) / time.Second)
+)
+
 // SubGroupInput defines the input payload for aggregate group member configuration.
 type SubGroupInput struct {
 	GroupID uint `json:"group_id"`
 	Weight  int  `json:"weight"`
+}
+
+// UpdateSubGroupSettingsInput defines relationship-level settings for an aggregate sub-group.
+type UpdateSubGroupSettingsInput struct {
+	Weight                     int
+	HealthResetIntervalSeconds int64
 }
 
 // AggregateValidationResult captures the normalized aggregate group parameters.
@@ -40,8 +51,9 @@ type AggregateGroupService struct {
 	statsCacheTTL time.Duration
 
 	// Callbacks for soft delete/restore operations (set by app layer)
-	OnSubGroupRemoved func(aggregateGroupID, subGroupID uint)
-	OnSubGroupAdded   func(aggregateGroupID, subGroupID uint)
+	OnSubGroupRemoved     func(aggregateGroupID, subGroupID uint)
+	OnSubGroupAdded       func(aggregateGroupID, subGroupID uint)
+	OnSubGroupHealthReset func(aggregateGroupID, subGroupID uint) error
 }
 
 // keyStatsCacheEntry stores cached key statistics with expiration time
@@ -199,11 +211,11 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 	}
 
 	subGroupIDs := make([]uint, 0, len(groupSubGroups))
-	weightMap := make(map[uint]int, len(groupSubGroups))
+	relationMap := make(map[uint]models.GroupSubGroup, len(groupSubGroups))
 
 	for _, gsg := range groupSubGroups {
 		subGroupIDs = append(subGroupIDs, gsg.SubGroupID)
-		weightMap[gsg.SubGroupID] = gsg.Weight
+		relationMap[gsg.SubGroupID] = gsg
 	}
 
 	var subGroupModels []models.Group
@@ -220,7 +232,7 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 		for _, subGroup := range subGroupModels {
 			inputs = append(inputs, SubGroupWeightInput{
 				SubGroupID: subGroup.ID,
-				Weight:     weightMap[subGroup.ID],
+				Weight:     relationMap[subGroup.ID].Weight,
 			})
 		}
 		dwInfos := s.dynamicWeightManager.GetSubGroupDynamicWeights(groupID, inputs)
@@ -245,11 +257,13 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 		}
 
 		info := models.SubGroupInfo{
-			Group:       subGroup,
-			Weight:      weightMap[subGroup.ID],
-			TotalKeys:   stats.TotalKeys,
-			ActiveKeys:  stats.ActiveKeys,
-			InvalidKeys: stats.InvalidKeys,
+			Group:                      subGroup,
+			Weight:                     relationMap[subGroup.ID].Weight,
+			HealthResetIntervalSeconds: relationMap[subGroup.ID].HealthResetIntervalSeconds,
+			LastHealthResetAt:          relationMap[subGroup.ID].LastHealthResetAt,
+			TotalKeys:                  stats.TotalKeys,
+			ActiveKeys:                 stats.ActiveKeys,
+			InvalidKeys:                stats.InvalidKeys,
 		}
 
 		// Add dynamic weight info if available
@@ -342,19 +356,22 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 	return nil
 }
 
-// UpdateSubGroupWeight updates the weight of a specific sub group
-func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupID, subGroupID uint, weight int) error {
+// UpdateSubGroupWeight updates relationship-level settings for a specific sub group.
+func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupID, subGroupID uint, input UpdateSubGroupSettingsInput) error {
 	_, err := FindAggregateGroupByID(ctx, s.db, groupID)
 	if err != nil {
 		return err
 	}
 
-	if weight < 0 {
+	if input.Weight < 0 {
 		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_negative", nil)
 	}
 
-	if weight > 1000 {
+	if input.Weight > 1000 {
 		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
+	}
+	if err := validateHealthResetIntervalSeconds(input.HealthResetIntervalSeconds); err != nil {
+		return err
 	}
 
 	// Check if sub-group relationship exists
@@ -369,7 +386,10 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 	result := s.db.WithContext(ctx).
 		Model(&models.GroupSubGroup{}).
 		Where("group_id = ? AND sub_group_id = ?", groupID, subGroupID).
-		Update("weight", weight)
+		Updates(map[string]any{
+			"weight":                        input.Weight,
+			"health_reset_interval_seconds": input.HealthResetIntervalSeconds,
+		})
 
 	if result.Error != nil {
 		return result.Error
@@ -384,6 +404,43 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache after updating sub group weight")
 	}
 
+	return nil
+}
+
+// ResetSubGroupHealth clears runtime and persisted health metrics for a sub-group relation.
+func (s *AggregateGroupService) ResetSubGroupHealth(ctx context.Context, groupID, subGroupID uint) error {
+	_, err := FindAggregateGroupByID(ctx, s.db, groupID)
+	if err != nil {
+		return err
+	}
+
+	var existingRecord models.GroupSubGroup
+	if err := s.db.WithContext(ctx).Where("group_id = ? AND sub_group_id = ?", groupID, subGroupID).Limit(1).Find(&existingRecord).Error; err != nil {
+		return err
+	}
+	if existingRecord.GroupID == 0 {
+		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
+	}
+
+	if s.dynamicWeightManager == nil {
+		return NewI18nError(app_errors.ErrInternalServer, "error.dynamic_weight_not_configured", nil)
+	}
+	if s.OnSubGroupHealthReset != nil {
+		return s.OnSubGroupHealthReset(groupID, subGroupID)
+	}
+	return s.dynamicWeightManager.ResetSubGroupMetrics(groupID, subGroupID)
+}
+
+func validateHealthResetIntervalSeconds(seconds int64) error {
+	if seconds < 0 {
+		return NewI18nError(app_errors.ErrValidation, "validation.invalid_health_reset_interval", nil)
+	}
+	if seconds > 0 && seconds < minHealthResetIntervalSeconds {
+		return NewI18nError(app_errors.ErrValidation, "validation.invalid_health_reset_interval", nil)
+	}
+	if seconds > maxHealthResetIntervalSeconds {
+		return NewI18nError(app_errors.ErrValidation, "validation.invalid_health_reset_interval", nil)
+	}
 	return nil
 }
 

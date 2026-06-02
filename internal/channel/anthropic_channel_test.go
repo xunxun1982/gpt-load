@@ -1,12 +1,17 @@
 package channel
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
+	"unicode/utf8"
 
 	"gpt-load/internal/models"
 
 	"github.com/stretchr/testify/assert"
+	"gorm.io/datatypes"
 )
 
 func TestClaudeCodeUserAgent(t *testing.T) {
@@ -120,6 +125,56 @@ func TestAnthropicChannel_ModifyRequest_DualAuth(t *testing.T) {
 	// Both headers should be set with the same key
 	assert.Equal(t, "Bearer test-key-123", req.Header.Get("Authorization"))
 	assert.Equal(t, "test-key-123", req.Header.Get("x-api-key"))
+}
+
+func TestAnthropicChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "test-key", r.Header.Get("x-api-key"))
+
+		var body map[string]any
+		err := json.NewDecoder(r.Body).Decode(&body)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, true, body["stream"])
+		messages, ok := body["messages"].([]any)
+		if assert.True(t, ok) && assert.NotEmpty(t, messages) {
+			message, ok := messages[0].(map[string]any)
+			if assert.True(t, ok) {
+				content, ok := message["content"].(string)
+				assert.True(t, ok)
+				assert.NotEqual(t, validationDefaultPrompt, content)
+				assert.True(t, validationPromptInQueue(content))
+				assert.LessOrEqual(t, utf8.RuneCountInString(content), 8)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ch := &AnthropicChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/messages",
+			TestModel:          "claude-3-haiku-20240307",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{
+			"validation_stream":      true,
+			"validation_prompt_mode": "random_queue",
+		},
+	})
+	assert.NoError(t, err)
+	assert.True(t, valid)
 }
 
 // Benchmark tests

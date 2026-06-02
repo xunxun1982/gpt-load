@@ -2585,7 +2585,8 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			c.Header("Content-Encoding", origEncoding)
 		}
 
-		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
+		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
+		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
@@ -2608,6 +2609,16 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		}
 		clearUpstreamEncodingHeaders(c)
 		c.JSON(resp.StatusCode, claudeErr)
+		return
+	}
+	if len(openaiResp.Choices) == 0 && openaiResp.Usage == nil {
+		clearUpstreamEncodingHeaders(c)
+		if !decompressed && origEncoding != "" {
+			c.Header("Content-Encoding", origEncoding)
+		}
+		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
+		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
+		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
@@ -3841,7 +3852,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			if err == io.EOF {
 				logrus.Debug("CC: Upstream stream EOF")
 				// Ensure final events are sent on EOF to prevent client hanging
-				finalize(streamStopReason, streamUsage, true)
+				finalize(streamStopReason, streamUsage, false)
 			} else if errors.Is(err, ErrSSETimeout) {
 				// Handle timeout error - send error event to client instead of hanging
 				logrus.WithError(err).Warn("CC: SSE read timeout, sending error to client")

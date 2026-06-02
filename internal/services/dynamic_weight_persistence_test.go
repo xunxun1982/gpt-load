@@ -9,6 +9,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -809,6 +810,169 @@ func TestDynamicWeightPersistence_RolloverTimeWindowsPreservesRateLimits(t *test
 	}
 	if memoryMetrics.LastRolloverAt.IsZero() || !memoryMetrics.LastRolloverAt.After(previousRollover) {
 		t.Error("Expected memory LastRolloverAt to be updated")
+	}
+}
+
+func TestDynamicWeightPersistence_ResetDueSubGroupHealth(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(&models.Group{}, &models.GroupSubGroup{}, &models.DynamicWeightMetric{}); err != nil {
+		t.Fatalf("Failed to migrate: %v", err)
+	}
+
+	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
+	manager := NewDynamicWeightManager(kvStore)
+	persistence := NewDynamicWeightPersistence(db, manager)
+
+	now := time.Date(2026, 6, 2, 1, 5, 0, 0, time.Local)
+	baseline := now.Add(-3 * time.Hour)
+	aggregateGroup := models.Group{
+		Name:        "agg-reset",
+		GroupType:   "aggregate",
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON("[]"),
+		Config:      datatypes.JSONMap{"health_reset_interval_seconds": float64(3600)},
+		CreatedAt:   baseline,
+		UpdatedAt:   baseline,
+	}
+	if err := db.Create(&aggregateGroup).Error; err != nil {
+		t.Fatalf("Failed to create aggregate group: %v", err)
+	}
+
+	relation := models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: 200,
+		Weight:     100,
+		CreatedAt:  baseline,
+		UpdatedAt:  baseline,
+	}
+	if err := db.Create(&relation).Error; err != nil {
+		t.Fatalf("Failed to create sub-group relation: %v", err)
+	}
+
+	metric := models.DynamicWeightMetric{
+		MetricType:          models.MetricTypeSubGroup,
+		GroupID:             aggregateGroup.ID,
+		SubGroupID:          200,
+		ConsecutiveFailures: 4,
+		Requests7d:          10,
+		UpdatedAt:           baseline,
+	}
+	if err := db.Create(&metric).Error; err != nil {
+		t.Fatalf("Failed to create dynamic weight metric: %v", err)
+	}
+	if err := manager.SetMetrics(SubGroupMetricsKey(aggregateGroup.ID, 200), &DynamicWeightMetrics{
+		ConsecutiveFailures: 4,
+		Requests7d:          10,
+		UpdatedAt:           baseline,
+	}); err != nil {
+		t.Fatalf("Failed to seed memory metrics: %v", err)
+	}
+
+	resetCount, err := persistence.ResetDueSubGroupHealth(now)
+	if err != nil {
+		t.Fatalf("ResetDueSubGroupHealth failed: %v", err)
+	}
+	if resetCount != 1 {
+		t.Fatalf("Expected 1 reset, got %d", resetCount)
+	}
+
+	var metricCount int64
+	if err := db.Model(&models.DynamicWeightMetric{}).
+		Where("metric_type = ? AND group_id = ? AND sub_group_id = ?", models.MetricTypeSubGroup, aggregateGroup.ID, 200).
+		Count(&metricCount).Error; err != nil {
+		t.Fatalf("Failed to count metrics: %v", err)
+	}
+	if metricCount != 0 {
+		t.Fatalf("Expected persisted metric to be deleted, got %d rows", metricCount)
+	}
+
+	memoryMetrics, err := manager.GetSubGroupMetrics(aggregateGroup.ID, 200)
+	if err != nil {
+		t.Fatalf("Failed to get memory metrics: %v", err)
+	}
+	if memoryMetrics.ConsecutiveFailures != 0 || memoryMetrics.Requests7d != 0 {
+		t.Fatalf("Expected memory metrics to be reset, got %+v", memoryMetrics)
+	}
+
+	var updatedRelation models.GroupSubGroup
+	if err := db.First(&updatedRelation, relation.ID).Error; err != nil {
+		t.Fatalf("Failed to reload relation: %v", err)
+	}
+	expectedSlot := time.Date(2026, 6, 2, 1, 0, 0, 0, time.Local)
+	if updatedRelation.LastHealthResetAt == nil || !updatedRelation.LastHealthResetAt.Equal(expectedSlot) {
+		t.Fatalf("Expected last reset at %v, got %v", expectedSlot, updatedRelation.LastHealthResetAt)
+	}
+}
+
+func TestDynamicWeightPersistence_ResetDueSubGroupHealthSkipsCurrentSlotAfterConfigUpdate(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(&models.Group{}, &models.GroupSubGroup{}, &models.DynamicWeightMetric{}); err != nil {
+		t.Fatalf("Failed to migrate: %v", err)
+	}
+
+	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
+	manager := NewDynamicWeightManager(kvStore)
+	persistence := NewDynamicWeightPersistence(db, manager)
+
+	now := time.Date(2026, 6, 2, 10, 5, 0, 0, time.Local)
+	aggregateGroup := models.Group{
+		Name:        "agg-reset-new",
+		GroupType:   "aggregate",
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON("[]"),
+		Config:      datatypes.JSONMap{"health_reset_interval_seconds": float64(86400)},
+		UpdatedAt:   now.Add(-time.Hour),
+	}
+	if err := db.Create(&aggregateGroup).Error; err != nil {
+		t.Fatalf("Failed to create aggregate group: %v", err)
+	}
+	relation := models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: 201,
+		Weight:     100,
+		UpdatedAt:  now.Add(-time.Hour),
+	}
+	if err := db.Create(&relation).Error; err != nil {
+		t.Fatalf("Failed to create sub-group relation: %v", err)
+	}
+	if err := db.Create(&models.DynamicWeightMetric{
+		MetricType: models.MetricTypeSubGroup,
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: 201,
+		Requests7d: 1,
+		UpdatedAt:  now,
+	}).Error; err != nil {
+		t.Fatalf("Failed to create dynamic weight metric: %v", err)
+	}
+
+	resetCount, err := persistence.ResetDueSubGroupHealth(now)
+	if err != nil {
+		t.Fatalf("ResetDueSubGroupHealth failed: %v", err)
+	}
+	if resetCount != 0 {
+		t.Fatalf("Expected no reset in the already-started daily slot, got %d", resetCount)
+	}
+}
+
+func TestSubGroupHealthResetSlotUsesRelationOverride(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 2, 6, 1, 0, 0, time.Local)
+	baseline := now.Add(-8 * time.Hour)
+	lastReset := time.Date(2026, 6, 2, 4, 0, 0, 0, time.Local)
+
+	slot, due := subGroupHealthResetSlot(now, 2*3600, &lastReset, baseline)
+	if !due {
+		t.Fatal("Expected relation override to be due at the 06:00 slot")
+	}
+	expectedSlot := time.Date(2026, 6, 2, 6, 0, 0, 0, time.Local)
+	if !slot.Equal(expectedSlot) {
+		t.Fatalf("Expected slot %v, got %v", expectedSlot, slot)
 	}
 }
 

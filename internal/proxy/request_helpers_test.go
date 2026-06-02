@@ -223,6 +223,123 @@ func TestApplyParallelToolCallsConfig(t *testing.T) {
 	})
 }
 
+func TestApplyStreamOverrideConfig(t *testing.T) {
+	ps := &ProxyServer{}
+
+	t.Run("force stream", func(t *testing.T) {
+		group := &models.Group{Config: datatypes.JSONMap{"force_stream": true}}
+		input := []byte(`{"model":"gpt-4","stream":false}`)
+
+		result, err := ps.applyStreamOverrideConfig(input, group)
+		assert.NoError(t, err)
+
+		var resultData map[string]any
+		assert.NoError(t, json.Unmarshal(result, &resultData))
+		assert.Equal(t, true, resultData["stream"])
+	})
+
+	t.Run("force non stream", func(t *testing.T) {
+		group := &models.Group{Config: datatypes.JSONMap{"force_non_stream": true}}
+		input := []byte(`{"model":"gpt-4","stream":true}`)
+
+		result, err := ps.applyStreamOverrideConfig(input, group)
+		assert.NoError(t, err)
+
+		var resultData map[string]any
+		assert.NoError(t, json.Unmarshal(result, &resultData))
+		assert.Equal(t, false, resultData["stream"])
+	})
+
+	t.Run("no config", func(t *testing.T) {
+		group := &models.Group{Config: datatypes.JSONMap{}}
+		input := []byte(`{"model":"gpt-4"}`)
+
+		result, err := ps.applyStreamOverrideConfig(input, group)
+		assert.NoError(t, err)
+		assert.Equal(t, input, result)
+	})
+
+	t.Run("conflicting config", func(t *testing.T) {
+		group := &models.Group{Config: datatypes.JSONMap{"force_stream": true, "force_non_stream": true}}
+		input := []byte(`{"model":"gpt-4","stream":false}`)
+
+		result, err := ps.applyStreamOverrideConfig(input, group)
+		assert.NoError(t, err)
+		assert.Equal(t, input, result)
+	})
+}
+
+func TestApplyResponsesIncludeConfig(t *testing.T) {
+	ps := &ProxyServer{}
+
+	t.Run("add encrypted reasoning include", func(t *testing.T) {
+		group := &models.Group{Config: datatypes.JSONMap{"responses_include_encrypted_reasoning": true}}
+		input := []byte(`{"model":"gpt-5","include":["web_search_call.action.sources"]}`)
+
+		result, err := ps.applyResponsesIncludeConfig(input, group)
+		assert.NoError(t, err)
+
+		var resultData map[string]any
+		assert.NoError(t, json.Unmarshal(result, &resultData))
+		include, ok := resultData["include"].([]any)
+		if assert.True(t, ok) {
+			assert.Contains(t, include, "web_search_call.action.sources")
+			assert.Contains(t, include, responsesEncryptedReasoning)
+		}
+	})
+
+	t.Run("does not duplicate existing include", func(t *testing.T) {
+		group := &models.Group{Config: datatypes.JSONMap{"responses_include_encrypted_reasoning": true}}
+		input := []byte(`{"model":"gpt-5","include":["reasoning.encrypted_content"]}`)
+
+		result, err := ps.applyResponsesIncludeConfig(input, group)
+		assert.NoError(t, err)
+
+		var resultData map[string]any
+		assert.NoError(t, json.Unmarshal(result, &resultData))
+		include, ok := resultData["include"].([]any)
+		if assert.True(t, ok) {
+			count := 0
+			for _, item := range include {
+				if item == responsesEncryptedReasoning {
+					count++
+				}
+			}
+			assert.Equal(t, 1, count)
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		group := &models.Group{Config: datatypes.JSONMap{}}
+		input := []byte(`{"model":"gpt-5"}`)
+
+		result, err := ps.applyResponsesIncludeConfig(input, group)
+		assert.NoError(t, err)
+		assert.Equal(t, input, result)
+	})
+}
+
+func TestApplyGeminiNativeStreamPathOverride(t *testing.T) {
+	assert.Equal(
+		t,
+		"/v1beta/models/gemini-pro:streamGenerateContent",
+		applyGeminiNativeStreamPathOverride("/v1beta/models/gemini-pro:generateContent", true, false),
+	)
+	assert.Equal(
+		t,
+		"/v1beta/models/gemini-pro:generateContent",
+		applyGeminiNativeStreamPathOverride("/v1beta/models/gemini-pro:streamGenerateContent", false, true),
+	)
+	assert.Equal(
+		t,
+		"/v1beta/openai/chat/completions",
+		applyGeminiNativeStreamPathOverride("/v1beta/openai/chat/completions", true, false),
+	)
+	assert.True(t, isGeminiNativeGenerateContentPath("/v1beta/models/gemini-pro:generateContent"))
+	assert.True(t, isGeminiNativeGenerateContentPath("/v1beta/models/gemini-pro:streamGenerateContent"))
+	assert.False(t, isGeminiNativeGenerateContentPath("/v1beta/openai/chat/completions"))
+}
+
 func TestLogUpstreamError(t *testing.T) {
 	t.Run("nil error", func(t *testing.T) {
 		// Should not panic

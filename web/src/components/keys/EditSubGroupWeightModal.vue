@@ -2,6 +2,7 @@
 import { keysApi } from "@/api/keys";
 import type { Group, SubGroupInfo } from "@/types/models";
 import { formatPercentage } from "@/utils/display";
+import { getSubGroupHealthResetOptions } from "@/utils/health-reset";
 import { Close } from "@vicons/ionicons5";
 import {
   NButton,
@@ -11,6 +12,7 @@ import {
   NIcon,
   NInputNumber,
   NModal,
+  NSelect,
   useMessage,
   type FormInst,
   type FormRules,
@@ -37,12 +39,15 @@ const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
 const formRef = ref<FormInst | null>(null);
+const healthResetOptions = computed(() => getSubGroupHealthResetOptions(t));
 
 // Form data
 const formData = reactive<{
   weight: number;
+  health_reset_interval_seconds: number;
 }>({
   weight: 0,
+  health_reset_interval_seconds: 0,
 });
 
 // Preview new weight percentage (assuming other sub-group weights stay unchanged)
@@ -111,6 +116,7 @@ watch(
   ([show, subGroup]) => {
     if (show && subGroup) {
       formData.weight = subGroup.weight;
+      formData.health_reset_interval_seconds = subGroup.health_reset_interval_seconds ?? 0;
     }
   },
   { immediate: true }
@@ -152,7 +158,8 @@ async function handleSubmit() {
     await keysApi.updateSubGroupWeight(
       aggregateGroupId,
       subGroupId,
-      formData.weight // Integer weight value (already constrained by input precision)
+      formData.weight, // Integer weight value (already constrained by input precision)
+      formData.health_reset_interval_seconds
     );
 
     // Backend has already displayed a success message through API response, no need to repeat here
@@ -241,6 +248,19 @@ function adjustWeight(delta: number) {
                 </n-button>
               </div>
             </div>
+          </n-form-item>
+
+          <n-form-item :label="t('subGroups.healthResetInterval')">
+            <n-select
+              v-model:value="formData.health_reset_interval_seconds"
+              :options="healthResetOptions"
+              :placeholder="t('subGroups.healthResetFollowAggregate')"
+            />
+            <template #feedback>
+              <span style="color: var(--text-secondary); font-size: 12px">
+                {{ t("subGroups.healthResetOverrideHint") }}
+              </span>
+            </template>
           </n-form-item>
 
           <div class="preview-section">

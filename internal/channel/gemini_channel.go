@@ -96,6 +96,9 @@ func (ch *GeminiChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
 // is honored consistently with normal traffic.
 func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
 	validationPath := "/v1beta/models/" + ch.TestModel + ":generateContent"
+	if validationStreamEnabled(group) {
+		validationPath = "/v1beta/models/" + ch.TestModel + ":streamGenerateContent"
+	}
 	q := url.Values{}
 	q.Set("key", apiKey.KeyValue)
 
@@ -114,7 +117,7 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 			{
 				"role": "user",
 				"parts": []gin.H{
-					{"text": "hi"},
+					{"text": validationPromptForGroup(group)},
 				},
 			},
 		},

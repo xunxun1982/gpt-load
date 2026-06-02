@@ -282,6 +282,51 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid validation stream",
+			config: map[string]any{
+				"validation_stream": true,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid validation prompt mode",
+			config: map[string]any{
+				"validation_prompt_mode": "random_queue",
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid validation prompt mode",
+			config: map[string]any{
+				"validation_prompt_mode": "random",
+			},
+			expectError: true,
+			errorMsg:    "must be 'default' or 'random_queue'",
+		},
+		{
+			name: "valid stream override",
+			config: map[string]any{
+				"force_stream": true,
+			},
+			expectError: false,
+		},
+		{
+			name: "conflicting stream override",
+			config: map[string]any{
+				"force_stream":     true,
+				"force_non_stream": true,
+			},
+			expectError: true,
+			errorMsg:    "cannot both be enabled",
+		},
+		{
+			name: "valid Responses encrypted reasoning include",
+			config: map[string]any{
+				"responses_include_encrypted_reasoning": true,
+			},
+			expectError: false,
+		},
+		{
 			name: "valid system setting override",
 			config: map[string]any{
 				"request_timeout": float64(120),

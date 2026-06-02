@@ -122,6 +122,8 @@ export interface ModelRedirectDynamicWeight {
 export interface SubGroupInfo {
   group: Group;
   weight: number;
+  health_reset_interval_seconds: number;
+  last_health_reset_at?: string | null;
   total_keys: number;
   active_keys: number;
   invalid_keys: number;

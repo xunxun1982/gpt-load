@@ -39,6 +39,7 @@ type GroupConfig struct {
 	MaxRetries                   *int    `json:"max_retries,omitempty"`
 	SubMaxRetries                *int    `json:"sub_max_retries,omitempty"`
 	BlacklistThreshold           *int    `json:"blacklist_threshold,omitempty"`
+	HealthResetIntervalSeconds   *int64  `json:"health_reset_interval_seconds,omitempty"`
 	FailoverStatusCodes          *string `json:"failover_status_codes,omitempty"`
 	KeyValidationIntervalMinutes *int    `json:"key_validation_interval_minutes,omitempty"`
 	KeyValidationConcurrency     *int    `json:"key_validation_concurrency,omitempty"`
@@ -47,6 +48,19 @@ type GroupConfig struct {
 	// ForceFunctionCall enables experimental function call middleware for this group.
 	// This flag is stored in the group-level config JSON and is optional.
 	ForceFunctionCall *bool `json:"force_function_call,omitempty"`
+	// ValidationStream controls whether key validation sends streaming test requests.
+	// Default is false to preserve the lowest-cost validation path.
+	ValidationStream *bool `json:"validation_stream,omitempty"`
+	// ValidationPromptMode controls the validation prompt source.
+	// Values: "default" (fixed lightweight prompt), "random_queue" (rotating short prompts).
+	ValidationPromptMode *string `json:"validation_prompt_mode,omitempty"`
+	// ForceStream and ForceNonStream override the outbound request stream flag.
+	// They are mutually exclusive and apply only to JSON request bodies with a stream field.
+	ForceStream    *bool `json:"force_stream,omitempty"`
+	ForceNonStream *bool `json:"force_non_stream,omitempty"`
+	// ResponsesIncludeEncryptedReasoning adds include=["reasoning.encrypted_content"]
+	// to OpenAI Responses API requests when enabled.
+	ResponsesIncludeEncryptedReasoning *bool `json:"responses_include_encrypted_reasoning,omitempty"`
 	// CCSupport enables Claude Code compatibility mode for this group.
 	// When enabled, clients can connect via /claude endpoint and requests will be
 	// converted from Claude format to OpenAI format before forwarding to upstream.
@@ -93,12 +107,14 @@ type PathRedirectRule struct {
 
 // GroupSubGroup is the association table for aggregate groups and sub-groups.
 type GroupSubGroup struct {
-	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	GroupID    uint      `gorm:"not null;uniqueIndex:idx_group_sub" json:"group_id"`
-	SubGroupID uint      `gorm:"not null;uniqueIndex:idx_group_sub" json:"sub_group_id"`
-	Weight     int       `gorm:"default:0" json:"weight"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID                         uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+	GroupID                    uint       `gorm:"not null;uniqueIndex:idx_group_sub" json:"group_id"`
+	SubGroupID                 uint       `gorm:"not null;uniqueIndex:idx_group_sub" json:"sub_group_id"`
+	Weight                     int        `gorm:"default:0" json:"weight"`
+	HealthResetIntervalSeconds int64      `gorm:"not null;default:0;index:idx_group_sub_health_reset" json:"health_reset_interval_seconds"`
+	LastHealthResetAt          *time.Time `json:"last_health_reset_at,omitempty"`
+	CreatedAt                  time.Time  `json:"created_at"`
+	UpdatedAt                  time.Time  `json:"updated_at"`
 
 	// Lightweight association - only store necessary info for performance
 	SubGroupName    string `gorm:"-" json:"sub_group_name,omitempty"`
@@ -107,12 +123,14 @@ type GroupSubGroup struct {
 
 // SubGroupInfo represents sub-group information for API responses.
 type SubGroupInfo struct {
-	Group         Group              `json:"group"`
-	Weight        int                `json:"weight"`
-	TotalKeys     int64              `json:"total_keys"`
-	ActiveKeys    int64              `json:"active_keys"`
-	InvalidKeys   int64              `json:"invalid_keys"`
-	DynamicWeight *DynamicWeightInfo `json:"dynamic_weight,omitempty"` // Dynamic weight info (nil if not enabled)
+	Group                      Group              `json:"group"`
+	Weight                     int                `json:"weight"`
+	HealthResetIntervalSeconds int64              `json:"health_reset_interval_seconds"`
+	LastHealthResetAt          *time.Time         `json:"last_health_reset_at,omitempty"`
+	TotalKeys                  int64              `json:"total_keys"`
+	ActiveKeys                 int64              `json:"active_keys"`
+	InvalidKeys                int64              `json:"invalid_keys"`
+	DynamicWeight              *DynamicWeightInfo `json:"dynamic_weight,omitempty"` // Dynamic weight info (nil if not enabled)
 }
 
 // DynamicWeightInfo represents dynamic weight information for display.

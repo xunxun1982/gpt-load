@@ -353,6 +353,12 @@ func (sm *SystemSettingsManager) ValidateSettings(settingsMap map[string]any) er
 
 // ValidateGroupConfigOverrides validates a map of group-level configuration overrides.
 func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[string]any) error {
+	if forceStream, ok := configMap["force_stream"].(bool); ok && forceStream {
+		if forceNonStream, ok := configMap["force_non_stream"].(bool); ok && forceNonStream {
+			return fmt.Errorf("force_stream and force_non_stream cannot both be enabled")
+		}
+	}
+
 	tempSettings := types.SystemSettings{}
 	v := reflect.ValueOf(&tempSettings).Elem()
 	t := v.Type()
@@ -396,15 +402,54 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
+		if key == "health_reset_interval_seconds" {
+			intVal, err := integerConfigValue(key, value)
+			if err != nil {
+				return err
+			}
+			if intVal < 0 {
+				return fmt.Errorf("value for %s (%d) is below minimum value (%d)", key, intVal, 0)
+			}
+			if intVal > 0 && intVal < 3600 {
+				return fmt.Errorf("value for %s (%d) is below minimum enabled value (%d)", key, intVal, 3600)
+			}
+			const maxHealthResetIntervalSeconds = 365 * 24 * 60 * 60
+			if intVal > maxHealthResetIntervalSeconds {
+				return fmt.Errorf("value for %s (%d) exceeds maximum value (%d)", key, intVal, maxHealthResetIntervalSeconds)
+			}
+			continue
+		}
+
 		// Allow group-only boolean flags for experimental features.
 		// These flags are stored only at group level and are not part of system-level settings.
 		if key == "force_function_call" || key == "cc_support" ||
 			key == "intercept_event_log" || key == "parallel_tool_calls" ||
-			key == "shorten_tool_names" {
+			key == "shorten_tool_names" || key == "validation_stream" ||
+			key == "force_stream" || key == "force_non_stream" ||
+			key == "responses_include_encrypted_reasoning" {
 			// Accept only boolean values; nil is already skipped above.
 			if _, ok := value.(bool); !ok {
 				return fmt.Errorf("invalid type for %s: expected a boolean, got %T", key, value)
 			}
+			continue
+		}
+
+		// Allow validation_prompt_mode string field for key validation prompts.
+		// Values: "default", "random_queue".
+		if key == "validation_prompt_mode" {
+			mode, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
+			}
+			mode = strings.ToLower(strings.TrimSpace(mode))
+			if mode == "" {
+				mode = "default"
+			}
+			validModes := map[string]bool{"default": true, "random_queue": true}
+			if !validModes[mode] {
+				return fmt.Errorf("invalid value for %s: must be 'default' or 'random_queue'", key)
+			}
+			configMap[key] = mode
 			continue
 		}
 
@@ -508,6 +553,27 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 	}
 
 	return nil
+}
+
+func integerConfigValue(key string, value any) (int64, error) {
+	floatVal, ok := value.(float64)
+	if !ok {
+		switch numVal := value.(type) {
+		case int:
+			return int64(numVal), nil
+		case int64:
+			return numVal, nil
+		case int32:
+			return int64(numVal), nil
+		default:
+			return 0, fmt.Errorf("invalid type for %s: expected a number, got %T", key, value)
+		}
+	}
+	intVal := int64(floatVal)
+	if floatVal != float64(intVal) {
+		return 0, fmt.Errorf("invalid value for %s: must be an integer", key)
+	}
+	return intVal, nil
 }
 
 // DisplaySystemConfig displays the current system settings.

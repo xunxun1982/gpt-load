@@ -97,22 +97,43 @@ export function formatPercentage(value: number): string {
 
 export function formatTokenCount(value: number): string {
   const roundedValue = Math.round(value);
-  const absValue = Math.abs(roundedValue);
   const units = [
-    { threshold: 1_000_000_000_000, suffix: "T" },
-    { threshold: 1_000_000_000, suffix: "B" },
-    { threshold: 1_000_000, suffix: "M" },
     { threshold: 1_000, suffix: "K" },
+    { threshold: 1_000_000, suffix: "M" },
+    { threshold: 1_000_000_000, suffix: "B" },
+    { threshold: 1_000_000_000_000, suffix: "T" },
   ];
 
-  for (const unit of units) {
-    if (absValue >= unit.threshold) {
-      const scaled = roundedValue / unit.threshold;
-      const fractionDigits = Math.abs(scaled) >= 100 ? 0 : 1;
-      return `${scaled.toFixed(fractionDigits)}${unit.suffix}`;
+  let unitIndex = -1;
+  for (let i = 0; i < units.length; i += 1) {
+    const unit = units[i];
+    if (unit && Math.abs(roundedValue) >= unit.threshold) {
+      unitIndex = i;
     }
   }
-  return roundedValue.toString();
+
+  if (unitIndex === -1) {
+    return roundedValue.toString();
+  }
+
+  let currentUnit = units[unitIndex];
+  if (!currentUnit) {
+    return roundedValue.toString();
+  }
+
+  let scaled = roundedValue / currentUnit.threshold;
+  let fractionDigits = Math.abs(scaled) >= 100 ? 0 : 1;
+  while (unitIndex < units.length - 1 && Number(scaled.toFixed(fractionDigits)) >= 1000) {
+    unitIndex += 1;
+    const nextUnit = units[unitIndex];
+    if (!nextUnit) {
+      break;
+    }
+    currentUnit = nextUnit;
+    scaled = roundedValue / currentUnit.threshold;
+    fractionDigits = Math.abs(scaled) >= 100 ? 0 : 1;
+  }
+  return `${scaled.toFixed(fractionDigits)}${currentUnit.suffix}`;
 }
 
 /**
