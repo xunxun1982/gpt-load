@@ -174,3 +174,14 @@ func (w *estimatedTokenCapture) add(p []byte) {
 	}
 	w.runeCount += int64(utf8.RuneCount(data))
 }
+
+func (w *estimatedTokenCapture) addString(s string) {
+	if s == "" {
+		return
+	}
+	if len(w.pending) > 0 {
+		w.add([]byte(s))
+		return
+	}
+	w.runeCount += int64(utf8.RuneCountInString(s))
+}

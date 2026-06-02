@@ -1205,6 +1205,41 @@ data: [DONE]
 	}
 }
 
+func TestCCStreamingResponse_ToolCallOnlySetsEstimatedFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	sseData := `data: {"id":"chatcmpl-tool","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{\"location\""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-tool","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":":\"San Francisco\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-tool","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("original_model", "gpt-4")
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	output := w.Body.String()
+	if !strings.Contains(output, `"type":"tool_use"`) {
+		t.Fatalf("expected tool_use block in output, got: %s", output)
+	}
+	if got := getEstimatedOutputTokens(c); got <= 0 {
+		t.Fatalf("expected estimated output tokens from tool call arguments, got %d", got)
+	}
+}
+
 // TestCCNormalResponse_ReasoningContent tests that reasoning_content from
 // DeepSeek reasoner models is correctly converted to Claude thinking blocks
 // in non-streaming responses.

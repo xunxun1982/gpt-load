@@ -1210,6 +1210,69 @@ func TestHandleCodexCCStreamingResponseSetsEstimatedFallback(t *testing.T) {
 	require.Greater(t, getEstimatedOutputTokens(c), int64(0))
 }
 
+func TestCaptureCodexStreamOutputEstimateDoneFallbacks(t *testing.T) {
+	t.Run("text done without delta", func(t *testing.T) {
+		var capture estimatedTokenCapture
+		seenDelta := make(map[string]struct{})
+
+		captureCodexStreamOutputEstimate(&capture, &CodexStreamEvent{
+			Type:      "response.output_text.done",
+			OutputIdx: 0,
+			Text:      "final text",
+		}, seenDelta)
+
+		require.Greater(t, capture.Tokens(), int64(0))
+	})
+
+	t.Run("function arguments done without delta", func(t *testing.T) {
+		var capture estimatedTokenCapture
+		seenDelta := make(map[string]struct{})
+
+		captureCodexStreamOutputEstimate(&capture, &CodexStreamEvent{
+			Type:      "response.function_call_arguments.done",
+			OutputIdx: 0,
+			Arguments: `{"query":"test"}`,
+		}, seenDelta)
+
+		require.Greater(t, capture.Tokens(), int64(0))
+	})
+
+	t.Run("function arguments from output item", func(t *testing.T) {
+		var capture estimatedTokenCapture
+		seenDelta := make(map[string]struct{})
+
+		captureCodexStreamOutputEstimate(&capture, &CodexStreamEvent{
+			Type:      "response.output_item.done",
+			OutputIdx: 0,
+			Item: &CodexOutputItem{
+				Type:      "function_call",
+				Arguments: `{"path":"file.txt"}`,
+			},
+		}, seenDelta)
+
+		require.Greater(t, capture.Tokens(), int64(0))
+	})
+
+	t.Run("done after delta does not double count", func(t *testing.T) {
+		var capture estimatedTokenCapture
+		seenDelta := make(map[string]struct{})
+
+		captureCodexStreamOutputEstimate(&capture, &CodexStreamEvent{
+			Type:      "response.output_text.delta",
+			OutputIdx: 0,
+			Delta:     "Hello",
+		}, seenDelta)
+		expected := capture.Tokens()
+		captureCodexStreamOutputEstimate(&capture, &CodexStreamEvent{
+			Type:      "response.output_text.done",
+			OutputIdx: 0,
+			Text:      "Hello",
+		}, seenDelta)
+
+		require.Equal(t, expected, capture.Tokens())
+	})
+}
+
 // TestCodexHelperFunctions tests various helper functions in codex_cc_support.go
 func TestCodexHelperFunctions(t *testing.T) {
 	t.Run("buildReverseToolNameMap", func(t *testing.T) {

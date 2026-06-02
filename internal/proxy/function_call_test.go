@@ -11017,6 +11017,7 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 		name                 string
 		events               []string
 		triggerSignal        string
+		responseStatus       int
 		expectEstimatedUsage bool
 		checkFunc            func(*testing.T, string)
 	}{
@@ -11028,7 +11029,8 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":null}]}` + "\n",
 				`data: [DONE]` + "\n",
 			},
-			triggerSignal: "<<CALL_abcd>>",
+			triggerSignal:        "<<CALL_abcd>>",
+			expectEstimatedUsage: true,
 			checkFunc: func(t *testing.T, output string) {
 				// Decode SSE content before assertions to avoid JSON escaping false negatives
 				decoded := extractStreamingContent(output)
@@ -11086,7 +11088,8 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 				`data: {"id":"chatcmpl-789","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"</function_calls>"},"finish_reason":null}]}` + "\n",
 				`data: [DONE]` + "\n",
 			},
-			triggerSignal: "<<CALL_xyzw>>",
+			triggerSignal:        "<<CALL_xyzw>>",
+			expectEstimatedUsage: true,
 			checkFunc: func(t *testing.T, output string) {
 				decoded := extractStreamingContent(output)
 				// Partial XML tags should be suppressed
@@ -11107,7 +11110,8 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 				`data: {"id":"chatcmpl-999","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<><parametername=\"todos\">[{\"id\":\"1\",\"content\":\"task\"}]"},"finish_reason":null}]}` + "\n",
 				`data: [DONE]` + "\n",
 			},
-			triggerSignal: "<<CALL_test>>",
+			triggerSignal:        "<<CALL_test>>",
+			expectEstimatedUsage: true,
 			checkFunc: func(t *testing.T, output string) {
 				decoded := extractStreamingContent(output)
 				// Malformed CC tags should be removed
@@ -11124,6 +11128,20 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "streaming upstream error does not estimate",
+			events: []string{
+				`data: {"id":"chatcmpl-error","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"upstream error body"},"finish_reason":"stop"}]}` + "\n",
+				`data: [DONE]` + "\n",
+			},
+			triggerSignal:  "<<CALL_error>>",
+			responseStatus: http.StatusBadRequest,
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, "upstream error body") {
+					t.Error("expected upstream error body to be forwarded")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -11136,8 +11154,12 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 			}
 
 			// Create mock upstream response
+			responseStatus := tt.responseStatus
+			if responseStatus == 0 {
+				responseStatus = http.StatusOK
+			}
 			upstreamResp := &http.Response{
-				StatusCode: http.StatusOK,
+				StatusCode: responseStatus,
 				Body:       io.NopCloser(strings.NewReader(streamData.String())),
 				Header:     make(http.Header),
 			}
@@ -11163,12 +11185,63 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 			if tt.checkFunc != nil {
 				tt.checkFunc(t, output)
 			}
+			got := getEstimatedOutputTokens(c)
 			if tt.expectEstimatedUsage {
-				if got := getEstimatedOutputTokens(c); got <= 0 {
+				if got <= 0 {
 					t.Fatalf("expected estimated output tokens, got %d", got)
 				}
+			} else if got != 0 {
+				t.Fatalf("did not expect estimated output tokens, got %d", got)
 			}
 		})
+	}
+}
+
+func TestHandleFunctionCallStreamingResponseEstimatesBeyondParseBuffer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	longContent := strings.Repeat("a", maxContentBufferBytes+1024)
+	payload, err := json.Marshal(map[string]any{
+		"id":      "chatcmpl-long",
+		"object":  "chat.completion.chunk",
+		"created": 1234567890,
+		"model":   "gpt-4",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"delta": map[string]any{
+					"role":    "assistant",
+					"content": longContent,
+				},
+				"finish_reason": "stop",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal streaming payload: %v", err)
+	}
+
+	streamData := "data: " + string(payload) + "\n\ndata: [DONE]\n\n"
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamData)),
+		Header:     make(http.Header),
+	}
+	upstreamResp.Header.Set("Content-Type", "text/event-stream")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_long>>")
+	c.Set("group", &models.Group{Name: "test-group"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	got := getEstimatedOutputTokens(c)
+	cappedEstimate := int64(utils.EstimateTokensFromString(strings.Repeat("a", maxContentBufferBytes)))
+	if got <= cappedEstimate {
+		t.Fatalf("expected estimate beyond capped parse buffer, got %d capped %d", got, cappedEstimate)
 	}
 }
 

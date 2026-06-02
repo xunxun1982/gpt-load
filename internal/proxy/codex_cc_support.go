@@ -1063,6 +1063,7 @@ type CodexStreamEvent struct {
 	Part        *CodexContentBlock `json:"part,omitempty"`
 	Delta       string             `json:"delta,omitempty"`
 	Text        string             `json:"text,omitempty"`
+	Arguments   string             `json:"arguments,omitempty"`
 	Response    *CodexResponse     `json:"response,omitempty"`
 	SequenceNum int                `json:"sequence_number,omitempty"`
 }
@@ -1780,6 +1781,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	lineCount := 0
 	streamCompleted := false
 	var estimateCapture estimatedTokenCapture
+	codexEstimateDeltas := make(map[string]struct{})
 	finalizeEstimatedUsage := func() {
 		if _, _, ok := getTokenUsage(c); ok {
 			return
@@ -1939,7 +1941,7 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 				codexEvent.Type = currentEventType
 			}
 			currentEventType = "" // Reset for next event
-			captureCodexStreamOutputEstimate(&estimateCapture, &codexEvent)
+			captureCodexStreamOutputEstimate(&estimateCapture, &codexEvent, codexEstimateDeltas)
 
 			// Debug log: show received event type
 			logrus.WithFields(logrus.Fields{
@@ -1967,15 +1969,123 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	logrus.Debug("Codex CC: Streaming response completed")
 }
 
-func captureCodexStreamOutputEstimate(capture *estimatedTokenCapture, event *CodexStreamEvent) {
-	if capture == nil || event == nil || event.Delta == "" {
+func captureCodexStreamOutputEstimate(capture *estimatedTokenCapture, event *CodexStreamEvent, seenDelta map[string]struct{}) {
+	if capture == nil || event == nil {
 		return
 	}
 	switch event.Type {
-	case "response.output_text.delta",
-		"response.reasoning_summary_text.delta",
-		"response.reasoning_text.delta",
-		"response.function_call_arguments.delta":
-		capture.add([]byte(event.Delta))
+	case "response.output_text.delta":
+		captureCodexStreamEstimateDelta(capture, seenDelta, event, "output_text", event.Delta)
+	case "response.reasoning_summary_text.delta":
+		captureCodexStreamEstimateDelta(capture, seenDelta, event, "reasoning_summary_text", event.Delta)
+	case "response.reasoning_text.delta":
+		captureCodexStreamEstimateDelta(capture, seenDelta, event, "reasoning_text", event.Delta)
+	case "response.function_call_arguments.delta":
+		captureCodexStreamEstimateDelta(capture, seenDelta, event, "function_call_arguments", event.Delta)
+	case "response.output_text.done":
+		captureCodexStreamEstimateDoneFallback(capture, seenDelta, event, "output_text", codexStreamEventText(event))
+	case "response.reasoning_summary_text.done":
+		captureCodexStreamEstimateDoneFallback(capture, seenDelta, event, "reasoning_summary_text", codexStreamEventText(event))
+	case "response.reasoning_text.done":
+		captureCodexStreamEstimateDoneFallback(capture, seenDelta, event, "reasoning_text", codexStreamEventText(event))
+	case "response.function_call_arguments.done":
+		captureCodexStreamEstimateDoneFallback(capture, seenDelta, event, "function_call_arguments", codexStreamEventArguments(event))
+	case "response.output_item.done":
+		captureCodexOutputItemEstimate(capture, seenDelta, event)
+	}
+}
+
+func captureCodexStreamEstimateDelta(capture *estimatedTokenCapture, seenDelta map[string]struct{}, event *CodexStreamEvent, kind, text string) {
+	if text == "" {
+		return
+	}
+	if seenDelta != nil {
+		seenDelta[codexStreamEstimateKey(event, kind)] = struct{}{}
+	}
+	capture.addString(text)
+}
+
+func captureCodexStreamEstimateDoneFallback(capture *estimatedTokenCapture, seenDelta map[string]struct{}, event *CodexStreamEvent, kind, text string) {
+	if text == "" {
+		return
+	}
+	if seenDelta != nil {
+		if _, ok := seenDelta[codexStreamEstimateKey(event, kind)]; ok {
+			return
+		}
+	}
+	capture.addString(text)
+}
+
+func codexStreamEstimateKey(event *CodexStreamEvent, kind string) string {
+	if event == nil {
+		return kind
+	}
+	return fmt.Sprintf("%s:%d:%d", kind, event.OutputIdx, event.ContentIdx)
+}
+
+func codexStreamEventText(event *CodexStreamEvent) string {
+	if event == nil {
+		return ""
+	}
+	if event.Text != "" {
+		return event.Text
+	}
+	if event.Part != nil && event.Part.Text != "" {
+		return event.Part.Text
+	}
+	if event.Item != nil {
+		for _, content := range event.Item.Content {
+			if content.Text != "" {
+				return content.Text
+			}
+		}
+		for _, summary := range event.Item.Summary {
+			if summary.Text != "" {
+				return summary.Text
+			}
+		}
+	}
+	return ""
+}
+
+func codexStreamEventArguments(event *CodexStreamEvent) string {
+	if event == nil {
+		return ""
+	}
+	if event.Arguments != "" {
+		return event.Arguments
+	}
+	if event.Item != nil {
+		return event.Item.Arguments
+	}
+	return ""
+}
+
+func captureCodexOutputItemEstimate(capture *estimatedTokenCapture, seenDelta map[string]struct{}, event *CodexStreamEvent) {
+	if event == nil || event.Item == nil {
+		return
+	}
+	switch event.Item.Type {
+	case "function_call":
+		captureCodexStreamEstimateDoneFallback(capture, seenDelta, event, "function_call_arguments", event.Item.Arguments)
+	case "message":
+		for i, content := range event.Item.Content {
+			if content.Text == "" {
+				continue
+			}
+			itemEvent := *event
+			itemEvent.ContentIdx = i
+			captureCodexStreamEstimateDoneFallback(capture, seenDelta, &itemEvent, "output_text", content.Text)
+		}
+	case "reasoning":
+		for i, summary := range event.Item.Summary {
+			if summary.Text == "" {
+				continue
+			}
+			itemEvent := *event
+			itemEvent.ContentIdx = i
+			captureCodexStreamEstimateDoneFallback(capture, seenDelta, &itemEvent, "reasoning_summary_text", summary.Text)
+		}
 	}
 }

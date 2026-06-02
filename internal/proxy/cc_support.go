@@ -3373,6 +3373,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	var currentToolCallName string
 	var currentToolCallArgs strings.Builder
 	var accumulatedContent strings.Builder
+	var outputEstimate estimatedTokenCapture
 	contentBufFullWarned := false
 	cleanupMode := cleanupModeArtifactsOnly
 	if isFunctionCallEnabled(c) {
@@ -3542,6 +3543,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 		// Now we know args are valid; emit complete tool_use block (start -> delta -> stop)
 		hasValidToolCalls = true
+		outputEstimate.addString(argsStr)
 
 		// Send content_block_start if not already sent
 		if !toolBlockStartSent {
@@ -3800,8 +3802,8 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 			usagePayload.InputTokens = usage.PromptTokens
 			usagePayload.OutputTokens = usage.CompletionTokens
 			setTokenUsageCounts(c, int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens))
-		} else if accumulatedContent.Len() > 0 {
-			estimatedOutputTokens := setEstimatedOutputTokensFromText(c, accumulatedContent.String())
+		} else if estimatedOutputTokens := outputEstimate.Tokens(); estimatedOutputTokens > 0 {
+			setEstimatedOutputTokens(c, estimatedOutputTokens)
 			usagePayload.OutputTokens = int(estimatedOutputTokens)
 			// Keep fallback tokens in the estimated path so request logs do not mark them as upstream usage.
 		}
@@ -3894,6 +3896,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		// This is emitted as thinking content in Claude format.
 		if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
 			reasoningStr := *delta.ReasoningContent
+			outputEstimate.addString(reasoningStr)
 			// Accumulate for tool call parsing in finalize()
 			if accumulatedContent.Len()+len(reasoningStr) <= maxContentBufferBytes {
 				accumulatedContent.WriteString(reasoningStr)
@@ -3911,6 +3914,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		// Handle content field (may contain tool calls after reasoning_content)
 		if delta.Content != nil && *delta.Content != "" {
 			contentStr := *delta.Content
+			outputEstimate.addString(contentStr)
 			if accumulatedContent.Len()+len(contentStr) <= maxContentBufferBytes {
 				accumulatedContent.WriteString(contentStr)
 			} else if !contentBufFullWarned {

@@ -1718,6 +1718,8 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	var contentBuf strings.Builder
 	// reasoningBuf accumulates reasoning_content for detecting tool call intent in thinking.
 	var reasoningBuf strings.Builder
+	// outputEstimate tracks all streamed output before the parse buffers are capped.
+	var outputEstimate estimatedTokenCapture
 	// contentBufTruncated tracks whether content was actually truncated due to buffer overflow.
 	// NOTE: AI review suggested using a dedicated flag instead of inferring from length.
 	// len(contentStr) >= maxContentBufferBytes can over-report truncation if stream naturally
@@ -1838,11 +1840,13 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 							if deltaVal, ok := ch["delta"].(map[string]any); ok {
 								// Accumulate reasoning_content for intent detection.
 								if reasoning, ok := deltaVal["reasoning_content"].(string); ok && reasoning != "" {
+									outputEstimate.addString(reasoning)
 									if reasoningBuf.Len()+len(reasoning) <= maxContentBufferBytes {
 										reasoningBuf.WriteString(reasoning)
 									}
 								}
 								if text, ok := deltaVal["content"].(string); ok && text != "" {
+									outputEstimate.addString(text)
 									// Accumulate content for final XML parsing.
 									if contentBuf.Len()+len(text) <= maxContentBufferBytes {
 										contentBuf.WriteString(text)
@@ -2080,8 +2084,10 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		if _, _, ok := getTokenUsage(c); ok {
 			return
 		}
-		estimatedOutputTokens := int64(utils.EstimateTokensFromString(contentStr) + utils.EstimateTokensFromString(reasoningStr))
-		setEstimatedOutputTokens(c, estimatedOutputTokens)
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return
+		}
+		setEstimatedOutputTokens(c, outputEstimate.Tokens())
 	}
 	parsedCalls := parseFunctionCallsXML(contentStr, triggerSignal)
 
