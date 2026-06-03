@@ -185,6 +185,54 @@ func TestHandleNormalResponsePrefersUpstreamUsage(t *testing.T) {
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
 }
 
+func TestHandleStreamingResponseParsesResponsesUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":8,\"total_tokens\":20}}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	usage, source, ok := getTokenUsage(c)
+	if !ok {
+		t.Fatal("expected upstream usage")
+	}
+	assert.Equal(t, int64(12), usage.InputTokens)
+	assert.Equal(t, int64(8), usage.OutputTokens)
+	assert.Equal(t, int64(20), usage.TotalTokens)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleStreamingResponseSetsEstimatedOutputFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello world\"}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	if usage, source, ok := getTokenUsage(c); ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected upstream usage: %+v source=%q ok=%v", usage, source, ok)
+	}
+	assert.Greater(t, getEstimatedOutputTokens(c), int64(0))
+}
+
 func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
