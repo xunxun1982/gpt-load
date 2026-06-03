@@ -487,7 +487,10 @@ function canHaveChildGroups(group: Group): boolean {
 // Load child groups when structural group fields change, not just object references.
 const groupsKey = computed(() => {
   return props.groups
-    .map(g => `${g.id}:${g.display_name}:${g.name}:${g.group_type}:${g.parent_group_id ?? ""}`)
+    .map(
+      g =>
+        `${g.id}:${g.display_name}:${g.name}:${g.group_type}:${g.parent_group_id ?? ""}:${g.enabled}`
+    )
     .join(",");
 });
 

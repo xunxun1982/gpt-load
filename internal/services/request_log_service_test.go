@@ -161,4 +161,8 @@ func TestRequestLogServiceWriteLogsToDBAggregatesModelTokenStats(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&models.ModelTokenHourlyStat{}).Count(&count).Error)
 	assert.EqualValues(t, 2, count)
+
+	var legacyStat models.ModelTokenHourlyStat
+	err := db.Where("model = ?", "legacy-type").First(&legacyStat).Error
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound, "token-5 should be excluded because aggregateModelTokenStats only includes final requests")
 }

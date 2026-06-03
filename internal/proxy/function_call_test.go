@@ -11131,13 +11131,12 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 		{
 			name: "streaming upstream error does not estimate",
 			events: []string{
-				`data: {"id":"chatcmpl-error","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"upstream error body"},"finish_reason":"stop"}]}` + "\n",
-				`data: [DONE]` + "\n",
+				`{"error":{"message":"upstream error body"}}`,
 			},
 			triggerSignal:  "<<CALL_error>>",
 			responseStatus: http.StatusBadRequest,
 			checkFunc: func(t *testing.T, output string) {
-				if !strings.Contains(output, "upstream error body") {
+				if !strings.Contains(output, `"upstream error body"`) {
 					t.Error("expected upstream error body to be forwarded")
 				}
 			},
@@ -11164,6 +11163,9 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 				Header:     make(http.Header),
 			}
 			upstreamResp.Header.Set("Content-Type", "text/event-stream")
+			if responseStatus != http.StatusOK {
+				upstreamResp.Header.Set("Content-Type", "application/json")
+			}
 
 			// Create test context
 			w := httptest.NewRecorder()
@@ -11182,6 +11184,12 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 
 			// Check results
 			output := w.Body.String()
+			if w.Code != responseStatus {
+				t.Errorf("expected status %d, got %d", responseStatus, w.Code)
+			}
+			if responseStatus != http.StatusOK && w.Header().Get("Content-Type") != upstreamResp.Header.Get("Content-Type") {
+				t.Errorf("expected content type %q, got %q", upstreamResp.Header.Get("Content-Type"), w.Header().Get("Content-Type"))
+			}
 			if tt.checkFunc != nil {
 				tt.checkFunc(t, output)
 			}

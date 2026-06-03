@@ -39,6 +39,7 @@ func copyUpstreamHeaders(dst http.Header, src http.Header) {
 		switch http.CanonicalHeaderKey(k) {
 		case "Content-Length", "Connection", "Keep-Alive", "Proxy-Authenticate",
 			"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+			dst.Del(k)
 			continue
 		default:
 			dst.Del(k)

@@ -250,6 +250,18 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 		assert.Equal(t, false, resultData["stream"])
 	})
 
+	t.Run("adds missing stream for explicit force stream", func(t *testing.T) {
+		group := &models.Group{Config: datatypes.JSONMap{"force_stream": true}}
+		input := []byte(`{"model":"gpt-4"}`)
+
+		result, err := ps.applyStreamOverrideConfig(input, group)
+		assert.NoError(t, err)
+
+		var resultData map[string]any
+		assert.NoError(t, json.Unmarshal(result, &resultData))
+		assert.Equal(t, true, resultData["stream"])
+	})
+
 	t.Run("no config", func(t *testing.T) {
 		group := &models.Group{Config: datatypes.JSONMap{}}
 		input := []byte(`{"model":"gpt-4"}`)

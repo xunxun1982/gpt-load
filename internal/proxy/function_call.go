@@ -1692,6 +1692,15 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 }
 
 func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp *http.Response) {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		copyUpstreamHeaders(c.Writer.Header(), resp.Header)
+		c.Status(resp.StatusCode)
+		if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+			logUpstreamError("copying upstream error body", err)
+		}
+		return
+	}
+
 	// Set standard SSE headers
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")

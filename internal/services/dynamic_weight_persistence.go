@@ -632,12 +632,16 @@ func (p *DynamicWeightPersistence) ResetDueSubGroupHealth(now time.Time) (int, e
 		if !due {
 			continue
 		}
-		if err := p.ResetSubGroupMetrics(relation.GroupID, relation.SubGroupID); err != nil {
-			return resetCount, err
-		}
-		if err := p.db.Model(&models.GroupSubGroup{}).
+		result := p.db.Model(&models.GroupSubGroup{}).
 			Where("id = ? AND (last_health_reset_at IS NULL OR last_health_reset_at < ?)", relation.ID, slotStart).
-			Update("last_health_reset_at", slotStart).Error; err != nil {
+			Update("last_health_reset_at", slotStart)
+		if result.Error != nil {
+			return resetCount, result.Error
+		}
+		if result.RowsAffected != 1 {
+			continue
+		}
+		if err := p.ResetSubGroupMetrics(relation.GroupID, relation.SubGroupID); err != nil {
 			return resetCount, err
 		}
 		resetCount++
@@ -723,7 +727,9 @@ func alignedHealthResetSlotStart(now time.Time, intervalSeconds int64) time.Time
 		if daysInterval <= 0 {
 			return time.Time{}
 		}
-		daysSinceAnchor := int(dayStart.Sub(anchor) / (24 * time.Hour))
+		anchorUTC := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 0, 0, 0, 0, time.UTC)
+		dayUTC := time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), 0, 0, 0, 0, time.UTC)
+		daysSinceAnchor := int(dayUTC.Sub(anchorUTC) / (24 * time.Hour))
 		return anchor.AddDate(0, 0, (daysSinceAnchor/daysInterval)*daysInterval)
 	}
 

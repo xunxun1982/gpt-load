@@ -361,9 +361,9 @@ func applyTokenUsageGroupFilter(query *gorm.DB, groupID uint, filterByParent boo
 		return query
 	}
 	if filterByParent {
-		return query.Where("parent_group_id = ?", groupID)
+		return query.Where("model_token_hourly_stats.parent_group_id = ?", groupID)
 	}
-	return query.Where("group_id = ?", groupID)
+	return query.Where("model_token_hourly_stats.group_id = ?", groupID)
 }
 
 func applyTokenUsageModelFilter(query *gorm.DB, model string) *gorm.DB {
@@ -373,10 +373,21 @@ func applyTokenUsageModelFilter(query *gorm.DB, model string) *gorm.DB {
 	return query.Where("model = ?", model)
 }
 
+func applyTokenUsageAggregateExclusion(query *gorm.DB, filterByParent bool) *gorm.DB {
+	query = query.Joins("LEFT JOIN groups token_group ON token_group.id = model_token_hourly_stats.group_id").
+		Where("(token_group.id IS NULL OR token_group.group_type <> ?)", "aggregate")
+	if filterByParent {
+		return query
+	}
+	return query.Joins("LEFT JOIN groups token_parent_group ON token_parent_group.id = model_token_hourly_stats.parent_group_id").
+		Where("(token_parent_group.id IS NULL OR token_parent_group.group_type <> ?)", "aggregate")
+}
+
 func (s *Server) getTokenUsageSummary(startTime, endTime time.Time, groupID uint, filterByParent bool, modelFilter string) (models.TokenUsageCard, error) {
 	var summary models.TokenUsageCard
 	query := s.DB.Model(&models.ModelTokenHourlyStat{}).
 		Where("time >= ? AND time < ?", startTime, endTime)
+	query = applyTokenUsageAggregateExclusion(query, filterByParent)
 	query = applyTokenUsageGroupFilter(query, groupID, filterByParent)
 	query = applyTokenUsageModelFilter(query, modelFilter)
 	err := query.Select(`
@@ -396,6 +407,7 @@ func (s *Server) getModelTokenUsageItems(startTime, endTime time.Time, groupID u
 	var items []models.ModelTokenUsageItem
 	query := s.DB.Model(&models.ModelTokenHourlyStat{}).
 		Where("time >= ? AND time < ?", startTime, endTime)
+	query = applyTokenUsageAggregateExclusion(query, filterByParent)
 	query = applyTokenUsageGroupFilter(query, groupID, filterByParent)
 	query = applyTokenUsageModelFilter(query, modelFilter)
 	err := query.Select(`
@@ -433,6 +445,7 @@ func (s *Server) getTokenUsageChartData(c *gin.Context, startTime, endTime time.
 	var hourlyStats []tokenHourlyStat
 	query := s.DB.Model(&models.ModelTokenHourlyStat{}).
 		Where("time >= ? AND time < ?", startTime, endTime)
+	query = applyTokenUsageAggregateExclusion(query, filterByParent)
 	query = applyTokenUsageGroupFilter(query, groupID, filterByParent)
 	query = applyTokenUsageModelFilter(query, modelFilter)
 	err := query.Select(`

@@ -976,6 +976,21 @@ func TestSubGroupHealthResetSlotUsesRelationOverride(t *testing.T) {
 	}
 }
 
+func TestAlignedHealthResetSlotStartUsesCalendarDaysAcrossDST(t *testing.T) {
+	t.Parallel()
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("timezone data unavailable: %v", err)
+	}
+
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, loc)
+	slot := alignedHealthResetSlotStart(now, int64((48*time.Hour)/time.Second))
+	expectedSlot := time.Date(2026, 3, 10, 0, 0, 0, 0, loc)
+	if !slot.Equal(expectedSlot) {
+		t.Fatalf("Expected slot %v, got %v", expectedSlot, slot)
+	}
+}
+
 func TestDynamicWeightPersistence_StartStop(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)

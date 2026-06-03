@@ -687,30 +687,6 @@ func TestLogRequestSkipsEstimatedTokenFallbackForLargeBody(t *testing.T) {
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
 }
 
-func TestLogRequestSkipsEstimatedTokenFallbackForLargeRequestBody(t *testing.T) {
-	t.Parallel()
-	gin.SetMode(gin.TestMode)
-
-	memStore := store.NewMemoryStore()
-	ps := &ProxyServer{
-		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
-	}
-	group := &models.Group{ID: 1, Name: "test-group", GroupType: "standard"}
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	setEstimatedOutputTokens(ctx, 3)
-
-	body := bytes.Repeat([]byte("a"), maxEstimatedTokenBodyBytes+1)
-	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, nil, body, models.RequestTypeFinal)
-
-	logEntry := popRecordedRequestLog(t, memStore)
-	assert.Empty(t, logEntry.TokenUsageSource)
-	assert.Equal(t, int64(0), logEntry.InputTokens)
-	assert.Equal(t, int64(0), logEntry.OutputTokens)
-	assert.Equal(t, int64(0), logEntry.TotalTokens)
-	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
-}
-
 func TestLogRequestPrefersUpstreamTokenUsageOverEstimate(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

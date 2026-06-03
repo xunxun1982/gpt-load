@@ -190,9 +190,6 @@ const controlledConfigKeys = new Set([
   "thinking_model",
   "codex_instructions",
   "codex_instructions_mode",
-  "cc_opus_model",
-  "cc_sonnet_model",
-  "cc_haiku_model",
 ]);
 const hiddenConfigOptionKeys = new Set(controlledConfigKeys);
 
