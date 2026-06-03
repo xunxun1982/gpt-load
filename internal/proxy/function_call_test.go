@@ -11253,6 +11253,39 @@ func TestHandleFunctionCallStreamingResponseEstimatesBeyondParseBuffer(t *testin
 	}
 }
 
+func TestHandleFunctionCallStreamingResponseErrorCapturesUpstreamUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := `{"error":{"message":"upstream failed"},"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}}`
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
+	upstreamResp.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, w.Code)
+	}
+	if got := w.Body.String(); got != body {
+		t.Fatalf("unexpected response body: %q", got)
+	}
+	usage, source, ok := getTokenUsage(c)
+	if !ok || usage.InputTokens != 9 || usage.OutputTokens != 4 || usage.TotalTokens != 13 || source != models.TokenUsageSourceUpstream {
+		t.Fatalf("expected upstream usage, got %+v source=%q ok=%v", usage, source, ok)
+	}
+	if got := getEstimatedOutputTokens(c); got != 0 {
+		t.Fatalf("did not expect estimated output tokens, got %d", got)
+	}
+}
+
 // TestFunctionCallHelperFunctions tests helper functions in function_call.go
 func TestFunctionCallHelperFunctions(t *testing.T) {
 	t.Run("isValidJSON", func(t *testing.T) {

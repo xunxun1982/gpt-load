@@ -228,12 +228,12 @@ func (s *Server) Chart(c *gin.Context) {
 
 // TokenUsage returns token usage summary and top model usage for the dashboard.
 func (s *Server) TokenUsage(c *gin.Context) {
-	groupID, filterByParent, parseErr, dbErr := s.parseTokenUsageGroupFilter(c)
-	if parseErr != nil {
-		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "invalid_param")
-		return
-	}
-	if dbErr != nil {
+	groupID, filterByParent, err := s.parseTokenUsageGroupFilter(c)
+	if err != nil {
+		if errors.Is(err, strconv.ErrSyntax) || errors.Is(err, strconv.ErrRange) {
+			response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "invalid_param")
+			return
+		}
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.current_stats_failed")
 		return
 	}
@@ -336,24 +336,24 @@ func (s *Server) getHourlyStats(startTime, endTime time.Time) (hourlyStatResult,
 	return result, err
 }
 
-func (s *Server) parseTokenUsageGroupFilter(c *gin.Context) (uint, bool, error, error) {
+func (s *Server) parseTokenUsageGroupFilter(c *gin.Context) (uint, bool, error) {
 	groupIDStr := c.Query("groupId")
 	if groupIDStr == "" {
-		return 0, false, nil, nil
+		return 0, false, nil
 	}
 	parsed, err := strconv.ParseUint(groupIDStr, 10, 0)
 	if err != nil {
-		return 0, false, err, nil
+		return 0, false, fmt.Errorf("parse groupId: %w", err)
 	}
 	groupID := uint(parsed)
 	var group models.Group
 	if err := s.DB.Select("id", "group_type").First(&group, groupID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return groupID, false, nil, nil
+			return groupID, false, nil
 		}
-		return 0, false, nil, err
+		return 0, false, fmt.Errorf("lookup group: %w", err)
 	}
-	return groupID, group.GroupType == "aggregate", nil, nil
+	return groupID, group.GroupType == "aggregate", nil
 }
 
 func applyTokenUsageGroupFilter(query *gorm.DB, groupID uint, filterByParent bool) *gorm.DB {

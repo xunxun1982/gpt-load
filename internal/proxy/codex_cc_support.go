@@ -1960,6 +1960,10 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 					return
 				}
 			}
+			if codexEvent.Type == "response.completed" || codexEvent.Type == "response.done" {
+				streamCompleted = true
+				break
+			}
 		}
 	}
 

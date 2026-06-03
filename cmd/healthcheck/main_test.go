@@ -61,6 +61,7 @@ func TestBuildAddressUsesIPv4(t *testing.T) {
 }
 
 func BenchmarkBuildAddress(b *testing.B) {
+	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
 	for b.Loop() {
 		_ = buildAddress("3001")
 	}
@@ -88,7 +89,7 @@ func BenchmarkHealthcheckTCPDialLocal(b *testing.B) {
 	})
 
 	address := listener.Addr().String()
-	b.ResetTimer()
+	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
 	for b.Loop() {
 		conn, err := net.DialTimeout("tcp", address, dialTimeout)
 		if err != nil {

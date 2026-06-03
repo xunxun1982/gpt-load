@@ -74,6 +74,7 @@ const delLoading = ref(false);
 const confirmInput = ref("");
 const expandedName = ref<string[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
+let configOptionsRequest: Promise<void> | null = null;
 const showProxyKeys = ref(false);
 const parentAggregateGroups = ref<ParentAggregateGroup[]>([]);
 const parentGroup = ref<Group | null>(null);
@@ -235,12 +236,21 @@ async function loadStats() {
 }
 
 async function loadConfigOptions() {
-  try {
-    const options = await keysApi.getGroupConfigOptions();
-    configOptions.value = options || [];
-  } catch (error) {
-    console.error("Failed to load config options:", error);
+  if (configOptionsRequest) {
+    return configOptionsRequest;
   }
+  configOptionsRequest = keysApi
+    .getGroupConfigOptions()
+    .then(options => {
+      configOptions.value = options || [];
+    })
+    .catch(error => {
+      console.error("Failed to load config options:", error);
+    })
+    .finally(() => {
+      configOptionsRequest = null;
+    });
+  return configOptionsRequest;
 }
 
 function groupNeedsConfigOptions(group: Group | null) {
@@ -253,7 +263,7 @@ function ensureConfigOptionsForGroup() {
   if (!groupNeedsConfigOptions(props.group) || configOptions.value.length > 0) {
     return;
   }
-  loadConfigOptions();
+  void loadConfigOptions();
 }
 
 async function loadParentAggregateGroups() {

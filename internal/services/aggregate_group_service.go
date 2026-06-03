@@ -426,11 +426,11 @@ func (s *AggregateGroupService) ResetSubGroupHealth(ctx context.Context, groupID
 		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
 	}
 
-	if s.dynamicWeightManager == nil {
-		return NewI18nError(app_errors.ErrInternalServer, "error.dynamic_weight_not_configured", nil)
-	}
 	if s.OnSubGroupHealthReset != nil {
 		return s.OnSubGroupHealthReset(groupID, subGroupID)
+	}
+	if s.dynamicWeightManager == nil {
+		return NewI18nError(app_errors.ErrInternalServer, "error.dynamic_weight_not_configured", nil)
 	}
 	return s.dynamicWeightManager.ResetSubGroupMetrics(groupID, subGroupID)
 }

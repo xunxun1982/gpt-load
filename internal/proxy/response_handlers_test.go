@@ -74,7 +74,6 @@ func TestShouldCaptureResponse(t *testing.T) {
 
 func TestTailUsageCaptureKeepsResponseTail(t *testing.T) {
 	capture := &tailUsageCapture{
-		buf:   make([]byte, 0, 10),
 		limit: 10,
 	}
 
@@ -95,7 +94,8 @@ func TestHandleNormalResponseSetsEstimatedOutputFallback(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	resp := &http.Response{
-		Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"hello world"}}]}`)),
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"hello world"}}]}`)),
 	}
 
 	ps := &ProxyServer{}
@@ -208,9 +208,9 @@ func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
 func BenchmarkTailUsageCaptureWrite(b *testing.B) {
 	payload := bytes.Repeat([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello world\"}}]}\n\n"), 2048)
 	b.SetBytes(int64(len(payload)))
+	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
 	for b.Loop() {
 		capture := &tailUsageCapture{
-			buf:   make([]byte, 0, maxUsageTailCaptureBytes),
 			limit: maxUsageTailCaptureBytes,
 		}
 		if _, err := capture.Write(payload); err != nil {
@@ -223,6 +223,7 @@ func BenchmarkTailUsageCaptureWrite(b *testing.B) {
 func BenchmarkEstimatedTokenCaptureWrite(b *testing.B) {
 	payload := bytes.Repeat([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello 世界\"}}]}\n\n"), 2048)
 	b.SetBytes(int64(len(payload)))
+	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
 	for b.Loop() {
 		var capture estimatedTokenCapture
 		if _, err := capture.Write(payload); err != nil {

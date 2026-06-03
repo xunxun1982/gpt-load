@@ -230,6 +230,7 @@ const (
 
 // Token usage source constants.
 const (
+	TokenUsageSourceUnknown   = "" // unknown or not set
 	TokenUsageSourceUpstream  = "upstream"
 	TokenUsageSourceEstimated = "estimated"
 )
@@ -264,7 +265,7 @@ type RequestLog struct {
 	CacheReadTokens  int64     `gorm:"not null;default:0" json:"cache_read_tokens"`
 	CacheWriteTokens int64     `gorm:"not null;default:0" json:"cache_write_tokens"`
 	ThinkingTokens   int64     `gorm:"not null;default:0" json:"thinking_tokens"`
-	TokenUsageSource string    `gorm:"type:varchar(20);not null;default:''" json:"token_usage_source"`
+	TokenUsageSource string    `gorm:"type:varchar(20);not null;default:''" json:"token_usage_source"` // zero value is TokenUsageSourceUnknown
 }
 
 // StatCard represents a single statistics card data for the dashboard.

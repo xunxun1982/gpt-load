@@ -1210,6 +1210,33 @@ func TestHandleCodexCCStreamingResponseSetsEstimatedFallback(t *testing.T) {
 	require.Greater(t, getEstimatedOutputTokens(c), int64(0))
 }
 
+func TestHandleCodexCCStreamingResponseSetsEstimatedFallbackWithoutDone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	streamData := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_tokens","model":"gpt-4o"}}`,
+		`data: {"type":"response.output_text.delta","delta":"Hello"}`,
+		`data: {"type":"response.output_text.delta","delta":" world"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n")
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamData)),
+		Header:     make(http.Header),
+	}
+	upstreamResp.Header.Set("Content-Type", "text/event-stream")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+
+	ps := &ProxyServer{}
+	ps.handleCodexCCStreamingResponse(c, upstreamResp)
+
+	require.Greater(t, getEstimatedOutputTokens(c), int64(0))
+}
+
 func TestCaptureCodexStreamOutputEstimateDoneFallbacks(t *testing.T) {
 	t.Run("text done without delta", func(t *testing.T) {
 		var capture estimatedTokenCapture

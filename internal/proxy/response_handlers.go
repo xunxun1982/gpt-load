@@ -147,7 +147,6 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		}
 	} else {
 		usageCapture := &tailUsageCapture{
-			buf:   make([]byte, 0, maxUsageTailCaptureBytes),
 			limit: maxUsageTailCaptureBytes,
 		}
 		estimateCapture := &estimatedTokenCapture{}

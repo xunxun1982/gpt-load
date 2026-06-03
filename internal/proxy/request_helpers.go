@@ -198,7 +198,7 @@ func (ps *ProxyServer) applyParallelToolCallsConfig(bodyBytes []byte, group *mod
 	return result, nil
 }
 
-func (ps *ProxyServer) applyStreamOverrideConfig(bodyBytes []byte, group *models.Group) ([]byte, error) {
+func (ps *ProxyServer) applyStreamOverrideConfig(bodyBytes []byte, group *models.Group, allowMissingStream bool) ([]byte, error) {
 	if len(bodyBytes) == 0 {
 		return bodyBytes, nil
 	}
@@ -218,6 +218,10 @@ func (ps *ProxyServer) applyStreamOverrideConfig(bodyBytes []byte, group *models
 		logrus.Warnf("failed to unmarshal request body for stream override, passing through: %v", err)
 		return bodyBytes, nil
 	}
+	// Known stream-capable endpoints may need an explicit field; custom schemas only get existing fields overwritten.
+	if _, exists := requestData["stream"]; !exists && !allowMissingStream {
+		return bodyBytes, nil
+	}
 
 	streamValue := forceStream
 	requestData["stream"] = streamValue
@@ -228,6 +232,10 @@ func (ps *ProxyServer) applyStreamOverrideConfig(bodyBytes []byte, group *models
 		return bodyBytes, nil
 	}
 	return result, nil
+}
+
+func allowsMissingStreamOverride(path, method string) bool {
+	return isChatCompletionsEndpoint(path, method) || isOpenAIResponsesEndpoint(path)
 }
 
 func (ps *ProxyServer) applyResponsesIncludeConfig(bodyBytes []byte, group *models.Group) ([]byte, error) {

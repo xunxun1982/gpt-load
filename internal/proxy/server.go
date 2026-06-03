@@ -899,7 +899,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			}
 			// Native Gemini selects streaming via endpoint suffix, not a JSON stream field.
 			if group.ChannelType != "gemini" || !isGeminiNativeGenerateContentPath(c.Request.URL.Path) {
-				finalBodyBytes, err = ps.applyStreamOverrideConfig(finalBodyBytes, group)
+				finalBodyBytes, err = ps.applyStreamOverrideConfig(finalBodyBytes, group, allowsMissingStreamOverride(c.Request.URL.Path, c.Request.Method))
 				if err != nil {
 					logrus.WithError(err).Warn("Failed to apply stream override config")
 				}
@@ -1595,7 +1595,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 	// Native Gemini selects streaming via endpoint suffix, not a JSON stream field.
 	if group.ChannelType != "gemini" || !isGeminiNativeGenerateContentPath(c.Request.URL.Path) {
-		finalBodyBytes, err = ps.applyStreamOverrideConfig(finalBodyBytes, group)
+		finalBodyBytes, err = ps.applyStreamOverrideConfig(finalBodyBytes, group, allowsMissingStreamOverride(c.Request.URL.Path, c.Request.Method))
 		if err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,

@@ -501,7 +501,14 @@ function loadGroupData() {
   const forceStreamRaw = rawConfig["force_stream"];
   const forceNonStreamRaw = rawConfig["force_non_stream"];
   let requestStreamMode: "default" | "force_stream" | "force_non_stream" = "default";
-  if (typeof forceStreamRaw === "boolean" && forceStreamRaw) {
+  if (
+    typeof forceStreamRaw === "boolean" &&
+    forceStreamRaw &&
+    typeof forceNonStreamRaw === "boolean" &&
+    forceNonStreamRaw
+  ) {
+    requestStreamMode = "default";
+  } else if (typeof forceStreamRaw === "boolean" && forceStreamRaw) {
     requestStreamMode = "force_stream";
   } else if (typeof forceNonStreamRaw === "boolean" && forceNonStreamRaw) {
     requestStreamMode = "force_non_stream";
@@ -1266,6 +1273,7 @@ async function handleSubmit() {
       config["force_non_stream"] = true;
       delete config["force_stream"];
     } else {
+      // Conflicting legacy flags load as default; clearing both preserves backend no-op behavior and passes validation.
       delete config["force_stream"];
       delete config["force_non_stream"];
     }

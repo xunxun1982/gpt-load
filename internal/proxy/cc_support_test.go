@@ -6386,7 +6386,7 @@ func TestHandleCCNormalResponseWithToolNameRestore(t *testing.T) {
 	}
 }
 
-func TestHandleCCNormalResponsePassthroughCapturesTokenUsage(t *testing.T) {
+func TestHandleCCNormalResponsePassthroughDoesNotCaptureUpstreamUsageAndSetsFallbackEstimate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	responseBody := `{"result":"plain alternate schema response","provider":"custom"}`

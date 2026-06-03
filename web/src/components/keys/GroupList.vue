@@ -469,7 +469,9 @@ async function loadAllChildGroups() {
       if (!isNaN(parentId)) {
         nextChildGroupsMap.set(
           parentId,
-          [...children].sort((a, b) => naturalCompare(a.name ?? "", b.name ?? ""))
+          [...children].sort((a, b) =>
+            naturalCompare(a.display_name || a.name || "", b.display_name || b.name || "")
+          )
         );
       }
     }

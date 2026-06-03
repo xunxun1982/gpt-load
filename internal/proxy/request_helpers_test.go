@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"gpt-load/internal/models"
@@ -230,7 +231,7 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 		group := &models.Group{Config: datatypes.JSONMap{"force_stream": true}}
 		input := []byte(`{"model":"gpt-4","stream":false}`)
 
-		result, err := ps.applyStreamOverrideConfig(input, group)
+		result, err := ps.applyStreamOverrideConfig(input, group, false)
 		assert.NoError(t, err)
 
 		var resultData map[string]any
@@ -242,7 +243,7 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 		group := &models.Group{Config: datatypes.JSONMap{"force_non_stream": true}}
 		input := []byte(`{"model":"gpt-4","stream":true}`)
 
-		result, err := ps.applyStreamOverrideConfig(input, group)
+		result, err := ps.applyStreamOverrideConfig(input, group, false)
 		assert.NoError(t, err)
 
 		var resultData map[string]any
@@ -250,11 +251,11 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 		assert.Equal(t, false, resultData["stream"])
 	})
 
-	t.Run("adds missing stream for explicit force stream", func(t *testing.T) {
+	t.Run("adds missing stream for known stream endpoint", func(t *testing.T) {
 		group := &models.Group{Config: datatypes.JSONMap{"force_stream": true}}
 		input := []byte(`{"model":"gpt-4"}`)
 
-		result, err := ps.applyStreamOverrideConfig(input, group)
+		result, err := ps.applyStreamOverrideConfig(input, group, true)
 		assert.NoError(t, err)
 
 		var resultData map[string]any
@@ -262,11 +263,20 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 		assert.Equal(t, true, resultData["stream"])
 	})
 
+	t.Run("does not add missing stream for unknown schema", func(t *testing.T) {
+		group := &models.Group{Config: datatypes.JSONMap{"force_stream": true}}
+		input := []byte(`{"model":"gpt-4"}`)
+
+		result, err := ps.applyStreamOverrideConfig(input, group, false)
+		assert.NoError(t, err)
+		assert.Equal(t, input, result)
+	})
+
 	t.Run("no config", func(t *testing.T) {
 		group := &models.Group{Config: datatypes.JSONMap{}}
 		input := []byte(`{"model":"gpt-4"}`)
 
-		result, err := ps.applyStreamOverrideConfig(input, group)
+		result, err := ps.applyStreamOverrideConfig(input, group, false)
 		assert.NoError(t, err)
 		assert.Equal(t, input, result)
 	})
@@ -275,9 +285,17 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 		group := &models.Group{Config: datatypes.JSONMap{"force_stream": true, "force_non_stream": true}}
 		input := []byte(`{"model":"gpt-4","stream":false}`)
 
-		result, err := ps.applyStreamOverrideConfig(input, group)
+		result, err := ps.applyStreamOverrideConfig(input, group, false)
 		assert.NoError(t, err)
 		assert.Equal(t, input, result)
+	})
+
+	t.Run("allows missing stream on chat completions and responses", func(t *testing.T) {
+		assert.True(t, allowsMissingStreamOverride("/v1/chat/completions", http.MethodPost))
+		assert.True(t, allowsMissingStreamOverride("/proxy/group/v1/chat/completions", http.MethodPost))
+		assert.True(t, allowsMissingStreamOverride("/v1/responses", http.MethodPost))
+		assert.False(t, allowsMissingStreamOverride("/v1/custom", http.MethodPost))
+		assert.False(t, allowsMissingStreamOverride("/v1/chat/completions", http.MethodGet))
 	})
 }
 

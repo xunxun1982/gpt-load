@@ -28,7 +28,7 @@ func setTokenUsageWithSource(c *gin.Context, usage tokenusage.Usage, source stri
 	if c == nil || usage.IsZero() {
 		return
 	}
-	if source == "" {
+	if source == models.TokenUsageSourceUnknown {
 		source = models.TokenUsageSourceUpstream
 	}
 	if source == models.TokenUsageSourceUpstream && c.Keys != nil {
