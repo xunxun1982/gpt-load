@@ -11253,7 +11253,7 @@ func TestHandleFunctionCallStreamingResponseEstimatesBeyondParseBuffer(t *testin
 	}
 }
 
-func TestHandleFunctionCallStreamingResponseErrorCapturesUpstreamUsage(t *testing.T) {
+func TestHandleFunctionCallStreamingResponseErrorDoesNotCaptureUpstreamUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := `{"error":{"message":"upstream failed"},"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}}`
@@ -11278,8 +11278,8 @@ func TestHandleFunctionCallStreamingResponseErrorCapturesUpstreamUsage(t *testin
 		t.Fatalf("unexpected response body: %q", got)
 	}
 	usage, source, ok := getTokenUsage(c)
-	if !ok || usage.InputTokens != 9 || usage.OutputTokens != 4 || usage.TotalTokens != 13 || source != models.TokenUsageSourceUpstream {
-		t.Fatalf("expected upstream usage, got %+v source=%q ok=%v", usage, source, ok)
+	if ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected upstream usage, got %+v source=%q ok=%v", usage, source, ok)
 	}
 	if got := getEstimatedOutputTokens(c); got != 0 {
 		t.Fatalf("did not expect estimated output tokens, got %d", got)

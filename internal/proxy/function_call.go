@@ -1693,16 +1693,12 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 
 func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp *http.Response) {
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		// Keep usage parsing bounded; streamed error bodies are still passed through unchanged.
-		usageCapture := &tailUsageCapture{limit: maxUsageTailCaptureBytes}
+		// Failed upstream responses do not contribute token usage; pass the body through unchanged.
 		copyUpstreamHeaders(c.Writer.Header(), resp.Header)
 		c.Status(resp.StatusCode)
-		if _, err := io.Copy(io.MultiWriter(c.Writer, usageCapture), resp.Body); err != nil {
+		if _, err := io.Copy(c.Writer, resp.Body); err != nil {
 			logUpstreamError("copying upstream error body", err)
 			return
-		}
-		if len(usageCapture.buf) > 0 {
-			setTokenUsageOrEstimateFromFullBodyIf(c, handleGzipCompression(resp, usageCapture.buf), false)
 		}
 		return
 	}

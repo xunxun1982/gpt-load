@@ -2245,23 +2245,26 @@ func (ps *ProxyServer) logRequest(
 		logEntry.ErrorMessage = finalError.Error()
 	}
 
-	if usage, source, ok := getTokenUsage(c); ok {
-		logEntry.InputTokens = usage.InputTokens
-		logEntry.OutputTokens = usage.OutputTokens
-		logEntry.TotalTokens = usage.TotalTokens
-		logEntry.CacheReadTokens = usage.CacheReadTokens
-		logEntry.CacheWriteTokens = usage.CacheWriteTokens
-		logEntry.ThinkingTokens = usage.ThinkingTokens
-		logEntry.TokenUsageSource = source
-	} else if logEntry.RequestType == models.RequestTypeFinal && logEntry.IsSuccess && len(bodyBytes) <= maxEstimatedTokenBodyBytes {
-		inputTokens := int64(utils.EstimateTokensFromBytes(bodyBytes))
-		outputTokens := getEstimatedOutputTokens(c)
-		totalTokens := inputTokens + outputTokens
-		if totalTokens > 0 {
-			logEntry.InputTokens = inputTokens
-			logEntry.OutputTokens = outputTokens
-			logEntry.TotalTokens = totalTokens
-			logEntry.TokenUsageSource = models.TokenUsageSourceEstimated
+	// Only successful final requests enter token stats; failed upstream 4xx/5xx responses are excluded.
+	if logEntry.RequestType == models.RequestTypeFinal && logEntry.IsSuccess {
+		if usage, source, ok := getTokenUsage(c); ok {
+			logEntry.InputTokens = usage.InputTokens
+			logEntry.OutputTokens = usage.OutputTokens
+			logEntry.TotalTokens = usage.TotalTokens
+			logEntry.CacheReadTokens = usage.CacheReadTokens
+			logEntry.CacheWriteTokens = usage.CacheWriteTokens
+			logEntry.ThinkingTokens = usage.ThinkingTokens
+			logEntry.TokenUsageSource = source
+		} else if len(bodyBytes) <= maxEstimatedTokenBodyBytes {
+			inputTokens := int64(utils.EstimateTokensFromBytes(bodyBytes))
+			outputTokens := getEstimatedOutputTokens(c)
+			totalTokens := inputTokens + outputTokens
+			if totalTokens > 0 {
+				logEntry.InputTokens = inputTokens
+				logEntry.OutputTokens = outputTokens
+				logEntry.TotalTokens = totalTokens
+				logEntry.TokenUsageSource = models.TokenUsageSourceEstimated
+			}
 		}
 	}
 	clearTokenUsage(c)
