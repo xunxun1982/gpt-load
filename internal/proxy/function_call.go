@@ -1292,6 +1292,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	// Fallback: if we cannot parse JSON, behave like normal response handler.
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
+		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
 		if shouldCapture {
 			if len(body) > maxResponseCaptureBytes {
 				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
@@ -1309,6 +1310,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	triggerVal, exists := c.Get(ctxKeyTriggerSignal)
 	if !exists {
 		// No trigger signal means this request was not rewritten for function call.
+		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
 		if shouldCapture {
 			if len(body) > maxResponseCaptureBytes {
 				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
@@ -1324,6 +1326,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 
 	triggerSignal, ok := triggerVal.(string)
 	if !ok || triggerSignal == "" {
+		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
 		if shouldCapture {
 			if len(body) > maxResponseCaptureBytes {
 				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
@@ -1340,6 +1343,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	choicesVal, ok := payload["choices"]
 	if !ok {
 		// No choices field, fallback to original payload.
+		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
 		if shouldCapture {
 			if len(body) > maxResponseCaptureBytes {
 				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
@@ -1355,6 +1359,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 
 	choices, ok := choicesVal.([]any)
 	if !ok || len(choices) == 0 {
+		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
 		if shouldCapture {
 			if len(body) > maxResponseCaptureBytes {
 				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
@@ -1367,6 +1372,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		}
 		return
 	}
+	setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
 
 	modified := false
 
@@ -1686,6 +1692,17 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 }
 
 func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp *http.Response) {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		// Failed upstream responses do not contribute token usage; pass the body through unchanged.
+		copyUpstreamHeaders(c.Writer.Header(), resp.Header)
+		c.Status(resp.StatusCode)
+		if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+			logUpstreamError("copying upstream error body", err)
+			return
+		}
+		return
+	}
+
 	// Set standard SSE headers
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -1712,6 +1729,8 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	var contentBuf strings.Builder
 	// reasoningBuf accumulates reasoning_content for detecting tool call intent in thinking.
 	var reasoningBuf strings.Builder
+	// outputEstimate tracks all streamed output before the parse buffers are capped.
+	var outputEstimate estimatedTokenCapture
 	// contentBufTruncated tracks whether content was actually truncated due to buffer overflow.
 	// NOTE: AI review suggested using a dedicated flag instead of inferring from length.
 	// len(contentStr) >= maxContentBufferBytes can over-report truncation if stream naturally
@@ -1823,6 +1842,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		// Parse current chunk, accumulate content, and strip XML blocks in real-time.
 		var modifiedLines []string
 		if dataStr != "" {
+			setTokenUsageFromBody(c, []byte(dataStr))
 			var evt map[string]any
 			if err := json.Unmarshal([]byte(dataStr), &evt); err == nil {
 				if choicesVal, ok := evt["choices"]; ok {
@@ -1831,11 +1851,13 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 							if deltaVal, ok := ch["delta"].(map[string]any); ok {
 								// Accumulate reasoning_content for intent detection.
 								if reasoning, ok := deltaVal["reasoning_content"].(string); ok && reasoning != "" {
+									outputEstimate.addString(reasoning)
 									if reasoningBuf.Len()+len(reasoning) <= maxContentBufferBytes {
 										reasoningBuf.WriteString(reasoning)
 									}
 								}
 								if text, ok := deltaVal["content"].(string); ok && text != "" {
+									outputEstimate.addString(text)
 									// Accumulate content for final XML parsing.
 									if contentBuf.Len()+len(text) <= maxContentBufferBytes {
 										contentBuf.WriteString(text)
@@ -2069,6 +2091,15 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	// parse function calls from the accumulated content buffer.
 	contentStr := contentBuf.String()
 	reasoningStr := reasoningBuf.String()
+	finalizeTokenEstimate := func() {
+		if _, _, ok := getTokenUsage(c); ok {
+			return
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return
+		}
+		setEstimatedOutputTokens(c, outputEstimate.Tokens())
+	}
 	parsedCalls := parseFunctionCallsXML(contentStr, triggerSignal)
 
 	// Fallback: If no calls found with trigger signal, try parsing without it.
@@ -2139,6 +2170,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		}
 
 		// No function calls detected – forward last event as-is, then [DONE].
+		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
 			if err := writeEvent(prevEventLines); err != nil {
 				logUpstreamError("writing stream to client", err)
@@ -2154,6 +2186,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	var lastEvt map[string]any
 	if err := json.Unmarshal([]byte(prevEventData), &lastEvt); err != nil {
 		logUpstreamError("parsing last streaming event for function calls", err)
+		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
 			_ = writeEvent(prevEventLines)
 		}
@@ -2164,6 +2197,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
 	choicesVal, ok := lastEvt["choices"]
 	if !ok {
+		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
 			_ = writeEvent(prevEventLines)
 		}
@@ -2173,6 +2207,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	}
 	choices, ok := choicesVal.([]any)
 	if !ok || len(choices) == 0 {
+		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
 			_ = writeEvent(prevEventLines)
 		}
@@ -2209,6 +2244,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	}
 
 	if len(toolCalls) == 0 {
+		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
 			_ = writeEvent(prevEventLines)
 		}
@@ -2238,6 +2274,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	out, err := json.Marshal(lastEvt)
 	if err != nil {
 		logUpstreamError("marshalling modified streaming function call event", err)
+		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
 			_ = writeEvent(prevEventLines)
 		}
@@ -2277,6 +2314,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		finalLines = append(finalLines, line)
 	}
 	finalLines = append(finalLines, "data: "+string(out)+"\n")
+	finalizeTokenEstimate()
 	if err := writeEvent(finalLines); err != nil {
 		logUpstreamError("writing modified streaming event", err)
 		return

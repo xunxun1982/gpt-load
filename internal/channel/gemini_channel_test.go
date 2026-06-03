@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"unicode/utf8"
 
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
 
 func TestGeminiChannel_ModifyRequest_NativeFormat(t *testing.T) {
@@ -275,6 +277,63 @@ func TestGeminiChannel_ValidateKey_Success(t *testing.T) {
 	group := &models.Group{}
 
 	valid, err := ch.ValidateKey(context.Background(), apiKey, group)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestGeminiChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "gemini-pro")
+		assert.Contains(t, r.URL.Path, "streamGenerateContent")
+		assert.Equal(t, "test-key", r.URL.Query().Get("key"))
+		assert.Equal(t, "sse", r.URL.Query().Get("alt"))
+
+		var body map[string]any
+		err := json.NewDecoder(r.Body).Decode(&body)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		contents, ok := body["contents"].([]any)
+		if assert.True(t, ok) && assert.NotEmpty(t, contents) {
+			content, ok := contents[0].(map[string]any)
+			if assert.True(t, ok) {
+				parts, ok := content["parts"].([]any)
+				if assert.True(t, ok) && assert.Len(t, parts, 1) {
+					part, ok := parts[0].(map[string]any)
+					if assert.True(t, ok) {
+						text, ok := part["text"].(string)
+						assert.True(t, ok)
+						assert.NotEqual(t, validationDefaultPrompt, text)
+						assert.True(t, validationPromptInQueue(text))
+						assert.LessOrEqual(t, utf8.RuneCountInString(text), 8)
+					}
+				}
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ch := &GeminiChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1beta/models/gemini-pro:generateContent",
+			TestModel:          "gemini-pro",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{
+			"validation_stream":      true,
+			"validation_prompt_mode": "random_queue",
+		},
+	})
 	assert.NoError(t, err)
 	assert.True(t, valid)
 }

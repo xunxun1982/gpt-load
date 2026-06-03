@@ -258,6 +258,9 @@ func TestDashboardMessageKeys(t *testing.T) {
 		"dashboard.invalid_keys",
 		"dashboard.success_requests",
 		"dashboard.failed_requests",
+		"dashboard.totalTokens",
+		"dashboard.inputTokens",
+		"dashboard.outputTokens",
 		"dashboard.auth_key_missing",
 		"dashboard.encryption_key_missing",
 	}

@@ -1,10 +1,13 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
@@ -14,6 +17,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/services"
 	"gpt-load/internal/store"
+	"gpt-load/internal/tokenusage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -636,6 +640,101 @@ func TestClearModelRedirectContextRemovesRetryAttemptState(t *testing.T) {
 	require.False(t, exists)
 }
 
+func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{ID: 1, Name: "test-group", GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	setEstimatedOutputTokens(ctx, 3)
+
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, nil, body, models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, models.TokenUsageSourceEstimated, logEntry.TokenUsageSource)
+	assert.Greater(t, logEntry.InputTokens, int64(0))
+	assert.Equal(t, int64(3), logEntry.OutputTokens)
+	assert.Equal(t, logEntry.InputTokens+logEntry.OutputTokens, logEntry.TotalTokens)
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
+}
+
+func TestLogRequestSkipsEstimatedTokenFallbackForLargeBody(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{ID: 1, Name: "test-group", GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	setEstimatedOutputTokens(ctx, 3)
+
+	body := bytes.Repeat([]byte("x"), maxEstimatedTokenBodyBytes+1)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, nil, body, models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Empty(t, logEntry.TokenUsageSource)
+	assert.Equal(t, int64(0), logEntry.InputTokens)
+	assert.Equal(t, int64(0), logEntry.OutputTokens)
+	assert.Equal(t, int64(0), logEntry.TotalTokens)
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
+}
+
+func TestLogRequestPrefersUpstreamTokenUsageOverEstimate(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{ID: 1, Name: "test-group", GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	setEstimatedOutputTokens(ctx, 100)
+	setTokenUsage(ctx, tokenusage.Usage{InputTokens: 2, OutputTokens: 4})
+
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, models.TokenUsageSourceUpstream, logEntry.TokenUsageSource)
+	assert.Equal(t, int64(2), logEntry.InputTokens)
+	assert.Equal(t, int64(4), logEntry.OutputTokens)
+	assert.Equal(t, int64(6), logEntry.TotalTokens)
+}
+
+func TestLogRequestSkipsTokenUsageForFailedRequest(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{ID: 1, Name: "test-group", GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	setEstimatedOutputTokens(ctx, 100)
+	setTokenUsage(ctx, tokenusage.Usage{InputTokens: 2, OutputTokens: 4})
+
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusTooManyRequests, errors.New("upstream rate limited"), false, "", nil, nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Empty(t, logEntry.TokenUsageSource)
+	assert.Equal(t, int64(0), logEntry.InputTokens)
+	assert.Equal(t, int64(0), logEntry.OutputTokens)
+	assert.Equal(t, int64(0), logEntry.TotalTokens)
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
+}
+
 func TestEstimateTokensForClaudeCountTokens(t *testing.T) {
 	t.Parallel()
 
@@ -668,6 +767,21 @@ func TestEstimateTokensForClaudeCountTokens(t *testing.T) {
 			assert.GreaterOrEqual(t, result, tt.minToken)
 		})
 	}
+}
+
+func popRecordedRequestLog(t *testing.T, memStore store.Store) models.RequestLog {
+	t.Helper()
+
+	keys, err := memStore.SPopN(services.PendingLogKeysSet, 1)
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+
+	logBytes, err := memStore.Get(keys[0])
+	require.NoError(t, err)
+
+	var logEntry models.RequestLog
+	require.NoError(t, json.Unmarshal(logBytes, &logEntry))
+	return logEntry
 }
 
 // Benchmark tests for hot paths

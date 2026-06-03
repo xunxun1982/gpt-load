@@ -384,9 +384,7 @@ function formatDateTime(isoString: string | null | undefined): string {
                     "
                   />
                 </div>
-                <div class="quick-actions">
-                  <span class="group-name">#{{ subGroup.group.name }}</span>
-                </div>
+                <span class="group-name">#{{ subGroup.group.name }}</span>
               </div>
             </div>
 
@@ -710,7 +708,7 @@ function formatDateTime(isoString: string | null | undefined): string {
 
 .keys-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 16px;
 }
 
@@ -754,7 +752,7 @@ function formatDateTime(isoString: string | null | undefined): string {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
+  width: 100%;
   min-width: 0;
 }
 
@@ -762,10 +760,10 @@ function formatDateTime(isoString: string | null | undefined): string {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 0 1 auto;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -777,8 +775,12 @@ function formatDateTime(isoString: string | null | undefined): string {
   background: #e6f4ff;
   padding: 2px 6px;
   border-radius: 4px;
-  white-space: nowrap;
-  flex-shrink: 0;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  align-self: flex-start;
+  max-width: 100%;
+  min-width: 0;
 }
 
 /* Group name styles in dark mode */
@@ -818,8 +820,9 @@ function formatDateTime(isoString: string | null | undefined): string {
 
 .key-section {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   flex: 1;
   min-width: 0;
 }
@@ -827,7 +830,7 @@ function formatDateTime(isoString: string | null | undefined): string {
 .key-bottom {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
@@ -835,10 +838,9 @@ function formatDateTime(isoString: string | null | undefined): string {
   display: flex;
   gap: 8px;
   font-size: 12px;
-  overflow: hidden;
+  overflow: visible;
   color: var(--text-secondary);
-  flex: 1;
-  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .stat-item {
@@ -852,7 +854,13 @@ function formatDateTime(isoString: string | null | undefined): string {
 }
 
 .key-actions {
-  flex-shrink: 0;
+  flex: 1 1 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 4px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .key-actions :deep(.n-button) {
@@ -886,7 +894,8 @@ function formatDateTime(isoString: string | null | undefined): string {
 .quick-actions {
   display: flex;
   gap: 4px;
-  flex-shrink: 0;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .sub-group-id {

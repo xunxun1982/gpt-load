@@ -31,8 +31,9 @@ import (
 )
 
 const (
-	maxUpstreamErrorBodySize  = 64 * 1024
-	maxProxyBodyPreallocBytes = 2 * 1024 * 1024
+	maxUpstreamErrorBodySize   = 64 * 1024
+	maxProxyBodyPreallocBytes  = 2 * 1024 * 1024
+	maxEstimatedTokenBodyBytes = 256 * 1024
 )
 
 func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
@@ -889,12 +890,34 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				}
 			}
 
+			if group.ChannelType == "gemini" {
+				c.Request.URL.Path = applyGeminiNativeStreamPathOverride(
+					c.Request.URL.Path,
+					getGroupConfigBool(group, "force_stream"),
+					getGroupConfigBool(group, "force_non_stream"),
+				)
+			}
+			// Native Gemini selects streaming via endpoint suffix, not a JSON stream field.
+			if group.ChannelType != "gemini" || !isGeminiNativeGenerateContentPath(c.Request.URL.Path) {
+				finalBodyBytes, err = ps.applyStreamOverrideConfig(finalBodyBytes, group, allowsMissingStreamOverride(c.Request.URL.Path, c.Request.Method))
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to apply stream override config")
+				}
+			}
+			if group.ChannelType == "openai-response" && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+				finalBodyBytes, err = ps.applyResponsesIncludeConfig(finalBodyBytes, group)
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to apply Responses include config")
+				}
+			}
+
 			isStream = channelHandler.IsStreamRequest(c, finalBodyBytes)
 
 			// Apply forced streaming for direct OpenAI Responses requests (non-CC mode).
 			// Codex-compatible upstreams require stream: true for reliable responses.
 			// If client requests non-stream, we force stream: true to upstream and collect response.
-			if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+			if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) &&
+				!getGroupConfigBool(group, "force_non_stream") && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 				modifiedBody, wasNonStream := channel.ForceStreamRequest(finalBodyBytes)
 				if wasNonStream {
 					finalBodyBytes = modifiedBody
@@ -1563,10 +1586,39 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
+	if group.ChannelType == "gemini" {
+		c.Request.URL.Path = applyGeminiNativeStreamPathOverride(
+			c.Request.URL.Path,
+			getGroupConfigBool(group, "force_stream"),
+			getGroupConfigBool(group, "force_non_stream"),
+		)
+	}
+	// Native Gemini selects streaming via endpoint suffix, not a JSON stream field.
+	if group.ChannelType != "gemini" || !isGeminiNativeGenerateContentPath(c.Request.URL.Path) {
+		finalBodyBytes, err = ps.applyStreamOverrideConfig(finalBodyBytes, group, allowsMissingStreamOverride(c.Request.URL.Path, c.Request.Method))
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply stream override config for sub-group")
+		}
+	}
+	if group.ChannelType == "openai-response" && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+		finalBodyBytes, err = ps.applyResponsesIncludeConfig(finalBodyBytes, group)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply Responses include config for sub-group")
+		}
+	}
+	isStream = subGroupChannelHandler.IsStreamRequest(c, finalBodyBytes)
+
 	// Apply forced streaming for direct OpenAI Responses sub-group requests (non-CC mode).
 	// Clear any stale forced stream state from previous sub-group attempts.
 	c.Set(ctxKeyOpenAIResponseForcedStream, false)
-	if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+	if group.ChannelType == "openai-response" && !isOpenAIResponseCCMode(c) &&
+		!getGroupConfigBool(group, "force_non_stream") && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 		modifiedBody, wasNonStream := channel.ForceStreamRequest(finalBodyBytes)
 		if wasNonStream {
 			finalBodyBytes = modifiedBody
@@ -2192,6 +2244,30 @@ func (ps *ProxyServer) logRequest(
 	if finalError != nil {
 		logEntry.ErrorMessage = finalError.Error()
 	}
+
+	// Only successful final requests enter token stats; failed upstream 4xx/5xx responses are excluded.
+	if logEntry.RequestType == models.RequestTypeFinal && logEntry.IsSuccess {
+		if usage, source, ok := getTokenUsage(c); ok {
+			logEntry.InputTokens = usage.InputTokens
+			logEntry.OutputTokens = usage.OutputTokens
+			logEntry.TotalTokens = usage.TotalTokens
+			logEntry.CacheReadTokens = usage.CacheReadTokens
+			logEntry.CacheWriteTokens = usage.CacheWriteTokens
+			logEntry.ThinkingTokens = usage.ThinkingTokens
+			logEntry.TokenUsageSource = source
+		} else if len(bodyBytes) <= maxEstimatedTokenBodyBytes {
+			inputTokens := int64(utils.EstimateTokensFromBytes(bodyBytes))
+			outputTokens := getEstimatedOutputTokens(c)
+			totalTokens := inputTokens + outputTokens
+			if totalTokens > 0 {
+				logEntry.InputTokens = inputTokens
+				logEntry.OutputTokens = outputTokens
+				logEntry.TotalTokens = totalTokens
+				logEntry.TokenUsageSource = models.TokenUsageSourceEstimated
+			}
+		}
+	}
+	clearTokenUsage(c)
 
 	// Debug log for request recording
 	if !logEntry.IsSuccess {

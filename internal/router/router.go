@@ -209,6 +209,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 	{
 		dashboard.GET("/stats", serverHandler.Stats)
 		dashboard.GET("/chart", serverHandler.Chart)
+		dashboard.GET("/token-usage", serverHandler.TokenUsage)
 		dashboard.GET("/encryption-status", serverHandler.EncryptionStatus)
 	}
 

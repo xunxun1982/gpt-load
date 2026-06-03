@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/tokenusage"
 	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,33 @@ import (
 
 // maxResponseCaptureBytes is the maximum size of response body to capture for logging
 const maxResponseCaptureBytes = 65000
+
+const maxUsageTailCaptureBytes = maxResponseCaptureBytes
+
+type tailUsageCapture struct {
+	buf   []byte
+	limit int
+}
+
+func (w *tailUsageCapture) Write(p []byte) (int, error) {
+	if w.limit <= 0 || len(p) == 0 {
+		return len(p), nil
+	}
+	if len(p) >= w.limit {
+		w.buf = append(w.buf[:0], p[len(p)-w.limit:]...)
+		return len(p), nil
+	}
+	if overflow := len(w.buf) + len(p) - w.limit; overflow > 0 {
+		if overflow >= len(w.buf) {
+			w.buf = w.buf[:0]
+		} else {
+			copy(w.buf, w.buf[overflow:])
+			w.buf = w.buf[:len(w.buf)-overflow]
+		}
+	}
+	w.buf = append(w.buf, p...)
+	return len(p), nil
+}
 
 // shouldCaptureResponse checks if response body capturing is enabled for the request
 func shouldCaptureResponse(c *gin.Context) bool {
@@ -48,11 +76,15 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	if shouldCapture {
 		responseCapture = bytes.NewBuffer(make([]byte, 0, 4096))
 	}
+	var usageParser tokenusage.SSEParser
+	var estimateCapture estimatedTokenCapture
 
 	buf := make([]byte, 4*1024)
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
+			usageParser.Write(buf[:n])
+			estimateCapture.Write(buf[:n])
 			if _, writeErr := c.Writer.Write(buf[:n]); writeErr != nil {
 				logUpstreamError("writing stream to client", writeErr)
 				return
@@ -82,6 +114,11 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	if responseCapture != nil && responseCapture.Len() > 0 {
 		c.Set("response_body", responseCapture.String())
 	}
+	if usage, ok := usageParser.Finish(); ok {
+		setTokenUsage(c, usage)
+	} else if resp.StatusCode < http.StatusBadRequest {
+		setEstimatedOutputTokens(c, estimateCapture.Tokens())
+	}
 }
 
 func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response) {
@@ -102,15 +139,23 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		} else {
 			c.Set("response_body", string(body))
 		}
+		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
 
 		// Write to client
 		if _, err := c.Writer.Write(body); err != nil {
 			logUpstreamError("writing response body", err)
 		}
 	} else {
-		// Fast path: direct copy without capturing
-		if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+		usageCapture := &tailUsageCapture{
+			limit: maxUsageTailCaptureBytes,
+		}
+		estimateCapture := &estimatedTokenCapture{}
+		if _, err := io.Copy(io.MultiWriter(c.Writer, usageCapture, estimateCapture), resp.Body); err != nil {
 			logUpstreamError("copying response body", err)
+			return
+		}
+		if (len(usageCapture.buf) == 0 || !setTokenUsageFromBody(c, usageCapture.buf)) && resp.StatusCode < http.StatusBadRequest {
+			setEstimatedOutputTokens(c, estimateCapture.Tokens())
 		}
 	}
 }
@@ -177,6 +222,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 			c.Set("response_body", string(responseBody))
 		}
 	}
+	setTokenUsageOrEstimateFromFullBodyIf(c, responseBody, resp.StatusCode < http.StatusBadRequest)
 
 	// c.Data already sets Content-Type, no need for redundant c.Header call
 	c.Data(resp.StatusCode, "application/json", responseBody)

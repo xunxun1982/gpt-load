@@ -18,6 +18,7 @@ const (
 	ctxKeyModelRedirectSourceModel = "model_redirect_source_model"
 	ctxKeyModelRedirectTargetIndex = "model_redirect_target_index"
 	requestLogModelMaxLength       = 255
+	responsesEncryptedReasoning    = "reasoning.encrypted_content"
 )
 
 func setModelRedirectContext(c *gin.Context, originalModel string, targetIdx int, preserveOriginal bool) {
@@ -195,6 +196,104 @@ func (ps *ProxyServer) applyParallelToolCallsConfig(bodyBytes []byte, group *mod
 		return bodyBytes, nil
 	}
 	return result, nil
+}
+
+func (ps *ProxyServer) applyStreamOverrideConfig(bodyBytes []byte, group *models.Group, allowMissingStream bool) ([]byte, error) {
+	if len(bodyBytes) == 0 {
+		return bodyBytes, nil
+	}
+
+	forceStream := getGroupConfigBool(group, "force_stream")
+	forceNonStream := getGroupConfigBool(group, "force_non_stream")
+	if !forceStream && !forceNonStream {
+		return bodyBytes, nil
+	}
+	if forceStream && forceNonStream {
+		logrus.WithField("group", group.Name).Warn("stream override skipped because force_stream and force_non_stream are both enabled")
+		return bodyBytes, nil
+	}
+
+	var requestData map[string]any
+	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+		logrus.Warnf("failed to unmarshal request body for stream override, passing through: %v", err)
+		return bodyBytes, nil
+	}
+	// Known stream-capable endpoints may need an explicit field; custom schemas only get existing fields overwritten.
+	if _, exists := requestData["stream"]; !exists && !allowMissingStream {
+		return bodyBytes, nil
+	}
+
+	streamValue := forceStream
+	requestData["stream"] = streamValue
+
+	result, err := json.Marshal(requestData)
+	if err != nil {
+		logrus.Warnf("failed to marshal request body after stream override, passing through: %v", err)
+		return bodyBytes, nil
+	}
+	return result, nil
+}
+
+func allowsMissingStreamOverride(path, method string) bool {
+	return isChatCompletionsEndpoint(path, method) || isOpenAIResponsesEndpoint(path)
+}
+
+func (ps *ProxyServer) applyResponsesIncludeConfig(bodyBytes []byte, group *models.Group) ([]byte, error) {
+	if len(bodyBytes) == 0 || !getGroupConfigBool(group, "responses_include_encrypted_reasoning") {
+		return bodyBytes, nil
+	}
+
+	var requestData map[string]any
+	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+		logrus.Warnf("failed to unmarshal request body for Responses include config, passing through: %v", err)
+		return bodyBytes, nil
+	}
+
+	includeValues := make([]any, 0, 2)
+	if rawInclude, ok := requestData["include"]; ok {
+		if existing, ok := rawInclude.([]any); ok {
+			includeValues = append(includeValues, existing...)
+		}
+	}
+
+	for _, value := range includeValues {
+		if text, ok := value.(string); ok && text == responsesEncryptedReasoning {
+			requestData["include"] = includeValues
+			result, err := json.Marshal(requestData)
+			if err != nil {
+				logrus.Warnf("failed to marshal request body after Responses include config, passing through: %v", err)
+				return bodyBytes, nil
+			}
+			return result, nil
+		}
+	}
+
+	includeValues = append(includeValues, responsesEncryptedReasoning)
+	requestData["include"] = includeValues
+
+	result, err := json.Marshal(requestData)
+	if err != nil {
+		logrus.Warnf("failed to marshal request body after Responses include config, passing through: %v", err)
+		return bodyBytes, nil
+	}
+	return result, nil
+}
+
+func applyGeminiNativeStreamPathOverride(path string, forceStream, forceNonStream bool) string {
+	if forceStream && forceNonStream {
+		return path
+	}
+	if forceStream && strings.HasSuffix(path, ":generateContent") {
+		return strings.TrimSuffix(path, ":generateContent") + ":streamGenerateContent"
+	}
+	if forceNonStream && strings.HasSuffix(path, ":streamGenerateContent") {
+		return strings.TrimSuffix(path, ":streamGenerateContent") + ":generateContent"
+	}
+	return path
+}
+
+func isGeminiNativeGenerateContentPath(path string) bool {
+	return strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent")
 }
 
 // applyModelMapping applies model name mapping based on group configuration.

@@ -338,10 +338,12 @@ export const keysApi = {
   async updateSubGroupWeight(
     aggregateGroupId: number,
     subGroupId: number,
-    weight: number
+    weight: number,
+    healthResetIntervalSeconds = 0
   ): Promise<void> {
     await http.put(`/groups/${aggregateGroupId}/sub-groups/${subGroupId}/weight`, {
       weight,
+      health_reset_interval_seconds: healthResetIntervalSeconds,
     });
   },
 

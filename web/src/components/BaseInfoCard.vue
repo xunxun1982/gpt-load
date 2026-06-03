@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DashboardStatsResponse } from "@/types/models";
-import { formatPercentage } from "@/utils/display";
+import { formatPercentage, formatTokenCount } from "@/utils/display";
 import { NCard, NGrid, NGridItem, NSpace, NTag, NTooltip } from "naive-ui";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -65,6 +65,11 @@ const updateAnimatedValues = () => {
       // Map trend from [-100, 100] to [0, 1], with 0 change at 0.5
       return (clamped + 100) / 200;
     })(),
+    token_usage: (() => {
+      const total = stats.value?.token_usage?.total_tokens ?? 0;
+      const output = stats.value?.token_usage?.output_tokens ?? 0;
+      return total > 0 ? Math.min(output / total, 1) : 0;
+    })(),
     error_rate: (() => {
       const raw = stats.value?.error_rate?.value ?? 0;
       const clamped = Math.max(Math.min(raw, 100), 0);
@@ -86,7 +91,7 @@ watch(
 <template>
   <div class="stats-container">
     <n-space vertical size="medium">
-      <n-grid cols="2 s:4" :x-gap="20" :y-gap="20" responsive="screen">
+      <n-grid cols="2 s:3 m:5" :x-gap="20" :y-gap="20" responsive="screen">
         <!-- Key count -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0s">
@@ -186,6 +191,42 @@ watch(
           </n-card>
         </n-grid-item>
 
+        <!-- 24h tokens -->
+        <n-grid-item span="1">
+          <n-card :bordered="false" class="stat-card" style="animation-delay: 0.13s">
+            <div class="stat-header">
+              <div class="stat-icon token-icon">∑</div>
+            </div>
+
+            <div class="stat-content">
+              <div class="stat-value">
+                {{ stats?.token_usage ? formatTokenCount(stats.token_usage.total_tokens) : "--" }}
+              </div>
+              <div class="stat-title">{{ t("dashboard.tokens24h") }}</div>
+              <div class="stat-detail">
+                {{ t("dashboard.inputTokens") }}:
+                {{ stats?.token_usage ? formatTokenCount(stats.token_usage.input_tokens) : "--" }}
+                ·
+                {{ t("dashboard.outputTokens") }}:
+                {{ stats?.token_usage ? formatTokenCount(stats.token_usage.output_tokens) : "--" }}
+              </div>
+              <div v-if="stats?.token_usage?.estimated_tokens" class="stat-detail">
+                {{ t("dashboard.includesEstimated") }}:
+                {{ formatTokenCount(stats.token_usage.estimated_tokens) }}
+              </div>
+            </div>
+
+            <div class="stat-bar">
+              <div
+                class="stat-bar-fill token-bar"
+                :style="{
+                  width: `${(animatedValues.token_usage ?? 0) * 100}%`,
+                }"
+              />
+            </div>
+          </n-card>
+        </n-grid-item>
+
         <!-- 24h error rate -->
         <n-grid-item span="1">
           <n-card :bordered="false" class="stat-card" style="animation-delay: 0.15s">
@@ -236,8 +277,15 @@ watch(
   border: 1px solid var(--border-color-light);
   position: relative;
   overflow: hidden;
+  height: 100%;
   animation: slideInUp 0.2s ease-out both;
   transition: all 0.2s ease;
+}
+
+.stat-card :deep(.n-card__content) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .stat-card:hover {
@@ -276,6 +324,12 @@ watch(
   background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
 }
 
+.token-icon {
+  background: linear-gradient(135deg, #14b8a6 0%, #0f766e 100%);
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
 .error-icon {
   background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
 }
@@ -294,6 +348,7 @@ watch(
 }
 
 .stat-content {
+  flex: 1;
   margin-bottom: 16px;
 }
 
@@ -309,6 +364,14 @@ watch(
   font-size: 0.95rem;
   color: var(--text-secondary);
   font-weight: 500;
+}
+
+.stat-detail {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .stat-bar {
@@ -337,6 +400,10 @@ watch(
 
 .request-bar {
   background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+}
+
+.token-bar {
+  background: linear-gradient(90deg, #14b8a6 0%, #0f766e 100%);
 }
 
 .error-bar {

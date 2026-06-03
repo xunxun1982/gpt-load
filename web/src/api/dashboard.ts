@@ -1,4 +1,9 @@
-import type { ChartData, DashboardStatsResponse, GroupListItem } from "@/types/models";
+import type {
+  ChartData,
+  DashboardStatsResponse,
+  DashboardTokenUsageResponse,
+  GroupListItem,
+} from "@/types/models";
 import http from "@/utils/http";
 
 export type DashboardChartRange =
@@ -26,6 +31,22 @@ export const getDashboardChart = (groupId?: number, range?: DashboardChartRange)
     params: {
       ...(groupId !== undefined ? { groupId } : {}),
       ...(range ? { range } : {}),
+    },
+  });
+};
+
+export const getDashboardTokenUsage = (
+  groupId?: number,
+  range?: DashboardChartRange,
+  limit?: number,
+  model?: string
+) => {
+  return http.get<DashboardTokenUsageResponse>("/dashboard/token-usage", {
+    params: {
+      ...(groupId !== undefined ? { groupId } : {}),
+      ...(range ? { range } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      ...(model ? { model } : {}),
     },
   });
 };

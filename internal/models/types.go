@@ -39,6 +39,7 @@ type GroupConfig struct {
 	MaxRetries                   *int    `json:"max_retries,omitempty"`
 	SubMaxRetries                *int    `json:"sub_max_retries,omitempty"`
 	BlacklistThreshold           *int    `json:"blacklist_threshold,omitempty"`
+	HealthResetIntervalSeconds   *int64  `json:"health_reset_interval_seconds,omitempty"`
 	FailoverStatusCodes          *string `json:"failover_status_codes,omitempty"`
 	KeyValidationIntervalMinutes *int    `json:"key_validation_interval_minutes,omitempty"`
 	KeyValidationConcurrency     *int    `json:"key_validation_concurrency,omitempty"`
@@ -47,6 +48,19 @@ type GroupConfig struct {
 	// ForceFunctionCall enables experimental function call middleware for this group.
 	// This flag is stored in the group-level config JSON and is optional.
 	ForceFunctionCall *bool `json:"force_function_call,omitempty"`
+	// ValidationStream controls whether key validation sends streaming test requests.
+	// Default is false to preserve the lowest-cost validation path.
+	ValidationStream *bool `json:"validation_stream,omitempty"`
+	// ValidationPromptMode controls the validation prompt source.
+	// Values: "default" (fixed lightweight prompt), "random_queue" (rotating short prompts).
+	ValidationPromptMode *string `json:"validation_prompt_mode,omitempty"`
+	// ForceStream and ForceNonStream override the outbound request stream flag.
+	// They are mutually exclusive and apply only to JSON request bodies with a stream field.
+	ForceStream    *bool `json:"force_stream,omitempty"`
+	ForceNonStream *bool `json:"force_non_stream,omitempty"`
+	// ResponsesIncludeEncryptedReasoning adds include=["reasoning.encrypted_content"]
+	// to OpenAI Responses API requests when enabled.
+	ResponsesIncludeEncryptedReasoning *bool `json:"responses_include_encrypted_reasoning,omitempty"`
 	// CCSupport enables Claude Code compatibility mode for this group.
 	// When enabled, clients can connect via /claude endpoint and requests will be
 	// converted from Claude format to OpenAI format before forwarding to upstream.
@@ -93,12 +107,14 @@ type PathRedirectRule struct {
 
 // GroupSubGroup is the association table for aggregate groups and sub-groups.
 type GroupSubGroup struct {
-	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	GroupID    uint      `gorm:"not null;uniqueIndex:idx_group_sub" json:"group_id"`
-	SubGroupID uint      `gorm:"not null;uniqueIndex:idx_group_sub" json:"sub_group_id"`
-	Weight     int       `gorm:"default:0" json:"weight"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID                         uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+	GroupID                    uint       `gorm:"not null;uniqueIndex:idx_group_sub" json:"group_id"`
+	SubGroupID                 uint       `gorm:"not null;uniqueIndex:idx_group_sub" json:"sub_group_id"`
+	Weight                     int        `gorm:"default:0" json:"weight"`
+	HealthResetIntervalSeconds int64      `gorm:"not null;default:0;index:idx_group_sub_health_reset" json:"health_reset_interval_seconds"`
+	LastHealthResetAt          *time.Time `json:"last_health_reset_at,omitempty"`
+	CreatedAt                  time.Time  `json:"created_at"`
+	UpdatedAt                  time.Time  `json:"updated_at"`
 
 	// Lightweight association - only store necessary info for performance
 	SubGroupName    string `gorm:"-" json:"sub_group_name,omitempty"`
@@ -107,12 +123,14 @@ type GroupSubGroup struct {
 
 // SubGroupInfo represents sub-group information for API responses.
 type SubGroupInfo struct {
-	Group         Group              `json:"group"`
-	Weight        int                `json:"weight"`
-	TotalKeys     int64              `json:"total_keys"`
-	ActiveKeys    int64              `json:"active_keys"`
-	InvalidKeys   int64              `json:"invalid_keys"`
-	DynamicWeight *DynamicWeightInfo `json:"dynamic_weight,omitempty"` // Dynamic weight info (nil if not enabled)
+	Group                      Group              `json:"group"`
+	Weight                     int                `json:"weight"`
+	HealthResetIntervalSeconds int64              `json:"health_reset_interval_seconds"`
+	LastHealthResetAt          *time.Time         `json:"last_health_reset_at,omitempty"`
+	TotalKeys                  int64              `json:"total_keys"`
+	ActiveKeys                 int64              `json:"active_keys"`
+	InvalidKeys                int64              `json:"invalid_keys"`
+	DynamicWeight              *DynamicWeightInfo `json:"dynamic_weight,omitempty"` // Dynamic weight info (nil if not enabled)
 }
 
 // DynamicWeightInfo represents dynamic weight information for display.
@@ -210,30 +228,44 @@ const (
 	RequestTypeFinal = "final"
 )
 
+// Token usage source constants.
+const (
+	TokenUsageSourceUnknown   = "" // unknown or not set
+	TokenUsageSourceUpstream  = "upstream"
+	TokenUsageSourceEstimated = "estimated"
+)
+
 // RequestLog corresponds to the request_logs table.
 type RequestLog struct {
-	ID              string    `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Timestamp       time.Time `gorm:"not null;index:idx_request_logs_group_timestamp;index:idx_request_logs_success_timestamp" json:"timestamp"`
-	GroupID         uint      `gorm:"not null;index:idx_request_logs_group_timestamp" json:"group_id"`
-	GroupName       string    `gorm:"type:varchar(255);index" json:"group_name"`
-	ParentGroupID   uint      `gorm:"index" json:"parent_group_id"`
-	ParentGroupName string    `gorm:"type:varchar(255);index" json:"parent_group_name"`
-	KeyValue        string    `gorm:"type:text" json:"key_value"`
-	KeyHash         string    `gorm:"type:varchar(128);index" json:"key_hash"`
-	Model           string    `gorm:"type:varchar(255);index" json:"model"`
-	MappedModel     string    `gorm:"type:varchar(255)" json:"mapped_model"` // Model name after mapping/redirect
-	IsSuccess       bool      `gorm:"not null;index:idx_request_logs_success_timestamp" json:"is_success"`
-	SourceIP        string    `gorm:"type:varchar(64)" json:"source_ip"`
-	StatusCode      int       `gorm:"not null" json:"status_code"`
-	RequestPath     string    `gorm:"type:varchar(500)" json:"request_path"`
-	Duration        int64     `gorm:"not null" json:"duration_ms"`
-	ErrorMessage    string    `gorm:"type:text" json:"error_message"`
-	UserAgent       string    `gorm:"type:varchar(512)" json:"user_agent"`
-	RequestType     string    `gorm:"type:varchar(20);not null;default:'final';index" json:"request_type"`
-	UpstreamAddr    string    `gorm:"type:varchar(500)" json:"upstream_addr"`
-	IsStream        bool      `gorm:"not null" json:"is_stream"`
-	RequestBody     string    `gorm:"type:text" json:"request_body"`
-	ResponseBody    string    `gorm:"type:text" json:"response_body"` // Response body for debugging (only stored when logging is enabled)
+	ID               string    `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Timestamp        time.Time `gorm:"not null;index:idx_request_logs_group_timestamp;index:idx_request_logs_success_timestamp" json:"timestamp"`
+	GroupID          uint      `gorm:"not null;index:idx_request_logs_group_timestamp" json:"group_id"`
+	GroupName        string    `gorm:"type:varchar(255);index" json:"group_name"`
+	ParentGroupID    uint      `gorm:"index" json:"parent_group_id"`
+	ParentGroupName  string    `gorm:"type:varchar(255);index" json:"parent_group_name"`
+	KeyValue         string    `gorm:"type:text" json:"key_value"`
+	KeyHash          string    `gorm:"type:varchar(128);index" json:"key_hash"`
+	Model            string    `gorm:"type:varchar(255);index" json:"model"`
+	MappedModel      string    `gorm:"type:varchar(255)" json:"mapped_model"` // Model name after mapping/redirect
+	IsSuccess        bool      `gorm:"not null;index:idx_request_logs_success_timestamp" json:"is_success"`
+	SourceIP         string    `gorm:"type:varchar(64)" json:"source_ip"`
+	StatusCode       int       `gorm:"not null" json:"status_code"`
+	RequestPath      string    `gorm:"type:varchar(500)" json:"request_path"`
+	Duration         int64     `gorm:"not null" json:"duration_ms"`
+	ErrorMessage     string    `gorm:"type:text" json:"error_message"`
+	UserAgent        string    `gorm:"type:varchar(512)" json:"user_agent"`
+	RequestType      string    `gorm:"type:varchar(20);not null;default:'final';index" json:"request_type"`
+	UpstreamAddr     string    `gorm:"type:varchar(500)" json:"upstream_addr"`
+	IsStream         bool      `gorm:"not null" json:"is_stream"`
+	RequestBody      string    `gorm:"type:text" json:"request_body"`
+	ResponseBody     string    `gorm:"type:text" json:"response_body"` // Response body for debugging (only stored when logging is enabled)
+	InputTokens      int64     `gorm:"not null;default:0;index" json:"input_tokens"`
+	OutputTokens     int64     `gorm:"not null;default:0;index" json:"output_tokens"`
+	TotalTokens      int64     `gorm:"not null;default:0;index" json:"total_tokens"`
+	CacheReadTokens  int64     `gorm:"not null;default:0" json:"cache_read_tokens"`
+	CacheWriteTokens int64     `gorm:"not null;default:0" json:"cache_write_tokens"`
+	ThinkingTokens   int64     `gorm:"not null;default:0" json:"thinking_tokens"`
+	TokenUsageSource string    `gorm:"type:varchar(20);not null;default:''" json:"token_usage_source"` // zero value is TokenUsageSourceUnknown
 }
 
 // StatCard represents a single statistics card data for the dashboard.
@@ -258,8 +290,42 @@ type DashboardStatsResponse struct {
 	KeyCount         StatCard          `json:"key_count"`
 	RPM              StatCard          `json:"rpm"`
 	RequestCount     StatCard          `json:"request_count"`
+	TokenUsage       TokenUsageCard    `json:"token_usage"`
 	ErrorRate        StatCard          `json:"error_rate"`
 	SecurityWarnings []SecurityWarning `json:"security_warnings"`
+}
+
+// TokenUsageCard represents aggregated token statistics for the dashboard.
+type TokenUsageCard struct {
+	InputTokens           int64 `json:"input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	TotalTokens           int64 `json:"total_tokens"`
+	CacheReadTokens       int64 `json:"cache_read_tokens"`
+	CacheWriteTokens      int64 `json:"cache_write_tokens"`
+	ThinkingTokens        int64 `json:"thinking_tokens"`
+	EstimatedTokens       int64 `json:"estimated_tokens"`
+	EstimatedRequestCount int64 `json:"estimated_request_count"`
+}
+
+// ModelTokenUsageItem represents token usage aggregated by model.
+type ModelTokenUsageItem struct {
+	Model                 string `json:"model"`
+	RequestCount          int64  `json:"request_count"`
+	InputTokens           int64  `json:"input_tokens"`
+	OutputTokens          int64  `json:"output_tokens"`
+	TotalTokens           int64  `json:"total_tokens"`
+	CacheReadTokens       int64  `json:"cache_read_tokens"`
+	CacheWriteTokens      int64  `json:"cache_write_tokens"`
+	ThinkingTokens        int64  `json:"thinking_tokens"`
+	EstimatedTokens       int64  `json:"estimated_tokens"`
+	EstimatedRequestCount int64  `json:"estimated_request_count"`
+}
+
+// DashboardTokenUsageResponse represents dashboard token usage details.
+type DashboardTokenUsageResponse struct {
+	Summary TokenUsageCard        `json:"summary"`
+	Models  []ModelTokenUsageItem `json:"models"`
+	Chart   ChartData             `json:"chart"`
 }
 
 // ChartDataset represents a dataset for charts.
@@ -284,6 +350,26 @@ type GroupHourlyStat struct {
 	FailureCount int64     `gorm:"not null;default:0" json:"failure_count"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// ModelTokenHourlyStat stores hourly token usage by actual upstream model.
+type ModelTokenHourlyStat struct {
+	ID                    uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Time                  time.Time `gorm:"not null;index:idx_model_token_hourly_time;uniqueIndex:idx_model_token_hour_group_parent_model,priority:1" json:"time"`
+	GroupID               uint      `gorm:"not null;index:idx_model_token_hourly_group;uniqueIndex:idx_model_token_hour_group_parent_model,priority:2" json:"group_id"`
+	ParentGroupID         uint      `gorm:"not null;default:0;index:idx_model_token_hourly_parent;uniqueIndex:idx_model_token_hour_group_parent_model,priority:3" json:"parent_group_id"`
+	Model                 string    `gorm:"type:varchar(255);not null;index:idx_model_token_hourly_model;uniqueIndex:idx_model_token_hour_group_parent_model,priority:4" json:"model"`
+	RequestCount          int64     `gorm:"not null;default:0" json:"request_count"`
+	InputTokens           int64     `gorm:"not null;default:0" json:"input_tokens"`
+	OutputTokens          int64     `gorm:"not null;default:0" json:"output_tokens"`
+	TotalTokens           int64     `gorm:"not null;default:0" json:"total_tokens"`
+	CacheReadTokens       int64     `gorm:"not null;default:0" json:"cache_read_tokens"`
+	CacheWriteTokens      int64     `gorm:"not null;default:0" json:"cache_write_tokens"`
+	ThinkingTokens        int64     `gorm:"not null;default:0" json:"thinking_tokens"`
+	EstimatedTokens       int64     `gorm:"not null;default:0" json:"estimated_tokens"`
+	EstimatedRequestCount int64     `gorm:"not null;default:0" json:"estimated_request_count"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 // GetMaxRequestSizeKB returns the max_request_size_kb precondition value for the group.

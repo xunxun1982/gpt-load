@@ -107,6 +107,7 @@ const showChildGroupModal = ref(false);
 const selectedParentGroup = ref<Group | null>(null);
 const childGroupsMap = ref<Map<number, ChildGroupInfo[]>>(new Map());
 const collapsedChildGroups = ref<Set<number>>(new Set());
+let childGroupsRequestSeq = 0;
 const ICON_CHILD = "🌿";
 const localGroupOrder = ref<Map<string, number[]>>(new Map());
 const draggingGroupId = ref<number | null>(null);
@@ -403,9 +404,7 @@ function getChildGroups(groupId: number | undefined): ChildGroupInfo[] {
   if (!groupId) {
     return [];
   }
-  const children = childGroupsMap.value.get(groupId) || [];
-  // Sort by name with natural number sorting for consistent display (child1, child2, child10)
-  return [...children].sort((a, b) => naturalCompare(a.name ?? "", b.name ?? ""));
+  return childGroupsMap.value.get(groupId) || [];
 }
 
 function isChildGroupsCollapsed(groupId: number | undefined): boolean {
@@ -456,17 +455,27 @@ function handleChildGroupCreated(group: Group) {
 }
 
 async function loadAllChildGroups() {
+  const requestSeq = ++childGroupsRequestSeq;
   // Use batch API to load all child groups in one request
   try {
     const allChildGroups = await keysApi.getAllChildGroups();
-    // Convert object keys from string to number and update the map
-    childGroupsMap.value.clear();
+    if (requestSeq !== childGroupsRequestSeq) {
+      return;
+    }
+
+    const nextChildGroupsMap = new Map<number, ChildGroupInfo[]>();
     for (const [parentIdStr, children] of Object.entries(allChildGroups)) {
       const parentId = parseInt(parentIdStr, 10);
       if (!isNaN(parentId)) {
-        childGroupsMap.value.set(parentId, children);
+        nextChildGroupsMap.set(
+          parentId,
+          [...children].sort((a, b) =>
+            naturalCompare(a.display_name || a.name || "", b.display_name || b.name || "")
+          )
+        );
       }
     }
+    childGroupsMap.value = nextChildGroupsMap;
   } catch (error) {
     console.error("Failed to load all child groups:", error);
   }
@@ -477,12 +486,18 @@ function canHaveChildGroups(group: Group): boolean {
   return group.group_type !== GROUP_TYPE_AGGREGATE && !group.parent_group_id;
 }
 
-// Load child groups when groups change
-// Use a computed key based on group IDs to detect actual data changes,
-// not just reference changes. This ensures childGroupsMap is refreshed
-// when groups are reloaded from backend (e.g., after editing a child group).
+// Load child groups when structural group fields change, not just object references.
 const groupsKey = computed(() => {
-  return props.groups.map(g => `${g.id}:${g.display_name}:${g.name}`).join(",");
+  return props.groups
+    .map(
+      g =>
+        `${g.id}:${g.display_name}:${g.name}:${g.group_type}:${g.parent_group_id ?? ""}:${g.enabled}`
+    )
+    .join(",");
+});
+
+const hasParentGroups = computed(() => {
+  return props.groups.some(g => g.group_type !== GROUP_TYPE_AGGREGATE && !g.parent_group_id);
 });
 
 const groupSortKey = computed(() => {
@@ -492,6 +507,11 @@ const groupSortKey = computed(() => {
 watch(
   groupsKey,
   () => {
+    if (!hasParentGroups.value) {
+      childGroupsRequestSeq++;
+      childGroupsMap.value = new Map();
+      return;
+    }
     loadAllChildGroups();
   },
   { immediate: true }
@@ -2144,6 +2164,9 @@ async function handleFileChange(event: Event) {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Defer off-screen group painting when large sidebars are open. */
+  content-visibility: auto;
+  contain-intrinsic-size: 64px;
 }
 
 .child-groups-container {

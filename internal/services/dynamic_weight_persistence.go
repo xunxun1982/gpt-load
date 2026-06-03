@@ -12,6 +12,7 @@ import (
 	"gpt-load/internal/store"
 
 	"github.com/sirupsen/logrus"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -117,6 +118,12 @@ func (p *DynamicWeightPersistence) runLoop() {
 // Rollover runs daily, cleanup runs weekly.
 func (p *DynamicWeightPersistence) checkAndRunMaintenance() {
 	now := time.Now()
+
+	if resetCount, err := p.ResetDueSubGroupHealth(now); err != nil {
+		logrus.WithError(err).Warn("Failed to reset scheduled sub-group health metrics")
+	} else if resetCount > 0 {
+		logrus.WithField("count", resetCount).Info("Scheduled sub-group health metrics reset")
+	}
 
 	// Run rollover daily
 	if now.Sub(p.lastRollover) >= DefaultRolloverInterval {
@@ -560,6 +567,186 @@ func (p *DynamicWeightPersistence) DeleteSubGroupMetrics(aggregateGroupID, subGr
 		Where("metric_type = ? AND group_id = ? AND sub_group_id = ? AND deleted_at IS NULL",
 			models.MetricTypeSubGroup, aggregateGroupID, subGroupID).
 		Update("deleted_at", now).Error
+}
+
+// ResetSubGroupMetrics removes live and persisted metrics for a sub-group relation.
+func (p *DynamicWeightPersistence) ResetSubGroupMetrics(aggregateGroupID, subGroupID uint) error {
+	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
+	p.clearDirtyKey(key)
+	if p.manager != nil {
+		if err := p.manager.ResetSubGroupMetrics(aggregateGroupID, subGroupID); err != nil {
+			return err
+		}
+	}
+	return p.db.Where("metric_type = ? AND group_id = ? AND sub_group_id = ?",
+		models.MetricTypeSubGroup, aggregateGroupID, subGroupID).
+		Delete(&models.DynamicWeightMetric{}).Error
+}
+
+func (p *DynamicWeightPersistence) clearDirtyKey(key string) {
+	p.dirtyMu.Lock()
+	delete(p.dirtyKeys, key)
+	p.dirtyMu.Unlock()
+}
+
+type aggregateHealthResetConfig struct {
+	IntervalSeconds int64
+	UpdatedAt       time.Time
+}
+
+// ResetDueSubGroupHealth resets sub-group health metrics whose schedule has reached an aligned slot.
+func (p *DynamicWeightPersistence) ResetDueSubGroupHealth(now time.Time) (int, error) {
+	defaultIntervals, err := p.loadAggregateHealthResetIntervals()
+	if err != nil {
+		return 0, err
+	}
+
+	var relations []models.GroupSubGroup
+	query := p.db.Model(&models.GroupSubGroup{})
+	if len(defaultIntervals) > 0 {
+		groupIDs := make([]uint, 0, len(defaultIntervals))
+		for groupID := range defaultIntervals {
+			groupIDs = append(groupIDs, groupID)
+		}
+		query = query.Where("group_id IN ? OR health_reset_interval_seconds > ?", groupIDs, 0)
+	} else {
+		query = query.Where("health_reset_interval_seconds > ?", 0)
+	}
+	if err := query.Find(&relations).Error; err != nil {
+		return 0, err
+	}
+
+	resetCount := 0
+	for _, relation := range relations {
+		intervalSeconds := relation.HealthResetIntervalSeconds
+		baseline := relation.UpdatedAt
+		if intervalSeconds <= 0 {
+			defaultConfig, ok := defaultIntervals[relation.GroupID]
+			if !ok {
+				continue
+			}
+			intervalSeconds = defaultConfig.IntervalSeconds
+			baseline = laterTime(baseline, defaultConfig.UpdatedAt)
+		}
+		slotStart, due := subGroupHealthResetSlot(now, intervalSeconds, relation.LastHealthResetAt, baseline)
+		if !due {
+			continue
+		}
+		result := p.db.Model(&models.GroupSubGroup{}).
+			Where("id = ? AND (last_health_reset_at IS NULL OR last_health_reset_at < ?)", relation.ID, slotStart).
+			Update("last_health_reset_at", slotStart)
+		if result.Error != nil {
+			return resetCount, result.Error
+		}
+		if result.RowsAffected != 1 {
+			continue
+		}
+		if err := p.ResetSubGroupMetrics(relation.GroupID, relation.SubGroupID); err != nil {
+			return resetCount, err
+		}
+		resetCount++
+	}
+	return resetCount, nil
+}
+
+func (p *DynamicWeightPersistence) loadAggregateHealthResetIntervals() (map[uint]aggregateHealthResetConfig, error) {
+	type aggregateConfigRow struct {
+		ID        uint
+		Config    datatypes.JSONMap
+		UpdatedAt time.Time
+	}
+
+	result := make(map[uint]aggregateHealthResetConfig)
+	var rows []aggregateConfigRow
+	err := p.db.Model(&models.Group{}).
+		Select("id", "config", "updated_at").
+		Where("group_type = ?", "aggregate").
+		FindInBatches(&rows, 500, func(tx *gorm.DB, batch int) error {
+			for _, row := range rows {
+				intervalSeconds := healthResetIntervalFromConfig(row.Config)
+				if intervalSeconds > 0 {
+					result[row.ID] = aggregateHealthResetConfig{
+						IntervalSeconds: intervalSeconds,
+						UpdatedAt:       row.UpdatedAt,
+					}
+				}
+			}
+			return nil
+		}).Error
+	return result, err
+}
+
+func healthResetIntervalFromConfig(config map[string]any) int64 {
+	if config == nil {
+		return 0
+	}
+	raw, ok := config["health_reset_interval_seconds"]
+	if !ok || raw == nil {
+		return 0
+	}
+
+	switch value := raw.(type) {
+	case float64:
+		return int64(value)
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	case json.Number:
+		parsed, err := value.Int64()
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func subGroupHealthResetSlot(now time.Time, intervalSeconds int64, lastResetAt *time.Time, baseline time.Time) (time.Time, bool) {
+	if intervalSeconds < minHealthResetIntervalSeconds || intervalSeconds > maxHealthResetIntervalSeconds {
+		return time.Time{}, false
+	}
+	slotStart := alignedHealthResetSlotStart(now, intervalSeconds)
+	if slotStart.IsZero() || slotStart.After(now) || !baseline.Before(slotStart) {
+		return slotStart, false
+	}
+	if lastResetAt != nil && !lastResetAt.Before(slotStart) {
+		return slotStart, false
+	}
+	return slotStart, true
+}
+
+func alignedHealthResetSlotStart(now time.Time, intervalSeconds int64) time.Time {
+	if intervalSeconds <= 0 {
+		return time.Time{}
+	}
+	loc := now.Location()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	if intervalSeconds%int64((24*time.Hour)/time.Second) == 0 {
+		anchor := time.Date(1970, 1, 1, 0, 0, 0, 0, loc)
+		daysInterval := int(intervalSeconds / int64((24*time.Hour)/time.Second))
+		if daysInterval <= 0 {
+			return time.Time{}
+		}
+		anchorUTC := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 0, 0, 0, 0, time.UTC)
+		dayUTC := time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), 0, 0, 0, 0, time.UTC)
+		daysSinceAnchor := int(dayUTC.Sub(anchorUTC) / (24 * time.Hour))
+		return anchor.AddDate(0, 0, (daysSinceAnchor/daysInterval)*daysInterval)
+	}
+
+	interval := time.Duration(intervalSeconds) * time.Second
+	elapsed := now.Sub(dayStart)
+	if elapsed < 0 {
+		return time.Time{}
+	}
+	slots := int64(elapsed / interval)
+	return dayStart.Add(time.Duration(slots) * interval)
+}
+
+func laterTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // DeleteModelRedirectMetrics soft-deletes model redirect metrics from database.

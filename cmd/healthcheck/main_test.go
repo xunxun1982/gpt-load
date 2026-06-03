@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"testing"
 )
 
@@ -56,5 +57,44 @@ func TestBuildAddressUsesIPv4(t *testing.T) {
 	// Verify it doesn't contain "localhost"
 	if len(address) >= 9 && address[:9] == "localhost" {
 		t.Error("buildAddress must not use 'localhost' for scratch image compatibility")
+	}
+}
+
+func BenchmarkBuildAddress(b *testing.B) {
+	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
+	for b.Loop() {
+		_ = buildAddress("3001")
+	}
+}
+
+func BenchmarkHealthcheckTCPDialLocal(b *testing.B) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	b.Cleanup(func() {
+		_ = listener.Close()
+		<-done
+	})
+
+	address := listener.Addr().String()
+	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
+	for b.Loop() {
+		conn, err := net.DialTimeout("tcp", address, dialTimeout)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = conn.Close()
 	}
 }

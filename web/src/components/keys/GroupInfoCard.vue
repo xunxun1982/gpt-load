@@ -7,9 +7,14 @@ import type {
   ParentAggregateGroup,
   SubGroupInfo,
 } from "@/types/models";
-import { appState } from "@/utils/app-state";
+import { appState, showProgressBar } from "@/utils/app-state";
 import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
-import { formatPercentage, getGroupDisplayName, maskProxyKeys } from "@/utils/display";
+import {
+  formatDisplayName,
+  formatPercentage,
+  getGroupDisplayName,
+  maskProxyKeys,
+} from "@/utils/display";
 import { CopyOutline, EyeOffOutline, EyeOutline, Pencil, Trash } from "@vicons/ionicons5";
 import {
   NButton,
@@ -32,7 +37,7 @@ import {
   NTooltip,
   useDialog,
 } from "naive-ui";
-import { computed, h, onMounted, ref, watch } from "vue";
+import { computed, h, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import AggregateGroupModal from "./AggregateGroupModal.vue";
 import GroupCopyModal from "./GroupCopyModal.vue";
@@ -69,6 +74,7 @@ const delLoading = ref(false);
 const confirmInput = ref("");
 const expandedName = ref<string[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
+let configOptionsRequest: Promise<void> | null = null;
 const showProxyKeys = ref(false);
 const parentAggregateGroups = ref<ParentAggregateGroup[]>([]);
 const parentGroup = ref<Group | null>(null);
@@ -77,6 +83,12 @@ const groupEnabled = computed({
   set: (_value: boolean) => {
     // Handled by handleToggleEnabled
   },
+});
+const groupTitle = computed(() => {
+  if (!props.group) {
+    return t("keys.selectGroup");
+  }
+  return props.group.display_name || formatDisplayName(props.group.name);
 });
 
 const proxyKeysDisplay = computed(() => {
@@ -168,18 +180,12 @@ async function copyProxyKeys() {
   });
 }
 
-onMounted(() => {
-  loadStats();
-  loadConfigOptions();
-  loadParentAggregateGroups();
-  loadParentGroup();
-});
-
 watch(
   () => props.group,
   () => {
     resetPage();
     loadStats();
+    ensureConfigOptionsForGroup();
     loadParentAggregateGroups();
     loadParentGroup();
   },
@@ -230,12 +236,34 @@ async function loadStats() {
 }
 
 async function loadConfigOptions() {
-  try {
-    const options = await keysApi.getGroupConfigOptions();
-    configOptions.value = options || [];
-  } catch (error) {
-    console.error("Failed to load config options:", error);
+  if (configOptionsRequest) {
+    return configOptionsRequest;
   }
+  configOptionsRequest = keysApi
+    .getGroupConfigOptions()
+    .then(options => {
+      configOptions.value = options || [];
+    })
+    .catch(error => {
+      console.error("Failed to load config options:", error);
+    })
+    .finally(() => {
+      configOptionsRequest = null;
+    });
+  return configOptionsRequest;
+}
+
+function groupNeedsConfigOptions(group: Group | null) {
+  return (
+    !!group?.config && typeof group.config === "object" && Object.keys(group.config).length > 0
+  );
+}
+
+function ensureConfigOptionsForGroup() {
+  if (!groupNeedsConfigOptions(props.group) || configOptions.value.length > 0) {
+    return;
+  }
+  void loadConfigOptions();
 }
 
 async function loadParentAggregateGroups() {
@@ -398,9 +426,10 @@ async function handleDelete() {
               // Check if this is an async deletion (GROUP_DELETE_ASYNC code)
               const isAsyncDeletion = response?.code === "GROUP_DELETE_ASYNC";
 
-              // Trigger task polling after the request is accepted
-              localStorage.removeItem("last_closed_task");
-              appState.taskPollingTrigger++;
+              if (isAsyncDeletion) {
+                localStorage.removeItem("last_closed_task");
+                showProgressBar(props.group.name);
+              }
 
               // If deleting a child group, pass parent group ID so parent component can select it
               emit(
@@ -509,7 +538,7 @@ function handleNavigateToSite(siteId: number) {
         <div class="card-header">
           <div class="header-left">
             <h3 class="group-title">
-              {{ group ? getGroupDisplayName(group) : t("keys.selectGroup") }}
+              {{ groupTitle }}
               <n-tooltip trigger="hover" v-if="group && group.endpoint">
                 <template #trigger>
                   <code class="group-url" @click="copyUrl(group.endpoint)">

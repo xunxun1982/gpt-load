@@ -10,6 +10,19 @@ import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
 
+const props = withDefaults(
+  defineProps<{
+    range?: DashboardChartRange;
+  }>(),
+  {
+    range: "today",
+  }
+);
+
+const emit = defineEmits<{
+  "update:range": [value: DashboardChartRange];
+}>();
+
 // Chart data and reactive state
 const chartData = ref<ChartData | null>(null);
 const ALL_GROUPS_VALUE = -1; // Safe sentinel: Backend IDs are uint (always >= 0)
@@ -33,6 +46,7 @@ const tooltipData = ref<{
 } | null>(null);
 const tooltipPosition = ref({ x: 0, y: 0 });
 const chartSvg = ref<SVGElement>();
+let chartRequestSeq = 0;
 
 // Chart dimensions and padding
 const chartWidth = 800;
@@ -69,6 +83,16 @@ const rangeOptions = computed<SelectOption[]>(() =>
     value: range.value,
     label: t(range.labelKey),
   }))
+);
+
+watch(
+  () => props.range,
+  value => {
+    if (selectedRange.value !== value) {
+      selectedRange.value = value;
+    }
+  },
+  { immediate: true }
 );
 
 // Derived drawable area size
@@ -456,41 +480,58 @@ const fetchGroups = async () => {
 
 // Fetch time-series chart data
 const fetchChartData = async () => {
+  const requestSeq = ++chartRequestSeq;
   try {
     loading.value = true;
     errorMessage.value = null;
     const groupId =
       selectedGroup.value === ALL_GROUPS_VALUE ? undefined : (selectedGroup.value ?? undefined);
     const response = await getDashboardChart(groupId, selectedRange.value);
+    if (requestSeq !== chartRequestSeq) {
+      return;
+    }
     chartData.value = response.data;
 
     // Start animation after a short delay to ensure DOM is updated
     setTimeout(() => {
-      startAnimation();
+      if (requestSeq === chartRequestSeq) {
+        startAnimation();
+      }
     }, 100);
   } catch (error) {
+    if (requestSeq !== chartRequestSeq) {
+      return;
+    }
     console.error("Failed to fetch chart data:", error);
     errorMessage.value = t("charts.loadError");
     chartData.value = null;
   } finally {
-    loading.value = false;
+    if (requestSeq === chartRequestSeq) {
+      loading.value = false;
+    }
   }
 };
 
 // Refresh chart when selected group or time range changes
 // AI suggestion: Setting default value when selectedGroup is cleared triggers watch again, suggest optimization
 // Not adopted: 1) return exits early avoiding immediate fetchChartData call 2) Next trigger executes normally 3) Ensures state consistency
-watch([selectedGroup, selectedRange], () => {
-  if (selectedGroup.value === null) {
-    selectedGroup.value = ALL_GROUPS_VALUE;
-    return;
-  }
-  fetchChartData();
-});
+watch(
+  [selectedGroup, selectedRange],
+  () => {
+    if (selectedGroup.value === null) {
+      selectedGroup.value = ALL_GROUPS_VALUE;
+      return;
+    }
+    if (selectedRange.value !== props.range) {
+      emit("update:range", selectedRange.value);
+    }
+    fetchChartData();
+  },
+  { immediate: true }
+);
 
 onMounted(() => {
   fetchGroups();
-  fetchChartData();
 });
 
 onUnmounted(() => {

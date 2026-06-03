@@ -2558,6 +2558,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		// Per AI review: removed "|| err != nil" since we're already inside err != nil block,
 		// making that condition always true and the 2xx fallback unreachable
 		if resp.StatusCode >= 400 {
+			setTokenUsageFromBody(c, bodyBytes)
 			// Extract error message from response body
 			errorMessage := strings.TrimSpace(string(bodyBytes))
 
@@ -2584,12 +2585,15 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			c.Header("Content-Encoding", origEncoding)
 		}
 
+		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
+		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 
 	// Check for OpenAI error
 	if openaiResp.Error != nil {
+		setTokenUsageFromBody(c, bodyBytes)
 		logrus.WithFields(logrus.Fields{
 			"error_type":    openaiResp.Error.Type,
 			"error_message": openaiResp.Error.Message,
@@ -2607,6 +2611,14 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		c.JSON(resp.StatusCode, claudeErr)
 		return
 	}
+	if len(openaiResp.Choices) == 0 && openaiResp.Usage == nil {
+		clearUpstreamEncodingHeaders(c)
+		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
+		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
+		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		return
+	}
+	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
 
 	// When force_function_call is enabled in CC mode, extract original content
 	// BEFORE conversion for function call parsing. This is necessary because
@@ -3370,6 +3382,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	var currentToolCallName string
 	var currentToolCallArgs strings.Builder
 	var accumulatedContent strings.Builder
+	var outputEstimate estimatedTokenCapture
 	contentBufFullWarned := false
 	cleanupMode := cleanupModeArtifactsOnly
 	if isFunctionCallEnabled(c) {
@@ -3539,6 +3552,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 		// Now we know args are valid; emit complete tool_use block (start -> delta -> stop)
 		hasValidToolCalls = true
+		outputEstimate.addString(argsStr)
 
 		// Send content_block_start if not already sent
 		if !toolBlockStartSent {
@@ -3715,7 +3729,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	})
 	defer aggregator.Close()
 
-	finalize := func(stopReason string, usage *OpenAIUsage) {
+	finalize := func(stopReason string, usage *OpenAIUsage, success bool) {
 		initialStopReason := stopReason
 		logrus.WithFields(logrus.Fields{
 			"msg_id":                  msgID,
@@ -3796,6 +3810,11 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if usage != nil {
 			usagePayload.InputTokens = usage.PromptTokens
 			usagePayload.OutputTokens = usage.CompletionTokens
+			setTokenUsageCounts(c, int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens))
+		} else if estimatedOutputTokens := outputEstimate.Tokens(); success && estimatedOutputTokens > 0 {
+			setEstimatedOutputTokens(c, estimatedOutputTokens)
+			usagePayload.OutputTokens = int(estimatedOutputTokens)
+			// Keep fallback tokens in the estimated path so request logs do not mark them as upstream usage.
 		}
 		applyTokenMultiplier(usagePayload)
 
@@ -3821,13 +3840,16 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}).Info("CC: Stream finalized successfully with stop_reason")
 	}
 
+	streamStopReason := "end_turn"
+	var streamUsage *OpenAIUsage
+
 	for {
 		event, err := reader.ReadEvent()
 		if err != nil {
 			if err == io.EOF {
 				logrus.Debug("CC: Upstream stream EOF")
 				// Ensure final events are sent on EOF to prevent client hanging
-				finalize("end_turn", nil)
+				finalize(streamStopReason, streamUsage, false)
 			} else if errors.Is(err, ErrSSETimeout) {
 				// Handle timeout error - send error event to client instead of hanging
 				logrus.WithError(err).Warn("CC: SSE read timeout, sending error to client")
@@ -3849,17 +3871,17 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					logrus.WithError(sendErr).Error("CC: Failed to send timeout error event")
 				}
 				// Send final events to properly terminate the stream
-				finalize("end_turn", nil)
+				finalize(streamStopReason, streamUsage, false)
 			} else {
 				logrus.WithError(err).Error("CC: Error reading stream")
 				// Send final events on error to ensure client receives termination
-				finalize("end_turn", nil)
+				finalize(streamStopReason, streamUsage, false)
 			}
 			break
 		}
 
 		if event.Data == "[DONE]" {
-			finalize("end_turn", nil)
+			finalize(streamStopReason, streamUsage, true)
 			logrus.Debug("CC: Stream finished successfully")
 			break
 		}
@@ -3868,6 +3890,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		if err := json.Unmarshal([]byte(event.Data), &openaiChunk); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"event_type": event.Event, "data_preview": utils.TruncateString(event.Data, 512)}).Debug("CC: Failed to parse OpenAI chunk as JSON, skipping")
 			continue
+		}
+
+		if openaiChunk.Usage != nil {
+			streamUsage = openaiChunk.Usage
 		}
 
 		if len(openaiChunk.Choices) == 0 {
@@ -3886,6 +3912,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		// This is emitted as thinking content in Claude format.
 		if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
 			reasoningStr := *delta.ReasoningContent
+			outputEstimate.addString(reasoningStr)
 			// Accumulate for tool call parsing in finalize()
 			if accumulatedContent.Len()+len(reasoningStr) <= maxContentBufferBytes {
 				accumulatedContent.WriteString(reasoningStr)
@@ -3903,6 +3930,7 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		// Handle content field (may contain tool calls after reasoning_content)
 		if delta.Content != nil && *delta.Content != "" {
 			contentStr := *delta.Content
+			outputEstimate.addString(contentStr)
 			if accumulatedContent.Len()+len(contentStr) <= maxContentBufferBytes {
 				accumulatedContent.WriteString(contentStr)
 			} else if !contentBufFullWarned {
@@ -4049,9 +4077,8 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 					Warn("CC: Received tool_calls finish_reason but no valid tool calls were processed, converting to end_turn")
 				stopReason = "end_turn"
 			}
-			finalize(stopReason, openaiChunk.Usage)
+			streamStopReason = stopReason
 			logrus.WithField("upstream_finish_reason", *choice.FinishReason).Debug("CC: Stream finished with upstream finish_reason")
-			break
 		}
 	}
 }

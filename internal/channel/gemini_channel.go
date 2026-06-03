@@ -98,6 +98,10 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 	validationPath := "/v1beta/models/" + ch.TestModel + ":generateContent"
 	q := url.Values{}
 	q.Set("key", apiKey.KeyValue)
+	if validationStreamEnabled(group) {
+		validationPath = "/v1beta/models/" + ch.TestModel + ":streamGenerateContent"
+		q.Set("alt", "sse")
+	}
 
 	selection, err := ch.SelectValidationUpstream(group, validationPath, q.Encode())
 	if err != nil {
@@ -114,7 +118,7 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 			{
 				"role": "user",
 				"parts": []gin.H{
-					{"text": "hi"},
+					{"text": validationPromptForGroup(group)},
 				},
 			},
 		},

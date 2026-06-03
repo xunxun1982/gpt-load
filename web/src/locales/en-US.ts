@@ -95,6 +95,19 @@ export default {
     blacklistedKeys: "Blacklisted Keys",
     rpm10Min: "10-Min RPM",
     requests24h: "24h Requests",
+    tokens24h: "24h Tokens",
+    modelTokenUsage: "Model Token Usage",
+    inputTokens: "Input Tokens",
+    outputTokens: "Output Tokens",
+    cacheTokens: "Cache Tokens",
+    thinkingTokens: "Thinking Tokens",
+    estimatedTokens: "Estimated Tokens",
+    includesEstimated: "Includes estimated",
+    modelFilter: "Model Filter",
+    allModels: "All Models",
+    model: "Model",
+    totalTokens: "Total Tokens",
+    noTokenUsage: "No token usage data",
     errorRate24h: "24h Error Rate",
     requestStatistics: "Request Statistics",
     totalRequests: "Total Requests",
@@ -384,6 +397,12 @@ export default {
     subMaxRetries: "Sub-group max retries",
     subMaxRetriesPlaceholder:
       "Max retries per sub-group within a single request (0 means no retry, 0-5)",
+    healthResetInterval: "Health Reset Interval",
+    healthResetDisabled: "Do not reset automatically",
+    healthResetEveryHours: "Every {count} hours",
+    healthResetEveryDays: "Every {count} days",
+    healthResetHint:
+      "Aligned from 00:00 each day; resets every sub-group's health in this aggregate group",
     precondition: "Precondition",
     preconditions: "Preconditions",
     preconditionMaxRequestSize: "Request Size Limit",
@@ -504,6 +523,25 @@ export default {
     parallelToolCallsDisabled: "Disabled",
     parallelToolCallsTip:
       "Only effective when native tools are present in the request. Has no effect when Force Function Call is enabled. OpenAI Responses channel defaults to enabled.",
+    validationStream: "Test Streaming",
+    validationStreamTip:
+      "Only affects key validation requests. Off by default to keep non-streaming validation.",
+    validationPromptMode: "Test Prompt",
+    validationPromptModeDefault: "Default hi",
+    validationPromptModeRandomQueue: "Short Question Queue",
+    validationPromptModeTip:
+      "Default sends hi. Queue mode rotates through 100 short questions to avoid fixed test content.",
+    requestBehavior: "Request Behavior",
+    requestBehaviorTooltip: "Lightweight request-body rewrites before forwarding to upstream.",
+    requestStreamMode: "Request Stream",
+    requestStreamModeDefault: "Default (client decides)",
+    requestStreamModeForceStream: "Force streaming",
+    requestStreamModeForceNonStream: "Force non-streaming",
+    requestStreamModeTip:
+      "Rewrites the stream field. Native Gemini paths switch between generateContent and streamGenerateContent.",
+    responsesIncludeEncryptedReasoning: "Encrypted Reasoning",
+    responsesIncludeEncryptedReasoningTip:
+      'OpenAI Responses only. Merges "reasoning.encrypted_content" into the request include array.',
     ccSupport: "Force CC Support",
     ccSupportTooltip1:
       "Enable Claude Code compatibility mode, allowing Claude clients to connect via /claude endpoint.",
@@ -715,6 +753,10 @@ export default {
     resetHealth: "Reset Health",
     confirmResetHealth: 'Are you sure to reset health metrics for sub group "{name}"?',
     resetHealthSuccess: "Health metrics reset successfully",
+    healthResetInterval: "Health Reset Interval",
+    healthResetFollowAggregate: "Follow aggregate group",
+    healthResetOverrideHint:
+      "When set, only this sub group is reset; follow uses the aggregate group's default interval",
   },
   logs: {
     title: "Logs",

@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -13,6 +15,25 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 )
+
+var benchmarkTokenCountSink int64
+
+type errorAfterReadCloser struct {
+	data []byte
+	done bool
+}
+
+func (r *errorAfterReadCloser) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		return copy(p, r.data), nil
+	}
+	return 0, errors.New("test copy error")
+}
+
+func (r *errorAfterReadCloser) Close() error {
+	return nil
+}
 
 func TestShouldCaptureResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -49,6 +70,167 @@ func TestShouldCaptureResponse(t *testing.T) {
 		result := shouldCaptureResponse(c)
 		assert.False(t, result)
 	})
+}
+
+func TestTailUsageCaptureKeepsResponseTail(t *testing.T) {
+	capture := &tailUsageCapture{
+		limit: 10,
+	}
+
+	if _, err := capture.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture.Write([]byte("defghijkl")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(capture.buf); got != "cdefghijkl" {
+		t.Fatalf("unexpected tail capture: %q", got)
+	}
+}
+
+func TestHandleNormalResponseSetsEstimatedOutputFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"hello world"}}]}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	if usage, source, ok := getTokenUsage(c); ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected upstream usage: %+v source=%q ok=%v", usage, source, ok)
+	}
+	assert.Greater(t, getEstimatedOutputTokens(c), int64(0))
+}
+
+func TestHandleNormalResponseSkipsEstimatedOutputForError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"upstream failed"}}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	if usage, source, ok := getTokenUsage(c); ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected upstream usage: %+v source=%q ok=%v", usage, source, ok)
+	}
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleNormalResponseCaptureSkipsEstimatedOutputForError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Body:       io.NopCloser(strings.NewReader(`plain upstream error`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+	if usage, source, ok := getTokenUsage(c); ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected upstream usage: %+v source=%q ok=%v", usage, source, ok)
+	}
+}
+
+func TestHandleNormalResponseKeepsExplicitUsageOnError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5},"error":{"message":"bad request"}}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	usage, source, ok := getTokenUsage(c)
+	if !ok {
+		t.Fatal("expected explicit usage")
+	}
+	assert.Equal(t, int64(5), usage.TotalTokens)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleNormalResponsePrefersUpstreamUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(`{"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	usage, source, ok := getTokenUsage(c)
+	if !ok {
+		t.Fatal("expected upstream usage")
+	}
+	assert.Equal(t, int64(12), usage.TotalTokens)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: &errorAfterReadCloser{
+			data: []byte(`{"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`),
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	if usage, source, ok := getTokenUsage(c); ok || !usage.IsZero() || source != "" {
+		t.Fatalf("unexpected token usage from truncated body: %+v source=%q ok=%v", usage, source, ok)
+	}
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func BenchmarkTailUsageCaptureWrite(b *testing.B) {
+	payload := bytes.Repeat([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello world\"}}]}\n\n"), 2048)
+	b.SetBytes(int64(len(payload)))
+	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
+	for b.Loop() {
+		capture := &tailUsageCapture{
+			limit: maxUsageTailCaptureBytes,
+		}
+		if _, err := capture.Write(payload); err != nil {
+			b.Fatal(err)
+		}
+		benchmarkTokenCountSink = int64(len(capture.buf))
+	}
+}
+
+func BenchmarkEstimatedTokenCaptureWrite(b *testing.B) {
+	payload := bytes.Repeat([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello 世界\"}}]}\n\n"), 2048)
+	b.SetBytes(int64(len(payload)))
+	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
+	for b.Loop() {
+		var capture estimatedTokenCapture
+		if _, err := capture.Write(payload); err != nil {
+			b.Fatal(err)
+		}
+		benchmarkTokenCountSink = capture.Tokens()
+	}
 }
 
 func TestCollectCodexStreamToResponse(t *testing.T) {

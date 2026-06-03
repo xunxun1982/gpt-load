@@ -87,6 +87,9 @@ type DynamicWeightConfig struct {
 	MediumHealthPenaltyExponent float64
 }
 
+// Recent failure memory is kept after a later success, but softened to reward recovery.
+const recentPenaltyAfterSuccessMultiplier = 0.75
+
 // DefaultDynamicWeightConfig returns the default configuration.
 // Optimized for unstable channels that may experience intermittent failures.
 // Tolerates patterns like "5-6 consecutive failures followed by 1 success" while still
@@ -503,6 +506,27 @@ func (m *DynamicWeightManager) calculateHealthSuccessRate(metrics *DynamicWeight
 	return m.calculateWeightedSuccessRate(metrics, credit)
 }
 
+func calculateRecentEventPenalty(now, eventAt, lastSuccessAt time.Time, cooldown time.Duration, basePenalty float64) float64 {
+	if eventAt.IsZero() || cooldown <= 0 || basePenalty <= 0 {
+		return 0
+	}
+
+	timeSinceEvent := now.Sub(eventAt)
+	if timeSinceEvent < 0 {
+		timeSinceEvent = 0
+	}
+	if timeSinceEvent >= cooldown {
+		return 0
+	}
+
+	decayRatio := 1.0 - (float64(timeSinceEvent) / float64(cooldown))
+	penalty := basePenalty * decayRatio
+	if !lastSuccessAt.IsZero() && lastSuccessAt.After(eventAt) {
+		penalty *= recentPenaltyAfterSuccessMultiplier
+	}
+	return penalty
+}
+
 // CalculateHealthScore calculates the health score based on metrics.
 // Returns a value between MinHealthScore and 1.0.
 func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetrics) float64 {
@@ -511,6 +535,7 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 	}
 
 	score := 1.0
+	now := time.Now()
 
 	// Penalty for consecutive failures (hard failures like 500, 401, etc.)
 	if metrics.ConsecutiveFailures > 0 {
@@ -531,24 +556,22 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 	}
 
 	// Penalty for recent failure (time-decaying)
-	if !metrics.LastFailureAt.IsZero() {
-		timeSinceFailure := time.Since(metrics.LastFailureAt)
-		if timeSinceFailure < m.config.RecentFailureCooldown {
-			decayRatio := 1.0 - (float64(timeSinceFailure) / float64(m.config.RecentFailureCooldown))
-			penalty := m.config.RecentFailurePenalty * decayRatio
-			score -= penalty
-		}
-	}
+	score -= calculateRecentEventPenalty(
+		now,
+		metrics.LastFailureAt,
+		metrics.LastSuccessAt,
+		m.config.RecentFailureCooldown,
+		m.config.RecentFailurePenalty,
+	)
 
 	// Penalty for recent rate limit (time-decaying) - lighter than hard failure
-	if !metrics.LastRateLimitAt.IsZero() {
-		timeSinceRateLimit := time.Since(metrics.LastRateLimitAt)
-		if timeSinceRateLimit < m.config.RecentRateLimitCooldown {
-			decayRatio := 1.0 - (float64(timeSinceRateLimit) / float64(m.config.RecentRateLimitCooldown))
-			penalty := m.config.RecentRateLimitPenalty * decayRatio
-			score -= penalty
-		}
-	}
+	score -= calculateRecentEventPenalty(
+		now,
+		metrics.LastRateLimitAt,
+		metrics.LastSuccessAt,
+		m.config.RecentRateLimitCooldown,
+		m.config.RecentRateLimitPenalty,
+	)
 
 	// Penalty for low weighted success rate (using time-windowed calculation)
 	totalRequests := metrics.Requests180d

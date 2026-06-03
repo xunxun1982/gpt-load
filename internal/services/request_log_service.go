@@ -31,6 +31,25 @@ type hourlyStatCounts struct {
 	Failure int64
 }
 
+type modelTokenStatKey struct {
+	Time          time.Time
+	GroupID       uint
+	ParentGroupID uint
+	Model         string
+}
+
+type modelTokenStatCounts struct {
+	RequestCount          int64
+	InputTokens           int64
+	OutputTokens          int64
+	TotalTokens           int64
+	CacheReadTokens       int64
+	CacheWriteTokens      int64
+	ThinkingTokens        int64
+	EstimatedTokens       int64
+	EstimatedRequestCount int64
+}
+
 type apiKeyStatsKey struct {
 	GroupID uint
 	KeyHash string
@@ -436,8 +455,53 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 			}
 		}
 
+		modelTokenStats := aggregateModelTokenStats(logs)
+		if len(modelTokenStats) > 0 {
+			if err := s.batchUpsertModelTokenStats(tx, modelTokenStats); err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
+}
+
+func aggregateModelTokenStats(logs []*models.RequestLog) map[modelTokenStatKey]modelTokenStatCounts {
+	stats := make(map[modelTokenStatKey]modelTokenStatCounts, len(logs)/4)
+	for _, log := range logs {
+		if log.RequestType != models.RequestTypeFinal || log.GroupID == 0 || log.TotalTokens <= 0 {
+			continue
+		}
+		hourlyTime := log.Timestamp.Truncate(time.Hour)
+		key := modelTokenStatKey{
+			Time:          hourlyTime,
+			GroupID:       log.GroupID,
+			ParentGroupID: log.ParentGroupID,
+			Model:         normalizeTokenUsageModel(log.Model),
+		}
+		counts := stats[key]
+		counts.RequestCount++
+		counts.InputTokens += log.InputTokens
+		counts.OutputTokens += log.OutputTokens
+		counts.TotalTokens += log.TotalTokens
+		counts.CacheReadTokens += log.CacheReadTokens
+		counts.CacheWriteTokens += log.CacheWriteTokens
+		counts.ThinkingTokens += log.ThinkingTokens
+		if log.TokenUsageSource == models.TokenUsageSourceEstimated {
+			counts.EstimatedTokens += log.TotalTokens
+			counts.EstimatedRequestCount++
+		}
+		stats[key] = counts
+	}
+	return stats
+}
+
+func normalizeTokenUsageModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "unknown"
+	}
+	return model
 }
 
 func updateAPIKeyStats(tx *gorm.DB, keyStats map[apiKeyStatsKey]apiKeyStats) error {
@@ -606,6 +670,132 @@ func (s *RequestLogService) batchUpsertHourlyStatsSQLite(tx *gorm.DB, stats []mo
 			}),
 		}).CreateInBatches(batch, len(batch)).Error; err != nil {
 			return fmt.Errorf("failed to batch upsert hourly stats (sqlite): %w", err)
+		}
+	}
+	return nil
+}
+
+// batchUpsertModelTokenStats performs batch upsert for model token statistics.
+func (s *RequestLogService) batchUpsertModelTokenStats(tx *gorm.DB, modelStats map[modelTokenStatKey]modelTokenStatCounts) error {
+	if len(modelStats) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	stats := make([]models.ModelTokenHourlyStat, 0, len(modelStats))
+	for key, counts := range modelStats {
+		stats = append(stats, models.ModelTokenHourlyStat{
+			Time:                  key.Time,
+			GroupID:               key.GroupID,
+			ParentGroupID:         key.ParentGroupID,
+			Model:                 key.Model,
+			RequestCount:          counts.RequestCount,
+			InputTokens:           counts.InputTokens,
+			OutputTokens:          counts.OutputTokens,
+			TotalTokens:           counts.TotalTokens,
+			CacheReadTokens:       counts.CacheReadTokens,
+			CacheWriteTokens:      counts.CacheWriteTokens,
+			ThinkingTokens:        counts.ThinkingTokens,
+			EstimatedTokens:       counts.EstimatedTokens,
+			EstimatedRequestCount: counts.EstimatedRequestCount,
+			CreatedAt:             now,
+			UpdatedAt:             now,
+		})
+	}
+
+	dialect := tx.Dialector.Name()
+	switch dialect {
+	case "postgres":
+		return s.batchUpsertModelTokenStatsPostgres(tx, stats)
+	case "mysql":
+		return s.batchUpsertModelTokenStatsMySQL(tx, stats)
+	case "sqlite":
+		return s.batchUpsertModelTokenStatsSQLite(tx, stats)
+	default:
+		logrus.WithField("dialect", dialect).Warn("Unknown database dialect for token stats, falling back to SQLite strategy")
+		return s.batchUpsertModelTokenStatsSQLite(tx, stats)
+	}
+}
+
+func (s *RequestLogService) batchUpsertModelTokenStatsPostgres(tx *gorm.DB, stats []models.ModelTokenHourlyStat) error {
+	for i := 0; i < len(stats); i += HourlyStatsBatchSize {
+		end := i + HourlyStatsBatchSize
+		if end > len(stats) {
+			end = len(stats)
+		}
+		batch := stats[i:end]
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "time"}, {Name: "group_id"}, {Name: "parent_group_id"}, {Name: "model"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"request_count":           gorm.Expr("model_token_hourly_stats.request_count + EXCLUDED.request_count"),
+				"input_tokens":            gorm.Expr("model_token_hourly_stats.input_tokens + EXCLUDED.input_tokens"),
+				"output_tokens":           gorm.Expr("model_token_hourly_stats.output_tokens + EXCLUDED.output_tokens"),
+				"total_tokens":            gorm.Expr("model_token_hourly_stats.total_tokens + EXCLUDED.total_tokens"),
+				"cache_read_tokens":       gorm.Expr("model_token_hourly_stats.cache_read_tokens + EXCLUDED.cache_read_tokens"),
+				"cache_write_tokens":      gorm.Expr("model_token_hourly_stats.cache_write_tokens + EXCLUDED.cache_write_tokens"),
+				"thinking_tokens":         gorm.Expr("model_token_hourly_stats.thinking_tokens + EXCLUDED.thinking_tokens"),
+				"estimated_tokens":        gorm.Expr("model_token_hourly_stats.estimated_tokens + EXCLUDED.estimated_tokens"),
+				"estimated_request_count": gorm.Expr("model_token_hourly_stats.estimated_request_count + EXCLUDED.estimated_request_count"),
+				"updated_at":              gorm.Expr("EXCLUDED.updated_at"),
+			}),
+		}).CreateInBatches(batch, len(batch)).Error; err != nil {
+			return fmt.Errorf("failed to batch upsert model token stats (postgres): %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *RequestLogService) batchUpsertModelTokenStatsMySQL(tx *gorm.DB, stats []models.ModelTokenHourlyStat) error {
+	for i := 0; i < len(stats); i += HourlyStatsBatchSize {
+		end := i + HourlyStatsBatchSize
+		if end > len(stats) {
+			end = len(stats)
+		}
+		batch := stats[i:end]
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "time"}, {Name: "group_id"}, {Name: "parent_group_id"}, {Name: "model"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"request_count":           gorm.Expr("request_count + VALUES(request_count)"),
+				"input_tokens":            gorm.Expr("input_tokens + VALUES(input_tokens)"),
+				"output_tokens":           gorm.Expr("output_tokens + VALUES(output_tokens)"),
+				"total_tokens":            gorm.Expr("total_tokens + VALUES(total_tokens)"),
+				"cache_read_tokens":       gorm.Expr("cache_read_tokens + VALUES(cache_read_tokens)"),
+				"cache_write_tokens":      gorm.Expr("cache_write_tokens + VALUES(cache_write_tokens)"),
+				"thinking_tokens":         gorm.Expr("thinking_tokens + VALUES(thinking_tokens)"),
+				"estimated_tokens":        gorm.Expr("estimated_tokens + VALUES(estimated_tokens)"),
+				"estimated_request_count": gorm.Expr("estimated_request_count + VALUES(estimated_request_count)"),
+				"updated_at":              gorm.Expr("VALUES(updated_at)"),
+			}),
+		}).CreateInBatches(batch, len(batch)).Error; err != nil {
+			return fmt.Errorf("failed to batch upsert model token stats (mysql): %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *RequestLogService) batchUpsertModelTokenStatsSQLite(tx *gorm.DB, stats []models.ModelTokenHourlyStat) error {
+	for i := 0; i < len(stats); i += HourlyStatsBatchSizeSQLite {
+		end := i + HourlyStatsBatchSizeSQLite
+		if end > len(stats) {
+			end = len(stats)
+		}
+		batch := stats[i:end]
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "time"}, {Name: "group_id"}, {Name: "parent_group_id"}, {Name: "model"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"request_count":           gorm.Expr("model_token_hourly_stats.request_count + excluded.request_count"),
+				"input_tokens":            gorm.Expr("model_token_hourly_stats.input_tokens + excluded.input_tokens"),
+				"output_tokens":           gorm.Expr("model_token_hourly_stats.output_tokens + excluded.output_tokens"),
+				"total_tokens":            gorm.Expr("model_token_hourly_stats.total_tokens + excluded.total_tokens"),
+				"cache_read_tokens":       gorm.Expr("model_token_hourly_stats.cache_read_tokens + excluded.cache_read_tokens"),
+				"cache_write_tokens":      gorm.Expr("model_token_hourly_stats.cache_write_tokens + excluded.cache_write_tokens"),
+				"thinking_tokens":         gorm.Expr("model_token_hourly_stats.thinking_tokens + excluded.thinking_tokens"),
+				"estimated_tokens":        gorm.Expr("model_token_hourly_stats.estimated_tokens + excluded.estimated_tokens"),
+				"estimated_request_count": gorm.Expr("model_token_hourly_stats.estimated_request_count + excluded.estimated_request_count"),
+				"updated_at":              gorm.Expr("excluded.updated_at"),
+			}),
+		}).CreateInBatches(batch, len(batch)).Error; err != nil {
+			return fmt.Errorf("failed to batch upsert model token stats (sqlite): %w", err)
 		}
 	}
 	return nil

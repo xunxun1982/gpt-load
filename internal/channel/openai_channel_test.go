@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"unicode/utf8"
 
 	"gpt-load/internal/models"
 
 	"github.com/stretchr/testify/assert"
+	"gorm.io/datatypes"
 )
 
 func TestOpenAIChannel_ModifyRequest(t *testing.T) {
@@ -122,6 +124,53 @@ func TestOpenAIChannel_ValidateKey_Success(t *testing.T) {
 	group := &models.Group{}
 
 	valid, err := ch.ValidateKey(context.Background(), apiKey, group)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestOpenAIChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		err := json.NewDecoder(r.Body).Decode(&body)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, true, body["stream"])
+		messages, ok := body["messages"].([]interface{})
+		if assert.True(t, ok) && assert.NotEmpty(t, messages) {
+			message, ok := messages[0].(map[string]interface{})
+			if assert.True(t, ok) {
+				content, ok := message["content"].(string)
+				assert.True(t, ok)
+				assert.NotEqual(t, validationDefaultPrompt, content)
+				assert.True(t, validationPromptInQueue(content))
+				assert.LessOrEqual(t, utf8.RuneCountInString(content), 8)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ch := &OpenAIChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/chat/completions",
+			TestModel:          "gpt-3.5-turbo",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{
+			"validation_stream":      true,
+			"validation_prompt_mode": "random_queue",
+		},
+	})
 	assert.NoError(t, err)
 	assert.True(t, valid)
 }

@@ -22,7 +22,7 @@ func init() {
 // ClaudeCodeUserAgent is the User-Agent header value for Claude Code CLI requests.
 // Format: claude-cli/VERSION (external, cli) - matches the official Claude Code CLI client.
 // Check: https://github.com/anthropics/claude-code/releases
-const ClaudeCodeUserAgent = "claude-cli/2.1.158 (external, cli)"
+const ClaudeCodeUserAgent = "claude-cli/2.1.160 (external, cli)"
 
 type AnthropicChannel struct {
 	*BaseChannel
@@ -78,13 +78,16 @@ func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIK
 
 	reqURL := selection.URL
 
-	// Use a minimal, low-cost payload for validation
+	// Use a minimal, low-cost payload for validation.
 	payload := gin.H{
 		"model":      ch.TestModel,
 		"max_tokens": 100,
 		"messages": []gin.H{
-			{"role": "user", "content": "hi"},
+			{"role": "user", "content": validationPromptForGroup(group)},
 		},
+	}
+	if validationStreamEnabled(group) {
+		payload["stream"] = true
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

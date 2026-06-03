@@ -27,6 +27,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&models.Group{},
 		&models.RequestLog{},
 		&models.GroupHourlyStat{},
+		&models.ModelTokenHourlyStat{},
 	)
 	require.NoError(t, err)
 

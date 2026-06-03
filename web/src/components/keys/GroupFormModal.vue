@@ -116,6 +116,10 @@ interface GroupFormData {
   model_redirect_strict: boolean;
   force_function_call: boolean;
   parallel_tool_calls: "default" | "true" | "false";
+  validation_stream: boolean;
+  validation_prompt_mode: "default" | "random_queue";
+  request_stream_mode: "default" | "force_stream" | "force_non_stream";
+  responses_include_encrypted_reasoning: boolean;
   cc_support: boolean;
   intercept_event_log: boolean;
   thinking_model: string;
@@ -150,6 +154,10 @@ const formData = reactive<GroupFormData>({
   model_redirect_strict: false,
   force_function_call: false,
   parallel_tool_calls: "default",
+  validation_stream: false,
+  validation_prompt_mode: "default",
+  request_stream_mode: "default",
+  responses_include_encrypted_reasoning: false,
   cc_support: false,
   intercept_event_log: false,
   thinking_model: "",
@@ -169,6 +177,21 @@ const configOptions = ref<GroupConfigOption[]>([]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
 const modelRedirectDynamicWeights = ref<ModelRedirectDynamicWeight[]>([]);
+const controlledConfigKeys = new Set([
+  "force_function_call",
+  "parallel_tool_calls",
+  "validation_stream",
+  "validation_prompt_mode",
+  "force_stream",
+  "force_non_stream",
+  "responses_include_encrypted_reasoning",
+  "cc_support",
+  "intercept_event_log",
+  "thinking_model",
+  "codex_instructions",
+  "codex_instructions_mode",
+]);
+const hiddenConfigOptionKeys = new Set(controlledConfigKeys);
 
 // Check if current group is a child group (has parent_group_id)
 const isChildGroup = computed(() => {
@@ -345,6 +368,9 @@ watch(
     if (!supportsParallelToolCalls(newChannelType)) {
       formData.parallel_tool_calls = "default";
     }
+    if (newChannelType !== "openai-response") {
+      formData.responses_include_encrypted_reasoning = false;
+    }
     if (
       newChannelType !== "openai" &&
       newChannelType !== "openai-response" &&
@@ -414,6 +440,10 @@ function resetForm() {
     model_redirect_strict: false,
     force_function_call: false,
     parallel_tool_calls: "default",
+    validation_stream: false,
+    validation_prompt_mode: "default",
+    request_stream_mode: "default",
+    responses_include_encrypted_reasoning: false,
     cc_support: false,
     intercept_event_log: false,
     thinking_model: "",
@@ -463,6 +493,32 @@ function loadGroupData() {
   if (typeof ptcRaw === "boolean") {
     parallelToolCalls = ptcRaw ? "true" : "false";
   }
+  const validationStreamRaw = rawConfig["validation_stream"];
+  const validationStream = typeof validationStreamRaw === "boolean" ? validationStreamRaw : false;
+  const validationPromptModeRaw = rawConfig["validation_prompt_mode"];
+  const validationPromptMode =
+    validationPromptModeRaw === "random_queue" ? "random_queue" : "default";
+  const forceStreamRaw = rawConfig["force_stream"];
+  const forceNonStreamRaw = rawConfig["force_non_stream"];
+  let requestStreamMode: "default" | "force_stream" | "force_non_stream" = "default";
+  if (
+    typeof forceStreamRaw === "boolean" &&
+    forceStreamRaw &&
+    typeof forceNonStreamRaw === "boolean" &&
+    forceNonStreamRaw
+  ) {
+    requestStreamMode = "default";
+  } else if (typeof forceStreamRaw === "boolean" && forceStreamRaw) {
+    requestStreamMode = "force_stream";
+  } else if (typeof forceNonStreamRaw === "boolean" && forceNonStreamRaw) {
+    requestStreamMode = "force_non_stream";
+  }
+  const responsesIncludeEncryptedReasoningRaw = rawConfig["responses_include_encrypted_reasoning"];
+  const responsesIncludeEncryptedReasoning =
+    props.group.channel_type === "openai-response" &&
+    typeof responsesIncludeEncryptedReasoningRaw === "boolean"
+      ? responsesIncludeEncryptedReasoningRaw
+      : false;
   const ccRaw = rawConfig["cc_support"];
   // CC support is available for OpenAI, OpenAI Responses, and Gemini channels.
   const ccSupport =
@@ -492,21 +548,7 @@ function loadGroupData() {
       : "auto";
 
   const configItems = Object.entries(rawConfig)
-    .filter(([key]) => {
-      const ignoredKeys = [
-        "force_function_call",
-        "parallel_tool_calls",
-        "cc_support",
-        "intercept_event_log",
-        "thinking_model",
-        "codex_instructions",
-        "codex_instructions_mode",
-        "cc_opus_model",
-        "cc_sonnet_model",
-        "cc_haiku_model",
-      ];
-      return !ignoredKeys.includes(key);
-    })
+    .filter(([key]) => !controlledConfigKeys.has(key))
     .map(([key, value]) => {
       return {
         key,
@@ -556,6 +598,10 @@ function loadGroupData() {
     model_redirect_strict: props.group.model_redirect_strict || false,
     force_function_call: forceFunctionCall,
     parallel_tool_calls: parallelToolCalls,
+    validation_stream: validationStream,
+    validation_prompt_mode: validationPromptMode,
+    request_stream_mode: requestStreamMode,
+    responses_include_encrypted_reasoning: responsesIncludeEncryptedReasoning,
     cc_support: ccSupport,
     intercept_event_log: interceptEventLog,
     thinking_model: thinkingModel,
@@ -607,13 +653,8 @@ function removeUpstream(index: number) {
 
 async function fetchGroupConfigOptions() {
   const options = await keysApi.getGroupConfigOptions();
-  // Hide force_function_call and parallel_tool_calls from generic config options
-  // so they are only controlled via dedicated toggles. This avoids confusing UX
-  // where users could add the key manually in the advanced config list while the
-  // toggle remains the single source of truth.
-  const normalized = (options || []).filter(
-    opt => opt.key !== "force_function_call" && opt.key !== "parallel_tool_calls"
-  );
+  // Hide keys that have first-class controls; keep backend-provided system overrides visible.
+  const normalized = (options || []).filter(opt => !hiddenConfigOptionKeys.has(opt.key));
   configOptions.value = normalized;
   configOptionsFetched.value = true;
 }
@@ -1213,6 +1254,39 @@ async function handleSubmit() {
       delete config["parallel_tool_calls"];
     }
 
+    if (formData.validation_stream) {
+      config["validation_stream"] = true;
+    } else {
+      delete config["validation_stream"];
+    }
+
+    if (formData.validation_prompt_mode === "random_queue") {
+      config["validation_prompt_mode"] = "random_queue";
+    } else {
+      delete config["validation_prompt_mode"];
+    }
+
+    if (formData.request_stream_mode === "force_stream") {
+      config["force_stream"] = true;
+      delete config["force_non_stream"];
+    } else if (formData.request_stream_mode === "force_non_stream") {
+      config["force_non_stream"] = true;
+      delete config["force_stream"];
+    } else {
+      // Conflicting legacy flags load as default; clearing both preserves backend no-op behavior and passes validation.
+      delete config["force_stream"];
+      delete config["force_non_stream"];
+    }
+
+    if (
+      formData.channel_type === "openai-response" &&
+      formData.responses_include_encrypted_reasoning
+    ) {
+      config["responses_include_encrypted_reasoning"] = true;
+    } else {
+      delete config["responses_include_encrypted_reasoning"];
+    }
+
     // Persist cc_support toggle as a dedicated config key.
     if (formData.cc_support) {
       config["cc_support"] = true;
@@ -1769,6 +1843,88 @@ async function handleSubmit() {
                     {{ t("keys.addConfigParam") }}
                   </n-button>
                 </div>
+
+                <n-form-item
+                  :label="t('keys.validationPromptMode')"
+                  path="validation_prompt_mode"
+                  style="margin-top: 16px"
+                >
+                  <div class="advanced-field-stack">
+                    <n-select
+                      v-model:value="formData.validation_prompt_mode"
+                      :options="[
+                        { label: t('keys.validationPromptModeDefault'), value: 'default' },
+                        {
+                          label: t('keys.validationPromptModeRandomQueue'),
+                          value: 'random_queue',
+                        },
+                      ]"
+                      size="small"
+                      style="max-width: 320px"
+                    />
+                    <div class="advanced-control-hint">
+                      {{ t("keys.validationPromptModeTip") }}
+                    </div>
+                  </div>
+                </n-form-item>
+
+                <n-form-item :label="t('keys.validationStream')" path="validation_stream">
+                  <div class="advanced-control-row">
+                    <n-switch v-model:value="formData.validation_stream" size="small" />
+                    <span class="advanced-control-hint">
+                      {{ t("keys.validationStreamTip") }}
+                    </span>
+                  </div>
+                </n-form-item>
+              </div>
+
+              <div v-if="formData.group_type !== 'aggregate'" class="config-section">
+                <h5 class="config-title-with-tooltip">
+                  {{ t("keys.requestBehavior") }}
+                  <n-tooltip trigger="hover" placement="right-start">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                    </template>
+                    {{ t("keys.requestBehaviorTooltip") }}
+                  </n-tooltip>
+                </h5>
+
+                <n-form-item :label="t('keys.requestStreamMode')" path="request_stream_mode">
+                  <div class="advanced-field-stack">
+                    <n-select
+                      v-model:value="formData.request_stream_mode"
+                      :options="[
+                        { label: t('keys.requestStreamModeDefault'), value: 'default' },
+                        { label: t('keys.requestStreamModeForceStream'), value: 'force_stream' },
+                        {
+                          label: t('keys.requestStreamModeForceNonStream'),
+                          value: 'force_non_stream',
+                        },
+                      ]"
+                      size="small"
+                      style="max-width: 320px"
+                    />
+                    <div class="advanced-control-hint">
+                      {{ t("keys.requestStreamModeTip") }}
+                    </div>
+                  </div>
+                </n-form-item>
+
+                <n-form-item
+                  v-if="formData.channel_type === 'openai-response'"
+                  :label="t('keys.responsesIncludeEncryptedReasoning')"
+                  path="responses_include_encrypted_reasoning"
+                >
+                  <div class="advanced-control-row">
+                    <n-switch
+                      v-model:value="formData.responses_include_encrypted_reasoning"
+                      size="small"
+                    />
+                    <span class="advanced-control-hint">
+                      {{ t("keys.responsesIncludeEncryptedReasoningTip") }}
+                    </span>
+                  </div>
+                </n-form-item>
               </div>
 
               <div class="config-section">
@@ -2905,6 +3061,29 @@ async function handleSubmit() {
   justify-content: center;
   align-items: flex-start;
   height: 34px;
+}
+
+.advanced-field-stack {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.advanced-control-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.advanced-control-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .model-redirect-wrapper {

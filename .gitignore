@@ -153,6 +153,7 @@ patches/
 implementation-notes.md
 .codex/skills/
 skills/gpt-load-code-review/
+.playwright-mcp/
 .kiro/
 .specstory/
 .vscode/

@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"unicode/utf8"
 
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/datatypes"
 )
 
 func TestCodexUserAgent(t *testing.T) {
@@ -18,7 +20,7 @@ func TestCodexUserAgent(t *testing.T) {
 
 	assert.NotEmpty(t, CodexUserAgent)
 	assert.Contains(t, CodexUserAgent, "codex-cli")
-	assert.Contains(t, CodexUserAgent, "0.135.0")
+	assert.Contains(t, CodexUserAgent, "0.136.0")
 }
 
 func TestOpenAIResponseChannel_ModifyRequest(t *testing.T) {
@@ -100,6 +102,55 @@ func TestOpenAIResponseChannel_ValidateKey_ValidKey(t *testing.T) {
 		context.Background(),
 		&models.APIKey{KeyValue: "test-valid-key"},
 		&models.Group{Name: "responses-group"},
+	)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestOpenAIResponseChannel_ValidateKey_StreamPromptQueueAndInclude(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, true, body["stream"])
+		input, ok := body["input"].(string)
+		if assert.True(t, ok) {
+			assert.NotEqual(t, validationDefaultPrompt, input)
+			assert.True(t, validationPromptInQueue(input))
+			assert.LessOrEqual(t, utf8.RuneCountInString(input), 8)
+		}
+		include, ok := body["include"].([]any)
+		if assert.True(t, ok) {
+			assert.Contains(t, include, "reasoning.encrypted_content")
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{
+			Name: "responses-group",
+			Config: datatypes.JSONMap{
+				"validation_stream":                     true,
+				"validation_prompt_mode":                "random_queue",
+				"responses_include_encrypted_reasoning": true,
+			},
+		},
 	)
 	assert.NoError(t, err)
 	assert.True(t, valid)

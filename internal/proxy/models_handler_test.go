@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net/http"
 	"testing"
 
 	"gpt-load/internal/models"
@@ -55,6 +56,33 @@ func TestIsModelsEndpoint(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestCopyUpstreamHeadersDropsConnectionTokenHeaders(t *testing.T) {
+	src := http.Header{}
+	src.Add("Connection", "Foo, bar")
+	src.Add("Connection", "Baz")
+	src.Set("Foo", "drop")
+	src.Set("bar", "drop")
+	src.Set("Baz", "drop")
+	src.Set("Content-Length", "123")
+	src.Set("Content-Type", "application/json")
+
+	dst := http.Header{}
+	dst.Set("Foo", "stale")
+	dst.Set("Bar", "stale")
+	dst.Set("Baz", "stale")
+	dst.Set("Connection", "stale")
+	dst.Set("Content-Length", "stale")
+
+	copyUpstreamHeaders(dst, src)
+
+	assert.Empty(t, dst.Values("Foo"))
+	assert.Empty(t, dst.Values("Bar"))
+	assert.Empty(t, dst.Values("Baz"))
+	assert.Empty(t, dst.Values("Connection"))
+	assert.Empty(t, dst.Values("Content-Length"))
+	assert.Equal(t, []string{"application/json"}, dst.Values("Content-Type"))
 }
 
 func TestEnhanceModelsResponse(t *testing.T) {
