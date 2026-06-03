@@ -35,8 +35,24 @@ func (ps *ProxyServer) isModelsEndpoint(path string) bool {
 
 // copyUpstreamHeaders copies headers from upstream, excluding hop-by-hop and Content-Length.
 func copyUpstreamHeaders(dst http.Header, src http.Header) {
+	// RFC 9110: Connection tokens name hop-by-hop headers that must not be forwarded.
+	connectionTokens := make(map[string]struct{})
+	for _, v := range src.Values("Connection") {
+		for _, token := range strings.Split(v, ",") {
+			token = http.CanonicalHeaderKey(strings.TrimSpace(token))
+			if token != "" {
+				connectionTokens[token] = struct{}{}
+			}
+		}
+	}
+
 	for k, vv := range src {
-		switch http.CanonicalHeaderKey(k) {
+		ck := http.CanonicalHeaderKey(k)
+		if _, ok := connectionTokens[ck]; ok {
+			dst.Del(k)
+			continue
+		}
+		switch ck {
 		case "Content-Length", "Connection", "Keep-Alive", "Proxy-Authenticate",
 			"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
 			dst.Del(k)

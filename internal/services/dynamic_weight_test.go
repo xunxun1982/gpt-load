@@ -475,6 +475,32 @@ func TestDynamicWeightManager_SingleSuccessAfterFailuresImprovesButDoesNotFullyR
 	assert.Less(t, healthAfter, 0.9)
 }
 
+func TestDynamicWeightManager_LaterSuccessSoftensRecentFailurePenalty(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+	now := time.Now()
+	lastFailureAt := now.Add(-1 * time.Minute)
+
+	withoutSuccess := &DynamicWeightMetrics{
+		Requests7d:          6,
+		Successes7d:         1,
+		Requests180d:        6,
+		Successes180d:       1,
+		LastFailureAt:       lastFailureAt,
+		ConsecutiveFailures: 0,
+	}
+	withLaterSuccess := *withoutSuccess
+	withLaterSuccess.LastSuccessAt = now
+
+	healthWithoutSuccess := dwm.CalculateHealthScore(withoutSuccess)
+	healthWithLaterSuccess := dwm.CalculateHealthScore(&withLaterSuccess)
+
+	assert.Greater(t, healthWithLaterSuccess, healthWithoutSuccess)
+	assert.Greater(t, healthWithLaterSuccess-healthWithoutSuccess, 0.02)
+	assert.Less(t, healthWithLaterSuccess, 0.9)
+}
+
 // TestDynamicWeightManager_ModelRedirectMetrics tests model redirect metrics
 func TestDynamicWeightManager_ModelRedirectMetrics(t *testing.T) {
 	memStore := store.NewMemoryStore()
