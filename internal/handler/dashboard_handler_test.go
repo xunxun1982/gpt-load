@@ -120,6 +120,58 @@ func TestStats(t *testing.T) {
 	}
 }
 
+func TestStatsIncludesAggregateRoutedTokenUsage(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	standard := models.Group{Name: "standard", DisplayName: "Standard", GroupType: "standard", Enabled: true, Upstreams: datatypes.JSON("[]"), ChannelType: "openai", TestModel: "gpt-4o"}
+	aggregate := models.Group{Name: "aggregate", DisplayName: "Aggregate", GroupType: "aggregate", Enabled: true, Upstreams: datatypes.JSON("[]"), ChannelType: "openai", TestModel: "gpt-4o"}
+	require.NoError(t, db.Create(&standard).Error)
+	require.NoError(t, db.Create(&aggregate).Error)
+
+	now := time.Now().Truncate(time.Hour)
+	require.NoError(t, db.Create(&[]models.ModelTokenHourlyStat{
+		{
+			Time:         now,
+			GroupID:      standard.ID,
+			Model:        "gpt-4o",
+			RequestCount: 1,
+			InputTokens:  10,
+			OutputTokens: 5,
+			TotalTokens:  15,
+		},
+		{
+			Time:                  now,
+			GroupID:               standard.ID,
+			ParentGroupID:         aggregate.ID,
+			Model:                 "gpt-5.5",
+			RequestCount:          1,
+			InputTokens:           20,
+			OutputTokens:          10,
+			TotalTokens:           30,
+			EstimatedTokens:       30,
+			EstimatedRequestCount: 1,
+		},
+	}).Error)
+
+	server := setupTestServerWithDB(t, db)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/api/dashboard/stats", nil)
+
+	server.Stats(c)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data := resp["data"].(map[string]any)
+	tokenUsage := data["token_usage"].(map[string]any)
+	assert.Equal(t, float64(45), tokenUsage["total_tokens"])
+	assert.Equal(t, float64(30), tokenUsage["estimated_tokens"])
+	assert.Equal(t, float64(1), tokenUsage["estimated_request_count"])
+}
+
 func TestChart(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -220,14 +272,14 @@ func TestTokenUsage(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	data := resp["data"].(map[string]any)
 	summary := data["summary"].(map[string]any)
-	assert.Equal(t, float64(15), summary["total_tokens"])
-	assert.Equal(t, float64(0), summary["estimated_tokens"])
-	assert.Equal(t, float64(0), summary["estimated_request_count"])
-	assert.Len(t, data["models"].([]any), 1)
+	assert.Equal(t, float64(45), summary["total_tokens"])
+	assert.Equal(t, float64(30), summary["estimated_tokens"])
+	assert.Equal(t, float64(1), summary["estimated_request_count"])
+	assert.Len(t, data["models"].([]any), 2)
 	chart := data["chart"].(map[string]any)
 	datasets := chart["datasets"].([]any)
 	require.Len(t, datasets, 3)
-	assert.Equal(t, float64(15), sumChartDataset(t, datasets[0]))
+	assert.Equal(t, float64(45), sumChartDataset(t, datasets[0]))
 
 	w = httptest.NewRecorder()
 	c, _ = gin.CreateTestContext(w)
@@ -239,6 +291,10 @@ func TestTokenUsage(t *testing.T) {
 	data = resp["data"].(map[string]any)
 	summary = data["summary"].(map[string]any)
 	assert.Equal(t, float64(15), summary["total_tokens"])
+	assert.Equal(t, float64(0), summary["estimated_tokens"])
+	modelsUsage := data["models"].([]any)
+	require.Len(t, modelsUsage, 1)
+	assert.Equal(t, "gpt-4o", modelsUsage[0].(map[string]any)["model"])
 
 	w = httptest.NewRecorder()
 	c, _ = gin.CreateTestContext(w)
@@ -264,7 +320,7 @@ func TestTokenUsage(t *testing.T) {
 	summary = data["summary"].(map[string]any)
 	assert.Equal(t, float64(15), summary["total_tokens"])
 	assert.Equal(t, float64(0), summary["estimated_tokens"])
-	modelsUsage := data["models"].([]any)
+	modelsUsage = data["models"].([]any)
 	require.Len(t, modelsUsage, 1)
 	assert.Equal(t, "gpt-4o", modelsUsage[0].(map[string]any)["model"])
 	chart = data["chart"].(map[string]any)
