@@ -54,6 +54,10 @@ const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
+const weightInputProps = computed(() => ({
+  "aria-label": t("keys.weight"),
+  title: t("keys.weight"),
+}));
 
 // Form data
 const formData = reactive<{
@@ -150,6 +154,40 @@ function getOptionsForItem(index: number) {
   return getOptionsForItems.value[index] || [];
 }
 
+// Keep integer enforcement shared between input, form validation, and submit payload.
+function isValidWeight(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1000;
+}
+
+function validateWeight(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return new Error(t("keys.enterWeight"));
+  }
+  if (!Number.isInteger(value)) {
+    return new Error(t("keys.weightMustBeInteger"));
+  }
+  if (value < 0) {
+    return new Error(t("keys.weightCannotBeNegative"));
+  }
+  if (value > 1000) {
+    return new Error(t("keys.weightMaxExceeded"));
+  }
+  return true;
+}
+
+function handleWeightUpdate(item: SubGroupItem, value: number | null) {
+  if (isValidWeight(value)) {
+    item.weight = value;
+  }
+}
+
+function sanitizeSubGroupWeight(value: number): number {
+  if (!isValidWeight(value)) {
+    throw new Error("Invalid sub-group weight");
+  }
+  return value;
+}
+
 // Form validation rules
 const rules: FormRules = {
   sub_groups: {
@@ -164,8 +202,9 @@ const rules: FormRules = {
 
       // Check if weights are valid
       for (const item of validItems) {
-        if (item.weight < 0) {
-          return new Error(t("keys.weightCannotBeNegative"));
+        const weightValidation = validateWeight(item.weight);
+        if (weightValidation !== true) {
+          return weightValidation;
         }
       }
 
@@ -227,12 +266,14 @@ async function handleSubmit() {
     await formRef.value?.validate();
 
     // Filter out valid sub-groups
-    const validSubGroups = formData.sub_groups.filter(sg => sg.group_id !== null);
+    const validSubGroups = formData.sub_groups
+      .filter((sg): sg is SubGroupItem & { group_id: number } => sg.group_id !== null)
+      .map(sg => ({
+        group_id: sg.group_id,
+        weight: sanitizeSubGroupWeight(sg.weight),
+      }));
 
-    await keysApi.addSubGroups(
-      aggregateId,
-      validSubGroups as { group_id: number; weight: number }[]
-    );
+    await keysApi.addSubGroups(aggregateId, validSubGroups);
 
     emit("success");
     handleClose();
@@ -337,11 +378,16 @@ function filterOption(pattern: string, option: SelectOption): boolean {
                     :show-feedback="false"
                   >
                     <n-input-number
-                      v-model:value="item.weight"
+                      :value="item.weight"
                       :min="0"
                       :max="1000"
+                      :precision="0"
+                      :validator="isValidWeight"
+                      :placeholder="t('keys.weight')"
+                      :input-props="weightInputProps"
                       size="small"
-                      style="width: 80px"
+                      class="weight-input"
+                      @update:value="value => handleWeightUpdate(item, value)"
                     />
                   </n-form-item>
                 </div>
@@ -498,7 +544,12 @@ function filterOption(pattern: string, option: SelectOption): boolean {
 }
 
 .item-weight {
+  width: 108px;
   flex-shrink: 0;
+}
+
+.weight-input {
+  width: 100%;
 }
 
 .item-delete {
@@ -554,27 +605,18 @@ function filterOption(pattern: string, option: SelectOption): boolean {
   }
 
   .sub-group-item {
-    flex-wrap: wrap;
     gap: 8px;
   }
+}
 
-  .item-index {
-    order: 0;
+@media (max-width: 480px) {
+  .sub-group-item {
+    gap: 6px;
+    padding: 8px;
   }
 
-  .item-select {
-    order: 1;
-    flex: 1 1 100%;
-    min-width: 100%;
-  }
-
-  .weight-section {
-    order: 2;
-    flex: 1;
-  }
-
-  .item-delete {
-    order: 3;
+  .weight-label {
+    display: none;
   }
 }
 

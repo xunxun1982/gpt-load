@@ -324,6 +324,7 @@ export default {
     updateWeightSuccess: "ウェイトを正常に更新しました",
     enterWeight: "ウェイトを入力してください",
     weightCannotBeNegative: "ウェイトは負の値にできません",
+    weightMustBeInteger: "ウェイトは整数で入力してください",
     weightMaxExceeded: "ウェイトは1000を超えることはできません",
     weightRangeHint: "範囲: 0〜1000（0=無効）",
     newWeight: "新しいウェイト",

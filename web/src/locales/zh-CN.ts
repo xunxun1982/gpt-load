@@ -319,6 +319,7 @@ export default {
     updateWeightSuccess: "更新权重成功",
     enterWeight: "请输入权重",
     weightCannotBeNegative: "权重不能为负数",
+    weightMustBeInteger: "权重必须为整数",
     weightMaxExceeded: "权重不能超过1000",
     weightRangeHint: "范围 0-1000（0=禁用）",
     newWeight: "新权重",
