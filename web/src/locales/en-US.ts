@@ -324,6 +324,7 @@ export default {
     updateWeightSuccess: "Weight updated successfully",
     enterWeight: "Please enter weight",
     weightCannotBeNegative: "Weight cannot be negative",
+    weightMustBeInteger: "Weight must be an integer",
     weightMaxExceeded: "Weight cannot exceed 1000",
     weightRangeHint: "Range: 0-1000 (0 = disabled)",
     newWeight: "New Weight",
