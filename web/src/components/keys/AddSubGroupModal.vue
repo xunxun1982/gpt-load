@@ -340,8 +340,9 @@ function filterOption(pattern: string, option: SelectOption): boolean {
                       v-model:value="item.weight"
                       :min="0"
                       :max="1000"
+                      :precision="0"
                       size="small"
-                      style="width: 80px"
+                      class="weight-input"
                     />
                   </n-form-item>
                 </div>
@@ -498,7 +499,12 @@ function filterOption(pattern: string, option: SelectOption): boolean {
 }
 
 .item-weight {
+  width: 108px;
   flex-shrink: 0;
+}
+
+.weight-input {
+  width: 100%;
 }
 
 .item-delete {
@@ -554,27 +560,18 @@ function filterOption(pattern: string, option: SelectOption): boolean {
   }
 
   .sub-group-item {
-    flex-wrap: wrap;
     gap: 8px;
   }
+}
 
-  .item-index {
-    order: 0;
+@media (max-width: 480px) {
+  .sub-group-item {
+    gap: 6px;
+    padding: 8px;
   }
 
-  .item-select {
-    order: 1;
-    flex: 1 1 100%;
-    min-width: 100%;
-  }
-
-  .weight-section {
-    order: 2;
-    flex: 1;
-  }
-
-  .item-delete {
-    order: 3;
+  .weight-label {
+    display: none;
   }
 }
 
