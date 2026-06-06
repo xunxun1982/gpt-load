@@ -8,6 +8,7 @@ import (
 const (
 	apiKeyGroupOrderIndexV2 = "idx_api_keys_group_order_v2"
 	apiKeyGroupHashIndex    = "idx_api_keys_group_key_hash"
+	apiKeyGroupIDIDIndex    = "idx_api_keys_group_id_id"
 )
 
 // V1_25_0_OptimizeAPIKeyIndexes adds composite indexes for high-throughput API key queries.
@@ -22,6 +23,10 @@ func V1_25_0_OptimizeAPIKeyIndexes(db *gorm.DB) error {
 	// Reuse the existing model index name to avoid creating a duplicate equivalent
 	// index with another review-suggested name.
 	if err := createIndexIfNotExists(db, "api_keys", apiKeyGroupHashIndex, "group_id, key_hash"); err != nil {
+		return err
+	}
+
+	if err := createIndexIfNotExists(db, "api_keys", apiKeyGroupIDIDIndex, "group_id, id"); err != nil {
 		return err
 	}
 

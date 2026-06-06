@@ -114,6 +114,7 @@ export const keysApi = {
     pagination: {
       total_items: number;
       total_pages: number;
+      has_more?: boolean;
     };
   }> {
     const res = await http.get("/keys", { params });

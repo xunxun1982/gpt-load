@@ -22,7 +22,7 @@ func init() {
 // ClaudeCodeUserAgent is the User-Agent header value for Claude Code CLI requests.
 // Format: claude-cli/VERSION (external, cli) - matches the official Claude Code CLI client.
 // Check: https://github.com/anthropics/claude-code/releases
-const ClaudeCodeUserAgent = "claude-cli/2.1.160 (external, cli)"
+const ClaudeCodeUserAgent = "claude-cli/2.1.167 (external, cli)"
 
 type AnthropicChannel struct {
 	*BaseChannel

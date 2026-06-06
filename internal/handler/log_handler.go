@@ -24,7 +24,7 @@ func (s *Server) GetLogs(c *gin.Context) {
 
 	var logs []models.RequestLog
 	query = query.Order("timestamp desc")
-	pagination, err := response.Paginate(c, query, &logs)
+	pagination, err := response.PaginateFast(c, query, &logs)
 	if err != nil {
 		response.Error(c, app_errors.ParseDBError(err))
 		return

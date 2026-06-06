@@ -20,7 +20,7 @@ func TestCodexUserAgent(t *testing.T) {
 
 	assert.NotEmpty(t, CodexUserAgent)
 	assert.Contains(t, CodexUserAgent, "codex-cli")
-	assert.Contains(t, CodexUserAgent, "0.136.0")
+	assert.Contains(t, CodexUserAgent, "0.137.0")
 }
 
 func TestOpenAIResponseChannel_ModifyRequest(t *testing.T) {

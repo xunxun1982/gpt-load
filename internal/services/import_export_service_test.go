@@ -1,7 +1,11 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,7 +16,37 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
+
+type sqlCaptureLogger struct {
+	mu         sync.Mutex
+	statements []string
+}
+
+func (l *sqlCaptureLogger) LogMode(logger.LogLevel) logger.Interface {
+	return l
+}
+
+func (l *sqlCaptureLogger) Info(context.Context, string, ...any) {}
+
+func (l *sqlCaptureLogger) Warn(context.Context, string, ...any) {}
+
+func (l *sqlCaptureLogger) Error(context.Context, string, ...any) {}
+
+func (l *sqlCaptureLogger) Trace(_ context.Context, _ time.Time, fc func() (string, int64), _ error) {
+	sql, _ := fc()
+	l.mu.Lock()
+	l.statements = append(l.statements, sql)
+	l.mu.Unlock()
+}
+
+func (l *sqlCaptureLogger) joinedSQL() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.ToUpper(strings.Join(l.statements, "\n"))
+}
 
 func TestExportSystemIncludesStandardChildGroups(t *testing.T) {
 	t.Parallel()
@@ -120,6 +154,86 @@ func TestExportSystemIncludesStandardChildGroups(t *testing.T) {
 	groupExport, err := service.ExportGroup(parent.ID)
 	require.NoError(t, err)
 	require.Len(t, groupExport.ChildGroups, 3)
+}
+
+func TestExportKeysForGroupUsesKeysetPagination(t *testing.T) {
+	t.Parallel()
+
+	capture := &sqlCaptureLogger{}
+	db := setupTestDB(t).Session(&gorm.Session{Logger: capture})
+	service := NewImportExportService(db, nil, nil)
+
+	group := models.Group{
+		Name:        "keyset-export-group",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   datatypes.JSON(`[{"url":"https://example.com","weight":1}]`),
+	}
+	require.NoError(t, db.Create(&group).Error)
+	for i := 0; i < ExportBatchSize+3; i++ {
+		require.NoError(t, db.Create(&models.APIKey{
+			GroupID:  group.ID,
+			KeyValue: "encrypted-key",
+			KeyHash:  "hash-keyset-export-group-" + strconv.Itoa(i),
+			Status:   models.KeyStatusActive,
+		}).Error)
+	}
+
+	result, err := service.ExportKeysForGroup(group.ID)
+	require.NoError(t, err)
+	require.Equal(t, ExportBatchSize+3, result.Count)
+	require.Len(t, result.Keys, ExportBatchSize+3)
+
+	statements := capture.joinedSQL()
+	require.NotContains(t, statements, " OFFSET ", "key exports must not use offset pagination")
+	require.Contains(t, statements, " ID > ", "key exports should advance with an ID cursor")
+}
+
+func TestExportKeysForGroupsUsesCompositeKeysetPagination(t *testing.T) {
+	t.Parallel()
+
+	capture := &sqlCaptureLogger{}
+	db := setupTestDB(t).Session(&gorm.Session{Logger: capture})
+	service := NewImportExportService(db, nil, nil)
+
+	groups := []models.Group{
+		{
+			Name:        "keyset-export-group-a",
+			GroupType:   "standard",
+			ChannelType: "openai",
+			Enabled:     true,
+			Upstreams:   datatypes.JSON(`[{"url":"https://a.example.com","weight":1}]`),
+		},
+		{
+			Name:        "keyset-export-group-b",
+			GroupType:   "standard",
+			ChannelType: "openai",
+			Enabled:     true,
+			Upstreams:   datatypes.JSON(`[{"url":"https://b.example.com","weight":1}]`),
+		},
+	}
+	for i := range groups {
+		require.NoError(t, db.Create(&groups[i]).Error)
+	}
+	for i := 0; i < ExportMultiGroupBatchSize+3; i++ {
+		groupID := groups[i%len(groups)].ID
+		require.NoError(t, db.Create(&models.APIKey{
+			GroupID:  groupID,
+			KeyValue: "encrypted-key",
+			KeyHash:  "hash-keyset-export-groups-" + strconv.Itoa(i),
+			Status:   models.KeyStatusActive,
+		}).Error)
+	}
+
+	result, err := service.ExportKeysForGroups([]uint{groups[0].ID, groups[1].ID})
+	require.NoError(t, err)
+	require.Equal(t, ExportMultiGroupBatchSize+3, len(result[groups[0].ID])+len(result[groups[1].ID]))
+
+	statements := capture.joinedSQL()
+	require.NotContains(t, statements, " OFFSET ", "multi-group key exports must not use offset pagination")
+	require.Contains(t, statements, "GROUP_ID > ", "multi-group exports should advance with a composite cursor")
+	require.Contains(t, statements, " ID > ", "multi-group exports should advance with a composite cursor")
 }
 
 func TestImportSystemRestoresStandardChildGroups(t *testing.T) {
