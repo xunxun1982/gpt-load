@@ -26,6 +26,7 @@ type Pagination struct {
 	PageSize   int   `json:"page_size"`
 	TotalItems int64 `json:"total_items"`
 	TotalPages int   `json:"total_pages"`
+	HasMore    bool  `json:"has_more,omitempty"`
 }
 
 // PaginatedResponse is the standard structure for all paginated API responses.
@@ -39,19 +40,7 @@ type PaginatedResponse struct {
 // For indexed queries (e.g., WHERE group_id = ?), COUNT should be fast using index scans.
 // During bulk imports, queries may timeout - data query returns error, COUNT query gracefully degrades to -1.
 func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, error) {
-	// 1. Parse pagination parameters from query string
-	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
-	if err != nil || page < 1 {
-		page = 1
-	}
-
-	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", strconv.Itoa(DefaultPageSize)))
-	if err != nil || pageSize <= 0 {
-		pageSize = DefaultPageSize
-	}
-	if pageSize > MaxPageSize {
-		pageSize = MaxPageSize
-	}
+	page, pageSize := parsePaginationParams(c)
 
 	offset := (page - 1) * pageSize
 
@@ -117,7 +106,7 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 	dataQuery := query.Session(&gorm.Session{NewDB: true})
 	// Fetch one extra row to detect if there are more pages
 	fetchLimit := pageSize + 1
-	err = dataQuery.WithContext(dataCtx).Limit(fetchLimit).Offset(offset).Find(dest).Error
+	err := dataQuery.WithContext(dataCtx).Limit(fetchLimit).Offset(offset).Find(dest).Error
 	dataDuration := time.Since(dataStartTime)
 
 	if err != nil {
@@ -192,8 +181,85 @@ func Paginate(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, err
 			PageSize:   pageSize,
 			TotalItems: totalItems,
 			TotalPages: totalPages,
+			HasMore:    hasMore,
 		},
 	}, nil
+}
+
+// PaginateFast returns a page without running COUNT unless the last page can be inferred.
+func PaginateFast(c *gin.Context, query *gorm.DB, dest any) (*PaginatedResponse, error) {
+	page, pageSize := parsePaginationParams(c)
+	offset := (page - 1) * pageSize
+
+	dataCtx, dataCancel := context.WithTimeout(c.Request.Context(), DataQueryTimeout)
+	defer dataCancel()
+
+	dataStartTime := time.Now()
+	dataQuery := query.Session(&gorm.Session{NewDB: true})
+	fetchLimit := pageSize + 1
+	if err := dataQuery.WithContext(dataCtx).Limit(fetchLimit).Offset(offset).Find(dest).Error; err != nil {
+		dataDuration := time.Since(dataStartTime)
+		logrus.WithFields(logrus.Fields{
+			"duration_ms": dataDuration.Milliseconds(),
+			"timeout_ms":  DataQueryTimeout.Milliseconds(),
+		}).WithError(err).Error("Pagination data query failed")
+		return nil, err
+	}
+
+	dataDuration := time.Since(dataStartTime)
+	if dataDuration > DataQueryTimeout/2 {
+		logrus.WithFields(logrus.Fields{
+			"duration_ms": dataDuration.Milliseconds(),
+			"page":        page,
+			"page_size":   pageSize,
+		}).Debug("Slow data query detected")
+	}
+
+	actualCount := getSliceLen(dest)
+	hasMore := actualCount > pageSize
+	if hasMore {
+		trimSliceToLen(dest, pageSize)
+		actualCount = pageSize
+	}
+
+	totalItems := int64(-1)
+	totalPages := -1
+	if !hasMore && !(page > 1 && actualCount == 0) {
+		totalItems = int64(offset + actualCount)
+		if totalItems == 0 {
+			totalPages = 0
+		} else {
+			totalPages = page
+		}
+	}
+
+	return &PaginatedResponse{
+		Items: dest,
+		Pagination: Pagination{
+			Page:       page,
+			PageSize:   pageSize,
+			TotalItems: totalItems,
+			TotalPages: totalPages,
+			HasMore:    hasMore,
+		},
+	}, nil
+}
+
+func parsePaginationParams(c *gin.Context) (int, int) {
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+
+	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", strconv.Itoa(DefaultPageSize)))
+	if err != nil || pageSize <= 0 {
+		pageSize = DefaultPageSize
+	}
+	if pageSize > MaxPageSize {
+		pageSize = MaxPageSize
+	}
+
+	return page, pageSize
 }
 
 // getSliceLen returns the length of a slice using reflection

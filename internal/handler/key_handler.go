@@ -429,7 +429,7 @@ func (s *Server) ListKeysInGroup(c *gin.Context) {
 	query := s.KeyService.ListKeysInGroupQuery(groupID, statusFilter, searchHash)
 
 	var keys []models.APIKey
-	paginatedResult, err := response.Paginate(c, query, &keys)
+	paginatedResult, err := response.PaginateFast(c, query, &keys)
 	if err != nil {
 		response.Error(c, app_errors.ParseDBError(err))
 		return

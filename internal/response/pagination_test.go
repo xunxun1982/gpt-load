@@ -1,14 +1,19 @@
 package response
 
 import (
+	"context"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // testModel is a simple model for testing pagination
@@ -20,6 +25,34 @@ type testModel struct {
 // TableName specifies the table name for testModel
 func (testModel) TableName() string {
 	return "test_models"
+}
+
+type paginationSQLCaptureLogger struct {
+	mu         sync.Mutex
+	statements []string
+}
+
+func (l *paginationSQLCaptureLogger) LogMode(logger.LogLevel) logger.Interface {
+	return l
+}
+
+func (l *paginationSQLCaptureLogger) Info(context.Context, string, ...any) {}
+
+func (l *paginationSQLCaptureLogger) Warn(context.Context, string, ...any) {}
+
+func (l *paginationSQLCaptureLogger) Error(context.Context, string, ...any) {}
+
+func (l *paginationSQLCaptureLogger) Trace(_ context.Context, _ time.Time, fc func() (string, int64), _ error) {
+	sql, _ := fc()
+	l.mu.Lock()
+	l.statements = append(l.statements, sql)
+	l.mu.Unlock()
+}
+
+func (l *paginationSQLCaptureLogger) joinedSQL() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.ToUpper(strings.Join(l.statements, "\n"))
 }
 
 // setupTestDB creates an in-memory SQLite database for testing
@@ -119,6 +152,54 @@ func TestPaginate_MultiplePages(t *testing.T) {
 		assert.Equal(t, int64(25), resp.Pagination.TotalItems)
 		assert.Equal(t, 3, resp.Pagination.TotalPages)
 	}
+}
+
+func TestPaginateFast_MultiplePagesDoesNotCount(t *testing.T) {
+	db := setupTestDB(t)
+	capture := &paginationSQLCaptureLogger{}
+	db = db.Session(&gorm.Session{Logger: capture})
+
+	for i := 1; i <= 25; i++ {
+		require.NoError(t, db.Create(&testModel{Name: "test"}).Error)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/?page=1&page_size=10", nil)
+
+	var results []testModel
+	resp, err := PaginateFast(c, db.Model(&testModel{}), &results)
+
+	require.NoError(t, err)
+	require.Len(t, results, 10)
+	require.True(t, resp.Pagination.HasMore)
+	require.Equal(t, int64(-1), resp.Pagination.TotalItems)
+	require.Equal(t, -1, resp.Pagination.TotalPages)
+	require.NotContains(t, capture.joinedSQL(), "COUNT(", "fast pagination should not run COUNT on full pages")
+}
+
+func TestPaginateFast_LastPageInfersTotal(t *testing.T) {
+	db := setupTestDB(t)
+	capture := &paginationSQLCaptureLogger{}
+	db = db.Session(&gorm.Session{Logger: capture})
+
+	for i := 1; i <= 25; i++ {
+		require.NoError(t, db.Create(&testModel{Name: "test"}).Error)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/?page=3&page_size=10", nil)
+
+	var results []testModel
+	resp, err := PaginateFast(c, db.Model(&testModel{}), &results)
+
+	require.NoError(t, err)
+	require.Len(t, results, 5)
+	require.False(t, resp.Pagination.HasMore)
+	require.Equal(t, int64(25), resp.Pagination.TotalItems)
+	require.Equal(t, 3, resp.Pagination.TotalPages)
+	require.NotContains(t, capture.joinedSQL(), "COUNT(", "fast pagination should infer last-page totals without COUNT")
 }
 
 // TestPaginate_InvalidParameters tests pagination with invalid parameters

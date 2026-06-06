@@ -55,6 +55,7 @@ const statusFilter = ref<"all" | "active" | "invalid">("all");
 const currentPage = ref(1);
 const pageSize = ref(12);
 const total = ref(0);
+const hasMore = ref(false);
 const totalPages = computed(() => {
   if (total.value < 0) {
     return -1;
@@ -84,6 +85,9 @@ const pageInfoText = computed(() => {
 const isNextPageDisabled = computed(() => {
   if (totalPages.value > 0 && currentPage.value >= totalPages.value) {
     return true;
+  }
+  if (totalPages.value < 0) {
+    return !hasMore.value;
   }
   if (keys.value.length === 0) {
     return true;
@@ -268,9 +272,13 @@ async function loadKeys() {
     });
     keys.value = result.items as KeyRow[];
     total.value = result.pagination.total_items;
+    hasMore.value =
+      result.pagination.has_more ??
+      (result.pagination.total_items < 0 && keys.value.length >= pageSize.value);
     // Reset retry count on successful load
     loadKeysRetryCount.value = 0;
   } catch (error: unknown) {
+    hasMore.value = false;
     // Check if it's a timeout error
     // Note: Uses string matching for timeout detection as a pragmatic approach
     // This works for current error formats but could be made more robust with

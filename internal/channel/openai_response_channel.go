@@ -39,7 +39,7 @@ func newOpenAIResponseChannel(f *Factory, group *models.Group) (ChannelProxy, er
 
 // CodexUserAgent is the User-Agent header value for Codex CLI-compatible requests.
 // Format: codex-cli/VERSION, matching the npm package @openai/codex client format.
-const CodexUserAgent = "codex-cli/0.136.0"
+const CodexUserAgent = "codex-cli/0.137.0"
 
 // ModifyRequest sets the Authorization header for the Responses API.
 // User-Agent is intentionally left unchanged for normal proxy requests.

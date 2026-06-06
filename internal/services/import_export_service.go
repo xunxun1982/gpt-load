@@ -11,7 +11,6 @@ import (
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -101,11 +100,10 @@ type ExportKeysResult struct {
 	Count int
 }
 
-// ExportKeysForGroup exports all keys for a specific group
-// This method fixes the FindInBatches limitation by using manual offset pagination
+// ExportKeysForGroup exports all keys for a specific group using ID keyset pagination.
 func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResult, error) {
 	var allKeys []KeyExportInfo
-	offset := 0
+	var lastID uint
 	totalExported := 0
 
 	// Get total count for progress tracking
@@ -126,23 +124,20 @@ func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResul
 
 	for {
 		var batchKeys []struct {
+			ID       uint
 			KeyValue string
 			Status   string
 		}
 
-		// Use Limit and Offset instead of FindInBatches to avoid its limitations
-		// FindInBatches has known issues with primary key pagination
-		// Order by id to ensure stable pagination (prevents skips/duplicates if data changes)
 		err := s.db.Model(&models.APIKey{}).
-			Select("key_value, status").
-			Where("group_id = ?", groupID).
+			Select("id, key_value, status").
+			Where("group_id = ? AND id > ?", groupID, lastID).
 			Order("id ASC").
 			Limit(ExportBatchSize).
-			Offset(offset).
 			Find(&batchKeys).Error
 
 		if err != nil {
-			return nil, fmt.Errorf("failed to export keys batch at offset %d: %w", offset, err)
+			return nil, fmt.Errorf("failed to export keys batch after id %d: %w", lastID, err)
 		}
 
 		// If no more records, we're done
@@ -158,6 +153,7 @@ func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResul
 			})
 		}
 
+		lastID = batchKeys[len(batchKeys)-1].ID
 		totalExported += len(batchKeys)
 
 		// Only log progress at 25%, 50%, 75% intervals for large exports
@@ -170,15 +166,13 @@ func (s *ImportExportService) ExportKeysForGroup(groupID uint) (*ExportKeysResul
 		}
 
 		// Debug level logging for detailed progress
-		logrus.Debugf("Exported batch: %d keys at offset %d (total: %d)",
-			len(batchKeys), offset, totalExported)
+		logrus.Debugf("Exported batch: %d keys after id %d (total: %d)",
+			len(batchKeys), lastID, totalExported)
 
 		// If we got less than batchSize, we've reached the end
 		if len(batchKeys) < ExportBatchSize {
 			break
 		}
-
-		offset += ExportBatchSize
 	}
 
 	// Final summary log
@@ -198,7 +192,6 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 	}
 
 	result := make(map[uint][]KeyExportInfo)
-	mu := sync.Mutex{}
 	totalExported := 0
 
 	// Get total count for progress tracking
@@ -207,8 +200,8 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 		logrus.WithError(err).Warn("Failed to get total count for groups")
 	}
 
-	// Process all groups' keys in batches
-	offset := 0
+	var lastGroupID uint
+	var lastID uint
 
 	// Log start with expected count
 	if totalCount > 0 {
@@ -221,6 +214,7 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 
 	for {
 		var batchKeys []struct {
+			ID       uint
 			GroupID  uint
 			KeyValue string
 			Status   string
@@ -229,15 +223,14 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 		// Query keys for all groups
 		// Order by group_id and id to ensure stable pagination across groups
 		err := s.db.Model(&models.APIKey{}).
-			Select("group_id, key_value, status").
-			Where("group_id IN ?", groupIDs).
+			Select("id, group_id, key_value, status").
+			Where("group_id IN ? AND (group_id > ? OR (group_id = ? AND id > ?))", groupIDs, lastGroupID, lastGroupID, lastID).
 			Order("group_id ASC, id ASC").
 			Limit(ExportMultiGroupBatchSize).
-			Offset(offset).
 			Find(&batchKeys).Error
 
 		if err != nil {
-			return nil, fmt.Errorf("failed to export keys batch at offset %d: %w", offset, err)
+			return nil, fmt.Errorf("failed to export keys batch after group %d id %d: %w", lastGroupID, lastID, err)
 		}
 
 		// If no more records, we're done
@@ -246,7 +239,6 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 		}
 
 		// Group keys by group ID
-		mu.Lock()
 		for _, key := range batchKeys {
 			if _, exists := result[key.GroupID]; !exists {
 				result[key.GroupID] = []KeyExportInfo{}
@@ -256,8 +248,10 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 				Status:   key.Status,
 			})
 		}
+		lastKey := batchKeys[len(batchKeys)-1]
+		lastGroupID = lastKey.GroupID
+		lastID = lastKey.ID
 		totalExported += len(batchKeys)
-		mu.Unlock()
 
 		// Only log progress at 25%, 50%, 75% intervals for large exports
 		if totalCount > LargeExportThreshold && totalExported > 0 {
@@ -269,15 +263,13 @@ func (s *ImportExportService) ExportKeysForGroups(groupIDs []uint) (map[uint][]K
 		}
 
 		// Debug level logging for detailed progress
-		logrus.Debugf("Exported batch: %d keys at offset %d (total: %d)",
-			len(batchKeys), offset, totalExported)
+		logrus.Debugf("Exported batch: %d keys after group %d id %d (total: %d)",
+			len(batchKeys), lastGroupID, lastID, totalExported)
 
 		// If we got less than batchSize, we've reached the end
 		if len(batchKeys) < ExportMultiGroupBatchSize {
 			break
 		}
-
-		offset += ExportMultiGroupBatchSize
 	}
 
 	logrus.Infof("System export completed: %d keys from %d groups", totalExported, len(groupIDs))

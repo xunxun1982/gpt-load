@@ -67,6 +67,7 @@ const logs = ref<LogRow[]>([]);
 const currentPage = ref(1);
 const pageSize = ref(15);
 const total = ref(0);
+const hasMore = ref(false);
 const totalPages = computed(() => {
   if (total.value < 0) {
     return -1;
@@ -94,6 +95,9 @@ const isNextPageDisabled = computed(() => {
   // If we know the total pages and we're at or beyond it, disable
   if (totalPages.value > 0 && currentPage.value >= totalPages.value) {
     return true;
+  }
+  if (totalPages.value < 0) {
+    return !hasMore.value;
   }
   // If we have no data on current page, also disable
   if (logs.value.length === 0) {
@@ -159,9 +163,13 @@ const loadLogs = async () => {
     if (res.code === 0 && res.data) {
       logs.value = res.data.items.map(log => ({ ...log, is_key_visible: false }));
       total.value = res.data.pagination.total_items;
+      hasMore.value =
+        res.data.pagination.has_more ??
+        (res.data.pagination.total_items < 0 && logs.value.length >= pageSize.value);
     } else {
       logs.value = [];
       total.value = 0;
+      hasMore.value = false;
       window.$message.error(res.message || t("logs.loadFailed"), {
         keepAliveOnHover: true,
         duration: 5000,
@@ -169,6 +177,7 @@ const loadLogs = async () => {
       });
     }
   } catch (_error) {
+    hasMore.value = false;
     window.$message.error(t("logs.requestFailed"));
   } finally {
     loading.value = false;
