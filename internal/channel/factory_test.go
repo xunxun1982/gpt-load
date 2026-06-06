@@ -20,7 +20,7 @@ func TestGetChannels(t *testing.T) {
 	if len(channels) == 0 {
 		t.Error("Expected at least one registered channel")
 	}
-	assert.Contains(t, channels, "openai-response")
+	assert.Equal(t, []string{"openai", "openai-response", "anthropic", "gemini"}, channels)
 	assert.NotContains(t, channels, "codex")
 }
 

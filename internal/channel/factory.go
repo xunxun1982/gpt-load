@@ -31,6 +31,17 @@ var (
 	channelRegistry = make(map[string]channelConstructor)
 )
 
+var preferredChannelOrder = []string{"openai", "openai-response", "anthropic", "gemini"}
+
+func isPreferredChannel(channelType string) bool {
+	for _, t := range preferredChannelOrder {
+		if channelType == t {
+			return true
+		}
+	}
+	return false
+}
+
 // Register adds a new channel constructor to the registry.
 func Register(channelType string, constructor channelConstructor) {
 	if _, exists := channelRegistry[channelType]; exists {
@@ -42,7 +53,15 @@ func Register(channelType string, constructor channelConstructor) {
 // GetChannels returns a slice of all registered channel type names.
 func GetChannels() []string {
 	supportedTypes := make([]string, 0, len(channelRegistry))
+	for _, t := range preferredChannelOrder {
+		if _, ok := channelRegistry[t]; ok {
+			supportedTypes = append(supportedTypes, t)
+		}
+	}
 	for t := range channelRegistry {
+		if isPreferredChannel(t) {
+			continue
+		}
 		supportedTypes = append(supportedTypes, t)
 	}
 	return supportedTypes
