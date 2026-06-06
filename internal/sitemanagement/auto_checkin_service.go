@@ -3,6 +3,7 @@ package sitemanagement
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,9 @@ const (
 
 	// Message constants for check-in results
 	msgNoValidCredentials = "no valid credentials"
+
+	newAPICheckinPoWAction = "checkin"
+	maxPoWAttempts         = uint64(1 << 32)
 )
 
 type AutoCheckinService struct {
@@ -1664,6 +1668,12 @@ func (p anyrouterProvider) tryCheckInWithAuthType(
 // Supports multi-auth fallback: tries access_token first, then cookie if access_token fails.
 type newAPIProvider struct{}
 
+type newAPIPoWChallenge struct {
+	ChallengeID string
+	HashPrefix  string
+	Difficulty  int
+}
+
 func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error) {
 	// Check if auth config is empty
 	if authConfig.IsEmpty() {
@@ -1764,6 +1774,10 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 		_ = json.Unmarshal(data, &resp)
 	}
 
+	if shouldRetryNewAPICheckinWithPoW(resp.Success, resp.Message) {
+		return p.retryCheckInWithPoW(ctx, client, site, headers, apiURL, authType, useStealth)
+	}
+
 	// Handle HTTP errors with parsed response message
 	if err != nil {
 		// Log error with full details at Warn level so users can see it
@@ -1790,6 +1804,9 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 
 		// Return detailed error message with HTTP status code
 		if resp.Message != "" {
+			if isTurnstileMissingMessage(resp.Message) {
+				return providerResult{Status: CheckinResultFailed, Message: newAPITurnstileBrowserRequiredMessage()}, nil
+			}
 			return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("HTTP %d: %s", statusCode, resp.Message)}, nil
 		}
 		// Return HTTP status code with common error explanations
@@ -1825,7 +1842,277 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 	}
 	// Failure with message
 	if resp.Message != "" {
+		if isTurnstileMissingMessage(resp.Message) {
+			return providerResult{Status: CheckinResultFailed, Message: newAPITurnstileBrowserRequiredMessage()}, nil
+		}
 		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
 	}
 	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, nil
+}
+
+func (p newAPIProvider) retryCheckInWithPoW(
+	ctx context.Context,
+	client *http.Client,
+	site ManagedSite,
+	headers map[string]string,
+	apiURL string,
+	authType string,
+	useStealth bool,
+) (providerResult, error) {
+	powChallenge, err := p.fetchPoWChallenge(ctx, client, site, headers, useStealth)
+	if err != nil {
+		return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("PoW challenge failed: %s", err.Error())}, nil
+	}
+	solveCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	nonce, err := solvePoWNonce(solveCtx, powChallenge.HashPrefix, powChallenge.Difficulty)
+	if err != nil {
+		return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("PoW solve failed: %s", err.Error())}, nil
+	}
+
+	powURL, err := appendQueryParams(apiURL, map[string]string{
+		"pow_challenge": powChallenge.ChallengeID,
+		"pow_nonce":     nonce,
+	})
+	if err != nil {
+		return providerResult{Status: CheckinResultFailed, Message: "invalid check-in URL"}, nil
+	}
+
+	var data []byte
+	var statusCode int
+	if useStealth {
+		data, statusCode, err = doStealthJSONRequest(ctx, client, http.MethodPost, powURL, headers, map[string]any{})
+	} else {
+		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, powURL, headers, map[string]any{})
+	}
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    any    `json:"data"`
+	}
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &resp)
+	}
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"site_id":     site.ID,
+			"site_name":   site.Name,
+			"auth_type":   authType,
+			"status_code": statusCode,
+			"resp_msg":    resp.Message,
+			"error":       err.Error(),
+		}).Warn("NewAPI PoW check-in HTTP error")
+		if resp.Message != "" {
+			return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("HTTP %d: %s", statusCode, resp.Message)}, nil
+		}
+		return providerResult{Status: CheckinResultFailed, Message: formatHTTPError(statusCode)}, nil
+	}
+	if isAlreadyCheckedMessage(resp.Message) {
+		return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
+	}
+	if resp.Success {
+		return providerResult{Status: CheckinResultSuccess, Message: resp.Message}, nil
+	}
+	if resp.Message != "" {
+		if isTurnstileMissingMessage(resp.Message) {
+			return providerResult{Status: CheckinResultFailed, Message: newAPITurnstileBrowserRequiredMessage()}, nil
+		}
+		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+	}
+	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, nil
+}
+
+func (p newAPIProvider) fetchPoWChallenge(
+	ctx context.Context,
+	client *http.Client,
+	site ManagedSite,
+	headers map[string]string,
+	useStealth bool,
+) (newAPIPoWChallenge, error) {
+	challengeURL, err := appendQueryParams(buildCheckinURL(site.BaseURL, "", "/api/user/pow/challenge"), map[string]string{
+		"action": newAPICheckinPoWAction,
+	})
+	if err != nil {
+		return newAPIPoWChallenge{}, err
+	}
+
+	var data []byte
+	var statusCode int
+	if useStealth {
+		data, statusCode, err = doStealthJSONRequest(ctx, client, http.MethodGet, challengeURL, headers, nil)
+	} else {
+		data, statusCode, err = doJSONRequest(ctx, client, http.MethodGet, challengeURL, headers, nil)
+	}
+	if err != nil {
+		return newAPIPoWChallenge{}, fmt.Errorf("http %d", statusCode)
+	}
+
+	challenge, err := parseNewAPIPoWChallenge(data)
+	if err != nil {
+		return newAPIPoWChallenge{}, err
+	}
+	return challenge, nil
+}
+
+func parseNewAPIPoWChallenge(data []byte) (newAPIPoWChallenge, error) {
+	var resp struct {
+		Success bool            `json:"success"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return newAPIPoWChallenge{}, err
+	}
+	if !resp.Success {
+		if resp.Message != "" {
+			return newAPIPoWChallenge{}, errors.New(resp.Message)
+		}
+		return newAPIPoWChallenge{}, errors.New("challenge request failed")
+	}
+
+	challenge, ok := extractPoWChallengeFields(resp.Data)
+	if !ok {
+		challenge, ok = extractPoWChallengeFields(data)
+	}
+	if !ok {
+		return newAPIPoWChallenge{}, errors.New("invalid challenge response")
+	}
+	if challenge.Difficulty < 0 || challenge.Difficulty > 32 {
+		return newAPIPoWChallenge{}, fmt.Errorf("unsupported difficulty %d", challenge.Difficulty)
+	}
+	if strings.TrimSpace(challenge.ChallengeID) == "" {
+		return newAPIPoWChallenge{}, errors.New("empty challenge")
+	}
+	if strings.TrimSpace(challenge.HashPrefix) == "" {
+		return newAPIPoWChallenge{}, errors.New("empty challenge prefix")
+	}
+	return challenge, nil
+}
+
+func extractPoWChallengeFields(data []byte) (newAPIPoWChallenge, bool) {
+	if len(data) == 0 {
+		return newAPIPoWChallenge{}, false
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return newAPIPoWChallenge{}, false
+	}
+
+	challengeField := firstStringField(fields, "challenge")
+	// Some NewAPI deployments separate the server challenge id from the hash prefix.
+	challengeID := firstStringField(fields, "id", "challenge_id", "pow_challenge", "challenge")
+	hashPrefix := firstStringField(fields, "prefix", "pow_prefix")
+	if hashPrefix == "" {
+		hashPrefix = challengeField
+	}
+	if challengeID == "" {
+		challengeID = hashPrefix
+	}
+	if hashPrefix == "" {
+		hashPrefix = challengeID
+	}
+	difficulty, ok := firstIntField(fields, "difficulty", "bits", "pow_difficulty")
+	if challengeID == "" || hashPrefix == "" || !ok {
+		return newAPIPoWChallenge{}, false
+	}
+	return newAPIPoWChallenge{
+		ChallengeID: challengeID,
+		HashPrefix:  hashPrefix,
+		Difficulty:  difficulty,
+	}, true
+}
+
+func firstStringField(fields map[string]any, names ...string) string {
+	for _, name := range names {
+		if value, ok := fields[name]; ok {
+			if s, ok := value.(string); ok {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
+}
+
+func firstIntField(fields map[string]any, names ...string) (int, bool) {
+	for _, name := range names {
+		if value, ok := fields[name]; ok {
+			switch v := value.(type) {
+			case float64:
+				if v == float64(int(v)) {
+					return int(v), true
+				}
+			case int:
+				return v, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func shouldRetryNewAPICheckinWithPoW(success bool, message string) bool {
+	return !success && strings.Contains(strings.ToLower(message), "pow") && strings.Contains(strings.ToLower(message), "nonce")
+}
+
+func solvePoWNonce(ctx context.Context, hashPrefix string, difficulty int) (string, error) {
+	for attempt := uint64(0); attempt < maxPoWAttempts; attempt++ {
+		if attempt%50000 == 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			default:
+			}
+		}
+		nonce := fmt.Sprintf("%08x", uint32(attempt))
+		sum := sha256.Sum256([]byte(hashPrefix + nonce))
+		if hasLeadingZeroBits(sum[:], difficulty) {
+			return nonce, nil
+		}
+	}
+	return "", errors.New("nonce not found")
+}
+
+func hasLeadingZeroBits(data []byte, bits int) bool {
+	if bits <= 0 {
+		return true
+	}
+	fullBytes := bits / 8
+	remainingBits := bits % 8
+	for i := 0; i < fullBytes && i < len(data); i++ {
+		if data[i] != 0 {
+			return false
+		}
+	}
+	if remainingBits == 0 {
+		return true
+	}
+	if fullBytes >= len(data) {
+		return false
+	}
+	mask := byte(0xff << (8 - remainingBits))
+	return data[fullBytes]&mask == 0
+}
+
+func appendQueryParams(rawURL string, params map[string]string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	query := parsed.Query()
+	for key, value := range params {
+		query.Set(key, value)
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
+}
+
+func isTurnstileMissingMessage(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "turnstile") && (strings.Contains(message, "为空") || strings.Contains(lower, "empty") || strings.Contains(lower, "required"))
+}
+
+func newAPITurnstileBrowserRequiredMessage() string {
+	// Turnstile tokens are bound to an interactive browser challenge, so background
+	// check-in must not fabricate or bypass them.
+	return "Turnstile requires browser verification; update the site cookie after completing Turnstile in browser"
 }
