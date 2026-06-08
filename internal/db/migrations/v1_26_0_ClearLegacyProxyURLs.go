@@ -5,6 +5,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const clearLegacyProxyURLsMigrationVersion = "v1.26.0_clear_legacy_proxy_urls"
@@ -36,6 +37,15 @@ func V1_26_0_ClearLegacyProxyURLs(db *gorm.DB) error {
 	}
 
 	err = db.Transaction(func(tx *gorm.DB) error {
+		acquired, err := acquireClearLegacyProxyURLsMigrationMarker(tx)
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			logrus.Info("Migration v1.26.0 completed concurrently, skipping")
+			return nil
+		}
+
 		if tx.Migrator().HasTable("system_settings") {
 			result := tx.Table("system_settings").
 				Where("setting_key = ? AND setting_value <> ?", "proxy_url", "").
@@ -52,13 +62,6 @@ func V1_26_0_ClearLegacyProxyURLs(db *gorm.DB) error {
 			if err := clearLegacyGroupProxyURLs(tx); err != nil {
 				return err
 			}
-		}
-
-		if err := tx.Create(&dataMigrationMarker{
-			Version:   clearLegacyProxyURLsMigrationVersion,
-			CreatedAt: time.Now().UTC(),
-		}).Error; err != nil {
-			return err
 		}
 		return nil
 	})
@@ -81,6 +84,20 @@ func hasDataMigrationRun(db *gorm.DB, version string) (bool, error) {
 	var count int64
 	err := db.Model(&dataMigrationMarker{}).Where("version = ?", version).Count(&count).Error
 	return count > 0, err
+}
+
+func acquireClearLegacyProxyURLsMigrationMarker(db *gorm.DB) (bool, error) {
+	result := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "version"}},
+		DoNothing: true,
+	}).Create(&dataMigrationMarker{
+		Version:   clearLegacyProxyURLsMigrationVersion,
+		CreatedAt: time.Now().UTC(),
+	})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func clearLegacyGroupProxyURLs(db *gorm.DB) error {

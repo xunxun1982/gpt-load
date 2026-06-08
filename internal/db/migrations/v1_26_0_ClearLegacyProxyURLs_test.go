@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"gpt-load/internal/models"
 
@@ -63,4 +64,31 @@ func TestV1_26_0_ClearLegacyProxyURLsClearsSystemAndGroupProxyValues(t *testing.
 	require.NoError(t, db.Where("name = ?", "standard").First(&group).Error)
 	require.Contains(t, string(group.Upstreams), "proxy_url")
 	require.Contains(t, group.Config, "proxy_url")
+}
+
+func TestV1_26_0_ClearLegacyProxyURLsMarkerInsertIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&models.SystemSetting{}, &models.Group{}))
+	require.NoError(t, ensureDataMigrationsTable(db))
+
+	tx := db.Begin()
+	require.NoError(t, tx.Error)
+	require.NoError(t, tx.Create(&dataMigrationMarker{
+		Version:   clearLegacyProxyURLsMigrationVersion,
+		CreatedAt: time.Now().UTC(),
+	}).Error)
+
+	acquired, err := acquireClearLegacyProxyURLsMigrationMarker(tx)
+	require.NoError(t, err)
+	require.False(t, acquired)
+	require.NoError(t, tx.Commit().Error)
+
+	var count int64
+	require.NoError(t, db.Model(&dataMigrationMarker{}).
+		Where("version = ?", clearLegacyProxyURLsMigrationVersion).
+		Count(&count).Error)
+	require.Equal(t, int64(1), count)
 }

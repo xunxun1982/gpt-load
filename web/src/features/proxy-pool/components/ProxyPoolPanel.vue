@@ -244,6 +244,14 @@ async function testItem(item: ProxyPoolItem, silent = false) {
       }
     }
   } catch {
+    testResults[item.id] = {
+      success: false,
+      url: item.url,
+      target_url: "",
+      timeout_ms: proxyTestTimeoutSeconds * 1000,
+      duration_ms: 0,
+      error: t("proxyPool.testRequestFailed"),
+    };
     if (!silent) {
       message.error(t("proxyPool.testRequestFailed"));
     }

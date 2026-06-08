@@ -443,6 +443,19 @@ func TestGetEffectiveConfigSplitTimeouts(t *testing.T) {
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
+func TestGetEffectiveConfigSplitTimeoutsWithNonZeroStreamTimeout(t *testing.T) {
+	manager := NewSystemSettingsManager()
+
+	cfg := manager.GetEffectiveConfig(map[string]any{
+		"non_stream_request_timeout": float64(45),
+		"stream_request_timeout":     float64(30),
+	})
+
+	assert.Equal(t, 45, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 30, cfg.StreamRequestTimeout)
+	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+}
+
 func TestGetEffectiveConfigLegacyRequestTimeout(t *testing.T) {
 	manager := NewSystemSettingsManager()
 

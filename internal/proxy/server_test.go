@@ -17,6 +17,7 @@ import (
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
+	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/httpclient"
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
@@ -625,8 +626,12 @@ func TestShouldAbortOnIgnorableErrorRetriesUpstreamTimeoutWhenClientAlive(t *tes
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Nanosecond)
 	defer cancel()
 	<-ctx.Done()
+	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+	// Keep the request context alive; this branch covers upstream timeouts, not client cancellation.
+	require.NoError(t, c.Request.Context().Err())
 
 	err := errors.New("net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers)")
+	require.True(t, app_errors.IsIgnorableError(err))
 	assert.False(t, ps.shouldAbortOnIgnorableError(c, err))
 }
 
@@ -697,8 +702,7 @@ func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing
 	slowUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&slowAttempts, 1)
 		_ = memStore.LPush(activeKeysListKeyForTest(fastGroupID.Load()), fastKeyID.Load())
-		time.Sleep(150 * time.Millisecond)
-		w.WriteHeader(http.StatusServiceUnavailable)
+		time.Sleep(1200 * time.Millisecond)
 	}))
 	t.Cleanup(slowUpstream.Close)
 

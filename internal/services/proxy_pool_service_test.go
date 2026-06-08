@@ -121,7 +121,12 @@ func TestProxyPoolServiceTestUsesConfiguredProxy(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, result.StatusCode)
 	assert.GreaterOrEqual(t, result.DurationMS, int64(0))
 	assert.Equal(t, proxyServer.URL, result.URL)
-	assert.Equal(t, targetURL, <-proxyRequests)
+	select {
+	case got := <-proxyRequests:
+		assert.Equal(t, targetURL, got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for proxy request")
+	}
 }
 
 func TestProxyPoolServiceTestSanitizesProxyCredentialsInErrors(t *testing.T) {
