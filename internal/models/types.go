@@ -27,9 +27,20 @@ type SystemSetting struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// ProxyPoolItem stores a reusable outbound proxy URL for upstream requests.
+type ProxyPoolItem struct {
+	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name      string    `gorm:"type:varchar(255);not null" json:"name"`
+	URL       string    `gorm:"type:text;not null" json:"url"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // GroupConfig stores group-specific configuration.
 type GroupConfig struct {
 	RequestTimeout               *int    `json:"request_timeout,omitempty"`
+	NonStreamRequestTimeout      *int    `json:"non_stream_request_timeout,omitempty"`
+	StreamRequestTimeout         *int    `json:"stream_request_timeout,omitempty"`
 	IdleConnTimeout              *int    `json:"idle_conn_timeout,omitempty"`
 	ConnectTimeout               *int    `json:"connect_timeout,omitempty"`
 	MaxIdleConns                 *int    `json:"max_idle_conns,omitempty"`

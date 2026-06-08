@@ -143,7 +143,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.25.0 migration - Optimize api_keys lookup and ordered listing indexes
-	return V1_25_0_OptimizeAPIKeyIndexes(db)
+	if err := V1_25_0_OptimizeAPIKeyIndexes(db); err != nil {
+		return err
+	}
+	// Run v1.26.0 migration - Clear proxy URL settings before proxy pool adoption
+	return V1_26_0_ClearLegacyProxyURLs(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

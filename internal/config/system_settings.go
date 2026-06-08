@@ -33,10 +33,28 @@ func NewSystemSettingsManager() *SystemSettingsManager {
 	return &SystemSettingsManager{}
 }
 
+func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, hasNonStream bool) {
+	if settings == nil {
+		return
+	}
+	if hasLegacy && !hasNonStream {
+		settings.NonStreamRequestTimeout = settings.RequestTimeout
+	}
+	if settings.NonStreamRequestTimeout <= 0 {
+		settings.NonStreamRequestTimeout = settings.RequestTimeout
+	}
+	settings.RequestTimeout = settings.NonStreamRequestTimeout
+}
+
 func validateStringSettingValue(key, val string) error {
 	if key == "failover_status_codes" {
 		if _, err := failover.ParseStatusCodeMatcher(val); err != nil {
 			return fmt.Errorf("invalid value for %s (%q): %w", key, val, err)
+		}
+	}
+	if key == "proxy_url" {
+		if _, err := utils.NormalizeProxyURL(val); err != nil {
+			return fmt.Errorf("invalid value for %s: %w", key, err)
 		}
 	}
 	return nil
@@ -82,6 +100,9 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 				}
 			}
 		}
+		_, hasLegacyTimeout := settingsMap["request_timeout"]
+		_, hasNonStreamTimeout := settingsMap["non_stream_request_timeout"]
+		normalizeSplitRequestTimeouts(&settings, hasLegacyTimeout, hasNonStreamTimeout)
 
 		settings.ProxyKeysMap = utils.StringToSet(settings.ProxyKeys, ",")
 
@@ -197,6 +218,11 @@ func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) erro
 
 	// Update database
 	var settingsToUpdate []models.SystemSetting
+	if legacyTimeout, hasLegacy := settingsMap["request_timeout"]; hasLegacy {
+		if _, hasNonStream := settingsMap["non_stream_request_timeout"]; !hasNonStream {
+			settingsMap["non_stream_request_timeout"] = legacyTimeout
+		}
+	}
 	for key, value := range settingsMap {
 		settingsToUpdate = append(settingsToUpdate, models.SystemSetting{
 			SettingKey:   key,
@@ -274,6 +300,11 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 			}
 		}
 	}
+	normalizeSplitRequestTimeouts(
+		&effectiveConfig,
+		groupConfig.RequestTimeout != nil,
+		groupConfig.NonStreamRequestTimeout != nil,
+	)
 
 	return effectiveConfig
 }
@@ -587,7 +618,8 @@ func (sm *SystemSettingsManager) DisplaySystemConfig(settings types.SystemSettin
 	logrus.Infof("    Request Log Write Interval: %d minutes", settings.RequestLogWriteIntervalMinutes)
 
 	logrus.Info("  --- Request Behavior ---")
-	logrus.Infof("    Request Timeout: %d seconds", settings.RequestTimeout)
+	logrus.Infof("    Non-Stream Request Timeout: %d seconds", settings.NonStreamRequestTimeout)
+	logrus.Infof("    Stream Request Timeout: %d seconds", settings.StreamRequestTimeout)
 	logrus.Infof("    Connect Timeout: %d seconds", settings.ConnectTimeout)
 	logrus.Infof("    Response Header Timeout: %d seconds", settings.ResponseHeaderTimeout)
 	logrus.Infof("    Idle Connection Timeout: %d seconds", settings.IdleConnTimeout)

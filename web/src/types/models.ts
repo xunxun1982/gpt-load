@@ -31,7 +31,15 @@ export interface APIKey {
 export interface UpstreamInfo {
   url: string;
   weight: number;
-  proxy_url?: string;
+  proxy_url?: string | null;
+}
+
+export interface ProxyPoolItem {
+  id: number;
+  name: string;
+  url: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface HeaderRule {

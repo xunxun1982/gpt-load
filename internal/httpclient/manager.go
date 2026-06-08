@@ -144,7 +144,7 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 			transport.Proxy = http.ProxyFromEnvironment
 		} else {
 			// Validate proxy URL scheme
-			if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" && proxyURL.Scheme != "socks5" {
+			if !utils.IsSupportedProxyScheme(proxyURL.Scheme) {
 				// Sanitize proxy URL to prevent credential leakage in logs
 				logrus.Warnf("Unsupported proxy scheme '%s' in URL '%s', falling back to environment settings", proxyURL.Scheme, utils.SanitizeProxyString(trimmedProxyURL))
 				transport.Proxy = http.ProxyFromEnvironment

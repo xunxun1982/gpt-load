@@ -101,6 +101,9 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(services.NewGroupService); err != nil {
 		return nil, err
 	}
+	if err := container.Provide(services.NewProxyPoolService); err != nil {
+		return nil, err
+	}
 	if err := container.Provide(services.NewAggregateGroupService); err != nil {
 		return nil, err
 	}

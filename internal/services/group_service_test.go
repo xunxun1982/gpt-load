@@ -564,6 +564,57 @@ func TestValidateAndCleanUpstreams(t *testing.T) {
 	}
 }
 
+func TestCreateGroupSavesProxyPoolSelectedUpstreamProxy(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	group, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "proxy-pool-upstream",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100,"proxy_url":" socks5://127.0.0.1:1080 "}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-4.1-mini",
+		ValidationEndpoint: "/v1/chat/completions",
+	})
+	require.NoError(t, err)
+
+	var saved []struct {
+		URL      string  `json:"url"`
+		Weight   int     `json:"weight"`
+		ProxyURL *string `json:"proxy_url,omitempty"`
+	}
+	require.NoError(t, json.Unmarshal(group.Upstreams, &saved))
+	require.Len(t, saved, 1)
+	require.NotNil(t, saved[0].ProxyURL)
+	assert.Equal(t, "socks5://127.0.0.1:1080", *saved[0].ProxyURL)
+}
+
+func TestUpdateGroupSavesProxyPoolSelectedConfigProxy(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	group, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "proxy-pool-config",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.openai.com","weight":100}]`),
+		ChannelType:        "openai",
+		TestModel:          "gpt-4.1-mini",
+		ValidationEndpoint: "/v1/chat/completions",
+	})
+	require.NoError(t, err)
+
+	updated, err := svc.UpdateGroup(context.Background(), group.ID, GroupUpdateParams{
+		Config: map[string]any{
+			"proxy_url": "http://127.0.0.1:8080",
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, updated.Config)
+	assert.Equal(t, "http://127.0.0.1:8080", updated.Config["proxy_url"])
+}
+
 // TestValidateAndCleanConfig tests config validation
 func TestValidateAndCleanConfig(t *testing.T) {
 	t.Parallel()

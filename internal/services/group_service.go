@@ -2748,6 +2748,9 @@ func (s *GroupService) GetGroupConfigOptions() ([]ConfigOption, error) {
 		if key == "" || key == "-" {
 			continue
 		}
+		if key == "request_timeout" {
+			continue
+		}
 
 		definition, ok := defMap[key]
 		if !ok {
@@ -2782,6 +2785,11 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 			configMap["force_function_call"] = legacyValue
 		}
 		delete(configMap, "force_function_calling")
+	}
+	if legacyValue, ok := configMap["request_timeout"]; ok {
+		if _, hasNewKey := configMap["non_stream_request_timeout"]; !hasNewKey {
+			configMap["non_stream_request_timeout"] = legacyValue
+		}
 	}
 
 	var tempGroupConfig models.GroupConfig
@@ -2824,6 +2832,9 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 	var finalMap map[string]any
 	if err := json.Unmarshal(validatedBytes, &finalMap); err != nil {
 		return nil, NewI18nError(app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
+	}
+	if nonStreamTimeout, ok := finalMap["non_stream_request_timeout"]; ok {
+		finalMap["request_timeout"] = nonStreamTimeout
 	}
 
 	return finalMap, nil
@@ -2962,11 +2973,14 @@ func (s *GroupService) validateAndCleanUpstreams(upstreams json.RawMessage) (dat
 		}
 		// Clean proxy_url if present
 		if defs[i].ProxyURL != nil {
-			trimmed := strings.TrimSpace(*defs[i].ProxyURL)
-			if trimmed == "" {
+			normalizedProxyURL, err := utils.NormalizeProxyURL(*defs[i].ProxyURL)
+			if err != nil {
+				return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": err.Error()})
+			}
+			if normalizedProxyURL == "" {
 				defs[i].ProxyURL = nil
 			} else {
-				defs[i].ProxyURL = &trimmed
+				defs[i].ProxyURL = &normalizedProxyURL
 			}
 		}
 	}

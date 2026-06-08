@@ -4934,42 +4934,42 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 	tests := []struct {
 		name                      string
 		responseHeaderTimeout     int
-		requestTimeout            int
+		streamRequestTimeout      int
 		expectedFirstByteTimeout  time.Duration
 		expectedSubsequentTimeout time.Duration
 	}{
 		{
 			name:                      "no group in context uses preset values",
 			responseHeaderTimeout:     0,
-			requestTimeout:            0,
+			streamRequestTimeout:      0,
 			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
 			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
 		},
 		{
 			name:                      "config values larger than preset uses preset",
 			responseHeaderTimeout:     600, // 600s > 30s preset
-			requestTimeout:            800, // 800s > 60s preset
+			streamRequestTimeout:      800, // 800s > 60s preset
 			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
 			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
 		},
 		{
 			name:                      "config values smaller than preset uses config",
 			responseHeaderTimeout:     10, // 10s < 30s preset
-			requestTimeout:            30, // 30s < 60s preset
+			streamRequestTimeout:      30, // 30s < 60s preset
 			expectedFirstByteTimeout:  10 * time.Second,
 			expectedSubsequentTimeout: 30 * time.Second,
 		},
 		{
 			name:                      "mixed config values",
 			responseHeaderTimeout:     20,  // 20s < 30s preset, use config
-			requestTimeout:            120, // 120s > 60s preset, use preset
+			streamRequestTimeout:      120, // 120s > 60s preset, use preset
 			expectedFirstByteTimeout:  20 * time.Second,
 			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
 		},
 		{
 			name:                      "zero config values uses preset",
 			responseHeaderTimeout:     0,
-			requestTimeout:            0,
+			streamRequestTimeout:      0,
 			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
 			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
 		},
@@ -4981,11 +4981,11 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 			c, _ := gin.CreateTestContext(w)
 
 			// Set up group with config if values are provided
-			if tt.responseHeaderTimeout > 0 || tt.requestTimeout > 0 || tt.name == "zero config values uses preset" {
+			if tt.responseHeaderTimeout > 0 || tt.streamRequestTimeout > 0 || tt.name == "zero config values uses preset" {
 				group := &models.Group{
 					EffectiveConfig: types.SystemSettings{
 						ResponseHeaderTimeout: tt.responseHeaderTimeout,
-						RequestTimeout:        tt.requestTimeout,
+						StreamRequestTimeout:  tt.streamRequestTimeout,
 					},
 				}
 				c.Set("group", group)

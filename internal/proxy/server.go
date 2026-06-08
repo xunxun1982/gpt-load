@@ -981,9 +981,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if isStream {
-		ctx, cancel = context.WithCancel(c.Request.Context())
+		if cfg.StreamRequestTimeout > 0 {
+			ctx, cancel = context.WithTimeout(c.Request.Context(), time.Duration(cfg.StreamRequestTimeout)*time.Second)
+		} else {
+			ctx, cancel = context.WithCancel(c.Request.Context())
+		}
 	} else {
-		timeout := time.Duration(cfg.RequestTimeout) * time.Second
+		timeout := time.Duration(cfg.NonStreamRequestTimeout) * time.Second
 		ctx, cancel = context.WithTimeout(c.Request.Context(), timeout)
 	}
 	defer cancel()
@@ -1676,9 +1680,13 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if isStream {
-		ctx, cancel = context.WithCancel(c.Request.Context())
+		if cfg.StreamRequestTimeout > 0 {
+			ctx, cancel = context.WithTimeout(c.Request.Context(), time.Duration(cfg.StreamRequestTimeout)*time.Second)
+		} else {
+			ctx, cancel = context.WithCancel(c.Request.Context())
+		}
 	} else {
-		timeout := time.Duration(cfg.RequestTimeout) * time.Second
+		timeout := time.Duration(cfg.NonStreamRequestTimeout) * time.Second
 		ctx, cancel = context.WithTimeout(c.Request.Context(), timeout)
 	}
 	defer cancel()

@@ -21,7 +21,7 @@ const menuOptions = computed<MenuOption[]>(() => {
     renderMenuItemWithChildren("more", t("nav.more"), "📦", [
       renderMenuItem("more-hub", t("hub.tabLabel"), "🏢", { tab: "hub" }),
       renderMenuItem("more-site", t("more.siteManagement"), "🌐", { tab: "site" }),
-      renderMenuItem("more-agent", t("more.agent"), "🤖", { tab: "agent" }),
+      renderMenuItem("more-proxy-pool", t("more.proxyPool"), "🧭", { tab: "proxyPool" }),
     ]),
   ];
 

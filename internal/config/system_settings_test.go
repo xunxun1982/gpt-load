@@ -32,7 +32,8 @@ func TestGetSettings(t *testing.T) {
 	// Should return default settings when not initialized
 	settings := manager.GetSettings()
 	assert.NotNil(t, settings)
-	assert.Greater(t, settings.RequestTimeout, 0)
+	assert.Greater(t, settings.NonStreamRequestTimeout, 0)
+	assert.Zero(t, settings.StreamRequestTimeout)
 }
 
 // TestGetAppUrl tests getting app URL
@@ -87,6 +88,20 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "valid integer setting",
 			settings: map[string]any{
+				"non_stream_request_timeout": float64(60),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid stream timeout disabled",
+			settings: map[string]any{
+				"stream_request_timeout": float64(0),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid legacy request timeout",
+			settings: map[string]any{
 				"request_timeout": float64(60),
 			},
 			expectError: false,
@@ -95,6 +110,13 @@ func TestValidateSettings(t *testing.T) {
 			name: "valid string setting",
 			settings: map[string]any{
 				"app_url": "http://localhost:3001",
+			},
+			expectError: false,
+		},
+		{
+			name: "valid proxy pool selected setting",
+			settings: map[string]any{
+				"proxy_url": "socks5://127.0.0.1:1080",
 			},
 			expectError: false,
 		},
@@ -109,7 +131,7 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "invalid type for integer",
 			settings: map[string]any{
-				"request_timeout": "not_a_number",
+				"non_stream_request_timeout": "not_a_number",
 			},
 			expectError: true,
 			errorMsg:    "expected a number",
@@ -117,7 +139,15 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "value below minimum",
 			settings: map[string]any{
-				"request_timeout": float64(0),
+				"non_stream_request_timeout": float64(0),
+			},
+			expectError: true,
+			errorMsg:    "below minimum value",
+		},
+		{
+			name: "stream timeout below minimum",
+			settings: map[string]any{
+				"stream_request_timeout": float64(-1),
 			},
 			expectError: true,
 			errorMsg:    "below minimum value",
@@ -125,7 +155,7 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "non-integer float value",
 			settings: map[string]any{
-				"request_timeout": float64(30.5),
+				"non_stream_request_timeout": float64(30.5),
 			},
 			expectError: true,
 			errorMsg:    "must be an integer",
@@ -371,7 +401,15 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid system setting override",
+			name: "valid split timeout overrides",
+			config: map[string]any{
+				"non_stream_request_timeout": float64(120),
+				"stream_request_timeout":     float64(0),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid legacy timeout override",
 			config: map[string]any{
 				"request_timeout": float64(120),
 			},
@@ -390,6 +428,31 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetEffectiveConfigSplitTimeouts(t *testing.T) {
+	manager := NewSystemSettingsManager()
+
+	cfg := manager.GetEffectiveConfig(map[string]any{
+		"non_stream_request_timeout": float64(45),
+		"stream_request_timeout":     float64(0),
+	})
+
+	assert.Equal(t, 45, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 0, cfg.StreamRequestTimeout)
+	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+}
+
+func TestGetEffectiveConfigLegacyRequestTimeout(t *testing.T) {
+	manager := NewSystemSettingsManager()
+
+	cfg := manager.GetEffectiveConfig(map[string]any{
+		"request_timeout": float64(75),
+	})
+
+	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 0, cfg.StreamRequestTimeout)
+	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
 // TestDisplaySystemConfig tests displaying system configuration

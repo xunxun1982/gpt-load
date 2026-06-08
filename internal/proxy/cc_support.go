@@ -4170,7 +4170,7 @@ const (
 //
 // Timeout mapping:
 // - firstByteTimeout: derived from ResponseHeaderTimeout (time to wait for first response)
-// - subsequentTimeout: derived from RequestTimeout (overall request timeout)
+// - subsequentTimeout: derived from StreamRequestTimeout (idle time between SSE events)
 func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeout time.Duration) {
 	// Default to preset values (upper bounds)
 	firstByteTimeout = sseFirstByteTimeoutPreset
@@ -4197,9 +4197,9 @@ func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeou
 		}
 	}
 
-	// Apply RequestTimeout if smaller than preset (stricter timeout)
-	if cfg.RequestTimeout > 0 {
-		configTimeout := time.Duration(cfg.RequestTimeout) * time.Second
+	// Apply StreamRequestTimeout if smaller than preset (stricter timeout)
+	if cfg.StreamRequestTimeout > 0 {
+		configTimeout := time.Duration(cfg.StreamRequestTimeout) * time.Second
 		if configTimeout < subsequentTimeout {
 			subsequentTimeout = configTimeout
 		}

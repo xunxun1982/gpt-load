@@ -1,13 +1,17 @@
 package channel
 
 import (
+	"context"
 	"encoding/json"
 	"gpt-load/internal/config"
 	"gpt-load/internal/httpclient"
 	"gpt-load/internal/models"
 	"gpt-load/internal/types"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,6 +42,132 @@ func setupTestFactoryForBenchmark() *Factory {
 	settingsManager := config.NewSystemSettingsManager()
 	clientManager := httpclient.NewHTTPClientManager()
 	return NewFactory(settingsManager, clientManager)
+}
+
+func TestNewBaseChannelUsesSplitRequestTimeouts(t *testing.T) {
+	t.Parallel()
+
+	factory := setupTestFactory(t)
+	upstreams := []map[string]any{
+		{"url": "https://api.openai.com", "weight": 100},
+	}
+	upstreamsJSON, err := json.Marshal(upstreams)
+	require.NoError(t, err)
+
+	base, err := factory.newBaseChannel("openai", &models.Group{
+		ID:          1,
+		Name:        "split-timeout-group",
+		ChannelType: "openai",
+		Upstreams:   datatypes.JSON(upstreamsJSON),
+		EffectiveConfig: types.SystemSettings{
+			ConnectTimeout:          15,
+			RequestTimeout:          90,
+			NonStreamRequestTimeout: 45,
+			StreamRequestTimeout:    120,
+			IdleConnTimeout:         90,
+			MaxIdleConns:            100,
+			MaxIdleConnsPerHost:     10,
+			ResponseHeaderTimeout:   30,
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, base.HTTPClient)
+	require.NotNil(t, base.StreamClient)
+
+	assert.Equal(t, 45*time.Second, base.HTTPClient.Timeout)
+	assert.Equal(t, 120*time.Second, base.StreamClient.Timeout)
+}
+
+func TestNewBaseChannelAllowsUnlimitedStreamTimeout(t *testing.T) {
+	t.Parallel()
+
+	factory := setupTestFactory(t)
+	upstreams := []map[string]any{
+		{"url": "https://api.openai.com", "weight": 100},
+	}
+	upstreamsJSON, err := json.Marshal(upstreams)
+	require.NoError(t, err)
+
+	base, err := factory.newBaseChannel("openai", &models.Group{
+		ID:          1,
+		Name:        "unlimited-stream-timeout-group",
+		ChannelType: "openai",
+		Upstreams:   datatypes.JSON(upstreamsJSON),
+		EffectiveConfig: types.SystemSettings{
+			ConnectTimeout:          15,
+			RequestTimeout:          90,
+			NonStreamRequestTimeout: 45,
+			StreamRequestTimeout:    0,
+			IdleConnTimeout:         90,
+			MaxIdleConns:            100,
+			MaxIdleConnsPerHost:     10,
+			ResponseHeaderTimeout:   30,
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, base.StreamClient)
+
+	assert.Zero(t, base.StreamClient.Timeout)
+}
+
+func TestNewBaseChannelUsesSelectedProxyForHTTPRequests(t *testing.T) {
+	t.Parallel()
+
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstreamServer.Close)
+
+	proxyHits := make(chan string, 1)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case proxyHits <- r.URL.String():
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(proxyServer.Close)
+
+	upstreamsJSON, err := json.Marshal([]map[string]any{
+		{"url": upstreamServer.URL, "weight": 100, "proxy_url": proxyServer.URL},
+	})
+	require.NoError(t, err)
+
+	base, err := setupTestFactory(t).newBaseChannel("openai", &models.Group{
+		ID:          1,
+		Name:        "proxy-flow-group",
+		ChannelType: "openai",
+		Upstreams:   datatypes.JSON(upstreamsJSON),
+		EffectiveConfig: types.SystemSettings{
+			ConnectTimeout:          1,
+			NonStreamRequestTimeout: 2,
+			StreamRequestTimeout:    0,
+			IdleConnTimeout:         30,
+			MaxIdleConns:            10,
+			MaxIdleConnsPerHost:     10,
+			ResponseHeaderTimeout:   2,
+		},
+	})
+	require.NoError(t, err)
+
+	selection, err := base.SelectUpstreamWithClients(mustParseURL("/proxy/proxy-flow-group/v1/models"), "proxy-flow-group")
+	require.NoError(t, err)
+	require.NotNil(t, selection.ProxyURL)
+	require.Equal(t, proxyServer.URL, *selection.ProxyURL)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, selection.URL, nil)
+	require.NoError(t, err)
+	resp, err := selection.HTTPClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	select {
+	case requestedURL := <-proxyHits:
+		assert.Equal(t, selection.URL, requestedURL)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected request to pass through configured proxy")
+	}
 }
 
 // TestNewFactory tests factory creation
