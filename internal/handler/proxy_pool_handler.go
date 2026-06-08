@@ -30,7 +30,7 @@ type ProxyPoolRequest struct {
 func (s *Server) ListProxyPool(c *gin.Context) {
 	items, err := s.ProxyPoolService.List(c.Request.Context())
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase, err.Error()))
+		respondProxyPoolServiceError(c, err)
 		return
 	}
 	response.Success(c, items)
@@ -85,7 +85,7 @@ func (s *Server) DeleteProxyPoolItem(c *gin.Context) {
 		return
 	}
 	if err := s.ProxyPoolService.Delete(c.Request.Context(), uint(id)); err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrDatabase, err.Error()))
+		respondProxyPoolServiceError(c, err)
 		return
 	}
 	response.Success(c, nil)

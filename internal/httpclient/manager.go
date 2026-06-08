@@ -137,16 +137,15 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	// Trim whitespace from proxy URL before parsing to handle common configuration issues
 	trimmedProxyURL := strings.TrimSpace(config.ProxyURL)
 	if trimmedProxyURL != "" {
-		proxyURL, err := url.Parse(trimmedProxyURL)
+		normalizedProxyURL, err := utils.NormalizeProxyURL(trimmedProxyURL)
 		if err != nil {
 			// Sanitize proxy URL to prevent credential leakage in logs
 			logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", utils.SanitizeProxyString(trimmedProxyURL), err)
 			transport.Proxy = http.ProxyFromEnvironment
 		} else {
-			// Validate proxy URL scheme
-			if !utils.IsSupportedProxyScheme(proxyURL.Scheme) {
-				// Sanitize proxy URL to prevent credential leakage in logs
-				logrus.Warnf("Unsupported proxy scheme '%s' in URL '%s', falling back to environment settings", proxyURL.Scheme, utils.SanitizeProxyString(trimmedProxyURL))
+			proxyURL, parseErr := url.Parse(normalizedProxyURL)
+			if parseErr != nil {
+				logrus.Warnf("Failed to parse normalized proxy URL '%s', falling back to environment settings", utils.SanitizeProxyString(normalizedProxyURL))
 				transport.Proxy = http.ProxyFromEnvironment
 			} else {
 				// Set proxy with detailed logging

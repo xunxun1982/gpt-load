@@ -4872,16 +4872,33 @@ func TestSSEReaderWithTimeout_NoSubsequentTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	event, err = reader.ReadEvent()
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("second read failed: %v", err)
+	type readResult struct {
+		event *SSEEvent
+		err   error
 	}
-	if event.Data != `{"test": 2}` {
-		t.Errorf("unexpected second data: %s", event.Data)
-	}
-	if elapsed < 100*time.Millisecond {
-		t.Errorf("expected no-timeout read to wait for delayed event, got %v", elapsed)
+	done := make(chan readResult, 1)
+	go func() {
+		evt, err := reader.ReadEvent()
+		done <- readResult{event: evt, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		elapsed := time.Since(start)
+		if result.err != nil {
+			t.Fatalf("second read failed: %v", result.err)
+		}
+		if result.event == nil {
+			t.Fatal("second read returned nil event")
+		}
+		if result.event.Data != `{"test": 2}` {
+			t.Errorf("unexpected second data: %s", result.event.Data)
+		}
+		if elapsed < 100*time.Millisecond {
+			t.Errorf("expected no-timeout read to wait for delayed event, got %v", elapsed)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second read hung waiting for delayed event")
 	}
 }
 

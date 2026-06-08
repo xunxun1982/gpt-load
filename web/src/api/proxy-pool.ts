@@ -16,20 +16,31 @@ export interface ProxyPoolTestResult {
   error?: string;
 }
 
+function requireProxyPoolData<T>(data: T | null | undefined, action: string): T {
+  if (data === null || data === undefined) {
+    throw new Error(`Proxy pool ${action} response missing data`);
+  }
+  return data;
+}
+
 export const proxyPoolApi = {
   async list(): Promise<ProxyPoolItem[]> {
     const res = await http.get("/proxy-pool");
-    return res.data || [];
+    const data = requireProxyPoolData<ProxyPoolItem[]>(res?.data, "list");
+    if (!Array.isArray(data)) {
+      throw new Error("Proxy pool list response data is invalid");
+    }
+    return data;
   },
 
   async create(payload: ProxyPoolPayload): Promise<ProxyPoolItem> {
     const res = await http.post("/proxy-pool", payload);
-    return res.data;
+    return requireProxyPoolData<ProxyPoolItem>(res?.data, "create");
   },
 
   async update(id: number, payload: ProxyPoolPayload): Promise<ProxyPoolItem> {
     const res = await http.put(`/proxy-pool/${id}`, payload);
-    return res.data;
+    return requireProxyPoolData<ProxyPoolItem>(res?.data, "update");
   },
 
   async delete(id: number): Promise<void> {
@@ -38,6 +49,6 @@ export const proxyPoolApi = {
 
   async test(id: number): Promise<ProxyPoolTestResult> {
     const res = await http.post(`/proxy-pool/${id}/test`, {}, { hideMessage: true });
-    return res.data;
+    return requireProxyPoolData<ProxyPoolTestResult>(res?.data, "test");
   },
 };

@@ -613,6 +613,11 @@ func TestUpdateGroupSavesProxyPoolSelectedConfigProxy(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, updated.Config)
 	assert.Equal(t, "http://127.0.0.1:8080", updated.Config["proxy_url"])
+
+	var persisted models.Group
+	require.NoError(t, db.First(&persisted, group.ID).Error)
+	require.NotNil(t, persisted.Config)
+	assert.Equal(t, "http://127.0.0.1:8080", persisted.Config["proxy_url"])
 }
 
 // TestValidateAndCleanConfig tests config validation

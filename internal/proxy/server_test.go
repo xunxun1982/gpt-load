@@ -653,6 +653,61 @@ func TestShouldAbortOnIgnorableErrorStopsWhenClientCanceled(t *testing.T) {
 	assert.True(t, ps.shouldAbortOnIgnorableError(c, err))
 }
 
+func TestEffectiveNonStreamRequestContextFallsBackForNonPositiveTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		cfg               types.SystemSettings
+		expectImmediate   bool
+		expectHasDeadline bool
+	}{
+		{
+			name: "positive non-stream timeout uses deadline",
+			cfg: types.SystemSettings{
+				NonStreamRequestTimeout: 1,
+				RequestTimeout:          0,
+			},
+			expectImmediate:   false,
+			expectHasDeadline: true,
+		},
+		{
+			name: "zero non-stream timeout falls back to legacy request timeout",
+			cfg: types.SystemSettings{
+				NonStreamRequestTimeout: 0,
+				RequestTimeout:          1,
+			},
+			expectImmediate:   false,
+			expectHasDeadline: true,
+		},
+		{
+			name: "zero non-stream and legacy timeouts uses cancelable context",
+			cfg: types.SystemSettings{
+				NonStreamRequestTimeout: 0,
+				RequestTimeout:          0,
+			},
+			expectImmediate:   false,
+			expectHasDeadline: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := effectiveNonStreamRequestContext(context.Background(), tt.cfg)
+			defer cancel()
+
+			_, hasDeadline := ctx.Deadline()
+			assert.Equal(t, tt.expectHasDeadline, hasDeadline)
+			select {
+			case <-ctx.Done():
+				assert.True(t, tt.expectImmediate, "context should not be canceled immediately")
+			default:
+				assert.False(t, tt.expectImmediate, "context should be canceled immediately")
+			}
+		})
+	}
+}
+
 func TestExecuteRequestWithRetryRetriesAfterNonStreamTimeout(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

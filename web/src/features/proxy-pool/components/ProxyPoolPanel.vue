@@ -307,6 +307,7 @@ function handleAutoTestChange(enabled: boolean) {
   if (!enabled) {
     return;
   }
+  void testAll(true);
   autoTestTimer = window.setInterval(() => {
     void testAll(true);
   }, proxyAutoTestIntervalMs);

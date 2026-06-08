@@ -121,6 +121,38 @@ func TestValidateSettings(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "invalid proxy_url unsupported scheme",
+			settings: map[string]any{
+				"proxy_url": "ftp://proxy.example.com",
+			},
+			expectError: true,
+			errorMsg:    "invalid value for proxy_url",
+		},
+		{
+			name: "invalid proxy_url missing scheme",
+			settings: map[string]any{
+				"proxy_url": "proxy.example.com:8080",
+			},
+			expectError: true,
+			errorMsg:    "invalid value for proxy_url",
+		},
+		{
+			name: "invalid proxy_url missing host",
+			settings: map[string]any{
+				"proxy_url": "http://",
+			},
+			expectError: true,
+			errorMsg:    "invalid value for proxy_url",
+		},
+		{
+			name: "invalid proxy_url malformed URL",
+			settings: map[string]any{
+				"proxy_url": "http://[invalid",
+			},
+			expectError: true,
+			errorMsg:    "invalid value for proxy_url",
+		},
+		{
 			name: "invalid setting key",
 			settings: map[string]any{
 				"invalid_key": "value",

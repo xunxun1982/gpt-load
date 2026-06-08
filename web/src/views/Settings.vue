@@ -74,7 +74,8 @@ async function fetchProxyPoolOptions() {
       label: item.name ? `${item.name} (${item.url})` : item.url,
       value: item.url,
     }));
-  } catch (_error) {
+  } catch (error) {
+    console.error("Failed to fetch proxy pool options:", error);
     message.error(t("proxyPool.loadFailed"));
   }
 }

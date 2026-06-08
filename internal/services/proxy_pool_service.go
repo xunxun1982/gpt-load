@@ -169,8 +169,7 @@ func testProxyURL(ctx context.Context, rawProxyURL string) (*ProxyPoolTestResult
 		ResponseHeaderTimeout: timeout,
 		TLSHandshakeTimeout:   minDuration(timeout, 5*time.Second),
 		DialContext: (&net.Dialer{
-			Timeout:   minDuration(timeout, 5*time.Second),
-			KeepAlive: 30 * time.Second,
+			Timeout: minDuration(timeout, 5*time.Second),
 		}).DialContext,
 	}
 	defer transport.CloseIdleConnections()

@@ -436,6 +436,7 @@ function resetForm() {
       {
         url: isCreateMode ? upstreamPlaceholder.value : "",
         weight: 1,
+        proxy_url: "",
       },
     ],
     channel_type: defaultChannelType,
@@ -567,8 +568,11 @@ function loadGroupData() {
     display_name: props.group.display_name || "",
     description: props.group.description || "",
     upstreams: props.group.upstreams?.length
-      ? [...props.group.upstreams]
-      : [{ url: "", weight: 1 }],
+      ? props.group.upstreams.map(upstream => ({
+          ...upstream,
+          proxy_url: upstream.proxy_url || "",
+        }))
+      : [{ url: "", weight: 1, proxy_url: "" }],
     channel_type: props.group.channel_type || "openai",
     sort: props.group.sort || 1,
     test_model: props.group.test_model || "",
@@ -646,6 +650,7 @@ function addUpstream() {
   formData.upstreams.push({
     url: "",
     weight: 1,
+    proxy_url: "",
   });
 }
 
@@ -673,7 +678,8 @@ async function fetchProxyPoolOptions() {
       label: item.name ? `${item.name} (${item.url})` : item.url,
       value: item.url,
     }));
-  } catch {
+  } catch (error) {
+    console.error("Failed to fetch proxy pool options:", error);
     message.error(t("proxyPool.loadFailed"));
   }
 }
@@ -1719,7 +1725,7 @@ async function handleSubmit() {
                 >
                   <template #trigger>
                     <n-select
-                      v-model:value="upstream.proxy_url"
+                      :value="upstream.proxy_url"
                       :options="upstreamProxyPoolOptions"
                       :placeholder="t('keys.upstreamProxyUrlPlaceholder')"
                       :disabled="isChildGroup"
