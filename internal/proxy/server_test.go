@@ -670,7 +670,7 @@ func TestExecuteRequestWithRetryRetriesAfterNonStreamTimeout(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt := atomic.AddInt32(&attempts, 1)
 		if attempt == 1 {
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(1200 * time.Millisecond)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -682,7 +682,7 @@ func TestExecuteRequestWithRetryRetriesAfterNonStreamTimeout(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/timeout-retry/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`)))
 
-	client := &http.Client{Timeout: 50 * time.Millisecond}
+	client := &http.Client{Timeout: 3 * time.Second}
 	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL}, group, group, []byte(`{"model":"gpt-test"}`), false, time.Now(), 0)
 
 	require.Equal(t, http.StatusOK, w.Code)

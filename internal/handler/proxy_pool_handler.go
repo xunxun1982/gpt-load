@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"strconv"
 
 	app_errors "gpt-load/internal/errors"
@@ -9,6 +10,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func respondProxyPoolServiceError(c *gin.Context, err error) {
+	var apiErr *app_errors.APIError
+	if errors.As(err, &apiErr) {
+		response.Error(c, apiErr)
+		return
+	}
+	response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "unexpected proxy pool error"))
+}
 
 // ProxyPoolRequest defines the payload for creating or updating a proxy pool item.
 type ProxyPoolRequest struct {
@@ -38,7 +48,7 @@ func (s *Server) CreateProxyPoolItem(c *gin.Context) {
 		URL:  req.URL,
 	})
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, err.Error()))
+		respondProxyPoolServiceError(c, err)
 		return
 	}
 	response.Success(c, item)
@@ -61,7 +71,7 @@ func (s *Server) UpdateProxyPoolItem(c *gin.Context) {
 		URL:  req.URL,
 	})
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, err.Error()))
+		respondProxyPoolServiceError(c, err)
 		return
 	}
 	response.Success(c, item)
@@ -90,7 +100,7 @@ func (s *Server) TestProxyPoolItem(c *gin.Context) {
 	}
 	result, err := s.ProxyPoolService.Test(c.Request.Context(), uint(id))
 	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, err.Error()))
+		respondProxyPoolServiceError(c, err)
 		return
 	}
 	response.Success(c, result)

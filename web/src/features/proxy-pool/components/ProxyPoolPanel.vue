@@ -62,12 +62,21 @@ const rules: FormRules = {
     {
       trigger: ["blur", "input"],
       validator: (_rule, value: string) => {
-        if (!value) {
+        const normalized = value?.trim();
+        if (!normalized) {
           return true;
         }
-        return /^(https?|socks5):\/\/[^/\s]+/i.test(value.trim())
-          ? true
-          : new Error(t("proxyPool.invalidUrl"));
+        if (/\s/.test(normalized)) {
+          return new Error(t("proxyPool.invalidUrl"));
+        }
+        try {
+          const parsed = new URL(normalized);
+          return ["http:", "https:", "socks5:"].includes(parsed.protocol) && !!parsed.hostname
+            ? true
+            : new Error(t("proxyPool.invalidUrl"));
+        } catch {
+          return new Error(t("proxyPool.invalidUrl"));
+        }
       },
     },
   ],
@@ -160,6 +169,8 @@ const columns = computed<DataTableColumns<ProxyPoolItem>>(() => [
                 quaternary: true,
                 circle: true,
                 size: "small",
+                "aria-label": t("common.edit"),
+                title: t("common.edit"),
                 onClick: () => openEdit(row),
               },
               { icon: () => h(NIcon, null, { default: () => h(CreateOutline) }) }
@@ -171,6 +182,8 @@ const columns = computed<DataTableColumns<ProxyPoolItem>>(() => [
                 circle: true,
                 size: "small",
                 type: "error",
+                "aria-label": t("common.delete"),
+                title: t("common.delete"),
                 onClick: () => confirmDelete(row),
               },
               { icon: () => h(NIcon, null, { default: () => h(TrashOutline) }) }

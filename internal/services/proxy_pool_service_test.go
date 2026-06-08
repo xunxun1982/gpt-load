@@ -2,12 +2,14 @@ package services
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 
 	"github.com/stretchr/testify/assert"
@@ -66,6 +68,28 @@ func TestProxyPoolServiceRejectsUnsupportedSchemes(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported proxy scheme")
+}
+
+func TestProxyPoolServiceReturnsTypedErrors(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+
+	_, err := svc.Create(context.Background(), ProxyPoolInput{
+		Name: "ftp",
+		URL:  "ftp://proxy.example.com:21",
+	})
+	var apiErr *app_errors.APIError
+	require.True(t, errors.As(err, &apiErr))
+	assert.Equal(t, app_errors.ErrValidation.Code, apiErr.Code)
+
+	_, err = svc.Update(context.Background(), 404, ProxyPoolInput{
+		Name: "missing",
+		URL:  "http://proxy.example.com:8080",
+	})
+	apiErr = nil
+	require.True(t, errors.As(err, &apiErr))
+	assert.Equal(t, app_errors.ErrResourceNotFound.Code, apiErr.Code)
 }
 
 func TestProxyPoolServiceAllowsHTTPAndSocks(t *testing.T) {

@@ -177,7 +177,6 @@ const channelTypeOptions = ref<{ label: string; value: string }[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
-const proxyPoolFetched = ref(false);
 const proxyPoolOptions = ref<{ label: string; value: string }[]>([]);
 const upstreamProxyPoolOptions = computed(() => [
   { label: t("keys.upstreamProxyUrlPlaceholder"), value: "" },
@@ -308,9 +307,7 @@ watch(
       if (!configOptionsFetched.value) {
         fetchGroupConfigOptions();
       }
-      if (!proxyPoolFetched.value) {
-        fetchProxyPoolOptions();
-      }
+      fetchProxyPoolOptions();
       resetForm();
       if (props.group) {
         loadGroupData();
@@ -676,7 +673,6 @@ async function fetchProxyPoolOptions() {
       label: item.name ? `${item.name} (${item.url})` : item.url,
       value: item.url,
     }));
-    proxyPoolFetched.value = true;
   } catch {
     message.error(t("proxyPool.loadFailed"));
   }

@@ -53,14 +53,14 @@ func normalizeProxyPoolInput(input ProxyPoolInput) (ProxyPoolInput, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.URL = strings.TrimSpace(input.URL)
 	if input.Name == "" {
-		return ProxyPoolInput{}, fmt.Errorf("proxy name is required")
+		return ProxyPoolInput{}, app_errors.NewValidationError("proxy name is required")
 	}
 	if input.URL == "" {
-		return ProxyPoolInput{}, fmt.Errorf("proxy URL is required")
+		return ProxyPoolInput{}, app_errors.NewValidationError("proxy URL is required")
 	}
 	normalizedURL, err := utils.NormalizeProxyURL(input.URL)
 	if err != nil {
-		return ProxyPoolInput{}, err
+		return ProxyPoolInput{}, app_errors.NewValidationError(err.Error())
 	}
 	input.URL = normalizedURL
 	return input, nil
@@ -94,7 +94,7 @@ func (s *ProxyPoolService) Create(ctx context.Context, input ProxyPoolInput) (*m
 // Update validates and updates an existing proxy pool item.
 func (s *ProxyPoolService) Update(ctx context.Context, id uint, input ProxyPoolInput) (*models.ProxyPoolItem, error) {
 	if id == 0 {
-		return nil, fmt.Errorf("invalid proxy ID")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "invalid proxy ID")
 	}
 	cleaned, err := normalizeProxyPoolInput(input)
 	if err != nil {
@@ -118,7 +118,7 @@ func (s *ProxyPoolService) Update(ctx context.Context, id uint, input ProxyPoolI
 // Delete removes a proxy pool item.
 func (s *ProxyPoolService) Delete(ctx context.Context, id uint) error {
 	if id == 0 {
-		return fmt.Errorf("invalid proxy ID")
+		return app_errors.NewAPIError(app_errors.ErrBadRequest, "invalid proxy ID")
 	}
 	if err := s.db.WithContext(ctx).Delete(&models.ProxyPoolItem{}, id).Error; err != nil {
 		return app_errors.ParseDBError(err)
@@ -129,7 +129,7 @@ func (s *ProxyPoolService) Delete(ctx context.Context, id uint) error {
 // Test verifies a stored proxy with a bounded HEAD request through that proxy.
 func (s *ProxyPoolService) Test(ctx context.Context, id uint) (*ProxyPoolTestResult, error) {
 	if id == 0 {
-		return nil, fmt.Errorf("invalid proxy ID")
+		return nil, app_errors.NewAPIError(app_errors.ErrBadRequest, "invalid proxy ID")
 	}
 	var item models.ProxyPoolItem
 	if err := s.db.WithContext(ctx).
@@ -143,11 +143,11 @@ func (s *ProxyPoolService) Test(ctx context.Context, id uint) (*ProxyPoolTestRes
 func testProxyURL(ctx context.Context, rawProxyURL string) (*ProxyPoolTestResult, error) {
 	normalizedURL, err := utils.NormalizeProxyURL(rawProxyURL)
 	if err != nil {
-		return nil, err
+		return nil, app_errors.NewValidationError(err.Error())
 	}
 	parsedProxyURL, err := url.Parse(normalizedURL)
 	if err != nil {
-		return nil, err
+		return nil, app_errors.NewAPIError(app_errors.ErrInternalServer, "failed to parse normalized proxy URL")
 	}
 
 	timeout := proxyPoolTestTimeout
@@ -184,7 +184,7 @@ func testProxyURL(ctx context.Context, rawProxyURL string) (*ProxyPoolTestResult
 	}
 	req, err := http.NewRequestWithContext(testCtx, http.MethodHead, proxyPoolTestTargetURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, app_errors.NewAPIError(app_errors.ErrInternalServer, "failed to create proxy test request")
 	}
 
 	start := time.Now()
