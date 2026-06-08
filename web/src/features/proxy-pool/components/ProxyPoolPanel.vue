@@ -36,6 +36,7 @@ const message = useMessage();
 const dialog = useDialog();
 const proxyTestTimeoutSeconds = 10;
 const proxyAutoTestIntervalMs = 60 * 60 * 1000;
+const proxyBatchTestConcurrency = 5;
 
 const loading = ref(false);
 const saving = ref(false);
@@ -258,8 +259,10 @@ async function testAll(silent = false) {
   batchTesting.value = true;
   testingAll.value = true;
   try {
-    for (const item of items.value) {
-      await testItem(item, true);
+    const testItems = [...items.value];
+    for (let i = 0; i < testItems.length; i += proxyBatchTestConcurrency) {
+      const batch = testItems.slice(i, i + proxyBatchTestConcurrency);
+      await Promise.all(batch.map(item => testItem(item, true)));
     }
     if (!silent) {
       message.success(t("proxyPool.testAllFinished"));

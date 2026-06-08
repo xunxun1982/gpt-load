@@ -13,11 +13,18 @@ func NormalizeProxyURL(raw string) (string, error) {
 		return "", nil
 	}
 	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil {
+		// Do not wrap url.Parse errors here; parse errors can contain proxy credentials.
 		return "", fmt.Errorf("invalid proxy URL")
+	}
+	if parsed.Scheme == "" {
+		return "", fmt.Errorf("invalid proxy URL: missing scheme")
 	}
 	if !IsSupportedProxyScheme(parsed.Scheme) {
 		return "", fmt.Errorf("unsupported proxy scheme: %s", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("invalid proxy URL: missing host")
 	}
 	return parsed.String(), nil
 }
