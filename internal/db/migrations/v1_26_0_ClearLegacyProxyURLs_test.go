@@ -13,12 +13,25 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestV1_26_0_ClearLegacyProxyURLsClearsSystemAndGroupProxyValues(t *testing.T) {
-	t.Parallel()
+func setupClearLegacyProxyURLsTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		require.NoError(t, sqlDB.Close())
+	})
 	require.NoError(t, db.AutoMigrate(&models.SystemSetting{}, &models.Group{}))
+	return db
+}
+
+func TestV1_26_0_ClearLegacyProxyURLsClearsSystemAndGroupProxyValues(t *testing.T) {
+	t.Parallel()
+
+	db := setupClearLegacyProxyURLsTestDB(t)
 
 	require.NoError(t, db.Create(&models.SystemSetting{
 		SettingKey:   "proxy_url",
@@ -69,9 +82,7 @@ func TestV1_26_0_ClearLegacyProxyURLsClearsSystemAndGroupProxyValues(t *testing.
 func TestV1_26_0_ClearLegacyProxyURLsMarkerInsertIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&models.SystemSetting{}, &models.Group{}))
+	db := setupClearLegacyProxyURLsTestDB(t)
 	require.NoError(t, ensureDataMigrationsTable(db))
 
 	tx := db.Begin()

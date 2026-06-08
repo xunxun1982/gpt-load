@@ -74,10 +74,12 @@ func V1_26_0_ClearLegacyProxyURLs(db *gorm.DB) error {
 }
 
 func ensureDataMigrationsTable(db *gorm.DB) error {
-	if db.Migrator().HasTable(&dataMigrationMarker{}) {
-		return nil
-	}
-	return db.Migrator().CreateTable(&dataMigrationMarker{})
+	return db.Exec(`
+		CREATE TABLE IF NOT EXISTS data_migrations (
+			version VARCHAR(128) PRIMARY KEY,
+			created_at TIMESTAMP NOT NULL
+		)
+	`).Error
 }
 
 func hasDataMigrationRun(db *gorm.DB, version string) (bool, error) {
