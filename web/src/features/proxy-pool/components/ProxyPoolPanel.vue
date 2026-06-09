@@ -590,7 +590,7 @@ function confirmDelete(item: ProxyPoolItem) {
         await loadItems();
       } catch {
         currentPage.value = previousPage;
-        if (hadTestResult && previousTestResult !== undefined) {
+        if (!deleted && hadTestResult && previousTestResult !== undefined) {
           testResults[item.id] = previousTestResult;
         }
         if (!deleted) {
