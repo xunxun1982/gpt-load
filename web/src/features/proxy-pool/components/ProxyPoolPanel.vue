@@ -289,9 +289,10 @@ async function loadItems() {
     if (items.value.length === 0 && autoTesting.value) {
       handleAutoTestChange(false);
     }
-  } catch {
+  } catch (error) {
     hasMore.value = false;
     message.error(t("proxyPool.loadFailed"));
+    throw error;
   } finally {
     loading.value = false;
   }
@@ -301,14 +302,26 @@ async function changePage(page: number) {
   if (page < 1 || page === currentPage.value) {
     return;
   }
+  const previousPage = currentPage.value;
   currentPage.value = page;
-  await loadItems();
+  try {
+    await loadItems();
+  } catch {
+    currentPage.value = previousPage;
+  }
 }
 
 async function changePageSize(size: number) {
+  const previousPage = currentPage.value;
+  const previousPageSize = pageSize.value;
   pageSize.value = size;
   currentPage.value = 1;
-  await loadItems();
+  try {
+    await loadItems();
+  } catch {
+    pageSize.value = previousPageSize;
+    currentPage.value = previousPage;
+  }
 }
 
 function settingValue(
@@ -676,7 +689,14 @@ onUnmounted(clearAutoTestTimer);
         aria-modal="true"
       >
         <template #header-extra>
-          <n-button quaternary circle size="small" @click="showSettingsModal = false">
+          <n-button
+            quaternary
+            circle
+            size="small"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            @click="showSettingsModal = false"
+          >
             <template #icon>
               <n-icon :component="Close" />
             </template>
@@ -744,7 +764,14 @@ onUnmounted(clearAutoTestTimer);
         aria-modal="true"
       >
         <template #header-extra>
-          <n-button quaternary circle size="small" @click="showModal = false">
+          <n-button
+            quaternary
+            circle
+            size="small"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
+            @click="showModal = false"
+          >
             <template #icon>
               <n-icon :component="Close" />
             </template>

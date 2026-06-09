@@ -14,7 +14,6 @@ import (
 )
 
 func TestListProxyPoolReturnsPaginatedResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	t.Parallel()
 
 	db := setupTestDB(t)
