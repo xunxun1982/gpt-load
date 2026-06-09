@@ -36,6 +36,7 @@ func V1_26_0_ClearLegacyProxyURLs(db *gorm.DB) error {
 		return nil
 	}
 
+	migrationRan := false
 	err = db.Transaction(func(tx *gorm.DB) error {
 		acquired, err := acquireClearLegacyProxyURLsMigrationMarker(tx)
 		if err != nil {
@@ -45,6 +46,7 @@ func V1_26_0_ClearLegacyProxyURLs(db *gorm.DB) error {
 			logrus.Info("Migration v1.26.0 completed concurrently, skipping")
 			return nil
 		}
+		migrationRan = true
 
 		if tx.Migrator().HasTable("system_settings") {
 			result := tx.Table("system_settings").
@@ -69,7 +71,9 @@ func V1_26_0_ClearLegacyProxyURLs(db *gorm.DB) error {
 		return err
 	}
 
-	logrus.Info("Migration v1.26.0 completed")
+	if migrationRan {
+		logrus.Info("Migration v1.26.0 completed")
+	}
 	return nil
 }
 

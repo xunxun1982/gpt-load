@@ -21,6 +21,7 @@ import {
   NInput,
   NInputNumber,
   NModal,
+  NSelect,
   NSpace,
   NSwitch,
   NTag,

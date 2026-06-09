@@ -8,6 +8,7 @@ import (
 	"gpt-load/internal/models"
 
 	"github.com/glebarez/sqlite"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -102,4 +103,43 @@ func TestV1_26_0_ClearLegacyProxyURLsMarkerInsertIsIdempotent(t *testing.T) {
 		Where("version = ?", clearLegacyProxyURLsMigrationVersion).
 		Count(&count).Error)
 	require.Equal(t, int64(1), count)
+}
+
+func TestV1_26_0_ClearLegacyProxyURLsConcurrentSkipDoesNotLogCompleted(t *testing.T) {
+	db := setupClearLegacyProxyURLsTestDB(t)
+	require.NoError(t, ensureDataMigrationsTable(db))
+
+	insertedByConcurrentInstance := false
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(
+		"test:insert_clear_legacy_proxy_urls_marker",
+		func(tx *gorm.DB) {
+			if insertedByConcurrentInstance || tx.Statement == nil || tx.Statement.Table != "data_migrations" {
+				return
+			}
+			marker, ok := tx.Statement.Dest.(*dataMigrationMarker)
+			if !ok || marker.Version != clearLegacyProxyURLsMigrationVersion {
+				return
+			}
+			insertedByConcurrentInstance = true
+			if err := tx.Exec(
+				"INSERT INTO data_migrations (version, created_at) VALUES (?, ?)",
+				clearLegacyProxyURLsMigrationVersion,
+				time.Now().UTC(),
+			).Error; err != nil {
+				tx.AddError(err)
+			}
+		},
+	))
+
+	hook := logrustest.NewGlobal()
+	defer hook.Reset()
+
+	require.NoError(t, V1_26_0_ClearLegacyProxyURLs(db))
+
+	var messages []string
+	for _, entry := range hook.AllEntries() {
+		messages = append(messages, entry.Message)
+	}
+	require.Contains(t, messages, "Migration v1.26.0 completed concurrently, skipping")
+	require.NotContains(t, messages, "Migration v1.26.0 completed")
 }
