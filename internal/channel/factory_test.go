@@ -170,6 +170,60 @@ func TestNewBaseChannelUsesSelectedProxyForHTTPRequests(t *testing.T) {
 	}
 }
 
+func TestNewBaseChannelUsesDirectClientWhenProxySelectionIsEmpty(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+
+	upstreamHits := make(chan struct{}, 1)
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstreamServer.Close)
+
+	upstreamsJSON, err := json.Marshal([]map[string]any{
+		{"url": upstreamServer.URL, "weight": 100, "proxy_url": ""},
+	})
+	require.NoError(t, err)
+
+	base, err := setupTestFactory(t).newBaseChannel("openai", &models.Group{
+		ID:          1,
+		Name:        "empty-proxy-group",
+		ChannelType: "openai",
+		Upstreams:   datatypes.JSON(upstreamsJSON),
+		EffectiveConfig: types.SystemSettings{
+			ConnectTimeout:          1,
+			NonStreamRequestTimeout: 2,
+			StreamRequestTimeout:    0,
+			IdleConnTimeout:         30,
+			MaxIdleConns:            10,
+			MaxIdleConnsPerHost:     10,
+			ResponseHeaderTimeout:   2,
+			ProxyURL:                "",
+		},
+	})
+	require.NoError(t, err)
+
+	selection, err := base.SelectUpstreamWithClients(mustParseURL("/proxy/empty-proxy-group/v1/models"), "empty-proxy-group")
+	require.NoError(t, err)
+	require.Nil(t, selection.ProxyURL)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, selection.URL, nil)
+	require.NoError(t, err)
+	resp, err := selection.HTTPClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	select {
+	case <-upstreamHits:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected empty proxy selection to reach upstream directly")
+	}
+}
+
 // TestNewFactory tests factory creation
 func TestNewFactory(t *testing.T) {
 	factory := setupTestFactory(t)

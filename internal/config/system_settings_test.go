@@ -93,6 +93,13 @@ func TestValidateSettings(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid non-stream timeout disabled",
+			settings: map[string]any{
+				"non_stream_request_timeout": float64(0),
+			},
+			expectError: false,
+		},
+		{
 			name: "valid stream timeout disabled",
 			settings: map[string]any{
 				"stream_request_timeout": float64(0),
@@ -117,6 +124,13 @@ func TestValidateSettings(t *testing.T) {
 			name: "valid proxy pool selected setting",
 			settings: map[string]any{
 				"proxy_url": "socks5://127.0.0.1:1080",
+			},
+			expectError: false,
+		},
+		{
+			name: "valid empty proxy pool setting",
+			settings: map[string]any{
+				"proxy_url": "",
 			},
 			expectError: false,
 		},
@@ -169,9 +183,9 @@ func TestValidateSettings(t *testing.T) {
 			errorMsg:    "expected a number",
 		},
 		{
-			name: "value below minimum",
+			name: "non-stream timeout below minimum",
 			settings: map[string]any{
-				"non_stream_request_timeout": float64(0),
+				"non_stream_request_timeout": float64(-1),
 			},
 			expectError: true,
 			errorMsg:    "below minimum value",
@@ -191,6 +205,44 @@ func TestValidateSettings(t *testing.T) {
 			},
 			expectError: true,
 			errorMsg:    "must be an integer",
+		},
+		{
+			name: "valid proxy pool test target URL",
+			settings: map[string]any{
+				"proxy_pool_test_target_url": "https://www.gstatic.com/generate_204",
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid proxy pool test target URL scheme",
+			settings: map[string]any{
+				"proxy_pool_test_target_url": "ftp://example.com/health",
+			},
+			expectError: true,
+			errorMsg:    "invalid value for proxy_pool_test_target_url",
+		},
+		{
+			name: "invalid proxy pool test target URL host",
+			settings: map[string]any{
+				"proxy_pool_test_target_url": "https:///health",
+			},
+			expectError: true,
+			errorMsg:    "invalid value for proxy_pool_test_target_url",
+		},
+		{
+			name: "invalid proxy pool test timeout below minimum",
+			settings: map[string]any{
+				"proxy_pool_test_timeout_seconds": float64(0),
+			},
+			expectError: true,
+			errorMsg:    "below minimum value",
+		},
+		{
+			name: "valid proxy pool auto test interval",
+			settings: map[string]any{
+				"proxy_pool_auto_test_interval_minutes": float64(60),
+			},
+			expectError: false,
 		},
 		{
 			name: "required string empty",
@@ -498,6 +550,18 @@ func TestGetEffectiveConfigLegacyRequestTimeout(t *testing.T) {
 	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
 	assert.Equal(t, 0, cfg.StreamRequestTimeout)
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+}
+
+func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t *testing.T) {
+	manager := NewSystemSettingsManager()
+
+	cfg := manager.GetEffectiveConfig(map[string]any{
+		"request_timeout":            float64(75),
+		"non_stream_request_timeout": float64(0),
+	})
+
+	assert.Equal(t, 0, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 0, cfg.RequestTimeout)
 }
 
 // TestDisplaySystemConfig tests displaying system configuration

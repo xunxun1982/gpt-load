@@ -11,6 +11,7 @@ import (
 	"gpt-load/internal/syncer"
 	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -37,13 +38,13 @@ func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, ha
 	if settings == nil {
 		return
 	}
-	// hasLegacy means request_timeout was supplied, hasNonStream means the split field was supplied.
-	// Keep RequestTimeout synced for legacy callers after migrating legacy-only values forward.
 	if hasLegacy && !hasNonStream {
 		settings.NonStreamRequestTimeout = settings.RequestTimeout
 	}
-	if settings.NonStreamRequestTimeout <= 0 {
-		settings.NonStreamRequestTimeout = settings.RequestTimeout
+	if hasNonStream {
+		// Explicit zero disables non-stream timeout; keep legacy fallback synced to the same value.
+		settings.RequestTimeout = settings.NonStreamRequestTimeout
+		return
 	}
 	settings.RequestTimeout = settings.NonStreamRequestTimeout
 }
@@ -57,6 +58,12 @@ func validateStringSettingValue(key, val string) error {
 	if key == "proxy_url" {
 		if _, err := utils.NormalizeProxyURL(val); err != nil {
 			return fmt.Errorf("invalid value for %s: %w", key, err)
+		}
+	}
+	if key == "proxy_pool_test_target_url" {
+		parsed, err := url.Parse(strings.TrimSpace(val))
+		if err != nil || parsed == nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("invalid value for %s: must be an absolute http or https URL", key)
 		}
 	}
 	return nil
@@ -220,10 +227,10 @@ func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) erro
 
 	// Update database
 	var settingsToUpdate []models.SystemSetting
-	if legacyTimeout, hasLegacy := settingsMap["request_timeout"]; hasLegacy {
-		if _, hasNonStream := settingsMap["non_stream_request_timeout"]; !hasNonStream {
-			settingsMap["non_stream_request_timeout"] = legacyTimeout
-		}
+	if nonStreamTimeout, hasNonStream := settingsMap["non_stream_request_timeout"]; hasNonStream {
+		settingsMap["request_timeout"] = nonStreamTimeout
+	} else if legacyTimeout, hasLegacy := settingsMap["request_timeout"]; hasLegacy {
+		settingsMap["non_stream_request_timeout"] = legacyTimeout
 	}
 	for key, value := range settingsMap {
 		settingsToUpdate = append(settingsToUpdate, models.SystemSetting{

@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	app_errors "gpt-load/internal/errors"
+	"gpt-load/internal/models"
 	"gpt-load/internal/response"
 	"gpt-load/internal/services"
 
@@ -28,12 +29,13 @@ type ProxyPoolRequest struct {
 
 // ListProxyPool handles GET /api/proxy-pool.
 func (s *Server) ListProxyPool(c *gin.Context) {
-	items, err := s.ProxyPoolService.List(c.Request.Context())
+	items := make([]models.ProxyPoolItem, 0)
+	pagination, err := response.PaginateFast(c, s.ProxyPoolService.ListQuery(c.Request.Context()), &items)
 	if err != nil {
-		respondProxyPoolServiceError(c, err)
+		response.Error(c, app_errors.ParseDBError(err))
 		return
 	}
-	response.Success(c, items)
+	response.Success(c, pagination)
 }
 
 // CreateProxyPoolItem handles POST /api/proxy-pool.

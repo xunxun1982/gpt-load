@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { proxyPoolApi, type ProxyPoolPayload, type ProxyPoolTestResult } from "@/api/proxy-pool";
+import { settingsApi, type SettingCategory, type SettingsUpdatePayload } from "@/api/settings";
 import type { ProxyPoolItem } from "@/types/models";
 import {
   Add,
@@ -7,6 +8,7 @@ import {
   Close,
   CreateOutline,
   RefreshOutline,
+  SettingsOutline,
   TrashOutline,
 } from "@vicons/ionicons5";
 import {
@@ -17,6 +19,7 @@ import {
   NFormItem,
   NIcon,
   NInput,
+  NInputNumber,
   NModal,
   NSpace,
   NSwitch,
@@ -34,21 +37,45 @@ import { useI18n } from "vue-i18n";
 const { t } = useI18n();
 const message = useMessage();
 const dialog = useDialog();
-const proxyTestTimeoutSeconds = 10;
-const proxyAutoTestIntervalMs = 60 * 60 * 1000;
+const defaultProxyPoolTestTargetURL = "https://www.gstatic.com/generate_204";
+const defaultProxyTestTimeoutSeconds = 10;
+const defaultProxyAutoTestIntervalMinutes = 60;
 const proxyBatchTestConcurrency = 5;
 
 const loading = ref(false);
 const saving = ref(false);
+const settingsLoading = ref(false);
+const settingsSaving = ref(false);
 const showModal = ref(false);
+const showSettingsModal = ref(false);
 const editingItem = ref<ProxyPoolItem | null>(null);
 const items = ref<ProxyPoolItem[]>([]);
+const currentPage = ref(1);
+const pageSize = ref(12);
+const total = ref(0);
+const hasMore = ref(false);
 const testingAll = ref(false);
 const autoTesting = ref(false);
 const batchTesting = ref(false);
 const testingIds = ref<number[]>([]);
 const testResults = reactive<Record<number, ProxyPoolTestResult>>({});
 let autoTestTimer: number | undefined;
+
+const proxyPoolSettingsForm = reactive<{
+  targetUrl: string;
+  timeoutSeconds: number | null;
+  intervalMinutes: number | null;
+}>({
+  targetUrl: defaultProxyPoolTestTargetURL,
+  timeoutSeconds: defaultProxyTestTimeoutSeconds,
+  intervalMinutes: defaultProxyAutoTestIntervalMinutes,
+});
+
+const proxyPoolSettingsApplied = reactive({
+  targetUrl: defaultProxyPoolTestTargetURL,
+  timeoutSeconds: defaultProxyTestTimeoutSeconds,
+  intervalMinutes: defaultProxyAutoTestIntervalMinutes,
+});
 
 const form = reactive<ProxyPoolPayload>({
   name: "",
@@ -198,11 +225,45 @@ const columns = computed<DataTableColumns<ProxyPoolItem>>(() => [
 ]);
 
 const testTimeoutText = computed(() =>
-  t("proxyPool.testTimeoutValue", { seconds: proxyTestTimeoutSeconds })
+  t("proxyPool.testTimeoutValue", { seconds: proxyPoolSettingsApplied.timeoutSeconds })
 );
-const autoTestIntervalText = computed(() =>
-  t("proxyPool.autoTestIntervalValue", { hours: proxyAutoTestIntervalMs / (60 * 60 * 1000) })
+const proxyAutoTestIntervalMs = computed(
+  () => proxyPoolSettingsApplied.intervalMinutes * 60 * 1000
 );
+const autoTestIntervalText = computed(() => {
+  const minutes = proxyPoolSettingsApplied.intervalMinutes;
+  if (minutes % 60 === 0) {
+    return t("proxyPool.autoTestIntervalHours", { hours: minutes / 60 });
+  }
+  return t("proxyPool.autoTestIntervalMinutes", { minutes });
+});
+const totalPages = computed(() => {
+  if (total.value < 0) {
+    return -1;
+  }
+  return Math.ceil(total.value / pageSize.value);
+});
+const totalRecordsText = computed(() => {
+  if (total.value < 0) {
+    return t("proxyPool.calculatingTotal");
+  }
+  return t("proxyPool.totalRecords", { total: total.value });
+});
+const pageInfoText = computed(() => {
+  if (totalPages.value < 0) {
+    return t("proxyPool.pageInfoUnknown", { current: currentPage.value });
+  }
+  return t("proxyPool.pageInfo", { current: currentPage.value, total: totalPages.value });
+});
+const isNextPageDisabled = computed(() => {
+  if (totalPages.value > 0 && currentPage.value >= totalPages.value) {
+    return true;
+  }
+  if (totalPages.value < 0) {
+    return !hasMore.value;
+  }
+  return items.value.length === 0;
+});
 
 function renderTestStatus(content: ReturnType<typeof h>) {
   return h("div", { class: "proxy-pool-test-status" }, [
@@ -216,14 +277,138 @@ function renderTestStatus(content: ReturnType<typeof h>) {
 async function loadItems() {
   loading.value = true;
   try {
-    items.value = await proxyPoolApi.list();
+    const result = await proxyPoolApi.listPage({
+      page: currentPage.value,
+      page_size: pageSize.value,
+    });
+    items.value = result.items;
+    total.value = result.pagination.total_items;
+    hasMore.value =
+      result.pagination.has_more ??
+      (result.pagination.total_items < 0 && items.value.length >= pageSize.value);
     if (items.value.length === 0 && autoTesting.value) {
       handleAutoTestChange(false);
     }
   } catch {
+    hasMore.value = false;
     message.error(t("proxyPool.loadFailed"));
   } finally {
     loading.value = false;
+  }
+}
+
+async function changePage(page: number) {
+  if (page < 1 || page === currentPage.value) {
+    return;
+  }
+  currentPage.value = page;
+  await loadItems();
+}
+
+async function changePageSize(size: number) {
+  pageSize.value = size;
+  currentPage.value = 1;
+  await loadItems();
+}
+
+function settingValue(
+  categories: SettingCategory[],
+  key: string
+): string | number | boolean | undefined {
+  for (const category of categories) {
+    const setting = category.settings?.find(item => item.key === key);
+    if (setting) {
+      return setting.value;
+    }
+  }
+  return undefined;
+}
+
+function positiveIntegerValue(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.trunc(parsed) : fallback;
+}
+
+function applyProxyPoolSettings(
+  targetUrl: string,
+  timeoutSeconds: number,
+  intervalMinutes: number
+) {
+  proxyPoolSettingsApplied.targetUrl = targetUrl;
+  proxyPoolSettingsApplied.timeoutSeconds = timeoutSeconds;
+  proxyPoolSettingsApplied.intervalMinutes = intervalMinutes;
+  proxyPoolSettingsForm.targetUrl = targetUrl;
+  proxyPoolSettingsForm.timeoutSeconds = timeoutSeconds;
+  proxyPoolSettingsForm.intervalMinutes = intervalMinutes;
+}
+
+function validTestTargetURL(value: string): boolean {
+  if (/\s/.test(value)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value);
+    return ["http:", "https:"].includes(parsed.protocol) && !!parsed.hostname;
+  } catch {
+    return false;
+  }
+}
+
+async function loadProxyPoolSettings() {
+  settingsLoading.value = true;
+  try {
+    const categories = await settingsApi.getSettings();
+    const targetUrl =
+      String(
+        settingValue(categories, "proxy_pool_test_target_url") || defaultProxyPoolTestTargetURL
+      ).trim() || defaultProxyPoolTestTargetURL;
+    const timeoutSeconds = positiveIntegerValue(
+      settingValue(categories, "proxy_pool_test_timeout_seconds"),
+      defaultProxyTestTimeoutSeconds
+    );
+    const intervalMinutes = positiveIntegerValue(
+      settingValue(categories, "proxy_pool_auto_test_interval_minutes"),
+      defaultProxyAutoTestIntervalMinutes
+    );
+    applyProxyPoolSettings(targetUrl, timeoutSeconds, intervalMinutes);
+  } catch {
+    message.error(t("proxyPool.settingsLoadFailed"));
+  } finally {
+    settingsLoading.value = false;
+  }
+}
+
+async function saveProxyPoolSettings() {
+  const targetUrl = proxyPoolSettingsForm.targetUrl.trim();
+  if (!validTestTargetURL(targetUrl)) {
+    message.error(t("proxyPool.invalidTestTarget"));
+    return;
+  }
+  const timeoutSeconds = positiveIntegerValue(
+    proxyPoolSettingsForm.timeoutSeconds,
+    defaultProxyTestTimeoutSeconds
+  );
+  const intervalMinutes = positiveIntegerValue(
+    proxyPoolSettingsForm.intervalMinutes,
+    defaultProxyAutoTestIntervalMinutes
+  );
+
+  settingsSaving.value = true;
+  try {
+    const payload: SettingsUpdatePayload = {
+      proxy_pool_test_target_url: targetUrl,
+      proxy_pool_test_timeout_seconds: timeoutSeconds,
+      proxy_pool_auto_test_interval_minutes: intervalMinutes,
+    };
+    await settingsApi.updateSettings(payload);
+    applyProxyPoolSettings(targetUrl, timeoutSeconds, intervalMinutes);
+    restartAutoTestTimer();
+    showSettingsModal.value = false;
+    message.success(t("proxyPool.settingsSaved"));
+  } catch {
+    message.error(t("proxyPool.settingsSaveFailed"));
+  } finally {
+    settingsSaving.value = false;
   }
 }
 
@@ -263,7 +448,7 @@ async function testItem(item: ProxyPoolItem, silent = false) {
       success: false,
       url: item.url,
       target_url: "",
-      timeout_ms: proxyTestTimeoutSeconds * 1000,
+      timeout_ms: proxyPoolSettingsApplied.timeoutSeconds * 1000,
       duration_ms: 0,
       error: t("proxyPool.testRequestFailed"),
     };
@@ -312,7 +497,17 @@ function handleAutoTestChange(enabled: boolean) {
   void testAll(true);
   autoTestTimer = window.setInterval(() => {
     void testAll(true);
-  }, proxyAutoTestIntervalMs);
+  }, proxyAutoTestIntervalMs.value);
+}
+
+function restartAutoTestTimer() {
+  if (!autoTesting.value) {
+    return;
+  }
+  clearAutoTestTimer();
+  autoTestTimer = window.setInterval(() => {
+    void testAll(true);
+  }, proxyAutoTestIntervalMs.value);
 }
 
 function resetForm() {
@@ -324,6 +519,11 @@ function resetForm() {
 function openCreate() {
   resetForm();
   showModal.value = true;
+}
+
+function openSettings() {
+  showSettingsModal.value = true;
+  void loadProxyPoolSettings();
 }
 
 function openEdit(item: ProxyPoolItem) {
@@ -338,6 +538,7 @@ async function submit() {
   saving.value = true;
   try {
     const payload = { name: form.name.trim(), url: form.url.trim() };
+    const creating = !editingItem.value;
     if (editingItem.value) {
       await proxyPoolApi.update(editingItem.value.id, payload);
     } else {
@@ -345,6 +546,9 @@ async function submit() {
     }
     showModal.value = false;
     resetForm();
+    if (creating) {
+      currentPage.value = 1;
+    }
     await loadItems();
   } finally {
     saving.value = false;
@@ -360,12 +564,18 @@ function confirmDelete(item: ProxyPoolItem) {
     onPositiveClick: async () => {
       await proxyPoolApi.delete(item.id);
       delete testResults[item.id];
+      if (items.value.length === 1 && currentPage.value > 1) {
+        currentPage.value -= 1;
+      }
       await loadItems();
     },
   });
 }
 
-onMounted(loadItems);
+onMounted(() => {
+  void loadProxyPoolSettings();
+  void loadItems();
+});
 onUnmounted(clearAutoTestTimer);
 </script>
 
@@ -373,6 +583,7 @@ onUnmounted(clearAutoTestTimer);
   <div class="proxy-pool-panel">
     <div class="proxy-pool-toolbar">
       <div class="proxy-pool-meta">
+        <span>{{ t("proxyPool.testTarget") }}: {{ proxyPoolSettingsApplied.targetUrl }}</span>
         <span>{{ t("proxyPool.testTimeout") }}: {{ testTimeoutText }}</span>
         <span>{{ t("proxyPool.autoTestInterval") }}: {{ autoTestIntervalText }}</span>
       </div>
@@ -382,6 +593,12 @@ onUnmounted(clearAutoTestTimer);
             <n-icon :component="Add" />
           </template>
           {{ t("proxyPool.add") }}
+        </n-button>
+        <n-button size="small" :loading="settingsLoading" @click="openSettings">
+          <template #icon>
+            <n-icon :component="SettingsOutline" />
+          </template>
+          {{ t("proxyPool.testSettings") }}
         </n-button>
         <n-button size="small" :loading="loading" @click="loadItems">
           <template #icon>
@@ -398,7 +615,7 @@ onUnmounted(clearAutoTestTimer);
           <template #icon>
             <n-icon :component="CheckmarkCircleOutline" />
           </template>
-          {{ t("proxyPool.testAll") }}
+          {{ t("proxyPool.testCurrentPage") }}
         </n-button>
         <div class="proxy-pool-auto-test">
           <n-switch
@@ -421,6 +638,101 @@ onUnmounted(clearAutoTestTimer);
       :single-line="false"
       :row-key="row => row.id"
     />
+
+    <div class="proxy-pool-pagination">
+      <div class="proxy-pool-pagination-info">
+        <span>{{ totalRecordsText }}</span>
+        <n-select
+          :value="pageSize"
+          :options="[
+            { label: t('proxyPool.recordsPerPage', { count: 12 }), value: 12 },
+            { label: t('proxyPool.recordsPerPage', { count: 24 }), value: 24 },
+            { label: t('proxyPool.recordsPerPage', { count: 60 }), value: 60 },
+            { label: t('proxyPool.recordsPerPage', { count: 120 }), value: 120 },
+          ]"
+          size="small"
+          style="width: 108px"
+          @update:value="changePageSize"
+        />
+      </div>
+      <div class="proxy-pool-pagination-controls">
+        <n-button size="small" :disabled="currentPage <= 1" @click="changePage(currentPage - 1)">
+          {{ t("common.previousPage") }}
+        </n-button>
+        <span class="proxy-pool-page-info">{{ pageInfoText }}</span>
+        <n-button size="small" :disabled="isNextPageDisabled" @click="changePage(currentPage + 1)">
+          {{ t("common.nextPage") }}
+        </n-button>
+      </div>
+    </div>
+
+    <n-modal v-model:show="showSettingsModal" class="proxy-pool-form-modal">
+      <n-card
+        class="proxy-pool-form-card"
+        :title="t('proxyPool.testSettings')"
+        :bordered="false"
+        size="medium"
+        role="dialog"
+        aria-modal="true"
+      >
+        <template #header-extra>
+          <n-button quaternary circle size="small" @click="showSettingsModal = false">
+            <template #icon>
+              <n-icon :component="Close" />
+            </template>
+          </n-button>
+        </template>
+
+        <n-form
+          label-placement="top"
+          size="small"
+          class="proxy-pool-form"
+          @submit.prevent="saveProxyPoolSettings"
+        >
+          <n-form-item :label="t('proxyPool.testTarget')">
+            <n-input
+              v-model:value="proxyPoolSettingsForm.targetUrl"
+              :placeholder="defaultProxyPoolTestTargetURL"
+              :disabled="settingsLoading || settingsSaving"
+            />
+          </n-form-item>
+          <div class="proxy-pool-settings-grid">
+            <n-form-item :label="t('proxyPool.testTimeout')">
+              <n-input-number
+                v-model:value="proxyPoolSettingsForm.timeoutSeconds"
+                :min="1"
+                :precision="0"
+                :show-button="false"
+                :disabled="settingsLoading || settingsSaving"
+              />
+            </n-form-item>
+            <n-form-item :label="t('proxyPool.autoTestInterval')">
+              <n-input-number
+                v-model:value="proxyPoolSettingsForm.intervalMinutes"
+                :min="1"
+                :precision="0"
+                :show-button="false"
+                :disabled="settingsLoading || settingsSaving"
+              />
+            </n-form-item>
+          </div>
+        </n-form>
+
+        <template #footer>
+          <n-space justify="end">
+            <n-button @click="showSettingsModal = false">{{ t("common.cancel") }}</n-button>
+            <n-button
+              type="primary"
+              :loading="settingsSaving"
+              :disabled="settingsLoading"
+              @click="saveProxyPoolSettings"
+            >
+              {{ t("common.save") }}
+            </n-button>
+          </n-space>
+        </template>
+      </n-card>
+    </n-modal>
 
     <n-modal v-model:show="showModal" class="proxy-pool-form-modal">
       <n-card
@@ -519,5 +831,49 @@ onUnmounted(clearAutoTestTimer);
 
 .proxy-pool-form {
   padding-top: 2px;
+}
+
+.proxy-pool-settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.proxy-pool-pagination {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.proxy-pool-pagination-info,
+.proxy-pool-pagination-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-color-3);
+  font-size: 12px;
+}
+
+.proxy-pool-page-info {
+  min-width: 72px;
+  text-align: center;
+}
+
+@media (max-width: 520px) {
+  .proxy-pool-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .proxy-pool-pagination,
+  .proxy-pool-pagination-info,
+  .proxy-pool-pagination-controls {
+    width: 100%;
+  }
+
+  .proxy-pool-pagination-controls {
+    justify-content: space-between;
+  }
 }
 </style>

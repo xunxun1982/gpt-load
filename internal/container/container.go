@@ -101,7 +101,9 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(services.NewGroupService); err != nil {
 		return nil, err
 	}
-	if err := container.Provide(services.NewProxyPoolService); err != nil {
+	if err := container.Provide(func(db *gorm.DB, settingsManager *config.SystemSettingsManager) *services.ProxyPoolService {
+		return services.NewProxyPoolServiceWithOptions(db, services.WithProxyPoolSettingsProvider(settingsManager))
+	}); err != nil {
 		return nil, err
 	}
 	if err := container.Provide(services.NewAggregateGroupService); err != nil {

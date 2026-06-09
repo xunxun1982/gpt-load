@@ -11,10 +11,19 @@ import (
 
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
+	"gpt-load/internal/types"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type proxyPoolSettingsProviderStub struct {
+	settings types.SystemSettings
+}
+
+func (s proxyPoolSettingsProviderStub) GetSettings() types.SystemSettings {
+	return s.settings
+}
 
 func setupProxyPoolService(t *testing.T) *ProxyPoolService {
 	return setupProxyPoolServiceWithOptions(t)
@@ -59,6 +68,53 @@ func TestProxyPoolServiceCRUD(t *testing.T) {
 	items, err = svc.List(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, items)
+}
+
+func TestProxyPoolServiceRejectsDuplicateNames(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, ProxyPoolInput{
+		Name: "shared proxy",
+		URL:  "http://proxy-a.example.com:8080",
+	})
+	require.NoError(t, err)
+
+	_, err = svc.Create(ctx, ProxyPoolInput{
+		Name: "shared proxy",
+		URL:  "http://proxy-b.example.com:8080",
+	})
+	var apiErr *app_errors.APIError
+	require.True(t, errors.As(err, &apiErr))
+	assert.Equal(t, app_errors.ErrDuplicateResource.Code, apiErr.Code)
+}
+
+func TestProxyPoolServiceRejectsDuplicateNamesOnUpdate(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, ProxyPoolInput{
+		Name: "first proxy",
+		URL:  "http://proxy-a.example.com:8080",
+	})
+	require.NoError(t, err)
+	second, err := svc.Create(ctx, ProxyPoolInput{
+		Name: "second proxy",
+		URL:  "http://proxy-b.example.com:8080",
+	})
+	require.NoError(t, err)
+
+	_, err = svc.Update(ctx, second.ID, ProxyPoolInput{
+		Name: "first proxy",
+		URL:  "http://proxy-c.example.com:8080",
+	})
+	var apiErr *app_errors.APIError
+	require.True(t, errors.As(err, &apiErr))
+	assert.Equal(t, app_errors.ErrDuplicateResource.Code, apiErr.Code)
 }
 
 func TestProxyPoolServiceRejectsUnsupportedSchemes(t *testing.T) {
@@ -142,6 +198,44 @@ func TestProxyPoolServiceTestUsesConfiguredProxy(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, result.StatusCode)
 	assert.GreaterOrEqual(t, result.DurationMS, int64(0))
 	assert.Equal(t, proxyServer.URL, result.URL)
+	select {
+	case got := <-proxyRequests:
+		assert.Equal(t, targetURL, got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for proxy request")
+	}
+}
+
+func TestProxyPoolServiceTestUsesSettingsHealthCheckConfig(t *testing.T) {
+	t.Parallel()
+
+	const targetURL = "http://settings-target.invalid/generate_204"
+	svc := setupProxyPoolServiceWithOptions(t, WithProxyPoolSettingsProvider(proxyPoolSettingsProviderStub{
+		settings: types.SystemSettings{
+			ProxyPoolTestTargetURL:           targetURL,
+			ProxyPoolTestTimeoutSeconds:      1,
+			ProxyPoolAutoTestIntervalMinutes: 60,
+		},
+	}))
+	ctx := context.Background()
+	proxyRequests := make(chan string, 1)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyRequests <- r.URL.String()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxyServer.Close()
+
+	item, err := svc.Create(ctx, ProxyPoolInput{
+		Name: "settings proxy",
+		URL:  proxyServer.URL,
+	})
+	require.NoError(t, err)
+
+	result, err := svc.Test(ctx, item.ID)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, targetURL, result.TargetURL)
+	assert.Equal(t, int64(1000), result.TimeoutMS)
 	select {
 	case got := <-proxyRequests:
 		assert.Equal(t, targetURL, got)

@@ -633,7 +633,6 @@ checkDebugMode();
                   size="small"
                   filterable
                   clearable
-                  @update:value="value => (form[item.key] = value || '')"
                   style="width: 100%"
                 />
                 <n-input

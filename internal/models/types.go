@@ -30,7 +30,7 @@ type SystemSetting struct {
 // ProxyPoolItem stores a reusable outbound proxy URL for upstream requests.
 type ProxyPoolItem struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name      string    `gorm:"type:varchar(255);not null" json:"name"`
+	Name      string    `gorm:"type:varchar(255);not null;uniqueIndex:idx_proxy_pool_items_name_unique" json:"name"`
 	URL       string    `gorm:"type:text;not null" json:"url"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

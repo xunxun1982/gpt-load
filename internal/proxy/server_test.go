@@ -751,12 +751,9 @@ func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
 
-	var fastGroupID atomic.Uint64
-	var fastKeyID atomic.Uint64
 	var slowAttempts int32
 	slowUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&slowAttempts, 1)
-		_ = memStore.LPush(activeKeysListKeyForTest(fastGroupID.Load()), fastKeyID.Load())
 		time.Sleep(1200 * time.Millisecond)
 	}))
 	t.Cleanup(slowUpstream.Close)
@@ -811,11 +808,8 @@ func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing
 		Weight:     100,
 	}).Error)
 
-	fastGroupID.Store(uint64(fastGroup.ID))
-
 	createTestKey(t, db, slowGroup.ID, "sk-agg-timeout-slow", ps.encryptionSvc)
 	fastKey := createTestKey(t, db, fastGroup.ID, "sk-agg-timeout-fast", ps.encryptionSvc)
-	fastKeyID.Store(uint64(fastKey.ID))
 	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
 	require.NoError(t, memStore.Delete(activeKeysListKeyForTest(uint64(fastGroup.ID))))
 	require.NoError(t, ps.groupManager.Initialize())
@@ -836,6 +830,11 @@ func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing
 		originalPath:        c.Request.URL.Path,
 		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
 	}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		// Test scaffolding: keep fastGroup unavailable for the first selection, then restore fastKey outside upstream handlers.
+		_ = memStore.LPush(activeKeysListKeyForTest(uint64(fastGroup.ID)), uint64(fastKey.ID))
+	}()
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, retryCtx.originalBodyBytes, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusOK, w.Code)

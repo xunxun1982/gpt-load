@@ -190,6 +190,10 @@ func TestConfigMessageKeys(t *testing.T) {
 		"config.proxy_keys",
 		"config.log_retention_days",
 		"config.request_timeout",
+		"config.proxy_pool_test_target_url",
+		"config.proxy_pool_test_timeout_seconds",
+		"config.proxy_pool_auto_test_interval_minutes",
+		"config.category.proxy_pool",
 		"config.max_retries",
 	}
 

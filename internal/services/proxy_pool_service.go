@@ -12,6 +12,7 @@ import (
 
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
+	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
 
 	"gorm.io/gorm"
@@ -44,6 +45,12 @@ type ProxyPoolService struct {
 	db                 *gorm.DB
 	healthCheckTarget  string
 	healthCheckTimeout time.Duration
+	settingsProvider   ProxyPoolSettingsProvider
+}
+
+// ProxyPoolSettingsProvider supplies runtime proxy pool health-check settings.
+type ProxyPoolSettingsProvider interface {
+	GetSettings() types.SystemSettings
 }
 
 // ProxyPoolServiceOption customizes ProxyPoolService behavior.
@@ -58,6 +65,13 @@ func WithProxyPoolHealthCheck(targetURL string, timeout time.Duration) ProxyPool
 		if timeout > 0 {
 			s.healthCheckTimeout = timeout
 		}
+	}
+}
+
+// WithProxyPoolSettingsProvider lets proxy tests use the current system settings.
+func WithProxyPoolSettingsProvider(provider ProxyPoolSettingsProvider) ProxyPoolServiceOption {
+	return func(s *ProxyPoolService) {
+		s.settingsProvider = provider
 	}
 }
 
@@ -99,13 +113,18 @@ func normalizeProxyPoolInput(input ProxyPoolInput) (ProxyPoolInput, error) {
 // List returns all proxy pool items ordered by creation ID.
 func (s *ProxyPoolService) List(ctx context.Context) ([]models.ProxyPoolItem, error) {
 	items := make([]models.ProxyPoolItem, 0)
-	if err := s.db.WithContext(ctx).
-		Select("id", "name", "url", "created_at", "updated_at").
-		Order("id ASC").
-		Find(&items).Error; err != nil {
+	if err := s.ListQuery(ctx).Find(&items).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 	return items, nil
+}
+
+// ListQuery returns the ordered proxy pool list query for handlers that paginate results.
+func (s *ProxyPoolService) ListQuery(ctx context.Context) *gorm.DB {
+	return s.db.WithContext(ctx).
+		Model(&models.ProxyPoolItem{}).
+		Select("id", "name", "url", "created_at", "updated_at").
+		Order("id ASC")
 }
 
 // Create validates and stores a proxy pool item.
@@ -180,14 +199,7 @@ func (s *ProxyPoolService) testProxyURL(ctx context.Context, rawProxyURL string)
 		return nil, app_errors.NewAPIError(app_errors.ErrInternalServer, "failed to parse normalized proxy URL")
 	}
 
-	timeout := s.healthCheckTimeout
-	if timeout <= 0 {
-		timeout = defaultProxyPoolTestTimeout
-	}
-	targetURL := s.healthCheckTarget
-	if strings.TrimSpace(targetURL) == "" {
-		targetURL = defaultProxyPoolTestTargetURL
-	}
+	targetURL, timeout := s.healthCheckConfig()
 	result := &ProxyPoolTestResult{
 		URL:       utils.SanitizeProxyString(normalizedURL),
 		TargetURL: targetURL,
@@ -235,6 +247,29 @@ func (s *ProxyPoolService) testProxyURL(ctx context.Context, rawProxyURL string)
 		result.Error = fmt.Sprintf("unexpected status code: %d", resp.StatusCode)
 	}
 	return result, nil
+}
+
+func (s *ProxyPoolService) healthCheckConfig() (string, time.Duration) {
+	targetURL := s.healthCheckTarget
+	timeout := s.healthCheckTimeout
+
+	if s.settingsProvider != nil {
+		settings := s.settingsProvider.GetSettings()
+		if configuredTarget := strings.TrimSpace(settings.ProxyPoolTestTargetURL); configuredTarget != "" {
+			targetURL = configuredTarget
+		}
+		if settings.ProxyPoolTestTimeoutSeconds > 0 {
+			timeout = time.Duration(settings.ProxyPoolTestTimeoutSeconds) * time.Second
+		}
+	}
+
+	if strings.TrimSpace(targetURL) == "" {
+		targetURL = defaultProxyPoolTestTargetURL
+	}
+	if timeout <= 0 {
+		timeout = defaultProxyPoolTestTimeout
+	}
+	return targetURL, timeout
 }
 
 func sanitizeProxyTestError(message string, rawProxyURL string) string {
