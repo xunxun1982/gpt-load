@@ -43,7 +43,7 @@ func TestV1_26_0_ClearLegacyProxyURLsClearsSystemAndGroupProxyValues(t *testing.
 		Upstreams:     datatypes.JSON(`[{"url":"https://a.example","weight":1,"proxy_url":"socks5://127.0.0.1:1080"}]`),
 		ChannelType:   "openai",
 		TestModel:     "gpt-test",
-		Config:        datatypes.JSONMap{"proxy_url": "http://127.0.0.1:8080", "max_retries": float64(2)},
+		Config:        datatypes.JSONMap{"proxy_url": "http://127.0.0.1:8080", "max_retries": json.Number("2")},
 		HeaderRules:   datatypes.JSON("[]"),
 		PathRedirects: datatypes.JSON("[]"),
 	}).Error)

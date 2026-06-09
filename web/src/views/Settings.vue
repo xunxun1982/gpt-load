@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import { settingsApi, type Setting, type SettingCategory } from "@/api/settings";
+import {
+  settingsApi,
+  type Setting,
+  type SettingCategory,
+  type SettingsUpdatePayload,
+} from "@/api/settings";
 import { proxyPoolApi } from "@/api/proxy-pool";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import http from "@/utils/http";
@@ -88,11 +93,24 @@ async function handleSubmit() {
   try {
     await formRef.value.validate();
     isSaving.value = true;
-    await settingsApi.updateSettings(form.value);
+    await settingsApi.updateSettings(normalizedSettingsPayload());
     await fetchSettings();
   } finally {
     isSaving.value = false;
   }
+}
+
+function normalizedSettingsPayload(): SettingsUpdatePayload {
+  const payload: SettingsUpdatePayload = { ...form.value };
+  const proxyValue = (payload as Record<string, unknown>).proxy_url;
+  // Naive UI clearable select emits null, while the backend expects "" for no proxy.
+  if (
+    Object.prototype.hasOwnProperty.call(payload, "proxy_url") &&
+    (proxyValue === null || proxyValue === undefined)
+  ) {
+    payload.proxy_url = "";
+  }
+  return payload;
 }
 
 function generateValidationRules(item: Setting): FormItemRule[] {

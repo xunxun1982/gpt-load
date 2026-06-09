@@ -575,19 +575,35 @@ function confirmDelete(item: ProxyPoolItem) {
     positiveText: t("common.delete"),
     negativeText: t("common.cancel"),
     onPositiveClick: async () => {
-      await proxyPoolApi.delete(item.id);
-      delete testResults[item.id];
-      if (items.value.length === 1 && currentPage.value > 1) {
-        currentPage.value -= 1;
+      const previousPage = currentPage.value;
+      const hadTestResult = Object.prototype.hasOwnProperty.call(testResults, item.id);
+      const previousTestResult = testResults[item.id];
+      let deleted = false;
+
+      try {
+        await proxyPoolApi.delete(item.id);
+        deleted = true;
+        delete testResults[item.id];
+        if (items.value.length === 1 && currentPage.value > 1) {
+          currentPage.value -= 1;
+        }
+        await loadItems();
+      } catch {
+        currentPage.value = previousPage;
+        if (hadTestResult && previousTestResult !== undefined) {
+          testResults[item.id] = previousTestResult;
+        }
+        if (!deleted) {
+          message.error(t("common.operationFailed"));
+        }
       }
-      await loadItems();
     },
   });
 }
 
 onMounted(() => {
-  void loadProxyPoolSettings();
-  void loadItems();
+  void loadProxyPoolSettings().catch(() => undefined);
+  void loadItems().catch(() => undefined);
 });
 onUnmounted(clearAutoTestTimer);
 </script>
