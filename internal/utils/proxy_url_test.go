@@ -59,6 +59,21 @@ func TestNormalizeProxyURLAcceptsValidSchemes(t *testing.T) {
 	}
 }
 
+func TestParseProxyURLReturnsParsedURL(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := ParseProxyURL("  socks5://proxy.example:1080  ")
+	if err != nil {
+		t.Fatalf("ParseProxyURL unexpected error: %v", err)
+	}
+	if parsed.Scheme != "socks5" {
+		t.Fatalf("ParseProxyURL scheme = %q, want socks5", parsed.Scheme)
+	}
+	if parsed.Host != "proxy.example:1080" {
+		t.Fatalf("ParseProxyURL host = %q, want proxy.example:1080", parsed.Host)
+	}
+}
+
 func TestNormalizeProxyURLRejectsUnsupportedSchemeFromBareHostPort(t *testing.T) {
 	t.Parallel()
 

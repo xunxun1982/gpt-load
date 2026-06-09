@@ -37,6 +37,8 @@ func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, ha
 	if settings == nil {
 		return
 	}
+	// hasLegacy means request_timeout was supplied, hasNonStream means the split field was supplied.
+	// Keep RequestTimeout synced for legacy callers after migrating legacy-only values forward.
 	if hasLegacy && !hasNonStream {
 		settings.NonStreamRequestTimeout = settings.RequestTimeout
 	}
