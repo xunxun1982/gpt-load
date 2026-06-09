@@ -100,19 +100,49 @@ func TestNormalizeProxyURLRejectsMissingHost(t *testing.T) {
 	}
 }
 
+func TestNormalizeProxyURLRejectsInvalidPorts(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"http://proxy.example:notaport",
+		"http://proxy.example:70000",
+		"http://proxy.example:0",
+	}
+
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			_, err := NormalizeProxyURL(raw)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "invalid port") {
+				t.Fatalf("expected invalid port error, got %q", err.Error())
+			}
+		})
+	}
+}
+
 func TestNormalizeProxyURLParseErrorDoesNotLeakCredentials(t *testing.T) {
 	t.Parallel()
 
 	userInfo := url.UserPassword("u", "p").String()
-	_, err := NormalizeProxyURL("http://" + userInfo + "@[::1")
+	tests := []string{
+		"http://" + userInfo + "@[::1",
+		"http://" + userInfo + "@proxy.example:notaport",
+	}
 
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "invalid proxy URL") {
-		t.Fatalf("expected invalid proxy URL error, got %q", err.Error())
-	}
-	if strings.Contains(err.Error(), userInfo) {
-		t.Fatalf("proxy credentials leaked in error: %q", err.Error())
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			_, err := NormalizeProxyURL(raw)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "invalid proxy URL") {
+				t.Fatalf("expected invalid proxy URL error, got %q", err.Error())
+			}
+			if strings.Contains(err.Error(), userInfo) {
+				t.Fatalf("proxy credentials leaked in error: %q", err.Error())
+			}
+		})
 	}
 }

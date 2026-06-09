@@ -17,9 +17,9 @@ import (
 	"gorm.io/gorm"
 )
 
-var (
-	proxyPoolTestTargetURL = "https://www.gstatic.com/generate_204"
-	proxyPoolTestTimeout   = 10 * time.Second
+const (
+	defaultProxyPoolTestTargetURL = "https://www.gstatic.com/generate_204"
+	defaultProxyPoolTestTimeout   = 10 * time.Second
 )
 
 // ProxyPoolInput captures editable proxy pool fields.
@@ -41,12 +41,42 @@ type ProxyPoolTestResult struct {
 
 // ProxyPoolService manages reusable upstream proxy URLs.
 type ProxyPoolService struct {
-	db *gorm.DB
+	db                 *gorm.DB
+	healthCheckTarget  string
+	healthCheckTimeout time.Duration
+}
+
+// ProxyPoolServiceOption customizes ProxyPoolService behavior.
+type ProxyPoolServiceOption func(*ProxyPoolService)
+
+// WithProxyPoolHealthCheck overrides the proxy health-check target and timeout.
+func WithProxyPoolHealthCheck(targetURL string, timeout time.Duration) ProxyPoolServiceOption {
+	return func(s *ProxyPoolService) {
+		if strings.TrimSpace(targetURL) != "" {
+			s.healthCheckTarget = strings.TrimSpace(targetURL)
+		}
+		if timeout > 0 {
+			s.healthCheckTimeout = timeout
+		}
+	}
 }
 
 // NewProxyPoolService constructs a ProxyPoolService.
 func NewProxyPoolService(db *gorm.DB) *ProxyPoolService {
-	return &ProxyPoolService{db: db}
+	return NewProxyPoolServiceWithOptions(db)
+}
+
+// NewProxyPoolServiceWithOptions constructs a ProxyPoolService with explicit options.
+func NewProxyPoolServiceWithOptions(db *gorm.DB, opts ...ProxyPoolServiceOption) *ProxyPoolService {
+	svc := &ProxyPoolService{
+		db:                 db,
+		healthCheckTarget:  defaultProxyPoolTestTargetURL,
+		healthCheckTimeout: defaultProxyPoolTestTimeout,
+	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 func normalizeProxyPoolInput(input ProxyPoolInput) (ProxyPoolInput, error) {
@@ -137,10 +167,10 @@ func (s *ProxyPoolService) Test(ctx context.Context, id uint) (*ProxyPoolTestRes
 		First(&item, id).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
-	return testProxyURL(ctx, item.URL)
+	return s.testProxyURL(ctx, item.URL)
 }
 
-func testProxyURL(ctx context.Context, rawProxyURL string) (*ProxyPoolTestResult, error) {
+func (s *ProxyPoolService) testProxyURL(ctx context.Context, rawProxyURL string) (*ProxyPoolTestResult, error) {
 	normalizedURL, err := utils.NormalizeProxyURL(rawProxyURL)
 	if err != nil {
 		return nil, app_errors.NewValidationError(err.Error())
@@ -150,13 +180,17 @@ func testProxyURL(ctx context.Context, rawProxyURL string) (*ProxyPoolTestResult
 		return nil, app_errors.NewAPIError(app_errors.ErrInternalServer, "failed to parse normalized proxy URL")
 	}
 
-	timeout := proxyPoolTestTimeout
+	timeout := s.healthCheckTimeout
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = defaultProxyPoolTestTimeout
+	}
+	targetURL := s.healthCheckTarget
+	if strings.TrimSpace(targetURL) == "" {
+		targetURL = defaultProxyPoolTestTargetURL
 	}
 	result := &ProxyPoolTestResult{
 		URL:       utils.SanitizeProxyString(normalizedURL),
-		TargetURL: proxyPoolTestTargetURL,
+		TargetURL: targetURL,
 		TimeoutMS: timeout.Milliseconds(),
 	}
 
@@ -181,7 +215,7 @@ func testProxyURL(ctx context.Context, rawProxyURL string) (*ProxyPoolTestResult
 			return http.ErrUseLastResponse
 		},
 	}
-	req, err := http.NewRequestWithContext(testCtx, http.MethodHead, proxyPoolTestTargetURL, nil)
+	req, err := http.NewRequestWithContext(testCtx, http.MethodHead, targetURL, nil)
 	if err != nil {
 		return nil, app_errors.NewAPIError(app_errors.ErrInternalServer, "failed to create proxy test request")
 	}

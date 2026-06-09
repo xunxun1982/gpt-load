@@ -156,6 +156,8 @@ const columns = computed<DataTableColumns<ProxyPoolItem>>(() => [
                       size: "small",
                       loading: isTesting(row.id),
                       disabled: batchTesting.value && !isTesting(row.id),
+                      "aria-label": `${t("proxyPool.test")}: ${row.name}`,
+                      title: `${t("proxyPool.test")}: ${row.name}`,
                       onClick: () => testItem(row),
                     },
                     { icon: () => h(NIcon, null, { default: () => h(CheckmarkCircleOutline) }) }

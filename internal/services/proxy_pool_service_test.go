@@ -17,10 +17,14 @@ import (
 )
 
 func setupProxyPoolService(t *testing.T) *ProxyPoolService {
+	return setupProxyPoolServiceWithOptions(t)
+}
+
+func setupProxyPoolServiceWithOptions(t *testing.T, opts ...ProxyPoolServiceOption) *ProxyPoolService {
 	t.Helper()
 	db := setupTestDB(t)
 	require.NoError(t, db.AutoMigrate(&models.ProxyPoolItem{}))
-	return NewProxyPoolService(db)
+	return NewProxyPoolServiceWithOptions(db, opts...)
 }
 
 func TestProxyPoolServiceCRUD(t *testing.T) {
@@ -112,24 +116,17 @@ func TestProxyPoolServiceAllowsHTTPAndSocks(t *testing.T) {
 }
 
 func TestProxyPoolServiceTestUsesConfiguredProxy(t *testing.T) {
-	svc := setupProxyPoolService(t)
-	ctx := context.Background()
+	t.Parallel()
+
 	const targetURL = "http://proxy-test.invalid/generate_204"
+	svc := setupProxyPoolServiceWithOptions(t, WithProxyPoolHealthCheck(targetURL, 2*time.Second))
+	ctx := context.Background()
 	proxyRequests := make(chan string, 1)
 	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxyRequests <- r.URL.String()
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer proxyServer.Close()
-
-	oldTargetURL := proxyPoolTestTargetURL
-	oldTimeout := proxyPoolTestTimeout
-	proxyPoolTestTargetURL = targetURL
-	proxyPoolTestTimeout = 2 * time.Second
-	defer func() {
-		proxyPoolTestTargetURL = oldTargetURL
-		proxyPoolTestTimeout = oldTimeout
-	}()
 
 	item, err := svc.Create(ctx, ProxyPoolInput{
 		Name: "local proxy",
@@ -154,17 +151,10 @@ func TestProxyPoolServiceTestUsesConfiguredProxy(t *testing.T) {
 }
 
 func TestProxyPoolServiceTestSanitizesProxyCredentialsInErrors(t *testing.T) {
-	svc := setupProxyPoolService(t)
-	ctx := context.Background()
+	t.Parallel()
 
-	oldTargetURL := proxyPoolTestTargetURL
-	oldTimeout := proxyPoolTestTimeout
-	proxyPoolTestTargetURL = "http://proxy-test.invalid/generate_204"
-	proxyPoolTestTimeout = 200 * time.Millisecond
-	defer func() {
-		proxyPoolTestTargetURL = oldTargetURL
-		proxyPoolTestTimeout = oldTimeout
-	}()
+	svc := setupProxyPoolServiceWithOptions(t, WithProxyPoolHealthCheck("http://proxy-test.invalid/generate_204", 200*time.Millisecond))
+	ctx := context.Background()
 
 	item, err := svc.Create(ctx, ProxyPoolInput{
 		Name: "credential proxy",
@@ -181,6 +171,6 @@ func TestProxyPoolServiceTestSanitizesProxyCredentialsInErrors(t *testing.T) {
 	assert.NotContains(t, result.Error, "proxy-user")
 	assert.NotContains(t, result.Error, "proxy-pass")
 	assert.NotContains(t, result.Error, "proxy-user:proxy-pass@")
-	assert.True(t, result.TimeoutMS <= int64((200*time.Millisecond).Milliseconds()))
-	assert.True(t, strings.TrimSpace(result.Error) != "")
+	assert.LessOrEqual(t, result.TimeoutMS, int64((200 * time.Millisecond).Milliseconds()))
+	assert.NotEmpty(t, strings.TrimSpace(result.Error))
 }

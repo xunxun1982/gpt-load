@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,9 @@ func ParseProxyURL(raw string) (*url.URL, error) {
 	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "invalid port") {
+			return nil, fmt.Errorf("invalid proxy URL: invalid port")
+		}
 		// Do not wrap url.Parse errors here; parse errors can contain proxy credentials.
 		return nil, fmt.Errorf("invalid proxy URL")
 	}
@@ -37,6 +41,16 @@ func ParseProxyURL(raw string) (*url.URL, error) {
 	}
 	if parsed.Host == "" {
 		return nil, fmt.Errorf("invalid proxy URL: missing host")
+	}
+	if strings.LastIndex(parsed.Host, ":") > strings.LastIndex(parsed.Host, "]") {
+		port := parsed.Port()
+		if port == "" {
+			return nil, fmt.Errorf("invalid proxy URL: invalid port")
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return nil, fmt.Errorf("invalid proxy URL: invalid port")
+		}
 	}
 	return parsed, nil
 }
