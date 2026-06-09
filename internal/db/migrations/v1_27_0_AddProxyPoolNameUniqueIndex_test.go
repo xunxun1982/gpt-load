@@ -65,3 +65,25 @@ func TestV1_27_0_AddProxyPoolNameUniqueIndexKeepsRenamedNamesWithinLimit(t *test
 	assert.Len(t, []rune(items[1].Name), proxyPoolNameMaxLength)
 	assert.Equal(t, strings.Repeat("a", proxyPoolNameMaxLength-2)+"-2", items[1].Name)
 }
+
+func TestV1_27_0_AddProxyPoolNameUniqueIndexSkipsWhenMarkerAlreadyAcquired(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&proxyPoolItemLegacyV1_27_0{}))
+	require.NoError(t, db.Create(&proxyPoolItemLegacyV1_27_0{Name: "duplicate", URL: "http://proxy-a.example.com:8080"}).Error)
+	require.NoError(t, db.Create(&proxyPoolItemLegacyV1_27_0{Name: "duplicate", URL: "http://proxy-b.example.com:8080"}).Error)
+	require.NoError(t, ensureDataMigrationsTable(db))
+	require.NoError(t, db.Create(&dataMigrationMarker{
+		Version:   proxyPoolNameUniqueIndexMigrationVersion,
+		CreatedAt: time.Now().UTC(),
+	}).Error)
+
+	require.NoError(t, V1_27_0_AddProxyPoolNameUniqueIndex(db))
+
+	require.False(t, db.Migrator().HasIndex("proxy_pool_items", proxyPoolNameUniqueIndex))
+	var items []models.ProxyPoolItem
+	require.NoError(t, db.Order("id ASC").Find(&items).Error)
+	require.Len(t, items, 2)
+	assert.Equal(t, "duplicate", items[0].Name)
+	assert.Equal(t, "duplicate", items[1].Name)
+}

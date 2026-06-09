@@ -93,11 +93,16 @@ func hasDataMigrationRun(db *gorm.DB, version string) (bool, error) {
 }
 
 func acquireClearLegacyProxyURLsMigrationMarker(db *gorm.DB) (bool, error) {
+	return acquireDataMigrationMarker(db, clearLegacyProxyURLsMigrationVersion)
+}
+
+func acquireDataMigrationMarker(db *gorm.DB, version string) (bool, error) {
+	// data_migrations rows are persistent completion markers, not transient locks.
 	result := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "version"}},
 		DoNothing: true,
 	}).Create(&dataMigrationMarker{
-		Version:   clearLegacyProxyURLsMigrationVersion,
+		Version:   version,
 		CreatedAt: time.Now().UTC(),
 	})
 	if result.Error != nil {

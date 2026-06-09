@@ -7,6 +7,7 @@ import (
 )
 
 const proxyPoolNameUniqueIndex = "idx_proxy_pool_items_name_unique"
+const proxyPoolNameUniqueIndexMigrationVersion = "v1.27.0_proxy_pool_name_unique_index"
 const proxyPoolNameMaxLength = 255
 
 type proxyPoolNameUniqueIndexModel struct {
@@ -25,15 +26,37 @@ type proxyPoolNameUniqueIndexRow struct {
 // V1_27_0_AddProxyPoolNameUniqueIndex makes proxy pool names unique after cleaning legacy duplicates.
 func V1_27_0_AddProxyPoolNameUniqueIndex(db *gorm.DB) error {
 	migrator := db.Migrator()
-	if !migrator.HasTable("proxy_pool_items") || migrator.HasIndex("proxy_pool_items", proxyPoolNameUniqueIndex) {
+	if !migrator.HasTable("proxy_pool_items") {
+		return nil
+	}
+	if err := ensureDataMigrationsTable(db); err != nil {
+		return err
+	}
+	ran, err := hasDataMigrationRun(db, proxyPoolNameUniqueIndexMigrationVersion)
+	if err != nil {
+		return err
+	}
+	if ran {
 		return nil
 	}
 
 	return db.Transaction(func(tx *gorm.DB) error {
+		acquired, err := acquireDataMigrationMarker(tx, proxyPoolNameUniqueIndexMigrationVersion)
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			return nil
+		}
+
+		txMigrator := tx.Migrator()
+		if !txMigrator.HasTable("proxy_pool_items") || txMigrator.HasIndex("proxy_pool_items", proxyPoolNameUniqueIndex) {
+			return nil
+		}
 		if err := renameDuplicateProxyPoolNames(tx); err != nil {
 			return err
 		}
-		return tx.Migrator().CreateIndex(&proxyPoolNameUniqueIndexModel{}, proxyPoolNameUniqueIndex)
+		return txMigrator.CreateIndex(&proxyPoolNameUniqueIndexModel{}, proxyPoolNameUniqueIndex)
 	})
 }
 

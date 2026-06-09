@@ -590,11 +590,11 @@ function confirmDelete(item: ProxyPoolItem) {
         }
         await loadItems();
       } catch {
-        currentPage.value = previousPage;
-        if (!deleted && hadTestResult && previousTestResult !== undefined) {
-          testResults[item.id] = previousTestResult;
-        }
         if (!deleted) {
+          currentPage.value = previousPage;
+          if (hadTestResult && previousTestResult !== undefined) {
+            testResults[item.id] = previousTestResult;
+          }
           message.error(t("common.operationFailed"));
         }
       }
