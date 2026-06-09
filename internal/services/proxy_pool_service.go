@@ -201,9 +201,9 @@ func (s *ProxyPoolService) testProxyURL(ctx context.Context, rawProxyURL string)
 		Proxy:                 http.ProxyURL(parsedProxyURL),
 		DisableKeepAlives:     true,
 		ResponseHeaderTimeout: timeout,
-		TLSHandshakeTimeout:   minDuration(timeout, 5*time.Second),
+		TLSHandshakeTimeout:   timeout,
 		DialContext: (&net.Dialer{
-			Timeout: minDuration(timeout, 5*time.Second),
+			Timeout: timeout,
 		}).DialContext,
 	}
 	defer transport.CloseIdleConnections()
@@ -235,13 +235,6 @@ func (s *ProxyPoolService) testProxyURL(ctx context.Context, rawProxyURL string)
 		result.Error = fmt.Sprintf("unexpected status code: %d", resp.StatusCode)
 	}
 	return result, nil
-}
-
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func sanitizeProxyTestError(message string, rawProxyURL string) string {
