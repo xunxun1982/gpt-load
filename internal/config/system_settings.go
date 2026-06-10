@@ -34,6 +34,10 @@ func NewSystemSettingsManager() *SystemSettingsManager {
 	return &SystemSettingsManager{}
 }
 
+// normalizeSplitRequestTimeouts keeps RequestTimeout synced to NonStreamRequestTimeout,
+// which is the source of truth for split timeout configuration.
+// It handles legacy-only backfill, explicit non-stream values including zero,
+// and default sync when neither setting was supplied.
 func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, hasNonStream bool) {
 	if settings == nil {
 		return
