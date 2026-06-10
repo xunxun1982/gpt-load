@@ -74,9 +74,9 @@ type DynamicWeightConfig struct {
 	RecentRateLimitCooldown        time.Duration
 	RateLimitSuccessCredit         float64
 
-	// Health score threshold below which effective weight is reduced to 10% of base weight
-	// (capped at 1, min 0.1) to prevent unhealthy high-weight targets from dominating
-	// healthy low-weight targets
+	// CriticalHealthThreshold is the health score threshold at or below which
+	// enabled targets use the fixed 1.0 recovery weight to prevent unhealthy
+	// high-weight targets from dominating healthy low-weight targets.
 	CriticalHealthThreshold float64
 	// Health score threshold for applying aggressive penalty
 	// Targets with health score between CriticalHealthThreshold and MediumHealthThreshold
@@ -632,10 +632,9 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 // GetEffectiveWeight calculates the effective weight based on base weight and health score.
 // Implements non-linear penalty for low health scores to reduce traffic to unhealthy targets.
 // Three health score ranges (optimized for unstable channels with intermittent failures):
-//  1. Critical (<= 0.50): effective weight reduced to the 1.0 recovery floor
+//  1. Critical (<= 0.50): fixed 1.0 recovery weight
 //     This prevents unhealthy high-weight targets from dominating healthy low-weight targets
-//     Example: baseWeight=100 -> 10% = 10.0, capped to 1.0;
-//     baseWeight=5 -> 1.0; baseWeight=1 -> 1.0
+//     Example: baseWeight=100 -> 1.0; baseWeight=5 -> 1.0; baseWeight=1 -> 1.0
 //  2. Medium (0.50 to 0.75): aggressive non-linear penalty using quadratic function
 //     Example: health=0.6 -> weight multiplier = 0.6^2 = 0.36
 //  3. Good (> 0.75): linear scaling
@@ -650,18 +649,9 @@ func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *Dynam
 
 	var effectiveWeight float64
 
-	// Critical health: use minimum 10% of base weight to allow recovery
-	// Cap at 1.0 to prevent unhealthy high-weight targets from dominating healthy low-weight targets
-	// Example: baseWeight=100 -> min(10.0, 1.0) = 1.0, baseWeight=5 -> 1.0
+	// Critical health: fixed 1.0 recovery weight for all enabled targets.
 	if healthScore <= m.config.CriticalHealthThreshold {
-		minWeight := float64(baseWeight) * 0.1
-		if minWeight > 1.0 {
-			minWeight = 1.0 // Cap at 1.0 to ensure fair competition with healthy low-weight targets
-		}
-		if minWeight < 1.0 {
-			minWeight = 1.0 // Floor at 1.0 to keep enabled targets recoverable.
-		}
-		effectiveWeight = minWeight
+		effectiveWeight = 1.0
 	} else if healthScore < m.config.MediumHealthThreshold {
 		// Medium health: apply aggressive non-linear penalty
 		// Use power function to create aggressive penalty curve
