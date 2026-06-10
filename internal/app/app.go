@@ -181,9 +181,6 @@ func (a *App) Start() error {
 
 		// Database migration
 		dbmigrations.HandleLegacyIndexes(a.db)
-		if err := dbmigrations.V1_27_0_AddProxyPoolNameUniqueIndex(a.db); err != nil {
-			return fmt.Errorf("database proxy pool name migration failed: %w", err)
-		}
 		if err := a.db.AutoMigrate(
 			&models.SystemSetting{},
 			&models.Group{},

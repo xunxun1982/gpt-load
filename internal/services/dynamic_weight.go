@@ -91,18 +91,17 @@ type DynamicWeightConfig struct {
 const recentPenaltyAfterSuccessMultiplier = 0.75
 
 // DefaultDynamicWeightConfig returns the default configuration.
-// Optimized for unstable channels that may experience intermittent failures.
-// Tolerates patterns like "5-6 consecutive failures followed by 1 success" while still
-// penalizing persistently poor performance. Balances between availability and quality.
+// Optimized for aggregate routing: isolated failures are tolerated, while repeated hard
+// failures quickly lose traffic and retain only the minimum recovery weight.
 func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 	return &DynamicWeightConfig{
 		// Consecutive failure penalty: 0.08 per failure
-		// Tolerates up to 5-6 failures before significant penalty (5 × 0.08 = 0.40 max)
-		// More forgiving than strict circuit breaker patterns for unstable channels
+		// The hard-failure path uses a progressive curve so repeated failures are penalized
+		// faster than isolated failures, similar to passive outlier-detection thresholds.
 		ConsecutiveFailurePenalty: 0.08,
-		// Max penalty at 0.40 (reached after 5 consecutive failures)
-		// Allows unstable channels to still receive some traffic for recovery
-		MaxConsecutiveFailurePenalty: 0.40,
+		// Max penalty at 0.90 (reached around 10 consecutive hard failures)
+		// Keeps a recovery path through MinHealthScore while quickly removing bad targets from normal selection.
+		MaxConsecutiveFailurePenalty: 0.90,
 		// Recent failure penalty: 0.12 with time decay
 		// Moderate penalty that decays over cooldown period
 		RecentFailurePenalty: 0.12,
@@ -131,7 +130,7 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 		// Lighter penalties allow the service to recover traffic faster once rate limit clears
 		ConsecutiveRateLimitPenalty: 0.025, // ~30% of 0.08
 		// Max penalty at 0.125 (reached after 5 consecutive rate limits)
-		// Much lighter than regular failure max of 0.40
+		// Much lighter than hard-failure max of 0.90.
 		MaxConsecutiveRateLimitPenalty: 0.125,
 		// Recent rate limit penalty: 0.04 with time decay (~30% of 0.12)
 		RecentRateLimitPenalty: 0.04,
@@ -527,6 +526,26 @@ func calculateRecentEventPenalty(now, eventAt, lastSuccessAt time.Time, cooldown
 	return penalty
 }
 
+func calculateConsecutiveHardFailurePenalty(count int64, basePenalty, maxPenalty float64) float64 {
+	if count <= 0 || basePenalty <= 0 || maxPenalty <= 0 {
+		return 0
+	}
+
+	// Explicit multipliers keep 2-10 consecutive hard failures distinct.
+	// This mirrors passive outlier detection: early failures are tolerated, repeated failures accelerate quickly.
+	multipliers := [...]float64{0, 1, 2.25, 4, 5.75, 7.25, 8.5, 9.5, 10.25, 10.75, 11.25}
+	var penalty float64
+	if count < int64(len(multipliers)) {
+		penalty = basePenalty * multipliers[count]
+	} else {
+		penalty = maxPenalty
+	}
+	if penalty > maxPenalty {
+		return maxPenalty
+	}
+	return penalty
+}
+
 // CalculateHealthScore calculates the health score based on metrics.
 // Returns a value between MinHealthScore and 1.0.
 func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetrics) float64 {
@@ -539,11 +558,11 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 
 	// Penalty for consecutive failures (hard failures like 500, 401, etc.)
 	if metrics.ConsecutiveFailures > 0 {
-		penalty := float64(metrics.ConsecutiveFailures) * m.config.ConsecutiveFailurePenalty
-		if penalty > m.config.MaxConsecutiveFailurePenalty {
-			penalty = m.config.MaxConsecutiveFailurePenalty
-		}
-		score -= penalty
+		score -= calculateConsecutiveHardFailurePenalty(
+			metrics.ConsecutiveFailures,
+			m.config.ConsecutiveFailurePenalty,
+			m.config.MaxConsecutiveFailurePenalty,
+		)
 	}
 
 	// Penalty for consecutive rate limits (429 errors) - lighter than hard failures

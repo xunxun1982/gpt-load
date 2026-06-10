@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2788,7 +2789,14 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 	}
 	if legacyValue, ok := configMap["request_timeout"]; ok {
 		if _, hasNewKey := configMap["non_stream_request_timeout"]; !hasNewKey {
-			configMap["non_stream_request_timeout"] = legacyValue
+			normalizedValue, ok := positiveNumericConfigValue(legacyValue)
+			if !ok {
+				return nil, NewI18nError(app_errors.ErrValidation, "error.invalid_config_format", map[string]any{
+					"error": "request_timeout must be greater than 0 when non_stream_request_timeout is omitted",
+				})
+			}
+			configMap["request_timeout"] = normalizedValue
+			configMap["non_stream_request_timeout"] = normalizedValue
 		}
 	}
 
@@ -2834,10 +2842,30 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 		return nil, NewI18nError(app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
 	}
 	if nonStreamTimeout, ok := finalMap["non_stream_request_timeout"]; ok {
+		// Keep legacy timeout synced with the explicit split timeout, including zero which disables fallback.
 		finalMap["request_timeout"] = nonStreamTimeout
 	}
 
 	return finalMap, nil
+}
+
+func positiveNumericConfigValue(value any) (any, bool) {
+	switch typedValue := value.(type) {
+	case int:
+		return typedValue, typedValue > 0
+	case int64:
+		return typedValue, typedValue > 0
+	case float64:
+		return typedValue, typedValue > 0 && !math.IsNaN(typedValue) && !math.IsInf(typedValue, 0)
+	case json.Number:
+		parsed, err := typedValue.Float64()
+		return parsed, err == nil && parsed > 0 && !math.IsNaN(parsed) && !math.IsInf(parsed, 0)
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typedValue), 64)
+		return parsed, err == nil && parsed > 0 && !math.IsNaN(parsed) && !math.IsInf(parsed, 0)
+	default:
+		return nil, false
+	}
 }
 
 // normalizePathRedirects validates and normalizes path redirect rules.

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -752,8 +753,18 @@ func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing
 	ps, memStore := setupTestProxyServerWithStore(t, db)
 
 	var slowAttempts int32
+	firstSlowAttemptStarted := make(chan struct{})
+	var signalFirstSlowAttempt sync.Once
+	t.Cleanup(func() {
+		signalFirstSlowAttempt.Do(func() {
+			close(firstSlowAttemptStarted)
+		})
+	})
 	slowUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&slowAttempts, 1)
+		signalFirstSlowAttempt.Do(func() {
+			close(firstSlowAttemptStarted)
+		})
 		time.Sleep(1200 * time.Millisecond)
 	}))
 	t.Cleanup(slowUpstream.Close)
@@ -831,7 +842,7 @@ func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing
 		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
 	}
 	go func() {
-		time.Sleep(200 * time.Millisecond)
+		<-firstSlowAttemptStarted
 		// Test scaffolding: keep fastGroup unavailable for the first selection, then restore fastKey outside upstream handlers.
 		_ = memStore.LPush(activeKeysListKeyForTest(uint64(fastGroup.ID)), uint64(fastKey.ID))
 	}()
@@ -840,6 +851,67 @@ func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, int32(1), atomic.LoadInt32(&slowAttempts))
 	require.Equal(t, int32(1), atomic.LoadInt32(&fastAttempts))
+}
+
+func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
+
+	aggregateGroup := &models.Group{
+		ID:        9001,
+		Name:      "agg-health",
+		GroupType: "aggregate",
+	}
+	failedGroup := &models.Group{
+		ID:          9002,
+		Name:        "agg-health-openai",
+		GroupType:   "standard",
+		ChannelType: "openai",
+	}
+	successGroup := &models.Group{
+		ID:          9003,
+		Name:        "agg-health-gemini",
+		GroupType:   "standard",
+		ChannelType: "gemini",
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/agg-health/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`)))
+	body := []byte(`{"model":"gpt-test"}`)
+
+	ps.logRequest(c, aggregateGroup, failedGroup, nil, time.Now().Add(-time.Millisecond), http.StatusBadGateway,
+		errors.New("upstream failed"), false, "https://openai.example", nil, &testChannelProxy{}, body, models.RequestTypeRetry)
+	ps.logRequest(c, aggregateGroup, successGroup, nil, time.Now().Add(-time.Millisecond), http.StatusOK,
+		nil, false, "https://gemini.example", nil, &testChannelProxy{}, body, models.RequestTypeFinal)
+
+	failedMetrics, err := dwm.GetSubGroupMetrics(aggregateGroup.ID, failedGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), failedMetrics.Requests180d)
+	assert.Equal(t, int64(0), failedMetrics.Successes180d)
+	assert.Equal(t, int64(1), failedMetrics.ConsecutiveFailures)
+
+	successMetrics, err := dwm.GetSubGroupMetrics(aggregateGroup.ID, successGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), successMetrics.Requests180d)
+	assert.Equal(t, int64(1), successMetrics.Successes180d)
+	assert.Equal(t, int64(0), successMetrics.ConsecutiveFailures)
+
+	failedGroupMetrics, err := dwm.GetGroupMetrics(failedGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), failedGroupMetrics.Requests180d)
+	assert.Equal(t, int64(0), failedGroupMetrics.Successes180d)
+
+	successGroupMetrics, err := dwm.GetGroupMetrics(successGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), successGroupMetrics.Requests180d)
+	assert.Equal(t, int64(1), successGroupMetrics.Successes180d)
 }
 
 func activeKeysListKeyForTest(groupID uint64) string {

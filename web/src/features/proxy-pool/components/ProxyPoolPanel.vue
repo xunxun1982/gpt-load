@@ -242,7 +242,7 @@ const totalPages = computed(() => {
   if (total.value < 0) {
     return -1;
   }
-  return Math.ceil(total.value / pageSize.value);
+  return Math.max(1, Math.ceil(total.value / pageSize.value));
 });
 const totalRecordsText = computed(() => {
   if (total.value < 0) {
@@ -368,7 +368,7 @@ function validTestTargetURL(value: string): boolean {
   }
 }
 
-async function loadProxyPoolSettings() {
+async function loadProxyPoolSettings(): Promise<boolean> {
   settingsLoading.value = true;
   try {
     const categories = await settingsApi.getSettings();
@@ -385,8 +385,10 @@ async function loadProxyPoolSettings() {
       defaultProxyAutoTestIntervalMinutes
     );
     applyProxyPoolSettings(targetUrl, timeoutSeconds, intervalMinutes);
+    return true;
   } catch {
     message.error(t("proxyPool.settingsLoadFailed"));
+    return false;
   } finally {
     settingsLoading.value = false;
   }
@@ -535,9 +537,10 @@ function openCreate() {
   showModal.value = true;
 }
 
-function openSettings() {
-  showSettingsModal.value = true;
-  void loadProxyPoolSettings();
+async function openSettings() {
+  if (await loadProxyPoolSettings()) {
+    showSettingsModal.value = true;
+  }
 }
 
 function openEdit(item: ProxyPoolItem) {
@@ -603,7 +606,7 @@ function confirmDelete(item: ProxyPoolItem) {
 }
 
 onMounted(() => {
-  void loadProxyPoolSettings().catch(() => undefined);
+  void loadProxyPoolSettings();
   void loadItems().catch(() => undefined);
 });
 onUnmounted(clearAutoTestTimer);

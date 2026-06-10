@@ -1,10 +1,13 @@
 package channel
 
 import (
+	"net/http/httptest"
 	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 // mustParseURL is a test helper that parses a URL or panics
@@ -222,5 +225,19 @@ func TestSelectUpstreamConcurrency(t *testing.T) {
 	wg.Wait()
 	if errCount > 0 {
 		t.Errorf("SelectUpstream() returned nil %d times in concurrent test", errCount)
+	}
+}
+
+func TestBaseChannelIsStreamRequestDefaultsMissingStreamFieldToNonStream(t *testing.T) {
+	t.Parallel()
+
+	bc := &BaseChannel{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+
+	result := bc.IsStreamRequest(c, []byte(`{"model":"gpt-test","messages":[]}`))
+	if result {
+		t.Fatal("request without stream indicators should be treated as non-stream")
 	}
 }

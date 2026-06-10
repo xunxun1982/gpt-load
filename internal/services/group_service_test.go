@@ -665,6 +665,72 @@ func TestValidateAndCleanConfig(t *testing.T) {
 	}
 }
 
+func TestValidateAndCleanConfigLegacyRequestTimeoutCompatibility(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	tests := []struct {
+		name        string
+		config      map[string]any
+		expected    map[string]any
+		expectError bool
+	}{
+		{
+			name: "legacy request timeout backfills missing split timeout",
+			config: map[string]any{
+				"request_timeout": 60,
+			},
+			expected: map[string]any{
+				"request_timeout":            float64(60),
+				"non_stream_request_timeout": float64(60),
+			},
+		},
+		{
+			name: "legacy string request timeout backfills missing split timeout",
+			config: map[string]any{
+				"request_timeout": "60",
+			},
+			expected: map[string]any{
+				"request_timeout":            float64(60),
+				"non_stream_request_timeout": float64(60),
+			},
+		},
+		{
+			name: "explicit zero split timeout overrides legacy fallback",
+			config: map[string]any{
+				"request_timeout":            60,
+				"non_stream_request_timeout": 0,
+			},
+			expected: map[string]any{
+				"request_timeout":            float64(0),
+				"non_stream_request_timeout": float64(0),
+			},
+		},
+		{
+			name: "legacy zero request timeout remains invalid without split timeout",
+			config: map[string]any{
+				"request_timeout": 0,
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleaned, err := svc.validateAndCleanConfig(tt.config)
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			for key, expected := range tt.expected {
+				assert.Equal(t, expected, cleaned[key])
+			}
+		})
+	}
+}
+
 // TestIsValidGroupName tests group name validation
 func TestIsValidGroupName(t *testing.T) {
 	t.Parallel()
