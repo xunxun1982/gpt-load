@@ -54,16 +54,21 @@ const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
+const defaultSubGroupWeight = 100;
 const weightInputProps = computed(() => ({
   "aria-label": t("keys.weight"),
   title: t("keys.weight"),
 }));
 
+function createDefaultSubGroupItem(): SubGroupItem {
+  return { group_id: null, weight: defaultSubGroupWeight };
+}
+
 // Form data
 const formData = reactive<{
   sub_groups: SubGroupItem[];
 }>({
-  sub_groups: [{ group_id: null, weight: 10 }],
+  sub_groups: [createDefaultSubGroupItem()],
 });
 
 // Compute available group options (exclude already added ones)
@@ -233,12 +238,12 @@ watch(
 
 // Reset form
 function resetForm() {
-  formData.sub_groups = [{ group_id: null, weight: 10 }];
+  formData.sub_groups = [createDefaultSubGroupItem()];
 }
 
 // Add sub-group item
 function addSubGroupItem() {
-  formData.sub_groups.push({ group_id: null, weight: 10 });
+  formData.sub_groups.push(createDefaultSubGroupItem());
 }
 
 // Remove sub-group item

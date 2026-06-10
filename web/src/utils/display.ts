@@ -161,7 +161,7 @@ export function formatHealthScore(score: number): string {
  *
  * @example
  * formatEffectiveWeight(1.5)  // "1.5"
- * formatEffectiveWeight(0.1)  // "0.1"
+ * formatEffectiveWeight(1)    // "1.0"
  * formatEffectiveWeight(10)   // "10.0"
  */
 export function formatEffectiveWeight(weight: number): string {
