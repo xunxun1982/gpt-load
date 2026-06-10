@@ -2,9 +2,35 @@ package models
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestProxyPoolItemJSONMasksProxyCredentials(t *testing.T) {
+	t.Parallel()
+
+	item := ProxyPoolItem{
+		ID:   1,
+		Name: "auth-proxy",
+		URL:  "http://user:secret@proxy.example.com:8080",
+	}
+
+	payload, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("json.Marshal ProxyPoolItem: %v", err)
+	}
+
+	body := string(payload)
+	for _, leaked := range []string{"user", "secret", "user:secret"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("proxy credentials leaked in JSON payload: %s", body)
+		}
+	}
+	if !strings.Contains(body, "http://proxy.example.com:8080") {
+		t.Fatalf("masked proxy endpoint missing in JSON payload: %s", body)
+	}
+}
 
 func TestGroup_GetMaxRequestSizeKB(t *testing.T) {
 	t.Parallel()
@@ -112,9 +138,9 @@ func TestDynamicWeightMetric_IsDeleted(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		metric  *DynamicWeightMetric
-		want    bool
+		name   string
+		metric *DynamicWeightMetric
+		want   bool
 	}{
 		{
 			name: "not deleted - nil DeletedAt",

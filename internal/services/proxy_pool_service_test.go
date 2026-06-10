@@ -70,6 +70,30 @@ func TestProxyPoolServiceCRUD(t *testing.T) {
 	assert.Empty(t, items)
 }
 
+func TestProxyPoolServiceUpdatePreservesHiddenCredentialsForSameEndpoint(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+	ctx := context.Background()
+	created, err := svc.Create(ctx, ProxyPoolInput{
+		Name: "auth proxy",
+		URL:  "http://user:secret@proxy.example.com:8080",
+	})
+	require.NoError(t, err)
+
+	updated, err := svc.Update(ctx, created.ID, ProxyPoolInput{
+		Name: "renamed proxy",
+		URL:  "http://proxy.example.com:8080",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "renamed proxy", updated.Name)
+	assert.Equal(t, "http://user:secret@proxy.example.com:8080", updated.URL)
+	var stored models.ProxyPoolItem
+	require.NoError(t, svc.db.First(&stored, created.ID).Error)
+	assert.Equal(t, "http://user:secret@proxy.example.com:8080", stored.URL)
+}
+
 func TestProxyPoolServiceRejectsDuplicateNames(t *testing.T) {
 	t.Parallel()
 

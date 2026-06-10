@@ -142,7 +142,7 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 		RateLimitSuccessCredit: 0.35,
 
 		// Critical health threshold: 0.50
-		// Below this, effective weight is capped at 1 (min 0.1) to prevent unhealthy
+		// Below this, enabled targets use the fixed 1.0 recovery floor to prevent unhealthy
 		// high-weight targets from dominating healthy low-weight targets
 		CriticalHealthThreshold: 0.50,
 		// Medium health threshold: 0.75

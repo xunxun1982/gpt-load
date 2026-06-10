@@ -553,23 +553,27 @@ function openEdit(item: ProxyPoolItem) {
 async function submit() {
   await formRef.value?.validate();
   saving.value = true;
+  const creating = !editingItem.value;
   try {
     const payload = { name: form.name.trim(), url: form.url.trim() };
-    const creating = !editingItem.value;
     if (editingItem.value) {
       await proxyPoolApi.update(editingItem.value.id, payload);
     } else {
       await proxyPoolApi.create(payload);
     }
-    showModal.value = false;
-    resetForm();
-    if (creating) {
-      currentPage.value = 1;
-    }
-    await loadItems();
+  } catch (error) {
+    console.error("Failed to save proxy pool item:", error);
+    message.error(t("common.operationFailed"));
+    return;
   } finally {
     saving.value = false;
   }
+  showModal.value = false;
+  resetForm();
+  if (creating) {
+    currentPage.value = 1;
+  }
+  await loadItems();
 }
 
 function confirmDelete(item: ProxyPoolItem) {

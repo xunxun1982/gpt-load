@@ -153,15 +153,35 @@ func (s *ProxyPoolService) Update(ctx context.Context, id uint, input ProxyPoolI
 	if err := s.db.WithContext(ctx).First(&item, id).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
+	nextURL := preserveProxyCredentialsForSameEndpoint(cleaned.URL, item.URL)
 	if err := s.db.WithContext(ctx).Model(&item).Updates(map[string]any{
 		"name": cleaned.Name,
-		"url":  cleaned.URL,
+		"url":  nextURL,
 	}).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 	item.Name = cleaned.Name
-	item.URL = cleaned.URL
+	item.URL = nextURL
 	return &item, nil
+}
+
+func preserveProxyCredentialsForSameEndpoint(nextURL, storedURL string) string {
+	nextParsed, nextErr := url.Parse(nextURL)
+	storedParsed, storedErr := url.Parse(storedURL)
+	if nextErr != nil || storedErr != nil || nextParsed.User != nil || storedParsed.User == nil {
+		return nextURL
+	}
+
+	nextEndpoint := *nextParsed
+	nextEndpoint.User = nil
+	storedEndpoint := *storedParsed
+	storedEndpoint.User = nil
+	if nextEndpoint.String() != storedEndpoint.String() {
+		return nextURL
+	}
+
+	// The UI receives masked URLs; preserve stored credentials when only metadata changed.
+	return storedURL
 }
 
 // Delete removes a proxy pool item.
