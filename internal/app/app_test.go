@@ -6,7 +6,9 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -30,6 +32,21 @@ var registerPersistWALDriverOnce sync.Once
 var failingCloseCalled atomic.Bool
 var persistWALDriverMu sync.Mutex
 var persistWALDriverConn *fakeSQLitePersistConn
+
+func TestStartDelegatesProxyPoolNameMigrationToMigrateDatabase(t *testing.T) {
+	t.Parallel()
+
+	contentBytes, err := os.ReadFile("app.go")
+	require.NoError(t, err)
+	content := string(contentBytes)
+
+	require.NotContains(t, content, "V1_27_0_AddProxyPoolNameUniqueIndex")
+	autoMigrateIndex := strings.Index(content, "a.db.AutoMigrate(")
+	migrateDatabaseIndex := strings.Index(content, "dbmigrations.MigrateDatabase(a.db)")
+	require.NotEqual(t, -1, autoMigrateIndex)
+	require.NotEqual(t, -1, migrateDatabaseIndex)
+	require.Less(t, autoMigrateIndex, migrateDatabaseIndex)
+}
 
 type blockingCloseDriver struct{}
 

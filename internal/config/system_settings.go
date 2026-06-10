@@ -11,6 +11,7 @@ import (
 	"gpt-load/internal/syncer"
 	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -33,10 +34,41 @@ func NewSystemSettingsManager() *SystemSettingsManager {
 	return &SystemSettingsManager{}
 }
 
+// normalizeSplitRequestTimeouts keeps RequestTimeout synced to NonStreamRequestTimeout,
+// which is the source of truth for split timeout configuration.
+// It handles legacy-only backfill, explicit non-stream values including zero,
+// and the already-synced defaults when neither setting was supplied.
+func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, hasNonStream bool) {
+	if settings == nil {
+		return
+	}
+	if hasNonStream {
+		// Explicit zero disables non-stream timeout; keep legacy fallback synced to the same value.
+		settings.RequestTimeout = settings.NonStreamRequestTimeout
+		return
+	}
+	if hasLegacy {
+		settings.NonStreamRequestTimeout = settings.RequestTimeout
+		return
+	}
+	// Defaults already keep both fields in sync when neither key was supplied.
+}
+
 func validateStringSettingValue(key, val string) error {
 	if key == "failover_status_codes" {
 		if _, err := failover.ParseStatusCodeMatcher(val); err != nil {
 			return fmt.Errorf("invalid value for %s (%q): %w", key, val, err)
+		}
+	}
+	if key == "proxy_url" {
+		if _, err := utils.NormalizeProxyURL(val); err != nil {
+			return fmt.Errorf("invalid value for %s: %w", key, err)
+		}
+	}
+	if key == "proxy_pool_test_target_url" {
+		parsed, err := url.Parse(strings.TrimSpace(val))
+		if err != nil || parsed == nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("invalid value for %s: must be an absolute http or https URL", key)
 		}
 	}
 	return nil
@@ -82,6 +114,9 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 				}
 			}
 		}
+		_, hasLegacyTimeout := settingsMap["request_timeout"]
+		_, hasNonStreamTimeout := settingsMap["non_stream_request_timeout"]
+		normalizeSplitRequestTimeouts(&settings, hasLegacyTimeout, hasNonStreamTimeout)
 
 		settings.ProxyKeysMap = utils.StringToSet(settings.ProxyKeys, ",")
 
@@ -197,6 +232,11 @@ func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) erro
 
 	// Update database
 	var settingsToUpdate []models.SystemSetting
+	if nonStreamTimeout, hasNonStream := settingsMap["non_stream_request_timeout"]; hasNonStream {
+		settingsMap["request_timeout"] = nonStreamTimeout
+	} else if legacyTimeout, hasLegacy := settingsMap["request_timeout"]; hasLegacy {
+		settingsMap["non_stream_request_timeout"] = legacyTimeout
+	}
 	for key, value := range settingsMap {
 		settingsToUpdate = append(settingsToUpdate, models.SystemSetting{
 			SettingKey:   key,
@@ -274,6 +314,11 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 			}
 		}
 	}
+	normalizeSplitRequestTimeouts(
+		&effectiveConfig,
+		groupConfig.RequestTimeout != nil,
+		groupConfig.NonStreamRequestTimeout != nil,
+	)
 
 	return effectiveConfig
 }
@@ -587,7 +632,8 @@ func (sm *SystemSettingsManager) DisplaySystemConfig(settings types.SystemSettin
 	logrus.Infof("    Request Log Write Interval: %d minutes", settings.RequestLogWriteIntervalMinutes)
 
 	logrus.Info("  --- Request Behavior ---")
-	logrus.Infof("    Request Timeout: %d seconds", settings.RequestTimeout)
+	logrus.Infof("    Non-Stream Request Timeout: %d seconds", settings.NonStreamRequestTimeout)
+	logrus.Infof("    Stream Request Timeout: %d seconds", settings.StreamRequestTimeout)
 	logrus.Infof("    Connect Timeout: %d seconds", settings.ConnectTimeout)
 	logrus.Infof("    Response Header Timeout: %d seconds", settings.ResponseHeaderTimeout)
 	logrus.Infof("    Idle Connection Timeout: %d seconds", settings.IdleConnTimeout)

@@ -2,22 +2,30 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
+	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/httpclient"
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
 	"gpt-load/internal/services"
 	"gpt-load/internal/store"
 	"gpt-load/internal/tokenusage"
+	"gpt-load/internal/types"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -26,6 +34,61 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+type testChannelProxy struct {
+	client *http.Client
+	url    string
+}
+
+func (p *testChannelProxy) SelectUpstreamWithClients(_ *url.URL, _ string) (*channel.UpstreamSelection, error) {
+	return &channel.UpstreamSelection{
+		URL:          p.url,
+		HTTPClient:   p.client,
+		StreamClient: p.client,
+	}, nil
+}
+
+func (p *testChannelProxy) BuildUpstreamURL(_ *url.URL, _ string) (string, error) {
+	return p.url, nil
+}
+
+func (p *testChannelProxy) IsConfigStale(_ *models.Group) bool {
+	return false
+}
+
+func (p *testChannelProxy) GetHTTPClient() *http.Client {
+	return p.client
+}
+
+func (p *testChannelProxy) GetStreamClient() *http.Client {
+	return p.client
+}
+
+func (p *testChannelProxy) ModifyRequest(_ *http.Request, _ *models.APIKey, _ *models.Group) {}
+
+func (p *testChannelProxy) IsStreamRequest(_ *gin.Context, _ []byte) bool {
+	return false
+}
+
+func (p *testChannelProxy) ExtractModel(_ *gin.Context, _ []byte) string {
+	return ""
+}
+
+func (p *testChannelProxy) ValidateKey(_ context.Context, _ *models.APIKey, _ *models.Group) (bool, error) {
+	return true, nil
+}
+
+func (p *testChannelProxy) ApplyModelRedirect(_ *http.Request, bodyBytes []byte, _ *models.Group) ([]byte, string, error) {
+	return bodyBytes, "", nil
+}
+
+func (p *testChannelProxy) ApplyModelRedirectWithIndex(_ *http.Request, bodyBytes []byte, _ *models.Group) ([]byte, string, int, error) {
+	return bodyBytes, "", -1, nil
+}
+
+func (p *testChannelProxy) TransformModelList(_ *http.Request, _ []byte, _ *models.Group) (map[string]any, error) {
+	return nil, nil
+}
 
 // setupTestDB creates an in-memory SQLite database for testing (pure Go, no CGO)
 func setupTestDB(t *testing.T) *gorm.DB {
@@ -46,6 +109,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	err = db.AutoMigrate(
 		&models.APIKey{},
 		&models.Group{},
+		&models.GroupSubGroup{},
 		&models.RequestLog{},
 		&models.GroupHourlyStat{},
 	)
@@ -56,6 +120,13 @@ func setupTestDB(t *testing.T) *gorm.DB {
 
 // setupTestProxyServer creates a test proxy server with minimal dependencies
 func setupTestProxyServer(t *testing.T, db *gorm.DB) *ProxyServer {
+	t.Helper()
+
+	ps, _ := setupTestProxyServerWithStore(t, db)
+	return ps
+}
+
+func setupTestProxyServerWithStore(t *testing.T, db *gorm.DB) (*ProxyServer, store.Store) {
 	t.Helper()
 
 	settingsManager := config.NewSystemSettingsManager()
@@ -86,7 +157,7 @@ func setupTestProxyServer(t *testing.T, db *gorm.DB) *ProxyServer {
 	)
 	require.NoError(t, err)
 
-	return ps
+	return ps, memStore
 }
 
 // createTestGroup creates a minimal valid group for testing
@@ -539,6 +610,329 @@ func TestCountAvailableSubGroups(t *testing.T) {
 			count := ps.countAvailableSubGroups(aggregateGroup, tt.excludedIDs)
 			assert.Equal(t, tt.expected, count)
 		})
+	}
+}
+
+func TestShouldAbortOnIgnorableErrorRetriesUpstreamTimeoutWhenClientAlive(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/test/v1/chat/completions", nil)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+	// Keep the request context alive; this branch covers upstream timeouts, not client cancellation.
+	require.NoError(t, c.Request.Context().Err())
+
+	err := errors.New("net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers)")
+	require.True(t, app_errors.IsIgnorableError(err))
+	assert.False(t, ps.shouldAbortOnIgnorableError(c, err))
+}
+
+func TestShouldAbortOnIgnorableErrorStopsWhenClientCanceled(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequestWithContext(parentCtx, http.MethodPost, "/proxy/test/v1/chat/completions", nil)
+
+	err := errors.New("request canceled")
+	assert.True(t, ps.shouldAbortOnIgnorableError(c, err))
+}
+
+func TestEffectiveNonStreamRequestContextFallsBackForNonPositiveTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		cfg               types.SystemSettings
+		expectImmediate   bool
+		expectHasDeadline bool
+	}{
+		{
+			name: "positive non-stream timeout uses deadline",
+			cfg: types.SystemSettings{
+				NonStreamRequestTimeout: 1,
+				RequestTimeout:          0,
+			},
+			expectImmediate:   false,
+			expectHasDeadline: true,
+		},
+		{
+			name: "zero non-stream timeout falls back to legacy request timeout",
+			cfg: types.SystemSettings{
+				NonStreamRequestTimeout: 0,
+				RequestTimeout:          1,
+			},
+			expectImmediate:   false,
+			expectHasDeadline: true,
+		},
+		{
+			name: "zero non-stream and legacy timeouts uses cancelable context",
+			cfg: types.SystemSettings{
+				NonStreamRequestTimeout: 0,
+				RequestTimeout:          0,
+			},
+			expectImmediate:   false,
+			expectHasDeadline: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := effectiveNonStreamRequestContext(context.Background(), tt.cfg)
+			defer cancel()
+
+			_, hasDeadline := ctx.Deadline()
+			assert.Equal(t, tt.expectHasDeadline, hasDeadline)
+			select {
+			case <-ctx.Done():
+				assert.True(t, tt.expectImmediate, "context should not be canceled immediately")
+			default:
+				assert.False(t, tt.expectImmediate, "context should be canceled immediately")
+			}
+		})
+	}
+}
+
+func TestExecuteRequestWithRetryRetriesAfterNonStreamTimeout(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	group := createTestGroup(t, db, "timeout-retry", "openai")
+	group.EffectiveConfig = systemSettingsWithRetryTimeout(1, 1)
+	createTestKey(t, db, group.ID, "sk-timeout-retry-1", ps.encryptionSvc)
+	createTestKey(t, db, group.ID, "sk-timeout-retry-2", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	var attempts int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attempts, 1)
+		if attempt == 1 {
+			time.Sleep(1200 * time.Millisecond)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/timeout-retry/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`)))
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL}, group, group, []byte(`{"model":"gpt-test"}`), false, time.Now(), 0)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, int32(2), atomic.LoadInt32(&attempts))
+}
+
+func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+
+	var slowAttempts int32
+	firstSlowAttemptStarted := make(chan struct{})
+	var signalFirstSlowAttempt sync.Once
+	t.Cleanup(func() {
+		signalFirstSlowAttempt.Do(func() {
+			close(firstSlowAttemptStarted)
+		})
+	})
+	slowUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&slowAttempts, 1)
+		signalFirstSlowAttempt.Do(func() {
+			close(firstSlowAttemptStarted)
+		})
+		time.Sleep(1200 * time.Millisecond)
+	}))
+	t.Cleanup(slowUpstream.Close)
+
+	var fastAttempts int32
+	fastUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&fastAttempts, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(fastUpstream.Close)
+
+	slowGroup := createTestGroup(t, db, "agg-timeout-slow", "openai")
+	slowGroup.Upstreams = []byte(`[{"url":"` + slowUpstream.URL + `","weight":100}]`)
+	slowGroup.Config = map[string]any{
+		"max_retries":                0,
+		"non_stream_request_timeout": 1,
+		"stream_request_timeout":     0,
+		"blacklist_threshold":        100,
+	}
+	require.NoError(t, db.Save(slowGroup).Error)
+
+	fastGroup := createTestGroup(t, db, "agg-timeout-fast", "openai")
+	fastGroup.Upstreams = []byte(`[{"url":"` + fastUpstream.URL + `","weight":100}]`)
+	fastGroup.Config = map[string]any{
+		"max_retries":                0,
+		"non_stream_request_timeout": 1,
+		"stream_request_timeout":     0,
+		"blacklist_threshold":        100,
+	}
+	require.NoError(t, db.Save(fastGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-timeout",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config: map[string]any{
+			"max_retries": 1,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: slowGroup.ID,
+		Weight:     100,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: fastGroup.ID,
+		Weight:     100,
+	}).Error)
+
+	createTestKey(t, db, slowGroup.ID, "sk-agg-timeout-slow", ps.encryptionSvc)
+	fastKey := createTestKey(t, db, fastGroup.ID, "sk-agg-timeout-fast", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, memStore.Delete(activeKeysListKeyForTest(uint64(fastGroup.ID))))
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName("agg-timeout")
+	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/agg-timeout/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`)))
+
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   []byte(`{"model":"gpt-test"}`),
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+	go func() {
+		<-firstSlowAttemptStarted
+		// Test scaffolding: keep fastGroup unavailable for the first selection, then restore fastKey outside upstream handlers.
+		_ = memStore.LPush(activeKeysListKeyForTest(uint64(fastGroup.ID)), uint64(fastKey.ID))
+	}()
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, retryCtx.originalBodyBytes, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, int32(1), atomic.LoadInt32(&slowAttempts))
+	require.Equal(t, int32(1), atomic.LoadInt32(&fastAttempts))
+}
+
+func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
+
+	aggregateGroup := &models.Group{
+		ID:        9001,
+		Name:      "agg-health",
+		GroupType: "aggregate",
+	}
+	failedGroup := &models.Group{
+		ID:          9002,
+		Name:        "agg-health-openai",
+		GroupType:   "standard",
+		ChannelType: "openai",
+	}
+	successGroup := &models.Group{
+		ID:          9003,
+		Name:        "agg-health-gemini",
+		GroupType:   "standard",
+		ChannelType: "gemini",
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/agg-health/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`)))
+	body := []byte(`{"model":"gpt-test"}`)
+
+	ps.logRequest(c, aggregateGroup, failedGroup, nil, time.Now().Add(-time.Millisecond), http.StatusBadGateway,
+		errors.New("upstream failed"), false, "https://openai.example", nil, &testChannelProxy{}, body, models.RequestTypeRetry)
+	ps.logRequest(c, aggregateGroup, successGroup, nil, time.Now().Add(-time.Millisecond), http.StatusOK,
+		nil, false, "https://gemini.example", nil, &testChannelProxy{}, body, models.RequestTypeFinal)
+
+	failedMetrics, err := dwm.GetSubGroupMetrics(aggregateGroup.ID, failedGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), failedMetrics.Requests180d)
+	assert.Equal(t, int64(0), failedMetrics.Successes180d)
+	assert.Equal(t, int64(1), failedMetrics.ConsecutiveFailures)
+
+	successMetrics, err := dwm.GetSubGroupMetrics(aggregateGroup.ID, successGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), successMetrics.Requests180d)
+	assert.Equal(t, int64(1), successMetrics.Successes180d)
+	assert.Equal(t, int64(0), successMetrics.ConsecutiveFailures)
+
+	failedGroupMetrics, err := dwm.GetGroupMetrics(failedGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), failedGroupMetrics.Requests180d)
+	assert.Equal(t, int64(0), failedGroupMetrics.Successes180d)
+
+	successGroupMetrics, err := dwm.GetGroupMetrics(successGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), successGroupMetrics.Requests180d)
+	assert.Equal(t, int64(1), successGroupMetrics.Successes180d)
+}
+
+func activeKeysListKeyForTest(groupID uint64) string {
+	return "group:" + strconv.FormatUint(groupID, 10) + ":active_keys"
+}
+
+func systemSettingsWithRetryTimeout(maxRetries, nonStreamTimeout int) types.SystemSettings {
+	return types.SystemSettings{
+		MaxRetries:                  maxRetries,
+		NonStreamRequestTimeout:     nonStreamTimeout,
+		StreamRequestTimeout:        0,
+		ConnectTimeout:              1,
+		IdleConnTimeout:             30,
+		MaxIdleConns:                10,
+		MaxIdleConnsPerHost:         10,
+		ResponseHeaderTimeout:       1,
+		FailoverStatusCodes:         "400-403,405-999",
+		BlacklistThreshold:          100,
+		RequestLogRetentionDays:     7,
+		KeyValidationConcurrency:    1,
+		KeyValidationTimeoutSeconds: 1,
 	}
 }
 

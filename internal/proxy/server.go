@@ -24,6 +24,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/response"
 	"gpt-load/internal/services"
+	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -41,6 +42,16 @@ func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
 		return failover.DefaultStatusCodeMatcher().Match(statusCode)
 	}
 	return group.FailoverStatusCodeMatcher.Match(statusCode)
+}
+
+func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSettings) (context.Context, context.CancelFunc) {
+	if cfg.NonStreamRequestTimeout > 0 {
+		return context.WithTimeout(parent, time.Duration(cfg.NonStreamRequestTimeout)*time.Second)
+	}
+	if cfg.RequestTimeout > 0 {
+		return context.WithTimeout(parent, time.Duration(cfg.RequestTimeout)*time.Second)
+	}
+	return context.WithCancel(parent)
 }
 
 // Context keys used for function call middleware.
@@ -981,10 +992,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if isStream {
-		ctx, cancel = context.WithCancel(c.Request.Context())
+		if cfg.StreamRequestTimeout > 0 {
+			ctx, cancel = context.WithTimeout(c.Request.Context(), time.Duration(cfg.StreamRequestTimeout)*time.Second)
+		} else {
+			ctx, cancel = context.WithCancel(c.Request.Context())
+		}
 	} else {
-		timeout := time.Duration(cfg.RequestTimeout) * time.Second
-		ctx, cancel = context.WithTimeout(c.Request.Context(), timeout)
+		ctx, cancel = effectiveNonStreamRequestContext(c.Request.Context(), cfg)
 	}
 	defer cancel()
 
@@ -1676,10 +1690,13 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if isStream {
-		ctx, cancel = context.WithCancel(c.Request.Context())
+		if cfg.StreamRequestTimeout > 0 {
+			ctx, cancel = context.WithTimeout(c.Request.Context(), time.Duration(cfg.StreamRequestTimeout)*time.Second)
+		} else {
+			ctx, cancel = context.WithCancel(c.Request.Context())
+		}
 	} else {
-		timeout := time.Duration(cfg.RequestTimeout) * time.Second
-		ctx, cancel = context.WithTimeout(c.Request.Context(), timeout)
+		ctx, cancel = effectiveNonStreamRequestContext(c.Request.Context(), cfg)
 	}
 	defer cancel()
 

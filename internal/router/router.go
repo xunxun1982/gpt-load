@@ -227,6 +227,16 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		settings.PUT("", serverHandler.UpdateSettings)
 	}
 
+	// Proxy pool
+	proxyPool := api.Group("/proxy-pool")
+	{
+		proxyPool.GET("", serverHandler.ListProxyPool)
+		proxyPool.POST("", serverHandler.CreateProxyPoolItem)
+		proxyPool.POST("/:id/test", serverHandler.TestProxyPoolItem)
+		proxyPool.PUT("/:id", serverHandler.UpdateProxyPoolItem)
+		proxyPool.DELETE("/:id", serverHandler.DeleteProxyPoolItem)
+	}
+
 	// Site management
 	siteMgmt := api.Group("/site-management")
 	{

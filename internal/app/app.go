@@ -190,6 +190,7 @@ func (a *App) Start() error {
 			&models.GroupHourlyStat{},
 			&models.ModelTokenHourlyStat{},
 			&models.DynamicWeightMetric{},
+			&models.ProxyPoolItem{},
 			&sitemanagement.ManagedSite{},
 			&sitemanagement.ManagedSiteCheckinLog{},
 			&sitemanagement.ManagedSiteSetting{},

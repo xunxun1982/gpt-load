@@ -1300,7 +1300,7 @@ func TestCCStreamingResponse_SkipsEstimatedFallbackOnTimeout(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set("original_model", "gpt-4")
-	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{RequestTimeout: 1}})
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{StreamRequestTimeout: 1}})
 
 	ps := &ProxyServer{}
 	ps.handleCCStreamingResponse(c, resp)
@@ -4849,6 +4849,59 @@ func TestSSEReaderWithTimeout_SubsequentTimeout(t *testing.T) {
 	}
 }
 
+// TestSSEReaderWithTimeout_NoSubsequentTimeout verifies that a zero subsequent
+// timeout waits for the next event instead of timing out immediately.
+func TestSSEReaderWithTimeout_NoSubsequentTimeout(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	go func() {
+		_, _ = pw.Write([]byte("data: {\"test\": 1}\n\n"))
+		time.Sleep(120 * time.Millisecond)
+		_, _ = pw.Write([]byte("data: {\"test\": 2}\n\n"))
+	}()
+
+	reader := NewSSEReaderWithTimeout(pr, 50*time.Millisecond, 0)
+
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatalf("first read failed: %v", err)
+	}
+	if event.Data != `{"test": 1}` {
+		t.Errorf("unexpected first data: %s", event.Data)
+	}
+
+	start := time.Now()
+	type readResult struct {
+		event *SSEEvent
+		err   error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		evt, err := reader.ReadEvent()
+		done <- readResult{event: evt, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		elapsed := time.Since(start)
+		if result.err != nil {
+			t.Fatalf("second read failed: %v", result.err)
+		}
+		if result.event == nil {
+			t.Fatal("second read returned nil event")
+		}
+		if result.event.Data != `{"test": 2}` {
+			t.Errorf("unexpected second data: %s", result.event.Data)
+		}
+		if elapsed < 100*time.Millisecond {
+			t.Errorf("expected no-timeout read to wait for delayed event, got %v", elapsed)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second read hung waiting for delayed event")
+	}
+}
+
 // TestSSEReaderWithTimeout_NormalOperation tests that SSEReaderWithTimeout
 // works correctly when data is received within timeout.
 func TestSSEReaderWithTimeout_NormalOperation(t *testing.T) {
@@ -4934,44 +4987,49 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 	tests := []struct {
 		name                      string
 		responseHeaderTimeout     int
-		requestTimeout            int
+		streamRequestTimeout      int
+		withGroup                 bool
 		expectedFirstByteTimeout  time.Duration
 		expectedSubsequentTimeout time.Duration
 	}{
 		{
 			name:                      "no group in context uses preset values",
 			responseHeaderTimeout:     0,
-			requestTimeout:            0,
+			streamRequestTimeout:      0,
 			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
 			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
 		},
 		{
 			name:                      "config values larger than preset uses preset",
 			responseHeaderTimeout:     600, // 600s > 30s preset
-			requestTimeout:            800, // 800s > 60s preset
+			streamRequestTimeout:      800, // 800s > 60s preset
+			withGroup:                 true,
 			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
 			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
 		},
 		{
 			name:                      "config values smaller than preset uses config",
 			responseHeaderTimeout:     10, // 10s < 30s preset
-			requestTimeout:            30, // 30s < 60s preset
+			streamRequestTimeout:      30, // 30s < 60s preset
+			withGroup:                 true,
 			expectedFirstByteTimeout:  10 * time.Second,
 			expectedSubsequentTimeout: 30 * time.Second,
 		},
 		{
 			name:                      "mixed config values",
 			responseHeaderTimeout:     20,  // 20s < 30s preset, use config
-			requestTimeout:            120, // 120s > 60s preset, use preset
+			streamRequestTimeout:      120, // 120s > 60s preset, use preset
+			withGroup:                 true,
 			expectedFirstByteTimeout:  20 * time.Second,
 			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
 		},
 		{
-			name:                      "zero config values uses preset",
+			name:                      "zero stream timeout disables idle timeout",
 			responseHeaderTimeout:     0,
-			requestTimeout:            0,
+			streamRequestTimeout:      0,
+			withGroup:                 true,
 			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
-			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
+			expectedSubsequentTimeout: 0,
 		},
 	}
 
@@ -4980,12 +5038,12 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 
-			// Set up group with config if values are provided
-			if tt.responseHeaderTimeout > 0 || tt.requestTimeout > 0 || tt.name == "zero config values uses preset" {
+			// Set up group with config when this case needs effective settings.
+			if tt.withGroup {
 				group := &models.Group{
 					EffectiveConfig: types.SystemSettings{
 						ResponseHeaderTimeout: tt.responseHeaderTimeout,
-						RequestTimeout:        tt.requestTimeout,
+						StreamRequestTimeout:  tt.streamRequestTimeout,
 					},
 				}
 				c.Set("group", group)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
+import { proxyPoolApi } from "@/api/proxy-pool";
 import { settingsApi } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
@@ -176,6 +177,11 @@ const channelTypeOptions = ref<{ label: string; value: string }[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
+const proxyPoolOptions = ref<{ label: string; value: string }[]>([]);
+const upstreamProxyPoolOptions = computed(() => [
+  { label: t("keys.upstreamProxyUrlPlaceholder"), value: "" },
+  ...proxyPoolOptions.value,
+]);
 const modelRedirectDynamicWeights = ref<ModelRedirectDynamicWeight[]>([]);
 const controlledConfigKeys = new Set([
   "force_function_call",
@@ -301,6 +307,7 @@ watch(
       if (!configOptionsFetched.value) {
         fetchGroupConfigOptions();
       }
+      fetchProxyPoolOptions();
       resetForm();
       if (props.group) {
         loadGroupData();
@@ -429,6 +436,7 @@ function resetForm() {
       {
         url: isCreateMode ? upstreamPlaceholder.value : "",
         weight: 1,
+        proxy_url: "",
       },
     ],
     channel_type: defaultChannelType,
@@ -560,8 +568,11 @@ function loadGroupData() {
     display_name: props.group.display_name || "",
     description: props.group.description || "",
     upstreams: props.group.upstreams?.length
-      ? [...props.group.upstreams]
-      : [{ url: "", weight: 1 }],
+      ? props.group.upstreams.map(upstream => ({
+          ...upstream,
+          proxy_url: upstream.proxy_url || "",
+        }))
+      : [{ url: "", weight: 1, proxy_url: "" }],
     channel_type: props.group.channel_type || "openai",
     sort: props.group.sort || 1,
     test_model: props.group.test_model || "",
@@ -639,6 +650,7 @@ function addUpstream() {
   formData.upstreams.push({
     url: "",
     weight: 1,
+    proxy_url: "",
   });
 }
 
@@ -657,6 +669,20 @@ async function fetchGroupConfigOptions() {
   const normalized = (options || []).filter(opt => !hiddenConfigOptionKeys.has(opt.key));
   configOptions.value = normalized;
   configOptionsFetched.value = true;
+}
+
+async function fetchProxyPoolOptions() {
+  try {
+    const items = await proxyPoolApi.list();
+    proxyPoolOptions.value = items.map(item => ({
+      label: item.name ? `${item.name} (${item.url})` : item.url,
+      value: item.url,
+    }));
+  } catch (error) {
+    proxyPoolOptions.value = [];
+    console.error("Failed to fetch proxy pool options:", error);
+    message.error(t("proxyPool.loadFailed"));
+  }
 }
 
 // Add config item
@@ -1369,7 +1395,7 @@ async function handleSubmit() {
           weight: u.weight,
           proxy_url: (() => {
             const p = (u.proxy_url || "").trim();
-            return /^https?:\/\//i.test(p) ? p : undefined;
+            return /^(https?|socks5):\/\//i.test(p) ? p : undefined;
           })(),
         }))
         .filter(u => !!u.url),
@@ -1699,12 +1725,14 @@ async function handleSubmit() {
                   :disabled="!upstream.proxy_url"
                 >
                   <template #trigger>
-                    <n-input
-                      v-model:value="upstream.proxy_url"
+                    <n-select
+                      :value="upstream.proxy_url"
+                      :options="upstreamProxyPoolOptions"
                       :placeholder="t('keys.upstreamProxyUrlPlaceholder')"
                       :disabled="isChildGroup"
                       style="width: 100%"
                       clearable
+                      @update:value="value => (upstream.proxy_url = value || '')"
                     />
                   </template>
                   <div style="max-width: 600px; word-break: break-all; white-space: pre-wrap">

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"gpt-load/internal/failover"
 	"gpt-load/internal/types"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -27,9 +29,48 @@ type SystemSetting struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// ProxyPoolItem stores a reusable outbound proxy URL for upstream requests.
+type ProxyPoolItem struct {
+	ID   uint   `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name string `gorm:"type:varchar(255);not null;uniqueIndex:idx_proxy_pool_items_name_unique" json:"name"`
+	// URL remains the runtime proxy value until config flows store proxy-pool references; JSON output masks credentials.
+	URL       string    `gorm:"type:text;not null" json:"url"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (p ProxyPoolItem) MarshalJSON() ([]byte, error) {
+	type proxyPoolItemJSON struct {
+		ID        uint      `json:"id"`
+		Name      string    `json:"name"`
+		URL       string    `json:"url"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	return json.Marshal(proxyPoolItemJSON{
+		ID:        p.ID,
+		Name:      p.Name,
+		URL:       maskProxyPoolURL(p.URL),
+		CreatedAt: p.CreatedAt,
+		UpdatedAt: p.UpdatedAt,
+	})
+}
+
+func maskProxyPoolURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed == nil || parsed.User == nil {
+		return trimmed
+	}
+	parsed.User = nil
+	return parsed.String()
+}
+
 // GroupConfig stores group-specific configuration.
 type GroupConfig struct {
 	RequestTimeout               *int    `json:"request_timeout,omitempty"`
+	NonStreamRequestTimeout      *int    `json:"non_stream_request_timeout,omitempty"`
+	StreamRequestTimeout         *int    `json:"stream_request_timeout,omitempty"`
 	IdleConnTimeout              *int    `json:"idle_conn_timeout,omitempty"`
 	ConnectTimeout               *int    `json:"connect_timeout,omitempty"`
 	MaxIdleConns                 *int    `json:"max_idle_conns,omitempty"`
@@ -138,7 +179,7 @@ type SubGroupInfo struct {
 type DynamicWeightInfo struct {
 	BaseWeight      int     `json:"base_weight"`      // Original configured weight
 	HealthScore     float64 `json:"health_score"`     // Health score (0.0 - 1.0)
-	EffectiveWeight float64 `json:"effective_weight"` // Calculated effective weight (1 decimal place, min 0.1)
+	EffectiveWeight float64 `json:"effective_weight"` // Calculated effective weight (1 decimal place, min 1.0 when enabled)
 	SuccessRate     float64 `json:"success_rate"`     // Success rate percentage (0-100)
 	RequestCount    int64   `json:"request_count"`    // Total request count
 	LastFailureAt   *string `json:"last_failure_at"`  // Last failure timestamp (ISO8601, nil if never failed)

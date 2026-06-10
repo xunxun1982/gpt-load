@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2748,6 +2749,9 @@ func (s *GroupService) GetGroupConfigOptions() ([]ConfigOption, error) {
 		if key == "" || key == "-" {
 			continue
 		}
+		if key == "request_timeout" {
+			continue
+		}
 
 		definition, ok := defMap[key]
 		if !ok {
@@ -2782,6 +2786,18 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 			configMap["force_function_call"] = legacyValue
 		}
 		delete(configMap, "force_function_calling")
+	}
+	if legacyValue, ok := configMap["request_timeout"]; ok {
+		if _, hasNewKey := configMap["non_stream_request_timeout"]; !hasNewKey {
+			normalizedValue, ok := positiveNumericConfigValue(legacyValue)
+			if !ok {
+				return nil, NewI18nError(app_errors.ErrValidation, "error.invalid_config_format", map[string]any{
+					"error": "request_timeout must be greater than 0 when non_stream_request_timeout is omitted",
+				})
+			}
+			configMap["request_timeout"] = normalizedValue
+			configMap["non_stream_request_timeout"] = normalizedValue
+		}
 	}
 
 	var tempGroupConfig models.GroupConfig
@@ -2825,8 +2841,31 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 	if err := json.Unmarshal(validatedBytes, &finalMap); err != nil {
 		return nil, NewI18nError(app_errors.ErrValidation, "error.invalid_config_format", map[string]any{"error": err.Error()})
 	}
+	if nonStreamTimeout, ok := finalMap["non_stream_request_timeout"]; ok {
+		// Keep legacy timeout synced with the explicit split timeout, including zero which disables fallback.
+		finalMap["request_timeout"] = nonStreamTimeout
+	}
 
 	return finalMap, nil
+}
+
+func positiveNumericConfigValue(value any) (any, bool) {
+	switch typedValue := value.(type) {
+	case int:
+		return typedValue, typedValue > 0
+	case int64:
+		return typedValue, typedValue > 0
+	case float64:
+		return typedValue, typedValue > 0 && !math.IsNaN(typedValue) && !math.IsInf(typedValue, 0)
+	case json.Number:
+		parsed, err := typedValue.Float64()
+		return parsed, err == nil && parsed > 0 && !math.IsNaN(parsed) && !math.IsInf(parsed, 0)
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typedValue), 64)
+		return parsed, err == nil && parsed > 0 && !math.IsNaN(parsed) && !math.IsInf(parsed, 0)
+	default:
+		return nil, false
+	}
 }
 
 // normalizePathRedirects validates and normalizes path redirect rules.
@@ -2962,11 +3001,14 @@ func (s *GroupService) validateAndCleanUpstreams(upstreams json.RawMessage) (dat
 		}
 		// Clean proxy_url if present
 		if defs[i].ProxyURL != nil {
-			trimmed := strings.TrimSpace(*defs[i].ProxyURL)
-			if trimmed == "" {
+			normalizedProxyURL, err := utils.NormalizeProxyURL(*defs[i].ProxyURL)
+			if err != nil {
+				return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": err.Error()})
+			}
+			if normalizedProxyURL == "" {
 				defs[i].ProxyURL = nil
 			} else {
-				defs[i].ProxyURL = &trimmed
+				defs[i].ProxyURL = &normalizedProxyURL
 			}
 		}
 	}

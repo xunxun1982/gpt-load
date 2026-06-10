@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NCard, NEmpty, NTabPane, NTabs } from "naive-ui";
+import { NCard, NTabPane, NTabs } from "naive-ui";
 import { defineAsyncComponent, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
@@ -11,10 +11,13 @@ const CentralizedMgmtPanel = defineAsyncComponent(
 const SiteManagementPanel = defineAsyncComponent(
   () => import("@/features/site-management/components/SiteManagementPanel.vue")
 );
+const ProxyPoolPanel = defineAsyncComponent(
+  () => import("@/features/proxy-pool/components/ProxyPoolPanel.vue")
+);
 
 const { t } = useI18n();
 
-type MoreTab = "hub" | "site" | "agent";
+type MoreTab = "hub" | "site" | "proxyPool";
 
 const DEFAULT_TAB: MoreTab = "hub";
 
@@ -24,13 +27,13 @@ const route = useRoute();
 const panes: Array<{ key: MoreTab; labelKey: string; icon: string }> = [
   { key: "hub", labelKey: "hub.tabLabel", icon: "🏢" },
   { key: "site", labelKey: "more.siteManagement", icon: "🌐" },
-  { key: "agent", labelKey: "more.agent", icon: "🤖" },
+  { key: "proxyPool", labelKey: "more.proxyPool", icon: "🧭" },
 ];
 
 // Sanitizes route query parameter to a valid tab value
 function normalizeTab(value: unknown): MoreTab {
   const raw = Array.isArray(value) ? value[0] : value;
-  if (raw === "hub" || raw === "site" || raw === "agent") {
+  if (raw === "hub" || raw === "site" || raw === "proxyPool") {
     return raw;
   }
   return DEFAULT_TAB;
@@ -101,12 +104,7 @@ function handleNavigateToGroup(groupId: number) {
             v-else-if="pane.key === 'site'"
             @navigate-to-group="handleNavigateToGroup"
           />
-          <n-empty
-            v-else
-            size="tiny"
-            :show-icon="false"
-            :description="t('more.emptyDescription')"
-          />
+          <proxy-pool-panel v-else-if="pane.key === 'proxyPool'" />
         </n-tab-pane>
       </n-tabs>
     </n-card>

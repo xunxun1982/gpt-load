@@ -137,26 +137,19 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	// Trim whitespace from proxy URL before parsing to handle common configuration issues
 	trimmedProxyURL := strings.TrimSpace(config.ProxyURL)
 	if trimmedProxyURL != "" {
-		proxyURL, err := url.Parse(trimmedProxyURL)
+		proxyURL, err := utils.ParseProxyURL(trimmedProxyURL)
 		if err != nil {
 			// Sanitize proxy URL to prevent credential leakage in logs
 			logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", utils.SanitizeProxyString(trimmedProxyURL), err)
 			transport.Proxy = http.ProxyFromEnvironment
 		} else {
-			// Validate proxy URL scheme
-			if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" && proxyURL.Scheme != "socks5" {
-				// Sanitize proxy URL to prevent credential leakage in logs
-				logrus.Warnf("Unsupported proxy scheme '%s' in URL '%s', falling back to environment settings", proxyURL.Scheme, utils.SanitizeProxyString(trimmedProxyURL))
-				transport.Proxy = http.ProxyFromEnvironment
-			} else {
-				// Set proxy with detailed logging
-				transport.Proxy = http.ProxyURL(proxyURL)
-				sanitized := utils.SanitizeProxyURLForLog(proxyURL)
-				logrus.Debugf("HTTP client configured with proxy: %s (scheme: %s, host: %s)", sanitized, proxyURL.Scheme, proxyURL.Host)
+			// Set proxy with detailed logging
+			transport.Proxy = http.ProxyURL(proxyURL)
+			sanitized := utils.SanitizeProxyURLForLog(proxyURL)
+			logrus.Debugf("HTTP client configured with proxy: %s (scheme: %s, host: %s)", sanitized, proxyURL.Scheme, proxyURL.Host)
 
-				// Test proxy connectivity (non-blocking)
-				go testProxyConnectivity(proxyURL)
-			}
+			// Test proxy connectivity (non-blocking)
+			go testProxyConnectivity(proxyURL)
 		}
 	} else {
 		// ProxyURL was empty or only whitespace, fall back to environment

@@ -2,6 +2,7 @@ package services
 
 import (
 	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func TestDynamicWeightManager_CalculateHealthScore(t *testing.T) {
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 3,
 			},
-			expected: 0.76, // 1.0 - (3 * 0.08) with unstable channel tolerant penalty
+			expected: 0.68, // Progressive hard-failure penalty: 1.0 - (0.08 * 4.0)
 		},
 		{
 			name: "recent failure reduces score",
@@ -115,6 +116,101 @@ func TestDynamicWeightManager_CalculateHealthScore(t *testing.T) {
 	}
 }
 
+func TestDynamicWeightManager_ConsecutiveHardFailuresReachMinimumHealth(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	const aggregateGroupID = uint(910)
+	const subGroupID = uint(911)
+
+	for i := 0; i < 8; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, subGroupID, false)
+	}
+
+	metrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, subGroupID)
+	require.NoError(t, err)
+	require.Equal(t, int64(8), metrics.ConsecutiveFailures)
+
+	health := dwm.CalculateHealthScore(metrics)
+	assert.InDelta(t, dwm.config.MinHealthScore, health, 0.01, "many consecutive hard failures should decay to minimum health quickly")
+}
+
+func TestDynamicWeightManager_ZeroSuccessRateCapsHealthBySampleCount(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	tests := []struct {
+		name           string
+		metrics        *DynamicWeightMetrics
+		expectedHealth float64
+	}{
+		{
+			name: "eight hard failures remain distinct from minimum",
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 8,
+				Requests180d:        8,
+				Successes180d:       0,
+			},
+			expectedHealth: 0.08,
+		},
+		{
+			name: "ten hard failures reach minimum health",
+			metrics: &DynamicWeightMetrics{
+				ConsecutiveFailures: 10,
+				Requests180d:        10,
+				Successes180d:       0,
+			},
+			expectedHealth: 0.01,
+		},
+	}
+
+	var eightFailureHealth, tenFailureHealth float64
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			health := dwm.CalculateHealthScore(tt.metrics)
+			assert.InDelta(t, tt.expectedHealth, health, 0.001)
+			if tt.metrics.ConsecutiveFailures == 8 {
+				eightFailureHealth = health
+			}
+			if tt.metrics.ConsecutiveFailures == 10 {
+				tenFailureHealth = health
+			}
+		})
+	}
+	assert.Greater(t, eightFailureHealth, tenFailureHealth, "8 and 10 consecutive hard failures should display different health")
+}
+
+func TestDynamicWeightManager_ConsecutiveHardFailurePenaltyCurve(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	tests := []struct {
+		failures       int64
+		expectedHealth float64
+	}{
+		{failures: 2, expectedHealth: 0.82},
+		{failures: 3, expectedHealth: 0.68},
+		{failures: 4, expectedHealth: 0.54},
+		{failures: 5, expectedHealth: 0.42},
+		{failures: 6, expectedHealth: 0.30},
+		{failures: 7, expectedHealth: 0.18},
+		{failures: 8, expectedHealth: 0.08},
+		{failures: 9, expectedHealth: 0.04},
+		{failures: 10, expectedHealth: 0.01},
+	}
+
+	for _, tt := range tests {
+		t.Run(strconv.FormatInt(tt.failures, 10), func(t *testing.T) {
+			metrics := &DynamicWeightMetrics{ConsecutiveFailures: tt.failures}
+			health := dwm.CalculateHealthScore(metrics)
+			assert.InDelta(t, tt.expectedHealth, health, 0.001)
+		})
+	}
+}
+
 // TestDynamicWeightManager_GetEffectiveWeight tests effective weight calculation
 func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 	memStore := store.NewMemoryStore()
@@ -147,21 +243,21 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 5,
 			},
-			minWeight: 30.0, // Health score ~0.60 (1.0 - 5*0.08 = 0.60), in medium range (0.50-0.75), quadratic: 0.60^2 = 0.36, weight ~36.0
-			maxWeight: 40.0,
+			minWeight: 1.0, // Health is in critical range after 5 consecutive hard failures.
+			maxWeight: 1.0,
 		},
 		{
 			name:       "poor health returns capped weight of 1.0",
 			baseWeight: 100,
 			metrics: &DynamicWeightMetrics{
-				ConsecutiveFailures: 6, // Max penalty 0.40 (capped at 5 failures)
+				ConsecutiveFailures: 6, // Progressive penalty places health in the critical range.
 				Requests180d:        100,
 				Successes180d:       20, // 20% success rate, penalty 0.18
 				Requests7d:          10,
 				Successes7d:         2,
 				LastFailureAt:       time.Now().Add(-1 * time.Minute), // Recent failure ~0.11 penalty
 			},
-			// Total penalty ~0.69 (0.40 + 0.18 + 0.11), health ~0.31, in critical range (<=0.50)
+			// Total penalty is in the critical range after consecutive, recent, and low-success penalties.
 			// Critical health: capped at 1.0
 			minWeight: 1.0,
 			maxWeight: 1.0,
@@ -170,22 +266,22 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 			name:       "good health score (>0.75) uses linear scaling",
 			baseWeight: 100,
 			metrics: &DynamicWeightMetrics{
-				ConsecutiveFailures: 3, // 3 * 0.08 = 0.24 penalty, health ~0.76
+				ConsecutiveFailures: 1, // health ~0.92
 				Requests180d:        50,
 				Successes180d:       45, // 90% success rate (above 40% threshold, no penalty)
 				Requests7d:          5,
 				Successes7d:         4,
 			},
-			minWeight: 70.0, // Health ~0.76, above medium threshold (0.75), linear scaling
-			maxWeight: 80.0,
+			minWeight: 90.0,
+			maxWeight: 95.0,
 		},
 		{
-			name:       "small base weight with medium health gets minimum weight of 0.1",
+			name:       "small base weight with medium health gets minimum weight of 1.0",
 			baseWeight: 1,
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 3, // Medium health
 			},
-			minWeight: 0.1,
+			minWeight: 1.0,
 			maxWeight: 1.0,
 		},
 	}
@@ -197,6 +293,30 @@ func TestDynamicWeightManager_GetEffectiveWeight(t *testing.T) {
 			assert.LessOrEqual(t, weight, tt.maxWeight)
 		})
 	}
+}
+
+func TestDynamicWeightManager_MinimumHealthKeepsRecoveryWeight(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	metrics := &DynamicWeightMetrics{
+		ConsecutiveFailures: 10,
+		Requests180d:        10,
+		Successes180d:       0,
+		LastFailureAt:       time.Now(),
+	}
+
+	health := dwm.CalculateHealthScore(metrics)
+	require.InDelta(t, dwm.config.MinHealthScore, health, 0.01)
+
+	effectiveWeight := dwm.GetEffectiveWeight(100, metrics)
+	assert.Equal(t, 1.0, effectiveWeight, "critical health should keep a 1.0 recovery weight for normal base weights")
+	assert.Equal(t, 10, GetEffectiveWeightForSelection(effectiveWeight), "selection weight preserves one decimal place")
+
+	smallEffectiveWeight := dwm.GetEffectiveWeight(1, metrics)
+	assert.Equal(t, 1.0, smallEffectiveWeight, "small base weights keep the 1.0 recovery weight")
+	assert.Equal(t, 10, GetEffectiveWeightForSelection(smallEffectiveWeight), "minimum recovery weight preserves one decimal place")
 }
 
 // TestGetEffectiveWeightForSelection tests conversion of float effective weight to integer for weighted selection
@@ -1037,44 +1157,44 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 		{
 			name: "poor health (consecutive failures + low success rate)",
 			metrics: &DynamicWeightMetrics{
-				ConsecutiveFailures: 6, // Max penalty 0.40 (capped at 5 failures)
+				ConsecutiveFailures: 6,
 				Requests180d:        100,
 				Successes180d:       20, // 20% success rate, penalty 0.18
 				Requests7d:          10,
 				Successes7d:         2,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 1.0, // Health ~0.42 (1.0 - 0.40 - 0.18), in critical range (<=0.50), capped at 1.0
+			expectedMinWeight: 1.0, // Critical health is capped to 1.0 recovery weight for normal base weights.
 			expectedMaxWeight: 1.0,
-			description:       "Health score ~0.42 in critical range, weight capped at 1.0",
+			description:       "Health is in critical range, weight capped at 1.0",
 		},
 		{
 			name: "moderate health (few failures) - moderate penalty",
 			metrics: &DynamicWeightMetrics{
-				ConsecutiveFailures: 3, // 0.24 penalty
+				ConsecutiveFailures: 2,
 				Requests180d:        50,
 				Successes180d:       45, // 90% success rate (above 40% threshold, no penalty)
 				Requests7d:          5,
 				Successes7d:         4,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 70.0, // Health ~0.76, above medium threshold (0.75), linear scaling
-			expectedMaxWeight: 80.0,
-			description:       "Health score ~0.76 with linear scaling in good range",
+			expectedMinWeight: 65.0, // Health ~0.82, above medium threshold, linear scaling.
+			expectedMaxWeight: 85.0,
+			description:       "Health score ~0.82 with linear scaling in good range",
 		},
 		{
 			name: "good health (minimal failures, good success rate)",
 			metrics: &DynamicWeightMetrics{
-				ConsecutiveFailures: 2, // 0.16 penalty
+				ConsecutiveFailures: 2,
 				Requests180d:        50,
 				Successes180d:       45, // 90% success rate
 				Requests7d:          5,
 				Successes7d:         4,
 			},
 			baseWeight:        100,
-			expectedMinWeight: 75.0,
-			expectedMaxWeight: 90.0,
-			description:       "Health score around 0.84 with linear scaling",
+			expectedMinWeight: 65.0,
+			expectedMaxWeight: 85.0,
+			description:       "Health score around 0.82 with linear scaling",
 		},
 		{
 			name: "good health (minimal failures) - minimal penalty",
@@ -1091,17 +1211,17 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 			description:       "Health score ~0.92 should use linear scaling",
 		},
 		{
-			name: "small weight with medium health - minimum 0.1",
+			name: "small weight with medium health - minimum 1.0",
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 3,
 			},
 			baseWeight:        1,
-			expectedMinWeight: 0.1,
+			expectedMinWeight: 1.0,
 			expectedMaxWeight: 1.0,
-			description:       "Even with penalty, non-critical health gets minimum weight of 0.1",
+			description:       "Even with penalty, non-critical health gets minimum weight of 1.0",
 		},
 		{
-			name: "small weight with critical health - minimum 0.1",
+			name: "small weight with critical health - minimum 1.0",
 			metrics: &DynamicWeightMetrics{
 				ConsecutiveFailures: 5,
 				Requests180d:        100,
@@ -1110,9 +1230,9 @@ func TestDynamicWeightManager_NonLinearHealthPenalty(t *testing.T) {
 				Successes7d:         2,
 			},
 			baseWeight:        1,
-			expectedMinWeight: 0.1,
-			expectedMaxWeight: 0.1,
-			description:       "Critical health results in minimum weight of 0.1 to allow recovery",
+			expectedMinWeight: 1.0,
+			expectedMaxWeight: 1.0,
+			description:       "Critical health results in minimum weight of 1.0 to allow recovery",
 		},
 	}
 
@@ -1148,7 +1268,7 @@ func TestDynamicWeightManager_HealthThresholdBehavior(t *testing.T) {
 
 	// Test case 1: Just above critical threshold
 	metrics1 := &DynamicWeightMetrics{
-		ConsecutiveFailures: 5,
+		ConsecutiveFailures: 3,
 		Requests180d:        50,
 		Successes180d:       35, // 70% success rate (better than threshold)
 		Requests7d:          5,
@@ -1255,7 +1375,7 @@ func TestDynamicWeightManager_RateLimitHandling(t *testing.T) {
 	assert.Equal(t, int64(5), metricsB.ConsecutiveRateLimits, "Rate limit failures should increment ConsecutiveRateLimits")
 
 	// Verify that rate limit failures receive lighter penalties
-	// Regular failures: 5 * 0.08 = 0.40 penalty (consecutive) + ~0.12 (recent, time-decaying) + 0.18 (low success rate)
+	// Hard failures: progressive consecutive penalty + ~0.12 recent penalty + 0.18 low-success penalty.
 	// Rate limit failures: 5 * 0.025 = 0.125 penalty (consecutive) + ~0.04 (recent, time-decaying) + 0.18 (low success rate)
 	// Note: Recent failure penalty decays over time, so exact values may vary slightly
 	assert.Less(t, healthA, 0.65, "Regular failures should have significant penalty")

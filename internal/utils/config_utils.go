@@ -32,6 +32,9 @@ func GenerateSettingsMetadata(s *types.SystemSettings) []models.SystemSettingInf
 		defaultTag := field.Tag.Get("default")
 		validateTag := field.Tag.Get("validate")
 		categoryTag := field.Tag.Get("category")
+		if categoryTag == "-" {
+			continue
+		}
 
 		var minValue *int
 		var required bool

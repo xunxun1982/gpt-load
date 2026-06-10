@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { settingsApi, type Setting, type SettingCategory } from "@/api/settings";
+import {
+  settingsApi,
+  type Setting,
+  type SettingCategory,
+  type SettingsUpdatePayload,
+} from "@/api/settings";
+import { proxyPoolApi } from "@/api/proxy-pool";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import http from "@/utils/http";
 import { HelpCircle, Save, CloudDownloadOutline, CloudUploadOutline } from "@vicons/ionicons5";
@@ -13,6 +19,7 @@ import {
   NIcon,
   NInput,
   NInputNumber,
+  NSelect,
   NSpace,
   NSwitch,
   NTooltip,
@@ -20,7 +27,7 @@ import {
   useMessage,
   type FormItemRule,
 } from "naive-ui";
-import { h, ref } from "vue";
+import { computed, h, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -29,11 +36,18 @@ const settingList = ref<SettingCategory[]>([]);
 const formRef = ref();
 const form = ref<Record<string, string | number | boolean>>({});
 const isSaving = ref(false);
+const proxyPoolOptions = ref<{ label: string; value: string }[]>([]);
 const message = useMessage();
 const dialog = useDialog();
 const systemFileInputRef = ref<HTMLInputElement | null>(null);
 
+const proxyPoolSelectOptions = computed(() => [
+  { label: t("settings.noProxy"), value: "" },
+  ...proxyPoolOptions.value,
+]);
+
 fetchSettings();
+fetchProxyPoolOptions();
 
 async function fetchSettings() {
   try {
@@ -49,12 +63,26 @@ function initForm() {
   form.value = settingList.value.reduce(
     (acc: Record<string, string | number | boolean>, category) => {
       category.settings?.forEach(setting => {
-        acc[setting.key] = setting.value;
+        acc[setting.key] =
+          setting.key === "proxy_url" ? String(setting.value || "") : setting.value;
       });
       return acc;
     },
     {}
   );
+}
+
+async function fetchProxyPoolOptions() {
+  try {
+    const items = await proxyPoolApi.list();
+    proxyPoolOptions.value = items.map(item => ({
+      label: item.name ? `${item.name} (${item.url})` : item.url,
+      value: item.url,
+    }));
+  } catch (error) {
+    console.error("Failed to fetch proxy pool options:", error);
+    message.error(t("proxyPool.loadFailed"));
+  }
 }
 
 async function handleSubmit() {
@@ -65,11 +93,24 @@ async function handleSubmit() {
   try {
     await formRef.value.validate();
     isSaving.value = true;
-    await settingsApi.updateSettings(form.value);
+    await settingsApi.updateSettings(normalizedSettingsPayload());
     await fetchSettings();
   } finally {
     isSaving.value = false;
   }
+}
+
+function normalizedSettingsPayload(): SettingsUpdatePayload {
+  const payload: SettingsUpdatePayload = { ...form.value };
+  const proxyValue = (payload as Record<string, unknown>).proxy_url;
+  // Naive UI clearable select emits null, while the backend expects "" for no proxy.
+  if (
+    Object.prototype.hasOwnProperty.call(payload, "proxy_url") &&
+    (proxyValue === null || proxyValue === undefined)
+  ) {
+    payload.proxy_url = "";
+  }
+  return payload;
 }
 
 function generateValidationRules(item: Setting): FormItemRule[] {
@@ -601,6 +642,16 @@ checkDebugMode();
                   v-model="form[item.key] as string"
                   :placeholder="t('settings.inputContent')"
                   size="small"
+                />
+                <n-select
+                  v-else-if="item.key === 'proxy_url'"
+                  v-model:value="form[item.key] as string"
+                  :options="proxyPoolSelectOptions"
+                  :placeholder="t('settings.noProxy')"
+                  size="small"
+                  filterable
+                  clearable
+                  style="width: 100%"
                 />
                 <n-input
                   v-else

@@ -4167,10 +4167,11 @@ const (
 // Logic: min(preset_value, effective_config_value)
 // - If config value < preset value: use config value (allows stricter timeouts)
 // - If config value >= preset value: use preset value (prevents excessively long timeouts)
+// - If StreamRequestTimeout is 0: disable idle timeout between SSE events
 //
 // Timeout mapping:
 // - firstByteTimeout: derived from ResponseHeaderTimeout (time to wait for first response)
-// - subsequentTimeout: derived from RequestTimeout (overall request timeout)
+// - subsequentTimeout: derived from StreamRequestTimeout (idle time between SSE events)
 func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeout time.Duration) {
 	// Default to preset values (upper bounds)
 	firstByteTimeout = sseFirstByteTimeoutPreset
@@ -4197,9 +4198,11 @@ func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeou
 		}
 	}
 
-	// Apply RequestTimeout if smaller than preset (stricter timeout)
-	if cfg.RequestTimeout > 0 {
-		configTimeout := time.Duration(cfg.RequestTimeout) * time.Second
+	// StreamRequestTimeout=0 explicitly disables the SSE idle timeout.
+	if cfg.StreamRequestTimeout == 0 {
+		subsequentTimeout = 0
+	} else if cfg.StreamRequestTimeout > 0 {
+		configTimeout := time.Duration(cfg.StreamRequestTimeout) * time.Second
 		if configTimeout < subsequentTimeout {
 			subsequentTimeout = configTimeout
 		}
@@ -4301,6 +4304,13 @@ func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
 	timeout := r.subsequentTimeout
 	if !r.receivedFirst {
 		timeout = r.firstByteTimeout
+	}
+	if timeout <= 0 {
+		event, err := r.readEventInternal()
+		if err == nil && event != nil {
+			r.receivedFirst = true
+		}
+		return event, err
 	}
 
 	type readResult struct {
