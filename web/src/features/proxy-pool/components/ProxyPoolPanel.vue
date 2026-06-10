@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyPoolApi, type ProxyPoolPayload, type ProxyPoolTestResult } from "@/api/proxy-pool";
-import { settingsApi, type SettingCategory, type SettingsUpdatePayload } from "@/api/settings";
+import { settingsApi, type SettingsUpdatePayload } from "@/api/settings";
 import type { ProxyPoolItem } from "@/types/models";
 import {
   Add,
@@ -325,19 +325,6 @@ async function changePageSize(size: number) {
   }
 }
 
-function settingValue(
-  categories: SettingCategory[],
-  key: string
-): string | number | boolean | undefined {
-  for (const category of categories) {
-    const setting = category.settings?.find(item => item.key === key);
-    if (setting) {
-      return setting.value;
-    }
-  }
-  return undefined;
-}
-
 function positiveIntegerValue(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 1 ? Math.trunc(parsed) : fallback;
@@ -371,17 +358,16 @@ function validTestTargetURL(value: string): boolean {
 async function loadProxyPoolSettings(): Promise<boolean> {
   settingsLoading.value = true;
   try {
-    const categories = await settingsApi.getSettings();
+    const settings = await settingsApi.getProxyPoolSettings();
     const targetUrl =
-      String(
-        settingValue(categories, "proxy_pool_test_target_url") || defaultProxyPoolTestTargetURL
-      ).trim() || defaultProxyPoolTestTargetURL;
+      String(settings.proxy_pool_test_target_url || defaultProxyPoolTestTargetURL).trim() ||
+      defaultProxyPoolTestTargetURL;
     const timeoutSeconds = positiveIntegerValue(
-      settingValue(categories, "proxy_pool_test_timeout_seconds"),
+      settings.proxy_pool_test_timeout_seconds,
       defaultProxyTestTimeoutSeconds
     );
     const intervalMinutes = positiveIntegerValue(
-      settingValue(categories, "proxy_pool_auto_test_interval_minutes"),
+      settings.proxy_pool_auto_test_interval_minutes,
       defaultProxyAutoTestIntervalMinutes
     );
     applyProxyPoolSettings(targetUrl, timeoutSeconds, intervalMinutes);

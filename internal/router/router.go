@@ -224,6 +224,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 	settings := api.Group("/settings")
 	{
 		settings.GET("", serverHandler.GetSettings)
+		settings.GET("/proxy-pool", serverHandler.GetProxyPoolSettings)
 		settings.PUT("", serverHandler.UpdateSettings)
 	}
 
