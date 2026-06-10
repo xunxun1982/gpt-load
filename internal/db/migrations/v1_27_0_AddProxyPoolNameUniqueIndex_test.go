@@ -67,6 +67,8 @@ func TestV1_27_0_AddProxyPoolNameUniqueIndexKeepsRenamedNamesWithinLimit(t *test
 }
 
 func TestV1_27_0_AddProxyPoolNameUniqueIndexSkipsWhenMarkerAlreadyAcquired(t *testing.T) {
+	t.Parallel()
+
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&proxyPoolItemLegacyV1_27_0{}))

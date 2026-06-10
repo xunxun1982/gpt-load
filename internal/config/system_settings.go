@@ -37,20 +37,21 @@ func NewSystemSettingsManager() *SystemSettingsManager {
 // normalizeSplitRequestTimeouts keeps RequestTimeout synced to NonStreamRequestTimeout,
 // which is the source of truth for split timeout configuration.
 // It handles legacy-only backfill, explicit non-stream values including zero,
-// and default sync when neither setting was supplied.
+// and the already-synced defaults when neither setting was supplied.
 func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, hasNonStream bool) {
 	if settings == nil {
 		return
-	}
-	if hasLegacy && !hasNonStream {
-		settings.NonStreamRequestTimeout = settings.RequestTimeout
 	}
 	if hasNonStream {
 		// Explicit zero disables non-stream timeout; keep legacy fallback synced to the same value.
 		settings.RequestTimeout = settings.NonStreamRequestTimeout
 		return
 	}
-	settings.RequestTimeout = settings.NonStreamRequestTimeout
+	if hasLegacy {
+		settings.NonStreamRequestTimeout = settings.RequestTimeout
+		return
+	}
+	// Defaults already keep both fields in sync when neither key was supplied.
 }
 
 func validateStringSettingValue(key, val string) error {

@@ -10,6 +10,7 @@ import (
 	"gpt-load/internal/services"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 )
 
 func respondProxyPoolServiceError(c *gin.Context, err error) {
@@ -18,7 +19,17 @@ func respondProxyPoolServiceError(c *gin.Context, err error) {
 		response.Error(c, apiErr)
 		return
 	}
+	logrus.WithContext(c.Request.Context()).WithError(err).Error("unexpected proxy pool service error")
+	// Keep the client response generic because unexpected errors can contain proxy URLs or database details.
 	response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "unexpected proxy pool error"))
+}
+
+func parseProxyPoolID(c *gin.Context) (uint, *app_errors.APIError) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		return 0, app_errors.NewAPIError(app_errors.ErrBadRequest, "invalid proxy ID")
+	}
+	return uint(id), nil
 }
 
 // ProxyPoolRequest defines the payload for creating or updating a proxy pool item.
@@ -58,9 +69,9 @@ func (s *Server) CreateProxyPoolItem(c *gin.Context) {
 
 // UpdateProxyPoolItem handles PUT /api/proxy-pool/:id.
 func (s *Server) UpdateProxyPoolItem(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil || id <= 0 {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "invalid proxy ID"))
+	id, apiErr := parseProxyPoolID(c)
+	if apiErr != nil {
+		response.Error(c, apiErr)
 		return
 	}
 	var req ProxyPoolRequest
@@ -68,7 +79,7 @@ func (s *Server) UpdateProxyPoolItem(c *gin.Context) {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
 		return
 	}
-	item, err := s.ProxyPoolService.Update(c.Request.Context(), uint(id), services.ProxyPoolInput{
+	item, err := s.ProxyPoolService.Update(c.Request.Context(), id, services.ProxyPoolInput{
 		Name: req.Name,
 		URL:  req.URL,
 	})
@@ -81,12 +92,12 @@ func (s *Server) UpdateProxyPoolItem(c *gin.Context) {
 
 // DeleteProxyPoolItem handles DELETE /api/proxy-pool/:id.
 func (s *Server) DeleteProxyPoolItem(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil || id <= 0 {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "invalid proxy ID"))
+	id, apiErr := parseProxyPoolID(c)
+	if apiErr != nil {
+		response.Error(c, apiErr)
 		return
 	}
-	if err := s.ProxyPoolService.Delete(c.Request.Context(), uint(id)); err != nil {
+	if err := s.ProxyPoolService.Delete(c.Request.Context(), id); err != nil {
 		respondProxyPoolServiceError(c, err)
 		return
 	}
@@ -95,12 +106,12 @@ func (s *Server) DeleteProxyPoolItem(c *gin.Context) {
 
 // TestProxyPoolItem handles POST /api/proxy-pool/:id/test.
 func (s *Server) TestProxyPoolItem(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil || id <= 0 {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, "invalid proxy ID"))
+	id, apiErr := parseProxyPoolID(c)
+	if apiErr != nil {
+		response.Error(c, apiErr)
 		return
 	}
-	result, err := s.ProxyPoolService.Test(c.Request.Context(), uint(id))
+	result, err := s.ProxyPoolService.Test(c.Request.Context(), id)
 	if err != nil {
 		respondProxyPoolServiceError(c, err)
 		return
