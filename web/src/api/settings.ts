@@ -15,12 +15,22 @@ export interface SettingCategory {
   settings: Setting[];
 }
 
+export interface ProxyPoolSettings {
+  proxy_pool_test_target_url: string;
+  proxy_pool_test_timeout_seconds: number;
+  proxy_pool_auto_test_interval_minutes: number;
+}
+
 export type SettingsUpdatePayload = Record<string, string | number | boolean>;
 
 export const settingsApi = {
   async getSettings(): Promise<SettingCategory[]> {
     const response = await http.get("/settings");
     return response.data || [];
+  },
+  async getProxyPoolSettings(): Promise<ProxyPoolSettings> {
+    const response = await http.get("/settings/proxy-pool");
+    return response.data;
   },
   updateSettings(data: SettingsUpdatePayload): Promise<void> {
     return http.put("/settings", data);

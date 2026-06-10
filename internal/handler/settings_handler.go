@@ -56,6 +56,16 @@ func (s *Server) GetSettings(c *gin.Context) {
 	response.Success(c, responseData)
 }
 
+// GetProxyPoolSettings returns proxy pool health-check settings for the proxy pool page.
+func (s *Server) GetProxyPoolSettings(c *gin.Context) {
+	settings := s.SettingsManager.GetSettings()
+	response.Success(c, gin.H{
+		"proxy_pool_test_target_url":            settings.ProxyPoolTestTargetURL,
+		"proxy_pool_test_timeout_seconds":       settings.ProxyPoolTestTimeoutSeconds,
+		"proxy_pool_auto_test_interval_minutes": settings.ProxyPoolAutoTestIntervalMinutes,
+	})
+}
+
 // GetEnvironmentInfo returns environment-specific information like DEBUG_MODE status
 func (s *Server) GetEnvironmentInfo(c *gin.Context) {
 	response.Success(c, gin.H{
