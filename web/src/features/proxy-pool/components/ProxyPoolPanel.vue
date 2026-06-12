@@ -307,6 +307,14 @@ async function loadItems() {
   }
 }
 
+async function onRefreshClick() {
+  try {
+    await loadItems();
+  } catch {
+    // loadItems already shows the failure toast; consume the click-path rejection.
+  }
+}
+
 async function changePage(page: number) {
   if (page < 1 || page === currentPage.value) {
     return;
@@ -631,7 +639,7 @@ onUnmounted(clearAutoTestTimer);
           </template>
           {{ t("proxyPool.testSettings") }}
         </n-button>
-        <n-button size="small" :loading="loading" @click="loadItems">
+        <n-button size="small" :loading="loading" @click="onRefreshClick">
           <template #icon>
             <n-icon :component="RefreshOutline" />
           </template>

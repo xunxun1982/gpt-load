@@ -938,7 +938,7 @@ func systemSettingsWithRetryTimeout(maxRetries, nonStreamTimeout int) types.Syst
 
 func TestRetryAfterRateLimitPressureFromHeader(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 6, 11, 12, 0, 0, 500*int(time.Millisecond), time.UTC)
 
 	tests := []struct {
 		name     string
@@ -951,8 +951,10 @@ func TestRetryAfterRateLimitPressureFromHeader(t *testing.T) {
 		{name: "five minute delta", header: "300", expected: 4},
 		{name: "one hour delta", header: "3600", expected: 5},
 		{name: "future http date", header: now.Add(10 * time.Minute).Format(http.TimeFormat), expected: 4},
-		{name: "exact five minute http date with subsecond now", header: now.Add(5*time.Minute + 500*time.Millisecond).Format(http.TimeFormat), expected: 4},
-		{name: "exact one hour http date with subsecond now", header: now.Add(time.Hour + 500*time.Millisecond).Format(http.TimeFormat), expected: 5},
+		// Retry-After dates are HTTP-date values, so the header intentionally uses
+		// http.TimeFormat while now keeps subsecond precision to cover ceil boundaries.
+		{name: "exact five minute http date with subsecond now", header: now.Add(5 * time.Minute).Format(http.TimeFormat), expected: 4},
+		{name: "exact one hour http date with subsecond now", header: now.Add(time.Hour).Format(http.TimeFormat), expected: 5},
 		{name: "past http date", header: now.Add(-time.Minute).Format(http.TimeFormat), expected: 1},
 		{name: "invalid", header: "retry after 30 seconds", expected: 1},
 	}
