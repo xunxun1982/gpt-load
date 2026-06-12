@@ -657,6 +657,16 @@ func TestResolveRuntimeProxyURLKeepsReferenceWhenResolverFails(t *testing.T) {
 	assert.Equal(t, ref, resolved)
 }
 
+func TestResolveRuntimeProxyURLKeepsReferenceWhenResolverReturnsBlank(t *testing.T) {
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(staticProxyURLResolver{resolved: " \t "})
+	ref := utils.BuildProxyPoolItemRef(14)
+
+	resolved := manager.ResolveRuntimeProxyURL(context.Background(), ref)
+
+	assert.Equal(t, ref, resolved)
+}
+
 // TestDisplaySystemConfig tests displaying system configuration
 func TestDisplaySystemConfig(t *testing.T) {
 	manager := NewSystemSettingsManager()

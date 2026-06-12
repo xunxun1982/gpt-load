@@ -368,7 +368,12 @@ func (sm *SystemSettingsManager) ResolveRuntimeProxyURL(ctx context.Context, raw
 		logrus.WithError(err).Warn("Failed to resolve proxy pool reference")
 		return trimmed
 	}
-	return strings.TrimSpace(resolved)
+	resolved = strings.TrimSpace(resolved)
+	if resolved == "" {
+		logrus.Warn("Proxy pool reference resolved to an empty proxy URL")
+		return trimmed
+	}
+	return resolved
 }
 
 // ValidateSettings validates the validity of system configuration
