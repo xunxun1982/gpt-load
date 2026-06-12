@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -238,8 +239,8 @@ func (s *ProxyPoolService) ResolveProxyURL(ctx context.Context, raw string) (str
 	if itemID, ok := utils.ParseProxyPoolItemRef(trimmed); ok {
 		var item models.ProxyPoolItem
 		if err := s.db.WithContext(ctx).Select("id", "url").First(&item, itemID).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				return "", nil
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", app_errors.NewNotFoundError("proxy pool item not found")
 			}
 			return "", app_errors.ParseDBError(err)
 		}

@@ -30,6 +30,9 @@ func ParseProxyPoolItemRef(raw string) (uint, bool) {
 	if err != nil || id == 0 {
 		return 0, false
 	}
+	if uint64(uint(id)) != id {
+		return 0, false
+	}
 	return uint(id), true
 }
 

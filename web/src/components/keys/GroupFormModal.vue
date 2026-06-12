@@ -1395,7 +1395,7 @@ async function handleSubmit() {
           weight: u.weight,
           proxy_url: (() => {
             const p = (u.proxy_url || "").trim();
-            return /^(https?|socks5):\/\//i.test(p) || /^proxy-pool:\d+$/i.test(p) ? p : undefined;
+            return /^(https?|socks5):\/\//i.test(p) || /^proxy-pool:\d+$/.test(p) ? p : undefined;
           })(),
         }))
         .filter(u => !!u.url),

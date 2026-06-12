@@ -54,7 +54,7 @@ func retryAfterRateLimitPressureFromHeader(header string, now time.Time) int64 {
 	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil {
 		waitSeconds = seconds
 	} else if retryAt, err := http.ParseTime(header); err == nil {
-		waitSeconds = int64(retryAt.Sub(now).Seconds())
+		waitSeconds = int64(math.Ceil(retryAt.Sub(now).Seconds()))
 	}
 	if waitSeconds <= 0 {
 		return 1
@@ -68,6 +68,16 @@ func retryAfterRateLimitPressureFromHeader(header string, now time.Time) int64 {
 	default:
 		return 3
 	}
+}
+
+func setRateLimitPressureContextForAttempt(c *gin.Context, resp *http.Response, now time.Time) {
+	if c.Keys != nil {
+		delete(c.Keys, ctxKeyRateLimitPressure)
+	}
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		return
+	}
+	c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), now))
 }
 
 func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSettings) (context.Context, context.CancelFunc) {
@@ -1140,6 +1150,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if resp != nil {
 		defer resp.Body.Close()
 	}
+	setRateLimitPressureContextForAttempt(c, resp, time.Now())
 
 	// Unified error handling for retries.
 	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
@@ -1159,9 +1170,6 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		} else {
 			// HTTP-level error (status >= 400)
 			statusCode = resp.StatusCode
-			if statusCode == http.StatusTooManyRequests {
-				c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), time.Now()))
-			}
 			// Limit error body read to a fixed size to prevent memory exhaustion
 			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {
@@ -1838,6 +1846,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if resp != nil {
 		defer resp.Body.Close()
 	}
+	setRateLimitPressureContextForAttempt(c, resp, time.Now())
 
 	// Unified error handling for retries.
 	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
@@ -1857,9 +1866,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		} else {
 			// HTTP-level error (status >= 400)
 			statusCode = resp.StatusCode
-			if statusCode == http.StatusTooManyRequests {
-				c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), time.Now()))
-			}
 			// Limit error body read to a fixed size to prevent memory exhaustion
 			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {

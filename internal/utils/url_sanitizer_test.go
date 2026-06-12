@@ -51,6 +51,12 @@ func TestSanitizeURLForLog(t *testing.T) {
 			[]string{"REDACTED", "normal=value"},
 			[]string{"k1", "t1"},
 		},
+		{
+			"URLWithCredentialKeyVariants",
+			"https://api.example.com/endpoint?x-api-key=secret-a&openai_api_key=secret-b&subscription-key=secret-c&normal=value",
+			[]string{"REDACTED", "normal=value"},
+			[]string{"secret-a", "secret-b", "secret-c"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -92,6 +98,7 @@ func TestSanitizeRequestURLForLog(t *testing.T) {
 	tests := []struct {
 		name        string
 		input       string
+		contains    []string
 		notContains []string
 		expectSame  bool // Expect result to be same as input
 	}{
@@ -99,30 +106,42 @@ func TestSanitizeRequestURLForLog(t *testing.T) {
 			"EmptyString",
 			"",
 			[]string{},
+			[]string{},
 			true,
 		},
 		{
 			"InvalidURL",
 			"not a valid url",
 			[]string{},
+			[]string{},
 			false, // url.Parse may modify the string
 		},
 		{
 			"URLWithAPIKey",
 			"https://api.example.com?api_key=secret",
+			[]string{"REDACTED"},
 			[]string{"secret"},
 			false,
 		},
 		{
 			"URLWithAccessToken",
 			"https://api.example.com?access_token=token123",
+			[]string{"REDACTED"},
 			[]string{"token123"},
 			false,
 		},
 		{
 			"URLWithMixedCaseCredentialParams",
 			"https://api.example.com/list?Api-Key=secret-a&subscriptionToken=secret-b&safe=value",
+			[]string{"safe=value", "REDACTED"},
 			[]string{"secret-a", "secret-b"},
+			false,
+		},
+		{
+			"URLWithCredentialKeyVariants",
+			"https://api.example.com/list?x-api-key=secret-a&openai_api_key=secret-b&subscription-key=secret-c&safe=value",
+			[]string{"safe=value", "REDACTED"},
+			[]string{"secret-a", "secret-b", "secret-c"},
 			false,
 		},
 	}
@@ -139,6 +158,12 @@ func TestSanitizeRequestURLForLog(t *testing.T) {
 			// Verify exact match when expected
 			if tt.expectSame && result != tt.input {
 				t.Errorf("SanitizeRequestURLForLog(%q) should return original input, got %q", tt.input, result)
+			}
+
+			for _, s := range tt.contains {
+				if !strings.Contains(result, s) {
+					t.Errorf("SanitizeRequestURLForLog(%q) should contain %q, got %q", tt.input, s, result)
+				}
 			}
 
 			for _, s := range tt.notContains {

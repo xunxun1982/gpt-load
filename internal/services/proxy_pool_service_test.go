@@ -55,6 +55,20 @@ func TestProxyPoolServiceResolveProxyReferenceUsesManualProxyPoolItem(t *testing
 	assert.Equal(t, "http://user:pass@manual.example.com:8080", resolved)
 }
 
+func TestProxyPoolServiceResolveProxyReferenceRejectsMissingManualProxyPoolItem(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+
+	resolved, err := svc.ResolveProxyURL(context.Background(), utils.BuildProxyPoolItemRef(404))
+
+	require.Error(t, err)
+	assert.Empty(t, resolved)
+	var apiErr *app_errors.APIError
+	require.True(t, errors.As(err, &apiErr))
+	assert.Equal(t, app_errors.ErrResourceNotFound.Code, apiErr.Code)
+}
+
 func TestProxyPoolServiceSelectionOptionsSanitizeManualProxyURL(t *testing.T) {
 	t.Parallel()
 

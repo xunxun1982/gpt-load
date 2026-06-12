@@ -30,6 +30,8 @@ export async function copy(text: string): Promise<boolean> {
   const activeElement =
     document.activeElement instanceof HTMLElement ? document.activeElement : null;
   try {
+    originalRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
     textarea = document.createElement("textarea");
     textarea.value = text;
     textarea.setAttribute("readonly", "");
@@ -44,8 +46,6 @@ export async function copy(text: string): Promise<boolean> {
     }
 
     document.body.appendChild(textarea);
-
-    originalRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
 
     textarea.focus({ preventScroll: true });
     textarea.select();

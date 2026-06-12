@@ -11,7 +11,7 @@ func isSensitiveQueryParam(name string) bool {
 	case "key", "apikey", "authkey", "accesskey", "token", "accesstoken", "refreshtoken", "auth", "authorization", "secret", "clientsecret", "password":
 		return true
 	}
-	for _, marker := range []string{"token", "secret", "password", "credential"} {
+	for _, marker := range []string{"apikey", "accesskey", "subscriptionkey", "token", "secret", "password", "credential"} {
 		if strings.Contains(normalized, marker) {
 			return true
 		}
