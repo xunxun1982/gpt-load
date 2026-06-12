@@ -74,21 +74,15 @@ type DynamicWeightConfig struct {
 	RecentRateLimitCooldown        time.Duration
 	RateLimitSuccessCredit         float64
 
-	// CriticalHealthThreshold is the health score threshold at or below which
-	// enabled targets use the fixed 1.0 recovery weight to prevent unhealthy
-	// high-weight targets from dominating healthy low-weight targets.
-	CriticalHealthThreshold float64
-	// Health score threshold for applying aggressive penalty
-	// Targets with health score between CriticalHealthThreshold and MediumHealthThreshold
-	// will have their weight reduced more aggressively using quadratic penalty
-	MediumHealthThreshold float64
-	// Penalty multiplier for medium health scores (0.3-0.7 range)
-	// Applied as: effectiveWeight = baseWeight * (healthScore ^ MediumHealthPenaltyExponent)
-	MediumHealthPenaltyExponent float64
+	// EffectiveWeightCurveExponent controls how quickly effective weight drops as health declines.
+	// Applied to normalized health: 1 + (baseWeight - 1) * normalizedHealth^exponent.
+	EffectiveWeightCurveExponent float64
 }
 
 // Recent failure memory is kept after a later success, but softened to reward recovery.
 const recentPenaltyAfterSuccessMultiplier = 0.75
+
+const minConsecutiveRateLimitsForPenalty int64 = 3
 
 // DefaultDynamicWeightConfig returns the default configuration.
 // Optimized for aggregate routing: isolated failures are tolerated, while repeated hard
@@ -141,18 +135,10 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 		// Throttling is still a failed request, but it should not collapse health like auth/billing/server failures.
 		RateLimitSuccessCredit: 0.35,
 
-		// Critical health threshold: 0.50
-		// Below this, enabled targets use the fixed 1.0 recovery floor to prevent unhealthy
-		// high-weight targets from dominating healthy low-weight targets
-		CriticalHealthThreshold: 0.50,
-		// Medium health threshold: 0.75
-		// Between 0.50 and 0.75, apply quadratic penalty for traffic reduction
-		// Balances between availability and quality for moderately unhealthy targets
-		MediumHealthThreshold: 0.75,
-		// Quadratic penalty exponent for medium health range
-		// effectiveWeight = baseWeight * (healthScore ^ 2.0)
-		// Example: health=0.5 -> weight multiplier=0.25
-		MediumHealthPenaltyExponent: 2.0,
+		// Quadratic effective-weight curve normalized between MinHealthScore and 1.0.
+		// This keeps effective weight and displayed health moving together: the recovery
+		// weight reaches 1.0 only when health reaches MinHealthScore.
+		EffectiveWeightCurveExponent: 2.0,
 	}
 }
 
@@ -270,9 +256,9 @@ func (m *DynamicWeightManager) RecordSubGroupSuccess(aggregateGroupID, subGroupI
 }
 
 // RecordSubGroupFailure records a failed request for a sub-group.
-func (m *DynamicWeightManager) RecordSubGroupFailure(aggregateGroupID, subGroupID uint, isRateLimit bool) {
+func (m *DynamicWeightManager) RecordSubGroupFailure(aggregateGroupID, subGroupID uint, isRateLimit bool, rateLimitPressure ...int64) {
 	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
-	m.recordFailure(key, isRateLimit)
+	m.recordFailure(key, isRateLimit, rateLimitPressure...)
 }
 
 // RecordGroupSuccess records a successful request for a standard group.
@@ -284,9 +270,9 @@ func (m *DynamicWeightManager) RecordGroupSuccess(groupID uint) {
 
 // RecordGroupFailure records a failed request for a standard group.
 // Used for Hub health score calculation based on request success rate.
-func (m *DynamicWeightManager) RecordGroupFailure(groupID uint, isRateLimit bool) {
+func (m *DynamicWeightManager) RecordGroupFailure(groupID uint, isRateLimit bool, rateLimitPressure ...int64) {
 	key := GroupMetricsKey(groupID)
-	m.recordFailure(key, isRateLimit)
+	m.recordFailure(key, isRateLimit, rateLimitPressure...)
 }
 
 // RecordModelRedirectSuccess records a successful request for a model redirect target.
@@ -296,9 +282,9 @@ func (m *DynamicWeightManager) RecordModelRedirectSuccess(groupID uint, sourceMo
 }
 
 // RecordModelRedirectFailure records a failed request for a model redirect target.
-func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceModel string, targetModel string, isRateLimit bool) {
+func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceModel string, targetModel string, isRateLimit bool, rateLimitPressure ...int64) {
 	key := ModelRedirectMetricsKey(groupID, sourceModel, targetModel)
-	m.recordFailure(key, isRateLimit)
+	m.recordFailure(key, isRateLimit, rateLimitPressure...)
 }
 
 // recordSuccess records a successful request.
@@ -345,7 +331,7 @@ func (m *DynamicWeightManager) recordSuccess(key string) {
 
 // recordFailure records a failed request.
 // isRateLimit indicates if this is a 429 rate limit error, which receives lighter penalties.
-func (m *DynamicWeightManager) recordFailure(key string, isRateLimit bool) {
+func (m *DynamicWeightManager) recordFailure(key string, isRateLimit bool, rateLimitPressure ...int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -359,8 +345,14 @@ func (m *DynamicWeightManager) recordFailure(key string, isRateLimit bool) {
 
 	if isRateLimit {
 		// Rate limit (429) errors: track separately with lighter penalties
-		// Don't increment ConsecutiveFailures as service is still available
-		metrics.ConsecutiveRateLimits++
+		// Do not clear ConsecutiveFailures here: only a real success proves the hard-failure streak recovered.
+		increment := int64(1)
+		if len(rateLimitPressure) > 0 &&
+			metrics.ConsecutiveRateLimits+1 >= minConsecutiveRateLimitsForPenalty &&
+			rateLimitPressure[0] > increment {
+			increment = rateLimitPressure[0]
+		}
+		metrics.ConsecutiveRateLimits += increment
 		metrics.LastRateLimitAt = now
 	} else {
 		// Regular failures (500, 401, etc.): full penalty
@@ -546,6 +538,18 @@ func calculateConsecutiveHardFailurePenalty(count int64, basePenalty, maxPenalty
 	return penalty
 }
 
+func calculateConsecutiveRateLimitPenalty(count int64, basePenalty, maxPenalty float64) float64 {
+	if count < minConsecutiveRateLimitsForPenalty || basePenalty <= 0 || maxPenalty <= 0 {
+		return 0
+	}
+
+	penalty := float64(count-minConsecutiveRateLimitsForPenalty+1) * basePenalty
+	if penalty > maxPenalty {
+		return maxPenalty
+	}
+	return penalty
+}
+
 func zeroSuccessHealthCap(totalRequests int64, minHealth float64) float64 {
 	switch {
 	case totalRequests >= 10:
@@ -582,13 +586,13 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 		)
 	}
 
-	// Penalty for consecutive rate limits (429 errors) - lighter than hard failures
-	if metrics.ConsecutiveRateLimits > 0 {
-		penalty := float64(metrics.ConsecutiveRateLimits) * m.config.ConsecutiveRateLimitPenalty
-		if penalty > m.config.MaxConsecutiveRateLimitPenalty {
-			penalty = m.config.MaxConsecutiveRateLimitPenalty
-		}
-		score -= penalty
+	// Penalty for consecutive rate limits (429 errors) starts only after repeated throttling.
+	if metrics.ConsecutiveRateLimits >= minConsecutiveRateLimitsForPenalty {
+		score -= calculateConsecutiveRateLimitPenalty(
+			metrics.ConsecutiveRateLimits,
+			m.config.ConsecutiveRateLimitPenalty,
+			m.config.MaxConsecutiveRateLimitPenalty,
+		)
 	}
 
 	// Penalty for recent failure (time-decaying)
@@ -600,14 +604,17 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 		m.config.RecentFailurePenalty,
 	)
 
-	// Penalty for recent rate limit (time-decaying) - lighter than hard failure
-	score -= calculateRecentEventPenalty(
-		now,
-		metrics.LastRateLimitAt,
-		metrics.LastSuccessAt,
-		m.config.RecentRateLimitCooldown,
-		m.config.RecentRateLimitPenalty,
-	)
+	// Interleaved 429/success patterns should not reduce health; apply recent throttling
+	// memory only while the current consecutive 429 streak has crossed the threshold.
+	if metrics.ConsecutiveRateLimits >= minConsecutiveRateLimitsForPenalty {
+		score -= calculateRecentEventPenalty(
+			now,
+			metrics.LastRateLimitAt,
+			metrics.LastSuccessAt,
+			m.config.RecentRateLimitCooldown,
+			m.config.RecentRateLimitPenalty,
+		)
+	}
 
 	// Penalty for low weighted success rate (using time-windowed calculation)
 	totalRequests := metrics.Requests180d
@@ -630,38 +637,33 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 }
 
 // GetEffectiveWeight calculates the effective weight based on base weight and health score.
-// Implements non-linear penalty for low health scores to reduce traffic to unhealthy targets.
-// Three health score ranges (optimized for unstable channels with intermittent failures):
-//  1. Critical (<= 0.50): fixed 1.0 recovery weight
-//     This prevents unhealthy high-weight targets from dominating healthy low-weight targets
-//     Example: baseWeight=100 -> 1.0; baseWeight=5 -> 1.0; baseWeight=1 -> 1.0
-//  2. Medium (0.50 to 0.75): aggressive non-linear penalty using quadratic function
-//     Example: health=0.6 -> weight multiplier = 0.6^2 = 0.36
-//  3. Good (> 0.75): linear scaling
-//
-// Returns a float64 value with 1 decimal place precision, minimum 1.0 for enabled weights.
+// The curve is anchored at MinHealthScore -> 1.0 and 1.0 -> baseWeight so displayed
+// health and effective weight decline together without hitting the floor early.
 func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *DynamicWeightMetrics) float64 {
 	if baseWeight <= 0 {
 		return 0.0
 	}
 
 	healthScore := m.CalculateHealthScore(metrics)
-
-	var effectiveWeight float64
-
-	// Critical health: fixed 1.0 recovery weight for all enabled targets.
-	if healthScore <= m.config.CriticalHealthThreshold {
-		effectiveWeight = 1.0
-	} else if healthScore < m.config.MediumHealthThreshold {
-		// Medium health: apply aggressive non-linear penalty
-		// Use power function to create aggressive penalty curve
-		// Example with exponent=2.0: health=0.4 -> 0.16, health=0.5 -> 0.25, health=0.6 -> 0.36
-		penalizedScore := math.Pow(healthScore, m.config.MediumHealthPenaltyExponent)
-		effectiveWeight = float64(baseWeight) * penalizedScore
-	} else {
-		// Good health: linear scaling
-		effectiveWeight = float64(baseWeight) * healthScore
+	minHealth := min(max(m.config.MinHealthScore, 0.0), 1.0)
+	if healthScore <= minHealth {
+		return 1.0
 	}
+	if healthScore > 1.0 {
+		healthScore = 1.0
+	}
+
+	normalizedHealth := 1.0
+	if minHealth < 1.0 {
+		normalizedHealth = (healthScore - minHealth) / (1.0 - minHealth)
+	}
+	normalizedHealth = min(max(normalizedHealth, 0.0), 1.0)
+	exponent := m.config.EffectiveWeightCurveExponent
+	if exponent <= 0 {
+		exponent = 1.0
+	}
+
+	effectiveWeight := 1.0 + (float64(baseWeight)-1.0)*math.Pow(normalizedHealth, exponent)
 
 	// Round to 1 decimal place and ensure enabled targets keep a 1.0 recovery floor.
 	result := math.Round(effectiveWeight*10) / 10

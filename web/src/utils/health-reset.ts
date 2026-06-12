@@ -1,6 +1,7 @@
 type Translate = (key: string, params?: Record<string, unknown>) => string;
 
 const intervalValues = [
+  30 * 60,
   60 * 60,
   2 * 60 * 60,
   4 * 60 * 60,
@@ -12,6 +13,9 @@ const intervalValues = [
 ];
 
 function formatIntervalLabel(t: Translate, seconds: number): string {
+  if (seconds < 3600) {
+    return t("keys.healthResetEveryMinutes", { count: seconds / 60 });
+  }
   const hours = seconds / 3600;
   if (hours < 24) {
     return t("keys.healthResetEveryHours", { count: hours });

@@ -3001,13 +3001,16 @@ func (s *GroupService) validateAndCleanUpstreams(upstreams json.RawMessage) (dat
 		}
 		// Clean proxy_url if present
 		if defs[i].ProxyURL != nil {
-			normalizedProxyURL, err := utils.NormalizeProxyURL(*defs[i].ProxyURL)
-			if err != nil {
-				return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": err.Error()})
-			}
-			if normalizedProxyURL == "" {
+			proxyValue := strings.TrimSpace(*defs[i].ProxyURL)
+			if proxyValue == "" {
 				defs[i].ProxyURL = nil
+			} else if utils.IsProxyPoolRef(proxyValue) {
+				defs[i].ProxyURL = &proxyValue
 			} else {
+				normalizedProxyURL, err := utils.NormalizeProxyURL(proxyValue)
+				if err != nil {
+					return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": err.Error()})
+				}
 				defs[i].ProxyURL = &normalizedProxyURL
 			}
 		}

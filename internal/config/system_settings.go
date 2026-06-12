@@ -26,12 +26,23 @@ const SettingsUpdateChannel = "system_settings:updated"
 
 // SystemSettingsManager manages system configuration.
 type SystemSettingsManager struct {
-	syncer *syncer.CacheSyncer[types.SystemSettings]
+	syncer           *syncer.CacheSyncer[types.SystemSettings]
+	proxyURLResolver ProxyURLResolver
+}
+
+// ProxyURLResolver resolves runtime proxy config values such as manual proxy pool references.
+type ProxyURLResolver interface {
+	ResolveProxyURL(ctx context.Context, raw string) (string, error)
 }
 
 // NewSystemSettingsManager creates a new, uninitialized SystemSettingsManager.
 func NewSystemSettingsManager() *SystemSettingsManager {
 	return &SystemSettingsManager{}
+}
+
+// SetProxyURLResolver configures runtime resolution for manual proxy pool references.
+func (sm *SystemSettingsManager) SetProxyURLResolver(resolver ProxyURLResolver) {
+	sm.proxyURLResolver = resolver
 }
 
 // normalizeSplitRequestTimeouts keeps RequestTimeout synced to NonStreamRequestTimeout,
@@ -61,6 +72,9 @@ func validateStringSettingValue(key, val string) error {
 		}
 	}
 	if key == "proxy_url" {
+		if val == "" || utils.IsProxyPoolRef(val) {
+			return nil
+		}
 		if _, err := utils.NormalizeProxyURL(val); err != nil {
 			return fmt.Errorf("invalid value for %s: %w", key, err)
 		}
@@ -189,11 +203,23 @@ func (sm *SystemSettingsManager) EnsureSettingsInitialized(authConfig types.Auth
 				logrus.Errorf("Failed to initialize setting %s: %v", setting.SettingKey, err)
 				return err
 			}
-			logrus.Infof("Initialized system setting: %s = %s", setting.SettingKey, setting.SettingValue)
+			logrus.Infof("Initialized system setting: %s = %s", setting.SettingKey, sanitizedSettingValueForLog(setting.SettingKey, setting.SettingValue))
 		}
 	}
 
 	return nil
+}
+
+func sanitizedSettingValueForLog(key, value string) string {
+	switch key {
+	case "proxy_keys", "proxy_url":
+		if strings.TrimSpace(value) == "" {
+			return ""
+		}
+		return "[REDACTED]"
+	default:
+		return value
+	}
 }
 
 // GetSettings gets the current system configuration.
@@ -285,6 +311,7 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 	effectiveConfig := sm.GetSettings()
 
 	if groupConfigJSON == nil {
+		effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 		return effectiveConfig
 	}
 
@@ -292,10 +319,12 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 	groupConfigBytes, err := groupConfigJSON.MarshalJSON()
 	if err != nil {
 		logrus.Warnf("Failed to marshal group config JSON, using system settings only. Error: %v", err)
+		effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 		return effectiveConfig
 	}
 	if err := json.Unmarshal(groupConfigBytes, &groupConfig); err != nil {
 		logrus.Warnf("Failed to unmarshal group config, using system settings only. Error: %v", err)
+		effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 		return effectiveConfig
 	}
 
@@ -319,8 +348,32 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 		groupConfig.RequestTimeout != nil,
 		groupConfig.NonStreamRequestTimeout != nil,
 	)
+	effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 
 	return effectiveConfig
+}
+
+// ResolveRuntimeProxyURL returns the actual proxy URL for runtime use.
+func (sm *SystemSettingsManager) ResolveRuntimeProxyURL(ctx context.Context, raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || !utils.IsProxyPoolRef(trimmed) {
+		return trimmed
+	}
+	if sm.proxyURLResolver == nil {
+		logrus.Warn("Proxy pool reference cannot be resolved because no resolver is configured")
+		return trimmed
+	}
+	resolved, err := sm.proxyURLResolver.ResolveProxyURL(ctx, trimmed)
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to resolve proxy pool reference")
+		return trimmed
+	}
+	resolved = strings.TrimSpace(resolved)
+	if resolved == "" {
+		logrus.Warn("Proxy pool reference resolved to an empty proxy URL")
+		return trimmed
+	}
+	return resolved
 }
 
 // ValidateSettings validates the validity of system configuration
@@ -452,12 +505,13 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			if err != nil {
 				return err
 			}
-			// Zero intentionally disables scheduled health resets; enabled intervals start at one hour.
+			// Zero intentionally disables scheduled health resets; enabled intervals start at 30 minutes.
 			if intVal < 0 {
 				return fmt.Errorf("value for %s (%d) is below minimum value (%d)", key, intVal, 0)
 			}
-			if intVal > 0 && intVal < 3600 {
-				return fmt.Errorf("value for %s (%d) is below minimum enabled value (%d)", key, intVal, 3600)
+			const minHealthResetIntervalSeconds = 30 * 60
+			if intVal > 0 && intVal < minHealthResetIntervalSeconds {
+				return fmt.Errorf("value for %s (%d) is below minimum enabled value (%d)", key, intVal, minHealthResetIntervalSeconds)
 			}
 			const maxHealthResetIntervalSeconds = 365 * 24 * 60 * 60
 			if intVal > maxHealthResetIntervalSeconds {

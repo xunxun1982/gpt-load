@@ -37,6 +37,7 @@ type App struct {
 	settingsManager          *config.SystemSettingsManager
 	groupManager             *services.GroupManager
 	childGroupService        *services.ChildGroupService
+	proxyPoolService         *services.ProxyPoolService
 	logCleanupService        *services.LogCleanupService
 	requestLogService        *services.RequestLogService
 	autoCheckinService       *sitemanagement.AutoCheckinService
@@ -62,6 +63,7 @@ type AppParams struct {
 	GroupService          *services.GroupService
 	AggregateGroupService *services.AggregateGroupService
 	ChildGroupService     *services.ChildGroupService
+	ProxyPoolService      *services.ProxyPoolService
 	LogCleanupService     *services.LogCleanupService
 	RequestLogService     *services.RequestLogService
 	AutoCheckinService    *sitemanagement.AutoCheckinService
@@ -148,6 +150,7 @@ func NewApp(params AppParams) *App {
 		settingsManager:          params.SettingsManager,
 		groupManager:             params.GroupManager,
 		childGroupService:        params.ChildGroupService,
+		proxyPoolService:         params.ProxyPoolService,
 		logCleanupService:        params.LogCleanupService,
 		requestLogService:        params.RequestLogService,
 		autoCheckinService:       params.AutoCheckinService,

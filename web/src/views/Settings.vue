@@ -74,10 +74,10 @@ function initForm() {
 
 async function fetchProxyPoolOptions() {
   try {
-    const items = await proxyPoolApi.list();
+    const items = await proxyPoolApi.listSelectionOptions();
     proxyPoolOptions.value = items.map(item => ({
-      label: item.name ? `${item.name} (${item.url})` : item.url,
-      value: item.url,
+      label: item.label ? `${item.label} (${item.url || item.value})` : item.url || item.value,
+      value: item.value,
     }));
   } catch (error) {
     console.error("Failed to fetch proxy pool options:", error);

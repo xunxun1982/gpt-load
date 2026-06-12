@@ -162,6 +162,15 @@ const columns = computed<DataTableColumns<ProxyPoolItem>>(() => [
     },
   },
   {
+    title: t("proxyPool.country"),
+    key: "country",
+    minWidth: 120,
+    render(row) {
+      const result = testResults[row.id];
+      return result?.country_name || result?.country_code || "-";
+    },
+  },
+  {
     title: t("common.actions"),
     key: "actions",
     width: 160,
@@ -265,7 +274,6 @@ const isNextPageDisabled = computed(() => {
   }
   return items.value.length === 0;
 });
-
 function renderTestStatus(content: ReturnType<typeof h>) {
   return h("div", { class: "proxy-pool-test-status" }, [
     content,
@@ -296,6 +304,14 @@ async function loadItems() {
     throw error;
   } finally {
     loading.value = false;
+  }
+}
+
+async function onRefreshClick() {
+  try {
+    await loadItems();
+  } catch {
+    // loadItems already shows the failure toast; consume the click-path rejection.
   }
 }
 
@@ -623,7 +639,7 @@ onUnmounted(clearAutoTestTimer);
           </template>
           {{ t("proxyPool.testSettings") }}
         </n-button>
-        <n-button size="small" :loading="loading" @click="loadItems">
+        <n-button size="small" :loading="loading" @click="onRefreshClick">
           <template #icon>
             <n-icon :component="RefreshOutline" />
           </template>
@@ -652,15 +668,23 @@ onUnmounted(clearAutoTestTimer);
       </n-space>
     </div>
 
-    <n-data-table
-      size="small"
-      :columns="columns"
-      :data="items"
-      :loading="loading"
-      :bordered="false"
-      :single-line="false"
-      :row-key="row => row.id"
-    />
+    <section class="proxy-pool-section">
+      <div class="proxy-pool-section-header">
+        <div>
+          <div class="proxy-pool-section-title">{{ t("proxyPool.manualProxies") }}</div>
+          <div class="proxy-pool-section-subtitle">{{ t("proxyPool.manualSectionHint") }}</div>
+        </div>
+      </div>
+      <n-data-table
+        size="small"
+        :columns="columns"
+        :data="items"
+        :loading="loading"
+        :bordered="false"
+        :single-line="false"
+        :row-key="row => row.id"
+      />
+    </section>
 
     <div class="proxy-pool-pagination">
       <div class="proxy-pool-pagination-info">
@@ -850,6 +874,37 @@ onUnmounted(clearAutoTestTimer);
   font-size: 13px;
 }
 
+.proxy-pool-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.proxy-pool-section + .proxy-pool-section {
+  border-top: 1px solid var(--border-color);
+  padding-top: 12px;
+}
+
+.proxy-pool-section-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.proxy-pool-section-title {
+  color: var(--text-color-1);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.proxy-pool-section-subtitle {
+  color: var(--text-color-3);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 .proxy-pool-test-status {
   display: inline-flex;
   flex-direction: column;
@@ -864,6 +919,7 @@ onUnmounted(clearAutoTestTimer);
 
 .proxy-pool-form-card {
   max-height: 85vh;
+  overflow: auto;
 }
 
 .proxy-pool-form {
@@ -874,6 +930,17 @@ onUnmounted(clearAutoTestTimer);
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+.proxy-pool-inline-setting {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.proxy-pool-inline-setting .n-input-number {
+  width: 96px;
 }
 
 .proxy-pool-pagination {

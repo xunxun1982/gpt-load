@@ -936,6 +936,96 @@ func systemSettingsWithRetryTimeout(maxRetries, nonStreamTimeout int) types.Syst
 	}
 }
 
+func TestRetryAfterRateLimitPressureFromHeader(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 11, 12, 0, 0, 500*int(time.Millisecond), time.UTC)
+
+	tests := []struct {
+		name     string
+		header   string
+		expected int64
+	}{
+		{name: "empty", header: "", expected: 1},
+		{name: "zero seconds", header: "0", expected: 1},
+		{name: "short delta", header: "30", expected: 3},
+		{name: "five minute delta", header: "300", expected: 4},
+		{name: "one hour delta", header: "3600", expected: 5},
+		{name: "future http date", header: now.Add(10 * time.Minute).Format(http.TimeFormat), expected: 4},
+		// Retry-After dates are HTTP-date values, so the header intentionally uses
+		// http.TimeFormat while now keeps subsecond precision to cover ceil boundaries.
+		{name: "exact five minute http date with subsecond now", header: now.Add(5 * time.Minute).Format(http.TimeFormat), expected: 4},
+		{name: "exact one hour http date with subsecond now", header: now.Add(time.Hour).Format(http.TimeFormat), expected: 5},
+		{name: "past http date", header: now.Add(-time.Minute).Format(http.TimeFormat), expected: 1},
+		{name: "invalid", header: "retry after 30 seconds", expected: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, retryAfterRateLimitPressureFromHeader(tt.header, now))
+		})
+	}
+}
+
+func TestSetRateLimitPressureContextForAttempt(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	now := time.Date(2026, 6, 11, 12, 0, 0, 500*int(time.Millisecond), time.UTC)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Retry-After": []string{now.Add(5 * time.Minute).Format(http.TimeFormat)},
+		},
+	}
+	setRateLimitPressureContextForAttempt(ctx, resp, now)
+
+	value, exists := ctx.Get(ctxKeyRateLimitPressure)
+	require.True(t, exists)
+	assert.Equal(t, int64(4), value)
+
+	setRateLimitPressureContextForAttempt(ctx, &http.Response{StatusCode: http.StatusInternalServerError}, now)
+	_, exists = ctx.Get(ctxKeyRateLimitPressure)
+	assert.False(t, exists)
+
+	ctx.Set(ctxKeyRateLimitPressure, int64(5))
+	setRateLimitPressureContextForAttempt(ctx, nil, now)
+	_, exists = ctx.Get(ctxKeyRateLimitPressure)
+	assert.False(t, exists)
+}
+
+func TestRecordDynamicWeightMetricsUsesRetryAfterPressureAfterConsecutive429Threshold(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
+
+	group := &models.Group{ID: 79, GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set(ctxKeyRateLimitPressure, int64(3))
+
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+
+	metrics, err := dwm.GetGroupMetrics(group.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), metrics.ConsecutiveRateLimits)
+	assert.InDelta(t, 1.0, dwm.CalculateHealthScore(metrics), 0.001)
+
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+
+	metrics, err = dwm.GetGroupMetrics(group.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), metrics.ConsecutiveRateLimits)
+	assert.Less(t, dwm.CalculateHealthScore(metrics), 1.0)
+}
+
 func TestRecordDynamicWeightMetricsForV2ModelRedirect(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

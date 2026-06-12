@@ -1,4 +1,4 @@
-import type { Pagination, ProxyPoolItem } from "@/types/models";
+import type { Pagination, ProxyPoolItem, ProxyPoolSelectionOption } from "@/types/models";
 import http from "@/utils/http";
 
 export interface ProxyPoolPayload {
@@ -13,6 +13,8 @@ export interface ProxyPoolTestResult {
   timeout_ms: number;
   duration_ms: number;
   status_code?: number;
+  country_code?: string;
+  country_name?: string;
   error?: string;
 }
 
@@ -85,5 +87,14 @@ export const proxyPoolApi = {
   async test(id: number): Promise<ProxyPoolTestResult> {
     const res = await http.post(`/proxy-pool/${id}/test`, {}, { hideMessage: true });
     return requireProxyPoolData<ProxyPoolTestResult>(res?.data, "test");
+  },
+
+  async listSelectionOptions(): Promise<ProxyPoolSelectionOption[]> {
+    const res = await http.get("/proxy-pool/selection-options");
+    const data = requireProxyPoolData<ProxyPoolSelectionOption[]>(res?.data, "selection options");
+    if (!Array.isArray(data)) {
+      throw new Error("Proxy pool selection options response data is invalid");
+    }
+    return data;
   },
 };

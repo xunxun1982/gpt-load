@@ -42,6 +42,15 @@ export interface ProxyPoolItem {
   updated_at: string;
 }
 
+export type ProxyPoolSelectionType = "manual";
+
+export interface ProxyPoolSelectionOption {
+  type: ProxyPoolSelectionType;
+  label: string;
+  value: string;
+  url?: string;
+}
+
 export interface HeaderRule {
   key: string;
   value: string;

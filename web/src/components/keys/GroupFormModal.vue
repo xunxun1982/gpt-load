@@ -673,10 +673,10 @@ async function fetchGroupConfigOptions() {
 
 async function fetchProxyPoolOptions() {
   try {
-    const items = await proxyPoolApi.list();
+    const items = await proxyPoolApi.listSelectionOptions();
     proxyPoolOptions.value = items.map(item => ({
-      label: item.name ? `${item.name} (${item.url})` : item.url,
-      value: item.url,
+      label: item.label ? `${item.label} (${item.url || item.value})` : item.url || item.value,
+      value: item.value,
     }));
   } catch (error) {
     proxyPoolOptions.value = [];
@@ -1395,7 +1395,7 @@ async function handleSubmit() {
           weight: u.weight,
           proxy_url: (() => {
             const p = (u.proxy_url || "").trim();
-            return /^(https?|socks5):\/\//i.test(p) ? p : undefined;
+            return /^(https?|socks5):\/\//i.test(p) || /^proxy-pool:\d+$/.test(p) ? p : undefined;
           })(),
         }))
         .filter(u => !!u.url),

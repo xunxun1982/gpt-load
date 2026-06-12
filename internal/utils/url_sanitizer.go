@@ -5,21 +5,18 @@ import (
 	"strings"
 )
 
-// sensitiveQueryParams lists query parameter names that should be redacted from logs.
-// These parameters may contain authentication tokens or other sensitive data.
-// Based on security best practices for credential leakage prevention.
-var sensitiveQueryParams = []string{
-	"key",
-	"api_key",
-	"apikey",
-	"token",
-	"access_token",
-	"refresh_token",
-	"auth",
-	"authorization",
-	"secret",
-	"client_secret",
-	"password",
+func isSensitiveQueryParam(name string) bool {
+	normalized := strings.NewReplacer("_", "", "-", "", ".", "").Replace(strings.ToLower(strings.TrimSpace(name)))
+	switch normalized {
+	case "key", "apikey", "authkey", "accesskey", "token", "accesstoken", "refreshtoken", "auth", "authorization", "secret", "clientsecret", "password":
+		return true
+	}
+	for _, marker := range []string{"apikey", "accesskey", "subscriptionkey", "token", "secret", "password", "credential"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // SanitizeURLForLog removes sensitive query parameters and user info from a URL.
@@ -34,8 +31,8 @@ func SanitizeURLForLog(u *url.URL) string {
 	// Remove sensitive query parameters
 	if copy.RawQuery != "" {
 		query := copy.Query()
-		for _, param := range sensitiveQueryParams {
-			if query.Has(param) {
+		for param := range query {
+			if isSensitiveQueryParam(param) {
 				query.Set(param, "[REDACTED]")
 			}
 		}

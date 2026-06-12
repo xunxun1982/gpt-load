@@ -2,6 +2,7 @@ package utils
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -119,6 +120,21 @@ func TestNormalizeProxyURLRejectsInvalidPorts(t *testing.T) {
 				t.Fatalf("expected invalid port error, got %q", err.Error())
 			}
 		})
+	}
+}
+
+func TestParseProxyPoolItemRefRejectsUintOverflow(t *testing.T) {
+	t.Parallel()
+
+	tooLargeForUint := "18446744073709551616"
+	if strconv.IntSize == 32 {
+		tooLargeForUint = "4294967296"
+	}
+
+	_, ok := ParseProxyPoolItemRef("proxy-pool:" + tooLargeForUint)
+
+	if ok {
+		t.Fatal("expected oversized proxy pool reference to be rejected")
 	}
 }
 

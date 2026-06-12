@@ -137,8 +137,12 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	// Trim whitespace from proxy URL before parsing to handle common configuration issues
 	trimmedProxyURL := strings.TrimSpace(config.ProxyURL)
 	if trimmedProxyURL != "" {
-		proxyURL, err := utils.ParseProxyURL(trimmedProxyURL)
-		if err != nil {
+		if utils.IsProxyPoolRef(trimmedProxyURL) {
+			// Unresolved proxy-pool refs must fail closed instead of falling back to direct or environment proxy.
+			transport.Proxy = func(*http.Request) (*url.URL, error) {
+				return nil, fmt.Errorf("unresolved proxy pool reference")
+			}
+		} else if proxyURL, err := utils.ParseProxyURL(trimmedProxyURL); err != nil {
 			// Sanitize proxy URL to prevent credential leakage in logs
 			logrus.Warnf("Invalid proxy URL '%s' provided, falling back to environment settings: %v", utils.SanitizeProxyString(trimmedProxyURL), err)
 			transport.Proxy = http.ProxyFromEnvironment

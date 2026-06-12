@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/types"
+	"gpt-load/internal/utils"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,8 +34,117 @@ func setupProxyPoolService(t *testing.T) *ProxyPoolService {
 func setupProxyPoolServiceWithOptions(t *testing.T, opts ...ProxyPoolServiceOption) *ProxyPoolService {
 	t.Helper()
 	db := setupTestDB(t)
-	require.NoError(t, db.AutoMigrate(&models.ProxyPoolItem{}))
+	require.NoError(t, db.AutoMigrate(
+		&models.ProxyPoolItem{},
+	))
 	return NewProxyPoolServiceWithOptions(db, opts...)
+}
+
+func TestProxyPoolServiceResolveProxyReferenceUsesManualProxyPoolItem(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+	item, err := svc.Create(context.Background(), ProxyPoolInput{
+		Name: "manual ref",
+		URL:  "http://user:pass@manual.example.com:8080",
+	})
+	require.NoError(t, err)
+
+	resolved, err := svc.ResolveProxyURL(context.Background(), utils.BuildProxyPoolItemRef(item.ID))
+	require.NoError(t, err)
+	assert.Equal(t, "http://user:pass@manual.example.com:8080", resolved)
+}
+
+func TestProxyPoolServiceResolveProxyReferenceRejectsMissingManualProxyPoolItem(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+
+	resolved, err := svc.ResolveProxyURL(context.Background(), utils.BuildProxyPoolItemRef(404))
+
+	require.Error(t, err)
+	assert.Empty(t, resolved)
+	var apiErr *app_errors.APIError
+	require.True(t, errors.As(err, &apiErr))
+	assert.Equal(t, app_errors.ErrResourceNotFound.Code, apiErr.Code)
+}
+
+func TestProxyPoolServiceSelectionOptionsSanitizeManualProxyURL(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+	item, err := svc.Create(context.Background(), ProxyPoolInput{
+		Name: "manual secret",
+		URL:  "http://user:pass@manual.example.com:8080",
+	})
+	require.NoError(t, err)
+
+	options, err := svc.ListSelectionOptions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, options, 1)
+	assert.Equal(t, utils.BuildProxyPoolItemRef(item.ID), options[0].Value)
+	assert.Equal(t, "http://manual.example.com:8080", options[0].URL)
+	assert.NotContains(t, options[0].URL, "user:pass")
+}
+
+func TestProxyPoolServiceRejectsSubscriptionReference(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+	_, err := svc.ResolveProxyURL(context.Background(), "proxy-subscription:12")
+	require.Error(t, err)
+}
+
+func TestProxyPoolServiceTestManualProxyStoresCountry(t *testing.T) {
+	t.Parallel()
+
+	const targetURL = "http://proxy-test.invalid/generate_204"
+	proxyRequests := make(chan string, 2)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyRequests <- r.URL.String()
+		switch r.URL.String() {
+		case targetURL:
+			w.WriteHeader(http.StatusNoContent)
+		case defaultProxyPoolCountryLookupURL:
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status":      "success",
+				"countryCode": "US",
+				"country":     "United States",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer proxyServer.Close()
+
+	svc := setupProxyPoolServiceWithOptions(
+		t,
+		WithProxyPoolHealthCheck(targetURL, 2*time.Second),
+	)
+	item, err := svc.Create(context.Background(), ProxyPoolInput{
+		Name: "country",
+		URL:  proxyServer.URL,
+	})
+	require.NoError(t, err)
+
+	result, err := svc.Test(context.Background(), item.ID)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, "US", result.CountryCode)
+	assert.Equal(t, "United States", result.CountryName)
+
+	var stored models.ProxyPoolItem
+	require.NoError(t, svc.db.First(&stored, item.ID).Error)
+	select {
+	case <-proxyRequests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for proxy health request")
+	}
+	select {
+	case <-proxyRequests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for proxy country request")
+	}
 }
 
 func TestProxyPoolServiceCRUD(t *testing.T) {
@@ -68,6 +179,32 @@ func TestProxyPoolServiceCRUD(t *testing.T) {
 	items, err = svc.List(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, items)
+}
+
+func TestProxyPoolServiceCreateUpdateAndDeleteInvalidateRuntimeProxySelection(t *testing.T) {
+	t.Parallel()
+
+	var invalidations int
+	svc := setupProxyPoolServiceWithOptions(t, WithProxyPoolSelectionInvalidation(func() {
+		invalidations++
+	}))
+	ctx := context.Background()
+	created, err := svc.Create(ctx, ProxyPoolInput{
+		Name: "runtime proxy",
+		URL:  "http://proxy-a.example.com:8080",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, invalidations)
+
+	_, err = svc.Update(ctx, created.ID, ProxyPoolInput{
+		Name: "runtime proxy updated",
+		URL:  "http://proxy-b.example.com:8080",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, invalidations)
+
+	require.NoError(t, svc.Delete(ctx, created.ID))
+	assert.Equal(t, 3, invalidations)
 }
 
 func TestProxyPoolServiceUpdatePreservesHiddenCredentialsForSameEndpoint(t *testing.T) {

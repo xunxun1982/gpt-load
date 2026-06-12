@@ -2,7 +2,7 @@
 import { logApi } from "@/api/logs";
 import type { LogFilter, RequestLog } from "@/types/models";
 import { copyWithFallback, createManualCopyContent } from "@/utils/clipboard";
-import { maskKey } from "@/utils/display";
+import { formatTokenCount, maskKey } from "@/utils/display";
 import {
   CheckmarkDoneOutline,
   CloseCircleOutline,
@@ -217,6 +217,45 @@ const formatJsonString = (jsonStr: string) => {
   }
 };
 
+const getTokenMetrics = (log: RequestLog) => {
+  return [
+    { label: t("logs.inputTokens"), value: log.input_tokens },
+    { label: t("logs.outputTokens"), value: log.output_tokens },
+    { label: t("logs.totalTokens"), value: log.total_tokens },
+    { label: t("logs.cacheReadTokens"), value: log.cache_read_tokens },
+    { label: t("logs.cacheWriteTokens"), value: log.cache_write_tokens },
+    { label: t("logs.thinkingTokens"), value: log.thinking_tokens },
+  ].filter(
+    (metric): metric is { label: string; value: number } => typeof metric.value === "number"
+  );
+};
+
+const hasTokenUsage = (log: RequestLog) => {
+  return getTokenMetrics(log).some(metric => metric.value > 0) || !!log.token_usage_source;
+};
+
+const formatTokenUsageSource = (source: RequestLog["token_usage_source"]) => {
+  if (source === "upstream") {
+    return t("logs.tokenSourceUpstream");
+  }
+  if (source === "estimated") {
+    return t("logs.tokenSourceEstimated");
+  }
+  return "-";
+};
+
+const formatTokenUsageInline = (log: RequestLog) => {
+  const metrics = getTokenMetrics(log).map(
+    metric => `${metric.label}: ${formatTokenCount(metric.value || 0)}`
+  );
+  if (log.token_usage_source) {
+    metrics.push(
+      `${t("logs.tokenUsageSource")}: ${formatTokenUsageSource(log.token_usage_source)}`
+    );
+  }
+  return metrics.length > 0 ? metrics.join(" · ") : "-";
+};
+
 // Copy helper with fallback dialog
 const copyContent = async (content: string, type: string) => {
   await copyWithFallback(content, {
@@ -241,7 +280,7 @@ const visibleColumns = ref<string[]>([]);
 const STORAGE_KEY = "log-table-visible-columns";
 
 // Columns that should always be included by default (even if not in saved preferences)
-const ALWAYS_DEFAULT_COLUMNS = ["parent_group_name"];
+const ALWAYS_DEFAULT_COLUMNS = ["parent_group_name", "token_usage"];
 
 // Load column preferences from localStorage
 const loadColumnPreferences = () => {
@@ -367,6 +406,18 @@ const allColumnConfigs: ColumnConfig[] = [
       }
       return row.model || "-";
     },
+  },
+  {
+    key: "token_usage",
+    title: t("logs.tokenUsage"),
+    width: 280,
+    defaultVisible: true,
+    render: (row: LogRow) =>
+      h(
+        NEllipsis,
+        { style: "max-width: 260px", tooltip: true },
+        { default: () => formatTokenUsageInline(row) }
+      ),
   },
   {
     key: "key_value",
@@ -888,6 +939,34 @@ const deselectAllColumns = () => {
             </div>
           </n-card>
 
+          <!-- Token information -->
+          <n-card
+            v-if="hasTokenUsage(selectedLog)"
+            :title="t('logs.tokenUsage')"
+            size="small"
+            :header-style="{ padding: '8px 12px', fontSize: '13px' }"
+          >
+            <div class="token-inline-compact">
+              <span
+                v-for="metric in getTokenMetrics(selectedLog)"
+                :key="metric.label"
+                class="token-pill-compact"
+              >
+                <span class="token-label-compact">{{ metric.label }}:</span>
+                <span class="token-value-compact">{{ formatTokenCount(metric.value || 0) }}</span>
+              </span>
+              <span class="token-pill-compact" v-if="selectedLog.token_usage_source">
+                <span class="token-label-compact">{{ t("logs.tokenUsageSource") }}:</span>
+                <n-tag
+                  :type="selectedLog.token_usage_source === 'estimated' ? 'warning' : 'success'"
+                  size="small"
+                >
+                  {{ formatTokenUsageSource(selectedLog.token_usage_source) }}
+                </n-tag>
+              </span>
+            </div>
+          </n-card>
+
           <!-- Request information (compact layout) -->
           <n-card
             :title="t('logs.requestInfo')"
@@ -1261,6 +1340,42 @@ const deselectAllColumns = () => {
   flex-shrink: 0;
   line-height: 24px;
   height: 24px;
+}
+
+.token-inline-compact {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.token-pill-compact {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+}
+
+.token-label-compact {
+  color: var(--text-secondary);
+  font-size: 11px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.token-value-compact {
+  color: var(--text-primary);
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .compact-fields {

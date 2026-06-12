@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	minHealthResetIntervalSeconds = int64(time.Hour / time.Second)
+	minHealthResetIntervalSeconds = int64((30 * time.Minute) / time.Second)
 	maxHealthResetIntervalSeconds = int64((365 * 24 * time.Hour) / time.Second)
 )
 

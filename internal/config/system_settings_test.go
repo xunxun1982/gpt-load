@@ -1,13 +1,54 @@
 package config
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"gpt-load/internal/store"
+	"gpt-load/internal/syncer"
+	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
+
+type staticProxyURLResolver struct {
+	resolved string
+	err      error
+}
+
+func (r staticProxyURLResolver) ResolveProxyURL(_ context.Context, _ string) (string, error) {
+	return r.resolved, r.err
+}
+
+func setupSystemSettingsManagerWithSettings(t *testing.T, settings types.SystemSettings) *SystemSettingsManager {
+	t.Helper()
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	cache, err := syncer.NewCacheSyncer(
+		func() (types.SystemSettings, error) {
+			return settings, nil
+		},
+		memStore,
+		"system-settings-test",
+		logrus.WithField("test", t.Name()),
+		nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(cache.Stop)
+
+	manager := NewSystemSettingsManager()
+	manager.syncer = cache
+	return manager
+}
 
 // TestSystemSettingsManager tests the system settings manager
 func TestSystemSettingsManager(t *testing.T) {
@@ -450,10 +491,17 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 		{
 			name: "invalid health reset interval below enabled minimum",
 			config: map[string]any{
-				"health_reset_interval_seconds": float64(3599),
+				"health_reset_interval_seconds": float64(1799),
 			},
 			expectError: true,
 			errorMsg:    "below minimum enabled value",
+		},
+		{
+			name: "valid health reset interval thirty minute boundary",
+			config: map[string]any{
+				"health_reset_interval_seconds": float64(1800),
+			},
+			expectError: false,
 		},
 		{
 			name: "valid health reset interval hour boundary",
@@ -480,7 +528,7 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 		{
 			name: "valid health reset interval int64",
 			config: map[string]any{
-				"health_reset_interval_seconds": int64(3600),
+				"health_reset_interval_seconds": int64(1800),
 			},
 			expectError: false,
 		},
@@ -562,6 +610,61 @@ func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t 
 
 	assert.Equal(t, 0, cfg.NonStreamRequestTimeout)
 	assert.Equal(t, 0, cfg.RequestTimeout)
+}
+
+func TestGetEffectiveConfigResolvesSystemProxyWhenGroupConfigMarshalFails(t *testing.T) {
+	manager := setupSystemSettingsManagerWithSettings(t, types.SystemSettings{
+		ProxyURL: utils.BuildProxyPoolItemRef(10),
+	})
+	manager.SetProxyURLResolver(staticProxyURLResolver{resolved: "http://proxy.example.com:8080"})
+
+	cfg := manager.GetEffectiveConfig(datatypes.JSONMap{
+		"invalid": func() {},
+	})
+
+	assert.Equal(t, "http://proxy.example.com:8080", cfg.ProxyURL)
+}
+
+func TestGetEffectiveConfigResolvesSystemProxyWhenGroupConfigUnmarshalFails(t *testing.T) {
+	manager := setupSystemSettingsManagerWithSettings(t, types.SystemSettings{
+		ProxyURL: utils.BuildProxyPoolItemRef(11),
+	})
+	manager.SetProxyURLResolver(staticProxyURLResolver{resolved: "http://proxy.example.com:8080"})
+
+	cfg := manager.GetEffectiveConfig(datatypes.JSONMap{
+		"proxy_url": []string{"invalid"},
+	})
+
+	assert.Equal(t, "http://proxy.example.com:8080", cfg.ProxyURL)
+}
+
+func TestResolveRuntimeProxyURLKeepsReferenceWhenResolverUnavailable(t *testing.T) {
+	manager := NewSystemSettingsManager()
+	ref := utils.BuildProxyPoolItemRef(12)
+
+	resolved := manager.ResolveRuntimeProxyURL(context.Background(), " "+ref+" ")
+
+	assert.Equal(t, ref, resolved)
+}
+
+func TestResolveRuntimeProxyURLKeepsReferenceWhenResolverFails(t *testing.T) {
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(staticProxyURLResolver{err: errors.New("missing proxy")})
+	ref := utils.BuildProxyPoolItemRef(13)
+
+	resolved := manager.ResolveRuntimeProxyURL(context.Background(), ref)
+
+	assert.Equal(t, ref, resolved)
+}
+
+func TestResolveRuntimeProxyURLKeepsReferenceWhenResolverReturnsBlank(t *testing.T) {
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(staticProxyURLResolver{resolved: " \t "})
+	ref := utils.BuildProxyPoolItemRef(14)
+
+	resolved := manager.ResolveRuntimeProxyURL(context.Background(), ref)
+
+	assert.Equal(t, ref, resolved)
 }
 
 // TestDisplaySystemConfig tests displaying system configuration

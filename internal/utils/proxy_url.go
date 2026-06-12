@@ -7,6 +7,46 @@ import (
 	"strings"
 )
 
+const (
+	proxyPoolItemRefPrefix = "proxy-pool:"
+)
+
+// BuildProxyPoolItemRef returns the stable config value for a manual proxy pool item.
+func BuildProxyPoolItemRef(id uint) string {
+	if id == 0 {
+		return ""
+	}
+	return proxyPoolItemRefPrefix + strconv.FormatUint(uint64(id), 10)
+}
+
+// ParseProxyPoolItemRef parses a manual proxy pool config value.
+func ParseProxyPoolItemRef(raw string) (uint, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, proxyPoolItemRefPrefix) {
+		return 0, false
+	}
+	idText := strings.TrimPrefix(trimmed, proxyPoolItemRefPrefix)
+	id, err := strconv.ParseUint(idText, 10, 64)
+	if err != nil || id == 0 {
+		return 0, false
+	}
+	if uint64(uint(id)) != id {
+		return 0, false
+	}
+	return uint(id), true
+}
+
+// IsProxyPoolItemRef reports whether the value is a valid manual proxy pool reference.
+func IsProxyPoolItemRef(raw string) bool {
+	_, ok := ParseProxyPoolItemRef(raw)
+	return ok
+}
+
+// IsProxyPoolRef reports whether the value is any supported proxy pool reference.
+func IsProxyPoolRef(raw string) bool {
+	return IsProxyPoolItemRef(raw)
+}
+
 // NormalizeProxyURL keeps the string contract for callers that persist normalized values.
 func NormalizeProxyURL(raw string) (string, error) {
 	parsed, err := ParseProxyURL(raw)

@@ -363,6 +363,17 @@ func TestUpdateSubGroupWeightPreservesOmittedHealthResetInterval(t *testing.T) {
 	require.NoError(t, db.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).First(&updated).Error)
 	assert.Equal(t, 300, updated.Weight)
 	assert.Equal(t, int64(0), updated.HealthResetIntervalSeconds)
+
+	thirtyMinutes := int64(30 * 60)
+	err = service.UpdateSubGroupWeight(context.Background(), aggregateGroup.ID, subGroup.ID, UpdateSubGroupSettingsInput{
+		Weight:                     400,
+		HealthResetIntervalSeconds: &thirtyMinutes,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).First(&updated).Error)
+	assert.Equal(t, 400, updated.Weight)
+	assert.Equal(t, int64(1800), updated.HealthResetIntervalSeconds)
 }
 
 func TestGenerateCacheKey(t *testing.T) {

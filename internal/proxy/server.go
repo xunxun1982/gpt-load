@@ -44,6 +44,42 @@ func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
 	return group.FailoverStatusCodeMatcher.Match(statusCode)
 }
 
+func retryAfterRateLimitPressureFromHeader(header string, now time.Time) int64 {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 1
+	}
+
+	var waitSeconds int64
+	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil {
+		waitSeconds = seconds
+	} else if retryAt, err := http.ParseTime(header); err == nil {
+		waitSeconds = int64(math.Ceil(retryAt.Sub(now).Seconds()))
+	}
+	if waitSeconds <= 0 {
+		return 1
+	}
+
+	switch {
+	case waitSeconds >= 3600:
+		return 5
+	case waitSeconds >= 300:
+		return 4
+	default:
+		return 3
+	}
+}
+
+func setRateLimitPressureContextForAttempt(c *gin.Context, resp *http.Response, now time.Time) {
+	if c.Keys != nil {
+		delete(c.Keys, ctxKeyRateLimitPressure)
+	}
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		return
+	}
+	c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), now))
+}
+
 func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSettings) (context.Context, context.CancelFunc) {
 	if cfg.NonStreamRequestTimeout > 0 {
 		return context.WithTimeout(parent, time.Duration(cfg.NonStreamRequestTimeout)*time.Second)
@@ -58,6 +94,7 @@ func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSe
 const (
 	ctxKeyTriggerSignal       = "fc_trigger_signal"
 	ctxKeyFunctionCallEnabled = "fc_enabled"
+	ctxKeyRateLimitPressure   = "rate_limit_pressure"
 )
 
 // ProxyServer represents the proxy server
@@ -1113,6 +1150,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if resp != nil {
 		defer resp.Body.Close()
 	}
+	setRateLimitPressureContextForAttempt(c, resp, time.Now())
 
 	// Unified error handling for retries.
 	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
@@ -1808,6 +1846,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if resp != nil {
 		defer resp.Body.Close()
 	}
+	setRateLimitPressureContextForAttempt(c, resp, time.Now())
 
 	// Unified error handling for retries.
 	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
@@ -2336,13 +2375,23 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 	// Rate limit errors receive lighter penalties as they indicate temporary throttling
 	// rather than service unavailability
 	isRateLimit := !isSuccess && statusCode == 429
+	rateLimitPressure := int64(1)
+	if isRateLimit {
+		// Only the standard Retry-After header increases throttling pressure.
+		// Response bodies can contain natural-language retry text even on unrelated paths.
+		if value, exists := c.Get(ctxKeyRateLimitPressure); exists {
+			if pressure, ok := value.(int64); ok && pressure > rateLimitPressure {
+				rateLimitPressure = pressure
+			}
+		}
+	}
 
 	// Record sub-group metrics for aggregate groups
 	if originalGroup != nil && originalGroup.GroupType == "aggregate" && originalGroup.ID != group.ID {
 		if isSuccess {
 			ps.dynamicWeightManager.RecordSubGroupSuccess(originalGroup.ID, group.ID)
 		} else {
-			ps.dynamicWeightManager.RecordSubGroupFailure(originalGroup.ID, group.ID, isRateLimit)
+			ps.dynamicWeightManager.RecordSubGroupFailure(originalGroup.ID, group.ID, isRateLimit, rateLimitPressure)
 		}
 
 		logrus.WithFields(logrus.Fields{
@@ -2360,7 +2409,7 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 		if isSuccess {
 			ps.dynamicWeightManager.RecordGroupSuccess(group.ID)
 		} else {
-			ps.dynamicWeightManager.RecordGroupFailure(group.ID, isRateLimit)
+			ps.dynamicWeightManager.RecordGroupFailure(group.ID, isRateLimit, rateLimitPressure)
 		}
 
 		logrus.WithFields(logrus.Fields{
@@ -2392,7 +2441,7 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 						if isSuccess {
 							ps.dynamicWeightManager.RecordModelRedirectSuccess(group.ID, originalModelStr, targetModel)
 						} else {
-							ps.dynamicWeightManager.RecordModelRedirectFailure(group.ID, originalModelStr, targetModel, isRateLimit)
+							ps.dynamicWeightManager.RecordModelRedirectFailure(group.ID, originalModelStr, targetModel, isRateLimit, rateLimitPressure)
 						}
 
 						logrus.WithFields(logrus.Fields{

@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,6 +23,8 @@ import (
 const (
 	defaultProxyPoolTestTargetURL = "https://www.gstatic.com/generate_204"
 	defaultProxyPoolTestTimeout   = 10 * time.Second
+
+	defaultProxyPoolCountryLookupURL = "http://ip-api.com/json/?fields=status,country,countryCode,query"
 )
 
 // ProxyPoolInput captures editable proxy pool fields.
@@ -31,21 +35,33 @@ type ProxyPoolInput struct {
 
 // ProxyPoolTestResult reports the result of an explicit proxy connectivity test.
 type ProxyPoolTestResult struct {
-	Success    bool   `json:"success"`
-	URL        string `json:"url"`
-	TargetURL  string `json:"target_url"`
-	TimeoutMS  int64  `json:"timeout_ms"`
-	DurationMS int64  `json:"duration_ms"`
-	StatusCode int    `json:"status_code,omitempty"`
-	Error      string `json:"error,omitempty"`
+	Success     bool   `json:"success"`
+	URL         string `json:"url"`
+	TargetURL   string `json:"target_url"`
+	TimeoutMS   int64  `json:"timeout_ms"`
+	DurationMS  int64  `json:"duration_ms"`
+	StatusCode  int    `json:"status_code,omitempty"`
+	CountryCode string `json:"country_code,omitempty"`
+	CountryName string `json:"country_name,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+// ProxyPoolSelectionOption is used by proxy selectors outside the proxy pool page.
+type ProxyPoolSelectionOption struct {
+	Type  string `json:"type"`
+	Label string `json:"label"`
+	Value string `json:"value"`
+	URL   string `json:"url,omitempty"`
 }
 
 // ProxyPoolService manages reusable upstream proxy URLs.
 type ProxyPoolService struct {
-	db                 *gorm.DB
-	healthCheckTarget  string
-	healthCheckTimeout time.Duration
-	settingsProvider   ProxyPoolSettingsProvider
+	db                       *gorm.DB
+	healthCheckTarget        string
+	healthCheckTimeout       time.Duration
+	countryLookupURL         string
+	settingsProvider         ProxyPoolSettingsProvider
+	invalidateProxySelection func()
 }
 
 // ProxyPoolSettingsProvider supplies runtime proxy pool health-check settings.
@@ -75,6 +91,22 @@ func WithProxyPoolSettingsProvider(provider ProxyPoolSettingsProvider) ProxyPool
 	}
 }
 
+// WithProxyPoolCountryLookupURL overrides the lightweight country lookup endpoint.
+func WithProxyPoolCountryLookupURL(rawURL string) ProxyPoolServiceOption {
+	return func(s *ProxyPoolService) {
+		if strings.TrimSpace(rawURL) != "" {
+			s.countryLookupURL = strings.TrimSpace(rawURL)
+		}
+	}
+}
+
+// WithProxyPoolSelectionInvalidation refreshes runtime proxy config after manual proxy changes.
+func WithProxyPoolSelectionInvalidation(callback func()) ProxyPoolServiceOption {
+	return func(s *ProxyPoolService) {
+		s.invalidateProxySelection = callback
+	}
+}
+
 // NewProxyPoolService constructs a ProxyPoolService.
 func NewProxyPoolService(db *gorm.DB) *ProxyPoolService {
 	return NewProxyPoolServiceWithOptions(db)
@@ -86,6 +118,7 @@ func NewProxyPoolServiceWithOptions(db *gorm.DB, opts ...ProxyPoolServiceOption)
 		db:                 db,
 		healthCheckTarget:  defaultProxyPoolTestTargetURL,
 		healthCheckTimeout: defaultProxyPoolTestTimeout,
+		countryLookupURL:   defaultProxyPoolCountryLookupURL,
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -137,6 +170,7 @@ func (s *ProxyPoolService) Create(ctx context.Context, input ProxyPoolInput) (*m
 	if err := s.db.WithContext(ctx).Create(item).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
+	s.invalidateProxyRuntime()
 	return item, nil
 }
 
@@ -162,6 +196,7 @@ func (s *ProxyPoolService) Update(ctx context.Context, id uint, input ProxyPoolI
 	}
 	item.Name = cleaned.Name
 	item.URL = nextURL
+	s.invalidateProxyRuntime()
 	return &item, nil
 }
 
@@ -192,7 +227,45 @@ func (s *ProxyPoolService) Delete(ctx context.Context, id uint) error {
 	if err := s.db.WithContext(ctx).Delete(&models.ProxyPoolItem{}, id).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
+	s.invalidateProxyRuntime()
 	return nil
+}
+
+// ResolveProxyURL converts proxy pool references into runtime proxy URLs.
+func (s *ProxyPoolService) ResolveProxyURL(ctx context.Context, raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if itemID, ok := utils.ParseProxyPoolItemRef(trimmed); ok {
+		var item models.ProxyPoolItem
+		if err := s.db.WithContext(ctx).Select("id", "url").First(&item, itemID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", app_errors.NewNotFoundError("proxy pool item not found")
+			}
+			return "", app_errors.ParseDBError(err)
+		}
+		return item.URL, nil
+	}
+	return utils.NormalizeProxyURL(trimmed)
+}
+
+// ListSelectionOptions returns manual proxies for proxy selection controls.
+func (s *ProxyPoolService) ListSelectionOptions(ctx context.Context) ([]ProxyPoolSelectionOption, error) {
+	items, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	options := make([]ProxyPoolSelectionOption, 0, len(items))
+	for _, item := range items {
+		options = append(options, ProxyPoolSelectionOption{
+			Type:  "manual",
+			Label: item.Name,
+			Value: utils.BuildProxyPoolItemRef(item.ID),
+			URL:   utils.SanitizeProxyString(item.URL),
+		})
+	}
+	return options, nil
 }
 
 // Test verifies a stored proxy with a bounded HEAD request through that proxy.
@@ -206,7 +279,20 @@ func (s *ProxyPoolService) Test(ctx context.Context, id uint) (*ProxyPoolTestRes
 		First(&item, id).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
-	return s.testProxyURL(ctx, item.URL)
+	result, err := s.testProxyURL(ctx, item.URL)
+	if err != nil {
+		return nil, err
+	}
+	if result.Success {
+		result.CountryCode, result.CountryName = s.lookupProxyCountry(ctx, item.URL)
+	}
+	return result, nil
+}
+
+func (s *ProxyPoolService) invalidateProxyRuntime() {
+	if s.invalidateProxySelection != nil {
+		s.invalidateProxySelection()
+	}
 }
 
 func (s *ProxyPoolService) testProxyURL(ctx context.Context, rawProxyURL string) (*ProxyPoolTestResult, error) {
@@ -267,6 +353,66 @@ func (s *ProxyPoolService) testProxyURL(ctx context.Context, rawProxyURL string)
 		result.Error = fmt.Sprintf("unexpected status code: %d", resp.StatusCode)
 	}
 	return result, nil
+}
+
+func (s *ProxyPoolService) lookupProxyCountry(ctx context.Context, rawProxyURL string) (string, string) {
+	if strings.TrimSpace(s.countryLookupURL) == "" {
+		return "", ""
+	}
+	normalizedURL, err := utils.NormalizeProxyURL(rawProxyURL)
+	if err != nil {
+		return "", ""
+	}
+	parsedProxyURL, err := url.Parse(normalizedURL)
+	if err != nil {
+		return "", ""
+	}
+	_, timeout := s.healthCheckConfig()
+	testCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	transport := &http.Transport{
+		Proxy:                 http.ProxyURL(parsedProxyURL),
+		DisableKeepAlives:     true,
+		ResponseHeaderTimeout: timeout,
+		TLSHandshakeTimeout:   timeout,
+		DialContext: (&net.Dialer{
+			Timeout: timeout,
+		}).DialContext,
+	}
+	defer transport.CloseIdleConnections()
+
+	req, err := http.NewRequestWithContext(testCtx, http.MethodGet, s.countryLookupURL, nil)
+	if err != nil {
+		return "", ""
+	}
+	client := &http.Client{Transport: transport, Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", ""
+	}
+	var payload struct {
+		CountryCodeCamel string `json:"countryCode"`
+		CountryCodeSnake string `json:"country_code"`
+		Country          string `json:"country"`
+		CountryName      string `json:"country_name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&payload); err != nil {
+		return "", ""
+	}
+	countryCode := payload.CountryCodeSnake
+	if countryCode == "" {
+		countryCode = payload.CountryCodeCamel
+	}
+	countryName := payload.CountryName
+	if countryName == "" && len(strings.TrimSpace(payload.Country)) > 2 {
+		countryName = payload.Country
+	}
+	return strings.ToUpper(strings.TrimSpace(countryCode)), strings.TrimSpace(countryName)
 }
 
 func (s *ProxyPoolService) healthCheckConfig() (string, time.Duration) {

@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"gpt-load/internal/utils"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -392,6 +393,31 @@ func TestGetClient_WithUnsupportedProxyScheme(t *testing.T) {
 
 	client := manager.GetClient(config)
 	assert.NotNil(t, client)
+}
+
+func TestGetClient_WithUnresolvedProxyPoolRefDoesNotFallbackToEnvironment(t *testing.T) {
+	t.Parallel()
+
+	manager := NewHTTPClientManager()
+
+	config := &Config{
+		ConnectTimeout:  10 * time.Second,
+		RequestTimeout:  30 * time.Second,
+		IdleConnTimeout: 90 * time.Second,
+		ProxyURL:        utils.BuildProxyPoolItemRef(404),
+	}
+
+	client := manager.GetClient(config)
+	assert.NotNil(t, client)
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, transport.Proxy)
+
+	req := httptest.NewRequest(http.MethodGet, "http://upstream.example.com", nil)
+	proxyURL, err := transport.Proxy(req)
+	require.Error(t, err)
+	assert.Nil(t, proxyURL)
+	assert.Contains(t, err.Error(), "unresolved proxy pool reference")
 }
 
 // TestGetClient_WithWhitespaceProxy tests client with proxy URL containing whitespace
