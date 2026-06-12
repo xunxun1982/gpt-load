@@ -118,3 +118,13 @@ func (s *Server) TestProxyPoolItem(c *gin.Context) {
 	}
 	response.Success(c, result)
 }
+
+// ListProxyPoolSelectionOptions handles GET /api/proxy-pool/selection-options.
+func (s *Server) ListProxyPoolSelectionOptions(c *gin.Context) {
+	options, err := s.ProxyPoolService.ListSelectionOptions(c.Request.Context())
+	if err != nil {
+		respondProxyPoolServiceError(c, err)
+		return
+	}
+	response.Success(c, options)
+}

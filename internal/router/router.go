@@ -232,6 +232,7 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 	proxyPool := api.Group("/proxy-pool")
 	{
 		proxyPool.GET("", serverHandler.ListProxyPool)
+		proxyPool.GET("/selection-options", serverHandler.ListProxyPoolSelectionOptions)
 		proxyPool.POST("", serverHandler.CreateProxyPoolItem)
 		proxyPool.POST("/:id/test", serverHandler.TestProxyPoolItem)
 		proxyPool.PUT("/:id", serverHandler.UpdateProxyPoolItem)

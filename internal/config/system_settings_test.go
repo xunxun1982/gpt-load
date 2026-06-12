@@ -450,10 +450,17 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 		{
 			name: "invalid health reset interval below enabled minimum",
 			config: map[string]any{
-				"health_reset_interval_seconds": float64(3599),
+				"health_reset_interval_seconds": float64(1799),
 			},
 			expectError: true,
 			errorMsg:    "below minimum enabled value",
+		},
+		{
+			name: "valid health reset interval thirty minute boundary",
+			config: map[string]any{
+				"health_reset_interval_seconds": float64(1800),
+			},
+			expectError: false,
 		},
 		{
 			name: "valid health reset interval hour boundary",
@@ -480,7 +487,7 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 		{
 			name: "valid health reset interval int64",
 			config: map[string]any{
-				"health_reset_interval_seconds": int64(3600),
+				"health_reset_interval_seconds": int64(1800),
 			},
 			expectError: false,
 		},

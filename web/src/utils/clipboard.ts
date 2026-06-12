@@ -24,8 +24,13 @@ export async function copy(text: string): Promise<boolean> {
 
   // Fallback: use the deprecated execCommand API with an off-screen textarea.
   // This approach is widely used and works in more browsers and HTTP contexts.
+  let textarea: HTMLTextAreaElement | null = null;
+  let originalRange: Range | null = null;
+  const selection = document.getSelection();
+  const activeElement =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
   try {
-    const textarea = document.createElement("textarea");
+    textarea = document.createElement("textarea");
     textarea.value = text;
     textarea.setAttribute("readonly", "");
     textarea.style.position = "fixed";
@@ -40,22 +45,13 @@ export async function copy(text: string): Promise<boolean> {
 
     document.body.appendChild(textarea);
 
-    const selection = document.getSelection();
-    const originalRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    originalRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
 
+    textarea.focus({ preventScroll: true });
     textarea.select();
     textarea.setSelectionRange(0, textarea.value.length); // For mobile devices
 
     const result = document.execCommand("copy");
-
-    document.body.removeChild(textarea);
-
-    if (selection) {
-      selection.removeAllRanges();
-      if (originalRange) {
-        selection.addRange(originalRange);
-      }
-    }
 
     if (!result) {
       console.error("Failed to copy text using document.execCommand");
@@ -65,6 +61,19 @@ export async function copy(text: string): Promise<boolean> {
   } catch (e) {
     console.error("Fallback copy method threw an error:", e);
     return false;
+  } finally {
+    if (textarea && textarea.parentNode) {
+      textarea.parentNode.removeChild(textarea);
+    }
+    if (selection) {
+      selection.removeAllRanges();
+      if (originalRange) {
+        selection.addRange(originalRange);
+      }
+    }
+    if (activeElement) {
+      activeElement.focus({ preventScroll: true });
+    }
   }
 }
 

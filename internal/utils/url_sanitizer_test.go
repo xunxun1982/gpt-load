@@ -119,6 +119,12 @@ func TestSanitizeRequestURLForLog(t *testing.T) {
 			[]string{"token123"},
 			false,
 		},
+		{
+			"URLWithMixedCaseCredentialParams",
+			"https://api.example.com/list?Api-Key=secret-a&subscriptionToken=secret-b&safe=value",
+			[]string{"secret-a", "secret-b"},
+			false,
+		},
 	}
 
 	for _, tt := range tests {

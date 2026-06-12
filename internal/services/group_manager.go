@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -167,9 +168,11 @@ func (gm *GroupManager) Initialize() error {
 			ByName: make(map[string]*models.Group, len(groups)),
 			ByID:   make(map[uint]*models.Group, len(groups)),
 		}
+		proxyResolveCache := make(map[string]string)
 		for _, group := range groups {
 			g := *group
 			g.EffectiveConfig = gm.settingsManager.GetEffectiveConfig(g.Config)
+			g.Upstreams = gm.resolveUpstreamProxyReferences(context.Background(), g.Upstreams, proxyResolveCache)
 			statusMatcher, err := failover.ParseStatusCodeMatcher(g.EffectiveConfig.FailoverStatusCodes)
 			if err != nil {
 				logrus.WithError(err).WithField("group_name", g.Name).Warn("Invalid failover status code pattern, using default")
@@ -332,6 +335,46 @@ func (gm *GroupManager) Stop(ctx context.Context) {
 	if gm.syncer != nil {
 		gm.syncer.Stop()
 	}
+}
+
+func (gm *GroupManager) resolveUpstreamProxyReferences(ctx context.Context, upstreams []byte, cache map[string]string) []byte {
+	if gm.settingsManager == nil || !bytes.Contains(upstreams, []byte("proxy-pool:")) {
+		return upstreams
+	}
+	var defs []struct {
+		URL      string  `json:"url"`
+		Weight   int     `json:"weight"`
+		ProxyURL *string `json:"proxy_url,omitempty"`
+	}
+	if err := json.Unmarshal(upstreams, &defs); err != nil {
+		return upstreams
+	}
+	changed := false
+	for i := range defs {
+		if defs[i].ProxyURL == nil || !utils.IsProxyPoolRef(*defs[i].ProxyURL) {
+			continue
+		}
+		ref := *defs[i].ProxyURL
+		resolved, ok := cache[ref]
+		if !ok {
+			resolved = gm.settingsManager.ResolveRuntimeProxyURL(ctx, ref)
+			cache[ref] = resolved
+		}
+		if resolved == "" {
+			defs[i].ProxyURL = nil
+		} else {
+			defs[i].ProxyURL = &resolved
+		}
+		changed = true
+	}
+	if !changed {
+		return upstreams
+	}
+	resolvedUpstreams, err := json.Marshal(defs)
+	if err != nil {
+		return upstreams
+	}
+	return resolvedUpstreams
 }
 
 // parseModelRedirectRulesV2 parses V2 model redirect rules from JSON.

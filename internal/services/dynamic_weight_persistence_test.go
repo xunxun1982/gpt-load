@@ -976,6 +976,22 @@ func TestSubGroupHealthResetSlotUsesRelationOverride(t *testing.T) {
 	}
 }
 
+func TestSubGroupHealthResetSlotAllowsThirtyMinuteInterval(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 2, 6, 31, 0, 0, time.Local)
+	baseline := now.Add(-2 * time.Hour)
+	lastReset := time.Date(2026, 6, 2, 6, 0, 0, 0, time.Local)
+
+	slot, due := subGroupHealthResetSlot(now, 30*60, &lastReset, baseline)
+	if !due {
+		t.Fatal("Expected 30-minute health reset to be due at the 06:30 slot")
+	}
+	expectedSlot := time.Date(2026, 6, 2, 6, 30, 0, 0, time.Local)
+	if !slot.Equal(expectedSlot) {
+		t.Fatalf("Expected slot %v, got %v", expectedSlot, slot)
+	}
+}
+
 func TestAlignedHealthResetSlotStartUsesCalendarDaysAcrossDST(t *testing.T) {
 	t.Parallel()
 	loc, err := time.LoadLocation("America/New_York")
