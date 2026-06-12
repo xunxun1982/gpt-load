@@ -225,11 +225,13 @@ const getTokenMetrics = (log: RequestLog) => {
     { label: t("logs.cacheReadTokens"), value: log.cache_read_tokens },
     { label: t("logs.cacheWriteTokens"), value: log.cache_write_tokens },
     { label: t("logs.thinkingTokens"), value: log.thinking_tokens },
-  ].filter(metric => typeof metric.value === "number" && metric.value > 0);
+  ].filter(
+    (metric): metric is { label: string; value: number } => typeof metric.value === "number"
+  );
 };
 
 const hasTokenUsage = (log: RequestLog) => {
-  return getTokenMetrics(log).length > 0 || !!log.token_usage_source;
+  return getTokenMetrics(log).some(metric => metric.value > 0) || !!log.token_usage_source;
 };
 
 const formatTokenUsageSource = (source: RequestLog["token_usage_source"]) => {

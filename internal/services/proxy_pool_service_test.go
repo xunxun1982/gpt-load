@@ -181,7 +181,7 @@ func TestProxyPoolServiceCRUD(t *testing.T) {
 	assert.Empty(t, items)
 }
 
-func TestProxyPoolServiceUpdateAndDeleteInvalidateRuntimeProxySelection(t *testing.T) {
+func TestProxyPoolServiceCreateUpdateAndDeleteInvalidateRuntimeProxySelection(t *testing.T) {
 	t.Parallel()
 
 	var invalidations int
@@ -194,17 +194,17 @@ func TestProxyPoolServiceUpdateAndDeleteInvalidateRuntimeProxySelection(t *testi
 		URL:  "http://proxy-a.example.com:8080",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 0, invalidations)
+	assert.Equal(t, 1, invalidations)
 
 	_, err = svc.Update(ctx, created.ID, ProxyPoolInput{
 		Name: "runtime proxy updated",
 		URL:  "http://proxy-b.example.com:8080",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 1, invalidations)
+	assert.Equal(t, 2, invalidations)
 
 	require.NoError(t, svc.Delete(ctx, created.ID))
-	assert.Equal(t, 2, invalidations)
+	assert.Equal(t, 3, invalidations)
 }
 
 func TestProxyPoolServiceUpdatePreservesHiddenCredentialsForSameEndpoint(t *testing.T) {

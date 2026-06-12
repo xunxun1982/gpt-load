@@ -1,13 +1,54 @@
 package config
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"gpt-load/internal/store"
+	"gpt-load/internal/syncer"
+	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
+
+type staticProxyURLResolver struct {
+	resolved string
+	err      error
+}
+
+func (r staticProxyURLResolver) ResolveProxyURL(_ context.Context, _ string) (string, error) {
+	return r.resolved, r.err
+}
+
+func setupSystemSettingsManagerWithSettings(t *testing.T, settings types.SystemSettings) *SystemSettingsManager {
+	t.Helper()
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	cache, err := syncer.NewCacheSyncer(
+		func() (types.SystemSettings, error) {
+			return settings, nil
+		},
+		memStore,
+		"system-settings-test",
+		logrus.WithField("test", t.Name()),
+		nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(cache.Stop)
+
+	manager := NewSystemSettingsManager()
+	manager.syncer = cache
+	return manager
+}
 
 // TestSystemSettingsManager tests the system settings manager
 func TestSystemSettingsManager(t *testing.T) {
@@ -569,6 +610,51 @@ func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t 
 
 	assert.Equal(t, 0, cfg.NonStreamRequestTimeout)
 	assert.Equal(t, 0, cfg.RequestTimeout)
+}
+
+func TestGetEffectiveConfigResolvesSystemProxyWhenGroupConfigMarshalFails(t *testing.T) {
+	manager := setupSystemSettingsManagerWithSettings(t, types.SystemSettings{
+		ProxyURL: utils.BuildProxyPoolItemRef(10),
+	})
+	manager.SetProxyURLResolver(staticProxyURLResolver{resolved: "http://proxy.example.com:8080"})
+
+	cfg := manager.GetEffectiveConfig(datatypes.JSONMap{
+		"invalid": func() {},
+	})
+
+	assert.Equal(t, "http://proxy.example.com:8080", cfg.ProxyURL)
+}
+
+func TestGetEffectiveConfigResolvesSystemProxyWhenGroupConfigUnmarshalFails(t *testing.T) {
+	manager := setupSystemSettingsManagerWithSettings(t, types.SystemSettings{
+		ProxyURL: utils.BuildProxyPoolItemRef(11),
+	})
+	manager.SetProxyURLResolver(staticProxyURLResolver{resolved: "http://proxy.example.com:8080"})
+
+	cfg := manager.GetEffectiveConfig(datatypes.JSONMap{
+		"proxy_url": []string{"invalid"},
+	})
+
+	assert.Equal(t, "http://proxy.example.com:8080", cfg.ProxyURL)
+}
+
+func TestResolveRuntimeProxyURLKeepsReferenceWhenResolverUnavailable(t *testing.T) {
+	manager := NewSystemSettingsManager()
+	ref := utils.BuildProxyPoolItemRef(12)
+
+	resolved := manager.ResolveRuntimeProxyURL(context.Background(), " "+ref+" ")
+
+	assert.Equal(t, ref, resolved)
+}
+
+func TestResolveRuntimeProxyURLKeepsReferenceWhenResolverFails(t *testing.T) {
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(staticProxyURLResolver{err: errors.New("missing proxy")})
+	ref := utils.BuildProxyPoolItemRef(13)
+
+	resolved := manager.ResolveRuntimeProxyURL(context.Background(), ref)
+
+	assert.Equal(t, ref, resolved)
 }
 
 // TestDisplaySystemConfig tests displaying system configuration

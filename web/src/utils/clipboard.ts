@@ -29,6 +29,13 @@ export async function copy(text: string): Promise<boolean> {
   const selection = document.getSelection();
   const activeElement =
     document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const activeTextControl =
+    activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
+      ? activeElement
+      : null;
+  const inputSelectionStart = activeTextControl?.selectionStart ?? null;
+  const inputSelectionEnd = activeTextControl?.selectionEnd ?? null;
+  const inputSelectionDirection = activeTextControl?.selectionDirection ?? null;
   try {
     originalRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
 
@@ -73,6 +80,22 @@ export async function copy(text: string): Promise<boolean> {
     }
     if (activeElement) {
       activeElement.focus({ preventScroll: true });
+      if (
+        activeTextControl &&
+        document.contains(activeTextControl) &&
+        inputSelectionStart !== null &&
+        inputSelectionEnd !== null
+      ) {
+        try {
+          activeTextControl.setSelectionRange(
+            inputSelectionStart,
+            inputSelectionEnd,
+            inputSelectionDirection ?? "none"
+          );
+        } catch {
+          // Some input types cannot restore text selection; focus restoration is still useful.
+        }
+      }
     }
   }
 }

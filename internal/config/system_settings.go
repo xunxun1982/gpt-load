@@ -319,10 +319,12 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 	groupConfigBytes, err := groupConfigJSON.MarshalJSON()
 	if err != nil {
 		logrus.Warnf("Failed to marshal group config JSON, using system settings only. Error: %v", err)
+		effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 		return effectiveConfig
 	}
 	if err := json.Unmarshal(groupConfigBytes, &groupConfig); err != nil {
 		logrus.Warnf("Failed to unmarshal group config, using system settings only. Error: %v", err)
+		effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 		return effectiveConfig
 	}
 
@@ -359,12 +361,12 @@ func (sm *SystemSettingsManager) ResolveRuntimeProxyURL(ctx context.Context, raw
 	}
 	if sm.proxyURLResolver == nil {
 		logrus.Warn("Proxy pool reference cannot be resolved because no resolver is configured")
-		return ""
+		return trimmed
 	}
 	resolved, err := sm.proxyURLResolver.ResolveProxyURL(ctx, trimmed)
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to resolve proxy pool reference")
-		return ""
+		return trimmed
 	}
 	return strings.TrimSpace(resolved)
 }

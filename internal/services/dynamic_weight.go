@@ -345,7 +345,7 @@ func (m *DynamicWeightManager) recordFailure(key string, isRateLimit bool, rateL
 
 	if isRateLimit {
 		// Rate limit (429) errors: track separately with lighter penalties
-		// Don't increment ConsecutiveFailures as service is still available
+		// Do not clear ConsecutiveFailures here: only a real success proves the hard-failure streak recovered.
 		increment := int64(1)
 		if len(rateLimitPressure) > 0 &&
 			metrics.ConsecutiveRateLimits+1 >= minConsecutiveRateLimitsForPenalty &&

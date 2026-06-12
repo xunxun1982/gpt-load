@@ -170,6 +170,7 @@ func (s *ProxyPoolService) Create(ctx context.Context, input ProxyPoolInput) (*m
 	if err := s.db.WithContext(ctx).Create(item).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
+	s.invalidateProxyRuntime()
 	return item, nil
 }
 
