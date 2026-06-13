@@ -360,19 +360,11 @@ func (s *AutoCheckinService) computeNextTriggerTime(ctx context.Context) (time.T
 		return retryTime, true, nil
 	}
 
-	// Handle different schedule modes
-	switch config.ScheduleMode {
-	case AutoCheckinScheduleModeMultiple:
-		if t := computeMultipleTrigger(config.ScheduleTimes, now); !t.IsZero() {
-			return t, true, nil
-		}
-	case AutoCheckinScheduleModeDeterministic:
-		if t := computeDeterministicTrigger(config, now); !t.IsZero() {
-			return t, true, nil
-		}
+	skipCurrentScheduleDay, err := lastRunSucceededForCurrentScheduleDay(config, status, now)
+	if err != nil {
+		return time.Time{}, true, err
 	}
-	// Default to random mode
-	next, err := computeRandomTrigger(config.WindowStart, config.WindowEnd, now)
+	next, err := computeNextRegularTrigger(config, now, skipCurrentScheduleDay)
 	return next, true, err
 }
 
@@ -481,6 +473,52 @@ func computeRetryTime(cfg *AutoCheckinConfig, st AutoCheckinStatus, now time.Tim
 	return next
 }
 
+func lastRunSucceededForCurrentScheduleDay(cfg *AutoCheckinConfig, st AutoCheckinStatus, now time.Time) (bool, error) {
+	if st.LastRunAt == "" || st.LastRunResult != AutoCheckinRunResultSuccess {
+		return false, nil
+	}
+	lastRun, err := time.Parse(time.RFC3339, st.LastRunAt)
+	if err != nil {
+		return false, nil
+	}
+	if cfg.ScheduleMode == AutoCheckinScheduleModeRandom {
+		startMin, err := parseTimeToMinutes(cfg.WindowStart)
+		if err != nil {
+			return false, err
+		}
+		endMin, err := parseTimeToMinutes(cfg.WindowEnd)
+		if err != nil {
+			return false, err
+		}
+		return randomScheduleDay(lastRun, startMin, endMin) == randomScheduleDay(now, startMin, endMin), nil
+	}
+	return todayString(lastRun) == todayString(now), nil
+}
+
+func computeNextRegularTrigger(cfg *AutoCheckinConfig, now time.Time, skipToday bool) (time.Time, error) {
+	base := now
+	if skipToday {
+		beijingNow := now.In(beijingLocation)
+		nextDay := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), 23, 59, 59, 0, beijingLocation)
+		base = nextDay
+	}
+
+	switch cfg.ScheduleMode {
+	case AutoCheckinScheduleModeMultiple:
+		if t := computeMultipleTrigger(cfg.ScheduleTimes, base); !t.IsZero() {
+			return t, nil
+		}
+	case AutoCheckinScheduleModeDeterministic:
+		if t := computeDeterministicTrigger(cfg, base); !t.IsZero() {
+			return t, nil
+		}
+	}
+	if skipToday {
+		return computeNextScheduleDayRandomTrigger(cfg.WindowStart, cfg.WindowEnd, now)
+	}
+	return computeRandomTrigger(cfg.WindowStart, cfg.WindowEnd, base)
+}
+
 func computeDeterministicTrigger(cfg *AutoCheckinConfig, now time.Time) time.Time {
 	deterministicMin, err := parseTimeToMinutes(cfg.DeterministicTime)
 	if err != nil {
@@ -546,6 +584,45 @@ func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Ti
 	}
 	offset := time.Duration(rand.Int63n(int64(duration)))
 	return start.Add(offset), nil
+}
+
+func computeNextScheduleDayRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Time, error) {
+	startMin, err := parseTimeToMinutes(windowStart)
+	if err != nil {
+		return time.Time{}, err
+	}
+	endMin, err := parseTimeToMinutes(windowEnd)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	nextScheduleDay := randomScheduleDayStart(now, startMin, endMin).AddDate(0, 0, 1)
+	start := nextScheduleDay.Add(time.Duration(startMin) * time.Minute)
+	end := nextScheduleDay.Add(time.Duration(endMin) * time.Minute)
+	if !end.After(start) {
+		end = end.Add(24 * time.Hour)
+	}
+
+	duration := end.Sub(start)
+	if duration <= 0 {
+		return nextScheduleDay.Add(24 * time.Hour), nil
+	}
+	offset := time.Duration(rand.Int63n(int64(duration)))
+	return start.Add(offset), nil
+}
+
+func randomScheduleDay(t time.Time, startMin, endMin int) string {
+	return randomScheduleDayStart(t, startMin, endMin).Format("2006-01-02")
+}
+
+func randomScheduleDayStart(t time.Time, startMin, endMin int) time.Time {
+	beijingTime := t.In(beijingLocation)
+	dayStart := time.Date(beijingTime.Year(), beijingTime.Month(), beijingTime.Day(), 0, 0, 0, 0, beijingLocation)
+	nowMin := beijingTime.Hour()*60 + beijingTime.Minute()
+	if startMin >= endMin && nowMin <= endMin {
+		return dayStart.AddDate(0, 0, -1)
+	}
+	return dayStart
 }
 
 func todayString(now time.Time) string {
