@@ -1,11 +1,16 @@
 package sitemanagement
 
 import (
+	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"gpt-load/internal/store"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -197,6 +202,231 @@ func TestNewAPIProviderDoesNotForgeTurnstileToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, CheckinResultFailed, result.Status)
 	assert.True(t, strings.Contains(result.Message, "browser"))
+}
+
+func TestAutoCheckinRandomScheduleSkipsCurrentWindowAfterSuccess(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	now := time.Now().In(beijingLocation)
+	windowStart := now.Add(-30 * time.Minute)
+	windowEnd := now.Add(30 * time.Minute)
+	if now.Hour() == 0 {
+		windowStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, beijingLocation)
+	}
+	if now.Hour() == 23 {
+		windowEnd = time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 0, 0, beijingLocation)
+	}
+
+	require.NoError(t, db.Create(&ManagedSiteSetting{
+		ID:                     1,
+		AutoCheckinEnabled:     true,
+		WindowStart:            windowStart.Format("15:04"),
+		WindowEnd:              windowEnd.Format("15:04"),
+		ScheduleMode:           AutoCheckinScheduleModeRandom,
+		RetryEnabled:           true,
+		RetryIntervalMinutes:   3,
+		RetryMaxAttemptsPerDay: 3,
+	}).Error)
+
+	successStatus := AutoCheckinStatus{
+		LastRunAt:     now.UTC().Format(time.RFC3339),
+		LastRunResult: AutoCheckinRunResultSuccess,
+		Summary: &AutoCheckinRunSummary{
+			TotalEligible: 1,
+			Executed:      1,
+			SuccessCount:  1,
+		},
+		Attempts: &AutoCheckinAttemptsTracker{
+			Date:     todayString(now),
+			Attempts: 1,
+		},
+		PendingRetry: false,
+	}
+	statusBytes, err := json.Marshal(successStatus)
+	require.NoError(t, err)
+	require.NoError(t, memStore.Set(autoCheckinStatusKey, statusBytes, time.Hour))
+
+	service := NewAutoCheckinService(db, memStore, encSvc)
+
+	next, enabled, err := service.computeNextTriggerTime(context.Background())
+
+	require.NoError(t, err)
+	require.True(t, enabled)
+	assert.True(t, next.In(beijingLocation).After(windowEnd),
+		"successful auto check-in should not be scheduled again in the same random window")
+}
+
+func TestAutoCheckinRandomScheduleSkipsCrossMidnightWindowAfterSuccess(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 1, 30, 0, 0, beijingLocation)
+	cfg := &AutoCheckinConfig{
+		ScheduleMode: AutoCheckinScheduleModeRandom,
+		WindowStart:  "23:00",
+		WindowEnd:    "02:00",
+	}
+
+	next, err := computeNextRegularTrigger(cfg, now, true)
+
+	require.NoError(t, err)
+	assert.True(t, !next.In(beijingLocation).Before(time.Date(2026, 6, 13, 23, 0, 0, 0, beijingLocation)) &&
+		next.In(beijingLocation).Before(time.Date(2026, 6, 14, 2, 0, 0, 0, beijingLocation)),
+		"successful auto check-in during a cross-midnight random window should skip to the next calendar day's window")
+}
+
+func TestAutoCheckinMultipleScheduleSkipsRemainingTimesAfterSuccess(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	now := time.Now().In(beijingLocation)
+	futureToday := sameDayFutureScheduleMinute(t, now)
+
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	require.NoError(t, db.Create(&ManagedSiteSetting{
+		ID:                     1,
+		AutoCheckinEnabled:     true,
+		ScheduleTimes:          "00:00," + futureToday.Format("15:04"),
+		ScheduleMode:           AutoCheckinScheduleModeMultiple,
+		RetryEnabled:           true,
+		RetryIntervalMinutes:   3,
+		RetryMaxAttemptsPerDay: 3,
+	}).Error)
+	require.NoError(t, storeSuccessfulAutoCheckinStatus(memStore, now))
+
+	service := NewAutoCheckinService(db, memStore, encSvc)
+
+	next, enabled, err := service.computeNextTriggerTime(context.Background())
+
+	require.NoError(t, err)
+	require.True(t, enabled)
+	assert.True(t, next.In(beijingLocation).After(futureToday),
+		"successful auto check-in should not be scheduled again at a later fixed time on the same day")
+}
+
+func TestAutoCheckinDeterministicScheduleSkipsTodayAfterSuccess(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	now := time.Now().In(beijingLocation)
+	futureToday := sameDayFutureScheduleMinute(t, now)
+
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	require.NoError(t, db.Create(&ManagedSiteSetting{
+		ID:                     1,
+		AutoCheckinEnabled:     true,
+		WindowStart:            "00:00",
+		WindowEnd:              "23:59",
+		ScheduleMode:           AutoCheckinScheduleModeDeterministic,
+		DeterministicTime:      futureToday.Format("15:04"),
+		RetryEnabled:           true,
+		RetryIntervalMinutes:   3,
+		RetryMaxAttemptsPerDay: 3,
+	}).Error)
+	require.NoError(t, storeSuccessfulAutoCheckinStatus(memStore, now))
+
+	service := NewAutoCheckinService(db, memStore, encSvc)
+
+	next, enabled, err := service.computeNextTriggerTime(context.Background())
+
+	require.NoError(t, err)
+	require.True(t, enabled)
+	assert.True(t, next.In(beijingLocation).After(futureToday),
+		"successful auto check-in should not be scheduled again at the deterministic time on the same day")
+}
+
+func TestAutoCheckinRetryTimeStillTakesPriorityAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	now := time.Now().In(beijingLocation)
+	lastRun := now.Add(-time.Minute)
+
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	require.NoError(t, db.Create(&ManagedSiteSetting{
+		ID:                     1,
+		AutoCheckinEnabled:     true,
+		ScheduleTimes:          sameDayFutureScheduleMinute(t, now).Format("15:04"),
+		ScheduleMode:           AutoCheckinScheduleModeMultiple,
+		RetryEnabled:           true,
+		RetryIntervalMinutes:   3,
+		RetryMaxAttemptsPerDay: 3,
+	}).Error)
+
+	failedStatus := AutoCheckinStatus{
+		LastRunAt:     lastRun.UTC().Format(time.RFC3339),
+		LastRunResult: AutoCheckinRunResultFailed,
+		Summary: &AutoCheckinRunSummary{
+			TotalEligible: 1,
+			Executed:      1,
+			FailedCount:   1,
+			NeedsRetry:    true,
+		},
+		Attempts: &AutoCheckinAttemptsTracker{
+			Date:     todayString(now),
+			Attempts: 1,
+		},
+		PendingRetry: true,
+	}
+	statusBytes, err := json.Marshal(failedStatus)
+	require.NoError(t, err)
+	require.NoError(t, memStore.Set(autoCheckinStatusKey, statusBytes, time.Hour))
+
+	service := NewAutoCheckinService(db, memStore, encSvc)
+
+	next, enabled, err := service.computeNextTriggerTime(context.Background())
+
+	require.NoError(t, err)
+	require.True(t, enabled)
+	assert.WithinDuration(t, lastRun.Add(3*time.Minute), next.In(beijingLocation), 2*time.Second)
+}
+
+func sameDayFutureScheduleMinute(t *testing.T, now time.Time) time.Time {
+	t.Helper()
+
+	future := now.Add(30 * time.Minute).Truncate(time.Minute)
+	if !future.After(now) {
+		future = future.Add(time.Minute)
+	}
+	if future.In(beijingLocation).YearDay() != now.In(beijingLocation).YearDay() {
+		t.Skip("cannot construct a later same-day HH:MM schedule in the final minutes of the day")
+	}
+	return future.In(beijingLocation)
+}
+
+func storeSuccessfulAutoCheckinStatus(memStore store.Store, now time.Time) error {
+	successStatus := AutoCheckinStatus{
+		LastRunAt:     now.UTC().Format(time.RFC3339),
+		LastRunResult: AutoCheckinRunResultSuccess,
+		Summary: &AutoCheckinRunSummary{
+			TotalEligible: 1,
+			Executed:      1,
+			SuccessCount:  1,
+		},
+		Attempts: &AutoCheckinAttemptsTracker{
+			Date:     todayString(now),
+			Attempts: 1,
+		},
+		PendingRetry: false,
+	}
+	statusBytes, err := json.Marshal(successStatus)
+	if err != nil {
+		return err
+	}
+	return memStore.Set(autoCheckinStatusKey, statusBytes, time.Hour)
 }
 
 func testPoWMeetsDifficulty(challenge, nonce string, difficulty int) bool {
