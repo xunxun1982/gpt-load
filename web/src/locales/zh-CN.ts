@@ -429,6 +429,7 @@ export default {
     gatewayProxy: "网关代理",
     gatewayProxyPlaceholder: "不使用代理和网关",
     invalidUpstreamProxy: "上游代理地址格式不正确",
+    upstreamProxyConflict: "上游代理和网关代理不能同时设置",
     addUpstream: "添加上游地址",
     groupConfig: "分组配置",
     groupConfigTooltip:

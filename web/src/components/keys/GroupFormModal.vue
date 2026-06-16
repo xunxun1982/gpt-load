@@ -135,17 +135,35 @@ interface GroupFormData {
   group_type?: string;
 }
 
+function createDefaultUpstream(url = ""): UpstreamInfo {
+  return {
+    url,
+    weight: 1,
+    proxy_url: "",
+    gateway_proxy: "",
+  };
+}
+
+function normalizeFormUpstreams(
+  upstreams?: UpstreamInfo[] | null,
+  fallbackURL = ""
+): UpstreamInfo[] {
+  if (!upstreams?.length) {
+    return [createDefaultUpstream(fallbackURL)];
+  }
+  return upstreams.map(upstream => ({
+    ...upstream,
+    proxy_url: upstream.proxy_url || "",
+    gateway_proxy: upstream.gateway_proxy || "",
+  }));
+}
+
 // Form data
 const formData = reactive<GroupFormData>({
   name: "",
   display_name: "",
   description: "",
-  upstreams: [
-    {
-      url: "",
-      weight: 1,
-    },
-  ] as UpstreamInfo[],
+  upstreams: [createDefaultUpstream()] as UpstreamInfo[],
   channel_type: "openai",
   sort: 1,
   test_model: "",
@@ -181,6 +199,8 @@ const proxyPoolOptions = ref<{ label: string; value: string }[]>([]);
 const gatewayProxyOptions = ref<{ label: string; value: string }[]>([]);
 const upstreamProxyValuePrefix = "proxy:";
 const upstreamGatewayValuePrefix = "gateway:";
+const upstreamProxyURLPattern = /^(https?|socks5):\/\//i;
+const proxyPoolRefPattern = /^proxy-pool:\d+$/;
 const upstreamProxySelectionOptions = computed(() => [
   { label: t("keys.gatewayProxyPlaceholder"), value: "" },
   ...proxyPoolOptions.value.map(item => ({
@@ -340,8 +360,8 @@ watch(
         const oldStr = JSON.stringify(oldUpstreams || []);
         const newStr = JSON.stringify(newUpstreams || []);
         if (oldStr !== newStr) {
-          // Reload form data to reflect the updated upstream URLs
-          loadGroupData();
+          // Sync only upstream rows; a full form reload would refetch unrelated model weights.
+          formData.upstreams = normalizeFormUpstreams(newUpstreams);
         }
       }
     }
@@ -442,13 +462,7 @@ function resetForm() {
     name: "",
     display_name: "",
     description: "",
-    upstreams: [
-      {
-        url: isCreateMode ? upstreamPlaceholder.value : "",
-        weight: 1,
-        proxy_url: "",
-      },
-    ],
+    upstreams: [createDefaultUpstream(isCreateMode ? upstreamPlaceholder.value : "")],
     channel_type: defaultChannelType,
     sort: 1,
     test_model: isCreateMode ? testModelPlaceholder.value : "",
@@ -577,13 +591,7 @@ function loadGroupData() {
     name: props.group.name || "",
     display_name: props.group.display_name || "",
     description: props.group.description || "",
-    upstreams: props.group.upstreams?.length
-      ? props.group.upstreams.map(upstream => ({
-          ...upstream,
-          proxy_url: upstream.proxy_url || "",
-          gateway_proxy: upstream.gateway_proxy || "",
-        }))
-      : [{ url: "", weight: 1, proxy_url: "", gateway_proxy: "" }],
+    upstreams: normalizeFormUpstreams(props.group.upstreams),
     channel_type: props.group.channel_type || "openai",
     sort: props.group.sort || 1,
     test_model: props.group.test_model || "",
@@ -658,12 +666,32 @@ async function fetchChannelTypes() {
 
 // Add upstream
 function addUpstream() {
-  formData.upstreams.push({
-    url: "",
-    weight: 1,
-    proxy_url: "",
-    gateway_proxy: "",
-  });
+  formData.upstreams.push(createDefaultUpstream());
+}
+
+function isValidUpstreamProxyValue(value: string): boolean {
+  return upstreamProxyURLPattern.test(value) || proxyPoolRefPattern.test(value);
+}
+
+function sanitizeUpstreamProxyDisplay(value?: string | null): string {
+  const trimmed = (value || "").trim();
+  if (!trimmed || trimmed === "betterclaude" || proxyPoolRefPattern.test(trimmed)) {
+    return trimmed;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString();
+  } catch {
+    const schemeIndex = trimmed.indexOf("://");
+    const atIndex = trimmed.lastIndexOf("@");
+    if (schemeIndex >= 0 && atIndex > schemeIndex + 3) {
+      return `${trimmed.slice(0, schemeIndex + 3)}${trimmed.slice(atIndex + 1)}`;
+    }
+    return trimmed;
+  }
 }
 
 function upstreamProxySelectionValue(upstream: UpstreamInfo) {
@@ -1449,25 +1477,42 @@ async function handleSubmit() {
     }
 
     // Build submit payload
+    const submitUpstreams: Array<{
+      url: string;
+      weight: number;
+      proxy_url?: string;
+      gateway_proxy?: string;
+    }> = [];
+    for (const upstream of formData.upstreams) {
+      const url = (upstream.url || "").trim();
+      if (!url) {
+        continue;
+      }
+
+      const proxy = (upstream.proxy_url || "").trim();
+      const gateway = (upstream.gateway_proxy || "").trim();
+      if (proxy && gateway) {
+        message.error(t("keys.upstreamProxyConflict"));
+        return;
+      }
+      if (proxy && !isValidUpstreamProxyValue(proxy)) {
+        message.error(t("keys.invalidUpstreamProxy"));
+        return;
+      }
+
+      submitUpstreams.push({
+        url,
+        weight: upstream.weight,
+        proxy_url: proxy || undefined,
+        gateway_proxy: gateway || undefined,
+      });
+    }
+
     const submitData = {
       name: formData.name,
       display_name: formData.display_name,
       description: formData.description,
-      upstreams: formData.upstreams
-        .map((u: UpstreamInfo) => {
-          const proxy = (() => {
-            const p = (u.proxy_url || "").trim();
-            return /^(https?|socks5):\/\//i.test(p) || /^proxy-pool:\d+$/.test(p) ? p : undefined;
-          })();
-          const gateway = proxy ? undefined : (u.gateway_proxy || "").trim() || undefined;
-          return {
-            url: (u.url || "").trim(),
-            weight: u.weight,
-            proxy_url: proxy,
-            gateway_proxy: gateway,
-          };
-        })
-        .filter(u => !!u.url),
+      upstreams: submitUpstreams,
       channel_type: formData.channel_type,
       sort: formData.sort,
       test_model: formData.test_model,
@@ -1806,7 +1851,7 @@ async function handleSubmit() {
                     />
                   </template>
                   <div style="max-width: 600px; word-break: break-all; white-space: pre-wrap">
-                    {{ upstream.proxy_url || upstream.gateway_proxy }}
+                    {{ sanitizeUpstreamProxyDisplay(upstream.proxy_url || upstream.gateway_proxy) }}
                   </div>
                 </n-tooltip>
               </div>

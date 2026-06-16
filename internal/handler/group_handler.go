@@ -308,6 +308,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		Description:          group.Description,
 		GroupType:            group.GroupType,
 		Enabled:              group.Enabled,
+		// Keep stored upstream proxy values here until update flows can preserve credentials for masked responses.
 		Upstreams:            group.Upstreams,
 		ChannelType:          group.ChannelType,
 		Sort:                 group.Sort,

@@ -443,6 +443,7 @@ export default {
     gatewayProxy: "ゲートウェイプロキシ",
     gatewayProxyPlaceholder: "プロキシとゲートウェイを使用しない",
     invalidUpstreamProxy: "アップストリームプロキシURLが無効です",
+    upstreamProxyConflict: "アップストリームプロキシとゲートウェイプロキシは同時に設定できません",
     addUpstream: "アップストリーム追加",
     groupConfig: "グループ設定",
     groupConfigTooltip:

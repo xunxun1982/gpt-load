@@ -443,6 +443,7 @@ export default {
     gatewayProxy: "Gateway Proxy",
     gatewayProxyPlaceholder: "No proxy or gateway",
     invalidUpstreamProxy: "Invalid upstream proxy URL",
+    upstreamProxyConflict: "Upstream proxy and gateway proxy cannot both be set",
     addUpstream: "Add Upstream",
     groupConfig: "Group Configuration",
     groupConfigTooltip:
