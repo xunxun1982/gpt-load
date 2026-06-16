@@ -248,6 +248,7 @@ func (a *App) Start() error {
 		a.autoCheckinService.Start()
 		a.balanceService.Start()
 		a.logCleanupService.Start()
+		a.proxyPoolService.StartGatewayProxyAutoTest()
 		a.cronChecker.Start()
 	} else {
 		logrus.Info("Starting as Slave Node.")
@@ -320,6 +321,7 @@ func (a *App) Stop(ctx context.Context) {
 			a.autoCheckinService.Stop,
 			a.balanceService.Stop,
 			a.logCleanupService.Stop,
+			a.proxyPoolService.Stop,
 			a.requestLogService.Stop,
 		)
 		// Stop dynamic weight persistence service

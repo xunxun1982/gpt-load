@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { proxyPoolApi, type ProxyPoolPayload, type ProxyPoolTestResult } from "@/api/proxy-pool";
 import { settingsApi, type SettingsUpdatePayload } from "@/api/settings";
-import type { ProxyPoolItem } from "@/types/models";
+import type { ProxyPoolItem, ProxyPoolSelectionOption } from "@/types/models";
 import {
   Add,
   CheckmarkCircleOutline,
@@ -41,6 +41,8 @@ const dialog = useDialog();
 const defaultProxyPoolTestTargetURL = "https://www.gstatic.com/generate_204";
 const defaultProxyTestTimeoutSeconds = 10;
 const defaultProxyAutoTestIntervalMinutes = 60;
+const defaultGatewayProxyTestTimeoutSeconds = 10;
+const defaultGatewayProxyAutoTestIntervalMinutes = 60;
 const proxyBatchTestConcurrency = 5;
 
 const loading = ref(false);
@@ -51,6 +53,7 @@ const showModal = ref(false);
 const showSettingsModal = ref(false);
 const editingItem = ref<ProxyPoolItem | null>(null);
 const items = ref<ProxyPoolItem[]>([]);
+const gatewayOptions = ref<ProxyPoolSelectionOption[]>([]);
 const currentPage = ref(1);
 const pageSize = ref(12);
 const total = ref(0);
@@ -60,22 +63,29 @@ const autoTesting = ref(false);
 const batchTesting = ref(false);
 const testingIds = ref<number[]>([]);
 const testResults = reactive<Record<number, ProxyPoolTestResult>>({});
+const gatewayTestResults = reactive<Record<string, ProxyPoolTestResult>>({});
 let autoTestTimer: number | undefined;
 
 const proxyPoolSettingsForm = reactive<{
   targetUrl: string;
   timeoutSeconds: number | null;
   intervalMinutes: number | null;
+  gatewayTimeoutSeconds: number | null;
+  gatewayIntervalMinutes: number | null;
 }>({
   targetUrl: defaultProxyPoolTestTargetURL,
   timeoutSeconds: defaultProxyTestTimeoutSeconds,
   intervalMinutes: defaultProxyAutoTestIntervalMinutes,
+  gatewayTimeoutSeconds: defaultGatewayProxyTestTimeoutSeconds,
+  gatewayIntervalMinutes: defaultGatewayProxyAutoTestIntervalMinutes,
 });
 
 const proxyPoolSettingsApplied = reactive({
   targetUrl: defaultProxyPoolTestTargetURL,
   timeoutSeconds: defaultProxyTestTimeoutSeconds,
   intervalMinutes: defaultProxyAutoTestIntervalMinutes,
+  gatewayTimeoutSeconds: defaultGatewayProxyTestTimeoutSeconds,
+  gatewayIntervalMinutes: defaultGatewayProxyAutoTestIntervalMinutes,
 });
 
 const form = reactive<ProxyPoolPayload>({
@@ -234,14 +244,137 @@ const columns = computed<DataTableColumns<ProxyPoolItem>>(() => [
   },
 ]);
 
+const gatewayColumns = computed<DataTableColumns<ProxyPoolSelectionOption>>(() => [
+  {
+    title: t("proxyPool.name"),
+    key: "label",
+    minWidth: 160,
+    render(row) {
+      return h(
+        "div",
+        { class: "gateway-name-cell" },
+        [
+          h("span", row.label),
+          row.active
+            ? h(NTag, { size: "small", type: "success", bordered: false }, () =>
+                t("proxyPool.activeGateway")
+              )
+            : null,
+        ].filter(Boolean)
+      );
+    },
+  },
+  {
+    title: t("proxyPool.url"),
+    key: "url",
+    minWidth: 260,
+    ellipsis: { tooltip: true },
+  },
+  {
+    title: t("proxyPool.testStatus"),
+    key: "test_status",
+    minWidth: 180,
+    render(row) {
+      const key = gatewayResultKey(row);
+      const result = gatewayTestResults[key];
+      if (isTestingGateway(key)) {
+        return renderTestStatus(
+          h(NTag, { size: "small", type: "info", bordered: false }, () => t("proxyPool.testing")),
+          gatewayTestTimeoutText.value
+        );
+      }
+      if (!result) {
+        return renderTestStatus(
+          h(NText, { depth: 3 }, () => t("proxyPool.notTested")),
+          gatewayTestTimeoutText.value
+        );
+      }
+      const tag = h(
+        NTag,
+        { size: "small", type: result.success ? "success" : "error", bordered: false },
+        () =>
+          result.success
+            ? t("proxyPool.testPassedShort", { duration: result.duration_ms })
+            : t("proxyPool.testFailedShort")
+      );
+      if (result.success || !result.error) {
+        return renderTestStatus(tag, gatewayTestTimeoutText.value);
+      }
+      return renderTestStatus(
+        h(
+          NTooltip,
+          { trigger: "hover" },
+          {
+            trigger: () => tag,
+            default: () => t("proxyPool.gatewayTestFailed", { error: result.error }),
+          }
+        ),
+        gatewayTestTimeoutText.value
+      );
+    },
+  },
+  {
+    title: t("common.actions"),
+    key: "actions",
+    width: 96,
+    render(row) {
+      const key = gatewayResultKey(row);
+      return h(
+        NTooltip,
+        { trigger: "hover" },
+        {
+          trigger: () =>
+            h(
+              NButton,
+              {
+                quaternary: true,
+                circle: true,
+                size: "small",
+                loading: isTestingGateway(key),
+                "aria-label": `${t("proxyPool.testGateway")}: ${row.label}`,
+                title: `${t("proxyPool.testGateway")}: ${row.label}`,
+                onClick: () => testGateway(row),
+              },
+              { icon: () => h(NIcon, null, { default: () => h(CheckmarkCircleOutline) }) }
+            ),
+          default: () => t("proxyPool.testGateway"),
+        }
+      );
+    },
+  },
+]);
+
 const testTimeoutText = computed(() =>
   t("proxyPool.testTimeoutValue", { seconds: proxyPoolSettingsApplied.timeoutSeconds })
 );
+const gatewayTestTimeoutText = computed(() =>
+  t("proxyPool.testTimeoutValue", { seconds: proxyPoolSettingsApplied.gatewayTimeoutSeconds })
+);
+
+const activeGatewayOption = computed(() => gatewayOptions.value.find(item => item.active));
+
+const activeGatewayText = computed(() => {
+  const option = activeGatewayOption.value;
+  if (!option) {
+    return t("proxyPool.noGatewayAvailable");
+  }
+  return t("proxyPool.activeGatewayValue", {
+    label: option.label,
+    url: option.url || option.value,
+  });
+});
 const proxyAutoTestIntervalMs = computed(
   () => proxyPoolSettingsApplied.intervalMinutes * 60 * 1000
 );
 const autoTestIntervalText = computed(() => {
   const minutes = proxyPoolSettingsApplied.intervalMinutes;
+  if (minutes % 60 === 0) {
+    return t("proxyPool.autoTestIntervalHours", { hours: minutes / 60 });
+  }
+  return t("proxyPool.autoTestIntervalMinutes", { minutes });
+});
+const gatewayAutoTestIntervalText = computed(() => {
+  const minutes = proxyPoolSettingsApplied.gatewayIntervalMinutes;
   if (minutes % 60 === 0) {
     return t("proxyPool.autoTestIntervalHours", { hours: minutes / 60 });
   }
@@ -274,22 +407,36 @@ const isNextPageDisabled = computed(() => {
   }
   return items.value.length === 0;
 });
-function renderTestStatus(content: ReturnType<typeof h>) {
+function renderTestStatus(content: ReturnType<typeof h>, timeoutText = testTimeoutText.value) {
   return h("div", { class: "proxy-pool-test-status" }, [
     content,
-    h(NText, { depth: 3 }, () =>
-      t("proxyPool.testTimeoutInline", { timeout: testTimeoutText.value })
-    ),
+    h(NText, { depth: 3 }, () => t("proxyPool.testTimeoutInline", { timeout: timeoutText })),
   ]);
 }
 
 async function loadItems() {
   loading.value = true;
   try {
-    const result = await proxyPoolApi.listPage({
-      page: currentPage.value,
-      page_size: pageSize.value,
-    });
+    const [resultState, gatewayState] = await Promise.allSettled([
+      proxyPoolApi.listPage({
+        page: currentPage.value,
+        page_size: pageSize.value,
+      }),
+      proxyPoolApi.listGatewayOptions(),
+    ]);
+
+    if (gatewayState.status === "fulfilled") {
+      gatewayOptions.value = gatewayState.value;
+    } else {
+      gatewayOptions.value = [];
+      console.error("Failed to load gateway proxy options:", gatewayState.reason);
+    }
+
+    if (resultState.status === "rejected") {
+      throw resultState.reason;
+    }
+
+    const result = resultState.value;
     items.value = result.items;
     total.value = result.pagination.total_items;
     hasMore.value =
@@ -349,14 +496,20 @@ function positiveIntegerValue(value: unknown, fallback: number): number {
 function applyProxyPoolSettings(
   targetUrl: string,
   timeoutSeconds: number,
-  intervalMinutes: number
+  intervalMinutes: number,
+  gatewayTimeoutSeconds: number,
+  gatewayIntervalMinutes: number
 ) {
   proxyPoolSettingsApplied.targetUrl = targetUrl;
   proxyPoolSettingsApplied.timeoutSeconds = timeoutSeconds;
   proxyPoolSettingsApplied.intervalMinutes = intervalMinutes;
+  proxyPoolSettingsApplied.gatewayTimeoutSeconds = gatewayTimeoutSeconds;
+  proxyPoolSettingsApplied.gatewayIntervalMinutes = gatewayIntervalMinutes;
   proxyPoolSettingsForm.targetUrl = targetUrl;
   proxyPoolSettingsForm.timeoutSeconds = timeoutSeconds;
   proxyPoolSettingsForm.intervalMinutes = intervalMinutes;
+  proxyPoolSettingsForm.gatewayTimeoutSeconds = gatewayTimeoutSeconds;
+  proxyPoolSettingsForm.gatewayIntervalMinutes = gatewayIntervalMinutes;
 }
 
 function validTestTargetURL(value: string): boolean {
@@ -386,7 +539,21 @@ async function loadProxyPoolSettings(): Promise<boolean> {
       settings.proxy_pool_auto_test_interval_minutes,
       defaultProxyAutoTestIntervalMinutes
     );
-    applyProxyPoolSettings(targetUrl, timeoutSeconds, intervalMinutes);
+    const gatewayTimeoutSeconds = positiveIntegerValue(
+      settings.gateway_proxy_test_timeout_seconds,
+      defaultGatewayProxyTestTimeoutSeconds
+    );
+    const gatewayIntervalMinutes = positiveIntegerValue(
+      settings.gateway_proxy_auto_test_interval_minutes,
+      defaultGatewayProxyAutoTestIntervalMinutes
+    );
+    applyProxyPoolSettings(
+      targetUrl,
+      timeoutSeconds,
+      intervalMinutes,
+      gatewayTimeoutSeconds,
+      gatewayIntervalMinutes
+    );
     return true;
   } catch {
     message.error(t("proxyPool.settingsLoadFailed"));
@@ -410,6 +577,14 @@ async function saveProxyPoolSettings() {
     proxyPoolSettingsForm.intervalMinutes,
     defaultProxyAutoTestIntervalMinutes
   );
+  const gatewayTimeoutSeconds = positiveIntegerValue(
+    proxyPoolSettingsForm.gatewayTimeoutSeconds,
+    defaultGatewayProxyTestTimeoutSeconds
+  );
+  const gatewayIntervalMinutes = positiveIntegerValue(
+    proxyPoolSettingsForm.gatewayIntervalMinutes,
+    defaultGatewayProxyAutoTestIntervalMinutes
+  );
 
   settingsSaving.value = true;
   try {
@@ -417,9 +592,17 @@ async function saveProxyPoolSettings() {
       proxy_pool_test_target_url: targetUrl,
       proxy_pool_test_timeout_seconds: timeoutSeconds,
       proxy_pool_auto_test_interval_minutes: intervalMinutes,
+      gateway_proxy_test_timeout_seconds: gatewayTimeoutSeconds,
+      gateway_proxy_auto_test_interval_minutes: gatewayIntervalMinutes,
     };
     await settingsApi.updateSettings(payload);
-    applyProxyPoolSettings(targetUrl, timeoutSeconds, intervalMinutes);
+    applyProxyPoolSettings(
+      targetUrl,
+      timeoutSeconds,
+      intervalMinutes,
+      gatewayTimeoutSeconds,
+      gatewayIntervalMinutes
+    );
     restartAutoTestTimer();
     showSettingsModal.value = false;
     message.success(t("proxyPool.settingsSaved"));
@@ -434,6 +617,22 @@ function isTesting(id: number): boolean {
   return testingIds.value.includes(id);
 }
 
+function gatewayResultKey(item: ProxyPoolSelectionOption): string {
+  return item.candidate_id || `${item.value}:${item.url || ""}`;
+}
+
+function isTestingGateway(key: string): boolean {
+  return testingIds.value.includes(-Math.abs(hashGatewayKey(key)));
+}
+
+function hashGatewayKey(key: string): number {
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) | 0;
+  }
+  return hash || 1;
+}
+
 function setTesting(id: number, testing: boolean) {
   if (testing) {
     if (!testingIds.value.includes(id)) {
@@ -442,6 +641,38 @@ function setTesting(id: number, testing: boolean) {
     return;
   }
   testingIds.value = testingIds.value.filter(itemID => itemID !== id);
+}
+
+async function testGateway(item: ProxyPoolSelectionOption) {
+  const key = gatewayResultKey(item);
+  const testID = -Math.abs(hashGatewayKey(key));
+  if (isTestingGateway(key)) {
+    return;
+  }
+  setTesting(testID, true);
+  try {
+    const result = await proxyPoolApi.testGateway(gatewayResultKey(item));
+    gatewayTestResults[key] = { ...result, url: item.url || result.url };
+    if (result.success) {
+      message.success(t("proxyPool.gatewayTestSuccess", { duration: result.duration_ms }));
+    } else {
+      message.error(
+        t("proxyPool.gatewayTestFailed", { error: result.error || t("proxyPool.unknownError") })
+      );
+    }
+  } catch {
+    gatewayTestResults[key] = {
+      success: false,
+      url: item.url || "",
+      target_url: "",
+      timeout_ms: proxyPoolSettingsApplied.gatewayTimeoutSeconds * 1000,
+      duration_ms: 0,
+      error: t("proxyPool.testRequestFailed"),
+    };
+    message.error(t("proxyPool.testRequestFailed"));
+  } finally {
+    setTesting(testID, false);
+  }
 }
 
 async function testItem(item: ProxyPoolItem, silent = false) {
@@ -623,8 +854,13 @@ onUnmounted(clearAutoTestTimer);
     <div class="proxy-pool-toolbar">
       <div class="proxy-pool-meta">
         <span>{{ t("proxyPool.testTarget") }}: {{ proxyPoolSettingsApplied.targetUrl }}</span>
-        <span>{{ t("proxyPool.testTimeout") }}: {{ testTimeoutText }}</span>
-        <span>{{ t("proxyPool.autoTestInterval") }}: {{ autoTestIntervalText }}</span>
+        <span>
+          {{ t("proxyPool.proxyTestSettings") }}: {{ testTimeoutText }} / {{ autoTestIntervalText }}
+        </span>
+        <span>
+          {{ t("proxyPool.gatewayTestSettings") }}: {{ gatewayTestTimeoutText }} /
+          {{ gatewayAutoTestIntervalText }}
+        </span>
       </div>
       <n-space align="center">
         <n-button type="primary" size="small" @click="openCreate">
@@ -667,6 +903,25 @@ onUnmounted(clearAutoTestTimer);
         </div>
       </n-space>
     </div>
+
+    <section class="proxy-pool-section">
+      <div class="proxy-pool-section-header">
+        <div>
+          <div class="proxy-pool-section-title">{{ t("proxyPool.gatewayProxies") }}</div>
+          <div class="proxy-pool-section-subtitle">{{ t("proxyPool.gatewaySectionHint") }}</div>
+          <div class="gateway-active-summary">{{ activeGatewayText }}</div>
+        </div>
+      </div>
+      <n-data-table
+        size="small"
+        :columns="gatewayColumns"
+        :data="gatewayOptions"
+        :loading="loading"
+        :bordered="false"
+        :single-line="false"
+        :row-key="gatewayResultKey"
+      />
+    </section>
 
     <section class="proxy-pool-section">
       <div class="proxy-pool-section-header">
@@ -743,6 +998,7 @@ onUnmounted(clearAutoTestTimer);
           class="proxy-pool-form"
           @submit.prevent="saveProxyPoolSettings"
         >
+          <div class="proxy-pool-settings-group-title">{{ t("proxyPool.proxyTestSettings") }}</div>
           <n-form-item :label="t('proxyPool.testTarget')">
             <n-input
               v-model:value="proxyPoolSettingsForm.targetUrl"
@@ -763,6 +1019,29 @@ onUnmounted(clearAutoTestTimer);
             <n-form-item :label="t('proxyPool.autoTestInterval')">
               <n-input-number
                 v-model:value="proxyPoolSettingsForm.intervalMinutes"
+                :min="1"
+                :precision="0"
+                :show-button="false"
+                :disabled="settingsLoading || settingsSaving"
+              />
+            </n-form-item>
+          </div>
+          <div class="proxy-pool-settings-group-title">
+            {{ t("proxyPool.gatewayTestSettings") }}
+          </div>
+          <div class="proxy-pool-settings-grid">
+            <n-form-item :label="t('proxyPool.testTimeout')">
+              <n-input-number
+                v-model:value="proxyPoolSettingsForm.gatewayTimeoutSeconds"
+                :min="1"
+                :precision="0"
+                :show-button="false"
+                :disabled="settingsLoading || settingsSaving"
+              />
+            </n-form-item>
+            <n-form-item :label="t('proxyPool.autoTestInterval')">
+              <n-input-number
+                v-model:value="proxyPoolSettingsForm.gatewayIntervalMinutes"
                 :min="1"
                 :precision="0"
                 :show-button="false"
@@ -905,6 +1184,20 @@ onUnmounted(clearAutoTestTimer);
   margin-top: 2px;
 }
 
+.gateway-active-summary {
+  color: var(--text-color-2);
+  font-size: 12px;
+  margin-top: 4px;
+  word-break: break-all;
+}
+
+.gateway-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .proxy-pool-test-status {
   display: inline-flex;
   flex-direction: column;
@@ -924,6 +1217,17 @@ onUnmounted(clearAutoTestTimer);
 
 .proxy-pool-form {
   padding-top: 2px;
+}
+
+.proxy-pool-settings-group-title {
+  color: var(--text-color-2);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.proxy-pool-settings-group-title:not(:first-child) {
+  margin-top: 4px;
 }
 
 .proxy-pool-settings-grid {

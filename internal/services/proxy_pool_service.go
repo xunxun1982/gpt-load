@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"gpt-load/internal/channel"
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/types"
@@ -23,6 +25,8 @@ import (
 const (
 	defaultProxyPoolTestTargetURL = "https://www.gstatic.com/generate_204"
 	defaultProxyPoolTestTimeout   = 10 * time.Second
+	defaultGatewayProxyTestCount  = 3
+	defaultGatewayProxyTestGap    = 3 * time.Second
 
 	defaultProxyPoolCountryLookupURL = "http://ip-api.com/json/?fields=status,country,countryCode,query"
 )
@@ -35,15 +39,18 @@ type ProxyPoolInput struct {
 
 // ProxyPoolTestResult reports the result of an explicit proxy connectivity test.
 type ProxyPoolTestResult struct {
-	Success     bool   `json:"success"`
-	URL         string `json:"url"`
-	TargetURL   string `json:"target_url"`
-	TimeoutMS   int64  `json:"timeout_ms"`
-	DurationMS  int64  `json:"duration_ms"`
-	StatusCode  int    `json:"status_code,omitempty"`
-	CountryCode string `json:"country_code,omitempty"`
-	CountryName string `json:"country_name,omitempty"`
-	Error       string `json:"error,omitempty"`
+	Success            bool   `json:"success"`
+	URL                string `json:"url"`
+	TargetURL          string `json:"target_url"`
+	TimeoutMS          int64  `json:"timeout_ms"`
+	DurationMS         int64  `json:"duration_ms"`
+	Attempts           int    `json:"attempts,omitempty"`
+	SuccessfulAttempts int    `json:"successful_attempts,omitempty"`
+	FailedAttempts     int    `json:"failed_attempts,omitempty"`
+	StatusCode         int    `json:"status_code,omitempty"`
+	CountryCode        string `json:"country_code,omitempty"`
+	CountryName        string `json:"country_name,omitempty"`
+	Error              string `json:"error,omitempty"`
 }
 
 // ProxyPoolSelectionOption is used by proxy selectors outside the proxy pool page.
@@ -54,14 +61,30 @@ type ProxyPoolSelectionOption struct {
 	URL   string `json:"url,omitempty"`
 }
 
+// GatewayProxyOption describes a built-in API gateway proxy choice.
+type GatewayProxyOption struct {
+	Type        string `json:"type"`
+	Label       string `json:"label"`
+	Value       string `json:"value"`
+	CandidateID string `json:"candidate_id"`
+	URL         string `json:"url"`
+	Active      bool   `json:"active,omitempty"`
+}
+
 // ProxyPoolService manages reusable upstream proxy URLs.
 type ProxyPoolService struct {
 	db                       *gorm.DB
 	healthCheckTarget        string
 	healthCheckTimeout       time.Duration
 	countryLookupURL         string
+	gatewayProxyOptions      []GatewayProxyOption
+	gatewayProxyTestCount    int
+	gatewayProxyTestGap      time.Duration
 	settingsProvider         ProxyPoolSettingsProvider
 	invalidateProxySelection func()
+	gatewayAutoTestMu        sync.Mutex
+	gatewayAutoTestCancel    context.CancelFunc
+	gatewayAutoTestDone      chan struct{}
 }
 
 // ProxyPoolSettingsProvider supplies runtime proxy pool health-check settings.
@@ -100,6 +123,25 @@ func WithProxyPoolCountryLookupURL(rawURL string) ProxyPoolServiceOption {
 	}
 }
 
+// WithGatewayProxyOptions overrides built-in gateway proxy options for tests.
+func WithGatewayProxyOptions(options []GatewayProxyOption) ProxyPoolServiceOption {
+	return func(s *ProxyPoolService) {
+		s.gatewayProxyOptions = append([]GatewayProxyOption(nil), options...)
+	}
+}
+
+// WithGatewayProxySampling overrides gateway test sampling for unit tests.
+func WithGatewayProxySampling(count int, gap time.Duration) ProxyPoolServiceOption {
+	return func(s *ProxyPoolService) {
+		if count > 0 {
+			s.gatewayProxyTestCount = count
+		}
+		if gap >= 0 {
+			s.gatewayProxyTestGap = gap
+		}
+	}
+}
+
 // WithProxyPoolSelectionInvalidation refreshes runtime proxy config after manual proxy changes.
 func WithProxyPoolSelectionInvalidation(callback func()) ProxyPoolServiceOption {
 	return func(s *ProxyPoolService) {
@@ -115,10 +157,13 @@ func NewProxyPoolService(db *gorm.DB) *ProxyPoolService {
 // NewProxyPoolServiceWithOptions constructs a ProxyPoolService with explicit options.
 func NewProxyPoolServiceWithOptions(db *gorm.DB, opts ...ProxyPoolServiceOption) *ProxyPoolService {
 	svc := &ProxyPoolService{
-		db:                 db,
-		healthCheckTarget:  defaultProxyPoolTestTargetURL,
-		healthCheckTimeout: defaultProxyPoolTestTimeout,
-		countryLookupURL:   defaultProxyPoolCountryLookupURL,
+		db:                    db,
+		healthCheckTarget:     defaultProxyPoolTestTargetURL,
+		healthCheckTimeout:    defaultProxyPoolTestTimeout,
+		countryLookupURL:      defaultProxyPoolCountryLookupURL,
+		gatewayProxyOptions:   defaultGatewayProxyOptions(),
+		gatewayProxyTestCount: defaultGatewayProxyTestCount,
+		gatewayProxyTestGap:   defaultGatewayProxyTestGap,
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -266,6 +311,295 @@ func (s *ProxyPoolService) ListSelectionOptions(ctx context.Context) ([]ProxyPoo
 		})
 	}
 	return options, nil
+}
+
+func defaultGatewayProxyOptions() []GatewayProxyOption {
+	return []GatewayProxyOption{
+		{Type: "gateway", Label: "BetterClaude", Value: "betterclaude", CandidateID: "betterclaude-default", URL: "https://betterclau.de"},
+		{Type: "gateway", Label: "BetterClaude CF", Value: "betterclaude", CandidateID: "betterclaude-cf", URL: "https://cf.betterclau.de"},
+		{Type: "gateway", Label: "BetterClaude JP-01", Value: "betterclaude", CandidateID: "betterclaude-jp-01", URL: "https://jp-01.betterclau.de"},
+		{Type: "gateway", Label: "BetterClaude HK-01", Value: "betterclaude", CandidateID: "betterclaude-hk-01", URL: "https://hk-01.betterclau.de"},
+		{Type: "gateway", Label: "BetterClaude US-01", Value: "betterclaude", CandidateID: "betterclaude-us-01", URL: "https://us-01.betterclau.de"},
+	}
+}
+
+// ListGatewayProxyOptions returns built-in API gateway proxy candidates.
+func (s *ProxyPoolService) ListGatewayProxyOptions() []GatewayProxyOption {
+	options := append([]GatewayProxyOption(nil), s.gatewayProxyOptions...)
+	for i := range options {
+		options[i].Active = sameGatewayProxyBaseURL(options[i].URL, channel.GatewayProxyBaseURL(options[i].Value))
+	}
+	return options
+}
+
+// TestGatewayProxy verifies a built-in API gateway proxy endpoint with a bounded request.
+func (s *ProxyPoolService) TestGatewayProxy(ctx context.Context, candidateID string) (*ProxyPoolTestResult, error) {
+	selected, err := s.gatewayProxyOptionByCandidateID(candidateID)
+	if err != nil {
+		return nil, err
+	}
+	return s.testGatewayProxyOption(ctx, selected)
+}
+
+func (s *ProxyPoolService) gatewayProxyOptionByCandidateID(candidateID string) (GatewayProxyOption, error) {
+	trimmed := strings.TrimSpace(candidateID)
+	var selected *GatewayProxyOption
+	for i := range s.gatewayProxyOptions {
+		if s.gatewayProxyOptions[i].CandidateID == trimmed {
+			selected = &s.gatewayProxyOptions[i]
+			break
+		}
+	}
+	if selected == nil {
+		return GatewayProxyOption{}, app_errors.NewValidationError("unsupported gateway proxy")
+	}
+	return *selected, nil
+}
+
+func (s *ProxyPoolService) testGatewayProxyOption(ctx context.Context, selected GatewayProxyOption) (*ProxyPoolTestResult, error) {
+	parsed, err := parseGatewayProxyBaseURL(selected.URL)
+	if err != nil {
+		return nil, err
+	}
+	timeout := s.gatewayProxyTestTimeout()
+	targetAddress := gatewayProxyDialAddress(parsed)
+	attempts := s.gatewayProxyTestCount
+	if attempts <= 0 {
+		attempts = defaultGatewayProxyTestCount
+	}
+	result := &ProxyPoolTestResult{
+		URL:       strings.TrimSpace(selected.URL),
+		TargetURL: "tcp://" + targetAddress,
+		TimeoutMS: timeout.Milliseconds(),
+		Attempts:  attempts,
+	}
+
+	var totalDuration int64
+	var lastErr string
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 && s.gatewayProxyTestGap > 0 {
+			timer := time.NewTimer(s.gatewayProxyTestGap)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				result.Error = utils.TruncateString(utils.SanitizeErrorBody(ctx.Err().Error()), 300)
+				return result, nil
+			}
+		}
+		duration, dialErr := dialGatewayProxy(ctx, targetAddress, timeout)
+		if dialErr != nil {
+			result.FailedAttempts++
+			totalDuration += timeout.Milliseconds()
+			lastErr = dialErr.Error()
+			continue
+		}
+		result.SuccessfulAttempts++
+		totalDuration += duration.Milliseconds()
+	}
+	result.Success = result.SuccessfulAttempts > 0
+	result.DurationMS = totalDuration / int64(attempts)
+	if result.Success {
+		if result.FailedAttempts > 0 {
+			result.Error = fmt.Sprintf("%d/%d gateway TCP checks succeeded; last error: %s", result.SuccessfulAttempts, attempts, utils.TruncateString(utils.SanitizeErrorBody(lastErr), 180))
+		}
+		return result, nil
+	}
+	result.Error = fmt.Sprintf("all %d gateway TCP checks failed: %s", attempts, utils.TruncateString(utils.SanitizeErrorBody(lastErr), 180))
+	return result, nil
+}
+
+func (s *ProxyPoolService) RunGatewayProxyAutoTest(ctx context.Context) []ProxyPoolTestResult {
+	options := append([]GatewayProxyOption(nil), s.gatewayProxyOptions...)
+	results := make([]ProxyPoolTestResult, len(options))
+
+	var wg sync.WaitGroup
+	for i := range options {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			result, err := s.testGatewayProxyOption(ctx, options[index])
+			if err != nil {
+				results[index] = ProxyPoolTestResult{
+					Success: false,
+					URL:     strings.TrimSpace(options[index].URL),
+					Error:   utils.TruncateString(utils.SanitizeErrorBody(err.Error()), 300),
+				}
+				return
+			}
+			results[index] = *result
+		}(i)
+	}
+	wg.Wait()
+
+	bestByProvider := make(map[string]ProxyPoolTestResult)
+	for _, result := range results {
+		if !result.Success {
+			continue
+		}
+		providerID := gatewayProxyProviderIDForURL(options, result.URL)
+		if providerID == "" {
+			continue
+		}
+		current, ok := bestByProvider[providerID]
+		if !ok || isBetterGatewayProxyResult(result, current) {
+			bestByProvider[providerID] = result
+		}
+	}
+	for providerID, result := range bestByProvider {
+		channel.SetGatewayProxyBaseURL(providerID, result.URL)
+	}
+	providerIDs := make(map[string]struct{})
+	for _, option := range options {
+		if strings.TrimSpace(option.Value) != "" {
+			providerIDs[option.Value] = struct{}{}
+		}
+	}
+	for providerID := range providerIDs {
+		if _, ok := bestByProvider[providerID]; !ok {
+			channel.DisableGatewayProxyBaseURL(providerID)
+		}
+	}
+	return results
+}
+
+func dialGatewayProxy(ctx context.Context, targetAddress string, timeout time.Duration) (time.Duration, error) {
+	testCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	dialer := &net.Dialer{Timeout: timeout}
+	start := time.Now()
+	conn, err := dialer.DialContext(testCtx, "tcp", targetAddress)
+	duration := time.Since(start)
+	if err != nil {
+		return duration, err
+	}
+	_ = conn.Close()
+	return duration, nil
+}
+
+func isBetterGatewayProxyResult(candidate, current ProxyPoolTestResult) bool {
+	if candidate.FailedAttempts != current.FailedAttempts {
+		return candidate.FailedAttempts < current.FailedAttempts
+	}
+	return candidate.DurationMS < current.DurationMS
+}
+
+// StartGatewayProxyAutoTest starts the background gateway node selector.
+func (s *ProxyPoolService) StartGatewayProxyAutoTest() {
+	s.gatewayAutoTestMu.Lock()
+	defer s.gatewayAutoTestMu.Unlock()
+	if s.gatewayAutoTestCancel != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.gatewayAutoTestCancel = cancel
+	s.gatewayAutoTestDone = done
+
+	go func() {
+		defer close(done)
+		s.RunGatewayProxyAutoTest(ctx)
+		for {
+			interval := s.gatewayProxyAutoTestInterval()
+			timer := time.NewTimer(interval)
+			select {
+			case <-timer.C:
+				s.RunGatewayProxyAutoTest(ctx)
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return
+			}
+		}
+	}()
+}
+
+// Stop gracefully stops the gateway auto-test worker.
+func (s *ProxyPoolService) Stop(ctx context.Context) {
+	s.gatewayAutoTestMu.Lock()
+	cancel := s.gatewayAutoTestCancel
+	done := s.gatewayAutoTestDone
+	s.gatewayAutoTestCancel = nil
+	s.gatewayAutoTestDone = nil
+	s.gatewayAutoTestMu.Unlock()
+	if cancel == nil || done == nil {
+		return
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
+func (s *ProxyPoolService) gatewayProxyTestTimeout() time.Duration {
+	timeout := defaultProxyPoolTestTimeout
+	if s.settingsProvider != nil {
+		settings := s.settingsProvider.GetSettings()
+		if settings.GatewayProxyTestTimeoutSeconds > 0 {
+			timeout = time.Duration(settings.GatewayProxyTestTimeoutSeconds) * time.Second
+		}
+	}
+	if timeout <= 0 {
+		timeout = defaultProxyPoolTestTimeout
+	}
+	return timeout
+}
+
+func (s *ProxyPoolService) gatewayProxyAutoTestInterval() time.Duration {
+	if s.settingsProvider != nil {
+		settings := s.settingsProvider.GetSettings()
+		if settings.GatewayProxyAutoTestIntervalMinutes > 0 {
+			return time.Duration(settings.GatewayProxyAutoTestIntervalMinutes) * time.Minute
+		}
+	}
+	return time.Hour
+}
+
+func parseGatewayProxyBaseURL(rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, app_errors.NewValidationError("invalid gateway proxy URL")
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed, nil
+}
+
+func gatewayProxyDialAddress(parsed *url.URL) string {
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "http" {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(parsed.Hostname(), port)
+}
+
+func sameGatewayProxyBaseURL(left, right string) bool {
+	leftURL, leftErr := parseGatewayProxyBaseURL(left)
+	rightURL, rightErr := parseGatewayProxyBaseURL(right)
+	return leftErr == nil && rightErr == nil && leftURL.String() == rightURL.String()
+}
+
+func gatewayProxyProviderIDForURL(options []GatewayProxyOption, rawURL string) string {
+	for _, option := range options {
+		if sameGatewayProxyBaseURL(option.URL, rawURL) {
+			return option.Value
+		}
+	}
+	return ""
 }
 
 // Test verifies a stored proxy with a bounded HEAD request through that proxy.

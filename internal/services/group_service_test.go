@@ -590,6 +590,63 @@ func TestCreateGroupSavesProxyPoolSelectedUpstreamProxy(t *testing.T) {
 	assert.Equal(t, "socks5://127.0.0.1:1080", *saved[0].ProxyURL)
 }
 
+func TestCreateGroupSavesGatewayProxySelectedUpstream(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	group, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "gateway-proxy-upstream",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"gateway_proxy":" BetterClaude "}]`),
+		ChannelType:        "anthropic",
+		TestModel:          "claude-3-haiku-20240307",
+		ValidationEndpoint: "/v1/messages",
+	})
+	require.NoError(t, err)
+
+	var saved []struct {
+		URL          string `json:"url"`
+		Weight       int    `json:"weight"`
+		GatewayProxy string `json:"gateway_proxy,omitempty"`
+	}
+	require.NoError(t, json.Unmarshal(group.Upstreams, &saved))
+	require.Len(t, saved, 1)
+	assert.Equal(t, "betterclaude", saved[0].GatewayProxy)
+}
+
+func TestCreateGroupRejectsUnsupportedGatewayProxy(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	_, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "unknown-gateway-proxy",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"gateway_proxy":"unknown"}]`),
+		ChannelType:        "anthropic",
+		TestModel:          "claude-3-haiku-20240307",
+		ValidationEndpoint: "/v1/messages",
+	})
+	require.Error(t, err)
+}
+
+func TestCreateGroupRejectsGatewayProxyWithUpstreamProxy(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	_, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:               "gateway-and-proxy",
+		GroupType:          "standard",
+		Upstreams:          json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"proxy_url":"http://127.0.0.1:8080","gateway_proxy":"betterclaude"}]`),
+		ChannelType:        "anthropic",
+		TestModel:          "claude-3-haiku-20240307",
+		ValidationEndpoint: "/v1/messages",
+	})
+	require.Error(t, err)
+}
+
 func TestUpdateGroupSavesProxyPoolSelectedConfigProxy(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
@@ -1709,6 +1766,45 @@ func TestUpdateChildGroupCannotModifyUpstream(t *testing.T) {
 	// Upstream should still be the original parent proxy URL
 	expectedURL := expectedProxyURL("parent-upstream-test")
 	assert.Equal(t, expectedURL, upstreams[0]["url"])
+}
+
+func TestUpdateChildGroupCannotAddGatewayProxyToManagedUpstream(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	parentGroup := models.Group{
+		Name:        "parent-gateway-lock",
+		DisplayName: "Parent Gateway Lock",
+		GroupType:   "standard",
+		Upstreams:   datatypes.JSON(`[{"url":"https://api.openai.com","weight":100,"gateway_proxy":"betterclaude"}]`),
+		ChannelType: "openai",
+		ProxyKeys:   "sk-parent-key",
+	}
+	require.NoError(t, db.Create(&parentGroup).Error)
+
+	expectedURL := "http://127.0.0.1:3001/proxy/parent-gateway-lock"
+	childGroup := models.Group{
+		Name:          "child-gateway-lock",
+		DisplayName:   "Child Gateway Lock",
+		GroupType:     "standard",
+		Upstreams:     datatypes.JSON(fmt.Sprintf(`[{"url":"%s","weight":1}]`, expectedURL)),
+		ChannelType:   "openai",
+		ParentGroupID: &parentGroup.ID,
+	}
+	require.NoError(t, db.Create(&childGroup).Error)
+
+	modifiedUpstreams := json.RawMessage(fmt.Sprintf(`[{"url":"%s","weight":1,"gateway_proxy":"betterclaude"}]`, expectedURL))
+	_, err := svc.UpdateGroup(context.Background(), childGroup.ID, GroupUpdateParams{
+		HasUpstreams: true,
+		Upstreams:    modifiedUpstreams,
+	})
+
+	require.Error(t, err)
+	var i18nErr *I18nError
+	require.True(t, errors.As(err, &i18nErr))
+	assert.Equal(t, "validation.child_group_cannot_modify_upstream", i18nErr.MessageID)
 }
 
 // TestUpdateChildGroupOtherFieldsAllowed tests that child groups can update other fields (not upstream).

@@ -19,6 +19,8 @@ export interface ProxyPoolSettings {
   proxy_pool_test_target_url: string;
   proxy_pool_test_timeout_seconds: number;
   proxy_pool_auto_test_interval_minutes: number;
+  gateway_proxy_test_timeout_seconds: number;
+  gateway_proxy_auto_test_interval_minutes: number;
 }
 
 export type SettingsUpdatePayload = Record<string, string | number | boolean>;

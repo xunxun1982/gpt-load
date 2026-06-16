@@ -12,6 +12,9 @@ export interface ProxyPoolTestResult {
   target_url: string;
   timeout_ms: number;
   duration_ms: number;
+  attempts?: number;
+  successful_attempts?: number;
+  failed_attempts?: number;
   status_code?: number;
   country_code?: string;
   country_name?: string;
@@ -87,6 +90,24 @@ export const proxyPoolApi = {
   async test(id: number): Promise<ProxyPoolTestResult> {
     const res = await http.post(`/proxy-pool/${id}/test`, {}, { hideMessage: true });
     return requireProxyPoolData<ProxyPoolTestResult>(res?.data, "test");
+  },
+
+  async listGatewayOptions(): Promise<ProxyPoolSelectionOption[]> {
+    const res = await http.get("/proxy-pool/gateway-options");
+    const data = requireProxyPoolData<ProxyPoolSelectionOption[]>(res?.data, "gateway options");
+    if (!Array.isArray(data)) {
+      throw new Error("Proxy pool gateway options response data is invalid");
+    }
+    return data;
+  },
+
+  async testGateway(candidateId: string): Promise<ProxyPoolTestResult> {
+    const res = await http.post(
+      `/proxy-pool/gateway-options/${encodeURIComponent(candidateId)}/test`,
+      {},
+      { hideMessage: true }
+    );
+    return requireProxyPoolData<ProxyPoolTestResult>(res?.data, "gateway test");
   },
 
   async listSelectionOptions(): Promise<ProxyPoolSelectionOption[]> {

@@ -3,11 +3,13 @@ package channel
 import (
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 // mustParseURL is a test helper that parses a URL or panics
@@ -17,6 +19,14 @@ func mustParseURL(rawURL string) *url.URL {
 		panic(err)
 	}
 	return u
+}
+
+func restoreGatewayProxyBaseURL(id, previous string) {
+	if strings.TrimSpace(previous) == "" {
+		DisableGatewayProxyBaseURL(id)
+		return
+	}
+	SetGatewayProxyBaseURL(id, previous)
 }
 
 // TestSelectUpstream tests upstream selection logic
@@ -191,6 +201,154 @@ func TestGetUpstreamURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
+	tests := []struct {
+		name        string
+		channelName string
+		groupName   string
+		baseURL     string
+		originalURL string
+		wantURL     string
+	}{
+		{
+			name:        "openai chat",
+			channelName: "openai",
+			groupName:   "openai-group",
+			baseURL:     "https://api.openai.com",
+			originalURL: "/proxy/openai-group/v1/chat/completions?stream=true",
+			wantURL:     "https://betterclau.de/openai/api.openai.com/v1/chat/completions?stream=true",
+		},
+		{
+			name:        "openai responses",
+			channelName: "openai-response",
+			groupName:   "responses-group",
+			baseURL:     "https://api.openai.com",
+			originalURL: "/proxy/responses-group/v1/responses",
+			wantURL:     "https://betterclau.de/openai/api.openai.com/v1/responses",
+		},
+		{
+			name:        "anthropic claude",
+			channelName: "anthropic",
+			groupName:   "claude-group",
+			baseURL:     "https://api.anthropic.com",
+			originalURL: "/proxy/claude-group/v1/messages",
+			wantURL:     "https://betterclau.de/claude/api.anthropic.com/v1/messages",
+		},
+		{
+			name:        "gemini native",
+			channelName: "gemini",
+			groupName:   "gemini-group",
+			baseURL:     "https://generativelanguage.googleapis.com",
+			originalURL: "/proxy/gemini-group/v1beta/models/gemini-2.5-flash:generateContent",
+			wantURL:     "https://betterclau.de/gemini/generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:        "gemini native streaming",
+			channelName: "gemini",
+			groupName:   "gemini-group",
+			baseURL:     "https://generativelanguage.googleapis.com",
+			originalURL: "/proxy/gemini-group/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+			wantURL:     "https://betterclau.de/gemini/generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+		},
+		{
+			name:        "preserves upstream path",
+			channelName: "openai",
+			groupName:   "custom-group",
+			baseURL:     "https://api.example.com/custom/base",
+			originalURL: "/proxy/custom-group/v1/messages",
+			wantURL:     "https://betterclau.de/openai/api.example.com/custom/base/v1/messages",
+		},
+	}
+
+	previous := GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		restoreGatewayProxyBaseURL("betterclaude", previous)
+	})
+	SetGatewayProxyBaseURL("betterclaude", "https://betterclau.de")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bc := &BaseChannel{
+				Name: tt.channelName,
+				Upstreams: []UpstreamInfo{
+					{
+						URL:          mustParseURL(tt.baseURL),
+						Weight:       100,
+						GatewayProxy: "betterclaude",
+					},
+				},
+			}
+
+			selection, err := bc.SelectUpstreamWithClients(mustParseURL(tt.originalURL), tt.groupName)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantURL, selection.URL)
+		})
+	}
+}
+
+func TestSelectUpstreamWithClientsUsesRuntimeGatewayProxyBaseURL(t *testing.T) {
+	previous := GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		restoreGatewayProxyBaseURL("betterclaude", previous)
+	})
+	SetGatewayProxyBaseURL("betterclaude", "https://cf.betterclau.de")
+
+	bc := &BaseChannel{
+		Name: "openai",
+		Upstreams: []UpstreamInfo{
+			{
+				URL:          mustParseURL("https://api.openai.com"),
+				Weight:       100,
+				GatewayProxy: "betterclaude",
+			},
+		},
+	}
+
+	selection, err := bc.SelectUpstreamWithClients(mustParseURL("/proxy/openai-group/v1/chat/completions"), "openai-group")
+
+	require.NoError(t, err)
+	require.Equal(t, "https://cf.betterclau.de/openai/api.openai.com/v1/chat/completions", selection.URL)
+}
+
+func TestSelectUpstreamWithClientsFallsBackWhenGatewayProxyRuntimeBaseDisabled(t *testing.T) {
+	previous := GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		restoreGatewayProxyBaseURL("betterclaude", previous)
+	})
+	DisableGatewayProxyBaseURL("betterclaude")
+
+	bc := &BaseChannel{
+		Name: "openai",
+		Upstreams: []UpstreamInfo{
+			{
+				URL:          mustParseURL("https://api.openai.com"),
+				Weight:       100,
+				GatewayProxy: "betterclaude",
+			},
+		},
+	}
+
+	selection, err := bc.SelectUpstreamWithClients(mustParseURL("/proxy/openai-group/v1/models"), "openai-group")
+
+	require.NoError(t, err)
+	require.Equal(t, "https://api.openai.com/v1/models", selection.URL)
+}
+
+func TestSelectUpstreamWithClientsKeepsURLWithoutGatewayProxy(t *testing.T) {
+	t.Parallel()
+
+	bc := &BaseChannel{
+		Name: "openai",
+		Upstreams: []UpstreamInfo{
+			{URL: mustParseURL("https://api.openai.com"), Weight: 100},
+		},
+	}
+
+	selection, err := bc.SelectUpstreamWithClients(mustParseURL("/proxy/openai-group/v1/models?limit=10"), "openai-group")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.openai.com/v1/models?limit=10", selection.URL)
 }
 
 // TestSelectUpstreamConcurrency tests concurrent upstream selection

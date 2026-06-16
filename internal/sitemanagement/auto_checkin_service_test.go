@@ -10,11 +10,18 @@ import (
 	"testing"
 	"time"
 
+	"gpt-load/internal/i18n"
 	"gpt-load/internal/store"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func init() {
+	if err := i18n.Init(); err != nil {
+		panic("failed to initialize i18n for tests: " + err.Error())
+	}
+}
 
 // TestTaskTypeConstantsSync verifies that local task type constants match services package
 // Uses string literals to avoid import cycle
@@ -201,7 +208,78 @@ func TestNewAPIProviderDoesNotForgeTurnstileToken(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, CheckinResultFailed, result.Status)
-	assert.True(t, strings.Contains(result.Message, "browser"))
+	assert.Contains(t, result.Message, "浏览器")
+	assert.Contains(t, result.Message, "Turnstile")
+}
+
+func TestNewAPIProviderAccessTokenCarriesCookieSessionWhenBothConfigured(t *testing.T) {
+	t.Parallel()
+
+	checkinRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/user/checkin", r.URL.Path)
+		checkinRequests++
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer test-access-token" {
+			_, _ = w.Write([]byte(`{"success":false,"message":"missing access token"}`))
+			return
+		}
+		if r.Header.Get("New-API-User") != "123" {
+			_, _ = w.Write([]byte(`{"success":false,"message":"missing user id"}`))
+			return
+		}
+		if !strings.Contains(r.Header.Get("Cookie"), "session=turnstile-ok") {
+			_, _ = w.Write([]byte(`{"success":false,"message":"Turnstile token 为空"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+	}))
+	defer server.Close()
+
+	provider := newAPIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeNewAPI,
+		UserID:   "123",
+	}, AuthConfig{
+		AuthTypes: []string{AuthTypeAccessToken, AuthTypeCookie},
+		AuthValues: map[string]string{
+			AuthTypeAccessToken: "test-access-token",
+			AuthTypeCookie:      "session=turnstile-ok; other=value",
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, "签到成功", result.Message)
+	assert.Equal(t, 1, checkinRequests)
+}
+
+func TestNewAPIProviderExplainsPrivateCheckinSignatureHeader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/user/checkin", r.URL.Path)
+		assert.Equal(t, "123", r.Header.Get("New-API-User"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":false,"message":"缺少签到签名请求头"}`))
+	}))
+	defer server.Close()
+
+	provider := newAPIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeNewAPI,
+		UserID:   "123",
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Contains(t, result.Message, "私有签到签名")
+	assert.Contains(t, result.Message, "Cookie")
 }
 
 func TestAutoCheckinRandomScheduleSkipsCurrentWindowAfterSuccess(t *testing.T) {

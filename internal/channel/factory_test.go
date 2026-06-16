@@ -224,6 +224,65 @@ func TestNewBaseChannelUsesDirectClientWhenProxySelectionIsEmpty(t *testing.T) {
 	}
 }
 
+func TestNewBaseChannelReadsGatewayProxyFromUpstreamConfig(t *testing.T) {
+	t.Parallel()
+
+	upstreamsJSON, err := json.Marshal([]map[string]any{
+		{"url": "https://api.anthropic.com", "weight": 100, "gateway_proxy": "betterclaude"},
+	})
+	require.NoError(t, err)
+
+	base, err := setupTestFactory(t).newBaseChannel("anthropic", &models.Group{
+		ID:          1,
+		Name:        "route-proxy-group",
+		ChannelType: "anthropic",
+		Upstreams:   datatypes.JSON(upstreamsJSON),
+		EffectiveConfig: types.SystemSettings{
+			ConnectTimeout:          1,
+			NonStreamRequestTimeout: 2,
+			StreamRequestTimeout:    0,
+			IdleConnTimeout:         30,
+			MaxIdleConns:            10,
+			MaxIdleConnsPerHost:     10,
+			ResponseHeaderTimeout:   2,
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, base.Upstreams, 1)
+	require.Equal(t, "betterclaude", base.Upstreams[0].GatewayProxy)
+}
+
+func TestNewBaseChannelGatewayProxyDoesNotInheritGroupProxy(t *testing.T) {
+	t.Parallel()
+
+	upstreamsJSON, err := json.Marshal([]map[string]any{
+		{"url": "https://api.anthropic.com", "weight": 100, "gateway_proxy": "betterclaude"},
+	})
+	require.NoError(t, err)
+
+	base, err := setupTestFactory(t).newBaseChannel("anthropic", &models.Group{
+		ID:          1,
+		Name:        "gateway-with-group-proxy",
+		ChannelType: "anthropic",
+		Upstreams:   datatypes.JSON(upstreamsJSON),
+		EffectiveConfig: types.SystemSettings{
+			ConnectTimeout:          1,
+			NonStreamRequestTimeout: 2,
+			StreamRequestTimeout:    0,
+			IdleConnTimeout:         30,
+			MaxIdleConns:            10,
+			MaxIdleConnsPerHost:     10,
+			ResponseHeaderTimeout:   2,
+			ProxyURL:                "http://proxy.example.com:8080",
+		},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, base.Upstreams, 1)
+	require.Equal(t, "betterclaude", base.Upstreams[0].GatewayProxy)
+	require.Nil(t, base.Upstreams[0].ProxyURL)
+}
+
 // TestNewFactory tests factory creation
 func TestNewFactory(t *testing.T) {
 	factory := setupTestFactory(t)

@@ -342,9 +342,10 @@ func (gm *GroupManager) resolveUpstreamProxyReferences(ctx context.Context, upst
 		return upstreams
 	}
 	var defs []struct {
-		URL      string  `json:"url"`
-		Weight   int     `json:"weight"`
-		ProxyURL *string `json:"proxy_url,omitempty"`
+		URL          string  `json:"url"`
+		Weight       int     `json:"weight"`
+		ProxyURL     *string `json:"proxy_url,omitempty"`
+		GatewayProxy string  `json:"gateway_proxy,omitempty"`
 	}
 	if err := json.Unmarshal(upstreams, &defs); err != nil {
 		return upstreams

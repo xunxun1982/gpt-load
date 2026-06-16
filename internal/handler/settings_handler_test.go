@@ -133,6 +133,8 @@ func TestServer_GetSettingsExcludesProxyPoolSettings(t *testing.T) {
 	assert.NotContains(t, keys, "proxy_pool_test_target_url")
 	assert.NotContains(t, keys, "proxy_pool_test_timeout_seconds")
 	assert.NotContains(t, keys, "proxy_pool_auto_test_interval_minutes")
+	assert.NotContains(t, keys, "gateway_proxy_test_timeout_seconds")
+	assert.NotContains(t, keys, "gateway_proxy_auto_test_interval_minutes")
 }
 
 func TestServer_GetProxyPoolSettings(t *testing.T) {
@@ -155,6 +157,8 @@ func TestServer_GetProxyPoolSettings(t *testing.T) {
 	assert.Equal(t, "https://www.gstatic.com/generate_204", data["proxy_pool_test_target_url"])
 	assert.EqualValues(t, 10, data["proxy_pool_test_timeout_seconds"])
 	assert.EqualValues(t, 60, data["proxy_pool_auto_test_interval_minutes"])
+	assert.EqualValues(t, 10, data["gateway_proxy_test_timeout_seconds"])
+	assert.EqualValues(t, 60, data["gateway_proxy_auto_test_interval_minutes"])
 }
 
 func collectSettingKeys(t *testing.T, response map[string]interface{}) map[string]struct{} {

@@ -128,3 +128,18 @@ func (s *Server) ListProxyPoolSelectionOptions(c *gin.Context) {
 	}
 	response.Success(c, options)
 }
+
+// ListGatewayProxyOptions handles GET /api/proxy-pool/gateway-options.
+func (s *Server) ListGatewayProxyOptions(c *gin.Context) {
+	response.Success(c, s.ProxyPoolService.ListGatewayProxyOptions())
+}
+
+// TestGatewayProxy handles POST /api/proxy-pool/gateway-options/:candidate_id/test.
+func (s *Server) TestGatewayProxy(c *gin.Context) {
+	result, err := s.ProxyPoolService.TestGatewayProxy(c.Request.Context(), c.Param("candidate_id"))
+	if err != nil {
+		respondProxyPoolServiceError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
