@@ -179,13 +179,18 @@ const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
 const proxyPoolOptions = ref<{ label: string; value: string }[]>([]);
 const gatewayProxyOptions = ref<{ label: string; value: string }[]>([]);
-const upstreamProxyPoolOptions = computed(() => [
-  { label: t("keys.upstreamProxyUrlPlaceholder"), value: "" },
-  ...proxyPoolOptions.value,
-]);
-const upstreamGatewayProxyOptions = computed(() => [
+const upstreamProxyValuePrefix = "proxy:";
+const upstreamGatewayValuePrefix = "gateway:";
+const upstreamProxySelectionOptions = computed(() => [
   { label: t("keys.gatewayProxyPlaceholder"), value: "" },
-  ...gatewayProxyOptions.value,
+  ...proxyPoolOptions.value.map(item => ({
+    label: `${t("keys.upstreamProxyUrl")}: ${item.label}`,
+    value: `${upstreamProxyValuePrefix}${item.value}`,
+  })),
+  ...gatewayProxyOptions.value.map(item => ({
+    label: `${t("keys.gatewayProxy")}: ${item.label}`,
+    value: `${upstreamGatewayValuePrefix}${item.value}`,
+  })),
 ]);
 const modelRedirectDynamicWeights = ref<ModelRedirectDynamicWeight[]>([]);
 const controlledConfigKeys = new Set([
@@ -661,18 +666,30 @@ function addUpstream() {
   });
 }
 
-function updateUpstreamProxy(upstream: UpstreamInfo, value: string | null) {
-  upstream.proxy_url = value || "";
+function upstreamProxySelectionValue(upstream: UpstreamInfo) {
   if (upstream.proxy_url) {
-    upstream.gateway_proxy = "";
+    return `${upstreamProxyValuePrefix}${upstream.proxy_url}`;
   }
+  if (upstream.gateway_proxy) {
+    return `${upstreamGatewayValuePrefix}${upstream.gateway_proxy}`;
+  }
+  return "";
 }
 
-function updateGatewayProxy(upstream: UpstreamInfo, value: string | null) {
-  upstream.gateway_proxy = value || "";
-  if (upstream.gateway_proxy) {
-    upstream.proxy_url = "";
+function updateUpstreamProxySelection(upstream: UpstreamInfo, value: string | null) {
+  const selected = value || "";
+  if (selected.startsWith(upstreamProxyValuePrefix)) {
+    upstream.proxy_url = selected.slice(upstreamProxyValuePrefix.length);
+    upstream.gateway_proxy = "";
+    return;
   }
+  if (selected.startsWith(upstreamGatewayValuePrefix)) {
+    upstream.proxy_url = "";
+    upstream.gateway_proxy = selected.slice(upstreamGatewayValuePrefix.length);
+    return;
+  }
+  upstream.proxy_url = "";
+  upstream.gateway_proxy = "";
 }
 
 // Remove upstream
@@ -1769,50 +1786,27 @@ async function handleSubmit() {
                 </n-tooltip>
               </div>
               <div class="upstream-proxy">
-                <span class="proxy-label">{{ t("keys.upstreamProxyUrl") }}</span>
+                <span class="proxy-label">{{ t("keys.gatewayProxyPlaceholder") }}</span>
                 <n-tooltip
                   trigger="hover"
                   placement="top"
                   style="width: 100%"
-                  :disabled="!upstream.proxy_url"
+                  :disabled="!upstream.proxy_url && !upstream.gateway_proxy"
                 >
                   <template #trigger>
                     <n-select
-                      :value="upstream.proxy_url"
-                      :options="upstreamProxyPoolOptions"
-                      :placeholder="t('keys.upstreamProxyUrlPlaceholder')"
-                      :disabled="isChildGroup"
-                      style="width: 100%"
-                      clearable
-                      @update:value="value => updateUpstreamProxy(upstream, value)"
-                    />
-                  </template>
-                  <div style="max-width: 600px; word-break: break-all; white-space: pre-wrap">
-                    {{ upstream.proxy_url }}
-                  </div>
-                </n-tooltip>
-              </div>
-              <div class="upstream-gateway-proxy">
-                <span class="gateway-proxy-label">{{ t("keys.gatewayProxy") }}</span>
-                <n-tooltip
-                  trigger="hover"
-                  placement="top"
-                  style="width: 100%"
-                  :disabled="!upstream.gateway_proxy"
-                >
-                  <template #trigger>
-                    <n-select
-                      :value="upstream.gateway_proxy"
-                      :options="upstreamGatewayProxyOptions"
+                      :value="upstreamProxySelectionValue(upstream)"
+                      :options="upstreamProxySelectionOptions"
                       :placeholder="t('keys.gatewayProxyPlaceholder')"
                       :disabled="isChildGroup"
                       style="width: 100%"
+                      filterable
                       clearable
-                      @update:value="value => updateGatewayProxy(upstream, value)"
+                      @update:value="value => updateUpstreamProxySelection(upstream, value)"
                     />
                   </template>
                   <div style="max-width: 600px; word-break: break-all; white-space: pre-wrap">
-                    {{ upstream.gateway_proxy }}
+                    {{ upstream.proxy_url || upstream.gateway_proxy }}
                   </div>
                 </n-tooltip>
               </div>
@@ -3121,21 +3115,12 @@ async function handleSubmit() {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1.3;
-  min-width: 170px;
-}
-
-.upstream-gateway-proxy {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1.15;
-  min-width: 160px;
+  flex: 1.45;
+  min-width: 220px;
   margin-right: 44px;
 }
 
-.proxy-label,
-.gateway-proxy-label {
+.proxy-label {
   font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
@@ -3424,8 +3409,7 @@ async function handleSubmit() {
   }
 
   .upstream-weight,
-  .upstream-proxy,
-  .upstream-gateway-proxy {
+  .upstream-proxy {
     flex: 1;
     flex-direction: column;
     align-items: flex-start;
