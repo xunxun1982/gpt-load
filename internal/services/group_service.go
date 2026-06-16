@@ -2972,9 +2972,10 @@ func (s *GroupService) validateAndCleanUpstreams(upstreams json.RawMessage) (dat
 	}
 
 	var defs []struct {
-		URL      string  `json:"url"`
-		Weight   int     `json:"weight"`
-		ProxyURL *string `json:"proxy_url,omitempty"`
+		URL          string  `json:"url"`
+		Weight       int     `json:"weight"`
+		ProxyURL     *string `json:"proxy_url,omitempty"`
+		GatewayProxy string  `json:"gateway_proxy,omitempty"`
 	}
 	if err := json.Unmarshal(upstreams, &defs); err != nil {
 		return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": err.Error()})
@@ -3013,6 +3014,13 @@ func (s *GroupService) validateAndCleanUpstreams(upstreams json.RawMessage) (dat
 				}
 				defs[i].ProxyURL = &normalizedProxyURL
 			}
+		}
+		defs[i].GatewayProxy = strings.ToLower(strings.TrimSpace(defs[i].GatewayProxy))
+		if defs[i].GatewayProxy != "" && defs[i].GatewayProxy != "betterclaude" {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": "unsupported gateway proxy"})
+		}
+		if defs[i].GatewayProxy != "" && defs[i].ProxyURL != nil {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_upstreams", map[string]any{"error": "gateway proxy and upstream proxy cannot both be set"})
 		}
 	}
 
@@ -3349,9 +3357,10 @@ func isValidValidationEndpoint(endpoint string) bool {
 // Used to detect if child group upstreams are being modified during updates.
 func upstreamsEqual(a, b datatypes.JSON) bool {
 	var left, right []struct {
-		URL      string  `json:"url"`
-		Weight   int     `json:"weight"`
-		ProxyURL *string `json:"proxy_url,omitempty"`
+		URL          string  `json:"url"`
+		Weight       int     `json:"weight"`
+		ProxyURL     *string `json:"proxy_url,omitempty"`
+		GatewayProxy string  `json:"gateway_proxy,omitempty"`
 	}
 	if json.Unmarshal(a, &left) != nil || json.Unmarshal(b, &right) != nil {
 		return false

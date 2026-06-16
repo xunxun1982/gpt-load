@@ -24,8 +24,94 @@ type UpstreamInfo struct {
 	Weight        int
 	CurrentWeight int
 	ProxyURL      *string      // Optional proxy URL for this upstream
+	GatewayProxy  string       // Optional API gateway proxy ID, separate from HTTP transport proxy.
 	HTTPClient    *http.Client // Dedicated HTTP client for this upstream
 	StreamClient  *http.Client // Dedicated stream client for this upstream
+}
+
+type gatewayProxyProvider struct {
+	Prefixes map[string]string
+}
+
+const gatewayProxyBetterClaude = "betterclaude"
+
+var gatewayProxyProviders = map[string]gatewayProxyProvider{
+	gatewayProxyBetterClaude: {
+		Prefixes: map[string]string{
+			"anthropic":       "claude",
+			"gemini":          "gemini",
+			"openai":          "openai",
+			"openai-response": "openai",
+		},
+	},
+}
+
+var (
+	gatewayProxyBaseURLMu sync.RWMutex
+	gatewayProxyBaseURLs  = map[string]url.URL{
+		gatewayProxyBetterClaude: mustParseGatewayProxyBaseURL("https://betterclau.de"),
+	}
+)
+
+func mustParseGatewayProxyBaseURL(rawBaseURL string) url.URL {
+	parsed, err := url.Parse(rawBaseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		panic("invalid built-in gateway proxy base URL")
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return *parsed
+}
+
+// GatewayProxyBaseURL returns the current runtime base URL for a built-in gateway proxy.
+func GatewayProxyBaseURL(gatewayProxyID string) string {
+	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
+	if trimmedID == "" {
+		return ""
+	}
+	gatewayProxyBaseURLMu.RLock()
+	defer gatewayProxyBaseURLMu.RUnlock()
+	base, ok := gatewayProxyBaseURLs[trimmedID]
+	if !ok {
+		return ""
+	}
+	return base.String()
+}
+
+// SetGatewayProxyBaseURL updates the runtime base URL for a built-in gateway proxy.
+func SetGatewayProxyBaseURL(gatewayProxyID string, rawBaseURL string) {
+	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
+	trimmedURL := strings.TrimSpace(rawBaseURL)
+	if trimmedID == "" || trimmedURL == "" {
+		return
+	}
+	if _, ok := gatewayProxyProviders[trimmedID]; !ok {
+		return
+	}
+	parsed, err := url.Parse(trimmedURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+
+	gatewayProxyBaseURLMu.Lock()
+	gatewayProxyBaseURLs[trimmedID] = *parsed
+	gatewayProxyBaseURLMu.Unlock()
+}
+
+// DisableGatewayProxyBaseURL disables a built-in gateway proxy at runtime.
+func DisableGatewayProxyBaseURL(gatewayProxyID string) {
+	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
+	if trimmedID == "" {
+		return
+	}
+	if _, ok := gatewayProxyProviders[trimmedID]; !ok {
+		return
+	}
+	gatewayProxyBaseURLMu.Lock()
+	delete(gatewayProxyBaseURLs, trimmedID)
+	gatewayProxyBaseURLMu.Unlock()
 }
 
 // BaseChannel provides common functionality for channel proxies.
@@ -138,6 +224,13 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 	}
 	finalURL.Path = joinedPath
 	finalURL.RawQuery = originalURL.RawQuery
+	if upstream.GatewayProxy != "" {
+		routedURL, err := buildGatewayProxyURL(upstream.GatewayProxy, b.Name, finalURL)
+		if err != nil {
+			return nil, err
+		}
+		finalURL = routedURL
+	}
 
 	return &UpstreamSelection{
 		URL:          finalURL.String(),
@@ -145,6 +238,41 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 		StreamClient: upstream.StreamClient,
 		ProxyURL:     upstream.ProxyURL,
 	}, nil
+}
+
+func buildGatewayProxyURL(gatewayProxyID string, channelType string, target url.URL) (url.URL, error) {
+	provider, ok := gatewayProxyProviders[strings.ToLower(strings.TrimSpace(gatewayProxyID))]
+	if !ok {
+		return url.URL{}, fmt.Errorf("unsupported gateway proxy: %s", gatewayProxyID)
+	}
+	prefix, ok := provider.Prefixes[channelType]
+	if !ok {
+		return url.URL{}, fmt.Errorf("gateway proxy %s does not support channel %s", gatewayProxyID, channelType)
+	}
+	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
+	gatewayProxyBaseURLMu.RLock()
+	base, ok := gatewayProxyBaseURLs[trimmedID]
+	gatewayProxyBaseURLMu.RUnlock()
+	if !ok {
+		// A disabled gateway means all monitored candidates failed; fall back to direct upstream.
+		return target, nil
+	}
+	targetHost := target.Host
+	if targetHost == "" {
+		return url.URL{}, fmt.Errorf("cannot gateway proxy target without host")
+	}
+	targetPath := target.EscapedPath()
+	if targetPath == "" {
+		targetPath = "/"
+	}
+	joinedPath, err := url.JoinPath(base.Path, prefix, targetHost, targetPath)
+	if err != nil {
+		return url.URL{}, fmt.Errorf("failed to build gateway proxy URL: %w", err)
+	}
+	routed := base
+	routed.Path = joinedPath
+	routed.RawQuery = target.RawQuery
+	return routed, nil
 }
 
 // BuildUpstreamURL constructs the target URL for the upstream service.

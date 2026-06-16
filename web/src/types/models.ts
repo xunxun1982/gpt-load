@@ -32,6 +32,7 @@ export interface UpstreamInfo {
   url: string;
   weight: number;
   proxy_url?: string | null;
+  gateway_proxy?: string | null;
 }
 
 export interface ProxyPoolItem {
@@ -42,13 +43,15 @@ export interface ProxyPoolItem {
   updated_at: string;
 }
 
-export type ProxyPoolSelectionType = "manual";
+export type ProxyPoolSelectionType = "manual" | "gateway";
 
 export interface ProxyPoolSelectionOption {
   type: ProxyPoolSelectionType;
   label: string;
   value: string;
+  candidate_id?: string;
   url?: string;
+  active?: boolean;
 }
 
 export interface HeaderRule {

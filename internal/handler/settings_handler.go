@@ -60,9 +60,11 @@ func (s *Server) GetSettings(c *gin.Context) {
 func (s *Server) GetProxyPoolSettings(c *gin.Context) {
 	settings := s.SettingsManager.GetSettings()
 	response.Success(c, gin.H{
-		"proxy_pool_test_target_url":            settings.ProxyPoolTestTargetURL,
-		"proxy_pool_test_timeout_seconds":       settings.ProxyPoolTestTimeoutSeconds,
-		"proxy_pool_auto_test_interval_minutes": settings.ProxyPoolAutoTestIntervalMinutes,
+		"proxy_pool_test_target_url":               settings.ProxyPoolTestTargetURL,
+		"proxy_pool_test_timeout_seconds":          settings.ProxyPoolTestTimeoutSeconds,
+		"proxy_pool_auto_test_interval_minutes":    settings.ProxyPoolAutoTestIntervalMinutes,
+		"gateway_proxy_test_timeout_seconds":       settings.GatewayProxyTestTimeoutSeconds,
+		"gateway_proxy_auto_test_interval_minutes": settings.GatewayProxyAutoTestIntervalMinutes,
 	})
 }
 

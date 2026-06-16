@@ -1761,9 +1761,13 @@ func (p newAPIProvider) CheckIn(ctx context.Context, client *http.Client, site M
 
 	// Try each auth type in order: access_token first, then cookie
 	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
+	var cookieSession string
+	if authConfig.HasAuthType(AuthTypeCookie) {
+		cookieSession = authConfig.GetAuthValue(AuthTypeCookie)
+	}
 
 	return tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
-		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
+		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, cookieSession, useStealth)
 	})
 }
 
@@ -1774,6 +1778,7 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 	site ManagedSite,
 	authType string,
 	authValue string,
+	cookieSession string,
 	useStealth bool,
 ) (providerResult, error) {
 	headers := buildUserHeaders(site.UserID)
@@ -1789,6 +1794,11 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 			return providerResult{Status: CheckinResultFailed, Message: "stealth bypass requires cookie auth"}, nil
 		}
 		headers["Authorization"] = "Bearer " + authValue
+		if cookieSession != "" {
+			// Cookie only carries browser session state such as Turnstile verification.
+			// Authorization remains the primary identity for this attempt.
+			headers["Cookie"] = cookieSession
+		}
 	case AuthTypeCookie:
 		// Validate CF cookies when stealth mode is enabled
 		if useStealth {
@@ -1884,6 +1894,9 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 			if isTurnstileMissingMessage(resp.Message) {
 				return providerResult{Status: CheckinResultFailed, Message: newAPITurnstileBrowserRequiredMessage()}, nil
 			}
+			if isPrivateCheckinSignatureMessage(resp.Message) {
+				return providerResult{Status: CheckinResultFailed, Message: newAPIPrivateCheckinSignatureMessage()}, nil
+			}
 			return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("HTTP %d: %s", statusCode, resp.Message)}, nil
 		}
 		// Return HTTP status code with common error explanations
@@ -1921,6 +1934,9 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 	if resp.Message != "" {
 		if isTurnstileMissingMessage(resp.Message) {
 			return providerResult{Status: CheckinResultFailed, Message: newAPITurnstileBrowserRequiredMessage()}, nil
+		}
+		if isPrivateCheckinSignatureMessage(resp.Message) {
+			return providerResult{Status: CheckinResultFailed, Message: newAPIPrivateCheckinSignatureMessage()}, nil
 		}
 		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
 	}
@@ -1994,6 +2010,9 @@ func (p newAPIProvider) retryCheckInWithPoW(
 	if resp.Message != "" {
 		if isTurnstileMissingMessage(resp.Message) {
 			return providerResult{Status: CheckinResultFailed, Message: newAPITurnstileBrowserRequiredMessage()}, nil
+		}
+		if isPrivateCheckinSignatureMessage(resp.Message) {
+			return providerResult{Status: CheckinResultFailed, Message: newAPIPrivateCheckinSignatureMessage()}, nil
 		}
 		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
 	}
@@ -2188,8 +2207,22 @@ func isTurnstileMissingMessage(message string) bool {
 	return strings.Contains(lower, "turnstile") && (strings.Contains(message, "为空") || strings.Contains(lower, "empty") || strings.Contains(lower, "required"))
 }
 
+func isPrivateCheckinSignatureMessage(message string) bool {
+	lower := strings.ToLower(message)
+	hasSignature := strings.Contains(message, "签名") || strings.Contains(lower, "signature")
+	hasHeader := strings.Contains(message, "请求头") || strings.Contains(lower, "header")
+	hasCheckin := strings.Contains(message, "签到") || strings.Contains(lower, "checkin")
+	return hasCheckin && hasSignature && hasHeader
+}
+
 func newAPITurnstileBrowserRequiredMessage() string {
 	// Turnstile tokens are bound to an interactive browser challenge, so background
 	// check-in must not fabricate or bypass them.
 	return "Turnstile requires browser verification; update the site cookie after completing Turnstile in browser"
+}
+
+func newAPIPrivateCheckinSignatureMessage() string {
+	// Official NewAPI check-in has no signature header; private forks may bind
+	// signatures to browser state, so background jobs must not invent one.
+	return "该站点要求私有签到签名请求头，官方 NewAPI 无法从 AccessToken/User ID 推导该签名；请改用浏览器 Cookie 或在站点页面完成签到"
 }

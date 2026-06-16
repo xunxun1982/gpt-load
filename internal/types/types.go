@@ -38,9 +38,11 @@ type SystemSettings struct {
 	ProxyURL                string `json:"proxy_url" name:"config.proxy_url" category:"config.category.request" desc:"config.proxy_url_desc"`
 
 	// Proxy pool health-check settings are managed from More > Proxy Pool only.
-	ProxyPoolTestTargetURL           string `json:"proxy_pool_test_target_url" default:"https://www.gstatic.com/generate_204" name:"config.proxy_pool_test_target_url" category:"-" desc:"config.proxy_pool_test_target_url_desc" validate:"required"`
-	ProxyPoolTestTimeoutSeconds      int    `json:"proxy_pool_test_timeout_seconds" default:"10" name:"config.proxy_pool_test_timeout_seconds" category:"-" desc:"config.proxy_pool_test_timeout_seconds_desc" validate:"required,min=1"`
-	ProxyPoolAutoTestIntervalMinutes int    `json:"proxy_pool_auto_test_interval_minutes" default:"60" name:"config.proxy_pool_auto_test_interval_minutes" category:"-" desc:"config.proxy_pool_auto_test_interval_minutes_desc" validate:"required,min=1"`
+	ProxyPoolTestTargetURL              string `json:"proxy_pool_test_target_url" default:"https://www.gstatic.com/generate_204" name:"config.proxy_pool_test_target_url" category:"-" desc:"config.proxy_pool_test_target_url_desc" validate:"required"`
+	ProxyPoolTestTimeoutSeconds         int    `json:"proxy_pool_test_timeout_seconds" default:"10" name:"config.proxy_pool_test_timeout_seconds" category:"-" desc:"config.proxy_pool_test_timeout_seconds_desc" validate:"required,min=1"`
+	ProxyPoolAutoTestIntervalMinutes    int    `json:"proxy_pool_auto_test_interval_minutes" default:"60" name:"config.proxy_pool_auto_test_interval_minutes" category:"-" desc:"config.proxy_pool_auto_test_interval_minutes_desc" validate:"required,min=1"`
+	GatewayProxyTestTimeoutSeconds      int    `json:"gateway_proxy_test_timeout_seconds" default:"10" name:"config.gateway_proxy_test_timeout_seconds" category:"-" desc:"config.gateway_proxy_test_timeout_seconds_desc" validate:"required,min=1"`
+	GatewayProxyAutoTestIntervalMinutes int    `json:"gateway_proxy_auto_test_interval_minutes" default:"60" name:"config.gateway_proxy_auto_test_interval_minutes" category:"-" desc:"config.gateway_proxy_auto_test_interval_minutes_desc" validate:"required,min=1"`
 
 	// Key configuration
 	MaxRetries                   int    `json:"max_retries" default:"3" name:"config.max_retries" category:"config.category.key" desc:"config.max_retries_desc" validate:"required,min=0"`

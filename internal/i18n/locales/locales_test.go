@@ -201,6 +201,10 @@ func TestConfigMessageKeys(t *testing.T) {
 		"config.proxy_pool_test_timeout_seconds_desc",
 		"config.proxy_pool_auto_test_interval_minutes",
 		"config.proxy_pool_auto_test_interval_minutes_desc",
+		"config.gateway_proxy_test_timeout_seconds",
+		"config.gateway_proxy_test_timeout_seconds_desc",
+		"config.gateway_proxy_auto_test_interval_minutes",
+		"config.gateway_proxy_auto_test_interval_minutes_desc",
 		"config.category.proxy_pool",
 		"config.max_retries",
 	}

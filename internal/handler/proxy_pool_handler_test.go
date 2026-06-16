@@ -114,3 +114,34 @@ func TestListProxyPoolSelectionOptionsSanitizesManualProxyCredentials(t *testing
 	require.Contains(t, bodyText, utils.BuildProxyPoolItemRef(item.ID))
 	require.Contains(t, bodyText, "http://manual.example.com:8080")
 }
+
+func TestListGatewayProxyOptions(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	server := &Server{ProxyPoolService: services.NewProxyPoolService(db)}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/proxy-pool/gateway-options", nil)
+
+	server.ListGatewayProxyOptions(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var body struct {
+		Code int `json:"code"`
+		Data []struct {
+			Type        string `json:"type"`
+			Label       string `json:"label"`
+			Value       string `json:"value"`
+			CandidateID string `json:"candidate_id"`
+			URL         string `json:"url"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, 0, body.Code)
+	require.Len(t, body.Data, 5)
+	require.Equal(t, "gateway", body.Data[0].Type)
+	require.Equal(t, "betterclaude", body.Data[0].Value)
+	require.Equal(t, "betterclaude-default", body.Data[0].CandidateID)
+	require.Equal(t, "https://betterclau.de", body.Data[0].URL)
+}

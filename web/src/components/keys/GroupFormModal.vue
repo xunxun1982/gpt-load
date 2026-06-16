@@ -178,9 +178,14 @@ const configOptions = ref<GroupConfigOption[]>([]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
 const proxyPoolOptions = ref<{ label: string; value: string }[]>([]);
+const gatewayProxyOptions = ref<{ label: string; value: string }[]>([]);
 const upstreamProxyPoolOptions = computed(() => [
   { label: t("keys.upstreamProxyUrlPlaceholder"), value: "" },
   ...proxyPoolOptions.value,
+]);
+const upstreamGatewayProxyOptions = computed(() => [
+  { label: t("keys.gatewayProxyPlaceholder"), value: "" },
+  ...gatewayProxyOptions.value,
 ]);
 const modelRedirectDynamicWeights = ref<ModelRedirectDynamicWeight[]>([]);
 const controlledConfigKeys = new Set([
@@ -571,8 +576,9 @@ function loadGroupData() {
       ? props.group.upstreams.map(upstream => ({
           ...upstream,
           proxy_url: upstream.proxy_url || "",
+          gateway_proxy: upstream.gateway_proxy || "",
         }))
-      : [{ url: "", weight: 1, proxy_url: "" }],
+      : [{ url: "", weight: 1, proxy_url: "", gateway_proxy: "" }],
     channel_type: props.group.channel_type || "openai",
     sort: props.group.sort || 1,
     test_model: props.group.test_model || "",
@@ -651,7 +657,22 @@ function addUpstream() {
     url: "",
     weight: 1,
     proxy_url: "",
+    gateway_proxy: "",
   });
+}
+
+function updateUpstreamProxy(upstream: UpstreamInfo, value: string | null) {
+  upstream.proxy_url = value || "";
+  if (upstream.proxy_url) {
+    upstream.gateway_proxy = "";
+  }
+}
+
+function updateGatewayProxy(upstream: UpstreamInfo, value: string | null) {
+  upstream.gateway_proxy = value || "";
+  if (upstream.gateway_proxy) {
+    upstream.proxy_url = "";
+  }
 }
 
 // Remove upstream
@@ -673,13 +694,27 @@ async function fetchGroupConfigOptions() {
 
 async function fetchProxyPoolOptions() {
   try {
-    const items = await proxyPoolApi.listSelectionOptions();
+    const [items, gateways] = await Promise.all([
+      proxyPoolApi.listSelectionOptions(),
+      proxyPoolApi.listGatewayOptions(),
+    ]);
     proxyPoolOptions.value = items.map(item => ({
       label: item.label ? `${item.label} (${item.url || item.value})` : item.url || item.value,
       value: item.value,
     }));
+    const gatewayByValue = new Map<string, { label: string; value: string }>();
+    gateways.forEach(item => {
+      if (!gatewayByValue.has(item.value)) {
+        gatewayByValue.set(item.value, {
+          label: item.label || item.value,
+          value: item.value,
+        });
+      }
+    });
+    gatewayProxyOptions.value = Array.from(gatewayByValue.values());
   } catch (error) {
     proxyPoolOptions.value = [];
+    gatewayProxyOptions.value = [];
     console.error("Failed to fetch proxy pool options:", error);
     message.error(t("proxyPool.loadFailed"));
   }
@@ -1397,6 +1432,10 @@ async function handleSubmit() {
             const p = (u.proxy_url || "").trim();
             return /^(https?|socks5):\/\//i.test(p) || /^proxy-pool:\d+$/.test(p) ? p : undefined;
           })(),
+          gateway_proxy: (() => {
+            const p = (u.gateway_proxy || "").trim();
+            return p || undefined;
+          })(),
         }))
         .filter(u => !!u.url),
       channel_type: formData.channel_type,
@@ -1732,11 +1771,35 @@ async function handleSubmit() {
                       :disabled="isChildGroup"
                       style="width: 100%"
                       clearable
-                      @update:value="value => (upstream.proxy_url = value || '')"
+                      @update:value="value => updateUpstreamProxy(upstream, value)"
                     />
                   </template>
                   <div style="max-width: 600px; word-break: break-all; white-space: pre-wrap">
                     {{ upstream.proxy_url }}
+                  </div>
+                </n-tooltip>
+              </div>
+              <div class="upstream-gateway-proxy">
+                <span class="gateway-proxy-label">{{ t("keys.gatewayProxy") }}</span>
+                <n-tooltip
+                  trigger="hover"
+                  placement="top"
+                  style="width: 100%"
+                  :disabled="!upstream.gateway_proxy"
+                >
+                  <template #trigger>
+                    <n-select
+                      :value="upstream.gateway_proxy"
+                      :options="upstreamGatewayProxyOptions"
+                      :placeholder="t('keys.gatewayProxyPlaceholder')"
+                      :disabled="isChildGroup"
+                      style="width: 100%"
+                      clearable
+                      @update:value="value => updateGatewayProxy(upstream, value)"
+                    />
+                  </template>
+                  <div style="max-width: 600px; word-break: break-all; white-space: pre-wrap">
+                    {{ upstream.gateway_proxy }}
                   </div>
                 </n-tooltip>
               </div>
@@ -3024,7 +3087,7 @@ async function handleSubmit() {
 }
 
 .upstream-url {
-  flex: 2.3;
+  flex: 2;
   min-width: 200px;
 }
 
@@ -3045,12 +3108,21 @@ async function handleSubmit() {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1.5;
-  min-width: 180px;
+  flex: 1.3;
+  min-width: 170px;
+}
+
+.upstream-gateway-proxy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1.15;
+  min-width: 160px;
   margin-right: 44px;
 }
 
-.proxy-label {
+.proxy-label,
+.gateway-proxy-label {
   font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
@@ -3339,7 +3411,8 @@ async function handleSubmit() {
   }
 
   .upstream-weight,
-  .upstream-proxy {
+  .upstream-proxy,
+  .upstream-gateway-proxy {
     flex: 1;
     flex-direction: column;
     align-items: flex-start;

@@ -286,6 +286,21 @@ func TestValidateSettings(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "invalid gateway proxy test timeout below minimum",
+			settings: map[string]any{
+				"gateway_proxy_test_timeout_seconds": float64(0),
+			},
+			expectError: true,
+			errorMsg:    "below minimum value",
+		},
+		{
+			name: "valid gateway proxy auto test interval",
+			settings: map[string]any{
+				"gateway_proxy_auto_test_interval_minutes": float64(60),
+			},
+			expectError: false,
+		},
+		{
 			name: "required string empty",
 			settings: map[string]any{
 				"app_url": "",

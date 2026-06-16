@@ -181,9 +181,10 @@ func (f *Factory) InvalidateAllCaches() {
 // newBaseChannel is a helper function to create and configure a BaseChannel.
 func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel, error) {
 	type upstreamDef struct {
-		URL      string  `json:"url"`
-		Weight   int     `json:"weight"`
-		ProxyURL *string `json:"proxy_url,omitempty"`
+		URL          string  `json:"url"`
+		Weight       int     `json:"weight"`
+		ProxyURL     *string `json:"proxy_url,omitempty"`
+		GatewayProxy string  `json:"gateway_proxy,omitempty"`
 	}
 
 	var defs []upstreamDef
@@ -213,10 +214,19 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 			continue
 		}
 
+		gatewayProxy := strings.ToLower(strings.TrimSpace(def.GatewayProxy))
 		// Determine effective proxy URL (per-upstream overrides group-level)
 		// Trim whitespace to handle common configuration issues
-		proxyURL := strings.TrimSpace(group.EffectiveConfig.ProxyURL)
-		if def.ProxyURL != nil && strings.TrimSpace(*def.ProxyURL) != "" {
+		proxyURL := ""
+		if gatewayProxy != "" {
+			logrus.WithFields(logrus.Fields{
+				"group_id":      group.ID,
+				"group_name":    group.Name,
+				"upstream":      def.URL,
+				"gateway_proxy": gatewayProxy,
+				"weight":        def.Weight,
+			}).Debug("Using gateway proxy without HTTP transport proxy")
+		} else if def.ProxyURL != nil && strings.TrimSpace(*def.ProxyURL) != "" {
 			proxyURL = strings.TrimSpace(*def.ProxyURL)
 			logrus.WithFields(logrus.Fields{
 				"group_id":   group.ID,
@@ -225,21 +235,24 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 				"proxy":      utils.SanitizeProxyString(proxyURL),
 				"weight":     def.Weight,
 			}).Debug("Using per-upstream proxy (overrides group-level)")
-		} else if proxyURL != "" {
-			logrus.WithFields(logrus.Fields{
-				"group_id":   group.ID,
-				"group_name": group.Name,
-				"upstream":   def.URL,
-				"proxy":      utils.SanitizeProxyString(proxyURL),
-				"weight":     def.Weight,
-			}).Debug("Using group-level proxy")
 		} else {
-			logrus.WithFields(logrus.Fields{
-				"group_id":   group.ID,
-				"group_name": group.Name,
-				"upstream":   def.URL,
-				"weight":     def.Weight,
-			}).Debug("No proxy configured for this upstream")
+			proxyURL = strings.TrimSpace(group.EffectiveConfig.ProxyURL)
+			if proxyURL != "" {
+				logrus.WithFields(logrus.Fields{
+					"group_id":   group.ID,
+					"group_name": group.Name,
+					"upstream":   def.URL,
+					"proxy":      utils.SanitizeProxyString(proxyURL),
+					"weight":     def.Weight,
+				}).Debug("Using group-level proxy")
+			} else {
+				logrus.WithFields(logrus.Fields{
+					"group_id":   group.ID,
+					"group_name": group.Name,
+					"upstream":   def.URL,
+					"weight":     def.Weight,
+				}).Debug("No proxy configured for this upstream")
+			}
 		}
 
 		// Base configuration for regular requests, derived from the group's effective settings.
@@ -283,6 +296,7 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 			URL:          u,
 			Weight:       def.Weight,
 			ProxyURL:     proxyPtr,
+			GatewayProxy: gatewayProxy,
 			HTTPClient:   httpClient,
 			StreamClient: streamClient,
 		})

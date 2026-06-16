@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"gpt-load/internal/channel"
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/types"
@@ -85,6 +86,220 @@ func TestProxyPoolServiceSelectionOptionsSanitizeManualProxyURL(t *testing.T) {
 	assert.Equal(t, utils.BuildProxyPoolItemRef(item.ID), options[0].Value)
 	assert.Equal(t, "http://manual.example.com:8080", options[0].URL)
 	assert.NotContains(t, options[0].URL, "user:pass")
+}
+
+func TestProxyPoolServiceListGatewayProxyOptions(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+
+	options := svc.ListGatewayProxyOptions()
+
+	require.Len(t, options, 5)
+	assert.Equal(t, "betterclaude", options[0].Value)
+	assert.Equal(t, "betterclaude-default", options[0].CandidateID)
+	assert.Equal(t, "https://betterclau.de", options[0].URL)
+	assert.Equal(t, "https://cf.betterclau.de", options[1].URL)
+}
+
+func TestProxyPoolServiceTestGatewayProxyUsesConfiguredBaseURL(t *testing.T) {
+	t.Parallel()
+
+	gatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer gatewayServer.Close()
+
+	svc := setupProxyPoolServiceWithOptions(
+		t,
+		WithGatewayProxyOptions([]GatewayProxyOption{
+			{
+				Type:        "gateway",
+				Label:       "local gateway",
+				Value:       "betterclaude",
+				CandidateID: "betterclaude-local",
+				URL:         gatewayServer.URL,
+			},
+		}),
+		WithGatewayProxySampling(3, 0),
+	)
+
+	result, err := svc.TestGatewayProxy(context.Background(), "betterclaude-local")
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, gatewayServer.URL, result.URL)
+	assert.Equal(t, "tcp://"+gatewayServer.Listener.Addr().String(), result.TargetURL)
+	assert.Equal(t, 3, result.Attempts)
+	assert.Equal(t, 3, result.SuccessfulAttempts)
+	assert.Zero(t, result.FailedAttempts)
+}
+
+func TestProxyPoolServiceTestGatewayProxyUsesCandidateIDForDuplicateProvider(t *testing.T) {
+	t.Parallel()
+
+	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer firstServer.Close()
+
+	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer secondServer.Close()
+
+	svc := setupProxyPoolServiceWithOptions(
+		t,
+		WithGatewayProxyOptions([]GatewayProxyOption{
+			{Type: "gateway", Label: "first", Value: "betterclaude", CandidateID: "betterclaude-first", URL: firstServer.URL},
+			{Type: "gateway", Label: "second", Value: "betterclaude", CandidateID: "betterclaude-second", URL: secondServer.URL},
+		}),
+		WithGatewayProxySampling(1, 0),
+	)
+
+	result, err := svc.TestGatewayProxy(context.Background(), "betterclaude-second")
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, secondServer.URL, result.URL)
+	assert.Equal(t, "tcp://"+secondServer.Listener.Addr().String(), result.TargetURL)
+}
+
+func TestProxyPoolServiceTestGatewayProxyRejectsUnknownValue(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+
+	_, err := svc.TestGatewayProxy(context.Background(), "unknown")
+
+	require.Error(t, err)
+}
+
+func TestProxyPoolServiceListGatewayProxyOptionsMarksActiveCandidate(t *testing.T) {
+	previous := channel.GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		channel.SetGatewayProxyBaseURL("betterclaude", previous)
+	})
+	channel.SetGatewayProxyBaseURL("betterclaude", "https://active.example.com")
+
+	svc := setupProxyPoolServiceWithOptions(t, WithGatewayProxyOptions([]GatewayProxyOption{
+		{Type: "gateway", Label: "inactive", Value: "betterclaude", CandidateID: "betterclaude-inactive", URL: "https://inactive.example.com"},
+		{Type: "gateway", Label: "active", Value: "betterclaude", CandidateID: "betterclaude-active", URL: "https://active.example.com"},
+	}))
+
+	options := svc.ListGatewayProxyOptions()
+
+	require.Len(t, options, 2)
+	assert.False(t, options[0].Active)
+	assert.True(t, options[1].Active)
+}
+
+func TestProxyPoolServiceRunGatewayProxyAutoTestSelectsReachableCandidate(t *testing.T) {
+	previous := channel.GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		channel.SetGatewayProxyBaseURL("betterclaude", previous)
+	})
+
+	reachableServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer reachableServer.Close()
+
+	svc := setupProxyPoolServiceWithOptions(
+		t,
+		WithGatewayProxyOptions([]GatewayProxyOption{
+			{Type: "gateway", Label: "reachable", Value: "betterclaude", CandidateID: "betterclaude-reachable", URL: reachableServer.URL},
+		}),
+		WithGatewayProxySampling(1, 0),
+	)
+
+	results := svc.RunGatewayProxyAutoTest(context.Background())
+
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Success)
+	assert.Equal(t, reachableServer.URL, channel.GatewayProxyBaseURL("betterclaude"))
+}
+
+func TestGatewayProxyResultComparisonPrefersFewerFailuresBeforeAverage(t *testing.T) {
+	t.Parallel()
+
+	flakyFast := ProxyPoolTestResult{
+		Success:            true,
+		Attempts:           3,
+		SuccessfulAttempts: 1,
+		FailedAttempts:     2,
+		DurationMS:         667,
+	}
+	stableSlow := ProxyPoolTestResult{
+		Success:            true,
+		Attempts:           3,
+		SuccessfulAttempts: 3,
+		FailedAttempts:     0,
+		DurationMS:         100,
+	}
+
+	assert.True(t, isBetterGatewayProxyResult(stableSlow, flakyFast))
+	assert.False(t, isBetterGatewayProxyResult(flakyFast, stableSlow))
+}
+
+func TestProxyPoolServiceTestGatewayProxyCountsFailuresAsConfiguredTimeout(t *testing.T) {
+	t.Parallel()
+
+	closedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	failingURL := closedServer.URL
+	closedServer.Close()
+
+	svc := setupProxyPoolServiceWithOptions(
+		t,
+		WithProxyPoolSettingsProvider(proxyPoolSettingsProviderStub{
+			settings: types.SystemSettings{GatewayProxyTestTimeoutSeconds: 1},
+		}),
+		WithGatewayProxyOptions([]GatewayProxyOption{
+			{Type: "gateway", Label: "failing", Value: "betterclaude", CandidateID: "betterclaude-failing", URL: failingURL},
+		}),
+		WithGatewayProxySampling(1, 0),
+	)
+
+	result, err := svc.TestGatewayProxy(context.Background(), "betterclaude-failing")
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.EqualValues(t, 1000, result.TimeoutMS)
+	assert.EqualValues(t, 1000, result.DurationMS)
+	assert.Equal(t, 1, result.Attempts)
+	assert.Zero(t, result.SuccessfulAttempts)
+	assert.Equal(t, 1, result.FailedAttempts)
+}
+
+func TestProxyPoolServiceRunGatewayProxyAutoTestDisablesGatewayWhenAllCandidatesFail(t *testing.T) {
+	previous := channel.GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		channel.SetGatewayProxyBaseURL("betterclaude", previous)
+	})
+	const previousBase = "https://previous.example.com"
+	channel.SetGatewayProxyBaseURL("betterclaude", previousBase)
+
+	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	failingURL := failingServer.URL
+	failingServer.Close()
+
+	svc := setupProxyPoolServiceWithOptions(
+		t,
+		WithGatewayProxyOptions([]GatewayProxyOption{
+			{Type: "gateway", Label: "failing", Value: "betterclaude", CandidateID: "betterclaude-failing", URL: failingURL},
+		}),
+		WithGatewayProxySampling(1, 0),
+	)
+
+	results := svc.RunGatewayProxyAutoTest(context.Background())
+
+	require.Len(t, results, 1)
+	assert.False(t, results[0].Success)
+	assert.Empty(t, channel.GatewayProxyBaseURL("betterclaude"))
 }
 
 func TestProxyPoolServiceRejectsSubscriptionReference(t *testing.T) {
