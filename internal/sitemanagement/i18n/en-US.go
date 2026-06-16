@@ -15,12 +15,14 @@ var MessagesEnUS = map[string]string{
 	"site_management.validation.schedule_times_required":       "At least one schedule time is required",
 
 	// Check-in messages
-	"site_management.checkin.failed":                    "Check-in failed",
-	"site_management.checkin.disabled":                  "Check-in disabled",
-	"site_management.checkin.stealth_requires_cookie":   "Stealth bypass requires cookie auth",
-	"site_management.checkin.missing_cf_cookies":        "Missing CF cookies, need one of: {{.cookies}}",
-	"site_management.checkin.cloudflare_challenge":      "Cloudflare challenge, update cookies from browser",
-	"site_management.checkin.anyrouter_requires_cookie": "Anyrouter requires cookie auth",
+	"site_management.checkin.failed":                             "Check-in failed",
+	"site_management.checkin.disabled":                           "Check-in disabled",
+	"site_management.checkin.stealth_requires_cookie":            "Stealth bypass requires cookie auth",
+	"site_management.checkin.missing_cf_cookies":                 "Missing CF cookies, need one of: {{.cookies}}",
+	"site_management.checkin.cloudflare_challenge":               "Cloudflare challenge, update cookies from browser",
+	"site_management.checkin.anyrouter_requires_cookie":          "Anyrouter requires cookie auth",
+	"site_management.checkin.turnstile_browser_required":         "Turnstile requires browser verification; update the site cookie after completing Turnstile in browser",
+	"site_management.checkin.private_checkin_signature_required": "This site requires a private check-in signature header. Official NewAPI cannot derive it from AccessToken or user ID; use browser cookies or check in on the site page",
 
 	// HTTP error messages
 	"site_management.checkin.http_400": "HTTP 400: Bad Request - check API endpoint and request format",

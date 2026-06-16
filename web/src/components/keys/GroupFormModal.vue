@@ -693,17 +693,26 @@ async function fetchGroupConfigOptions() {
 }
 
 async function fetchProxyPoolOptions() {
-  try {
-    const [items, gateways] = await Promise.all([
-      proxyPoolApi.listSelectionOptions(),
-      proxyPoolApi.listGatewayOptions(),
-    ]);
-    proxyPoolOptions.value = items.map(item => ({
+  const [itemsResult, gatewaysResult] = await Promise.allSettled([
+    proxyPoolApi.listSelectionOptions(),
+    proxyPoolApi.listGatewayOptions(),
+  ]);
+  let failed = false;
+
+  if (itemsResult.status === "fulfilled") {
+    proxyPoolOptions.value = itemsResult.value.map(item => ({
       label: item.label ? `${item.label} (${item.url || item.value})` : item.url || item.value,
       value: item.value,
     }));
+  } else {
+    failed = true;
+    proxyPoolOptions.value = [];
+    console.error("Failed to fetch proxy pool options:", itemsResult.reason);
+  }
+
+  if (gatewaysResult.status === "fulfilled") {
     const gatewayByValue = new Map<string, { label: string; value: string }>();
-    gateways.forEach(item => {
+    gatewaysResult.value.forEach(item => {
       if (!gatewayByValue.has(item.value)) {
         gatewayByValue.set(item.value, {
           label: item.label || item.value,
@@ -712,10 +721,13 @@ async function fetchProxyPoolOptions() {
       }
     });
     gatewayProxyOptions.value = Array.from(gatewayByValue.values());
-  } catch (error) {
-    proxyPoolOptions.value = [];
+  } else {
+    failed = true;
     gatewayProxyOptions.value = [];
-    console.error("Failed to fetch proxy pool options:", error);
+    console.error("Failed to fetch gateway proxy options:", gatewaysResult.reason);
+  }
+
+  if (failed) {
     message.error(t("proxyPool.loadFailed"));
   }
 }
@@ -1425,18 +1437,19 @@ async function handleSubmit() {
       display_name: formData.display_name,
       description: formData.description,
       upstreams: formData.upstreams
-        .map((u: UpstreamInfo) => ({
-          url: (u.url || "").trim(),
-          weight: u.weight,
-          proxy_url: (() => {
+        .map((u: UpstreamInfo) => {
+          const proxy = (() => {
             const p = (u.proxy_url || "").trim();
             return /^(https?|socks5):\/\//i.test(p) || /^proxy-pool:\d+$/.test(p) ? p : undefined;
-          })(),
-          gateway_proxy: (() => {
-            const p = (u.gateway_proxy || "").trim();
-            return p || undefined;
-          })(),
-        }))
+          })();
+          const gateway = proxy ? undefined : (u.gateway_proxy || "").trim() || undefined;
+          return {
+            url: (u.url || "").trim(),
+            weight: u.weight,
+            proxy_url: proxy,
+            gateway_proxy: gateway,
+          };
+        })
         .filter(u => !!u.url),
       channel_type: formData.channel_type,
       sort: formData.sort,

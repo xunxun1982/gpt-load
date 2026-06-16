@@ -10,11 +10,18 @@ import (
 	"testing"
 	"time"
 
+	"gpt-load/internal/i18n"
 	"gpt-load/internal/store"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func init() {
+	if err := i18n.Init(); err != nil {
+		panic("failed to initialize i18n for tests: " + err.Error())
+	}
+}
 
 // TestTaskTypeConstantsSync verifies that local task type constants match services package
 // Uses string literals to avoid import cycle
@@ -201,7 +208,8 @@ func TestNewAPIProviderDoesNotForgeTurnstileToken(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, CheckinResultFailed, result.Status)
-	assert.True(t, strings.Contains(result.Message, "browser"))
+	assert.Contains(t, result.Message, "浏览器")
+	assert.Contains(t, result.Message, "Turnstile")
 }
 
 func TestNewAPIProviderAccessTokenCarriesCookieSessionWhenBothConfigured(t *testing.T) {

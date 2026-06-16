@@ -15,12 +15,14 @@ var MessagesJaJP = map[string]string{
 	"site_management.validation.schedule_times_required":       "少なくとも1つのスケジュール時間が必要です",
 
 	// Check-in messages
-	"site_management.checkin.failed":                    "チェックイン失敗",
-	"site_management.checkin.disabled":                  "チェックイン無効",
-	"site_management.checkin.stealth_requires_cookie":   "ステルスバイパスにはCookie認証が必要です",
-	"site_management.checkin.missing_cf_cookies":        "CF Cookiesが不足しています。次のいずれかが必要: {{.cookies}}",
-	"site_management.checkin.cloudflare_challenge":      "Cloudflareチャレンジ、ブラウザからCookiesを更新してください",
-	"site_management.checkin.anyrouter_requires_cookie": "AnyrouterにはCookie認証が必要です",
+	"site_management.checkin.failed":                             "チェックイン失敗",
+	"site_management.checkin.disabled":                           "チェックイン無効",
+	"site_management.checkin.stealth_requires_cookie":            "ステルスバイパスにはCookie認証が必要です",
+	"site_management.checkin.missing_cf_cookies":                 "CF Cookiesが不足しています。次のいずれかが必要: {{.cookies}}",
+	"site_management.checkin.cloudflare_challenge":               "Cloudflareチャレンジ、ブラウザからCookiesを更新してください",
+	"site_management.checkin.anyrouter_requires_cookie":          "AnyrouterにはCookie認証が必要です",
+	"site_management.checkin.turnstile_browser_required":         "Turnstileにはブラウザ認証が必要です。ブラウザでTurnstileを完了してからサイトCookieを更新してください",
+	"site_management.checkin.private_checkin_signature_required": "このサイトにはプライベートなチェックイン署名ヘッダーが必要です。公式NewAPIではAccessTokenまたはユーザーIDから導出できません。ブラウザCookieを使うか、サイトページでチェックインしてください",
 
 	// HTTP error messages
 	"site_management.checkin.http_400": "HTTP 400: 不正なリクエスト - APIエンドポイントとリクエスト形式を確認してください",

@@ -127,6 +127,8 @@ func TestCheckinMessageKeys(t *testing.T) {
 		"site_management.checkin.missing_cf_cookies",
 		"site_management.checkin.cloudflare_challenge",
 		"site_management.checkin.anyrouter_requires_cookie",
+		"site_management.checkin.turnstile_browser_required",
+		"site_management.checkin.private_checkin_signature_required",
 	}
 
 	for _, key := range checkinKeys {

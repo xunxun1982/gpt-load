@@ -3,6 +3,7 @@ package channel
 import (
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,14 @@ func mustParseURL(rawURL string) *url.URL {
 		panic(err)
 	}
 	return u
+}
+
+func restoreGatewayProxyBaseURL(id, previous string) {
+	if strings.TrimSpace(previous) == "" {
+		DisableGatewayProxyBaseURL(id)
+		return
+	}
+	SetGatewayProxyBaseURL(id, previous)
 }
 
 // TestSelectUpstream tests upstream selection logic
@@ -255,7 +264,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 
 	previous := GatewayProxyBaseURL("betterclaude")
 	t.Cleanup(func() {
-		SetGatewayProxyBaseURL("betterclaude", previous)
+		restoreGatewayProxyBaseURL("betterclaude", previous)
 	})
 	SetGatewayProxyBaseURL("betterclaude", "https://betterclau.de")
 
@@ -282,7 +291,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 func TestSelectUpstreamWithClientsUsesRuntimeGatewayProxyBaseURL(t *testing.T) {
 	previous := GatewayProxyBaseURL("betterclaude")
 	t.Cleanup(func() {
-		SetGatewayProxyBaseURL("betterclaude", previous)
+		restoreGatewayProxyBaseURL("betterclaude", previous)
 	})
 	SetGatewayProxyBaseURL("betterclaude", "https://cf.betterclau.de")
 
@@ -306,7 +315,7 @@ func TestSelectUpstreamWithClientsUsesRuntimeGatewayProxyBaseURL(t *testing.T) {
 func TestSelectUpstreamWithClientsFallsBackWhenGatewayProxyRuntimeBaseDisabled(t *testing.T) {
 	previous := GatewayProxyBaseURL("betterclaude")
 	t.Cleanup(func() {
-		SetGatewayProxyBaseURL("betterclaude", previous)
+		restoreGatewayProxyBaseURL("betterclaude", previous)
 	})
 	DisableGatewayProxyBaseURL("betterclaude")
 

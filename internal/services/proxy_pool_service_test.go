@@ -235,7 +235,7 @@ func TestGatewayProxyResultComparisonPrefersFewerFailuresBeforeAverage(t *testin
 		Attempts:           3,
 		SuccessfulAttempts: 3,
 		FailedAttempts:     0,
-		DurationMS:         100,
+		DurationMS:         2000,
 	}
 
 	assert.True(t, isBetterGatewayProxyResult(stableSlow, flakyFast))

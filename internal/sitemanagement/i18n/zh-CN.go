@@ -15,12 +15,14 @@ var MessagesZhCN = map[string]string{
 	"site_management.validation.schedule_times_required":       "至少需要设置一个签到时间",
 
 	// Check-in messages
-	"site_management.checkin.failed":                    "签到失败",
-	"site_management.checkin.disabled":                  "签到已禁用",
-	"site_management.checkin.stealth_requires_cookie":   "隐身绕过需要使用Cookie认证",
-	"site_management.checkin.missing_cf_cookies":        "缺少CF Cookies，需要以下之一：{{.cookies}}",
-	"site_management.checkin.cloudflare_challenge":      "Cloudflare验证，请从浏览器更新Cookies",
-	"site_management.checkin.anyrouter_requires_cookie": "Anyrouter需要使用Cookie认证",
+	"site_management.checkin.failed":                             "签到失败",
+	"site_management.checkin.disabled":                           "签到已禁用",
+	"site_management.checkin.stealth_requires_cookie":            "隐身绕过需要使用Cookie认证",
+	"site_management.checkin.missing_cf_cookies":                 "缺少CF Cookies，需要以下之一：{{.cookies}}",
+	"site_management.checkin.cloudflare_challenge":               "Cloudflare验证，请从浏览器更新Cookies",
+	"site_management.checkin.anyrouter_requires_cookie":          "Anyrouter需要使用Cookie认证",
+	"site_management.checkin.turnstile_browser_required":         "Turnstile需要浏览器验证，请在浏览器完成Turnstile后更新站点Cookie",
+	"site_management.checkin.private_checkin_signature_required": "该站点要求私有签到签名请求头，官方NewAPI无法从AccessToken或用户ID推导该签名；请改用浏览器Cookie或在站点页面完成签到",
 
 	// HTTP error messages
 	"site_management.checkin.http_400": "HTTP 400: 错误请求 - 请检查API端点和请求格式",

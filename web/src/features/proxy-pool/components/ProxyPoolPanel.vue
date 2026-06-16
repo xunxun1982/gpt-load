@@ -417,15 +417,27 @@ function renderTestStatus(content: ReturnType<typeof h>, timeoutText = testTimeo
 async function loadItems() {
   loading.value = true;
   try {
-    const [result, gateways] = await Promise.all([
+    const [resultState, gatewayState] = await Promise.allSettled([
       proxyPoolApi.listPage({
         page: currentPage.value,
         page_size: pageSize.value,
       }),
       proxyPoolApi.listGatewayOptions(),
     ]);
+
+    if (gatewayState.status === "fulfilled") {
+      gatewayOptions.value = gatewayState.value;
+    } else {
+      gatewayOptions.value = [];
+      console.error("Failed to load gateway proxy options:", gatewayState.reason);
+    }
+
+    if (resultState.status === "rejected") {
+      throw resultState.reason;
+    }
+
+    const result = resultState.value;
     items.value = result.items;
-    gatewayOptions.value = gateways;
     total.value = result.pagination.total_items;
     hasMore.value =
       result.pagination.has_more ??

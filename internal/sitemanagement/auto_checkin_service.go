@@ -2218,11 +2218,13 @@ func isPrivateCheckinSignatureMessage(message string) bool {
 func newAPITurnstileBrowserRequiredMessage() string {
 	// Turnstile tokens are bound to an interactive browser challenge, so background
 	// check-in must not fabricate or bypass them.
-	return "Turnstile requires browser verification; update the site cookie after completing Turnstile in browser"
+	localizer := i18n.GetLocalizer("zh-CN")
+	return i18n.T(localizer, "site_management.checkin.turnstile_browser_required")
 }
 
 func newAPIPrivateCheckinSignatureMessage() string {
 	// Official NewAPI check-in has no signature header; private forks may bind
 	// signatures to browser state, so background jobs must not invent one.
-	return "该站点要求私有签到签名请求头，官方 NewAPI 无法从 AccessToken/User ID 推导该签名；请改用浏览器 Cookie 或在站点页面完成签到"
+	localizer := i18n.GetLocalizer("zh-CN")
+	return i18n.T(localizer, "site_management.checkin.private_checkin_signature_required")
 }
