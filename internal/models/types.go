@@ -102,6 +102,13 @@ type GroupConfig struct {
 	// ResponsesIncludeEncryptedReasoning adds include=["reasoning.encrypted_content"]
 	// to OpenAI Responses API requests when enabled.
 	ResponsesIncludeEncryptedReasoning *bool `json:"responses_include_encrypted_reasoning,omitempty"`
+	// SimulatedClient applies a narrow client fingerprint preset to upstream requests.
+	// Values: "off", "codex", "claude_code".
+	SimulatedClient *string `json:"simulated_client,omitempty"`
+	// SimulatedCodexVersion overrides the default Codex TUI version used in the simulated User-Agent.
+	SimulatedCodexVersion *string `json:"simulated_codex_version,omitempty"`
+	// SimulatedClaudeCodeVersion overrides the default Claude Code CLI version used in the simulated User-Agent.
+	SimulatedClaudeCodeVersion *string `json:"simulated_claude_code_version,omitempty"`
 	// CCSupport enables Claude Code compatibility mode for this group.
 	// When enabled, clients can connect via /claude endpoint and requests will be
 	// converted from Claude format to OpenAI format before forwarding to upstream.

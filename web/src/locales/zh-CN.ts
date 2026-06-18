@@ -520,6 +520,17 @@ export default {
     requestStreamModeForceNonStream: "强制非流式",
     requestStreamModeTip:
       "改写请求体 stream 字段；Gemini 原生接口会同步切换 generateContent/streamGenerateContent 路径。",
+    simulatedClient: "模拟客户端",
+    simulatedClientOff: "关闭（透传）",
+    simulatedClientCodex: "模拟 Codex",
+    simulatedClientClaudeCode: "模拟 Claude Code",
+    simulatedClientTip: "关闭时保持透传；开启后会应用对应客户端的请求头指纹。",
+    simulatedCodexVersion: "Codex 版本",
+    simulatedCodexVersionPlaceholder: "默认 0.141.0",
+    simulatedCodexVersionTip: "用于生成 codex-tui User-Agent，留空使用默认版本。",
+    simulatedClaudeCodeVersion: "Claude Code 版本",
+    simulatedClaudeCodeVersionPlaceholder: "默认 2.1.133",
+    simulatedClaudeCodeVersionTip: "用于生成 claude-cli User-Agent，留空使用默认版本。",
     responsesIncludeEncryptedReasoning: "加密推理内容",
     responsesIncludeEncryptedReasoningTip:
       '仅 OpenAI Responses 生效；向请求体 include 合并 "reasoning.encrypted_content"。',

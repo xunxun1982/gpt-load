@@ -544,6 +544,20 @@ export default {
     requestStreamModeForceNonStream: "Force non-streaming",
     requestStreamModeTip:
       "Rewrites the stream field. Native Gemini paths switch between generateContent and streamGenerateContent.",
+    simulatedClient: "Simulated Client",
+    simulatedClientOff: "Off (passthrough)",
+    simulatedClientCodex: "Simulate Codex",
+    simulatedClientClaudeCode: "Simulate Claude Code",
+    simulatedClientTip:
+      "Off keeps passthrough. Enabled modes apply the selected client fingerprint.",
+    simulatedCodexVersion: "Codex Version",
+    simulatedCodexVersionPlaceholder: "Default 0.141.0",
+    simulatedCodexVersionTip:
+      "Builds the codex-tui User-Agent. Leave empty to use the default version.",
+    simulatedClaudeCodeVersion: "Claude Code Version",
+    simulatedClaudeCodeVersionPlaceholder: "Default 2.1.133",
+    simulatedClaudeCodeVersionTip:
+      "Builds the claude-cli User-Agent. Leave empty to use the default version.",
     responsesIncludeEncryptedReasoning: "Encrypted Reasoning",
     responsesIncludeEncryptedReasoningTip:
       'OpenAI Responses only. Merges "reasoning.encrypted_content" into the request include array.',

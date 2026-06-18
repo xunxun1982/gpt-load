@@ -497,6 +497,66 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid simulated codex client",
+			config: map[string]any{
+				"simulated_client": "codex",
+			},
+			expectError: false,
+		},
+		{
+			name: "valid simulated claude code client",
+			config: map[string]any{
+				"simulated_client": "claude_code",
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid simulated client type",
+			config: map[string]any{
+				"simulated_client": true,
+			},
+			expectError: true,
+			errorMsg:    "expected a string",
+		},
+		{
+			name: "invalid simulated client value",
+			config: map[string]any{
+				"simulated_client": "browser",
+			},
+			expectError: true,
+			errorMsg:    "must be 'off', 'codex', or 'claude_code'",
+		},
+		{
+			name: "valid simulated codex version",
+			config: map[string]any{
+				"simulated_codex_version": "0.150.1",
+			},
+			expectError: false,
+		},
+		{
+			name: "valid simulated claude code version",
+			config: map[string]any{
+				"simulated_claude_code_version": "2.2.0",
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid simulated codex version type",
+			config: map[string]any{
+				"simulated_codex_version": 1,
+			},
+			expectError: true,
+			errorMsg:    "expected a string",
+		},
+		{
+			name: "invalid simulated claude code version format",
+			config: map[string]any{
+				"simulated_claude_code_version": "2.1",
+			},
+			expectError: true,
+			errorMsg:    "must be a semantic version",
+		},
+		{
 			name: "valid health reset interval disabled",
 			config: map[string]any{
 				"health_reset_interval_seconds": float64(0),

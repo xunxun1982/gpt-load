@@ -1103,18 +1103,16 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
+	applySimulatedClientHeaders(req, group, isStream)
+
 	// Set headers for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
 	// NOTE: This intentionally overrides any custom headers set by header rules.
 	// Reason: some Responses upstreams validate Codex CLI-compatible headers.
 	// IMPORTANT: These headers are ONLY set when CC mode is enabled (/claude path with cc_support=true).
 	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original headers).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
-	// Reference: CLIProxyAPI codex_executor.go applyCodexHeaders()
 	if isOpenAIResponseCCMode(c) {
-		req.Header.Set("User-Agent", channel.CodexUserAgent)
-		// Additional headers required by Codex CLI-compatible Responses upstreams.
-		req.Header.Set("Openai-Beta", "responses=experimental")
-		req.Header.Set("Accept", "text/event-stream")
+		applyCodexCompatibleHeaders(req, group, true)
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 
@@ -1800,19 +1798,16 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Set User-Agent for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
-	// NOTE: This intentionally overrides any custom User-Agent set by header rules.
-	// Reason: some Responses upstreams validate the Codex CLI-compatible User-Agent header.
-	// IMPORTANT: This UA is ONLY set when CC mode is enabled (/claude path with cc_support=true).
-	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original UA).
+	applySimulatedClientHeaders(req, group, isStream)
+
+	// Set headers for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
+	// NOTE: This intentionally overrides any custom headers set by header rules.
+	// Reason: some Responses upstreams validate Codex CLI-compatible headers.
+	// IMPORTANT: These headers are ONLY set when CC mode is enabled (/claude path with cc_support=true).
+	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original headers).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
-	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version.
-	// Reference: CLIProxyAPI codex_executor.go applyCodexHeaders()
 	if isOpenAIResponseCCMode(c) {
-		req.Header.Set("User-Agent", channel.CodexUserAgent)
-		// Additional headers required by Codex CLI-compatible Responses upstreams.
-		req.Header.Set("Openai-Beta", "responses=experimental")
-		req.Header.Set("Accept", "text/event-stream")
+		applyCodexCompatibleHeaders(req, group, true)
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 

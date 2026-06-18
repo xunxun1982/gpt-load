@@ -37,9 +37,16 @@ func newOpenAIResponseChannel(f *Factory, group *models.Group) (ChannelProxy, er
 	}, nil
 }
 
-// CodexUserAgent is the User-Agent header value for Codex CLI-compatible requests.
-// Format: codex-cli/VERSION, matching the npm package @openai/codex client format.
-const CodexUserAgent = "codex-cli/0.137.0"
+// DefaultCodexVersion is the default Codex TUI version used for simulated client fingerprints.
+const DefaultCodexVersion = "0.141.0"
+
+// BuildCodexUserAgent builds the Codex TUI User-Agent string for the given version.
+func BuildCodexUserAgent(version string) string {
+	return "codex-tui/" + version + " (Windows 10.0.19045; x86_64) WindowsTerminal (codex-tui; " + version + ")"
+}
+
+// CodexUserAgent is the default User-Agent header value for Codex CLI-compatible requests.
+var CodexUserAgent = BuildCodexUserAgent(DefaultCodexVersion)
 
 // ModifyRequest sets the Authorization header for the Responses API.
 // User-Agent is intentionally left unchanged for normal proxy requests.
