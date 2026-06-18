@@ -16,7 +16,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/datatypes"
@@ -583,8 +582,8 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 				delete(configMap, key)
 				continue
 			}
-			if !isSimpleSemver(version) {
-				return fmt.Errorf("invalid value for %s: must be a semantic version like 1.2.3", key)
+			if !utils.IsDottedNumericVersion(version) {
+				return fmt.Errorf("invalid value for %s: must be a dotted numeric version like 1.2 or 1.2.3", key)
 			}
 			configMap[key] = version
 			continue
@@ -711,24 +710,6 @@ func integerConfigValue(key string, value any) (int64, error) {
 		return 0, fmt.Errorf("invalid value for %s: must be an integer", key)
 	}
 	return intVal, nil
-}
-
-func isSimpleSemver(version string) bool {
-	parts := strings.Split(version, ".")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, part := range parts {
-		if part == "" {
-			return false
-		}
-		for _, r := range part {
-			if !unicode.IsDigit(r) {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // DisplaySystemConfig displays the current system settings.

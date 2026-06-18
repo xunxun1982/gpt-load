@@ -1313,6 +1313,76 @@ func TestRecordDynamicWeightMetricsUsesRetryAfterPressureAfterConsecutive429Thre
 	assert.Less(t, dwm.CalculateHealthScore(metrics), 1.0)
 }
 
+func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFor429(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
+
+	group := &models.Group{ID: 81, GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("response_body", `{"error":{"message":"api key 5小时限额已用完","type":"rate_limit_exceeded"}}`)
+
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+
+	metrics, err := dwm.GetGroupMetrics(group.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(6), metrics.ConsecutiveRateLimits)
+	assert.Less(t, dwm.CalculateHealthScore(metrics), 0.90)
+	assert.Greater(t, dwm.CalculateHealthScore(metrics), 0.45)
+}
+
+func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name     string
+		body     string
+		expected int64
+	}{
+		{
+			name:     "structured rate limit exceeded with json spacing",
+			body:     `{"error":{"message":"api key quota exhausted","type": "rate_limit_exceeded"}}`,
+			expected: quotaExhaustedRatePressure,
+		},
+		{
+			name:     "chinese quota exhausted message",
+			body:     `{"error":{"message":"api key 5小时限额已用完"}}`,
+			expected: quotaExhaustedRatePressure,
+		},
+		{
+			name:     "plain too many requests remains light",
+			body:     `{"error":{"message":"Too many requests"}}`,
+			expected: 0,
+		},
+		{
+			name:     "generic limit exceeded remains light",
+			body:     `{"error":{"message":"request limit exceeded"}}`,
+			expected: 0,
+		},
+		{
+			name:     "generic rate limit type remains light",
+			body:     `{"error":{"message":"Too many requests","type":"rate_limit_exceeded"}}`,
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Set("response_body", tt.body)
+			assert.Equal(t, tt.expected, quotaExhaustedRateLimitPressureFromContext(ctx))
+		})
+	}
+}
+
 func TestRecordDynamicWeightMetricsForV2ModelRedirect(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

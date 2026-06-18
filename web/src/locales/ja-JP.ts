@@ -558,6 +558,8 @@ export default {
     simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.133",
     simulatedClaudeCodeVersionTip:
       "claude-cli User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
+    invalidSimulatedClientVersion:
+      "{client} は 1.2、1.2.3、1.2.3.4 のような数値ドット区切りの形式にしてください。",
     responsesIncludeEncryptedReasoning: "暗号化推理",
     responsesIncludeEncryptedReasoningTip:
       'OpenAI Responses のみ。リクエストの include 配列に "reasoning.encrypted_content" を追加します。',

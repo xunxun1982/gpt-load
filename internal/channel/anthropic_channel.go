@@ -117,6 +117,7 @@ func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIK
 		headerCtx := utils.NewHeaderVariableContext(group, apiKey)
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
+	ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group))
 
 	client := selection.HTTPClient
 	if client == nil {

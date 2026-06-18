@@ -179,6 +179,48 @@ func TestAnthropicChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
 	assert.True(t, valid)
 }
 
+func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, BuildClaudeCodeUserAgent("2.2.0"), r.Header.Get("User-Agent"))
+		assert.Equal(t, "application/json", r.Header.Get("Accept"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		assert.Equal(t, "cli", r.Header.Get("X-App"))
+		assert.Equal(t, "2023-06-01", r.Header.Get("anthropic-version"))
+		assert.Contains(t, r.Header.Get("anthropic-beta"), "claude-code-20250219")
+		assert.Contains(t, r.Header.Get("anthropic-beta"), "redact-thinking-2026-02-12")
+		assert.Equal(t, "true", r.Header.Get("Anthropic-Dangerous-Direct-Browser-Access"))
+		assert.Equal(t, "js", r.Header.Get("X-Stainless-Lang"))
+		assert.Equal(t, "node", r.Header.Get("X-Stainless-Runtime"))
+		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "test-key", r.Header.Get("x-api-key"))
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ch := &AnthropicChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/messages",
+			TestModel:          "claude-3-haiku-20240307",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{
+			"simulated_client":              "claude_code",
+			"simulated_claude_code_version": "2.2.0",
+		},
+	})
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
 // Benchmark tests
 func BenchmarkAnthropicChannel_ModifyRequest(b *testing.B) {
 	b.ReportAllocs()

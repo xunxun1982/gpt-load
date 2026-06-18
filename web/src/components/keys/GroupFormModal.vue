@@ -81,6 +81,9 @@ const formRef = ref();
 const fetchingModels = ref(false);
 const showModelSelector = ref(false);
 const availableModels = ref<string[]>([]);
+const DEFAULT_CODEX_VERSION = "0.141.0";
+const DEFAULT_CLAUDE_CODE_VERSION = "2.1.133";
+const simpleClientVersionPattern = /^[0-9]+(?:\.[0-9]+)+$/;
 
 // Model redirect edit mode: "gui" or "json"
 const modelRedirectEditMode = ref<"gui" | "json">("gui");
@@ -181,8 +184,8 @@ const formData = reactive<GroupFormData>({
   request_stream_mode: "default",
   responses_include_encrypted_reasoning: false,
   simulated_client: "off",
-  simulated_codex_version: "0.141.0",
-  simulated_claude_code_version: "2.1.133",
+  simulated_codex_version: DEFAULT_CODEX_VERSION,
+  simulated_claude_code_version: DEFAULT_CLAUDE_CODE_VERSION,
   cc_support: false,
   intercept_event_log: false,
   thinking_model: "",
@@ -486,8 +489,8 @@ function resetForm() {
     request_stream_mode: "default",
     responses_include_encrypted_reasoning: false,
     simulated_client: "off",
-    simulated_codex_version: "0.141.0",
-    simulated_claude_code_version: "2.1.133",
+    simulated_codex_version: DEFAULT_CODEX_VERSION,
+    simulated_claude_code_version: DEFAULT_CLAUDE_CODE_VERSION,
     cc_support: false,
     intercept_event_log: false,
     thinking_model: "",
@@ -572,12 +575,12 @@ function loadGroupData() {
   const simulatedCodexVersion =
     typeof simulatedCodexVersionRaw === "string" && simulatedCodexVersionRaw.trim()
       ? simulatedCodexVersionRaw.trim()
-      : "0.141.0";
+      : DEFAULT_CODEX_VERSION;
   const simulatedClaudeCodeVersionRaw = rawConfig["simulated_claude_code_version"];
   const simulatedClaudeCodeVersion =
     typeof simulatedClaudeCodeVersionRaw === "string" && simulatedClaudeCodeVersionRaw.trim()
       ? simulatedClaudeCodeVersionRaw.trim()
-      : "2.1.133";
+      : DEFAULT_CLAUDE_CODE_VERSION;
   const ccRaw = rawConfig["cc_support"];
   // CC support is available for OpenAI, OpenAI Responses, and Gemini channels.
   const ccSupport =
@@ -1429,7 +1432,13 @@ async function handleSubmit() {
     if (formData.simulated_client === "codex") {
       config["simulated_client"] = "codex";
       const codexVersion = formData.simulated_codex_version.trim();
-      if (codexVersion && codexVersion !== "0.141.0") {
+      if (codexVersion && !simpleClientVersionPattern.test(codexVersion)) {
+        message.error(
+          t("keys.invalidSimulatedClientVersion", { client: t("keys.simulatedCodexVersion") })
+        );
+        return;
+      }
+      if (codexVersion && codexVersion !== DEFAULT_CODEX_VERSION) {
         config["simulated_codex_version"] = codexVersion;
       } else {
         delete config["simulated_codex_version"];
@@ -1438,7 +1447,13 @@ async function handleSubmit() {
     } else if (formData.simulated_client === "claude_code") {
       config["simulated_client"] = "claude_code";
       const claudeCodeVersion = formData.simulated_claude_code_version.trim();
-      if (claudeCodeVersion && claudeCodeVersion !== "2.1.133") {
+      if (claudeCodeVersion && !simpleClientVersionPattern.test(claudeCodeVersion)) {
+        message.error(
+          t("keys.invalidSimulatedClientVersion", { client: t("keys.simulatedClaudeCodeVersion") })
+        );
+        return;
+      }
+      if (claudeCodeVersion && claudeCodeVersion !== DEFAULT_CLAUDE_CODE_VERSION) {
         config["simulated_claude_code_version"] = claudeCodeVersion;
       } else {
         delete config["simulated_claude_code_version"];

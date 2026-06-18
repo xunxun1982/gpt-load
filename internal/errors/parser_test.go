@@ -64,6 +64,16 @@ func TestParseUpstreamError(t *testing.T) {
 			body:     []byte(`{"error": {"message": "` + strings.Repeat("a", 3000) + `"}}`),
 			expected: strings.Repeat("a", maxErrorBodyLength),
 		},
+		{
+			name:     "standard message redacts api key",
+			body:     []byte(`{"error": {"message": "upstream rejected key sk-abcdefghijklmnopqrstuvwxyz123456"}}`),
+			expected: "upstream rejected key [REDACTED_API_KEY]",
+		},
+		{
+			name:     "raw fallback redacts authorization header",
+			body:     []byte("Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456\nrequest failed"),
+			expected: "Authorization: [REDACTED]\nrequest failed",
+		},
 	}
 
 	for _, tt := range tests {

@@ -335,6 +335,17 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Equal(t, "upstream-key", req.Header.Get("x-api-key"))
 	})
 
+	t.Run("codex non-stream preset overrides accept fingerprint", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set("Accept", "text/plain")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, false)
+
+		assert.Equal(t, "application/json", req.Header.Get("Accept"))
+	})
+
 	t.Run("claude code preset sets stainless fingerprint without touching auth headers", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 		req.Header.Set("Authorization", "Bearer upstream-key")
@@ -369,21 +380,21 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		codexReq := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 		applySimulatedClientHeaders(codexReq, &models.Group{Config: datatypes.JSONMap{
 			"simulated_client":        "codex",
-			"simulated_codex_version": "0.150.1",
+			"simulated_codex_version": "1.32",
 		}}, false)
 		codexUA := codexReq.Header.Get("User-Agent")
-		assert.Equal(t, buildCodexUserAgent("0.150.1"), codexUA)
-		assert.Equal(t, 2, strings.Count(codexUA, "0.150.1"))
-		assert.Equal(t, "0.150.1", codexReq.Header.Get("Version"))
+		assert.Equal(t, buildCodexUserAgent("1.32"), codexUA)
+		assert.Equal(t, 2, strings.Count(codexUA, "1.32"))
+		assert.Equal(t, "1.32", codexReq.Header.Get("Version"))
 		assert.Equal(t, "codex_cli_rs", codexReq.Header.Get("originator"))
 
 		claudeReq := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 		claudeReq.Header.Set("anthropic-beta", "custom-beta,claude-code-20250219")
 		applySimulatedClientHeaders(claudeReq, &models.Group{Config: datatypes.JSONMap{
 			"simulated_client":              "claude_code",
-			"simulated_claude_code_version": "2.2.0",
+			"simulated_claude_code_version": "1.32.6.9.8",
 		}}, false)
-		assert.Equal(t, buildClaudeCodeUserAgent("2.2.0"), claudeReq.Header.Get("User-Agent"))
+		assert.Equal(t, buildClaudeCodeUserAgent("1.32.6.9.8"), claudeReq.Header.Get("User-Agent"))
 		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "claude-code-20250219")
 		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "custom-beta")
 		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "interleaved-thinking-2025-05-14")

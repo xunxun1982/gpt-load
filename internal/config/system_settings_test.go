@@ -328,10 +328,11 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
 	tests := []struct {
-		name        string
-		config      map[string]any
-		expectError bool
-		errorMsg    string
+		name         string
+		config       map[string]any
+		expectError  bool
+		errorMsg     string
+		assertConfig func(t *testing.T, config map[string]any)
 	}{
 		{
 			name: "valid sub_max_retries",
@@ -511,6 +512,16 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "simulated client trims and normalizes case",
+			config: map[string]any{
+				"simulated_client": "  CODEX  ",
+			},
+			expectError: false,
+			assertConfig: func(t *testing.T, config map[string]any) {
+				assert.Equal(t, "codex", config["simulated_client"])
+			},
+		},
+		{
 			name: "invalid simulated client type",
 			config: map[string]any{
 				"simulated_client": true,
@@ -534,11 +545,47 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid simulated codex version with two segments",
+			config: map[string]any{
+				"simulated_codex_version": "1.32",
+			},
+			expectError: false,
+		},
+		{
 			name: "valid simulated claude code version",
 			config: map[string]any{
 				"simulated_claude_code_version": "2.2.0",
 			},
 			expectError: false,
+		},
+		{
+			name: "valid simulated claude code version with many segments",
+			config: map[string]any{
+				"simulated_claude_code_version": "1.32.6.9.8",
+			},
+			expectError: false,
+		},
+		{
+			name: "blank simulated codex version clears override",
+			config: map[string]any{
+				"simulated_codex_version": "   ",
+			},
+			expectError: false,
+			assertConfig: func(t *testing.T, config map[string]any) {
+				_, exists := config["simulated_codex_version"]
+				assert.False(t, exists)
+			},
+		},
+		{
+			name: "blank simulated claude code version clears override",
+			config: map[string]any{
+				"simulated_claude_code_version": "",
+			},
+			expectError: false,
+			assertConfig: func(t *testing.T, config map[string]any) {
+				_, exists := config["simulated_claude_code_version"]
+				assert.False(t, exists)
+			},
 		},
 		{
 			name: "invalid simulated codex version type",
@@ -551,10 +598,26 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 		{
 			name: "invalid simulated claude code version format",
 			config: map[string]any{
-				"simulated_claude_code_version": "2.1",
+				"simulated_claude_code_version": "2..1",
 			},
 			expectError: true,
-			errorMsg:    "must be a semantic version",
+			errorMsg:    "must be a dotted numeric version",
+		},
+		{
+			name: "invalid simulated codex version non ascii digits",
+			config: map[string]any{
+				"simulated_codex_version": "١.٢.٣",
+			},
+			expectError: true,
+			errorMsg:    "must be a dotted numeric version",
+		},
+		{
+			name: "invalid simulated codex version single segment",
+			config: map[string]any{
+				"simulated_codex_version": "1",
+			},
+			expectError: true,
+			errorMsg:    "must be a dotted numeric version",
 		},
 		{
 			name: "valid health reset interval disabled",
@@ -632,6 +695,9 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 				assert.Contains(t, err.Error(), tt.errorMsg)
 			} else {
 				require.NoError(t, err)
+				if tt.assertConfig != nil {
+					tt.assertConfig(t, tt.config)
+				}
 			}
 		})
 	}

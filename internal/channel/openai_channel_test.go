@@ -175,6 +175,44 @@ func TestOpenAIChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
 	assert.True(t, valid)
 }
 
+func TestOpenAIChannel_ValidateKey_AppliesSimulatedCodexClient(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, BuildCodexUserAgent("0.150.1"), r.Header.Get("User-Agent"))
+		assert.Equal(t, "0.150.1", r.Header.Get("Version"))
+		assert.Equal(t, "codex_cli_rs", r.Header.Get("originator"))
+		assert.Equal(t, "responses=experimental", r.Header.Get("OpenAI-Beta"))
+		assert.Equal(t, "application/json", r.Header.Get("Accept"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"test","object":"chat.completion"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/chat/completions",
+			TestModel:          "gpt-3.5-turbo",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{
+			"simulated_client":        "codex",
+			"simulated_codex_version": "0.150.1",
+		},
+	})
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
 func TestOpenAIChannel_ValidateKey_InvalidKey(t *testing.T) {
 	t.Parallel()
 

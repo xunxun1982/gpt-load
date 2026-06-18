@@ -531,6 +531,7 @@ export default {
     simulatedClaudeCodeVersion: "Claude Code 版本",
     simulatedClaudeCodeVersionPlaceholder: "默认 2.1.133",
     simulatedClaudeCodeVersionTip: "用于生成 claude-cli User-Agent，留空使用默认版本。",
+    invalidSimulatedClientVersion: "{client} 必须使用 1.2、1.2.3 或 1.2.3.4 这样的纯数字版本格式。",
     responsesIncludeEncryptedReasoning: "加密推理内容",
     responsesIncludeEncryptedReasoningTip:
       '仅 OpenAI Responses 生效；向请求体 include 合并 "reasoning.encrypted_content"。',

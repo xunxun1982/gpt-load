@@ -35,7 +35,21 @@ const (
 	maxUpstreamErrorBodySize   = 64 * 1024
 	maxProxyBodyPreallocBytes  = 2 * 1024 * 1024
 	maxEstimatedTokenBodyBytes = 256 * 1024
+	quotaExhaustedRatePressure = int64(4)
 )
+
+var quotaExhaustedRateMarkers = []string{
+	// Keep generic rate_limit_exceeded / too many requests as light throttling.
+	"insufficient_quota",
+	"quota exhausted",
+	"limit exhausted",
+	"quota exceeded",
+	"exceeded your current quota",
+	"限额已用完",
+	"配额已用完",
+	"配额用尽",
+	"额度已用完",
+}
 
 func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
 	if group == nil || group.FailoverStatusCodeMatcher.IsZero() {
@@ -78,6 +92,27 @@ func setRateLimitPressureContextForAttempt(c *gin.Context, resp *http.Response, 
 		return
 	}
 	c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), now))
+}
+
+func quotaExhaustedRateLimitPressureFromContext(c *gin.Context) int64 {
+	if c == nil {
+		return 0
+	}
+	responseBody, exists := c.Get("response_body")
+	if !exists {
+		return 0
+	}
+	body, ok := responseBody.(string)
+	if !ok {
+		return 0
+	}
+	body = strings.ToLower(body)
+	for _, marker := range quotaExhaustedRateMarkers {
+		if strings.Contains(body, marker) {
+			return quotaExhaustedRatePressure
+		}
+	}
+	return 0
 }
 
 func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSettings) (context.Context, context.CancelFunc) {
@@ -2378,6 +2413,9 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 			if pressure, ok := value.(int64); ok && pressure > rateLimitPressure {
 				rateLimitPressure = pressure
 			}
+		}
+		if quotaPressure := quotaExhaustedRateLimitPressureFromContext(c); quotaPressure > rateLimitPressure {
+			rateLimitPressure = quotaPressure
 		}
 	}
 

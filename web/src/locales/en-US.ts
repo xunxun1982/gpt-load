@@ -558,6 +558,8 @@ export default {
     simulatedClaudeCodeVersionPlaceholder: "Default 2.1.133",
     simulatedClaudeCodeVersionTip:
       "Builds the claude-cli User-Agent. Leave empty to use the default version.",
+    invalidSimulatedClientVersion:
+      "{client} must use a dotted numeric version like 1.2, 1.2.3, or 1.2.3.4.",
     responsesIncludeEncryptedReasoning: "Encrypted Reasoning",
     responsesIncludeEncryptedReasoningTip:
       'OpenAI Responses only. Merges "reasoning.encrypted_content" into the request include array.',
