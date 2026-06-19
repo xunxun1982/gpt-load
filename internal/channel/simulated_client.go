@@ -24,6 +24,10 @@ var simulatedClaudeCodeBetaTokens = []string{
 	"effort-2025-11-24",
 }
 
+var simulatedOpenAIBetaTokens = []string{
+	"responses=experimental",
+}
+
 func simulatedClientMode(group *models.Group) string {
 	if group == nil || group.Config == nil {
 		return simulatedClientOff
@@ -86,7 +90,7 @@ func ApplyCodexCompatibleHeaders(req *http.Request, group *models.Group, isStrea
 	req.Header.Set("User-Agent", BuildCodexUserAgent(version))
 	req.Header.Set("Version", version)
 	req.Header.Set("originator", "codex_cli_rs")
-	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("OpenAI-Beta", mergeCommaHeaderTokens(req.Header.Get("OpenAI-Beta"), simulatedOpenAIBetaTokens))
 	setHeaderIfMissing(req, "Content-Type", "application/json")
 	if isStream {
 		setHeaderIfMissing(req, "Accept", "text/event-stream")

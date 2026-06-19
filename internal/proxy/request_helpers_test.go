@@ -335,6 +335,17 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Equal(t, "upstream-key", req.Header.Get("x-api-key"))
 	})
 
+	t.Run("codex preset preserves existing openai beta tokens", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set("OpenAI-Beta", "custom-beta,responses=experimental")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, false)
+
+		assert.Equal(t, "custom-beta,responses=experimental", req.Header.Get("OpenAI-Beta"))
+	})
+
 	t.Run("codex preset preserves explicit media type headers", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 		req.Header.Set("Accept", "text/plain")

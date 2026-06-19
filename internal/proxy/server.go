@@ -87,6 +87,7 @@ func retryAfterRateLimitPressureFromHeader(header string, now time.Time) int64 {
 func setRateLimitPressureContextForAttempt(c *gin.Context, resp *http.Response, now time.Time) {
 	if c.Keys != nil {
 		delete(c.Keys, ctxKeyRateLimitPressure)
+		delete(c.Keys, "response_body")
 	}
 	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
 		return

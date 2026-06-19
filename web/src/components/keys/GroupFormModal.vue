@@ -567,9 +567,11 @@ function loadGroupData() {
       ? responsesIncludeEncryptedReasoningRaw
       : false;
   const simulatedClientRaw = rawConfig["simulated_client"];
+  const normalizedSimulatedClient =
+    typeof simulatedClientRaw === "string" ? simulatedClientRaw.trim().toLowerCase() : "";
   const simulatedClient =
-    simulatedClientRaw === "codex" || simulatedClientRaw === "claude_code"
-      ? simulatedClientRaw
+    normalizedSimulatedClient === "codex" || normalizedSimulatedClient === "claude_code"
+      ? normalizedSimulatedClient
       : "off";
   const simulatedCodexVersionRaw = rawConfig["simulated_codex_version"];
   const simulatedCodexVersion =

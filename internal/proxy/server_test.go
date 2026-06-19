@@ -1273,6 +1273,11 @@ func TestSetRateLimitPressureContextForAttempt(t *testing.T) {
 	require.True(t, exists)
 	assert.Equal(t, int64(4), value)
 
+	ctx.Set("response_body", `{"error":{"message":"api key quota exhausted"}}`)
+	setRateLimitPressureContextForAttempt(ctx, resp, now)
+	_, exists = ctx.Get("response_body")
+	assert.False(t, exists)
+
 	setRateLimitPressureContextForAttempt(ctx, &http.Response{StatusCode: http.StatusInternalServerError}, now)
 	_, exists = ctx.Get(ctxKeyRateLimitPressure)
 	assert.False(t, exists)
