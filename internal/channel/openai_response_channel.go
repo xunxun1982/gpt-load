@@ -5,15 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func init() {
@@ -37,12 +36,12 @@ func newOpenAIResponseChannel(f *Factory, group *models.Group) (ChannelProxy, er
 	}, nil
 }
 
-// DefaultCodexVersion is the default Codex TUI version used for simulated client fingerprints.
+// DefaultCodexVersion is the default Codex CLI version used for simulated client fingerprints.
 const DefaultCodexVersion = "0.141.0"
 
-// BuildCodexUserAgent builds the Codex TUI User-Agent string for the given version.
+// BuildCodexUserAgent builds the Codex CLI User-Agent string for the given version.
 func BuildCodexUserAgent(version string) string {
-	return "codex-tui/" + version + " (Windows 10.0.19045; x86_64) WindowsTerminal (codex-tui; " + version + ")"
+	return "codex_cli_rs/" + version + " (Ubuntu 22.4.0; x86_64) xterm-256color"
 }
 
 // CodexUserAgent is the default User-Agent header value for Codex CLI-compatible requests.
@@ -61,7 +60,14 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 		return false, fmt.Errorf("failed to parse validation endpoint: %w", err)
 	}
 
-	selection, err := ch.SelectValidationUpstream(group, endpointURL.Path, endpointURL.RawQuery)
+	isCodexProbe := simulatedClientMode(group) == simulatedClientCodex
+
+	validationPath := endpointURL.Path
+	if isCodexProbe && !strings.HasSuffix(validationPath, "/compact") {
+		validationPath = strings.TrimRight(validationPath, "/") + "/compact"
+	}
+
+	selection, err := ch.SelectValidationUpstream(group, validationPath, endpointURL.RawQuery)
 	if err != nil {
 		return false, fmt.Errorf("failed to select validation upstream: %w", err)
 	}
@@ -70,16 +76,7 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 	}
 	reqURL := selection.URL
 
-	payload := gin.H{
-		"model": ch.TestModel,
-		"input": validationPromptForGroup(group),
-	}
-	if validationStreamEnabled(group) {
-		payload["stream"] = true
-	}
-	if validationResponsesIncludeEncryptedReasoning(group) {
-		payload["include"] = []string{"reasoning.encrypted_content"}
-	}
+	payload := buildResponsesValidationPayload(group, ch.TestModel, isCodexProbe)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return false, fmt.Errorf("failed to marshal validation payload: %w", err)
@@ -97,6 +94,11 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 	ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group))
+	if isCodexProbe {
+		sessionID := uuid.NewString()
+		req.Header.Set("Session_ID", sessionID)
+		req.Header.Set("Conversation_ID", sessionID)
+	}
 
 	client := selection.HTTPClient
 	if client == nil {
@@ -112,13 +114,40 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 		return true, nil
 	}
 
-	errorBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("key is invalid (status %d), but failed to read error body: %w", resp.StatusCode, err)
+	return false, invalidValidationStatusError(resp)
+}
+
+func buildResponsesValidationPayload(group *models.Group, model string, isCodexProbe bool) gin.H {
+	if isCodexProbe {
+		return gin.H{
+			"model":        model,
+			"instructions": "You are a helpful coding assistant.",
+			"input": []gin.H{
+				{
+					"type": "message",
+					"role": "user",
+					"content": []gin.H{
+						{
+							"type": "input_text",
+							"text": "Respond with OK.",
+						},
+					},
+				},
+			},
+		}
 	}
 
-	parsedError := app_errors.ParseUpstreamError(errorBody)
-	return false, fmt.Errorf("[status %d] %s", resp.StatusCode, parsedError)
+	payload := gin.H{
+		"model": model,
+		"input": validationPromptForGroup(group),
+	}
+	if validationStreamEnabled(group) {
+		payload["stream"] = true
+	}
+	if validationResponsesIncludeEncryptedReasoning(group) {
+		payload["include"] = []string{"reasoning.encrypted_content"}
+	}
+	return payload
 }
 
 // IsStreamRequest checks whether the request expects a streaming response.

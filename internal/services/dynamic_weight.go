@@ -123,11 +123,11 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 		// 429 indicates temporary throttling, not service unavailability
 		// Lighter penalties allow the service to recover traffic faster once rate limit clears
 		ConsecutiveRateLimitPenalty: 0.025, // ~30% of 0.08
-		// Max penalty at 0.125 (reached after 5 consecutive rate limits)
-		// Much lighter than hard-failure max of 0.99.
-		MaxConsecutiveRateLimitPenalty: 0.125,
-		// Recent rate limit penalty: 0.04 with time decay (~30% of 0.12)
-		RecentRateLimitPenalty: 0.04,
+		// Max penalty at 0.16 keeps plain throttling recoverable while making repeated
+		// quota/concurrency exhaustion materially visible even when historical success rate is high.
+		MaxConsecutiveRateLimitPenalty: 0.16,
+		// Recent rate limit penalty: 0.05 with time decay.
+		RecentRateLimitPenalty: 0.05,
 		// 3-minute cooldown for rate limit penalty (shorter than regular 8-minute)
 		// Rate limits typically clear faster than service failures
 		RecentRateLimitCooldown: 3 * time.Minute,

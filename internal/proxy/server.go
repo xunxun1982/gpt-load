@@ -116,6 +116,23 @@ func quotaExhaustedRateLimitPressureFromContext(c *gin.Context) int64 {
 	return 0
 }
 
+func logicalStatusFromContext(c *gin.Context) (int, string, bool) {
+	if c == nil {
+		return 0, "", false
+	}
+	value, exists := c.Get(ctxKeyUpstreamLogicalStatusCode)
+	if !exists {
+		return 0, "", false
+	}
+	statusCode, ok := value.(int)
+	if !ok || statusCode <= 0 {
+		return 0, "", false
+	}
+	message, _ := c.Get(ctxKeyUpstreamLogicalErrorMessage)
+	messageStr, _ := message.(string)
+	return statusCode, strings.TrimSpace(messageStr), true
+}
+
 func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSettings) (context.Context, context.CancelFunc) {
 	if cfg.NonStreamRequestTimeout > 0 {
 		return context.WithTimeout(parent, time.Duration(cfg.NonStreamRequestTimeout)*time.Second)
@@ -128,9 +145,11 @@ func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSe
 
 // Context keys used for function call middleware.
 const (
-	ctxKeyTriggerSignal       = "fc_trigger_signal"
-	ctxKeyFunctionCallEnabled = "fc_enabled"
-	ctxKeyRateLimitPressure   = "rate_limit_pressure"
+	ctxKeyTriggerSignal               = "fc_trigger_signal"
+	ctxKeyFunctionCallEnabled         = "fc_enabled"
+	ctxKeyRateLimitPressure           = "rate_limit_pressure"
+	ctxKeyUpstreamLogicalStatusCode   = "upstream_logical_status_code"
+	ctxKeyUpstreamLogicalErrorMessage = "upstream_logical_error_message"
 )
 
 // ProxyServer represents the proxy server
@@ -1092,13 +1111,6 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	// Apply anonymization: remove tracking and proxy-revealing headers
 	utils.CleanAnonymizationHeaders(req)
 
-	// For /models with mapping configured, remove Accept-Encoding so upstream returns plain (non-gzip) body
-	// This ensures we can read/modify the response safely.
-	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
-		req.Header.Del("Accept-Encoding")
-		logrus.Debug("Removed Accept-Encoding header for /models endpoint to avoid gzip compression")
-	}
-
 	// Apply model redirection with index tracking for dynamic weight metrics
 	// Skip for CC mode as redirection is already handled in CC conversion
 	// This prevents strict mode errors when using Claude model names with CC
@@ -1151,6 +1163,8 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		applyCodexCompatibleHeaders(req, group, true)
 		req.Header.Set("Connection", "Keep-Alive")
 	}
+
+	removeAcceptEncodingForProxyParsing(req, c, group)
 
 	// Use the upstream-specific client (with its dedicated proxy configuration)
 	var client *http.Client
@@ -1211,7 +1225,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 				errorBody = []byte("Failed to read error body")
 			}
 
-			errorBody = handleGzipCompression(resp, errorBody)
+			errorBody = decompressUpstreamErrorBody(resp, errorBody)
 
 			// Store error response body in context for logging.
 			// Per AI review: sanitize sensitive data before storing to prevent
@@ -1789,12 +1803,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Apply anonymization: remove tracking and proxy-revealing headers
 	utils.CleanAnonymizationHeaders(req)
 
-	// For /models with mapping configured, remove Accept-Encoding
-	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && ps.isModelsEndpoint(c.Request.URL.Path) {
-		req.Header.Del("Accept-Encoding")
-		logrus.Debug("Removed Accept-Encoding header for /models endpoint to avoid gzip compression")
-	}
-
 	// Apply model redirection for aggregate sub-group with index tracking for dynamic weight metrics
 	// Skip for CC mode as redirection is already handled in CC conversion
 	// This prevents strict mode errors when using Claude model names with CC
@@ -1846,6 +1854,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		applyCodexCompatibleHeaders(req, group, true)
 		req.Header.Set("Connection", "Keep-Alive")
 	}
+
+	removeAcceptEncodingForProxyParsing(req, c, group)
 
 	// Use the upstream-specific client
 	var client *http.Client
@@ -1904,7 +1914,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				errorBody = []byte("Failed to read error body")
 			}
 
-			errorBody = handleGzipCompression(resp, errorBody)
+			errorBody = decompressUpstreamErrorBody(resp, errorBody)
 
 			// Store sanitized error response body in context for logging.
 			// Per AI review: sanitize to prevent leaking secrets/PII in logs.
@@ -2284,6 +2294,16 @@ func (ps *ProxyServer) logRequest(
 		ResponseBody: responseBodyToLog,
 	}
 
+	if logicalStatusCode, logicalErrorMessage, ok := logicalStatusFromContext(c); ok {
+		logEntry.IsSuccess = false
+		logEntry.StatusCode = logicalStatusCode
+		if logicalErrorMessage != "" {
+			logEntry.ErrorMessage = logicalErrorMessage
+		} else if finalError != nil {
+			logEntry.ErrorMessage = finalError.Error()
+		}
+	}
+
 	// Set parent group
 	if originalGroup != nil && originalGroup.GroupType == "aggregate" && originalGroup.ID != group.ID {
 		logEntry.ParentGroupID = originalGroup.ID
@@ -2386,7 +2406,7 @@ func (ps *ProxyServer) logRequest(
 	// This ensures that failed sub-group attempts are reflected in health scores,
 	// even when the overall aggregate request succeeds via retry to another sub-group.
 	if ps.dynamicWeightManager != nil {
-		ps.recordDynamicWeightMetrics(c, originalGroup, group, logEntry.IsSuccess, statusCode)
+		ps.recordDynamicWeightMetrics(c, originalGroup, group, logEntry.IsSuccess, logEntry.StatusCode)
 	}
 }
 

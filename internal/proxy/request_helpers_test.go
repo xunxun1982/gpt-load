@@ -12,6 +12,7 @@ import (
 	"gpt-load/internal/channel"
 	"gpt-load/internal/models"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/datatypes"
 )
@@ -423,7 +424,7 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		}}, false)
 		codexUA := codexReq.Header.Get("User-Agent")
 		assert.Equal(t, buildCodexUserAgent("1.32"), codexUA)
-		assert.Equal(t, 2, strings.Count(codexUA, "1.32"))
+		assert.Equal(t, 1, strings.Count(codexUA, "1.32"))
 		assert.Equal(t, "1.32", codexReq.Header.Get("Version"))
 		assert.Equal(t, "codex_cli_rs", codexReq.Header.Get("originator"))
 
@@ -476,6 +477,57 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, body, got)
 	})
+}
+
+func TestShouldRemoveAcceptEncodingForProxyParsing(t *testing.T) {
+	t.Run("plain passthrough keeps accept encoding", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/proxy/test/v1/chat/completions", nil)
+		group := &models.Group{}
+		assert.False(t, shouldRemoveAcceptEncodingForProxyParsing(c, group))
+	})
+
+	t.Run("models enhancement removes accept encoding", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodGet, "/proxy/test/v1/models", nil)
+		group := &models.Group{ModelMappingCache: map[string]string{"a": "b"}}
+		assert.True(t, shouldRemoveAcceptEncodingForProxyParsing(c, group))
+	})
+
+	t.Run("function call conversion removes accept encoding", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/proxy/test/v1/chat/completions", nil)
+		c.Set(ctxKeyFunctionCallEnabled, true)
+		group := &models.Group{}
+		assert.True(t, shouldRemoveAcceptEncodingForProxyParsing(c, group))
+	})
+
+	t.Run("cc conversion removes accept encoding", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/proxy/test/claude/v1/messages", nil)
+		c.Set("cc_enabled", true)
+		group := &models.Group{}
+		assert.True(t, shouldRemoveAcceptEncodingForProxyParsing(c, group))
+	})
+
+	t.Run("forced stream collection removes accept encoding", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/proxy/test/v1/responses", nil)
+		c.Set(ctxKeyOpenAIResponseForcedStream, true)
+		group := &models.Group{}
+		assert.True(t, shouldRemoveAcceptEncodingForProxyParsing(c, group))
+	})
+}
+
+func TestRemoveAcceptEncodingForProxyParsing(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/proxy/test/v1/responses", nil)
+	req.Header.Set("Accept-Encoding", "gzip, br")
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = req
+	c.Set(ctxKeyOpenAIResponseForcedStream, true)
+
+	removeAcceptEncodingForProxyParsing(req, c, &models.Group{})
+	assert.Empty(t, req.Header.Get("Accept-Encoding"))
 }
 
 func TestApplyResponsesIncludeConfig(t *testing.T) {

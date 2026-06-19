@@ -1549,6 +1549,28 @@ func TestDynamicWeightManager_QuotaExhaustedRateLimitPenaltyIsStrongerButNotHard
 	assert.LessOrEqual(t, quotaHealth, 0.80, "quota exhausted penalty should be materially stronger than plain throttling")
 }
 
+func TestDynamicWeightManager_QuotaExhaustedRateLimitPenaltyDropsHealthAfterManyAttempts(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	groupID := uint(274)
+	for i := 0; i < 100; i++ {
+		dwm.RecordGroupSuccess(groupID)
+	}
+	for i := 0; i < 15; i++ {
+		dwm.RecordGroupFailure(groupID, true, 4)
+	}
+
+	metrics, err := dwm.GetGroupMetrics(groupID)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, metrics.ConsecutiveRateLimits, int64(15))
+
+	health := dwm.CalculateHealthScore(metrics)
+	assert.Less(t, health, 0.80)
+	assert.Greater(t, health, 0.45)
+}
+
 // TestDynamicWeightManager_MixedFailureTypes tests handling of mixed failure types
 func TestDynamicWeightManager_MixedFailureTypes(t *testing.T) {
 	t.Parallel()

@@ -26,7 +26,9 @@ import (
 	"gpt-load/internal/store"
 	"gpt-load/internal/tokenusage"
 	"gpt-load/internal/types"
+	"gpt-load/internal/utils"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -1205,6 +1207,17 @@ func activeKeysListKeyForTest(groupID uint64) string {
 	return "group:" + strconv.FormatUint(groupID, 10) + ":active_keys"
 }
 
+func compressBrotliForProxyTest(t *testing.T, body []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := brotli.NewWriter(&buf)
+	_, err := writer.Write(body)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	return buf.Bytes()
+}
+
 func systemSettingsWithRetryTimeout(maxRetries, nonStreamTimeout int) types.SystemSettings {
 	return types.SystemSettings{
 		MaxRetries:                  maxRetries,
@@ -1343,6 +1356,41 @@ func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFor429(t *testing.T
 	assert.Greater(t, dwm.CalculateHealthScore(metrics), 0.45)
 }
 
+func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFromCompressed429Body(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
+
+	rawBody := []byte(`{"error":{"message":"api key 日限额已用完","type":"rate_limit_exceeded"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Content-Encoding": []string{"br"},
+		},
+	}
+	decodedBody := decompressUpstreamErrorBody(resp, compressBrotliForProxyTest(t, rawBody))
+	require.Equal(t, rawBody, decodedBody)
+
+	group := &models.Group{ID: 82, GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("response_body", utils.TruncateString(utils.SanitizeErrorBody(string(decodedBody)), maxResponseCaptureBytes))
+	require.Equal(t, quotaExhaustedRatePressure, quotaExhaustedRateLimitPressureFromContext(ctx))
+
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+
+	metrics, err := dwm.GetGroupMetrics(group.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(6), metrics.ConsecutiveRateLimits)
+	assert.Less(t, dwm.CalculateHealthScore(metrics), 0.90)
+}
+
 func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -1360,6 +1408,11 @@ func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
 		{
 			name:     "chinese quota exhausted message",
 			body:     `{"error":{"message":"api key 5小时限额已用完"}}`,
+			expected: quotaExhaustedRatePressure,
+		},
+		{
+			name:     "chinese daily quota exhausted message",
+			body:     `{"error":{"message":"api key 日限额已用完","type":"rate_limit_exceeded"}}`,
 			expected: quotaExhaustedRatePressure,
 		},
 		{
@@ -1579,6 +1632,35 @@ func TestLogRequestSkipsTokenUsageForFailedRequest(t *testing.T) {
 	assert.Equal(t, int64(0), logEntry.OutputTokens)
 	assert.Equal(t, int64(0), logEntry.TotalTokens)
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
+}
+
+func TestLogRequestUsesLogicalStreamingFailureForHealthMetrics(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps := &ProxyServer{
+		requestLogService:    services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+		dynamicWeightManager: dwm,
+	}
+	group := &models.Group{ID: 91, Name: "logical-failure-group", GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusTooManyRequests)
+	ctx.Set(ctxKeyUpstreamLogicalErrorMessage, "Concurrency limit exceeded for user, please retry later")
+	ctx.Set("response_body", `{"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded for user, please retry later"}}}`)
+
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, true, "", nil, nil, []byte(`{"model":"gpt-5.4"}`), models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.False(t, logEntry.IsSuccess)
+	assert.Equal(t, http.StatusTooManyRequests, logEntry.StatusCode)
+	assert.Contains(t, logEntry.ErrorMessage, "Concurrency limit exceeded")
+
+	metrics, err := dwm.GetGroupMetrics(group.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), metrics.ConsecutiveRateLimits)
 }
 
 func TestEstimateTokensForClaudeCountTokens(t *testing.T) {

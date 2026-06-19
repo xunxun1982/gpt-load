@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1287,7 +1288,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		logUpstreamError("reading response body", err)
 		return
 	}
-	body := handleGzipCompression(resp, rawBody)
+	body := decompressUpstreamErrorBody(resp, rawBody)
 
 	// Fallback: if we cannot parse JSON, behave like normal response handler.
 	var payload map[string]any
@@ -1693,10 +1694,21 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 
 func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp *http.Response) {
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		// Failed upstream responses do not contribute token usage; pass the body through unchanged.
+		// Failed upstream responses do not contribute token usage.
+		// If upstream body is compressed, decode it before forwarding because this
+		// path reads the body here instead of transparently proxying the response.
 		copyUpstreamHeaders(c.Writer.Header(), resp.Header)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			logUpstreamError("reading upstream error body", err)
+			return
+		}
+		decoded := decompressUpstreamErrorBody(resp, body)
+		if !bytes.Equal(decoded, body) {
+			clearUpstreamEncodingHeaders(c)
+		}
 		c.Status(resp.StatusCode)
-		if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+		if _, err := c.Writer.Write(decoded); err != nil {
 			logUpstreamError("copying upstream error body", err)
 			return
 		}
@@ -1724,7 +1736,24 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		return
 	}
 
-	reader := bufio.NewReader(resp.Body)
+	clearUpstreamEncodingHeaders(c)
+	streamBody := resp.Body
+	if contentEncoding := resp.Header.Get("Content-Encoding"); contentEncoding != "" {
+		decompressedBody, err := utils.NewDecompressReader(contentEncoding, resp.Body)
+		if err != nil {
+			logrus.WithError(err).WithField("content_encoding", contentEncoding).
+				Warn("Function call streaming: failed to create decompression reader")
+			return
+		}
+		streamBody = decompressedBody
+		defer func() {
+			if closer, ok := streamBody.(io.Closer); ok && closer != resp.Body {
+				closer.Close()
+			}
+		}()
+	}
+
+	reader := bufio.NewReader(streamBody)
 	// contentBuf accumulates assistant text content across all chunks.
 	var contentBuf strings.Builder
 	// reasoningBuf accumulates reasoning_content for detecting tool call intent in thinking.

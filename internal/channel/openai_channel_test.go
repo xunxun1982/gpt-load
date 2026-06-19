@@ -1,6 +1,8 @@
 package channel
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -10,7 +12,10 @@ import (
 
 	"gpt-load/internal/models"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
 )
 
@@ -279,6 +284,72 @@ func TestOpenAIChannel_ValidateKey_ServerError(t *testing.T) {
 	assert.Contains(t, err.Error(), "500")
 }
 
+func TestOpenAIChannel_ValidateKey_DecodesCompressedErrorBody(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		encoding string
+		compress func(t *testing.T, body []byte) []byte
+	}{
+		{
+			name:     "gzip",
+			encoding: "gzip",
+			compress: compressGzipForValidationTest,
+		},
+		{
+			name:     "brotli",
+			encoding: "br",
+			compress: compressBrotliForValidationTest,
+		},
+		{
+			name:     "zstd",
+			encoding: "zstd",
+			compress: compressZstdForValidationTest,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rawBody := []byte(`{"error":{"message":"upstream rejected simulated codex client","type":"forbidden"}}`)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Encoding", tt.encoding)
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write(tt.compress(t, rawBody))
+			}))
+			defer server.Close()
+
+			ch := &OpenAIChannel{
+				BaseChannel: &BaseChannel{
+					ValidationEndpoint: "/v1/chat/completions",
+					TestModel:          "gpt-3.5-turbo",
+					HTTPClient: &http.Client{
+						Transport: &http.Transport{DisableCompression: true},
+					},
+					Upstreams: []UpstreamInfo{
+						{
+							URL:    mustParseURL(server.URL),
+							Weight: 100,
+							HTTPClient: &http.Client{
+								Transport: &http.Transport{DisableCompression: true},
+							},
+						},
+					},
+				},
+			}
+
+			valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{})
+			assert.False(t, valid)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "[status 403]")
+			assert.Contains(t, err.Error(), "upstream rejected simulated codex client")
+		})
+	}
+}
+
 func TestOpenAIChannel_ValidateKey_NoUpstream(t *testing.T) {
 	t.Parallel()
 
@@ -321,4 +392,38 @@ func BenchmarkOpenAIChannel_ModifyRequest(b *testing.B) {
 		req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 		ch.ModifyRequest(req, apiKey, group)
 	}
+}
+
+func compressGzipForValidationTest(t *testing.T, body []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	_, err := writer.Write(body)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	return buf.Bytes()
+}
+
+func compressBrotliForValidationTest(t *testing.T, body []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := brotli.NewWriter(&buf)
+	_, err := writer.Write(body)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	return buf.Bytes()
+}
+
+func compressZstdForValidationTest(t *testing.T, body []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer, err := zstd.NewWriter(&buf)
+	require.NoError(t, err)
+	_, err = writer.Write(body)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	return buf.Bytes()
 }
