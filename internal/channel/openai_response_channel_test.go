@@ -20,8 +20,8 @@ func TestCodexUserAgent(t *testing.T) {
 
 	assert.NotEmpty(t, CodexUserAgent)
 	assert.Equal(t, BuildCodexUserAgent(DefaultCodexVersion), CodexUserAgent)
-	assert.Contains(t, CodexUserAgent, "codex-tui/"+DefaultCodexVersion)
-	assert.Contains(t, CodexUserAgent, "WindowsTerminal")
+	assert.Contains(t, CodexUserAgent, "codex_cli_rs/"+DefaultCodexVersion)
+	assert.Contains(t, CodexUserAgent, "xterm-256color")
 }
 
 func TestOpenAIResponseChannel_ModifyRequest(t *testing.T) {
@@ -163,7 +163,10 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, BuildCodexUserAgent("0.150.1"), r.Header.Get("User-Agent"))
 		assert.Equal(t, "0.150.1", r.Header.Get("Version"))
-		assert.Equal(t, "codex_cli_rs", r.Header.Get("originator"))
+		assert.Equal(t, "codex_cli_rs", r.Header.Get("Originator"))
+		assert.Equal(t, "terminal_resize_reflow", r.Header.Get("X-Codex-Beta-Features"))
+		assert.NotEmpty(t, r.Header.Get("X-Codex-Turn-Metadata"))
+		assert.NotEmpty(t, r.Header.Get("X-Codex-Window-Id"))
 		assert.Equal(t, "responses=experimental", r.Header.Get("OpenAI-Beta"))
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
@@ -192,6 +195,103 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 			Config: datatypes.JSONMap{
 				"simulated_client":        "codex",
 				"simulated_codex_version": "0.150.1",
+			},
+		},
+	)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestOpenAIResponseChannel_ValidateKey_UsesCompactProbeForSimulatedCodex(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/responses/compact", r.URL.Path)
+		assert.Equal(t, "application/json", r.Header.Get("Accept"))
+		assert.Equal(t, "codex_cli_rs", r.Header.Get("Originator"))
+		assert.NotEmpty(t, r.Header.Get("Session_ID"))
+		assert.Equal(t, r.Header.Get("Session_ID"), r.Header.Get("Conversation_ID"))
+
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, "gpt-5.2-codex", body["model"])
+		assert.Equal(t, "You are a helpful coding assistant.", body["instructions"])
+		input, ok := body["input"].([]any)
+		if assert.True(t, ok) && assert.Len(t, input, 1) {
+			item, ok := input[0].(map[string]any)
+			if assert.True(t, ok) {
+				assert.Equal(t, "message", item["type"])
+				assert.Equal(t, "user", item["role"])
+				content, ok := item["content"].([]any)
+				if assert.True(t, ok) && assert.Len(t, content, 1) {
+					part, ok := content[0].(map[string]any)
+					if assert.True(t, ok) {
+						assert.Equal(t, "input_text", part["type"])
+						assert.Equal(t, "Respond with OK.", part["text"])
+					}
+				}
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{
+			Name: "responses-group",
+			Config: datatypes.JSONMap{
+				"simulated_client":        "codex",
+				"simulated_codex_version": "0.150.1",
+			},
+		},
+	)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestOpenAIResponseChannel_ValidateKey_KeepsExistingCompactProbePath(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/responses/compact", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses/compact/",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{
+			Name: "responses-group",
+			Config: datatypes.JSONMap{
+				"simulated_client": "codex",
 			},
 		},
 	)

@@ -183,7 +183,7 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, BuildClaudeCodeUserAgent("2.2.0"), r.Header.Get("User-Agent"))
+		assert.Equal(t, BuildClaudeCodeUserAgent("2.1.161"), r.Header.Get("User-Agent"))
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		assert.Equal(t, "cli", r.Header.Get("X-App"))
@@ -193,8 +193,50 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 		assert.Equal(t, "true", r.Header.Get("Anthropic-Dangerous-Direct-Browser-Access"))
 		assert.Equal(t, "js", r.Header.Get("X-Stainless-Lang"))
 		assert.Equal(t, "node", r.Header.Get("X-Stainless-Runtime"))
+		assert.Equal(t, "Linux", r.Header.Get("X-Stainless-OS"))
+		assert.Equal(t, "arm64", r.Header.Get("X-Stainless-Arch"))
 		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
 		assert.Equal(t, "test-key", r.Header.Get("x-api-key"))
+
+		var body map[string]any
+		err := json.NewDecoder(r.Body).Decode(&body)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, true, body["stream"])
+		assert.Equal(t, float64(1), body["temperature"])
+		metadata, ok := body["metadata"].(map[string]any)
+		if assert.True(t, ok) {
+			userID, ok := metadata["user_id"].(string)
+			assert.True(t, ok)
+			assert.NotEmpty(t, userID)
+		}
+		system, ok := body["system"].([]any)
+		if assert.True(t, ok) && assert.NotEmpty(t, system) {
+			item, ok := system[0].(map[string]any)
+			if assert.True(t, ok) {
+				assert.Equal(t, "text", item["type"])
+				assert.NotEmpty(t, item["text"])
+			}
+		}
+		messages, ok := body["messages"].([]any)
+		if assert.True(t, ok) && assert.NotEmpty(t, messages) {
+			message, ok := messages[0].(map[string]any)
+			if assert.True(t, ok) {
+				content, ok := message["content"].([]any)
+				if assert.True(t, ok) && assert.NotEmpty(t, content) {
+					part, ok := content[0].(map[string]any)
+					if assert.True(t, ok) {
+						assert.Equal(t, "text", part["type"])
+						cacheControl, ok := part["cache_control"].(map[string]any)
+						if assert.True(t, ok) {
+							assert.Equal(t, "ephemeral", cacheControl["type"])
+						}
+					}
+				}
+			}
+		}
 
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -214,7 +256,8 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
 		Config: datatypes.JSONMap{
 			"simulated_client":              "claude_code",
-			"simulated_claude_code_version": "2.2.0",
+			"simulated_claude_code_version": "2.1.161",
+			"validation_stream":             true,
 		},
 	})
 	assert.NoError(t, err)

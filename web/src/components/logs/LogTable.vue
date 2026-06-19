@@ -256,6 +256,15 @@ const formatTokenUsageInline = (log: RequestLog) => {
   return metrics.length > 0 ? metrics.join(" · ") : "-";
 };
 
+const shouldShowUserAgentChange = computed(() => {
+  const log = selectedLog.value;
+  return !!(
+    log?.user_agent &&
+    log.upstream_user_agent &&
+    log.upstream_user_agent !== log.user_agent
+  );
+});
+
 // Copy helper with fallback dialog
 const copyContent = async (content: string, type: string) => {
   await copyWithFallback(content, {
@@ -1028,13 +1037,54 @@ const deselectAllColumns = () => {
                 </div>
               </div>
 
-              <div class="compact-field" v-if="selectedLog.user_agent">
+              <div class="compact-field" v-if="shouldShowUserAgentChange">
+                <div class="user-agent-compare">
+                  <div class="user-agent-compare-item">
+                    <span class="compact-field-title user-agent-label">
+                      {{ t("logs.userAgentBefore") }}
+                    </span>
+                    <span class="compact-field-content user-agent-value">
+                      {{ selectedLog.user_agent }}
+                    </span>
+                    <n-button
+                      size="tiny"
+                      text
+                      @click="copyContent(selectedLog.user_agent, t('logs.userAgentBefore'))"
+                    >
+                      <template #icon>
+                        <n-icon :component="CopyOutline" />
+                      </template>
+                    </n-button>
+                  </div>
+                  <div class="user-agent-compare-item">
+                    <span class="compact-field-title user-agent-label">
+                      {{ t("logs.userAgentAfter") }}
+                    </span>
+                    <span class="compact-field-content user-agent-value">
+                      {{ selectedLog.upstream_user_agent }}
+                    </span>
+                    <n-button
+                      size="tiny"
+                      text
+                      @click="
+                        copyContent(selectedLog.upstream_user_agent || '', t('logs.userAgentAfter'))
+                      "
+                    >
+                      <template #icon>
+                        <n-icon :component="CopyOutline" />
+                      </template>
+                    </n-button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="compact-field" v-else-if="selectedLog.user_agent">
                 <div class="compact-field-header">
-                  <span class="compact-field-title">User Agent</span>
+                  <span class="compact-field-title">{{ t("logs.userAgent") }}</span>
                   <n-button
                     size="tiny"
                     text
-                    @click="copyContent(selectedLog.user_agent, 'User Agent')"
+                    @click="copyContent(selectedLog.user_agent, t('logs.userAgent'))"
                   >
                     <template #icon>
                       <n-icon :component="CopyOutline" />
@@ -1429,6 +1479,37 @@ const deselectAllColumns = () => {
   color: var(--text-primary);
   max-height: 100px;
   overflow-y: auto;
+}
+
+.user-agent-compare {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.user-agent-compare-item {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+  min-width: 260px;
+  max-width: 50%;
+}
+
+.user-agent-label {
+  flex: 0 0 auto;
+}
+
+.user-agent-value {
+  display: inline-block;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
 }
 
 .detail-field {

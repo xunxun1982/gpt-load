@@ -185,6 +185,102 @@ func TestNewAPIProviderKeepsPlainCheckinPathWhenPoWNotRequired(t *testing.T) {
 	assert.Zero(t, challengeRequests)
 }
 
+func TestNewAPIProviderFallbacksToSignInWhenDefaultCheckinNotFound(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "Bearer test-access-token", r.Header.Get("Authorization"))
+		assert.Equal(t, "123", r.Header.Get("New-API-User"))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/user/checkin":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"message":"route not found"}`))
+		case "/api/user/sign_in":
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := newAPIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeNewAPI,
+		UserID:   "123",
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, "签到成功", result.Message)
+	assert.Equal(t, []string{"/api/user/checkin", "/api/user/sign_in"}, paths)
+}
+
+func TestNewAPIProviderDoesNotFallbackToSignInForCustomCheckinURL(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		assert.Equal(t, http.MethodPost, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"success":false,"message":"route not found"}`))
+	}))
+	defer server.Close()
+
+	provider := newAPIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:          server.URL,
+		SiteType:         SiteTypeNewAPI,
+		UserID:           "123",
+		CustomCheckInURL: "/custom/checkin",
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Contains(t, result.Message, "404")
+	assert.Equal(t, []string{"/custom/checkin"}, paths)
+}
+
+func TestNewAPIProviderDoesNotFallbackToSignInForBusinessFailure(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		assert.Equal(t, http.MethodPost, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":false,"message":"Turnstile token 为空"}`))
+	}))
+	defer server.Close()
+
+	provider := newAPIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeNewAPI,
+		UserID:   "123",
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Contains(t, result.Message, "Turnstile")
+	assert.Equal(t, []string{"/api/user/checkin"}, paths)
+}
+
 func TestNewAPIProviderDoesNotForgeTurnstileToken(t *testing.T) {
 	t.Parallel()
 
@@ -280,6 +376,114 @@ func TestNewAPIProviderExplainsPrivateCheckinSignatureHeader(t *testing.T) {
 	assert.Equal(t, CheckinResultFailed, result.Status)
 	assert.Contains(t, result.Message, "私有签到签名")
 	assert.Contains(t, result.Message, "Cookie")
+}
+
+func TestAutoCheckinRefreshesBalanceAfterSuccessfulCheckin(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/user/checkin":
+			assert.Equal(t, http.MethodPost, r.Method)
+			assert.Equal(t, "Bearer test-access-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		case "/api/user/self":
+			assert.Equal(t, http.MethodGet, r.Method)
+			assert.Equal(t, "Bearer test-access-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":2500000}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	encryptedAuth, err := encSvc.Encrypt("test-access-token")
+	require.NoError(t, err)
+	encryptedUserID, err := encSvc.Encrypt("123")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:           "newapi",
+		BaseURL:        server.URL,
+		SiteType:       SiteTypeNewAPI,
+		Enabled:        true,
+		CheckInEnabled: true,
+		AuthType:       AuthTypeAccessToken,
+		AuthValue:      encryptedAuth,
+		UserID:         encryptedUserID,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+	service.SetBalanceService(NewBalanceService(db, encSvc))
+
+	result, err := service.CheckInSite(t.Context(), site.ID)
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	var updated ManagedSite
+	require.NoError(t, db.First(&updated, site.ID).Error)
+	assert.Equal(t, "$5.00", updated.LastBalance)
+	assert.Equal(t, GetBeijingCheckinDay(), updated.LastBalanceDate)
+}
+
+func TestAutoCheckinRefreshesBalanceAfterSuccessfulCheckinWithMultiAuth(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/user/checkin":
+			assert.Equal(t, http.MethodPost, r.Method)
+			assert.Equal(t, "Bearer test-access-token", r.Header.Get("Authorization"))
+			assert.Contains(t, r.Header.Get("Cookie"), "session=browser-ok")
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		case "/api/user/self":
+			assert.Equal(t, http.MethodGet, r.Method)
+			assert.Equal(t, "Bearer test-access-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":1500000}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	authJSON := `{"access_token":"test-access-token","cookie":"session=browser-ok"}`
+	encryptedAuth, err := encSvc.Encrypt(authJSON)
+	require.NoError(t, err)
+	encryptedUserID, err := encSvc.Encrypt("123")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:           "newapi-multi-auth",
+		BaseURL:        server.URL,
+		SiteType:       SiteTypeNewAPI,
+		Enabled:        true,
+		CheckInEnabled: true,
+		AuthType:       AuthTypeAccessToken + "," + AuthTypeCookie,
+		AuthValue:      encryptedAuth,
+		UserID:         encryptedUserID,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+	service.SetBalanceService(NewBalanceService(db, encSvc))
+
+	result, err := service.CheckInSite(t.Context(), site.ID)
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	var updated ManagedSite
+	require.NoError(t, db.First(&updated, site.ID).Error)
+	assert.Equal(t, "$3.00", updated.LastBalance)
+	assert.Equal(t, GetBeijingCheckinDay(), updated.LastBalanceDate)
 }
 
 func TestAutoCheckinRandomScheduleSkipsCurrentWindowAfterSuccess(t *testing.T) {

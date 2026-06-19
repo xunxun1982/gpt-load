@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"gpt-load/internal/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -21,6 +23,21 @@ var benchmarkTokenCountSink int64
 type errorAfterReadCloser struct {
 	data []byte
 	done bool
+}
+
+func compressGzipForResponseHandlerTest(t *testing.T, body []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	_, err := writer.Write(body)
+	if err != nil {
+		t.Fatalf("failed to write gzip body: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close gzip writer: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func (r *errorAfterReadCloser) Read(p []byte) (int, error) {
@@ -32,6 +49,16 @@ func (r *errorAfterReadCloser) Read(p []byte) (int, error) {
 }
 
 func (r *errorAfterReadCloser) Close() error {
+	return nil
+}
+
+type alwaysErrorReadCloser struct{}
+
+func (r alwaysErrorReadCloser) Read(_ []byte) (int, error) {
+	return 0, errors.New("test read error")
+}
+
+func (r alwaysErrorReadCloser) Close() error {
 	return nil
 }
 
@@ -123,6 +150,45 @@ func TestHandleNormalResponseSkipsEstimatedOutputForError(t *testing.T) {
 		t.Fatalf("unexpected upstream usage: %+v source=%q ok=%v", usage, source, ok)
 	}
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleCodexForcedStreamResponseSanitizesErrorLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var logBuf bytes.Buffer
+	originalOutput := logrus.StandardLogger().Out
+	originalFormatter := logrus.StandardLogger().Formatter
+	originalLevel := logrus.GetLevel()
+	logrus.SetOutput(&logBuf)
+	logrus.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
+	logrus.SetLevel(logrus.WarnLevel)
+	t.Cleanup(func() {
+		logrus.SetOutput(originalOutput)
+		logrus.SetFormatter(originalFormatter)
+		logrus.SetLevel(originalLevel)
+	})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	bearerToken := strings.Repeat("a", 32)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream rejected Bearer " + bearerToken + " for operator@example.invalid\"}}}\n\n",
+		)),
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	logOutput := logBuf.String()
+	assert.NotContains(t, logOutput, bearerToken)
+	assert.NotContains(t, logOutput, "operator@example.invalid")
+	assert.Contains(t, logOutput, "Bearer [REDACTED]")
+	assert.Contains(t, logOutput, "[REDACTED_EMAIL]")
 }
 
 func TestHandleNormalResponseCaptureSkipsEstimatedOutputForError(t *testing.T) {
@@ -233,6 +299,132 @@ func TestHandleStreamingResponseSetsEstimatedOutputFallback(t *testing.T) {
 	assert.Greater(t, getEstimatedOutputTokens(c), int64(0))
 }
 
+func TestHandleStreamingResponseRecordsResponsesFailedRateLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_123\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"failed\",\"output\":[],\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Concurrency limit exceeded for user, please retry later\"}}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	statusCode, exists := c.Get(ctxKeyUpstreamLogicalStatusCode)
+	if assert.True(t, exists) {
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+	}
+	message, exists := c.Get(ctxKeyUpstreamLogicalErrorMessage)
+	if assert.True(t, exists) {
+		assert.Contains(t, message, "Concurrency limit exceeded")
+	}
+	body, exists := c.Get("response_body")
+	if assert.True(t, exists) {
+		assert.Contains(t, body, "rate_limit_exceeded")
+		assert.Contains(t, body, "Concurrency limit exceeded")
+	}
+	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleStreamingResponseSanitizesCapturedLogicalFailureBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream leaked operator@example.invalid\"}}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	body, exists := c.Get("response_body")
+	if assert.True(t, exists) {
+		bodyStr, ok := body.(string)
+		if assert.True(t, ok) {
+			assert.NotContains(t, bodyStr, "operator@example.invalid")
+			assert.Contains(t, bodyStr, "[REDACTED_EMAIL]")
+		}
+	}
+}
+
+func TestSetLogicalFailureContextSanitizesSyntheticBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	setLogicalFailureContext(c, http.StatusBadGateway, "server_error", "upstream leaked operator@example.invalid")
+
+	body, exists := c.Get("response_body")
+	if assert.True(t, exists) {
+		bodyStr, ok := body.(string)
+		if assert.True(t, ok) {
+			assert.NotContains(t, bodyStr, "operator@example.invalid")
+			assert.Contains(t, bodyStr, "[REDACTED_EMAIL]")
+		}
+	}
+}
+
+func TestHandleCodexForcedStreamResponseUsesBadGatewayForNonRateLimitFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"failed\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"upstream failed\"}}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+		Header: make(http.Header),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	statusCode, exists := c.Get(ctxKeyUpstreamLogicalStatusCode)
+	if assert.True(t, exists) {
+		assert.Equal(t, http.StatusBadGateway, statusCode)
+	}
+}
+
+func TestHandleCodexForcedStreamResponseKeepsFailedEventTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"failed\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"upstream failed\"}}}\n\n" +
+				"event: response.completed\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_completed\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"output\":[]}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+		Header: make(http.Header),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	statusCode, exists := c.Get(ctxKeyUpstreamLogicalStatusCode)
+	if assert.True(t, exists) {
+		assert.Equal(t, http.StatusBadGateway, statusCode)
+	}
+}
+
 func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -282,6 +474,32 @@ func BenchmarkEstimatedTokenCaptureWrite(b *testing.B) {
 }
 
 func TestCollectCodexStreamToResponse(t *testing.T) {
+	t.Run("nil response", func(t *testing.T) {
+		result, err := collectCodexStreamToResponse(nil)
+
+		assert.Error(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("nil response body", func(t *testing.T) {
+		result, err := collectCodexStreamToResponse(&http.Response{})
+
+		assert.Error(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("rejects oversized stream line", func(t *testing.T) {
+		streamData := "data: " + strings.Repeat("x", maxCodexStreamLineBytes+1) + "\n"
+		resp := &http.Response{
+			Body: io.NopCloser(strings.NewReader(streamData)),
+		}
+
+		result, err := collectCodexStreamToResponse(resp)
+
+		assert.Error(t, err)
+		assert.Nil(t, result)
+	})
+
 	t.Run("simple text response", func(t *testing.T) {
 		streamData := `event: response.created
 data: {"type":"response.created","response":{"id":"resp_123","model":"gpt-4","status":"in_progress"}}
@@ -394,6 +612,30 @@ data: [DONE]
 		assert.NotNil(t, result)
 	})
 
+	t.Run("response failed event", func(t *testing.T) {
+		streamData := `event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_failed","object":"response","model":"gpt-5.4","status":"failed","output":[],"error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded for user, please retry later"}}}
+
+data: [DONE]
+`
+
+		resp := &http.Response{
+			Body: io.NopCloser(strings.NewReader(streamData)),
+		}
+
+		result, err := collectCodexStreamToResponse(resp)
+
+		assert.NoError(t, err)
+		if assert.NotNil(t, result) {
+			assert.Equal(t, "resp_failed", result.ID)
+			assert.Equal(t, "failed", result.Status)
+			if assert.NotNil(t, result.Error) {
+				assert.Equal(t, "rate_limit_exceeded", result.Error.Code)
+				assert.Contains(t, result.Error.Message, "Concurrency limit exceeded")
+			}
+		}
+	})
+
 	t.Run("empty stream", func(t *testing.T) {
 		resp := &http.Response{
 			Body: io.NopCloser(bytes.NewReader([]byte{})),
@@ -405,5 +647,38 @@ data: [DONE]
 		assert.NotNil(t, result)
 		// Should return a minimal response
 		assert.Equal(t, "completed", result.Status)
+	})
+
+	t.Run("gzip compressed stream", func(t *testing.T) {
+		streamData := `event: response.created
+data: {"type":"response.created","response":{"id":"resp_zip","model":"gpt-4","status":"in_progress"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Hello Zip"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"message"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_zip","model":"gpt-4","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello Zip"}]}]}}
+
+data: [DONE]
+`
+
+		resp := &http.Response{
+			Body: io.NopCloser(bytes.NewReader(compressGzipForResponseHandlerTest(t, []byte(streamData)))),
+			Header: http.Header{
+				"Content-Encoding": []string{"gzip"},
+			},
+		}
+
+		result, err := collectCodexStreamToResponse(resp)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, "resp_zip", result.ID)
+		assert.Equal(t, "gpt-4", result.Model)
+		assert.Equal(t, "completed", result.Status)
+		assert.Len(t, result.Output, 1)
 	})
 }

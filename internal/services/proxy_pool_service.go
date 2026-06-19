@@ -63,12 +63,13 @@ type ProxyPoolSelectionOption struct {
 
 // GatewayProxyOption describes a built-in API gateway proxy choice.
 type GatewayProxyOption struct {
-	Type        string `json:"type"`
-	Label       string `json:"label"`
-	Value       string `json:"value"`
-	CandidateID string `json:"candidate_id"`
-	URL         string `json:"url"`
-	Active      bool   `json:"active,omitempty"`
+	Type        string               `json:"type"`
+	Label       string               `json:"label"`
+	Value       string               `json:"value"`
+	CandidateID string               `json:"candidate_id"`
+	URL         string               `json:"url"`
+	Active      bool                 `json:"active,omitempty"`
+	TestResult  *ProxyPoolTestResult `json:"test_result,omitempty"`
 }
 
 // ProxyPoolService manages reusable upstream proxy URLs.
@@ -85,6 +86,8 @@ type ProxyPoolService struct {
 	gatewayAutoTestMu        sync.Mutex
 	gatewayAutoTestCancel    context.CancelFunc
 	gatewayAutoTestDone      chan struct{}
+	gatewayTestResultMu      sync.RWMutex
+	gatewayTestResults       map[string]ProxyPoolTestResult
 }
 
 // ProxyPoolSettingsProvider supplies runtime proxy pool health-check settings.
@@ -326,8 +329,14 @@ func defaultGatewayProxyOptions() []GatewayProxyOption {
 // ListGatewayProxyOptions returns built-in API gateway proxy candidates.
 func (s *ProxyPoolService) ListGatewayProxyOptions() []GatewayProxyOption {
 	options := append([]GatewayProxyOption(nil), s.gatewayProxyOptions...)
+	s.gatewayTestResultMu.RLock()
+	defer s.gatewayTestResultMu.RUnlock()
 	for i := range options {
 		options[i].Active = sameGatewayProxyBaseURL(options[i].URL, channel.GatewayProxyBaseURL(options[i].Value))
+		if result, ok := s.gatewayTestResults[options[i].CandidateID]; ok {
+			resultCopy := result
+			options[i].TestResult = &resultCopy
+		}
 	}
 	return options
 }
@@ -338,7 +347,19 @@ func (s *ProxyPoolService) TestGatewayProxy(ctx context.Context, candidateID str
 	if err != nil {
 		return nil, err
 	}
-	return s.testGatewayProxyOption(ctx, selected)
+	result, err := s.testGatewayProxyOption(ctx, selected)
+	if result != nil {
+		s.storeGatewayTestResult(selected.CandidateID, *result)
+		return result, err
+	}
+	if err != nil {
+		s.storeGatewayTestResult(selected.CandidateID, ProxyPoolTestResult{
+			Success: false,
+			URL:     strings.TrimSpace(selected.URL),
+			Error:   utils.TruncateString(utils.SanitizeErrorBody(err.Error()), 300),
+		})
+	}
+	return result, err
 }
 
 func (s *ProxyPoolService) gatewayProxyOptionByCandidateID(candidateID string) (GatewayProxyOption, error) {
@@ -430,9 +451,11 @@ func (s *ProxyPoolService) RunGatewayProxyAutoTest(ctx context.Context) []ProxyP
 					URL:     strings.TrimSpace(options[index].URL),
 					Error:   utils.TruncateString(utils.SanitizeErrorBody(err.Error()), 300),
 				}
+				s.storeGatewayTestResult(options[index].CandidateID, results[index])
 				return
 			}
 			results[index] = *result
+			s.storeGatewayTestResult(options[index].CandidateID, results[index])
 		}(i)
 	}
 	wg.Wait()
@@ -466,6 +489,18 @@ func (s *ProxyPoolService) RunGatewayProxyAutoTest(ctx context.Context) []ProxyP
 		}
 	}
 	return results
+}
+
+func (s *ProxyPoolService) storeGatewayTestResult(candidateID string, result ProxyPoolTestResult) {
+	if strings.TrimSpace(candidateID) == "" {
+		return
+	}
+	s.gatewayTestResultMu.Lock()
+	if s.gatewayTestResults == nil {
+		s.gatewayTestResults = make(map[string]ProxyPoolTestResult)
+	}
+	s.gatewayTestResults[candidateID] = result
+	s.gatewayTestResultMu.Unlock()
 }
 
 func dialGatewayProxy(ctx context.Context, targetAddress string, timeout time.Duration) (time.Duration, error) {

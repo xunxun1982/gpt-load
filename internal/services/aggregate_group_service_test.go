@@ -2,9 +2,11 @@ package services
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 
 	"github.com/stretchr/testify/assert"
@@ -306,6 +308,112 @@ func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testin
 	require.NoError(t, err)
 	require.Len(t, result.SubGroups, len(groups))
 	assert.Equal(t, "/v1/messages", result.ValidationEndpoint)
+}
+
+func TestValidateSubGroupsRejectsDuplicateGroupIDs(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	subGroup := models.Group{
+		Name:        "sub-duplicate-validation",
+		DisplayName: "Sub Duplicate Validation",
+		GroupType:   "standard",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&subGroup).Error)
+
+	_, err := service.ValidateSubGroups(context.Background(), "openai", []SubGroupInput{
+		{GroupID: subGroup.ID, Weight: 100},
+		{GroupID: subGroup.ID, Weight: 200},
+	}, "")
+
+	require.Error(t, err)
+	var i18nErr *I18nError
+	require.True(t, errors.As(err, &i18nErr))
+	assert.Equal(t, app_errors.ErrValidation.Code, i18nErr.APIError.Code)
+	assert.Equal(t, "validation.duplicate_sub_group", i18nErr.MessageID)
+}
+
+func TestAddSubGroupsPersistsHealthResetInterval(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	aggregateGroup := models.Group{
+		Name:        "aggregate-add-sub-health-reset",
+		DisplayName: "Aggregate Add Sub Health Reset",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	subGroup := models.Group{
+		Name:        "sub-add-health-reset",
+		DisplayName: "Sub Add Health Reset",
+		GroupType:   "standard",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&aggregateGroup).Error)
+	require.NoError(t, db.Create(&subGroup).Error)
+
+	interval := int64(3600)
+	err := service.AddSubGroups(context.Background(), aggregateGroup.ID, []SubGroupInput{
+		{GroupID: subGroup.ID, Weight: 100, HealthResetIntervalSeconds: &interval},
+	})
+	require.NoError(t, err)
+
+	var relation models.GroupSubGroup
+	require.NoError(t, db.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).First(&relation).Error)
+	assert.Equal(t, int64(3600), relation.HealthResetIntervalSeconds)
+}
+
+func TestAddSubGroupsRejectsInvalidHealthResetInterval(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	aggregateGroup := models.Group{
+		Name:        "aggregate-add-sub-invalid-health-reset",
+		DisplayName: "Aggregate Add Sub Invalid Health Reset",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	subGroup := models.Group{
+		Name:        "sub-add-invalid-health-reset",
+		DisplayName: "Sub Add Invalid Health Reset",
+		GroupType:   "standard",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&aggregateGroup).Error)
+	require.NoError(t, db.Create(&subGroup).Error)
+
+	invalidInterval := int64(60)
+	err := service.AddSubGroups(context.Background(), aggregateGroup.ID, []SubGroupInput{
+		{GroupID: subGroup.ID, Weight: 100, HealthResetIntervalSeconds: &invalidInterval},
+	})
+	require.Error(t, err)
+
+	var count int64
+	require.NoError(t, db.Model(&models.GroupSubGroup{}).
+		Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).
+		Count(&count).Error)
+	assert.Equal(t, int64(0), count)
 }
 
 func TestUpdateSubGroupWeightPreservesOmittedHealthResetInterval(t *testing.T) {

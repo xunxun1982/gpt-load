@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -157,16 +155,7 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 		return true, nil
 	}
 
-	// For non-200 responses, parse the body to provide a more specific error reason.
-	errorBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("key is invalid (status %d), but failed to read error body: %w", resp.StatusCode, err)
-	}
-
-	// Use the new parser to extract a clean error message.
-	parsedError := app_errors.ParseUpstreamError(errorBody)
-
-	return false, fmt.Errorf("[status %d] %s", resp.StatusCode, parsedError)
+	return false, invalidValidationStatusError(resp)
 }
 
 // ApplyModelRedirect overrides the default implementation for Gemini channel.

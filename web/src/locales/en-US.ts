@@ -553,9 +553,9 @@ export default {
     simulatedCodexVersion: "Codex Version",
     simulatedCodexVersionPlaceholder: "Default 0.141.0",
     simulatedCodexVersionTip:
-      "Builds the codex-tui User-Agent. Leave empty to use the default version.",
+      "Builds the codex_cli_rs User-Agent. Leave empty to use the default version.",
     simulatedClaudeCodeVersion: "Claude Code Version",
-    simulatedClaudeCodeVersionPlaceholder: "Default 2.1.133",
+    simulatedClaudeCodeVersionPlaceholder: "Default 2.1.161",
     simulatedClaudeCodeVersionTip:
       "Builds the claude-cli User-Agent. Leave empty to use the default version.",
     invalidSimulatedClientVersion:
@@ -827,6 +827,8 @@ export default {
     responseBody: "Response Body",
     clientIp: "Client IP",
     userAgent: "User Agent",
+    userAgentBefore: "Before User Agent",
+    userAgentAfter: "After User Agent",
     stackTrace: "Stack Trace",
     logLevel: "Log Level",
     logTime: "Log Time",

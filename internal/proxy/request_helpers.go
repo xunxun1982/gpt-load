@@ -52,6 +52,26 @@ func applyCodexCompatibleHeaders(req *http.Request, group *models.Group, isStrea
 	channel.ApplyCodexCompatibleHeaders(req, group, isStream)
 }
 
+func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Group) bool {
+	if c == nil || c.Request == nil || group == nil {
+		return false
+	}
+	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
+		return true
+	}
+	if isCCEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) {
+		return true
+	}
+	return false
+}
+
+func removeAcceptEncodingForProxyParsing(req *http.Request, c *gin.Context, group *models.Group) {
+	if req == nil || !shouldRemoveAcceptEncodingForProxyParsing(c, group) {
+		return
+	}
+	req.Header.Del("Accept-Encoding")
+}
+
 func buildCodexUserAgent(version string) string {
 	return channel.BuildCodexUserAgent(version)
 }
@@ -397,18 +417,19 @@ func logUpstreamError(context string, err error) {
 	}
 }
 
-// Deprecated: handleGzipCompression is no longer needed.
-// Go's http.Client (DisableCompression == false) auto-adds Accept-Encoding and
-// transparently decompresses non-streaming responses. This helper and its single
-// remaining call site are intentionally kept for backward compatibility and to
-// avoid surprising behavior changes, even though automated reviews may suggest
-// removing them.
+func decompressUpstreamErrorBody(resp *http.Response, bodyBytes []byte) []byte {
+	if resp == nil || len(bodyBytes) == 0 {
+		return bodyBytes
+	}
+
+	decompressed, err := utils.DecompressResponseWithLimit(resp.Header.Get("Content-Encoding"), bodyBytes, maxUpstreamErrorBodySize)
+	if err != nil {
+		logrus.WithError(err).Debug("Failed to decompress upstream error body")
+		return bodyBytes
+	}
+	return decompressed
+}
+
 func handleGzipCompression(_ *http.Response, bodyBytes []byte) []byte {
-	// When DisableCompression is false (default for non-streaming requests),
-	// Go's http.Client automatically:
-	// 1. Adds "Accept-Encoding: gzip" to requests
-	// 2. Decompresses response bodies
-	// 3. Removes "Content-Encoding" header from responses
-	// Therefore, this function will never see compressed data and can be safely removed.
 	return bodyBytes
 }

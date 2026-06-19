@@ -553,9 +553,9 @@ export default {
     simulatedCodexVersion: "Codex バージョン",
     simulatedCodexVersionPlaceholder: "デフォルト 0.141.0",
     simulatedCodexVersionTip:
-      "codex-tui User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
+      "codex_cli_rs User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     simulatedClaudeCodeVersion: "Claude Code バージョン",
-    simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.133",
+    simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.161",
     simulatedClaudeCodeVersionTip:
       "claude-cli User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     invalidSimulatedClientVersion:
@@ -812,6 +812,8 @@ export default {
     responseBody: "レスポンスボディ",
     clientIp: "クライアントIP",
     userAgent: "ユーザーエージェント",
+    userAgentBefore: "変更前 User Agent",
+    userAgentAfter: "変更後 User Agent",
     stackTrace: "スタックトレース",
     logLevel: "ログレベル",
     logTime: "ログ時間",

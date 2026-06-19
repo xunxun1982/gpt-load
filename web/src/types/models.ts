@@ -43,6 +43,21 @@ export interface ProxyPoolItem {
   updated_at: string;
 }
 
+export interface ProxyPoolTestResult {
+  success: boolean;
+  url: string;
+  target_url: string;
+  timeout_ms: number;
+  duration_ms: number;
+  attempts?: number;
+  successful_attempts?: number;
+  failed_attempts?: number;
+  status_code?: number;
+  country_code?: string;
+  country_name?: string;
+  error?: string;
+}
+
 export type ProxyPoolSelectionType = "manual" | "gateway";
 
 export interface ProxyPoolSelectionOption {
@@ -52,6 +67,7 @@ export interface ProxyPoolSelectionOption {
   candidate_id?: string;
   url?: string;
   active?: boolean;
+  test_result?: ProxyPoolTestResult;
 }
 
 export interface HeaderRule {
@@ -106,6 +122,7 @@ export type ModelRedirectRulesV2 = Record<string, ModelRedirectRuleV2>;
 export interface SubGroupConfig {
   group_id: number;
   weight: number;
+  health_reset_interval_seconds?: number;
 }
 
 // Dynamic weight information for display
@@ -284,6 +301,7 @@ export interface RequestLog {
   duration_ms: number;
   error_message: string;
   user_agent: string;
+  upstream_user_agent?: string;
   request_type: "retry" | "final";
   group_name?: string;
   parent_group_name?: string;

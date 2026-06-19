@@ -24,8 +24,9 @@ const (
 
 // SubGroupInput defines the input payload for aggregate group member configuration.
 type SubGroupInput struct {
-	GroupID uint `json:"group_id"`
-	Weight  int  `json:"weight"`
+	GroupID                    uint   `json:"group_id"`
+	Weight                     int    `json:"weight"`
+	HealthResetIntervalSeconds *int64 `json:"health_reset_interval_seconds"`
 }
 
 // UpdateSubGroupSettingsInput defines relationship-level settings for an aggregate sub-group.
@@ -110,6 +111,7 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 	}
 
 	subGroupIDs := make([]uint, 0, len(inputs))
+	seenSubGroupIDs := make(map[uint]struct{}, len(inputs))
 	for _, input := range inputs {
 		if input.GroupID == 0 {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_sub_group_id", nil)
@@ -120,6 +122,10 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		if input.Weight > 1000 {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
 		}
+		if _, exists := seenSubGroupIDs[input.GroupID]; exists {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.duplicate_sub_group", nil)
+		}
+		seenSubGroupIDs[input.GroupID] = struct{}{}
 		subGroupIDs = append(subGroupIDs, input.GroupID)
 	}
 
@@ -182,9 +188,17 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		if _, ok := subGroupMap[input.GroupID]; !ok {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_not_found", nil)
 		}
+		healthResetIntervalSeconds := int64(0)
+		if input.HealthResetIntervalSeconds != nil {
+			if err := validateHealthResetIntervalSeconds(*input.HealthResetIntervalSeconds); err != nil {
+				return nil, err
+			}
+			healthResetIntervalSeconds = *input.HealthResetIntervalSeconds
+		}
 		resultSubGroups = append(resultSubGroups, models.GroupSubGroup{
-			SubGroupID: input.GroupID,
-			Weight:     input.Weight,
+			SubGroupID:                 input.GroupID,
+			Weight:                     input.Weight,
+			HealthResetIntervalSeconds: healthResetIntervalSeconds,
 		})
 	}
 

@@ -226,6 +226,7 @@ func (s *BalanceService) fetchSiteBalanceInternal(ctx context.Context, site *Man
 		logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to decrypt auth value for balance fetch")
 		return result
 	}
+	authConfig := parseAuthConfig(site.AuthType, authValue)
 
 	// Decrypt user_id if present
 	userID := ""
@@ -236,7 +237,7 @@ func (s *BalanceService) fetchSiteBalanceInternal(ctx context.Context, site *Man
 	}
 
 	// Fetch balance from site API
-	balance := s.fetchBalanceFromAPI(ctx, site, authValue, userID)
+	balance := s.fetchBalanceFromAPI(ctx, site, authConfig, userID)
 	if balance != nil {
 		result.Balance = balance
 	}
@@ -268,23 +269,54 @@ func (s *BalanceService) supportsBalance(siteType string) bool {
 	}
 }
 
-// fetchBalanceFromAPI fetches balance from the site's /api/user/self endpoint
-func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedSite, authValue, userID string) *string {
+// fetchBalanceFromAPI fetches balance from the site's /api/user/self endpoint.
+func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedSite, authConfig AuthConfig, userID string) *string {
 	// Build API URL
 	apiURL := extractBaseURL(site.BaseURL) + "/api/user/self"
 
-	// Build headers
-	headers := make(map[string]string)
+	// Get appropriate HTTP client and make request
+	client := s.getHTTPClient(site)
 
-	// Add user ID headers if available
+	for _, authType := range []string{AuthTypeAccessToken, AuthTypeCookie} {
+		if !authConfig.HasAuthType(authType) {
+			continue
+		}
+		authValue := authConfig.GetAuthValue(authType)
+		if authValue == "" {
+			continue
+		}
+		headers := buildBalanceHeaders(authType, authValue, userID)
+		if headers == nil {
+			continue
+		}
+
+		var data []byte
+		var err error
+		if shouldUseStealthRequest(*site) {
+			data, _, err = doStealthJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+		} else {
+			data, _, err = doJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+		}
+		if err != nil {
+			logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site API")
+			continue
+		}
+		if balance := s.parseBalanceResponse(data); balance != nil {
+			return balance
+		}
+	}
+
+	return nil
+}
+
+func buildBalanceHeaders(authType, authValue, userID string) map[string]string {
+	headers := make(map[string]string)
 	if userID != "" {
 		for k, v := range buildUserHeaders(userID) {
 			headers[k] = v
 		}
 	}
-
-	// Set auth header based on auth type
-	switch site.AuthType {
+	switch authType {
 	case AuthTypeAccessToken:
 		headers["Authorization"] = "Bearer " + authValue
 	case AuthTypeCookie:
@@ -292,26 +324,7 @@ func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedS
 	default:
 		return nil
 	}
-
-	// Get appropriate HTTP client and make request
-	client := s.getHTTPClient(site)
-	var data []byte
-	var err error
-
-	// Reuse existing request functions from auto_checkin_service.go
-	if shouldUseStealthRequest(*site) {
-		data, _, err = doStealthJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
-	} else {
-		data, _, err = doJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
-	}
-
-	if err != nil {
-		logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site API")
-		return nil
-	}
-
-	// Parse response
-	return s.parseBalanceResponse(data)
+	return headers
 }
 
 // parseBalanceResponse parses the API response and extracts balance

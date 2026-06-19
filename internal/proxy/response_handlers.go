@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -19,11 +20,23 @@ import (
 // maxResponseCaptureBytes is the maximum size of response body to capture for logging
 const maxResponseCaptureBytes = 65000
 
-const maxUsageTailCaptureBytes = maxResponseCaptureBytes
+const (
+	maxUsageTailCaptureBytes     = maxResponseCaptureBytes
+	maxCodexStreamLineBytes      = 1 * 1024 * 1024
+	maxCodexStreamCollectBytes   = 8 * 1024 * 1024
+	errCodexStreamCollectorLimit = "codex forced stream collector exceeded size limit"
+)
 
 type tailUsageCapture struct {
 	buf   []byte
 	limit int
+}
+
+type sseLogicalFailureCapture struct {
+	pending      []byte
+	statusCode   int
+	errorCode    string
+	errorMessage string
 }
 
 func (w *tailUsageCapture) Write(p []byte) (int, error) {
@@ -44,6 +57,120 @@ func (w *tailUsageCapture) Write(p []byte) (int, error) {
 	}
 	w.buf = append(w.buf, p...)
 	return len(p), nil
+}
+
+func (p *sseLogicalFailureCapture) Write(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	p.pending = append(p.pending, chunk...)
+	for {
+		idx := bytes.IndexByte(p.pending, '\n')
+		if idx < 0 {
+			if len(p.pending) > maxResponseCaptureBytes {
+				p.pending = p.pending[:0]
+			}
+			return
+		}
+		line := p.pending[:idx]
+		p.pending = p.pending[idx+1:]
+		p.parseLine(line)
+	}
+}
+
+func (p *sseLogicalFailureCapture) Finish() {
+	if len(p.pending) > 0 {
+		p.parseLine(p.pending)
+		p.pending = nil
+	}
+}
+
+func (p *sseLogicalFailureCapture) parseLine(line []byte) {
+	line = bytes.TrimSpace(line)
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return
+	}
+	data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+		return
+	}
+
+	var payload struct {
+		Type  string `json:"type"`
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error,omitempty"`
+		Response *struct {
+			Status string `json:"status"`
+			Error  *struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+				Type    string `json:"type"`
+			} `json:"error,omitempty"`
+		} `json:"response,omitempty"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return
+	}
+
+	errorCode := ""
+	errorMessage := ""
+	if payload.Error != nil {
+		errorCode = strings.TrimSpace(payload.Error.Code)
+		errorMessage = strings.TrimSpace(payload.Error.Message)
+	}
+	if payload.Response != nil && payload.Response.Error != nil {
+		if errorCode == "" {
+			errorCode = strings.TrimSpace(payload.Response.Error.Code)
+		}
+		if errorMessage == "" {
+			errorMessage = strings.TrimSpace(payload.Response.Error.Message)
+		}
+	}
+
+	isFailed := payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed"))
+	if !isFailed {
+		return
+	}
+
+	statusCode := http.StatusBadGateway
+	lowerCode := strings.ToLower(errorCode)
+	lowerMessage := strings.ToLower(errorMessage)
+	if lowerCode == "rate_limit_exceeded" || strings.Contains(lowerMessage, "concurrency limit exceeded") || strings.Contains(lowerMessage, "rate limit") {
+		statusCode = http.StatusTooManyRequests
+	}
+
+	p.statusCode = statusCode
+	p.errorCode = errorCode
+	if errorMessage != "" {
+		p.errorMessage = errorMessage
+	}
+}
+
+func setLogicalFailureContext(c *gin.Context, statusCode int, errorCode, errorMessage string) {
+	if c == nil || statusCode <= 0 {
+		return
+	}
+	c.Set(ctxKeyUpstreamLogicalStatusCode, statusCode)
+	if strings.TrimSpace(errorMessage) != "" {
+		c.Set(ctxKeyUpstreamLogicalErrorMessage, strings.TrimSpace(utils.SanitizeErrorBody(errorMessage)))
+	}
+	if _, exists := c.Get("response_body"); !exists && (strings.TrimSpace(errorCode) != "" || strings.TrimSpace(errorMessage) != "") {
+		summary := strings.TrimSpace(utils.SanitizeErrorBody(errorMessage))
+		if strings.TrimSpace(errorCode) != "" {
+			summary = `{"error":{"code":"` + strings.TrimSpace(errorCode) + `","message":"` + strings.ReplaceAll(summary, `"`, `'`) + `"}}`
+		}
+		c.Set("response_body", utils.TruncateString(summary, maxResponseCaptureBytes))
+	}
+	if statusCode == http.StatusTooManyRequests {
+		if currentPressure, exists := c.Get(ctxKeyRateLimitPressure); !exists {
+			c.Set(ctxKeyRateLimitPressure, int64(3))
+		} else if pressure, ok := currentPressure.(int64); ok && pressure < 3 {
+			c.Set(ctxKeyRateLimitPressure, int64(3))
+		}
+	}
 }
 
 // shouldCaptureResponse checks if response body capturing is enabled for the request
@@ -78,6 +205,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	}
 	var usageParser tokenusage.SSEParser
 	var estimateCapture estimatedTokenCapture
+	var failureCapture sseLogicalFailureCapture
 
 	buf := make([]byte, 4*1024)
 	for {
@@ -85,6 +213,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 		if n > 0 {
 			usageParser.Write(buf[:n])
 			estimateCapture.Write(buf[:n])
+			failureCapture.Write(buf[:n])
 			if _, writeErr := c.Writer.Write(buf[:n]); writeErr != nil {
 				logUpstreamError("writing stream to client", writeErr)
 				return
@@ -110,13 +239,21 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 		}
 	}
 
+	failureCapture.Finish()
 	// Store captured response in context for logging
 	if responseCapture != nil && responseCapture.Len() > 0 {
-		c.Set("response_body", responseCapture.String())
+		responseBody := responseCapture.String()
+		if failureCapture.statusCode > 0 {
+			responseBody = utils.SanitizeErrorBody(responseBody)
+		}
+		c.Set("response_body", responseBody)
+	}
+	if failureCapture.statusCode > 0 {
+		setLogicalFailureContext(c, failureCapture.statusCode, failureCapture.errorCode, failureCapture.errorMessage)
 	}
 	if usage, ok := usageParser.Finish(); ok {
 		setTokenUsage(c, usage)
-	} else if resp.StatusCode < http.StatusBadRequest {
+	} else if resp.StatusCode < http.StatusBadRequest && failureCapture.statusCode == 0 {
 		setEstimatedOutputTokens(c, estimateCapture.Tokens())
 	}
 }
@@ -186,11 +323,18 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 
 	// Check for Codex error in response
 	if codexResp.Error != nil {
+		statusCode := resp.StatusCode
+		if strings.EqualFold(codexResp.Status, "failed") && strings.EqualFold(codexResp.Error.Code, "rate_limit_exceeded") {
+			statusCode = http.StatusTooManyRequests
+		} else if statusCode < http.StatusBadRequest {
+			statusCode = http.StatusBadGateway
+		}
+		setLogicalFailureContext(c, statusCode, codexResp.Error.Code, codexResp.Error.Message)
 		logrus.WithFields(logrus.Fields{
 			"error_type":    codexResp.Error.Type,
-			"error_message": utils.TruncateString(codexResp.Error.Message, 200),
+			"error_message": utils.TruncateString(utils.SanitizeErrorBody(codexResp.Error.Message), 200),
 		}).Warn("Codex forced stream: upstream returned error")
-		c.JSON(resp.StatusCode, codexResp)
+		c.JSON(statusCode, codexResp)
 		return
 	}
 
@@ -222,7 +366,9 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 			c.Set("response_body", string(responseBody))
 		}
 	}
-	setTokenUsageOrEstimateFromFullBodyIf(c, responseBody, resp.StatusCode < http.StatusBadRequest)
+	logicalStatusCode, _, hasLogicalFailure := logicalStatusFromContext(c)
+	shouldEstimate := resp.StatusCode < http.StatusBadRequest && (!hasLogicalFailure || logicalStatusCode < http.StatusBadRequest)
+	setTokenUsageOrEstimateFromFullBodyIf(c, responseBody, shouldEstimate)
 
 	// c.Data already sets Content-Type, no need for redundant c.Header call
 	c.Data(resp.StatusCode, "application/json", responseBody)
@@ -292,11 +438,31 @@ type codexStreamItem struct {
 // Note: Caller is responsible for closing resp.Body (typically via defer in server.go).
 // Note: Usage field is populated from response.completed event; fallback path has no usage data.
 func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, error) {
-	reader := bufio.NewReader(resp.Body)
+	if resp == nil || resp.Body == nil {
+		return nil, io.ErrUnexpectedEOF
+	}
+
+	bodyReader := resp.Body
+	if contentEncoding := resp.Header.Get("Content-Encoding"); contentEncoding != "" {
+		decompressed, err := utils.NewDecompressReader(contentEncoding, resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		bodyReader = decompressed
+		defer func() {
+			if closer, ok := bodyReader.(io.Closer); ok && closer != resp.Body {
+				closer.Close()
+			}
+		}()
+	}
+
+	scanner := bufio.NewScanner(io.LimitReader(bodyReader, maxCodexStreamCollectBytes+1))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamLineBytes)
 
 	var finalResp *codexStreamResponse
 	var currentEventType string
 	var parseErrorCount int // Track JSON parse errors for debugging
+	var collectedBytes int64
 
 	// Collectors for building response from stream events
 	var outputItems []codexStreamOutputItem
@@ -306,17 +472,15 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 	var model string
 	var responseID string
 
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				logrus.Debug("Codex forced stream: stream ended with EOF")
-				break
-			}
-			return nil, err
+readLoop:
+	for scanner.Scan() {
+		lineBytes := scanner.Bytes()
+		collectedBytes += int64(len(lineBytes)) + 1 // Include the consumed newline for the total stream cap.
+		if collectedBytes > maxCodexStreamCollectBytes {
+			return nil, errors.New(errCodexStreamCollectorLimit)
 		}
 
-		line = strings.TrimSpace(line)
+		line := strings.TrimSpace(string(lineBytes))
 		if line == "" {
 			continue
 		}
@@ -330,7 +494,7 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				break
+				break readLoop
 			}
 
 			var event codexStreamEvent
@@ -417,8 +581,16 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 				if event.Response != nil {
 					finalResp = event.Response
 				}
+			case "response.failed":
+				if event.Response != nil {
+					finalResp = event.Response
+				}
+				break readLoop
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 
 	// Log warning if multiple parse errors occurred (may indicate upstream issues)
@@ -460,6 +632,13 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 			Model:  model,
 			Output: outputItems,
 			// Note: Usage is nil in fallback path as it's only available from response.completed event
+		}
+	}
+
+	if finalResp != nil && strings.EqualFold(finalResp.Status, "failed") && finalResp.Error == nil {
+		finalResp.Error = &codexStreamError{
+			Type:    "server_error",
+			Message: "upstream stream failed",
 		}
 	}
 

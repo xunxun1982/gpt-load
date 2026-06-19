@@ -3,16 +3,17 @@ package channel
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func init() {
@@ -22,7 +23,7 @@ func init() {
 // ClaudeCodeUserAgent is the User-Agent header value for Claude Code CLI requests.
 // Format: claude-cli/VERSION (external, cli) - matches the official Claude Code CLI client.
 // Check: https://github.com/anthropics/claude-code/releases
-const DefaultClaudeCodeVersion = "2.1.133"
+const DefaultClaudeCodeVersion = "2.1.161"
 
 // BuildClaudeCodeUserAgent builds the Claude Code CLI User-Agent string for the given version.
 func BuildClaudeCodeUserAgent(version string) string {
@@ -86,16 +87,9 @@ func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIK
 
 	reqURL := selection.URL
 
-	// Use a minimal, low-cost payload for validation.
-	payload := gin.H{
-		"model":      ch.TestModel,
-		"max_tokens": 100,
-		"messages": []gin.H{
-			{"role": "user", "content": validationPromptForGroup(group)},
-		},
-	}
-	if validationStreamEnabled(group) {
-		payload["stream"] = true
+	payload, err := buildAnthropicValidationPayload(group, ch.TestModel)
+	if err != nil {
+		return false, fmt.Errorf("failed to build validation payload: %w", err)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -135,14 +129,123 @@ func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIK
 		return true, nil
 	}
 
-	// For non-200 responses, parse the body to provide a more specific error reason.
-	errorBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("key is invalid (status %d), but failed to read error body: %w", resp.StatusCode, err)
+	return false, invalidValidationStatusError(resp)
+}
+
+const claudeCodeValidationSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
+
+func buildAnthropicValidationPayload(group *models.Group, model string) (gin.H, error) {
+	if simulatedClientMode(group) != simulatedClientClaudeCode {
+		payload := gin.H{
+			"model":      model,
+			"max_tokens": 100,
+			"messages": []gin.H{
+				{"role": "user", "content": validationPromptForGroup(group)},
+			},
+		}
+		if validationStreamEnabled(group) {
+			payload["stream"] = true
+		}
+		return payload, nil
 	}
 
-	// Use the new parser to extract a clean error message.
-	parsedError := app_errors.ParseUpstreamError(errorBody)
+	sessionID, err := buildClaudeCodeValidationUserID(simulatedClientVersion(group, "simulated_claude_code_version", DefaultClaudeCodeVersion))
+	if err != nil {
+		return nil, err
+	}
 
-	return false, fmt.Errorf("[status %d] %s", resp.StatusCode, parsedError)
+	payload := gin.H{
+		"model":       model,
+		"max_tokens":  1024,
+		"temperature": 1,
+		"stream":      true,
+		"messages": []gin.H{
+			{
+				"role": "user",
+				"content": []gin.H{
+					{
+						"type": "text",
+						"text": validationPromptForGroup(group),
+						"cache_control": gin.H{
+							"type": "ephemeral",
+						},
+					},
+				},
+			},
+		},
+		"system": []gin.H{
+			{
+				"type": "text",
+				"text": claudeCodeValidationSystemPrompt,
+				"cache_control": gin.H{
+					"type": "ephemeral",
+				},
+			},
+		},
+		"metadata": gin.H{
+			"user_id": sessionID,
+		},
+	}
+	return payload, nil
+}
+
+func buildClaudeCodeValidationUserID(version string) (string, error) {
+	deviceID, err := randomHexString(32)
+	if err != nil {
+		return "", err
+	}
+	sessionID := uuid.NewString()
+	if isClaudeCodeJSONMetadataVersion(version) {
+		return fmt.Sprintf("{\"device_id\":\"%s\",\"account_uuid\":\"\",\"session_id\":\"%s\"}", deviceID, sessionID), nil
+	}
+	return "user_" + deviceID + "_account__session_" + sessionID, nil
+}
+
+func randomHexString(byteLen int) (string, error) {
+	if byteLen <= 0 {
+		return "", nil
+	}
+	buf := make([]byte, byteLen)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	const hexChars = "0123456789abcdef"
+	out := make([]byte, byteLen*2)
+	for i, b := range buf {
+		out[i*2] = hexChars[b>>4]
+		out[i*2+1] = hexChars[b&0x0f]
+	}
+	return string(out), nil
+}
+
+func isClaudeCodeJSONMetadataVersion(version string) bool {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return false
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) < 3 {
+		return false
+	}
+	major := parseVersionPart(parts[0])
+	minor := parseVersionPart(parts[1])
+	patch := parseVersionPart(parts[2])
+	if major != 2 {
+		return major > 2
+	}
+	if minor != 1 {
+		return minor > 1
+	}
+	return patch >= 78
+}
+
+func parseVersionPart(part string) int {
+	value := 0
+	for _, ch := range part {
+		if ch < '0' || ch > '9' {
+			break
+		}
+		value = value*10 + int(ch-'0')
+	}
+	return value
 }

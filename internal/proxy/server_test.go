@@ -10,10 +10,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
@@ -26,7 +28,9 @@ import (
 	"gpt-load/internal/store"
 	"gpt-load/internal/tokenusage"
 	"gpt-load/internal/types"
+	"gpt-load/internal/utils"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -822,6 +826,249 @@ func TestExecuteRequestWithRetryCodexCCModeUsesConfiguredSimulatedVersion(t *tes
 	assert.Equal(t, "codex_cli_rs", <-receivedOriginator)
 }
 
+func TestExecuteRequestWithRetryLogsClientAndUpstreamUserAgent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+
+	group := createTestGroup(t, db, "simulated-ua-log", "openai-response")
+	group.Config = map[string]any{
+		"max_retries":             0,
+		"simulated_client":        "codex",
+		"simulated_codex_version": "0.150.1",
+	}
+	group.EffectiveConfig = types.SystemSettings{EnableRequestBodyLogging: true}
+	createTestKey(t, db, group.ID, "test-key-simulated-ua-log", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	body := []byte(`{"model":"gpt-5","input":"hello"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/simulated-ua-log/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", "client-before/1.0")
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL}, group, group, body, false, time.Now(), 0)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, "client-before/1.0", logEntry.UserAgent)
+	assert.Equal(t, buildCodexUserAgent("0.150.1"), logEntry.UpstreamUserAgent)
+}
+
+func TestLogRequestTruncatesUserAgentFieldsToColumnLimit(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{
+		ID:   1,
+		Name: "test-group",
+		EffectiveConfig: types.SystemSettings{
+			EnableRequestBodyLogging: true,
+		},
+	}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	clientSecret := strings.Repeat("b", 32)
+	upstreamEmail := "operator@example.invalid"
+	ctx.Request.Header.Set("User-Agent", "Bearer "+clientSecret+strings.Repeat("入", requestLogUserAgentMaxRunes+5))
+	ctx.Set(ctxKeyUpstreamUserAgent, upstreamEmail+strings.Repeat("上", requestLogUserAgentMaxRunes+5))
+
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, requestLogUserAgentMaxRunes, utf8.RuneCountInString(logEntry.UserAgent))
+	assert.Equal(t, requestLogUserAgentMaxRunes, utf8.RuneCountInString(logEntry.UpstreamUserAgent))
+	assert.NotContains(t, logEntry.UserAgent, clientSecret)
+	assert.NotContains(t, logEntry.UpstreamUserAgent, upstreamEmail)
+	assert.Contains(t, logEntry.UserAgent, "Bearer [REDACTED]")
+	assert.Contains(t, logEntry.UpstreamUserAgent, "[REDACTED_EMAIL]")
+}
+
+func TestLogRequestSanitizesCapturedResponseBodyBeforeTruncation(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{
+		ID:   1,
+		Name: "test-group",
+		EffectiveConfig: types.SystemSettings{
+			EnableRequestBodyLogging: true,
+		},
+	}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	upstreamKey := "s" + "k-" + strings.Repeat("c", 32)
+	ctx.Set("response_body", `{"error":"bad upstream key","api_key":"`+upstreamKey+`"}`)
+
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusBadGateway, errors.New("upstream failed"), false, "", nil, nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.NotContains(t, logEntry.ResponseBody, upstreamKey)
+	assert.Contains(t, logEntry.ResponseBody, `"api_key": "[REDACTED]"`)
+}
+
+func TestExecuteRequestWithRetryPreservesCodexHeadersThroughTwoProxyLayers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	firstProxy := setupTestProxyServer(t, db)
+	secondProxy := setupTestProxyServer(t, db)
+
+	firstGroup := createTestGroup(t, db, "codex-layer-one", "openai-response")
+	firstGroup.Config = map[string]any{"max_retries": 0}
+	secondGroup := createTestGroup(t, db, "codex-layer-two", "openai-response")
+	secondGroup.Config = map[string]any{"max_retries": 0}
+	createTestKey(t, db, firstGroup.ID, "test-key-codex-layer-one", firstProxy.encryptionSvc)
+	createTestKey(t, db, secondGroup.ID, "test-key-codex-layer-two", secondProxy.encryptionSvc)
+	require.NoError(t, firstProxy.keyProvider.LoadKeysFromDB())
+	require.NoError(t, secondProxy.keyProvider.LoadKeysFromDB())
+
+	finalHeaders := make(chan http.Header, 1)
+	finalUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalHeaders <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(finalUpstream.Close)
+
+	secondLayer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		ctx, _ := gin.CreateTestContext(w)
+		ctx.Request = httptest.NewRequest(r.Method, r.URL.RequestURI(), bytes.NewReader(body))
+		ctx.Request.Header = r.Header.Clone()
+		secondProxy.executeRequestWithRetry(ctx, &testChannelProxy{
+			client: &http.Client{Timeout: 3 * time.Second},
+			url:    finalUpstream.URL,
+		}, secondGroup, secondGroup, body, false, time.Now(), 0)
+	}))
+	t.Cleanup(secondLayer.Close)
+
+	body := []byte(`{"model":"gpt-5","input":"hello"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-layer-one/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+	c.Request.Header.Set("OpenAI-Beta", "responses=experimental")
+	c.Request.Header.Set("Version", "0.150.1")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+	c.Request.Header.Set("Session_ID", "client-session")
+	c.Request.Header.Set("Conversation_ID", "client-conversation")
+	c.Request.Header.Set("X-Codex-Turn-Metadata", `{"source":"client"}`)
+	c.Request.Header.Set("X-Codex-Beta-Features", "client-beta")
+	c.Request.Header.Set("x-client-request-id", "client-request")
+	c.Request.Header.Set("x-codex-window-id", "client-window")
+
+	firstProxy.executeRequestWithRetry(c, &testChannelProxy{
+		client: &http.Client{Timeout: 3 * time.Second},
+		url:    secondLayer.URL + "/proxy/codex-layer-two/v1/responses",
+	}, firstGroup, firstGroup, body, false, time.Now(), 0)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var headers http.Header
+	select {
+	case headers = <-finalHeaders:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for final upstream headers")
+	}
+	assert.Equal(t, buildCodexUserAgent("0.150.1"), headers.Get("User-Agent"))
+	assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
+	assert.Equal(t, "0.150.1", headers.Get("Version"))
+	assert.Equal(t, "codex_cli_rs", headers.Get("originator"))
+	assert.Equal(t, "client-session", headers.Get("Session_ID"))
+	assert.Equal(t, "client-conversation", headers.Get("Conversation_ID"))
+	assert.Equal(t, `{"source":"client"}`, headers.Get("X-Codex-Turn-Metadata"))
+	assert.Equal(t, "client-beta", headers.Get("X-Codex-Beta-Features"))
+	assert.Equal(t, "client-request", headers.Get("x-client-request-id"))
+	assert.Equal(t, "client-window", headers.Get("x-codex-window-id"))
+}
+
+func TestExecuteRequestWithRetrySimulatedCodexSurvivesTwoProxyLayers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	firstProxy := setupTestProxyServer(t, db)
+	secondProxy := setupTestProxyServer(t, db)
+
+	firstGroup := createTestGroup(t, db, "sim-codex-layer-one", "openai-response")
+	firstGroup.Config = map[string]any{
+		"max_retries":             0,
+		"simulated_client":        "codex",
+		"simulated_codex_version": "0.150.1",
+	}
+	secondGroup := createTestGroup(t, db, "sim-codex-layer-two", "openai-response")
+	secondGroup.Config = map[string]any{"max_retries": 0}
+	createTestKey(t, db, firstGroup.ID, "test-key-sim-codex-layer-one", firstProxy.encryptionSvc)
+	createTestKey(t, db, secondGroup.ID, "test-key-sim-codex-layer-two", secondProxy.encryptionSvc)
+	require.NoError(t, firstProxy.keyProvider.LoadKeysFromDB())
+	require.NoError(t, secondProxy.keyProvider.LoadKeysFromDB())
+
+	finalHeaders := make(chan http.Header, 1)
+	finalUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalHeaders <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(finalUpstream.Close)
+
+	secondLayer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		ctx, _ := gin.CreateTestContext(w)
+		ctx.Request = httptest.NewRequest(r.Method, r.URL.RequestURI(), bytes.NewReader(body))
+		ctx.Request.Header = r.Header.Clone()
+		secondProxy.executeRequestWithRetry(ctx, &testChannelProxy{
+			client: &http.Client{Timeout: 3 * time.Second},
+			url:    finalUpstream.URL,
+		}, secondGroup, secondGroup, body, false, time.Now(), 0)
+	}))
+	t.Cleanup(secondLayer.Close)
+
+	body := []byte(`{"model":"gpt-5","input":"hello"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/sim-codex-layer-one/v1/responses", bytes.NewReader(body))
+
+	firstProxy.executeRequestWithRetry(c, &testChannelProxy{
+		client: &http.Client{Timeout: 3 * time.Second},
+		url:    secondLayer.URL + "/proxy/sim-codex-layer-two/v1/responses",
+	}, firstGroup, firstGroup, body, false, time.Now(), 0)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var headers http.Header
+	select {
+	case headers = <-finalHeaders:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for final upstream headers")
+	}
+	assert.Equal(t, buildCodexUserAgent("0.150.1"), headers.Get("User-Agent"))
+	assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
+	assert.Equal(t, "0.150.1", headers.Get("Version"))
+	assert.Equal(t, "codex_cli_rs", headers.Get("Originator"))
+	assert.Equal(t, "terminal_resize_reflow", headers.Get("X-Codex-Beta-Features"))
+	assert.NotEmpty(t, headers.Get("X-Codex-Turn-Metadata"))
+	assert.NotEmpty(t, headers.Get("X-Codex-Window-Id"))
+	assert.Empty(t, headers.Get("x-client-request-id"))
+	assert.Empty(t, headers.Get("Session-Id"))
+	assert.Empty(t, headers.Get("Thread-Id"))
+}
+
 func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -1205,6 +1452,17 @@ func activeKeysListKeyForTest(groupID uint64) string {
 	return "group:" + strconv.FormatUint(groupID, 10) + ":active_keys"
 }
 
+func compressBrotliForProxyTest(t *testing.T, body []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := brotli.NewWriter(&buf)
+	_, err := writer.Write(body)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	return buf.Bytes()
+}
+
 func systemSettingsWithRetryTimeout(maxRetries, nonStreamTimeout int) types.SystemSettings {
 	return types.SystemSettings{
 		MaxRetries:                  maxRetries,
@@ -1343,6 +1601,41 @@ func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFor429(t *testing.T
 	assert.Greater(t, dwm.CalculateHealthScore(metrics), 0.45)
 }
 
+func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFromCompressed429Body(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
+
+	rawBody := []byte(`{"error":{"message":"api key 日限额已用完","type":"rate_limit_exceeded"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Content-Encoding": []string{"br"},
+		},
+	}
+	decodedBody := decompressUpstreamErrorBody(resp, compressBrotliForProxyTest(t, rawBody))
+	require.Equal(t, rawBody, decodedBody)
+
+	group := &models.Group{ID: 82, GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("response_body", utils.TruncateString(utils.SanitizeErrorBody(string(decodedBody)), maxResponseCaptureBytes))
+	require.Equal(t, quotaExhaustedRatePressure, quotaExhaustedRateLimitPressureFromContext(ctx))
+
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+
+	metrics, err := dwm.GetGroupMetrics(group.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(6), metrics.ConsecutiveRateLimits)
+	assert.Less(t, dwm.CalculateHealthScore(metrics), 0.90)
+}
+
 func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -1360,6 +1653,11 @@ func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
 		{
 			name:     "chinese quota exhausted message",
 			body:     `{"error":{"message":"api key 5小时限额已用完"}}`,
+			expected: quotaExhaustedRatePressure,
+		},
+		{
+			name:     "chinese daily quota exhausted message",
+			body:     `{"error":{"message":"api key 日限额已用完","type":"rate_limit_exceeded"}}`,
 			expected: quotaExhaustedRatePressure,
 		},
 		{
@@ -1579,6 +1877,57 @@ func TestLogRequestSkipsTokenUsageForFailedRequest(t *testing.T) {
 	assert.Equal(t, int64(0), logEntry.OutputTokens)
 	assert.Equal(t, int64(0), logEntry.TotalTokens)
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
+}
+
+func TestLogRequestUsesLogicalStreamingFailureForHealthMetrics(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps := &ProxyServer{
+		requestLogService:    services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+		dynamicWeightManager: dwm,
+	}
+	group := &models.Group{ID: 91, Name: "logical-failure-group", GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusTooManyRequests)
+	ctx.Set(ctxKeyUpstreamLogicalErrorMessage, "Concurrency limit exceeded for user, please retry later")
+	ctx.Set("response_body", `{"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded for user, please retry later"}}}`)
+
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, true, "", nil, nil, []byte(`{"model":"gpt-5.4"}`), models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.False(t, logEntry.IsSuccess)
+	assert.Equal(t, http.StatusTooManyRequests, logEntry.StatusCode)
+	assert.Contains(t, logEntry.ErrorMessage, "Concurrency limit exceeded")
+
+	metrics, err := dwm.GetGroupMetrics(group.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), metrics.ConsecutiveRateLimits)
+}
+
+func TestLogRequestPreservesLogicalErrorMessageWhenFinalErrorExists(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{ID: 92, Name: "logical-error-message-group", GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusTooManyRequests)
+	ctx.Set(ctxKeyUpstreamLogicalErrorMessage, "Concurrency limit exceeded for user, please retry later")
+
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, errors.New("forced stream ended with logical failure"), true, "", nil, nil, []byte(`{"model":"gpt-5.4"}`), models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.False(t, logEntry.IsSuccess)
+	assert.Equal(t, http.StatusTooManyRequests, logEntry.StatusCode)
+	assert.Equal(t, "Concurrency limit exceeded for user, please retry later", logEntry.ErrorMessage)
 }
 
 func TestEstimateTokensForClaudeCountTokens(t *testing.T) {
