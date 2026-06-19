@@ -812,6 +812,8 @@ export default {
     responseBody: "レスポンスボディ",
     clientIp: "クライアントIP",
     userAgent: "ユーザーエージェント",
+    userAgentBefore: "変更前 User Agent",
+    userAgentAfter: "変更後 User Agent",
     stackTrace: "スタックトレース",
     logLevel: "ログレベル",
     logTime: "ログ時間",

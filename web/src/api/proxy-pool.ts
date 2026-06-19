@@ -1,4 +1,9 @@
-import type { Pagination, ProxyPoolItem, ProxyPoolSelectionOption } from "@/types/models";
+import type {
+  Pagination,
+  ProxyPoolItem,
+  ProxyPoolSelectionOption,
+  ProxyPoolTestResult,
+} from "@/types/models";
 import http from "@/utils/http";
 
 export interface ProxyPoolPayload {
@@ -6,20 +11,7 @@ export interface ProxyPoolPayload {
   url: string;
 }
 
-export interface ProxyPoolTestResult {
-  success: boolean;
-  url: string;
-  target_url: string;
-  timeout_ms: number;
-  duration_ms: number;
-  attempts?: number;
-  successful_attempts?: number;
-  failed_attempts?: number;
-  status_code?: number;
-  country_code?: string;
-  country_name?: string;
-  error?: string;
-}
+export type { ProxyPoolTestResult } from "@/types/models";
 
 export interface ProxyPoolListParams {
   page?: number;

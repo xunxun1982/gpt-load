@@ -7,6 +7,7 @@ import type {
   GroupStatsResponse,
   KeyStatus,
   ParentAggregateGroup,
+  SubGroupConfig,
   TaskInfo,
 } from "@/types/models";
 import http from "@/utils/http";
@@ -326,10 +327,7 @@ export const keysApi = {
   },
 
   // Add sub-groups to an aggregate group
-  async addSubGroups(
-    aggregateGroupId: number,
-    subGroups: { group_id: number; weight: number }[]
-  ): Promise<void> {
+  async addSubGroups(aggregateGroupId: number, subGroups: SubGroupConfig[]): Promise<void> {
     await http.post(`/groups/${aggregateGroupId}/sub-groups`, {
       sub_groups: subGroups,
     });

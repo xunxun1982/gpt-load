@@ -790,6 +790,8 @@ export default {
     responseBody: "响应体",
     clientIp: "IP地址",
     userAgent: "用户代理",
+    userAgentBefore: "伪装前 User Agent",
+    userAgentAfter: "伪装后 User Agent",
     stackTrace: "堆栈跟踪",
     logLevel: "日志级别",
     logTime: "日志时间",

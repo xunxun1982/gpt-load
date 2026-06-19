@@ -279,15 +279,11 @@ const gatewayColumns = computed<DataTableColumns<ProxyPoolSelectionOption>>(() =
       const result = gatewayTestResults[key];
       if (isTestingGateway(key)) {
         return renderTestStatus(
-          h(NTag, { size: "small", type: "info", bordered: false }, () => t("proxyPool.testing")),
-          gatewayTestTimeoutText.value
+          h(NTag, { size: "small", type: "info", bordered: false }, () => t("proxyPool.testing"))
         );
       }
       if (!result) {
-        return renderTestStatus(
-          h(NText, { depth: 3 }, () => t("proxyPool.notTested")),
-          gatewayTestTimeoutText.value
-        );
+        return renderTestStatus(h(NText, { depth: 3 }, () => t("proxyPool.notTested")));
       }
       const tag = h(
         NTag,
@@ -298,7 +294,7 @@ const gatewayColumns = computed<DataTableColumns<ProxyPoolSelectionOption>>(() =
             : t("proxyPool.testFailedShort")
       );
       if (result.success || !result.error) {
-        return renderTestStatus(tag, gatewayTestTimeoutText.value);
+        return renderTestStatus(tag);
       }
       return renderTestStatus(
         h(
@@ -308,8 +304,7 @@ const gatewayColumns = computed<DataTableColumns<ProxyPoolSelectionOption>>(() =
             trigger: () => tag,
             default: () => t("proxyPool.gatewayTestFailed", { error: result.error }),
           }
-        ),
-        gatewayTestTimeoutText.value
+        )
       );
     },
   },
@@ -407,11 +402,8 @@ const isNextPageDisabled = computed(() => {
   }
   return items.value.length === 0;
 });
-function renderTestStatus(content: ReturnType<typeof h>, timeoutText = testTimeoutText.value) {
-  return h("div", { class: "proxy-pool-test-status" }, [
-    content,
-    h(NText, { depth: 3 }, () => t("proxyPool.testTimeoutInline", { timeout: timeoutText })),
-  ]);
+function renderTestStatus(content: ReturnType<typeof h>) {
+  return h("div", { class: "proxy-pool-test-status" }, [content]);
 }
 
 async function loadItems() {
@@ -427,6 +419,7 @@ async function loadItems() {
 
     if (gatewayState.status === "fulfilled") {
       gatewayOptions.value = gatewayState.value;
+      syncGatewayTestResults(gatewayState.value);
     } else {
       gatewayOptions.value = [];
       console.error("Failed to load gateway proxy options:", gatewayState.reason);
@@ -451,6 +444,14 @@ async function loadItems() {
     throw error;
   } finally {
     loading.value = false;
+  }
+}
+
+function syncGatewayTestResults(options: ProxyPoolSelectionOption[]) {
+  for (const item of options) {
+    if (item.test_result) {
+      gatewayTestResults[gatewayResultKey(item)] = item.test_result;
+    }
   }
 }
 

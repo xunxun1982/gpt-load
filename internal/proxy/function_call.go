@@ -1691,6 +1691,18 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	}
 }
 
+func writeUpstreamErrorBodyReadFailure(c *gin.Context) {
+	// The proxy already owns this upstream error path, so return a proxy-side
+	// gateway error instead of leaving clients with an empty partial response.
+	clearUpstreamEncodingHeaders(c)
+	c.JSON(http.StatusBadGateway, gin.H{
+		"error": gin.H{
+			"message": "Failed to read upstream error body",
+			"type":    "server_error",
+		},
+	})
+}
+
 func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp *http.Response) {
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		// Failed upstream responses do not contribute token usage.
@@ -1718,6 +1730,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 			decoded, err := io.ReadAll(io.LimitReader(bodyReader, maxUpstreamErrorBodySize))
 			if err != nil {
 				logUpstreamError("reading decompressed upstream error body", err)
+				writeUpstreamErrorBodyReadFailure(c)
 				return
 			}
 			clearUpstreamEncodingHeaders(c)
@@ -1730,6 +1743,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 		if err != nil {
 			logUpstreamError("reading upstream error body", err)
+			writeUpstreamErrorBodyReadFailure(c)
 			return
 		}
 		c.Status(resp.StatusCode)

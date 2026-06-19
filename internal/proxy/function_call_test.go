@@ -11358,6 +11358,61 @@ func TestHandleFunctionCallStreamingResponseErrorRejectsInvalidCompressedBody(t 
 	}
 }
 
+func TestHandleFunctionCallStreamingResponseErrorBodyReadFailureReturnsBadGateway(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name   string
+		body   io.ReadCloser
+		header http.Header
+	}{
+		{
+			name: "plain body read failure",
+			body: alwaysErrorReadCloser{},
+			header: http.Header{
+				"Content-Type": []string{"application/json"},
+			},
+		},
+		{
+			name: "decompressed body read failure",
+			body: &errorAfterReadCloser{
+				data: compressGzipForFunctionCallTest(t, []byte(`{"error":{"message":"upstream failed"}}`)),
+			},
+			header: http.Header{
+				"Content-Encoding": []string{"gzip"},
+				"Content-Type":     []string{"application/json"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstreamResp := &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       tt.body,
+				Header:     tt.header.Clone(),
+			}
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/test", nil)
+
+			ps := &ProxyServer{}
+			ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+			if w.Code != http.StatusBadGateway {
+				t.Fatalf("expected status %d, got %d", http.StatusBadGateway, w.Code)
+			}
+			if !strings.Contains(w.Body.String(), "Failed to read upstream error body") {
+				t.Fatalf("expected read failure response, got %q", w.Body.String())
+			}
+			if got := w.Header().Get("Content-Encoding"); got != "" {
+				t.Fatalf("expected stale content encoding to be cleared, got %q", got)
+			}
+		})
+	}
+}
+
 func TestHandleFunctionCallNormalResponseDecodesCompressedBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

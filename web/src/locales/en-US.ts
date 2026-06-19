@@ -827,6 +827,8 @@ export default {
     responseBody: "Response Body",
     clientIp: "Client IP",
     userAgent: "User Agent",
+    userAgentBefore: "Before User Agent",
+    userAgentAfter: "After User Agent",
     stackTrace: "Stack Trace",
     logLevel: "Log Level",
     logTime: "Log Time",

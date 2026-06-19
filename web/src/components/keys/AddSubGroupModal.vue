@@ -3,6 +3,7 @@ import { keysApi } from "@/api/keys";
 import GroupSelectLabel from "@/components/common/GroupSelectLabel.vue";
 import type { Group, SubGroupInfo } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
+import { getSubGroupHealthResetOptions } from "@/utils/health-reset";
 import { sortGroupsWithChildren } from "@/utils/sort";
 import { Add, Close } from "@vicons/ionicons5";
 import {
@@ -36,6 +37,7 @@ interface Emits {
 interface SubGroupItem {
   group_id: number | null;
   weight: number;
+  health_reset_interval_seconds: number;
 }
 
 // Extended option interface for sorting
@@ -55,13 +57,18 @@ const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
 const defaultSubGroupWeight = 100;
+const healthResetOptions = computed(() => getSubGroupHealthResetOptions(t));
 const weightInputProps = computed(() => ({
   "aria-label": t("keys.weight"),
   title: t("keys.weight"),
 }));
 
 function createDefaultSubGroupItem(): SubGroupItem {
-  return { group_id: null, weight: defaultSubGroupWeight };
+  return {
+    group_id: null,
+    weight: defaultSubGroupWeight,
+    health_reset_interval_seconds: 0,
+  };
 }
 
 // Form data
@@ -276,6 +283,7 @@ async function handleSubmit() {
       .map(sg => ({
         group_id: sg.group_id,
         weight: sanitizeSubGroupWeight(sg.weight),
+        health_reset_interval_seconds: sg.health_reset_interval_seconds,
       }));
 
     await keysApi.addSubGroups(aggregateId, validSubGroups);
@@ -341,7 +349,7 @@ function filterOption(pattern: string, option: SelectOption): boolean {
         :model="formData"
         :rules="rules"
         label-placement="left"
-        label-width="100px"
+        label-width="120px"
       >
         <div class="form-section">
           <div class="section-header">
@@ -357,59 +365,78 @@ function filterOption(pattern: string, option: SelectOption): boolean {
           <div class="sub-groups-container">
             <div class="sub-groups-list">
               <div v-for="(item, index) in formData.sub_groups" :key="index" class="sub-group-item">
-                <span class="item-index">{{ index + 1 }}</span>
-
-                <n-form-item
-                  class="item-select"
-                  :path="`sub_groups[${index}].group_id`"
-                  :show-feedback="false"
-                >
-                  <n-select
-                    v-model:value="item.group_id"
-                    :options="getOptionsForItem(index)"
-                    :placeholder="t('keys.searchAndSelectSubGroup')"
-                    :render-label="renderLabel"
-                    :filter="filterOption"
-                    filterable
-                    clearable
-                  />
-                </n-form-item>
-
-                <div class="weight-section">
-                  <span class="weight-label">{{ t("keys.weight") }}</span>
-                  <n-form-item
-                    class="item-weight"
-                    :path="`sub_groups[${index}].weight`"
-                    :show-feedback="false"
+                <div class="sub-group-item-header">
+                  <span class="item-index">{{ index + 1 }}</span>
+                  <n-button
+                    @click="removeSubGroupItem(index)"
+                    type="error"
+                    quaternary
+                    circle
+                    size="small"
+                    class="item-delete"
+                    :style="{ visibility: formData.sub_groups.length > 1 ? 'visible' : 'hidden' }"
                   >
-                    <n-input-number
-                      :value="item.weight"
-                      :min="0"
-                      :max="1000"
-                      :precision="0"
-                      :validator="isValidWeight"
-                      :placeholder="t('keys.weight')"
-                      :input-props="weightInputProps"
-                      size="small"
-                      class="weight-input"
-                      @update:value="value => handleWeightUpdate(item, value)"
-                    />
-                  </n-form-item>
+                    <template #icon>
+                      <n-icon :component="Close" />
+                    </template>
+                  </n-button>
                 </div>
 
-                <n-button
-                  @click="removeSubGroupItem(index)"
-                  type="error"
-                  quaternary
-                  circle
-                  size="small"
-                  class="item-delete"
-                  :style="{ visibility: formData.sub_groups.length > 1 ? 'visible' : 'hidden' }"
-                >
-                  <template #icon>
-                    <n-icon :component="Close" />
-                  </template>
-                </n-button>
+                <div class="sub-group-fields">
+                  <n-form-item
+                    class="item-select"
+                    :label="t('keys.subGroup')"
+                    :path="`sub_groups[${index}].group_id`"
+                    :show-feedback="false"
+                  >
+                    <n-select
+                      v-model:value="item.group_id"
+                      :options="getOptionsForItem(index)"
+                      :placeholder="t('keys.searchAndSelectSubGroup')"
+                      :render-label="renderLabel"
+                      :filter="filterOption"
+                      filterable
+                      clearable
+                    />
+                  </n-form-item>
+
+                  <div class="weight-section">
+                    <n-form-item
+                      class="item-weight"
+                      :label="t('keys.weight')"
+                      :path="`sub_groups[${index}].weight`"
+                      :show-feedback="false"
+                    >
+                      <n-input-number
+                        :value="item.weight"
+                        :min="0"
+                        :max="1000"
+                        :precision="0"
+                        :validator="isValidWeight"
+                        :placeholder="t('keys.weight')"
+                        :input-props="weightInputProps"
+                        size="small"
+                        class="weight-input"
+                        @update:value="value => handleWeightUpdate(item, value)"
+                      />
+                    </n-form-item>
+                  </div>
+
+                  <div class="health-reset-section">
+                    <n-form-item
+                      class="item-health-reset"
+                      :label="t('subGroups.healthResetInterval')"
+                      :show-feedback="false"
+                    >
+                      <n-select
+                        v-model:value="item.health_reset_interval_seconds"
+                        :options="healthResetOptions"
+                        :placeholder="t('subGroups.healthResetFollowAggregate')"
+                        size="small"
+                      />
+                    </n-form-item>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -452,7 +479,19 @@ function filterOption(pattern: string, option: SelectOption): boolean {
 
 <style scoped>
 .add-sub-group-modal {
-  width: 600px;
+  width: 540px;
+}
+
+.add-sub-group-modal :deep(.n-card-header) {
+  padding: 24px 28px 16px;
+}
+
+.add-sub-group-modal :deep(.n-card__content) {
+  padding: 0 28px 18px;
+}
+
+.add-sub-group-modal :deep(.n-card__footer) {
+  padding: 18px 28px 24px;
 }
 
 .form-section {
@@ -486,34 +525,35 @@ function filterOption(pattern: string, option: SelectOption): boolean {
 }
 
 .sub-groups-container {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-md);
-  padding: 12px;
+  padding: 0;
 }
 
 .sub-groups-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 320px;
+  gap: 6px;
+  max-height: min(46vh, 460px);
   overflow-y: auto;
 }
 
 .sub-group-item {
-  display: flex;
-  align-items: center;
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
   gap: 10px;
-  padding: 10px 12px;
-  background: var(--card-bg-solid);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-sm);
-  transition: all 0.2s ease;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border-color);
 }
 
-.sub-group-item:hover {
-  border-color: var(--primary-color);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+.sub-group-item:last-child {
+  border-bottom: 0;
+}
+
+.sub-group-item-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 
 .item-index {
@@ -530,26 +570,39 @@ function filterOption(pattern: string, option: SelectOption): boolean {
   border-radius: 50%;
 }
 
-.item-select {
-  flex: 1;
+.sub-group-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   min-width: 0;
 }
 
-.weight-section {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
+.weight-section,
+.health-reset-section {
+  min-width: 0;
 }
 
-.weight-label {
-  font-size: 12px;
+.item-select,
+.item-weight,
+.item-health-reset {
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.item-select :deep(.n-form-item-blank),
+.item-weight :deep(.n-form-item-blank),
+.item-health-reset :deep(.n-form-item-blank) {
+  min-height: 28px;
+}
+
+.item-select :deep(.n-form-item-label),
+.item-weight :deep(.n-form-item-label),
+.item-health-reset :deep(.n-form-item-label) {
   color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .item-weight {
-  width: 108px;
   flex-shrink: 0;
 }
 
@@ -606,11 +659,15 @@ function filterOption(pattern: string, option: SelectOption): boolean {
 /* Responsive layout */
 @media (max-width: 768px) {
   .add-sub-group-modal {
-    width: 95vw;
+    width: 90vw;
   }
 
   .sub-group-item {
-    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .sub-groups-list {
+    max-height: 44vh;
   }
 }
 
@@ -619,27 +676,9 @@ function filterOption(pattern: string, option: SelectOption): boolean {
     gap: 6px;
     padding: 8px;
   }
-
-  .weight-label {
-    display: none;
-  }
 }
 
 /* Dark mode adjustments */
-:root.dark .sub-groups-container {
-  background: var(--bg-tertiary);
-}
-
-:root.dark .sub-group-item {
-  background: var(--bg-secondary);
-  border-color: rgba(255, 255, 255, 0.08);
-}
-
-:root.dark .sub-group-item:hover {
-  border-color: var(--primary-color);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
 :root.dark .channel-badge {
   background: rgba(102, 126, 234, 0.15);
   border-color: rgba(102, 126, 234, 0.4);

@@ -14,6 +14,7 @@ import (
 	"gpt-load/internal/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -48,6 +49,16 @@ func (r *errorAfterReadCloser) Read(p []byte) (int, error) {
 }
 
 func (r *errorAfterReadCloser) Close() error {
+	return nil
+}
+
+type alwaysErrorReadCloser struct{}
+
+func (r alwaysErrorReadCloser) Read(_ []byte) (int, error) {
+	return 0, errors.New("test read error")
+}
+
+func (r alwaysErrorReadCloser) Close() error {
 	return nil
 }
 
@@ -139,6 +150,45 @@ func TestHandleNormalResponseSkipsEstimatedOutputForError(t *testing.T) {
 		t.Fatalf("unexpected upstream usage: %+v source=%q ok=%v", usage, source, ok)
 	}
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleCodexForcedStreamResponseSanitizesErrorLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var logBuf bytes.Buffer
+	originalOutput := logrus.StandardLogger().Out
+	originalFormatter := logrus.StandardLogger().Formatter
+	originalLevel := logrus.GetLevel()
+	logrus.SetOutput(&logBuf)
+	logrus.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
+	logrus.SetLevel(logrus.WarnLevel)
+	t.Cleanup(func() {
+		logrus.SetOutput(originalOutput)
+		logrus.SetFormatter(originalFormatter)
+		logrus.SetLevel(originalLevel)
+	})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	bearerToken := strings.Repeat("a", 32)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream rejected Bearer " + bearerToken + " for operator@example.invalid\"}}}\n\n",
+		)),
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	logOutput := logBuf.String()
+	assert.NotContains(t, logOutput, bearerToken)
+	assert.NotContains(t, logOutput, "operator@example.invalid")
+	assert.Contains(t, logOutput, "Bearer [REDACTED]")
+	assert.Contains(t, logOutput, "[REDACTED_EMAIL]")
 }
 
 func TestHandleNormalResponseCaptureSkipsEstimatedOutputForError(t *testing.T) {
@@ -349,6 +399,32 @@ func TestHandleCodexForcedStreamResponseUsesBadGatewayForNonRateLimitFailure(t *
 	}
 }
 
+func TestHandleCodexForcedStreamResponseKeepsFailedEventTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"failed\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"upstream failed\"}}}\n\n" +
+				"event: response.completed\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_completed\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"output\":[]}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+		Header: make(http.Header),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	statusCode, exists := c.Get(ctxKeyUpstreamLogicalStatusCode)
+	if assert.True(t, exists) {
+		assert.Equal(t, http.StatusBadGateway, statusCode)
+	}
+}
+
 func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -398,6 +474,32 @@ func BenchmarkEstimatedTokenCaptureWrite(b *testing.B) {
 }
 
 func TestCollectCodexStreamToResponse(t *testing.T) {
+	t.Run("nil response", func(t *testing.T) {
+		result, err := collectCodexStreamToResponse(nil)
+
+		assert.Error(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("nil response body", func(t *testing.T) {
+		result, err := collectCodexStreamToResponse(&http.Response{})
+
+		assert.Error(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("rejects oversized stream line", func(t *testing.T) {
+		streamData := "data: " + strings.Repeat("x", maxCodexStreamLineBytes+1) + "\n"
+		resp := &http.Response{
+			Body: io.NopCloser(strings.NewReader(streamData)),
+		}
+
+		result, err := collectCodexStreamToResponse(resp)
+
+		assert.Error(t, err)
+		assert.Nil(t, result)
+	})
+
 	t.Run("simple text response", func(t *testing.T) {
 		streamData := `event: response.created
 data: {"type":"response.created","response":{"id":"resp_123","model":"gpt-4","status":"in_progress"}}

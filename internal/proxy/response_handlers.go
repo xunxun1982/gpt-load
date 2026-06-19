@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -19,7 +20,12 @@ import (
 // maxResponseCaptureBytes is the maximum size of response body to capture for logging
 const maxResponseCaptureBytes = 65000
 
-const maxUsageTailCaptureBytes = maxResponseCaptureBytes
+const (
+	maxUsageTailCaptureBytes     = maxResponseCaptureBytes
+	maxCodexStreamLineBytes      = 1 * 1024 * 1024
+	maxCodexStreamCollectBytes   = 8 * 1024 * 1024
+	errCodexStreamCollectorLimit = "codex forced stream collector exceeded size limit"
+)
 
 type tailUsageCapture struct {
 	buf   []byte
@@ -326,7 +332,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 		setLogicalFailureContext(c, statusCode, codexResp.Error.Code, codexResp.Error.Message)
 		logrus.WithFields(logrus.Fields{
 			"error_type":    codexResp.Error.Type,
-			"error_message": utils.TruncateString(codexResp.Error.Message, 200),
+			"error_message": utils.TruncateString(utils.SanitizeErrorBody(codexResp.Error.Message), 200),
 		}).Warn("Codex forced stream: upstream returned error")
 		c.JSON(statusCode, codexResp)
 		return
@@ -432,27 +438,31 @@ type codexStreamItem struct {
 // Note: Caller is responsible for closing resp.Body (typically via defer in server.go).
 // Note: Usage field is populated from response.completed event; fallback path has no usage data.
 func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, error) {
-	bodyReader := resp.Body
-	if resp != nil {
-		if contentEncoding := resp.Header.Get("Content-Encoding"); contentEncoding != "" {
-			decompressed, err := utils.NewDecompressReader(contentEncoding, resp.Body)
-			if err != nil {
-				return nil, err
-			}
-			bodyReader = decompressed
-			defer func() {
-				if closer, ok := bodyReader.(io.Closer); ok && closer != resp.Body {
-					closer.Close()
-				}
-			}()
-		}
+	if resp == nil || resp.Body == nil {
+		return nil, io.ErrUnexpectedEOF
 	}
 
-	reader := bufio.NewReader(bodyReader)
+	bodyReader := resp.Body
+	if contentEncoding := resp.Header.Get("Content-Encoding"); contentEncoding != "" {
+		decompressed, err := utils.NewDecompressReader(contentEncoding, resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		bodyReader = decompressed
+		defer func() {
+			if closer, ok := bodyReader.(io.Closer); ok && closer != resp.Body {
+				closer.Close()
+			}
+		}()
+	}
+
+	scanner := bufio.NewScanner(io.LimitReader(bodyReader, maxCodexStreamCollectBytes+1))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamLineBytes)
 
 	var finalResp *codexStreamResponse
 	var currentEventType string
 	var parseErrorCount int // Track JSON parse errors for debugging
+	var collectedBytes int64
 
 	// Collectors for building response from stream events
 	var outputItems []codexStreamOutputItem
@@ -462,17 +472,15 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 	var model string
 	var responseID string
 
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				logrus.Debug("Codex forced stream: stream ended with EOF")
-				break
-			}
-			return nil, err
+readLoop:
+	for scanner.Scan() {
+		lineBytes := scanner.Bytes()
+		collectedBytes += int64(len(lineBytes)) + 1 // Include the consumed newline for the total stream cap.
+		if collectedBytes > maxCodexStreamCollectBytes {
+			return nil, errors.New(errCodexStreamCollectorLimit)
 		}
 
-		line = strings.TrimSpace(line)
+		line := strings.TrimSpace(string(lineBytes))
 		if line == "" {
 			continue
 		}
@@ -486,7 +494,7 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				break
+				break readLoop
 			}
 
 			var event codexStreamEvent
@@ -577,8 +585,12 @@ func collectCodexStreamToResponse(resp *http.Response) (*codexStreamResponse, er
 				if event.Response != nil {
 					finalResp = event.Response
 				}
+				break readLoop
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 
 	// Log warning if multiple parse errors occurred (may indicate upstream issues)

@@ -285,35 +285,36 @@ const (
 
 // RequestLog corresponds to the request_logs table.
 type RequestLog struct {
-	ID               string    `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Timestamp        time.Time `gorm:"not null;index:idx_request_logs_group_timestamp;index:idx_request_logs_success_timestamp" json:"timestamp"`
-	GroupID          uint      `gorm:"not null;index:idx_request_logs_group_timestamp" json:"group_id"`
-	GroupName        string    `gorm:"type:varchar(255);index" json:"group_name"`
-	ParentGroupID    uint      `gorm:"index" json:"parent_group_id"`
-	ParentGroupName  string    `gorm:"type:varchar(255);index" json:"parent_group_name"`
-	KeyValue         string    `gorm:"type:text" json:"key_value"`
-	KeyHash          string    `gorm:"type:varchar(128);index" json:"key_hash"`
-	Model            string    `gorm:"type:varchar(255);index" json:"model"`
-	MappedModel      string    `gorm:"type:varchar(255)" json:"mapped_model"` // Model name after mapping/redirect
-	IsSuccess        bool      `gorm:"not null;index:idx_request_logs_success_timestamp" json:"is_success"`
-	SourceIP         string    `gorm:"type:varchar(64)" json:"source_ip"`
-	StatusCode       int       `gorm:"not null" json:"status_code"`
-	RequestPath      string    `gorm:"type:varchar(500)" json:"request_path"`
-	Duration         int64     `gorm:"not null" json:"duration_ms"`
-	ErrorMessage     string    `gorm:"type:text" json:"error_message"`
-	UserAgent        string    `gorm:"type:varchar(512)" json:"user_agent"`
-	RequestType      string    `gorm:"type:varchar(20);not null;default:'final';index" json:"request_type"`
-	UpstreamAddr     string    `gorm:"type:varchar(500)" json:"upstream_addr"`
-	IsStream         bool      `gorm:"not null" json:"is_stream"`
-	RequestBody      string    `gorm:"type:text" json:"request_body"`
-	ResponseBody     string    `gorm:"type:text" json:"response_body"` // Response body for debugging (only stored when logging is enabled)
-	InputTokens      int64     `gorm:"not null;default:0;index" json:"input_tokens"`
-	OutputTokens     int64     `gorm:"not null;default:0;index" json:"output_tokens"`
-	TotalTokens      int64     `gorm:"not null;default:0;index" json:"total_tokens"`
-	CacheReadTokens  int64     `gorm:"not null;default:0" json:"cache_read_tokens"`
-	CacheWriteTokens int64     `gorm:"not null;default:0" json:"cache_write_tokens"`
-	ThinkingTokens   int64     `gorm:"not null;default:0" json:"thinking_tokens"`
-	TokenUsageSource string    `gorm:"type:varchar(20);not null;default:''" json:"token_usage_source"` // zero value is TokenUsageSourceUnknown
+	ID                string    `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Timestamp         time.Time `gorm:"not null;index:idx_request_logs_group_timestamp;index:idx_request_logs_success_timestamp" json:"timestamp"`
+	GroupID           uint      `gorm:"not null;index:idx_request_logs_group_timestamp" json:"group_id"`
+	GroupName         string    `gorm:"type:varchar(255);index" json:"group_name"`
+	ParentGroupID     uint      `gorm:"index" json:"parent_group_id"`
+	ParentGroupName   string    `gorm:"type:varchar(255);index" json:"parent_group_name"`
+	KeyValue          string    `gorm:"type:text" json:"key_value"`
+	KeyHash           string    `gorm:"type:varchar(128);index" json:"key_hash"`
+	Model             string    `gorm:"type:varchar(255);index" json:"model"`
+	MappedModel       string    `gorm:"type:varchar(255)" json:"mapped_model"` // Model name after mapping/redirect
+	IsSuccess         bool      `gorm:"not null;index:idx_request_logs_success_timestamp" json:"is_success"`
+	SourceIP          string    `gorm:"type:varchar(64)" json:"source_ip"`
+	StatusCode        int       `gorm:"not null" json:"status_code"`
+	RequestPath       string    `gorm:"type:varchar(500)" json:"request_path"`
+	Duration          int64     `gorm:"not null" json:"duration_ms"`
+	ErrorMessage      string    `gorm:"type:text" json:"error_message"`
+	UserAgent         string    `gorm:"type:varchar(512)" json:"user_agent"`
+	UpstreamUserAgent string    `gorm:"type:varchar(512)" json:"upstream_user_agent"`
+	RequestType       string    `gorm:"type:varchar(20);not null;default:'final';index" json:"request_type"`
+	UpstreamAddr      string    `gorm:"type:varchar(500)" json:"upstream_addr"`
+	IsStream          bool      `gorm:"not null" json:"is_stream"`
+	RequestBody       string    `gorm:"type:text" json:"request_body"`
+	ResponseBody      string    `gorm:"type:text" json:"response_body"` // Response body for debugging (only stored when logging is enabled)
+	InputTokens       int64     `gorm:"not null;default:0;index" json:"input_tokens"`
+	OutputTokens      int64     `gorm:"not null;default:0;index" json:"output_tokens"`
+	TotalTokens       int64     `gorm:"not null;default:0;index" json:"total_tokens"`
+	CacheReadTokens   int64     `gorm:"not null;default:0" json:"cache_read_tokens"`
+	CacheWriteTokens  int64     `gorm:"not null;default:0" json:"cache_write_tokens"`
+	ThinkingTokens    int64     `gorm:"not null;default:0" json:"thinking_tokens"`
+	TokenUsageSource  string    `gorm:"type:varchar(20);not null;default:''" json:"token_usage_source"` // zero value is TokenUsageSourceUnknown
 }
 
 // StatCard represents a single statistics card data for the dashboard.

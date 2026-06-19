@@ -219,6 +219,14 @@ func TestOpenAIResponseChannel_ValidateKey_UsesCompactProbeForSimulatedCodex(t *
 			if assert.True(t, ok) {
 				assert.Equal(t, "message", item["type"])
 				assert.Equal(t, "user", item["role"])
+				content, ok := item["content"].([]any)
+				if assert.True(t, ok) && assert.Len(t, content, 1) {
+					part, ok := content[0].(map[string]any)
+					if assert.True(t, ok) {
+						assert.Equal(t, "input_text", part["type"])
+						assert.Equal(t, "Respond with OK.", part["text"])
+					}
+				}
 			}
 		}
 

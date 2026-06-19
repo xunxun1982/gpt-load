@@ -32,10 +32,11 @@ import (
 )
 
 const (
-	maxUpstreamErrorBodySize   = 64 * 1024
-	maxProxyBodyPreallocBytes  = 2 * 1024 * 1024
-	maxEstimatedTokenBodyBytes = 256 * 1024
-	quotaExhaustedRatePressure = int64(4)
+	maxUpstreamErrorBodySize    = 64 * 1024
+	maxProxyBodyPreallocBytes   = 2 * 1024 * 1024
+	maxEstimatedTokenBodyBytes  = 256 * 1024
+	quotaExhaustedRatePressure  = int64(4)
+	requestLogUserAgentMaxRunes = 512
 )
 
 var quotaExhaustedRateMarkers = []string{
@@ -150,6 +151,7 @@ const (
 	ctxKeyRateLimitPressure           = "rate_limit_pressure"
 	ctxKeyUpstreamLogicalStatusCode   = "upstream_logical_status_code"
 	ctxKeyUpstreamLogicalErrorMessage = "upstream_logical_error_message"
+	ctxKeyUpstreamUserAgent           = "upstream_user_agent"
 )
 
 // ProxyServer represents the proxy server
@@ -1059,6 +1061,9 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 	// Store group in context for response handlers to access
 	c.Set("group", group)
+	if c.Keys != nil {
+		delete(c.Keys, ctxKeyUpstreamUserAgent)
+	}
 
 	apiKey, err := ps.keyProvider.SelectKey(group.ID)
 	if err != nil {
@@ -1165,6 +1170,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	}
 
 	removeAcceptEncodingForProxyParsing(req, c, group)
+	setUpstreamUserAgentForLog(c, group, req)
 
 	// Use the upstream-specific client (with its dedicated proxy configuration)
 	var client *http.Client
@@ -1737,6 +1743,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Store group in context for response handlers to access
 	c.Set("group", group)
+	if c.Keys != nil {
+		delete(c.Keys, ctxKeyUpstreamUserAgent)
+	}
 
 	apiKey, err := ps.keyProvider.SelectKey(group.ID)
 	if err != nil {
@@ -1856,6 +1865,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 
 	removeAcceptEncodingForProxyParsing(req, c, group)
+	setUpstreamUserAgentForLog(c, group, req)
 
 	// Use the upstream-specific client
 	var client *http.Client
@@ -2223,6 +2233,15 @@ func (ps *ProxyServer) logEarlyError(c *gin.Context, group *models.Group, startT
 	ps.requestLogService.RecordError(groupID, groupName, c.ClientIP(), utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), errMsg, statusCode, time.Since(startTime).Milliseconds())
 }
 
+func setUpstreamUserAgentForLog(c *gin.Context, group *models.Group, req *http.Request) {
+	if group == nil || !group.EffectiveConfig.EnableRequestBodyLogging {
+		return
+	}
+	if ua := strings.TrimSpace(req.UserAgent()); ua != "" {
+		c.Set(ctxKeyUpstreamUserAgent, ua)
+	}
+}
+
 // logRequest is a helper function to create and record a request log.
 func (ps *ProxyServer) logRequest(
 	c *gin.Context,
@@ -2243,11 +2262,16 @@ func (ps *ProxyServer) logRequest(
 		return
 	}
 
-	var requestBodyToLog, responseBodyToLog, userAgent string
+	var requestBodyToLog, responseBodyToLog, userAgent, upstreamUserAgent string
 
 	if group.EffectiveConfig.EnableRequestBodyLogging {
 		requestBodyToLog = utils.TruncateString(string(bodyBytes), maxResponseCaptureBytes)
-		userAgent = c.Request.UserAgent()
+		userAgent = utils.TruncateString(utils.SanitizeErrorBody(c.Request.UserAgent()), requestLogUserAgentMaxRunes)
+		if ua, exists := c.Get(ctxKeyUpstreamUserAgent); exists {
+			if uaStr, ok := ua.(string); ok {
+				upstreamUserAgent = utils.TruncateString(utils.SanitizeErrorBody(uaStr), requestLogUserAgentMaxRunes)
+			}
+		}
 
 		// Get captured response body from context (if available)
 		if responseBody, exists := c.Get("response_body"); exists {
@@ -2279,19 +2303,20 @@ func (ps *ProxyServer) logRequest(
 	}
 
 	logEntry := &models.RequestLog{
-		GroupID:      group.ID,
-		GroupName:    group.Name,
-		IsSuccess:    finalError == nil && statusCode < 400,
-		SourceIP:     c.ClientIP(),
-		StatusCode:   statusCode,
-		RequestPath:  utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), // Sanitize to prevent auth token leakage
-		Duration:     duration,
-		UserAgent:    userAgent,
-		RequestType:  requestType,
-		IsStream:     isStream,
-		UpstreamAddr: utils.TruncateString(upstreamAddrWithProxy, 500),
-		RequestBody:  requestBodyToLog,
-		ResponseBody: responseBodyToLog,
+		GroupID:           group.ID,
+		GroupName:         group.Name,
+		IsSuccess:         finalError == nil && statusCode < 400,
+		SourceIP:          c.ClientIP(),
+		StatusCode:        statusCode,
+		RequestPath:       utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), // Sanitize to prevent auth token leakage
+		Duration:          duration,
+		UserAgent:         userAgent,
+		UpstreamUserAgent: upstreamUserAgent,
+		RequestType:       requestType,
+		IsStream:          isStream,
+		UpstreamAddr:      utils.TruncateString(upstreamAddrWithProxy, 500),
+		RequestBody:       requestBodyToLog,
+		ResponseBody:      responseBodyToLog,
 	}
 
 	if logicalStatusCode, logicalErrorMessage, ok := logicalStatusFromContext(c); ok {
