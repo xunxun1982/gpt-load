@@ -149,12 +149,12 @@ func setLogicalFailureContext(c *gin.Context, statusCode int, errorCode, errorMe
 	}
 	c.Set(ctxKeyUpstreamLogicalStatusCode, statusCode)
 	if strings.TrimSpace(errorMessage) != "" {
-		c.Set(ctxKeyUpstreamLogicalErrorMessage, strings.TrimSpace(errorMessage))
+		c.Set(ctxKeyUpstreamLogicalErrorMessage, strings.TrimSpace(utils.SanitizeErrorBody(errorMessage)))
 	}
 	if _, exists := c.Get("response_body"); !exists && (strings.TrimSpace(errorCode) != "" || strings.TrimSpace(errorMessage) != "") {
-		summary := strings.TrimSpace(errorMessage)
+		summary := strings.TrimSpace(utils.SanitizeErrorBody(errorMessage))
 		if strings.TrimSpace(errorCode) != "" {
-			summary = `{"error":{"code":"` + strings.TrimSpace(errorCode) + `","message":"` + strings.ReplaceAll(strings.TrimSpace(errorMessage), `"`, `'`) + `"}}`
+			summary = `{"error":{"code":"` + strings.TrimSpace(errorCode) + `","message":"` + strings.ReplaceAll(summary, `"`, `'`) + `"}}`
 		}
 		c.Set("response_body", utils.TruncateString(summary, maxResponseCaptureBytes))
 	}
@@ -233,11 +233,15 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 		}
 	}
 
+	failureCapture.Finish()
 	// Store captured response in context for logging
 	if responseCapture != nil && responseCapture.Len() > 0 {
-		c.Set("response_body", responseCapture.String())
+		responseBody := responseCapture.String()
+		if failureCapture.statusCode > 0 {
+			responseBody = utils.SanitizeErrorBody(responseBody)
+		}
+		c.Set("response_body", responseBody)
 	}
-	failureCapture.Finish()
 	if failureCapture.statusCode > 0 {
 		setLogicalFailureContext(c, failureCapture.statusCode, failureCapture.errorCode, failureCapture.errorMessage)
 	}
@@ -316,6 +320,8 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 		statusCode := resp.StatusCode
 		if strings.EqualFold(codexResp.Status, "failed") && strings.EqualFold(codexResp.Error.Code, "rate_limit_exceeded") {
 			statusCode = http.StatusTooManyRequests
+		} else if statusCode < http.StatusBadRequest {
+			statusCode = http.StatusBadGateway
 		}
 		setLogicalFailureContext(c, statusCode, codexResp.Error.Code, codexResp.Error.Message)
 		logrus.WithFields(logrus.Fields{

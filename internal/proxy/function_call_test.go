@@ -11302,6 +11302,62 @@ func TestHandleFunctionCallStreamingResponseErrorDoesNotCaptureUpstreamUsage(t *
 	}
 }
 
+func TestHandleFunctionCallStreamingResponseErrorBodyIsBounded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := strings.Repeat("x", maxUpstreamErrorBodySize+128)
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
+	upstreamResp.Header.Set("Content-Type", "text/plain")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, w.Code)
+	}
+	if got := w.Body.Len(); got != maxUpstreamErrorBodySize {
+		t.Fatalf("expected bounded body length %d, got %d", maxUpstreamErrorBodySize, got)
+	}
+}
+
+func TestHandleFunctionCallStreamingResponseErrorRejectsInvalidCompressedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Body:       io.NopCloser(strings.NewReader("not gzip data")),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+			"Content-Type":     []string{"application/json"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, w.Code)
+	}
+	if strings.Contains(w.Body.String(), "not gzip data") {
+		t.Fatalf("expected decompression failure response, got raw upstream body: %q", w.Body.String())
+	}
+	if got := w.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("expected stale content encoding to be cleared, got %q", got)
+	}
+}
+
 func TestHandleFunctionCallNormalResponseDecodesCompressedBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

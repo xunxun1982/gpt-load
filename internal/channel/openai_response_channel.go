@@ -63,8 +63,11 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 	isCodexProbe := simulatedClientMode(group) == simulatedClientCodex
 
 	validationPath := endpointURL.Path
-	if isCodexProbe && !strings.HasSuffix(validationPath, "/compact") {
-		validationPath = strings.TrimRight(validationPath, "/") + "/compact"
+	if isCodexProbe {
+		validationPath = strings.TrimRight(validationPath, "/")
+		if !strings.HasSuffix(validationPath, "/compact") {
+			validationPath += "/compact"
+		}
 	}
 
 	selection, err := ch.SelectValidationUpstream(group, validationPath, endpointURL.RawQuery)

@@ -253,6 +253,41 @@ func TestOpenAIResponseChannel_ValidateKey_UsesCompactProbeForSimulatedCodex(t *
 	assert.True(t, valid)
 }
 
+func TestOpenAIResponseChannel_ValidateKey_KeepsExistingCompactProbePath(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/responses/compact", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses/compact/",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{
+			Name: "responses-group",
+			Config: datatypes.JSONMap{
+				"simulated_client": "codex",
+			},
+		},
+	)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
 func TestOpenAIResponseChannel_ValidateKey_InvalidKey(t *testing.T) {
 	t.Parallel()
 

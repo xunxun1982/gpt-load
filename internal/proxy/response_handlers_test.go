@@ -282,6 +282,73 @@ func TestHandleStreamingResponseRecordsResponsesFailedRateLimit(t *testing.T) {
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
 }
 
+func TestHandleStreamingResponseSanitizesCapturedLogicalFailureBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream leaked operator@example.invalid\"}}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	body, exists := c.Get("response_body")
+	if assert.True(t, exists) {
+		bodyStr, ok := body.(string)
+		if assert.True(t, ok) {
+			assert.NotContains(t, bodyStr, "operator@example.invalid")
+			assert.Contains(t, bodyStr, "[REDACTED_EMAIL]")
+		}
+	}
+}
+
+func TestSetLogicalFailureContextSanitizesSyntheticBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	setLogicalFailureContext(c, http.StatusBadGateway, "server_error", "upstream leaked operator@example.invalid")
+
+	body, exists := c.Get("response_body")
+	if assert.True(t, exists) {
+		bodyStr, ok := body.(string)
+		if assert.True(t, ok) {
+			assert.NotContains(t, bodyStr, "operator@example.invalid")
+			assert.Contains(t, bodyStr, "[REDACTED_EMAIL]")
+		}
+	}
+}
+
+func TestHandleCodexForcedStreamResponseUsesBadGatewayForNonRateLimitFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"failed\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"upstream failed\"}}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+		Header: make(http.Header),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	statusCode, exists := c.Get(ctxKeyUpstreamLogicalStatusCode)
+	if assert.True(t, exists) {
+		assert.Equal(t, http.StatusBadGateway, statusCode)
+	}
+}
+
 func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

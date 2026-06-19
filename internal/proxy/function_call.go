@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1698,17 +1697,43 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		// If upstream body is compressed, decode it before forwarding because this
 		// path reads the body here instead of transparently proxying the response.
 		copyUpstreamHeaders(c.Writer.Header(), resp.Header)
-		body, err := io.ReadAll(resp.Body)
+		if contentEncoding := resp.Header.Get("Content-Encoding"); contentEncoding != "" {
+			bodyReader, decompressErr := utils.NewDecompressReader(contentEncoding, resp.Body)
+			if decompressErr != nil {
+				logUpstreamError("decompressing upstream error body", decompressErr)
+				clearUpstreamEncodingHeaders(c)
+				c.JSON(http.StatusBadGateway, gin.H{
+					"error": gin.H{
+						"message": "Failed to decompress upstream error body",
+						"type":    "server_error",
+					},
+				})
+				return
+			}
+			defer func() {
+				if closer, ok := bodyReader.(io.Closer); ok {
+					_ = closer.Close()
+				}
+			}()
+			decoded, err := io.ReadAll(io.LimitReader(bodyReader, maxUpstreamErrorBodySize))
+			if err != nil {
+				logUpstreamError("reading decompressed upstream error body", err)
+				return
+			}
+			clearUpstreamEncodingHeaders(c)
+			c.Status(resp.StatusCode)
+			if _, err := c.Writer.Write(decoded); err != nil {
+				logUpstreamError("copying upstream error body", err)
+			}
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 		if err != nil {
 			logUpstreamError("reading upstream error body", err)
 			return
 		}
-		decoded := decompressUpstreamErrorBody(resp, body)
-		if !bytes.Equal(decoded, body) {
-			clearUpstreamEncodingHeaders(c)
-		}
 		c.Status(resp.StatusCode)
-		if _, err := c.Writer.Write(decoded); err != nil {
+		if _, err := c.Writer.Write(body); err != nil {
 			logUpstreamError("copying upstream error body", err)
 			return
 		}
