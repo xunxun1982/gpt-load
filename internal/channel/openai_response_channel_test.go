@@ -163,7 +163,10 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, BuildCodexUserAgent("0.150.1"), r.Header.Get("User-Agent"))
 		assert.Equal(t, "0.150.1", r.Header.Get("Version"))
-		assert.Equal(t, "codex_cli_rs", r.Header.Get("originator"))
+		assert.Equal(t, "codex_cli_rs", r.Header.Get("Originator"))
+		assert.Equal(t, "terminal_resize_reflow", r.Header.Get("X-Codex-Beta-Features"))
+		assert.NotEmpty(t, r.Header.Get("X-Codex-Turn-Metadata"))
+		assert.NotEmpty(t, r.Header.Get("X-Codex-Window-Id"))
 		assert.Equal(t, "responses=experimental", r.Header.Get("OpenAI-Beta"))
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
@@ -205,7 +208,7 @@ func TestOpenAIResponseChannel_ValidateKey_UsesCompactProbeForSimulatedCodex(t *
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/responses/compact", r.URL.Path)
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
-		assert.Equal(t, "codex_cli_rs", r.Header.Get("originator"))
+		assert.Equal(t, "codex_cli_rs", r.Header.Get("Originator"))
 		assert.NotEmpty(t, r.Header.Get("Session_ID"))
 		assert.Equal(t, r.Header.Get("Session_ID"), r.Header.Get("Conversation_ID"))
 

@@ -2276,7 +2276,7 @@ func (ps *ProxyServer) logRequest(
 		// Get captured response body from context (if available)
 		if responseBody, exists := c.Get("response_body"); exists {
 			if responseBodyStr, ok := responseBody.(string); ok {
-				responseBodyToLog = utils.TruncateString(responseBodyStr, maxResponseCaptureBytes)
+				responseBodyToLog = utils.TruncateString(utils.SanitizeErrorBody(responseBodyStr), maxResponseCaptureBytes)
 			}
 		}
 	}

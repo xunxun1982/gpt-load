@@ -330,6 +330,17 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Equal(t, channel.DefaultCodexVersion, req.Header.Get("Version"))
 		assert.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
 		assert.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
+		assert.Equal(t, "terminal_resize_reflow", req.Header.Get("X-Codex-Beta-Features"))
+		windowID := req.Header.Get("X-Codex-Window-Id")
+		assert.NotEmpty(t, windowID)
+		var turnMetadata map[string]string
+		assert.NoError(t, json.Unmarshal([]byte(req.Header.Get("X-Codex-Turn-Metadata")), &turnMetadata))
+		assert.Equal(t, "turn", turnMetadata["request_kind"])
+		assert.NotEmpty(t, turnMetadata["turn_id"])
+		assert.Equal(t, windowID, turnMetadata["window_id"])
+		assert.Empty(t, req.Header.Get("x-client-request-id"))
+		assert.Empty(t, req.Header.Get("Session-Id"))
+		assert.Empty(t, req.Header.Get("Thread-Id"))
 		assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
 		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
 		assert.Equal(t, "Bearer upstream-key", req.Header.Get("Authorization"))
@@ -448,9 +459,13 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Equal(t, "2023-06-01", claudeReq.Header.Get("anthropic-version"))
 	})
 
-	t.Run("codex preset preserves existing runtime trace headers and does not synthesize missing ones", func(t *testing.T) {
+	t.Run("codex preset preserves existing runtime trace headers without synthesizing missing ones", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 		req.Header.Set("Session_id", "client-session")
+		req.Header.Set("Session-Id", "client-session-hyphen")
+		req.Header.Set("Thread-Id", "client-thread")
+		req.Header.Set("x-client-request-id", "client-request")
+		req.Header.Set("X-Codex-Window-Id", "client-window")
 		req.Header.Set("X-Codex-Turn-Metadata", `{"source":"client"}`)
 		req.Header.Set("X-Codex-Beta-Features", "client-beta")
 
@@ -459,10 +474,27 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		}}, false)
 
 		assert.Equal(t, "client-session", req.Header.Get("Session_id"))
+		assert.Equal(t, "client-session-hyphen", req.Header.Get("Session-Id"))
+		assert.Equal(t, "client-thread", req.Header.Get("Thread-Id"))
+		assert.Equal(t, "client-request", req.Header.Get("x-client-request-id"))
+		assert.Equal(t, "client-window", req.Header.Get("X-Codex-Window-Id"))
 		assert.Equal(t, `{"source":"client"}`, req.Header.Get("X-Codex-Turn-Metadata"))
 		assert.Equal(t, "client-beta", req.Header.Get("X-Codex-Beta-Features"))
+	})
+
+	t.Run("codex preset does not synthesize session routing headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, false)
+
+		assert.Empty(t, req.Header.Get("Session-Id"))
+		assert.Empty(t, req.Header.Get("Thread-Id"))
 		assert.Empty(t, req.Header.Get("x-client-request-id"))
-		assert.Empty(t, req.Header.Get("x-codex-window-id"))
+		assert.NotEmpty(t, req.Header.Get("X-Codex-Window-Id"))
+		assert.NotEmpty(t, req.Header.Get("X-Codex-Turn-Metadata"))
+		assert.Equal(t, "terminal_resize_reflow", req.Header.Get("X-Codex-Beta-Features"))
 	})
 
 	t.Run("does not modify request body", func(t *testing.T) {

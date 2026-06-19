@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1282,12 +1283,45 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	// Read full response body. We bound the workload of XML parsing below by
 	// limiting the size of the assistant content string passed into the parser,
 	// instead of truncating the response returned to the client.
-	rawBody, err := io.ReadAll(resp.Body)
+	rawBody, err := readAllWithLimit(resp.Body, maxUpstreamResponseBodySize)
 	if err != nil {
 		logUpstreamError("reading response body", err)
+		clearUpstreamEncodingHeaders(c)
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"message": "Upstream response body is too large",
+				"type":    "server_error",
+			},
+		})
 		return
 	}
-	body := decompressUpstreamErrorBody(resp, rawBody)
+	body := rawBody
+	if contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding")); contentEncoding != "" {
+		if !supportedUpstreamContentEncoding(contentEncoding) {
+			logrus.WithField("content_encoding", contentEncoding).Debug("Unsupported upstream content encoding")
+			writeUpstreamDecompressionFailure(c, "Failed to decompress upstream response body")
+			return
+		}
+		decompressedReader, decompressErr := utils.NewDecompressReader(contentEncoding, io.NopCloser(bytes.NewReader(rawBody)))
+		if decompressErr != nil {
+			logUpstreamError("decompressing response body", decompressErr)
+			writeUpstreamDecompressionFailure(c, "Failed to decompress upstream response body")
+			return
+		}
+		defer func() {
+			if closer, ok := decompressedReader.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}()
+		decompressed, readErr := readAllWithLimit(decompressedReader, maxUpstreamResponseBodySize)
+		if readErr != nil {
+			logUpstreamError("reading decompressed response body", readErr)
+			writeUpstreamDecompressionFailure(c, "Failed to decompress upstream response body")
+			return
+		}
+		body = decompressed
+		clearUpstreamEncodingHeaders(c)
+	}
 
 	// Fallback: if we cannot parse JSON, behave like normal response handler.
 	var payload map[string]any
@@ -1686,8 +1720,29 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		}
 	}
 
+	clearUpstreamEncodingHeaders(c)
 	if _, werr := c.Writer.Write(out); werr != nil {
 		logUpstreamError("writing response body", werr)
+	}
+}
+
+func writeUpstreamDecompressionFailure(c *gin.Context, message string) {
+	clearUpstreamEncodingHeaders(c)
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.JSON(http.StatusBadGateway, gin.H{
+		"error": gin.H{
+			"message": message,
+			"type":    "server_error",
+		},
+	})
+}
+
+func supportedUpstreamContentEncoding(encoding string) bool {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "identity", "gzip", "deflate", "br", "zstd":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1710,6 +1765,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		// path reads the body here instead of transparently proxying the response.
 		copyUpstreamHeaders(c.Writer.Header(), resp.Header)
 		if contentEncoding := resp.Header.Get("Content-Encoding"); contentEncoding != "" {
+			if !supportedUpstreamContentEncoding(contentEncoding) {
+				logrus.WithField("content_encoding", contentEncoding).Debug("Unsupported upstream error content encoding")
+				writeUpstreamDecompressionFailure(c, "Failed to decompress upstream error body")
+				return
+			}
 			bodyReader, decompressErr := utils.NewDecompressReader(contentEncoding, resp.Body)
 			if decompressErr != nil {
 				logUpstreamError("decompressing upstream error body", decompressErr)
@@ -1727,7 +1787,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 					_ = closer.Close()
 				}
 			}()
-			decoded, err := io.ReadAll(io.LimitReader(bodyReader, maxUpstreamErrorBodySize))
+			decoded, err := readAllWithLimit(bodyReader, maxUpstreamErrorBodySize)
 			if err != nil {
 				logUpstreamError("reading decompressed upstream error body", err)
 				writeUpstreamErrorBodyReadFailure(c)
@@ -1740,7 +1800,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 			}
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
+		body, err := readAllWithLimit(resp.Body, maxUpstreamErrorBodySize)
 		if err != nil {
 			logUpstreamError("reading upstream error body", err)
 			writeUpstreamErrorBodyReadFailure(c)
@@ -1778,10 +1838,16 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	clearUpstreamEncodingHeaders(c)
 	streamBody := resp.Body
 	if contentEncoding := resp.Header.Get("Content-Encoding"); contentEncoding != "" {
+		if !supportedUpstreamContentEncoding(contentEncoding) {
+			logrus.WithField("content_encoding", contentEncoding).Debug("Unsupported upstream stream content encoding")
+			writeUpstreamDecompressionFailure(c, "Failed to decompress upstream stream body")
+			return
+		}
 		decompressedBody, err := utils.NewDecompressReader(contentEncoding, resp.Body)
 		if err != nil {
 			logrus.WithError(err).WithField("content_encoding", contentEncoding).
 				Warn("Function call streaming: failed to create decompression reader")
+			writeUpstreamDecompressionFailure(c, "Failed to decompress upstream stream body")
 			return
 		}
 		streamBody = decompressedBody

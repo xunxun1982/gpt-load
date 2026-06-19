@@ -1,11 +1,14 @@
 package channel
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -27,6 +30,8 @@ var simulatedClaudeCodeBetaTokens = []string{
 var simulatedOpenAIBetaTokens = []string{
 	"responses=experimental",
 }
+
+const simulatedCodexBetaFeatures = "terminal_resize_reflow"
 
 func simulatedClientMode(group *models.Group) string {
 	if group == nil || group.Config == nil {
@@ -61,6 +66,8 @@ func ApplySimulatedClientHeaders(req *http.Request, group *models.Group, isStrea
 	case simulatedClientCodex:
 		ApplyCodexCompatibleHeaders(req, group, isStream)
 	case simulatedClientClaudeCode:
+		// This preset targets the Anthropic Claude Code CLI signature.
+		// The Claude Code Codex plugin uses a different Originator/User-Agent pair.
 		req.Header.Set("User-Agent", BuildClaudeCodeUserAgent(simulatedClientVersion(group, "simulated_claude_code_version", DefaultClaudeCodeVersion)))
 		setHeaderIfMissing(req, "Accept", "application/json")
 		setHeaderIfMissing(req, "Content-Type", "application/json")
@@ -91,11 +98,31 @@ func ApplyCodexCompatibleHeaders(req *http.Request, group *models.Group, isStrea
 	req.Header.Set("Version", version)
 	req.Header.Set("originator", "codex_cli_rs")
 	req.Header.Set("OpenAI-Beta", mergeCommaHeaderTokens(req.Header.Get("OpenAI-Beta"), simulatedOpenAIBetaTokens))
+	ensureCodexFeatureHeaders(req)
 	setHeaderIfMissing(req, "Content-Type", "application/json")
 	if isStream {
 		setHeaderIfMissing(req, "Accept", "text/event-stream")
 	} else {
 		setHeaderIfMissing(req, "Accept", "application/json")
+	}
+}
+
+func ensureCodexFeatureHeaders(req *http.Request) {
+	setHeaderIfMissing(req, "X-Codex-Beta-Features", simulatedCodexBetaFeatures)
+	windowID := strings.TrimSpace(req.Header.Get("X-Codex-Window-Id"))
+	if windowID == "" {
+		windowID = uuid.NewString()
+		req.Header.Set("X-Codex-Window-Id", windowID)
+	}
+	if strings.TrimSpace(req.Header.Get("X-Codex-Turn-Metadata")) == "" {
+		metadata, err := json.Marshal(map[string]string{
+			"request_kind": "turn",
+			"turn_id":      uuid.NewString(),
+			"window_id":    windowID,
+		})
+		if err == nil {
+			req.Header.Set("X-Codex-Turn-Metadata", string(metadata))
+		}
 	}
 }
 

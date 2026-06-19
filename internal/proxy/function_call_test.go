@@ -11302,10 +11302,10 @@ func TestHandleFunctionCallStreamingResponseErrorDoesNotCaptureUpstreamUsage(t *
 	}
 }
 
-func TestHandleFunctionCallStreamingResponseErrorBodyIsBounded(t *testing.T) {
+func TestHandleFunctionCallStreamingResponseErrorBodyTooLargeReturnsBadGateway(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	body := strings.Repeat("x", maxUpstreamErrorBodySize+128)
+	body := strings.Repeat("x", maxUpstreamErrorBodySize+1)
 	upstreamResp := &http.Response{
 		StatusCode: http.StatusInternalServerError,
 		Body:       io.NopCloser(strings.NewReader(body)),
@@ -11320,11 +11320,11 @@ func TestHandleFunctionCallStreamingResponseErrorBodyIsBounded(t *testing.T) {
 	ps := &ProxyServer{}
 	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, w.Code)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, w.Code)
 	}
-	if got := w.Body.Len(); got != maxUpstreamErrorBodySize {
-		t.Fatalf("expected bounded body length %d, got %d", maxUpstreamErrorBodySize, got)
+	if strings.Contains(w.Body.String(), strings.Repeat("x", 128)) {
+		t.Fatalf("expected proxy error instead of partial upstream body, got %q", w.Body.String())
 	}
 }
 
@@ -11355,6 +11355,41 @@ func TestHandleFunctionCallStreamingResponseErrorRejectsInvalidCompressedBody(t 
 	}
 	if got := w.Header().Get("Content-Encoding"); got != "" {
 		t.Fatalf("expected stale content encoding to be cleared, got %q", got)
+	}
+}
+
+func TestHandleFunctionCallStreamingResponseRejectsInvalidCompressedSuccessBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("not gzip stream")),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+			"Content-Type":     []string{"text/event-stream"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_badzip>>")
+	c.Set("group", &models.Group{Name: "test-group"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, w.Code)
+	}
+	if strings.Contains(w.Body.String(), "not gzip stream") {
+		t.Fatalf("expected decompression failure response, got raw upstream body: %q", w.Body.String())
+	}
+	if got := w.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("expected stale content encoding to be cleared, got %q", got)
+	}
+	if got := w.Header().Get("Content-Type"); strings.Contains(got, "text/event-stream") {
+		t.Fatalf("expected gateway error content type, got %q", got)
 	}
 }
 
@@ -11429,6 +11464,8 @@ func TestHandleFunctionCallNormalResponseDecodesCompressedBody(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Writer.Header().Set("Content-Encoding", "gzip")
+	c.Writer.Header().Set("Content-Length", "123")
 	c.Set(ctxKeyTriggerSignal, "<<CALL_norm>>")
 	c.Set("group", &models.Group{Name: "test-group"})
 
@@ -11441,6 +11478,111 @@ func TestHandleFunctionCallNormalResponseDecodesCompressedBody(t *testing.T) {
 	}
 	if strings.Contains(output, "<function_calls>") {
 		t.Fatalf("expected function_calls XML to be removed, got %s", output)
+	}
+	if got := w.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("expected stale content encoding to be cleared, got %q", got)
+	}
+	if got := w.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("expected stale content length to be cleared, got %q", got)
+	}
+}
+
+func TestHandleFunctionCallNormalResponseRejectsInvalidCompressedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("not gzip body")),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+			"Content-Type":     []string{"application/json"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Writer.Header().Set("Content-Encoding", "gzip")
+	c.Set(ctxKeyTriggerSignal, "<<CALL_norm_badzip>>")
+	c.Set("group", &models.Group{Name: "test-group"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallNormalResponse(c, upstreamResp)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, w.Code)
+	}
+	if strings.Contains(w.Body.String(), "not gzip body") {
+		t.Fatalf("expected decompression failure response, got raw upstream body: %q", w.Body.String())
+	}
+	if got := w.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("expected stale content encoding to be cleared, got %q", got)
+	}
+}
+
+func TestHandleFunctionCallNormalResponseRejectsUnsupportedCompressedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("encoded body")),
+		Header: http.Header{
+			"Content-Encoding": []string{"x-custom"},
+			"Content-Type":     []string{"application/json"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Writer.Header().Set("Content-Encoding", "x-custom")
+	c.Set(ctxKeyTriggerSignal, "<<CALL_norm_unknownzip>>")
+	c.Set("group", &models.Group{Name: "test-group"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallNormalResponse(c, upstreamResp)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, w.Code)
+	}
+	if strings.Contains(w.Body.String(), "encoded body") {
+		t.Fatalf("expected decompression failure response, got raw upstream body: %q", w.Body.String())
+	}
+	if got := w.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("expected stale content encoding to be cleared, got %q", got)
+	}
+}
+
+func TestHandleFunctionCallNormalResponseClearsLengthAfterRewrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Run it. <function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":"stop"}]}`)
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Writer.Header().Set("Content-Length", "123")
+	c.Set(ctxKeyTriggerSignal, "<<CALL_norm_len>>")
+	c.Set("group", &models.Group{Name: "test-group"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallNormalResponse(c, upstreamResp)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"tool_calls"`) {
+		t.Fatalf("expected rewritten tool calls, got %s", w.Body.String())
+	}
+	if got := w.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("expected stale content length to be cleared, got %q", got)
 	}
 }
 

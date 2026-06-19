@@ -12,18 +12,22 @@ import (
 const maxValidationErrorBodySize int64 = 64 * 1024
 
 func parseValidationErrorResponse(resp *http.Response) (string, error) {
-	errorBody, err := io.ReadAll(io.LimitReader(resp.Body, maxValidationErrorBodySize+1))
+	reader := resp.Body
+	if encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))); encoding != "" {
+		decompressed, err := utils.NewDecompressReader(encoding, resp.Body)
+		if err != nil {
+			return "", err
+		}
+		reader = decompressed
+		defer reader.Close()
+	}
+
+	errorBody, err := io.ReadAll(io.LimitReader(reader, maxValidationErrorBodySize+1))
 	if err != nil {
 		return "", err
 	}
 	if int64(len(errorBody)) > maxValidationErrorBodySize {
-		errorBody = errorBody[:maxValidationErrorBodySize]
-	}
-
-	encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
-	errorBody, err = utils.DecompressResponseWithLimit(encoding, errorBody, maxValidationErrorBodySize)
-	if err != nil {
-		return "", err
+		return "", utils.ErrDecompressedTooLarge
 	}
 
 	return app_errors.ParseUpstreamError(errorBody), nil

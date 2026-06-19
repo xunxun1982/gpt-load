@@ -896,6 +896,33 @@ func TestLogRequestTruncatesUserAgentFieldsToColumnLimit(t *testing.T) {
 	assert.Contains(t, logEntry.UpstreamUserAgent, "[REDACTED_EMAIL]")
 }
 
+func TestLogRequestSanitizesCapturedResponseBodyBeforeTruncation(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{
+		ID:   1,
+		Name: "test-group",
+		EffectiveConfig: types.SystemSettings{
+			EnableRequestBodyLogging: true,
+		},
+	}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	upstreamKey := "s" + "k-" + strings.Repeat("c", 32)
+	ctx.Set("response_body", `{"error":"bad upstream key","api_key":"`+upstreamKey+`"}`)
+
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusBadGateway, errors.New("upstream failed"), false, "", nil, nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.NotContains(t, logEntry.ResponseBody, upstreamKey)
+	assert.Contains(t, logEntry.ResponseBody, `"api_key": "[REDACTED]"`)
+}
+
 func TestExecuteRequestWithRetryPreservesCodexHeadersThroughTwoProxyLayers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -954,7 +981,12 @@ func TestExecuteRequestWithRetryPreservesCodexHeadersThroughTwoProxyLayers(t *te
 	}, firstGroup, firstGroup, body, false, time.Now(), 0)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	headers := <-finalHeaders
+	var headers http.Header
+	select {
+	case headers = <-finalHeaders:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for final upstream headers")
+	}
 	assert.Equal(t, buildCodexUserAgent("0.150.1"), headers.Get("User-Agent"))
 	assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
 	assert.Equal(t, "0.150.1", headers.Get("Version"))
@@ -965,6 +997,76 @@ func TestExecuteRequestWithRetryPreservesCodexHeadersThroughTwoProxyLayers(t *te
 	assert.Equal(t, "client-beta", headers.Get("X-Codex-Beta-Features"))
 	assert.Equal(t, "client-request", headers.Get("x-client-request-id"))
 	assert.Equal(t, "client-window", headers.Get("x-codex-window-id"))
+}
+
+func TestExecuteRequestWithRetrySimulatedCodexSurvivesTwoProxyLayers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	firstProxy := setupTestProxyServer(t, db)
+	secondProxy := setupTestProxyServer(t, db)
+
+	firstGroup := createTestGroup(t, db, "sim-codex-layer-one", "openai-response")
+	firstGroup.Config = map[string]any{
+		"max_retries":             0,
+		"simulated_client":        "codex",
+		"simulated_codex_version": "0.150.1",
+	}
+	secondGroup := createTestGroup(t, db, "sim-codex-layer-two", "openai-response")
+	secondGroup.Config = map[string]any{"max_retries": 0}
+	createTestKey(t, db, firstGroup.ID, "test-key-sim-codex-layer-one", firstProxy.encryptionSvc)
+	createTestKey(t, db, secondGroup.ID, "test-key-sim-codex-layer-two", secondProxy.encryptionSvc)
+	require.NoError(t, firstProxy.keyProvider.LoadKeysFromDB())
+	require.NoError(t, secondProxy.keyProvider.LoadKeysFromDB())
+
+	finalHeaders := make(chan http.Header, 1)
+	finalUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalHeaders <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(finalUpstream.Close)
+
+	secondLayer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		ctx, _ := gin.CreateTestContext(w)
+		ctx.Request = httptest.NewRequest(r.Method, r.URL.RequestURI(), bytes.NewReader(body))
+		ctx.Request.Header = r.Header.Clone()
+		secondProxy.executeRequestWithRetry(ctx, &testChannelProxy{
+			client: &http.Client{Timeout: 3 * time.Second},
+			url:    finalUpstream.URL,
+		}, secondGroup, secondGroup, body, false, time.Now(), 0)
+	}))
+	t.Cleanup(secondLayer.Close)
+
+	body := []byte(`{"model":"gpt-5","input":"hello"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/sim-codex-layer-one/v1/responses", bytes.NewReader(body))
+
+	firstProxy.executeRequestWithRetry(c, &testChannelProxy{
+		client: &http.Client{Timeout: 3 * time.Second},
+		url:    secondLayer.URL + "/proxy/sim-codex-layer-two/v1/responses",
+	}, firstGroup, firstGroup, body, false, time.Now(), 0)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var headers http.Header
+	select {
+	case headers = <-finalHeaders:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for final upstream headers")
+	}
+	assert.Equal(t, buildCodexUserAgent("0.150.1"), headers.Get("User-Agent"))
+	assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
+	assert.Equal(t, "0.150.1", headers.Get("Version"))
+	assert.Equal(t, "codex_cli_rs", headers.Get("Originator"))
+	assert.Equal(t, "terminal_resize_reflow", headers.Get("X-Codex-Beta-Features"))
+	assert.NotEmpty(t, headers.Get("X-Codex-Turn-Metadata"))
+	assert.NotEmpty(t, headers.Get("X-Codex-Window-Id"))
+	assert.Empty(t, headers.Get("x-client-request-id"))
+	assert.Empty(t, headers.Get("Session-Id"))
+	assert.Empty(t, headers.Get("Thread-Id"))
 }
 
 func TestExecuteRequestWithAggregateRetryRetriesAfterNonStreamTimeout(t *testing.T) {
