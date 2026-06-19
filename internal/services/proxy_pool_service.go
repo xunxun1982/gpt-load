@@ -350,6 +350,14 @@ func (s *ProxyPoolService) TestGatewayProxy(ctx context.Context, candidateID str
 	result, err := s.testGatewayProxyOption(ctx, selected)
 	if result != nil {
 		s.storeGatewayTestResult(selected.CandidateID, *result)
+		return result, err
+	}
+	if err != nil {
+		s.storeGatewayTestResult(selected.CandidateID, ProxyPoolTestResult{
+			Success: false,
+			URL:     strings.TrimSpace(selected.URL),
+			Error:   utils.TruncateString(utils.SanitizeErrorBody(err.Error()), 300),
+		})
 	}
 	return result, err
 }

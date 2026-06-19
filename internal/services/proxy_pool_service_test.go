@@ -276,6 +276,30 @@ func TestProxyPoolServiceListGatewayProxyOptionsIncludesLatestManualTestResult(t
 	assert.Equal(t, gatewayServer.URL, options[0].TestResult.URL)
 }
 
+func TestProxyPoolServiceTestGatewayProxyCachesManualFailureWhenResultIsNil(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolServiceWithOptions(
+		t,
+		WithGatewayProxyOptions([]GatewayProxyOption{
+			{Type: "gateway", Label: "invalid", Value: "betterclaude", CandidateID: "betterclaude-invalid", URL: "://bad-url"},
+		}),
+		WithGatewayProxySampling(1, 0),
+	)
+
+	result, err := svc.TestGatewayProxy(context.Background(), "betterclaude-invalid")
+
+	require.Error(t, err)
+	require.Nil(t, result)
+
+	options := svc.ListGatewayProxyOptions()
+	require.Len(t, options, 1)
+	require.NotNil(t, options[0].TestResult)
+	assert.False(t, options[0].TestResult.Success)
+	assert.Equal(t, "://bad-url", options[0].TestResult.URL)
+	assert.NotEmpty(t, strings.TrimSpace(options[0].TestResult.Error))
+}
+
 func TestGatewayProxyResultComparisonPrefersFewerFailuresBeforeAverage(t *testing.T) {
 	t.Parallel()
 

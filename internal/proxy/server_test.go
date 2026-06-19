@@ -1806,6 +1806,28 @@ func TestLogRequestUsesLogicalStreamingFailureForHealthMetrics(t *testing.T) {
 	assert.Equal(t, int64(1), metrics.ConsecutiveRateLimits)
 }
 
+func TestLogRequestPreservesLogicalErrorMessageWhenFinalErrorExists(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{ID: 92, Name: "logical-error-message-group", GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusTooManyRequests)
+	ctx.Set(ctxKeyUpstreamLogicalErrorMessage, "Concurrency limit exceeded for user, please retry later")
+
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, errors.New("forced stream ended with logical failure"), true, "", nil, nil, []byte(`{"model":"gpt-5.4"}`), models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.False(t, logEntry.IsSuccess)
+	assert.Equal(t, http.StatusTooManyRequests, logEntry.StatusCode)
+	assert.Equal(t, "Concurrency limit exceeded for user, please retry later", logEntry.ErrorMessage)
+}
+
 func TestEstimateTokensForClaudeCountTokens(t *testing.T) {
 	t.Parallel()
 

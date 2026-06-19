@@ -51,6 +51,7 @@ type AutoCheckinService struct {
 	store         store.Store
 	encryptionSvc encryption.Service
 	client        *http.Client
+	balanceSvc    *BalanceService
 
 	// Proxy client cache to reuse HTTP clients with same proxy URL for connection pooling.
 	// Key: normalized proxy URL, Value: *http.Client with proxy transport.
@@ -108,6 +109,10 @@ func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encrypt
 		runNowCh:         make(chan struct{}, 1),
 		cleanupCh:        make(chan struct{}),
 	}
+}
+
+func (s *AutoCheckinService) SetBalanceService(balanceSvc *BalanceService) {
+	s.balanceSvc = balanceSvc
 }
 
 func (s *AutoCheckinService) Start() {
@@ -774,6 +779,7 @@ func (s *AutoCheckinService) CheckInSite(ctx context.Context, siteID uint) (*Che
 
 func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) CheckinResult {
 	result := CheckinResult{SiteID: site.ID, Status: CheckinResultFailed}
+	encryptedUserID := site.UserID
 
 	provider := resolveProvider(site.SiteType)
 	if provider == nil {
@@ -818,8 +824,22 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	result.Status = res.Status
 	result.Message = res.Message
 	s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
+	if result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked {
+		site.UserID = encryptedUserID
+		s.refreshBalanceAfterCheckin(ctx, site)
+	}
 
 	return result
+}
+
+func (s *AutoCheckinService) refreshBalanceAfterCheckin(ctx context.Context, site ManagedSite) {
+	if s.balanceSvc == nil {
+		return
+	}
+	info := s.balanceSvc.FetchSiteBalance(ctx, &site)
+	if info == nil || info.Balance == nil {
+		logrus.WithField("site_id", site.ID).Debug("ManagedSite check-in balance refresh returned no balance")
+	}
 }
 
 // getCheckinHTTPClient returns an HTTP client based on site's bypass method and proxy settings.
@@ -1861,6 +1881,31 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 		_ = json.Unmarshal(data, &resp)
 	}
 
+	if err != nil && shouldFallbackNewAPICheckinToSignIn(site.CustomCheckInURL, statusCode, resp.Message) {
+		signInURL := buildCheckinURL(site.BaseURL, "", "/api/user/sign_in")
+		logrus.WithFields(logrus.Fields{
+			"site_id":     site.ID,
+			"site_name":   site.Name,
+			"auth_type":   authType,
+			"status_code": statusCode,
+			"resp_msg":    resp.Message,
+		}).Debug("NewAPI check-in endpoint missing, trying sign_in fallback")
+		if useStealth {
+			data, statusCode, err = doStealthJSONRequest(ctx, client, http.MethodPost, signInURL, headers, map[string]any{})
+		} else {
+			data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, signInURL, headers, map[string]any{})
+		}
+		resp = struct {
+			Success bool   `json:"success"`
+			Message string `json:"message"`
+			Data    any    `json:"data"`
+		}{}
+		if len(data) > 0 {
+			_ = json.Unmarshal(data, &resp)
+		}
+		apiURL = signInURL
+	}
+
 	if shouldRetryNewAPICheckinWithPoW(resp.Success, resp.Message) {
 		return p.retryCheckInWithPoW(ctx, client, site, headers, apiURL, authType, useStealth)
 	}
@@ -2148,6 +2193,33 @@ func firstIntField(fields map[string]any, names ...string) (int, bool) {
 
 func shouldRetryNewAPICheckinWithPoW(success bool, message string) bool {
 	return !success && strings.Contains(strings.ToLower(message), "pow") && strings.Contains(strings.ToLower(message), "nonce")
+}
+
+func shouldFallbackNewAPICheckinToSignIn(customCheckinURL string, statusCode int, message string) bool {
+	if strings.TrimSpace(customCheckinURL) != "" || statusCode != http.StatusNotFound {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return true
+	}
+	missingEndpointSignals := []string{
+		"not found",
+		"route not found",
+		"endpoint not found",
+		"api not found",
+		"接口不存在",
+		"接口未找到",
+		"路由不存在",
+		"未找到接口",
+		"unsupported",
+	}
+	for _, signal := range missingEndpointSignals {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func solvePoWNonce(ctx context.Context, hashPrefix string, difficulty int) (string, error) {

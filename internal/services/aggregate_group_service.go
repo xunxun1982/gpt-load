@@ -111,6 +111,7 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 	}
 
 	subGroupIDs := make([]uint, 0, len(inputs))
+	seenSubGroupIDs := make(map[uint]struct{}, len(inputs))
 	for _, input := range inputs {
 		if input.GroupID == 0 {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_sub_group_id", nil)
@@ -121,6 +122,10 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		if input.Weight > 1000 {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
 		}
+		if _, exists := seenSubGroupIDs[input.GroupID]; exists {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.duplicate_sub_group", nil)
+		}
+		seenSubGroupIDs[input.GroupID] = struct{}{}
 		subGroupIDs = append(subGroupIDs, input.GroupID)
 	}
 

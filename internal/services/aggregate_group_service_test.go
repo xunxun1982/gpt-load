@@ -2,9 +2,11 @@ package services
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 
 	"github.com/stretchr/testify/assert"
@@ -306,6 +308,34 @@ func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testin
 	require.NoError(t, err)
 	require.Len(t, result.SubGroups, len(groups))
 	assert.Equal(t, "/v1/messages", result.ValidationEndpoint)
+}
+
+func TestValidateSubGroupsRejectsDuplicateGroupIDs(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	subGroup := models.Group{
+		Name:        "sub-duplicate-validation",
+		DisplayName: "Sub Duplicate Validation",
+		GroupType:   "standard",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&subGroup).Error)
+
+	_, err := service.ValidateSubGroups(context.Background(), "openai", []SubGroupInput{
+		{GroupID: subGroup.ID, Weight: 100},
+		{GroupID: subGroup.ID, Weight: 200},
+	}, "")
+
+	require.Error(t, err)
+	var i18nErr *I18nError
+	require.True(t, errors.As(err, &i18nErr))
+	assert.Equal(t, app_errors.ErrValidation.Code, i18nErr.APIError.Code)
+	assert.Equal(t, "validation.duplicate_sub_group", i18nErr.MessageID)
 }
 
 func TestAddSubGroupsPersistsHealthResetInterval(t *testing.T) {

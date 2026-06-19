@@ -448,11 +448,18 @@ async function loadItems() {
 }
 
 function syncGatewayTestResults(options: ProxyPoolSelectionOption[]) {
+  const next: Record<string, ProxyPoolTestResult> = {};
   for (const item of options) {
     if (item.test_result) {
-      gatewayTestResults[gatewayResultKey(item)] = item.test_result;
+      next[gatewayResultKey(item)] = item.test_result;
     }
   }
+  for (const key of Object.keys(gatewayTestResults)) {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      delete gatewayTestResults[key];
+    }
+  }
+  Object.assign(gatewayTestResults, next);
 }
 
 async function onRefreshClick() {

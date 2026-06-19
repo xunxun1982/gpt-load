@@ -2373,7 +2373,7 @@ func (ps *ProxyServer) logRequest(
 		logEntry.KeyHash = ps.encryptionSvc.Hash(apiKey.KeyValue)
 	}
 
-	if finalError != nil {
+	if finalError != nil && logEntry.ErrorMessage == "" {
 		logEntry.ErrorMessage = finalError.Error()
 	}
 

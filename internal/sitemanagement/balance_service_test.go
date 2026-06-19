@@ -173,6 +173,36 @@ func TestBalanceService_ParseBalanceResponse(t *testing.T) {
 	}
 }
 
+func TestBuildBalanceHeaders(t *testing.T) {
+	t.Parallel()
+
+	t.Run("access token", func(t *testing.T) {
+		t.Parallel()
+
+		headers := buildBalanceHeaders(AuthTypeAccessToken, "test-access-token", "123")
+
+		assert.Equal(t, "Bearer test-access-token", headers["Authorization"])
+		assert.Equal(t, "123", headers["New-API-User"])
+		assert.Empty(t, headers["Cookie"])
+	})
+
+	t.Run("cookie", func(t *testing.T) {
+		t.Parallel()
+
+		headers := buildBalanceHeaders(AuthTypeCookie, "session=test", "123")
+
+		assert.Equal(t, "session=test", headers["Cookie"])
+		assert.Equal(t, "123", headers["New-API-User"])
+		assert.Empty(t, headers["Authorization"])
+	})
+
+	t.Run("unsupported", func(t *testing.T) {
+		t.Parallel()
+
+		assert.Nil(t, buildBalanceHeaders(AuthTypeNone, "unused", "123"))
+	})
+}
+
 // TestBalanceService_FetchAllBalances tests concurrent balance fetching
 func TestBalanceService_FetchAllBalances(t *testing.T) {
 	t.Parallel()
