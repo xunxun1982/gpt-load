@@ -1,10 +1,15 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"gpt-load/internal/channel"
 	"gpt-load/internal/models"
 
 	"github.com/stretchr/testify/assert"
@@ -296,6 +301,180 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 		assert.True(t, allowsMissingStreamOverride("/v1/responses", http.MethodPost))
 		assert.False(t, allowsMissingStreamOverride("/v1/custom", http.MethodPost))
 		assert.False(t, allowsMissingStreamOverride("/v1/chat/completions", http.MethodGet))
+	})
+}
+
+func TestApplySimulatedClientHeaders(t *testing.T) {
+	t.Run("no config preserves client headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set("User-Agent", "custom-client/1.0")
+		req.Header.Set("OpenAI-Beta", "custom-beta")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{}}, false)
+
+		assert.Equal(t, "custom-client/1.0", req.Header.Get("User-Agent"))
+		assert.Equal(t, "custom-beta", req.Header.Get("OpenAI-Beta"))
+	})
+
+	t.Run("codex preset sets client fingerprint without touching auth headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set("Authorization", "Bearer upstream-key")
+		req.Header.Set("x-api-key", "upstream-key")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, true)
+
+		assert.Equal(t, buildCodexUserAgent(channel.DefaultCodexVersion), req.Header.Get("User-Agent"))
+		assert.Equal(t, channel.DefaultCodexVersion, req.Header.Get("Version"))
+		assert.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
+		assert.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
+		assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
+		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+		assert.Equal(t, "Bearer upstream-key", req.Header.Get("Authorization"))
+		assert.Equal(t, "upstream-key", req.Header.Get("x-api-key"))
+	})
+
+	t.Run("codex preset preserves existing openai beta tokens", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set("OpenAI-Beta", "custom-beta,responses=experimental")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, false)
+
+		assert.Equal(t, "custom-beta,responses=experimental", req.Header.Get("OpenAI-Beta"))
+	})
+
+	t.Run("codex preset preserves explicit media type headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set("Accept", "text/plain")
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, false)
+
+		assert.Equal(t, "text/plain", req.Header.Get("Accept"))
+		assert.Equal(t, "multipart/form-data; boundary=test", req.Header.Get("Content-Type"))
+	})
+
+	t.Run("claude code preset preserves explicit media type headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		req.Header.Set("Accept", "text/plain")
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "claude_code",
+		}}, false)
+
+		assert.Equal(t, "text/plain", req.Header.Get("Accept"))
+		assert.Equal(t, "multipart/form-data; boundary=test", req.Header.Get("Content-Type"))
+	})
+
+	t.Run("media type headers with blank values use preset defaults", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set("Accept", "  ")
+		req.Header.Set("Content-Type", "\t")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, true)
+
+		assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
+		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+	})
+
+	t.Run("claude code preset sets stainless fingerprint without touching auth headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		req.Header.Set("Authorization", "Bearer upstream-key")
+		req.Header.Set("x-api-key", "upstream-key")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "claude_code",
+		}}, false)
+
+		assert.Equal(t, buildClaudeCodeUserAgent(channel.DefaultClaudeCodeVersion), req.Header.Get("User-Agent"))
+		assert.Equal(t, "application/json", req.Header.Get("Accept"))
+		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+		assert.Equal(t, "cli", req.Header.Get("X-App"))
+		assert.Equal(t, "2023-06-01", req.Header.Get("anthropic-version"))
+		assert.Contains(t, req.Header.Get("anthropic-beta"), "claude-code-20250219")
+		assert.Contains(t, req.Header.Get("anthropic-beta"), "redact-thinking-2026-02-12")
+		assert.Contains(t, req.Header.Get("anthropic-beta"), "context-management-2025-06-27")
+		assert.Contains(t, req.Header.Get("anthropic-beta"), "prompt-caching-scope-2026-01-05")
+		assert.Contains(t, req.Header.Get("anthropic-beta"), "mid-conversation-system-2026-04-07")
+		assert.Contains(t, req.Header.Get("anthropic-beta"), "effort-2025-11-24")
+		assert.Equal(t, "true", req.Header.Get("Anthropic-Dangerous-Direct-Browser-Access"))
+		assert.Equal(t, "js", req.Header.Get("X-Stainless-Lang"))
+		assert.Equal(t, "node", req.Header.Get("X-Stainless-Runtime"))
+		assert.Equal(t, "0", req.Header.Get("X-Stainless-Retry-Count"))
+		assert.Equal(t, "600", req.Header.Get("X-Stainless-Timeout"))
+		assert.Equal(t, "Bearer upstream-key", req.Header.Get("Authorization"))
+		assert.Equal(t, "upstream-key", req.Header.Get("x-api-key"))
+		assert.Empty(t, req.Header.Get("X-Claude-Code-Session-Id"))
+	})
+
+	t.Run("custom client versions override default user agents", func(t *testing.T) {
+		codexReq := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		applySimulatedClientHeaders(codexReq, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client":        "codex",
+			"simulated_codex_version": "1.32",
+		}}, false)
+		codexUA := codexReq.Header.Get("User-Agent")
+		assert.Equal(t, buildCodexUserAgent("1.32"), codexUA)
+		assert.Equal(t, 2, strings.Count(codexUA, "1.32"))
+		assert.Equal(t, "1.32", codexReq.Header.Get("Version"))
+		assert.Equal(t, "codex_cli_rs", codexReq.Header.Get("originator"))
+
+		claudeReq := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		claudeReq.Header.Set("anthropic-beta", "custom-beta,claude-code-20250219")
+		applySimulatedClientHeaders(claudeReq, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client":              "claude_code",
+			"simulated_claude_code_version": "1.32.6.9.8",
+		}}, false)
+		assert.Equal(t, buildClaudeCodeUserAgent("1.32.6.9.8"), claudeReq.Header.Get("User-Agent"))
+		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "claude-code-20250219")
+		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "custom-beta")
+		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "interleaved-thinking-2025-05-14")
+		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "redact-thinking-2026-02-12")
+		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "context-management-2025-06-27")
+		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "prompt-caching-scope-2026-01-05")
+		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "mid-conversation-system-2026-04-07")
+		assert.Contains(t, claudeReq.Header.Get("anthropic-beta"), "effort-2025-11-24")
+		assert.Equal(t, "0.94.0", claudeReq.Header.Get("X-Stainless-Package-Version"))
+		assert.Equal(t, "v24.3.0", claudeReq.Header.Get("X-Stainless-Runtime-Version"))
+		assert.Equal(t, "2023-06-01", claudeReq.Header.Get("anthropic-version"))
+	})
+
+	t.Run("codex preset preserves existing runtime trace headers and does not synthesize missing ones", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set("Session_id", "client-session")
+		req.Header.Set("X-Codex-Turn-Metadata", `{"source":"client"}`)
+		req.Header.Set("X-Codex-Beta-Features", "client-beta")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, false)
+
+		assert.Equal(t, "client-session", req.Header.Get("Session_id"))
+		assert.Equal(t, `{"source":"client"}`, req.Header.Get("X-Codex-Turn-Metadata"))
+		assert.Equal(t, "client-beta", req.Header.Get("X-Codex-Beta-Features"))
+		assert.Empty(t, req.Header.Get("x-client-request-id"))
+		assert.Empty(t, req.Header.Get("x-codex-window-id"))
+	})
+
+	t.Run("does not modify request body", func(t *testing.T) {
+		body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"client-user"},"messages":[{"role":"user","content":"hello"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "claude_code",
+		}}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, body, got)
 	})
 }
 

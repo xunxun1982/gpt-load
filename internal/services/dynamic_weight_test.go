@@ -1512,6 +1512,43 @@ func TestDynamicWeightManager_RetryAfterRateLimitPressureWaitsForConsecutiveThre
 	assert.Less(t, dwm.CalculateHealthScore(thirdRetryAfterMetrics), 1.0)
 }
 
+func TestDynamicWeightManager_QuotaExhaustedRateLimitPenaltyIsStrongerButNotHardFailure(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	const aggregateGroupID = uint(270)
+	const plainRateLimitSubGroupID = uint(271)
+	const quotaExhaustedSubGroupID = uint(272)
+	const hardFailureSubGroupID = uint(273)
+
+	for i := 0; i < 5; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, plainRateLimitSubGroupID, true)
+		dwm.RecordSubGroupFailure(aggregateGroupID, hardFailureSubGroupID, false)
+	}
+	dwm.RecordSubGroupFailure(aggregateGroupID, quotaExhaustedSubGroupID, true)
+	dwm.RecordSubGroupFailure(aggregateGroupID, quotaExhaustedSubGroupID, true)
+	dwm.RecordSubGroupFailure(aggregateGroupID, quotaExhaustedSubGroupID, true, 4)
+	dwm.RecordSubGroupFailure(aggregateGroupID, quotaExhaustedSubGroupID, true)
+	dwm.RecordSubGroupFailure(aggregateGroupID, quotaExhaustedSubGroupID, true)
+
+	plainMetrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, plainRateLimitSubGroupID)
+	require.NoError(t, err)
+	quotaMetrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, quotaExhaustedSubGroupID)
+	require.NoError(t, err)
+	hardFailureMetrics, err := dwm.GetSubGroupMetrics(aggregateGroupID, hardFailureSubGroupID)
+	require.NoError(t, err)
+
+	plainHealth := dwm.CalculateHealthScore(plainMetrics)
+	quotaHealth := dwm.CalculateHealthScore(quotaMetrics)
+	hardFailureHealth := dwm.CalculateHealthScore(hardFailureMetrics)
+
+	assert.Greater(t, plainHealth, quotaHealth, "quota exhausted 429 should penalize more than plain throttling")
+	assert.Greater(t, quotaHealth, hardFailureHealth, "quota exhausted 429 should still be lighter than hard failures")
+	assert.GreaterOrEqual(t, quotaHealth, 0.45, "quota exhausted penalty should not collapse health like hard failures")
+	assert.LessOrEqual(t, quotaHealth, 0.80, "quota exhausted penalty should be materially stronger than plain throttling")
+}
+
 // TestDynamicWeightManager_MixedFailureTypes tests handling of mixed failure types
 func TestDynamicWeightManager_MixedFailureTypes(t *testing.T) {
 	t.Parallel()

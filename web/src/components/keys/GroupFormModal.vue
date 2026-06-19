@@ -81,6 +81,9 @@ const formRef = ref();
 const fetchingModels = ref(false);
 const showModelSelector = ref(false);
 const availableModels = ref<string[]>([]);
+const DEFAULT_CODEX_VERSION = "0.141.0";
+const DEFAULT_CLAUDE_CODE_VERSION = "2.1.133";
+const simpleClientVersionPattern = /^[0-9]+(?:\.[0-9]+)+$/;
 
 // Model redirect edit mode: "gui" or "json"
 const modelRedirectEditMode = ref<"gui" | "json">("gui");
@@ -121,6 +124,9 @@ interface GroupFormData {
   validation_prompt_mode: "default" | "random_queue";
   request_stream_mode: "default" | "force_stream" | "force_non_stream";
   responses_include_encrypted_reasoning: boolean;
+  simulated_client: "off" | "codex" | "claude_code";
+  simulated_codex_version: string;
+  simulated_claude_code_version: string;
   cc_support: boolean;
   intercept_event_log: boolean;
   thinking_model: string;
@@ -177,6 +183,9 @@ const formData = reactive<GroupFormData>({
   validation_prompt_mode: "default",
   request_stream_mode: "default",
   responses_include_encrypted_reasoning: false,
+  simulated_client: "off",
+  simulated_codex_version: DEFAULT_CODEX_VERSION,
+  simulated_claude_code_version: DEFAULT_CLAUDE_CODE_VERSION,
   cc_support: false,
   intercept_event_log: false,
   thinking_model: "",
@@ -221,6 +230,9 @@ const controlledConfigKeys = new Set([
   "force_stream",
   "force_non_stream",
   "responses_include_encrypted_reasoning",
+  "simulated_client",
+  "simulated_codex_version",
+  "simulated_claude_code_version",
   "cc_support",
   "intercept_event_log",
   "thinking_model",
@@ -476,6 +488,9 @@ function resetForm() {
     validation_prompt_mode: "default",
     request_stream_mode: "default",
     responses_include_encrypted_reasoning: false,
+    simulated_client: "off",
+    simulated_codex_version: DEFAULT_CODEX_VERSION,
+    simulated_claude_code_version: DEFAULT_CLAUDE_CODE_VERSION,
     cc_support: false,
     intercept_event_log: false,
     thinking_model: "",
@@ -551,6 +566,23 @@ function loadGroupData() {
     typeof responsesIncludeEncryptedReasoningRaw === "boolean"
       ? responsesIncludeEncryptedReasoningRaw
       : false;
+  const simulatedClientRaw = rawConfig["simulated_client"];
+  const normalizedSimulatedClient =
+    typeof simulatedClientRaw === "string" ? simulatedClientRaw.trim().toLowerCase() : "";
+  const simulatedClient =
+    normalizedSimulatedClient === "codex" || normalizedSimulatedClient === "claude_code"
+      ? normalizedSimulatedClient
+      : "off";
+  const simulatedCodexVersionRaw = rawConfig["simulated_codex_version"];
+  const simulatedCodexVersion =
+    typeof simulatedCodexVersionRaw === "string" && simulatedCodexVersionRaw.trim()
+      ? simulatedCodexVersionRaw.trim()
+      : DEFAULT_CODEX_VERSION;
+  const simulatedClaudeCodeVersionRaw = rawConfig["simulated_claude_code_version"];
+  const simulatedClaudeCodeVersion =
+    typeof simulatedClaudeCodeVersionRaw === "string" && simulatedClaudeCodeVersionRaw.trim()
+      ? simulatedClaudeCodeVersionRaw.trim()
+      : DEFAULT_CLAUDE_CODE_VERSION;
   const ccRaw = rawConfig["cc_support"];
   // CC support is available for OpenAI, OpenAI Responses, and Gemini channels.
   const ccSupport =
@@ -632,6 +664,9 @@ function loadGroupData() {
     validation_prompt_mode: validationPromptMode,
     request_stream_mode: requestStreamMode,
     responses_include_encrypted_reasoning: responsesIncludeEncryptedReasoning,
+    simulated_client: simulatedClient,
+    simulated_codex_version: simulatedCodexVersion,
+    simulated_claude_code_version: simulatedClaudeCodeVersion,
     cc_support: ccSupport,
     intercept_event_log: interceptEventLog,
     thinking_model: thinkingModel,
@@ -1396,6 +1431,42 @@ async function handleSubmit() {
       delete config["force_non_stream"];
     }
 
+    if (formData.simulated_client === "codex") {
+      config["simulated_client"] = "codex";
+      const codexVersion = formData.simulated_codex_version.trim();
+      if (codexVersion && !simpleClientVersionPattern.test(codexVersion)) {
+        message.error(
+          t("keys.invalidSimulatedClientVersion", { client: t("keys.simulatedCodexVersion") })
+        );
+        return;
+      }
+      if (codexVersion && codexVersion !== DEFAULT_CODEX_VERSION) {
+        config["simulated_codex_version"] = codexVersion;
+      } else {
+        delete config["simulated_codex_version"];
+      }
+      delete config["simulated_claude_code_version"];
+    } else if (formData.simulated_client === "claude_code") {
+      config["simulated_client"] = "claude_code";
+      const claudeCodeVersion = formData.simulated_claude_code_version.trim();
+      if (claudeCodeVersion && !simpleClientVersionPattern.test(claudeCodeVersion)) {
+        message.error(
+          t("keys.invalidSimulatedClientVersion", { client: t("keys.simulatedClaudeCodeVersion") })
+        );
+        return;
+      }
+      if (claudeCodeVersion && claudeCodeVersion !== DEFAULT_CLAUDE_CODE_VERSION) {
+        config["simulated_claude_code_version"] = claudeCodeVersion;
+      } else {
+        delete config["simulated_claude_code_version"];
+      }
+      delete config["simulated_codex_version"];
+    } else {
+      delete config["simulated_client"];
+      delete config["simulated_codex_version"];
+      delete config["simulated_claude_code_version"];
+    }
+
     if (
       formData.channel_type === "openai-response" &&
       formData.responses_include_encrypted_reasoning
@@ -2049,6 +2120,62 @@ async function handleSubmit() {
                     />
                     <div class="advanced-control-hint">
                       {{ t("keys.requestStreamModeTip") }}
+                    </div>
+                  </div>
+                </n-form-item>
+
+                <n-form-item :label="t('keys.simulatedClient')" path="simulated_client">
+                  <div class="advanced-field-stack">
+                    <div class="simulated-client-row">
+                      <div class="simulated-client-select">
+                        <n-select
+                          v-model:value="formData.simulated_client"
+                          :options="[
+                            { label: t('keys.simulatedClientOff'), value: 'off' },
+                            { label: t('keys.simulatedClientCodex'), value: 'codex' },
+                            { label: t('keys.simulatedClientClaudeCode'), value: 'claude_code' },
+                          ]"
+                          size="small"
+                        />
+                      </div>
+                      <div
+                        v-if="formData.simulated_client === 'codex'"
+                        class="simulated-client-version"
+                      >
+                        <span class="simulated-client-version-label">
+                          {{ t("keys.simulatedCodexVersion") }}
+                        </span>
+                        <n-input
+                          v-model:value="formData.simulated_codex_version"
+                          :placeholder="t('keys.simulatedCodexVersionPlaceholder')"
+                          size="small"
+                        />
+                      </div>
+                      <div
+                        v-if="formData.simulated_client === 'claude_code'"
+                        class="simulated-client-version"
+                      >
+                        <span class="simulated-client-version-label">
+                          {{ t("keys.simulatedClaudeCodeVersion") }}
+                        </span>
+                        <n-input
+                          v-model:value="formData.simulated_claude_code_version"
+                          :placeholder="t('keys.simulatedClaudeCodeVersionPlaceholder')"
+                          size="small"
+                        />
+                      </div>
+                    </div>
+                    <div class="advanced-control-hint">
+                      {{ t("keys.simulatedClientTip") }}
+                    </div>
+                    <div v-if="formData.simulated_client === 'codex'" class="advanced-control-hint">
+                      {{ t("keys.simulatedCodexVersionTip") }}
+                    </div>
+                    <div
+                      v-if="formData.simulated_client === 'claude_code'"
+                      class="advanced-control-hint"
+                    >
+                      {{ t("keys.simulatedClaudeCodeVersionTip") }}
                     </div>
                   </div>
                 </n-form-item>
@@ -3229,6 +3356,40 @@ async function handleSubmit() {
   word-break: break-word;
 }
 
+.simulated-client-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.simulated-client-select {
+  flex: 0 1 260px;
+  min-width: 220px;
+}
+
+.simulated-client-version {
+  flex: 1 1 320px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.simulated-client-version-label {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 32px;
+  white-space: nowrap;
+}
+
+.simulated-client-version :deep(.n-input) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .model-redirect-wrapper {
   width: 100%;
   --redirect-item-height: 36px;
@@ -3447,7 +3608,8 @@ async function handleSubmit() {
   }
 
   .upstream-row,
-  .config-item-content {
+  .config-item-content,
+  .simulated-client-row {
     flex-direction: column;
     gap: 8px;
     align-items: stretch;
@@ -3462,6 +3624,18 @@ async function handleSubmit() {
 
   .config-value {
     flex: 1;
+  }
+
+  .simulated-client-select,
+  .simulated-client-version {
+    flex: 1;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .simulated-client-version {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .upstream-actions,

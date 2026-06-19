@@ -544,6 +544,22 @@ export default {
     requestStreamModeForceNonStream: "強制非ストリーミング",
     requestStreamModeTip:
       "stream フィールドを書き換えます。Gemini ネイティブでは generateContent/streamGenerateContent パスも切り替えます。",
+    simulatedClient: "クライアント模擬",
+    simulatedClientOff: "オフ（透過）",
+    simulatedClientCodex: "Codex を模擬",
+    simulatedClientClaudeCode: "Claude Code を模擬",
+    simulatedClientTip:
+      "オフでは透過します。有効にすると選択したクライアントの指紋ヘッダーを適用します。",
+    simulatedCodexVersion: "Codex バージョン",
+    simulatedCodexVersionPlaceholder: "デフォルト 0.141.0",
+    simulatedCodexVersionTip:
+      "codex-tui User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
+    simulatedClaudeCodeVersion: "Claude Code バージョン",
+    simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.133",
+    simulatedClaudeCodeVersionTip:
+      "claude-cli User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
+    invalidSimulatedClientVersion:
+      "{client} は 1.2、1.2.3、1.2.3.4 のような数値ドット区切りの形式にしてください。",
     responsesIncludeEncryptedReasoning: "暗号化推理",
     responsesIncludeEncryptedReasoningTip:
       'OpenAI Responses のみ。リクエストの include 配列に "reasoning.encrypted_content" を追加します。',

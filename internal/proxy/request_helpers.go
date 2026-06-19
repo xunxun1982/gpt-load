@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"gpt-load/internal/channel"
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
@@ -41,6 +42,22 @@ func setModelRedirectContext(c *gin.Context, originalModel string, targetIdx int
 	} else {
 		c.Set(ctxKeyModelRedirectTargetIndex, -1)
 	}
+}
+
+func applySimulatedClientHeaders(req *http.Request, group *models.Group, isStream bool) {
+	channel.ApplySimulatedClientHeaders(req, group, isStream)
+}
+
+func applyCodexCompatibleHeaders(req *http.Request, group *models.Group, isStream bool) {
+	channel.ApplyCodexCompatibleHeaders(req, group, isStream)
+}
+
+func buildCodexUserAgent(version string) string {
+	return channel.BuildCodexUserAgent(version)
+}
+
+func buildClaudeCodeUserAgent(version string) string {
+	return channel.BuildClaudeCodeUserAgent(version)
 }
 
 func clearModelRedirectContext(c *gin.Context) {

@@ -553,6 +553,42 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
+		// Allow simulated_client string field for explicit client fingerprint presets.
+		// Values: "off" (default), "codex", "claude_code".
+		if key == "simulated_client" {
+			mode, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
+			}
+			mode = strings.ToLower(strings.TrimSpace(mode))
+			if mode == "" {
+				mode = "off"
+			}
+			validModes := map[string]bool{"off": true, "codex": true, "claude_code": true}
+			if !validModes[mode] {
+				return fmt.Errorf("invalid value for %s: must be 'off', 'codex', or 'claude_code'", key)
+			}
+			configMap[key] = mode
+			continue
+		}
+
+		if key == "simulated_codex_version" || key == "simulated_claude_code_version" {
+			version, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("invalid type for %s: expected a string, got %T", key, value)
+			}
+			version = strings.TrimSpace(version)
+			if version == "" {
+				delete(configMap, key)
+				continue
+			}
+			if !utils.IsDottedNumericVersion(version) {
+				return fmt.Errorf("invalid value for %s: must be a dotted numeric version like 1.2 or 1.2.3", key)
+			}
+			configMap[key] = version
+			continue
+		}
+
 		// Allow thinking_model string field for CC support extended thinking.
 		// This specifies the model to use when Claude Code enables extended thinking mode.
 		if key == "thinking_model" {

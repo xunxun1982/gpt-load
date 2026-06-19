@@ -35,7 +35,21 @@ const (
 	maxUpstreamErrorBodySize   = 64 * 1024
 	maxProxyBodyPreallocBytes  = 2 * 1024 * 1024
 	maxEstimatedTokenBodyBytes = 256 * 1024
+	quotaExhaustedRatePressure = int64(4)
 )
+
+var quotaExhaustedRateMarkers = []string{
+	// Keep generic rate_limit_exceeded / too many requests as light throttling.
+	"insufficient_quota",
+	"quota exhausted",
+	"limit exhausted",
+	"quota exceeded",
+	"exceeded your current quota",
+	"限额已用完",
+	"配额已用完",
+	"配额用尽",
+	"额度已用完",
+}
 
 func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
 	if group == nil || group.FailoverStatusCodeMatcher.IsZero() {
@@ -73,11 +87,33 @@ func retryAfterRateLimitPressureFromHeader(header string, now time.Time) int64 {
 func setRateLimitPressureContextForAttempt(c *gin.Context, resp *http.Response, now time.Time) {
 	if c.Keys != nil {
 		delete(c.Keys, ctxKeyRateLimitPressure)
+		delete(c.Keys, "response_body")
 	}
 	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
 		return
 	}
 	c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), now))
+}
+
+func quotaExhaustedRateLimitPressureFromContext(c *gin.Context) int64 {
+	if c == nil {
+		return 0
+	}
+	responseBody, exists := c.Get("response_body")
+	if !exists {
+		return 0
+	}
+	body, ok := responseBody.(string)
+	if !ok {
+		return 0
+	}
+	body = strings.ToLower(body)
+	for _, marker := range quotaExhaustedRateMarkers {
+		if strings.Contains(body, marker) {
+			return quotaExhaustedRatePressure
+		}
+	}
+	return 0
 }
 
 func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSettings) (context.Context, context.CancelFunc) {
@@ -1103,18 +1139,16 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
+	applySimulatedClientHeaders(req, group, isStream)
+
 	// Set headers for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
 	// NOTE: This intentionally overrides any custom headers set by header rules.
 	// Reason: some Responses upstreams validate Codex CLI-compatible headers.
 	// IMPORTANT: These headers are ONLY set when CC mode is enabled (/claude path with cc_support=true).
 	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original headers).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
-	// Reference: CLIProxyAPI codex_executor.go applyCodexHeaders()
 	if isOpenAIResponseCCMode(c) {
-		req.Header.Set("User-Agent", channel.CodexUserAgent)
-		// Additional headers required by Codex CLI-compatible Responses upstreams.
-		req.Header.Set("Openai-Beta", "responses=experimental")
-		req.Header.Set("Accept", "text/event-stream")
+		applyCodexCompatibleHeaders(req, group, true)
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 
@@ -1800,19 +1834,16 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	// Set User-Agent for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
-	// NOTE: This intentionally overrides any custom User-Agent set by header rules.
-	// Reason: some Responses upstreams validate the Codex CLI-compatible User-Agent header.
-	// IMPORTANT: This UA is ONLY set when CC mode is enabled (/claude path with cc_support=true).
-	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original UA).
+	applySimulatedClientHeaders(req, group, isStream)
+
+	// Set headers for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
+	// NOTE: This intentionally overrides any custom headers set by header rules.
+	// Reason: some Responses upstreams validate Codex CLI-compatible headers.
+	// IMPORTANT: These headers are ONLY set when CC mode is enabled (/claude path with cc_support=true).
+	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original headers).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
-	// Codex CLI uses "codex-cli/VERSION" format, we use the current stable version.
-	// Reference: CLIProxyAPI codex_executor.go applyCodexHeaders()
 	if isOpenAIResponseCCMode(c) {
-		req.Header.Set("User-Agent", channel.CodexUserAgent)
-		// Additional headers required by Codex CLI-compatible Responses upstreams.
-		req.Header.Set("Openai-Beta", "responses=experimental")
-		req.Header.Set("Accept", "text/event-stream")
+		applyCodexCompatibleHeaders(req, group, true)
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 
@@ -2383,6 +2414,9 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 			if pressure, ok := value.(int64); ok && pressure > rateLimitPressure {
 				rateLimitPressure = pressure
 			}
+		}
+		if quotaPressure := quotaExhaustedRateLimitPressureFromContext(c); quotaPressure > rateLimitPressure {
+			rateLimitPressure = quotaPressure
 		}
 	}
 

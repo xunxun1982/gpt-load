@@ -139,6 +139,7 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 		headerCtx := utils.NewHeaderVariableContext(group, apiKey)
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
+	ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group))
 
 	client := selection.HTTPClient
 	if client == nil {

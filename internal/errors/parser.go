@@ -40,7 +40,7 @@ func ParseUpstreamError(body []byte) string {
 	var stdErr standardErrorResponse
 	if err := json.Unmarshal(body, &stdErr); err == nil {
 		if msg := strings.TrimSpace(stdErr.Error.Message); msg != "" {
-			return utils.TruncateString(msg, maxErrorBodyLength)
+			return safeParsedErrorMessage(msg)
 		}
 	}
 
@@ -48,7 +48,7 @@ func ParseUpstreamError(body []byte) string {
 	var vendorErr vendorErrorResponse
 	if err := json.Unmarshal(body, &vendorErr); err == nil {
 		if msg := strings.TrimSpace(vendorErr.ErrorMsg); msg != "" {
-			return utils.TruncateString(msg, maxErrorBodyLength)
+			return safeParsedErrorMessage(msg)
 		}
 	}
 
@@ -56,7 +56,7 @@ func ParseUpstreamError(body []byte) string {
 	var simpleErr simpleErrorResponse
 	if err := json.Unmarshal(body, &simpleErr); err == nil {
 		if msg := strings.TrimSpace(simpleErr.Error); msg != "" {
-			return utils.TruncateString(msg, maxErrorBodyLength)
+			return safeParsedErrorMessage(msg)
 		}
 	}
 
@@ -64,10 +64,14 @@ func ParseUpstreamError(body []byte) string {
 	var rootMsgErr rootMessageErrorResponse
 	if err := json.Unmarshal(body, &rootMsgErr); err == nil {
 		if msg := strings.TrimSpace(rootMsgErr.Message); msg != "" {
-			return utils.TruncateString(msg, maxErrorBodyLength)
+			return safeParsedErrorMessage(msg)
 		}
 	}
 
 	// 5. Graceful Degradation: If all parsing fails, return the raw (but safe) body.
-	return utils.TruncateString(string(body), maxErrorBodyLength)
+	return safeParsedErrorMessage(string(body))
+}
+
+func safeParsedErrorMessage(message string) string {
+	return utils.TruncateString(utils.SanitizeErrorBody(message), maxErrorBodyLength)
 }
