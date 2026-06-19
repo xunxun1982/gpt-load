@@ -58,8 +58,8 @@ func ApplySimulatedClientHeaders(req *http.Request, group *models.Group, isStrea
 		ApplyCodexCompatibleHeaders(req, group, isStream)
 	case simulatedClientClaudeCode:
 		req.Header.Set("User-Agent", BuildClaudeCodeUserAgent(simulatedClientVersion(group, "simulated_claude_code_version", DefaultClaudeCodeVersion)))
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("Content-Type", "application/json")
+		setHeaderIfMissing(req, "Accept", "application/json")
+		setHeaderIfMissing(req, "Content-Type", "application/json")
 		req.Header.Set("X-App", "cli")
 		req.Header.Set("anthropic-version", "2023-06-01")
 		// Runtime session and transport negotiation headers are preserved from clients, not synthesized here.
@@ -87,11 +87,18 @@ func ApplyCodexCompatibleHeaders(req *http.Request, group *models.Group, isStrea
 	req.Header.Set("Version", version)
 	req.Header.Set("originator", "codex_cli_rs")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("Content-Type", "application/json")
+	setHeaderIfMissing(req, "Content-Type", "application/json")
 	if isStream {
-		req.Header.Set("Accept", "text/event-stream")
+		setHeaderIfMissing(req, "Accept", "text/event-stream")
 	} else {
-		req.Header.Set("Accept", "application/json")
+		setHeaderIfMissing(req, "Accept", "application/json")
+	}
+}
+
+// Media negotiation headers describe request semantics, so keep explicit passthrough values.
+func setHeaderIfMissing(req *http.Request, key, value string) {
+	if strings.TrimSpace(req.Header.Get(key)) == "" {
+		req.Header.Set(key, value)
 	}
 }
 

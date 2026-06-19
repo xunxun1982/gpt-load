@@ -335,15 +335,43 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Equal(t, "upstream-key", req.Header.Get("x-api-key"))
 	})
 
-	t.Run("codex non-stream preset overrides accept fingerprint", func(t *testing.T) {
+	t.Run("codex preset preserves explicit media type headers", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 		req.Header.Set("Accept", "text/plain")
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=test")
 
 		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
 			"simulated_client": "codex",
 		}}, false)
 
-		assert.Equal(t, "application/json", req.Header.Get("Accept"))
+		assert.Equal(t, "text/plain", req.Header.Get("Accept"))
+		assert.Equal(t, "multipart/form-data; boundary=test", req.Header.Get("Content-Type"))
+	})
+
+	t.Run("claude code preset preserves explicit media type headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		req.Header.Set("Accept", "text/plain")
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "claude_code",
+		}}, false)
+
+		assert.Equal(t, "text/plain", req.Header.Get("Accept"))
+		assert.Equal(t, "multipart/form-data; boundary=test", req.Header.Get("Content-Type"))
+	})
+
+	t.Run("media type headers with blank values use preset defaults", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set("Accept", "  ")
+		req.Header.Set("Content-Type", "\t")
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, true)
+
+		assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
+		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
 	})
 
 	t.Run("claude code preset sets stainless fingerprint without touching auth headers", func(t *testing.T) {
