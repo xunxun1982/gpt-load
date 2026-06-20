@@ -1,6 +1,7 @@
 package keypool
 
 import (
+	"errors"
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
@@ -165,6 +166,46 @@ func TestTestMultipleKeys_ExistingKeys(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, len(results))
 	assert.Equal(t, "sk-test1", results[0].KeyValue)
+}
+
+func TestSanitizeValidationErrorReplacesUnreadableMessages(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+	}{
+		{
+			name:    "replacement characters sample one",
+			message: "���D�AR�0E�{�Q�0l܎g����I4�)Ҕ�'p�",
+		},
+		{
+			name:    "replacement characters sample two",
+			message: "��x�(.4�N_`�л��=%��8�L#����?�'�W",
+		},
+		{
+			name:    "replacement characters sample three",
+			message: ":FY�2�pD�I�|}ވ#�",
+		},
+		{
+			name:    "replacement characters sample four",
+			message: "��G0,tV]�����p4�gy��y���R���{e��U]YՂj_�pr����0zdG!�̄�1]Q���*���'��u�|w�î��^G�,9���\\���,%0F}Fh�ȧ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := sanitizeValidationError(errors.New(tt.message))
+
+			require.Error(t, err)
+			assert.Equal(t, "upstream returned unreadable binary error body", err.Error())
+		})
+	}
+}
+
+func TestSanitizeValidationErrorKeepsReadableMessages(t *testing.T) {
+	err := sanitizeValidationError(errors.New("[status 401] Invalid API key"))
+
+	require.Error(t, err)
+	assert.Equal(t, "[status 401] Invalid API key", err.Error())
 }
 
 // Benchmark tests for PGO optimization

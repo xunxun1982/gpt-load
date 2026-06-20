@@ -150,12 +150,7 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 	}
 	defer resp.Body.Close()
 
-	// Any 2xx status code indicates the key is valid.
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return true, nil
-	}
-
-	return false, invalidValidationStatusError(resp)
+	return validateKeyResponseStatus(resp)
 }
 
 // ApplyModelRedirect overrides the default implementation for Gemini channel.

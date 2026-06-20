@@ -6,6 +6,7 @@ import (
 	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
+	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
 	"time"
 
@@ -64,6 +65,7 @@ func (s *KeyValidator) ValidateSingleKey(key *models.APIKey, group *models.Group
 	}
 
 	isValid, validationErr := ch.ValidateKey(ctx, key, group)
+	validationErr = sanitizeValidationError(validationErr)
 
 	var errorMsg string
 	if !isValid && validationErr != nil {
@@ -143,4 +145,14 @@ func (s *KeyValidator) TestMultipleKeys(group *models.Group, keyValues []string)
 	}
 
 	return results, nil
+}
+
+func sanitizeValidationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if !app_errors.IsReadableUpstreamBody([]byte(err.Error())) {
+		return fmt.Errorf("upstream returned unreadable binary error body")
+	}
+	return err
 }

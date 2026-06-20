@@ -314,6 +314,7 @@ func TestGeminiChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
 			}
 		}
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}` + "\n\n"))
 	}))
 	defer server.Close()
 

@@ -157,6 +157,7 @@ func TestAnthropicChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
 			}
 		}
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`event: message_start` + "\n" + `data: {"type":"message_start"}` + "\n\n"))
 	}))
 	defer server.Close()
 
@@ -241,6 +242,7 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 		}
 
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`event: message_start` + "\n" + `data: {"type":"message_start"}` + "\n\n"))
 	}))
 	defer server.Close()
 
