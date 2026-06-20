@@ -56,6 +56,11 @@ func simulatedClientMode(group *models.Group) string {
 	}
 }
 
+// IsSimulatedClientEnabled reports whether the group enables a simulated client preset.
+func IsSimulatedClientEnabled(group *models.Group) bool {
+	return simulatedClientMode(group) != simulatedClientOff
+}
+
 // ApplySimulatedClientHeaders applies the configured client fingerprint preset.
 func ApplySimulatedClientHeaders(req *http.Request, group *models.Group, isStream bool) {
 	if req == nil {

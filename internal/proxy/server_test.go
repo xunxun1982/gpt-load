@@ -901,6 +901,7 @@ func TestExecuteRequestWithRetryLogsClientAndUpstreamUserAgent(t *testing.T) {
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Equal(t, "client-before/1.0", logEntry.UserAgent)
 	assert.Equal(t, buildCodexUserAgent("0.150.1"), logEntry.UpstreamUserAgent)
+	assert.True(t, logEntry.SimulatedClientEnabled)
 }
 
 func TestExecuteRequestWithRetryLogsUpstreamUserAgentWhenSimulatedClientAlreadyInbound(t *testing.T) {
@@ -938,6 +939,7 @@ func TestExecuteRequestWithRetryLogsUpstreamUserAgentWhenSimulatedClientAlreadyI
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Equal(t, buildCodexUserAgent("0.150.1"), logEntry.UserAgent)
 	assert.Equal(t, buildCodexUserAgent("0.150.1"), logEntry.UpstreamUserAgent)
+	assert.True(t, logEntry.SimulatedClientEnabled)
 }
 
 func TestLogRequestTruncatesUserAgentFieldsToColumnLimit(t *testing.T) {
@@ -971,6 +973,7 @@ func TestLogRequestTruncatesUserAgentFieldsToColumnLimit(t *testing.T) {
 	assert.NotContains(t, logEntry.UpstreamUserAgent, upstreamEmail)
 	assert.Contains(t, logEntry.UserAgent, "Bearer [REDACTED]")
 	assert.Contains(t, logEntry.UpstreamUserAgent, "[REDACTED_EMAIL]")
+	assert.False(t, logEntry.SimulatedClientEnabled)
 }
 
 func TestLogRequestSanitizesCapturedResponseBodyBeforeTruncation(t *testing.T) {
@@ -1471,6 +1474,101 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 		},
 	}
 	assert.ElementsMatch(t, want, got)
+}
+
+func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSubGroupOnly(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	selectedSubGroup := createTestGroup(t, db, "agg-log-sim-selected", "openai-response")
+	selectedSubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	selectedSubGroup.Config = map[string]any{
+		"max_retries": 0,
+	}
+	selectedSubGroup.EffectiveConfig = types.SystemSettings{EnableRequestBodyLogging: true}
+	require.NoError(t, db.Save(selectedSubGroup).Error)
+
+	otherSubGroup := createTestGroup(t, db, "agg-log-sim-other", "openai-response")
+	otherSubGroup.Upstreams = []byte(`[{"url":"https://placeholder.example","weight":100}]`)
+	otherSubGroup.Config = map[string]any{
+		"max_retries":             0,
+		"simulated_client":        "codex",
+		"simulated_codex_version": "0.150.1",
+	}
+	otherSubGroup.EffectiveConfig = types.SystemSettings{EnableRequestBodyLogging: true}
+	require.NoError(t, db.Save(otherSubGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-log-sim-parent",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config: map[string]any{
+			"simulated_client": "claude_code",
+			"max_retries":      0,
+		},
+		EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      selectedSubGroup.ID,
+		SubGroupName:    selectedSubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      otherSubGroup.ID,
+		SubGroupName:    otherSubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          1,
+	}).Error)
+
+	createTestKey(t, db, selectedSubGroup.ID, "sk-agg-log-sim-selected", ps.encryptionSvc)
+	createTestKey(t, db, otherSubGroup.ID, "sk-agg-log-sim-other", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, memStore.Delete(activeKeysListKeyForTest(uint64(otherSubGroup.ID))))
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5","input":"hello"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", "client-before/1.0")
+
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, selectedSubGroup.ID, logEntry.GroupID)
+	assert.Equal(t, selectedSubGroup.Name, logEntry.GroupName)
+	assert.Equal(t, aggregateGroup.ID, logEntry.ParentGroupID)
+	assert.Equal(t, aggregateGroup.Name, logEntry.ParentGroupName)
+	assert.False(t, logEntry.SimulatedClientEnabled)
 }
 
 func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {

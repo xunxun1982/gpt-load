@@ -2303,20 +2303,21 @@ func (ps *ProxyServer) logRequest(
 	}
 
 	logEntry := &models.RequestLog{
-		GroupID:           group.ID,
-		GroupName:         group.Name,
-		IsSuccess:         finalError == nil && statusCode < 400,
-		SourceIP:          c.ClientIP(),
-		StatusCode:        statusCode,
-		RequestPath:       utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), // Sanitize to prevent auth token leakage
-		Duration:          duration,
-		UserAgent:         userAgent,
-		UpstreamUserAgent: upstreamUserAgent,
-		RequestType:       requestType,
-		IsStream:          isStream,
-		UpstreamAddr:      utils.TruncateString(upstreamAddrWithProxy, 500),
-		RequestBody:       requestBodyToLog,
-		ResponseBody:      responseBodyToLog,
+		GroupID:                group.ID,
+		GroupName:              group.Name,
+		IsSuccess:              finalError == nil && statusCode < 400,
+		SourceIP:               c.ClientIP(),
+		StatusCode:             statusCode,
+		RequestPath:            utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), // Sanitize to prevent auth token leakage
+		Duration:               duration,
+		UserAgent:              userAgent,
+		UpstreamUserAgent:      upstreamUserAgent,
+		SimulatedClientEnabled: channel.IsSimulatedClientEnabled(group),
+		RequestType:            requestType,
+		IsStream:               isStream,
+		UpstreamAddr:           utils.TruncateString(upstreamAddrWithProxy, 500),
+		RequestBody:            requestBodyToLog,
+		ResponseBody:           responseBodyToLog,
 	}
 
 	if logicalStatusCode, logicalErrorMessage, ok := logicalStatusFromContext(c); ok {

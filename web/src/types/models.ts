@@ -302,6 +302,7 @@ export interface RequestLog {
   error_message: string;
   user_agent: string;
   upstream_user_agent?: string;
+  simulated_client_enabled?: boolean;
   request_type: "retry" | "final";
   group_name?: string;
   parent_group_name?: string;
