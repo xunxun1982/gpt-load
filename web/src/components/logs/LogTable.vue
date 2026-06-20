@@ -258,7 +258,7 @@ const formatTokenUsageInline = (log: RequestLog) => {
 
 const shouldShowUserAgentChange = computed(() => {
   const log = selectedLog.value;
-  return !!log?.simulated_client_enabled;
+  return !!log?.simulated_client_enabled && (!!log?.user_agent || !!log?.upstream_user_agent);
 });
 
 // Copy helper with fallback dialog

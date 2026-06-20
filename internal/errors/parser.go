@@ -3,6 +3,7 @@ package errors
 import (
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 
 	"gpt-load/internal/utils"
 )
@@ -69,9 +70,30 @@ func ParseUpstreamError(body []byte) string {
 	}
 
 	// 5. Graceful Degradation: If all parsing fails, return the raw (but safe) body.
+	if !IsReadableUpstreamBody(body) {
+		return "upstream returned unreadable binary error body"
+	}
 	return safeParsedErrorMessage(string(body))
 }
 
 func safeParsedErrorMessage(message string) string {
 	return utils.TruncateString(utils.SanitizeErrorBody(message), maxErrorBodyLength)
+}
+
+func IsReadableUpstreamBody(body []byte) bool {
+	if len(body) == 0 {
+		return true
+	}
+	if !utf8.Valid(body) {
+		return false
+	}
+	for _, r := range string(body) {
+		if r == utf8.RuneError {
+			return false
+		}
+		if r < 0x20 && r != '\n' && r != '\r' && r != '\t' {
+			return false
+		}
+	}
+	return true
 }

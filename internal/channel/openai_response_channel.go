@@ -63,13 +63,6 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 	isCodexProbe := simulatedClientMode(group) == simulatedClientCodex
 
 	validationPath := endpointURL.Path
-	if isCodexProbe {
-		validationPath = strings.TrimRight(validationPath, "/")
-		if !strings.HasSuffix(validationPath, "/compact") {
-			validationPath += "/compact"
-		}
-	}
-
 	selection, err := ch.SelectValidationUpstream(group, validationPath, endpointURL.RawQuery)
 	if err != nil {
 		return false, fmt.Errorf("failed to select validation upstream: %w", err)
@@ -113,11 +106,7 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return true, nil
-	}
-
-	return false, invalidValidationStatusError(resp)
+	return validateKeyResponseStatus(resp)
 }
 
 func buildResponsesValidationPayload(group *models.Group, model string, isCodexProbe bool) gin.H {

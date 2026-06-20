@@ -203,11 +203,11 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 	assert.True(t, valid)
 }
 
-func TestOpenAIResponseChannel_ValidateKey_UsesCompactProbeForSimulatedCodex(t *testing.T) {
+func TestOpenAIResponseChannel_ValidateKey_UsesConfiguredEndpointForSimulatedCodex(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/v1/responses/compact", r.URL.Path)
+		assert.Equal(t, "/v1/responses", r.URL.Path)
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
 		assert.Equal(t, "codex_cli_rs", r.Header.Get("Originator"))
 		assert.NotEmpty(t, r.Header.Get("Session_ID"))
@@ -265,7 +265,96 @@ func TestOpenAIResponseChannel_ValidateKey_UsesCompactProbeForSimulatedCodex(t *
 	assert.True(t, valid)
 }
 
-func TestOpenAIResponseChannel_ValidateKey_KeepsExistingCompactProbePath(t *testing.T) {
+func TestOpenAIResponseChannel_ValidateKey_RejectsBinarySuccessBodyForSimulatedCodex(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/responses", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte{0xff, 0xfe, 0xfd, 0x00, 0x81, 0x82})
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient: &http.Client{
+				Transport: &http.Transport{DisableCompression: true},
+			},
+			Upstreams: []UpstreamInfo{
+				{
+					URL:    mustParseURL(server.URL),
+					Weight: 100,
+					HTTPClient: &http.Client{
+						Transport: &http.Transport{DisableCompression: true},
+					},
+				},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{
+			Name: "responses-group",
+			Config: datatypes.JSONMap{
+				"simulated_client": "codex",
+			},
+		},
+	)
+	assert.False(t, valid)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "validation response")
+	}
+}
+
+func TestOpenAIResponseChannel_ValidateKey_DecodesCompressedSuccessBodyForSimulatedCodex(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/responses", r.URL.Path)
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(compressGzipForValidationTest(t, []byte(`{"id":"resp_test","object":"response"}`)))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient: &http.Client{
+				Transport: &http.Transport{DisableCompression: true},
+			},
+			Upstreams: []UpstreamInfo{
+				{
+					URL:    mustParseURL(server.URL),
+					Weight: 100,
+					HTTPClient: &http.Client{
+						Transport: &http.Transport{DisableCompression: true},
+					},
+				},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{
+			Name: "responses-group",
+			Config: datatypes.JSONMap{
+				"simulated_client": "codex",
+			},
+		},
+	)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestOpenAIResponseChannel_ValidateKey_UsesCustomValidationEndpointForSimulatedCodex(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -277,7 +366,7 @@ func TestOpenAIResponseChannel_ValidateKey_KeepsExistingCompactProbePath(t *test
 
 	ch := &OpenAIResponseChannel{
 		BaseChannel: &BaseChannel{
-			ValidationEndpoint: "/v1/responses/compact/",
+			ValidationEndpoint: "/v1/responses/compact",
 			TestModel:          "gpt-5.2-codex",
 			HTTPClient:         server.Client(),
 			Upstreams: []UpstreamInfo{

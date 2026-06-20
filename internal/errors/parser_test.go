@@ -74,6 +74,16 @@ func TestParseUpstreamError(t *testing.T) {
 			body:     []byte("Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456\nrequest failed"),
 			expected: "Authorization: [REDACTED]\nrequest failed",
 		},
+		{
+			name:     "binary fallback becomes readable message",
+			body:     []byte{0xff, 0xfe, 0xfd, 0x00, 0x81, 0x82},
+			expected: "upstream returned unreadable binary error body",
+		},
+		{
+			name:     "replacement characters fallback becomes readable message",
+			body:     []byte("���D�AR�0E�{�Q�0l܎g����I4�)Ҕ�'p�"),
+			expected: "upstream returned unreadable binary error body",
+		},
 	}
 
 	for _, tt := range tests {

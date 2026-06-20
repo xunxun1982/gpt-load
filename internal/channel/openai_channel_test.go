@@ -133,6 +133,34 @@ func TestOpenAIChannel_ValidateKey_Success(t *testing.T) {
 	assert.True(t, valid)
 }
 
+func TestOpenAIChannel_ValidateKey_RejectsUnreadableSuccessBody(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("��x�(.4�N_`�л��=%��8�L#����?�'�W"))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/chat/completions",
+			TestModel:          "gpt-3.5-turbo",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{})
+
+	assert.False(t, valid)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation response")
+	assert.NotContains(t, err.Error(), "�")
+}
+
 func TestOpenAIChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
 	t.Parallel()
 
@@ -156,6 +184,7 @@ func TestOpenAIChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
 			}
 		}
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-test","object":"chat.completion.chunk"}` + "\n\n"))
 	}))
 	defer server.Close()
 
