@@ -553,9 +553,9 @@ export default {
     simulatedCodexVersion: "Codex バージョン",
     simulatedCodexVersionPlaceholder: "デフォルト 0.141.0",
     simulatedCodexVersionTip:
-      "codex_cli_rs User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
+      "codex-tui/<version> User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     simulatedClaudeCodeVersion: "Claude Code バージョン",
-    simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.161",
+    simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.183",
     simulatedClaudeCodeVersionTip:
       "claude-cli User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     invalidSimulatedClientVersion:
@@ -733,7 +733,7 @@ export default {
     addSubGroup: "サブグループを追加",
     subGroup: "サブグループ",
     totalSubGroups: "合計 {total} サブグループ",
-    sortedByWeight: "重み降順でソート",
+    sortedByWeight: "有効重み降順でソート",
     noSubGroups: "サブグループがありません",
     loadFailed: "サブグループの読み込みに失敗しました",
     removeSubGroup: "サブグループを削除",

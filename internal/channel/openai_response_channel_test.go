@@ -20,8 +20,9 @@ func TestCodexUserAgent(t *testing.T) {
 
 	assert.NotEmpty(t, CodexUserAgent)
 	assert.Equal(t, BuildCodexUserAgent(DefaultCodexVersion), CodexUserAgent)
-	assert.Contains(t, CodexUserAgent, "codex_cli_rs/"+DefaultCodexVersion)
-	assert.Contains(t, CodexUserAgent, "xterm-256color")
+	assert.Contains(t, CodexUserAgent, "codex-tui/"+DefaultCodexVersion)
+	assert.Contains(t, CodexUserAgent, "WindowsTerminal")
+	assert.Contains(t, CodexUserAgent, "(codex-tui; "+DefaultCodexVersion+")")
 }
 
 func TestOpenAIResponseChannel_ModifyRequest(t *testing.T) {

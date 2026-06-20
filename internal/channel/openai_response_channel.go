@@ -36,12 +36,12 @@ func newOpenAIResponseChannel(f *Factory, group *models.Group) (ChannelProxy, er
 	}, nil
 }
 
-// DefaultCodexVersion is the default Codex CLI version used for simulated client fingerprints.
+// DefaultCodexVersion is the default Codex TUI version used for simulated client fingerprints.
 const DefaultCodexVersion = "0.141.0"
 
-// BuildCodexUserAgent builds the Codex CLI User-Agent string for the given version.
+// BuildCodexUserAgent builds the Codex TUI User-Agent string for the given version.
 func BuildCodexUserAgent(version string) string {
-	return "codex_cli_rs/" + version + " (Ubuntu 22.4.0; x86_64) xterm-256color"
+	return "codex-tui/" + version + " (Windows 10.0.19045; x86_64) WindowsTerminal (codex-tui; " + version + ")"
 }
 
 // CodexUserAgent is the default User-Agent header value for Codex CLI-compatible requests.
