@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"gpt-load/internal/channel"
@@ -435,7 +434,8 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		}}, false)
 		codexUA := codexReq.Header.Get("User-Agent")
 		assert.Equal(t, buildCodexUserAgent("1.32"), codexUA)
-		assert.Equal(t, 1, strings.Count(codexUA, "1.32"))
+		assert.Contains(t, codexUA, "codex-tui/1.32")
+		assert.Contains(t, codexUA, "(codex-tui; 1.32)")
 		assert.Equal(t, "1.32", codexReq.Header.Get("Version"))
 		assert.Equal(t, "codex_cli_rs", codexReq.Header.Get("originator"))
 

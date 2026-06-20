@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -25,6 +26,7 @@ func TestClaudeCodeUserAgent(t *testing.T) {
 	assert.Regexp(t, `claude-cli/\d+\.\d+\.\d+`, ClaudeCodeUserAgent)
 	assert.Contains(t, ClaudeCodeUserAgent, "external")
 	assert.Contains(t, ClaudeCodeUserAgent, "cli")
+	assert.Equal(t, 1, strings.Count(ClaudeCodeUserAgent, "(external, cli)"))
 }
 
 func TestAnthropicChannel_ModifyRequest(t *testing.T) {
@@ -183,7 +185,7 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, BuildClaudeCodeUserAgent("2.1.161"), r.Header.Get("User-Agent"))
+		assert.Equal(t, BuildClaudeCodeUserAgent("2.1.183"), r.Header.Get("User-Agent"))
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		assert.Equal(t, "cli", r.Header.Get("X-App"))
@@ -256,7 +258,7 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
 		Config: datatypes.JSONMap{
 			"simulated_client":              "claude_code",
-			"simulated_claude_code_version": "2.1.161",
+			"simulated_claude_code_version": "2.1.183",
 			"validation_stream":             true,
 		},
 	})

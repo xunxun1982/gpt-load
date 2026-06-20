@@ -785,6 +785,46 @@ func TestExecuteRequestWithRetrySimulatedClientPreservesRequestBody(t *testing.T
 	assert.Equal(t, "true", <-receivedDangerousHeader)
 }
 
+func TestExecuteRequestWithRetrySimulatedCodexPreservesRequestModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	group := createTestGroup(t, db, "simulate-codex-model-passthrough", "openai-response")
+	group.Config = map[string]any{
+		"max_retries":             0,
+		"simulated_client":        "codex",
+		"simulated_codex_version": "0.150.1",
+	}
+	createTestKey(t, db, group.ID, "sk-simulated-codex-model-passthrough", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	body := []byte(`{"model":"gpt-5","input":"hello"}`)
+	receivedBody := make(chan []byte, 1)
+	receivedUserAgent := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedBody <- got
+		receivedUserAgent <- r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/simulate-codex-model-passthrough/v1/responses", bytes.NewReader(body))
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL}, group, group, body, false, time.Now(), 0)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.JSONEq(t, string(body), string(<-receivedBody))
+	assert.Equal(t, buildCodexUserAgent("0.150.1"), <-receivedUserAgent)
+}
+
 func TestExecuteRequestWithRetryCodexCCModeUsesConfiguredSimulatedVersion(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -860,6 +900,43 @@ func TestExecuteRequestWithRetryLogsClientAndUpstreamUserAgent(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Equal(t, "client-before/1.0", logEntry.UserAgent)
+	assert.Equal(t, buildCodexUserAgent("0.150.1"), logEntry.UpstreamUserAgent)
+}
+
+func TestExecuteRequestWithRetryLogsUpstreamUserAgentWhenSimulatedClientAlreadyInbound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+
+	group := createTestGroup(t, db, "simulated-ua-log-same", "openai-response")
+	group.Config = map[string]any{
+		"max_retries":             0,
+		"simulated_client":        "codex",
+		"simulated_codex_version": "0.150.1",
+	}
+	group.EffectiveConfig = types.SystemSettings{EnableRequestBodyLogging: true}
+	createTestKey(t, db, group.ID, "test-key-simulated-ua-log-same", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	body := []byte(`{"model":"gpt-5","input":"hello"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/simulated-ua-log-same/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL}, group, group, body, false, time.Now(), 0)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, buildCodexUserAgent("0.150.1"), logEntry.UserAgent)
 	assert.Equal(t, buildCodexUserAgent("0.150.1"), logEntry.UpstreamUserAgent)
 }
 
@@ -1286,15 +1363,20 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 	ps := setupTestProxyServer(t, db)
 
 	var attempts int32
-	receivedUserAgent := make(chan string, 2)
-	receivedVersion := make(chan string, 2)
-	receivedOriginator := make(chan string, 2)
-	receivedAnthropicVersion := make(chan string, 2)
+	type receivedHeaders struct {
+		userAgent        string
+		version          string
+		originator       string
+		anthropicVersion string
+	}
+	receivedHeadersCh := make(chan receivedHeaders, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedUserAgent <- r.Header.Get("User-Agent")
-		receivedVersion <- r.Header.Get("Version")
-		receivedOriginator <- r.Header.Get("originator")
-		receivedAnthropicVersion <- r.Header.Get("anthropic-version")
+		receivedHeadersCh <- receivedHeaders{
+			userAgent:        r.Header.Get("User-Agent"),
+			version:          r.Header.Get("Version"),
+			originator:       r.Header.Get("originator"),
+			anthropicVersion: r.Header.Get("anthropic-version"),
+		}
 		if atomic.AddInt32(&attempts, 1) == 1 {
 			http.Error(w, `{"error":"fail first subgroup"}`, http.StatusBadGateway)
 			return
@@ -1376,15 +1458,19 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, buildCodexUserAgent("0.150.1"), <-receivedUserAgent)
-	assert.Equal(t, "0.150.1", <-receivedVersion)
-	assert.Equal(t, "codex_cli_rs", <-receivedOriginator)
-	assert.Empty(t, <-receivedAnthropicVersion)
-
-	assert.Equal(t, buildClaudeCodeUserAgent("2.3.4"), <-receivedUserAgent)
-	assert.Empty(t, <-receivedVersion)
-	assert.Empty(t, <-receivedOriginator)
-	assert.Equal(t, "2023-06-01", <-receivedAnthropicVersion)
+	got := []receivedHeaders{<-receivedHeadersCh, <-receivedHeadersCh}
+	want := []receivedHeaders{
+		{
+			userAgent:  buildCodexUserAgent("0.150.1"),
+			version:    "0.150.1",
+			originator: "codex_cli_rs",
+		},
+		{
+			userAgent:        buildClaudeCodeUserAgent("2.3.4"),
+			anthropicVersion: "2023-06-01",
+		},
+	}
+	assert.ElementsMatch(t, want, got)
 }
 
 func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {

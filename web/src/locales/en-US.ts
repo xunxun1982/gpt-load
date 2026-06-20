@@ -553,9 +553,9 @@ export default {
     simulatedCodexVersion: "Codex Version",
     simulatedCodexVersionPlaceholder: "Default 0.141.0",
     simulatedCodexVersionTip:
-      "Builds the codex_cli_rs User-Agent. Leave empty to use the default version.",
+      "Builds the codex-tui/<version> User-Agent. Leave empty to use the default version.",
     simulatedClaudeCodeVersion: "Claude Code Version",
-    simulatedClaudeCodeVersionPlaceholder: "Default 2.1.161",
+    simulatedClaudeCodeVersionPlaceholder: "Default 2.1.183",
     simulatedClaudeCodeVersionTip:
       "Builds the claude-cli User-Agent. Leave empty to use the default version.",
     invalidSimulatedClientVersion:
@@ -749,7 +749,7 @@ export default {
     addSubGroup: "Add Sub Group",
     subGroup: "Sub Group",
     totalSubGroups: "Total {total} sub groups",
-    sortedByWeight: "Sorted by weight descending",
+    sortedByWeight: "Sorted by effective weight descending",
     noSubGroups: "No sub groups",
     loadFailed: "Failed to load sub groups",
     removeSubGroup: "Remove Sub Group",
