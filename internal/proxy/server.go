@@ -41,6 +41,7 @@ const (
 
 var quotaExhaustedRateMarkers = []string{
 	// Keep generic rate_limit_exceeded / too many requests as light throttling.
+	"api_key_quota_exhausted",
 	"insufficient_quota",
 	"quota exhausted",
 	"limit exhausted",

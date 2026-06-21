@@ -1835,6 +1835,11 @@ func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
 			expected: quotaExhaustedRatePressure,
 		},
 		{
+			name:     "structured api key quota exhausted code",
+			body:     `{"code":"API_KEY_QUOTA_EXHAUSTED","message":"temporary quota block"}`,
+			expected: quotaExhaustedRatePressure,
+		},
+		{
 			name:     "chinese quota exhausted message",
 			body:     `{"error":{"message":"api key 5小时限额已用完"}}`,
 			expected: quotaExhaustedRatePressure,
