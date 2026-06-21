@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /* global console, process */
 
-const source = readFileSync("src/features/proxy-pool/components/ProxyPoolPanel.vue", "utf8");
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const panelPath = resolve(scriptDir, "../src/features/proxy-pool/components/ProxyPoolPanel.vue");
+const source = readFileSync(panelPath, "utf8");
 
 const checks = [
   {
