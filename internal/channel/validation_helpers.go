@@ -127,6 +127,12 @@ func validationPromptForGroup(group *models.Group) string {
 }
 
 func validationStreamEnabled(group *models.Group) bool {
+	if groupConfigBool(group, "force_non_stream") {
+		return false
+	}
+	if groupConfigBool(group, "force_stream") {
+		return true
+	}
 	return groupConfigBool(group, "validation_stream")
 }
 

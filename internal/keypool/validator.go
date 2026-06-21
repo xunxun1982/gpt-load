@@ -8,6 +8,7 @@ import (
 	"gpt-load/internal/encryption"
 	app_errors "gpt-load/internal/errors"
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -154,5 +155,5 @@ func sanitizeValidationError(err error) error {
 	if !app_errors.IsReadableUpstreamBody([]byte(err.Error())) {
 		return fmt.Errorf("upstream returned unreadable binary error body")
 	}
-	return err
+	return fmt.Errorf("%s", utils.SanitizeErrorBody(err.Error()))
 }

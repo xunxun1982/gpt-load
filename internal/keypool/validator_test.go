@@ -208,6 +208,17 @@ func TestSanitizeValidationErrorKeepsReadableMessages(t *testing.T) {
 	assert.Equal(t, "[status 401] Invalid API key", err.Error())
 }
 
+func TestSanitizeValidationErrorRedactsCredentials(t *testing.T) {
+	err := sanitizeValidationError(errors.New(`Post "https://api.example.com/v1?key=query-secret&x-goog-api-key=goog-secret": invalid x-goog-api-key=plain-secret`))
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "query-secret")
+	assert.NotContains(t, err.Error(), "goog-secret")
+	assert.NotContains(t, err.Error(), "plain-secret")
+	assert.Contains(t, err.Error(), "key=[REDACTED]")
+	assert.Contains(t, err.Error(), "x-goog-api-key=[REDACTED]")
+}
+
 // Benchmark tests for PGO optimization
 func BenchmarkValidateSingleKey(b *testing.B) {
 	validator, db, _ := setupTestValidator(b)

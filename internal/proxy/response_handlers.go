@@ -183,6 +183,20 @@ func shouldCaptureResponse(c *gin.Context) bool {
 	return false
 }
 
+func sanitizeAndTruncateStringForLog(value string, limit int) string {
+	if value == "" || limit <= 0 {
+		return ""
+	}
+	return utils.TruncateString(utils.SanitizeErrorBody(value), limit)
+}
+
+func sanitizeAndTruncateBytesForLog(value []byte, limit int) string {
+	if len(value) == 0 || limit <= 0 {
+		return ""
+	}
+	return sanitizeAndTruncateStringForLog(string(value), limit)
+}
+
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -242,11 +256,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	failureCapture.Finish()
 	// Store captured response in context for logging
 	if responseCapture != nil && responseCapture.Len() > 0 {
-		responseBody := responseCapture.String()
-		if failureCapture.statusCode > 0 {
-			responseBody = utils.SanitizeErrorBody(responseBody)
-		}
-		c.Set("response_body", responseBody)
+		c.Set("response_body", sanitizeAndTruncateStringForLog(responseCapture.String(), maxResponseCaptureBytes))
 	}
 	if failureCapture.statusCode > 0 {
 		setLogicalFailureContext(c, failureCapture.statusCode, failureCapture.errorCode, failureCapture.errorMessage)
@@ -270,12 +280,7 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			return
 		}
 
-		// Store captured response (truncate to max capture limit)
-		if len(body) > maxResponseCaptureBytes {
-			c.Set("response_body", string(body[:maxResponseCaptureBytes]))
-		} else {
-			c.Set("response_body", string(body))
-		}
+		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
 
 		// Write to client
@@ -360,11 +365,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 
 	// Store response for logging if enabled
 	if shouldCaptureResponse(c) {
-		if len(responseBody) > maxResponseCaptureBytes {
-			c.Set("response_body", string(responseBody[:maxResponseCaptureBytes]))
-		} else {
-			c.Set("response_body", string(responseBody))
-		}
+		c.Set("response_body", sanitizeAndTruncateBytesForLog(responseBody, maxResponseCaptureBytes))
 	}
 	logicalStatusCode, _, hasLogicalFailure := logicalStatusFromContext(c)
 	shouldEstimate := resp.StatusCode < http.StatusBadRequest && (!hasLogicalFailure || logicalStatusCode < http.StatusBadRequest)
@@ -387,14 +388,16 @@ type codexStreamResponse struct {
 }
 
 type codexStreamOutputItem struct {
-	Type      string                    `json:"type"`
-	ID        string                    `json:"id,omitempty"`
-	Status    string                    `json:"status,omitempty"`
-	Role      string                    `json:"role,omitempty"`
-	Content   []codexStreamContentBlock `json:"content,omitempty"`
-	CallID    string                    `json:"call_id,omitempty"`
-	Name      string                    `json:"name,omitempty"`
-	Arguments string                    `json:"arguments,omitempty"`
+	Type             string                    `json:"type"`
+	ID               string                    `json:"id,omitempty"`
+	Status           string                    `json:"status,omitempty"`
+	Role             string                    `json:"role,omitempty"`
+	Content          []codexStreamContentBlock `json:"content,omitempty"`
+	CallID           string                    `json:"call_id,omitempty"`
+	Name             string                    `json:"name,omitempty"`
+	Arguments        string                    `json:"arguments,omitempty"`
+	EncryptedContent string                    `json:"encrypted_content,omitempty"`
+	Summary          json.RawMessage           `json:"summary,omitempty"`
 }
 
 type codexStreamContentBlock struct {
@@ -425,12 +428,14 @@ type codexStreamEvent struct {
 }
 
 type codexStreamItem struct {
-	Type      string `json:"type"`
-	ID        string `json:"id,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Type             string          `json:"type"`
+	ID               string          `json:"id,omitempty"`
+	CallID           string          `json:"call_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Arguments        string          `json:"arguments,omitempty"`
+	Status           string          `json:"status,omitempty"`
+	EncryptedContent string          `json:"encrypted_content,omitempty"`
+	Summary          json.RawMessage `json:"summary,omitempty"`
 }
 
 // collectCodexStreamToResponse reads streaming response and builds a complete CodexResponse.
@@ -573,6 +578,14 @@ readLoop:
 						currentToolID = ""
 						currentToolName = ""
 						currentToolArgs.Reset()
+					case "reasoning":
+						outputItems = append(outputItems, codexStreamOutputItem{
+							Type:             "reasoning",
+							ID:               event.Item.ID,
+							Status:           event.Item.Status,
+							EncryptedContent: event.Item.EncryptedContent,
+							Summary:          event.Item.Summary,
+						})
 					}
 				}
 

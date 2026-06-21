@@ -508,9 +508,13 @@ async function changePage(page: number) {
 }
 
 async function changePageSize(size: number) {
+  const nextPageSize = positiveIntegerValue(size, pageSize.value);
+  if (nextPageSize === pageSize.value) {
+    return;
+  }
   const previousPage = currentPage.value;
   const previousPageSize = pageSize.value;
-  pageSize.value = size;
+  pageSize.value = nextPageSize;
   currentPage.value = 1;
   try {
     await loadItems();
@@ -528,7 +532,11 @@ function changeGatewayPage(page: number) {
 }
 
 function changeGatewayPageSize(size: number) {
-  gatewayPageSize.value = size;
+  const nextPageSize = positiveIntegerValue(size, gatewayPageSize.value);
+  if (nextPageSize === gatewayPageSize.value) {
+    return;
+  }
+  gatewayPageSize.value = nextPageSize;
   gatewayCurrentPage.value = 1;
   normalizeGatewayPage();
 }

@@ -224,10 +224,15 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 	}
 	finalURL.Path = joinedPath
 	finalURL.RawQuery = originalURL.RawQuery
+	gatewayProxy := ""
 	if upstream.GatewayProxy != "" {
+		directURL := finalURL.String()
 		routedURL, err := buildGatewayProxyURL(upstream.GatewayProxy, b.Name, finalURL)
 		if err != nil {
 			return nil, err
+		}
+		if routedURL.String() != directURL {
+			gatewayProxy = strings.ToLower(strings.TrimSpace(upstream.GatewayProxy))
 		}
 		finalURL = routedURL
 	}
@@ -237,6 +242,7 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 		HTTPClient:   upstream.HTTPClient,
 		StreamClient: upstream.StreamClient,
 		ProxyURL:     upstream.ProxyURL,
+		GatewayProxy: gatewayProxy,
 	}, nil
 }
 

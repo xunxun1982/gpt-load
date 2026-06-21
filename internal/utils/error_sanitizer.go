@@ -18,8 +18,13 @@ var (
 	// Authorization header pattern (redact entire value on the line)
 	authHeaderPattern = regexp.MustCompile(`(?im)\bAuthorization:\s*[^\r\n]*`)
 	// Generic secret/password/token patterns in JSON
-	// Added "authorization" to key list per AI review
-	secretJSONPattern = regexp.MustCompile(`(?i)"(api_key|apikey|secret|password|token|auth|authorization|credential|private_key)":\s*"[^"]*"`)
+	// Field names cover common upstream auth variants such as x-api-key,
+	// x-goog-api-key, access_token, refresh_token, and client_secret.
+	secretJSONPattern = regexp.MustCompile(`(?i)"((?:x[-_])?(?:goog[-_])?api[-_]?key|openai[-_]?api[-_]?key|subscription[-_]?key|apikey|access[-_]?token|refresh[-_]?token|client[-_]?secret|encrypted[-_]?content|secret|password|token|auth|authorization|credential|private[-_]?key)":\s*"[^"\r\n]*(?:"|$)`)
+	// Sensitive query parameters embedded in transport errors or plain text logs.
+	secretQueryPattern = regexp.MustCompile(`(?i)([?&](?:key|api[_\-.]?key|x[_\-.]?api[_\-.]?key|x[_\-.]?goog[_\-.]?api[_\-.]?key|openai[_\-.]?api[_\-.]?key|subscription[_\-.]?key|access[_\-.]?token|refresh[_\-.]?token|client[_\-.]?secret|auth|authorization|secret|password|credential)[^=&\s"'<>]*=)[^&\s"'<>]+`)
+	// Sensitive key=value fragments sometimes appear without a URL prefix in upstream error messages.
+	secretAssignmentPattern = regexp.MustCompile(`(?i)(\b(?:api[_\-.]?key|x[_\-.]?api[_\-.]?key|x[_\-.]?goog[_\-.]?api[_\-.]?key|openai[_\-.]?api[_\-.]?key|subscription[_\-.]?key|access[_\-.]?token|refresh[_\-.]?token|client[_\-.]?secret|authorization|secret|password|credential)=)[^&\s"'<>]+`)
 	// Email pattern (basic PII)
 	emailPattern = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
 	// Per AI review: add cloud provider key patterns for broader coverage
@@ -68,6 +73,9 @@ func SanitizeErrorBody(body string) string {
 		}
 		return "[REDACTED_SECRET]"
 	})
+
+	result = secretQueryPattern.ReplaceAllString(result, "${1}[REDACTED]")
+	result = secretAssignmentPattern.ReplaceAllString(result, "${1}[REDACTED]")
 
 	// Redact standalone API keys (sk-...)
 	result = apiKeyStandalonePattern.ReplaceAllString(result, "[REDACTED_API_KEY]")

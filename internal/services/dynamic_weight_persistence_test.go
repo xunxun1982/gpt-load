@@ -1007,6 +1007,42 @@ func TestAlignedHealthResetSlotStartUsesCalendarDaysAcrossDST(t *testing.T) {
 	}
 }
 
+func TestAlignedHealthResetSlotStartTreatsThirtyDaysAsMonthlyInBeijing(t *testing.T) {
+	t.Parallel()
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+
+	tests := []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		{
+			name: "middle of month",
+			now:  time.Date(2026, 6, 21, 21, 0, 0, 0, loc),
+			want: time.Date(2026, 6, 1, 0, 0, 0, 0, loc),
+		},
+		{
+			name: "next month just after midnight",
+			now:  time.Date(2026, 7, 1, 0, 1, 0, 0, loc),
+			want: time.Date(2026, 7, 1, 0, 0, 0, 0, loc),
+		},
+		{
+			name: "cross year",
+			now:  time.Date(2027, 1, 1, 0, 1, 0, 0, loc),
+			want: time.Date(2027, 1, 1, 0, 0, 0, 0, loc),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			slot := alignedHealthResetSlotStart(tt.now, int64((30*24*time.Hour)/time.Second))
+			if !slot.Equal(tt.want) {
+				t.Fatalf("Expected slot %v, got %v", tt.want, slot)
+			}
+		})
+	}
+}
+
 func TestDynamicWeightPersistence_StartStop(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)

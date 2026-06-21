@@ -1328,11 +1328,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	if err := json.Unmarshal(body, &payload); err != nil {
 		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
 		if shouldCapture {
-			if len(body) > maxResponseCaptureBytes {
-				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
-			} else {
-				c.Set("response_body", string(body))
-			}
+			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		}
 		if _, werr := c.Writer.Write(body); werr != nil {
 			logUpstreamError("writing response body", werr)
@@ -1346,11 +1342,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		// No trigger signal means this request was not rewritten for function call.
 		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
 		if shouldCapture {
-			if len(body) > maxResponseCaptureBytes {
-				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
-			} else {
-				c.Set("response_body", string(body))
-			}
+			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		}
 		if _, werr := c.Writer.Write(body); werr != nil {
 			logUpstreamError("writing response body", werr)
@@ -1362,11 +1354,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	if !ok || triggerSignal == "" {
 		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
 		if shouldCapture {
-			if len(body) > maxResponseCaptureBytes {
-				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
-			} else {
-				c.Set("response_body", string(body))
-			}
+			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		}
 		if _, werr := c.Writer.Write(body); werr != nil {
 			logUpstreamError("writing response body", werr)
@@ -1379,11 +1367,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		// No choices field, fallback to original payload.
 		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
 		if shouldCapture {
-			if len(body) > maxResponseCaptureBytes {
-				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
-			} else {
-				c.Set("response_body", string(body))
-			}
+			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		}
 		if _, werr := c.Writer.Write(body); werr != nil {
 			logUpstreamError("writing response body", werr)
@@ -1395,11 +1379,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	if !ok || len(choices) == 0 {
 		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
 		if shouldCapture {
-			if len(body) > maxResponseCaptureBytes {
-				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
-			} else {
-				c.Set("response_body", string(body))
-			}
+			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		}
 		if _, werr := c.Writer.Write(body); werr != nil {
 			logUpstreamError("writing response body", werr)
@@ -1665,11 +1645,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	if !modified {
 		// No valid function calls parsed, fall back to original payload.
 		if shouldCapture {
-			if len(body) > maxResponseCaptureBytes {
-				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
-			} else {
-				c.Set("response_body", string(body))
-			}
+			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		}
 		if _, werr := c.Writer.Write(body); werr != nil {
 			logUpstreamError("writing response body", werr)
@@ -1683,11 +1659,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to marshal modified function call response, falling back to original body")
 		if shouldCapture {
-			if len(body) > maxResponseCaptureBytes {
-				c.Set("response_body", string(body[:maxResponseCaptureBytes]))
-			} else {
-				c.Set("response_body", string(body))
-			}
+			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		}
 		if _, werr := c.Writer.Write(body); werr != nil {
 			logUpstreamError("writing response body", werr)
@@ -1713,11 +1685,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 
 	// Store captured response in context for logging
 	if shouldCapture {
-		if len(out) > maxResponseCaptureBytes {
-			c.Set("response_body", string(out[:maxResponseCaptureBytes]))
-		} else {
-			c.Set("response_body", string(out))
-		}
+		c.Set("response_body", sanitizeAndTruncateBytesForLog(out, maxResponseCaptureBytes))
 	}
 
 	clearUpstreamEncodingHeaders(c)

@@ -111,7 +111,7 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 
 func buildResponsesValidationPayload(group *models.Group, model string, isCodexProbe bool) gin.H {
 	if isCodexProbe {
-		return gin.H{
+		payload := gin.H{
 			"model":        model,
 			"instructions": "You are a helpful coding assistant.",
 			"input": []gin.H{
@@ -127,6 +127,11 @@ func buildResponsesValidationPayload(group *models.Group, model string, isCodexP
 				},
 			},
 		}
+		if validationStreamEnabled(group) {
+			payload["stream"] = true
+		}
+		applyResponsesValidationInclude(payload, group)
+		return payload
 	}
 
 	payload := gin.H{
@@ -136,10 +141,14 @@ func buildResponsesValidationPayload(group *models.Group, model string, isCodexP
 	if validationStreamEnabled(group) {
 		payload["stream"] = true
 	}
+	applyResponsesValidationInclude(payload, group)
+	return payload
+}
+
+func applyResponsesValidationInclude(payload gin.H, group *models.Group) {
 	if validationResponsesIncludeEncryptedReasoning(group) {
 		payload["include"] = []string{"reasoning.encrypted_content"}
 	}
-	return payload
 }
 
 // IsStreamRequest checks whether the request expects a streaming response.

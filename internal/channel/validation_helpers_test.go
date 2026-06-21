@@ -44,6 +44,12 @@ func TestValidationConfigHelpers(t *testing.T) {
 	require.True(t, validationResponsesIncludeEncryptedReasoning(group))
 	require.False(t, validationStreamEnabled(&models.Group{}))
 	require.False(t, validationResponsesIncludeEncryptedReasoning(&models.Group{}))
+	require.True(t, validationStreamEnabled(&models.Group{
+		Config: datatypes.JSONMap{"force_stream": true},
+	}))
+	require.False(t, validationStreamEnabled(&models.Group{
+		Config: datatypes.JSONMap{"validation_stream": true, "force_non_stream": true},
+	}))
 }
 
 func validationPromptInQueue(prompt string) bool {

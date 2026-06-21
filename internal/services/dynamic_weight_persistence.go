@@ -26,7 +26,8 @@ const (
 	// DefaultRolloverInterval is the default interval for rolling over time window statistics.
 	DefaultRolloverInterval = 24 * time.Hour
 	// SoftDeleteRetentionDays is how long soft-deleted records are kept before permanent deletion.
-	SoftDeleteRetentionDays = 180
+	SoftDeleteRetentionDays   = 180
+	monthlyHealthResetSeconds = int64((30 * 24 * time.Hour) / time.Second)
 )
 
 // DynamicWeightPersistence handles persistence of dynamic weight metrics to database.
@@ -720,6 +721,9 @@ func alignedHealthResetSlotStart(now time.Time, intervalSeconds int64) time.Time
 		return time.Time{}
 	}
 	loc := now.Location()
+	if intervalSeconds == monthlyHealthResetSeconds {
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+	}
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	if intervalSeconds%int64((24*time.Hour)/time.Second) == 0 {
 		anchor := time.Date(1970, 1, 1, 0, 0, 0, 0, loc)
