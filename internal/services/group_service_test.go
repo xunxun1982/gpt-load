@@ -111,7 +111,7 @@ func setupTestGroupService(tb testing.TB, db *gorm.DB) *GroupService {
 		DB:              db,
 		SettingsManager: settingsManager,
 	})
-	keyService := NewKeyService(db, keyProvider, keyValidator, encryptionSvc)
+	keyService := NewKeyService(db, keyProvider, keyValidator, encryptionSvc, nil)
 	channelFactory := &channel.Factory{}
 
 	svc := NewGroupService(

@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var benchmarkTokenCountSink int64
@@ -567,6 +568,32 @@ data: [DONE]
 		assert.Equal(t, "function_call", result.Output[0].Type)
 	})
 
+	t.Run("reasoning item preserves encrypted content", func(t *testing.T) {
+		streamData := `event: response.created
+data: {"type":"response.created","response":{"id":"resp_reasoning","model":"gpt-5"}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_123","status":"completed","encrypted_content":"gAAAA-test","summary":[{"type":"summary_text","text":"brief"}]}}
+
+data: [DONE]
+`
+
+		resp := &http.Response{
+			Body: io.NopCloser(strings.NewReader(streamData)),
+		}
+
+		result, err := collectCodexStreamToResponse(resp)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.Output, 1)
+		assert.Equal(t, "reasoning", result.Output[0].Type)
+		assert.Equal(t, "rs_123", result.Output[0].ID)
+		assert.Equal(t, "completed", result.Output[0].Status)
+		assert.Equal(t, "gAAAA-test", result.Output[0].EncryptedContent)
+		assert.JSONEq(t, `[{"type":"summary_text","text":"brief"}]`, string(result.Output[0].Summary))
+	})
+
 	t.Run("stream without completion event", func(t *testing.T) {
 		streamData := `event: response.created
 data: {"type":"response.created","response":{"id":"resp_789","model":"gpt-4"}}
@@ -681,4 +708,41 @@ data: [DONE]
 		assert.Equal(t, "completed", result.Status)
 		assert.Len(t, result.Output, 1)
 	})
+}
+
+func TestHandleCodexForcedStreamResponseSanitizesEncryptedContentForLog(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	streamData := `event: response.created
+data: {"type":"response.created","response":{"id":"resp_reasoning","model":"gpt-5"}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_123","status":"completed","encrypted_content":"gAAAA-response-reasoning","summary":[]}}
+
+data: [DONE]
+`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamData)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	group := &models.Group{
+		EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", group)
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "gAAAA-response-reasoning")
+	rawLogBody, exists := c.Get("response_body")
+	require.True(t, exists)
+	logBody, ok := rawLogBody.(string)
+	require.True(t, ok)
+	assert.NotContains(t, logBody, "gAAAA-response-reasoning")
+	assert.Contains(t, logBody, `"encrypted_content": "[REDACTED]"`)
 }

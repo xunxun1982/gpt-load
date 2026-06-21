@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -357,6 +358,28 @@ func TestStreamLogKeysToCSV_EmptyResult(t *testing.T) {
 	// Should only have header
 	assert.Len(t, records, 1)
 	assert.Equal(t, []string{"key_value", "group_name", "status_code"}, records[0])
+}
+
+type failingCSVWriter struct {
+	err error
+}
+
+func (w failingCSVWriter) Write(_ []byte) (int, error) {
+	return 0, w.err
+}
+
+func TestStreamLogKeysToCSV_ReturnsFlushError(t *testing.T) {
+	t.Parallel()
+	service, _ := setupLogServiceTest(t)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+
+	err := service.StreamLogKeysToCSV(c, failingCSVWriter{err: errors.New("flush write failed")})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "failed to flush CSV data")
+	assert.ErrorContains(t, err, "flush write failed")
 }
 
 // TestStreamLogKeysToCSV_WithFilters tests CSV export with filters

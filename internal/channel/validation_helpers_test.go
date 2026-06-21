@@ -44,6 +44,59 @@ func TestValidationConfigHelpers(t *testing.T) {
 	require.True(t, validationResponsesIncludeEncryptedReasoning(group))
 	require.False(t, validationStreamEnabled(&models.Group{}))
 	require.False(t, validationResponsesIncludeEncryptedReasoning(&models.Group{}))
+	require.True(t, validationStreamEnabled(&models.Group{
+		Config: datatypes.JSONMap{"force_stream": true},
+	}))
+	require.False(t, validationStreamEnabled(&models.Group{
+		Config: datatypes.JSONMap{"validation_stream": true, "force_non_stream": true},
+	}))
+}
+
+func TestValidationStreamPayloadValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    datatypes.JSONMap
+		wantValue bool
+		wantSet   bool
+	}{
+		{
+			name:    "default follows request and omits stream field",
+			config:  datatypes.JSONMap{},
+			wantSet: false,
+		},
+		{
+			name:      "validation stream enables stream field",
+			config:    datatypes.JSONMap{"validation_stream": true},
+			wantValue: true,
+			wantSet:   true,
+		},
+		{
+			name:      "force stream enables stream field",
+			config:    datatypes.JSONMap{"force_stream": true},
+			wantValue: true,
+			wantSet:   true,
+		},
+		{
+			name:      "force non stream writes explicit false",
+			config:    datatypes.JSONMap{"force_non_stream": true},
+			wantValue: false,
+			wantSet:   true,
+		},
+		{
+			name:      "force non stream overrides validation stream",
+			config:    datatypes.JSONMap{"validation_stream": true, "force_non_stream": true},
+			wantValue: false,
+			wantSet:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotValue, gotSet := validationStreamPayloadValue(&models.Group{Config: tt.config})
+			require.Equal(t, tt.wantSet, gotSet)
+			require.Equal(t, tt.wantValue, gotValue)
+		})
+	}
 }
 
 func validationPromptInQueue(prompt string) bool {

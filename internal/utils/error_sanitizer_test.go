@@ -58,6 +58,42 @@ func TestSanitizeErrorBody(t *testing.T) {
 			excludes: []string{"secret123456"},
 		},
 		{
+			name:     "json dashed api key fields",
+			input:    `{"x-api-key":"secret-a","x-goog-api-key":"secret-b","openai_api_key":"secret-c","subscription-key":"secret-d"}`,
+			contains: []string{`"x-api-key": "[REDACTED]"`, `"x-goog-api-key": "[REDACTED]"`, `"openai_api_key": "[REDACTED]"`, `"subscription-key": "[REDACTED]"`},
+			excludes: []string{"secret-a", "secret-b", "secret-c", "secret-d"},
+		},
+		{
+			name:     "json oauth secret fields",
+			input:    `{"access_token":"access-secret","refresh_token":"refresh-secret","client_secret":"client-secret","private-key":"private-secret"}`,
+			contains: []string{`"access_token": "[REDACTED]"`, `"refresh_token": "[REDACTED]"`, `"client_secret": "[REDACTED]"`, `"private-key": "[REDACTED]"`},
+			excludes: []string{"access-secret", "refresh-secret", "client-secret", "private-secret"},
+		},
+		{
+			name:     "json encrypted content field",
+			input:    `{"type":"reasoning","encrypted_content":"gAAAA-encrypted-reasoning"}`,
+			contains: []string{`"encrypted_content": "[REDACTED]"`},
+			excludes: []string{"gAAAA-encrypted-reasoning"},
+		},
+		{
+			name:     "truncated json encrypted content field",
+			input:    `{"type":"reasoning","encrypted_content":"gAAAA-encrypted-reasoning-fragment`,
+			contains: []string{`"encrypted_content": "[REDACTED]"`},
+			excludes: []string{"gAAAA-encrypted-reasoning-fragment"},
+		},
+		{
+			name:     "transport error URL query credentials",
+			input:    `Post "https://api.example.com/v1?key=query-secret&x-goog-api-key=goog-secret&safe=value": dial failed`,
+			contains: []string{"key=[REDACTED]", "x-goog-api-key=[REDACTED]", "safe=value"},
+			excludes: []string{"query-secret", "goog-secret"},
+		},
+		{
+			name:     "plain credential assignment in error",
+			input:    `invalid key x-goog-api-key=goog-secret-value`,
+			contains: []string{"x-goog-api-key=[REDACTED]"},
+			excludes: []string{"goog-secret-value"},
+		},
+		{
 			name:     "json password field",
 			input:    `{"password": "mypassword123", "user": "admin"}`,
 			contains: []string{`"password": "[REDACTED]"`, `"user": "admin"`},

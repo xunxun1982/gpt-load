@@ -484,6 +484,50 @@ func TestUpdateSubGroupWeightPreservesOmittedHealthResetInterval(t *testing.T) {
 	assert.Equal(t, int64(1800), updated.HealthResetIntervalSeconds)
 }
 
+func TestResetSubGroupHealthAllowsDisabledSubGroup(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	aggregateGroup := models.Group{
+		Name:        "aggregate-reset-disabled-sub",
+		DisplayName: "Aggregate Reset Disabled Sub",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	subGroup := models.Group{
+		Name:        "sub-reset-disabled-manual",
+		DisplayName: "Sub Reset Disabled Manual",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&aggregateGroup).Error)
+	require.NoError(t, db.Create(&subGroup).Error)
+	require.NoError(t, db.Model(&subGroup).Update("enabled", false).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: subGroup.ID,
+		Weight:     100,
+	}).Error)
+
+	called := false
+	service.OnSubGroupHealthReset = func(aggregateGroupID, subGroupID uint) error {
+		called = true
+		assert.Equal(t, aggregateGroup.ID, aggregateGroupID)
+		assert.Equal(t, subGroup.ID, subGroupID)
+		return nil
+	}
+
+	require.NoError(t, service.ResetSubGroupHealth(context.Background(), aggregateGroup.ID, subGroup.ID))
+	assert.True(t, called)
+}
+
 func TestGenerateCacheKey(t *testing.T) {
 	t.Parallel()
 

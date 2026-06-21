@@ -272,7 +272,13 @@ func (ps *ProxyServer) applyStreamOverrideConfig(bodyBytes []byte, group *models
 }
 
 func allowsMissingStreamOverride(path, method string) bool {
-	return isChatCompletionsEndpoint(path, method) || isOpenAIResponsesEndpoint(path)
+	return isChatCompletionsEndpoint(path, method) ||
+		isOpenAIResponsesEndpoint(path) ||
+		isAnthropicMessagesEndpoint(path, method)
+}
+
+func isAnthropicMessagesEndpoint(path, method string) bool {
+	return method == http.MethodPost && strings.HasSuffix(path, "/v1/messages")
 }
 
 func (ps *ProxyServer) applyResponsesIncludeConfig(bodyBytes []byte, group *models.Group) ([]byte, error) {

@@ -8,6 +8,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,7 @@ type KeyService struct {
 	KeyProvider               *keypool.KeyProvider
 	KeyValidator              *keypool.KeyValidator
 	EncryptionSvc             encryption.Service
+	RequestLogService         *RequestLogService
 	CacheInvalidationCallback func(groupID uint) // Optional callback for cache invalidation
 
 	// Lightweight last-page cache for listing keys under load
@@ -75,14 +77,15 @@ func (s *KeyService) insertChunkSize() int {
 }
 
 // NewKeyService creates a new KeyService.
-func NewKeyService(db *gorm.DB, keyProvider *keypool.KeyProvider, keyValidator *keypool.KeyValidator, encryptionSvc encryption.Service) *KeyService {
+func NewKeyService(db *gorm.DB, keyProvider *keypool.KeyProvider, keyValidator *keypool.KeyValidator, encryptionSvc encryption.Service, requestLogService *RequestLogService) *KeyService {
 	return &KeyService{
-		DB:            db,
-		KeyProvider:   keyProvider,
-		KeyValidator:  keyValidator,
-		EncryptionSvc: encryptionSvc,
-		pageCache:     make(map[string]keyPageCacheEntry),
-		pageCacheTTL:  2 * time.Second,
+		DB:                db,
+		KeyProvider:       keyProvider,
+		KeyValidator:      keyValidator,
+		EncryptionSvc:     encryptionSvc,
+		RequestLogService: requestLogService,
+		pageCache:         make(map[string]keyPageCacheEntry),
+		pageCacheTTL:      2 * time.Second,
 	}
 }
 
@@ -437,6 +440,8 @@ func (s *KeyService) TestMultipleKeys(group *models.Group, keysText string) ([]k
 		return nil, fmt.Errorf("no valid keys found in the input text")
 	}
 
+	start := time.Now()
+	isSingleManualTest := len(keysToTest) == 1
 	allResults := make([]keypool.KeyTestResult, 0, len(keysToTest))
 	err := utils.ProcessInChunks(keysToTest, s.insertChunkSize(), func(chunk []string) error {
 		results, err := s.KeyValidator.TestMultipleKeys(group, chunk)
@@ -447,10 +452,64 @@ func (s *KeyService) TestMultipleKeys(group *models.Group, keysText string) ([]k
 		return nil
 	})
 	if err != nil {
+		if isSingleManualTest {
+			s.recordKeyValidationLog(group, keysToTest[0], false, http.StatusInternalServerError, time.Since(start), err.Error())
+		}
 		return nil, err
 	}
 
+	if isSingleManualTest && len(allResults) == 1 {
+		result := allResults[0]
+		s.recordKeyValidationLog(group, keysToTest[0], result.IsValid, validationLogStatusCode(result), time.Since(start), result.Error)
+	}
+
 	return allResults, nil
+}
+
+func validationLogStatusCode(result keypool.KeyTestResult) int {
+	if result.IsValid {
+		return http.StatusOK
+	}
+	if strings.Contains(result.Error, "does not exist") {
+		return http.StatusBadRequest
+	}
+	return http.StatusBadGateway
+}
+
+func (s *KeyService) recordKeyValidationLog(group *models.Group, keyValue string, isSuccess bool, statusCode int, duration time.Duration, errorMessage string) {
+	if s.RequestLogService == nil || group == nil {
+		return
+	}
+
+	keyHash := s.EncryptionSvc.Hash(keyValue)
+	encryptedKeyValue, err := s.EncryptionSvc.Encrypt(keyValue)
+	if err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"group_id": group.ID,
+			"key_hash": keyHash,
+		}).Error("Failed to encrypt key value for validation logging")
+		encryptedKeyValue = "failed-to-encryption"
+	}
+
+	safeErrorMessage := utils.TruncateString(utils.SanitizeErrorBody(errorMessage), 1000)
+	logEntry := &models.RequestLog{
+		GroupID:      group.ID,
+		GroupName:    group.Name,
+		KeyValue:     encryptedKeyValue,
+		KeyHash:      keyHash,
+		IsSuccess:    isSuccess,
+		StatusCode:   statusCode,
+		RequestPath:  "/keys/test-multiple",
+		Duration:     duration.Milliseconds(),
+		RequestType:  models.RequestTypeValidation,
+		ErrorMessage: safeErrorMessage,
+	}
+	if err := s.RequestLogService.Record(logEntry); err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"group_id": group.ID,
+			"key_hash": keyHash,
+		}).Warn("Failed to record key validation log")
+	}
 }
 
 // StreamKeysToWriter fetches keys from the database in batches and writes them to the provided writer.

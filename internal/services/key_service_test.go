@@ -2,12 +2,16 @@ package services
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 
+	"gpt-load/internal/channel"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
+	"gpt-load/internal/httpclient"
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
@@ -57,9 +61,44 @@ func setupKeyServiceTest(tb testing.TB) (*gorm.DB, *KeyService) {
 		DB:              db,
 		SettingsManager: settingsManager,
 	})
-	keyService := NewKeyService(db, keyProvider, keyValidator, encryptionSvc)
+	keyService := NewKeyService(db, keyProvider, keyValidator, encryptionSvc, nil)
 
 	return db, keyService
+}
+
+func setupKeyServiceValidationLogTest(t *testing.T) (*gorm.DB, *KeyService, *RequestLogService, encryption.Service) {
+	t.Helper()
+
+	db := setupRequestLogServiceTestDB(t,
+		&models.APIKey{},
+		&models.Group{},
+		&models.RequestLog{},
+		&models.GroupHourlyStat{},
+		&models.ModelTokenHourlyStat{},
+	)
+
+	settingsManager := config.NewSystemSettingsManager()
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() { memStore.Close() })
+	encryptionSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+
+	keyProvider := keypool.NewProvider(db, memStore, settingsManager, encryptionSvc)
+	t.Cleanup(func() { keyProvider.Stop() })
+
+	httpClientManager := httpclient.NewHTTPClientManager()
+	channelFactory := channel.NewFactory(settingsManager, httpClientManager)
+	keyValidator := keypool.NewKeyValidator(keypool.KeyValidatorParams{
+		DB:              db,
+		ChannelFactory:  channelFactory,
+		SettingsManager: settingsManager,
+		KeypoolProvider: keyProvider,
+		EncryptionSvc:   encryptionSvc,
+	})
+	requestLogService := NewRequestLogService(db, memStore, settingsManager)
+	keyService := NewKeyService(db, keyProvider, keyValidator, encryptionSvc, requestLogService)
+
+	return db, keyService, requestLogService, encryptionSvc
 }
 
 // createTestGroup creates a minimal valid group for testing
@@ -74,6 +113,58 @@ func createTestGroup(tb testing.TB, db *gorm.DB, name string) models.Group {
 	err := db.Create(&group).Error
 	require.NoError(tb, err)
 	return group
+}
+
+func TestTestMultipleKeysRecordsSingleValidationLogOnly(t *testing.T) {
+	t.Parallel()
+	db, svc, requestLogService, encryptionSvc := setupKeyServiceValidationLogTest(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := models.Group{
+		Name:        "single-validation-log",
+		ChannelType: "openai",
+		GroupType:   "standard",
+		Enabled:     false,
+		Upstreams:   []byte(`[{"url":"` + upstream.URL + `","weight":100}]`),
+	}
+	require.NoError(t, db.Create(&group).Error)
+	key := models.APIKey{
+		GroupID:  group.ID,
+		KeyValue: "sk-single-validation",
+		KeyHash:  encryptionSvc.Hash("sk-single-validation"),
+		Status:   models.KeyStatusActive,
+	}
+	require.NoError(t, db.Create(&key).Error)
+
+	results, err := svc.TestMultipleKeys(&group, "sk-single-validation")
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.True(t, results[0].IsValid)
+	requestLogService.flush()
+
+	var logs []models.RequestLog
+	require.NoError(t, db.Find(&logs).Error)
+	require.Len(t, logs, 1)
+	assert.Equal(t, models.RequestTypeValidation, logs[0].RequestType)
+	assert.Equal(t, group.ID, logs[0].GroupID)
+	assert.Equal(t, group.Name, logs[0].GroupName)
+	assert.Equal(t, key.KeyHash, logs[0].KeyHash)
+	assert.True(t, logs[0].IsSuccess)
+	assert.Equal(t, http.StatusOK, logs[0].StatusCode)
+	assert.NotEqual(t, "sk-single-validation", logs[0].KeyValue)
+
+	_, err = svc.TestMultipleKeys(&group, "sk-single-validation\nsk-single-validation")
+	require.NoError(t, err)
+	requestLogService.flush()
+
+	var count int64
+	require.NoError(t, db.Model(&models.RequestLog{}).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
 }
 
 // TestParseKeysFromText tests key parsing from various formats

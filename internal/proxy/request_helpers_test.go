@@ -299,8 +299,11 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 		assert.True(t, allowsMissingStreamOverride("/v1/chat/completions", http.MethodPost))
 		assert.True(t, allowsMissingStreamOverride("/proxy/group/v1/chat/completions", http.MethodPost))
 		assert.True(t, allowsMissingStreamOverride("/v1/responses", http.MethodPost))
+		assert.True(t, allowsMissingStreamOverride("/v1/messages", http.MethodPost))
+		assert.True(t, allowsMissingStreamOverride("/proxy/group/v1/messages", http.MethodPost))
 		assert.False(t, allowsMissingStreamOverride("/v1/custom", http.MethodPost))
 		assert.False(t, allowsMissingStreamOverride("/v1/chat/completions", http.MethodGet))
+		assert.False(t, allowsMissingStreamOverride("/v1/messages", http.MethodGet))
 	})
 }
 

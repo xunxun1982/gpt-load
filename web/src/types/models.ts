@@ -303,7 +303,7 @@ export interface RequestLog {
   user_agent: string;
   upstream_user_agent?: string;
   simulated_client_enabled?: boolean;
-  request_type: "retry" | "final";
+  request_type: "retry" | "final" | "validation";
   group_name?: string;
   parent_group_name?: string;
   key_value?: string;
@@ -349,7 +349,7 @@ export interface LogFilter {
   error_contains?: string;
   start_time?: string | null;
   end_time?: string | null;
-  request_type?: "retry" | "final";
+  request_type?: "retry" | "final" | "validation";
 }
 
 export interface DashboardStats {

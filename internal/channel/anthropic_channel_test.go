@@ -268,6 +268,81 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 	assert.True(t, valid)
 }
 
+func TestAnthropicChannel_ValidateKey_ClaudeCodeDefaultOmitsStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		err := json.NewDecoder(r.Body).Decode(&body)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		assert.NotContains(t, body, "stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_test","type":"message","role":"assistant","content":[]}`))
+	}))
+	defer server.Close()
+
+	ch := &AnthropicChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/messages",
+			TestModel:          "claude-3-haiku-20240307",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{
+			"simulated_client":              "claude_code",
+			"simulated_claude_code_version": "2.1.183",
+		},
+	})
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestAnthropicChannel_ValidateKey_ClaudeCodeHonorsForceNonStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		err := json.NewDecoder(r.Body).Decode(&body)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, false, body["stream"])
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_test","type":"message","role":"assistant","content":[]}`))
+	}))
+	defer server.Close()
+
+	ch := &AnthropicChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/messages",
+			TestModel:          "claude-3-haiku-20240307",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{
+			"simulated_client":              "claude_code",
+			"simulated_claude_code_version": "2.1.183",
+			"force_non_stream":              true,
+		},
+	})
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
 // Benchmark tests
 func BenchmarkAnthropicChannel_ModifyRequest(b *testing.B) {
 	b.ReportAllocs()

@@ -61,6 +61,39 @@ func TestRequestLogServiceWriteLogsToDBUpdatesKeyStatsByGroupAndHash(t *testing.
 	assert.True(t, group2Key.LastUsedAt.Equal(baseTime.Add(2*time.Minute)))
 }
 
+func TestRequestLogServiceWriteLogsToDBSkipsValidationLogsForStats(t *testing.T) {
+	t.Parallel()
+
+	db := setupRequestLogServiceTestDB(t, &models.APIKey{}, &models.RequestLog{}, &models.GroupHourlyStat{}, &models.ModelTokenHourlyStat{})
+
+	baseTime := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
+	key := models.APIKey{GroupID: 1, KeyValue: "key-1", KeyHash: "hash-1", Status: models.KeyStatusActive}
+	require.NoError(t, db.Create(&key).Error)
+
+	service := &RequestLogService{db: db}
+	require.NoError(t, service.writeLogsToDB([]*models.RequestLog{
+		{
+			ID:          "validation-1",
+			Timestamp:   baseTime,
+			GroupID:     1,
+			GroupName:   "test-group",
+			KeyHash:     "hash-1",
+			IsSuccess:   true,
+			StatusCode:  200,
+			RequestType: models.RequestTypeValidation,
+		},
+	}))
+
+	var updated models.APIKey
+	require.NoError(t, db.First(&updated, key.ID).Error)
+	assert.EqualValues(t, 0, updated.RequestCount)
+	assert.Nil(t, updated.LastUsedAt)
+
+	var hourlyCount int64
+	require.NoError(t, db.Model(&models.GroupHourlyStat{}).Count(&hourlyCount).Error)
+	assert.Equal(t, int64(0), hourlyCount)
+}
+
 func TestRequestLogServiceWriteLogsToDBAggregatesModelTokenStats(t *testing.T) {
 	t.Parallel()
 

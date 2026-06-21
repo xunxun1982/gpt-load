@@ -15,6 +15,7 @@ type UpstreamSelection struct {
 	HTTPClient   *http.Client
 	StreamClient *http.Client
 	ProxyURL     *string // The proxy URL used by this upstream (for logging/observability)
+	GatewayProxy string  // The gateway proxy used by this upstream (for logging/observability)
 }
 
 // ChannelProxy defines the interface for different API channel proxies.

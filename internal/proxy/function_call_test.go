@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -11517,6 +11518,51 @@ func TestHandleFunctionCallNormalResponseRejectsInvalidCompressedBody(t *testing
 	}
 	if got := w.Header().Get("Content-Encoding"); got != "" {
 		t.Fatalf("expected stale content encoding to be cleared, got %q", got)
+	}
+}
+
+func TestHandleFunctionCallNormalResponseSanitizesResponseBodyForLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	encryptedContent := "gAAAA-" + strings.Repeat("x", 32)
+	upstreamBody := `{"type":"reasoning","encrypted_content":"` + encryptedContent + `"}`
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("group", &models.Group{
+		Name: "test-group",
+		EffectiveConfig: types.SystemSettings{
+			EnableRequestBodyLogging: true,
+		},
+	})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallNormalResponse(c, upstreamResp)
+
+	if got := w.Body.String(); got != upstreamBody {
+		t.Fatalf("expected client response to stay unchanged, got %q", got)
+	}
+	logBody, exists := c.Get("response_body")
+	if !exists {
+		t.Fatal("expected response_body to be captured")
+	}
+	logBodyStr, ok := logBody.(string)
+	if !ok {
+		t.Fatalf("expected response_body string, got %T", logBody)
+	}
+	if strings.Contains(logBodyStr, encryptedContent) {
+		t.Fatalf("expected encrypted content to be redacted from log body, got %q", logBodyStr)
+	}
+	if !strings.Contains(logBodyStr, `"encrypted_content": "[REDACTED]"`) {
+		t.Fatalf("expected redacted encrypted_content field, got %q", logBodyStr)
 	}
 }
 

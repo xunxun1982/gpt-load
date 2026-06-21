@@ -56,6 +56,8 @@ const items = ref<ProxyPoolItem[]>([]);
 const gatewayOptions = ref<ProxyPoolSelectionOption[]>([]);
 const currentPage = ref(1);
 const pageSize = ref(12);
+const gatewayCurrentPage = ref(1);
+const gatewayPageSize = ref(6);
 const total = ref(0);
 const hasMore = ref(false);
 const testingAll = ref(false);
@@ -402,8 +404,28 @@ const isNextPageDisabled = computed(() => {
   }
   return items.value.length === 0;
 });
+const gatewayTotal = computed(() => gatewayOptions.value.length);
+const gatewayTotalPages = computed(() =>
+  Math.max(1, Math.ceil(gatewayTotal.value / gatewayPageSize.value))
+);
+const pagedGatewayOptions = computed(() => {
+  const start = (gatewayCurrentPage.value - 1) * gatewayPageSize.value;
+  return gatewayOptions.value.slice(start, start + gatewayPageSize.value);
+});
+const gatewayTotalRecordsText = computed(() =>
+  t("proxyPool.totalRecords", { total: gatewayTotal.value })
+);
+const gatewayPageInfoText = computed(() =>
+  t("proxyPool.pageInfo", { current: gatewayCurrentPage.value, total: gatewayTotalPages.value })
+);
 function renderTestStatus(content: ReturnType<typeof h>) {
   return h("div", { class: "proxy-pool-test-status" }, [content]);
+}
+
+function normalizeGatewayPage() {
+  if (gatewayCurrentPage.value > gatewayTotalPages.value) {
+    gatewayCurrentPage.value = gatewayTotalPages.value;
+  }
 }
 
 async function loadItems() {
@@ -420,8 +442,10 @@ async function loadItems() {
     if (gatewayState.status === "fulfilled") {
       gatewayOptions.value = gatewayState.value;
       syncGatewayTestResults(gatewayState.value);
+      normalizeGatewayPage();
     } else {
       gatewayOptions.value = [];
+      gatewayCurrentPage.value = 1;
       console.error("Failed to load gateway proxy options:", gatewayState.reason);
     }
 
@@ -484,9 +508,13 @@ async function changePage(page: number) {
 }
 
 async function changePageSize(size: number) {
+  const nextPageSize = positiveIntegerValue(size, pageSize.value);
+  if (nextPageSize === pageSize.value) {
+    return;
+  }
   const previousPage = currentPage.value;
   const previousPageSize = pageSize.value;
-  pageSize.value = size;
+  pageSize.value = nextPageSize;
   currentPage.value = 1;
   try {
     await loadItems();
@@ -494,6 +522,23 @@ async function changePageSize(size: number) {
     pageSize.value = previousPageSize;
     currentPage.value = previousPage;
   }
+}
+
+function changeGatewayPage(page: number) {
+  if (page < 1 || page > gatewayTotalPages.value || page === gatewayCurrentPage.value) {
+    return;
+  }
+  gatewayCurrentPage.value = page;
+}
+
+function changeGatewayPageSize(size: number) {
+  const nextPageSize = positiveIntegerValue(size, gatewayPageSize.value);
+  if (nextPageSize === gatewayPageSize.value) {
+    return;
+  }
+  gatewayPageSize.value = nextPageSize;
+  gatewayCurrentPage.value = 1;
+  normalizeGatewayPage();
 }
 
 function positiveIntegerValue(value: unknown, fallback: number): number {
@@ -912,68 +957,113 @@ onUnmounted(clearAutoTestTimer);
       </n-space>
     </div>
 
-    <section class="proxy-pool-section">
-      <div class="proxy-pool-section-header">
-        <div>
-          <div class="proxy-pool-section-title">{{ t("proxyPool.gatewayProxies") }}</div>
-          <div class="proxy-pool-section-subtitle">{{ t("proxyPool.gatewaySectionHint") }}</div>
-          <div class="gateway-active-summary">{{ activeGatewayText }}</div>
+    <div class="proxy-pool-content-stack">
+      <section class="proxy-pool-section proxy-pool-manual-section">
+        <div class="proxy-pool-section-header">
+          <div>
+            <div class="proxy-pool-section-title">{{ t("proxyPool.manualProxies") }}</div>
+            <div class="proxy-pool-section-subtitle">{{ t("proxyPool.manualSectionHint") }}</div>
+          </div>
         </div>
-      </div>
-      <n-data-table
-        size="small"
-        :columns="gatewayColumns"
-        :data="gatewayOptions"
-        :loading="loading"
-        :bordered="false"
-        :single-line="false"
-        :row-key="gatewayResultKey"
-      />
-    </section>
-
-    <section class="proxy-pool-section">
-      <div class="proxy-pool-section-header">
-        <div>
-          <div class="proxy-pool-section-title">{{ t("proxyPool.manualProxies") }}</div>
-          <div class="proxy-pool-section-subtitle">{{ t("proxyPool.manualSectionHint") }}</div>
-        </div>
-      </div>
-      <n-data-table
-        size="small"
-        :columns="columns"
-        :data="items"
-        :loading="loading"
-        :bordered="false"
-        :single-line="false"
-        :row-key="row => row.id"
-      />
-    </section>
-
-    <div class="proxy-pool-pagination">
-      <div class="proxy-pool-pagination-info">
-        <span>{{ totalRecordsText }}</span>
-        <n-select
-          :value="pageSize"
-          :options="[
-            { label: t('proxyPool.recordsPerPage', { count: 12 }), value: 12 },
-            { label: t('proxyPool.recordsPerPage', { count: 24 }), value: 24 },
-            { label: t('proxyPool.recordsPerPage', { count: 60 }), value: 60 },
-            { label: t('proxyPool.recordsPerPage', { count: 120 }), value: 120 },
-          ]"
+        <n-data-table
           size="small"
-          style="width: 108px"
-          @update:value="changePageSize"
+          :columns="columns"
+          :data="items"
+          :loading="loading"
+          :bordered="false"
+          :single-line="false"
+          :row-key="row => row.id"
         />
-      </div>
-      <div class="proxy-pool-pagination-controls">
-        <n-button size="small" :disabled="currentPage <= 1" @click="changePage(currentPage - 1)">
-          {{ t("common.previousPage") }}
-        </n-button>
-        <span class="proxy-pool-page-info">{{ pageInfoText }}</span>
-        <n-button size="small" :disabled="isNextPageDisabled" @click="changePage(currentPage + 1)">
-          {{ t("common.nextPage") }}
-        </n-button>
-      </div>
+
+        <div class="proxy-pool-pagination">
+          <div class="proxy-pool-pagination-info">
+            <span>{{ totalRecordsText }}</span>
+            <n-select
+              :value="pageSize"
+              :options="[
+                { label: t('proxyPool.recordsPerPage', { count: 12 }), value: 12 },
+                { label: t('proxyPool.recordsPerPage', { count: 24 }), value: 24 },
+                { label: t('proxyPool.recordsPerPage', { count: 60 }), value: 60 },
+                { label: t('proxyPool.recordsPerPage', { count: 120 }), value: 120 },
+              ]"
+              size="small"
+              style="width: 108px"
+              @update:value="changePageSize"
+            />
+          </div>
+          <div class="proxy-pool-pagination-controls">
+            <n-button
+              size="small"
+              :disabled="currentPage <= 1"
+              @click="changePage(currentPage - 1)"
+            >
+              {{ t("common.previousPage") }}
+            </n-button>
+            <span class="proxy-pool-page-info">{{ pageInfoText }}</span>
+            <n-button
+              size="small"
+              :disabled="isNextPageDisabled"
+              @click="changePage(currentPage + 1)"
+            >
+              {{ t("common.nextPage") }}
+            </n-button>
+          </div>
+        </div>
+      </section>
+
+      <section class="proxy-pool-section proxy-pool-gateway-section">
+        <div class="proxy-pool-section-header">
+          <div>
+            <div class="proxy-pool-section-title">{{ t("proxyPool.gatewayProxies") }}</div>
+            <div class="proxy-pool-section-subtitle">{{ t("proxyPool.gatewaySectionHint") }}</div>
+            <div class="gateway-active-summary">{{ activeGatewayText }}</div>
+          </div>
+        </div>
+        <n-data-table
+          size="small"
+          :columns="gatewayColumns"
+          :data="pagedGatewayOptions"
+          :loading="loading"
+          :bordered="false"
+          :single-line="false"
+          :row-key="gatewayResultKey"
+        />
+
+        <div class="proxy-pool-gateway-pagination">
+          <div class="proxy-pool-pagination-info">
+            <span>{{ gatewayTotalRecordsText }}</span>
+            <n-select
+              :value="gatewayPageSize"
+              :options="[
+                { label: t('proxyPool.recordsPerPage', { count: 6 }), value: 6 },
+                { label: t('proxyPool.recordsPerPage', { count: 12 }), value: 12 },
+                { label: t('proxyPool.recordsPerPage', { count: 24 }), value: 24 },
+                { label: t('proxyPool.recordsPerPage', { count: 60 }), value: 60 },
+              ]"
+              size="small"
+              style="width: 108px"
+              @update:value="changeGatewayPageSize"
+            />
+          </div>
+          <div class="proxy-pool-pagination-controls">
+            <n-button
+              size="small"
+              :disabled="gatewayCurrentPage <= 1"
+              @click="changeGatewayPage(gatewayCurrentPage - 1)"
+            >
+              {{ t("common.previousPage") }}
+            </n-button>
+            <span class="proxy-pool-page-info">{{ gatewayPageInfoText }}</span>
+            <n-button
+              size="small"
+              :disabled="gatewayCurrentPage >= gatewayTotalPages"
+              @click="changeGatewayPage(gatewayCurrentPage + 1)"
+            >
+              {{ t("common.nextPage") }}
+            </n-button>
+          </div>
+        </div>
+      </section>
     </div>
 
     <n-modal v-model:show="showSettingsModal" class="proxy-pool-form-modal">
@@ -1134,7 +1224,7 @@ onUnmounted(clearAutoTestTimer);
 .proxy-pool-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .proxy-pool-toolbar {
@@ -1161,16 +1251,20 @@ onUnmounted(clearAutoTestTimer);
   font-size: 13px;
 }
 
-.proxy-pool-section {
+.proxy-pool-content-stack {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-top: 4px;
 }
 
-.proxy-pool-section + .proxy-pool-section {
-  border-top: 1px solid var(--border-color);
-  padding-top: 12px;
+.proxy-pool-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
 }
 
 .proxy-pool-section-header {
@@ -1195,7 +1289,7 @@ onUnmounted(clearAutoTestTimer);
 .gateway-active-summary {
   color: var(--text-color-2);
   font-size: 12px;
-  margin-top: 4px;
+  margin-top: 2px;
   word-break: break-all;
 }
 
@@ -1204,6 +1298,11 @@ onUnmounted(clearAutoTestTimer);
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.proxy-pool-section :deep(.n-data-table-th),
+.proxy-pool-section :deep(.n-data-table-td) {
+  padding: 6px 8px;
 }
 
 .proxy-pool-test-status {
@@ -1261,6 +1360,18 @@ onUnmounted(clearAutoTestTimer);
   gap: 12px;
   align-items: center;
   flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color);
+}
+
+.proxy-pool-gateway-pagination {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color);
 }
 
 .proxy-pool-pagination-info,
@@ -1283,6 +1394,7 @@ onUnmounted(clearAutoTestTimer);
   }
 
   .proxy-pool-pagination,
+  .proxy-pool-gateway-pagination,
   .proxy-pool-pagination-info,
   .proxy-pool-pagination-controls {
     width: 100%;

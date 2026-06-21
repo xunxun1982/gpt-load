@@ -108,6 +108,25 @@ func TestValidateKeysText(t *testing.T) {
 	}
 }
 
+func TestAllowDisabledGroupManualKeyTest(t *testing.T) {
+	tests := []struct {
+		name     string
+		keyCount int
+		want     bool
+	}{
+		{name: "single key allowed", keyCount: 1, want: true},
+		{name: "empty not allowed", keyCount: 0, want: false},
+		{name: "batch not allowed", keyCount: 2, want: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, allowDisabledGroupManualKeyTest(tt.keyCount))
+		})
+	}
+}
+
 func TestKeyTextRequest_Validation(t *testing.T) {
 	tests := []struct {
 		name    string

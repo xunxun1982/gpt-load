@@ -134,7 +134,28 @@ const successOptions = [
 const requestTypeOptions = [
   { label: t("logs.retryRequest"), value: "retry" },
   { label: t("logs.finalRequest"), value: "final" },
+  { label: t("logs.validationRequest"), value: "validation" },
 ];
+
+const getRequestTypeLabel = (requestType: RequestLog["request_type"]) => {
+  if (requestType === "retry") {
+    return t("logs.retryRequest");
+  }
+  if (requestType === "validation") {
+    return t("logs.validationRequest");
+  }
+  return t("logs.finalRequest");
+};
+
+const getRequestTypeTagType = (requestType: RequestLog["request_type"]) => {
+  if (requestType === "retry") {
+    return "warning";
+  }
+  if (requestType === "validation") {
+    return "info";
+  }
+  return "default";
+};
 
 // Fetch data
 const loadLogs = async () => {
@@ -344,16 +365,13 @@ const allColumnConfigs: ColumnConfig[] = [
   {
     key: "request_type",
     title: t("logs.requestType"),
-    width: 90,
+    width: 130,
     defaultVisible: true,
     render: (row: LogRow) => {
       return h(
         NTag,
-        { type: row.request_type === "retry" ? "warning" : "default", size: "small", round: true },
-        {
-          default: () =>
-            row.request_type === "retry" ? t("logs.retryRequest") : t("logs.finalRequest"),
-        }
+        { type: getRequestTypeTagType(row.request_type), size: "small", round: true },
+        { default: () => getRequestTypeLabel(row.request_type) }
       );
     },
   },
@@ -895,10 +913,9 @@ const deselectAllColumns = () => {
               </div>
               <div class="detail-item-compact">
                 <span class="detail-label-compact">{{ t("logs.requestType") }}:</span>
-                <n-tag v-if="selectedLog.request_type === 'retry'" type="warning" size="small">
-                  {{ t("logs.retryRequest") }}
+                <n-tag :type="getRequestTypeTagType(selectedLog.request_type)" size="small">
+                  {{ getRequestTypeLabel(selectedLog.request_type) }}
                 </n-tag>
-                <n-tag v-else type="default" size="small">{{ t("logs.finalRequest") }}</n-tag>
               </div>
               <div class="detail-item-compact">
                 <span class="detail-label-compact">{{ t("logs.responseType") }}:</span>

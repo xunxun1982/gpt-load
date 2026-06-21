@@ -284,6 +284,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 			selection, err := bc.SelectUpstreamWithClients(mustParseURL(tt.originalURL), tt.groupName)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantURL, selection.URL)
+			require.Equal(t, "betterclaude", selection.GatewayProxy)
 		})
 	}
 }
@@ -310,6 +311,7 @@ func TestSelectUpstreamWithClientsUsesRuntimeGatewayProxyBaseURL(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "https://cf.betterclau.de/openai/api.openai.com/v1/chat/completions", selection.URL)
+	require.Equal(t, "betterclaude", selection.GatewayProxy)
 }
 
 func TestSelectUpstreamWithClientsFallsBackWhenGatewayProxyRuntimeBaseDisabled(t *testing.T) {
@@ -334,6 +336,7 @@ func TestSelectUpstreamWithClientsFallsBackWhenGatewayProxyRuntimeBaseDisabled(t
 
 	require.NoError(t, err)
 	require.Equal(t, "https://api.openai.com/v1/models", selection.URL)
+	require.Empty(t, selection.GatewayProxy)
 }
 
 func TestSelectUpstreamWithClientsKeepsURLWithoutGatewayProxy(t *testing.T) {
@@ -349,6 +352,7 @@ func TestSelectUpstreamWithClientsKeepsURLWithoutGatewayProxy(t *testing.T) {
 	selection, err := bc.SelectUpstreamWithClients(mustParseURL("/proxy/openai-group/v1/models?limit=10"), "openai-group")
 	require.NoError(t, err)
 	require.Equal(t, "https://api.openai.com/v1/models?limit=10", selection.URL)
+	require.Empty(t, selection.GatewayProxy)
 }
 
 // TestSelectUpstreamConcurrency tests concurrent upstream selection

@@ -169,8 +169,16 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 		assert.NotEmpty(t, r.Header.Get("X-Codex-Turn-Metadata"))
 		assert.NotEmpty(t, r.Header.Get("X-Codex-Window-Id"))
 		assert.Equal(t, "responses=experimental", r.Header.Get("OpenAI-Beta"))
-		assert.Equal(t, "application/json", r.Header.Get("Accept"))
+		assert.Equal(t, "text/event-stream", r.Header.Get("Accept"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, true, body["stream"])
+		include, ok := body["include"].([]any)
+		if assert.True(t, ok) {
+			assert.Contains(t, include, "reasoning.encrypted_content")
+		}
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response"}`))
@@ -194,9 +202,45 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 		&models.Group{
 			Name: "responses-group",
 			Config: datatypes.JSONMap{
-				"simulated_client":        "codex",
-				"simulated_codex_version": "0.150.1",
+				"simulated_client":                      "codex",
+				"simulated_codex_version":               "0.150.1",
+				"force_stream":                          true,
+				"responses_include_encrypted_reasoning": true,
 			},
+		},
+	)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestOpenAIResponseChannel_ValidateKey_ForceNonStreamControlsValidationStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, false, body["stream"])
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{
+			Config: datatypes.JSONMap{"validation_stream": true, "force_non_stream": true},
 		},
 	)
 	assert.NoError(t, err)

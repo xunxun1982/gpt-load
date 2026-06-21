@@ -776,6 +776,7 @@ export default {
     copyFailed: "{type}のコピーに失敗しました",
     retryRequest: "リトライリクエスト",
     finalRequest: "最終リクエスト",
+    validationRequest: "検証リクエスト",
     time: "時間",
     requestType: "リクエストタイプ",
     responseType: "レスポンスタイプ",

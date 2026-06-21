@@ -517,6 +517,113 @@ func TestSafeProxyURL(t *testing.T) {
 	}
 }
 
+func TestFormatUpstreamAddrForLog(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		upstreamAddr string
+		proxyURL     *string
+		gatewayProxy string
+		expected     string
+	}{
+		{
+			name:         "no_proxy",
+			upstreamAddr: "https://api.example.com/v1/chat/completions",
+			expected:     "https://api.example.com/v1/chat/completions",
+		},
+		{
+			name:         "manual_proxy",
+			upstreamAddr: "https://api.example.com/v1/chat/completions",
+			proxyURL:     strPtr("http://proxy.example.com:8080"),
+			expected:     "https://api.example.com/v1/chat/completions (manual proxy: http://proxy.example.com:8080)",
+		},
+		{
+			name:         "manual_proxy_redacts_credentials",
+			upstreamAddr: "https://api.example.com/v1/chat/completions",
+			proxyURL:     strPtr("http://user:password@proxy.example.com:8080"),
+			expected:     "https://api.example.com/v1/chat/completions (manual proxy: http://%2A%2A%2A@proxy.example.com:8080)",
+		},
+		{
+			name:         "gateway_proxy",
+			upstreamAddr: "https://betterclau.de/openai/api.example.com/v1/chat/completions",
+			gatewayProxy: "betterclaude",
+			expected:     "https://betterclau.de/openai/api.example.com/v1/chat/completions (gateway proxy: betterclaude)",
+		},
+		{
+			name:         "gateway_takes_precedence_over_manual",
+			upstreamAddr: "https://betterclau.de/openai/api.example.com/v1/chat/completions",
+			proxyURL:     strPtr("http://proxy.example.com:8080"),
+			gatewayProxy: "betterclaude",
+			expected:     "https://betterclau.de/openai/api.example.com/v1/chat/completions (gateway proxy: betterclaude)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := formatUpstreamAddrForLog(tt.upstreamAddr, tt.proxyURL, tt.gatewayProxy)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestLogRequestRecordsProxyInfoInUpstreamAddr(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name         string
+		upstreamAddr string
+		proxyURL     *string
+		gatewayProxy string
+		expected     string
+	}{
+		{
+			name:         "no proxy",
+			upstreamAddr: "https://api.example.com/v1/models",
+			expected:     "https://api.example.com/v1/models",
+		},
+		{
+			name:         "manual proxy",
+			upstreamAddr: "https://api.example.com/v1/models",
+			proxyURL:     strPtr("http://user:password@proxy.example.com:8080"),
+			expected:     "https://api.example.com/v1/models (manual proxy: http://%2A%2A%2A@proxy.example.com:8080)",
+		},
+		{
+			name:         "gateway proxy",
+			upstreamAddr: "https://betterclau.de/openai/api.example.com/v1/models",
+			gatewayProxy: "betterclaude",
+			expected:     "https://betterclau.de/openai/api.example.com/v1/models (gateway proxy: betterclaude)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			memStore := store.NewMemoryStore()
+			ps := &ProxyServer{
+				requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+			}
+			group := &models.Group{
+				ID:              1,
+				Name:            "proxy-log-group",
+				GroupType:       "standard",
+				EffectiveConfig: types.SystemSettings{},
+			}
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/models", nil)
+
+			ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, tt.upstreamAddr, tt.proxyURL, tt.gatewayProxy, nil, nil, models.RequestTypeFinal)
+
+			logEntry := popRecordedRequestLog(t, memStore)
+			assert.Equal(t, tt.expected, logEntry.UpstreamAddr)
+			assert.NotContains(t, logEntry.UpstreamAddr, "password")
+		})
+	}
+}
+
 func TestRestoreOriginalPath(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -749,6 +856,43 @@ func TestExecuteRequestWithRetryRetriesAfterNonStreamTimeout(t *testing.T) {
 	require.Equal(t, int32(2), atomic.LoadInt32(&attempts))
 }
 
+func TestExecuteRequestWithRetrySanitizesIgnorableAbortLogError(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
+
+	group := createTestGroup(t, db, "abort-log-sanitize", "openai")
+	group.Config = map[string]any{"max_retries": 0}
+	group.EffectiveConfig = systemSettingsWithRetryTimeout(0, 0)
+	createTestKey(t, db, group.ID, "sk-abort-log-sanitize", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request should be canceled before reaching upstream")
+	}))
+	t.Cleanup(upstream.Close)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	parentCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/abort-log-sanitize/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`))).WithContext(parentCtx)
+
+	upstreamURL := upstream.URL + "/v1/chat/completions?key=plain-secret&x-goog-api-key=goog-secret"
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: upstream.Client(), url: upstreamURL}, group, group, []byte(`{"model":"gpt-test"}`), false, time.Now(), 0)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, 499, logEntry.StatusCode)
+	assert.Contains(t, logEntry.ErrorMessage, "key=[REDACTED]")
+	assert.Contains(t, logEntry.ErrorMessage, "x-goog-api-key=[REDACTED]")
+	assert.NotContains(t, logEntry.ErrorMessage, "plain-secret")
+	assert.NotContains(t, logEntry.ErrorMessage, "goog-secret")
+}
+
 func TestExecuteRequestWithRetrySimulatedClientPreservesRequestBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -866,6 +1010,100 @@ func TestExecuteRequestWithRetryCodexCCModeUsesConfiguredSimulatedVersion(t *tes
 	assert.Equal(t, "codex_cli_rs", <-receivedOriginator)
 }
 
+func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedBody <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"object\":\"response\",\"model\":\"gpt-5\",\"status\":\"completed\",\"output\":[]}}\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := createTestGroup(t, db, "codex-force-stream", "openai-response")
+	group.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	group.Config = map[string]any{
+		"blacklist_threshold":                   100,
+		"force_stream":                          true,
+		"responses_include_encrypted_reasoning": true,
+		"simulated_client":                      "codex",
+		"simulated_codex_version":               "0.150.1",
+	}
+	require.NoError(t, db.Save(group).Error)
+	createTestKey(t, db, group.ID, "sk-codex-force-stream", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	body := []byte(`{"model":"gpt-5","input":"hello","stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-force-stream/v1/responses", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &payload))
+	assert.Equal(t, true, payload["stream"])
+}
+
+func TestExecuteRequestWithRetrySanitizesUpstreamHTTPError(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"invalid key x-goog-api-key=goog-secret-value","type":"invalid_request_error"}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := createTestGroup(t, db, "sanitize-upstream-http-error", "openai")
+	group.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	group.Config = map[string]any{
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	require.NoError(t, db.Save(group).Error)
+	createTestKey(t, db, group.ID, "sk-sanitize-upstream-http-error", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+group.Name+"/v1/chat/completions", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NotContains(t, w.Body.String(), "goog-secret-value")
+	assert.Contains(t, w.Body.String(), "[REDACTED]")
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.NotContains(t, logEntry.ErrorMessage, "goog-secret-value")
+	assert.Contains(t, logEntry.ErrorMessage, "[REDACTED]")
+}
+
 func TestExecuteRequestWithRetryLogsClientAndUpstreamUserAgent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -964,7 +1202,7 @@ func TestLogRequestTruncatesUserAgentFieldsToColumnLimit(t *testing.T) {
 	ctx.Request.Header.Set("User-Agent", "Bearer "+clientSecret+strings.Repeat("入", requestLogUserAgentMaxRunes+5))
 	ctx.Set(ctxKeyUpstreamUserAgent, upstreamEmail+strings.Repeat("上", requestLogUserAgentMaxRunes+5))
 
-	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, "", nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
 
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Equal(t, requestLogUserAgentMaxRunes, utf8.RuneCountInString(logEntry.UserAgent))
@@ -996,7 +1234,7 @@ func TestLogRequestSanitizesCapturedResponseBodyBeforeTruncation(t *testing.T) {
 	upstreamKey := "s" + "k-" + strings.Repeat("c", 32)
 	ctx.Set("response_body", `{"error":"bad upstream key","api_key":"`+upstreamKey+`"}`)
 
-	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusBadGateway, errors.New("upstream failed"), false, "", nil, nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusBadGateway, errors.New("upstream failed"), false, "", nil, "", nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
 
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.NotContains(t, logEntry.ResponseBody, upstreamKey)
@@ -1571,6 +1809,210 @@ func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSu
 	assert.False(t, logEntry.SimulatedClientEnabled)
 }
 
+func TestExecuteRequestWithAggregateRetryUsesSelectedSubGroupMaxRetries(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+
+	var attempts int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&attempts, 1) <= 2 {
+			http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "agg-sub-retry-selected", "openai")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	subGroup.Config = map[string]any{
+		"max_retries":         2,
+		"blacklist_threshold": 100,
+	}
+	subGroup.EffectiveConfig = systemSettingsWithRetryTimeout(2, 1)
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-sub-retry-parent",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config: map[string]any{
+			"max_retries":     0,
+			"sub_max_retries": 10,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-agg-sub-retry-a", ps.encryptionSvc)
+	createTestKey(t, db, subGroup.ID, "sk-agg-sub-retry-b", ps.encryptionSvc)
+	createTestKey(t, db, subGroup.ID, "sk-agg-sub-retry-c", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-test"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/chat/completions", bytes.NewReader(body))
+
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int32(3), atomic.LoadInt32(&attempts))
+
+	retryLogs := []models.RequestLog{
+		popRecordedRequestLog(t, memStore),
+		popRecordedRequestLog(t, memStore),
+		popRecordedRequestLog(t, memStore),
+	}
+	require.Len(t, retryLogs, 3)
+	requestTypes := map[string]int{}
+	for _, logEntry := range retryLogs {
+		requestTypes[logEntry.RequestType]++
+	}
+	assert.Equal(t, 2, requestTypes[models.RequestTypeRetry])
+	assert.Equal(t, 1, requestTypes[models.RequestTypeFinal])
+}
+
+func TestExecuteRequestWithAggregateRetryPinsSubGroupDuringKeyRetries(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+
+	var targetAttempts int32
+	var backupAttempts int32
+	var backupKey *models.APIKey
+	targetUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&targetAttempts, 1) == 1 && backupKey != nil {
+			_ = memStore.LPush(activeKeysListKeyForTest(uint64(backupKey.GroupID)), uint64(backupKey.ID))
+		}
+		if atomic.LoadInt32(&targetAttempts) <= 2 {
+			http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(targetUpstream.Close)
+
+	backupUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&backupAttempts, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"backup":true}`)
+	}))
+	t.Cleanup(backupUpstream.Close)
+
+	targetGroup := createTestGroup(t, db, "agg-key-retry-target", "openai")
+	targetGroup.Upstreams = []byte(`[{"url":"` + targetUpstream.URL + `","weight":100}]`)
+	targetGroup.Config = map[string]any{
+		"max_retries":         10,
+		"blacklist_threshold": 100,
+	}
+	targetGroup.EffectiveConfig = systemSettingsWithRetryTimeout(10, 1)
+	require.NoError(t, db.Save(targetGroup).Error)
+
+	backupGroup := createTestGroup(t, db, "agg-key-retry-backup", "openai")
+	backupGroup.Upstreams = []byte(`[{"url":"` + backupUpstream.URL + `","weight":100}]`)
+	backupGroup.Config = map[string]any{
+		"max_retries":         10,
+		"blacklist_threshold": 100,
+	}
+	backupGroup.EffectiveConfig = systemSettingsWithRetryTimeout(10, 1)
+	require.NoError(t, db.Save(backupGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-key-retry-parent",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config: map[string]any{
+			"max_retries":     8,
+			"sub_max_retries": 10,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      targetGroup.ID,
+		SubGroupName:    targetGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          1,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      backupGroup.ID,
+		SubGroupName:    backupGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          1_000_000,
+	}).Error)
+
+	createTestKey(t, db, targetGroup.ID, "sk-agg-key-retry-a", ps.encryptionSvc)
+	createTestKey(t, db, targetGroup.ID, "sk-agg-key-retry-b", ps.encryptionSvc)
+	createTestKey(t, db, targetGroup.ID, "sk-agg-key-retry-c", ps.encryptionSvc)
+	backupKey = createTestKey(t, db, backupGroup.ID, "sk-agg-key-retry-backup", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, memStore.Delete(activeKeysListKeyForTest(uint64(backupGroup.ID))))
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-test"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/chat/completions", bytes.NewReader(body))
+
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int32(3), atomic.LoadInt32(&targetAttempts))
+	assert.Equal(t, int32(0), atomic.LoadInt32(&backupAttempts))
+
+	for i := 0; i < 3; i++ {
+		logEntry := popRecordedRequestLog(t, memStore)
+		assert.Equal(t, targetGroup.ID, logEntry.GroupID)
+		assert.Equal(t, targetGroup.Name, logEntry.GroupName)
+	}
+}
+
 func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -1605,9 +2047,9 @@ func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {
 	body := []byte(`{"model":"gpt-test"}`)
 
 	ps.logRequest(c, aggregateGroup, failedGroup, nil, time.Now().Add(-time.Millisecond), http.StatusBadGateway,
-		errors.New("upstream failed"), false, "https://openai.example", nil, &testChannelProxy{}, body, models.RequestTypeRetry)
+		errors.New("upstream failed"), false, "https://openai.example", nil, "", &testChannelProxy{}, body, models.RequestTypeRetry)
 	ps.logRequest(c, aggregateGroup, successGroup, nil, time.Now().Add(-time.Millisecond), http.StatusOK,
-		nil, false, "https://gemini.example", nil, &testChannelProxy{}, body, models.RequestTypeFinal)
+		nil, false, "https://gemini.example", nil, "", &testChannelProxy{}, body, models.RequestTypeFinal)
 
 	failedMetrics, err := dwm.GetSubGroupMetrics(aggregateGroup.ID, failedGroup.ID)
 	require.NoError(t, err)
@@ -1835,6 +2277,11 @@ func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
 			expected: quotaExhaustedRatePressure,
 		},
 		{
+			name:     "structured api key quota exhausted code",
+			body:     `{"code":"API_KEY_QUOTA_EXHAUSTED","message":"temporary quota block"}`,
+			expected: quotaExhaustedRatePressure,
+		},
+		{
 			name:     "chinese quota exhausted message",
 			body:     `{"error":{"message":"api key 5小时限额已用完"}}`,
 			expected: quotaExhaustedRatePressure,
@@ -1968,6 +2415,32 @@ func TestClearModelRedirectContextRemovesRetryAttemptState(t *testing.T) {
 	require.False(t, exists)
 }
 
+func TestSanitizeInternalErrorMessageRedactsURLCredentials(t *testing.T) {
+	t.Parallel()
+
+	raw := "Post \"https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?key=plain-secret&x-goog-api-key=goog-secret\": dial tcp failed"
+	got := sanitizeInternalErrorMessage(raw)
+
+	assert.Contains(t, got, "key=[REDACTED]")
+	assert.Contains(t, got, "x-goog-api-key=[REDACTED]")
+	assert.NotContains(t, got, "plain-secret")
+	assert.NotContains(t, got, "goog-secret")
+}
+
+func TestSanitizeInternalErrorRedactsURLCredentials(t *testing.T) {
+	t.Parallel()
+
+	raw := errors.New("Post \"https://upstream.example/v1/messages?key=plain-secret&x-goog-api-key=goog-secret\": request canceled")
+	got := sanitizeInternalError(raw)
+
+	require.Error(t, got)
+	assert.Contains(t, got.Error(), "key=[REDACTED]")
+	assert.Contains(t, got.Error(), "x-goog-api-key=[REDACTED]")
+	assert.NotContains(t, got.Error(), "plain-secret")
+	assert.NotContains(t, got.Error(), "goog-secret")
+	assert.Nil(t, sanitizeInternalError(nil))
+}
+
 func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -1982,7 +2455,7 @@ func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {
 	setEstimatedOutputTokens(ctx, 3)
 
 	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
-	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, nil, body, models.RequestTypeFinal)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, "", nil, body, models.RequestTypeFinal)
 
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Equal(t, models.TokenUsageSourceEstimated, logEntry.TokenUsageSource)
@@ -2006,7 +2479,7 @@ func TestLogRequestSkipsEstimatedTokenFallbackForLargeBody(t *testing.T) {
 	setEstimatedOutputTokens(ctx, 3)
 
 	body := bytes.Repeat([]byte("x"), maxEstimatedTokenBodyBytes+1)
-	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, nil, body, models.RequestTypeFinal)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, "", nil, body, models.RequestTypeFinal)
 
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Empty(t, logEntry.TokenUsageSource)
@@ -2030,7 +2503,7 @@ func TestLogRequestPrefersUpstreamTokenUsageOverEstimate(t *testing.T) {
 	setEstimatedOutputTokens(ctx, 100)
 	setTokenUsage(ctx, tokenusage.Usage{InputTokens: 2, OutputTokens: 4})
 
-	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, "", nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
 
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Equal(t, models.TokenUsageSourceUpstream, logEntry.TokenUsageSource)
@@ -2053,7 +2526,7 @@ func TestLogRequestSkipsTokenUsageForFailedRequest(t *testing.T) {
 	setEstimatedOutputTokens(ctx, 100)
 	setTokenUsage(ctx, tokenusage.Usage{InputTokens: 2, OutputTokens: 4})
 
-	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusTooManyRequests, errors.New("upstream rate limited"), false, "", nil, nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusTooManyRequests, errors.New("upstream rate limited"), false, "", nil, "", nil, []byte(`{"model":"gpt-4o"}`), models.RequestTypeFinal)
 
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Empty(t, logEntry.TokenUsageSource)
@@ -2061,6 +2534,37 @@ func TestLogRequestSkipsTokenUsageForFailedRequest(t *testing.T) {
 	assert.Equal(t, int64(0), logEntry.OutputTokens)
 	assert.Equal(t, int64(0), logEntry.TotalTokens)
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
+}
+
+func TestLogRequestSanitizesRequestBodyBeforePersisting(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{
+		ID:        1,
+		Name:      "request-body-log-group",
+		GroupType: "standard",
+		EffectiveConfig: types.SystemSettings{
+			EnableRequestBodyLogging: true,
+		},
+	}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions?key=client-query-key", nil)
+
+	body := []byte(`{"api_key":"sk-body-secret","authorization":"Bearer body-secret","x-goog-api-key":"goog-body-secret","encrypted_content":"gAAAA-request-reasoning","messages":[{"role":"user","content":"hello"}]}`)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "https://upstream.example", nil, "", nil, body, models.RequestTypeFinal)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.NotContains(t, logEntry.RequestBody, "sk-body-secret")
+	assert.NotContains(t, logEntry.RequestBody, "body-secret")
+	assert.NotContains(t, logEntry.RequestBody, "goog-body-secret")
+	assert.NotContains(t, logEntry.RequestBody, "gAAAA-request-reasoning")
+	assert.Contains(t, logEntry.RequestBody, "[REDACTED]")
+	assert.NotContains(t, logEntry.RequestPath, "client-query-key")
 }
 
 func TestLogRequestUsesLogicalStreamingFailureForHealthMetrics(t *testing.T) {
@@ -2080,7 +2584,7 @@ func TestLogRequestUsesLogicalStreamingFailureForHealthMetrics(t *testing.T) {
 	ctx.Set(ctxKeyUpstreamLogicalErrorMessage, "Concurrency limit exceeded for user, please retry later")
 	ctx.Set("response_body", `{"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded for user, please retry later"}}}`)
 
-	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, true, "", nil, nil, []byte(`{"model":"gpt-5.4"}`), models.RequestTypeFinal)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, true, "", nil, "", nil, []byte(`{"model":"gpt-5.4"}`), models.RequestTypeFinal)
 
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.False(t, logEntry.IsSuccess)
@@ -2106,7 +2610,7 @@ func TestLogRequestPreservesLogicalErrorMessageWhenFinalErrorExists(t *testing.T
 	ctx.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusTooManyRequests)
 	ctx.Set(ctxKeyUpstreamLogicalErrorMessage, "Concurrency limit exceeded for user, please retry later")
 
-	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, errors.New("forced stream ended with logical failure"), true, "", nil, nil, []byte(`{"model":"gpt-5.4"}`), models.RequestTypeFinal)
+	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, errors.New("forced stream ended with logical failure"), true, "", nil, "", nil, []byte(`{"model":"gpt-5.4"}`), models.RequestTypeFinal)
 
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.False(t, logEntry.IsSuccess)

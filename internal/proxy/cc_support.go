@@ -2752,8 +2752,8 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		return
 	}
 
-	// Store Claude response body for downstream logging (will be truncated by logger).
-	c.Set("response_body", string(claudeBody))
+	// Store a sanitized Claude response copy for downstream logging only.
+	c.Set("response_body", sanitizeAndTruncateBytesForLog(claudeBody, maxResponseCaptureBytes))
 
 	// Clear upstream encoding/length headers before writing synthesized response.
 	// The proxy decompresses and re-encodes the response, so upstream headers no longer match.

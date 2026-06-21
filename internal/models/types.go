@@ -272,8 +272,9 @@ type APIKey struct {
 
 // RequestType request type constants
 const (
-	RequestTypeRetry = "retry"
-	RequestTypeFinal = "final"
+	RequestTypeRetry      = "retry"
+	RequestTypeFinal      = "final"
+	RequestTypeValidation = "validation"
 )
 
 // Token usage source constants.

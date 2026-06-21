@@ -791,6 +791,7 @@ export default {
     copyFailed: "Failed to copy {type}",
     retryRequest: "Retry Request",
     finalRequest: "Final Request",
+    validationRequest: "Validation Request",
     time: "Time",
     requestType: "Request Type",
     responseType: "Response Type",

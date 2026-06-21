@@ -27,6 +27,10 @@ const (
 	DefaultRolloverInterval = 24 * time.Hour
 	// SoftDeleteRetentionDays is how long soft-deleted records are kept before permanent deletion.
 	SoftDeleteRetentionDays = 180
+	// calendarMonthHealthResetSeconds is the legacy stored value for calendar-month alignment.
+	// AI review suggested fixed 30-day windows, but project behavior intentionally resets on
+	// local calendar month boundaries, so actual intervals can be 28-31 days.
+	calendarMonthHealthResetSeconds = int64((30 * 24 * time.Hour) / time.Second)
 )
 
 // DynamicWeightPersistence handles persistence of dynamic weight metrics to database.
@@ -602,7 +606,10 @@ func (p *DynamicWeightPersistence) ResetDueSubGroupHealth(now time.Time) (int, e
 	}
 
 	var relations []models.GroupSubGroup
-	query := p.db.Model(&models.GroupSubGroup{})
+	// Automatic scheduled resets ignore disabled sub-groups; manual health resets use ResetSubGroupMetrics directly.
+	query := p.db.Model(&models.GroupSubGroup{}).
+		Select("group_sub_groups.*").
+		Joins("JOIN groups AS sub_groups ON sub_groups.id = group_sub_groups.sub_group_id AND sub_groups.enabled = ?", true)
 	if len(defaultIntervals) > 0 {
 		groupIDs := make([]uint, 0, len(defaultIntervals))
 		for groupID := range defaultIntervals {
@@ -720,6 +727,9 @@ func alignedHealthResetSlotStart(now time.Time, intervalSeconds int64) time.Time
 		return time.Time{}
 	}
 	loc := now.Location()
+	if intervalSeconds == calendarMonthHealthResetSeconds {
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+	}
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	if intervalSeconds%int64((24*time.Hour)/time.Second) == 0 {
 		anchor := time.Date(1970, 1, 1, 0, 0, 0, 0, loc)

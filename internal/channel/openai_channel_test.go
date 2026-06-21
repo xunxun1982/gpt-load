@@ -209,6 +209,66 @@ func TestOpenAIChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
 	assert.True(t, valid)
 }
 
+func TestOpenAIChannel_ValidateKey_ForceStreamControlsValidationStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, true, body["stream"])
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-test","object":"chat.completion.chunk"}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/chat/completions",
+			TestModel:          "gpt-3.5-turbo",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{"force_stream": true},
+	})
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
+func TestOpenAIChannel_ValidateKey_ForceNonStreamControlsValidationStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, false, body["stream"])
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/chat/completions",
+			TestModel:          "gpt-3.5-turbo",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{"validation_stream": true, "force_non_stream": true},
+	})
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
 func TestOpenAIChannel_ValidateKey_AppliesSimulatedCodexClient(t *testing.T) {
 	t.Parallel()
 

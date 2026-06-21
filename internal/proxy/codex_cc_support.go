@@ -1673,7 +1673,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		return
 	}
 
-	c.Set("response_body", string(claudeBody))
+	c.Set("response_body", sanitizeAndTruncateBytesForLog(claudeBody, maxResponseCaptureBytes))
 	clearUpstreamEncodingHeaders(c)
 	c.Header("Content-Type", "application/json")
 	c.Data(resp.StatusCode, "application/json", claudeBody)

@@ -20,6 +20,7 @@ const likeEscapeChar = "!"
 
 // ExportableLogKey defines the structure for the data to be exported to CSV.
 type ExportableLogKey struct {
+	KeyHash    string `gorm:"column:key_hash"`
 	KeyValue   string `gorm:"column:key_value"`
 	GroupName  string `gorm:"column:group_name"`
 	StatusCode int    `gorm:"column:status_code"`
@@ -114,15 +115,12 @@ func (s *LogService) GetLogsQuery(c *gin.Context) *gorm.DB {
 func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error {
 	// Create a CSV writer
 	csvWriter := csv.NewWriter(writer)
-	defer csvWriter.Flush()
 
 	// Write CSV header
 	header := []string{"key_value", "group_name", "status_code"}
 	if err := csvWriter.Write(header); err != nil {
 		return fmt.Errorf("failed to write CSV header: %w", err)
 	}
-
-	var results []ExportableLogKey
 
 	// Build base query with filters
 	baseQuery := s.DB.Model(&models.RequestLog{}).
@@ -142,33 +140,33 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 	// 3. Performance: Switch statement overhead is negligible compared to DB query time
 	// 4. Clarity: Each branch documents the specific database version requirements
 	// Reference: https://www.bennadel.com/blog/3636-sql-queries-that-look-the-same-are-not-violating-the-dry-principle.htm
-	var err error
+	var query *gorm.DB
 	switch dialect {
 	case "postgres", "pgx":
 		// PostgreSQL: Use ROW_NUMBER() window function for optimal performance
 		// This reduces 3 table scans to 1 scan with a single sort operation
-		err = s.DB.Raw(`
-			SELECT key_value, group_name, status_code FROM (
+		query = s.DB.Raw(`
+			SELECT key_hash, key_value, group_name, status_code FROM (
 				SELECT
 					key_hash, key_value, group_name, status_code,
 					ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
 				FROM (?) AS base
 			) AS ranked WHERE rn = 1
 			ORDER BY key_hash
-		`, baseQuery).Scan(&results).Error
+		`, baseQuery)
 
 	case "mysql":
 		// MySQL 8.0+: Use ROW_NUMBER() window function
 		// Note: MySQL 5.7 does not support window functions, but we target newer versions
-		err = s.DB.Raw(`
-			SELECT key_value, group_name, status_code FROM (
+		query = s.DB.Raw(`
+			SELECT key_hash, key_value, group_name, status_code FROM (
 				SELECT
 					key_hash, key_value, group_name, status_code,
 					ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
 				FROM (?) AS base
 			) AS ranked WHERE rn = 1
 			ORDER BY key_hash
-		`, baseQuery).Scan(&results).Error
+		`, baseQuery)
 
 	default:
 		// SQLite 3.25+: Use ROW_NUMBER() window function (supported since September 2018)
@@ -176,28 +174,34 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 		// Note: This default branch also handles unknown dialects. We intentionally do not
 		// log warnings for unknown dialects because SQLite dialect names vary ("sqlite", "sqlite3")
 		// and incompatible databases will fail with clear SQL syntax errors at execution time.
-		err = s.DB.Raw(`
-			SELECT key_value, group_name, status_code FROM (
+		query = s.DB.Raw(`
+			SELECT key_hash, key_value, group_name, status_code FROM (
 				SELECT
 					key_hash, key_value, group_name, status_code,
 					ROW_NUMBER() OVER (PARTITION BY key_hash ORDER BY timestamp DESC, id DESC) AS rn
 				FROM (?) AS base
 			) AS ranked WHERE rn = 1
 			ORDER BY key_hash
-		`, baseQuery).Scan(&results).Error
+		`, baseQuery)
 	}
 
+	rows, err := query.Rows()
 	if err != nil {
 		return fmt.Errorf("failed to fetch log keys: %w", err)
 	}
+	defer rows.Close()
 
-	// Decrypt and write CSV data
-	for _, record := range results {
+	// Decrypt and write CSV data row by row to avoid retaining large exports in memory.
+	for rows.Next() {
+		var record ExportableLogKey
+		if err := rows.Scan(&record.KeyHash, &record.KeyValue, &record.GroupName, &record.StatusCode); err != nil {
+			return fmt.Errorf("failed to scan log key row: %w", err)
+		}
 		// Decrypt key for CSV export
 		decryptedKey := record.KeyValue
 		if record.KeyValue != "" {
 			if decrypted, err := s.EncryptionSvc.Decrypt(record.KeyValue); err != nil {
-				logrus.WithError(err).WithField("key_value", record.KeyValue).Error("Failed to decrypt key for CSV export")
+				logrus.WithError(err).WithField("key_hash", record.KeyHash).Error("Failed to decrypt key for CSV export")
 				decryptedKey = "failed-to-decrypt"
 			} else {
 				decryptedKey = decrypted
@@ -212,6 +216,13 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 		if err := csvWriter.Write(csvRecord); err != nil {
 			return fmt.Errorf("failed to write CSV record: %w", err)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to read log key rows: %w", err)
+	}
+	csvWriter.Flush()
+	if err := csvWriter.Error(); err != nil {
+		return fmt.Errorf("failed to flush CSV data: %w", err)
 	}
 
 	return nil
