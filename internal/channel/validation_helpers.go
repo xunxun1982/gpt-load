@@ -136,6 +136,16 @@ func validationStreamEnabled(group *models.Group) bool {
 	return groupConfigBool(group, "validation_stream")
 }
 
+func validationStreamPayloadValue(group *models.Group) (bool, bool) {
+	if groupConfigBool(group, "force_non_stream") {
+		return false, true
+	}
+	if groupConfigBool(group, "force_stream") || groupConfigBool(group, "validation_stream") {
+		return true, true
+	}
+	return false, false
+}
+
 func validationResponsesIncludeEncryptedReasoning(group *models.Group) bool {
 	return groupConfigBool(group, "responses_include_encrypted_reasoning")
 }

@@ -127,8 +127,8 @@ func buildResponsesValidationPayload(group *models.Group, model string, isCodexP
 				},
 			},
 		}
-		if validationStreamEnabled(group) {
-			payload["stream"] = true
+		if streamValue, ok := validationStreamPayloadValue(group); ok {
+			payload["stream"] = streamValue
 		}
 		applyResponsesValidationInclude(payload, group)
 		return payload
@@ -138,8 +138,8 @@ func buildResponsesValidationPayload(group *models.Group, model string, isCodexP
 		"model": model,
 		"input": validationPromptForGroup(group),
 	}
-	if validationStreamEnabled(group) {
-		payload["stream"] = true
+	if streamValue, ok := validationStreamPayloadValue(group); ok {
+		payload["stream"] = streamValue
 	}
 	applyResponsesValidationInclude(payload, group)
 	return payload

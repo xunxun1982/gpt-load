@@ -115,7 +115,6 @@ func (s *LogService) GetLogsQuery(c *gin.Context) *gorm.DB {
 func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error {
 	// Create a CSV writer
 	csvWriter := csv.NewWriter(writer)
-	defer csvWriter.Flush()
 
 	// Write CSV header
 	header := []string{"key_value", "group_name", "status_code"}
@@ -220,6 +219,10 @@ func (s *LogService) StreamLogKeysToCSV(c *gin.Context, writer io.Writer) error 
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("failed to read log key rows: %w", err)
+	}
+	csvWriter.Flush()
+	if err := csvWriter.Error(); err != nil {
+		return fmt.Errorf("failed to flush CSV data: %w", err)
 	}
 
 	return nil

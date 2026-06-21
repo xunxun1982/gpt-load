@@ -138,8 +138,8 @@ func buildAnthropicValidationPayload(group *models.Group, model string) (gin.H, 
 				{"role": "user", "content": validationPromptForGroup(group)},
 			},
 		}
-		if validationStreamEnabled(group) {
-			payload["stream"] = true
+		if streamValue, ok := validationStreamPayloadValue(group); ok {
+			payload["stream"] = streamValue
 		}
 		return payload, nil
 	}
@@ -153,7 +153,6 @@ func buildAnthropicValidationPayload(group *models.Group, model string) (gin.H, 
 		"model":       model,
 		"max_tokens":  1024,
 		"temperature": 1,
-		"stream":      true,
 		"messages": []gin.H{
 			{
 				"role": "user",
@@ -180,6 +179,9 @@ func buildAnthropicValidationPayload(group *models.Group, model string) (gin.H, 
 		"metadata": gin.H{
 			"user_id": sessionID,
 		},
+	}
+	if streamValue, ok := validationStreamPayloadValue(group); ok {
+		payload["stream"] = streamValue
 	}
 	return payload, nil
 }

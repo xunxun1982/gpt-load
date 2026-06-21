@@ -62,8 +62,8 @@ func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 			{"role": "user", "content": validationPromptForGroup(group)},
 		},
 	}
-	if validationStreamEnabled(group) {
-		payload["stream"] = true
+	if streamValue, ok := validationStreamPayloadValue(group); ok {
+		payload["stream"] = streamValue
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

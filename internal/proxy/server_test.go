@@ -856,6 +856,43 @@ func TestExecuteRequestWithRetryRetriesAfterNonStreamTimeout(t *testing.T) {
 	require.Equal(t, int32(2), atomic.LoadInt32(&attempts))
 }
 
+func TestExecuteRequestWithRetrySanitizesIgnorableAbortLogError(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
+
+	group := createTestGroup(t, db, "abort-log-sanitize", "openai")
+	group.Config = map[string]any{"max_retries": 0}
+	group.EffectiveConfig = systemSettingsWithRetryTimeout(0, 0)
+	createTestKey(t, db, group.ID, "sk-abort-log-sanitize", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request should be canceled before reaching upstream")
+	}))
+	t.Cleanup(upstream.Close)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	parentCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/abort-log-sanitize/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`))).WithContext(parentCtx)
+
+	upstreamURL := upstream.URL + "/v1/chat/completions?key=plain-secret&x-goog-api-key=goog-secret"
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: upstream.Client(), url: upstreamURL}, group, group, []byte(`{"model":"gpt-test"}`), false, time.Now(), 0)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, 499, logEntry.StatusCode)
+	assert.Contains(t, logEntry.ErrorMessage, "key=[REDACTED]")
+	assert.Contains(t, logEntry.ErrorMessage, "x-goog-api-key=[REDACTED]")
+	assert.NotContains(t, logEntry.ErrorMessage, "plain-secret")
+	assert.NotContains(t, logEntry.ErrorMessage, "goog-secret")
+}
+
 func TestExecuteRequestWithRetrySimulatedClientPreservesRequestBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -2388,6 +2425,20 @@ func TestSanitizeInternalErrorMessageRedactsURLCredentials(t *testing.T) {
 	assert.Contains(t, got, "x-goog-api-key=[REDACTED]")
 	assert.NotContains(t, got, "plain-secret")
 	assert.NotContains(t, got, "goog-secret")
+}
+
+func TestSanitizeInternalErrorRedactsURLCredentials(t *testing.T) {
+	t.Parallel()
+
+	raw := errors.New("Post \"https://upstream.example/v1/messages?key=plain-secret&x-goog-api-key=goog-secret\": request canceled")
+	got := sanitizeInternalError(raw)
+
+	require.Error(t, got)
+	assert.Contains(t, got.Error(), "key=[REDACTED]")
+	assert.Contains(t, got.Error(), "x-goog-api-key=[REDACTED]")
+	assert.NotContains(t, got.Error(), "plain-secret")
+	assert.NotContains(t, got.Error(), "goog-secret")
+	assert.Nil(t, sanitizeInternalError(nil))
 }
 
 func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {

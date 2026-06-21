@@ -339,6 +339,36 @@ func TestGeminiChannel_ValidateKey_StreamAndPromptQueue(t *testing.T) {
 	assert.True(t, valid)
 }
 
+func TestGeminiChannel_ValidateKey_ForceNonStreamControlsValidationStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "generateContent")
+		assert.NotContains(t, r.URL.Path, "streamGenerateContent")
+		assert.Empty(t, r.URL.Query().Get("alt"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}`))
+	}))
+	defer server.Close()
+
+	ch := &GeminiChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1beta/models/gemini-pro:generateContent",
+			TestModel:          "gemini-pro",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+		Config: datatypes.JSONMap{"validation_stream": true, "force_non_stream": true},
+	})
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
 func TestGeminiChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testing.T) {
 	t.Parallel()
 

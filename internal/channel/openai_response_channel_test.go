@@ -213,6 +213,40 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 	assert.True(t, valid)
 }
 
+func TestOpenAIResponseChannel_ValidateKey_ForceNonStreamControlsValidationStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, false, body["stream"])
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, err := ch.ValidateKey(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{
+			Config: datatypes.JSONMap{"validation_stream": true, "force_non_stream": true},
+		},
+	)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+}
+
 func TestOpenAIResponseChannel_ValidateKey_UsesConfiguredEndpointForSimulatedCodex(t *testing.T) {
 	t.Parallel()
 

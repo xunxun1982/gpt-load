@@ -234,6 +234,13 @@ func sanitizeInternalErrorMessage(message string) string {
 	return utils.SanitizeErrorBody(message)
 }
 
+func sanitizeInternalError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(sanitizeInternalErrorMessage(err.Error()))
+}
+
 // parseRetryConfigInt extracts and validates a retry-related integer config value.
 // Returns a value clamped to the range [0, 100].
 func parseRetryConfigInt(config map[string]any, key string) int {
@@ -1231,7 +1238,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
 			return
 		}
 
@@ -1941,7 +1948,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 			return
 		}
 
