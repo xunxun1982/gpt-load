@@ -754,6 +754,7 @@ export default {
     copyFailed: "复制{type}失败",
     retryRequest: "重试请求",
     finalRequest: "最终请求",
+    validationRequest: "密钥验证",
     time: "时间",
     requestType: "请求类型",
     responseType: "响应类型",

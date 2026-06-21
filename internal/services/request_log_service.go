@@ -402,7 +402,7 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 
 		keyStats := make(map[apiKeyStatsKey]apiKeyStats, len(logs)/2)
 		for _, log := range logs {
-			if log.IsSuccess && log.GroupID > 0 && log.KeyHash != "" {
+			if log.RequestType == models.RequestTypeFinal && log.IsSuccess && log.GroupID > 0 && log.KeyHash != "" {
 				key := apiKeyStatsKey{GroupID: log.GroupID, KeyHash: log.KeyHash}
 				stats := keyStats[key]
 				stats.Count++
@@ -422,7 +422,7 @@ func (s *RequestLogService) writeLogsToDB(logs []*models.RequestLog) error {
 		// Update statistics table using batch upsert
 		hourlyStats := make(map[hourlyStatKey]hourlyStatCounts, len(logs)/10)
 		for _, log := range logs {
-			if log.RequestType == models.RequestTypeRetry {
+			if log.RequestType != models.RequestTypeFinal {
 				continue
 			}
 			hourlyTime := log.Timestamp.Truncate(time.Hour)

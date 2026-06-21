@@ -69,6 +69,11 @@ func validateKeysText(c *gin.Context, keysText string) bool {
 	return true
 }
 
+func allowDisabledGroupManualKeyTest(keyCount int) bool {
+	// Disabled groups still allow exactly one manual key test so operators can diagnose keys.
+	return keyCount == 1
+}
+
 // findGroupByID is a helper function to find a group by its ID.
 func (s *Server) findGroupByID(c *gin.Context, groupID uint) (*models.Group, bool) {
 	// 1) Try cache first (fast path, avoids DB during heavy writes)
@@ -640,8 +645,14 @@ func (s *Server) TestMultipleKeys(c *gin.Context) {
 		return
 	}
 
-	// Check if group is enabled
-	if !groupDB.Enabled {
+	if !validateKeysText(c, req.KeysText) {
+		return
+	}
+
+	keysToTest := s.KeyService.ParseKeysFromText(req.KeysText)
+
+	// Disabled groups only allow a single manual key test; batch tests remain blocked.
+	if !groupDB.Enabled && !allowDisabledGroupManualKeyTest(len(keysToTest)) {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.group_disabled")
 		return
 	}
@@ -649,10 +660,6 @@ func (s *Server) TestMultipleKeys(c *gin.Context) {
 	group, err := s.GroupManager.GetGroupByName(groupDB.Name)
 	if err != nil {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrResourceNotFound, "validation.group_not_found")
-		return
-	}
-
-	if !validateKeysText(c, req.KeysText) {
 		return
 	}
 
