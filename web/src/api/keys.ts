@@ -345,12 +345,19 @@ export const keysApi = {
     subGroupId: number,
     options: UpdateSubGroupWeightOptions
   ): Promise<void> {
-    const { weight, minEffectiveWeight = 1, healthResetIntervalSeconds = 0 } = options;
-    await http.put(`/groups/${aggregateGroupId}/sub-groups/${subGroupId}/weight`, {
-      weight,
-      min_effective_weight: minEffectiveWeight,
-      health_reset_interval_seconds: healthResetIntervalSeconds,
-    });
+    const { weight, minEffectiveWeight, healthResetIntervalSeconds } = options;
+    const payload: {
+      weight: number;
+      min_effective_weight?: number;
+      health_reset_interval_seconds?: number;
+    } = { weight };
+    if (minEffectiveWeight !== undefined) {
+      payload.min_effective_weight = minEffectiveWeight;
+    }
+    if (healthResetIntervalSeconds !== undefined) {
+      payload.health_reset_interval_seconds = healthResetIntervalSeconds;
+    }
+    await http.put(`/groups/${aggregateGroupId}/sub-groups/${subGroupId}/weight`, payload);
   },
 
   // Delete a sub-group

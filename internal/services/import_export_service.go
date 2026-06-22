@@ -1274,6 +1274,16 @@ func (s *ImportExportService) importAggregateSubGroupRelations(tx *gorm.DB, grou
 		}
 
 		for _, subGroupInfo := range groupData.SubGroups {
+			if err := validateSubGroupWeight(subGroupInfo.Weight); err != nil {
+				logrus.WithError(err).Warnf("Skipping sub-group relation %s -> %s with invalid weight", aggregateGroup.Name, subGroupInfo.GroupName)
+				skipped++
+				continue
+			}
+			if err := validateMinEffectiveWeight(subGroupInfo.Weight, subGroupInfo.MinEffectiveWeight); err != nil {
+				logrus.WithError(err).Warnf("Skipping sub-group relation %s -> %s with invalid minimum effective weight", aggregateGroup.Name, subGroupInfo.GroupName)
+				skipped++
+				continue
+			}
 			if err := validateHealthResetIntervalSeconds(subGroupInfo.HealthResetIntervalSeconds); err != nil {
 				logrus.WithError(err).Warnf("Skipping sub-group relation %s -> %s with invalid health reset interval", aggregateGroup.Name, subGroupInfo.GroupName)
 				skipped++

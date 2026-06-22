@@ -118,11 +118,8 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		if input.GroupID == 0 {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_sub_group_id", nil)
 		}
-		if input.Weight < 0 {
-			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_negative", nil)
-		}
-		if input.Weight > 1000 {
-			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
+		if err := validateSubGroupWeight(input.Weight); err != nil {
+			return nil, err
 		}
 		if input.MinEffectiveWeight != nil {
 			if err := validateMinEffectiveWeight(input.Weight, *input.MinEffectiveWeight); err != nil {
@@ -391,12 +388,8 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 		return err
 	}
 
-	if input.Weight < 0 {
-		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_negative", nil)
-	}
-
-	if input.Weight > 1000 {
-		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
+	if err := validateSubGroupWeight(input.Weight); err != nil {
+		return err
 	}
 	if input.MinEffectiveWeight != nil {
 		if err := validateMinEffectiveWeight(input.Weight, *input.MinEffectiveWeight); err != nil {
@@ -473,6 +466,16 @@ func (s *AggregateGroupService) ResetSubGroupHealth(ctx context.Context, groupID
 		return NewI18nError(app_errors.ErrInternalServer, "error.dynamic_weight_not_configured", nil)
 	}
 	return s.dynamicWeightManager.ResetSubGroupMetrics(groupID, subGroupID)
+}
+
+func validateSubGroupWeight(weight int) error {
+	if weight < 0 {
+		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_negative", nil)
+	}
+	if weight > 1000 {
+		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
+	}
+	return nil
 }
 
 func validateMinEffectiveWeight(weight, minEffectiveWeight int) error {
