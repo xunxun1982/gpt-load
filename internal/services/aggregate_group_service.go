@@ -26,12 +26,14 @@ const (
 type SubGroupInput struct {
 	GroupID                    uint   `json:"group_id"`
 	Weight                     int    `json:"weight"`
+	MinEffectiveWeight         *int   `json:"min_effective_weight"`
 	HealthResetIntervalSeconds *int64 `json:"health_reset_interval_seconds"`
 }
 
 // UpdateSubGroupSettingsInput defines relationship-level settings for an aggregate sub-group.
 type UpdateSubGroupSettingsInput struct {
 	Weight                     int
+	MinEffectiveWeight         *int
 	HealthResetIntervalSeconds *int64
 }
 
@@ -122,6 +124,11 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		if input.Weight > 1000 {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
 		}
+		if input.MinEffectiveWeight != nil {
+			if err := validateMinEffectiveWeight(input.Weight, *input.MinEffectiveWeight); err != nil {
+				return nil, err
+			}
+		}
 		if _, exists := seenSubGroupIDs[input.GroupID]; exists {
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.duplicate_sub_group", nil)
 		}
@@ -189,6 +196,10 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_not_found", nil)
 		}
 		healthResetIntervalSeconds := int64(0)
+		minEffectiveWeight := normalizeSubGroupMinEffectiveWeight(input.Weight, 1)
+		if input.MinEffectiveWeight != nil {
+			minEffectiveWeight = normalizeSubGroupMinEffectiveWeight(input.Weight, *input.MinEffectiveWeight)
+		}
 		if input.HealthResetIntervalSeconds != nil {
 			if err := validateHealthResetIntervalSeconds(*input.HealthResetIntervalSeconds); err != nil {
 				return nil, err
@@ -198,6 +209,7 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		resultSubGroups = append(resultSubGroups, models.GroupSubGroup{
 			SubGroupID:                 input.GroupID,
 			Weight:                     input.Weight,
+			MinEffectiveWeight:         minEffectiveWeight,
 			HealthResetIntervalSeconds: healthResetIntervalSeconds,
 		})
 	}
@@ -245,8 +257,9 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 		inputs := make([]SubGroupWeightInput, 0, len(subGroupModels))
 		for _, subGroup := range subGroupModels {
 			inputs = append(inputs, SubGroupWeightInput{
-				SubGroupID: subGroup.ID,
-				Weight:     relationMap[subGroup.ID].Weight,
+				SubGroupID:         subGroup.ID,
+				Weight:             relationMap[subGroup.ID].Weight,
+				MinEffectiveWeight: relationMap[subGroup.ID].MinEffectiveWeight,
 			})
 		}
 		dwInfos := s.dynamicWeightManager.GetSubGroupDynamicWeights(groupID, inputs)
@@ -273,6 +286,7 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 		info := models.SubGroupInfo{
 			Group:                      subGroup,
 			Weight:                     relationMap[subGroup.ID].Weight,
+			MinEffectiveWeight:         normalizeSubGroupMinEffectiveWeight(relationMap[subGroup.ID].Weight, relationMap[subGroup.ID].MinEffectiveWeight),
 			HealthResetIntervalSeconds: relationMap[subGroup.ID].HealthResetIntervalSeconds,
 			LastHealthResetAt:          relationMap[subGroup.ID].LastHealthResetAt,
 			TotalKeys:                  stats.TotalKeys,
@@ -384,6 +398,11 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 	if input.Weight > 1000 {
 		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
 	}
+	if input.MinEffectiveWeight != nil {
+		if err := validateMinEffectiveWeight(input.Weight, *input.MinEffectiveWeight); err != nil {
+			return err
+		}
+	}
 	if input.HealthResetIntervalSeconds != nil {
 		if err := validateHealthResetIntervalSeconds(*input.HealthResetIntervalSeconds); err != nil {
 			return err
@@ -399,7 +418,14 @@ func (s *AggregateGroupService) UpdateSubGroupWeight(ctx context.Context, groupI
 		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
 	}
 
-	updates := map[string]any{"weight": input.Weight}
+	minEffectiveWeight := existingRecord.MinEffectiveWeight
+	if input.MinEffectiveWeight != nil {
+		minEffectiveWeight = *input.MinEffectiveWeight
+	}
+	updates := map[string]any{
+		"weight":               input.Weight,
+		"min_effective_weight": normalizeSubGroupMinEffectiveWeight(input.Weight, minEffectiveWeight),
+	}
 	if input.HealthResetIntervalSeconds != nil {
 		updates["health_reset_interval_seconds"] = *input.HealthResetIntervalSeconds
 	}
@@ -447,6 +473,32 @@ func (s *AggregateGroupService) ResetSubGroupHealth(ctx context.Context, groupID
 		return NewI18nError(app_errors.ErrInternalServer, "error.dynamic_weight_not_configured", nil)
 	}
 	return s.dynamicWeightManager.ResetSubGroupMetrics(groupID, subGroupID)
+}
+
+func validateMinEffectiveWeight(weight, minEffectiveWeight int) error {
+	if minEffectiveWeight < 0 {
+		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_min_effective_weight_negative", nil)
+	}
+	if minEffectiveWeight > 1000 {
+		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_min_effective_weight_max_exceeded", nil)
+	}
+	if weight > 0 && minEffectiveWeight > weight {
+		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_min_effective_weight_exceeds_weight", nil)
+	}
+	return nil
+}
+
+func normalizeSubGroupMinEffectiveWeight(weight, minEffectiveWeight int) int {
+	if weight <= 0 {
+		return 0
+	}
+	if minEffectiveWeight <= 0 {
+		return 1
+	}
+	if minEffectiveWeight > weight {
+		return weight
+	}
+	return minEffectiveWeight
 }
 
 func validateHealthResetIntervalSeconds(seconds int64) error {

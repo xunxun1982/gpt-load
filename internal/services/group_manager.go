@@ -134,7 +134,7 @@ func (gm *GroupManager) Initialize() error {
 		subCtx, subCancel := context.WithTimeout(context.Background(), timeout)
 		defer subCancel()
 		if err := gm.db.WithContext(subCtx).
-			Select("group_id, sub_group_id, weight").
+			Select("group_id, sub_group_id, weight, min_effective_weight").
 			Where("weight > ?", 0).
 			Find(&allSubGroups).Error; err != nil {
 			if utils.IsTransientDBError(err) {

@@ -310,8 +310,9 @@ func ConvertGroupForImport(groupExport GroupExportData, inputIsPlain bool, encry
 
 	for _, sg := range groupExport.SubGroups {
 		groupData.SubGroups = append(groupData.SubGroups, services.SubGroupInfo{
-			GroupName: sg.GroupName,
-			Weight:    sg.Weight,
+			GroupName:          sg.GroupName,
+			Weight:             sg.Weight,
+			MinEffectiveWeight: sg.MinEffectiveWeight,
 		})
 	}
 

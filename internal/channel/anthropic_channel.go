@@ -71,34 +71,43 @@ func (ch *AnthropicChannel) ModifyRequest(req *http.Request, apiKey *models.APIK
 // It now uses BaseChannel.SelectValidationUpstream so that upstream-specific proxy configuration
 // is honored consistently with normal traffic.
 func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
+	isValid, _, err := ch.validateKey(ctx, apiKey, group, false)
+	return isValid, err
+}
+
+func (ch *AnthropicChannel) ValidateKeyWithTrace(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, *ValidationTrace, error) {
+	return ch.validateKey(ctx, apiKey, group, true)
+}
+
+func (ch *AnthropicChannel) validateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group, captureTrace bool) (bool, *ValidationTrace, error) {
 	// Parse validation endpoint to extract path and query parameters
 	endpointURL, err := url.Parse(ch.ValidationEndpoint)
 	if err != nil {
-		return false, fmt.Errorf("failed to parse validation endpoint: %w", err)
+		return false, nil, fmt.Errorf("failed to parse validation endpoint: %w", err)
 	}
 
 	selection, err := ch.SelectValidationUpstream(group, endpointURL.Path, endpointURL.RawQuery)
 	if err != nil {
-		return false, fmt.Errorf("failed to select upstream for anthropic validation: %w", err)
+		return false, nil, fmt.Errorf("failed to select upstream for anthropic validation: %w", err)
 	}
 	if selection == nil || selection.URL == "" {
-		return false, fmt.Errorf("failed to select upstream for anthropic validation: empty result")
+		return false, nil, fmt.Errorf("failed to select upstream for anthropic validation: empty result")
 	}
 
 	reqURL := selection.URL
 
 	payload, err := buildAnthropicValidationPayload(group, ch.TestModel)
 	if err != nil {
-		return false, fmt.Errorf("failed to build validation payload: %w", err)
+		return false, nil, fmt.Errorf("failed to build validation payload: %w", err)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return false, fmt.Errorf("failed to marshal validation payload: %w", err)
+		return false, nil, fmt.Errorf("failed to marshal validation payload: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewBuffer(body))
 	if err != nil {
-		return false, fmt.Errorf("failed to create validation request: %w", err)
+		return false, nil, fmt.Errorf("failed to create validation request: %w", err)
 	}
 	// Apply dual authentication strategy consistent with ModifyRequest
 	req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
@@ -113,6 +122,11 @@ func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIK
 	}
 	ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group))
 
+	var trace *ValidationTrace
+	if captureTrace {
+		trace = validationTraceFromRequest(req, body, validationUpstreamAddr(selection))
+	}
+
 	client := selection.HTTPClient
 	if client == nil {
 		client = ch.HTTPClient
@@ -120,11 +134,12 @@ func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIK
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("failed to send validation request: %w", err)
+		return false, trace, fmt.Errorf("failed to send validation request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	return validateKeyResponseStatus(resp)
+	isValid, err := validateKeyResponseStatusWithTrace(resp, trace)
+	return isValid, trace, err
 }
 
 const claudeCodeValidationSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."

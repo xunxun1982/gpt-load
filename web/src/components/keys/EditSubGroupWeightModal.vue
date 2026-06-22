@@ -44,9 +44,11 @@ const healthResetOptions = computed(() => getSubGroupHealthResetOptions(t));
 // Form data
 const formData = reactive<{
   weight: number;
+  min_effective_weight: number;
   health_reset_interval_seconds: number;
 }>({
   weight: 0,
+  min_effective_weight: 1,
   health_reset_interval_seconds: 0,
 });
 
@@ -65,7 +67,7 @@ const previewPercentage = computed<string>(() => {
   const totalWeight = props.subGroups.reduce((sum, sg) => {
     if (sg.group.id === props.subGroup?.group.id) {
       // For current sub-group, use new weight only if enabled
-      return sum + (currentEnabled ? formData.weight : 0);
+      return sum + (currentEnabled ? previewEffectiveWeight.value : 0);
     }
     // For other sub-groups, only count if enabled and has positive weight
     // Use effective weight from dynamic weight info if available
@@ -85,8 +87,23 @@ const previewPercentage = computed<string>(() => {
     return "0%";
   }
 
-  const percentage = (formData.weight / totalWeight) * 100;
+  const percentage = (previewEffectiveWeight.value / totalWeight) * 100;
   return formatPercentage(percentage);
+});
+
+const previewEffectiveWeight = computed(() => {
+  if (!props.subGroup?.group.enabled || formData.weight <= 0) {
+    return 0;
+  }
+  const dynamicWeight = Math.min(
+    props.subGroup.dynamic_weight?.effective_weight ?? formData.weight,
+    formData.weight
+  );
+  const minEffectiveWeight =
+    formData.min_effective_weight > 0
+      ? Math.min(formData.min_effective_weight, formData.weight)
+      : 1;
+  return Math.max(dynamicWeight, minEffectiveWeight);
 });
 
 // Form validation rules
@@ -108,6 +125,26 @@ const rules: FormRules = {
       trigger: ["blur", "input"],
     },
   ],
+  min_effective_weight: [
+    {
+      validator: (_rule, value) => {
+        if (formData.weight <= 0) {
+          return true;
+        }
+        if (value === null || value === undefined || value === "") {
+          return new Error(t("subGroups.enterMinEffectiveWeight"));
+        }
+        if (value < 1) {
+          return new Error(t("subGroups.minEffectiveWeightCannotBeLessThanOne"));
+        }
+        if (value > formData.weight) {
+          return new Error(t("subGroups.minEffectiveWeightCannotExceedWeight"));
+        }
+        return true;
+      },
+      trigger: ["blur", "input"],
+    },
+  ],
 };
 
 // Watch dialog visibility and sub-group changes
@@ -116,10 +153,19 @@ watch(
   ([show, subGroup]) => {
     if (show && subGroup) {
       formData.weight = subGroup.weight;
+      formData.min_effective_weight = subGroup.weight > 0 ? subGroup.min_effective_weight || 1 : 0;
       formData.health_reset_interval_seconds = subGroup.health_reset_interval_seconds ?? 0;
     }
   },
   { immediate: true }
+);
+
+watch(
+  () => formData.weight,
+  weight => {
+    formData.min_effective_weight =
+      weight > 0 ? Math.min(Math.max(formData.min_effective_weight || 1, 1), weight) : 0;
+  }
 );
 
 // Close modal
@@ -155,12 +201,12 @@ async function handleSubmit() {
   }
 
   try {
-    await keysApi.updateSubGroupWeight(
-      aggregateGroupId,
-      subGroupId,
-      formData.weight, // Integer weight value (already constrained by input precision)
-      formData.health_reset_interval_seconds
-    );
+    await keysApi.updateSubGroupWeight(aggregateGroupId, subGroupId, {
+      weight: formData.weight, // Integer weight value (already constrained by input precision)
+      minEffectiveWeight:
+        formData.weight > 0 ? Math.min(formData.min_effective_weight, formData.weight) : 0,
+      healthResetIntervalSeconds: formData.health_reset_interval_seconds,
+    });
 
     // Backend has already displayed a success message through API response, no need to repeat here
     emit("success");
@@ -174,6 +220,8 @@ async function handleSubmit() {
 function adjustWeight(delta: number) {
   const newWeight = Math.max(0, Math.min(1000, formData.weight + delta));
   formData.weight = newWeight;
+  formData.min_effective_weight =
+    newWeight > 0 ? Math.min(Math.max(formData.min_effective_weight, 1), newWeight) : 0;
 }
 </script>
 
@@ -183,7 +231,7 @@ function adjustWeight(delta: number) {
       class="edit-weight-card"
       :title="t('keys.editWeight')"
       :bordered="false"
-      size="huge"
+      size="medium"
       role="dialog"
       aria-modal="true"
     >
@@ -219,7 +267,12 @@ function adjustWeight(delta: number) {
             </div>
           </div>
 
-          <n-form-item :label="t('keys.newWeight')" path="weight">
+          <n-form-item
+            :label="t('keys.newWeight')"
+            path="weight"
+            class="compact-form-item"
+            :show-feedback="false"
+          >
             <div class="weight-input-section">
               <n-input-number
                 v-model:value="formData.weight"
@@ -227,6 +280,7 @@ function adjustWeight(delta: number) {
                 :max="1000"
                 :precision="0"
                 :placeholder="t('keys.enterWeight')"
+                size="small"
                 style="flex: 1"
               />
               <div class="quick-adjust">
@@ -250,23 +304,44 @@ function adjustWeight(delta: number) {
             </div>
           </n-form-item>
 
-          <n-form-item :label="t('subGroups.healthResetInterval')">
+          <n-form-item
+            :label="t('subGroups.minEffectiveWeight')"
+            path="min_effective_weight"
+            class="compact-form-item"
+            :show-feedback="false"
+          >
+            <n-input-number
+              v-model:value="formData.min_effective_weight"
+              :min="formData.weight > 0 ? 1 : 0"
+              :max="Math.max(formData.weight, 0)"
+              :precision="0"
+              :disabled="formData.weight <= 0"
+              :placeholder="t('subGroups.minEffectiveWeight')"
+              size="small"
+            />
+          </n-form-item>
+
+          <n-form-item
+            :label="t('subGroups.healthResetInterval')"
+            class="compact-form-item"
+            :show-feedback="false"
+          >
             <n-select
               v-model:value="formData.health_reset_interval_seconds"
               :options="healthResetOptions"
               :placeholder="t('subGroups.healthResetFollowAggregate')"
+              size="small"
             />
-            <template #feedback>
-              <span style="color: var(--text-secondary); font-size: 12px">
-                {{ t("subGroups.healthResetOverrideHint") }}
-              </span>
-            </template>
           </n-form-item>
 
           <div class="preview-section">
             <div class="preview-item">
               <span class="preview-label">{{ t("keys.previewPercentage") }}:</span>
               <span class="preview-value">{{ previewPercentage }}</span>
+            </div>
+            <div class="preview-item">
+              <span class="preview-label">{{ t("subGroups.effectiveWeight") }}:</span>
+              <span class="preview-value">{{ previewEffectiveWeight }}</span>
             </div>
             <div class="preview-note">
               {{ t("keys.weightPreviewNote") }}
@@ -276,7 +351,7 @@ function adjustWeight(delta: number) {
       </n-form>
 
       <template #footer>
-        <div style="display: flex; justify-content: flex-end; gap: 12px">
+        <div class="footer-actions">
           <n-button @click="handleClose">{{ t("common.cancel") }}</n-button>
           <n-button type="primary" @click="handleSubmit" :loading="loading">
             {{ t("common.confirm") }}
@@ -289,7 +364,34 @@ function adjustWeight(delta: number) {
 
 <style scoped>
 .edit-weight-modal {
-  width: 500px;
+  width: 460px;
+}
+
+.edit-weight-card :deep(.n-card-header) {
+  padding: 24px 28px 16px;
+}
+
+.edit-weight-card :deep(.n-card__content) {
+  padding: 0 28px 18px;
+}
+
+.edit-weight-card :deep(.n-card__footer) {
+  padding: 18px 28px 24px;
+}
+
+.edit-weight-card :deep(.n-form-item) {
+  margin-bottom: 8px;
+}
+
+.compact-form-item :deep(.n-form-item-label) {
+  height: 28px;
+  min-height: 28px;
+  line-height: 28px;
+  white-space: nowrap;
+}
+
+.compact-form-item :deep(.n-form-item-blank) {
+  min-height: 28px;
 }
 
 .form-section {
@@ -297,18 +399,19 @@ function adjustWeight(delta: number) {
 }
 
 .sub-group-info {
-  margin-bottom: 24px;
-  padding: 16px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
   background: var(--bg-secondary);
   border-radius: var(--border-radius-md);
   border: 1px solid var(--border-color);
 }
 
 .section-title {
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 12px;
+  line-height: 22px;
+  margin: 0 0 4px;
 }
 
 .group-name {
@@ -324,7 +427,8 @@ function adjustWeight(delta: number) {
 }
 
 .detail-item {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
+  line-height: 18px;
   color: var(--text-secondary);
 }
 
@@ -335,7 +439,7 @@ function adjustWeight(delta: number) {
 .weight-input-section {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
 }
 
@@ -346,8 +450,8 @@ function adjustWeight(delta: number) {
 }
 
 .preview-section {
-  margin-top: 16px;
-  padding: 16px;
+  margin-top: 8px;
+  padding: 10px 12px;
   background: var(--bg-tertiary);
   border-radius: var(--border-radius-sm);
   border: 1px solid var(--border-color);
@@ -357,7 +461,8 @@ function adjustWeight(delta: number) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  line-height: 22px;
+  margin-bottom: 2px;
 }
 
 .preview-label {
@@ -366,15 +471,23 @@ function adjustWeight(delta: number) {
 }
 
 .preview-value {
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 700;
   color: var(--primary-color);
 }
 
 .preview-note {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
+  line-height: 18px;
+  margin-top: 4px;
   color: var(--text-tertiary);
   font-style: italic;
+}
+
+.footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
 }
 
 /* Responsive layout */

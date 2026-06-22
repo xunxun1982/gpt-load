@@ -55,9 +55,18 @@ func (ch *OpenAIResponseChannel) ModifyRequest(req *http.Request, apiKey *models
 
 // ValidateKey checks whether the given API key can call the Responses API.
 func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
+	isValid, _, err := ch.validateKey(ctx, apiKey, group, false)
+	return isValid, err
+}
+
+func (ch *OpenAIResponseChannel) ValidateKeyWithTrace(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, *ValidationTrace, error) {
+	return ch.validateKey(ctx, apiKey, group, true)
+}
+
+func (ch *OpenAIResponseChannel) validateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group, captureTrace bool) (bool, *ValidationTrace, error) {
 	endpointURL, err := url.Parse(ch.ValidationEndpoint)
 	if err != nil {
-		return false, fmt.Errorf("failed to parse validation endpoint: %w", err)
+		return false, nil, fmt.Errorf("failed to parse validation endpoint: %w", err)
 	}
 
 	isCodexProbe := simulatedClientMode(group) == simulatedClientCodex
@@ -65,22 +74,22 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 	validationPath := endpointURL.Path
 	selection, err := ch.SelectValidationUpstream(group, validationPath, endpointURL.RawQuery)
 	if err != nil {
-		return false, fmt.Errorf("failed to select validation upstream: %w", err)
+		return false, nil, fmt.Errorf("failed to select validation upstream: %w", err)
 	}
 	if selection == nil || selection.URL == "" {
-		return false, fmt.Errorf("failed to select validation upstream: empty result")
+		return false, nil, fmt.Errorf("failed to select validation upstream: empty result")
 	}
 	reqURL := selection.URL
 
 	payload := buildResponsesValidationPayload(group, ch.TestModel, isCodexProbe)
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return false, fmt.Errorf("failed to marshal validation payload: %w", err)
+		return false, nil, fmt.Errorf("failed to marshal validation payload: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewBuffer(body))
 	if err != nil {
-		return false, fmt.Errorf("failed to create validation request: %w", err)
+		return false, nil, fmt.Errorf("failed to create validation request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
 	req.Header.Set("Content-Type", "application/json")
@@ -96,17 +105,23 @@ func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models
 		req.Header.Set("Conversation_ID", sessionID)
 	}
 
+	var trace *ValidationTrace
+	if captureTrace {
+		trace = validationTraceFromRequest(req, body, validationUpstreamAddr(selection))
+	}
+
 	client := selection.HTTPClient
 	if client == nil {
 		client = ch.HTTPClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("failed to send validation request: %w", err)
+		return false, trace, fmt.Errorf("failed to send validation request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	return validateKeyResponseStatus(resp)
+	isValid, err := validateKeyResponseStatusWithTrace(resp, trace)
+	return isValid, trace, err
 }
 
 func buildResponsesValidationPayload(group *models.Group, model string, isCodexProbe bool) gin.H {

@@ -329,6 +329,7 @@ export default {
     weightRangeHint: "Range: 0-1000 (0 = disabled)",
     newWeight: "New Weight",
     currentWeight: "Current Weight",
+    minEffectiveWeight: "Minimum Effective Weight",
     previewPercentage: "Preview Percentage",
     weightPreviewNote:
       "This is a preview percentage, assuming other sub group weights remain unchanged",
@@ -766,6 +767,10 @@ export default {
     dynamicWeight: "Dynamic Weight",
     baseWeight: "Base Weight",
     effectiveWeight: "Effective Weight",
+    minEffectiveWeight: "Minimum Effective Weight",
+    enterMinEffectiveWeight: "Please enter minimum effective weight",
+    minEffectiveWeightCannotBeLessThanOne: "Minimum effective weight cannot be less than 1",
+    minEffectiveWeightCannotExceedWeight: "Minimum effective weight cannot exceed base weight",
     healthScore: "Health",
     successRate: "Success Rate",
     requestCount: "Requests",

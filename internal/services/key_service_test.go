@@ -119,9 +119,13 @@ func TestTestMultipleKeysRecordsSingleValidationLogOnly(t *testing.T) {
 	t.Parallel()
 	db, svc, requestLogService, encryptionSvc := setupKeyServiceValidationLogTest(t)
 
+	var receivedPath string
+	var receivedUserAgent string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.RequestURI()
+		receivedUserAgent = r.Header.Get("User-Agent")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}]}`))
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}],"usage":{"total_tokens":2}}`))
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -157,6 +161,17 @@ func TestTestMultipleKeysRecordsSingleValidationLogOnly(t *testing.T) {
 	assert.True(t, logs[0].IsSuccess)
 	assert.Equal(t, http.StatusOK, logs[0].StatusCode)
 	assert.NotEqual(t, "sk-single-validation", logs[0].KeyValue)
+	assert.Equal(t, receivedPath, logs[0].RequestPath)
+	assert.Equal(t, upstream.URL+"/v1/chat/completions", logs[0].UpstreamAddr)
+	assert.Equal(t, receivedUserAgent, logs[0].UpstreamUserAgent)
+	assert.Contains(t, logs[0].RequestBody, `"model"`)
+	assert.Contains(t, logs[0].ResponseBody, `"chatcmpl-test"`)
+	assert.EqualValues(t, 2, logs[0].TotalTokens)
+	assert.Equal(t, models.TokenUsageSourceUpstream, logs[0].TokenUsageSource)
+	assert.NotContains(t, logs[0].RequestPath, "sk-single-validation")
+	assert.NotContains(t, logs[0].UpstreamAddr, "sk-single-validation")
+	assert.NotContains(t, logs[0].RequestBody, "sk-single-validation")
+	assert.NotContains(t, logs[0].ResponseBody, "sk-single-validation")
 
 	_, err = svc.TestMultipleKeys(&group, "sk-single-validation\nsk-single-validation")
 	require.NoError(t, err)
@@ -165,6 +180,88 @@ func TestTestMultipleKeysRecordsSingleValidationLogOnly(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&models.RequestLog{}).Count(&count).Error)
 	assert.Equal(t, int64(1), count)
+}
+
+func TestTestMultipleKeysEstimatesTokenUsageWithoutUsageResponse(t *testing.T) {
+	t.Parallel()
+	db, svc, requestLogService, encryptionSvc := setupKeyServiceValidationLogTest(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-no-usage","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := models.Group{
+		Name:        "single-validation-estimated-token-log",
+		ChannelType: "openai",
+		GroupType:   "standard",
+		Enabled:     false,
+		Upstreams:   []byte(`[{"url":"` + upstream.URL + `","weight":100}]`),
+	}
+	require.NoError(t, db.Create(&group).Error)
+	key := models.APIKey{
+		GroupID:  group.ID,
+		KeyValue: "sk-single-estimated-validation",
+		KeyHash:  encryptionSvc.Hash("sk-single-estimated-validation"),
+		Status:   models.KeyStatusActive,
+	}
+	require.NoError(t, db.Create(&key).Error)
+
+	results, err := svc.TestMultipleKeys(&group, "sk-single-estimated-validation")
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.True(t, results[0].IsValid)
+	requestLogService.flush()
+
+	var log models.RequestLog
+	require.NoError(t, db.First(&log).Error)
+	assert.Greater(t, log.InputTokens, int64(0))
+	assert.Equal(t, int64(0), log.OutputTokens)
+	assert.Equal(t, log.InputTokens, log.TotalTokens)
+	assert.Equal(t, models.TokenUsageSourceEstimated, log.TokenUsageSource)
+}
+
+func TestTestMultipleKeysDoesNotShowTokenUsageForErrorResponse(t *testing.T) {
+	t.Parallel()
+	db, svc, requestLogService, encryptionSvc := setupKeyServiceValidationLogTest(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid key"}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := models.Group{
+		Name:        "single-validation-error-token-log",
+		ChannelType: "openai",
+		GroupType:   "standard",
+		Enabled:     false,
+		Upstreams:   []byte(`[{"url":"` + upstream.URL + `","weight":100}]`),
+	}
+	require.NoError(t, db.Create(&group).Error)
+	key := models.APIKey{
+		GroupID:  group.ID,
+		KeyValue: "sk-single-error-validation",
+		KeyHash:  encryptionSvc.Hash("sk-single-error-validation"),
+		Status:   models.KeyStatusActive,
+	}
+	require.NoError(t, db.Create(&key).Error)
+
+	results, err := svc.TestMultipleKeys(&group, "sk-single-error-validation")
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.False(t, results[0].IsValid)
+	requestLogService.flush()
+
+	var log models.RequestLog
+	require.NoError(t, db.First(&log).Error)
+	assert.Equal(t, int64(0), log.InputTokens)
+	assert.Equal(t, int64(0), log.OutputTokens)
+	assert.Equal(t, int64(0), log.TotalTokens)
+	assert.Empty(t, log.TokenUsageSource)
+	assert.Contains(t, log.ResponseBody, "invalid key")
 }
 
 // TestParseKeysFromText tests key parsing from various formats

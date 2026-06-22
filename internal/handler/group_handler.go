@@ -301,13 +301,13 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 	}
 
 	return &GroupResponse{
-		ID:                   group.ID,
-		Name:                 group.Name,
-		Endpoint:             endpoint,
-		DisplayName:          group.DisplayName,
-		Description:          group.Description,
-		GroupType:            group.GroupType,
-		Enabled:              group.Enabled,
+		ID:          group.ID,
+		Name:        group.Name,
+		Endpoint:    endpoint,
+		DisplayName: group.DisplayName,
+		Description: group.Description,
+		GroupType:   group.GroupType,
+		Enabled:     group.Enabled,
 		// Keep stored upstream proxy values here until update flows can preserve credentials for masked responses.
 		Upstreams:            group.Upstreams,
 		ChannelType:          group.ChannelType,
@@ -500,6 +500,7 @@ type AddSubGroupsRequest struct {
 // UpdateSubGroupWeightRequest defines the payload for updating a sub group weight
 type UpdateSubGroupWeightRequest struct {
 	Weight                     int    `json:"weight"`
+	MinEffectiveWeight         *int   `json:"min_effective_weight"`
 	HealthResetIntervalSeconds *int64 `json:"health_reset_interval_seconds"`
 }
 
@@ -574,6 +575,7 @@ func (s *Server) UpdateSubGroupWeight(c *gin.Context) {
 
 	input := services.UpdateSubGroupSettingsInput{
 		Weight:                     req.Weight,
+		MinEffectiveWeight:         req.MinEffectiveWeight,
 		HealthResetIntervalSeconds: req.HealthResetIntervalSeconds,
 	}
 	if err := s.AggregateGroupService.UpdateSubGroupWeight(c.Request.Context(), uint(id), uint(subGroupID), input); s.handleGroupError(c, err) {

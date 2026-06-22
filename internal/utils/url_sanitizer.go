@@ -56,15 +56,13 @@ func SanitizeRequestURLForLog(urlStr string) string {
 	return SanitizeURLForLog(u)
 }
 
-// SanitizeProxyURLForLog returns a string form of the URL with user info removed.
-// This prevents leaking credentials (e.g., http://user:pass@host:port) in logs.
+// SanitizeProxyURLForLog returns a string form of the URL with credentials removed.
+// This prevents leaking proxy user info or token-like query parameters in logs.
 func SanitizeProxyURLForLog(u *url.URL) string {
 	if u == nil {
 		return ""
 	}
-	copy := *u
-	copy.User = nil
-	return copy.String()
+	return SanitizeURLForLog(u)
 }
 
 // SanitizeProxyString tries to remove user info from a proxy URL string.

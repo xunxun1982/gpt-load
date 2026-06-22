@@ -37,6 +37,7 @@ interface Emits {
 interface SubGroupItem {
   group_id: number | null;
   weight: number;
+  min_effective_weight: number;
   health_reset_interval_seconds: number;
 }
 
@@ -57,6 +58,7 @@ const message = useMessage();
 const loading = ref(false);
 const formRef = ref();
 const defaultSubGroupWeight = 100;
+const defaultMinEffectiveWeight = 1;
 const healthResetOptions = computed(() => getSubGroupHealthResetOptions(t));
 const weightInputProps = computed(() => ({
   "aria-label": t("keys.weight"),
@@ -67,6 +69,7 @@ function createDefaultSubGroupItem(): SubGroupItem {
   return {
     group_id: null,
     weight: defaultSubGroupWeight,
+    min_effective_weight: defaultMinEffectiveWeight,
     health_reset_interval_seconds: 0,
   };
 }
@@ -190,6 +193,10 @@ function validateWeight(value: number | null | undefined) {
 function handleWeightUpdate(item: SubGroupItem, value: number | null) {
   if (isValidWeight(value)) {
     item.weight = value;
+    item.min_effective_weight =
+      value > 0
+        ? Math.min(Math.max(item.min_effective_weight, defaultMinEffectiveWeight), value)
+        : 0;
   }
 }
 
@@ -283,6 +290,10 @@ async function handleSubmit() {
       .map(sg => ({
         group_id: sg.group_id,
         weight: sanitizeSubGroupWeight(sg.weight),
+        min_effective_weight:
+          sg.weight > 0
+            ? Math.min(Math.max(sg.min_effective_weight, defaultMinEffectiveWeight), sg.weight)
+            : 0,
         health_reset_interval_seconds: sg.health_reset_interval_seconds,
       }));
 

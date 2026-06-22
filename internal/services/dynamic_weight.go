@@ -640,14 +640,21 @@ func (m *DynamicWeightManager) CalculateHealthScore(metrics *DynamicWeightMetric
 // The curve is anchored at MinHealthScore -> 1.0 and 1.0 -> baseWeight so displayed
 // health and effective weight decline together without hitting the floor early.
 func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *DynamicWeightMetrics) float64 {
+	return m.GetEffectiveWeightWithMinimum(baseWeight, 1, metrics)
+}
+
+// GetEffectiveWeightWithMinimum calculates effective weight and applies a relation-level floor.
+// A non-positive base weight still means the sub-group is disabled for selection.
+func (m *DynamicWeightManager) GetEffectiveWeightWithMinimum(baseWeight, minEffectiveWeight int, metrics *DynamicWeightMetrics) float64 {
 	if baseWeight <= 0 {
 		return 0.0
 	}
+	minWeight := normalizeMinEffectiveWeight(baseWeight, minEffectiveWeight)
 
 	healthScore := m.CalculateHealthScore(metrics)
 	minHealth := min(max(m.config.MinHealthScore, 0.0), 1.0)
 	if healthScore <= minHealth {
-		return 1.0
+		return float64(minWeight)
 	}
 	if healthScore > 1.0 {
 		healthScore = 1.0
@@ -663,15 +670,28 @@ func (m *DynamicWeightManager) GetEffectiveWeight(baseWeight int, metrics *Dynam
 		exponent = 1.0
 	}
 
-	effectiveWeight := 1.0 + (float64(baseWeight)-1.0)*math.Pow(normalizedHealth, exponent)
+	effectiveWeight := float64(minWeight) + (float64(baseWeight)-float64(minWeight))*math.Pow(normalizedHealth, exponent)
 
 	// Round to 1 decimal place and ensure enabled targets keep a 1.0 recovery floor.
 	result := math.Round(effectiveWeight*10) / 10
-	if result < 1.0 {
-		result = 1.0
+	if result < float64(minWeight) {
+		result = float64(minWeight)
 	}
 
 	return result
+}
+
+func normalizeMinEffectiveWeight(baseWeight, minEffectiveWeight int) int {
+	if baseWeight <= 0 {
+		return 0
+	}
+	if minEffectiveWeight <= 0 {
+		return 1
+	}
+	if minEffectiveWeight > baseWeight {
+		return baseWeight
+	}
+	return minEffectiveWeight
 }
 
 // GetEffectiveWeightForSelection converts float effective weight to integer for weighted random selection.
@@ -694,8 +714,9 @@ func GetEffectiveWeightForSelection(effectiveWeight float64) int {
 
 // SubGroupWeightInput holds the sub-group ID and its base weight for dynamic weight calculation.
 type SubGroupWeightInput struct {
-	SubGroupID uint
-	Weight     int
+	SubGroupID         uint
+	Weight             int
+	MinEffectiveWeight int
 }
 
 // GetSubGroupDynamicWeights returns dynamic weight info for all sub-groups of an aggregate group.
@@ -713,7 +734,7 @@ func (m *DynamicWeightManager) GetSubGroupDynamicWeights(aggregateGroupID uint, 
 		}
 
 		healthScore := m.CalculateHealthScore(metrics)
-		effectiveWeight := m.GetEffectiveWeight(sg.Weight, metrics)
+		effectiveWeight := m.GetEffectiveWeightWithMinimum(sg.Weight, sg.MinEffectiveWeight, metrics)
 		weightedSuccessRate := m.CalculateWeightedSuccessRate(metrics)
 
 		info := models.DynamicWeightInfo{
@@ -752,7 +773,7 @@ func (m *DynamicWeightManager) GetEffectiveWeightsForSelection(aggregateGroupID 
 				"sub_group_id":       sg.SubGroupID,
 			}).Debug("Failed to get sub-group metrics for selection")
 		}
-		effectiveWeight := m.GetEffectiveWeight(sg.Weight, metrics)
+		effectiveWeight := m.GetEffectiveWeightWithMinimum(sg.Weight, sg.MinEffectiveWeight, metrics)
 		weights[i] = GetEffectiveWeightForSelection(effectiveWeight)
 	}
 	return weights

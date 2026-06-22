@@ -122,6 +122,7 @@ export type ModelRedirectRulesV2 = Record<string, ModelRedirectRuleV2>;
 export interface SubGroupConfig {
   group_id: number;
   weight: number;
+  min_effective_weight?: number;
   health_reset_interval_seconds?: number;
 }
 
@@ -159,6 +160,7 @@ export interface ModelRedirectDynamicWeight {
 export interface SubGroupInfo {
   group: Group;
   weight: number;
+  min_effective_weight: number;
   health_reset_interval_seconds: number;
   last_health_reset_at?: string | null;
   total_keys: number;

@@ -484,6 +484,71 @@ func TestUpdateSubGroupWeightPreservesOmittedHealthResetInterval(t *testing.T) {
 	assert.Equal(t, int64(1800), updated.HealthResetIntervalSeconds)
 }
 
+func TestUpdateSubGroupWeightPersistsMinimumEffectiveWeight(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	aggregateGroup := models.Group{
+		Name:        "aggregate-update-min-effective-weight",
+		DisplayName: "Aggregate Update Min Effective Weight",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	subGroup := models.Group{
+		Name:        "sub-update-min-effective-weight",
+		DisplayName: "Sub Update Min Effective Weight",
+		GroupType:   "standard",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&aggregateGroup).Error)
+	require.NoError(t, db.Create(&subGroup).Error)
+
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:            aggregateGroup.ID,
+		SubGroupID:         subGroup.ID,
+		Weight:             100,
+		MinEffectiveWeight: 1,
+	}).Error)
+
+	minEffectiveWeight := 12
+	err := service.UpdateSubGroupWeight(context.Background(), aggregateGroup.ID, subGroup.ID, UpdateSubGroupSettingsInput{
+		Weight:             200,
+		MinEffectiveWeight: &minEffectiveWeight,
+	})
+	require.NoError(t, err)
+
+	var updated models.GroupSubGroup
+	require.NoError(t, db.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).First(&updated).Error)
+	assert.Equal(t, 200, updated.Weight)
+	assert.Equal(t, 12, updated.MinEffectiveWeight)
+
+	err = service.UpdateSubGroupWeight(context.Background(), aggregateGroup.ID, subGroup.ID, UpdateSubGroupSettingsInput{
+		Weight: 300,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).First(&updated).Error)
+	assert.Equal(t, 300, updated.Weight)
+	assert.Equal(t, 12, updated.MinEffectiveWeight)
+
+	err = service.UpdateSubGroupWeight(context.Background(), aggregateGroup.ID, subGroup.ID, UpdateSubGroupSettingsInput{
+		Weight: 5,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).First(&updated).Error)
+	assert.Equal(t, 5, updated.Weight)
+	assert.Equal(t, 5, updated.MinEffectiveWeight)
+}
+
 func TestResetSubGroupHealthAllowsDisabledSubGroup(t *testing.T) {
 	db := setupTestDB(t)
 	service := NewAggregateGroupService(db, &GroupManager{}, nil)

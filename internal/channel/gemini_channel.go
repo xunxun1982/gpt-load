@@ -93,6 +93,15 @@ func (ch *GeminiChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
 // It now uses BaseChannel.SelectValidationUpstream so that upstream-specific proxy configuration
 // is honored consistently with normal traffic.
 func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
+	isValid, _, err := ch.validateKey(ctx, apiKey, group, false)
+	return isValid, err
+}
+
+func (ch *GeminiChannel) ValidateKeyWithTrace(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, *ValidationTrace, error) {
+	return ch.validateKey(ctx, apiKey, group, true)
+}
+
+func (ch *GeminiChannel) validateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group, captureTrace bool) (bool, *ValidationTrace, error) {
 	validationPath := "/v1beta/models/" + ch.TestModel + ":generateContent"
 	q := url.Values{}
 	q.Set("key", apiKey.KeyValue)
@@ -103,10 +112,10 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 
 	selection, err := ch.SelectValidationUpstream(group, validationPath, q.Encode())
 	if err != nil {
-		return false, fmt.Errorf("failed to select upstream for gemini validation: %w", err)
+		return false, nil, fmt.Errorf("failed to select upstream for gemini validation: %w", err)
 	}
 	if selection == nil || selection.URL == "" {
-		return false, fmt.Errorf("failed to select upstream for gemini validation: empty result")
+		return false, nil, fmt.Errorf("failed to select upstream for gemini validation: empty result")
 	}
 
 	reqURL := selection.URL
@@ -123,12 +132,12 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return false, fmt.Errorf("failed to marshal validation payload: %w", err)
+		return false, nil, fmt.Errorf("failed to marshal validation payload: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewBuffer(body))
 	if err != nil {
-		return false, fmt.Errorf("failed to create validation request: %w", err)
+		return false, nil, fmt.Errorf("failed to create validation request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -139,6 +148,11 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 	}
 	ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group))
 
+	var trace *ValidationTrace
+	if captureTrace {
+		trace = validationTraceFromRequest(req, body, validationUpstreamAddr(selection))
+	}
+
 	client := selection.HTTPClient
 	if client == nil {
 		client = ch.HTTPClient
@@ -146,11 +160,12 @@ func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("failed to send validation request: %w", err)
+		return false, trace, fmt.Errorf("failed to send validation request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	return validateKeyResponseStatus(resp)
+	isValid, err := validateKeyResponseStatusWithTrace(resp, trace)
+	return isValid, trace, err
 }
 
 // ApplyModelRedirect overrides the default implementation for Gemini channel.

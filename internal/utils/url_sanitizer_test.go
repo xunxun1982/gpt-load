@@ -198,6 +198,11 @@ func TestSanitizeProxyURLForLog(t *testing.T) {
 			"http://proxy.example.com:8080",
 			[]string{},
 		},
+		{
+			"ProxyWithSensitiveQuery",
+			"http://proxy.example.com:8080?token=raw-value-a&safe=value",
+			[]string{"raw-value-a"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -254,6 +259,11 @@ func TestSanitizeProxyString(t *testing.T) {
 			"ProxyWithSpaces",
 			"  http://user:pass@proxy.example.com:8080  ",
 			[]string{"user", "pass"},
+		},
+		{
+			"ProxyStringWithSensitiveQuery",
+			"http://user:pass@proxy.example.com:8080?api_key=raw-value-b&safe=value",
+			[]string{"user", "pass", "raw-value-b"},
 		},
 	}
 
