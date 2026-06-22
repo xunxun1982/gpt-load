@@ -478,6 +478,94 @@ func TestImportSystemSkipsSubGroupWithInvalidHealthResetInterval(t *testing.T) {
 	assert.Equal(t, 3, relations[0].Weight)
 }
 
+func TestImportSystemSkipsSubGroupWithInvalidMinEffectiveWeight(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&models.SystemSetting{}))
+	service := NewImportExportService(db, nil, nil)
+
+	importData := &SystemExportData{
+		Version: "2.0",
+		Groups: []GroupExportData{
+			{
+				Group: models.Group{
+					Name:        "aggregate-invalid-min-weight",
+					GroupType:   "aggregate",
+					ChannelType: "openai",
+					Enabled:     true,
+					Upstreams:   datatypes.JSON(`[]`),
+				},
+				SubGroups: []SubGroupInfo{
+					{GroupName: "standard-valid-min-weight", Weight: 8, MinEffectiveWeight: 3},
+					{GroupName: "standard-invalid-min-weight", Weight: 4, MinEffectiveWeight: 5},
+				},
+			},
+			{
+				Group: models.Group{Name: "standard-valid-min-weight", GroupType: "standard", ChannelType: "openai", Enabled: true, Upstreams: datatypes.JSON(`[]`)},
+			},
+			{
+				Group: models.Group{Name: "standard-invalid-min-weight", GroupType: "standard", ChannelType: "openai", Enabled: true, Upstreams: datatypes.JSON(`[]`)},
+			},
+		},
+	}
+
+	require.NoError(t, service.ImportSystem(db, importData))
+
+	var aggregate models.Group
+	require.NoError(t, db.Where("name = ?", "aggregate-invalid-min-weight").First(&aggregate).Error)
+
+	var relations []models.GroupSubGroup
+	require.NoError(t, db.Where("group_id = ?", aggregate.ID).Find(&relations).Error)
+	require.Len(t, relations, 1)
+	assert.Equal(t, 8, relations[0].Weight)
+	assert.Equal(t, 3, relations[0].MinEffectiveWeight)
+}
+
+func TestImportSystemSkipsSubGroupWithInvalidWeight(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&models.SystemSetting{}))
+	service := NewImportExportService(db, nil, nil)
+
+	importData := &SystemExportData{
+		Version: "2.0",
+		Groups: []GroupExportData{
+			{
+				Group: models.Group{
+					Name:        "aggregate-invalid-weight",
+					GroupType:   "aggregate",
+					ChannelType: "openai",
+					Enabled:     true,
+					Upstreams:   datatypes.JSON(`[]`),
+				},
+				SubGroups: []SubGroupInfo{
+					{GroupName: "standard-valid-weight", Weight: 5, MinEffectiveWeight: 2},
+					{GroupName: "standard-invalid-weight", Weight: 1001, MinEffectiveWeight: 1},
+				},
+			},
+			{
+				Group: models.Group{Name: "standard-valid-weight", GroupType: "standard", ChannelType: "openai", Enabled: true, Upstreams: datatypes.JSON(`[]`)},
+			},
+			{
+				Group: models.Group{Name: "standard-invalid-weight", GroupType: "standard", ChannelType: "openai", Enabled: true, Upstreams: datatypes.JSON(`[]`)},
+			},
+		},
+	}
+
+	require.NoError(t, service.ImportSystem(db, importData))
+
+	var aggregate models.Group
+	require.NoError(t, db.Where("name = ?", "aggregate-invalid-weight").First(&aggregate).Error)
+
+	var relations []models.GroupSubGroup
+	require.NoError(t, db.Where("group_id = ?", aggregate.ID).Find(&relations).Error)
+	require.Len(t, relations, 1)
+	assert.Equal(t, 5, relations[0].Weight)
+	assert.Equal(t, 2, relations[0].MinEffectiveWeight)
+}
+
 func TestExportImportSystemRestoresDynamicWeightsByGroupName(t *testing.T) {
 	t.Parallel()
 
