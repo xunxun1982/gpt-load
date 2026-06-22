@@ -65,7 +65,7 @@ func validationUpstreamAddr(selection *UpstreamSelection) string {
 		upstreamAddr += " (via manual proxy: " + utils.SanitizeProxyString(*selection.ProxyURL) + ")"
 	}
 	if strings.TrimSpace(selection.GatewayProxy) != "" {
-		upstreamAddr += " (via gateway: " + strings.TrimSpace(selection.GatewayProxy) + ")"
+		upstreamAddr += " (via gateway: " + utils.SanitizeProxyString(selection.GatewayProxy) + ")"
 	}
 	return upstreamAddr
 }

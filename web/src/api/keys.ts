@@ -30,6 +30,12 @@ interface FetchModelsResponse {
   models?: GeminiModelItem[];
 }
 
+interface UpdateSubGroupWeightOptions {
+  weight: number;
+  minEffectiveWeight?: number;
+  healthResetIntervalSeconds?: number;
+}
+
 export const keysApi = {
   // Get all groups
   async getGroups(): Promise<Group[]> {
@@ -337,10 +343,9 @@ export const keysApi = {
   async updateSubGroupWeight(
     aggregateGroupId: number,
     subGroupId: number,
-    weight: number,
-    minEffectiveWeight = 1,
-    healthResetIntervalSeconds = 0
+    options: UpdateSubGroupWeightOptions
   ): Promise<void> {
+    const { weight, minEffectiveWeight = 1, healthResetIntervalSeconds = 0 } = options;
     await http.put(`/groups/${aggregateGroupId}/sub-groups/${subGroupId}/weight`, {
       weight,
       min_effective_weight: minEffectiveWeight,

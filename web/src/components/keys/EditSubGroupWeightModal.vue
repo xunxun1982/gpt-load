@@ -95,7 +95,10 @@ const previewEffectiveWeight = computed(() => {
   if (!props.subGroup?.group.enabled || formData.weight <= 0) {
     return 0;
   }
-  const dynamicWeight = props.subGroup.dynamic_weight?.effective_weight ?? formData.weight;
+  const dynamicWeight = Math.min(
+    props.subGroup.dynamic_weight?.effective_weight ?? formData.weight,
+    formData.weight
+  );
   const minEffectiveWeight =
     formData.min_effective_weight > 0
       ? Math.min(formData.min_effective_weight, formData.weight)
@@ -198,13 +201,12 @@ async function handleSubmit() {
   }
 
   try {
-    await keysApi.updateSubGroupWeight(
-      aggregateGroupId,
-      subGroupId,
-      formData.weight, // Integer weight value (already constrained by input precision)
-      formData.weight > 0 ? Math.min(formData.min_effective_weight, formData.weight) : 0,
-      formData.health_reset_interval_seconds
-    );
+    await keysApi.updateSubGroupWeight(aggregateGroupId, subGroupId, {
+      weight: formData.weight, // Integer weight value (already constrained by input precision)
+      minEffectiveWeight:
+        formData.weight > 0 ? Math.min(formData.min_effective_weight, formData.weight) : 0,
+      healthResetIntervalSeconds: formData.health_reset_interval_seconds,
+    });
 
     // Backend has already displayed a success message through API response, no need to repeat here
     emit("success");
