@@ -486,6 +486,10 @@ function formatDateTime(isoString: string | null | undefined): string {
                         </span>
                       </div>
                       <div class="info-row">
+                        <span class="info-label">{{ t("subGroups.minEffectiveWeight") }}:</span>
+                        <span class="info-value">{{ subGroup.min_effective_weight }}</span>
+                      </div>
+                      <div class="info-row">
                         <span class="info-label">{{ t("subGroups.healthScore") }}:</span>
                         <span
                           class="info-value"

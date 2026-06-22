@@ -727,6 +727,32 @@ func TestDynamicWeightManager_GetSubGroupDynamicWeights(t *testing.T) {
 		"Sub-group with success should have higher effective weight than sub-group with failure")
 }
 
+func TestDynamicWeightManager_SubGroupMinimumEffectiveWeight(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(1)
+	subGroups := []SubGroupWeightInput{
+		{SubGroupID: 1, Weight: 100, MinEffectiveWeight: 8},
+		{SubGroupID: 2, Weight: 0, MinEffectiveWeight: 8},
+	}
+
+	for i := 0; i < 20; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, 1, false)
+	}
+
+	weights := dwm.GetSubGroupDynamicWeights(aggregateGroupID, subGroups)
+	require.Len(t, weights, 2)
+	assert.Equal(t, 8.0, weights[0].EffectiveWeight)
+	assert.Equal(t, 0.0, weights[1].EffectiveWeight)
+
+	selectionWeights := dwm.GetEffectiveWeightsForSelection(aggregateGroupID, subGroups)
+	require.Len(t, selectionWeights, 2)
+	assert.Equal(t, 80, selectionWeights[0])
+	assert.Equal(t, 0, selectionWeights[1])
+}
+
 // TestDynamicWeightManager_DynamicWeightedRandomSelect tests weighted random selection
 func TestDynamicWeightManager_DynamicWeightedRandomSelect(t *testing.T) {
 	memStore := store.NewMemoryStore()

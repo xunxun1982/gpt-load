@@ -455,6 +455,7 @@ type ChildGroupExport struct {
 type SubGroupInfo struct {
 	GroupName                  string `json:"group_name"`
 	Weight                     int    `json:"weight"`
+	MinEffectiveWeight         int    `json:"min_effective_weight,omitempty"`
 	HealthResetIntervalSeconds int64  `json:"health_reset_interval_seconds,omitempty"`
 }
 
@@ -537,6 +538,7 @@ func (s *ImportExportService) ExportGroup(groupID uint) (*GroupExportData, error
 					result.SubGroups = append(result.SubGroups, SubGroupInfo{
 						GroupName:                  sg.Name,
 						Weight:                     relation.Weight,
+						MinEffectiveWeight:         normalizeSubGroupMinEffectiveWeight(relation.Weight, relation.MinEffectiveWeight),
 						HealthResetIntervalSeconds: relation.HealthResetIntervalSeconds,
 					})
 				}
@@ -1291,12 +1293,14 @@ func (s *ImportExportService) importAggregateSubGroupRelations(tx *gorm.DB, grou
 				GroupID:                    aggregateGroup.ID,
 				SubGroupID:                 subGroup.ID,
 				Weight:                     subGroupInfo.Weight,
+				MinEffectiveWeight:         normalizeSubGroupMinEffectiveWeight(subGroupInfo.Weight, subGroupInfo.MinEffectiveWeight),
 				HealthResetIntervalSeconds: subGroupInfo.HealthResetIntervalSeconds,
 			}
 
 			if err := tx.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).
 				Assign(map[string]any{
 					"weight":                        subGroupInfo.Weight,
+					"min_effective_weight":          normalizeSubGroupMinEffectiveWeight(subGroupInfo.Weight, subGroupInfo.MinEffectiveWeight),
 					"health_reset_interval_seconds": subGroupInfo.HealthResetIntervalSeconds,
 				}).
 				FirstOrCreate(&relation).Error; err != nil {

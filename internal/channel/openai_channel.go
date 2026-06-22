@@ -39,19 +39,28 @@ func (ch *OpenAIChannel) ModifyRequest(req *http.Request, apiKey *models.APIKey,
 
 // ValidateKey checks if the given API key is valid by making a chat completion request.
 func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
+	isValid, _, err := ch.validateKey(ctx, apiKey, group, false)
+	return isValid, err
+}
+
+func (ch *OpenAIChannel) ValidateKeyWithTrace(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, *ValidationTrace, error) {
+	return ch.validateKey(ctx, apiKey, group, true)
+}
+
+func (ch *OpenAIChannel) validateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group, captureTrace bool) (bool, *ValidationTrace, error) {
 	// Parse validation endpoint to extract path and query parameters
 	endpointURL, err := url.Parse(ch.ValidationEndpoint)
 	if err != nil {
-		return false, fmt.Errorf("failed to parse validation endpoint: %w", err)
+		return false, nil, fmt.Errorf("failed to parse validation endpoint: %w", err)
 	}
 
 	// Select upstream with dedicated client using the unified helper
 	selection, err := ch.SelectValidationUpstream(group, endpointURL.Path, endpointURL.RawQuery)
 	if err != nil {
-		return false, fmt.Errorf("failed to select validation upstream: %w", err)
+		return false, nil, fmt.Errorf("failed to select validation upstream: %w", err)
 	}
 	if selection == nil || selection.URL == "" {
-		return false, fmt.Errorf("failed to select validation upstream: empty result")
+		return false, nil, fmt.Errorf("failed to select validation upstream: empty result")
 	}
 	reqURL := selection.URL
 
@@ -67,12 +76,12 @@ func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return false, fmt.Errorf("failed to marshal validation payload: %w", err)
+		return false, nil, fmt.Errorf("failed to marshal validation payload: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewBuffer(body))
 	if err != nil {
-		return false, fmt.Errorf("failed to create validation request: %w", err)
+		return false, nil, fmt.Errorf("failed to create validation request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey.KeyValue)
 	req.Header.Set("Content-Type", "application/json")
@@ -84,15 +93,21 @@ func (ch *OpenAIChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey,
 	}
 	ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group))
 
+	var trace *ValidationTrace
+	if captureTrace {
+		trace = validationTraceFromRequest(req, body, validationUpstreamAddr(selection))
+	}
+
 	client := selection.HTTPClient
 	if client == nil {
 		client = ch.HTTPClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("failed to send validation request: %w", err)
+		return false, trace, fmt.Errorf("failed to send validation request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	return validateKeyResponseStatus(resp)
+	isValid, err := validateKeyResponseStatusWithTrace(resp, trace)
+	return isValid, trace, err
 }

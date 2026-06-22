@@ -282,6 +282,11 @@ const shouldShowUserAgentChange = computed(() => {
   return !!log?.simulated_client_enabled && (!!log?.user_agent || !!log?.upstream_user_agent);
 });
 
+const selectedUserAgent = computed(() => {
+  const log = selectedLog.value;
+  return log?.user_agent || log?.upstream_user_agent || "";
+});
+
 // Copy helper with fallback dialog
 const copyContent = async (content: string, type: string) => {
   await copyWithFallback(content, {
@@ -1091,13 +1096,13 @@ const deselectAllColumns = () => {
                 </div>
               </div>
 
-              <div class="compact-field" v-else-if="selectedLog.user_agent">
+              <div class="compact-field" v-else-if="selectedUserAgent">
                 <div class="compact-field-header">
                   <span class="compact-field-title">{{ t("logs.userAgent") }}</span>
                   <n-button
                     size="tiny"
                     text
-                    @click="copyContent(selectedLog.user_agent, t('logs.userAgent'))"
+                    @click="copyContent(selectedUserAgent, t('logs.userAgent'))"
                   >
                     <template #icon>
                       <n-icon :component="CopyOutline" />
@@ -1105,7 +1110,7 @@ const deselectAllColumns = () => {
                   </n-button>
                 </div>
                 <div class="compact-field-content">
-                  {{ selectedLog.user_agent }}
+                  {{ selectedUserAgent }}
                 </div>
               </div>
 

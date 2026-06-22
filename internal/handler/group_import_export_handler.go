@@ -66,8 +66,9 @@ type KeyExportInfo struct {
 
 // SubGroupExportInfo represents sub-group export information.
 type SubGroupExportInfo struct {
-	GroupName string `json:"group_name"`
-	Weight    int    `json:"weight"`
+	GroupName          string `json:"group_name"`
+	Weight             int    `json:"weight"`
+	MinEffectiveWeight int    `json:"min_effective_weight,omitempty"`
 }
 
 // ChildGroupExportInfo represents child group export information.
@@ -188,8 +189,9 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	// Convert sub-groups to export format
 	for _, sg := range groupData.SubGroups {
 		exportData.SubGroups = append(exportData.SubGroups, SubGroupExportInfo{
-			GroupName: sg.GroupName,
-			Weight:    sg.Weight,
+			GroupName:          sg.GroupName,
+			Weight:             sg.Weight,
+			MinEffectiveWeight: sg.MinEffectiveWeight,
 		})
 	}
 
@@ -339,8 +341,9 @@ func (s *Server) ImportGroup(c *gin.Context) {
 	// Convert sub-groups
 	for _, sg := range importData.SubGroups {
 		serviceGroupData.SubGroups = append(serviceGroupData.SubGroups, services.SubGroupInfo{
-			GroupName: sg.GroupName,
-			Weight:    sg.Weight,
+			GroupName:          sg.GroupName,
+			Weight:             sg.Weight,
+			MinEffectiveWeight: sg.MinEffectiveWeight,
 		})
 	}
 

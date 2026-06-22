@@ -338,10 +338,12 @@ export const keysApi = {
     aggregateGroupId: number,
     subGroupId: number,
     weight: number,
+    minEffectiveWeight = 1,
     healthResetIntervalSeconds = 0
   ): Promise<void> {
     await http.put(`/groups/${aggregateGroupId}/sub-groups/${subGroupId}/weight`, {
       weight,
+      min_effective_weight: minEffectiveWeight,
       health_reset_interval_seconds: healthResetIntervalSeconds,
     });
   },

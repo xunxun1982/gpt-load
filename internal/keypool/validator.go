@@ -18,9 +18,10 @@ import (
 
 // KeyTestResult holds the validation result for a single key.
 type KeyTestResult struct {
-	KeyValue string `json:"key_value"`
-	IsValid  bool   `json:"is_valid"`
-	Error    string `json:"error,omitempty"`
+	KeyValue        string                   `json:"key_value"`
+	IsValid         bool                     `json:"is_valid"`
+	Error           string                   `json:"error,omitempty"`
+	ValidationTrace *channel.ValidationTrace `json:"-"`
 }
 
 // KeyValidator provides methods to validate API keys.
@@ -54,6 +55,11 @@ func NewKeyValidator(params KeyValidatorParams) *KeyValidator {
 
 // ValidateSingleKey performs a validation check on a single API key.
 func (s *KeyValidator) ValidateSingleKey(key *models.APIKey, group *models.Group) (bool, error) {
+	isValid, _, err := s.validateSingleKey(key, group, false)
+	return isValid, err
+}
+
+func (s *KeyValidator) validateSingleKey(key *models.APIKey, group *models.Group, captureTrace bool) (bool, *channel.ValidationTrace, error) {
 	if group.EffectiveConfig.AppUrl == "" {
 		group.EffectiveConfig = s.SettingsManager.GetEffectiveConfig(group.Config)
 	}
@@ -62,10 +68,21 @@ func (s *KeyValidator) ValidateSingleKey(key *models.APIKey, group *models.Group
 
 	ch, err := s.channelFactory.GetChannel(group)
 	if err != nil {
-		return false, fmt.Errorf("failed to get channel for group %s: %w", group.Name, err)
+		return false, nil, fmt.Errorf("failed to get channel for group %s: %w", group.Name, err)
 	}
 
-	isValid, validationErr := ch.ValidateKey(ctx, key, group)
+	var trace *channel.ValidationTrace
+	var isValid bool
+	var validationErr error
+	if captureTrace {
+		if tracer, ok := ch.(channel.KeyValidationTracer); ok {
+			isValid, trace, validationErr = tracer.ValidateKeyWithTrace(ctx, key, group)
+		} else {
+			isValid, validationErr = ch.ValidateKey(ctx, key, group)
+		}
+	} else {
+		isValid, validationErr = ch.ValidateKey(ctx, key, group)
+	}
 	validationErr = sanitizeValidationError(validationErr)
 
 	var errorMsg string
@@ -80,7 +97,7 @@ func (s *KeyValidator) ValidateSingleKey(key *models.APIKey, group *models.Group
 			"key_id":   key.ID,
 			"group_id": group.ID,
 		}).Debug("Key validation failed")
-		return false, validationErr
+		return false, trace, validationErr
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -88,11 +105,26 @@ func (s *KeyValidator) ValidateSingleKey(key *models.APIKey, group *models.Group
 		"is_valid": isValid,
 	}).Debug("Key validation successful")
 
-	return true, nil
+	return true, trace, nil
 }
 
 // TestMultipleKeys performs a synchronous validation for a list of key values within a specific group.
 func (s *KeyValidator) TestMultipleKeys(group *models.Group, keyValues []string) ([]KeyTestResult, error) {
+	return s.testMultipleKeys(group, keyValues, false)
+}
+
+func (s *KeyValidator) TestSingleKeyWithTrace(group *models.Group, keyValue string) (KeyTestResult, error) {
+	results, err := s.testMultipleKeys(group, []string{keyValue}, true)
+	if err != nil {
+		return KeyTestResult{}, err
+	}
+	if len(results) == 0 {
+		return KeyTestResult{}, fmt.Errorf("no validation result returned")
+	}
+	return results[0], nil
+}
+
+func (s *KeyValidator) testMultipleKeys(group *models.Group, keyValues []string, captureTrace bool) ([]KeyTestResult, error) {
 	results := make([]KeyTestResult, len(keyValues))
 
 	// Generate hashes for all key values
@@ -133,12 +165,13 @@ func (s *KeyValidator) TestMultipleKeys(group *models.Group, keyValues []string)
 
 		apiKey.KeyValue = kv
 
-		isValid, validationErr := s.ValidateSingleKey(&apiKey, group)
+		isValid, trace, validationErr := s.validateSingleKey(&apiKey, group, captureTrace && len(keyValues) == 1)
 
 		results[i] = KeyTestResult{
-			KeyValue: kv,
-			IsValid:  isValid,
-			Error:    "",
+			KeyValue:        kv,
+			IsValid:         isValid,
+			Error:           "",
+			ValidationTrace: trace,
 		}
 		if validationErr != nil {
 			results[i].Error = validationErr.Error()

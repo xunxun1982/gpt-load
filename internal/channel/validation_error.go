@@ -14,11 +14,21 @@ const maxValidationErrorBodySize int64 = 64 * 1024
 const maxValidationSuccessBodySize int64 = 64 * 1024
 
 func parseValidationErrorResponse(resp *http.Response) (string, error) {
+	parsed, err := parseValidationErrorResponseWithBody(resp)
+	return parsed.message, err
+}
+
+type validationErrorResponse struct {
+	body    string
+	message string
+}
+
+func parseValidationErrorResponseWithBody(resp *http.Response) (validationErrorResponse, error) {
 	reader := resp.Body
 	if encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))); encoding != "" {
 		decompressed, err := utils.NewDecompressReader(encoding, resp.Body)
 		if err != nil {
-			return "", err
+			return validationErrorResponse{}, err
 		}
 		reader = decompressed
 		defer reader.Close()
@@ -26,13 +36,16 @@ func parseValidationErrorResponse(resp *http.Response) (string, error) {
 
 	errorBody, err := io.ReadAll(io.LimitReader(reader, maxValidationErrorBodySize+1))
 	if err != nil {
-		return "", err
+		return validationErrorResponse{}, err
 	}
 	if int64(len(errorBody)) > maxValidationErrorBodySize {
-		return "", utils.ErrDecompressedTooLarge
+		return validationErrorResponse{}, utils.ErrDecompressedTooLarge
 	}
 
-	return app_errors.ParseUpstreamError(errorBody), nil
+	return validationErrorResponse{
+		body:    string(errorBody),
+		message: app_errors.ParseUpstreamError(errorBody),
+	}, nil
 }
 
 func invalidValidationStatusError(resp *http.Response) error {

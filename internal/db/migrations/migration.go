@@ -151,7 +151,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.27.0 migration - Add unique proxy pool name index after cleaning legacy duplicates
-	return V1_27_0_AddProxyPoolNameUniqueIndex(db)
+	if err := V1_27_0_AddProxyPoolNameUniqueIndex(db); err != nil {
+		return err
+	}
+	// Run v1.28.0 migration - Add sub-group minimum effective weight
+	return V1_28_0_AddSubGroupMinEffectiveWeight(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors

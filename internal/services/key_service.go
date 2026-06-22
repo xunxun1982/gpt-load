@@ -3,9 +3,11 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"gpt-load/internal/channel"
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/keypool"
 	"gpt-load/internal/models"
+	"gpt-load/internal/tokenusage"
 	"gpt-load/internal/utils"
 	"io"
 	"net/http"
@@ -443,24 +445,30 @@ func (s *KeyService) TestMultipleKeys(group *models.Group, keysText string) ([]k
 	start := time.Now()
 	isSingleManualTest := len(keysToTest) == 1
 	allResults := make([]keypool.KeyTestResult, 0, len(keysToTest))
-	err := utils.ProcessInChunks(keysToTest, s.insertChunkSize(), func(chunk []string) error {
-		results, err := s.KeyValidator.TestMultipleKeys(group, chunk)
+	if isSingleManualTest {
+		result, err := s.KeyValidator.TestSingleKeyWithTrace(group, keysToTest[0])
 		if err != nil {
-			return err
+			s.recordKeyValidationLog(group, keysToTest[0], false, http.StatusInternalServerError, time.Since(start), err.Error(), nil)
+			return nil, err
 		}
-		allResults = append(allResults, results...)
-		return nil
-	})
-	if err != nil {
-		if isSingleManualTest {
-			s.recordKeyValidationLog(group, keysToTest[0], false, http.StatusInternalServerError, time.Since(start), err.Error())
+		allResults = append(allResults, result)
+	} else {
+		err := utils.ProcessInChunks(keysToTest, s.insertChunkSize(), func(chunk []string) error {
+			results, err := s.KeyValidator.TestMultipleKeys(group, chunk)
+			if err != nil {
+				return err
+			}
+			allResults = append(allResults, results...)
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
 	}
 
 	if isSingleManualTest && len(allResults) == 1 {
 		result := allResults[0]
-		s.recordKeyValidationLog(group, keysToTest[0], result.IsValid, validationLogStatusCode(result), time.Since(start), result.Error)
+		s.recordKeyValidationLog(group, keysToTest[0], result.IsValid, validationLogStatusCode(result), time.Since(start), result.Error, result.ValidationTrace)
 	}
 
 	return allResults, nil
@@ -476,7 +484,7 @@ func validationLogStatusCode(result keypool.KeyTestResult) int {
 	return http.StatusBadGateway
 }
 
-func (s *KeyService) recordKeyValidationLog(group *models.Group, keyValue string, isSuccess bool, statusCode int, duration time.Duration, errorMessage string) {
+func (s *KeyService) recordKeyValidationLog(group *models.Group, keyValue string, isSuccess bool, statusCode int, duration time.Duration, errorMessage string, trace *channel.ValidationTrace) {
 	if s.RequestLogService == nil || group == nil {
 		return
 	}
@@ -504,12 +512,56 @@ func (s *KeyService) recordKeyValidationLog(group *models.Group, keyValue string
 		RequestType:  models.RequestTypeValidation,
 		ErrorMessage: safeErrorMessage,
 	}
+	applyValidationTraceToLog(logEntry, trace)
 	if err := s.RequestLogService.Record(logEntry); err != nil {
 		logrus.WithError(err).WithFields(logrus.Fields{
 			"group_id": group.ID,
 			"key_hash": keyHash,
 		}).Warn("Failed to record key validation log")
 	}
+}
+
+func applyValidationTraceToLog(logEntry *models.RequestLog, trace *channel.ValidationTrace) {
+	if logEntry == nil || trace == nil {
+		return
+	}
+	if trace.RequestPath != "" {
+		logEntry.RequestPath = trace.RequestPath
+	}
+	logEntry.UpstreamAddr = trace.UpstreamAddr
+	logEntry.UpstreamUserAgent = trace.UpstreamUserAgent
+	logEntry.RequestBody = trace.RequestBody
+	logEntry.ResponseBody = trace.ResponseBody
+
+	// Error responses are kept for diagnosis but do not show token usage because
+	// upstream billing semantics are ambiguous for rejected validation requests.
+	if trace.ResponseError {
+		return
+	}
+	if trace.HasReportedUsage {
+		applyValidationTokenUsage(logEntry, trace.ReportedTokenUsage, models.TokenUsageSourceUpstream)
+		return
+	}
+	if trace.EstimatedInputTokens > 0 {
+		applyValidationTokenUsage(logEntry, tokenusage.Usage{
+			InputTokens: trace.EstimatedInputTokens,
+			TotalTokens: trace.EstimatedInputTokens,
+		}, models.TokenUsageSourceEstimated)
+	}
+}
+
+func applyValidationTokenUsage(logEntry *models.RequestLog, usage tokenusage.Usage, source string) {
+	if logEntry == nil || usage.IsZero() {
+		return
+	}
+	usage = usage.Normalize()
+	logEntry.InputTokens = usage.InputTokens
+	logEntry.OutputTokens = usage.OutputTokens
+	logEntry.TotalTokens = usage.TotalTokens
+	logEntry.CacheReadTokens = usage.CacheReadTokens
+	logEntry.CacheWriteTokens = usage.CacheWriteTokens
+	logEntry.ThinkingTokens = usage.ThinkingTokens
+	logEntry.TokenUsageSource = source
 }
 
 // StreamKeysToWriter fetches keys from the database in batches and writes them to the provided writer.

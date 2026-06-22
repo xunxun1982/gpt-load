@@ -329,6 +329,7 @@ export default {
     weightRangeHint: "範囲: 0〜1000（0=無効）",
     newWeight: "新しいウェイト",
     currentWeight: "現在のウェイト",
+    minEffectiveWeight: "最低有効重み",
     previewPercentage: "プレビュー割合",
     weightPreviewNote:
       "これはプレビュー割合です。他のサブグループのウェイトは変更されないと仮定しています",
@@ -751,6 +752,10 @@ export default {
     dynamicWeight: "動的重み",
     baseWeight: "基本重み",
     effectiveWeight: "有効重み",
+    minEffectiveWeight: "最低有効重み",
+    enterMinEffectiveWeight: "最低有効重みを入力してください",
+    minEffectiveWeightCannotBeLessThanOne: "最低有効重みは1未満にできません",
+    minEffectiveWeightCannotExceedWeight: "最低有効重みは基本重みを超えることはできません",
     healthScore: "健康度",
     successRate: "成功率",
     requestCount: "リクエスト数",

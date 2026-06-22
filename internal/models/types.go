@@ -159,6 +159,7 @@ type GroupSubGroup struct {
 	GroupID                    uint       `gorm:"not null;uniqueIndex:idx_group_sub" json:"group_id"`
 	SubGroupID                 uint       `gorm:"not null;uniqueIndex:idx_group_sub" json:"sub_group_id"`
 	Weight                     int        `gorm:"default:0" json:"weight"`
+	MinEffectiveWeight         int        `gorm:"not null;default:1" json:"min_effective_weight"`
 	HealthResetIntervalSeconds int64      `gorm:"not null;default:0;index:idx_group_sub_health_reset" json:"health_reset_interval_seconds"`
 	LastHealthResetAt          *time.Time `json:"last_health_reset_at,omitempty"`
 	CreatedAt                  time.Time  `json:"created_at"`
@@ -173,6 +174,7 @@ type GroupSubGroup struct {
 type SubGroupInfo struct {
 	Group                      Group              `json:"group"`
 	Weight                     int                `json:"weight"`
+	MinEffectiveWeight         int                `json:"min_effective_weight"`
 	HealthResetIntervalSeconds int64              `json:"health_reset_interval_seconds"`
 	LastHealthResetAt          *time.Time         `json:"last_health_reset_at,omitempty"`
 	TotalKeys                  int64              `json:"total_keys"`

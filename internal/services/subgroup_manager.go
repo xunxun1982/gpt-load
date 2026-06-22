@@ -21,12 +21,13 @@ type SubGroupManager struct {
 
 // subGroupItem represents a sub-group with its weight and current weight for round-robin
 type subGroupItem struct {
-	name          string
-	subGroupID    uint
-	activeKeysKey string
-	weight        int
-	currentWeight int
-	enabled       bool
+	name               string
+	subGroupID         uint
+	activeKeysKey      string
+	weight             int
+	minEffectiveWeight int
+	currentWeight      int
+	enabled            bool
 }
 
 // NewSubGroupManager creates a new sub-group manager service
@@ -177,12 +178,13 @@ func (m *SubGroupManager) createSelector(group *models.Group, dynamicWeight *Dyn
 	var items []subGroupItem
 	for _, sg := range group.SubGroups {
 		items = append(items, subGroupItem{
-			name:          sg.SubGroupName,
-			subGroupID:    sg.SubGroupID,
-			activeKeysKey: activeKeysListKey(sg.SubGroupID),
-			weight:        sg.Weight,
-			currentWeight: 0,
-			enabled:       sg.SubGroupEnabled,
+			name:               sg.SubGroupName,
+			subGroupID:         sg.SubGroupID,
+			activeKeysKey:      activeKeysListKey(sg.SubGroupID),
+			weight:             sg.Weight,
+			minEffectiveWeight: normalizeSubGroupMinEffectiveWeight(sg.Weight, sg.MinEffectiveWeight),
+			currentWeight:      0,
+			enabled:            sg.SubGroupEnabled,
 		})
 	}
 
@@ -437,7 +439,7 @@ func (s *selector) selectByWeightSkipping(excludeIDs map[uint]bool, attempted []
 			// Apply dynamic weight if manager is available
 			if s.dynamicWeight != nil {
 				metrics, _ := s.dynamicWeight.GetSubGroupMetrics(s.groupID, s.subGroups[i].subGroupID)
-				effectiveWeight := s.dynamicWeight.GetEffectiveWeight(baseWeight, metrics)
+				effectiveWeight := s.dynamicWeight.GetEffectiveWeightWithMinimum(baseWeight, s.subGroups[i].minEffectiveWeight, metrics)
 				weights[i] = GetEffectiveWeightForSelection(effectiveWeight)
 			} else {
 				weights[i] = baseWeight
