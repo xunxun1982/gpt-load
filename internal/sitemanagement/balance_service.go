@@ -39,6 +39,15 @@ type userSelfResponse struct {
 	Quota int64 `json:"quota"`
 }
 
+type sub2APIProfileResponse struct {
+	Success *bool `json:"success"`
+	Code    *int  `json:"code"`
+	Data    struct {
+		Balance *float64 `json:"balance"`
+	} `json:"data"`
+	Balance *float64 `json:"balance"`
+}
+
 // BalanceService handles fetching balance information from managed sites
 type BalanceService struct {
 	db               *gorm.DB
@@ -262,15 +271,19 @@ func (s *BalanceService) updateSiteBalance(ctx context.Context, siteID uint, bal
 // supportsBalance checks if a site type supports balance fetching
 func (s *BalanceService) supportsBalance(siteType string) bool {
 	switch siteType {
-	case SiteTypeNewAPI, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub, SiteTypeWongGongyi:
+	case SiteTypeNewAPI, SiteTypeSub2API, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub, SiteTypeWongGongyi:
 		return true
 	default:
 		return false
 	}
 }
 
-// fetchBalanceFromAPI fetches balance from the site's /api/user/self endpoint.
+// fetchBalanceFromAPI fetches balance from the site's provider-specific profile endpoint.
 func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedSite, authConfig AuthConfig, userID string) *string {
+	if site.SiteType == SiteTypeSub2API {
+		return s.fetchSub2APIBalanceFromAPI(ctx, site, authConfig, userID)
+	}
+
 	// Build API URL
 	apiURL := extractBaseURL(site.BaseURL) + "/api/user/self"
 
@@ -309,6 +322,42 @@ func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedS
 	return nil
 }
 
+func (s *BalanceService) fetchSub2APIBalanceFromAPI(ctx context.Context, site *ManagedSite, authConfig AuthConfig, userID string) *string {
+	apiURL := extractBaseURL(site.BaseURL) + "/api/v1/user/profile"
+	client := s.getHTTPClient(site)
+
+	for _, authType := range []string{AuthTypeAccessToken, AuthTypeCookie} {
+		if !authConfig.HasAuthType(authType) {
+			continue
+		}
+		authValue := authConfig.GetAuthValue(authType)
+		if authValue == "" {
+			continue
+		}
+		headers := buildBalanceHeaders(authType, authValue, userID)
+		if headers == nil {
+			continue
+		}
+
+		var data []byte
+		var err error
+		if shouldUseStealthRequest(*site) {
+			data, _, err = doStealthJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+		} else {
+			data, _, err = doJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+		}
+		if err != nil {
+			logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch Sub2API balance from profile API")
+			continue
+		}
+		if balance := s.parseSub2APIBalanceResponse(data); balance != nil {
+			return balance
+		}
+	}
+
+	return nil
+}
+
 func buildBalanceHeaders(authType, authValue, userID string) map[string]string {
 	headers := make(map[string]string)
 	if userID != "" {
@@ -318,7 +367,7 @@ func buildBalanceHeaders(authType, authValue, userID string) map[string]string {
 	}
 	switch authType {
 	case AuthTypeAccessToken:
-		headers["Authorization"] = "Bearer " + authValue
+		headers["Authorization"] = bearerAuthorizationValue(authValue)
 	case AuthTypeCookie:
 		headers["Cookie"] = authValue
 	default:
@@ -353,6 +402,31 @@ func (s *BalanceService) parseBalanceResponse(data []byte) *string {
 	balanceUSD := float64(quota) / 500000.0
 	balanceStr := fmt.Sprintf("$%.2f", balanceUSD)
 
+	return &balanceStr
+}
+
+func (s *BalanceService) parseSub2APIBalanceResponse(data []byte) *string {
+	var resp sub2APIProfileResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil
+	}
+
+	if resp.Success != nil && !*resp.Success {
+		return nil
+	}
+	if resp.Code != nil && *resp.Code != 0 {
+		return nil
+	}
+
+	balance := resp.Data.Balance
+	if balance == nil {
+		balance = resp.Balance
+	}
+	if balance == nil {
+		return nil
+	}
+
+	balanceStr := fmt.Sprintf("$%.2f", *balance)
 	return &balanceStr
 }
 

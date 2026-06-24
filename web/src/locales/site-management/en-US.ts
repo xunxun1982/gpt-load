@@ -52,10 +52,10 @@ export default {
   bypassMethodStealth: "Stealth (TLS Fingerprint)",
   stealthBypassHint: "⚠️ Stealth bypass requires Cookie auth type",
   stealthCookieHint:
-    "💡 Include CF cookies (cf_clearance, acw_tc, etc.) from browser for Cloudflare bypass",
+    "💡 Include browser WAF cookies (cf_clearance, acw_tc, cdn_sec_tc, acw_sc__v2, etc.) from browser",
   stealthRequiresCookieAuth: "Stealth bypass requires Cookie auth type",
   stealthRequiresCookieValue: "Stealth bypass requires cookie value",
-  missingCFCookies: "Missing CF cookies for Cloudflare bypass. Need at least one of: {cookies}",
+  missingCFCookies: "Missing browser WAF cookies. Need at least one of: {cookies}",
   maxTwoAuthTypes: "Maximum 2 authentication types allowed",
 
   // Auth related
@@ -69,7 +69,11 @@ export default {
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
-    "Capture Cookie from browser, including session/token fields. If site uses Cloudflare protection, also include cf_clearance.",
+    "Capture Cookie from browser, including session/token fields. If site uses browser protection, also include WAF cookies such as cf_clearance and acw_tc.",
+  sub2ApiAuthHint:
+    "For Sub2API, select Access Token. Use DevTools Application -> Local Storage -> current Sub2API domain -> auth_token as AuthValue/Token, and leave User ID empty.",
+  anyrouterAuthHint:
+    "For AnyRouter, select Cookie. After login, find the https://<AnyRouter domain>/api/user/sign_in request in Network and copy the full Cookie from Request Headers. Leave User ID empty.",
   multiAuthHint:
     "Multiple auth types selected. Check-in will try Access Token first, then Cookie if it fails. Success with either counts as successful check-in.",
   hasAuth: "Auth Configured",
@@ -79,6 +83,7 @@ export default {
   siteTypeOther: "Other",
   siteTypeBrand: "Brand",
   siteTypeNewApi: "New API",
+  siteTypeSub2Api: "Sub2API",
   siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
   siteTypeDoneHub: "Done Hub",
@@ -172,10 +177,11 @@ export default {
   backendMsg_unsupportedAuthType: "Unsupported auth type",
   backendMsg_anyrouterRequiresCookie: "Anyrouter requires cookie auth",
   backendMsg_cloudflareChallenge: "Cloudflare challenge, update cookies from browser",
+  backendMsg_browserChallenge: "Browser challenge, update cookies or WAF cookies from browser",
   backendMsg_alreadyCheckedIn: "Already checked in",
   backendMsg_stealthRequiresCookie: "Stealth bypass requires cookie auth",
   backendMsg_missingCfCookies:
-    "Missing CF cookies, need one of: cf_clearance, acw_tc, cdn_sec_tc, acw_sc__v2, __cf_bm, _cfuvid",
+    "Missing browser WAF cookies, need one of: cf_clearance, acw_tc, cdn_sec_tc, acw_sc__v2, __cf_bm, _cfuvid",
 
   // Import/Export
   exportEncrypted: "Export Encrypted",

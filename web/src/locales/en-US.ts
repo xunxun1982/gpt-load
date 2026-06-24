@@ -1091,8 +1091,13 @@ export default {
     authTypeCookie: "Cookie",
     authTypeCookieHint:
       "Capture Cookie from browser, including session/token fields. If site uses Cloudflare protection, also include cf_clearance.",
+    sub2ApiAuthHint:
+      "For Sub2API, select Access Token. Use DevTools Application -> Local Storage -> current Sub2API domain -> auth_token as AuthValue/Token, and leave User ID empty.",
+    anyrouterAuthHint:
+      "For AnyRouter, select Cookie. After login, find the https://<AnyRouter domain>/api/user/sign_in request in Network and copy the full Cookie from Request Headers. Leave User ID empty.",
     authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
     siteTypeUnknown: "Unknown",
+    siteTypeSub2Api: "Sub2API",
     siteTypeVeloera: "Veloera",
     siteTypeWong: "Wong-gongyi",
     lastStatus: "Last Status",

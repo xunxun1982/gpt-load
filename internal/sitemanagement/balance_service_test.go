@@ -63,6 +63,41 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	assert.Equal(t, "$1.00", *result.Balance)
 }
 
+func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/user/profile", r.URL.Path)
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"balance":12.5}}`))
+	}))
+	defer server.Close()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	service := NewBalanceService(db, encSvc)
+
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := &ManagedSite{
+		Name:      "Sub2API Site",
+		BaseURL:   server.URL + "/check-in",
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	result := service.FetchSiteBalance(context.Background(), site)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Balance)
+	assert.Equal(t, "$12.50", *result.Balance)
+}
+
 // TestBalanceService_FetchSiteBalance_NoAuth tests balance fetch without auth
 func TestBalanceService_FetchSiteBalance_NoAuth(t *testing.T) {
 	t.Parallel()
@@ -367,6 +402,7 @@ func TestBalanceService_SupportsBalance(t *testing.T) {
 		expected bool
 	}{
 		{SiteTypeNewAPI, true},
+		{SiteTypeSub2API, true},
 		{SiteTypeVeloera, true},
 		{SiteTypeOneHub, true},
 		{SiteTypeDoneHub, true},

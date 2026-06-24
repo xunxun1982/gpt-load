@@ -1078,8 +1078,13 @@ export default {
     authTypeCookie: "Cookie",
     authTypeCookieHint:
       "ブラウザからCookieを取得してください。session/tokenなどのフィールドを含めます。サイトがCloudflare保護を使用している場合は、cf_clearanceも含めてください。",
+    sub2ApiAuthHint:
+      "Sub2APIはアクセストークンを選択します。AuthValue/TokenにはDevTools Application -> Local Storage -> 現在のSub2APIドメイン -> auth_tokenを入力し、ユーザーIDは空欄にします。",
+    anyrouterAuthHint:
+      "AnyRouterはCookieを選択します。ログイン後、Networkで https://<AnyRouterドメイン>/api/user/sign_in リクエストを探し、Request HeadersのCookie全体をコピーします。ユーザーIDは空欄にします。",
     authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
     siteTypeUnknown: "不明",
+    siteTypeSub2Api: "Sub2API",
     siteTypeVeloera: "Veloera",
     siteTypeWong: "Wong-gongyi",
     lastStatus: "最新状態",

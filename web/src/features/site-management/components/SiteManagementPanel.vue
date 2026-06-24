@@ -157,7 +157,7 @@ const logsSite = ref<ManagedSiteDTO | null>(null);
 
 const siteTypeOptions = computed(() => [
   { label: t("siteManagement.siteTypeNewApi"), value: "new-api" },
-  { label: t("siteManagement.siteTypeVeloera"), value: "Veloera" },
+  { label: t("siteManagement.siteTypeSub2Api"), value: "sub2api" },
   { label: t("siteManagement.siteTypeOneHub"), value: "one-hub" },
   { label: t("siteManagement.siteTypeDoneHub"), value: "done-hub" },
   { label: t("siteManagement.siteTypeWong"), value: "wong-gongyi" },
@@ -171,6 +171,17 @@ const authTypeOptions = computed(() => [
   { label: t("siteManagement.authTypeAccessToken"), value: "access_token" },
   { label: t("siteManagement.authTypeCookie"), value: "cookie" },
 ]);
+
+const siteSpecificAuthHintKey = computed(() => {
+  switch (siteForm.site_type) {
+    case "sub2api":
+      return "siteManagement.sub2ApiAuthHint";
+    case "anyrouter":
+      return "siteManagement.anyrouterAuthHint";
+    default:
+      return "";
+  }
+});
 
 const bypassMethodOptions = computed(() => [
   { label: t("siteManagement.bypassMethodNone"), value: "" },
@@ -741,6 +752,7 @@ const backendMsgMap: Record<string, string> = {
   "anyrouter requires cookie auth": "siteManagement.backendMsg_anyrouterRequiresCookie",
   "cloudflare challenge, update cookies from browser":
     "siteManagement.backendMsg_cloudflareChallenge",
+  "browser challenge, update cookies from browser": "siteManagement.backendMsg_browserChallenge",
   "already checked in": "siteManagement.backendMsg_alreadyCheckedIn",
   "stealth bypass requires cookie auth": "siteManagement.backendMsg_stealthRequiresCookie",
 };
@@ -1273,6 +1285,9 @@ const logsColumns = computed<DataTableColumns<CheckinLogDTO>>(() => [
 async function handleExport() {
   try {
     const mode = await askExportMode(dialog, t);
+    if (!mode) {
+      return;
+    }
     const blob = await siteManagementApi.exportSites(mode, true);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1316,6 +1331,9 @@ async function handleFileChange(event: Event) {
 
     // Ask user for import mode
     const mode = await askImportMode(dialog, t);
+    if (!mode) {
+      return;
+    }
 
     importLoading.value = true;
     const result = await siteManagementApi.importSites(data, mode === "auto" ? undefined : mode);
@@ -1397,7 +1415,7 @@ function getBalanceDisplay(site: ManagedSiteDTO): string {
 
 // Check if site type supports balance fetching
 function supportsBalance(siteType: string): boolean {
-  return ["new-api", "Veloera", "one-hub", "done-hub", "wong-gongyi"].includes(siteType);
+  return ["new-api", "sub2api", "Veloera", "one-hub", "done-hub", "wong-gongyi"].includes(siteType);
 }
 
 // Delete all unbound sites with confirmation
@@ -2090,6 +2108,13 @@ watch(
                 style="width: 100%"
               />
             </n-form-item>
+            <n-text
+              v-if="siteSpecificAuthHintKey"
+              depth="3"
+              style="font-size: 12px; display: block; margin-top: -4px; margin-bottom: 8px"
+            >
+              {{ t(siteSpecificAuthHintKey) }}
+            </n-text>
             <!-- Access Token input (shown when access_token is selected) -->
             <n-form-item
               v-if="siteForm.auth_type.includes('access_token')"

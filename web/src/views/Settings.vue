@@ -149,6 +149,9 @@ function generateValidationRules(item: Setting): FormItemRule[] {
 async function handleExportAll() {
   const { askExportMode } = await import("@/utils/export-import");
   const mode = await askExportMode(dialog, t);
+  if (!mode) {
+    return;
+  }
 
   try {
     await settingsApi.exportAll(mode);
@@ -276,6 +279,10 @@ async function handleSystemFileChange(event: Event) {
             try {
               const { askImportMode } = await import("@/utils/export-import");
               const mode = await askImportMode(dialog, t);
+              if (!mode) {
+                message.destroyAll();
+                return;
+              }
               await settingsApi.importAll(data, { mode, filename: file.name });
               message.destroyAll();
               message.success(t("settings.importSuccess"));
@@ -366,6 +373,10 @@ async function handleSystemFileChange(event: Event) {
               // Ask import mode (backend will ignore if unsupported)
               const { askImportMode } = await import("@/utils/export-import");
               const mode = await askImportMode(dialog, t);
+              if (!mode) {
+                message.destroyAll();
+                return;
+              }
               // Prefer full system import path when only groups provided? Keep batch endpoint for compatibility
               await settingsApi.importGroupsBatch(
                 { groups: data.groups },

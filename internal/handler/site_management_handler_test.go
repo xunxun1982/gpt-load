@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"gpt-load/internal/encryption"
+	"gpt-load/internal/i18n"
 	"gpt-load/internal/models"
 	"gpt-load/internal/sitemanagement"
 	"gpt-load/internal/store"
@@ -17,6 +19,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func init() {
+	if err := i18n.Init(); err != nil {
+		panic("failed to initialize i18n for tests: " + err.Error())
+	}
+}
 
 func TestCreateManagedSiteRequest_Validation(t *testing.T) {
 	tests := []struct {
@@ -201,4 +209,55 @@ func TestListManagedSites_FocusSiteIDUsesPaginatedPath(t *testing.T) {
 		}
 	}
 	assert.True(t, foundTarget, "focused site should be included in the returned page")
+}
+
+func TestImportManagedSitesSuccessMessageInterpolatesCounts(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&sitemanagement.ManagedSite{}, &sitemanagement.ManagedSiteSetting{}))
+
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
+
+	server := &Server{SiteService: sitemanagement.NewSiteService(db, kvStore, encSvc)}
+	router := gin.New()
+	router.Use(i18n.Middleware())
+	router.POST("/site-management/import", server.ImportManagedSites)
+
+	body := []byte(`{
+		"version":"1.0",
+		"sites":[
+			{
+				"name":"Imported Site",
+				"base_url":"https://example.com",
+				"site_type":"new-api",
+				"auth_type":"none"
+			}
+		]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/site-management/import?mode=plain", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Language", "zh-CN")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	message, ok := resp["message"].(string)
+	require.True(t, ok)
+	assert.Contains(t, message, "已导入 1 个站点")
+	assert.NotContains(t, message, "{{")
+	assert.False(t, strings.Contains(message, "<") || strings.Contains(message, ">"))
+
+	data, ok := resp["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(1), data["imported"])
+	assert.Equal(t, float64(0), data["skipped"])
+	assert.Equal(t, float64(1), data["total"])
 }

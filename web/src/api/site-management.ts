@@ -1,9 +1,10 @@
 import http from "@/utils/http";
 
-// Note: "Veloera" is capitalized to match backend SiteTypeVeloera constant
 export type ManagedSiteType =
   | "unknown"
   | "new-api"
+  | "sub2api"
+  // Legacy records may still use this value; new entries should use New API instead.
   | "Veloera"
   | "wong-gongyi"
   | "one-hub"
@@ -240,7 +241,7 @@ export const siteManagementApi = {
     if (mode) {
       params.mode = mode;
     }
-    const res = await http.post("/site-management/import", data, { params });
+    const res = await http.post("/site-management/import", data, { params, hideMessage: true });
     return res.data;
   },
 

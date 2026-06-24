@@ -825,6 +825,9 @@ async function handleExportGroup(group: Group, event: Event) {
 
   const { askExportMode } = await import("@/utils/export-import");
   const mode = await askExportMode(dialog, t);
+  if (!mode) {
+    return;
+  }
 
   try {
     const groupId = group.id;
@@ -864,6 +867,12 @@ async function handleFileChange(event: Event) {
 
     const { askImportMode } = await import("@/utils/export-import");
     const mode = await askImportMode(dialog, t);
+    if (!mode) {
+      if (fileInputRef.value) {
+        fileInputRef.value.value = "";
+      }
+      return;
+    }
 
     // Prevent duplicate imports
     if (isImporting.value) {
