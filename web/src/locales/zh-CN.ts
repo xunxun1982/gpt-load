@@ -1045,7 +1045,7 @@ export default {
     authTypeAccessToken: "Access Token",
     authTypeCookie: "Cookie",
     authTypeCookieHint:
-      "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了 Cloudflare 防护，还需包含 cf_clearance。",
+      "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了浏览器防护，还需包含 cf_clearance、acw_tc 等防护 Cookie。",
     sub2ApiAuthHint:
       "Sub2API 选择 Access Token；AuthValue/Token 填浏览器开发者工具 Application/应用 -> Local Storage -> 当前 Sub2API 域名 -> auth_token，用户ID留空。",
     anyrouterAuthHint:

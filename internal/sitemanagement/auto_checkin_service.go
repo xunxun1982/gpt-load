@@ -1640,10 +1640,7 @@ func anyrouterReferer(siteBaseURL string) string {
 	if err != nil || parsed.Host == "" {
 		return trimmed
 	}
-	if parsed.Path != "" && parsed.Path != "/" {
-		return trimmed
-	}
-	return extractBaseURL(siteBaseURL) + "/console/personal"
+	return extractBaseURL(trimmed) + "/console/personal"
 }
 
 type wongProvider struct{}

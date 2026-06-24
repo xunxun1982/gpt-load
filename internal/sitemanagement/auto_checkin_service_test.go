@@ -422,32 +422,55 @@ func TestResolveProviderMapsLegacyVeloeraToNewAPI(t *testing.T) {
 func TestAnyRouterProviderUsesCookieAjaxSignInEndpoint(t *testing.T) {
 	t.Parallel()
 
-	var paths []string
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
-		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "session=browser-ok", r.Header.Get("Cookie"))
-		assert.Equal(t, "XMLHttpRequest", r.Header.Get("X-Requested-With"))
-		assert.Equal(t, server.URL+"/console/personal", r.Header.Get("Referer"))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
-	}))
-	defer server.Close()
+	tests := []struct {
+		name        string
+		baseURL     func(string) string
+		wantReferer func(string) string
+	}{
+		{
+			name:        "origin only",
+			baseURL:     func(serverURL string) string { return serverURL },
+			wantReferer: func(serverURL string) string { return serverURL + "/console/personal" },
+		},
+		{
+			name:        "pathful base URL",
+			baseURL:     func(serverURL string) string { return serverURL + "/check-in" },
+			wantReferer: func(serverURL string) string { return serverURL + "/console/personal" },
+		},
+	}
 
-	provider := anyrouterProvider{}
-	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
-		BaseURL:  server.URL,
-		SiteType: SiteTypeAnyrouter,
-	}, AuthConfig{
-		AuthTypes:  []string{AuthTypeCookie},
-		AuthValues: map[string]string{AuthTypeCookie: "session=browser-ok"},
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.NoError(t, err)
-	assert.Equal(t, CheckinResultSuccess, result.Status)
-	assert.Equal(t, "签到成功", result.Message)
-	assert.Equal(t, []string{"/api/user/sign_in"}, paths)
+			var paths []string
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, "session=browser-ok", r.Header.Get("Cookie"))
+				assert.Equal(t, "XMLHttpRequest", r.Header.Get("X-Requested-With"))
+				assert.Equal(t, tt.wantReferer(server.URL), r.Header.Get("Referer"))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+			}))
+			defer server.Close()
+
+			provider := anyrouterProvider{}
+			result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+				BaseURL:  tt.baseURL(server.URL),
+				SiteType: SiteTypeAnyrouter,
+			}, AuthConfig{
+				AuthTypes:  []string{AuthTypeCookie},
+				AuthValues: map[string]string{AuthTypeCookie: "session=browser-ok"},
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, CheckinResultSuccess, result.Status)
+			assert.Equal(t, "签到成功", result.Message)
+			assert.Equal(t, []string{"/api/user/sign_in"}, paths)
+		})
+	}
 }
 
 func TestAnyRouterProviderDoesNotSendUserIDHeader(t *testing.T) {

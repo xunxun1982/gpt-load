@@ -69,6 +69,7 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 	tests := []struct {
 		name               string
 		authToken          string
+		cookieSession      string
 		expectedAuthHeader string
 		response           string
 		expectedBalance    *string
@@ -76,6 +77,14 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 		{
 			name:               "happy path",
 			authToken:          "test-token",
+			expectedAuthHeader: "Bearer test-token",
+			response:           `{"code":0,"message":"success","data":{"balance":12.5}}`,
+			expectedBalance:    stringPtr("$12.50"),
+		},
+		{
+			name:               "access token with browser session cookie",
+			authToken:          "test-token",
+			cookieSession:      "session=browser-ok",
 			expectedAuthHeader: "Bearer test-token",
 			response:           `{"code":0,"message":"success","data":{"balance":12.5}}`,
 			expectedBalance:    stringPtr("$12.50"),
@@ -124,6 +133,7 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, "/api/v1/user/profile", r.URL.Path)
 				assert.Equal(t, tt.expectedAuthHeader, r.Header.Get("Authorization"))
+				assert.Equal(t, tt.cookieSession, r.Header.Get("Cookie"))
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(tt.response))
 			}))
@@ -136,13 +146,19 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 
 			service := NewBalanceService(db, encSvc)
 
-			authValue, err := encSvc.Encrypt(tt.authToken)
+			authType := AuthTypeAccessToken
+			authPlainValue := tt.authToken
+			if tt.cookieSession != "" {
+				authType = AuthTypeAccessToken + "," + AuthTypeCookie
+				authPlainValue = fmt.Sprintf(`{"%s":%q,"%s":%q}`, AuthTypeAccessToken, tt.authToken, AuthTypeCookie, tt.cookieSession)
+			}
+			authValue, err := encSvc.Encrypt(authPlainValue)
 			require.NoError(t, err)
 			site := &ManagedSite{
 				Name:      "Sub2API Site",
 				BaseURL:   server.URL + "/check-in",
 				SiteType:  SiteTypeSub2API,
-				AuthType:  AuthTypeAccessToken,
+				AuthType:  authType,
 				AuthValue: authValue,
 			}
 			require.NoError(t, db.Create(site).Error)
@@ -275,17 +291,27 @@ func TestBuildBalanceHeaders(t *testing.T) {
 	t.Run("access token", func(t *testing.T) {
 		t.Parallel()
 
-		headers := buildBalanceHeaders(AuthTypeAccessToken, "test-access-token", "123")
+		headers := buildBalanceHeaders(AuthTypeAccessToken, "test-access-token", "123", "")
 
 		assert.Equal(t, "Bearer test-access-token", headers["Authorization"])
 		assert.Equal(t, "123", headers["New-API-User"])
 		assert.Empty(t, headers["Cookie"])
 	})
 
+	t.Run("access token with browser session cookie", func(t *testing.T) {
+		t.Parallel()
+
+		headers := buildBalanceHeaders(AuthTypeAccessToken, "test-access-token", "123", "session=browser")
+
+		assert.Equal(t, "Bearer test-access-token", headers["Authorization"])
+		assert.Equal(t, "123", headers["New-API-User"])
+		assert.Equal(t, "session=browser", headers["Cookie"])
+	})
+
 	t.Run("cookie", func(t *testing.T) {
 		t.Parallel()
 
-		headers := buildBalanceHeaders(AuthTypeCookie, "session=test", "123")
+		headers := buildBalanceHeaders(AuthTypeCookie, "session=test", "123", "")
 
 		assert.Equal(t, "session=test", headers["Cookie"])
 		assert.Equal(t, "123", headers["New-API-User"])
@@ -295,7 +321,7 @@ func TestBuildBalanceHeaders(t *testing.T) {
 	t.Run("unsupported", func(t *testing.T) {
 		t.Parallel()
 
-		assert.Nil(t, buildBalanceHeaders(AuthTypeNone, "unused", "123"))
+		assert.Nil(t, buildBalanceHeaders(AuthTypeNone, "unused", "123", ""))
 	})
 }
 

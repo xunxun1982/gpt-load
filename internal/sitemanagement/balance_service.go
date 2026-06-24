@@ -296,6 +296,10 @@ func (s *BalanceService) fetchBalanceWithParser(
 ) *string {
 	apiURL := extractBaseURL(site.BaseURL) + urlSuffix
 	client := s.getHTTPClient(site)
+	cookieSession := ""
+	if authConfig.HasAuthType(AuthTypeCookie) {
+		cookieSession = authConfig.GetAuthValue(AuthTypeCookie)
+	}
 
 	for _, authType := range []string{AuthTypeAccessToken, AuthTypeCookie} {
 		if !authConfig.HasAuthType(authType) {
@@ -305,7 +309,7 @@ func (s *BalanceService) fetchBalanceWithParser(
 		if authValue == "" {
 			continue
 		}
-		headers := buildBalanceHeaders(authType, authValue, userID)
+		headers := buildBalanceHeaders(authType, authValue, userID, cookieSession)
 		if headers == nil {
 			continue
 		}
@@ -329,7 +333,7 @@ func (s *BalanceService) fetchBalanceWithParser(
 	return nil
 }
 
-func buildBalanceHeaders(authType, authValue, userID string) map[string]string {
+func buildBalanceHeaders(authType, authValue, userID, cookieSession string) map[string]string {
 	headers := make(map[string]string)
 	if userID != "" {
 		for k, v := range buildUserHeaders(userID) {
@@ -339,6 +343,10 @@ func buildBalanceHeaders(authType, authValue, userID string) map[string]string {
 	switch authType {
 	case AuthTypeAccessToken:
 		headers["Authorization"] = bearerAuthorizationValue(authValue)
+		// Some WAF-protected sites require the browser session cookie alongside bearer auth.
+		if cookieSession != "" {
+			headers["Cookie"] = cookieSession
+		}
 	case AuthTypeCookie:
 		headers["Cookie"] = authValue
 	default:
