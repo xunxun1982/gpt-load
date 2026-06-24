@@ -155,7 +155,9 @@ const logsLoading = ref(false);
 const logs = ref<CheckinLogDTO[]>([]);
 const logsSite = ref<ManagedSiteDTO | null>(null);
 
-const siteTypeOptions = computed(() => [
+const legacyVeloeraSiteType = "Veloera" as const;
+
+const baseSiteTypeOptions = computed<SelectOption[]>(() => [
   { label: t("siteManagement.siteTypeNewApi"), value: "new-api" },
   { label: t("siteManagement.siteTypeSub2Api"), value: "sub2api" },
   { label: t("siteManagement.siteTypeOneHub"), value: "one-hub" },
@@ -165,6 +167,26 @@ const siteTypeOptions = computed(() => [
   { label: t("siteManagement.siteTypeBrand"), value: "brand" },
   { label: t("siteManagement.siteTypeOther"), value: "unknown" },
 ]);
+
+const legacyVeloeraOption = computed<SelectOption>(() => ({
+  label: t("siteManagement.siteTypeVeloera"),
+  value: legacyVeloeraSiteType,
+}));
+
+const siteTypeLabelOptions = computed<SelectOption[]>(() => [
+  ...baseSiteTypeOptions.value.slice(0, 2),
+  legacyVeloeraOption.value,
+  ...baseSiteTypeOptions.value.slice(2),
+]);
+
+const siteTypeOptions = computed<SelectOption[]>(() => {
+  if (siteForm.site_type !== legacyVeloeraSiteType) {
+    return baseSiteTypeOptions.value;
+  }
+
+  // Keep legacy Veloera editable without exposing it for new site creation.
+  return siteTypeLabelOptions.value;
+});
 
 // Auth type options for multi-select
 const authTypeOptions = computed(() => [
@@ -688,7 +710,8 @@ function statusTag(status: ManagedSiteDTO["last_checkin_status"]) {
 }
 
 function getSiteTypeLabel(type: string) {
-  return siteTypeOptions.value.find(o => o.value === type)?.label || type;
+  const label = siteTypeLabelOptions.value.find(o => o.value === type)?.label;
+  return typeof label === "string" ? label : type;
 }
 
 /**

@@ -403,6 +403,14 @@ func TestNewAPIProviderDetectsHTMLChallengePage(t *testing.T) {
 	assert.Equal(t, msgBrowserChallengeDetected, result.Message)
 }
 
+func TestIsBrowserChallengeResponseIgnoresJSONForbiddenChallengeMessage(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`{"success":false,"message":"challenge token is invalid"}`)
+
+	assert.False(t, isBrowserChallengeResponse(http.StatusForbidden, data))
+}
+
 func TestResolveProviderMapsLegacyVeloeraToNewAPI(t *testing.T) {
 	t.Parallel()
 

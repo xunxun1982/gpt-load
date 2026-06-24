@@ -66,36 +66,97 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/v1/user/profile", r.URL.Path)
-		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"balance":12.5}}`))
-	}))
-	defer server.Close()
-
-	db := setupTestDB(t)
-	encSvc := setupTestEncryption(t)
-
-	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
-
-	service := NewBalanceService(db, encSvc)
-
-	authValue, err := encSvc.Encrypt("test-token")
-	require.NoError(t, err)
-	site := &ManagedSite{
-		Name:      "Sub2API Site",
-		BaseURL:   server.URL + "/check-in",
-		SiteType:  SiteTypeSub2API,
-		AuthType:  AuthTypeAccessToken,
-		AuthValue: authValue,
+	tests := []struct {
+		name               string
+		authToken          string
+		expectedAuthHeader string
+		response           string
+		expectedBalance    *string
+	}{
+		{
+			name:               "happy path",
+			authToken:          "test-token",
+			expectedAuthHeader: "Bearer test-token",
+			response:           `{"code":0,"message":"success","data":{"balance":12.5}}`,
+			expectedBalance:    stringPtr("$12.50"),
+		},
+		{
+			name:               "already bearer prefixed token",
+			authToken:          "Bearer test-token",
+			expectedAuthHeader: "Bearer test-token",
+			response:           `{"code":0,"message":"success","data":{"balance":12.5}}`,
+			expectedBalance:    stringPtr("$12.50"),
+		},
+		{
+			name:               "success false",
+			authToken:          "test-token",
+			expectedAuthHeader: "Bearer test-token",
+			response:           `{"success":false,"data":{"balance":12.5}}`,
+			expectedBalance:    nil,
+		},
+		{
+			name:               "nonzero code",
+			authToken:          "test-token",
+			expectedAuthHeader: "Bearer test-token",
+			response:           `{"code":1,"message":"failed","data":{"balance":12.5}}`,
+			expectedBalance:    nil,
+		},
+		{
+			name:               "zero data balance",
+			authToken:          "test-token",
+			expectedAuthHeader: "Bearer test-token",
+			response:           `{"code":0,"message":"success","data":{"balance":0}}`,
+			expectedBalance:    stringPtr("$0.00"),
+		},
+		{
+			name:               "root balance fallback",
+			authToken:          "test-token",
+			expectedAuthHeader: "Bearer test-token",
+			response:           `{"code":0,"message":"success","balance":8.75}`,
+			expectedBalance:    stringPtr("$8.75"),
+		},
 	}
-	require.NoError(t, db.Create(site).Error)
 
-	result := service.FetchSiteBalance(context.Background(), site)
-	require.NotNil(t, result)
-	require.NotNil(t, result.Balance)
-	assert.Equal(t, "$12.50", *result.Balance)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/api/v1/user/profile", r.URL.Path)
+				assert.Equal(t, tt.expectedAuthHeader, r.Header.Get("Authorization"))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			defer server.Close()
+
+			db := setupTestDB(t)
+			encSvc := setupTestEncryption(t)
+
+			require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+			service := NewBalanceService(db, encSvc)
+
+			authValue, err := encSvc.Encrypt(tt.authToken)
+			require.NoError(t, err)
+			site := &ManagedSite{
+				Name:      "Sub2API Site",
+				BaseURL:   server.URL + "/check-in",
+				SiteType:  SiteTypeSub2API,
+				AuthType:  AuthTypeAccessToken,
+				AuthValue: authValue,
+			}
+			require.NoError(t, db.Create(site).Error)
+
+			result := service.FetchSiteBalance(context.Background(), site)
+			require.NotNil(t, result)
+			if tt.expectedBalance == nil {
+				assert.Nil(t, result.Balance)
+				return
+			}
+			require.NotNil(t, result.Balance)
+			assert.Equal(t, *tt.expectedBalance, *result.Balance)
+		})
+	}
 }
 
 // TestBalanceService_FetchSiteBalance_NoAuth tests balance fetch without auth

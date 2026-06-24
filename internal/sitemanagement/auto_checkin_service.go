@@ -1185,10 +1185,10 @@ func isBrowserChallengeResponse(statusCode int, responseBody []byte) bool {
 		return false
 	}
 	respLower := strings.ToLower(string(responseBody))
+	// Avoid treating ordinary JSON API errors that mention "challenge" as browser challenges.
 	if statusCode == http.StatusForbidden &&
 		(strings.Contains(respLower, "cloudflare") ||
 			strings.Contains(respLower, "cf-") ||
-			strings.Contains(respLower, "challenge") ||
 			strings.Contains(respLower, "ray id")) {
 		return true
 	}
