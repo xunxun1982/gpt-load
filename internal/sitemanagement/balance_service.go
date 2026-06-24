@@ -281,13 +281,20 @@ func (s *BalanceService) supportsBalance(siteType string) bool {
 // fetchBalanceFromAPI fetches balance from the site's provider-specific profile endpoint.
 func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedSite, authConfig AuthConfig, userID string) *string {
 	if site.SiteType == SiteTypeSub2API {
-		return s.fetchSub2APIBalanceFromAPI(ctx, site, authConfig, userID)
+		return s.fetchBalanceWithParser(ctx, site, authConfig, userID, "/api/v1/user/profile", s.parseSub2APIBalanceResponse)
 	}
+	return s.fetchBalanceWithParser(ctx, site, authConfig, userID, "/api/user/self", s.parseBalanceResponse)
+}
 
-	// Build API URL
-	apiURL := extractBaseURL(site.BaseURL) + "/api/user/self"
-
-	// Get appropriate HTTP client and make request
+func (s *BalanceService) fetchBalanceWithParser(
+	ctx context.Context,
+	site *ManagedSite,
+	authConfig AuthConfig,
+	userID string,
+	urlSuffix string,
+	parse func([]byte) *string,
+) *string {
+	apiURL := extractBaseURL(site.BaseURL) + urlSuffix
 	client := s.getHTTPClient(site)
 
 	for _, authType := range []string{AuthTypeAccessToken, AuthTypeCookie} {
@@ -314,43 +321,7 @@ func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedS
 			logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site API")
 			continue
 		}
-		if balance := s.parseBalanceResponse(data); balance != nil {
-			return balance
-		}
-	}
-
-	return nil
-}
-
-func (s *BalanceService) fetchSub2APIBalanceFromAPI(ctx context.Context, site *ManagedSite, authConfig AuthConfig, userID string) *string {
-	apiURL := extractBaseURL(site.BaseURL) + "/api/v1/user/profile"
-	client := s.getHTTPClient(site)
-
-	for _, authType := range []string{AuthTypeAccessToken, AuthTypeCookie} {
-		if !authConfig.HasAuthType(authType) {
-			continue
-		}
-		authValue := authConfig.GetAuthValue(authType)
-		if authValue == "" {
-			continue
-		}
-		headers := buildBalanceHeaders(authType, authValue, userID)
-		if headers == nil {
-			continue
-		}
-
-		var data []byte
-		var err error
-		if shouldUseStealthRequest(*site) {
-			data, _, err = doStealthJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
-		} else {
-			data, _, err = doJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
-		}
-		if err != nil {
-			logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch Sub2API balance from profile API")
-			continue
-		}
-		if balance := s.parseSub2APIBalanceResponse(data); balance != nil {
+		if balance := parse(data); balance != nil {
 			return balance
 		}
 	}

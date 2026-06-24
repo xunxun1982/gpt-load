@@ -1180,22 +1180,6 @@ func shouldUseStealthRequest(site ManagedSite) bool {
 	return isStealthBypassMethod(site.BypassMethod)
 }
 
-// isCFChallengeResponse checks if an HTTP response indicates a Cloudflare challenge.
-// Returns true if the response appears to be a CF challenge page (403 with CF markers).
-// Note: Per Cloudflare docs, the official way is to check cf-mitigated header,
-// but we also check body content as fallback for compatibility with various setups.
-func isCFChallengeResponse(statusCode int, responseBody []byte) bool {
-	if statusCode != 403 {
-		return false
-	}
-	// Normalize to lowercase once for consistent case-insensitive matching
-	respLower := strings.ToLower(string(responseBody))
-	return strings.Contains(respLower, "cloudflare") ||
-		strings.Contains(respLower, "cf-") ||
-		strings.Contains(respLower, "challenge") ||
-		strings.Contains(respLower, "ray id")
-}
-
 func isBrowserChallengeResponse(statusCode int, responseBody []byte) bool {
 	if len(responseBody) == 0 {
 		return false
@@ -1575,9 +1559,6 @@ func (p sub2APIProvider) requestCheckIn(
 			"resp_msg":    resp.Message,
 			"error":       err.Error(),
 		}).Warn("Sub2API check-in HTTP error")
-		if useStealth && isCFChallengeResponse(statusCode, data) {
-			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, statusCode, false, nil
-		}
 		if isAlreadyCheckedMessage(resp.Message) {
 			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, statusCode, false, nil
 		}
@@ -1844,10 +1825,6 @@ func (p anyrouterProvider) tryCheckInWithAuthType(
 			"error":       err.Error(),
 		}).Warn("Anyrouter check-in HTTP error")
 
-		if isBrowserChallengeResponse(statusCode, data) {
-			return providerResult{Status: CheckinResultFailed, Message: msgBrowserChallengeDetected}, nil
-		}
-
 		if isAlreadyCheckedMessage(resp.Message) {
 			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
 		}
@@ -2086,11 +2063,6 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 			"resp_msg":    resp.Message,
 			"error":       err.Error(),
 		}).Warn("NewAPI check-in HTTP error")
-
-		// Check for Cloudflare challenge response
-		if useStealth && isCFChallengeResponse(statusCode, data) {
-			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
-		}
 
 		// Check if response body contains "already checked" message
 		if isAlreadyCheckedMessage(resp.Message) {
