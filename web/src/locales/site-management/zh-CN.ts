@@ -51,10 +51,11 @@ export default {
   bypassMethodNone: "无",
   bypassMethodStealth: "隐身模式 (TLS指纹)",
   stealthBypassHint: "⚠️ 隐身绕过需要使用 Cookie 认证方式",
-  stealthCookieHint: "💡 请在 Cookie 中包含 CF Cookies（cf_clearance、acw_tc 等）以绕过 Cloudflare",
+  stealthCookieHint:
+    "💡 请在 Cookie 中包含浏览器防护 Cookie（cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2 等）",
   stealthRequiresCookieAuth: "隐身绕过需要使用 Cookie 认证方式",
   stealthRequiresCookieValue: "隐身绕过需要填写 Cookie 值",
-  missingCFCookies: "缺少 Cloudflare 绕过所需的 CF Cookies，需要以下至少一个：{cookies}",
+  missingCFCookies: "缺少浏览器防护 Cookie，需要以下至少一个：{cookies}",
   maxTwoAuthTypes: "最多只能选择 2 种认证方式",
 
   // Auth related
@@ -68,7 +69,11 @@ export default {
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
-    "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了 Cloudflare 防护，还需包含 cf_clearance。",
+    "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了浏览器防护，还需包含 cf_clearance、acw_tc 等防护 Cookie。",
+  sub2ApiAuthHint:
+    "Sub2API 选择 Access Token；AuthValue/Token 填浏览器开发者工具 Application/应用 -> Local Storage -> 当前 Sub2API 域名 -> auth_token，用户ID留空。",
+  anyrouterAuthHint:
+    "AnyRouter 选择 Cookie；登录站点后在 Network 中找 https://<AnyRouter域名>/api/user/sign_in 请求，复制 Request Headers 里的完整 Cookie，用户ID留空。",
   multiAuthHint:
     "已选择多个认证方式。签到时将先尝试 Access Token，失败后再尝试 Cookie，任一成功即算签到成功。",
   hasAuth: "已配置认证",
@@ -78,6 +83,7 @@ export default {
   siteTypeOther: "其他",
   siteTypeBrand: "品牌",
   siteTypeNewApi: "New API",
+  siteTypeSub2Api: "Sub2API",
   siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
   siteTypeDoneHub: "Done Hub",
@@ -168,10 +174,11 @@ export default {
   backendMsg_unsupportedAuthType: "不支持的认证类型",
   backendMsg_anyrouterRequiresCookie: "Anyrouter 需要 Cookie 认证",
   backendMsg_cloudflareChallenge: "Cloudflare 验证，请从浏览器更新 Cookie",
+  backendMsg_browserChallenge: "浏览器验证，请从浏览器更新 Cookie 或防护 Cookie",
   backendMsg_alreadyCheckedIn: "今日已签到",
   backendMsg_stealthRequiresCookie: "隐身绕过需要使用 Cookie 认证",
   backendMsg_missingCfCookies:
-    "缺少 CF Cookies，需要以下之一：cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2、__cf_bm、_cfuvid",
+    "缺少浏览器防护 Cookie，需要以下之一：cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2、__cf_bm、_cfuvid",
 
   // Import/Export
   exportEncrypted: "加密导出",

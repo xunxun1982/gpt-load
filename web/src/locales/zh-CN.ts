@@ -1045,9 +1045,14 @@ export default {
     authTypeAccessToken: "Access Token",
     authTypeCookie: "Cookie",
     authTypeCookieHint:
-      "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了 Cloudflare 防护，还需包含 cf_clearance。",
+      "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了浏览器防护，还需包含 cf_clearance、acw_tc 等防护 Cookie。",
+    sub2ApiAuthHint:
+      "Sub2API 选择 Access Token；AuthValue/Token 填浏览器开发者工具 Application/应用 -> Local Storage -> 当前 Sub2API 域名 -> auth_token，用户ID留空。",
+    anyrouterAuthHint:
+      "AnyRouter 选择 Cookie；登录站点后在 Network 中找 https://<AnyRouter域名>/api/user/sign_in 请求，复制 Request Headers 里的完整 Cookie，用户ID留空。",
     authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
     siteTypeUnknown: "未知",
+    siteTypeSub2Api: "Sub2API",
     siteTypeVeloera: "Veloera",
     siteTypeWong: "Wong-gongyi",
     lastStatus: "最近状态",

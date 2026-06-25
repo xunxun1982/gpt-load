@@ -52,11 +52,10 @@ export default {
   bypassMethodStealth: "ステルス (TLS指紋)",
   stealthBypassHint: "⚠️ ステルスバイパスにはCookie認証が必要です",
   stealthCookieHint:
-    "💡 Cloudflareバイパスのため、ブラウザからCF Cookies（cf_clearance、acw_tcなど）を含めてください",
+    "💡 ブラウザからWAF Cookie（cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2など）を含めてください",
   stealthRequiresCookieAuth: "ステルスバイパスにはCookie認証が必要です",
   stealthRequiresCookieValue: "ステルスバイパスにはCookie値が必要です",
-  missingCFCookies:
-    "Cloudflareバイパスに必要なCF Cookiesが不足しています。次のいずれかが必要：{cookies}",
+  missingCFCookies: "ブラウザWAF Cookieが不足しています。次のいずれかが必要：{cookies}",
   maxTwoAuthTypes: "認証方式は最大2つまで選択できます",
 
   // Auth related
@@ -70,7 +69,11 @@ export default {
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
-    "ブラウザからCookieを取得してください。session/tokenなどのフィールドを含めます。サイトがCloudflare保護を使用している場合は、cf_clearanceも含めてください。",
+    "ブラウザからCookieを取得してください。session/tokenなどのフィールドを含めます。サイトがブラウザ保護を使用している場合は、cf_clearanceやacw_tcなどのWAF Cookieも含めてください。",
+  sub2ApiAuthHint:
+    "Sub2APIはアクセストークンを選択します。AuthValue/TokenにはDevTools Application -> Local Storage -> 現在のSub2APIドメイン -> auth_tokenを入力し、ユーザーIDは空欄にします。",
+  anyrouterAuthHint:
+    "AnyRouterはCookieを選択します。ログイン後、Networkで https://<AnyRouterドメイン>/api/user/sign_in リクエストを探し、Request HeadersのCookie全体をコピーします。ユーザーIDは空欄にします。",
   multiAuthHint:
     "複数の認証方式が選択されています。チェックイン時はまずアクセストークンを試し、失敗した場合はCookieを試します。いずれかが成功すればチェックイン成功となります。",
   hasAuth: "認証設定済み",
@@ -80,6 +83,7 @@ export default {
   siteTypeOther: "その他",
   siteTypeBrand: "ブランド",
   siteTypeNewApi: "New API",
+  siteTypeSub2Api: "Sub2API",
   siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
   siteTypeDoneHub: "Done Hub",
@@ -166,10 +170,12 @@ export default {
   backendMsg_unsupportedAuthType: "サポートされていない認証タイプ",
   backendMsg_anyrouterRequiresCookie: "AnyrouterはCookie認証が必要です",
   backendMsg_cloudflareChallenge: "Cloudflareチャレンジ、ブラウザからCookiesを更新してください",
+  backendMsg_browserChallenge:
+    "ブラウザチャレンジです。ブラウザからCookieまたはWAF Cookieを更新してください",
   backendMsg_alreadyCheckedIn: "本日チェックイン済み",
   backendMsg_stealthRequiresCookie: "ステルスバイパスにはCookie認証が必要です",
   backendMsg_missingCfCookies:
-    "CF Cookiesが不足しています。次のいずれかが必要: cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2、__cf_bm、_cfuvid",
+    "ブラウザWAF Cookieが不足しています。次のいずれかが必要: cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2、__cf_bm、_cfuvid",
 
   // Import/Export
   exportEncrypted: "暗号化エクスポート",

@@ -40,7 +40,8 @@ const (
 	maxResponseBodySize = 2 << 20 // 2 MB limit for HTTP response body
 
 	// Message constants for check-in results
-	msgNoValidCredentials = "no valid credentials"
+	msgNoValidCredentials       = "no valid credentials"
+	msgBrowserChallengeDetected = "browser challenge, update cookies from browser"
 
 	newAPICheckinPoWAction = "checkin"
 	maxPoWAttempts         = uint64(1 << 32)
@@ -1048,11 +1049,11 @@ type checkinProvider interface {
 
 func resolveProvider(siteType string) checkinProvider {
 	switch siteType {
-	case SiteTypeNewAPI, SiteTypeOneHub, SiteTypeDoneHub:
+	case SiteTypeNewAPI, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub:
 		// NewAPI-compatible sites share the same checkin endpoint: POST /api/user/checkin
 		return newAPIProvider{}
-	case SiteTypeVeloera:
-		return veloeraProvider{}
+	case SiteTypeSub2API:
+		return sub2APIProvider{}
 	case SiteTypeWongGongyi:
 		return wongProvider{}
 	case SiteTypeAnyrouter:
@@ -1109,6 +1110,17 @@ func buildUserHeaders(userID string) map[string]string {
 		"Rix-Api-User": uid,
 		"neo-api-user": uid,
 	}
+}
+
+func bearerAuthorizationValue(token string) string {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
+		return ""
+	}
+	if len(trimmed) >= len("Bearer ") && strings.EqualFold(trimmed[:len("Bearer ")], "Bearer ") {
+		return trimmed
+	}
+	return "Bearer " + trimmed
 }
 
 // knownWAFCookieNames lists known Cloudflare/WAF cookie names that indicate bypass capability.
@@ -1168,20 +1180,45 @@ func shouldUseStealthRequest(site ManagedSite) bool {
 	return isStealthBypassMethod(site.BypassMethod)
 }
 
-// isCFChallengeResponse checks if an HTTP response indicates a Cloudflare challenge.
-// Returns true if the response appears to be a CF challenge page (403 with CF markers).
-// Note: Per Cloudflare docs, the official way is to check cf-mitigated header,
-// but we also check body content as fallback for compatibility with various setups.
-func isCFChallengeResponse(statusCode int, responseBody []byte) bool {
-	if statusCode != 403 {
+func isBrowserChallengeResponse(statusCode int, responseBody []byte) bool {
+	if len(responseBody) == 0 {
 		return false
 	}
-	// Normalize to lowercase once for consistent case-insensitive matching
 	respLower := strings.ToLower(string(responseBody))
-	return strings.Contains(respLower, "cloudflare") ||
-		strings.Contains(respLower, "cf-") ||
-		strings.Contains(respLower, "challenge") ||
-		strings.Contains(respLower, "ray id")
+	// Avoid treating ordinary JSON API errors that mention "challenge" as browser challenges.
+	if statusCode == http.StatusForbidden &&
+		(strings.Contains(respLower, "cloudflare") ||
+			strings.Contains(respLower, "cf-") ||
+			strings.Contains(respLower, "ray id")) {
+		return true
+	}
+
+	htmlLike := strings.Contains(respLower, "<!doctype html") ||
+		strings.Contains(respLower, "<html") ||
+		strings.Contains(respLower, "<script")
+	if !htmlLike {
+		return false
+	}
+
+	challengeSignals := []string{
+		"cf-mitigated",
+		"cloudflare",
+		"cf-chl",
+		"cf-ray",
+		"ray id",
+		"just a moment",
+		"challenge",
+		"acw_sc__v2",
+		"acw_tc",
+		"cdn_sec_tc",
+		"arg1=",
+	}
+	for _, signal := range challengeSignals {
+		if strings.Contains(respLower, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func doJSONRequest(ctx context.Context, client *http.Client, method, fullURL string, headers map[string]string, body any) ([]byte, int, error) {
@@ -1297,7 +1334,9 @@ func isAlreadyCheckedMessage(msg string) bool {
 		return true
 	}
 	// English patterns (use specific phrases to avoid false positives like "Token already expired")
-	if strings.Contains(m, "already checked") || strings.Contains(m, "already signed") {
+	if strings.Contains(m, "already checked") ||
+		strings.Contains(m, "already signed") ||
+		strings.Contains(m, "already used today") {
 		return true
 	}
 	// Japanese patterns
@@ -1410,47 +1449,44 @@ func tryMultiAuth(
 	return providerResult{Status: CheckinResultSkipped, Message: msgNoValidCredentials}, nil
 }
 
-type veloeraProvider struct{}
+type sub2APIProvider struct{}
 
-func (p veloeraProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error) {
-	// Check if auth config is empty
+func (p sub2APIProvider) CheckIn(ctx context.Context, client *http.Client, site ManagedSite, authConfig AuthConfig) (providerResult, error) {
 	if authConfig.IsEmpty() {
 		return providerResult{Status: CheckinResultSkipped, Message: "missing credentials"}, nil
 	}
 
 	useStealth := shouldUseStealthRequest(site)
-
-	// Try each auth type in order: access_token first, then cookie
 	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
+	var cookieSession string
+	if authConfig.HasAuthType(AuthTypeCookie) {
+		cookieSession = authConfig.GetAuthValue(AuthTypeCookie)
+	}
 
 	return tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
-		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, useStealth)
+		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, cookieSession, useStealth)
 	})
 }
 
-func (p veloeraProvider) tryCheckInWithAuthType(
+func (p sub2APIProvider) tryCheckInWithAuthType(
 	ctx context.Context,
 	client *http.Client,
 	site ManagedSite,
 	authType string,
 	authValue string,
+	cookieSession string,
 	useStealth bool,
 ) (providerResult, error) {
-	headers := buildUserHeaders(site.UserID)
-	if headers == nil {
-		headers = make(map[string]string)
-	}
-
-	// Set auth header based on auth type
+	headers := make(map[string]string)
 	switch authType {
 	case AuthTypeAccessToken:
 		if useStealth {
 			return providerResult{Status: CheckinResultFailed, Message: "stealth bypass requires cookie auth"}, nil
 		}
-		if strings.TrimSpace(site.UserID) == "" {
-			return providerResult{Status: CheckinResultSkipped, Message: "missing user_id"}, nil
+		headers["Authorization"] = bearerAuthorizationValue(authValue)
+		if cookieSession != "" {
+			headers["Cookie"] = cookieSession
 		}
-		headers["Authorization"] = "Bearer " + authValue
 	case AuthTypeCookie:
 		if useStealth {
 			missingCookies := validateCFCookies(authValue)
@@ -1466,8 +1502,28 @@ func (p veloeraProvider) tryCheckInWithAuthType(
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
-	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/check_in")
+	for _, apiURL := range buildSub2APICheckinURLs(site) {
+		result, _, missingEndpoint, err := p.requestCheckIn(ctx, client, apiURL, headers, authType, useStealth)
+		if err != nil {
+			return result, err
+		}
+		if missingEndpoint {
+			continue
+		}
+		return result, nil
+	}
 
+	return providerResult{Status: CheckinResultFailed, Message: "check-in endpoint not configured"}, nil
+}
+
+func (p sub2APIProvider) requestCheckIn(
+	ctx context.Context,
+	client *http.Client,
+	apiURL string,
+	headers map[string]string,
+	authType string,
+	useStealth bool,
+) (providerResult, int, bool, error) {
 	var data []byte
 	var statusCode int
 	var err error
@@ -1477,70 +1533,109 @@ func (p veloeraProvider) tryCheckInWithAuthType(
 		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
 	}
 
-	var resp struct {
-		Success bool        `json:"success"`
-		Message string      `json:"message"`
-		Data    interface{} `json:"data"`
+	resp := parseGenericCheckInResponse(data)
+	if isBrowserChallengeResponse(statusCode, data) {
+		return providerResult{Status: CheckinResultFailed, Message: msgBrowserChallengeDetected}, statusCode, false, nil
 	}
-
-	// Try to parse response body even on error (may contain useful error message)
-	if len(data) > 0 {
-		_ = json.Unmarshal(data, &resp)
-	}
-
-	// Handle HTTP errors with parsed response message
 	if err != nil {
-		// Log error with full details at Warn level so users can see it
+		if sub2APIMissingEndpointStatus(statusCode) {
+			logrus.WithFields(logrus.Fields{
+				"endpoint":    pathForLog(apiURL),
+				"auth_type":   authType,
+				"status_code": statusCode,
+				"resp_msg":    resp.Message,
+			}).Debug("Sub2API check-in endpoint missing, trying next endpoint")
+			return providerResult{Status: CheckinResultFailed, Message: formatHTTPError(statusCode)}, statusCode, true, nil
+		}
 		logrus.WithFields(logrus.Fields{
-			"site_id":     site.ID,
-			"site_name":   site.Name,
-			"api_url":     apiURL,
+			"endpoint":    pathForLog(apiURL),
 			"auth_type":   authType,
 			"status_code": statusCode,
-			"response":    truncateString(string(data), 500),
 			"resp_msg":    resp.Message,
 			"error":       err.Error(),
-		}).Warn("Veloera check-in HTTP error")
-
-		// Check for Cloudflare challenge response
-		if useStealth && isCFChallengeResponse(statusCode, data) {
-			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
-		}
-
-		// Check if response body contains "already checked" message
+		}).Warn("Sub2API check-in HTTP error")
 		if isAlreadyCheckedMessage(resp.Message) {
-			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
+			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, statusCode, false, nil
 		}
-		// Return detailed error message with HTTP status code
 		if resp.Message != "" {
-			return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("HTTP %d: %s", statusCode, resp.Message)}, nil
+			return providerResult{Status: CheckinResultFailed, Message: fmt.Sprintf("HTTP %d: %s", statusCode, resp.Message)}, statusCode, false, nil
 		}
-		return providerResult{Status: CheckinResultFailed, Message: formatHTTPError(statusCode)}, nil
-	}
-
-	// Log response for debugging when check-in fails
-	if !resp.Success {
-		logrus.WithFields(logrus.Fields{
-			"site_id":     site.ID,
-			"site_name":   site.Name,
-			"auth_type":   authType,
-			"status_code": statusCode,
-			"response":    truncateString(string(data), 500),
-			"resp_msg":    resp.Message,
-			"success":     resp.Success,
-		}).Warn("Veloera check-in failed")
+		return providerResult{Status: CheckinResultFailed, Message: formatHTTPError(statusCode)}, statusCode, false, nil
 	}
 
 	if isAlreadyCheckedMessage(resp.Message) {
-		return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
+		return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, statusCode, false, nil
 	}
 	if resp.Success {
-		return providerResult{Status: CheckinResultSuccess, Message: resp.Message}, nil
+		return providerResult{Status: CheckinResultSuccess, Message: resp.Message}, statusCode, false, nil
 	}
 	if resp.Message != "" {
-		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, statusCode, false, nil
 	}
-	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, nil
+	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, statusCode, false, nil
+}
+
+type genericCheckInResponse struct {
+	Success bool
+	Message string
+}
+
+func parseGenericCheckInResponse(data []byte) genericCheckInResponse {
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Code    *int   `json:"code"`
+	}
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &resp)
+	}
+	return genericCheckInResponse{
+		Success: resp.Success || (resp.Code != nil && *resp.Code == 0),
+		Message: resp.Message,
+	}
+}
+
+func buildSub2APICheckinURLs(site ManagedSite) []string {
+	urls := make([]string, 0, 3)
+	add := func(path string) {
+		apiURL := buildCheckinURL(site.BaseURL, path, path)
+		for _, existing := range urls {
+			if existing == apiURL {
+				return
+			}
+		}
+		urls = append(urls, apiURL)
+	}
+
+	if strings.TrimSpace(site.CustomCheckInURL) != "" {
+		add(site.CustomCheckInURL)
+	}
+	add("/api/v1/user/check-in")
+	add("/api/v1/check-in")
+	return urls
+}
+
+func sub2APIMissingEndpointStatus(statusCode int) bool {
+	return statusCode == http.StatusNotFound ||
+		statusCode == http.StatusMethodNotAllowed ||
+		statusCode == http.StatusGone
+}
+
+func pathForLog(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Path == "" {
+		return ""
+	}
+	return parsed.Path
+}
+
+func anyrouterReferer(siteBaseURL string) string {
+	trimmed := strings.TrimSpace(siteBaseURL)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Host == "" {
+		return trimmed
+	}
+	return extractBaseURL(trimmed) + "/console/personal"
 }
 
 type wongProvider struct{}
@@ -1574,7 +1669,7 @@ func (p wongProvider) tryCheckInWithAuthType(
 	// Set auth header based on auth type
 	switch authType {
 	case AuthTypeAccessToken:
-		headers["Authorization"] = "Bearer " + authValue
+		headers["Authorization"] = bearerAuthorizationValue(authValue)
 	case AuthTypeCookie:
 		headers["Cookie"] = authValue
 	default:
@@ -1682,11 +1777,7 @@ func (p anyrouterProvider) tryCheckInWithAuthType(
 		}
 	}
 
-	// Build headers with user ID for API authentication
-	headers := buildUserHeaders(site.UserID)
-	if headers == nil {
-		headers = make(map[string]string)
-	}
+	headers := make(map[string]string)
 
 	// Add required headers for anyrouter
 	headers["Cookie"] = authValue
@@ -1695,7 +1786,7 @@ func (p anyrouterProvider) tryCheckInWithAuthType(
 	// Extract base URL for Origin and Referer headers (important for CORS)
 	baseURL := extractBaseURL(site.BaseURL)
 	headers["Origin"] = baseURL
-	headers["Referer"] = site.BaseURL // Use full URL with path for Referer
+	headers["Referer"] = anyrouterReferer(site.BaseURL)
 
 	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/sign_in")
 
@@ -1709,14 +1800,11 @@ func (p anyrouterProvider) tryCheckInWithAuthType(
 		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
 	}
 
-	var resp struct {
-		Success bool   `json:"success"`
-		Message string `json:"message"`
+	if isBrowserChallengeResponse(statusCode, data) {
+		return providerResult{Status: CheckinResultFailed, Message: msgBrowserChallengeDetected}, nil
 	}
 
-	if len(data) > 0 {
-		_ = json.Unmarshal(data, &resp)
-	}
+	resp := parseAnyrouterCheckInResponse(data)
 
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -1729,16 +1817,14 @@ func (p anyrouterProvider) tryCheckInWithAuthType(
 			"error":       err.Error(),
 		}).Warn("Anyrouter check-in HTTP error")
 
-		// Check for Cloudflare challenge response
-		if isCFChallengeResponse(statusCode, data) {
-			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
-		}
-
 		if isAlreadyCheckedMessage(resp.Message) {
 			return providerResult{Status: CheckinResultAlreadyChecked, Message: resp.Message}, nil
 		}
 		if resp.Message != "" {
 			return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
+		}
+		if resp.Code != nil || resp.Ret != nil {
+			return providerResult{Status: CheckinResultFailed, Message: anyrouterFailureMessage(resp, statusCode)}, nil
 		}
 		return providerResult{Status: CheckinResultFailed, Message: formatHTTPError(statusCode)}, nil
 	}
@@ -1757,7 +1843,46 @@ func (p anyrouterProvider) tryCheckInWithAuthType(
 	if resp.Message != "" {
 		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, nil
 	}
-	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, nil
+	return providerResult{Status: CheckinResultFailed, Message: anyrouterFailureMessage(resp, statusCode)}, nil
+}
+
+type anyrouterCheckInResponse struct {
+	Success bool
+	Message string
+	Code    *int
+	Ret     *int
+}
+
+func parseAnyrouterCheckInResponse(data []byte) anyrouterCheckInResponse {
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Code    *int   `json:"code"`
+		Ret     *int   `json:"ret"`
+	}
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &resp)
+	}
+	return anyrouterCheckInResponse{
+		Success: resp.Success,
+		Message: resp.Message,
+		Code:    resp.Code,
+		Ret:     resp.Ret,
+	}
+}
+
+func anyrouterFailureMessage(resp anyrouterCheckInResponse, statusCode int) string {
+	parts := []string{"check-in failed"}
+	if statusCode > 0 {
+		parts = append(parts, fmt.Sprintf("http=%d", statusCode))
+	}
+	if resp.Code != nil {
+		parts = append(parts, fmt.Sprintf("code=%d", *resp.Code))
+	}
+	if resp.Ret != nil {
+		parts = append(parts, fmt.Sprintf("ret=%d", *resp.Ret))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // newAPIProvider handles check-in for NewAPI-compatible sites (new-api, one-hub, done-hub).
@@ -1813,7 +1938,7 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 		if useStealth {
 			return providerResult{Status: CheckinResultFailed, Message: "stealth bypass requires cookie auth"}, nil
 		}
-		headers["Authorization"] = "Bearer " + authValue
+		headers["Authorization"] = bearerAuthorizationValue(authValue)
 		if cookieSession != "" {
 			// Cookie only carries browser session state such as Turnstile verification.
 			// Authorization remains the primary identity for this attempt.
@@ -1881,6 +2006,10 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 		_ = json.Unmarshal(data, &resp)
 	}
 
+	if isBrowserChallengeResponse(statusCode, data) {
+		return providerResult{Status: CheckinResultFailed, Message: msgBrowserChallengeDetected}, nil
+	}
+
 	if err != nil && shouldFallbackNewAPICheckinToSignIn(site.CustomCheckInURL, statusCode, resp.Message) {
 		signInURL := buildCheckinURL(site.BaseURL, "", "/api/user/sign_in")
 		logrus.WithFields(logrus.Fields{
@@ -1903,6 +2032,9 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 		if len(data) > 0 {
 			_ = json.Unmarshal(data, &resp)
 		}
+		if isBrowserChallengeResponse(statusCode, data) {
+			return providerResult{Status: CheckinResultFailed, Message: msgBrowserChallengeDetected}, nil
+		}
 		apiURL = signInURL
 	}
 
@@ -1923,11 +2055,6 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 			"resp_msg":    resp.Message,
 			"error":       err.Error(),
 		}).Warn("NewAPI check-in HTTP error")
-
-		// Check for Cloudflare challenge response
-		if useStealth && isCFChallengeResponse(statusCode, data) {
-			return providerResult{Status: CheckinResultFailed, Message: "cloudflare challenge, update cookies from browser"}, nil
-		}
 
 		// Check if response body contains "already checked" message
 		if isAlreadyCheckedMessage(resp.Message) {
@@ -2031,6 +2158,9 @@ func (p newAPIProvider) retryCheckInWithPoW(
 	}
 	if len(data) > 0 {
 		_ = json.Unmarshal(data, &resp)
+	}
+	if isBrowserChallengeResponse(statusCode, data) {
+		return providerResult{Status: CheckinResultFailed, Message: msgBrowserChallengeDetected}, nil
 	}
 	if err != nil {
 		logrus.WithFields(logrus.Fields{

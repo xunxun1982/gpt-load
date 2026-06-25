@@ -39,6 +39,15 @@ type userSelfResponse struct {
 	Quota int64 `json:"quota"`
 }
 
+type sub2APIProfileResponse struct {
+	Success *bool `json:"success"`
+	Code    *int  `json:"code"`
+	Data    struct {
+		Balance *float64 `json:"balance"`
+	} `json:"data"`
+	Balance *float64 `json:"balance"`
+}
+
 // BalanceService handles fetching balance information from managed sites
 type BalanceService struct {
 	db               *gorm.DB
@@ -262,20 +271,35 @@ func (s *BalanceService) updateSiteBalance(ctx context.Context, siteID uint, bal
 // supportsBalance checks if a site type supports balance fetching
 func (s *BalanceService) supportsBalance(siteType string) bool {
 	switch siteType {
-	case SiteTypeNewAPI, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub, SiteTypeWongGongyi:
+	case SiteTypeNewAPI, SiteTypeSub2API, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub, SiteTypeWongGongyi:
 		return true
 	default:
 		return false
 	}
 }
 
-// fetchBalanceFromAPI fetches balance from the site's /api/user/self endpoint.
+// fetchBalanceFromAPI fetches balance from the site's provider-specific profile endpoint.
 func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedSite, authConfig AuthConfig, userID string) *string {
-	// Build API URL
-	apiURL := extractBaseURL(site.BaseURL) + "/api/user/self"
+	if site.SiteType == SiteTypeSub2API {
+		return s.fetchBalanceWithParser(ctx, site, authConfig, userID, "/api/v1/user/profile", s.parseSub2APIBalanceResponse)
+	}
+	return s.fetchBalanceWithParser(ctx, site, authConfig, userID, "/api/user/self", s.parseBalanceResponse)
+}
 
-	// Get appropriate HTTP client and make request
+func (s *BalanceService) fetchBalanceWithParser(
+	ctx context.Context,
+	site *ManagedSite,
+	authConfig AuthConfig,
+	userID string,
+	urlSuffix string,
+	parse func([]byte) *string,
+) *string {
+	apiURL := extractBaseURL(site.BaseURL) + urlSuffix
 	client := s.getHTTPClient(site)
+	cookieSession := ""
+	if authConfig.HasAuthType(AuthTypeCookie) {
+		cookieSession = authConfig.GetAuthValue(AuthTypeCookie)
+	}
 
 	for _, authType := range []string{AuthTypeAccessToken, AuthTypeCookie} {
 		if !authConfig.HasAuthType(authType) {
@@ -285,7 +309,7 @@ func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedS
 		if authValue == "" {
 			continue
 		}
-		headers := buildBalanceHeaders(authType, authValue, userID)
+		headers := buildBalanceHeaders(authType, authValue, userID, cookieSession)
 		if headers == nil {
 			continue
 		}
@@ -301,7 +325,7 @@ func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedS
 			logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site API")
 			continue
 		}
-		if balance := s.parseBalanceResponse(data); balance != nil {
+		if balance := parse(data); balance != nil {
 			return balance
 		}
 	}
@@ -309,7 +333,7 @@ func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedS
 	return nil
 }
 
-func buildBalanceHeaders(authType, authValue, userID string) map[string]string {
+func buildBalanceHeaders(authType, authValue, userID, cookieSession string) map[string]string {
 	headers := make(map[string]string)
 	if userID != "" {
 		for k, v := range buildUserHeaders(userID) {
@@ -318,7 +342,11 @@ func buildBalanceHeaders(authType, authValue, userID string) map[string]string {
 	}
 	switch authType {
 	case AuthTypeAccessToken:
-		headers["Authorization"] = "Bearer " + authValue
+		headers["Authorization"] = bearerAuthorizationValue(authValue)
+		// Some WAF-protected sites require the browser session cookie alongside bearer auth.
+		if cookieSession != "" {
+			headers["Cookie"] = cookieSession
+		}
 	case AuthTypeCookie:
 		headers["Cookie"] = authValue
 	default:
@@ -353,6 +381,31 @@ func (s *BalanceService) parseBalanceResponse(data []byte) *string {
 	balanceUSD := float64(quota) / 500000.0
 	balanceStr := fmt.Sprintf("$%.2f", balanceUSD)
 
+	return &balanceStr
+}
+
+func (s *BalanceService) parseSub2APIBalanceResponse(data []byte) *string {
+	var resp sub2APIProfileResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil
+	}
+
+	if resp.Success != nil && !*resp.Success {
+		return nil
+	}
+	if resp.Code != nil && *resp.Code != 0 {
+		return nil
+	}
+
+	balance := resp.Data.Balance
+	if balance == nil {
+		balance = resp.Balance
+	}
+	if balance == nil {
+		return nil
+	}
+
+	balanceStr := fmt.Sprintf("$%.2f", *balance)
 	return &balanceStr
 }
 

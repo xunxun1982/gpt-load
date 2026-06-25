@@ -14,14 +14,30 @@ function askMode<T extends string>(
     contentKey: string;
     actions: Array<{ label: string; value: T; type?: ButtonType }>;
   }
-): Promise<T> {
+): Promise<T | null> {
   return new Promise(resolve => {
-    const d = dialog.create({
+    let settled = false;
+    let dialogInstance: ReturnType<DialogApi["create"]> | null = null;
+    const finish = (value: T | null) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      dialogInstance?.destroy();
+      resolve(value);
+    };
+    dialogInstance = dialog.create({
       title: t(opts.titleKey),
       content: t(opts.contentKey),
       showIcon: true,
-      closable: false,
-      maskClosable: false,
+      closable: true,
+      maskClosable: true,
+      onClose: () => {
+        finish(null);
+      },
+      onMaskClick: () => {
+        finish(null);
+      },
       action: () =>
         h(
           "div",
@@ -32,8 +48,7 @@ function askMode<T extends string>(
               {
                 type: action.type,
                 onClick: () => {
-                  d.destroy();
-                  resolve(action.value);
+                  finish(action.value);
                 },
               },
               { default: () => action.label }
@@ -44,7 +59,10 @@ function askMode<T extends string>(
   });
 }
 
-export function askExportMode(dialog: DialogApi, t: (key: string) => string): Promise<ExportMode> {
+export function askExportMode(
+  dialog: DialogApi,
+  t: (key: string) => string
+): Promise<ExportMode | null> {
   return askMode<ExportMode>(dialog, t, {
     titleKey: "export.modeTitle",
     contentKey: "export.modeDesc",
@@ -55,7 +73,10 @@ export function askExportMode(dialog: DialogApi, t: (key: string) => string): Pr
   });
 }
 
-export function askImportMode(dialog: DialogApi, t: (key: string) => string): Promise<ImportMode> {
+export function askImportMode(
+  dialog: DialogApi,
+  t: (key: string) => string
+): Promise<ImportMode | null> {
   return askMode<ImportMode>(dialog, t, {
     titleKey: "import.modeTitle",
     contentKey: "import.modeDesc",

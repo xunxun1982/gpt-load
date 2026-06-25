@@ -64,9 +64,9 @@ func (m *StealthClientManager) GetClient(proxyURL string) *http.Client {
 func (m *StealthClientManager) createStealthClient(proxyURL string) *http.Client {
 	// Configure tls-client options
 	options := []tls_client.HttpClientOption{
-		// Use Chrome 120 profile for best compatibility
+		// Use the newest Chrome profile supported by the pinned tls-client version.
 		// This includes proper HTTP/2 support and modern TLS fingerprinting
-		tls_client.WithClientProfile(profiles.Chrome_120),
+		tls_client.WithClientProfile(profiles.Chrome_146),
 		// Enable random TLS extension order for better fingerprint randomization
 		tls_client.WithRandomTLSExtensionOrder(),
 	}
@@ -181,10 +181,10 @@ func convertHeadersBack(fh http_tls.Header) http.Header {
 // Note: Connection header is omitted as it violates RFC 9113 §8.2.2 for HTTP/2.
 func stealthHeaders() map[string]string {
 	return map[string]string{
-		"User-Agent":         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"User-Agent":         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
 		"Accept":             "application/json, text/plain, */*",
 		"Accept-Language":    "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-		"Sec-Ch-Ua":          `"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"`,
+		"Sec-Ch-Ua":          `"Not_A Brand";v="8", "Chromium";v="146", "Google Chrome";v="146"`,
 		"Sec-Ch-Ua-Mobile":   "?0",
 		"Sec-Ch-Ua-Platform": `"Windows"`,
 		"Sec-Fetch-Dest":     "empty",

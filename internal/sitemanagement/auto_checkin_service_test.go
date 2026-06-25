@@ -378,6 +378,348 @@ func TestNewAPIProviderExplainsPrivateCheckinSignatureHeader(t *testing.T) {
 	assert.Contains(t, result.Message, "Cookie")
 }
 
+func TestNewAPIProviderDetectsHTMLChallengePage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/user/checkin", r.URL.Path)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><html><body><script>var arg1='x';document.cookie='acw_sc__v2=y';</script></body></html>`))
+	}))
+	defer server.Close()
+
+	provider := newAPIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeNewAPI,
+		UserID:   "123",
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, msgBrowserChallengeDetected, result.Message)
+}
+
+func TestIsBrowserChallengeResponseIgnoresJSONForbiddenChallengeMessage(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`{"success":false,"message":"challenge token is invalid"}`)
+
+	assert.False(t, isBrowserChallengeResponse(http.StatusForbidden, data))
+}
+
+func TestResolveProviderMapsLegacyVeloeraToNewAPI(t *testing.T) {
+	t.Parallel()
+
+	provider := resolveProvider(SiteTypeVeloera)
+
+	assert.IsType(t, newAPIProvider{}, provider)
+}
+
+func TestAnyRouterProviderUsesCookieAjaxSignInEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		baseURL     func(string) string
+		wantReferer func(string) string
+	}{
+		{
+			name:        "origin only",
+			baseURL:     func(serverURL string) string { return serverURL },
+			wantReferer: func(serverURL string) string { return serverURL + "/console/personal" },
+		},
+		{
+			name:        "pathful base URL",
+			baseURL:     func(serverURL string) string { return serverURL + "/check-in" },
+			wantReferer: func(serverURL string) string { return serverURL + "/console/personal" },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var paths []string
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, "session=browser-ok", r.Header.Get("Cookie"))
+				assert.Equal(t, "XMLHttpRequest", r.Header.Get("X-Requested-With"))
+				assert.Equal(t, tt.wantReferer(server.URL), r.Header.Get("Referer"))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+			}))
+			defer server.Close()
+
+			provider := anyrouterProvider{}
+			result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+				BaseURL:  tt.baseURL(server.URL),
+				SiteType: SiteTypeAnyrouter,
+			}, AuthConfig{
+				AuthTypes:  []string{AuthTypeCookie},
+				AuthValues: map[string]string{AuthTypeCookie: "session=browser-ok"},
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, CheckinResultSuccess, result.Status)
+			assert.Equal(t, "签到成功", result.Message)
+			assert.Equal(t, []string{"/api/user/sign_in"}, paths)
+		})
+	}
+}
+
+func TestAnyRouterProviderDoesNotSendUserIDHeader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Empty(t, r.Header.Get("New-API-User"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+	}))
+	defer server.Close()
+
+	provider := anyrouterProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeAnyrouter,
+		UserID:   "test-user-id",
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeCookie},
+		AuthValues: map[string]string{AuthTypeCookie: "session=browser-ok"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+}
+
+func TestAnyRouterProviderReturnsProtocolFieldsWhenMessageEmpty(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":false,"message":"","code":40003,"ret":-1}`))
+	}))
+	defer server.Close()
+
+	provider := anyrouterProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeAnyrouter,
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeCookie},
+		AuthValues: map[string]string{AuthTypeCookie: "session=browser-ok"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Contains(t, result.Message, "code=40003")
+	assert.Contains(t, result.Message, "ret=-1")
+}
+
+func TestAnyRouterProviderDetectsHTMLChallengePage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><html><body><script>var arg1='x';document.cookie='acw_sc__v2=y';</script></body></html>`))
+	}))
+	defer server.Close()
+
+	provider := anyrouterProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeAnyrouter,
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeCookie},
+		AuthValues: map[string]string{AuthTypeCookie: "session=browser-ok; acw_tc=test"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, msgBrowserChallengeDetected, result.Message)
+}
+
+func TestSub2APIProviderFallbacksToNewCheckInEndpointWhenLegacyMissing(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "Bearer test-access-token", r.Header.Get("Authorization"))
+		assert.Equal(t, "session=browser-ok", r.Header.Get("Cookie"))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/user/check-in":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"message":"route not found"}`))
+		case "/api/v1/check-in":
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL + "/check-in",
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes: []string{AuthTypeAccessToken, AuthTypeCookie},
+		AuthValues: map[string]string{
+			AuthTypeAccessToken: "test-access-token",
+			AuthTypeCookie:      "session=browser-ok",
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, "签到成功", result.Message)
+	assert.Equal(t, []string{"/api/v1/user/check-in", "/api/v1/check-in"}, paths)
+}
+
+func TestSub2APIProviderReportsMissingCheckInEndpointWhenDefaultsMissing(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"success":false,"message":"route not found"}`))
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, "check-in endpoint not configured", result.Message)
+	assert.Equal(t, []string{"/api/v1/user/check-in", "/api/v1/check-in"}, paths)
+}
+
+func TestSub2APIProviderAcceptsBearerPrefixedAccessToken(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/user/check-in", r.URL.Path)
+		assert.Equal(t, "Bearer test-access-token", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "Bearer test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, "签到成功", result.Message)
+}
+
+func TestSub2APIProviderDoesNotFallbackOnBusinessFailure(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":false,"message":"already used today"}`))
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultAlreadyChecked, result.Status)
+	assert.Equal(t, "already used today", result.Message)
+	assert.Equal(t, []string{"/api/v1/user/check-in"}, paths)
+}
+
+func TestSub2APIProviderKeepsCustomCheckInURLBeforeDefaultFallbacks(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/custom/check-in":
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_, _ = w.Write([]byte(`{"success":false,"message":"method not allowed"}`))
+		case "/api/v1/user/check-in":
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:          server.URL,
+		SiteType:         SiteTypeSub2API,
+		CustomCheckInURL: "/custom/check-in",
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeCookie},
+		AuthValues: map[string]string{AuthTypeCookie: "session=browser-ok"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, []string{"/custom/check-in", "/api/v1/user/check-in"}, paths)
+}
+
+func TestSub2APIProviderDetectsHTMLChallengePage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/user/check-in", r.URL.Path)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><html><body><script>var arg1='x';document.cookie='acw_tc=y';</script></body></html>`))
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, msgBrowserChallengeDetected, result.Message)
+}
+
 func TestAutoCheckinRefreshesBalanceAfterSuccessfulCheckin(t *testing.T) {
 	t.Parallel()
 

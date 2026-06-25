@@ -149,6 +149,9 @@ function generateValidationRules(item: Setting): FormItemRule[] {
 async function handleExportAll() {
   const { askExportMode } = await import("@/utils/export-import");
   const mode = await askExportMode(dialog, t);
+  if (!mode) {
+    return;
+  }
 
   try {
     await settingsApi.exportAll(mode);
@@ -269,13 +272,16 @@ async function handleSystemFileChange(event: Event) {
 
           // Close dialog immediately and start import
           isImporting.value = true;
-          message.loading(t("settings.importingSystem"), { duration: 0 });
 
           // Execute import asynchronously after dialog closes
           setTimeout(async () => {
             try {
               const { askImportMode } = await import("@/utils/export-import");
               const mode = await askImportMode(dialog, t);
+              if (!mode) {
+                return;
+              }
+              message.loading(t("settings.importingSystem"), { duration: 0 });
               await settingsApi.importAll(data, { mode, filename: file.name });
               message.destroyAll();
               message.success(t("settings.importSuccess"));
@@ -354,7 +360,6 @@ async function handleSystemFileChange(event: Event) {
 
           // Close dialog immediately and start import
           isImporting.value = true;
-          message.loading(t("settings.importingGroups"), { duration: 0 });
 
           // Execute import asynchronously after dialog closes
           setTimeout(async () => {
@@ -366,6 +371,10 @@ async function handleSystemFileChange(event: Event) {
               // Ask import mode (backend will ignore if unsupported)
               const { askImportMode } = await import("@/utils/export-import");
               const mode = await askImportMode(dialog, t);
+              if (!mode) {
+                return;
+              }
+              message.loading(t("settings.importingGroups"), { duration: 0 });
               // Prefer full system import path when only groups provided? Keep batch endpoint for compatibility
               await settingsApi.importGroupsBatch(
                 { groups: data.groups },

@@ -478,11 +478,12 @@ func (s *Server) ImportManagedSites(c *gin.Context) {
 		return
 	}
 
-	response.SuccessI18n(c, "success.sites_imported", map[string]interface{}{
+	data := map[string]any{
 		"imported": imported,
 		"skipped":  skipped,
 		"total":    len(importData.Sites),
-	})
+	}
+	response.SuccessI18n(c, "success.sites_imported", data, data)
 }
 
 // FetchSiteBalance fetches balance for a single site
