@@ -584,6 +584,33 @@ func TestSub2APIProviderFallbacksToNewCheckInEndpointWhenLegacyMissing(t *testin
 	assert.Equal(t, []string{"/api/v1/user/check-in", "/api/v1/check-in"}, paths)
 }
 
+func TestSub2APIProviderReportsMissingCheckInEndpointWhenDefaultsMissing(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"success":false,"message":"route not found"}`))
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "test-access-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, "check-in endpoint not configured", result.Message)
+	assert.Equal(t, []string{"/api/v1/user/check-in", "/api/v1/check-in"}, paths)
+}
+
 func TestSub2APIProviderAcceptsBearerPrefixedAccessToken(t *testing.T) {
 	t.Parallel()
 

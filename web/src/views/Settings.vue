@@ -279,7 +279,6 @@ async function handleSystemFileChange(event: Event) {
               const { askImportMode } = await import("@/utils/export-import");
               const mode = await askImportMode(dialog, t);
               if (!mode) {
-                message.destroyAll();
                 return;
               }
               message.loading(t("settings.importingSystem"), { duration: 0 });
@@ -373,7 +372,6 @@ async function handleSystemFileChange(event: Event) {
               const { askImportMode } = await import("@/utils/export-import");
               const mode = await askImportMode(dialog, t);
               if (!mode) {
-                message.destroyAll();
                 return;
               }
               message.loading(t("settings.importingGroups"), { duration: 0 });

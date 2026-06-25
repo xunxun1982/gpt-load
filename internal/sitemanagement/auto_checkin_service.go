@@ -1502,22 +1502,17 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
-	var lastResult providerResult
 	for _, apiURL := range buildSub2APICheckinURLs(site) {
 		result, _, missingEndpoint, err := p.requestCheckIn(ctx, client, apiURL, headers, authType, useStealth)
 		if err != nil {
 			return result, err
 		}
-		lastResult = result
 		if missingEndpoint {
 			continue
 		}
 		return result, nil
 	}
 
-	if lastResult.Status != "" {
-		return lastResult, nil
-	}
 	return providerResult{Status: CheckinResultFailed, Message: "check-in endpoint not configured"}, nil
 }
 
